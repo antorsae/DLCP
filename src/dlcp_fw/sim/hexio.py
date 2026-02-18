@@ -35,7 +35,7 @@ def parse_intel_hex(path: Path) -> Dict[int, int]:
 
         total = ll + ((addr16 >> 8) & 0xFF) + (addr16 & 0xFF) + rtype + sum(data)
         total &= 0xFF
-        calc = ((~total + 1) & 0xFF)
+        calc = (~total + 1) & 0xFF
         if calc != cc:
             raise HexError(
                 f"{path}:{lineno}: checksum mismatch got=0x{cc:02X} want=0x{calc:02X}"

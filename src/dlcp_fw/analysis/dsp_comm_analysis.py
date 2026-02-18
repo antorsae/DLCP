@@ -4,7 +4,7 @@ Deep DSP Communication Analysis - Understand SPI/I2C protocol to external DSP
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional
 from collections import defaultdict
 
 

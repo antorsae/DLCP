@@ -29,7 +29,6 @@ import argparse
 import dataclasses
 import json
 import pathlib
-import sys
 from datetime import datetime, timezone
 
 

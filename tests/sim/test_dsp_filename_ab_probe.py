@@ -1,25 +1,24 @@
 from __future__ import annotations
 
-import pathlib
 import sys
+from pathlib import Path
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dlcp_fw.flash import dsp_filename_ab_probe as probe
 
 
-def _mk_blob(start: int, size: int, fill: int = 0xFF) -> bytearray:
-    _ = start
+def _mk_blob(size: int, fill: int = 0xFF) -> bytearray:
     return bytearray([fill] * size)
 
 
 def test_analyze_bytes_no_changes() -> None:
     start = 0x0800
     size = 0x7800
-    before = bytes(_mk_blob(start, size))
+    before = bytes(_mk_blob(size))
     after = bytes(before)
 
     out = probe.analyze_bytes(before, after, start_addr=start)
@@ -31,7 +30,7 @@ def test_analyze_bytes_no_changes() -> None:
 def test_analyze_bytes_tail_only_change() -> None:
     start = 0x0800
     size = 0x7800
-    before = _mk_blob(start, size)
+    before = _mk_blob(size)
     after = bytearray(before)
 
     # Tail area inside 0x5F00..0x5FFF only.
@@ -48,7 +47,7 @@ def test_analyze_bytes_tail_only_change() -> None:
 def test_analyze_bytes_table_main_change() -> None:
     start = 0x0800
     size = 0x7800
-    before = _mk_blob(start, size)
+    before = _mk_blob(size)
     after = bytearray(before)
 
     # Main table payload-ish area.

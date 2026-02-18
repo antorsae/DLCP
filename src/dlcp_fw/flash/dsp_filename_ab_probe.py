@@ -29,7 +29,6 @@ import dataclasses
 import hashlib
 import json
 import pathlib
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone

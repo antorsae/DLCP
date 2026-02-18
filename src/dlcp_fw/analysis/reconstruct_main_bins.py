@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-from typing import Dict, List
 
 from dlcp_fw.paths import FIRMWARE_DUMPS_DIR, STOCK_MAIN_HEX
 
@@ -25,8 +24,8 @@ class HexParseError(RuntimeError):
     pass
 
 
-def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
-    mem: Dict[int, int] = {}
+def parse_intel_hex(path: pathlib.Path) -> dict[int, int]:
+    mem: dict[int, int] = {}
     upper = 0
 
     def b(h: str) -> int:
@@ -49,13 +48,13 @@ def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
             cc = b(line[9 + ll * 2 : 11 + ll * 2])
 
             total = ll + ((aaaa >> 8) & 0xFF) + (aaaa & 0xFF) + rtype
-            data: List[int] = []
+            data: list[int] = []
             for i in range(0, len(data_hex), 2):
                 bb = b(data_hex[i : i + 2])
                 data.append(bb)
                 total += bb
             total &= 0xFF
-            calc = ((~total + 1) & 0xFF)
+            calc = (~total + 1) & 0xFF
             if calc != cc:
                 raise HexParseError(
                     f"{path}:{lineno}: checksum mismatch (got 0x{cc:02x}, want 0x{calc:02x})"
@@ -79,7 +78,7 @@ def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
 
 
 def write_region(
-    mem: Dict[int, int],
+    mem: dict[int, int],
     out_path: pathlib.Path,
     start: int,
     length: int,

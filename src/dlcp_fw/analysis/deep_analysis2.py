@@ -4,7 +4,7 @@ Deeper Analysis - Focus on USB HID protocol, command structure, and DSP operatio
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional
 from collections import defaultdict
 
 
@@ -407,7 +407,7 @@ def find_usb_strings(memory: Dict[int, int]):
                     print(f"    Length: {length}")
                     print(f'    Text: "{text}"')
                     print(f"    Raw: {data.hex()}")
-            except:
+            except Exception:
                 pass
 
 

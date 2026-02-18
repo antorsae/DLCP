@@ -3,9 +3,8 @@
 Detailed Code Analysis - Find entry points, analyze main function and ISRs
 """
 
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Tuple
 
 
 def parse_intel_hex(filepath: str) -> Dict[int, int]:

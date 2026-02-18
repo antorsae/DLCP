@@ -376,7 +376,7 @@ def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
                 data.append(bb)
                 total += bb
             total &= 0xFF
-            calc = ((~total + 1) & 0xFF)
+            calc = (~total + 1) & 0xFF
             if calc != cc:
                 raise HexParseError(
                     f"{path}:{lineno}: checksum mismatch (got 0x{cc:02X}, want 0x{calc:02X})"
@@ -401,7 +401,7 @@ def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
 def _record(addr16: int, rtype: int, payload: bytes) -> str:
     ll = len(payload)
     total = ll + ((addr16 >> 8) & 0xFF) + (addr16 & 0xFF) + rtype + sum(payload)
-    cc = ((~total + 1) & 0xFF)
+    cc = (~total + 1) & 0xFF
     return f":{ll:02X}{addr16:04X}{rtype:02X}{payload.hex().upper()}{cc:02X}"
 
 

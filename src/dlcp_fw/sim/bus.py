@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, List, Sequence, Set
+from typing import List, Sequence, Set
 
 from .main_model import MainUnitModel
 from .protocol import SerialFrame

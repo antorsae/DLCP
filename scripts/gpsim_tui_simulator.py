@@ -30,14 +30,13 @@ import re
 import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Deque, Dict, List
-
-import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:

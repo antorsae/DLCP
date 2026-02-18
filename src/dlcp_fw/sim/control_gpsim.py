@@ -391,9 +391,7 @@ class GpsimControlHarness:
         self._issue = lambda c, t=10.0: self._gpsim.cmd(c, timeout_s=t)
 
         self._decoder = _LogDecoder()
-        self._key_release: Dict[str, int] = {
-            k: 0 for k in SCAN_BITS
-        }
+        self._key_release: Dict[str, int] = dict.fromkeys(SCAN_BITS, 0)
         self._prev_active: set[str] = set()
 
         # Heartbeat model state

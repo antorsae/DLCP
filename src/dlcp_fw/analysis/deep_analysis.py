@@ -3,7 +3,6 @@
 Deep Firmware Analysis - Trace execution, identify functionality, map data structures
 """
 
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict

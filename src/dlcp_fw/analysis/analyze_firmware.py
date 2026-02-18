@@ -4,12 +4,10 @@ PIC18 Firmware Analyzer for HYPEX DLCP
 Correctly parses Intel HEX and disassembles PIC18 code
 """
 
-import struct
-import sys
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # PIC18 Instruction Set - opcode masks and mnemonics
 PIC18_INSTRUCTIONS = [

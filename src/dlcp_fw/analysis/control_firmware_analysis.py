@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Analyze DLCP Control Firmware hex files."""
 
-import os
-import sys
+from pathlib import Path
 
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V14, STOCK_CONTROL_HEX_V15B, STOCK_CONTROL_HEX_V16B
 
@@ -117,7 +116,7 @@ def main():
 
     firmwares = {}
     for name, path in files.items():
-        if os.path.exists(path):
+        if Path(path).exists():
             firmwares[name] = parse_intel_hex(path)
             print(f"=== {name}: Loaded {len(firmwares[name])} bytes ===")
         else:

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Deep analysis of DLCP Control Unit firmware"""
 
-import struct
-import re
 from pathlib import Path
 
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V14, STOCK_CONTROL_HEX_V15B, STOCK_CONTROL_HEX_V16B

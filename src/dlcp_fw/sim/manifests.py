@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pathlib
 import subprocess
 import tempfile
+from pathlib import Path
 
 from .hexio import parse_intel_hex
 from .overlay import OverlayManifest
@@ -326,7 +326,7 @@ def main_serial_mailbox_hooks(gpasm: str = "gpasm") -> OverlayManifest:
     """Build mailbox hook overlay for main UART helper functions."""
 
     with tempfile.TemporaryDirectory(prefix="main_serial_hook_") as td:
-        td_path = pathlib.Path(td)
+        td_path = Path(td)
         asm = td_path / "main_serial_hook.asm"
         out_hex = td_path / "main_serial_hook.hex"
         asm.write_text(_MAIN_SERIAL_MAILBOX_HOOK_ASM, encoding="ascii")
@@ -467,7 +467,7 @@ def main_serial_mailbox_hooks_uart_only(gpasm: str = "gpasm") -> OverlayManifest
     """Build mailbox hook overlay for main UART helper functions only."""
 
     with tempfile.TemporaryDirectory(prefix="main_uart_hook_") as td:
-        td_path = pathlib.Path(td)
+        td_path = Path(td)
         asm = td_path / "main_uart_hook.asm"
         out_hex = td_path / "main_uart_hook.hex"
         asm.write_text(_MAIN_UART_MAILBOX_ONLY_HOOK_ASM, encoding="ascii")
@@ -530,7 +530,7 @@ def main_adc_boot_wait_hook(gpasm: str = "gpasm") -> OverlayManifest:
     """Hook ADC wait path in function_024 for gpsim runs."""
 
     with tempfile.TemporaryDirectory(prefix="main_adc_hook_") as td:
-        td_path = pathlib.Path(td)
+        td_path = Path(td)
         asm = td_path / "main_adc_hook.asm"
         out_hex = td_path / "main_adc_hook.hex"
         asm.write_text(_MAIN_ADC_BOOT_WAIT_HOOK_ASM, encoding="ascii")

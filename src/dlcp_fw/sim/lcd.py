@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 
 @dataclass(frozen=True)
@@ -23,8 +23,8 @@ def decode_lcd_bytes(log_path: Path) -> List[LcdByte]:
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
     rs = 0
-    pending: Tuple[int, int] | None = None
-    nibbles: List[Tuple[int, int, int]] = []
+    pending: tuple[int, int] | None = None
+    nibbles: list[tuple[int, int, int]] = []
 
     for line in lines:
         m = ins_re.match(line)
@@ -52,9 +52,8 @@ def decode_lcd_bytes(log_path: Path) -> List[LcdByte]:
 
     out: List[LcdByte] = []
     for i in range(0, len(nibbles) - 1, 2):
-        _, _, _ = nibbles[i]
+        _, _, n1 = nibbles[i]
         c2, rs2, n2 = nibbles[i + 1]
-        n1 = nibbles[i][2]
         b = ((n1 << 4) | n2) & 0xFF
         out.append(LcdByte(cycle=c2, rs=rs2, value=b, n1=n1, n2=n2))
     return out

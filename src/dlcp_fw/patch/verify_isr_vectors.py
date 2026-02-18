@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """Verify ISR vector redirects are applied in the patched hex."""
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from dlcp_fw.paths import PATCHED_MAIN_HEX, SIM_ARTIFACTS_DIR
 from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.manifests import main_reset_to_appstart, main_i2c_bypass

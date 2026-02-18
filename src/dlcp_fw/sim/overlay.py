@@ -75,7 +75,4 @@ def apply_overlays(base_hex: Path, output_hex: Path, manifests: Sequence[Overlay
 
 
 def summary(results: Iterable[OverlayResult]) -> Dict[str, int]:
-    out: Dict[str, int] = {}
-    for r in results:
-        out[r.manifest_name] = r.changed_bytes
-    return out
+    return {r.manifest_name: r.changed_bytes for r in results}

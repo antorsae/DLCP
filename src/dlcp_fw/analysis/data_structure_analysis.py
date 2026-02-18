@@ -4,9 +4,8 @@ Data Structure Deep Analysis - Filter counts, gain/delay, filter types
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional
 from collections import defaultdict
-import struct
 
 
 def parse_intel_hex(filepath: str) -> Dict[int, int]:

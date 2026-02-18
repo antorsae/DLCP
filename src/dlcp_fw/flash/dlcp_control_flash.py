@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 import sys
 import time
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V14
 
@@ -94,7 +94,7 @@ def parse_intel_hex(path: str) -> Dict[int, int]:
                 data.append(b)
                 total += b
             total &= 0xFF
-            calc = ((~total + 1) & 0xFF)
+            calc = (~total + 1) & 0xFF
             if calc != cc:
                 raise HexParseError(
                     f"{path}:{lineno}: checksum mismatch (got 0x{cc:02x}, want 0x{calc:02x})"

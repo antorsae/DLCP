@@ -59,7 +59,7 @@ def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
 def _rec(addr16: int, rtype: int, payload: bytes) -> str:
     ll = len(payload)
     total = ll + ((addr16 >> 8) & 0xFF) + (addr16 & 0xFF) + rtype + sum(payload)
-    cc = ((~total + 1) & 0xFF)
+    cc = (~total + 1) & 0xFF
     return f":{ll:02X}{addr16:04X}{rtype:02X}{payload.hex().upper()}{cc:02X}"
 
 

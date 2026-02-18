@@ -6,8 +6,8 @@ commands that must remain compatible after adding preset command 0x20.
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import pytest
 
