@@ -650,6 +650,37 @@ class GpsimControlHarness:
         """Read a single RAM/SFR register."""
         return _read_reg(self._issue, addr)
 
+    def inject_decoded_ir_event(
+        self,
+        *,
+        cmd: int,
+        addr: int,
+        steps: int = 4,
+        clear_debounce: bool = True,
+    ) -> List[TxTriplet]:
+        """Inject a decoded IR event through the ISR handoff registers.
+
+        This bypasses RB5 waveform generation and directly writes:
+        - 0x01D: decoded IR command
+        - 0x01E: decoded IR address
+
+        Then it clears 0x01F bit0 (IR_ARMED) so the foreground dispatch
+        path (label_166) runs on the next step(s).
+        """
+        if clear_debounce:
+            self._issue("reg(0x01B)=0x00", 5.0)
+            self._issue("reg(0x01C)=0x00", 5.0)
+        self._issue(f"reg(0x01D)=0x{cmd & 0xFF:02X}", 5.0)
+        self._issue(f"reg(0x01E)=0x{addr & 0xFF:02X}", 5.0)
+
+        flags = self.read_reg(0x01F)
+        self._issue(f"reg(0x01F)=0x{flags & 0xFE:02X}", 5.0)
+
+        before = len(self._decoder.tx_frames)
+        for _ in range(max(1, steps)):
+            self.step()
+        return self.tx_frames()[before:]
+
     def dump_eeprom(self, path: Path) -> None:
         """Save EEPROM contents to an Intel HEX file.
 

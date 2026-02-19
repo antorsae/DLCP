@@ -9,6 +9,7 @@ Patch summary (top-level Preset screen design):
 - Preset screen shows >A< / >B< selection brackets; UP=A, DOWN=B.
 - Volume screen shows active preset letter (A/B) at column 15.
 - Preset change broadcasts route=0xB0 cmd=0x20 data=0|1.
+- IR F1/F2 shortcuts: RC5 0x38 -> preset A, RC5 0x39 -> preset B.
 - Preset state stored in state_flags bit6 (0x01F.6); persisted at EEPROM 0x74.
 - Firmware version policy: display/version tuple updated to 1.41.
 """
@@ -35,7 +36,7 @@ LIST P=18F2550
 ; ============================================================
 ; Patch 0 - Startup flag init
 ; ============================================================
-; Ensure custom state bits (5/6/7) start from known values each boot.
+; Ensure custom state bits (5/6) start from known values each boot.
 ; Original: bcf 0x01F,3
 org 0x1106
     clrf 0x01F, ACCESS
@@ -109,6 +110,14 @@ org 0x0B52
     nop
 
 ; ============================================================
+; Patch 7 - IR dispatch pre-hook
+; ============================================================
+; Original: 0x0E46 -> goto label_166 (0x0E4C)
+; Route through wrapper to handle RC5 F1/F2 as preset shortcuts.
+org 0x0E46
+    goto ir_dispatch_pre_stub
+
+; ============================================================
 ; New code in erased flash area (0x7000+)
 ; ============================================================
 org 0x7000
@@ -129,8 +138,59 @@ preset_boot_init_wrapper:
     goto preset_boot_init_done
     bsf 0x01F, 6, ACCESS
 preset_boot_init_done:
-    bsf 0x01F, 7, ACCESS        ; mark preset init done
     return
+
+; ------------------------------------------------------------
+; ir_dispatch_pre_stub:
+; - adds RC5 F1/F2 preset shortcuts before stock IR dispatch
+; - cmd 0x38 (F1) -> preset A
+; - cmd 0x39 (F2) -> preset B
+; ------------------------------------------------------------
+ir_dispatch_pre_stub:
+    ; Match configured RC5 address first (same gate as stock dispatch).
+    movf 0x01E, W, ACCESS
+    cpfseq 0x020, ACCESS
+    goto ir_dispatch_passthrough
+
+    ; F1 (0x38) -> preset A
+    movf 0x01D, W, ACCESS
+    xorlw 0x38
+    bz ir_set_preset_a
+
+    ; F2 (0x39) -> preset B
+    movf 0x01D, W, ACCESS
+    xorlw 0x39
+    bz ir_set_preset_b
+
+    goto ir_dispatch_passthrough
+
+ir_set_preset_a:
+    ; Idempotent: if already A, do nothing.
+    btfss 0x01F, 6, ACCESS
+    goto ir_dispatch_done
+    bcf 0x01F, 6, ACCESS
+    movlb 0x00
+    call send_preset_frame
+    bsf 0x01F, 3, ACCESS         ; request UI refresh
+    goto ir_dispatch_done
+
+ir_set_preset_b:
+    ; Idempotent: if already B, do nothing.
+    btfsc 0x01F, 6, ACCESS
+    goto ir_dispatch_done
+    bsf 0x01F, 6, ACCESS
+    movlb 0x00
+    call send_preset_frame
+    bsf 0x01F, 3, ACCESS         ; request UI refresh
+    goto ir_dispatch_done
+
+ir_dispatch_done:
+    bsf 0x01F, 0, ACCESS         ; re-arm IR path (matches stock tail)
+    return
+
+ir_dispatch_passthrough:
+    movlb 0x00
+    goto 0x0E4C                  ; stock label_166
 
 ; ------------------------------------------------------------
 ; new_dispatch_stub: handle menu states 1, 2, 3
@@ -271,9 +331,24 @@ line2_sp:
     movlw ' '
     call 0x00EC
 
+    ; Shadow rendered preset in scratch byte 0x02D for out-of-band
+    ; change detection (avoids reusing stock state_flags bits).
+    clrf 0x02D, ACCESS
+    btfsc 0x01F, 6, ACCESS
+    incf 0x02D, F, ACCESS
+
 ; --- Event loop ---
 preset_loop:
     call 0x0D24                 ; function_042 (wait for event)
+
+    ; If preset changed out-of-band (e.g. IR F1/F2), redraw this screen.
+    clrf WREG, ACCESS
+    btfsc 0x01F, 6, ACCESS
+    movlw 0x01
+    xorwf 0x02D, W, ACCESS
+    bz prs_shadow_ok
+    goto preset_screen
+prs_shadow_ok:
 
     ; Check UP (0x9A bit1) -> set preset A
     btfss 0x09A, 1, BANKED
@@ -516,6 +591,11 @@ def validate_expected(mem: Dict[int, int]) -> None:
         0x0B53: 0x6A,
         0x0B54: 0x06,  # movlw 0x06
         0x0B55: 0x0E,
+        # Patch 7: IR dispatch pre-hook (original goto label_166)
+        0x0E46: 0x26,
+        0x0E47: 0xEF,
+        0x0E48: 0x07,
+        0x0E49: 0xF0,
     }
     for a, want in expected.items():
         got = mem.get(a, 0xFF)
@@ -581,7 +661,7 @@ def main() -> int:
         "code patch:",
         f"bytes={patch_written}",
         f"changed={patch_changed}",
-        "hooks=[0x1106,0x116E,0x11A4,0x0B52,0x1264,0x1288,0x149A,0x1A08,0x123E,0x13AE]",
+        "hooks=[0x1106,0x116E,0x11A4,0x0B52,0x0E46,0x1264,0x1288,0x149A,0x1A08,0x123E,0x13AE]",
         "stub_range=0x7000+",
     )
     print(

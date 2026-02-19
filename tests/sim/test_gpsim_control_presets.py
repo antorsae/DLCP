@@ -35,6 +35,10 @@ def _boot_harness(
         eeprom_file=eeprom_file,
         chunk_cycles=200_000,
         hold_cycles=100_000,
+        # Keep UI navigation tests deterministic; synthetic heartbeat traffic
+        # can alias with short key pulses and create timing-only flakes.
+        heartbeat_rx_mode="none",
+        heartbeat_force_connected=True,
     )
     h.warmup(WARMUP_CYCLES)
     return h

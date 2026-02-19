@@ -181,6 +181,25 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
             f"control full-sync hook mismatch at 0x0B55: got 0x{control_new.get(0x0B55, 0xFF):02X}, want 0xF0"
         )
 
+    # --- Patch 6: IR dispatch pre-hook at 0x0E46 ---
+    # Verify this is a goto and that it targets the new 0x7000 stub area,
+    # not the stock label_166 dispatch at 0x0E4C.
+    ir_w1_lo = control_new.get(0x0E46, 0xFF)
+    ir_w1_hi = control_new.get(0x0E47, 0xFF)
+    ir_w2_lo = control_new.get(0x0E48, 0xFF)
+    ir_w2_hi = control_new.get(0x0E49, 0xFF)
+    if ir_w1_hi != 0xEF or ir_w2_hi != 0xF0:
+        raise RuntimeError("control IR dispatch hook at 0x0E46 not a goto instruction")
+    # PIC18 GOTO encoding (byte-address target):
+    # target = (((word2_low12 << 8) | word1_low8) * 2).
+    ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
+    if ir_target == 0x0E4C:
+        raise RuntimeError("control IR dispatch hook target drifted to stock label_166 (0x0E4C)")
+    if not (0x7000 <= ir_target < 0x7200):
+        raise RuntimeError(
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x71FF)"
+        )
+
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
     def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7200) -> int | None:
@@ -211,6 +230,12 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x73]")
     if _find_seq([0x72, 0x0E, 0xA9, 0x6E]) is not None:
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x72]")
+
+    # IR preset shortcuts must exist in stub code: xorlw 0x38 and xorlw 0x39.
+    if _find_seq([0x38, 0x0A]) is None:
+        raise RuntimeError("control IR preset shortcut missing xorlw 0x38 (F1->preset A)")
+    if _find_seq([0x39, 0x0A]) is None:
+        raise RuntimeError("control IR preset shortcut missing xorlw 0x39 (F2->preset B)")
 
     # Verify stub calls function_042 (0x0D24) at some point
     found_fn042 = False
@@ -269,6 +294,13 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
         raise RuntimeError("control original mismatch at 0x123E (expected decfsz 0xBF)")
     if control_orig.get(0x0B52, 0x00) != 0x28:
         raise RuntimeError("control original mismatch at 0x0B52 (expected clrf 0x028)")
+    if (
+        control_orig.get(0x0E46, 0x00) != 0x26
+        or control_orig.get(0x0E47, 0x00) != 0xEF
+        or control_orig.get(0x0E48, 0x00) != 0x07
+        or control_orig.get(0x0E49, 0x00) != 0xF0
+    ):
+        raise RuntimeError("control original mismatch at 0x0E46 (expected goto label_166)")
     if control_orig.get(0x1106, 0x00) != 0x1F or control_orig.get(0x1107, 0x00) != 0x96:
         raise RuntimeError("control original mismatch at 0x1106 (expected bcf 0x01F,3)")
     if (

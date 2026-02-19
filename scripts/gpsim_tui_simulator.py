@@ -16,7 +16,8 @@ Keys:
 - d: right
 - s: select
 - f: standby
-- 0/1/2: force MAIN AN0 ADC to 0x0000/0x0228/0x0FFF (both units)
+- 7/8/9: force MAIN AN0 ADC to 0x0000/0x0228/0x0FFF (both units)
+- 1/2: inject decoded IR F1/F2 (0x38/0x39) into CONTROL firmware
 - h: toggle info/help
 - q: quit
 """
@@ -129,6 +130,8 @@ CTRL_DATA_LABELS = {
 
 WAKE_CMD = 0x03
 WAKE_DATA = 0x01
+IR_F1_CMD = 0x38
+IR_F2_CMD = 0x39
 
 # ── Clock and UART timing model ──────────────────────────────────────
 # PIC18F2550: instruction cycle (Tcy) = Fosc / 4.
@@ -1167,6 +1170,17 @@ class GpsimControlSession:
             self.key_release[action], self.current_cycle + self.hold_cycles
         )
 
+    def inject_decoded_ir(self, cmd: int, *, addr: int | None = None) -> int:
+        """Inject a decoded IR event through CONTROL ISR handoff registers."""
+        ir_addr = _read_reg(self._issue, 0x020) if addr is None else (addr & 0xFF)
+        self._issue("reg(0x01B)=0x00", 5.0)
+        self._issue("reg(0x01C)=0x00", 5.0)
+        self._issue(f"reg(0x01D)=0x{cmd & 0xFF:02X}", 5.0)
+        self._issue(f"reg(0x01E)=0x{ir_addr:02X}", 5.0)
+        flags = _read_reg(self._issue, 0x01F)
+        self._issue(f"reg(0x01F)=0x{flags & 0xFE:02X}", 5.0)
+        return ir_addr
+
     def inject_triplet(self, frame: TxTriplet) -> bool:
         return self.inject_bytes([frame.route, frame.cmd, frame.data])
 
@@ -1424,8 +1438,9 @@ def _draw_help_overlay(stdscr: curses.window, start_y: int, x: int) -> None:
         "Chain forwarding is strict-hop: CONTROL<->DLCP#0<->DLCP#1 (no direct #1->CONTROL).",
         "Current-loop RX pin model: MAIN RC0 is driven idle-high (pin-level).",
         "RC2 strap model: MAIN #0 high (local/control), MAIN #1 low (daisy-chain).",
-        "MAIN AN0 can be force-driven with --main-RA0 and hotkeys 0/1/2.",
-        "Hotkeys: 0->0x0000, 1->0x0228, 2->0x0FFF (applies to both MAIN units).",
+        "MAIN AN0 can be force-driven with --main-RA0 and hotkeys 7/8/9.",
+        "Hotkeys: 7->0x0000, 8->0x0228, 9->0x0FFF (applies to both MAIN units).",
+        "Hotkeys: 1/2 inject decoded IR F1/F2 (0x38/0x39) to CONTROL.",
         "Startup path is stock control firmware; serial is byte-paced at 31,250 baud.",
         f"EUSART model: byte_cyc={_byte_cycles(CONTROL_FOSC_HZ)} Tcy, FIFO depth={EUSART_FIFO_DEPTH}, overrun=drop.",
         "Timer3 modes: shim (faster), harness (external overflow model, higher fidelity).",
@@ -1496,7 +1511,8 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
         )
     )
 
-    ra0_hotkeys = {"0": 0x0000, "1": 0x0228, "2": 0x0FFF}
+    ra0_hotkeys = {"7": 0x0000, "8": 0x0228, "9": 0x0FFF}
+    ir_hotkeys = {"1": IR_F1_CMD, "2": IR_F2_CMD}
     ra0_target_adc = int(args.main_ra0) & 0x0FFF
     main0.set_main_ra0_adc(ra0_target_adc)
     if main1 is not None:
@@ -1826,6 +1842,18 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                             )
                             status = f"main_ra0=0x{ra0_target_adc:03X} cycle={control.current_cycle}"
                             did_press = True
+                        elif c in ir_hotkeys:
+                            ir_cmd = ir_hotkeys[c]
+                            ir_addr = control.inject_decoded_ir(ir_cmd)
+                            label = "F1" if ir_cmd == IR_F1_CMD else "F2"
+                            trace.append(
+                                f"0x{control.current_cycle:08X} IR inject {label} cmd=0x{ir_cmd:02X} addr=0x{ir_addr:02X}"
+                            )
+                            status = (
+                                f"ir_{label.lower()} cmd=0x{ir_cmd:02X} addr=0x{ir_addr:02X} "
+                                f"cycle={control.current_cycle}"
+                            )
+                            did_press = True
                 if mapped:
                     control.press(mapped)
                     did_press = True
@@ -1936,7 +1964,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                 stdscr,
                 10,
                 2,
-                f"{ra0_label} = 0x{ra0_target_adc:03X}   hotkeys: 0=0x0000 1=0x0228 2=0x0FFF",
+                f"{ra0_label} = 0x{ra0_target_adc:03X}   hotkeys: 7=0x0000 8=0x0228 9=0x0FFF",
             )
             # Keypad.
             _safe_addstr(stdscr, 5, 40, "Keys (visual feedback):")
@@ -1957,7 +1985,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                 flash_until.get("x", 0.0) > now or flash_until.get("c", 0.0) > now
             )
             _draw_key(stdscr, 8, 50, "x", "down (c alias)", pressed=down_pressed)
-            _safe_addstr(stdscr, 9, 40, "q=quit  h=toggle help  0/1/2=MAIN RA0")
+            _safe_addstr(stdscr, 9, 40, "q=quit  h=toggle help  7/8/9=MAIN RA0  1/2=IR F1/F2")
 
             _draw_unit_panel(stdscr, 12, 2, 0, main_mem0)
             if not single_main:
@@ -2050,7 +2078,7 @@ def parse_args() -> argparse.Namespace:
         dest="main_ra0",
         type=_parse_adc12,
         default=0x0000,
-        help="force MAIN AN0 ADC sample on both units (0x000..0xFFF), default 0x0000; runtime hotkeys 0/1/2",
+        help="force MAIN AN0 ADC sample on both units (0x000..0xFFF), default 0x0000; runtime hotkeys 7/8/9",
     )
     ap.add_argument(
         "--main0-rc2",

@@ -20,6 +20,13 @@ pass.  Patched HEX files are ready for flashing.
 - The active preset is shown with selection brackets `>A<` or `>B<`.
 - The Volume screen shows the active preset letter at column 15:
   `Volume:        A` or `Volume:        B`.
+- IR shortcuts on the Hypex RC5 remote are supported:
+  `F1` (`0x38`) selects Preset A, `F2` (`0x39`) selects Preset B.
+- IR preset switching is idempotent: pressing F1 while already on A (or F2
+  while already on B) performs no extra preset TX/persist writes.
+- IR preset switching updates runtime state regardless of current menu screen.
+  If the active screen shows preset state (Volume or Preset), the display is
+  refreshed to the new A/B state.
 - USBaudio sub-parameter is **preserved** (not repurposed).
 - HFD table uploads are transparent — they always target the active preset's
   bank.  Switching presets changes which physical flash region is written.
@@ -74,6 +81,7 @@ The active preset is stored as bit2 of RAM `0x05E`:
 | String table fix (Setup) | `0x149A` | `movff 0xBF,0x027` → `movlw 0x02; movwf 0x027` (state 3 → index 2) |
 | String table fix (Input) | `0x1A08` | `movff 0xBF,0x027` → `movlw 0x01; movwf 0x027` (state 2 → index 1) |
 | Dispatch redirect | `0x123E` | `goto new_dispatch_stub` — routes states 1/2/3 to correct functions |
+| IR dispatch pre-hook | `0x0E46` | `goto ir_dispatch_pre_stub` — adds F1/F2 preset shortcuts, then tail-jumps to stock IR dispatcher |
 | Volume indicator | `0x13AE` | `goto volume_indicator_stub` — shows A/B at LCD column 15 |
 | Full-sync hook | `0x0B52` | `goto full_sync_entry_stub` — emits periodic preset sync (`0x20`) via TX-only path |
 | Stub block | `0x7000+` | Boot-load wrapper, dispatch, volume indicator, full-sync, preset screen, frame send helpers |
@@ -197,6 +205,8 @@ Additional regression coverage:
 | `tests/sim/test_control_main_powercycle_sync.py` | Full power-cycle + late-join MAIN preset resync behavior |
 | `tests/sim/test_control_gpsim_command_emission_legacy.py` | Legacy CONTROL→MAIN command emission coverage during boot/runtime |
 | `tests/sim/test_control_gpsim_response_parser.py` | CONTROL RX parser behavior for response commands and reset path handling |
+| `tests/sim/test_control_gpsim_ir_compatibility.py` | Decoded-IR dispatch parity (stock V1.4 vs patched V1.41): both RC5 profiles, action emissions, and negative cases |
+| `tests/sim/test_control_gpsim_ir_preset_switch.py` | Patched-only IR preset switching: F1/F2 mapping, idempotency, off-screen updates, and LCD consistency |
 | `tests/sim/test_control_gpsim_full_config_persistence.py` | Deep gpsim matrix: Input/BL Timeout/DLCP1/DLCP2 edits + persistence + preset drift isolation checks |
 | `tests/sim/test_main_dsp_refresh_behavior.py` | MAIN DSP refresh characterization: boot apply path, preset-change apply semantics, USB upload no-auto-apply behavior |
 | `tests/sim/test_verify_presets_ab_semantic_guards.py` | Semantic guard tests for verifier drift detection (main/control hooks) |

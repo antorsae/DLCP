@@ -149,7 +149,10 @@ def _force_persist_tick(h: GpsimControlHarness) -> None:
     # Trigger the periodic save branch in function_042: set timer to 0xEA60.
     h._issue("reg(0x09D)=0x60", 5.0)
     h._issue("reg(0x09E)=0xEA", 5.0)
-    _step_n(h, 10)
+    # Allow enough runtime for the EEPROM save loop to fully complete in gpsim.
+    # Shorter windows can capture a mid-save image (early bytes updated, later
+    # bytes still stale), which causes false persistence mismatches.
+    _step_n(h, 20)
 
 
 @pytest.mark.gpsim
