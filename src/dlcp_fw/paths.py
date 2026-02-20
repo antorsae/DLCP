@@ -22,7 +22,10 @@ STOCK_CONTROL_HEX_V15B = FIRMWARE_STOCK_DIR / "control" / "DLCP Control Firmware
 STOCK_CONTROL_HEX_V16B = FIRMWARE_STOCK_DIR / "control" / "DLCP Control Firmware V1.6b.hex"
 
 PATCHED_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.4.hex"
-PATCHED_CONTROL_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.41.hex"
+PATCHED_CONTROL_HEX_V141 = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.41.hex"
+PATCHED_CONTROL_HEX_V151B = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.51b.hex"
+# Backward-compatible alias: existing tests/tools use this as the active control patch.
+PATCHED_CONTROL_HEX = PATCHED_CONTROL_HEX_V141
 
 MAIN_DISASM = FIRMWARE_DISASM_DIR / "main" / "gpdasm_output.asm"
 MAIN_DISASM_ALT = FIRMWARE_DISASM_DIR / "main" / "full_disasm.asm"

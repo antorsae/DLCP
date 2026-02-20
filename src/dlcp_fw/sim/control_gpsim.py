@@ -30,7 +30,7 @@ from typing import Dict, List
 from .lcd import LcdByte, LcdState
 from .manifests import (
     control_disable_boot_wait,
-    control_disable_standby_check,
+    control_disable_standby_check_for_hex,
     control_reset_to_appstart,
 )
 from .overlay import apply_overlays
@@ -384,7 +384,7 @@ class GpsimControlHarness:
         manifests = [control_reset_to_appstart()]
         if fast_boot:
             manifests.append(control_disable_boot_wait())
-        manifests.append(control_disable_standby_check())
+        manifests.append(control_disable_standby_check_for_hex(control_hex))
         apply_overlays(control_hex, self.sim_hex, manifests=manifests)
 
         self._gpsim = _CliSession()

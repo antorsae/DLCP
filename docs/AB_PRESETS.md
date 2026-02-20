@@ -1,9 +1,9 @@
 # DLCP A/B Presets
 
-Binary patches to CONTROL V1.4 and MAIN V2.3 firmware that add dual-bank
-preset (A/B) support.  The stock firmware has a single preset table; this
-patch adds a second bank so users can switch between two independent DSP
-configurations without re-uploading via HFD.
+Binary patches to CONTROL V1.4/V1.5b and MAIN V2.3 firmware that add
+dual-bank preset (A/B) support.  The stock firmware has a single preset
+table; this patch adds a second bank so users can switch between two
+independent DSP configurations without re-uploading via HFD.
 
 ## Status
 
@@ -91,18 +91,55 @@ The active preset is stored as bit2 of RAM `0x05E`:
 
 **USBaudio labels and command are preserved** — no text patches applied.
 
+### CONTROL firmware port mapping (V1.5b → V1.51b)
+
+V1.51b is the V1.5b rebase of the same A/B feature set used by V1.41.
+
+| Patch element | V1.41 address (from V1.4) | V1.51b address (from V1.5b) | Notes |
+|---------------|----------------------------|-----------------------------|-------|
+| Startup flag init | `0x1106` | `0x10F6` | `bcf 0x01F,3` → `clrf 0x01F` |
+| Startup preset-load hook | `0x116E` | `0x1160` | Redirect stock `call function_026` to wrapper |
+| Version splash literal | `0x11A4` (`0x29`) | `0x1196` (`0x33`) | Splash shows `1.41` vs `1.51` |
+| Navigation wrap | `0x1264`, `0x1288` | `0x1256`, `0x127A` | `movlw 0x03` for 4-screen wrap |
+| String index fix (Setup) | `0x149A` | `0x148C` | Force Setup title index = 2 |
+| String index fix (Input) | `0x1A08` | `0x19FA` | Force Input title index = 1 |
+| Dispatch redirect | `0x123E` | `0x1230` | Redirect to `new_dispatch_stub` |
+| Volume indicator hook | `0x13AE` | `0x13A0` | Redirect to `volume_indicator_stub` |
+| Full-sync hook | `0x0B52` | `0x0B2C` | Redirect to `full_sync_entry_stub` |
+| IR dispatch pre-hook | `0x0E46` | `0x0E32` | Redirect to `ir_dispatch_pre_stub` |
+
+Retargeted stock call/jump anchors inside the V1.51b stub:
+
+| Stub reference | V1.41 target | V1.51b target |
+|----------------|--------------|---------------|
+| `function_026` (startup settings load) | `0x0A62` | `0x0A3C` |
+| `function_042` (volume screen draw) | `0x0D24` | `0x0CFE` |
+| `function_052` (Input screen) | `0x1A00` | `0x19F2` |
+| `function_047` (Setup screen) | `0x1492` | `0x1484` |
+| IR passthrough label | `0x0E4C` | `0x0E38` |
+| Full-sync loop targets | `0x0BA8` / `0x0B5A` | `0x0B82` / `0x0B36` |
+| Serial TX byte helper | `0x0608` | `0x05E2` |
+
+Bit allocation note for V1.51b:
+- Preset state remains `0x01F.6` (`0=A`, `1=B`).
+- The boot-time one-shot resync latch uses `0x01F.7` in V1.51b
+  (V1.5b uses bit5 in stock logic).
+
 ### EEPROM persistence
 
 Preset persistence is decoupled from stock BL-timeout storage:
 
 - Runtime preset state is `state_flags bit6` (`0x01F.6`), not RAM `0x0EB`.
 - User preset changes persist to **EEPROM `0x74`** in `send_preset_frame`.
-- Boot restore runs from a startup wrapper (hook at `0x116E`):
+- Boot restore runs from a startup wrapper (hook at `0x116E` on V1.41,
+  `0x1160` on V1.51b):
   it calls stock `function_026`, then reads EEPROM `0x74` and sets/clears
   `0x01F.6` (`0x01` => B, anything else => A).
 - Periodic/full-sync preset broadcasts use TX-only send and do not write EEPROM.
 - Stock BL-timeout behavior (`0x0EB`/EEPROM `0x73` and its clamps) is unchanged.
-- CONTROL EEPROM version tuple is kept at `1.41` (`0xF00070..72 = 01 04 31`).
+- CONTROL EEPROM version tuple:
+  - V1.41: `0xF00070..72 = 01 04 31`
+  - V1.51b: `0xF00070..72 = 01 05 31`
 - MAIN EEPROM version tuple is kept at stock `2.30` (`0xF00080..82 = 02 03 30`).
 - MAIN USB host-info version literal is patched to `2.4` in app code
   (`0x240C/0x2412/0x2416 = 03/02/04` in the `cmd=0x06` response path).
@@ -117,6 +154,7 @@ default value on every power cycle.
 |------|-------------|
 | `firmware/patched/releases/DLCP_Firmware_V2.4.hex` | Patched MAIN firmware |
 | `firmware/patched/releases/DLCP_Control_V1.41.hex` | Patched CONTROL firmware |
+| `firmware/patched/releases/DLCP_Control_V1.51b.hex` | Patched CONTROL firmware (V1.5b port baseline) |
 
 ## Build
 
@@ -124,7 +162,8 @@ Requires `gpasm` (from gputils) and Python 3.
 
 ```bash
 python3 -m dlcp_fw.patch.build_main_presets_ab      # -> firmware/patched/releases/DLCP_Firmware_V2.4.hex
-python3 -m dlcp_fw.patch.build_control_presets_ab   # -> firmware/patched/releases/DLCP_Control_V1.41.hex
+python3 -m dlcp_fw.patch.build_control_presets_ab      # V1.4  -> V1.41
+python3 -m dlcp_fw.patch.build_control_presets_ab_v15b # V1.5b -> V1.51b
 ```
 
 Both scripts accept `--in-hex`, `--out-hex`, and `--gpasm` overrides.
@@ -136,11 +175,16 @@ non-erased destination range.
 ### Static verification
 
 ```bash
+# MAIN + CONTROL V1.4 -> V1.41 path
 python3 -m dlcp_fw.patch.verify_presets_ab
+
+# MAIN + CONTROL V1.5b -> V1.51b path
+python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v151b --control-profile v15b
 ```
 
 Byte-level checks: table copy correctness, hook signatures, cmd dispatch,
-navigation wrap, string index fixes, volume/full-sync hooks, preset stub presence.
+navigation wrap, string index fixes, volume/full-sync hooks, preset stub
+presence, and profile-specific V1.5b hook-target validation.
 
 ### Protocol simulation (no gpsim needed)
 
@@ -207,9 +251,24 @@ Additional regression coverage:
 | `tests/sim/test_control_gpsim_response_parser.py` | CONTROL RX parser behavior for response commands and reset path handling |
 | `tests/sim/test_control_gpsim_ir_compatibility.py` | Decoded-IR dispatch parity (stock V1.4 vs patched V1.41): both RC5 profiles, action emissions, and negative cases |
 | `tests/sim/test_control_gpsim_ir_preset_switch.py` | Patched-only IR preset switching: F1/F2 mapping, idempotency, off-screen updates, and LCD consistency |
+| `tests/sim/test_control_v15b_port_compatibility.py` | V1.5b/V1.51b parity + V1.4↔V1.5b delta-preservation checks (static + gpsim) |
+| `tests/sim/test_verify_presets_ab_v15b_semantic_guards.py` | V1.5b verifier semantic guards (hook/target/literal drift rejection) |
 | `tests/sim/test_control_gpsim_full_config_persistence.py` | Deep gpsim matrix: Input/BL Timeout/DLCP1/DLCP2 edits + persistence + preset drift isolation checks |
 | `tests/sim/test_main_dsp_refresh_behavior.py` | MAIN DSP refresh characterization: boot apply path, preset-change apply semantics, USB upload no-auto-apply behavior |
 | `tests/sim/test_verify_presets_ab_semantic_guards.py` | Semantic guard tests for verifier drift detection (main/control hooks) |
+
+#### V1.5b → V1.51b test matrix (executed)
+
+| Scope | Tests / Command | Expected | Result |
+|-------|------------------|----------|--------|
+| Static patch-map validation | `python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v151b --control-profile v15b` | V1.5b hook map, targets, literals, and tuple checks pass | Pass |
+| Verifier guard hardening | `tests/sim/test_verify_presets_ab_v15b_semantic_guards.py` | Detect full-sync hook drift, IR hook opcode drift, IR target reverts, shortcut literal drift | Pass |
+| Stock delta preservation | `tests/sim/test_control_v15b_port_compatibility.py::test_control_v14_v15b_stock_delta_preserved_in_v151b` | Preserve V1.5b-side deltas (`CONFIG1L`, `EEPROM[0xFE]`, `cmd=0x18` path) | Pass |
+| `cmd=0x18` behavior parity | `tests/sim/test_control_v15b_port_compatibility.py::test_cmd18_reset_behavior_matches_v15b_not_v14` | Match V1.5b behavior and not V1.4 behavior | Pass |
+| IR dispatch parity matrix | `tests/sim/test_control_v15b_port_compatibility.py::test_ir_actions_match_stock_v15b_dispatch_behavior` | Both RC5 profiles emit same frames and state deltas as stock V1.5b | Pass |
+| IR negative parity | `tests/sim/test_control_v15b_port_compatibility.py::test_ir_wrong_address_is_ignored_like_stock_v15b`, `tests/sim/test_control_v15b_port_compatibility.py::test_ir_unknown_command_is_ignored_like_stock_v15b` | Wrong address and unknown command are ignored like stock | Pass |
+| Key-action parity | `tests/sim/test_control_v15b_port_compatibility.py::test_key_action_legacy_frames_match_stock_v15b` | Legacy same-screen key emissions (`S`/`U`) match stock V1.5b | Pass |
+| Full regression suite | `python3 -m pytest tests/sim -q` | No regressions across sim + gpsim | `146 passed` |
 
 #### Stock V2.3 DSP-refresh characterization progress (2026-02-18)
 
@@ -231,11 +290,12 @@ Additional regression coverage:
   - `0x1A76..0x1A92` (apply gate)
   - `0x2BB8..0x2CA6` (`function_021` upload body)
 
-**Simulation overlays**: The harness applies `control_disable_standby_check`
-(NOPs the standby-handler jump at 0x1228) so the firmware stays in DISPLAY mode
-without requiring a live MAIN heartbeat.  For no-file boot it seeds EEPROM
-`0x74` (preset) and `0x73` (stock BL-timeout byte) to `0xFF`, matching real
-PIC18 erased defaults (`gpsim` defaults EEPROM to `0x00`).
+**Simulation overlays**: The harness auto-selects standby bypass overlay by
+firmware layout (`0x1228` on V1.4 family, `0x121A` on V1.5b family) so the
+firmware stays in DISPLAY mode without requiring a live MAIN heartbeat. For
+no-file boot it seeds EEPROM `0x74` (preset) and `0x73` (stock BL-timeout
+byte) to `0xFF`, matching real PIC18 erased defaults (`gpsim` defaults EEPROM
+to `0x00`).
 
 ## Flash Order
 
@@ -260,10 +320,16 @@ Notes:
 scripts/flash_control_safe.sh
 ```
 
+`scripts/flash_control_safe.sh` defaults to
+`firmware/patched/releases/DLCP_Control_V1.51b.hex` with bootloader reference
+`firmware/stock/control/DLCP Control Firmware V1.5b.hex`.
+
 ### Recovery notes (if update fails)
 
-- Keep a copy of stock control HEX (`firmware/stock/control/DLCP Control Firmware V1.4.hex`)
-  and stock main HEX available before flashing.
+- Keep copies of stock control HEX matching your target branch:
+  - `firmware/stock/control/DLCP Control Firmware V1.4.hex` (for V1.41 path)
+  - `firmware/stock/control/DLCP Control Firmware V1.5b.hex` (for V1.51b path)
+  and stock main HEX before flashing.
 - If CONTROL update fails but relay path is still alive, re-run flash with stock
   control HEX first, then retry patched HEX.
 - Documented manual control-bootloader entry is `UP+DOWN` held at power-on for
@@ -278,6 +344,7 @@ scripts/flash_control_safe.sh
 | `scripts/flash_control_safe.sh` | Safe flashing wrapper: runs preflight first, enforces bootloader match, blocks unsafe flags, asks confirmation before live write |
 | `src/dlcp_fw/patch/build_main_presets_ab.py` | Build patched MAIN HEX: assembles PIC18 stubs via gpasm, copies table A→B, applies hook redirections |
 | `src/dlcp_fw/patch/build_control_presets_ab.py` | Build patched CONTROL HEX: assembles stubs for dispatch/nav/preset_screen/volume_indicator |
+| `src/dlcp_fw/patch/build_control_presets_ab_v15b.py` | Build patched CONTROL HEX for V1.5b baseline: same feature set retargeted to V1.5b addresses/call graph |
 | `src/dlcp_fw/patch/verify_presets_ab.py` | Static byte-level verification of both patched HEX files |
 | `scripts/sim_presets_ab.py` | Protocol simulator: two MAIN units, preset switch + HFD upload, digest assertions |
 | `scripts/sim_link_control_main_presets_ab.py` | Full link simulator: Control + two Mains, route filtering, patch compat check |

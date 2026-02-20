@@ -9,7 +9,14 @@ import argparse
 import pathlib
 from typing import Dict
 
-from dlcp_fw.paths import PATCHED_CONTROL_HEX, PATCHED_MAIN_HEX, STOCK_CONTROL_HEX_V14, STOCK_MAIN_HEX
+from dlcp_fw.paths import (
+    PATCHED_CONTROL_HEX,
+    PATCHED_CONTROL_HEX_V151B,
+    PATCHED_MAIN_HEX,
+    STOCK_CONTROL_HEX_V14,
+    STOCK_CONTROL_HEX_V15B,
+    STOCK_MAIN_HEX,
+)
 
 
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
@@ -314,6 +321,197 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
         raise RuntimeError("control original mismatch at 0x11A4 (expected movlw 0x04)")
 
 
+def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]) -> None:
+    # Keep stock BL-timeout clamp behavior (preset no longer uses 0x0EB/0x73 path).
+    if control_new.get(0x0AF8, 0xFF) != 0x05 or control_new.get(0x0AF9, 0xFF) != 0x0E:
+        raise RuntimeError("control BL-timeout clamp unexpectedly changed at 0x0AF8")
+    if control_new.get(0x0B02, 0xFF) != 0x01 or control_new.get(0x0B03, 0xFF) != 0x0E:
+        raise RuntimeError("control BL-timeout default unexpectedly changed at 0x0B02")
+
+    # --- Patch 0: startup state init ---
+    # 0x10F6: clrf 0x01F,ACCESS (deterministic init for preset/latch bits)
+    if control_new.get(0x10F6, 0xFF) != 0x1F or control_new.get(0x10F7, 0xFF) != 0x6A:
+        raise RuntimeError("control startup flag init missing at 0x10F6 (expected clrf 0x01F)")
+    # 0x1160: call preset_boot_init_wrapper in stub area.
+    if control_new.get(0x1161, 0xFF) != 0xEC or control_new.get(0x1163, 0xFF) != 0xF0:
+        raise RuntimeError("control startup preset-load hook missing at 0x1160")
+
+    # --- Patch 1: Navigation wrap (movlw 0x03) ---
+    for addr, label in [(0x1256, "RIGHT"), (0x127A, "LEFT")]:
+        got = control_new.get(addr, 0xFF)
+        if got != 0x03:
+            raise RuntimeError(
+                f"control nav wrap {label} at 0x{addr:04X}: got 0x{got:02X}, want 0x03"
+            )
+
+    # --- Patch 2: String table index fixes ---
+    # function_047 (Setup): movlw 0x02; movwf 0x027
+    if control_new.get(0x148C, 0xFF) != 0x02 or control_new.get(0x148D, 0xFF) != 0x0E:
+        raise RuntimeError("control string index fix missing at 0x148C (Setup)")
+    if control_new.get(0x148F, 0xFF) != 0x6E:
+        raise RuntimeError("control string index fix missing at 0x148E (Setup movwf)")
+    # function_052 (Input): movlw 0x01; movwf 0x027
+    if control_new.get(0x19FA, 0xFF) != 0x01 or control_new.get(0x19FB, 0xFF) != 0x0E:
+        raise RuntimeError("control string index fix missing at 0x19FA (Input)")
+    if control_new.get(0x19FD, 0xFF) != 0x6E:
+        raise RuntimeError("control string index fix missing at 0x19FC (Input movwf)")
+
+    # --- Patch 3: Dispatch redirect at 0x1230 ---
+    # Must be a goto (EFxx Fxxx) to 0x7000 area
+    if control_new.get(0x1231, 0xFF) != 0xEF:
+        raise RuntimeError("control dispatch hook at 0x1230 not a goto instruction")
+    if control_new.get(0x7000, 0xFF) == 0xFF:
+        raise RuntimeError("control dispatch stub missing at 0x7000")
+
+    # --- Patch 4: Volume indicator hook at 0x13A0 ---
+    # Must be a goto (EFxx Fxxx) to stub area
+    if control_new.get(0x13A1, 0xFF) != 0xEF:
+        raise RuntimeError("control volume indicator hook at 0x13A0 not a goto instruction")
+
+    # --- Patch 5: Full-sync entry hook at 0x0B2C ---
+    # Must be a goto to stub area (replacing clrf/movlw prologue).
+    if control_new.get(0x0B2D, 0xFF) != 0xEF:
+        raise RuntimeError(
+            f"control full-sync hook mismatch at 0x0B2D: got 0x{control_new.get(0x0B2D, 0xFF):02X}, want 0xEF"
+        )
+    if control_new.get(0x0B2F, 0xFF) != 0xF0:
+        raise RuntimeError(
+            f"control full-sync hook mismatch at 0x0B2F: got 0x{control_new.get(0x0B2F, 0xFF):02X}, want 0xF0"
+        )
+
+    # --- Patch 6: IR dispatch pre-hook at 0x0E32 ---
+    # Verify this is a goto and that it targets the new 0x7000 stub area,
+    # not the stock label_164 dispatch at 0x0E38.
+    ir_w1_lo = control_new.get(0x0E32, 0xFF)
+    ir_w1_hi = control_new.get(0x0E33, 0xFF)
+    ir_w2_lo = control_new.get(0x0E34, 0xFF)
+    ir_w2_hi = control_new.get(0x0E35, 0xFF)
+    if ir_w1_hi != 0xEF or ir_w2_hi != 0xF0:
+        raise RuntimeError("control IR dispatch hook at 0x0E32 not a goto instruction")
+    # PIC18 GOTO encoding (byte-address target):
+    # target = (((word2_low12 << 8) | word1_low8) * 2).
+    ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
+    if ir_target == 0x0E38:
+        raise RuntimeError("control IR dispatch hook target drifted to stock label_164 (0x0E38)")
+    if not (0x7000 <= ir_target < 0x7200):
+        raise RuntimeError(
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x71FF)"
+        )
+
+    # Full-sync stub must call the TX-only preset sender (same call target as
+    # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7200) -> int | None:
+        n = len(seq)
+        for a in range(lo, hi - n + 1):
+            if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
+                return a
+        return None
+
+    full_sync_anchor = _find_seq([0x28, 0x6A, 0x06, 0x0E, 0x28, 0x60])  # clrf 0x028; movlw 0x06; cpfslt 0x028
+    if full_sync_anchor is None or full_sync_anchor < 0x7004:
+        raise RuntimeError("control full-sync stub signature not found in 0x7000 stub area")
+    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_anchor - 4, full_sync_anchor)]
+    if full_sync_call[1] != 0xEC or full_sync_call[3] != 0xF0:
+        raise RuntimeError("control full-sync stub missing call to TX-only preset sender")
+
+    send_persist_anchor = _find_seq([0x74, 0x0E, 0xA9, 0x6E])  # movlw 0x74; movwf EEADR
+    if send_persist_anchor is None or send_persist_anchor < 0x7004:
+        raise RuntimeError("control send_preset_frame persistence signature missing (EEPROM[0x74])")
+    send_persist_call = [control_new.get(a, 0xFF) for a in range(send_persist_anchor - 4, send_persist_anchor)]
+    if send_persist_call[1] != 0xEC or send_persist_call[3] != 0xF0:
+        raise RuntimeError("control send_preset_frame missing initial TX-only call")
+    if full_sync_call != send_persist_call:
+        raise RuntimeError("control full-sync stub not linked to same TX-only sender as send_preset_frame")
+
+    # Ensure the new preset persistence byte is used in stub code.
+    if _find_seq([0x73, 0x0E, 0xA9, 0x6E]) is not None:
+        raise RuntimeError("control stub still writes preset persistence to EEPROM[0x73]")
+    if _find_seq([0x72, 0x0E, 0xA9, 0x6E]) is not None:
+        raise RuntimeError("control stub still writes preset persistence to EEPROM[0x72]")
+
+    # IR preset shortcuts must exist in stub code: xorlw 0x38 and xorlw 0x39.
+    if _find_seq([0x38, 0x0A]) is None:
+        raise RuntimeError("control IR preset shortcut missing xorlw 0x38 (F1->preset A)")
+    if _find_seq([0x39, 0x0A]) is None:
+        raise RuntimeError("control IR preset shortcut missing xorlw 0x39 (F2->preset B)")
+
+    # Verify stub calls function_042 (0x0CFE) at some point.
+    found_fn042 = False
+    for a in range(0x7000, 0x7200, 2):
+        lo = control_new.get(a, 0xFF)
+        hi = control_new.get(a + 1, 0xFF)
+        # call 0x0CFE: EC7F F006 -> bytes 7F EC 06 F0
+        if lo == 0x7F and hi == 0xEC:
+            nxt_lo = control_new.get(a + 2, 0xFF)
+            nxt_hi = control_new.get(a + 3, 0xFF)
+            if nxt_lo == 0x06 and nxt_hi == 0xF0:
+                found_fn042 = True
+                break
+    if not found_fn042:
+        raise RuntimeError("control stub area missing call to function_042 (0x0CFE)")
+
+    # Verify send_preset_frame emits route 0xB0, cmd 0x20
+    found_b0 = False
+    found_20 = False
+    for a in range(0x7000, 0x7200, 2):
+        lo = control_new.get(a, 0xFF)
+        hi = control_new.get(a + 1, 0xFF)
+        if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0
+            found_b0 = True
+        if lo == 0x20 and hi == 0x0E and found_b0:  # movlw 0x20
+            found_20 = True
+            break
+    if not (found_b0 and found_20):
+        raise RuntimeError("control stub missing send_preset_frame (route=0xB0, cmd=0x20)")
+
+    # CONTROL version tuple should be 1.51 (EEPROM 0x70..0x72) and startup
+    # splash literal should render "1.51" (minor literal movlw 0x33).
+    control_ver = [control_new.get(a, 0xFF) for a in (0xF00070, 0xF00071, 0xF00072)]
+    if control_ver != [0x01, 0x05, 0x31]:
+        raise RuntimeError(
+            f"control version tuple mismatch: got {[hex(x) for x in control_ver]}, want [0x1,0x5,0x31]"
+        )
+    if control_new.get(0x1196, 0xFF) != 0x33 or control_new.get(0x1197, 0xFF) != 0x0E:
+        raise RuntimeError("control startup splash literal mismatch at 0x1196 (expected movlw 0x33)")
+
+    # --- Text labels preserved (USBaudio NOT overwritten) ---
+    def s(addr: int) -> str:
+        return bytes(control_new.get(addr + i, 0x20) for i in range(16)).decode("ascii", "replace")
+
+    vol_hdr = s(0x1052)
+    if vol_hdr != "Volume:         ":
+        raise RuntimeError(f"control Volume header changed: {vol_hdr!r}")
+    app_window = bytes(control_new.get(a, 0x20) for a in range(0x1000, 0x1B00))
+    if b"USBaudio" not in app_window:
+        raise RuntimeError("control USBaudio label missing from app text window")
+
+    # Original should still have old bytes at key locations.
+    if control_orig.get(0x1256, 0x00) != 0x02:
+        raise RuntimeError("control original mismatch at 0x1256 (expected movlw 0x02)")
+    if control_orig.get(0x1230, 0x00) != 0xBF:
+        raise RuntimeError("control original mismatch at 0x1230 (expected decfsz 0xBF)")
+    if control_orig.get(0x0B2C, 0x00) != 0x28:
+        raise RuntimeError("control original mismatch at 0x0B2C (expected clrf 0x028)")
+    if (
+        control_orig.get(0x0E32, 0x00) != 0x1C
+        or control_orig.get(0x0E33, 0x00) != 0xEF
+        or control_orig.get(0x0E34, 0x00) != 0x07
+        or control_orig.get(0x0E35, 0x00) != 0xF0
+    ):
+        raise RuntimeError("control original mismatch at 0x0E32 (expected goto label_164)")
+    if control_orig.get(0x10F6, 0x00) != 0x1F or control_orig.get(0x10F7, 0x00) != 0x96:
+        raise RuntimeError("control original mismatch at 0x10F6 (expected bcf 0x01F,3)")
+    if (
+        control_orig.get(0x1160, 0x00) != 0x1E
+        or control_orig.get(0x1161, 0x00) != 0xEC
+        or control_orig.get(0x1162, 0x00) != 0x05
+        or control_orig.get(0x1163, 0x00) != 0xF0
+    ):
+        raise RuntimeError("control original mismatch at 0x1160 (expected call function_026)")
+    if control_orig.get(0x1196, 0x00) != 0x04 or control_orig.get(0x1197, 0x00) != 0x0E:
+        raise RuntimeError("control original mismatch at 0x1196 (expected movlw 0x04)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -336,7 +534,22 @@ def main() -> int:
         type=pathlib.Path,
         default=PATCHED_CONTROL_HEX,
     )
+    ap.add_argument(
+        "--control-profile",
+        choices=("auto", "v14", "v15b"),
+        default="auto",
+        help="control firmware profile for verification (default: auto)",
+    )
+    ap.add_argument(
+        "--control-new-v151b",
+        action="store_true",
+        help="shortcut: set --control-orig to stock V1.5b and --control-new to patched V1.51b",
+    )
     args = ap.parse_args()
+
+    if args.control_new_v151b:
+        args.control_orig = STOCK_CONTROL_HEX_V15B
+        args.control_new = PATCHED_CONTROL_HEX_V151B
 
     main_orig = parse_intel_hex(args.main_orig.resolve())
     main_new = parse_intel_hex(args.main_new.resolve())
@@ -344,7 +557,17 @@ def main() -> int:
     control_new = parse_intel_hex(args.control_new.resolve())
 
     check_main(main_orig, main_new)
-    check_control(control_orig, control_new)
+
+    profile = args.control_profile
+    if profile == "auto":
+        if control_orig.get(0x10F6, 0xFF) == 0x1F and control_orig.get(0x1160, 0xFF) == 0x1E:
+            profile = "v15b"
+        else:
+            profile = "v14"
+    if profile == "v14":
+        check_control(control_orig, control_new)
+    else:
+        check_control_v15b(control_orig, control_new)
 
     print("OK: main + control preset A/B patches validated.")
     return 0

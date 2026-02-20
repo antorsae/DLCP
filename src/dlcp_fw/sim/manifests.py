@@ -75,6 +75,33 @@ def control_disable_boot_wait() -> OverlayManifest:
     )
 
 
+def _control_disable_standby_check_manifest(*, jump_addr: int, goto_word_lo: int, name: str) -> OverlayManifest:
+    """Build a simulation overlay that NOPs a standby jump site."""
+    return OverlayManifest(
+        name=name,
+        preconditions={
+            jump_addr + 0x0: goto_word_lo,
+            jump_addr + 0x1: 0xEF,
+            jump_addr + 0x2: 0x09,
+            jump_addr + 0x3: 0xF0,
+        },
+        byte_patches={
+            # Two NOP words (0x0000 0x0000)
+            jump_addr + 0x0: 0x00,
+            jump_addr + 0x1: 0x00,
+            jump_addr + 0x2: 0x00,
+            jump_addr + 0x3: 0x00,
+        },
+        postconditions={
+            jump_addr + 0x0: 0x00,
+            jump_addr + 0x1: 0x00,
+            jump_addr + 0x2: 0x00,
+            jump_addr + 0x3: 0x00,
+        },
+        description="Simulation-only: NOP standby jump so firmware stays in DISPLAY mode.",
+    )
+
+
 def control_disable_standby_check() -> OverlayManifest:
     """
     Simulation-only: disable the standby/reconnect jump in the main loop.
@@ -98,29 +125,41 @@ def control_disable_standby_check() -> OverlayManifest:
       00122c:  961f  bcf    0x1F, 3, A    ; label_206 – active display loop
     """
 
-    return OverlayManifest(
+    return _control_disable_standby_check_manifest(
+        jump_addr=0x1228,
+        goto_word_lo=0x4F,
         name="control_disable_standby_check",
-        preconditions={
-            # goto label_214 (EF4F F009)
-            0x1228: 0x4F,
-            0x1229: 0xEF,
-            0x122A: 0x09,
-            0x122B: 0xF0,
-        },
-        byte_patches={
-            # Two NOP words (0x0000 0x0000)
-            0x1228: 0x00,
-            0x1229: 0x00,
-            0x122A: 0x00,
-            0x122B: 0x00,
-        },
-        postconditions={
-            0x1228: 0x00,
-            0x1229: 0x00,
-            0x122A: 0x00,
-            0x122B: 0x00,
-        },
-        description="Simulation-only: NOP standby jump so firmware stays in DISPLAY mode.",
+    )
+
+
+def control_disable_standby_check_v15b() -> OverlayManifest:
+    """V1.5b standby-jump variant at 0x121A (goto label_212)."""
+    return _control_disable_standby_check_manifest(
+        jump_addr=0x121A,
+        goto_word_lo=0x48,
+        name="control_disable_standby_check_v15b",
+    )
+
+
+def control_disable_standby_check_for_hex(control_hex: Path) -> OverlayManifest:
+    """Select the standby-check overlay matching the control firmware layout."""
+    mem = parse_intel_hex(control_hex)
+    if (
+        mem.get(0x1228, 0xFF) == 0x4F
+        and mem.get(0x1229, 0xFF) == 0xEF
+        and mem.get(0x122A, 0xFF) == 0x09
+        and mem.get(0x122B, 0xFF) == 0xF0
+    ):
+        return control_disable_standby_check()
+    if (
+        mem.get(0x121A, 0xFF) == 0x48
+        and mem.get(0x121B, 0xFF) == 0xEF
+        and mem.get(0x121C, 0xFF) == 0x09
+        and mem.get(0x121D, 0xFF) == 0xF0
+    ):
+        return control_disable_standby_check_v15b()
+    raise RuntimeError(
+        "unsupported control standby-jump layout: expected V1.4 site 0x1228 or V1.5b site 0x121A"
     )
 
 
