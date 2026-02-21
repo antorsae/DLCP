@@ -298,6 +298,20 @@ class TxTriplet:
     data: int
 
 
+@dataclass(frozen=True)
+class RxTriplet:
+    route: int
+    cmd: int
+    data: int
+
+    def normalized(self) -> "RxTriplet":
+        return RxTriplet(
+            route=self.route & 0xFF,
+            cmd=self.cmd & 0xFF,
+            data=self.data & 0xFF,
+        )
+
+
 @dataclass
 class StepResult:
     lcd: tuple[str, str]
@@ -649,6 +663,44 @@ class GpsimControlHarness:
     def read_reg(self, addr: int) -> int:
         """Read a single RAM/SFR register."""
         return _read_reg(self._issue, addr)
+
+    def inject_host_commands(
+        self,
+        commands: List[RxTriplet],
+        *,
+        steps_per_command: int = 1,
+    ) -> List[TxTriplet]:
+        """Inject route/cmd/data triplets into CONTROL RX buffer.
+
+        This is the public host-command injection harness used by gpsim
+        tests to drive parser behavior without touching private internals.
+        """
+        before = len(self._decoder.tx_frames)
+        for raw in commands:
+            frame = raw.normalized()
+            ok = self._inject_rx_bytes([frame.route, frame.cmd, frame.data])
+            if not ok:
+                raise RuntimeError(
+                    f"RX ring full while injecting frame "
+                    f"route=0x{frame.route:02X} cmd=0x{frame.cmd:02X} data=0x{frame.data:02X}"
+                )
+            for _ in range(max(0, steps_per_command)):
+                self.step()
+        return self.tx_frames()[before:]
+
+    def inject_host_command(
+        self,
+        *,
+        cmd: int,
+        data: int,
+        route: int = 0xBF,
+        steps: int = 1,
+    ) -> List[TxTriplet]:
+        """Inject one route/cmd/data triplet into CONTROL RX buffer."""
+        return self.inject_host_commands(
+            [RxTriplet(route=route, cmd=cmd, data=data)],
+            steps_per_command=steps,
+        )
 
     def inject_decoded_ir_event(
         self,

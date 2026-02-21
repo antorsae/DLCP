@@ -137,7 +137,7 @@ def _run_cmd18_reset_case(control_hex: Path) -> tuple[bool, set[int]]:
         for _ in range(KEY_STEPS):
             h.step()
         assert h.read_reg(0x0BF) == 1
-        assert h._inject_rx_bytes([0xBF, 0x18, 0x01]) is True
+        h.inject_host_command(cmd=0x18, data=0x01, steps=0)
 
         seen_text = False
         states: set[int] = set()
@@ -200,6 +200,33 @@ def test_control_v15b_v16b_stock_delta_preserved_in_v161b(patched_control_hex_v1
     # Keep V1.6b dispatch-family callsite bytes (outside patch hooks).
     assert v16.get(0x11E8, 0xFF) == 0x68
     assert v161.get(0x11E8, 0xFF) == 0x68
+
+
+def test_control_v161b_preserves_setup_usb_surface_code_blocks(patched_control_hex_v161b: Path) -> None:
+    """Keep V1.6b setup-related blocks byte-identical.
+
+    V1.6b removed front-panel setup navigation, but setup-equivalent values are
+    still represented in control RAM blocks and command helper routines. Keep the
+    stock V1.6b code for those paths intact in V1.61b.
+    """
+    v16 = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    v161 = parse_intel_hex(patched_control_hex_v161b)
+
+    protected_ranges = [
+        # EEPROM save path for setup parameter blocks.
+        (0x09BC, 0x0A30, "setup_save_cluster"),
+        # EEPROM load/restore path for setup parameter blocks.
+        (0x0A72, 0x0AF8, "setup_load_cluster"),
+        # Legacy helper routines that emit route/cmd/data for 0x17..0x1E.
+        (0x0B7C, 0x0C22, "setup_tx_helper_cluster"),
+    ]
+
+    for start, end, label in protected_ranges:
+        diffs = [addr for addr in range(start, end) if v161.get(addr, 0xFF) != v16.get(addr, 0xFF)]
+        assert not diffs, (
+            f"{label} drifted in V1.61b; first diff=0x{diffs[0]:04X} "
+            f"(stock=0x{v16.get(diffs[0], 0xFF):02X}, patched=0x{v161.get(diffs[0], 0xFF):02X})"
+        )
 
 
 @pytest.mark.gpsim

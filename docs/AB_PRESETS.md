@@ -55,6 +55,28 @@ Screen 1 (Preset, B active):
 - Command `0x20` was chosen to avoid collision with existing handlers
   (`0x1F` is already used in MAIN firmware).
 
+### Setup command map (V1.4/V1.5b menu and USB-equivalent MAIN surface)
+
+In stock CONTROL `V1.4`/`V1.5b`, Setup menu actions emit route/cmd/data frames
+through `function_027`:
+- V1.4 emitters: `function_030..036` (`0x0BEE..0x0C92`) and `function_039` (`0x0CD0`).
+- V1.5b emitters: `function_030..036` (`0x0BC8..0x0C6C`) and `function_039` (`0x0CAA`).
+
+| Setup item (UI) | Route | Cmd | Data source in CONTROL RAM |
+|-----------------|-------|-----|----------------------------|
+| `DLCP n / CH1 source` | `0xB0+n` | `0x17` | `0x0C1 + (n-1)` |
+| `DLCP n / CH2 source` | `0xB0+n` | `0x18` | `0x0C7 + (n-1)` |
+| `DLCP n / CH3 source` | `0xB0+n` | `0x19` | `0x0CD + (n-1)` |
+| `DLCP n / CH4 source` | `0xB0+n` | `0x1A` | `0x0D3 + (n-1)` |
+| `DLCP n / CH5 source` | `0xB0+n` | `0x1B` | `0x0D9 + (n-1)` |
+| `DLCP n / CH6 source` | `0xB0+n` | `0x1C` | `0x0DF + (n-1)` |
+| `DLCP n / USBaudio (CAT/AES/S/PDIF)` | `0xB0+n` | `0x1E` | `0x0E5 + (n-1)` |
+| `BL Timeout` | `0xB0` | `0x1D` | `0x0A7` |
+
+These command IDs are the same MAIN-side compatibility surface kept in the
+patch (`0x17..0x1E`, `0x1D`), and are the basis for USB/HFD-side setup
+regression coverage in the test suite.
+
 ### MAIN firmware patch (V2.3)
 
 | Component | Address range | Description |
@@ -259,7 +281,8 @@ python3 -m pytest tests/sim/ -q
 The `GpsimControlHarness` (`src/dlcp_fw/sim/control_gpsim.py`) provides a non-interactive
 gpsim harness for CONTROL firmware.  It runs the patched firmware to
 instruction-level fidelity with LCD decode, button injection, serial frame
-capture, and EEPROM read/write via PIC18 SFR registers.
+capture, host-command injection (`inject_host_command`,
+`inject_host_commands`), and EEPROM read/write via PIC18 SFR registers.
 
 Tests in `tests/sim/test_gpsim_control_presets.py`:
 
@@ -287,15 +310,17 @@ Additional regression coverage:
 |------|---------|
 | `tests/sim/test_main_gpsim_command_compatibility.py` | Focused legacy command compatibility checks (`0x1D`/`0x1E`) |
 | `tests/sim/test_main_gpsim_command_matrix.py` | Exhaustive stock-vs-patched sweep across original MAIN command set |
-| `tests/sim/test_main_gpsim_command_edges.py` | Edge conditions (min/max data, routing variants) for legacy MAIN commands |
+| `tests/sim/test_main_gpsim_command_edges.py` | Edge conditions (min/max data, routing variants), including setup-equivalent route coverage for `0x17..0x1C` on DLCP1/DLCP2 |
 | `tests/sim/test_control_main_powercycle_sync.py` | Full power-cycle + late-join MAIN preset resync behavior |
 | `tests/sim/test_control_gpsim_command_emission_legacy.py` | Legacy CONTROL→MAIN command emission coverage during boot/runtime |
 | `tests/sim/test_control_gpsim_response_parser.py` | CONTROL RX parser behavior for response commands and reset path handling |
+| `tests/sim/test_control_gpsim_host_command_injection.py` | Public host-command injection harness coverage (single + sequence injection paths) |
 | `tests/sim/test_control_gpsim_ir_compatibility.py` | Decoded-IR dispatch parity (stock V1.4 vs patched V1.41): both RC5 profiles, action emissions, and negative cases |
 | `tests/sim/test_control_gpsim_ir_preset_switch.py` | Patched-only IR preset switching: F1/F2 mapping, idempotency, off-screen updates, and LCD consistency |
+| `tests/sim/test_control_gpsim_preset_eeprom_diff.py` | Strict preset-toggle EEPROM diff guard: only EEPROM `0x74` may change on A/B toggles |
 | `tests/sim/test_control_v15b_port_compatibility.py` | V1.5b/V1.51b parity + V1.4↔V1.5b delta-preservation checks (static + gpsim) |
 | `tests/sim/test_verify_presets_ab_v15b_semantic_guards.py` | V1.5b verifier semantic guards (hook/target/literal drift rejection) |
-| `tests/sim/test_control_v16b_port_compatibility.py` | V1.6b/V1.61b parity + V1.5b↔V1.6b delta-preservation checks (static + gpsim) |
+| `tests/sim/test_control_v16b_port_compatibility.py` | V1.6b/V1.61b parity + V1.5b↔V1.6b delta-preservation checks (static + gpsim), including setup code-block immutability guards |
 | `tests/sim/test_verify_presets_ab_v16b_semantic_guards.py` | V1.6b verifier semantic guards (hook/target/literal drift rejection) |
 | `tests/sim/test_control_gpsim_full_config_persistence.py` | Deep gpsim matrix: Input/BL Timeout/DLCP1/DLCP2 edits + persistence + preset drift isolation checks |
 | `tests/sim/test_main_dsp_refresh_behavior.py` | MAIN DSP refresh characterization: boot apply path, preset-change apply semantics, USB upload no-auto-apply behavior |
@@ -325,6 +350,7 @@ Additional regression coverage:
 | IR dispatch parity matrix | `tests/sim/test_control_v16b_port_compatibility.py::test_ir_actions_match_stock_v16b_dispatch_behavior` | Both RC5 profiles emit same frames and state deltas as stock V1.6b | Pass |
 | IR negative parity | `tests/sim/test_control_v16b_port_compatibility.py::test_ir_wrong_address_is_ignored_like_stock_v16b`, `tests/sim/test_control_v16b_port_compatibility.py::test_ir_unknown_command_is_ignored_like_stock_v16b` | Wrong address and unknown command are ignored like stock | Pass |
 | Key-action parity | `tests/sim/test_control_v16b_port_compatibility.py::test_key_action_legacy_frames_match_stock_v16b` | Legacy same-screen key emissions (`S`/`U`) match stock V1.6b | Pass |
+| Setup-block immutability guard | `tests/sim/test_control_v16b_port_compatibility.py::test_control_v161b_preserves_setup_usb_surface_code_blocks` | Keep V1.6b setup load/save and `0x17..0x1E` helper blocks byte-identical in V1.61b | Pass |
 | New-suite gpsim run | `python3 -m pytest tests/sim/test_control_v16b_port_compatibility.py -q -m gpsim` | All V1.6b parity cases pass | `18 passed` |
 
 #### Stock V2.3 DSP-refresh characterization progress (2026-02-18)

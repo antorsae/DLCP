@@ -1,7 +1,7 @@
 """DLCP preset simulation framework."""
 
 from .bus import CurrentLoopBus, FaultProfile
-from .control_gpsim import GpsimControlHarness, StepResult, TxTriplet
+from .control_gpsim import GpsimControlHarness, RxTriplet, StepResult, TxTriplet
 from .control_ui import ControlPersistentState, ControlStrings, ControlUISim
 from .gpsim import GpsimRunConfig, GpsimRunResult, run_gpsim
 from .hexio import assert_bytes, parse_intel_hex, write_intel_hex
@@ -25,6 +25,7 @@ __all__ = [
     "ControlStrings",
     "ControlUISim",
     "GpsimControlHarness",
+    "RxTriplet",
     "StepResult",
     "TxTriplet",
     "GpsimRunConfig",

@@ -137,7 +137,7 @@ def _run_cmd18_reset_case(control_hex: Path) -> tuple[bool, set[int]]:
         for _ in range(KEY_STEPS):
             h.step()
         assert h.read_reg(0x0BF) == 1
-        assert h._inject_rx_bytes([0xBF, 0x18, 0x01]) is True
+        h.inject_host_command(cmd=0x18, data=0x01, steps=0)
 
         seen_text = False
         states: set[int] = set()

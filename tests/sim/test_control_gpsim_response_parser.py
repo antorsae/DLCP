@@ -54,7 +54,7 @@ def test_response_cmd_0x29_is_ignored_without_state_corruption(patched_control_h
             0x0B9: h.read_reg(0x0B9),
             0x0BF: h.read_reg(0x0BF),
         }
-        assert h._inject_rx_bytes([0xBF, 0x29, 0x01]) is True
+        h.inject_host_command(cmd=0x29, data=0x01, steps=0)
         _step_n(h, 8)
         after = {
             0x0A1: h.read_reg(0x0A1),
@@ -80,7 +80,7 @@ def test_response_cmd_0x18_data1_triggers_reset_path(patched_control_hex: Path) 
         _step_n(h, STEP_COUNT)
         assert h.read_reg(0x0BF) == 1
 
-        assert h._inject_rx_bytes([0xBF, 0x18, 0x01]) is True
+        h.inject_host_command(cmd=0x18, data=0x01, steps=0)
         seen = []
         for _ in range(40):
             h.step()
@@ -107,7 +107,7 @@ def test_response_cmd_0x18_data0_does_not_reset(patched_control_hex: Path) -> No
         _step_n(h, STEP_COUNT)
         assert h.read_reg(0x0BF) == 1
 
-        assert h._inject_rx_bytes([0xBF, 0x18, 0x00]) is True
+        h.inject_host_command(cmd=0x18, data=0x00, steps=0)
         seen = []
         for _ in range(30):
             h.step()
