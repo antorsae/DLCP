@@ -141,6 +141,15 @@ def control_disable_standby_check_v15b() -> OverlayManifest:
     )
 
 
+def control_disable_standby_check_v16b() -> OverlayManifest:
+    """V1.6b standby-jump variant at 0x11DA (goto label_210)."""
+    return _control_disable_standby_check_manifest(
+        jump_addr=0x11DA,
+        goto_word_lo=0x28,
+        name="control_disable_standby_check_v16b",
+    )
+
+
 def control_disable_standby_check_for_hex(control_hex: Path) -> OverlayManifest:
     """Select the standby-check overlay matching the control firmware layout."""
     mem = parse_intel_hex(control_hex)
@@ -158,8 +167,16 @@ def control_disable_standby_check_for_hex(control_hex: Path) -> OverlayManifest:
         and mem.get(0x121D, 0xFF) == 0xF0
     ):
         return control_disable_standby_check_v15b()
+    if (
+        mem.get(0x11DA, 0xFF) == 0x28
+        and mem.get(0x11DB, 0xFF) == 0xEF
+        and mem.get(0x11DC, 0xFF) == 0x09
+        and mem.get(0x11DD, 0xFF) == 0xF0
+    ):
+        return control_disable_standby_check_v16b()
     raise RuntimeError(
-        "unsupported control standby-jump layout: expected V1.4 site 0x1228 or V1.5b site 0x121A"
+        "unsupported control standby-jump layout: expected V1.4 site 0x1228, "
+        "V1.5b site 0x121A, or V1.6b site 0x11DA"
     )
 
 
