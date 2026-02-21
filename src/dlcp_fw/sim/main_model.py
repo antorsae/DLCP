@@ -29,26 +29,42 @@ class DspIngestEvent:
     table_sha256: str
 
 
+@dataclass(frozen=True)
+class UsbCmd03Event:
+    subcmd: int
+    payload: bytes
+    response: bytes
+
+
 @dataclass
 class MainUnitModel:
     name: str
     link_addr: int
     flash: bytearray
+    eeprom: bytearray = field(default_factory=lambda: bytearray([0xFF] * 0x100))
+    ram: bytearray = field(default_factory=lambda: bytearray([0x00] * 0x300))
     preset_idx: int = 0
     apply_count: int = 0
     rx_count: int = 0
     handled_count: int = 0
+    filename_dirty: bool = False
     flash_writes: List[FlashWriteEvent] = field(default_factory=list)
     dsp_ingest: List[DspIngestEvent] = field(default_factory=list)
+    usb_cmd03_log: List[UsbCmd03Event] = field(default_factory=list)
 
     @staticmethod
     def from_hex(name: str, link_addr: int, hex_path: Path) -> "MainUnitModel":
         mem: Dict[int, int] = parse_intel_hex(hex_path)
         flash = bytearray([0xFF] * 0x6000)
+        eeprom = bytearray([0xFF] * 0x100)
         for addr, b in mem.items():
             if 0 <= addr < len(flash):
                 flash[addr] = b
-        return MainUnitModel(name=name, link_addr=link_addr, flash=flash)
+            if 0xF00000 <= addr <= 0xF000FF:
+                eeprom[addr - 0xF00000] = b
+        m = MainUnitModel(name=name, link_addr=link_addr, flash=flash, eeprom=eeprom)
+        m.boot_load_filename_from_eeprom()
+        return m
 
     def _accepts_route(self, route: int) -> bool:
         if (route & 0xF0) != 0xB0:
@@ -114,3 +130,74 @@ class MainUnitModel:
             self.flash_writes.append(
                 FlashWriteEvent(logical_addr=logical, physical_addr=physical, value=b)
             )
+
+    # DSP filename storage model (from MAIN disassembly):
+    # - RAM slot   : 0x02C0..0x02DD (30 bytes)
+    # - EEPROM slot: 0x0060..0x007D (30 bytes)
+    # - cmd=0x03/subcmd=0x09 stores payload bytes with 0x00->0xFF mapping and marks dirty.
+    # - cmd=0x03/subcmd=0x08 reads RAM slot.
+    # - cmd=0x03/subcmd=0x0A erases slot to 0xFF and marks dirty.
+    _FILENAME_LEN = 0x1E
+    _FILENAME_RAM_BASE = 0x2C0
+    _FILENAME_EEPROM_BASE = 0x60
+
+    def _set_filename_ram_bytes(self, slot: bytes) -> None:
+        if len(slot) != self._FILENAME_LEN:
+            raise ValueError("filename slot must be exactly 30 bytes")
+        base = self._FILENAME_RAM_BASE
+        self.ram[base : base + self._FILENAME_LEN] = slot
+
+    def filename_ram_bytes(self) -> bytes:
+        base = self._FILENAME_RAM_BASE
+        return bytes(self.ram[base : base + self._FILENAME_LEN])
+
+    def filename_eeprom_bytes(self) -> bytes:
+        base = self._FILENAME_EEPROM_BASE
+        return bytes(self.eeprom[base : base + self._FILENAME_LEN])
+
+    def cmd03_set_filename(self, payload: bytes) -> bytes:
+        slot = bytearray([0xFF] * self._FILENAME_LEN)
+        n = min(len(payload), self._FILENAME_LEN)
+        for i in range(n):
+            b = payload[i] & 0xFF
+            slot[i] = b if b != 0x00 else 0xFF
+        self._set_filename_ram_bytes(bytes(slot))
+        self.filename_dirty = True
+        return b""
+
+    def cmd03_erase_filename(self) -> bytes:
+        self._set_filename_ram_bytes(bytes([0xFF] * self._FILENAME_LEN))
+        self.filename_dirty = True
+        return b""
+
+    def cmd03_get_filename(self) -> bytes:
+        return self.filename_ram_bytes()
+
+    def persist_dirty_filename_to_eeprom(self) -> bool:
+        if not self.filename_dirty:
+            return False
+        base = self._FILENAME_EEPROM_BASE
+        self.eeprom[base : base + self._FILENAME_LEN] = self.filename_ram_bytes()
+        self.filename_dirty = False
+        return True
+
+    def boot_load_filename_from_eeprom(self) -> None:
+        base = self._FILENAME_EEPROM_BASE
+        slot = bytes(self.eeprom[base : base + self._FILENAME_LEN])
+        self._set_filename_ram_bytes(slot)
+        # Boot-time RAM init consumes persisted state and clears volatile dirty latch.
+        self.filename_dirty = False
+
+    def usb_cmd03(self, subcmd: int, payload: bytes = b"") -> bytes:
+        sub = subcmd & 0xFF
+        data = bytes(payload)
+        if sub == 0x08:
+            resp = self.cmd03_get_filename()
+        elif sub == 0x09:
+            resp = self.cmd03_set_filename(data)
+        elif sub == 0x0A:
+            resp = self.cmd03_erase_filename()
+        else:
+            resp = b""
+        self.usb_cmd03_log.append(UsbCmd03Event(subcmd=sub, payload=data, response=resp))
+        return resp

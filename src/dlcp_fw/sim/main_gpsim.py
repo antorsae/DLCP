@@ -7,9 +7,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Mapping, Sequence
 
-from .manifests import main_reset_to_appstart, main_serial_mailbox_hooks
+from .manifests import main_i2c_bypass, main_reset_to_appstart, main_serial_mailbox_hooks
 from .overlay import apply_overlays
 from .paths import MAIN_HEX_PATCHED, SIM_ARTIFACTS_DIR
 from .protocol import SerialFrame
@@ -24,6 +24,16 @@ class MainGpsimResult:
     regs: Dict[int, int]
     cycles: int
     parser_break_hit: bool = False
+
+
+@dataclass(frozen=True)
+class MainCmd03DispatchResult:
+    sim_hex: Path
+    cli_path: Path
+    regs: Dict[int, int]
+    parser_break_hit: bool
+    label003_break_hit: bool
+    return_break_hit: bool
 
 
 def _build_frame_bytes(frames: Sequence[SerialFrame]) -> List[int]:
@@ -101,6 +111,11 @@ def _parse_regs(cli_text: str) -> Dict[int, int]:
             val = int(m.group(3), 16)
             out[addr] = val
     return out
+
+
+def _did_hit_break(cli_text: str, addr: int) -> bool:
+    pat = rf"line_{addr:04x}\(0x{addr:04x}\)"
+    return bool(re.search(pat, cli_text, flags=re.IGNORECASE))
 
 
 def run_main_mailbox_gpsim(
@@ -227,4 +242,163 @@ def run_main_mailbox_gpsim(
             regs=regs,
             cycles=cycles,
             parser_break_hit=parser_break_hit,
+        )
+
+
+def run_main_cmd03_dispatch_gpsim(
+    *,
+    subcmd: int,
+    payload: bytes = b"",
+    main_hex: Path = MAIN_HEX_PATCHED,
+    gpasm: str = "gpasm",
+    parser_break_addr: int = 0x1BEA,
+    label003_break_addr: int = 0x10D0,
+    return_break_addr: int = 0x15AA,
+    dispatch_entry_pc: int = 0x3A7E,
+    sentinel_regs: Mapping[int, int] | None = None,
+    timeout_s: float = 30.0,
+    keep_artifacts: bool = False,
+    artifact_dir: Path | None = None,
+) -> MainCmd03DispatchResult:
+    """
+    Run a strict instruction-level cmd=0x03 dispatch probe on MAIN firmware.
+
+    The harness boots to parser idle, injects a command window at 0x11A..,
+    then jumps to the parser call-site (0x3A7E) and validates execution hits:
+    - label_003 (0x10D0): cmd=0x03 handler entry
+    - label_083 (0x15AA): command completion/return path
+    """
+    sub = subcmd & 0xFF
+    data = bytes(payload[:30])
+    sentinels = {int(k) & 0xFFF: int(v) & 0xFF for k, v in (sentinel_regs or {}).items()}
+
+    watch_regs: List[int] = [
+        0x05E,
+        0x073,
+        0x074,
+        0x097,
+        0x099,
+        0x0A5,
+        0x0A6,
+        0x0A7,
+        0x0A8,
+        0x0A9,
+        0x0AA,
+        0x0B2,
+        0x0B3,
+        0x0B8,
+        0x0BD,
+        0x0C0,
+        0x11A,
+        0x11B,
+    ]
+    watch_regs.extend(range(0x2C0, 0x2DE))
+    watch_regs.extend(sentinels.keys())
+    watch_regs = list(dict.fromkeys(watch_regs))
+
+    with tempfile.TemporaryDirectory(prefix="main_cmd03_dispatch_sim_") as td:
+        tdp = Path(td)
+        sim_hex = tdp / "main_cmd03_sim.hex"
+        cli_path = tdp / "main_cmd03_gpsim_cli.txt"
+        stc_path = cli_path.with_suffix(".stc")
+
+        apply_overlays(
+            main_hex,
+            sim_hex,
+            manifests=[
+                main_reset_to_appstart(),
+                main_i2c_bypass(),
+                main_serial_mailbox_hooks(gpasm=gpasm),
+            ],
+        )
+
+        lines = [
+            "processor p18f2550",
+            f"load {sim_hex}",
+            f"break e 0x{parser_break_addr:04X}",
+            "run",
+        ]
+        for addr, val in sentinels.items():
+            lines.append(f"reg(0x{addr:03x})=0x{val:02X}")
+
+        # Clear payload window to deterministic 0x00 bytes.
+        for i in range(30):
+            lines.append(f"reg(0x{(0x11C + i):03x})=0x00")
+        for i, b in enumerate(data):
+            lines.append(f"reg(0x{(0x11C + i):03x})=0x{b:02X}")
+
+        lines.extend(
+            [
+                "reg(0x11a)=0x03",
+                f"reg(0x11b)=0x{sub:02X}",
+                "reg(0x0c0)=0x01",
+                f"pc=0x{dispatch_entry_pc:04X}",
+                f"break e 0x{label003_break_addr:04X}",
+                "run",
+                f"break e 0x{return_break_addr:04X}",
+                "run",
+            ]
+        )
+        for r in watch_regs:
+            lines.append(f"reg(0x{r:03x})")
+        lines.extend(["quit", ""])
+        stc_path.write_text("\n".join(lines), encoding="ascii")
+
+        try:
+            cp = subprocess.run(
+                ["gpsim", "-i", "-c", str(stc_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            cli_path.write_text((exc.stdout or "") + (exc.stderr or ""), encoding="utf-8")
+            raise RuntimeError(f"gpsim cmd03 probe timed out after {exc.timeout}s; inspect {cli_path}") from exc
+        cli_text = cp.stdout + cp.stderr
+        cli_path.write_text(cli_text, encoding="utf-8")
+        if cp.returncode != 0:
+            raise RuntimeError(f"gpsim cmd03 probe exited {cp.returncode}; inspect {cli_path}")
+
+        parser_break_hit = _did_hit_break(cli_text, parser_break_addr)
+        label003_break_hit = _did_hit_break(cli_text, label003_break_addr)
+        return_break_hit = _did_hit_break(cli_text, return_break_addr)
+        if not parser_break_hit:
+            raise RuntimeError(
+                f"gpsim cmd03 probe did not reach parser break 0x{parser_break_addr:04X}; inspect {cli_path}"
+            )
+        if not label003_break_hit:
+            raise RuntimeError(
+                f"gpsim cmd03 probe did not hit label_003 at 0x{label003_break_addr:04X}; inspect {cli_path}"
+            )
+        if not return_break_hit:
+            raise RuntimeError(
+                f"gpsim cmd03 probe did not hit return break 0x{return_break_addr:04X}; inspect {cli_path}"
+            )
+
+        regs = _parse_regs(cli_text)
+
+        if keep_artifacts:
+            if artifact_dir is None:
+                artifact_dir = SIM_ARTIFACTS_DIR / "main_cmd03_dispatch_last"
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            (artifact_dir / "main_cmd03_sim.hex").write_bytes(sim_hex.read_bytes())
+            (artifact_dir / "main_cmd03_gpsim_cli.txt").write_text(cli_text, encoding="utf-8")
+            (artifact_dir / "main_cmd03_gpsim.stc").write_text("\n".join(lines), encoding="ascii")
+            return MainCmd03DispatchResult(
+                sim_hex=artifact_dir / "main_cmd03_sim.hex",
+                cli_path=artifact_dir / "main_cmd03_gpsim_cli.txt",
+                regs=regs,
+                parser_break_hit=parser_break_hit,
+                label003_break_hit=label003_break_hit,
+                return_break_hit=return_break_hit,
+            )
+
+        return MainCmd03DispatchResult(
+            sim_hex=sim_hex,
+            cli_path=cli_path,
+            regs=regs,
+            parser_break_hit=parser_break_hit,
+            label003_break_hit=label003_break_hit,
+            return_break_hit=return_break_hit,
         )
