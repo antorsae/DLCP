@@ -1,0 +1,77 @@
+Setup.exe listing (7z):
+
+7-Zip [64] 17.05 : Copyright (c) 1999-2021 Igor Pavlov : 2017-08-28
+p7zip Version 17.05 (locale=utf8,Utf16=on,HugeFiles=on,64 bits,10 CPUs LE)
+
+Scanning the drive for archives:
+1 file, 741888 bytes (725 KiB)
+
+Listing archive: firmware/stock/PC/HFD_v4.97/Setup.exe
+
+--
+Path = firmware/stock/PC/HFD_v4.97/Setup.exe
+Type = PE
+Physical Size = 741888
+CPU = x86
+Characteristics = Executable 32-bit
+Created = 2017-01-04 09:32:48
+Headers Size = 512
+Checksum = 0
+Name = HYPEX_INSTALLER.exe
+Image Size = 770048
+Section Alignment = 8192
+File Alignment = 512
+Code Size = 576512
+Initialized Data Size = 164864
+Uninitialized Data Size = 0
+Linker Version = 48.0
+OS Version = 4.0
+Image Version = 0.0
+Subsystem Version = 4.0
+Subsystem = Windows GUI
+DLL Characteristics = Relocated NX-Compatible NoSEH TerminalServerAware
+Stack Reserve = 1048576
+Stack Commit = 4096
+Heap Reserve = 1048576
+Heap Commit = 4096
+Image Base = 4194304
+Comment = FileVersion: 1.0.0.0
+ProductVersion: 1.0.0.0
+Comments: Install/Uninstall Filter Design
+CompanyName: Hypex Electronics
+FileDescription: Hypex Filter Design Installer
+InternalName: HYPEX_INSTALLER.exe
+LegalCopyright: Copyright ©  2012
+LegalTrademarks: 
+OriginalFilename: HYPEX_INSTALLER.exe
+ProductName: Hypex Installer
+Assembly Version: 1.0.0.0
+
+   Date      Time    Attr         Size   Compressed  Name
+------------------- ----- ------------ ------------  ------------------------
+2017-01-04 09:32:48 .....       576512       576512  .text
+                    .....         1800         1800  .rsrc/version.txt
+                    .....        60354        60354  .rsrc/ICON/1
+                    .....        67646        67624  .rsrc/ICON/2.ico
+                    .....        16958        16936  .rsrc/ICON/3.ico
+                    .....         9662         9640  .rsrc/ICON/4.ico
+                    .....         4286         4264  .rsrc/ICON/5.ico
+                    .....         2462         2440  .rsrc/ICON/6.ico
+                    .....         1150         1128  .rsrc/ICON/7.ico
+                    .....          104          104  .rsrc/GROUP_ICON/32512
+2017-01-04 09:32:48 .....          512          512  .reloc
+------------------- ----- ------------ ------------  ------------------------
+2017-01-04 09:32:48             741446       741314  11 files
+
+Extracted setup files:
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.reloc
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/GROUP_ICON/32512
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/1
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/2.ico
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/3.ico
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/4.ico
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/5.ico
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/6.ico
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/ICON/7.ico
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.rsrc/version.txt
+firmware/stock/PC/HFD_v4.97/_setup_extracted/.text

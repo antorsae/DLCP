@@ -115,6 +115,29 @@ Evidence:
 - `firmware/disasm/PC/HFD_v2.12/disasm_packet_builder_554590_554980.asm`
 - `firmware/disasm/PC/HFD_v2.12/callsites_command_dl_constants_55xxxx.txt`
 
+## DSP Filename Commands in v2.12 (Equivalence with v4.97)
+
+v2.12 implements the same DSP filename command family as v4.97:
+
+- `cmd=0x03, subcmd=0x08` -> read filename
+- `cmd=0x03, subcmd=0x09` -> write/update filename
+
+Evidence in v2.12:
+
+- `disasm_response_parser_553910_554520.asm`
+  - parser explicitly checks incoming `subcmd 0x08` and `0x09`
+    in command-3 response path.
+- `disasm_cmd3_txlogic_554c00_554ed0.asm`
+  - TX-side command-3 path emits `dl=0x03` and uses `cl=0x09` in command setup.
+- `strings_HFD_v2.12.txt`
+  - includes `"DSP filter: No filename found"`, consistent with a filename read
+    UI flow.
+
+Implication:
+
+- HFD v2.12 has equivalent filename functionality on the host side; it is not
+  a v4.97-only feature.
+
 ### Practical semantics (inferred from code/data flow)
 
 - `0x05`: bulk configuration push (includes routing bytes and many setup fields)
