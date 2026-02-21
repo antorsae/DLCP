@@ -1,0 +1,26 @@
+132c9c Software version 2.12
+132cbc Firmware version 
+150afc Channel 1
+150b30 L+R/Mid
+150b40 L-R/Side
+154b7f DLCP001
+154fe5 DLCP001ClickTFormControl
+155998 DLCP connected
+1579f4 S/PDIF
+157a04 USB audio
+157a68 AES/EBU
+157a94 Channel 1
+158170 S/PDIF
+158180 USB audio
+1595d1 DLCP002
+15a10d DLCP002Click
+160c3c Function not supported in this
+16100c , Firmware version 
+196f94 Channel 1 / Tweeter
+19a056 DLCP002
+19a074 DLCP002Click
+1ad7b1 Firmware version 1.0 (Build)Font.Charset
+1adfa2 USB audio
+1ae432 USB audio
+1aedb3 DLCP001
+1aedd1 DLCP001Click

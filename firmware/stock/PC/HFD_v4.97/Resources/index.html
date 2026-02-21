@@ -1,0 +1,217 @@
+<html>
+	<head>
+		<title>Hypex Filter Designer</title>
+		<meta name="revision" content="400" />
+		<meta name="version" content="v4.97" />
+		<!-- Include meta tag to ensure proper rendering and touch zooming -->
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<!-- Include jQuery Mobile stylesheets -->
+		<link rel="stylesheet" href="http://code.jquery.com/mobile/1.4.5/jquery.mobile-1.4.5.min.css">
+		<!-- Include the jQuery library -->
+		<script src="http://code.jquery.com/jquery-1.11.3.min.js"></script>
+		<!-- Include the jQuery Mobile library -->
+		<script src="http://code.jquery.com/mobile/1.4.5/jquery.mobile-1.4.5.min.js"></script>
+
+		<script>
+			function checkIfInView(element){
+				var offset = element.offset().top + element.height();
+				
+				var visible_area_start = $(window).scrollTop();
+				var visible_area_end = visible_area_start + window.innerHeight;
+				
+				if(offset < visible_area_start || offset > visible_area_end){
+					// Not in view so scroll to it
+					$('html,body').animate({scrollTop: offset}, 1000);
+					return false;
+				}
+			   return true;
+			}
+			
+			$(document).ready(function(){
+				$("#softwareDisclaimerPanel").slideUp("fast");
+				$("#softwareDisclaimerButton").click(function(){
+					$("#softwareDisclaimerPanel").slideToggle("slow", function(){
+						checkIfInView($("#softwareDisclaimer"));
+						if ($("#softwareDisclaimerPanel").css('display') != 'none') {
+							$("#softwareDisclaimerButton").text('Close software disclaimer');
+						} else {
+							$("#softwareDisclaimerButton").text('Read software disclaimer');
+						}
+					});
+				});
+			});
+			
+		//	$(document).scroll(function(){
+		//		checkIfInView($("#softwareDisclaimer"));
+		//	});
+		</script>
+		
+		<style>
+			#softwareDisclaimerButton {}
+			#sections {
+				padding: 5px;
+				width:200px;
+			}
+			p {
+				margin-left: 40px;
+			}
+			h1 {
+				margin-left: 20px;
+			}
+			h2 {
+				margin-left: 20px;
+			}
+			h4 {
+				margin-left: 40px;
+			}
+		</style>			
+	</head>
+	
+	<body>
+		<div data-role="page" id="mainpage" data-theme="a">
+			<p><img src="Hypex_logo.jpg" width="450px" /></p>
+			<h1>Hypex Electronics Filter Design</h1><br/>
+			<p>The software package includes: <br/>
+			  - Setup + DLL's for the Hypex Filter Design program v4.97<br/>
+			  - Sample impulse files<br/>
+			  - FusionAmp firmware v1.44<br/>
+			<br/>
+			To use the program extract the Setup.zip file to a local drive and start Setup.exe. For extra help, please read the "FA Update Tutorial V0200.pdf" which is located in the "Resources\Documentation" folder.<br/>
+			The software is designed for use on Windows-7, 8.1 and 10 platforms.<br/>
+			Future software and firmware version will be available at the website, but latest FusionAmp firmware (v1.44) is also included in this HFD update in the "Resources\FusionAmp fimware" folder.<br/>
+			For sample impulse files, please see folder 'Sample files' (it also contains a file with flat response data).<br/>
+			Starting with HFD version 4.8, a connected FusionAmp should have firmware version v1.3 (or higher). Please update your FusionAmp to version 1.3 (see folder "Resources\FusionAmp firmware").<br/>
+			Starting with HFD version 4.9, a connected FusionAmp should have firmware version v1.4 (or higher). Please update your FusionAmp to version 1.4 (see folder "Resources\FusionAmp firmware").<br/>
+			</p>
+			<h2>Hypex Filter Design v4.97</h2>
+			<p>Improvements in HFD v4.97:<br/>
+			  - After changing only one preset and uploading all presets, the channels of the other presets were set to unity filters (passing audio with a gain of 0dB)<br/>
+			  - Sometimes during changing an equalizer filter, exceptions were thrown<br/>
+			  - Password protection now works on individual items (previous it protected all settings)<br/>
+			  - E-mail address is checked more thoroughly<br/>
+			  - The phase was not always calculated when changing channel parameters like 'invert' when the phase tab was selected<br/>
+			  - Standby LED (red LED) functionality changed. Now selectable: OFF, 100%, 50% 25% brightness<br/>
+			  - NC52 amplifier added<br/>
+			  - The name of a linked channel (top-left on the magnitude tab) is expanded with the text "(readonly: linked to channel x)"<br/>
+			  - Graphical screen is closed when FusionAmp is disconnected<br/>
+			  - It was possible to manually enter a center frequency of over 50k, causing the biquad to be unselectable afterwards<br/>
+			  - Changing the volume with HFD is a bit delayed to prevent sudden high level output. Still, it is preferable to control the volume slider with the arrow keys of the PC keyboard<br/>
+			  - Changing numeric values with a comma is improved (especially when parts of the number were selected)<br/>
+			  - Sometimes the DELETE button for biquads was not presented (especially for low-pass biquads)<br/>
+			  - The file system in HFD is improved. Network drives (Linux and Windows) are now all visible, including the projects<br/>
+			  - A browse for folder button is added, to select a new location for the database<br/>
+			  - HFD is now ready for FusionAmps with FIR filters (FA with FIR is in development)<br/>
+			  - A checkbox is added to enable or disable the equalizer effect during filter design<br/>
+			  - The equalizer can be bypassed<br/>
+			  - Closing filterdesign sometimes changed the selected preset of an attached FusionAmp<br/>
+			  - Import of microphone correction values improved (now skips more text at the beginning of the file)<br/>
+			  - Several exceptions fixed<br/>
+			</p>
+			</p>
+			<h2>Hypex Filter Design v4.96</h2>
+			<p>Improvements in HFD v4.96:<br/>
+			  - NCAS500 and NCAS1000 soft clip limiting values updated<br/>
+			  - NCAS500 cannot have third channel enabled<br/>
+			</p>
+			<h2>Hypex Filter Design v4.95</h2>
+			<h4>This version requires FusionAmp firmware version 1.41, included in this bundle. Please update your FusionAmp to v1.41 (or higher), after installing HFD v4.95</h4>
+			<p>Improvements in HFD v4.95:<br/>
+			  - Added parametric equalizer (firmware v1.41 needed)<br/>
+			  - Added phase plots<br/>
+			  - Improved zooming on impulse graph<br/>
+			  - Added some help at magnitude and impulse graph<br/>
+			  - All fractional inputs now use '.' or ',' as decimal seperator<br/>
+			  - Many minor bugs fixed (please check releasenote file "Resources\FusionAmp firmware\Releasenotes v1.41, hfd v4.95.txt" for details)<br/>
+			</p>
+			<h2>Hypex Filter Design v4.83</h2>
+			<p>Improvements in HFD v4.83:<br/>
+			  - HFD produced incorrect password recovery codes when requested by mail<br/>
+			  - On main window, numeric volume input now works with '.' and ',' as decimal seperator<br/>
+			</p>
+			<h2>Hypex Filter Design v4.82</h2>
+			<p>Improvements in HFD v4.82:<br/>
+			  - "Productcode" changed to "Serial number" for connected OEM devices<br/>
+			  - BTL disabled for NCAS amplifiers (FusionAmp)<br/>
+			  - DLCP number of analog inputs was incorrect<br/>
+			</p>
+			<h2>Hypex Filter Design v4.8</h2>
+			<h4>This version requires FusionAmp firmware version 1.3, included in this bundle. Please update your FusionAmp to v1.3 (or higher), after installing HFD v4.8</h4>
+			<p>Changes in HFD v4.8:<br/>
+			  - Graphical filter design:<br/>
+				-- in an edit box it was possible to enter a 0Hz frequency<br/>
+				-- in AsymShelf, zero and pole frequencies and Q-factors were swapped (zero was pole, pole was zero)<br/>
+				-- Live update option is removed<br/>
+				-- invert channel had no effect on filters with only unity biquads (or when no filter entered at all)<br/>
+			  - Absolute SUBIN volume now only available when SUBIN board is detected<br/>
+			  - Now possible to create filter designs offline for all types of FusionAmps<br/>
+			  - Startup volume is changed from dropbox (with 10dB increments) to fixed point number entry (0.1dB resolution)<br/>
+			  - Power mode now only contains two options in the drop-down menu: Low-Power (for use with DIGIN board), Standby mode (<=0.5W)<br/>
+			  - preset volume offset did not change when pressing ENTER key, or when changing back to original value<br/>
+			  - DAC filter setting now accessible through HFD<br/>
+			  - Only FusionAmp projects can be uploaded to a FusionAmp<br/>
+			  - Volume is rounded to nearest whole dB<br/>
+			  - Projects are now sorted on date changed, not on creation date<br/>
+			  - HFD help file updated<br/>
+			</p>
+			<h2>Hypex Filter Design v4.71</h2>
+			<p>Enhancements in HFD v4.71:<br/>
+			  - Fixed volume bug AS2.100 when connecting Hypex Filter Design to AS2.100<br/>
+			  - Fixed preset issue PSC2<br/>
+			  - Fixed volume numeric format on main form for legacy devices<br/>
+			</p>
+			<h2>Hypex Filter Design v4.7</h2>
+			<p>Enhancements in HFD v4.7:<br/>
+			  - Added FusionAmp device<br/>
+			  - New URLs for webshop and software updates<br/>
+			  - USB communication driver updated (needed for FusionAmp)<br/>
+			  - Alignment of channels in header of graphical filter design screen improved<br/>
+			  - Fixed exception when a 1-channel project was created<br/>
+			  - AS2.100 sub out setting made available again<br/>
+			  - Several minor bugs fixed<br/>
+			  </p>
+			<h2>Hypex Filter Design v4.62</h2>
+			<p>Enhancements in HFD v4.62:<br/>
+			  - Bug fixed: Changing the measurement sampling frequency did not always have the proper effect (application used 44100Hz as default)<br/>
+			  </p>
+			<h2>Hypex Filter Design v4.6</h2>
+			<p>Enhancements in HFD v4.6:<br/>
+			  - Bug fixed: Floating point error occured when taking measurement and DecimalPointSeparator was set to '.' in Windows regional settings<br/>
+			  </p>
+			<h2>HFD is designed by:</h2>
+			<p>Hypex Electronics BV<br/>
+			  Kattegat 8<br />
+			  NL-9723 JP GRONINGEN<br/>
+			  The Netherlands<br/><br/>
+			  OEM Web-site: <a href="http://www.hypex.nl">www.hypex.nl</a><br/>
+			  DIY Web-site: <a href="http://www.diyclassd.com">www.diyclassd.com</a><br/>
+			  E-mail:   <a href="mailto:support@hypex.nl">support@hypex.nl</a><br/>
+			  Future software and firmware version will be available at the website and on <a href="http://www.diyclassd.com">www.diyclassd.com</a>
+			</p>
+			<div id="softwareDisclaimer" class="ui-content">
+				<button id="softwareDisclaimerButton"  class="ui-mini ui-btn ui-btn-inline ui-btn-shadow ui-btn-corner-all ui-icon-carat-r">Read software disclaimer</button>
+				<div id="softwareDisclaimerPanel">
+					<p>Software distributed by Hypex Electronics B.V. is provided 'as is' without warranty of any kind, either express or implied, including, but not limited to, the implied warranties of fitness for a purpose, or the warranty of non-infringement.<br/>
+					<br/>
+					Without limiting the foregoing, Hypex Electronics B.V. makes no warranty that:<br/>
+					*	the software will meet your requirements<br/>
+					*	the software will be uninterrupted, timely, secure or error-free<br/>
+					*	the results that may be obtained from the use of the software will be effective, accurate or reliable<br/>
+					*	the quality of the software will meet your expectations<br/>
+					*	any errors in the software obtained from Hypex Electronics B.V. will be corrected.<br/>
+					<br/>
+					Software and its documentation made available by Hypex Electronics B.V.:<br/>
+					*	could include technical or other mistakes, inaccuracies or typographical errors. Hypex Electronics B.V. may make changes to the software or documentation at any time, without notice.<br/>
+					*	may be out of date, and Hypex Electronics B.V. makes no commitment to update such materials.<br/>
+					<br/>
+					Hypex Electronics B.V. assumes no responsibility for errors or ommissions in the software or documentation.<br/>
+					All products, product specifications and data are subject to change without notice to improve reliability, function or design or otherwise.<br/>
+					<br/>
+					In no event shall Hypex Electronics B.V. be liable to you or any third parties for any special, punitive, incidental, indirect or consequential damages of any kind, or any damages whatsoever, including, without limitation, those resulting from loss of use, data or profits, whether or not Hypex Electronics B.V. has been advised of the possibility of such damages, and on any theory of liability, arising out of or in connection with the use of this software.<br/>
+					<br/>
+					The use of the software provided by Hypex Electronics B.V. is done at your own discretion and risk and with agreement that you will be solely responsible for any damage to your computer system or loss of data that results from such activities. No advice or information, whether oral or written, obtained by you from Hypex Electronics B.V. or from Hypex Electronics B.V. website shall create any warranty for the software.<br/>
+				</div>
+			</div>
+			<p>Last update: May, 2019.</p>
+		</div>
+	</body>
+</html>

@@ -1,0 +1,9 @@
+[Autorun]
+open=Setup.exe
+icon=Setup.exe,0
+label=Hypex Filter Designer
+
+[Content]
+MusicFiles=0
+PictureFiles=0
+VideoFiles=0

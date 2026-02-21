@@ -1,0 +1,51 @@
+HFD v4.95 and firmware v1.41 release notes:
+- Firmware improvements (v1.41):
+	- DSP equalizer added
+	- FusionAmp responded to other commands than "ON" when in Standby mode
+	- Signal detection level (ON and OFF) is now user configurable in four levels
+	- Power failure detection improved for NC502MP modules
+	- When slave-input was forced to "auto-detect" it sometimes did not unmute
+	- Source select for slave somewhat changed when source is locked to S/PDIF, see HFD help file	
+	
+- HFD improvements (v4.95):
+	- When a NC500MP or a NCAS module is connected, it should be impossible to select BTL option
+	- A memory leak occurred when a new project was started or loaded
+	- Live filter update removed
+	- HFD now only detects the devices on USB which it can actually control
+	- When a FA251 or FA501 was connected, it was possible to select a digital channel
+	- HFD manual had Dutch page names
+	- Not all digits of the firmware version number are displayed, e.g. 1.3 instead of 1.33.
+	- Sometimes presets were not uploaded correctly and were only audible after a repeated upload
+	- Sometimes an "Access violation" or "Invalid class type" error occured when resizing the filter design window or opening a new project
+	- On entering a fractured number, the comma and the dot both act as a decimal separator. The decimal separator of the regional settings is used
+	- Sometime the start-up volume was reset to -96dB
+	- The maximum limiter value was a bit off, due to amplifier correction
+	- In HFD help a FusionAmp Getting started chapter is added
+	- Gain is limited to +15,90dB in channel input
+	- Pressing Update Limiter had no effect if the limiter parameters had not been changed. This behaviour could cause unexpected results after turning bridged configuration on or off
+	- Unused channels in limiter are made invisible
+	- Sometimes the "delete" option did not show when right-clicking on a biquad in filter design
+	- Sometimes a divide by zero error occurred during preset upload to an FA123
+	- Sometimes an access violation occurred when uploading presets to DSP
+	- Sometimes the drop-down menu for changing the filter type stopped reacting to mouse clicks
+	- Biquad-enable was not exchanged when exchanging biquads in the advanced screen
+	- Sort order of projects ("Open project" dialog), is now saved
+	- New filter examples added to help file
+	- Disabled biquad is now represented as a diamond, not a circle like enabled biquads
+	- After importing an impulse response, the measured sample rate 96kHz was not remembered
+	- When opening or creating a new project, the connected FusionAmp scanned all presets. Now, the FusionAmp is muted first
+	- Sometimes it was impossible to upload older projects to the DSP
+	- When a FusionAmp without digital input is connected, only "Standby" power mode is available
+	- Help is added to the filter design screen
+	- A "FLAT" button is added to the impulse response input, making it easy to import a flat impulse
+	- Volume offset on preset is expanded from +/- 12dB to +/- 24dB
+	- Phase plot added on its own tab
+	- EQ settings are stored in FusionAmp, not in project file
+	- Clicking on a filter sometimes changed its center frequency a bit
+	- PSC2 -10dB offset was not working
+	- PSC2 preset selection did not always work fine
+	- "Force defaults" button added on "Device settings" screen
+	- When closing a project that hadn't been changed, sometimes the save dialog popped up
+	- Zoom level is remembered when switching tabs
+	- Q-factor now has 3 decimals in input
+	- Signal detection level (ON and OFF) is now user configurable in four levels

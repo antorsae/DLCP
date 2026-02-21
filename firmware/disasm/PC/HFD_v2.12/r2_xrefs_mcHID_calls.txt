@@ -1,0 +1,15 @@
+fcn.00554f1c 0x554f39 [CALL:--x] call sub.mcHID.dll_Connect
+(nofunc) 0x555129 [CALL:--x] call sub.mcHID.dll_Connect
+(nofunc) 0x555119 [CALL:--x] call sub.mcHID.dll_Disconnect
+(nofunc) 0x554ffc [CALL:--x] call sub.mcHID.dll_GetItem
+(nofunc) 0x554fe8 [CALL:--x] call sub.mcHID.dll_GetItemCount
+(nofunc) 0x555303 [CALL:--x] call sub.mcHID.dll_Read
+fcn.00554f50 0x554f8d [CALL:--x] call sub.mcHID.dll_Write
+(nofunc) 0x55500c [CALL:--x] call sub.mcHID.dll_GetVendorID
+(nofunc) 0x5552d6 [CALL:--x] call sub.mcHID.dll_GetVendorID
+(nofunc) 0x555022 [CALL:--x] call sub.mcHID.dll_GetProductID
+(nofunc) 0x5552e8 [CALL:--x] call sub.mcHID.dll_GetProductID
+(nofunc) 0x5550da [CALL:--x] call sub.mcHID.dll_GetProductName
+(nofunc) 0x55503a [CALL:--x] call sub.mcHID.dll_SetReadNotify
+(nofunc) 0x554fd5 [CALL:--x] call sub.mcHID.dll_IsAvailable
+(nofunc) 0x555106 [CALL:--x] call sub.mcHID.dll_IsAvailable

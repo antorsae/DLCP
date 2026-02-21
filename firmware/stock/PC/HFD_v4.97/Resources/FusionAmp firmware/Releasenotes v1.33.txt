@@ -1,0 +1,5 @@
+Firmware v1.33 release notes:
+	- Changing sources with remote control resulted in erratic selection of inputs
+	- A slight change of the standby power supply on MP modules will keep the connected FusionAmp longer alive in case of a powerfailure.
+	  FusionAmps firmware now handles powerdown differently.
+	- DC error and power failure indication is improved

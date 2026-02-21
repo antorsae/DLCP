@@ -1,0 +1,36 @@
+Firmware v1.44 release notes:
+- Firmware improvements (v1.44):
+	- Stability of the audio path improved during preset change
+	- When a slave had the volume locked, after switching on, it kept the volume at -96dB. Now it selects the last chosen volume
+	- When a slave input was changed (with HFD) from S/PDIF to another input and then back to S/PDIF, no audio was produced that was offered on S/PDIF input
+	- When Signal detection was enabled together with the Low power option and Wake on line disabled, the FusionAmp always started after connecting it to mains
+	- The FusionAmp was sometimes unable to start with the remote control
+	- When the FusionAmp was in standby with Auto source select enabled and offering audio on an analogue input, the FusionAmp started but sometimes stayed muted
+	- Auto source detection improved after changing preset
+	- Auto source detection in master-slave setup now checks for audio on both left and right channel. Previously it only checked the selected channel
+	- NC52 amplifier added
+	- An equalizer bypass is added in the DSP firmware
+	- Offset on volume per preset enlarged (was -12dB..+12dB), now -24dB..+24dB
+	
+- HFD v4.97	
+	- After changing only one preset and uploading all presets, the channels of the other presets were set to unity filters (passing audio with a gain of 0dB)
+	- Sometimes during changing an equalizer filter, exceptions were thrown
+	- Password protection now works on individual items (previous it protected all settings)
+	- E-mail address is checked more thoroughly
+	- The phase was not always calculated when changing channel parameters like 'invert' when the phase tab was selected
+	- Standby LED (red LED) functionality changed. Now selectable: OFF, 100%, 50% 25% brightness
+	- NC52 amplifier added
+	- The name of a linked channel (top-left on the magnitude tab) is expanded with the text "(readonly: linked to channel x)"
+	- Graphical screen is closed when FusionAmp is disconnected
+	- It was possible to manually enter a center frequency of over 50k, causing the biquad to be unselectable afterwards
+	- Changing the volume with HFD is a bit delayed to prevent sudden high level output. Still, it is preferable to control the volume slider with the arrow keys of the PC keyboard
+	- Changing numeric values with a comma is improved (especially when parts of the number were selected)
+	- Sometimes the DELETE button for biquads was not presented (especially for low-pass biquads)
+	- The file system in HFD is improved. Network drives (Linux and Windows) are now all visible, including the projects
+	- A browse for folder button is added, to select a new location for the database
+	- HFD is now ready for FusionAmps with FIR filters (FA with FIR is in development)
+	- A checkbox is added to enable or disable the equalizer effect during filter design
+	- The equalizer can be bypassed
+	- Import of microphone correction values improved (now skips more text at the beginning of the file)
+	- Several exceptions fixed
+	

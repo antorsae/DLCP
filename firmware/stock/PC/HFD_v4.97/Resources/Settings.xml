@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+	<application>
+		<freqpoints value="1024"/>
+		<fftpoints value="65536"/>
+		<minfreq value="1"/>
+		<maxfreq value="96000"/>
+		<freqstep value="100"/>
+		<minq value="0,1"/>
+		<maxq value="20"/>
+		<defaultq value="3"/>
+		<qstep value="0,04"/>
+		<gainstep value="0,1"/>
+		<mingain value="-144"/>
+		<maxgain value="15,9"/>
+		<mindelay value="0"/>
+		<maxdelay value="1000"/>
+		<micsmoothing value="0,015"/>
+		<asiodevice value=""/>
+		<asioinput value=""/>
+		<asiooutput value=""/>
+		<datadir default="FilterData" value="FilterData"/>
+		<measurementdir default="SpeakerMeasurements" value="SpeakerMeasurements"/>
+		<projecttitle default="Project #" value="MyLastProject"/>
+		<channeltitle default="Ch #" value="MyLastChannel"/>
+		<microphonecorrectionfile value=""/> 
+		<recentprojects/>
+  </application>
+	<devices/>
+</configuration>

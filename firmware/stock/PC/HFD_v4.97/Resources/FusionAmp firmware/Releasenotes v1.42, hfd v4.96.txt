@@ -1,0 +1,8 @@
+HFD v4.96 and firmware v1.42 release notes:
+- Firmware improvements (v1.42):
+	- NCAS500 and NCAS1000 implemented as amplifiers
+	- Equalizer filters now have the same precision as the channel filters (double precision)
+	
+- HFD improvements (v4.96):
+	- NCAS500 and NCAS1000 soft clip limiter updated
+	- NCAS500 can not have third channel enabled
