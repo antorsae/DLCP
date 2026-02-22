@@ -55,7 +55,7 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
 
     # Hook signatures (little-endian bytes)
     expected = {
-        0x1E64: 0x90,  # goto 0x5520 (little-endian)
+        0x1E64: 0x80,  # goto 0x5500 (little-endian)
         0x2E6E: 0x20,  # goto 0x5440
         0x3DAC: 0x60,  # goto 0x54C0
         0x4028: 0x00,  # goto 0x5400
@@ -65,45 +65,67 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
         if got != want:
             raise RuntimeError(f"main hook mismatch at 0x{a:04X}: got 0x{got:02X}, want 0x{want:02X}")
 
-    # cmd tail guard checks: preserve legacy compares and append cmd=0x20.
-    cmd_tail_expected = {
-        0x5522: 0x1D,  # xorlw 0x1D -> goto 0x1E02 (legacy cmd 0x1D)
-        0x5526: 0x01,
-        0x5527: 0xEF,
-        0x5528: 0x0F,
-        0x5529: 0xF0,
-        0x552C: 0x1E,  # xorlw 0x1E -> goto 0x1E1C (legacy cmd 0x1E)
-        0x5530: 0x0E,
-        0x5531: 0xEF,
-        0x5532: 0x0F,
-        0x5533: 0xF0,
-        0x5536: 0x20,  # xorlw 0x20 (new preset command)
-        # Idempotent cmd=0x20 apply paths:
-        # - A-path: only apply when bit2 was set
-        0x5540: 0x5E,  # btfss 0x05E,2
-        0x5541: 0xA4,
-        0x5546: 0x5E,  # bcf 0x05E,2
-        0x5547: 0x94,
-        0x5548: 0xBA,  # call 0x4574
-        0x5549: 0xEC,
-        0x554A: 0x22,
-        0x554B: 0xF0,
-        # - B-path: only apply when bit2 was clear
-        0x5550: 0x5E,  # btfsc 0x05E,2
-        0x5551: 0xB4,
-        0x5556: 0x5E,  # bsf 0x05E,2
-        0x5557: 0x84,
-        0x5558: 0xBA,  # call 0x4574
-        0x5559: 0xEC,
-        0x555A: 0x22,
-        0x555B: 0xF0,
-    }
-    for a, want in cmd_tail_expected.items():
-        got = main_new.get(a, 0xFF)
-        if got != want:
+    def _decode_goto_target(addr: int) -> int:
+        w1_lo = main_new.get(addr, 0xFF)
+        w1_hi = main_new.get(addr + 1, 0xFF)
+        w2_lo = main_new.get(addr + 2, 0xFF)
+        w2_hi = main_new.get(addr + 3, 0xFF)
+        if w1_hi != 0xEF or w2_hi != 0xF0:
+            raise RuntimeError(f"main hook at 0x{addr:04X} is not a goto instruction")
+        return ((((w2_hi & 0x0F) << 8) | w2_lo) << 8 | w1_lo) * 2
+
+    # Filename cmd=0x03 hooks must land in low helper block (0x4980..0x49FF)
+    # to select the active A/B filename bank on boot-load and dirty-persist.
+    for hook in (0x20BE, 0x27C0):
+        tgt = _decode_goto_target(hook)
+        if not (0x4980 <= tgt < 0x4A00):
             raise RuntimeError(
-                f"main cmd-tail guard mismatch at 0x{a:04X}: got 0x{got:02X}, want 0x{want:02X}"
+                f"main filename hook target out of expected range: hook=0x{hook:04X} target=0x{tgt:04X}"
             )
+
+    def _find_seq(seq: list[int], lo: int = 0x5400, hi: int = 0x5600) -> int | None:
+        n = len(seq)
+        for a in range(lo, hi - n + 1):
+            if all(main_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
+                return a
+        return None
+
+    def _count_seq(seq: list[int], lo: int = 0x5400, hi: int = 0x5600) -> int:
+        n = len(seq)
+        count = 0
+        for a in range(lo, hi - n + 1):
+            if all(main_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
+                count += 1
+        return count
+
+    # cmd-tail guard checks: preserve legacy compares and include cmd=0x20/0x21/0x22.
+    for literal in (0x1D, 0x1E, 0x20, 0x21, 0x22):
+        if _find_seq([literal, 0x0A], lo=0x5500, hi=0x5600) is None:
+            raise RuntimeError(f"main cmd-tail missing xorlw 0x{literal:02X}")
+
+    # cmd=0x20 idempotent apply path must still call table-apply twice (A and B branches).
+    if _count_seq([0xBA, 0xEC, 0x22, 0xF0], lo=0x5500, hi=0x5600) < 2:  # call 0x4574
+        raise RuntimeError("main cmd-tail missing dual apply calls for cmd=0x20 A/B branches")
+
+    # cmd=0x20 path must reload filename RAM from active bank on real preset change.
+    if _count_seq([0xC0, 0xEC, 0x24, 0xF0], lo=0x4980, hi=0x5600) < 2:  # call 0x4980
+        raise RuntimeError("main filename bank loader call count too low (expected cmd20 A/B)")
+
+    # cmd=0x21 path must emit display chunks through UART TX helper.
+    if _find_seq([0x4B, 0xEC, 0x24, 0xF0], lo=0x5500, hi=0x5600) is None:  # call 0x4896
+        raise RuntimeError("main cmd=0x21 display sender missing UART TX helper call")
+
+    # cmd=0x22 path must call generation sender and include cmd literal 0x22.
+    if _find_seq([0x34, 0xEC, 0x2A, 0xF0], lo=0x5500, hi=0x5600) is None:  # call 0x5468
+        raise RuntimeError("main cmd=0x22 path missing generation sender call")
+    if _find_seq([0x22, 0x0E], lo=0x5400, hi=0x5600) is None:
+        raise RuntimeError("main generation sender missing cmd literal 0x22")
+
+    # Filename generation storage must use EEPROM[0x7E] for A and EEPROM[0xBF] for B.
+    if _find_seq([0x7E, 0x0E], lo=0x5400, hi=0x5600) is None:
+        raise RuntimeError("main generation helper missing EEPROM literal 0x7E")
+    if _find_seq([0xBF, 0x0E], lo=0x5400, hi=0x5600) is None:
+        raise RuntimeError("main generation helper missing EEPROM literal 0xBF")
 
     # MAIN EEPROM tuple must remain stock 2.30 (revert prior 2.31 tweak).
     main_ver = [main_new.get(a, 0xFF) for a in (0xF00080, 0xF00081, 0xF00082)]
@@ -204,19 +226,40 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
     if ir_target == 0x0E4C:
         raise RuntimeError("control IR dispatch hook target drifted to stock label_166 (0x0E4C)")
-    if not (0x7000 <= ir_target < 0x7200):
+    if not (0x7000 <= ir_target < 0x7400):
         raise RuntimeError(
-            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x71FF)"
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x73FF)"
+        )
+
+    # --- Patch 8: parser tail hook at 0x05EC ---
+    p_w1_lo = control_new.get(0x05EC, 0xFF)
+    p_w1_hi = control_new.get(0x05ED, 0xFF)
+    p_w2_lo = control_new.get(0x05EE, 0xFF)
+    p_w2_hi = control_new.get(0x05EF, 0xFF)
+    if p_w1_hi != 0xEF or p_w2_hi != 0xF0:
+        raise RuntimeError("control parser tail hook at 0x05EC not a goto instruction")
+    parser_target = ((((p_w2_hi & 0x0F) << 8) | p_w2_lo) << 8 | p_w1_lo) * 2
+    if not (0x7000 <= parser_target < 0x7400):
+        raise RuntimeError(
+            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x73FF)"
         )
 
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
-    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7200) -> int | None:
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int | None:
         n = len(seq)
         for a in range(lo, hi - n + 1):
             if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
                 return a
         return None
+
+    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int:
+        n = len(seq)
+        count = 0
+        for a in range(lo, hi - n + 1):
+            if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
+                count += 1
+        return count
 
     full_sync_anchor = _find_seq([0x28, 0x6A, 0x06, 0x0E, 0x28, 0x60])  # clrf 0x028; movlw 0x06; cpfslt 0x028
     if full_sync_anchor is None or full_sync_anchor < 0x7004:
@@ -246,9 +289,33 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     if _find_seq([0x39, 0x0A]) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x39 (F2->preset B)")
 
+    # Filename parser/request signatures:
+    # - request-token mask keeps bit7 clear: andlw 0x78
+    # - context preserve mask keeps redraw+mode bits: andlw 0x90
+    # - parser chunk gate: andlw 0xF8; xorlw 0x30 (local idx 0..7)
+    # - parser context cmd literal: movlw 0x2F
+    # - generation sender: movlw 0x22 (cmd)
+    # - page sender: movlw 0x21 (cmd)
+    if _find_seq([0x78, 0x0B]) is None:
+        raise RuntimeError("control filename request token mask missing (andlw 0x78)")
+    if _find_seq([0x90, 0x0B]) is None:
+        raise RuntimeError("control parser context preserve mask missing (andlw 0x90)")
+    if _find_seq([0xF8, 0x0B, 0x30, 0x0A]) is None:
+        raise RuntimeError("control parser chunk gate missing (andlw 0xF8 / xorlw 0x30)")
+    if _find_seq([0x2F, 0x0E]) is None:
+        raise RuntimeError("control parser context literal missing (movlw 0x2F)")
+    if _find_seq([0x22, 0x0E]) is None:
+        raise RuntimeError("control filename generation sender missing cmd literal 0x22")
+    if _find_seq([0x21, 0x0E]) is None:
+        raise RuntimeError("control filename request sender missing cmd literal 0x21")
+    if _count_seq([0xB0, 0x0E]) < 1:
+        raise RuntimeError("control missing route=0xB0 sender (preset broadcast)")
+    if _count_seq([0xB1, 0x0E]) < 1:
+        raise RuntimeError("control missing route=0xB1 sender (filename request unicast)")
+
     # Verify stub calls function_042 (0x0D24) at some point
     found_fn042 = False
-    for a in range(0x7000, 0x7200, 2):
+    for a in range(0x7000, 0x7400, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         # call 0x0D24: EC92 F006 -> bytes 92 EC 06 F0
@@ -264,7 +331,7 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     # Verify send_preset_frame emits route 0xB0, cmd 0x20
     found_b0 = False
     found_20 = False
-    for a in range(0x7000, 0x7200, 2):
+    for a in range(0x7000, 0x7400, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0
@@ -319,6 +386,8 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
         or control_orig.get(0x1171, 0x00) != 0xF0
     ):
         raise RuntimeError("control original mismatch at 0x116E (expected call function_026)")
+    if control_orig.get(0x05EC, 0x00) != 0x1D or control_orig.get(0x05ED, 0x00) != 0x0E:
+        raise RuntimeError("control original mismatch at 0x05EC (expected movlw 0x1D)")
     if control_orig.get(0x11A4, 0x00) != 0x04 or control_orig.get(0x11A5, 0x00) != 0x0E:
         raise RuntimeError("control original mismatch at 0x11A4 (expected movlw 0x04)")
 
@@ -395,19 +464,40 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
     if ir_target == 0x0E38:
         raise RuntimeError("control IR dispatch hook target drifted to stock label_164 (0x0E38)")
-    if not (0x7000 <= ir_target < 0x7200):
+    if not (0x7000 <= ir_target < 0x7400):
         raise RuntimeError(
-            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x71FF)"
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x73FF)"
+        )
+
+    # --- Patch 8: parser tail hook at 0x05C6 ---
+    p_w1_lo = control_new.get(0x05C6, 0xFF)
+    p_w1_hi = control_new.get(0x05C7, 0xFF)
+    p_w2_lo = control_new.get(0x05C8, 0xFF)
+    p_w2_hi = control_new.get(0x05C9, 0xFF)
+    if p_w1_hi != 0xEF or p_w2_hi != 0xF0:
+        raise RuntimeError("control parser tail hook at 0x05C6 not a goto instruction")
+    parser_target = ((((p_w2_hi & 0x0F) << 8) | p_w2_lo) << 8 | p_w1_lo) * 2
+    if not (0x7000 <= parser_target < 0x7400):
+        raise RuntimeError(
+            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x73FF)"
         )
 
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
-    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7200) -> int | None:
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int | None:
         n = len(seq)
         for a in range(lo, hi - n + 1):
             if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
                 return a
         return None
+
+    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int:
+        n = len(seq)
+        count = 0
+        for a in range(lo, hi - n + 1):
+            if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
+                count += 1
+        return count
 
     full_sync_anchor = _find_seq([0x28, 0x6A, 0x06, 0x0E, 0x28, 0x60])  # clrf 0x028; movlw 0x06; cpfslt 0x028
     if full_sync_anchor is None or full_sync_anchor < 0x7004:
@@ -437,9 +527,33 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     if _find_seq([0x39, 0x0A]) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x39 (F2->preset B)")
 
+    # Filename parser/request signatures:
+    # - request-token mask keeps bit7 clear: andlw 0x78
+    # - context preserve mask keeps redraw+mode bits: andlw 0x90
+    # - parser chunk gate: andlw 0xF8; xorlw 0x30 (local idx 0..7)
+    # - parser context cmd literal: movlw 0x2F
+    # - generation sender: movlw 0x22 (cmd)
+    # - page sender: movlw 0x21 (cmd)
+    if _find_seq([0x78, 0x0B]) is None:
+        raise RuntimeError("control filename request token mask missing (andlw 0x78)")
+    if _find_seq([0x90, 0x0B]) is None:
+        raise RuntimeError("control parser context preserve mask missing (andlw 0x90)")
+    if _find_seq([0xF8, 0x0B, 0x30, 0x0A]) is None:
+        raise RuntimeError("control parser chunk gate missing (andlw 0xF8 / xorlw 0x30)")
+    if _find_seq([0x2F, 0x0E]) is None:
+        raise RuntimeError("control parser context literal missing (movlw 0x2F)")
+    if _find_seq([0x22, 0x0E]) is None:
+        raise RuntimeError("control filename generation sender missing cmd literal 0x22")
+    if _find_seq([0x21, 0x0E]) is None:
+        raise RuntimeError("control filename request sender missing cmd literal 0x21")
+    if _count_seq([0xB0, 0x0E]) < 1:
+        raise RuntimeError("control missing route=0xB0 sender (preset broadcast)")
+    if _count_seq([0xB1, 0x0E]) < 1:
+        raise RuntimeError("control missing route=0xB1 sender (filename request unicast)")
+
     # Verify stub calls function_042 (0x0CFE) at some point.
     found_fn042 = False
-    for a in range(0x7000, 0x7200, 2):
+    for a in range(0x7000, 0x7400, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         # call 0x0CFE: EC7F F006 -> bytes 7F EC 06 F0
@@ -455,7 +569,7 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     # Verify send_preset_frame emits route 0xB0, cmd 0x20
     found_b0 = False
     found_20 = False
-    for a in range(0x7000, 0x7200, 2):
+    for a in range(0x7000, 0x7400, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0
@@ -510,6 +624,8 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
         or control_orig.get(0x1163, 0x00) != 0xF0
     ):
         raise RuntimeError("control original mismatch at 0x1160 (expected call function_026)")
+    if control_orig.get(0x05C6, 0x00) != 0x1D or control_orig.get(0x05C7, 0x00) != 0x0E:
+        raise RuntimeError("control original mismatch at 0x05C6 (expected movlw 0x1D)")
     if control_orig.get(0x1196, 0x00) != 0x04 or control_orig.get(0x1197, 0x00) != 0x0E:
         raise RuntimeError("control original mismatch at 0x1196 (expected movlw 0x04)")
 
@@ -586,19 +702,40 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
     if ir_target == 0x0DEC:
         raise RuntimeError("control IR dispatch hook target drifted to stock label_162 (0x0DEC)")
-    if not (0x7000 <= ir_target < 0x7200):
+    if not (0x7000 <= ir_target < 0x7400):
         raise RuntimeError(
-            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x71FF)"
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x73FF)"
+        )
+
+    # --- Patch 8: parser tail hook at 0x05D0 ---
+    p_w1_lo = control_new.get(0x05D0, 0xFF)
+    p_w1_hi = control_new.get(0x05D1, 0xFF)
+    p_w2_lo = control_new.get(0x05D2, 0xFF)
+    p_w2_hi = control_new.get(0x05D3, 0xFF)
+    if p_w1_hi != 0xEF or p_w2_hi != 0xF0:
+        raise RuntimeError("control parser tail hook at 0x05D0 not a goto instruction")
+    parser_target = ((((p_w2_hi & 0x0F) << 8) | p_w2_lo) << 8 | p_w1_lo) * 2
+    if not (0x7000 <= parser_target < 0x7400):
+        raise RuntimeError(
+            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x73FF)"
         )
 
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
-    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7200) -> int | None:
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int | None:
         n = len(seq)
         for a in range(lo, hi - n + 1):
             if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
                 return a
         return None
+
+    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int:
+        n = len(seq)
+        count = 0
+        for a in range(lo, hi - n + 1):
+            if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
+                count += 1
+        return count
 
     # call 0x0C40 (function_031): bytes 20 EC 06 F0
     full_sync_anchor = _find_seq([0x20, 0xEC, 0x06, 0xF0])
@@ -641,9 +778,33 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     if _find_seq([0x39, 0x0A]) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x39 (F2->preset B)")
 
+    # Filename parser/request signatures:
+    # - request-token mask keeps bit7 clear: andlw 0x78
+    # - context preserve mask keeps redraw+mode bits: andlw 0x90
+    # - parser chunk gate: andlw 0xF8; xorlw 0x30 (local idx 0..7)
+    # - parser context cmd literal: movlw 0x2F
+    # - generation sender: movlw 0x22 (cmd)
+    # - page sender: movlw 0x21 (cmd)
+    if _find_seq([0x78, 0x0B]) is None:
+        raise RuntimeError("control filename request token mask missing (andlw 0x78)")
+    if _find_seq([0x90, 0x0B]) is None:
+        raise RuntimeError("control parser context preserve mask missing (andlw 0x90)")
+    if _find_seq([0xF8, 0x0B, 0x30, 0x0A]) is None:
+        raise RuntimeError("control parser chunk gate missing (andlw 0xF8 / xorlw 0x30)")
+    if _find_seq([0x2F, 0x0E]) is None:
+        raise RuntimeError("control parser context literal missing (movlw 0x2F)")
+    if _find_seq([0x22, 0x0E]) is None:
+        raise RuntimeError("control filename generation sender missing cmd literal 0x22")
+    if _find_seq([0x21, 0x0E]) is None:
+        raise RuntimeError("control filename request sender missing cmd literal 0x21")
+    if _count_seq([0xB0, 0x0E]) < 1:
+        raise RuntimeError("control missing route=0xB0 sender (preset broadcast)")
+    if _count_seq([0xB1, 0x0E]) < 1:
+        raise RuntimeError("control missing route=0xB1 sender (filename request unicast)")
+
     # Verify stub calls function_035 (0x0CB2) at some point.
     found_fn035 = False
-    for a in range(0x7000, 0x7200, 2):
+    for a in range(0x7000, 0x7400, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         # call 0x0CB2: EC59 F006 -> bytes 59 EC 06 F0
@@ -659,7 +820,7 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     # Verify send_preset_frame emits route 0xB0, cmd 0x20.
     found_b0 = False
     found_20 = False
-    for a in range(0x7000, 0x7200, 2):
+    for a in range(0x7000, 0x7400, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0
@@ -714,6 +875,8 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
         or control_orig.get(0x111F, 0x00) != 0xF0
     ):
         raise RuntimeError("control original mismatch at 0x111C (expected call function_026)")
+    if control_orig.get(0x05D0, 0x00) != 0x1D or control_orig.get(0x05D1, 0x00) != 0x0E:
+        raise RuntimeError("control original mismatch at 0x05D0 (expected movlw 0x1D)")
     if control_orig.get(0x1152, 0x00) != 0x06 or control_orig.get(0x1153, 0x00) != 0x0E:
         raise RuntimeError("control original mismatch at 0x1152 (expected movlw 0x06)")
 

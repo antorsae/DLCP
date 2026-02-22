@@ -48,7 +48,7 @@ class CurrentLoopBus:
     def deliver(self, idx: int, frame: SerialFrame) -> List[str]:
         frame = frame.normalized()
         if idx in self.fault.corrupt_cmd_indices:
-            frame = SerialFrame(route=frame.route, cmd=0x21, data=frame.data)
+            frame = SerialFrame(route=frame.route, cmd=0x2F, data=frame.data)
         if idx in self.fault.corrupt_route_indices:
             frame = SerialFrame(route=0xAF, cmd=frame.cmd, data=frame.data)
 

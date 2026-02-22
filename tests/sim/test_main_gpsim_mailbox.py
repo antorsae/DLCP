@@ -47,7 +47,8 @@ def test_main_gpsim_wrong_command_still_consumed_stably() -> None:
     if shutil.which("gpsim") is None:
         pytest.skip("gpsim not installed")
     res = run_main_mailbox_gpsim(
-        frames=[SerialFrame(route=0xB0, cmd=0x21, data=0x01)],
+        # cmd=0x21 is now valid (filename display chunks). Use a truly unknown cmd.
+        frames=[SerialFrame(route=0xB0, cmd=0x2F, data=0x01)],
         cycles=120_000_000,
     )
     assert res.parser_break_hit is True

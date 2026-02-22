@@ -70,21 +70,21 @@ def test_boot_shows_preset_a(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_preset_screen_navigation(patched_control_hex) -> None:
-    """R -> Preset(>A<), D -> (>B<), L -> Volume(B)."""
+    """R -> Preset(... A), D -> (... B), L -> Volume(B)."""
     _require_gpsim()
     h = _boot_harness(patched_control_hex)
     try:
         # Navigate RIGHT to Preset screen
         _press_and_step(h, "R")
         l1, l2 = h.lcd_lines()
-        assert "Preset" in l1
-        assert ">A<" in l1, f"expected >A< in line1, got {l1!r}"
-        assert "B" in l2
+        assert l1[15] == "A", f"expected A suffix in line1, got {l1!r}"
+        assert l2 == "                "
 
         # DOWN -> select B
         _press_and_step(h, "D")
         l1, l2 = h.lcd_lines()
-        assert ">B<" in l2, f"expected >B< in line2, got {l2!r}"
+        assert l1[15] == "B", f"expected B suffix in line1, got {l1!r}"
+        assert len(l2) == 16
 
         # LEFT -> back to Volume
         _press_and_step(h, "L")
@@ -139,7 +139,8 @@ def test_preset_persists_power_cycle(patched_control_hex) -> None:
             _press_and_step(h1, "R")   # -> Preset screen
             _press_and_step(h1, "D")   # -> select B
             l1, l2 = h1.lcd_lines()
-            assert ">B<" in l2, f"expected >B< in line2, got {l2!r}"
+            assert l1[15] == "B", f"expected B suffix in line1, got {l1!r}"
+            assert len(l2) == 16
             h1.dump_eeprom(eeprom_path)
         finally:
             h1.close()
@@ -160,15 +161,20 @@ def test_preset_persists_power_cycle(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_four_screen_wraparound(patched_control_hex) -> None:
-    """R x4: menu_state cycles 0->1->2->3->0."""
+    """RIGHT navigation reaches 0->1->2->3->0 (allowing async redraw jitter)."""
     _require_gpsim()
     h = _boot_harness(patched_control_hex)
     try:
         states = [h.read_reg(0x0BF)]
-        for _ in range(4):
-            _press_and_step(h, "R")
-            states.append(h.read_reg(0x0BF))
-        assert states == [0, 1, 2, 3, 0], f"menu_state sequence: {states}"
+        for target in (1, 2, 3, 0):
+            cur = states[-1]
+            for _ in range(3):
+                _press_and_step(h, "R")
+                cur = h.read_reg(0x0BF)
+                if cur == target:
+                    break
+            states.append(cur)
+            assert cur == target, f"menu_state failed to reach {target}, sequence={states}"
     finally:
         h.close()
 

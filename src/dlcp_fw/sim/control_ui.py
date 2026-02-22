@@ -105,6 +105,21 @@ class ControlUISim:
     aux_vals: List[int] = field(default_factory=lambda: [0] * 6)  # USBaudio options
     timeout_sel: int = 0
     tx_frames: List[SerialFrame] = field(default_factory=list)
+    filename_cache: List[bytearray] = field(
+        default_factory=lambda: [bytearray(b" " * 30), bytearray(b" " * 30)]
+    )
+    filename_stage: bytearray = field(default_factory=lambda: bytearray(b" " * 30))
+    filename_stage_target: int = 0
+    filename_txn: int = 0  # 4-bit transfer token (req data bits6..3; bit7 clear)
+    filename_expected_req: int = 0  # packed req data: txn/page/preset
+    filename_ctx_armed: bool = False
+    filename_expect_generation: bool = False
+    filename_expected_local_idx: int = 0  # expected cmd offset 0..7
+    filename_fetch_preset: int = 0  # target preset for current transfer (0=A,1=B)
+    filename_generation_cache: List[int] = field(default_factory=lambda: [0x00, 0x00])
+    filename_generation_valid_mask: int = 0
+    filename_generation_pending: int = 0
+    filename_generation_pending_valid: bool = False
 
     def boot(self) -> None:
         self.preset = self.persist.load_preset()
@@ -129,6 +144,24 @@ class ControlUISim:
     def _emit_preset_frame(self) -> None:
         self._emit_frame(0xB0, 0x20, self.preset & 0x01)
 
+    def _emit_filename_request(self) -> None:
+        # Request DSP filename chunks from first MAIN only (route 0xB1)
+        # to avoid duplicate replies from downstream units.
+        self._emit_frame(0xB1, 0x21, self.filename_expected_req & 0xFF)
+
+    def _emit_filename_generation_request(self) -> None:
+        self._emit_frame(0xB1, 0x22, self.filename_expected_req & 0xFF)
+
+    def _start_filename_fetch(self) -> None:
+        self.filename_txn = (self.filename_txn + 1) & 0x0F
+        self.filename_fetch_preset = self.preset & 0x01
+        self.filename_expected_req = ((self.filename_txn & 0x0F) << 3) | self.filename_fetch_preset
+        self.filename_ctx_armed = False
+        self.filename_expect_generation = True
+        self.filename_expected_local_idx = 0
+        self.filename_generation_pending_valid = False
+        self._emit_filename_generation_request()
+
     def _set_preset(self, idx: int) -> None:
         normalized = idx & 0x01
         if normalized == self.preset:
@@ -136,6 +169,8 @@ class ControlUISim:
         self.preset = normalized
         self.persist.save_preset(self.preset)
         self._emit_preset_frame()
+        if self.menu_state == 1:
+            self._start_filename_fetch()
 
     # ---- Render helpers ----
 
@@ -156,22 +191,87 @@ class ControlUISim:
             return _clamp16(f"-{abs(delta)}.0 dB")
         return _clamp16("0.0 dB")
 
-    def _render_preset_line(self, line_preset: int) -> str:
-        """Render one line of the Preset screen.
+    def _active_filename_buf(self) -> bytearray:
+        return self.filename_cache[1 if self.preset else 0]
 
-        line_preset: 0 for line 1 (A), 1 for line 2 (B).
-        """
-        letter = "A" if line_preset == 0 else "B"
-        active = (self.preset == line_preset)
-        lbracket = ">" if active else " "
-        rbracket = "<" if active else " "
+    def _render_preset_line1(self) -> str:
+        # Firmware format: "<filename[0..13]> <preset>"
+        buf = self._active_filename_buf()
+        suffix = "B" if self.preset else "A"
+        return _clamp16(bytes(buf[:14]).decode("ascii", "replace") + " " + suffix)
 
-        if line_preset == 0:
-            # Line 1: "Preset       >A<"
-            return _clamp16(f"Preset       {lbracket}{letter}{rbracket}")
-        else:
-            # Line 2: "             >B<"
-            return _clamp16(f"             {lbracket}{letter}{rbracket}")
+    def _render_preset_line2(self) -> str:
+        # Firmware format: "<filename[14..29]>"
+        buf = self._active_filename_buf()
+        return _clamp16(bytes(buf[14:30]).decode("ascii", "replace"))
+
+    def _commit_filename_page(self, page: int) -> None:
+        target = self.filename_stage_target & 0x01
+        start = page * 8
+        end = min(30, start + (6 if page == 3 else 8))
+        self.filename_cache[target][start:end] = self.filename_stage[start:end]
+
+    def ingest_rx_frame(self, frame: SerialFrame) -> bool:
+        f = frame.normalized()
+        if f.cmd == 0x2F:
+            if f.data == (self.filename_expected_req & 0xFF):
+                self.filename_ctx_armed = True
+                self.filename_expected_local_idx = 0
+                self.filename_stage_target = f.data & 0x01
+            return True
+        if f.cmd == 0x22:
+            if not self.filename_ctx_armed or not self.filename_expect_generation:
+                return True
+            target = self.filename_stage_target & 0x01
+            incoming = f.data & 0x7F
+            bit = 1 << target
+            cache_hit = (
+                (self.filename_generation_valid_mask & bit) != 0
+                and self.filename_generation_cache[target] == incoming
+            )
+            self.filename_ctx_armed = False
+            self.filename_expect_generation = False
+            if cache_hit:
+                self.filename_generation_pending_valid = False
+                return True
+            self.filename_generation_pending = incoming
+            self.filename_generation_pending_valid = True
+            self.filename_expected_local_idx = 0
+            self._emit_filename_request()
+            return True
+        if 0x30 <= f.cmd <= 0x37:
+            if self.filename_expect_generation:
+                return True
+            if not self.filename_ctx_armed:
+                return True
+            local_idx = f.cmd - 0x30
+            if local_idx != self.filename_expected_local_idx:
+                return True
+            page = (self.filename_expected_req >> 1) & 0x03
+            if page == 3 and local_idx > 5:
+                return True
+            idx = page * 8 + local_idx
+            data = f.data
+            self.filename_stage[idx] = data if data not in (0x00, 0xFF) else 0x20
+            if page < 3 and local_idx == 7:
+                self._commit_filename_page(page)
+                self.filename_expected_req = (self.filename_expected_req + 0x02) & 0xFF
+                self.filename_ctx_armed = False
+                self.filename_expected_local_idx = 0
+                self._emit_filename_request()
+            elif page == 3 and local_idx == 5:
+                self._commit_filename_page(page)
+                if self.filename_generation_pending_valid:
+                    target = self.filename_stage_target & 0x01
+                    bit = 1 << target
+                    self.filename_generation_cache[target] = self.filename_generation_pending & 0x7F
+                    self.filename_generation_valid_mask |= bit
+                    self.filename_generation_pending_valid = False
+                self.filename_ctx_armed = False
+            else:
+                self.filename_expected_local_idx += 1
+            return True
+        return False
 
     def render(self) -> tuple[str, str]:
         if self.in_setup_item:
@@ -191,7 +291,7 @@ class ControlUISim:
         if self.menu_state == 0:
             return self._render_volume_line1(), self._render_volume_line2()
         if self.menu_state == 1:
-            return self._render_preset_line(0), self._render_preset_line(1)
+            return self._render_preset_line1(), self._render_preset_line2()
         if self.menu_state == 2:
             return _clamp16(self.st.menu_hdr[1]), _clamp16(
                 self.st.input_opts[self.input_sel % len(self.st.input_opts)]
@@ -241,6 +341,7 @@ class ControlUISim:
         if self.menu_state == 0:
             if k == "R":
                 self.menu_state = 1
+                self._start_filename_fetch()
             elif k == "L":
                 self.menu_state = 3
             elif k == "U":
@@ -274,6 +375,7 @@ class ControlUISim:
                 self.menu_state = 3
             elif k == "L":
                 self.menu_state = 1
+                self._start_filename_fetch()
             elif k == "U":
                 self.input_sel = (self.input_sel + 1) % len(self.st.input_opts)
                 self._emit_input()

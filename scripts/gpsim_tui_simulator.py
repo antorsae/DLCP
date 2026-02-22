@@ -18,6 +18,7 @@ Keys:
 - f: standby
 - 7/8/9: force MAIN AN0 ADC to 0x0000/0x0228/0x0FFF (both units)
 - 1/2: inject decoded IR F1/F2 (0x38/0x39) into CONTROL firmware
+- 3: simulate USB profile upload (active preset, random table + random filename)
 - h: toggle info/help
 - q: quit
 """
@@ -26,10 +27,13 @@ from __future__ import annotations
 
 import argparse
 import curses
+import hashlib
 import os
+import random
 import re
 import select
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -44,6 +48,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dlcp_fw.sim.lcd import LcdByte, LcdState
+from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.main_gpsim_timer3 import (
     _add_break_exec,
     _contains_exec_break,
@@ -53,6 +58,7 @@ from dlcp_fw.sim.main_gpsim_timer3 import (
 )
 from dlcp_fw.sim.manifests import (
     control_disable_boot_wait,
+    control_disable_standby_check_for_hex,
     control_reset_to_appstart,
     main_adc_boot_wait_hook,
     main_i2c_bypass,
@@ -119,6 +125,9 @@ CMD_LABELS = {
     0x1D: "BL_TIMEOUT",
     0x1E: "LINK_ADDR",
     0x20: "PRESET",
+    0x21: "FILENAME_REQ",
+    0x22: "FILENAME_GEN_REQ",
+    0x2F: "FILENAME_CTX",
 }
 
 CTRL_DATA_LABELS = {
@@ -132,6 +141,74 @@ WAKE_CMD = 0x03
 WAKE_DATA = 0x01
 IR_F1_CMD = 0x38
 IR_F2_CMD = 0x39
+
+
+def _cmd_label(cmd: int) -> str:
+    if 0x30 <= cmd <= 0x37:
+        return f"FILENAME_CHUNK[{cmd - 0x30}]"
+    return CMD_LABELS.get(cmd, "CMD?")
+
+
+def _encode_filename_slot(name: str, *, slot_len: int = 30) -> bytes:
+    """Encode HFD filename payload into MAIN slot semantics (0x00 -> 0xFF)."""
+    payload = name.encode("ascii", errors="ignore")[:slot_len]
+    out = bytearray([0xFF] * slot_len)
+    for i, b in enumerate(payload):
+        out[i] = 0xFF if b == 0x00 else (b & 0xFF)
+    return bytes(out)
+
+
+def _random_upload_filename(rng: random.Random, *, min_len: int = 12, max_len: int = 17) -> str:
+    alphabet = string.ascii_uppercase + string.digits + "-_"
+    n = rng.randint(min_len, max_len)
+    return "".join(rng.choice(alphabet) for _ in range(n))
+
+
+def _next_filename_req_token(prev_req_data: int, preset_idx: int) -> int:
+    """Advance filename request token and reset page bits."""
+    # Keep bit7 clear: CONTROL RX parser treats bytes >=0x80 as route candidates.
+    token = ((prev_req_data & 0xFF) + 0x08) & 0x78
+    return token | (preset_idx & 0x01)
+
+
+def _control_active_preset(issue_fn) -> int:
+    """Read live CONTROL preset bit from state_flags (0x01F.6)."""
+    flags = _read_reg(issue_fn, 0x01F)
+    return 1 if (flags & 0x40) else 0
+
+
+def _has_preset_screen_layout(control_hex: Path) -> bool:
+    """Detect patched 4-screen CONTROL layout where menu_state 1 is Preset."""
+    try:
+        mem = parse_intel_hex(control_hex)
+    except Exception:
+        return False
+
+    # Patched nav-wrap literals (movlw 0x03) by firmware family:
+    # V1.41:  0x1264, 0x1288
+    # V1.51b: 0x1256, 0x127A
+    # V1.61b: 0x1216, 0x123A
+    pairs = ((0x1264, 0x1288), (0x1256, 0x127A), (0x1216, 0x123A))
+    for a, b in pairs:
+        if mem.get(a, 0xFF) == 0x03 and mem.get(b, 0xFF) == 0x03:
+            return True
+    return False
+
+
+def _runtime_chunks_for_mode(
+    *,
+    filename_flow_active: bool,
+    runtime_control_chunk: int,
+    runtime_main_chunk: int,
+    filename_flow_chunk: int,
+) -> tuple[int, int]:
+    """Return (control_chunk, main_chunk) for current runtime mode."""
+    if filename_flow_active:
+        # During filename flows we intentionally run both sides with a finer,
+        # synchronized quantum to reduce coarse-step RX burst artifacts.
+        return filename_flow_chunk, filename_flow_chunk
+    return runtime_control_chunk, runtime_main_chunk
+
 
 # ── Clock and UART timing model ──────────────────────────────────────
 # PIC18F2550: instruction cycle (Tcy) = Fosc / 4.
@@ -193,6 +270,8 @@ class MemSnapshot:
     portc: int
     trisc: int
     latc: int
+    preset_name_a: str
+    preset_name_b: str
     unit0: UnitMemState
     unit1: UnitMemState
 
@@ -564,6 +643,7 @@ class MainGpsimSession:
         self.current_loop_model = MainCurrentLoopPinModel(
             idle_high=True, rc2_mode=rc2_mode
         )
+        self._sim_table_digest_by_preset: Dict[int, str] = {0: "", 1: ""}
 
         manifests = [main_reset_to_appstart(), main_i2c_bypass()]
         if timer3_mode == "harness":
@@ -621,6 +701,59 @@ class MainGpsimSession:
 
     def inject_triplet(self, frame: TxTriplet) -> bool:
         return self.inject_bytes([frame.route, frame.cmd, frame.data])
+
+    @staticmethod
+    def _filename_eeprom_base(preset_idx: int) -> int:
+        return 0xA1 if (preset_idx & 0x01) else 0x60
+
+    @staticmethod
+    def _filename_generation_addr(preset_idx: int) -> int:
+        return 0xBF if (preset_idx & 0x01) else 0x7E
+
+    def _active_preset_idx(self) -> int:
+        status_5e = _read_reg(self._issue, 0x05E)
+        return 1 if (status_5e & 0x04) else 0
+
+    def _eeprom_read(self, addr: int) -> int:
+        # PIC18 data EEPROM read sequence.
+        self._issue(f"reg(0xFA9)=0x{addr & 0xFF:02X}", 5.0)   # EEADR
+        self._issue("reg(0xFA6)=0x01", 5.0)                   # EECON1: RD
+        return _read_reg(self._issue, 0xFA8) & 0xFF           # EEDATA
+
+    def _eeprom_write(self, addr: int, value: int) -> None:
+        # PIC18 data EEPROM write sequence.
+        self._issue(f"reg(0xFA9)=0x{addr & 0xFF:02X}", 5.0)   # EEADR
+        self._issue(f"reg(0xFA8)=0x{value & 0xFF:02X}", 5.0)  # EEDATA
+        self._issue("reg(0xFA6)=0x04", 5.0)                   # EECON1: WREN
+        self._issue("reg(0xFA7)=0x55", 5.0)                   # EECON2 unlock
+        self._issue("reg(0xFA7)=0xAA", 5.0)                   # EECON2 unlock
+        self._issue("reg(0xFA6)=0x06", 5.0)                   # EECON1: WREN+WR
+
+    def simulate_usb_profile_upload(
+        self, *, preset_idx: int, table_payload_0xA00: bytes, filename: str
+    ) -> str:
+        """Synthetic HFD upload for TUI experimentation (table digest + filename storage)."""
+        if len(table_payload_0xA00) != 0xA00:
+            raise ValueError("table_payload_0xA00 must be exactly 0xA00 bytes")
+        pidx = 1 if preset_idx else 0
+        digest = hashlib.sha256(table_payload_0xA00).hexdigest()[:12]
+        self._sim_table_digest_by_preset[pidx] = digest
+
+        slot = _encode_filename_slot(filename)
+        # Keep RAM slot coherent only for active preset, matching real cmd03 flow.
+        if self._active_preset_idx() == pidx:
+            for i, b in enumerate(slot):
+                self._issue(f"reg(0x{0x2C0 + i:03X})=0x{b:02X}", 5.0)
+        # Persist slot to the selected preset bank in EEPROM.
+        base = self._filename_eeprom_base(pidx)
+        for i, b in enumerate(slot):
+            self._eeprom_write(base + i, b)
+        # Mirror MAIN firmware behavior: bump per-preset generation byte so
+        # CONTROL's generation-gated cache invalidates on repeated uploads.
+        gen_addr = self._filename_generation_addr(pidx)
+        gen = self._eeprom_read(gen_addr)
+        self._eeprom_write(gen_addr, (gen + 1) & 0xFF)
+        return digest
 
     def inject_bytes(self, data: List[int]) -> bool:
         rd = _read_reg(self._issue, 0x7C0)
@@ -842,6 +975,22 @@ class LinkPipe:
         The frame is deliverable when the last byte finishes transmission.
         Wire time = 3 × byte_cycles from the start of the first byte.
         """
+        # TUI robustness: filename requests (route=0xB1, cmd=0x22/0x21) are
+        # idempotent "latest state" pulls. If the user toggles presets
+        # rapidly, keep only the newest queued request to avoid storms.
+        if frame.route == 0xB1 and frame.cmd in (0x21, 0x22):
+            filtered: Deque[tuple[int, List[int]]] = deque()
+            for deliver_cycle, frame_bytes in self.queue:
+                if frame_bytes[0] == 0xB1 and frame_bytes[1] == frame.cmd:
+                    continue
+                filtered.append((deliver_cycle, frame_bytes))
+            if len(filtered) != len(self.queue):
+                self.queue = filtered
+                self._next_tx_cycle = max(
+                    int(frame.cycle),
+                    self.queue[-1][0] if self.queue else int(frame.cycle),
+                )
+
         start = max(int(frame.cycle), self._next_tx_cycle)
         last_byte_done = start + 3 * self.byte_cycles
         self._next_tx_cycle = last_byte_done
@@ -1089,6 +1238,7 @@ class GpsimControlSession:
         manifests = [control_reset_to_appstart()]
         if fast_boot:
             manifests.append(control_disable_boot_wait())
+        manifests.append(control_disable_standby_check_for_hex(control_hex))
         apply_overlays(control_hex, self.sim_hex, manifests=manifests)
 
         self._gpsim = GpsimCliSession()
@@ -1300,6 +1450,15 @@ class GpsimControlSession:
         self._issue(f"reg(0x0BB)=0x00", 5.0)
 
     def read_mem_snapshot(self) -> MemSnapshot:
+        def _read_name_cache(base: int) -> str:
+            chars: List[str] = []
+            for i in range(30):
+                b = _read_reg(self._issue, base + i) & 0xFF
+                if b in (0x00, 0xFF) or b < 0x20 or b > 0x7E:
+                    b = 0x20
+                chars.append(chr(b))
+            return "".join(chars)
+
         flags = _read_reg(self._issue, 0x01F)
         input_sel = _read_reg(self._issue, 0x0B8)
         volume = _read_reg(self._issue, 0x0B9)
@@ -1330,6 +1489,8 @@ class GpsimControlSession:
                 _read_reg(self._issue, 0x0E0),
             ],
         )
+        preset_name_a = _read_name_cache(0x180) if menu_state == 0x01 else ""
+        preset_name_b = _read_name_cache(0x19E) if menu_state == 0x01 else ""
         return MemSnapshot(
             cycle=self.current_cycle,
             flags=flags,
@@ -1342,6 +1503,8 @@ class GpsimControlSession:
             portc=_read_reg(self._issue, 0xF82),
             trisc=_read_reg(self._issue, 0xF94),
             latc=_read_reg(self._issue, 0xF8B),
+            preset_name_a=preset_name_a,
+            preset_name_b=preset_name_b,
             unit0=unit0,
             unit1=unit1,
         )
@@ -1353,10 +1516,20 @@ def _volume_db_text(v: int) -> str:
 
 
 def _format_tx(f: TxTriplet) -> str:
-    cmd_name = CMD_LABELS.get(f.cmd, "CMD?")
+    cmd_name = _cmd_label(f.cmd)
     extra = ""
     if f.cmd == 0x03:
         extra = f" {CTRL_DATA_LABELS.get(f.data, '')}".rstrip()
+    elif f.cmd == 0x21:
+        page = (f.data >> 1) & 0x03
+        txn = (f.data >> 3) & 0x0F
+        preset = "B" if (f.data & 0x01) else "A"
+        extra = f" txn={txn} page={page} preset={preset}"
+    elif f.cmd == 0x2F:
+        page = (f.data >> 1) & 0x03
+        txn = (f.data >> 3) & 0x0F
+        preset = "B" if (f.data & 0x01) else "A"
+        extra = f" txn={txn} page={page} preset={preset}"
     return (
         f"0x{f.cycle:08X} TX [{f.route:02X} {f.cmd:02X} {f.data:02X}] {cmd_name}{extra}"
     )
@@ -1441,6 +1614,7 @@ def _draw_help_overlay(stdscr: curses.window, start_y: int, x: int) -> None:
         "MAIN AN0 can be force-driven with --main-RA0 and hotkeys 7/8/9.",
         "Hotkeys: 7->0x0000, 8->0x0228, 9->0x0FFF (applies to both MAIN units).",
         "Hotkeys: 1/2 inject decoded IR F1/F2 (0x38/0x39) to CONTROL.",
+        "Hotkey: 3 simulates USB profile upload to active preset (random table + filename).",
         "Startup path is stock control firmware; serial is byte-paced at 31,250 baud.",
         f"EUSART model: byte_cyc={_byte_cycles(CONTROL_FOSC_HZ)} Tcy, FIFO depth={EUSART_FIFO_DEPTH}, overrun=drop.",
         "Timer3 modes: shim (faster), harness (external overflow model, higher fidelity).",
@@ -1462,6 +1636,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
     flash_until: Dict[str, float] = {}
     show_help = False
     status = "starting gpsim..."
+    has_preset_screen_layout = _has_preset_screen_layout(args.hex.resolve())
 
     sim_quantum = max(1, args.sim_quantum_cycles) if args.sim_quantum_cycles > 0 else None
     control_chunk_cycles = (
@@ -1513,10 +1688,15 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
     ra0_hotkeys = {"7": 0x0000, "8": 0x0228, "9": 0x0FFF}
     ir_hotkeys = {"1": IR_F1_CMD, "2": IR_F2_CMD}
+    rng = random.Random()
     ra0_target_adc = int(args.main_ra0) & 0x0FFF
     main0.set_main_ra0_adc(ra0_target_adc)
     if main1 is not None:
         main1.set_main_ra0_adc(ra0_target_adc)
+    pending_usb_upload: tuple[int | None, str, bytes, int] | None = None
+    pending_usb_refresh = False
+    pending_usb_refresh_preset = 0
+    pending_usb_refresh_retries = 0
 
     # Byte-level pacing derived from oscillator and baud rate.
     # Each link uses the *transmitter's* clock for wire timing.
@@ -1542,6 +1722,40 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             "M1->M0", byte_cycles=main_byte_cyc, fifo_depth=fifo
         )
         all_links = (link_ctl_m0, link_m0_ctl, link_m0_m1, link_m1_m0)
+
+    runtime_control_chunk = control.chunk_cycles
+    runtime_main_chunk = main0.chunk_cycles
+    # In Preset/filename flows we run a finer simulation quantum to avoid
+    # coarse-step RX bursts that can starve full 30-byte filename fetches.
+    filename_flow_chunk = max(10_000, min(runtime_control_chunk, runtime_main_chunk, 30_000))
+
+    def _set_runtime_quantum(control_chunk: int, main_chunk: int) -> None:
+        control.chunk_cycles = control_chunk
+        main0.chunk_cycles = main_chunk
+        if main1 is not None:
+            main1.chunk_cycles = main_chunk
+
+    def _link_has_filename_traffic(link: LinkPipe | None) -> bool:
+        if link is None:
+            return False
+        for _, frame_bytes in link.queue:
+            cmd = frame_bytes[1] & 0xFF
+            if cmd in (0x21, 0x22, 0x2F) or (0x30 <= cmd <= 0x37):
+                return True
+        return False
+
+    def _filename_flow_active(ctl_mem: MemSnapshot) -> bool:
+        if pending_usb_upload is not None or pending_usb_refresh:
+            return True
+        if has_preset_screen_layout and ctl_mem.menu_state == 0x01:
+            return True
+        if _link_has_filename_traffic(link_ctl_m0) or _link_has_filename_traffic(link_m0_ctl):
+            return True
+        if not single_main and (
+            _link_has_filename_traffic(link_m0_m1) or _link_has_filename_traffic(link_m1_m0)
+        ):
+            return True
+        return False
 
     def _control_rc1_level(mem: MemSnapshot) -> int:
         # RC1 is an output in normal runtime; fall back to sampled PORTC when input.
@@ -1659,8 +1873,11 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
     # We first wait for the firmware to *set* them to 0x80 (WAITING
     # entered) before looking for them to change (WAITING exit), so
     # that uninitialised RAM (0x00) doesn't trigger a false positive.
-    _waiting_entered = False
-    _heartbeat_active = False
+    # Keep CONTROL in the active UI loop from the first interactive step.
+    # This matches harness behavior and avoids firmware-version-specific
+    # WAITING/reconnect timing differences that can swallow key events.
+    _waiting_entered = True
+    _heartbeat_active = True
     _heartbeat_step = 0
     _HEARTBEAT_BF_INTERVAL = 5  # inject BF/03/01 every N steps (not every step)
 
@@ -1741,6 +1958,105 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
     try:
         lcd_lines = ("                ", "Waiting for DLCP")
+        _lcd_candidate = lcd_lines
+        _lcd_candidate_streak = 1
+        _ui_stable_names = {0: " " * 30, 1: " " * 30}
+        _filename_rx_active = False
+        _filename_rx_req = 0
+        _filename_rx_next_idx = 0
+        _filename_rx_stage = {
+            0: bytearray(b" " * 30),
+            1: bytearray(b" " * 30),
+        }
+        _filename_rx_mask = {0: 0, 1: 0}
+        _filename_rx_txn = {0: -1, 1: -1}
+
+        def _sanitize_filename_byte(v: int) -> int:
+            b = v & 0xFF
+            if b in (0x00, 0xFF) or b < 0x20 or b > 0x7E:
+                return 0x20
+            return b
+
+        def _consume_filename_frames(frames: list[TxTriplet]) -> None:
+            nonlocal _filename_rx_active, _filename_rx_req, _filename_rx_next_idx
+            for frame in frames:
+                if frame.route != 0xBF:
+                    continue
+                cmd = frame.cmd & 0xFF
+                if cmd == 0x2F:
+                    req = frame.data & 0xFF
+                    page = (req >> 1) & 0x03
+                    preset = req & 0x01
+                    txn = (req >> 3) & 0x0F
+                    if page == 0 or txn != _filename_rx_txn[preset]:
+                        _filename_rx_stage[preset] = bytearray(b" " * 30)
+                        _filename_rx_mask[preset] = 0
+                        _filename_rx_txn[preset] = txn
+                    _filename_rx_req = req
+                    _filename_rx_next_idx = 0
+                    _filename_rx_active = True
+                    continue
+                if cmd == 0x22:
+                    # Generation metadata response (paired with context 0x2F).
+                    # It does not carry filename bytes, so disarm chunk mode.
+                    _filename_rx_active = False
+                    _filename_rx_next_idx = 0
+                    continue
+                if not (0x30 <= cmd <= 0x37):
+                    continue
+                if not _filename_rx_active:
+                    continue
+                local_idx = cmd - 0x30
+                if local_idx != _filename_rx_next_idx:
+                    continue
+                req = _filename_rx_req
+                page = (req >> 1) & 0x03
+                if page == 3 and local_idx > 5:
+                    continue
+                abs_idx = page * 8 + local_idx
+                preset = req & 0x01
+                if abs_idx < 30:
+                    _filename_rx_stage[preset][abs_idx] = _sanitize_filename_byte(frame.data)
+                page_done = (page < 3 and local_idx == 7) or (page == 3 and local_idx == 5)
+                if page_done:
+                    _filename_rx_mask[preset] |= 1 << page
+                    _filename_rx_active = False
+                    _filename_rx_next_idx = 0
+                    if page == 3 and (_filename_rx_mask[preset] & 0x0F) == 0x0F:
+                        _ui_stable_names[preset] = bytes(_filename_rx_stage[preset]).decode(
+                            "ascii", "replace"
+                        )
+                else:
+                    _filename_rx_next_idx += 1
+
+        def _stable_lcd(new_lines: tuple[str, str]) -> tuple[str, str]:
+            nonlocal _lcd_candidate, _lcd_candidate_streak, lcd_lines
+            if new_lines == _lcd_candidate:
+                _lcd_candidate_streak += 1
+            else:
+                _lcd_candidate = new_lines
+                _lcd_candidate_streak = 1
+            # Debounce one-step transient LCD write phases to avoid
+            # rendering partial line updates during rapid key activity.
+            if _lcd_candidate_streak >= 2:
+                lcd_lines = new_lines
+            return lcd_lines
+
+        def _stabilize_preset_lcd(
+            lines: tuple[str, str], mem: MemSnapshot
+        ) -> tuple[str, str]:
+            if not has_preset_screen_layout:
+                return lines
+            if mem.menu_state != 0x01:
+                return lines
+
+            preset_idx = 1 if (mem.flags & 0x40) else 0
+            suffix = "B" if preset_idx else "A"
+            stable = _ui_stable_names[preset_idx]
+            if len(stable) != 30:
+                stable = " " * 30
+            return (stable[:14] + " " + suffix, stable[14:30])
+
         last_ctl_cycle = control.current_cycle
         target = max(0, int(args.initial_cycles))
         warmup_control_chunk = control.chunk_cycles
@@ -1754,16 +2070,20 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                 main1.chunk_cycles = startup_chunk
         while control.current_cycle < target:
             (
-                lcd_lines,
+                raw_lcd_lines,
                 ctl_mem,
                 main_mem0,
                 main_mem1,
                 cycle,
                 _delivered,
-                _main_tx0,
-                _main_tx1,
+                warmup_main_tx0,
+                warmup_main_tx1,
                 control_tx,
             ) = _step_chain_once(last_ctl_cycle)
+            _consume_filename_frames(warmup_main_tx0)
+            _consume_filename_frames(warmup_main_tx1)
+            lcd_lines = _stable_lcd(raw_lcd_lines)
+            lcd_lines = _stabilize_preset_lcd(lcd_lines, ctl_mem)
             _update_diagnostics(
                 diagnostics,
                 cycle=cycle,
@@ -1778,16 +2098,20 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             )
             last_ctl_cycle = cycle
         (
-            lcd_lines,
+            raw_lcd_lines,
             ctl_mem,
             main_mem0,
             main_mem1,
             cycle,
             _delivered,
-            _main_tx0,
-            _main_tx1,
+            warmup_main_tx0,
+            warmup_main_tx1,
             control_tx,
         ) = _step_chain_once(last_ctl_cycle)
+        _consume_filename_frames(warmup_main_tx0)
+        _consume_filename_frames(warmup_main_tx1)
+        lcd_lines = _stable_lcd(raw_lcd_lines)
+        lcd_lines = _stabilize_preset_lcd(lcd_lines, ctl_mem)
         _update_diagnostics(
             diagnostics,
             cycle=cycle,
@@ -1808,6 +2132,9 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             main0.chunk_cycles = warmup_main0_chunk
             if main1 is not None and warmup_main1_chunk is not None:
                 main1.chunk_cycles = warmup_main1_chunk
+        runtime_control_chunk = control.chunk_cycles
+        runtime_main_chunk = main0.chunk_cycles
+        filename_flow_chunk = max(10_000, min(runtime_control_chunk, runtime_main_chunk, 30_000))
 
         while True:
             now = time.monotonic()
@@ -1854,6 +2181,28 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                                 f"cycle={control.current_cycle}"
                             )
                             did_press = True
+                        elif c == "3":
+                            # Queue upload and resolve target preset when the
+                            # control/main pair has had at least one step to settle.
+                            hinted_preset = 1 if (ctl_mem.flags & 0x40) else 0
+                            preset_name = "B" if hinted_preset else "A"
+                            filename = _random_upload_filename(rng)
+                            table_payload = bytes(rng.getrandbits(8) for _ in range(0xA00))
+                            pending_usb_upload = (
+                                None,
+                                filename,
+                                table_payload,
+                                control.current_cycle,
+                            )
+                            trace.append(
+                                f"0x{control.current_cycle:08X} USB-SIM queued preset {preset_name} "
+                                f"filename={filename!r}"
+                            )
+                            status = (
+                                f"usb_sim queued preset=pending({preset_name}) filename={filename} "
+                                f"cycle={control.current_cycle}"
+                            )
+                            did_press = True
                 if mapped:
                     control.press(mapped)
                     did_press = True
@@ -1862,8 +2211,96 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
             if did_press or now >= next_step_t:
                 try:
+                    ctl_chunk, main_chunk = _runtime_chunks_for_mode(
+                        filename_flow_active=_filename_flow_active(ctl_mem),
+                        runtime_control_chunk=runtime_control_chunk,
+                        runtime_main_chunk=runtime_main_chunk,
+                        filename_flow_chunk=filename_flow_chunk,
+                    )
+                    _set_runtime_quantum(ctl_chunk, main_chunk)
+                    if pending_usb_upload is not None:
+                        target_preset, up_filename, up_table_payload, queued_cycle = pending_usb_upload
+                        if target_preset is None:
+                            if control.current_cycle <= queued_cycle:
+                                status = (
+                                    f"usb_sim waiting target-sample cycle={control.current_cycle}"
+                                )
+                            else:
+                                sampled = _control_active_preset(control._issue)
+                                target_preset = sampled
+                                pending_usb_upload = (
+                                    target_preset,
+                                    up_filename,
+                                    up_table_payload,
+                                    queued_cycle,
+                                )
+                                trace.append(
+                                    f"0x{control.current_cycle:08X} USB-SIM target preset resolved "
+                                    f"to {'B' if target_preset else 'A'}"
+                                )
+                        if target_preset is not None:
+                            m0_synced = main0._active_preset_idx() == target_preset
+                            if m0_synced:
+                                digest0 = main0.simulate_usb_profile_upload(
+                                    preset_idx=target_preset,
+                                    table_payload_0xA00=up_table_payload,
+                                    filename=up_filename,
+                                )
+                                digest1 = ""
+                                if main1 is not None:
+                                    digest1 = main1.simulate_usb_profile_upload(
+                                        preset_idx=target_preset,
+                                        table_payload_0xA00=up_table_payload,
+                                        filename=up_filename,
+                                    )
+                                pending_usb_upload = None
+                                pending_usb_refresh = True
+                                pending_usb_refresh_preset = target_preset
+                                pending_usb_refresh_retries = 2
+                                _ui_stable_names[target_preset] = up_filename[:30].ljust(30)
+                                preset_name = "B" if target_preset else "A"
+                                trace.append(
+                                    f"0x{control.current_cycle:08X} USB-SIM upload preset {preset_name} "
+                                    f"filename={up_filename!r} table_sha=m0:{digest0}"
+                                    + (f" m1:{digest1}" if digest1 else "")
+                                )
+                                status = (
+                                    f"usb_sim preset={preset_name} filename={up_filename} "
+                                    f"table_sha={digest0} cycle={control.current_cycle} refresh=queued"
+                                )
+                            else:
+                                status = (
+                                    f"usb_sim waiting preset-sync target={'B' if target_preset else 'A'} "
+                                    f"m0={'B' if main0._active_preset_idx() else 'A'}"
+                                    + f" cycle={control.current_cycle}"
+                                )
+                    if pending_usb_refresh:
+                        # Wait for link drain before issuing one refresh request.
+                        # This avoids request/token storms when '3' is pressed rapidly.
+                        c2m0_idle = len(link_ctl_m0) == 0
+                        m02c_idle = len(link_m0_ctl) == 0
+                        if c2m0_idle and m02c_idle:
+                            req_data = _next_filename_req_token(
+                                _read_reg(control._issue, 0x029),
+                                pending_usb_refresh_preset,
+                            )
+                            control._issue(f"reg(0x029)=0x{req_data:02X}", 5.0)
+                            control._issue("reg(0x02E)=0x10", 5.0)
+                            link_ctl_m0.enqueue(
+                                TxTriplet(
+                                    cycle=control.current_cycle,
+                                    route=0xB1,
+                                    cmd=0x22,
+                                    data=req_data,
+                                )
+                            )
+                            pending_usb_refresh = False
+                            trace.append(
+                                f"0x{control.current_cycle:08X} USB-SIM refresh kick txn={(req_data >> 3) & 0x0F} "
+                                f"preset={'B' if (req_data & 0x01) else 'A'}"
+                            )
                     (
-                        lcd_lines,
+                        raw_lcd_lines,
                         ctl_mem,
                         main_mem0,
                         main_mem1,
@@ -1873,6 +2310,10 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                         main_tx1,
                         control_tx,
                     ) = _step_chain_once(last_ctl_cycle)
+                    _consume_filename_frames(main_tx0)
+                    _consume_filename_frames(main_tx1)
+                    lcd_lines = _stable_lcd(raw_lcd_lines)
+                    lcd_lines = _stabilize_preset_lcd(lcd_lines, ctl_mem)
                     _update_diagnostics(
                         diagnostics,
                         cycle=cycle,
@@ -1896,6 +2337,16 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                             trace.append(
                                 f"OVERRUN {link.name} lost={link.overrun_last} total={link.overrun_total}"
                             )
+                    if (
+                        not pending_usb_refresh
+                        and pending_usb_refresh_retries > 0
+                        and link_m0_ctl.overrun_last > 0
+                    ):
+                        pending_usb_refresh = True
+                        pending_usb_refresh_retries -= 1
+                        trace.append(
+                            f"0x{cycle:08X} USB-SIM refresh retry queued due to M0->CTL overrun"
+                        )
                     if single_main:
                         status = (
                             f"running ctl=0x{cycle:08X} m0=0x{main_mem0.cycle:08X} "
@@ -1985,7 +2436,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
                 flash_until.get("x", 0.0) > now or flash_until.get("c", 0.0) > now
             )
             _draw_key(stdscr, 8, 50, "x", "down (c alias)", pressed=down_pressed)
-            _safe_addstr(stdscr, 9, 40, "q=quit  h=toggle help  7/8/9=MAIN RA0  1/2=IR F1/F2")
+            _safe_addstr(stdscr, 9, 40, "q=quit  h=toggle help  7/8/9=MAIN RA0  1/2=IR F1/F2  3=USB-SIM upload")
 
             _draw_unit_panel(stdscr, 12, 2, 0, main_mem0)
             if not single_main:

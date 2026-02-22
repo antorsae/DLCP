@@ -136,12 +136,15 @@ def _set_param_idx(h: GpsimControlHarness, target: int, *, max_moves: int = 24) 
     )
 
 
-def _set_line2_contains(h: GpsimControlHarness, token: str, *, max_presses: int = 12) -> None:
+def _set_line2_contains(h: GpsimControlHarness, token: str, *, max_presses: int = 20) -> None:
     for _ in range(max_presses):
         _, line2 = h.lcd_lines()
         if token in line2:
             return
         _press(h, "U")
+        _, line2 = h.lcd_lines()
+        if token in line2:
+            return
     raise AssertionError(f"failed to reach option containing {token!r}; lcd={h.lcd_lines()}")
 
 

@@ -118,5 +118,9 @@ def test_cmd20_stub_contains_apply_calls_in_built_hex() -> None:
     mem = parse_intel_hex(ROOT / "firmware" / "patched" / "releases" / "DLCP_Firmware_V2.4.hex")
     # call 0x4574 encoding appears twice in cmd_tail_patch (preset A / preset B branches).
     want = [0xBA, 0xEC, 0x22, 0xF0]
-    assert [mem.get(0x5548 + i, 0xFF) for i in range(4)] == want
-    assert [mem.get(0x5558 + i, 0xFF) for i in range(4)] == want
+    hits = [
+        a
+        for a in range(0x5500, 0x5600)
+        if all(mem.get(a + i, 0xFF) == want[i] for i in range(4))
+    ]
+    assert len(hits) >= 2

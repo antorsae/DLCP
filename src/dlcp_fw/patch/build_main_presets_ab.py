@@ -8,7 +8,12 @@ Patch strategy:
 2) Inject code stubs in erased app space to:
    - remap table flash reads/writes/erases from 0x56xx..0x5Fxx to
      0x4Axx..0x53xx when preset B is active;
-   - add current-loop command 0x20: set preset A/B and apply immediately.
+   - add current-loop command 0x20: set preset A/B and apply immediately;
+   - add current-loop command 0x21: emit paged LCD filename display with
+     context frame (cmd 0x2F) + local chunk commands (0x30..0x37);
+   - add current-loop command 0x22: emit filename-generation metadata
+     (context frame + generation byte) for low-traffic cache validation;
+   - bank cmd03 DSP filename EEPROM/RAM load+persist paths by preset.
 3) Emit a full Intel HEX output.
 
 Version policy:
@@ -40,6 +45,16 @@ LIST P=18F2550
 org 0x1E64
     goto cmd_tail_patch
 
+; cmd=0x03 filename boot-load path (EEPROM->RAM 0x2C0..0x2DD)
+; now needs active-preset bank selection.
+org 0x20BE
+    goto filename_boot_load_patch
+
+; cmd=0x03 filename dirty persist path (RAM->EEPROM)
+; now needs active-preset bank selection.
+org 0x27C0
+    goto filename_persist_patch
+
 org 0x2E6E
     goto function_025_patch
 org 0x2E72
@@ -56,6 +71,219 @@ org 0x402C
     nop
 org 0x402E
     nop
+
+; --- New helpers in low erased app gap ---
+org 0x4980
+load_active_filename_slot:
+    ; Select EEPROM filename bank by active preset:
+    ; A -> 0x60..0x7D, B -> 0xA1..0xBE
+    movlw 0x60
+    movwf 0x0B, ACCESS
+    btfss 0x05E, 2, ACCESS
+    bra load_slot_base_done
+    movlw 0xA1
+    movwf 0x0B, ACCESS
+load_slot_base_done:
+    clrf 0x0A, ACCESS          ; idx = 0..29
+
+load_slot_loop:
+    movf 0x0B, W, ACCESS
+    addwf 0x0A, W, ACCESS
+    movwf 0x03, ACCESS         ; EEPROM addr low
+    clrf 0x04, ACCESS          ; EEPROM addr high
+    call 0x4884                ; function_110 (EEPROM read), W <- byte
+    movwf 0x0C, ACCESS
+
+    movlw 0xC0
+    addwf 0x0A, W, ACCESS
+    movwf FSR2L, ACCESS
+    movlw 0x02
+    movwf FSR2H, ACCESS
+    movf 0x0C, W, ACCESS
+    movwf INDF2, ACCESS        ; RAM[0x2C0 + idx] = byte
+
+    incf 0x0A, F, ACCESS
+    movlw 0x1D
+    cpfsgt 0x0A, ACCESS
+    bra load_slot_loop
+    return
+
+filename_boot_load_patch:
+    call load_active_filename_slot
+    goto 0x20E4
+
+filename_persist_patch:
+    ; Select EEPROM filename bank by active preset:
+    ; A -> 0x60..0x7D, B -> 0xA1..0xBE
+    movlw 0x60
+    movwf 0x0B, ACCESS
+    btfss 0x05E, 2, ACCESS
+    bra persist_base_done
+    movlw 0xA1
+    movwf 0x0B, ACCESS
+persist_base_done:
+    clrf 0x0A, ACCESS          ; idx = 0..29
+
+persist_slot_loop:
+    movlw 0xC0
+    addwf 0x0A, W, ACCESS
+    movwf FSR2L, ACCESS
+    movlw 0x02
+    movwf FSR2H, ACCESS
+    movf INDF2, W, ACCESS
+    movwf 0x09, ACCESS         ; data byte for function_094
+
+    movf 0x0B, W, ACCESS
+    addwf 0x0A, W, ACCESS
+    movwf 0x07, ACCESS         ; EEPROM addr low for function_094
+    clrf 0x08, ACCESS          ; EEPROM addr high
+    call 0x46DE                ; function_094 (EEPROM write)
+
+    incf 0x0A, F, ACCESS
+    movlw 0x1D
+    cpfsgt 0x0A, ACCESS
+    bra persist_slot_loop
+
+    call increment_filename_generation
+
+    bcf 0x0BD, 5, BANKED
+    goto 0x27EC
+
+send_filename_display_frames:
+    goto send_filename_display_frames_hi
+
+org 0x5468
+send_filename_generation_frames:
+    ; Emit generation metadata for active preset:
+    ;   [BF 2F req_echo]
+    ;   [BF 22 generation]
+    ; Generation bytes:
+    ;   A: EEPROM[0x7E], B: EEPROM[0xBF]
+    movlw 0x7E
+    movwf 0x03, ACCESS
+    btfss 0x05E, 2, ACCESS
+    bra sfg_addr_ready
+    movlw 0xBF
+    movwf 0x03, ACCESS
+sfg_addr_ready:
+    clrf 0x04, ACCESS
+    call 0x4884                ; function_110 (EEPROM read), W <- generation
+    andlw 0x7F
+    movwf 0x0C, ACCESS
+
+    movlw 0xBF
+    call 0x4896
+    movlw 0x2F
+    call 0x4896
+    movf 0x0A3, W, BANKED
+    call 0x4896
+
+    movlw 0xBF
+    call 0x4896
+    movlw 0x22
+    call 0x4896
+    movf 0x0C, W, ACCESS
+    call 0x4896
+    return
+
+org 0x5564
+increment_filename_generation:
+    ; Bump per-preset filename generation byte:
+    ;   A: 0x7E (= 0x60 + 0x1E), B: 0xBF (= 0xA1 + 0x1E)
+    ; 0x0B still holds active filename base (0x60 or 0xA1) from persist loop setup.
+    movf 0x0B, W, ACCESS
+    addlw 0x1E
+    movwf 0x03, ACCESS
+    clrf 0x04, ACCESS
+    call 0x4884                ; function_110 (EEPROM read), W <- generation
+    addlw 0x01
+    movwf 0x09, ACCESS         ; data byte for function_094
+    movf 0x03, W, ACCESS
+    movwf 0x07, ACCESS         ; EEPROM addr low for function_094
+    clrf 0x08, ACCESS
+    call 0x46DE                ; function_094 (EEPROM write)
+    return
+
+org 0x5580
+send_filename_display_frames_hi:
+    ; Paged emit from RAM[0x2C0..0x2DD].
+    ; Request layout (cmd=0x21 data byte):
+    ;   bit0   : preset mirror
+    ;   bits2:1: page index 0..3
+    ;   bits7:3: transaction id echo
+    ; Window map (response cmd is local index within page):
+    ;   page0 -> abs idx 0..7
+    ;   page1 -> abs idx 8..15
+    ;   page2 -> abs idx 16..23
+    ;   page3 -> abs idx 24..29
+    ; All chunk responses use cmd 0x30..0x37 and require context frame 0x2F.
+
+    ; page = (data >> 1) & 0x03
+    movf 0x0A3, W, BANKED
+    andlw 0x06
+    movwf 0x0B, ACCESS
+    rrncf 0x0B, F, ACCESS      ; 0..3
+
+    ; start idx = page * 8
+    clrf 0x0A, ACCESS
+sfd_mul8_loop:
+    movf 0x0B, W, ACCESS
+    bz sfd_idx_ready
+    movlw 0x08
+    addwf 0x0A, F, ACCESS
+    decf 0x0B, F, ACCESS
+    bra sfd_mul8_loop
+sfd_idx_ready:
+    movff 0x0A, 0x0B            ; base idx for local cmd indexing
+    ; end idx = start+7 except page3 -> 29
+    movlw 0x1D
+    movwf 0x0C, ACCESS
+    movf 0x0A, W, ACCESS
+    xorlw 0x18
+    bz sfd_loop
+    movf 0x0A, W, ACCESS
+    addlw 0x07
+    movwf 0x0C, ACCESS
+
+    ; Emit context frame first:
+    ;   [BF 2F data], where data echoes req bits (txn/page/preset).
+    movlw 0xBF
+    call 0x4896
+    movlw 0x2F
+    call 0x4896
+    movf 0x0A3, W, BANKED
+    call 0x4896
+
+sfd_loop:
+    movlw 0xBF
+    call 0x4896                ; function_111 (UART TX byte)
+    movf 0x0B, W, ACCESS
+    subwf 0x0A, W, ACCESS      ; W = abs_idx - base_idx => local idx 0..7
+    addlw 0x30
+    call 0x4896
+
+    movlw 0xC0
+    addwf 0x0A, W, ACCESS
+    movwf FSR2L, ACCESS
+    movlw 0x02
+    movwf FSR2H, ACCESS
+    movf INDF2, W, ACCESS
+    bz sfd_space
+    xorlw 0xFF
+    bz sfd_space
+    movf INDF2, W, ACCESS
+    bra sfd_send_data
+
+sfd_space:
+    movlw ' '
+
+sfd_send_data:
+    call 0x4896
+    incf 0x0A, F, ACCESS
+    movf 0x0C, W, ACCESS
+    cpfsgt 0x0A, ACCESS
+    bra sfd_loop
+    return
 
 ; --- New code in erased app region ---
 org 0x5400
@@ -160,10 +388,10 @@ er_chk_end:
 er_done:
     goto 0x3DB2
 
-org 0x5520
+org 0x5500
 cmd_tail_patch:
     ; We replaced compare slots at 0x1E64..0x1E66.
-    ; Recreate old behavior for cmd=0x1D and cmd=0x1E, then add cmd=0x20.
+    ; Recreate old behavior for cmd=0x1D and cmd=0x1E, then add cmd=0x20/0x21.
 
     movf 0x0A2, W, BANKED
     xorlw 0x1D
@@ -177,7 +405,7 @@ cmd_tail_patch:
 
     movf 0x0A2, W, BANKED
     xorlw 0x20
-    bnz cmd_done
+    bnz cmd_check_21
 
     ; cmd 0x20: set preset (data byte low bit), then apply only on change
     movf 0x0A3, W, BANKED
@@ -188,6 +416,7 @@ preset_a:
     btfss 0x05E, 2, ACCESS
     goto cmd_done
     bcf 0x05E, 2, ACCESS
+    call load_active_filename_slot
     call 0x4574
     goto cmd_done
 
@@ -195,7 +424,22 @@ preset_b:
     btfsc 0x05E, 2, ACCESS
     goto cmd_done
     bsf 0x05E, 2, ACCESS
+    call load_active_filename_slot
     call 0x4574
+    goto cmd_done
+
+cmd_check_21:
+    movf 0x0A2, W, BANKED
+    xorlw 0x21
+    bnz cmd_check_22
+    call send_filename_display_frames
+    goto cmd_done
+
+cmd_check_22:
+    movf 0x0A2, W, BANKED
+    xorlw 0x22
+    bnz cmd_done
+    call send_filename_generation_frames
 
 cmd_done:
     goto 0x1E6C
@@ -460,8 +704,8 @@ def main() -> int:
         "stub patch:",
         f"bytes={patch_written}",
         f"changed={patch_changed}",
-        "hook_addrs=[0x1E64,0x2E6E,0x3DAC,0x4028]",
-        "stub_range=0x5400..0x55FF",
+        "hook_addrs=[0x1E64,0x20BE,0x27C0,0x2E6E,0x3DAC,0x4028]",
+        "stub_ranges=0x4980..0x49FF,0x5400..0x55FF",
     )
     print(
         "eeprom version tuple:",

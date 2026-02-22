@@ -41,7 +41,7 @@ def test_check_control_v16b_rejects_ir_shortcut_constant_drift() -> None:
 
     # Remove xorlw 0x38 signature used for F1->preset A.
     hit = None
-    for addr in range(0x7000, 0x7200):
+    for addr in range(0x7000, 0x7400):
         if mut.get(addr, 0xFF) == 0x38 and mut.get(addr + 1, 0xFF) == 0x0A:
             hit = addr
             break
@@ -64,4 +64,77 @@ def test_check_control_v16b_rejects_ir_dispatch_target_reverted_to_stock() -> No
     mut[0x0DE8] = 0x06
 
     with pytest.raises(RuntimeError, match="target drifted to stock label_162"):
+        check_control_v16b(stock, mut)
+
+
+def test_check_control_v16b_rejects_parser_tail_hook_drift() -> None:
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    patched = parse_intel_hex(PATCHED_CONTROL_HEX_V161B)
+    mut = dict(patched)
+    mut[0x05D1] = 0xEE
+
+    with pytest.raises(RuntimeError, match="parser tail hook at 0x05D0"):
+        check_control_v16b(stock, mut)
+
+
+def test_check_control_v16b_rejects_filename_chunk_gate_drift() -> None:
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    patched = parse_intel_hex(PATCHED_CONTROL_HEX_V161B)
+    mut = dict(patched)
+
+    hit = None
+    for addr in range(0x7000, 0x7400):
+        if (
+            mut.get(addr, 0xFF) == 0xF8
+            and mut.get(addr + 1, 0xFF) == 0x0B
+            and mut.get(addr + 2, 0xFF) == 0x30
+            and mut.get(addr + 3, 0xFF) == 0x0A
+        ):
+            hit = addr
+            break
+    if hit is None:
+        raise RuntimeError("test setup failed: parser chunk gate signature not found")
+    mut[hit + 2] = 0x31
+
+    with pytest.raises(RuntimeError, match="parser chunk gate missing"):
+        check_control_v16b(stock, mut)
+
+
+def test_check_control_v16b_rejects_filename_context_literal_drift() -> None:
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    patched = parse_intel_hex(PATCHED_CONTROL_HEX_V161B)
+    mut = dict(patched)
+
+    hit = None
+    for addr in range(0x7000, 0x7400):
+        if (
+            mut.get(addr, 0xFF) == 0x2F
+            and mut.get(addr + 1, 0xFF) == 0x0E
+        ):
+            hit = addr
+            break
+    if hit is None:
+        raise RuntimeError("test setup failed: parser context literal signature not found")
+    mut[hit] = 0x2E
+
+    with pytest.raises(RuntimeError, match="context literal missing"):
+        check_control_v16b(stock, mut)
+
+
+def test_check_control_v16b_rejects_filename_generation_literal_drift() -> None:
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    patched = parse_intel_hex(PATCHED_CONTROL_HEX_V161B)
+    mut = dict(patched)
+
+    hits = [
+        addr
+        for addr in range(0x7000, 0x7400)
+        if mut.get(addr, 0xFF) == 0x22 and mut.get(addr + 1, 0xFF) == 0x0E
+    ]
+    if not hits:
+        raise RuntimeError("test setup failed: generation sender literal not found")
+    for addr in hits:
+        mut[addr] = 0x23
+
+    with pytest.raises(RuntimeError, match="generation sender missing"):
         check_control_v16b(stock, mut)

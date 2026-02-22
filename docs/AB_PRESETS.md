@@ -1,6 +1,6 @@
 # DLCP A/B Presets
 
-Binary patches to CONTROL V1.4/V1.5b/V1.6b and MAIN V2.3 firmware that add
+Binary patches to CONTROL V1.4/V1.5b/V1.6b and MAIN V2.4 app firmware that add
 dual-bank preset (A/B) support.  The stock firmware has a single preset
 table; this patch adds a second bank so users can switch between two
 independent DSP configurations without re-uploading via HFD.
@@ -8,7 +8,7 @@ independent DSP configurations without re-uploading via HFD.
 ## Status
 
 **Working.**  Build, verify, protocol simulation, and full test suite all
-pass.  Patched HEX files are ready for flashing.
+pass (`257` tests).  Patched HEX files are ready for flashing.
 
 ## What It Does
 
@@ -17,7 +17,9 @@ pass.  Patched HEX files are ready for flashing.
 - **Preset is a top-level menu screen** between Volume and Input.
 - Navigation: Volume(0) → Preset(1) → Input(2) → Setup(3) → (wrap).
 - On the Preset screen, UP selects **Preset A**, DOWN selects **Preset B**.
-- The active preset is shown with selection brackets `>A<` or `>B<`.
+- Preset screen renders selected preset + full 30-byte filename split across LCD lines:
+  line 1: `<filename[0..13]> <preset>`
+  line 2: `<filename[14..29]>`
 - The Volume screen shows the active preset letter at column 15:
   `Volume:        A` or `Volume:        B`.
 - IR shortcuts on the Hypex RC5 remote are supported:
@@ -38,14 +40,13 @@ pass.  Patched HEX files are ready for flashing.
 ### LCD layout
 
 ```
-Screen 0 (Volume):          Screen 1 (Preset, A active):
-|Volume:        A|          |Preset       >A<|
-|-96.0dB         |          |              B |
+Screen 0 (Volume):           Screen 1 (Preset, A active):
+|Volume:        A|           |LX521.4 PB6v23 A|
+|-96.0dB         |           |v7              |
 
-Screen 1 (Preset, B active):
-|Preset        A |          Screen 2 (Input):       Screen 3 (Setup):
-|             >B<|          |Input:          |      |Setup           |
-                            |Auto Detect     |      |DLCP 1          |
+Screen 1 (Preset, B active): Screen 2 (Input):       Screen 3 (Setup):
+|This dsp filen B|           |Input:          |      |Setup           |
+|ame has 30 chars|           |Auto Detect     |      |DLCP 1          |
 ```
 
 ### Protocol
@@ -54,6 +55,24 @@ Screen 1 (Preset, B active):
 - Routed as broadcast `0xB0` so all MAIN units in the chain switch together.
 - Command `0x20` was chosen to avoid collision with existing handlers
   (`0x1F` is already used in MAIN firmware).
+- New current-loop command **`0x22`** (filename generation request), data layout:
+  `bit0=preset(A/B)`, `bits2:1=page(0..3)`, `bits6:3=txn(0..15)`, `bit7=0`.
+- New current-loop command **`0x21`** (filename page request) uses the same
+  token layout as `0x22`.
+- Routed as unicast `0xB1` (first MAIN only) to avoid duplicate filename
+  replies from downstream units.
+- MAIN reply path for `0x22`:
+  - context frame: `cmd=0x2F`, data echo=`txn/page/preset`
+  - generation frame: `cmd=0x22`, data=`generation(7-bit)`
+- MAIN reply path for `0x21` (paged payload):
+  - context frame: `cmd=0x2F`, data echo=`txn/page/preset`
+  - chunk frames: `cmd=0x30..0x37` (local idx 0..7 within page)
+  - page 3 emits only local idx `0..5` (absolute 24..29)
+- CONTROL flow is generation-first:
+  - On Preset entry/switch, send `0x22` first.
+  - If generation unchanged vs cached value for that preset, stop (no `0x21` pages).
+  - If generation changed/unknown, send `0x21` page requests until full 30-byte
+    name is committed.
 
 ### Setup command map (V1.4/V1.5b menu and USB-equivalent MAIN surface)
 
@@ -77,20 +96,28 @@ These command IDs are the same MAIN-side compatibility surface kept in the
 patch (`0x17..0x1E`, `0x1D`), and are the basis for USB/HFD-side setup
 regression coverage in the test suite.
 
-### MAIN firmware patch (V2.3)
+### MAIN firmware patch (V2.4 app / stock tuple 2.30)
 
 | Component | Address range | Description |
 |-----------|---------------|-------------|
 | Table copy A→B | `0x4A00..0x53FF` | Clone of original table at `0x5600..0x5FFF` (0xA00 bytes) |
+| Filename helper block | `0x4980..0x49FF` (stub) | Active-bank filename load/persist helpers for cmd03 paths (`A:0x60..0x7D`, `B:0xA1..0xBE`) |
 | Read remap | `0x5400` (stub) | `function_061_patch`: remaps TBLRD high-byte from `0x56..0x5F` to `0x4A..0x53` when preset B active |
 | Write remap | `0x5440` (stub) | `function_025_patch`: remaps flash-write destination for preset B |
 | Erase remap | `0x54C0` (stub) | `function_054_patch`: remaps erase start/end window for preset B |
-| Command dispatch | `0x5520` (stub) | `cmd_tail_patch`: preserves legacy `cmd=0x1D` and `cmd=0x1E` branches, then handles `cmd=0x20` with idempotent set/clear of `0x05E.2` and conditional `apply_table` (`0x4574`) |
-| Hook points | `0x1E64`, `0x2E6E`, `0x3DAC`, `0x4028` | `goto` redirections to stubs above |
+| Generation sender | `0x5468` (stub) | Handles `cmd=0x22`: emits context (`0x2F`) + generation (`0x22`) from EEPROM generation byte |
+| Command dispatch | `0x5500` (stub) | `cmd_tail_patch`: preserves legacy `cmd=0x1D/0x1E`, idempotent `cmd=0x20`, paged `cmd=0x21`, and generation `cmd=0x22` |
+| Generation increment | `0x5564` (stub) | Bumps per-preset filename generation on filename persist |
+| Filename TX helper | `0x5580+` (stub) | Emits paged filename context/chunks (`0x2F`, `0x30..0x37`) from RAM cache |
+| Hook points | `0x1E64`, `0x20BE`, `0x27C0`, `0x2E6E`, `0x3DAC`, `0x4028` | `goto` redirections to stubs above |
 
 The active preset is stored as bit2 of RAM `0x05E`:
 - `0x05E.2 = 0` → Preset A (table at `0x5600`)
 - `0x05E.2 = 1` → Preset B (table at `0x4A00`)
+
+Filename generation bytes (used by `cmd=0x22`) are stored in MAIN EEPROM:
+- Preset A generation: `EEPROM[0x7E]`
+- Preset B generation: `EEPROM[0xBF]`
 
 ### CONTROL firmware patch (V1.4) — top-level Preset screen
 
@@ -104,11 +131,16 @@ The active preset is stored as bit2 of RAM `0x05E`:
 | String table fix (Input) | `0x1A08` | `movff 0xBF,0x027` → `movlw 0x01; movwf 0x027` (state 2 → index 1) |
 | Dispatch redirect | `0x123E` | `goto new_dispatch_stub` — routes states 1/2/3 to correct functions |
 | IR dispatch pre-hook | `0x0E46` | `goto ir_dispatch_pre_stub` — adds F1/F2 preset shortcuts, then tail-jumps to stock IR dispatcher |
+| Parser tail hook | `0x05EC` | `goto parser_tail_patch` — preserves stock cmd `0x1D` tail and adds `cmd=0x2F` context + `cmd=0x22` generation gate + `cmd=0x30..0x37` paged chunk ingest/commit (8+8+8+6 bytes) |
 | Volume indicator | `0x13AE` | `goto volume_indicator_stub` — shows A/B at LCD column 15 |
 | Full-sync hook | `0x0B52` | `goto full_sync_entry_stub` — emits periodic preset sync (`0x20`) via TX-only path |
 | Stub block | `0x7000+` | Boot-load wrapper, dispatch, volume indicator, full-sync, preset screen, frame send helpers |
 | Send preset TX-only | `0x7000+` | `send_preset_frame_txonly`: transmits route=0xB0 cmd=0x20 data=(bit6) |
 | Send preset + persist | `0x7000+` | `send_preset_frame`: TX-only send + EEPROM write at `0x74` |
+| Send filename generation request | `0x7000+` | `send_filename_generation_request`: route=0xB1 cmd=0x22 data=`((txn4bit)<<3)|(page<<1)|preset` (bit7 clear) |
+| Send filename page request | `0x7000+` | `send_filename_request_current`: route=0xB1 cmd=0x21 using same token bytes |
+| Filename display caches | `0x180..0x1D9` (RAM) | 30-byte per-preset caches (`A:0x180..0x19D`, `B:0x19E..0x1BB`) plus 30-byte staging (`0x1BC..0x1D9`), RAM-only |
+| Filename generation cache | `0x1DA..0x1DC` (RAM) | `0x1DA=A_gen`, `0x1DB=B_gen`, `0x1DC=valid mask (bit0=A, bit1=B)` |
 | Preset runtime state | `0x01F.6` | `0=A`, `1=B` (state_flags bit6; avoids collision with stock `0x0EB`) |
 
 **USBaudio labels and command are preserved** — no text patches applied.
@@ -129,6 +161,7 @@ V1.51b is the V1.5b rebase of the same A/B feature set used by V1.41.
 | Volume indicator hook | `0x13AE` | `0x13A0` | Redirect to `volume_indicator_stub` |
 | Full-sync hook | `0x0B52` | `0x0B2C` | Redirect to `full_sync_entry_stub` |
 | IR dispatch pre-hook | `0x0E46` | `0x0E32` | Redirect to `ir_dispatch_pre_stub` |
+| Parser tail hook | `0x05EC` | `0x05C6` | Redirect to `parser_tail_patch` (`cmd=0x2F` context + `cmd=0x30..0x37` chunks) |
 
 Retargeted stock call/jump anchors inside the V1.51b stub:
 
@@ -164,6 +197,7 @@ V1.6b "combi display" branch behavior.
 | Volume indicator hook | `0x13A0` | `0x137A` | Redirect to `volume_indicator_stub` |
 | Full-sync hook | `0x0B2C` | `0x0B36` | Redirect function_028 entry to preset-sync wrapper |
 | IR dispatch pre-hook | `0x0E32` | `0x0DE6` | Redirect to `ir_dispatch_pre_stub` |
+| Parser tail hook | `0x05C6` | `0x05D0` | Redirect to `parser_tail_patch` (`cmd=0x2F` context + `cmd=0x30..0x37` chunks) |
 
 Retargeted stock call/jump anchors inside the V1.61b stub:
 
@@ -247,8 +281,9 @@ python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v161b --control-profile
 ```
 
 Byte-level checks: table copy correctness, hook signatures, cmd dispatch,
-navigation wrap, string index fixes, volume/full-sync hooks, preset stub
-presence, and profile-specific V1.5b/V1.6b hook-target validation.
+navigation wrap, string index fixes, volume/full-sync hooks, parser-tail
+hooks, filename request/chunk signatures, preset stub presence, and
+profile-specific V1.5b/V1.6b hook-target validation.
 
 ### Protocol simulation (no gpsim needed)
 
@@ -267,13 +302,13 @@ python3 scripts/sim_control_ui_presets.py --script "R,D,R,R,R"
 
 ```bash
 # Python-level tests (no gpsim required):
-python3 -m pytest tests/sim/ -q -k "not gpsim"
+uv run --with pytest python -m pytest tests/sim/ -q -k "not gpsim"
 
 # gpsim instruction-level tests (requires gpsim):
-python3 -m pytest tests/sim/ -q -m gpsim
+uv run --with pytest python -m pytest tests/sim/ -q -m gpsim
 
 # All tests:
-python3 -m pytest tests/sim/ -q
+uv run --with pytest python -m pytest tests/sim/ -q
 ```
 
 ### gpsim-level preset tests
@@ -289,7 +324,7 @@ Tests in `tests/sim/test_gpsim_control_presets.py`:
 | Test | Verifies |
 |------|----------|
 | `test_boot_shows_preset_a` | Fresh EEPROM → LCD col 15 = 'A' |
-| `test_preset_screen_navigation` | R→Preset(>A<), D→(>B<), L→Volume(B) |
+| `test_preset_screen_navigation` | R→Preset(`... A`), D→(`... B`), L→Volume(B) |
 | `test_preset_emits_serial_frames` | DOWN→(0xB0,0x20,0x01), UP→(0xB0,0x20,0x00) |
 | `test_preset_persists_power_cycle` | Set B → dump EEPROM → reload → boot shows B |
 | `test_four_screen_wraparound` | R×4: menu_state 0→1→2→3→0 |
@@ -317,6 +352,13 @@ Additional regression coverage:
 | `tests/sim/test_control_gpsim_host_command_injection.py` | Public host-command injection harness coverage (single + sequence injection paths) |
 | `tests/sim/test_control_gpsim_ir_compatibility.py` | Decoded-IR dispatch parity (stock V1.4 vs patched V1.41): both RC5 profiles, action emissions, and negative cases |
 | `tests/sim/test_control_gpsim_ir_preset_switch.py` | Patched-only IR preset switching: F1/F2 mapping, idempotency, off-screen updates, and LCD consistency |
+| `tests/sim/test_control_gpsim_preset_filename_display.py` | Preset-screen DSP filename behavior: cmd `0x21` tokenized requests, `0x2F` context + `0x30..0x37` chunk ingest, A/B cache rendering |
+| `tests/sim/test_control_gpsim_preset_filename_display.py::test_generation_match_skips_cmd21_fetch_in_gpsim` | Generation-cache fast path: unchanged generation replies avoid paged `0x21` transfer |
+| `tests/sim/test_control_gpsim_preset_filename_display.py::test_generation_mismatch_triggers_cmd21_fetch_in_gpsim` | Generation-cache miss path: changed generation forces paged `0x21` transfer |
+| `tests/sim/test_control_gpsim_preset_filename_display.py::test_incomplete_reply_does_not_clobber_displayed_name` | Guards against partial-transfer cache clobber (first-char-only regressions under dropped chunks) |
+| `tests/sim/test_gpsim_tui_filename_upload_flow.py` | Real `run_tui` regression path (hotkey `3` upload, A/B preset toggles, quick-toggle resilience) with scripted key injection |
+| `tests/sim/test_gpsim_tui_simulator_hotkey_helpers.py` | TUI helper guards for protocol labels (`0x22`) and filename token handling |
+| `tests/sim/test_tx_storm.py` | Ensures no filename-request storms (`0x22`/`0x21`) under repeated Preset navigation |
 | `tests/sim/test_control_gpsim_preset_eeprom_diff.py` | Strict preset-toggle EEPROM diff guard: only EEPROM `0x74` may change on A/B toggles |
 | `tests/sim/test_control_v15b_port_compatibility.py` | V1.5b/V1.51b parity + V1.4↔V1.5b delta-preservation checks (static + gpsim) |
 | `tests/sim/test_verify_presets_ab_v15b_semantic_guards.py` | V1.5b verifier semantic guards (hook/target/literal drift rejection) |
@@ -324,6 +366,7 @@ Additional regression coverage:
 | `tests/sim/test_verify_presets_ab_v16b_semantic_guards.py` | V1.6b verifier semantic guards (hook/target/literal drift rejection) |
 | `tests/sim/test_control_gpsim_full_config_persistence.py` | Deep gpsim matrix: Input/BL Timeout/DLCP1/DLCP2 edits + persistence + preset drift isolation checks |
 | `tests/sim/test_main_dsp_refresh_behavior.py` | MAIN DSP refresh characterization: boot apply path, preset-change apply semantics, USB upload no-auto-apply behavior |
+| `tests/sim/test_main_dsp_filename_sim_validation.py` | MAIN filename model validation: dual-bank EEPROM isolation, cmd03 semantics, cmd21 display chunk emission, cmd22 generation metadata |
 | `tests/sim/test_verify_presets_ab_semantic_guards.py` | Semantic guard tests for verifier drift detection (main/control hooks) |
 
 #### V1.5b → V1.51b test matrix (executed)
@@ -337,7 +380,7 @@ Additional regression coverage:
 | IR dispatch parity matrix | `tests/sim/test_control_v15b_port_compatibility.py::test_ir_actions_match_stock_v15b_dispatch_behavior` | Both RC5 profiles emit same frames and state deltas as stock V1.5b | Pass |
 | IR negative parity | `tests/sim/test_control_v15b_port_compatibility.py::test_ir_wrong_address_is_ignored_like_stock_v15b`, `tests/sim/test_control_v15b_port_compatibility.py::test_ir_unknown_command_is_ignored_like_stock_v15b` | Wrong address and unknown command are ignored like stock | Pass |
 | Key-action parity | `tests/sim/test_control_v15b_port_compatibility.py::test_key_action_legacy_frames_match_stock_v15b` | Legacy same-screen key emissions (`S`/`U`) match stock V1.5b | Pass |
-| Full regression suite | `python3 -m pytest tests/sim -q` | No regressions across sim + gpsim | `146 passed` |
+| Full regression suite | `.venv_ep0/bin/python -m pytest -q` | No regressions across sim + gpsim | `257 passed` |
 
 #### V1.6b → V1.61b test matrix (executed)
 
@@ -351,7 +394,7 @@ Additional regression coverage:
 | IR negative parity | `tests/sim/test_control_v16b_port_compatibility.py::test_ir_wrong_address_is_ignored_like_stock_v16b`, `tests/sim/test_control_v16b_port_compatibility.py::test_ir_unknown_command_is_ignored_like_stock_v16b` | Wrong address and unknown command are ignored like stock | Pass |
 | Key-action parity | `tests/sim/test_control_v16b_port_compatibility.py::test_key_action_legacy_frames_match_stock_v16b` | Legacy same-screen key emissions (`S`/`U`) match stock V1.6b | Pass |
 | Setup-block immutability guard | `tests/sim/test_control_v16b_port_compatibility.py::test_control_v161b_preserves_setup_usb_surface_code_blocks` | Keep V1.6b setup load/save and `0x17..0x1E` helper blocks byte-identical in V1.61b | Pass |
-| New-suite gpsim run | `python3 -m pytest tests/sim/test_control_v16b_port_compatibility.py -q -m gpsim` | All V1.6b parity cases pass | `18 passed` |
+| New-suite gpsim run | `uv run --with pytest python -m pytest tests/sim/test_control_v16b_port_compatibility.py -q -m gpsim` | All V1.6b parity cases pass | `18 passed` |
 
 #### Stock V2.3 DSP-refresh characterization progress (2026-02-18)
 
@@ -373,12 +416,12 @@ Additional regression coverage:
   - `0x1A76..0x1A92` (apply gate)
   - `0x2BB8..0x2CA6` (`function_021` upload body)
 
-**Simulation overlays**: The harness auto-selects standby bypass overlay by
-firmware layout (`0x1228` on V1.4 family, `0x121A` on V1.5b family,
-`0x11DA` on V1.6b family) so the firmware stays in DISPLAY mode without
-requiring a live MAIN heartbeat. For no-file boot it seeds EEPROM `0x74`
-(preset) and `0x73` (stock BL-timeout byte) to `0xFF`, matching real PIC18
-erased defaults (`gpsim` defaults EEPROM to `0x00`).
+**Simulation overlays**: Both the non-interactive harness and TUI runner
+auto-select standby bypass overlay by firmware layout (`0x1228` on V1.4
+family, `0x121A` on V1.5b family, `0x11DA` on V1.6b family) so the firmware
+stays in DISPLAY mode deterministically. For no-file boot the harness seeds
+EEPROM `0x74` (preset) and `0x73` (stock BL-timeout byte) to `0xFF`, matching
+real PIC18 erased defaults (`gpsim` defaults EEPROM to `0x00`).
 
 ## Flash Order
 
@@ -450,6 +493,10 @@ scripts/flash_control_safe.sh
 4. **EEPROM persistence is now active.**  The patched firmware writes preset
    changes to EEPROM[0x74] (idempotent: no write on redundant same-preset
    selection) and restores on boot. Fresh EEPROM (`0xFF`) defaults to preset A.
+
+5. **CONTROL filename caches are RAM-only.**  Preset-screen DSP filename
+   lines are populated from MAIN `0x2F` context + `0x30..0x37` chunk replies and are not
+   persisted in CONTROL EEPROM.
 
 ## Related Documentation
 

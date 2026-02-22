@@ -38,6 +38,33 @@ def test_repeated_preset_frame_is_idempotent_for_dsp_apply(patched_main_hex) -> 
     assert m.apply_count == 1
     assert len(m.dsp_ingest) == 1
 
+
+def test_cmd21_emits_filename_chunks_without_dsp_apply(patched_main_hex) -> None:
+    m = MainUnitModel.from_hex("main", 1, patched_main_hex)
+    base = b"DSP-FILE-XYZ"
+    m.usb_cmd03(0x09, base + (b"\x00" * (30 - len(base))))
+
+    assert m.apply_count == 0
+    assert m.process_frame(SerialFrame(route=0xB0, cmd=0x21, data=0x00)) is True
+    assert m.apply_count == 0
+    assert len(m.tx_frames) == 9
+    assert [f.cmd for f in m.tx_frames] == [0x2F] + list(range(0x30, 0x38))
+    assert m.tx_frames[0].data == 0x00
+
+    # Page 3 (data bits2:1=3 -> 0x06) returns tail idx 24..29 (6 bytes).
+    m.tx_frames.clear()
+    assert m.process_frame(SerialFrame(route=0xB0, cmd=0x21, data=0x06)) is True
+    assert len(m.tx_frames) == 7
+    assert [f.cmd for f in m.tx_frames] == [0x2F] + list(range(0x30, 0x36))
+    assert m.tx_frames[0].data == 0x06
+
+    # cmd=0x22 returns generation metadata only (context + generation byte).
+    m.tx_frames.clear()
+    assert m.process_frame(SerialFrame(route=0xB0, cmd=0x22, data=0x10)) is True
+    assert m.apply_count == 0
+    assert [f.cmd for f in m.tx_frames] == [0x2F, 0x22]
+    assert m.tx_frames[0].data == 0x10
+
     # Duplicate "set preset B" must not trigger extra table apply.
     assert m.process_frame(SerialFrame(route=0xB0, cmd=0x20, data=0x01)) is True
     assert m.preset_idx == 1

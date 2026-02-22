@@ -6,9 +6,12 @@ Patch summary (top-level Preset screen design):
 - Add Preset as a top-level menu screen between Volume and Input.
 - Navigation: Volume(0) <-> Preset(1) <-> Input(2) <-> Setup(3) (wrap).
 - USBaudio sub-parameter is left untouched (original function preserved).
-- Preset screen shows >A< / >B< selection brackets; UP=A, DOWN=B.
+- Preset screen shows selected preset letter + full 30-byte DSP filename split across both lines.
 - Volume screen shows active preset letter (A/B) at column 15.
 - Preset change broadcasts route=0xB0 cmd=0x20 data=0|1.
+- CONTROL requests generation metadata first with route=0xB1 cmd=0x22 data=((txn4bit)<<3)|preset.
+- CONTROL requests filename pages (cmd=0x21) only when generation changed/unknown.
+- CONTROL parser accepts MAIN context cmd=0x2F + cmd=0x22 generation + local chunks cmd=0x30..0x37.
 - IR F1/F2 shortcuts: RC5 0x38 -> preset A, RC5 0x39 -> preset B.
 - Preset state stored in state_flags bit6 (0x01F.6); persisted at EEPROM 0x74.
 - Firmware version policy: display/version tuple updated to 1.61b.
@@ -116,6 +119,15 @@ org 0x0DE6
     goto ir_dispatch_pre_stub
 
 ; ============================================================
+; Patch 8 - Parser tail hook for filename chunks
+; ============================================================
+; Original: label_063 starts with "movlw 0x1D".
+; Route through wrapper that preserves cmd=0x1D behavior and adds
+; cmd=0x30..0x4D LCD filename chunk handling.
+org 0x05D0
+    goto parser_tail_patch
+
+; ============================================================
 ; New code in erased flash area (0x7000+)
 ; ============================================================
 org 0x7000
@@ -136,6 +148,30 @@ preset_boot_init_wrapper:
     goto preset_boot_init_done
     bsf 0x01F, 6, ACCESS
 preset_boot_init_done:
+    call init_filename_cache
+    return
+
+; ------------------------------------------------------------
+; init_filename_cache:
+; - initialize display caches for preset A/B filenames:
+;   A: 0x180..0x19D (30 bytes), B: 0x19E..0x1BB (30 bytes)
+; ------------------------------------------------------------
+init_filename_cache:
+    lfsr 1, 0x0180
+    movlw 0x5A
+    movwf 0x028, ACCESS
+ifc_loop:
+    movlw ' '
+    movwf POSTINC1, ACCESS
+    decfsz 0x028, F, ACCESS
+    bra ifc_loop
+    ; filename generation cache A/B + valid mask
+    lfsr 1, 0x01DA
+    clrf POSTINC1, ACCESS
+    clrf POSTINC1, ACCESS
+    clrf INDF1, ACCESS
+    clrf 0x029, ACCESS
+    clrf 0x02E, ACCESS
     return
 
 ; ------------------------------------------------------------
@@ -250,98 +286,76 @@ full_sync_entry_stub:
     goto 0x0B3A                 ; continue original function_028 flow
 
 ; ------------------------------------------------------------
-; preset_screen: full Preset screen render + event loop
-; Line 1: "Preset       >A<" or "Preset        A "
-; Line 2: "              B " or "             >B<"
+; preset_screen: render + event loop
+; Line 1: "<filename[0..13]> <preset>" (16 chars total)
+; Line 2: "<filename[14..29]>" (16 chars)
 ; ------------------------------------------------------------
 preset_screen:
+    call start_filename_fetch
+
+prs_screen_draw:
     ; --- Line 1 ---
     movlw 0x80
     movwf 0x001, ACCESS         ; LCD output target
     movlw 0x80                  ; cursor: line 1, column 0
     call 0x0066
 
-    ; "Preset" (6 chars)
-    movlw 'P'
-    call 0x00EC
-    movlw 'r'
-    call 0x00EC
-    movlw 'e'
-    call 0x00EC
-    movlw 's'
-    call 0x00EC
-    movlw 'e'
-    call 0x00EC
-    movlw 't'
-    call 0x00EC
+    lfsr 1, 0x0180              ; preset A filename cache
+    btfsc 0x01F, 6, ACCESS
+    lfsr 1, 0x019E              ; preset B filename cache
 
-    ; 7 spaces (columns 6-12)
-    movlw 0x07
+    ; Emit first 14 filename chars on line1.
+    movlw 0x0E
     movwf 0x028, ACCESS
-line1_sp:
-    movlw ' '
+prs_line1_name_loop:
+    movf POSTINC1, W, ACCESS
     call 0x00EC
     decfsz 0x028, F, ACCESS
-    bra line1_sp
-
-    ; Column 13: '>' if preset=A (bit6=0), else ' '
-    movlw '>'
-    btfsc 0x01F, 6, ACCESS
+    bra prs_line1_name_loop
     movlw ' '
     call 0x00EC
-    ; Column 14: 'A'
     movlw 'A'
-    call 0x00EC
-    ; Column 15: '<' if preset=A, else ' '
-    movlw '<'
     btfsc 0x01F, 6, ACCESS
-    movlw ' '
+    movlw 'B'
     call 0x00EC
 
     ; --- Line 2 ---
-    movlw 0xC0                  ; cursor: line 2, column 0
+    movlw 0xC0
     call 0x0066
-
-    ; 13 spaces (columns 0-12)
-    movlw 0x0D
+    movlw 0x10
     movwf 0x028, ACCESS
-line2_sp:
-    movlw ' '
+prs_line2_name_loop:
+    movf POSTINC1, W, ACCESS
     call 0x00EC
     decfsz 0x028, F, ACCESS
-    bra line2_sp
-
-    ; Column 13: '>' if preset=B (bit6=1), else ' '
-    movlw '>'
-    btfss 0x01F, 6, ACCESS
-    movlw ' '
-    call 0x00EC
-    ; Column 14: 'B'
-    movlw 'B'
-    call 0x00EC
-    ; Column 15: '<' if preset=B, else ' '
-    movlw '<'
-    btfss 0x01F, 6, ACCESS
-    movlw ' '
-    call 0x00EC
+    bra prs_line2_name_loop
+    clrf 0x028, ACCESS
 
     ; Shadow rendered preset in scratch byte 0x02D for out-of-band
     ; change detection (avoids reusing stock state_flags bits).
     clrf 0x02D, ACCESS
     btfsc 0x01F, 6, ACCESS
     incf 0x02D, F, ACCESS
+    bcf 0x02E, 7, ACCESS
 
 ; --- Event loop ---
 preset_loop:
     call 0x0CB2                 ; function_035 (wait for event)
+    ; Parser chunk update pending -> redraw.
+    btfss 0x02E, 7, ACCESS
+    goto prs_check_shadow
+    bcf 0x02E, 7, ACCESS
+    goto prs_screen_draw
 
-    ; If preset changed out-of-band (e.g. IR F1/F2), redraw this screen.
+prs_check_shadow:
+    ; If preset changed out-of-band (e.g. IR F1/F2), request and redraw.
     clrf WREG, ACCESS
     btfsc 0x01F, 6, ACCESS
     movlw 0x01
     xorwf 0x02D, W, ACCESS
     bz prs_shadow_ok
-    goto preset_screen
+    call start_filename_fetch
+    goto prs_screen_draw
 prs_shadow_ok:
 
     ; Check UP (0x9A bit1) -> set preset A
@@ -351,7 +365,8 @@ prs_shadow_ok:
     goto preset_loop
     bcf 0x01F, 6, ACCESS
     call send_preset_frame
-    goto preset_screen           ; full re-render
+    call start_filename_fetch
+    goto prs_screen_draw         ; full re-render
 
 prs_check_down:
     ; Check DOWN (0x9A bit2) -> set preset B
@@ -361,7 +376,8 @@ prs_check_down:
     goto preset_loop
     bsf 0x01F, 6, ACCESS
     call send_preset_frame
-    goto preset_screen           ; full re-render
+    call start_filename_fetch
+    goto prs_screen_draw         ; full re-render
 
 ; --- Exit check (same pattern as function_046 at 0x1402) ---
 preset_exit_check:
@@ -383,6 +399,247 @@ preset_exit_check:
     return
 
 ; ------------------------------------------------------------
+; parser_tail_patch:
+; - preserve stock cmd=0x1D behavior
+; - add cmd=0x2F context + cmd=0x30..0x37 local chunk ingest
+; ------------------------------------------------------------
+parser_tail_patch:
+    movlw 0x1D
+    cpfseq 0x02F, ACCESS
+    goto prs_parser_check_ctx
+    movf 0x0A7, W, BANKED
+    subwf 0x030, W, ACCESS
+    skpnz
+    goto prs_parser_done
+    movff 0x030, 0x0A7
+    call 0x0F54                 ; function_037
+    goto prs_parser_done
+
+prs_parser_check_ctx:
+    movlw 0x2F
+    cpfseq 0x02F, ACCESS
+    goto prs_parser_check_gen
+    movf 0x030, W, ACCESS
+    xorwf 0x029, W, ACCESS
+    btfss STATUS, Z, ACCESS
+    goto prs_parser_done
+    ; Context matched request txn/page/preset: arm chunk ingest.
+    movf 0x02E, W, ACCESS
+    andlw 0x90
+    movwf 0x02E, ACCESS
+    btfss 0x029, 0, ACCESS
+    bcf 0x02E, 5, ACCESS
+    btfsc 0x029, 0, ACCESS
+    bsf 0x02E, 5, ACCESS
+    bsf 0x02E, 6, ACCESS
+    goto prs_parser_done
+
+prs_parser_check_gen:
+    movlw 0x22
+    cpfseq 0x02F, ACCESS
+    goto prs_parser_check_chunks
+
+    ; Generation response is accepted only after matching context and while
+    ; generation mode is active (0x02E.4).
+    btfss 0x02E, 6, ACCESS
+    goto prs_parser_done
+    btfss 0x02E, 4, ACCESS
+    goto prs_parser_done
+
+    ; Generation is carried as 7-bit data (<0x80) to stay framing-safe.
+    movf 0x030, W, ACCESS
+    andlw 0x7F
+    movwf 0x028, ACCESS
+
+    ; Select generation cache byte + valid-bit mask by target preset.
+    lfsr 0, 0x01DC              ; valid mask (bit0=A, bit1=B)
+    lfsr 1, 0x01DA              ; gen cache A
+    movlw 0x01
+    movwf 0x02A, ACCESS
+    btfss 0x02E, 5, ACCESS
+    goto prs_parser_gen_target_ready
+    lfsr 1, 0x01DB              ; gen cache B
+    movlw 0x02
+    movwf 0x02A, ACCESS
+prs_parser_gen_target_ready:
+    movf INDF0, W, ACCESS
+    andwf 0x02A, W, ACCESS
+    bz prs_parser_gen_miss
+    movf INDF1, W, ACCESS
+    xorwf 0x028, W, ACCESS
+    bz prs_parser_gen_hit
+
+prs_parser_gen_miss:
+    ; Generation changed/unknown: stage it and start paged cmd=0x21 fetch.
+    ; Cache/valid are committed only after full page3 completion.
+    movf 0x028, W, ACCESS
+    movwf 0x02C, ACCESS
+    movf 0x02E, W, ACCESS
+    andlw 0x80
+    movwf 0x02E, ACCESS
+    call send_filename_request_current
+    goto prs_parser_done
+
+prs_parser_gen_hit:
+    ; Cache already up-to-date: stop without cmd=0x21 fetch.
+    movf 0x02E, W, ACCESS
+    andlw 0x80
+    movwf 0x02E, ACCESS
+    goto prs_parser_done
+
+prs_parser_check_chunks:
+    ; Accept only local chunk commands 0x30..0x37.
+    movf 0x02F, W, ACCESS
+    andlw 0xF8
+    xorlw 0x30
+    bnz prs_parser_done
+
+    ; Ignore chunks unless matching context was accepted.
+    btfss 0x02E, 6, ACCESS
+    goto prs_parser_done
+    btfsc 0x02E, 4, ACCESS
+    goto prs_parser_done
+
+    movf 0x02F, W, ACCESS
+    andlw 0x07
+    movwf 0x02A, ACCESS
+
+    ; Enforce in-page order (expected local idx in 0x02E bits0..2).
+    movf 0x02E, W, ACCESS
+    andlw 0x07
+    xorwf 0x02A, W, ACCESS
+    bnz prs_parser_done
+
+    ; Page3 has only idx 0..5 (abs 24..29).
+    movf 0x029, W, ACCESS
+    andlw 0x06
+    xorlw 0x06
+    bnz prs_parser_idx_ok
+    movf 0x02A, W, ACCESS
+    sublw 0x05
+    bnc prs_parser_done
+prs_parser_idx_ok:
+    ; abs_idx = ((page_bits<<2)) + local_idx.
+    movf 0x029, W, ACCESS
+    andlw 0x06
+    movwf 0x028, ACCESS
+    movf 0x028, W, ACCESS
+    addwf 0x028, F, ACCESS
+    movf 0x028, W, ACCESS
+    addwf 0x028, F, ACCESS
+
+    ; Stage incoming byte into 30-byte staging buffer (0x01BC..0x01D9).
+    lfsr 1, 0x01BC
+    movf 0x02A, W, ACCESS
+    addwf 0x028, W, ACCESS
+    addwf FSR1L, F, ACCESS
+
+    movf 0x030, W, ACCESS
+    bz prs_parser_space
+    xorlw 0xFF
+    bz prs_parser_space
+    movf 0x030, W, ACCESS
+    bra prs_parser_store
+prs_parser_space:
+    movlw ' '
+prs_parser_store:
+    movwf INDF1, ACCESS
+
+prs_parser_advance:
+    ; Page transition/termination driven by expected local idx.
+    movf 0x029, W, ACCESS
+    andlw 0x06
+    xorlw 0x06
+    bz prs_parser_page3
+
+    movf 0x02A, W, ACCESS
+    xorlw 0x07                  ; page0..2 end
+    bz prs_parser_page_commit_next
+    incf 0x02E, F, ACCESS       ; next local idx
+    goto prs_parser_done
+
+prs_parser_page3:
+    movf 0x02A, W, ACCESS
+    xorlw 0x05                  ; page3 end (idx 5)
+    bz prs_parser_page_commit_done
+    incf 0x02E, F, ACCESS
+    goto prs_parser_done
+prs_parser_page_commit_next:
+    ; Commit this completed 8-byte page, then request next page.
+    call prs_parser_commit_page
+    movlw 0x02                  ; next page
+    addwf 0x029, F, ACCESS
+    movf 0x02E, W, ACCESS
+    andlw 0x80
+    movwf 0x02E, ACCESS         ; clear armed + expected idx
+    call send_filename_request_current
+    goto prs_parser_done
+
+prs_parser_page_commit_done:
+    ; Final page (idx 0..5): commit tail and complete transfer.
+    call prs_parser_commit_page
+    ; Commit staged generation only after full transfer commit.
+    lfsr 0, 0x01DC              ; valid mask (bit0=A, bit1=B)
+    lfsr 1, 0x01DA              ; gen cache A
+    movlw 0x01
+    movwf 0x02A, ACCESS
+    btfss 0x02E, 5, ACCESS
+    goto prs_parser_gen_commit_target
+    lfsr 1, 0x01DB              ; gen cache B
+    movlw 0x02
+    movwf 0x02A, ACCESS
+prs_parser_gen_commit_target:
+    movf 0x02C, W, ACCESS
+    movwf INDF1, ACCESS
+    movf INDF0, W, ACCESS
+    iorwf 0x02A, W, ACCESS
+    movwf INDF0, ACCESS
+    bcf 0x02E, 6, ACCESS        ; disarm context
+    goto prs_parser_done
+
+prs_parser_commit_page:
+    ; page_off = (page_bits<<2) = page*8
+    movf 0x029, W, ACCESS
+    andlw 0x06
+    movwf 0x028, ACCESS
+    movf 0x028, W, ACCESS
+    addwf 0x028, F, ACCESS
+    movf 0x028, W, ACCESS
+    addwf 0x028, F, ACCESS
+
+    lfsr 0, 0x01BC              ; staging base
+    lfsr 1, 0x0180              ; preset A cache
+    btfsc 0x02E, 5, ACCESS
+    lfsr 1, 0x019E              ; preset B cache
+    movf 0x028, W, ACCESS
+    addwf FSR0L, F, ACCESS
+    addwf FSR1L, F, ACCESS
+
+    movlw 0x08                  ; default page copy width
+    movwf 0x02A, ACCESS
+    movf 0x029, W, ACCESS
+    andlw 0x06
+    xorlw 0x06
+    bnz prs_parser_commit_loop
+    movlw 0x06                  ; page3 tail width
+    movwf 0x02A, ACCESS
+prs_parser_commit_loop:
+    movf POSTINC0, W, ACCESS
+    movwf POSTINC1, ACCESS
+    decfsz 0x02A, F, ACCESS
+    bra prs_parser_commit_loop
+
+    ; Mark redraw only when preset screen is active.
+    movlw 0x01
+    cpfseq 0x0BF, BANKED
+    return
+    bsf 0x02E, 7, ACCESS
+    return
+
+prs_parser_done:
+    goto 0x05EA
+
+; ------------------------------------------------------------
 ; send_preset_frame: transmit route=0xB0 cmd=0x20 data=preset
 ; ------------------------------------------------------------
 send_preset_frame_txonly:
@@ -395,6 +652,44 @@ send_preset_frame_txonly:
     clrf WREG, ACCESS
     btfsc 0x01F, 6, ACCESS
     movlw 0x01                  ; data = preset value (0 or 1)
+    movwf 0x027, ACCESS
+    call 0x05EC
+    return
+
+start_filename_fetch:
+    ; Build new request token: bump txn (bits6..3), page0, preset bit.
+    ; Keep bit7 clear so reply data is never mis-framed as a route byte.
+    movf 0x029, W, ACCESS
+    addlw 0x08
+    andlw 0x78
+    movwf 0x029, ACCESS
+    btfsc 0x01F, 6, ACCESS
+    incf 0x029, F, ACCESS
+    clrf 0x02E, ACCESS
+    bsf 0x02E, 4, ACCESS        ; generation mode (expect cmd=0x22 after context)
+    call send_filename_generation_request
+    return
+
+send_filename_generation_request:
+    movlw 0xB1                  ; route = first MAIN only
+    movwf 0x027, ACCESS
+    call 0x05EC                 ; function_020 (serial TX byte)
+    movlw 0x22                  ; cmd = filename generation request
+    movwf 0x027, ACCESS
+    call 0x05EC
+    movf 0x029, W, ACCESS
+    movwf 0x027, ACCESS
+    call 0x05EC
+    return
+
+send_filename_request_current:
+    movlw 0xB1                  ; route = first MAIN only
+    movwf 0x027, ACCESS
+    call 0x05EC                 ; function_020 (serial TX byte)
+    movlw 0x21                  ; cmd = filename display request
+    movwf 0x027, ACCESS
+    call 0x05EC
+    movf 0x029, W, ACCESS
     movwf 0x027, ACCESS
     call 0x05EC
     return
@@ -590,6 +885,9 @@ def validate_expected(mem: Dict[int, int]) -> None:
         0x0DE7: 0xEF,
         0x0DE8: 0x06,
         0x0DE9: 0xF0,
+        # Patch 8: parser-tail hook site (original label_063: movlw 0x1D)
+        0x05D0: 0x1D,
+        0x05D1: 0x0E,
     }
     for a, want in expected.items():
         got = mem.get(a, 0xFF)
@@ -655,7 +953,7 @@ def main() -> int:
         "code patch:",
         f"bytes={patch_written}",
         f"changed={patch_changed}",
-        "hooks=[0x10B2,0x111C,0x1152,0x0B36,0x0DE6,0x1216,0x123A,0x1406,0x191A,0x11F0,0x137A]",
+        "hooks=[0x10B2,0x111C,0x1152,0x0B36,0x0DE6,0x05D0,0x1216,0x123A,0x1406,0x191A,0x11F0,0x137A]",
         "stub_range=0x7000+",
     )
     print(

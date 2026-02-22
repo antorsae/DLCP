@@ -122,10 +122,11 @@ def test_cmd03_subcmd0a_erases_filename_slot_without_touching_preset_related_ram
         assert got == want, f"cmd03 erase clobbered protected RAM 0x{addr:03X}: got=0x{got:02X}"
 
 
-def test_cmd03_handler_bytes_match_stock_in_patched_main(patched_main_hex) -> None:
+def test_cmd03_handler_bytes_match_stock_with_expected_filename_hooks(patched_main_hex) -> None:
     """
-    Guard against accidental cmd03 regression: patched image must preserve
-    stock bytes in cmd03 handler and filename EEPROM window logic blocks.
+    Guard against accidental cmd03 regression:
+    - patched image preserves stock cmd03 handler dispatch body
+    - patched image intentionally hooks filename boot/persist sites.
     """
     if not STOCK_MAIN_HEX.exists():
         raise RuntimeError(f"missing stock main HEX: {STOCK_MAIN_HEX}")
@@ -133,15 +134,24 @@ def test_cmd03_handler_bytes_match_stock_in_patched_main(patched_main_hex) -> No
     stock = parse_intel_hex(STOCK_MAIN_HEX)
     patched = parse_intel_hex(patched_main_hex)
 
-    ranges = [
-        (0x10D0, 0x1132),  # label_003 cmd03 handler body
-        (0x27C0, 0x27E6),  # filename EEPROM 0x60..0x7D persist window setup
-    ]
-    for start, end in ranges:
-        for addr in range(start, end + 1):
-            s = stock.get(addr, 0xFF)
-            p = patched.get(addr, 0xFF)
-            assert p == s, f"cmd03-related byte drift at 0x{addr:04X}: stock=0x{s:02X} patched=0x{p:02X}"
+    # Stock cmd03 dispatch handler should stay byte-identical.
+    for addr in range(0x10D0, 0x1132 + 1):
+        s = stock.get(addr, 0xFF)
+        p = patched.get(addr, 0xFF)
+        assert p == s, f"cmd03-dispatch byte drift at 0x{addr:04X}: stock=0x{s:02X} patched=0x{p:02X}"
+
+    # Filename boot/persist sites are intentionally hooked in patched image.
+    def _decode_goto_target(mem: dict[int, int], addr: int) -> int:
+        w1_lo = mem.get(addr, 0xFF)
+        w1_hi = mem.get(addr + 1, 0xFF)
+        w2_lo = mem.get(addr + 2, 0xFF)
+        w2_hi = mem.get(addr + 3, 0xFF)
+        assert w1_hi == 0xEF and w2_hi == 0xF0, f"hook at 0x{addr:04X} not goto"
+        return ((((w2_hi & 0x0F) << 8) | w2_lo) << 8 | w1_lo) * 2
+
+    for hook in (0x20BE, 0x27C0):
+        tgt = _decode_goto_target(patched, hook)
+        assert 0x4980 <= tgt < 0x4A00, f"unexpected filename hook target for 0x{hook:04X}: 0x{tgt:04X}"
 
 
 def _run_cmd03_persist_probe(
@@ -242,7 +252,9 @@ def test_cmd03_persist_writes_only_filename_eeprom_window_stock_vs_patched(
 ) -> None:
     """
     Instruction-level EEPROM guard:
-    cmd03(0x09) + real dirty flush path must only touch EEPROM[0x60..0x7D].
+    cmd03(0x09) + real dirty flush path touches:
+    - stock:   EEPROM[0x60..0x7D]
+    - patched: EEPROM[0x60..0x7D] + generation byte EEPROM[0x7E]
     """
     _require_gpsim()
     if not STOCK_MAIN_HEX.exists():
@@ -262,13 +274,15 @@ def test_cmd03_persist_writes_only_filename_eeprom_window_stock_vs_patched(
         payload=payload,
     )
 
-    expected_addrs = set(range(0x60, 0x7E))
+    expected_stock_addrs = set(range(0x60, 0x7E))
+    expected_patched_addrs = set(range(0x60, 0x7F))
     stock_addrs = [a for a, _ in stock_writes]
     patched_addrs = [a for a, _ in patched_writes]
-    assert stock_addrs and set(stock_addrs).issubset(expected_addrs)
-    assert patched_addrs and set(patched_addrs).issubset(expected_addrs)
-    assert expected_addrs.issubset(set(stock_addrs))
-    assert expected_addrs.issubset(set(patched_addrs))
+    assert stock_addrs and set(stock_addrs).issubset(expected_stock_addrs)
+    assert patched_addrs and set(patched_addrs).issubset(expected_patched_addrs)
+    assert expected_stock_addrs.issubset(set(stock_addrs))
+    assert expected_stock_addrs.issubset(set(patched_addrs))
+    assert 0x7E in set(patched_addrs)
 
     def last_value_per_addr(writes: list[tuple[int, int]]) -> dict[int, int]:
         out: dict[int, int] = {}
@@ -284,5 +298,6 @@ def test_cmd03_persist_writes_only_filename_eeprom_window_stock_vs_patched(
         assert stock_last.get(addr) == want
         assert patched_last.get(addr) == want
 
-    # Parity guard against regressions in patched image.
-    assert patched_last == stock_last
+    # Slot bytes must remain parity-equivalent with stock path.
+    for addr in range(0x60, 0x7E):
+        assert patched_last.get(addr) == stock_last.get(addr)
