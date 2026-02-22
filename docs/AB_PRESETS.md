@@ -8,7 +8,7 @@ independent DSP configurations without re-uploading via HFD.
 ## Status
 
 **Working.**  Build, verify, protocol simulation, and full test suite all
-pass (`257` tests).  Patched HEX files are ready for flashing.
+pass (`264` tests).  Patched HEX files are ready for flashing.
 
 ## What It Does
 
@@ -261,7 +261,7 @@ python3 -m dlcp_fw.patch.build_control_presets_ab_v15b # V1.5b -> V1.51b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b # V1.6b -> V1.61b
 ```
 
-Both scripts accept `--in-hex`, `--out-hex`, and `--gpasm` overrides.
+All build scripts accept `--in-hex`, `--out-hex`, and `--gpasm` overrides.
 `build_main_presets_ab.py` also accepts `--force-copy` to overwrite a
 non-erased destination range.
 
@@ -301,14 +301,11 @@ python3 scripts/sim_control_ui_presets.py --script "R,D,R,R,R"
 ### Test suite (pytest)
 
 ```bash
-# Python-level tests (no gpsim required):
-uv run --with pytest python -m pytest tests/sim/ -q -k "not gpsim"
+# Full suite (gpsim-inclusive, recommended):
+.venv_ep0/bin/python -m pytest -q tests/sim
 
-# gpsim instruction-level tests (requires gpsim):
-uv run --with pytest python -m pytest tests/sim/ -q -m gpsim
-
-# All tests:
-uv run --with pytest python -m pytest tests/sim/ -q
+# Collect-only inventory:
+.venv_ep0/bin/python -m pytest -q tests/sim --collect-only
 ```
 
 ### gpsim-level preset tests
@@ -380,7 +377,7 @@ Additional regression coverage:
 | IR dispatch parity matrix | `tests/sim/test_control_v15b_port_compatibility.py::test_ir_actions_match_stock_v15b_dispatch_behavior` | Both RC5 profiles emit same frames and state deltas as stock V1.5b | Pass |
 | IR negative parity | `tests/sim/test_control_v15b_port_compatibility.py::test_ir_wrong_address_is_ignored_like_stock_v15b`, `tests/sim/test_control_v15b_port_compatibility.py::test_ir_unknown_command_is_ignored_like_stock_v15b` | Wrong address and unknown command are ignored like stock | Pass |
 | Key-action parity | `tests/sim/test_control_v15b_port_compatibility.py::test_key_action_legacy_frames_match_stock_v15b` | Legacy same-screen key emissions (`S`/`U`) match stock V1.5b | Pass |
-| Full regression suite | `.venv_ep0/bin/python -m pytest -q` | No regressions across sim + gpsim | `257 passed` |
+| Full regression suite | `.venv_ep0/bin/python -m pytest -q tests/sim` | No regressions across sim + gpsim | `264 passed` |
 
 #### V1.6b → V1.61b test matrix (executed)
 
@@ -394,7 +391,7 @@ Additional regression coverage:
 | IR negative parity | `tests/sim/test_control_v16b_port_compatibility.py::test_ir_wrong_address_is_ignored_like_stock_v16b`, `tests/sim/test_control_v16b_port_compatibility.py::test_ir_unknown_command_is_ignored_like_stock_v16b` | Wrong address and unknown command are ignored like stock | Pass |
 | Key-action parity | `tests/sim/test_control_v16b_port_compatibility.py::test_key_action_legacy_frames_match_stock_v16b` | Legacy same-screen key emissions (`S`/`U`) match stock V1.6b | Pass |
 | Setup-block immutability guard | `tests/sim/test_control_v16b_port_compatibility.py::test_control_v161b_preserves_setup_usb_surface_code_blocks` | Keep V1.6b setup load/save and `0x17..0x1E` helper blocks byte-identical in V1.61b | Pass |
-| New-suite gpsim run | `uv run --with pytest python -m pytest tests/sim/test_control_v16b_port_compatibility.py -q -m gpsim` | All V1.6b parity cases pass | `18 passed` |
+| New-suite gpsim run | `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_v16b_port_compatibility.py -m gpsim` | All V1.6b parity cases pass | `18 passed` |
 
 #### Stock V2.3 DSP-refresh characterization progress (2026-02-18)
 
@@ -500,11 +497,11 @@ scripts/flash_control_safe.sh
 
 ## Related Documentation
 
-- `SIMULATION.md` — co-simulation guide (TUI, overlays, architecture)
-- `TEST_SIMULATOR.md` — test framework documentation
-- `REANALYSIS_CORRECTIONS_2026-02-16.md` — corrections found during patch development
-- `CONTROL_UNIT_ANALYSIS.md` — CONTROL firmware reverse-engineering notes
-- `ANALYSIS_REPORT_CLAUDE.md` — MAIN firmware analysis (notes lack of built-in preset system)
+- `docs/SIMULATION.md` — co-simulation guide (TUI, overlays, architecture)
+- `docs/TEST_SIMULATOR.md` — test framework documentation
+- `docs/analysis/REANALYSIS_CORRECTIONS_2026-02-16.md` — corrections found during patch development
+- `docs/analysis/CONTROL_UNIT_ANALYSIS.md` — CONTROL firmware reverse-engineering notes
+- `docs/analysis/ANALYSIS_REPORT_CLAUDE.md` — MAIN firmware analysis (notes lack of built-in preset system)
 
 ### Key simulation modules
 

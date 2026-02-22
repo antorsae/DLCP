@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-02-21
+Last updated: 2026-02-22
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -96,7 +96,7 @@ Use these locations only:
 - Control primary: `firmware/disasm/control/v1.4_disasm.asm`
 - Control variants: `firmware/disasm/control/v1.5b_disasm.asm`, `firmware/disasm/control/v1.6b_disasm.asm`
 - Legacy/raw control disasm: `firmware/disasm/control/v14.asm`, `firmware/disasm/control/v15b.asm`, `firmware/disasm/control/v16b.asm`
-- PC HFD RE artifacts: `firmware/disasm/PC/HFD_v2.12/...`
+- PC HFD RE artifacts: `firmware/disasm/PC/HFD_v2.12/...`, `firmware/disasm/PC/HFD_v4.97/...`
 
 ### Dumps and references
 
@@ -170,10 +170,10 @@ Current suite includes:
 - End-to-end/faults: `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
 - Flash/probe tools: `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
 
-Recent verification (2026-02-21):
+Recent verification (2026-02-22):
 
-- `.venv_ep0/bin/pytest -q tests/sim -k "not gpsim"` -> `58 passed, 131 deselected`
-- `.venv_ep0/bin/pytest -q tests/sim --collect-only` -> `189 tests collected`
+- `.venv_ep0/bin/python -m pytest -q tests/sim` -> `264 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim --collect-only` -> `264 tests collected`
 
 ## Documentation Map
 
@@ -192,6 +192,7 @@ Deep analysis docs:
 - `docs/analysis/FIRMWARE_UPDATE_MECHANISM.md`
 - `docs/analysis/HFD_v2.12-codex.md`
 - `docs/analysis/HFD_v2.12-RL-binary-patch-plan.md`
+- `docs/analysis/HFD_v4.97-codex.md`
 - `docs/analysis/PIN_SEMANTICS.md`
 - `docs/analysis/REANALYSIS_CORRECTIONS_2026-02-16.md`
 - `docs/analysis/SIMULATION_STDBY_WAIT_DIAGNOSIS.md`
@@ -220,16 +221,10 @@ python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
 python3 -m dlcp_fw.patch.verify_presets_ab
 ```
 
-Run fast test gate:
+Run full test gate (gpsim-inclusive):
 
 ```bash
-.venv_ep0/bin/pytest -q tests/sim -k "not gpsim"
-```
-
-Run full test gate:
-
-```bash
-.venv_ep0/bin/pytest -q tests/sim
+.venv_ep0/bin/python -m pytest -q tests/sim
 ```
 
 Safe control flash preflight/live:
