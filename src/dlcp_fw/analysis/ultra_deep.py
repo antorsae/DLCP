@@ -265,7 +265,7 @@ def disasm_block(memory: Dict[int, int], start: int, count: int = 20):
         if (word & 0xC000) == 0xC000:
             word2 = get_word(memory, addr + 2)
             if word2:
-                fs = word1 & 0x0FFF
+                fs = word & 0x0FFF
                 fd = word2 & 0x0FFF
                 result.append(f"0x{addr:04X}: MOVFF 0x{fs:03X}, 0x{fd:03X}")
                 addr += 4

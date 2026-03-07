@@ -18,16 +18,15 @@ import argparse
 import pathlib
 import re
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from dlcp_fw.paths import SIM_ARTIFACTS_DIR, STOCK_CONTROL_HEX_V14
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:

@@ -14,15 +14,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import pathlib
-import sys
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from dlcp_fw.paths import STOCK_MAIN_HEX
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:

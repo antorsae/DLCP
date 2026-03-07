@@ -20,19 +20,17 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
 
-import sys
-
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from dlcp_fw.sim.hexio import parse_intel_hex, write_intel_hex
 from dlcp_fw.sim.lcd import LcdState, decode_lcd_bytes
 from dlcp_fw.sim.manifests import control_disable_boot_wait, control_reset_to_appstart
 from dlcp_fw.sim.overlay import apply_overlays
 from dlcp_fw.paths import PATCHED_CONTROL_HEX, SIM_ARTIFACTS_DIR, STOCK_CONTROL_HEX_V14
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 KEY_PIN: Dict[str, int] = {

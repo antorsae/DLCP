@@ -35,7 +35,6 @@ import select
 import shutil
 import string
 import subprocess
-import sys
 import tempfile
 import time
 from collections import deque
@@ -43,9 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Deque, Dict, List
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from dlcp_fw.sim.lcd import LcdByte, LcdState
 from dlcp_fw.sim.hexio import parse_intel_hex
@@ -67,6 +64,8 @@ from dlcp_fw.sim.manifests import (
     main_serial_mailbox_hooks_uart_only,
 )
 from dlcp_fw.sim.overlay import apply_overlays
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 UP = "UP"
@@ -1447,7 +1446,7 @@ class GpsimControlSession:
         # scan to 0x0BE (accepted) and reset debounce counter 0x0BB to 0
         # so the next 4 function_023 calls don't overwrite our value.
         self._issue(f"reg(0x0BE)=0x{scan:02X}", 5.0)
-        self._issue(f"reg(0x0BB)=0x00", 5.0)
+        self._issue("reg(0x0BB)=0x00", 5.0)
 
     def read_mem_snapshot(self) -> MemSnapshot:
         def _read_name_cache(base: int) -> str:

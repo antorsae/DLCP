@@ -21,13 +21,10 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Deque, Dict, List
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from gpsim_tui_simulator import (
     CONTROL_FOSC_HZ,
-    EUSART_FIFO_DEPTH,
     MAIN_FOSC_HZ,
     GpsimControlSession,
     LinkPipe,
@@ -38,6 +35,8 @@ from gpsim_tui_simulator import (
     _byte_cycles,
 )
 from dlcp_fw.paths import SIM_ARTIFACTS_DIR
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 def _parse_adc12(text: str) -> int:

@@ -16,13 +16,10 @@ import argparse
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from dlcp_fw.sim.gpsim import GpsimRunConfig, run_gpsim
 from dlcp_fw.sim.lcd import LcdState, decode_lcd_bytes
@@ -33,6 +30,8 @@ from dlcp_fw.sim.overlay import apply_overlays
 from dlcp_fw.sim.paths import ANALYSIS_ROOT, CONTROL_HEX_PATCHED, SIM_ARTIFACTS_DIR
 from dlcp_fw.sim.protocol import SerialFrame
 from dlcp_fw.sim.scenarios import run_fault_matrix, run_preset_ab_roundtrip
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 def cmd_overlay_check() -> int:

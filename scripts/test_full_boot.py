@@ -15,13 +15,9 @@ Heartbeat modelling:
   and CONTROL proceed through RECONNECT → DISPLAY.
 """
 
-import sys
 import time
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from gpsim_tui_simulator import (
     CONTROL_FOSC_HZ,
@@ -34,6 +30,8 @@ from gpsim_tui_simulator import (
     _byte_cycles,
 )
 from dlcp_fw.sim.main_gpsim_timer3 import _read_reg
+
+ROOT = _bootstrap.REPO_ROOT
 
 CONTROL_HEX = ROOT / "firmware" / "stock" / "control" / "DLCP Control Firmware V1.4.hex"
 MAIN_HEX    = ROOT / "firmware" / "stock" / "main" / "DLCP Firmware V2.3.hex"
@@ -247,12 +245,12 @@ print(f"Waiting seen:       {waiting_seen}")
 if waiting_exit_cycle:
     print(f"Waiting exit:       {_fmt_time(waiting_exit_cycle)}")
 else:
-    print(f"Waiting exit:       NOT YET")
+    print("Waiting exit:       NOT YET")
 if display_entry_cycle:
     print(f"Display entry:      {_fmt_time(display_entry_cycle)}")
 else:
-    print(f"Display entry:      NOT YET (bit1 still 0)")
-print(f"Final LCD:")
+    print("Display entry:      NOT YET (bit1 still 0)")
+print("Final LCD:")
 print(f"  |{lcd1:16}|")
 print(f"  |{lcd2:16}|")
 

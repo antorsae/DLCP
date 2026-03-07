@@ -21,15 +21,14 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-import sys
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import _bootstrap
 
 from dlcp_fw.paths import PATCHED_CONTROL_HEX
+
+ROOT = _bootstrap.REPO_ROOT
 
 
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
