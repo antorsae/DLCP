@@ -8,6 +8,20 @@ a new `R-L` mode while preserving stock behavior for existing modes.
 `R-L` is **not implemented** in the current patched releases. This document
 captures confirmed routing behavior and concrete patch instructions.
 
+Implemented vs planned:
+
+| Area | Current status | Notes |
+|------|----------------|-------|
+| MAIN firmware (`V2.4`) | Not implemented | `data=4` is stored, but current decode falls through to the default `R` selector pair. |
+| CONTROL firmware (`V1.41`, `V1.51b`, `V1.61b`) | Not implemented | No released CONTROL build exposes or emits a user-facing `R-L` option. |
+| HFD v2.12 host patch | Planned only | Host-side `R-L` UI work must not be treated as sufficient by itself; it depends on the MAIN change below. |
+| Verifier and regression tests | Planned only | No released verifier/test gate currently asserts `R-L` semantics. |
+
+Related docs:
+
+- `docs/analysis/HFD_v2.12-codex.md`
+- `docs/analysis/HFD_v2.12-RL-binary-patch-plan.md`
+
 ## Scope
 
 - MAIN firmware command/decoder path for source routing (`cmd 0x17..0x1C`).
@@ -222,7 +236,11 @@ Run full suite for all patched release lines:
    both channels are hot; this is unchanged from existing `L-R`.
 2. **Host UI mismatch**: If HFD UI does not expose value `4`, raw command path
    can still support it.
-3. **No DSP silicon simulation**: gpsim validates firmware routing math and
+3. **Host-only patch is unsafe to treat as complete**: an HFD patch that emits
+   route `4` without the MAIN decode/sanitizer changes below will present as
+   `R-L` in the host UI while the device still applies current fallback
+   semantics (`R`).
+4. **No DSP silicon simulation**: gpsim validates firmware routing math and
    register writes, not analog audio output.
 
 ## Quick checklist

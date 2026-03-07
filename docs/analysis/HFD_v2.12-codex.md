@@ -17,6 +17,13 @@ All supporting disassembly artifacts are in:
 Concrete byte-level patch manifest:
 - `docs/analysis/HFD_v2.12-RL-binary-patch-plan.md`
 
+## Status
+
+This document contains reverse engineering for a future HFD-side `R-L` patch.
+That host work is still contingent on firmware support described in
+`docs/R_L_ROUTING.md`; current released MAIN firmware does not yet implement
+`route value 4 -> R-L`.
+
 ## Executive Summary
 
 - HFD v2.12 talks to DLCP via `mcHID.dll` HID wrappers (`Read/Write/Connect/GetVendorID/...`).
@@ -219,7 +226,12 @@ See:
 
 ## Implication: feasibility of adding `R-L` in HFD v2.12
 
-Feasibility is good if firmware already accepts route value `4`.
+Feasibility is good once firmware adds real support for route value `4`.
+
+Current state:
+- HFD can be patched to emit and display route value `4`.
+- Current released MAIN firmware does not yet give value `4` distinct `R-L`
+  semantics, so an HFD-only patch would be incomplete and misleading.
 
 Why:
 - Route path is index-based byte transport, not fixed bitfield.

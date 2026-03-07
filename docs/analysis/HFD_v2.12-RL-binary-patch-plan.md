@@ -7,8 +7,20 @@ Goal:
 - Add a 5th routing option (`R-L`) in each channel routing combo in HFD v2.12.
 - Keep existing `Left`, `Right`, `L+R/Mid`, `L-R/Side` behavior unchanged.
 
-Assumption:
-- MAIN firmware already accepts route value `4` and maps it to `R-L`.
+## Status
+
+This document is a host-side patch plan only. It is **not sufficient for
+current DLCP patched releases**.
+
+Current prerequisite status:
+- MAIN firmware does **not** yet map route value `4` to `R-L`.
+- Current released MAIN behavior for `data=4` is documented in
+  `docs/R_L_ROUTING.md`: the raw value can be latched, but apply falls through
+  to current default semantics (`R`).
+
+Required prerequisite before this HFD patch is treated as valid:
+- Implement the MAIN-side `4 -> (3,1)` decode and related sanitizer changes in
+  `docs/R_L_ROUTING.md`.
 
 ## One-command deterministic patcher
 
@@ -150,7 +162,8 @@ printf '\x53\x8b\x83\x14\x03\x00\x00\x8b\x80\x14\x02\x00\x00\xba\xac\x5b\x56\x00
 - `xxd -g 1 -s 0x164fac -l 4 /tmp/HFD_v2.12.RL.exe` should be `52 2d 4c 00`.
 
 3. Runtime smoke test:
-- Launch patched HFD.
+- Launch patched HFD against a firmware build that already implements
+  `R-L` per `docs/R_L_ROUTING.md`.
 - Verify each channel routing combo has 5 items.
 - Select `R-L` and push config.
 - Read back from device: value should persist as route `4`.
@@ -159,6 +172,9 @@ printf '\x53\x8b\x83\x14\x03\x00\x00\x8b\x80\x14\x02\x00\x00\xba\xac\x5b\x56\x00
 
 - This patch is static and does not modify PE headers or section sizes.
 - It relies on an in-section code cave (`0x565AF0..0x565BFF`) being unused.
+- Do not ship this host patch against current released DLCP firmware lines by
+  itself; without the MAIN prerequisite it creates a host/device semantic
+  mismatch for route value `4`.
 - If this constructor function is ever re-entered for existing combo instances,
   `R-L` could be appended again. In observed flow this block is setup-time; if
   needed, add a one-shot guard byte in cave in a follow-up revision.
