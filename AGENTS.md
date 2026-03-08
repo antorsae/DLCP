@@ -196,6 +196,9 @@ Deep analysis docs:
 - `docs/analysis/PIN_SEMANTICS.md`
 - `docs/analysis/REANALYSIS_CORRECTIONS_2026-02-16.md`
 - `docs/analysis/SIMULATION_STDBY_WAIT_DIAGNOSIS.md`
+- `docs/analysis/STOCK_SYNC_DEADLOCK_ANALYSIS_2026-03-08-gpt-5.4-xhigh.md`
+- `docs/analysis/STOCK_SYNC_DEADLOCK_ANALYSIS_2026-03-08-gpt-5.2-pro.md`
+- `docs/analysis/STOCK_SYNC_DEADLOCK_ANALYSIS_2026-03-08-opus-4.6.md`
 
 ## Artifacts and Caches
 
