@@ -1,8 +1,4 @@
-"""gpsim-level tests for CONTROL firmware preset UI and persistence.
-
-All tests require gpsim and are marked slow — run with:
-    pytest -m gpsim tests/sim/test_gpsim_control_presets.py
-"""
+"""gpsim-level tests for CONTROL firmware preset UI and persistence."""
 
 from __future__ import annotations
 
@@ -15,11 +11,11 @@ import pytest
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness
 
 
-WARMUP_CYCLES = 25_000_000  # boot(~7M) + WAITING(~16M) + DISPLAY entry(~19M) + margin
-STEP_COUNT = 12  # steps per button press to allow debounce + render
+WARMUP_CYCLES = 25_000_000
+STEP_COUNT = 12
 
 
-def _require_gpsim():
+def _require_gpsim() -> None:
     if shutil.which("gpsim") is None:
         pytest.skip("gpsim not installed")
 
@@ -35,8 +31,6 @@ def _boot_harness(
         eeprom_file=eeprom_file,
         chunk_cycles=200_000,
         hold_cycles=100_000,
-        # Keep UI navigation tests deterministic; synthetic heartbeat traffic
-        # can alias with short key pulses and create timing-only flakes.
         heartbeat_rx_mode="none",
         heartbeat_force_connected=True,
     )
@@ -44,25 +38,30 @@ def _boot_harness(
     return h
 
 
-def _press_and_step(h: GpsimControlHarness, key: str, steps: int = STEP_COUNT):
-    """Press a key and step until the firmware processes it."""
+def _press_and_step(h: GpsimControlHarness, key: str, steps: int = STEP_COUNT) -> None:
     h.press(key)
     for _ in range(steps):
         h.step()
 
 
+def _step_until_line1(h: GpsimControlHarness, expected: str, *, limit: int = 80) -> None:
+    for _ in range(limit):
+        if h.lcd_lines()[0] == expected:
+            return
+        h.step()
+    raise AssertionError(f"failed to reach LCD line1={expected!r}, got={h.lcd_lines()!r}")
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_boot_shows_preset_a(patched_control_hex) -> None:
-    """Fresh EEPROM boot -> LCD column 15 shows 'A'."""
     _require_gpsim()
     h = _boot_harness(patched_control_hex)
     try:
-        # Step a few more times for LCD to settle
         for _ in range(8):
             h.step()
         l1, _ = h.lcd_lines()
-        assert l1[15] == "A", f"expected 'A' at col 15, got {l1!r}"
+        assert l1 == "Volume:        A"
     finally:
         h.close()
 
@@ -70,26 +69,22 @@ def test_boot_shows_preset_a(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_preset_screen_navigation(patched_control_hex) -> None:
-    """R -> Preset(... A), D -> (... B), L -> Volume(B)."""
     _require_gpsim()
     h = _boot_harness(patched_control_hex)
     try:
-        # Navigate RIGHT to Preset screen
         _press_and_step(h, "R")
         l1, l2 = h.lcd_lines()
-        assert l1[15] == "A", f"expected A suffix in line1, got {l1!r}"
-        assert l2 == "                "
+        assert l1 == "Preset          "
+        assert l2 == "Active: A       "
 
-        # DOWN -> select B
         _press_and_step(h, "D")
         l1, l2 = h.lcd_lines()
-        assert l1[15] == "B", f"expected B suffix in line1, got {l1!r}"
-        assert len(l2) == 16
+        assert l1 == "Preset          "
+        assert l2 == "Active: B       "
 
-        # LEFT -> back to Volume
         _press_and_step(h, "L")
         l1, _ = h.lcd_lines()
-        assert l1[15] == "B", f"expected 'B' at col 15, got {l1!r}"
+        assert l1 == "Volume:        B"
     finally:
         h.close()
 
@@ -97,30 +92,25 @@ def test_preset_screen_navigation(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_preset_emits_serial_frames(patched_control_hex) -> None:
-    """DOWN -> (0xB0,0x20,0x01), UP -> (0xB0,0x20,0x00)."""
     _require_gpsim()
     h = _boot_harness(patched_control_hex)
     try:
-        # Navigate to Preset screen
         _press_and_step(h, "R")
-
-        # Press DOWN (select B)
         tx_before = len(h.tx_frames())
         _press_and_step(h, "D")
         frames = h.tx_frames()[tx_before:]
         preset_frames = [f for f in frames if f.cmd == 0x20]
-        assert len(preset_frames) >= 1, f"expected preset frame, got {frames}"
+        assert preset_frames
         assert preset_frames[0].route == 0xB0
-        assert preset_frames[0].data == 0x01  # B
+        assert preset_frames[0].data == 0x01
 
-        # Press UP (select A)
         tx_before = len(h.tx_frames())
         _press_and_step(h, "U")
         frames = h.tx_frames()[tx_before:]
         preset_frames = [f for f in frames if f.cmd == 0x20]
-        assert len(preset_frames) >= 1, f"expected preset frame, got {frames}"
+        assert preset_frames
         assert preset_frames[0].route == 0xB0
-        assert preset_frames[0].data == 0x00  # A
+        assert preset_frames[0].data == 0x00
     finally:
         h.close()
 
@@ -128,32 +118,24 @@ def test_preset_emits_serial_frames(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_preset_persists_power_cycle(patched_control_hex) -> None:
-    """Set B -> dump EEPROM -> new session with loaded EEPROM -> boot shows B."""
     _require_gpsim()
     with tempfile.TemporaryDirectory() as td:
         eeprom_path = Path(td) / "eeprom.hex"
 
-        # Session 1: switch to preset B and dump EEPROM
         h1 = _boot_harness(patched_control_hex)
         try:
-            _press_and_step(h1, "R")   # -> Preset screen
-            _press_and_step(h1, "D")   # -> select B
+            _press_and_step(h1, "R")
+            _press_and_step(h1, "D")
             l1, l2 = h1.lcd_lines()
-            assert l1[15] == "B", f"expected B suffix in line1, got {l1!r}"
-            assert len(l2) == 16
+            assert l1 == "Preset          "
+            assert l2 == "Active: B       "
             h1.dump_eeprom(eeprom_path)
         finally:
             h1.close()
 
-        assert eeprom_path.exists(), "EEPROM dump file not created"
-
-        # Session 2: boot with the saved EEPROM
         h2 = _boot_harness(patched_control_hex, eeprom_file=eeprom_path)
         try:
-            for _ in range(8):
-                h2.step()
-            l1, _ = h2.lcd_lines()
-            assert l1[15] == "B", f"expected 'B' at col 15 after EEPROM restore, got {l1!r}"
+            _step_until_line1(h2, "Volume:        B")
         finally:
             h2.close()
 
@@ -161,7 +143,6 @@ def test_preset_persists_power_cycle(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_four_screen_wraparound(patched_control_hex) -> None:
-    """RIGHT navigation reaches 0->1->2->3->0 (allowing async redraw jitter)."""
     _require_gpsim()
     h = _boot_harness(patched_control_hex)
     try:
@@ -182,40 +163,23 @@ def test_four_screen_wraparound(patched_control_hex) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_volume_resets_on_power_cycle(patched_control_hex) -> None:
-    """Volume is volatile — RAM changes don't survive power cycle.
-
-    Volume (0x0B9) is synced from MAIN via serial, not stored in EEPROM.
-    After a power cycle the register returns to the heartbeat-injected
-    default regardless of the value it had before the reset.
-    """
     _require_gpsim()
     with tempfile.TemporaryDirectory() as td:
         eeprom_path = Path(td) / "eeprom.hex"
 
-        # Session 1: change volume in RAM directly, then dump EEPROM.
         h1 = _boot_harness(patched_control_hex)
         try:
             vol_default = h1.read_reg(0x0B9)
-            # Simulate a volume change by writing directly to RAM
             h1._issue("reg(0x0B9)=0x30", 5.0)
-            vol_changed = h1.read_reg(0x0B9)
-            assert vol_changed == 0x30, (
-                f"direct RAM write failed: expected 0x30, got 0x{vol_changed:02X}"
-            )
+            assert h1.read_reg(0x0B9) == 0x30
             h1.dump_eeprom(eeprom_path)
         finally:
             h1.close()
 
-        # Session 2: boot with same EEPROM — volume should revert to
-        # the heartbeat-injected value, proving it's not in EEPROM.
         h2 = _boot_harness(patched_control_hex, eeprom_file=eeprom_path)
         try:
             for _ in range(8):
                 h2.step()
-            vol_reset = h2.read_reg(0x0B9)
-            assert vol_reset == vol_default, (
-                f"volume should reset to 0x{vol_default:02X} on power cycle, "
-                f"got 0x{vol_reset:02X}"
-            )
+            assert h2.read_reg(0x0B9) == vol_default
         finally:
             h2.close()

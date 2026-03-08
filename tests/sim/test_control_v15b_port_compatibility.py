@@ -195,18 +195,13 @@ def test_control_v14_v15b_stock_delta_preserved_in_v151b(patched_control_hex_v15
 
     # Response cmd tail changed between V1.4 and V1.5b at 0x05C6.
     # V1.4 has movlw 0x18; V1.5b switched to cmd=0x1D handling.
-    # Patched V1.51b hooks this site to a stub, but must preserve cmd=0x1D
-    # semantics in the stub body.
+    # The simplified V1.51b design does not touch this parser tail, so the
+    # V1.5b bytes must remain intact.
     assert v14.get(0x05C6, 0xFF) == 0x18
     assert v15.get(0x05C6, 0xFF) == 0x1D
-    assert v151.get(0x05C7, 0xFF) == 0xEF and v151.get(0x05C9, 0xFF) == 0xF0
-    assert any(
-        v151.get(a, 0xFF) == 0x1D
-        and v151.get(a + 1, 0xFF) == 0x0E
-        and v151.get(a + 2, 0xFF) == 0x2F
-        and v151.get(a + 3, 0xFF) == 0x62
-        for a in range(0x7000, 0x7400)
-    )
+    assert [v151.get(0x05C6 + off, 0xFF) for off in range(6)] == [
+        v15.get(0x05C6 + off, 0xFF) for off in range(6)
+    ]
 
 
 @pytest.mark.gpsim

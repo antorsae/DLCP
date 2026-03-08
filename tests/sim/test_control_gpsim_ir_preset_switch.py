@@ -156,8 +156,8 @@ def test_ir_preset_switch_rerenders_preset_screen(patched_control_hex: Path) -> 
         _press_and_step(h, "R")  # Volume -> Preset
         assert h.read_reg(0x0BF) == 1
         l1, l2 = h.lcd_lines()
-        assert l1[15] == "A"
-        assert len(l2) == 16
+        assert l1 == "Preset          "
+        assert l2 == "Active: A       "
 
         h.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
         for _ in range(4):
@@ -165,8 +165,8 @@ def test_ir_preset_switch_rerenders_preset_screen(patched_control_hex: Path) -> 
         assert h.read_reg(0x0BF) == 1
         l1, l2 = h.lcd_lines()
         assert _preset_idx(h) == 1
-        assert l1[15] == "B"
-        assert len(l2) == 16
+        assert l1 == "Preset          "
+        assert l2 == "Active: B       "
 
         h.inject_decoded_ir_event(cmd=0x38, addr=0x10, steps=1)
         for _ in range(4):
@@ -174,8 +174,8 @@ def test_ir_preset_switch_rerenders_preset_screen(patched_control_hex: Path) -> 
         assert h.read_reg(0x0BF) == 1
         l1, l2 = h.lcd_lines()
         assert _preset_idx(h) == 0
-        assert l1[15] == "A"
-        assert len(l2) == 16
+        assert l1 == "Preset          "
+        assert l2 == "Active: A       "
     finally:
         h.close()
 

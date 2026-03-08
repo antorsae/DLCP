@@ -53,6 +53,11 @@ class MainUnitModel:
     usb_cmd03_log: List[UsbCmd03Event] = field(default_factory=list)
     tx_frames: List[SerialFrame] = field(default_factory=list)
 
+    _FILENAME_LEN = 0x1E
+    _FILENAME_RAM_BASE = 0x2C0
+    _FILENAME_EEPROM_BASE = 0x60
+    _FILENAME_GEN_EEPROM = 0x7E
+
     @staticmethod
     def from_hex(name: str, link_addr: int, hex_path: Path) -> "MainUnitModel":
         mem: Dict[int, int] = parse_intel_hex(hex_path)
@@ -63,9 +68,9 @@ class MainUnitModel:
                 flash[addr] = b
             if 0xF00000 <= addr <= 0xF000FF:
                 eeprom[addr - 0xF00000] = b
-        m = MainUnitModel(name=name, link_addr=link_addr, flash=flash, eeprom=eeprom)
-        m.boot_load_filename_from_eeprom()
-        return m
+        model = MainUnitModel(name=name, link_addr=link_addr, flash=flash, eeprom=eeprom)
+        model.boot_load_filename_from_eeprom()
+        return model
 
     def _accepts_route(self, route: int) -> bool:
         if (route & 0xF0) != 0xB0:
@@ -89,27 +94,17 @@ class MainUnitModel:
         self.rx_count += 1
         if not self._accepts_route(frame.route):
             return False
-        if frame.cmd == 0x20:
-            self.set_preset(frame.data & 0x01)
-            self.handled_count += 1
-            return True
-        if frame.cmd == 0x21:
-            self.emit_filename_display_frames(frame.data)
-            self.handled_count += 1
-            return True
-        if frame.cmd == 0x22:
-            self.emit_filename_generation_frames(frame.data)
-            self.handled_count += 1
-            return True
-        return False
+        if frame.cmd != 0x20:
+            return False
+        self.set_preset(frame.data & 0x01)
+        self.handled_count += 1
+        return True
 
     def set_preset(self, idx: int) -> None:
         normalized = 1 if idx else 0
         if normalized == self.preset_idx:
             return
         self.preset_idx = normalized
-        # MAIN patch reloads active filename slot on real preset change.
-        self.boot_load_filename_from_eeprom()
         self.apply_table()
 
     def table_bytes(self, base: int = 0x5600) -> bytes:
@@ -149,7 +144,6 @@ class MainUnitModel:
         filename: str | None = None,
         persist_filename: bool = True,
     ) -> None:
-        """Simulate a full HFD profile upload (table + optional DSP filename)."""
         self.upload_hfd_table(table_payload_0xA00)
         if filename is None:
             return
@@ -158,24 +152,6 @@ class MainUnitModel:
         self.usb_cmd03(0x09, payload)
         if persist_filename:
             self.persist_dirty_filename_to_eeprom()
-
-    # DSP filename storage model (from MAIN disassembly):
-    # - RAM slot   : 0x02C0..0x02DD (30 bytes)
-    # - EEPROM slot A: 0x0060..0x007D (30 bytes)
-    # - EEPROM slot B: 0x00A1..0x00BE (30 bytes)
-    # - EEPROM generation A: 0x007E, B: 0x00BF (incremented on persist).
-    # - cmd=0x03/subcmd=0x09 stores payload bytes with 0x00->0xFF mapping and marks dirty.
-    # - cmd=0x03/subcmd=0x08 reads RAM slot.
-    # - cmd=0x03/subcmd=0x0A erases slot to 0xFF and marks dirty.
-    _FILENAME_LEN = 0x1E
-    _FILENAME_RAM_BASE = 0x2C0
-    _FILENAME_EEPROM_BASE_A = 0x60
-    _FILENAME_EEPROM_BASE_B = 0xA1
-    _FILENAME_GEN_EEPROM_A = 0x7E
-    _FILENAME_GEN_EEPROM_B = 0xBF
-
-    def _active_filename_eeprom_base(self) -> int:
-        return self._FILENAME_EEPROM_BASE_B if self.preset_idx else self._FILENAME_EEPROM_BASE_A
 
     @staticmethod
     def _sanitize_filename_char(b: int) -> int:
@@ -195,21 +171,18 @@ class MainUnitModel:
         return bytes(self.ram[base : base + self._FILENAME_LEN])
 
     def filename_eeprom_bytes(self, preset_idx: int | None = None) -> bytes:
-        idx = self.preset_idx if preset_idx is None else (1 if preset_idx else 0)
-        base = self._FILENAME_EEPROM_BASE_B if idx else self._FILENAME_EEPROM_BASE_A
+        _ = preset_idx
+        base = self._FILENAME_EEPROM_BASE
         return bytes(self.eeprom[base : base + self._FILENAME_LEN])
 
     def filename_generation(self, preset_idx: int | None = None) -> int:
-        idx = self.preset_idx if preset_idx is None else (1 if preset_idx else 0)
-        addr = self._FILENAME_GEN_EEPROM_B if idx else self._FILENAME_GEN_EEPROM_A
-        return self.eeprom[addr] & 0x7F
+        _ = preset_idx
+        return self.eeprom[self._FILENAME_GEN_EEPROM] & 0x7F
 
     def cmd03_set_filename(self, payload: bytes) -> bytes:
         slot = bytearray([0xFF] * self._FILENAME_LEN)
-        n = min(len(payload), self._FILENAME_LEN)
-        for i in range(n):
-            b = payload[i] & 0xFF
-            slot[i] = b if b != 0x00 else 0xFF
+        for i, b in enumerate(payload[: self._FILENAME_LEN]):
+            slot[i] = (b & 0xFF) or 0xFF
         self._set_filename_ram_bytes(bytes(slot))
         self.filename_dirty = True
         return b""
@@ -225,56 +198,16 @@ class MainUnitModel:
     def persist_dirty_filename_to_eeprom(self) -> bool:
         if not self.filename_dirty:
             return False
-        base = self._active_filename_eeprom_base()
+        base = self._FILENAME_EEPROM_BASE
         self.eeprom[base : base + self._FILENAME_LEN] = self.filename_ram_bytes()
-        gen_addr = self._FILENAME_GEN_EEPROM_B if self.preset_idx else self._FILENAME_GEN_EEPROM_A
-        self.eeprom[gen_addr] = (self.eeprom[gen_addr] + 1) & 0x7F
+        self.eeprom[self._FILENAME_GEN_EEPROM] = (self.eeprom[self._FILENAME_GEN_EEPROM] + 1) & 0x7F
         self.filename_dirty = False
         return True
 
     def boot_load_filename_from_eeprom(self) -> None:
-        base = self._active_filename_eeprom_base()
-        slot = bytes(self.eeprom[base : base + self._FILENAME_LEN])
-        self._set_filename_ram_bytes(slot)
-        # Boot-time RAM init consumes persisted state and clears volatile dirty latch.
+        base = self._FILENAME_EEPROM_BASE
+        self._set_filename_ram_bytes(bytes(self.eeprom[base : base + self._FILENAME_LEN]))
         self.filename_dirty = False
-
-    def emit_filename_display_frames(self, req_data: int = 0x00) -> List[SerialFrame]:
-        """Emit MAIN response frames for requested filename page.
-
-        cmd=0x21 data layout:
-        - bit0: preset mirror
-        - bits2:1: page (0..3)
-        - bits7:3: transaction id echo
-        """
-        req = req_data & 0xFF
-        page = (req >> 1) & 0x03
-        start = page * 8
-        end = min(start + 8, self._FILENAME_LEN)
-        slot = self.filename_ram_bytes()
-
-        frames: List[SerialFrame] = [SerialFrame(route=0xBF, cmd=0x2F, data=req).normalized()]
-        for local_idx, abs_idx in enumerate(range(start, end)):
-            frames.append(
-                SerialFrame(
-                    route=0xBF,
-                    cmd=0x30 + local_idx,
-                    data=self._sanitize_filename_char(slot[abs_idx]),
-                ).normalized()
-            )
-        self.tx_frames.extend(frames)
-        return frames
-
-    def emit_filename_generation_frames(self, req_data: int = 0x00) -> List[SerialFrame]:
-        """Emit MAIN response frames for generation metadata request (cmd=0x22)."""
-        req = req_data & 0xFF
-        gen = self.filename_generation()
-        frames = [
-            SerialFrame(route=0xBF, cmd=0x2F, data=req).normalized(),
-            SerialFrame(route=0xBF, cmd=0x22, data=gen).normalized(),
-        ]
-        self.tx_frames.extend(frames)
-        return frames
 
     def drain_tx_frames(self) -> List[SerialFrame]:
         out = list(self.tx_frames)

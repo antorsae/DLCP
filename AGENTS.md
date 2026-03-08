@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-02-22
+Last updated: 2026-03-08
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -170,10 +170,10 @@ Current suite includes:
 - End-to-end/faults: `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
 - Flash/probe tools: `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
 
-Recent verification (2026-02-22):
+Recent verification (2026-03-08):
 
-- `.venv_ep0/bin/python -m pytest -q tests/sim` -> `264 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim --collect-only` -> `264 tests collected`
+- `.venv_ep0/bin/python -m pytest -q tests/sim` -> `211 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim --collect-only` -> `211 tests collected`
 
 ## Documentation Map
 

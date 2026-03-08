@@ -1,4 +1,4 @@
-"""Regression test for CONTROL->MAIN preset resync after full power cycle."""
+"""Regression tests for CONTROL->MAIN preset resync with bounded retry bursts."""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ def _boot_harness(
         eeprom_file=eeprom_file,
         chunk_cycles=200_000,
         hold_cycles=100_000,
+        heartbeat_rx_mode="none",
+        heartbeat_force_connected=True,
     )
     h.warmup(WARMUP_CYCLES)
     return h
@@ -55,119 +57,127 @@ def _eeprom_byte(path: Path, addr: int) -> int:
     return mem.get(addr, 0xFF)
 
 
+def _preset_frames(frames) -> list[tuple[int, int, int]]:
+    return [(f.route, f.cmd, f.data) for f in frames if f.cmd == 0x20]
+
+
+def _wait_for_preset_frame_count(
+    h: GpsimControlHarness,
+    expected: int,
+    *,
+    limit: int = 160,
+) -> list[tuple[int, int, int]]:
+    for _ in range(limit):
+        frames = _preset_frames(h.tx_frames())
+        if len(frames) >= expected:
+            return frames
+        h.step()
+    raise AssertionError(f"failed to collect {expected} preset frames, got {_preset_frames(h.tx_frames())!r}")
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_control_boot_resyncs_main_preset_after_full_power_cycle(
     patched_control_hex: Path,
     patched_main_hex: Path,
 ) -> None:
-    """If CONTROL restores preset B from EEPROM, boot must re-emit cmd=0x20 data=1."""
     _require_gpsim()
 
     with tempfile.TemporaryDirectory() as td:
         eeprom_path = Path(td) / "eeprom.hex"
 
-        # Session 1: user selects preset B and CONTROL persists EEPROM[0x74].
         h1 = _boot_harness(patched_control_hex)
         try:
-            _press_and_step(h1, "R")  # Volume -> Preset
-            tx_before = len(h1.tx_frames())
-            _press_and_step(h1, "D")  # Select B (emits cmd=0x20 data=1)
-            tx_after_select = h1.tx_frames()[tx_before:]
-            preset_frames = [f for f in tx_after_select if f.cmd == 0x20]
-            assert preset_frames, "selecting preset B did not emit cmd=0x20 frame"
-            assert preset_frames[-1].data == 0x01
+            _press_and_step(h1, "R")
+            _press_and_step(h1, "D")
             h1.dump_eeprom(eeprom_path)
         finally:
             h1.close()
 
-        # Session 2: full power cycle for both CONTROL and MAIN.
-        # MAIN starts in preset A (bit clear) after boot and depends on
-        # CONTROL's boot-time preset frame to resync to B.
         main_after_boot = MainUnitModel.from_hex("main", 1, patched_main_hex)
         assert main_after_boot.preset_idx == 0
 
         h2 = _boot_harness(patched_control_hex, eeprom_file=eeprom_path)
         try:
-            for _ in range(10):
+            boot_frames = _wait_for_preset_frame_count(h2, 3)
+            assert boot_frames[:3] == [
+                (0xB0, 0x20, 0x01),
+                (0xB0, 0x20, 0x01),
+                (0xB0, 0x20, 0x01),
+            ]
+            _deliver_preset_frames(main_after_boot, h2.tx_frames())
+            assert main_after_boot.preset_idx == 1
+            assert main_after_boot.apply_count == 1
+
+            before = len(_preset_frames(h2.tx_frames()))
+            for _ in range(24):
                 h2.step()
-            line1, _ = h2.lcd_lines()
-            assert line1[15] == "B", f"expected CONTROL UI to restore B, got {line1!r}"
-
-            boot_frames = h2.tx_frames()
-            _deliver_preset_frames(main_after_boot, boot_frames)
-
-            assert any(f.cmd == 0x20 and f.data == 0x01 for f in boot_frames), (
-                "CONTROL boot did not emit preset-resync frame cmd=0x20 data=1"
-            )
-            assert main_after_boot.preset_idx == 1, (
-                "MAIN remained in preset A after full power cycle; "
-                "expected CONTROL boot to resync MAIN to preset B"
-            )
+            after = len(_preset_frames(h2.tx_frames()))
+            assert after == before, "boot retry burst did not terminate after three sends"
         finally:
             h2.close()
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_late_join_main_reboot_resyncs_via_periodic_preset_broadcast(
+def test_reconnect_queues_exactly_three_additional_preset_retries(
     patched_control_hex: Path,
-    patched_main_hex: Path,
 ) -> None:
-    """A MAIN rebooting mid-run should be pulled back to CONTROL's current preset."""
     _require_gpsim()
 
     with tempfile.TemporaryDirectory() as td:
         eeprom_path = Path(td) / "eeprom.hex"
-        eeprom_after_path = Path(td) / "eeprom_after.hex"
+        h = _boot_harness(patched_control_hex, eeprom_file=eeprom_path)
+        try:
+            baseline = len(_preset_frames(h.tx_frames()))
+            flags = h.read_reg(0x01F)
+            h._issue(f"reg(0x01F)=0x{flags & ~0x02:02X}", 5.0)
+            for _ in range(4):
+                h.step()
+            baseline = len(_preset_frames(h.tx_frames()))
+            flags = h.read_reg(0x01F)
+            h._issue(f"reg(0x01F)=0x{flags | 0x02:02X}", 5.0)
 
-        # Session 1: persist preset B in CONTROL EEPROM.
+            burst = _wait_for_preset_frame_count(h, baseline + 3)[baseline:]
+            assert burst[:3] == [
+                (0xB0, 0x20, 0x00),
+                (0xB0, 0x20, 0x00),
+                (0xB0, 0x20, 0x00),
+            ]
+            stable = len(_preset_frames(h.tx_frames()))
+            for _ in range(24):
+                h.step()
+            assert len(_preset_frames(h.tx_frames())) == stable
+        finally:
+            h.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_retry_burst_does_not_rewrite_preset_eeprom(
+    patched_control_hex: Path,
+) -> None:
+    _require_gpsim()
+
+    with tempfile.TemporaryDirectory() as td:
+        eeprom_path = Path(td) / "seed.hex"
+        after_path = Path(td) / "after.hex"
+
         h1 = _boot_harness(patched_control_hex)
         try:
-            _press_and_step(h1, "R")  # Volume -> Preset
-            _press_and_step(h1, "D")  # Select B
+            _press_and_step(h1, "R")
+            _press_and_step(h1, "D")
             h1.dump_eeprom(eeprom_path)
         finally:
             h1.close()
         assert _eeprom_byte(eeprom_path, 0x74) == 0x01
 
-        # Session 2: CONTROL runs with preset B restored.
         h2 = _boot_harness(patched_control_hex, eeprom_file=eeprom_path)
         try:
-            boot_frames = h2.tx_frames()
-            assert any(f.cmd == 0x20 and f.data == 0x01 for f in boot_frames)
-
-            # MAIN #1 online at startup follows preset B.
-            main1 = MainUnitModel.from_hex("main1", 1, patched_main_hex)
-            _deliver_preset_frames(main1, boot_frames)
-            assert main1.preset_idx == 1
-            assert main1.apply_count == 1
-
-            # MAIN #2 reboots later (starts from preset A) and must recover to B
-            # from periodic CONTROL preset broadcasts.
-            main2 = MainUnitModel.from_hex("main2", 1, patched_main_hex)
-            assert main2.preset_idx == 0
-
-            frame_idx = len(h2.tx_frames())
-            saw_periodic_preset = False
-            for _ in range(80):
+            for _ in range(40):
                 h2.step()
-                new_frames = h2.tx_frames()[frame_idx:]
-                frame_idx += len(new_frames)
-                _deliver_preset_frames(main2, new_frames)
-                if any(f.cmd == 0x20 and f.data == 0x01 for f in new_frames):
-                    saw_periodic_preset = True
-                if saw_periodic_preset and main2.preset_idx == 1:
-                    break
-
-            assert saw_periodic_preset, "no periodic preset resync frame observed after startup"
-            assert main2.preset_idx == 1, "late-join MAIN did not recover to CONTROL preset B"
-            # MAIN cmd=0x20 is idempotent: repeated set-B frames should not re-apply.
-            assert main2.apply_count == 1
-
-            # Periodic sync path should not rewrite preset EEPROM.
-            h2.dump_eeprom(eeprom_after_path)
+            h2.dump_eeprom(after_path)
         finally:
             h2.close()
 
-        assert _eeprom_byte(eeprom_after_path, 0x74) == 0x01
+        assert _eeprom_byte(after_path, 0x74) == 0x01
