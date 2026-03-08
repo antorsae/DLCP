@@ -25,6 +25,7 @@ analysis/
 ├── AGENTS.md
 ├── docs/
 │   ├── AB_PRESETS.md
+│   ├── ROBUSTNESS.md
 │   ├── R_L_ROUTING.md
 │   ├── SIMULATION.md
 │   ├── TEST_SIMULATOR.md
@@ -180,6 +181,7 @@ Recent verification (2026-03-08):
 Top-level docs:
 
 - `docs/AB_PRESETS.md` (A/B preset patch design, flashing, checks)
+- `docs/ROBUSTNESS.md` (robustness findings, release policy, and implementation plan)
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
