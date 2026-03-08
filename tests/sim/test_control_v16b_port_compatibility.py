@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from dlcp_fw.patch.verify_presets_ab import check_control_v16b, parse_intel_hex
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V15B, STOCK_CONTROL_HEX_V16B
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness, TxTriplet
+from dlcp_fw.sim.hexio import write_intel_hex
 
 
 WARMUP_CYCLES = 25_000_000
@@ -44,10 +46,11 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
-def _boot_harness(control_hex: Path) -> GpsimControlHarness:
+def _boot_harness(control_hex: Path, *, eeprom_file: Path | None = None) -> GpsimControlHarness:
     h = GpsimControlHarness(
         control_hex,
         fast_boot=True,
+        eeprom_file=eeprom_file,
         chunk_cycles=200_000,
         hold_cycles=120_000,
         heartbeat_rx_mode="none",
@@ -172,6 +175,25 @@ def _run_action_frames(control_hex: Path, *, pre_keys: list[str], action_key: st
         h.close()
 
 
+def _seed_stale_v16_setup_index(path: Path, *, setup_idx: int) -> None:
+    mem = {addr: 0x00 for addr in range(256)}
+    mem[0x01] = setup_idx & 0xFF
+    mem[0x73] = 0xFF
+    mem[0x74] = 0xFF
+    write_intel_hex(path, mem)
+
+
+def _enter_setup_screen(h: GpsimControlHarness, *, max_moves: int = 8) -> tuple[str, str]:
+    for _ in range(max_moves):
+        lines = h.lcd_lines()
+        if lines[0].startswith("Setup"):
+            return lines
+        h.press("R")
+        for _ in range(KEY_STEPS):
+            h.step()
+    raise AssertionError(f"failed to reach Setup screen: lcd={h.lcd_lines()} state=0x{h.read_reg(0x0BF):02X}")
+
+
 def test_control_v161b_static_verifier_accepts_current_patch(patched_control_hex_v161b: Path) -> None:
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
     patched = parse_intel_hex(patched_control_hex_v161b)
@@ -227,6 +249,47 @@ def test_control_v161b_preserves_setup_usb_surface_code_blocks(patched_control_h
             f"{label} drifted in V1.61b; first diff=0x{diffs[0]:04X} "
             f"(stock=0x{v16.get(diffs[0], 0xFF):02X}, patched=0x{v161.get(diffs[0], 0xFF):02X})"
         )
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v161b_clamps_stale_setup_index_from_eeprom(patched_control_hex_v161b: Path) -> None:
+    _require_gpsim()
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        stale = tmp / "stale_setup.hex"
+        scrubbed = tmp / "scrubbed.hex"
+        _seed_stale_v16_setup_index(stale, setup_idx=0x01)
+
+        stock = _boot_harness(STOCK_CONTROL_HEX_V16B, eeprom_file=stale)
+        try:
+            stock_setup = _enter_setup_screen(stock)
+            assert stock_setup[0] == "Setup           "
+            assert stock_setup[1] != "BL Timeout      "
+            stock.press("S")
+            for _ in range(KEY_STEPS):
+                stock.step()
+            stock_editor = stock.lcd_lines()
+            assert stock_editor[0] != "BL Timeout      "
+            assert stock_editor[1] == "30 sec          "
+        finally:
+            stock.close()
+
+        patched = _boot_harness(patched_control_hex_v161b, eeprom_file=stale)
+        try:
+            patched.dump_eeprom(scrubbed)
+            scrubbed_mem = parse_intel_hex(scrubbed)
+            assert scrubbed_mem.get(0x01, 0xFF) == 0x00
+
+            patched_setup = _enter_setup_screen(patched)
+            assert patched_setup == ("Setup           ", "BL Timeout      ")
+            patched.press("S")
+            for _ in range(KEY_STEPS):
+                patched.step()
+            assert patched.lcd_lines() == ("BL Timeout      ", "30 sec          ")
+        finally:
+            patched.close()
 
 
 @pytest.mark.gpsim

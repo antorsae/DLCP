@@ -138,3 +138,22 @@ def test_check_control_v16b_rejects_filename_generation_literal_drift() -> None:
 
     with pytest.raises(RuntimeError, match="generation sender missing"):
         check_control_v16b(stock, mut)
+
+
+def test_check_control_v16b_rejects_boot_setup_index_clamp_drift() -> None:
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    patched = parse_intel_hex(PATCHED_CONTROL_HEX_V161B)
+    mut = dict(patched)
+
+    hit = None
+    seq = [0xBA, 0x51, 0x06, 0xE0, 0xBA, 0x6B, 0x01, 0x0E, 0xA9, 0x6E]
+    for addr in range(0x7000, 0x7400):
+        if all(mut.get(addr + off, 0xFF) == byte for off, byte in enumerate(seq)):
+            hit = addr
+            break
+    if hit is None:
+        raise RuntimeError("test setup failed: stale setup-index clamp signature not found")
+    mut[hit + 4] = 0x00
+
+    with pytest.raises(RuntimeError, match="stale setup-index clamp"):
+        check_control_v16b(stock, mut)

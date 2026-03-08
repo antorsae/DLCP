@@ -226,9 +226,9 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
     if ir_target == 0x0E4C:
         raise RuntimeError("control IR dispatch hook target drifted to stock label_166 (0x0E4C)")
-    if not (0x7000 <= ir_target < 0x7400):
+    if not (0x7000 <= ir_target < 0x7600):
         raise RuntimeError(
-            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x73FF)"
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x75FF)"
         )
 
     # --- Patch 8: parser tail hook at 0x05EC ---
@@ -239,21 +239,21 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     if p_w1_hi != 0xEF or p_w2_hi != 0xF0:
         raise RuntimeError("control parser tail hook at 0x05EC not a goto instruction")
     parser_target = ((((p_w2_hi & 0x0F) << 8) | p_w2_lo) << 8 | p_w1_lo) * 2
-    if not (0x7000 <= parser_target < 0x7400):
+    if not (0x7000 <= parser_target < 0x7600):
         raise RuntimeError(
-            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x73FF)"
+            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x75FF)"
         )
 
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
-    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int | None:
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7600) -> int | None:
         n = len(seq)
         for a in range(lo, hi - n + 1):
             if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
                 return a
         return None
 
-    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int:
+    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7600) -> int:
         n = len(seq)
         count = 0
         for a in range(lo, hi - n + 1):
@@ -261,10 +261,22 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
                 count += 1
         return count
 
+    fs_w1_lo = control_new.get(0x0B52, 0xFF)
+    fs_w1_hi = control_new.get(0x0B53, 0xFF)
+    fs_w2_lo = control_new.get(0x0B54, 0xFF)
+    fs_w2_hi = control_new.get(0x0B55, 0xFF)
+    if fs_w1_hi != 0xEF or fs_w2_hi != 0xF0:
+        raise RuntimeError("control full-sync hook at 0x0B52 not a goto instruction")
+    full_sync_target = ((((fs_w2_hi & 0x0F) << 8) | fs_w2_lo) << 8 | fs_w1_lo) * 2
+    if not (0x7000 <= full_sync_target < 0x7600):
+        raise RuntimeError(
+            f"control full-sync hook target out of stub range: 0x{full_sync_target:04X} (want 0x7000..0x75FF)"
+        )
+
     full_sync_anchor = _find_seq([0x28, 0x6A, 0x06, 0x0E, 0x28, 0x60])  # clrf 0x028; movlw 0x06; cpfslt 0x028
     if full_sync_anchor is None or full_sync_anchor < 0x7004:
-        raise RuntimeError("control full-sync stub signature not found in 0x7000 stub area")
-    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_anchor - 4, full_sync_anchor)]
+        raise RuntimeError("control full-sync stub signature not found in 0x7000..0x75FF stub area")
+    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_target, full_sync_target + 4)]
     if full_sync_call[1] != 0xEC or full_sync_call[3] != 0xF0:
         raise RuntimeError("control full-sync stub missing call to TX-only preset sender")
 
@@ -282,7 +294,6 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x73]")
     if _find_seq([0x72, 0x0E, 0xA9, 0x6E]) is not None:
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x72]")
-
     # IR preset shortcuts must exist in stub code: xorlw 0x38 and xorlw 0x39.
     if _find_seq([0x38, 0x0A]) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x38 (F1->preset A)")
@@ -294,7 +305,7 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     # - context preserve mask keeps redraw+mode bits: andlw 0x90
     # - parser chunk gate: andlw 0xF8; xorlw 0x30 (local idx 0..7)
     # - parser context cmd literal: movlw 0x2F
-    # - generation sender: movlw 0x22 (cmd)
+    # - generation sender: movlw 0x22 (request)
     # - page sender: movlw 0x21 (cmd)
     if _find_seq([0x78, 0x0B]) is None:
         raise RuntimeError("control filename request token mask missing (andlw 0x78)")
@@ -315,7 +326,7 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
 
     # Verify stub calls function_042 (0x0D24) at some point
     found_fn042 = False
-    for a in range(0x7000, 0x7400, 2):
+    for a in range(0x7000, 0x7600, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         # call 0x0D24: EC92 F006 -> bytes 92 EC 06 F0
@@ -331,7 +342,7 @@ def check_control(control_orig: Dict[int, int], control_new: Dict[int, int]) -> 
     # Verify send_preset_frame emits route 0xB0, cmd 0x20
     found_b0 = False
     found_20 = False
-    for a in range(0x7000, 0x7400, 2):
+    for a in range(0x7000, 0x7600, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0
@@ -464,9 +475,9 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
     if ir_target == 0x0E38:
         raise RuntimeError("control IR dispatch hook target drifted to stock label_164 (0x0E38)")
-    if not (0x7000 <= ir_target < 0x7400):
+    if not (0x7000 <= ir_target < 0x7600):
         raise RuntimeError(
-            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x73FF)"
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x75FF)"
         )
 
     # --- Patch 8: parser tail hook at 0x05C6 ---
@@ -477,21 +488,21 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     if p_w1_hi != 0xEF or p_w2_hi != 0xF0:
         raise RuntimeError("control parser tail hook at 0x05C6 not a goto instruction")
     parser_target = ((((p_w2_hi & 0x0F) << 8) | p_w2_lo) << 8 | p_w1_lo) * 2
-    if not (0x7000 <= parser_target < 0x7400):
+    if not (0x7000 <= parser_target < 0x7600):
         raise RuntimeError(
-            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x73FF)"
+            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x75FF)"
         )
 
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
-    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int | None:
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7600) -> int | None:
         n = len(seq)
         for a in range(lo, hi - n + 1):
             if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
                 return a
         return None
 
-    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int:
+    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7600) -> int:
         n = len(seq)
         count = 0
         for a in range(lo, hi - n + 1):
@@ -499,10 +510,22 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
                 count += 1
         return count
 
+    fs_w1_lo = control_new.get(0x0B2C, 0xFF)
+    fs_w1_hi = control_new.get(0x0B2D, 0xFF)
+    fs_w2_lo = control_new.get(0x0B2E, 0xFF)
+    fs_w2_hi = control_new.get(0x0B2F, 0xFF)
+    if fs_w1_hi != 0xEF or fs_w2_hi != 0xF0:
+        raise RuntimeError("control full-sync hook at 0x0B2C not a goto instruction")
+    full_sync_target = ((((fs_w2_hi & 0x0F) << 8) | fs_w2_lo) << 8 | fs_w1_lo) * 2
+    if not (0x7000 <= full_sync_target < 0x7600):
+        raise RuntimeError(
+            f"control full-sync hook target out of stub range: 0x{full_sync_target:04X} (want 0x7000..0x75FF)"
+        )
+
     full_sync_anchor = _find_seq([0x28, 0x6A, 0x06, 0x0E, 0x28, 0x60])  # clrf 0x028; movlw 0x06; cpfslt 0x028
     if full_sync_anchor is None or full_sync_anchor < 0x7004:
-        raise RuntimeError("control full-sync stub signature not found in 0x7000 stub area")
-    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_anchor - 4, full_sync_anchor)]
+        raise RuntimeError("control full-sync stub signature not found in 0x7000..0x75FF stub area")
+    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_target, full_sync_target + 4)]
     if full_sync_call[1] != 0xEC or full_sync_call[3] != 0xF0:
         raise RuntimeError("control full-sync stub missing call to TX-only preset sender")
 
@@ -520,7 +543,6 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x73]")
     if _find_seq([0x72, 0x0E, 0xA9, 0x6E]) is not None:
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x72]")
-
     # IR preset shortcuts must exist in stub code: xorlw 0x38 and xorlw 0x39.
     if _find_seq([0x38, 0x0A]) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x38 (F1->preset A)")
@@ -532,7 +554,7 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     # - context preserve mask keeps redraw+mode bits: andlw 0x90
     # - parser chunk gate: andlw 0xF8; xorlw 0x30 (local idx 0..7)
     # - parser context cmd literal: movlw 0x2F
-    # - generation sender: movlw 0x22 (cmd)
+    # - generation sender: movlw 0x22 (request)
     # - page sender: movlw 0x21 (cmd)
     if _find_seq([0x78, 0x0B]) is None:
         raise RuntimeError("control filename request token mask missing (andlw 0x78)")
@@ -553,7 +575,7 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
 
     # Verify stub calls function_042 (0x0CFE) at some point.
     found_fn042 = False
-    for a in range(0x7000, 0x7400, 2):
+    for a in range(0x7000, 0x7600, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         # call 0x0CFE: EC7F F006 -> bytes 7F EC 06 F0
@@ -569,7 +591,7 @@ def check_control_v15b(control_orig: Dict[int, int], control_new: Dict[int, int]
     # Verify send_preset_frame emits route 0xB0, cmd 0x20
     found_b0 = False
     found_20 = False
-    for a in range(0x7000, 0x7400, 2):
+    for a in range(0x7000, 0x7600, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0
@@ -702,9 +724,9 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     ir_target = ((((ir_w2_hi & 0x0F) << 8) | ir_w2_lo) << 8 | ir_w1_lo) * 2
     if ir_target == 0x0DEC:
         raise RuntimeError("control IR dispatch hook target drifted to stock label_162 (0x0DEC)")
-    if not (0x7000 <= ir_target < 0x7400):
+    if not (0x7000 <= ir_target < 0x7600):
         raise RuntimeError(
-            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x73FF)"
+            f"control IR dispatch hook target out of stub range: 0x{ir_target:04X} (want 0x7000..0x75FF)"
         )
 
     # --- Patch 8: parser tail hook at 0x05D0 ---
@@ -715,21 +737,21 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     if p_w1_hi != 0xEF or p_w2_hi != 0xF0:
         raise RuntimeError("control parser tail hook at 0x05D0 not a goto instruction")
     parser_target = ((((p_w2_hi & 0x0F) << 8) | p_w2_lo) << 8 | p_w1_lo) * 2
-    if not (0x7000 <= parser_target < 0x7400):
+    if not (0x7000 <= parser_target < 0x7600):
         raise RuntimeError(
-            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x73FF)"
+            f"control parser-tail hook target out of stub range: 0x{parser_target:04X} (want 0x7000..0x75FF)"
         )
 
     # Full-sync stub must call the TX-only preset sender (same call target as
     # send_preset_frame's first instruction), but avoid hard-coded stub offsets.
-    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int | None:
+    def _find_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7600) -> int | None:
         n = len(seq)
         for a in range(lo, hi - n + 1):
             if all(control_new.get(a + i, 0xFF) == seq[i] for i in range(n)):
                 return a
         return None
 
-    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7400) -> int:
+    def _count_seq(seq: list[int], lo: int = 0x7000, hi: int = 0x7600) -> int:
         n = len(seq)
         count = 0
         for a in range(lo, hi - n + 1):
@@ -737,11 +759,23 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
                 count += 1
         return count
 
+    fs_w1_lo = control_new.get(0x0B36, 0xFF)
+    fs_w1_hi = control_new.get(0x0B37, 0xFF)
+    fs_w2_lo = control_new.get(0x0B38, 0xFF)
+    fs_w2_hi = control_new.get(0x0B39, 0xFF)
+    if fs_w1_hi != 0xEF or fs_w2_hi != 0xF0:
+        raise RuntimeError("control full-sync hook at 0x0B36 not a goto instruction")
+    full_sync_target = ((((fs_w2_hi & 0x0F) << 8) | fs_w2_lo) << 8 | fs_w1_lo) * 2
+    if not (0x7000 <= full_sync_target < 0x7600):
+        raise RuntimeError(
+            f"control full-sync hook target out of stub range: 0x{full_sync_target:04X} (want 0x7000..0x75FF)"
+        )
+
     # call 0x0C40 (function_031): bytes 20 EC 06 F0
     full_sync_anchor = _find_seq([0x20, 0xEC, 0x06, 0xF0])
     if full_sync_anchor is None or full_sync_anchor < 0x7004:
-        raise RuntimeError("control full-sync stub signature not found in 0x7000 stub area")
-    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_anchor - 4, full_sync_anchor)]
+        raise RuntimeError("control full-sync stub signature not found in 0x7000..0x75FF stub area")
+    full_sync_call = [control_new.get(a, 0xFF) for a in range(full_sync_target, full_sync_target + 4)]
     if full_sync_call[1] != 0xEC or full_sync_call[3] != 0xF0:
         raise RuntimeError("control full-sync stub missing call to TX-only preset sender")
     # Following instruction must be goto 0x0B3A (continue original flow).
@@ -783,7 +817,7 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     # - context preserve mask keeps redraw+mode bits: andlw 0x90
     # - parser chunk gate: andlw 0xF8; xorlw 0x30 (local idx 0..7)
     # - parser context cmd literal: movlw 0x2F
-    # - generation sender: movlw 0x22 (cmd)
+    # - generation sender: movlw 0x22 (request)
     # - page sender: movlw 0x21 (cmd)
     if _find_seq([0x78, 0x0B]) is None:
         raise RuntimeError("control filename request token mask missing (andlw 0x78)")
@@ -802,9 +836,12 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     if _count_seq([0xB1, 0x0E]) < 1:
         raise RuntimeError("control missing route=0xB1 sender (filename request unicast)")
 
+    if _find_seq([0xBA, 0x51, 0x06, 0xE0, 0xBA, 0x6B, 0x01, 0x0E, 0xA9, 0x6E]) is None:
+        raise RuntimeError("control V1.61b boot stub missing stale setup-index clamp for EEPROM[0x01]/0x0BA")
+
     # Verify stub calls function_035 (0x0CB2) at some point.
     found_fn035 = False
-    for a in range(0x7000, 0x7400, 2):
+    for a in range(0x7000, 0x7600, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         # call 0x0CB2: EC59 F006 -> bytes 59 EC 06 F0
@@ -820,7 +857,7 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     # Verify send_preset_frame emits route 0xB0, cmd 0x20.
     found_b0 = False
     found_20 = False
-    for a in range(0x7000, 0x7400, 2):
+    for a in range(0x7000, 0x7600, 2):
         lo = control_new.get(a, 0xFF)
         hi = control_new.get(a + 1, 0xFF)
         if lo == 0xB0 and hi == 0x0E:  # movlw 0xB0

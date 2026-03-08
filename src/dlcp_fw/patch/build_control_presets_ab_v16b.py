@@ -135,10 +135,20 @@ org 0x7000
 ; ------------------------------------------------------------
 ; preset_boot_init_wrapper:
 ; - preserve stock function_026 behavior
+; - migrate stale V1.5b-era setup submenu index to 0 for V1.6b's
+;   single-item Setup menu and scrub EEPROM[0x01] once if needed
 ; - load preset from EEPROM[0x74] into state_flags bit6
 ; ------------------------------------------------------------
 preset_boot_init_wrapper:
     call 0x0A46                 ; function_026 (stock settings load)
+    movf 0x0BA, W, BANKED
+    bz preset_boot_setup_ok
+    clrf 0x0BA, BANKED
+    movlw 0x01
+    movwf EEADR, ACCESS
+    clrf WREG, ACCESS
+    call 0x01A2                 ; function_011 (EEPROM byte write)
+preset_boot_setup_ok:
     movlw 0x74
     call 0x0196                 ; function_010 (EEPROM byte read)
     movwf 0x027, ACCESS
@@ -401,7 +411,7 @@ preset_exit_check:
 ; ------------------------------------------------------------
 ; parser_tail_patch:
 ; - preserve stock cmd=0x1D behavior
-; - add cmd=0x2F context + cmd=0x30..0x37 local chunk ingest
+; - add cmd=0x2F context + cmd=0x22 generation gate + cmd=0x30..0x37 local chunk ingest
 ; ------------------------------------------------------------
 parser_tail_patch:
     movlw 0x1D
@@ -446,7 +456,6 @@ prs_parser_check_gen:
     btfss 0x02E, 4, ACCESS
     goto prs_parser_done
 
-    ; Generation is carried as 7-bit data (<0x80) to stay framing-safe.
     movf 0x030, W, ACCESS
     andlw 0x7F
     movwf 0x028, ACCESS
