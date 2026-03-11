@@ -17,14 +17,25 @@ FIRMWARE_DUMPS_DIR = FIRMWARE_DIR / "dumps"
 FIRMWARE_REFERENCE_DIR = FIRMWARE_DIR / "reference"
 
 STOCK_MAIN_HEX = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3.hex"
+STOCK_MAIN_PROGRAM_MEMORY_EXPORT = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-Program Memory.hex"
+STOCK_MAIN_DUMP_TABLE = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-dump.hex"
+STOCK_MAIN_DUMP_CONVERTED_HEX = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-dump-converted.hex"
+STOCK_MAIN_COMBINED_HEX = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-combined.hex"
+STOCK_MAIN_CONFIG_BITS_EXPORT = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-Configuration Bits.hex"
+STOCK_MAIN_EE_DATA_EXPORT = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-EE Data Memory.hex"
+STOCK_MAIN_USER_ID_EXPORT = FIRMWARE_STOCK_DIR / "main" / "DLCP Firmware V2.3-User ID Memory.hex"
 STOCK_CONTROL_HEX_V14 = FIRMWARE_STOCK_DIR / "control" / "DLCP Control Firmware V1.4.hex"
 STOCK_CONTROL_HEX_V15B = FIRMWARE_STOCK_DIR / "control" / "DLCP Control Firmware V1.5b.hex"
 STOCK_CONTROL_HEX_V16B = FIRMWARE_STOCK_DIR / "control" / "DLCP Control Firmware V1.6b.hex"
 
-PATCHED_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.4.hex"
+PATCHED_MAIN_HEX_V24 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.4.hex"
+PATCHED_MAIN_HEX_V25 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.5.hex"
+# Backward-compatible alias: existing tests/tools use this as the active main patch.
+PATCHED_MAIN_HEX = PATCHED_MAIN_HEX_V25
 PATCHED_CONTROL_HEX_V141 = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.41.hex"
 PATCHED_CONTROL_HEX_V151B = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.51b.hex"
 PATCHED_CONTROL_HEX_V161B = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.61b.hex"
+PATCHED_CONTROL_HEX_V162B = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.62b.hex"
 # Backward-compatible alias: existing tests/tools use this as the active control patch.
 PATCHED_CONTROL_HEX = PATCHED_CONTROL_HEX_V141
 
