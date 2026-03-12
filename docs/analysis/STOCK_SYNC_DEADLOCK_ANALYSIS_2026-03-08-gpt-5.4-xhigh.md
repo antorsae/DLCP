@@ -169,7 +169,7 @@ CONTROL stock config bytes:
 - `CONFIG2H = 0x00`
 - `CONFIG4L = 0x80`
 
-Per `39632e.txt`:
+Per `39632e.pdf` / `39632e.md`:
 
 - `WDTEN = 0` means watchdog is disabled unless software sets `WDTCON.SWDTEN`
 - `STVREN = 0` means stack full/underflow does not reset

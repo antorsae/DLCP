@@ -14,8 +14,7 @@ Deadlock / desync risks I can confirm in stock 2.3 + 1.4
 
   Watchdog (WDT) reality
 
-  - Datasheet: CONFIG2H contains WDTPS and WDTEN (firmware/reference/39632e.txt:46958); WDT behavior and WDTCON.SWDTEN are described in the WDT
-    section (firmware/reference/39632e.txt:47853).
+  - Datasheet: CONFIG2H contains WDTPS and WDTEN (see `firmware/reference/39632e.pdf`, with `firmware/reference/39632e.md` as the repo citation companion); WDT behavior and `WDTCON.SWDTEN` are described in the WDT section of the same datasheet.
   - Stock MAIN has CONFIG2H=0x1E → WDTEN=0 (off, SW-controlled) and WDTPS=0xF (1:32768). Stock CONTROL has CONFIG2H=0x00 → WDTEN=0, WDTPS=0
     (1:1). Neither disassembly shows any WDTCON access, so WDT stays off in practice → a deadlock won’t self-recover.
 

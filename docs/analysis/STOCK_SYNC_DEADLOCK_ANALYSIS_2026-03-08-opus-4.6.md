@@ -3,7 +3,7 @@
 Date: 2026-03-08
 Model: Claude Opus 4.6 (high effort, 5 parallel research agents)
 Scope: stock MAIN `DLCP Firmware V2.3.hex` and stock CONTROL `DLCP Control Firmware V1.4.hex`
-Reference: PIC18F2455/2550 datasheet `firmware/reference/39632e.pdf|txt`
+Reference: PIC18F2455/2550 datasheet `firmware/reference/39632e.pdf` with repo companion `firmware/reference/39632e.md`
 
 ## Executive Summary
 
@@ -25,7 +25,7 @@ These are sufficient to produce exactly the failure patterns reported:
 
 ## Safety Net Analysis: WDT and Reset Configuration
 
-### PIC18F2455/2550 Watchdog Capabilities (from 39632e.txt)
+### PIC18F2455/2550 Watchdog Capabilities (from 39632e.pdf / 39632e.md)
 
 The WDT uses the INTRC oscillator with a base period of 4ms, multiplied by a 16-bit postscaler (WDTPS3:WDTPS0). Available timeouts range from 4ms (1:1) to 131s (1:32768). Two control levels exist:
 
