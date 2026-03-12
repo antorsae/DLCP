@@ -1,8 +1,11 @@
 # DLCP Co-Simulation Guide
 
-gpsim-backed co-simulation of CONTROL (V1.4) and MAIN (V2.3) PIC18F2550
-firmware.  Runs unmodified firmware images with minimal binary overlays
-for reset-vector redirection, UART mailbox hooks, and optional Timer3 shim.
+gpsim-backed co-simulation of CONTROL (V1.4) and MAIN (V2.3) firmware.
+MAIN now runs on the physical `p18f2455` model. CONTROL now runs on the
+physical `p18f25k20` model via the repo-local `gpsim-xtc` fork in
+`vendor/gpsim-0.32.1-xtc/`, built under `artifacts/tools/gpsim-xtc/`.
+Runs unmodified firmware images with minimal binary overlays for reset-vector
+redirection, UART mailbox hooks, and optional Timer3 shim.
 
 ## Quick Start
 
@@ -71,11 +74,16 @@ round-robin order, pumping serial frames between steps via `LinkPipe`.
 
 ### Serial transport model (LinkPipe)
 
-Each serial link is modelled as a byte-paced queue matching PIC18F2550
-EUSART at 31,250 baud, 8N1:
+Each serial link is modelled as a byte-paced queue matching the PIC18 EUSART
+used by both DLCP MCUs at 31,250 baud, 8N1. CONTROL simulation now uses the
+physical `p18f25k20` target from the local `gpsim-xtc` build:
 
-- **Wire time**: 960 instruction cycles per byte (320 us at 3 MIPS)
-- **Frame size**: 3 bytes (route, cmd, data) = 2,880 Tcy per frame
+- **Wire time**:
+  - CONTROL: 960 instruction cycles per byte (320 us at 3 MIPS, `Fosc=12 MHz`)
+  - MAIN: 1280 instruction cycles per byte (320 us at 4 MIPS, `Fosc=16 MHz`)
+- **Frame size**:
+  - CONTROL transmitter: 2,880 Tcy per 3-byte frame
+  - MAIN transmitter: 3,840 Tcy per 3-byte frame
 - **FIFO depth**: CONTROL ring = 47 usable slots; MAIN mailbox = 63 slots
 - **Overrun**: frames that arrive when the sink's ring/mailbox is full are
   silently dropped (models OERR on real silicon)
@@ -192,6 +200,14 @@ Arrow keys also work for UP/DOWN/LEFT/RIGHT.
 - **release**: AN0 ADC driven LOW — MAIN enters standby sensing.
 - **control** / **auto**: AN0 follows CONTROL RC1 bus state (heartbeat-driven).
 
+In the higher-fidelity native-ring chain harness, MAIN boot now uses a real
+gpsim analog stimulus on `p18f2455.porta0` to clear the stock `function_024`
+AN0 gate. The default chain path now also leaves the existing `hold` standby
+model active after boot instead of forcing `main_ra0_adc=0x0000`; that forced
+low setting made MAIN's first `BF 03` status report standby and only appeared
+to work before because `main_adc_boot_wait_hook` left a stale high ADC sample
+in place.
+
 ### RC2 strap models
 
 - **high**: RC2 = 1 — MAIN operates as primary/local unit (SPBRG=0x3F, SCS1 set).
@@ -225,7 +241,7 @@ firmware logic.
 |---------|--------|
 | `main_reset_to_appstart` | Redirect reset vector to app entry (0x1000) |
 | `main_serial_mailbox_hooks` | Replace UART ISR with mailbox-backed RX/TX for harness injection |
-| `main_adc_boot_wait_hook` | Hook ADC read during boot wait for harness-controlled AN0 |
+| `main_adc_boot_wait_hook` | Legacy hook for harness paths that still patch through `function_024` (for example the UART-only Timer3 compare harness) |
 | `main_i2c_bypass` | Bypass I2C initialisation (TAS3108 not simulated) |
 
 ## Known Limitations

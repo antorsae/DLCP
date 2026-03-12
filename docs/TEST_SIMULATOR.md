@@ -7,8 +7,9 @@ end-to-end with simulation-only overlays and deterministic tests.
 
 Current target matrix:
 
-- Main firmware: `firmware/patched/releases/DLCP_Firmware_V2.4.hex`
-- Control firmware: `firmware/patched/releases/DLCP_Control_V1.41.hex`
+- Main firmware: `firmware/patched/releases/DLCP_Firmware_V2.5.hex`
+- Control firmware: `firmware/patched/releases/DLCP_Control_V1.62b.hex`
+- Compatibility control firmware: `firmware/patched/releases/DLCP_Control_V1.61b.hex`
 - Topology: one Control + two Main units
 
 Constraints:
@@ -40,7 +41,8 @@ Required:
 
 - `python3`
 - `gpasm` (for firmware patch build, not required for every test run)
-- `gpsim` (for instruction-level control LCD tests)
+- repo-local `artifacts/tools/gpsim-xtc/bin/gpsim-xtc` (tests also see the
+  compatibility shim `artifacts/tools/gpsim-xtc/bin/gpsim`)
 - `pytest` (test runner)
 
 Optional:
@@ -90,16 +92,19 @@ Framework package: `src/dlcp_fw/sim/`
   - roundtrip and fault-matrix scenario helpers.
 - `src/dlcp_fw/sim/main_gpsim.py`
   - instruction-level main dispatch runs in gpsim.
+  - uses the physical `p18f2455` gpsim model for MAIN.
   - simulation-only UART mailbox hooks for RX/TX probing.
 - `src/dlcp_fw/sim/main_gpsim_timer3.py`
-  - harness-driven Timer3 model (cycle-accurate overflow scheduling).
-  - compares harness timing vs semantic Timer3 shim behavior.
+  - native no-shim Timer3 compare harness.
+  - observes the real `function_079` / `PIR2.TMR3IF` path before parser dispatch.
   - retains UART mailbox hooks + ADC boot-wait hook, but no Timer3 firmware shim.
 - `src/dlcp_fw/sim/control_gpsim.py`
   - non-interactive gpsim harness for CONTROL firmware.
   - LCD decode, button injection, serial frame capture.
   - EEPROM read/write via PIC18 SFR registers (EEADR, EEDATA, EECON1/2).
   - applies `control_disable_standby_check` overlay for standalone operation.
+  - physical CONTROL silicon and gpsim target are both `PIC18F25K20`
+    via the repo-local `gpsim-xtc` build.
 
 ### 4.2 Orchestration
 
@@ -135,7 +140,12 @@ generated temp HEX copies used by gpsim/test runners.
    - RX mailbox: `0x780..0x79F` (with pointers `0x7C0/0x7C1`)
    - TX mailbox: `0x7A0..0x7BF` (with pointer `0x7C3`)
 5. `main_serial_mailbox_hooks_uart_only` + `main_adc_boot_wait_hook`
-   - used by harness Timer3 mode where Timer3 stays unpatched in firmware.
+   - used by the native no-shim Timer3 compare path where Timer3 stays unpatched in firmware.
+   - a separate AN0 boot regression now proves the stock `function_024` gate can exit with a real gpsim `p18f2455.porta0` analog stimulus.
+   - the compare harness still keeps the ADC boot hook because the UART-only overlay currently places helper code inside the `function_024` body.
+6. Native-ring chain harness boot
+   - the stock/native chain tests now clear `function_024` with a real gpsim `p18f2455.porta0` analog stimulus instead of `main_adc_boot_wait_hook`.
+   - those chain tests also stopped forcing `main_ra0_adc=0x0000`; the earlier forced-low default made MAIN's first `BF 03` report standby and only passed when the old hook leaked a stale high ADC sample into the early status path.
 
 ### 5.3 Hook categories covered by framework
 
@@ -182,8 +192,8 @@ Location: `tests/sim/`
   - instruction-level main command dispatch via mailbox-injected frames
   - verifies parser breakpoint reach + mailbox consume/reply counters
 - `test_main_gpsim_timer3_compare.py`
-  - cycle-accurate harness Timer3 run
-  - semantic-vs-harness comparison checks
+  - semantic-shim vs native no-shim Timer3 comparison checks
+  - locks in the observed stock MAIN `0xF830` / prescale-2 Timer3 delay path
 - `test_gpsim_control_presets.py`
   - gpsim instruction-level CONTROL preset UI tests
   - boot default, screen navigation, serial frames, EEPROM persistence, volume volatility

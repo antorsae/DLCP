@@ -5,14 +5,137 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence
 
+from .gpsim import require_gpsim_binary
 from .manifests import main_i2c_bypass, main_reset_to_appstart, main_serial_mailbox_hooks
 from .overlay import apply_overlays
 from .paths import MAIN_HEX_PATCHED, SIM_ARTIFACTS_DIR
 from .protocol import SerialFrame
+
+MAIN_FAULT_FLAGS_ADDR = 0x7C7
+MAIN_NATIVE_TIMEOUT_UART_SEED_ADDR = 0x04E
+MAIN_NATIVE_TIMEOUT_MSSP_SEED_ADDR = 0x04F
+MAIN_NATIVE_TIMEOUT_SEED_OK = 0x10
+MAIN_NATIVE_TIMEOUT_SEED_TIMEOUT = 0x00
+MAIN_FAULT_UART_TX_STALL = 0x01
+MAIN_FAULT_MSSP_WAIT_STALL = 0x02
+MAIN_GPSIM_PROCESSOR = "p18f2455"
+MAIN_MAILBOX_TX_BASE = 0x740
+MAIN_MAILBOX_TX_SIZE = 0x40
+MAIN_ADC_VREF_VOLTS = 5.0
+MAIN_AN0_BOOT_ADC = 0x0237
+MAIN_AN0_BOOT_EXIT_ADDR = 0x2DC8
+_MAIN_EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
+_MAIN_CYCLE_LINE_RE = re.compile(r"^\s*0x([0-9A-Fa-f]+)\s+p18f[0-9A-Za-z]+", re.MULTILINE)
+_MAIN_AN0_BOOT_CYCLE_CACHE: dict[str, int] = {}
+
+
+def _clamp_main_adc(adc: int) -> int:
+    return max(0, min(0x03FF, int(adc)))
+
+
+def main_adc_to_voltage(adc: int, *, vref_volts: float = MAIN_ADC_VREF_VOLTS) -> float:
+    return (_clamp_main_adc(adc) / 1023.0) * vref_volts
+
+
+def write_main_an0_bootstrap_stc(
+    path: Path,
+    *,
+    adc: int = MAIN_AN0_BOOT_ADC,
+    post_boot_adc: int | None = None,
+    post_boot_cycle: int | None = None,
+    processor: str = MAIN_GPSIM_PROCESSOR,
+) -> None:
+    voltage = main_adc_to_voltage(adc)
+    data_points = [f"100, {voltage:.6f}"]
+    if post_boot_adc is not None and post_boot_cycle is not None:
+        post_voltage = main_adc_to_voltage(post_boot_adc)
+        data_points.append(f"{int(post_boot_cycle)}, {post_voltage:.6f}")
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            module library libgpsim_modules
+            node na0
+            stimulus asynchronous_stimulus
+            initial_state {voltage:.6f}
+            start_cycle 1
+            period 10000000
+            analog
+            {{ {", ".join(data_points)} }}
+            name an0_boot
+            end
+            attach na0 an0_boot {processor}.porta0
+            """
+        ),
+        encoding="ascii",
+    )
+
+
+def _parse_main_exec_break(cli_text: str) -> int | None:
+    match = _MAIN_EXEC_BREAK_RE.search(cli_text)
+    if match is None:
+        return None
+    return int(match.group(1), 16) & 0xFFFF
+
+
+def _parse_main_cycle(cli_text: str) -> int:
+    match = _MAIN_CYCLE_LINE_RE.search(cli_text)
+    if match is None:
+        raise RuntimeError("unable to parse cycle counter from gpsim output")
+    return int(match.group(1), 16)
+
+
+def probe_main_an0_boot_exit_cycle(
+    main_hex: Path,
+    *,
+    boot_exit_addr: int = MAIN_AN0_BOOT_EXIT_ADDR,
+) -> int:
+    cache_key = str(Path(main_hex).resolve())
+    cached = _MAIN_AN0_BOOT_CYCLE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    with tempfile.TemporaryDirectory(prefix="main_an0_boot_probe_") as td:
+        tdp = Path(td)
+        sim_hex = tdp / "main_sim.hex"
+        boot_stc = tdp / "main_an0_bootstrap.stc"
+        probe_stc = tdp / "main_an0_probe.stc"
+
+        apply_overlays(main_hex, sim_hex, manifests=[main_reset_to_appstart()])
+        write_main_an0_bootstrap_stc(boot_stc, processor=MAIN_GPSIM_PROCESSOR)
+        probe_stc.write_text(
+            "\n".join(
+                [
+                    f"processor {MAIN_GPSIM_PROCESSOR}",
+                    f"load {sim_hex}",
+                    "frequency 16000000",
+                    f"load {boot_stc}",
+                    f"break e 0x{boot_exit_addr:04X}",
+                    "run",
+                    "quit",
+                    "",
+                ]
+            ),
+            encoding="ascii",
+        )
+        cp = subprocess.run(
+            [require_gpsim_binary(), "-i", "-c", str(probe_stc)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        cli_text = cp.stdout + cp.stderr
+        if cp.returncode != 0:
+            raise RuntimeError(f"gpsim exited {cp.returncode} while probing AN0 boot cycle:\n{cli_text}")
+        if _parse_main_exec_break(cli_text) != (boot_exit_addr & 0xFFFF):
+            raise RuntimeError(f"gpsim did not reach AN0 boot exit 0x{boot_exit_addr:04X}:\n{cli_text}")
+        cycle = _parse_main_cycle(cli_text)
+        _MAIN_AN0_BOOT_CYCLE_CACHE[cache_key] = cycle
+        return cycle
 
 
 @dataclass(frozen=True)
@@ -50,11 +173,12 @@ def _build_script(
     cycles: int,
     parser_break_addr: int,
     rx_bytes: Sequence[int],
+    fault_flags: int,
     cli_path: Path,
     watch_regs: Iterable[int],
 ) -> str:
     lines = [
-        "processor p18f2550",
+        f"processor {MAIN_GPSIM_PROCESSOR}",
         f"load {sim_hex}",
         f"log on {log_path}",
         "log w txreg",
@@ -66,6 +190,7 @@ def _build_script(
         f"reg(0x7c1)=0x{len(rx_bytes) & 0xFF:02X}",  # rx_wr
         "reg(0x7c2)=0x00",  # tx_rd (reserved)
         "reg(0x7c3)=0x00",  # tx_wr
+        f"reg(0x{MAIN_FAULT_FLAGS_ADDR:03x})=0x{fault_flags & 0xFF:02X}",
     ]
     for i, b in enumerate(rx_bytes):
         lines.append(f"reg(0x{(0x780 + i):03x})=0x{b & 0xFF:02X}")
@@ -113,9 +238,31 @@ def _parse_regs(cli_text: str) -> Dict[int, int]:
     return out
 
 
+def _mailbox_tx_bytes(regs: Mapping[int, int]) -> List[int]:
+    rd = regs.get(0x7C2, 0) & 0xFF
+    wr = regs.get(0x7C3, 0) & 0xFF
+    out: List[int] = []
+    cur = rd
+    while cur != wr:
+        addr = MAIN_MAILBOX_TX_BASE + (cur & 0x3F)
+        out.append(regs.get(addr, 0) & 0xFF)
+        cur = (cur + 1) & 0xFF
+        if len(out) > MAIN_MAILBOX_TX_SIZE:
+            break
+    return out
+
+
 def _did_hit_break(cli_text: str, addr: int) -> bool:
     pat = rf"line_{addr:04x}\(0x{addr:04x}\)"
     return bool(re.search(pat, cli_text, flags=re.IGNORECASE))
+
+
+def _timeout_text(data: str | bytes | None) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data
 
 
 def run_main_mailbox_gpsim(
@@ -128,6 +275,7 @@ def run_main_mailbox_gpsim(
     stage1_timeout_s: float = 20.0,
     keep_artifacts: bool = False,
     artifact_dir: Path | None = None,
+    fault_flags: int = 0,
 ) -> MainGpsimResult:
     rx_bytes = _build_frame_bytes(frames)
     if len(rx_bytes) > 32:
@@ -163,8 +311,11 @@ def run_main_mailbox_gpsim(
         0x0C3,  # mirrored link address (cmd 0x1E)
         0x7C0,
         0x7C1,
+        0x7C2,
         0x7C3,
+        MAIN_FAULT_FLAGS_ADDR,
     ]
+    watch_regs.extend(range(MAIN_MAILBOX_TX_BASE, MAIN_MAILBOX_TX_BASE + MAIN_MAILBOX_TX_SIZE))
 
     with tempfile.TemporaryDirectory(prefix="main_mailbox_sim_") as td:
         tdp = Path(td)
@@ -185,19 +336,21 @@ def run_main_mailbox_gpsim(
             cycles=cycles,
             parser_break_addr=parser_break_addr,
             rx_bytes=rx_bytes,
+            fault_flags=fault_flags,
             cli_path=cli_path,
             watch_regs=watch_regs,
         )
+        gpsim_bin = require_gpsim_binary()
         try:
             cp = subprocess.run(
-                ["gpsim", "-i", "-c", str(stc_path)],
+                [gpsim_bin, "-i", "-c", str(stc_path)],
                 text=True,
                 capture_output=True,
                 check=False,
                 timeout=stage1_timeout_s + 20.0,
             )
         except subprocess.TimeoutExpired as exc:
-            cli_path.write_text((exc.stdout or "") + (exc.stderr or ""), encoding="utf-8")
+            cli_path.write_text(_timeout_text(exc.stdout) + _timeout_text(exc.stderr), encoding="utf-8")
             raise RuntimeError(f"gpsim timed out after {exc.timeout}s; inspect {cli_path}") from exc
         cli_text = cp.stdout + cp.stderr
         cli_path.write_text(cli_text, encoding="utf-8")
@@ -213,8 +366,10 @@ def run_main_mailbox_gpsim(
         if "cycle break:" not in cli_text:
             raise RuntimeError(f"gpsim did not hit cycle break; inspect {cli_path}")
 
-        tx_bytes = _parse_tx_bytes(log_path)
         regs = _parse_regs(cli_text)
+        tx_bytes = _mailbox_tx_bytes(regs)
+        if not tx_bytes:
+            tx_bytes = _parse_tx_bytes(log_path)
 
         if keep_artifacts:
             if artifact_dir is None:
@@ -307,13 +462,12 @@ def run_main_cmd03_dispatch_gpsim(
             sim_hex,
             manifests=[
                 main_reset_to_appstart(),
-                main_i2c_bypass(),
                 main_serial_mailbox_hooks(gpasm=gpasm),
             ],
         )
 
         lines = [
-            "processor p18f2550",
+            f"processor {MAIN_GPSIM_PROCESSOR}",
             f"load {sim_hex}",
             f"break e 0x{parser_break_addr:04X}",
             "run",
@@ -343,17 +497,18 @@ def run_main_cmd03_dispatch_gpsim(
             lines.append(f"reg(0x{r:03x})")
         lines.extend(["quit", ""])
         stc_path.write_text("\n".join(lines), encoding="ascii")
+        gpsim_bin = require_gpsim_binary()
 
         try:
             cp = subprocess.run(
-                ["gpsim", "-i", "-c", str(stc_path)],
+                [gpsim_bin, "-i", "-c", str(stc_path)],
                 text=True,
                 capture_output=True,
                 check=False,
                 timeout=timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
-            cli_path.write_text((exc.stdout or "") + (exc.stderr or ""), encoding="utf-8")
+            cli_path.write_text(_timeout_text(exc.stdout) + _timeout_text(exc.stderr), encoding="utf-8")
             raise RuntimeError(f"gpsim cmd03 probe timed out after {exc.timeout}s; inspect {cli_path}") from exc
         cli_text = cp.stdout + cp.stderr
         cli_path.write_text(cli_text, encoding="utf-8")
