@@ -29,6 +29,7 @@ import argparse
 import curses
 import hashlib
 import os
+import pty
 import random
 import re
 import select
@@ -46,6 +47,7 @@ import _bootstrap
 
 from dlcp_fw.sim.lcd import LcdByte, LcdState
 from dlcp_fw.sim.hexio import parse_intel_hex
+from dlcp_fw.sim.gpsim import require_gpsim_binary
 from dlcp_fw.sim.main_gpsim_timer3 import (
     _add_break_exec,
     _contains_exec_break,
@@ -210,19 +212,28 @@ def _runtime_chunks_for_mode(
 
 
 # ── Clock and UART timing model ──────────────────────────────────────
-# PIC18F2550: instruction cycle (Tcy) = Fosc / 4.
+# PIC18F2455/2550 family: instruction cycle (Tcy) = Fosc / 4.
 # 31,250 baud 8N1: 10 bits/byte → 320 µs/byte on wire.
 #
 # CONTROL PIC: 12 MHz crystal → 3 MIPS → 960 Tcy/byte.
-# MAIN PIC:    12 MHz crystal → 3 MIPS → 960 Tcy/byte.
-#   (Both confirmed by SPBRG=23 with BRGH=1: Fosc/(16*(23+1)) = 31,250.)
+# MAIN PIC:    12 MHz external clock input -> PLLDIV /3 -> 96 MHz PLL /6
+#              => 16 MHz Fosc -> 4 MIPS -> 1280 Tcy/byte.
+# CONTROL is confirmed by its 12 MHz UART setup. MAIN is confirmed by stock
+# PIC18F2455 config words plus BRGH=1, BRG16=1, SPBRG=0x7F:
+# 16 MHz / (4 * (127 + 1)) = 31,250.
 #
-# EUSART RCREG FIFO is 2 bytes deep (PIC18F2550 datasheet §20.2.2,
+# EUSART RCREG FIFO is 2 bytes deep (PIC18F2455/2550 datasheet §20.2.2,
 # Figure 20-6/20-7).  There is NO hardware receive buffer beyond that.
 # Overrun (OERR) occurs when a 3rd byte completes in RSR while RCREG
 # is still full.  The simulation must respect this constraint.
 CONTROL_FOSC_HZ = 12_000_000
-MAIN_FOSC_HZ = 12_000_000
+CONTROL_GPSIM_PROCESSOR = "p18f25k20"
+MAIN_FOSC_HZ = 16_000_000
+MAIN_GPSIM_PROCESSOR = "p18f2455"
+
+MAIN_FAULT_FLAGS_ADDR = 0x7C7
+MAIN_FAULT_UART_TX_STALL = 0x01
+MAIN_FAULT_MSSP_WAIT_STALL = 0x02
 BAUD_RATE = 31_250
 BITS_PER_BYTE = 10  # 8N1: 1 start + 8 data + 1 stop
 EUSART_FIFO_DEPTH = 2  # RCREG depth per datasheet
@@ -390,18 +401,17 @@ class GpsimCliSession:
 
     _PROMPT = b"**gpsim>"
 
-    def __init__(self) -> None:
+    def __init__(self, gpsim_bin: str) -> None:
+        master_fd, slave_fd = pty.openpty()
         self.proc = subprocess.Popen(
-            ["gpsim", "-i"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            [gpsim_bin, "-i"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
         )
-        if self.proc.stdin is None or self.proc.stdout is None:
-            raise RuntimeError("failed to start gpsim interactive session")
-        self.stdin = self.proc.stdin
-        self.stdout = self.proc.stdout
-        self.fd = self.stdout.fileno()
+        os.close(slave_fd)
+        self.fd = master_fd
         self.buf = b""
         self._read_until_prompt(timeout_s=8.0, require=None)
 
@@ -413,11 +423,14 @@ class GpsimCliSession:
 
     def _sync(self) -> None:
         # Drain any pending bytes and drop content up to the last prompt.
+        settle = time.monotonic() + 0.02
         while True:
-            data = self._read_available(0.0)
+            timeout_s = max(0.0, settle - time.monotonic())
+            data = self._read_available(timeout_s)
             if not data:
                 break
             self.buf += data
+            settle = time.monotonic() + 0.02
         idx = self.buf.rfind(self._PROMPT)
         if idx >= 0:
             self.buf = self.buf[idx + len(self._PROMPT) :]
@@ -459,11 +472,8 @@ class GpsimCliSession:
         if self.proc.poll() is not None:
             raise RuntimeError("gpsim exited unexpectedly")
         self._sync()
-        self.stdin.write((command + "\n").encode("ascii"))
-        self.stdin.flush()
-        return self._read_until_prompt(
-            timeout_s=timeout_s, require=command.encode("ascii")
-        )
+        os.write(self.fd, (command + "\n").encode("ascii"))
+        return self._read_until_prompt(timeout_s=timeout_s, require=None)
 
     def close(self) -> None:
         if self.proc.poll() is None:
@@ -475,6 +485,10 @@ class GpsimCliSession:
             self.proc.wait(timeout=2.0)
         except Exception:
             self.proc.kill()
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -622,6 +636,7 @@ class MainGpsimSession:
         rc2_mode: str,
         timer3_mode: str,
         rx_fifo_limit: int = 6,
+        bypass_i2c: bool = True,
     ) -> None:
         self.chunk_cycles = chunk_cycles
         self.tag = tag
@@ -644,7 +659,9 @@ class MainGpsimSession:
         )
         self._sim_table_digest_by_preset: Dict[int, str] = {0: "", 1: ""}
 
-        manifests = [main_reset_to_appstart(), main_i2c_bypass()]
+        manifests = [main_reset_to_appstart()]
+        if bypass_i2c:
+            manifests.append(main_i2c_bypass())
         if timer3_mode == "harness":
             manifests.extend(
                 [
@@ -674,7 +691,7 @@ class MainGpsimSession:
         return self.standby_model.target_adc()
 
     def _boot(self) -> None:
-        self._issue("processor p18f2550", 5.0)
+        self._issue(f"processor {MAIN_GPSIM_PROCESSOR}", 5.0)
         self._issue(f"load {self.sim_hex}", 10.0)
         self._issue(f"frequency {MAIN_FOSC_HZ}", 5.0)
         self._issue(f"log on {self.log_path}", 5.0)
@@ -688,6 +705,7 @@ class MainGpsimSession:
         self._issue("reg(0x7C1)=0x00", 5.0)
         self._issue("reg(0x7C2)=0x00", 5.0)
         self._issue("reg(0x7C3)=0x00", 5.0)
+        self._issue(f"reg(0x{MAIN_FAULT_FLAGS_ADDR:03X})=0x00", 5.0)
         self._apply_pin_models()
 
     def close(self) -> None:
@@ -700,6 +718,32 @@ class MainGpsimSession:
 
     def inject_triplet(self, frame: TxTriplet) -> bool:
         return self.inject_bytes([frame.route, frame.cmd, frame.data])
+
+    def fault_flags(self) -> int:
+        return _read_reg(self._issue, MAIN_FAULT_FLAGS_ADDR)
+
+    def set_fault_flags(
+        self,
+        *,
+        uart_tx_stall: bool | None = None,
+        mssp_wait_stall: bool | None = None,
+    ) -> int:
+        flags = self.fault_flags()
+        if uart_tx_stall is not None:
+            if uart_tx_stall:
+                flags |= MAIN_FAULT_UART_TX_STALL
+            else:
+                flags &= ~MAIN_FAULT_UART_TX_STALL
+        if mssp_wait_stall is not None:
+            if mssp_wait_stall:
+                flags |= MAIN_FAULT_MSSP_WAIT_STALL
+            else:
+                flags &= ~MAIN_FAULT_MSSP_WAIT_STALL
+        self._issue(f"reg(0x{MAIN_FAULT_FLAGS_ADDR:03X})=0x{flags:02X}", 5.0)
+        return flags
+
+    def clear_fault_flags(self) -> None:
+        self._issue(f"reg(0x{MAIN_FAULT_FLAGS_ADDR:03X})=0x00", 5.0)
 
     @staticmethod
     def _filename_eeprom_base(preset_idx: int) -> int:
@@ -929,14 +973,15 @@ class MainGpsimSession:
 
 
 class LinkPipe:
-    """Byte-paced current-loop transport matching PIC18F2550 EUSART.
+    """Byte-paced current-loop transport matching PIC18F2455 EUSART.
 
-    Real EUSART has a 2-byte RCREG FIFO (PIC18F2550 §20.2.2).  No flow
+    Real EUSART has a 2-byte RCREG FIFO (PIC18F2455/2550 §20.2.2).  No flow
     control exists on the current-loop wire: if the receiver can't keep
     up, bytes are lost (overrun / OERR).
 
-    Each byte occupies ``byte_cycles`` instruction cycles on the wire
-    (320 µs at 31,250 baud 8N1 → 960 Tcy at 3 MIPS).  Frames are
+    Each byte occupies ``byte_cycles`` instruction cycles on the wire.
+    At 31,250 baud 8N1 that is always 320 us in real time, which becomes
+    960 Tcy on CONTROL (3 MIPS) and 1280 Tcy on MAIN (4 MIPS). Frames are
     enqueued as three individual bytes with inter-byte wire-rate spacing.
 
     ``fifo_depth`` caps how many bytes the pump will inject into the sink
@@ -1219,10 +1264,9 @@ class GpsimControlSession:
         chunk_cycles: int,
         hold_cycles: int,
         rx_fifo_limit: int = 6,
+        disable_standby_check: bool = True,
     ) -> None:
-        if shutil.which("gpsim") is None:
-            raise RuntimeError("gpsim not found in PATH")
-
+        self._gpsim_bin = require_gpsim_binary()
         self.chunk_cycles = chunk_cycles
         self.hold_cycles = hold_cycles
         # CONTROL firmware uses a 48-byte ring at 0x066-0x095.
@@ -1237,10 +1281,11 @@ class GpsimControlSession:
         manifests = [control_reset_to_appstart()]
         if fast_boot:
             manifests.append(control_disable_boot_wait())
-        manifests.append(control_disable_standby_check_for_hex(control_hex))
+        if disable_standby_check:
+            manifests.append(control_disable_standby_check_for_hex(control_hex))
         apply_overlays(control_hex, self.sim_hex, manifests=manifests)
 
-        self._gpsim = GpsimCliSession()
+        self._gpsim = GpsimCliSession(self._gpsim_bin)
         self._issue = lambda c, t=10.0: self._gpsim.cmd(c, timeout_s=t)
         self.current_cycle = 0
 
@@ -1258,7 +1303,7 @@ class GpsimControlSession:
         self._boot()
 
     def _boot(self) -> None:
-        self._issue("processor p18f2550", 5.0)
+        self._issue(f"processor {CONTROL_GPSIM_PROCESSOR}", 5.0)
         self._issue(f"load {self.sim_hex}", 10.0)
         self._issue(f"frequency {CONTROL_FOSC_HZ}", 5.0)
         self._issue(f"log on {self.log_path}", 5.0)
@@ -1269,12 +1314,12 @@ class GpsimControlSession:
 
     # gpsim pin names and stimulus names for the 6 button inputs.
     _BTN_STIMULI = [
-        ("p18f2550.porta1", "stim_ra1"),  # SELECT (RA1)
-        ("p18f2550.porta2", "stim_ra2"),  # DOWN   (RA2)
-        ("p18f2550.porta3", "stim_ra3"),  # STBY   (RA3)
-        ("p18f2550.porta4", "stim_ra4"),  # RIGHT  (RA4)
-        ("p18f2550.portc0", "stim_rc0"),  # UP     (RC0)
-        ("p18f2550.portc5", "stim_rc5"),  # LEFT   (RC5)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta1", "stim_ra1"),  # SELECT (RA1)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta2", "stim_ra2"),  # DOWN   (RA2)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta3", "stim_ra3"),  # STBY   (RA3)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta4", "stim_ra4"),  # RIGHT  (RA4)
+        (f"{CONTROL_GPSIM_PROCESSOR}.portc0", "stim_rc0"),  # UP     (RC0)
+        (f"{CONTROL_GPSIM_PROCESSOR}.portc5", "stim_rc5"),  # LEFT   (RC5)
     ]
 
     def _setup_button_stimuli(self) -> None:
@@ -1699,8 +1744,8 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
     # Byte-level pacing derived from oscillator and baud rate.
     # Each link uses the *transmitter's* clock for wire timing.
-    ctl_byte_cyc = _byte_cycles(CONTROL_FOSC_HZ)   # 960 @ 12 MHz
-    main_byte_cyc = _byte_cycles(MAIN_FOSC_HZ)     # 960 @ 12 MHz
+    ctl_byte_cyc = _byte_cycles(CONTROL_FOSC_HZ)   # 960 @ 12 MHz CONTROL Fosc
+    main_byte_cyc = _byte_cycles(MAIN_FOSC_HZ)     # 1280 @ 16 MHz MAIN Fosc
     fifo = args.rx_fifo_limit
 
     link_ctl_m0 = LinkPipe(
@@ -2490,7 +2535,11 @@ def parse_args() -> argparse.Namespace:
         action="append",
         type=Path,
         required=True,
-        help="main firmware HEX path (pass once to reuse for both mains, or twice for #0/#1)",
+        help=(
+            "main firmware HEX path (app-only MAIN HEXs are seeded onto "
+            "V2.3-combined by default; pass once to reuse for both mains, "
+            "or twice for #0/#1)"
+        ),
     )
     ap.add_argument(
         "--gpasm", default="gpasm", help="gpasm executable for simulation hook assembly"

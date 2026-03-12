@@ -5,7 +5,15 @@ MAIN now runs on the physical `p18f2455` model. CONTROL now runs on the
 physical `p18f25k20` model via the repo-local `gpsim-xtc` fork in
 `vendor/gpsim-0.32.1-xtc/`, built under `artifacts/tools/gpsim-xtc/`.
 Runs unmodified firmware images with minimal binary overlays for reset-vector
-redirection, UART mailbox hooks, and optional Timer3 shim.
+redirection, optional UART mailbox hooks for low-fidelity tests, and optional
+Timer3 shim logic.
+
+For MAIN, app-only HEX inputs such as `DLCP Firmware V2.3.hex`,
+`DLCP_Firmware_V2.4.hex`, and `DLCP_Firmware_V2.5.hex` are now seeded onto the
+dump-based `DLCP Firmware V2.3-combined.hex` recovery image before gpsim-only
+overlays are applied. That preserves the recovered boot block, config words,
+EEPROM, User ID, and preset-table region by default while still testing the
+requested app image.
 
 ## Quick Start
 
@@ -56,8 +64,43 @@ python scripts/test_button_inject.py
    Heartbeat model                RC2 strap model
 ```
 
-Each unit runs in its own gpsim process.  The harness steps them in
-round-robin order, pumping serial frames between steps via `LinkPipe`.
+Each unit runs in its own gpsim process. The default `chain_gpsim` harness
+still steps them round-robin and pumps serial frames between steps via
+`LinkPipe`.
+
+## High-Fidelity UART Direction
+
+The repo now also has a supported live wire harness,
+`src/dlcp_fw/sim/wire_chain_gpsim.py`, that keeps each PIC in its own gpsim
+process and bridges the physical UART pins with gpsim's `FileRecorder` and
+streaming `FileStimulus` modules. That path exercises the simulated EUSART
+receive state machines, timing, `RCREG` FIFO, and `OERR` behavior without
+injecting bytes into firmware RAM.
+
+The ideal end-state is still a single gpsim process containing `ctl`, `m0`,
+`m1`, etc., with one node per physical hop:
+
+- `ctl.portc6 -> m0.portc7`
+- `m0.portc6 -> ctl.portc7`
+- `m0.portc6 -> m1.portc7`
+- `m1.portc6 -> m0.portc7`
+
+That matches the real daisy-chain topology better than the current per-process
+transport, and it lets gpsim's existing EUSART model provide the timing:
+
+- BRG timing from `SPBRGH:SPBRG`, `BRGH`, and `BRG16`
+- three-sample RX majority detect
+- `TXREG` to `TSR` transfer timing and `TXIF`/`TRMT` behavior
+- `RCREG` FIFO and `OERR` behavior
+
+The repo-local gpsim build now supports the required topology groundwork for
+that mode: one process can load labeled `ctl`, `m0`, and `m1` processors and
+attach qualified `RC6`/`RC7` pins between them. The regression for that
+capability is `tests/sim/test_gpsim_multi_processor_uart_topology.py`.
+
+However, gpsim still executes only the active CPU in a one-process run, so the
+current high-fidelity transport uses one process per PIC and a live pin bridge
+instead of shared-node execution.
 
 ### Key components
 
@@ -67,10 +110,19 @@ round-robin order, pumping serial frames between steps via `LinkPipe`.
 | `GpsimControlHarness` | `src/dlcp_fw/sim/control_gpsim.py` | Non-interactive CONTROL gpsim harness for automated tests; EEPROM SFR read/write |
 | `MainGpsimSession` | `scripts/gpsim_tui_simulator.py` | MAIN gpsim wrapper; mailbox hooks, Timer3 model, AN0/RC2 pin models |
 | `LinkPipe` | `scripts/gpsim_tui_simulator.py` | Byte-paced serial transport; wire-rate spacing at 31,250 baud 8N1 |
+| `WireMultiMainChainHarness` | `src/dlcp_fw/sim/wire_chain_gpsim.py` | Live multi-process UART bridge using real RC6/RC7 pin transitions |
 | `LiveLogDecoder` | `scripts/gpsim_tui_simulator.py` | Parses gpsim log writes to extract LCD commands and TX frames |
 | `LcdState` | `src/dlcp_fw/sim/lcd.py` | HD44780 protocol state machine |
 | `apply_overlays` | `src/dlcp_fw/sim/overlay.py` | Binary patching engine for HEX files |
 | Manifests | `src/dlcp_fw/sim/manifests.py` | Overlay definitions: reset redirect, boot wait bypass, standby check bypass, UART hooks |
+
+MAIN gpsim harnesses materialize a seeded full-device temp HEX before overlays:
+
+- input app bytes `0x1000..0x55FF` come from the requested MAIN HEX
+- boot block, config, EEPROM, User ID, and `0x5600..0x5FFF` preset-table space
+  come from `firmware/stock/main/DLCP Firmware V2.3-combined.hex`
+- if the requested MAIN HEX already contains a programmed boot block, it is
+  treated as a full-device image and used verbatim
 
 ### Serial transport model (LinkPipe)
 
@@ -91,6 +143,23 @@ physical `p18f25k20` target from the local `gpsim-xtc` build:
 Frames are injected atomically (all 3 bytes or none) to preserve parser
 framing.  This is a slight simplification — real EUSART delivers bytes
 individually — but preserves protocol correctness.
+
+### Serial transport model (Wire Harness)
+
+`WireMultiMainChainHarness` replaces `LinkPipe` with real pin activity:
+
+- sender RC6 transitions are captured by gpsim `FileRecorder`
+- a host bridge rescales cycle timestamps between 3 MIPS CONTROL and 4 MIPS
+  MAIN instruction clocks
+- receiver RC7 is driven by a streaming gpsim `FileStimulus`
+- each MCU's native EUSART performs the actual start-bit detect, majority
+  sampling, `RCREG` buffering, and overrun behavior
+
+Current scope:
+
+- proven for stock CONTROL `<->` stock MAIN UART exchange on the MAIN side
+- supports `[CONTROL <-> MAIN0] <-> [MAIN1] ...` topology wiring in the harness
+- does not yet imply that CONTROL leaves `WAITING FOR DLCP` in the stock UI path
 
 ### Heartbeat model
 
@@ -176,7 +245,7 @@ Arrow keys also work for UP/DOWN/LEFT/RIGHT.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `hex` (positional) | — | CONTROL firmware HEX path |
-| `--main-hex` | (required) | MAIN firmware HEX; pass once for both units or twice for #0/#1 |
+| `--main-hex` | (required) | MAIN firmware HEX; app-only inputs are seeded onto `V2.3-combined` before gpsim-only overlays; pass once for both units or twice for #0/#1 |
 | `--single-main` | false | Run with one MAIN unit (terminated chain) |
 | `--fast-boot` | false | Bypass one startup delay call in CONTROL firmware |
 | `--gpasm` | `gpasm` | gpasm executable for hook assembly |
@@ -250,6 +319,8 @@ firmware logic.
    MAIN detecting via ADC, responding with BF/03/01) is replaced by
    synthetic bit3 and BF/03/01 injection.  This means the exact heartbeat
    timing and the MAIN-side ADC threshold behaviour are not exercised.
+   The wire harness removes the UART part of this limitation for MAIN, but the
+   CONTROL-side WAITING/display state machine still needs separate work.
 
 2. **Button presses bypass pin-level simulation**.  Because gpsim stimuli
    cannot be toggled at runtime, buttons are injected at the RAM level
@@ -284,6 +355,7 @@ firmware logic.
 scripts/gpsim_tui_simulator.py  — TUI and co-simulation core
 src/dlcp_fw/sim/control_gpsim.py       — non-interactive CONTROL gpsim harness (tests)
 src/dlcp_fw/sim/main_gpsim.py          — MAIN gpsim harness (mailbox injection)
+src/dlcp_fw/sim/wire_chain_gpsim.py    — live wire UART chain harness
 src/dlcp_fw/sim/manifests.py           — overlay definitions
 src/dlcp_fw/sim/main_gpsim_timer3.py   — gpsim register helpers, Timer3 model
 src/dlcp_fw/sim/lcd.py                 — HD44780 LCD state machine
@@ -303,7 +375,7 @@ scripts/test_button_inject.py   — button press regression (SELECT/UP/DOWN)
 
 ```
 firmware/stock/control/DLCP Control Firmware V1.4.hex  — CONTROL binary
-firmware/stock/main/DLCP Firmware V2.3.hex             — MAIN binary
+firmware/stock/main/DLCP Firmware V2.3.hex             — app-only MAIN binary (gpsim seeds onto V2.3-combined)
 firmware/disasm/control/v1.4_disasm.asm                — CONTROL disassembly
 firmware/disasm/main/gpdasm_output.asm                 — MAIN disassembly
 ```

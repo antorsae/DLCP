@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,14 +10,15 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import STOCK_MAIN_HEX
+from dlcp_fw.sim.gpsim import gpsim_available, require_gpsim_binary
 from dlcp_fw.sim.hexio import parse_intel_hex
-from dlcp_fw.sim.main_gpsim import run_main_cmd03_dispatch_gpsim
+from dlcp_fw.sim.main_gpsim import build_seeded_main_sim_hex, run_main_cmd03_dispatch_gpsim
 from dlcp_fw.sim.manifests import main_i2c_bypass, main_reset_to_appstart, main_serial_mailbox_hooks
 from dlcp_fw.sim.overlay import apply_overlays
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 
@@ -124,18 +124,20 @@ def test_cmd03_handler_bytes_match_stock_without_filename_hooks(patched_main_hex
 def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> list[tuple[int, int]]:
     with tempfile.TemporaryDirectory(prefix="main_cmd03_eeprom_probe_") as td:
         tdp = Path(td)
+        seeded_hex = tdp / "seeded.hex"
         sim_hex = tdp / "sim.hex"
         log_path = tdp / "run.log"
         stc_path = tdp / "run.stc"
 
+        build_seeded_main_sim_hex(main_hex, seeded_hex)
         apply_overlays(
-            main_hex,
+            seeded_hex,
             sim_hex,
             manifests=[main_reset_to_appstart(), main_i2c_bypass(), main_serial_mailbox_hooks()],
         )
 
         data = bytes(payload[:30])
-        lines = ["processor p18f2550", f"load {sim_hex}", "break e 0x1BEA", "run"]
+        lines = ["processor p18f2455", f"load {sim_hex}", "break e 0x1BEA", "run"]
         for i in range(30):
             lines.append(f"reg(0x{(0x11C + i):03x})=0x00")
         for i, b in enumerate(data):
@@ -164,9 +166,10 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
             ]
         )
         stc_path.write_text("\n".join(lines), encoding="ascii")
+        gpsim_bin = require_gpsim_binary()
 
         cp = subprocess.run(
-            ["gpsim", "-i", "-c", str(stc_path)],
+            [gpsim_bin, "-i", "-c", str(stc_path)],
             text=True,
             capture_output=True,
             check=False,

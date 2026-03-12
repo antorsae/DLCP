@@ -30,6 +30,7 @@ from .main_gpsim import (
     MAIN_FAULT_UART_TX_STALL,
     MAIN_GPSIM_PROCESSOR,
     MAIN_MAILBOX_TX_BASE,
+    build_seeded_main_sim_hex,
     probe_main_an0_boot_exit_cycle,
     write_main_an0_bootstrap_stc,
 )
@@ -222,6 +223,7 @@ class MainChainHarness:
         self._fault_flags_value = 0
         self._tmp = tempfile.TemporaryDirectory(prefix=f"gpsim_chain_main_{tag}_")
         self.tmp_path = Path(self._tmp.name)
+        self.seeded_hex = self.tmp_path / "main_seeded.hex"
         self.sim_hex = self.tmp_path / "sim.hex"
         self.log_path = self.tmp_path / "gpsim.log"
         self.current_cycle = 0
@@ -259,7 +261,8 @@ class MainChainHarness:
                 )
             if bypass_i2c:
                 manifests.append(main_i2c_bypass())
-        apply_overlays(main_hex, self.sim_hex, manifests=manifests)
+        build_seeded_main_sim_hex(main_hex, self.seeded_hex)
+        apply_overlays(self.seeded_hex, self.sim_hex, manifests=manifests)
 
         self._gpsim = _CliSession(self._gpsim_bin)
         self._issue = lambda c, t=10.0: self._gpsim.cmd(c, timeout_s=t)

@@ -79,7 +79,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("control_hex", type=Path, help="CONTROL firmware HEX path")
     ap.add_argument(
         "--main-hex", action="append", type=Path, required=True,
-        help="MAIN firmware HEX path (pass once to reuse for both, or twice for #0/#1)",
+        help=(
+            "MAIN firmware HEX path (app-only MAIN HEXs are seeded onto "
+            "V2.3-combined by default; pass once to reuse for both, or twice "
+            "for #0/#1)"
+        ),
     )
     ap.add_argument("--gpasm", default="gpasm", help="gpasm executable")
     ap.add_argument("--duration-s", type=float, default=60.0,
@@ -201,7 +205,7 @@ def main() -> int:
         )
     )
 
-    # Byte-paced links (PIC18F2550 EUSART: 2-byte RCREG, no flow control).
+    # Byte-paced links (PIC18F2455 EUSART: 2-byte RCREG, no flow control).
     ctl_byte_cyc = _byte_cycles(CONTROL_FOSC_HZ)
     main_byte_cyc = _byte_cycles(MAIN_FOSC_HZ)
     fifo = args.rx_fifo_limit

@@ -93,6 +93,9 @@ Framework package: `src/dlcp_fw/sim/`
 - `src/dlcp_fw/sim/main_gpsim.py`
   - instruction-level main dispatch runs in gpsim.
   - uses the physical `p18f2455` gpsim model for MAIN.
+  - app-only MAIN HEX inputs are merged onto the dump-based
+    `DLCP Firmware V2.3-combined.hex` seed before gpsim-only overlays, so tests
+    keep recovered boot/config/EEPROM/User-ID context by default.
   - simulation-only UART mailbox hooks for RX/TX probing.
 - `src/dlcp_fw/sim/main_gpsim_timer3.py`
   - native no-shim Timer3 compare harness.
@@ -133,6 +136,8 @@ generated temp HEX copies used by gpsim/test runners.
    - removes one startup delay call to accelerate simulation
 3. `main_reset_to_appstart`
    - patches reset vector to app start (`0x1000`) in gpsim
+   - applied after MAIN sim materializes a seeded full-device temp HEX
+     (`V2.3-combined` base + requested app bytes in `0x1000..0x55FF`)
 4. `main_serial_mailbox_hooks`
    - hooks `function_109/087/111` to mailbox-backed RX/TX probes
    - hooks `function_079` with a Timer3-overflow shim for gpsim
@@ -194,6 +199,14 @@ Location: `tests/sim/`
 - `test_main_gpsim_timer3_compare.py`
   - semantic-shim vs native no-shim Timer3 comparison checks
   - locks in the observed stock MAIN `0xF830` / prescale-2 Timer3 delay path
+- `test_gpsim_multi_processor_uart_topology.py`
+  - proves the repo-local gpsim build can host labeled `ctl` + `m0` + `m1`
+    in one process and attach `RC6`/`RC7` hop nodes for a two-powerbox chain
+- `test_wire_chain_gpsim.py`
+  - exercises stock CONTROL `<->` stock MAIN with a live RC6/RC7 bridge
+  - keeps gpsim's native EUSART RX timing, `RCREG` FIFO, and overrun logic in play
+  - currently locks in MAIN-side real-UART progress and BF status replies without
+    claiming full CONTROL UI connection yet
 - `test_gpsim_control_presets.py`
   - gpsim instruction-level CONTROL preset UI tests
   - boot default, screen navigation, serial frames, EEPROM persistence, volume volatility
