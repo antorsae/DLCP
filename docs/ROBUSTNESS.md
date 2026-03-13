@@ -527,6 +527,12 @@ The release bars should be:
 - stock baseline tests must reproduce `WAITING FOR DLCP` and remain stuck within the test budget
 - `V2.5 + V1.61b` must recover from transient active-path MAIN timeout faults without entering permanent `WAITING FOR DLCP`
 - current raw-main `gpsim` result shows `V2.5 + V1.61b` reconnecting after the induced wake fault is cleared; comparative reconnect robustness vs `V1.62b` still needs hardware validation
+- the new shared external-I2C gpsim fault paths (`cfg71` address-phase SCL
+  stretch, data-phase NACK, and bounded data-triggered SDA-low hold) each
+  drive both `V2.4 + V1.61b` and `V2.5 + V1.61b` into `WAITING`, and both
+  recover after the same fault is cleared or expires, so they are real shared
+  stressors but not yet reproducers for the field-observed V2.4-only stranded
+  case
 - `V2.5 + V1.61b` must preserve all existing wire-visible semantics used by `V1.61b`
 - `V2.5 + V1.62b` must recover faster and more consistently than `V2.5 + V1.61b` in reconnect/parser-fault scenarios
 - the current raw-main `gpsim` result meets that wake / reconnect recovery bar for `V2.5 + V1.62b`

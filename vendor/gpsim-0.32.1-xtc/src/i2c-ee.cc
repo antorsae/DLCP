@@ -172,6 +172,25 @@ i2c_slave::~i2c_slave()
 }
 
 
+void i2c_slave::set_scl_driving_state(bool new_state)
+{
+    scl->setDrivingState(new_state);
+}
+
+
+void i2c_slave::set_sda_driving_state(bool new_state)
+{
+    sda->setDrivingState(new_state);
+}
+
+
+bool i2c_slave::receive_data_byte(unsigned int data)
+{
+    put_data(data);
+    return true;
+}
+
+
 void i2c_slave::new_scl_edge(bool level)
 {
     scl_high = level;
@@ -185,7 +204,7 @@ void i2c_slave::new_scl_edge(bool level)
     {
         if (bus_state == RX_DATA && bit_count == 0)
         {
-            sda->setDrivingState(true);   // Master drives bus
+            set_sda_driving_state(true);   // Master drives bus
         }
     }
 }
@@ -225,7 +244,7 @@ void i2c_slave::callback()
             {
                 //start_write();
                 Vprintf(("%s : data set to 0x%x\n", __FUNCTION__, xfr_data));
-                put_data(xfr_data);
+                ack_rx_pending = receive_data_byte(xfr_data);
                 bus_state = ACK_RX;
             }
 
@@ -260,6 +279,7 @@ void i2c_slave::callback()
             {
                 // master is writing, we read
                 bus_state = RX_DATA;
+                ack_rx_pending = true;
                 bit_count = 0;
                 xfr_data = 0;
             }
@@ -268,6 +288,7 @@ void i2c_slave::callback()
 
         case ACK_RX :	// ACK being read by master
             bus_state = RX_DATA;
+            ack_rx_pending = true;
             bit_count = 0;
             xfr_data = 0;
             break;
@@ -282,7 +303,7 @@ void i2c_slave::callback()
         switch (bus_state)
         {
         case ACK_I2C_ADD :		// after address ACK start to send data
-            sda->setDrivingState(false);     // send ACK
+            set_sda_driving_state(false);     // send ACK
             bus_state = ACK_WR;
 
             // Check the R/W bit of the address byte
@@ -301,19 +322,19 @@ void i2c_slave::callback()
         case TX_DATA :	// send data to master
             if (bit_count == 0)
             {
-                sda->setDrivingState(true);        // Release the bus
+                set_sda_driving_state(true);        // Release the bus
                 bus_state = ACK_RD;
 
             }
             else
             {
-                sda->setDrivingState(shift_write_bit());
+                set_sda_driving_state(shift_write_bit());
             }
 
             break;
 
         case ACK_RX :	// Send ACK read data
-            sda->setDrivingState(false);
+            set_sda_driving_state(ack_rx_pending ? false : true);
             break;
 
         default:
@@ -354,6 +375,7 @@ void i2c_slave::new_sda_edge(bool sda_val)
             Vprintf(("i2c_slave : SDA Falling edge with SCL high => start bit state=%s\n", state_name()));
 
             bus_state = RX_I2C_ADD;
+            ack_rx_pending = true;
             bit_count = 0;
             xfr_data = 0;
         }

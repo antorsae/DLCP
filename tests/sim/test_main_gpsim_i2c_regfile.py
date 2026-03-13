@@ -21,6 +21,7 @@ from dlcp_fw.sim.overlay import apply_overlays
 _BREAK_RE = re.compile(r"line_([0-9a-f]{4})\(0x([0-9a-f]{4})\)", re.IGNORECASE)
 _SFR_RE = re.compile(r"\[0x([0-9A-Fa-f]+)\]\s*=\s*0x([0-9A-Fa-f]+)")
 _REGFILE_RE = re.compile(r"(?:[A-Za-z0-9_]+\.)?reg([0-9A-Fa-f]{2})\s*=\s*(?:\$|0x)([0-9A-Fa-f]+)", re.IGNORECASE)
+_SCALAR_RE = re.compile(r"^\s*(\$[0-9A-Fa-f]+|0x[0-9A-Fa-f]+|\d+)\s*$", re.MULTILINE)
 
 
 def _require_gpsim() -> None:
@@ -52,7 +53,21 @@ def _read_regfile(cli_text: str, addr: int) -> int:
     raise AssertionError(f"missing regfile readback for reg{wanted_addr:02x}")
 
 
-def _run_main_i2c_regfile_probe(main_hex: Path, *, lines: list[str]) -> str:
+def _read_last_scalar(cli_text: str) -> int:
+    matches = list(_SCALAR_RE.finditer(cli_text))
+    if not matches:
+        raise AssertionError("missing scalar readback")
+    value_text = matches[-1].group(1)
+    base = 16 if value_text.lower().startswith("0x") or value_text.startswith("$") else 10
+    return int(value_text.replace("$", "0x"), base)
+
+
+def _run_main_i2c_regfile_probe(
+    main_hex: Path,
+    *,
+    lines: list[str],
+    devices: list[MainI2CRegFileDevice] | None = None,
+) -> str:
     with tempfile.TemporaryDirectory(prefix="main_i2c_regfile_probe_") as td:
         tdp = Path(td)
         seeded_hex = tdp / "main_seeded.hex"
@@ -66,7 +81,9 @@ def _run_main_i2c_regfile_probe(main_hex: Path, *, lines: list[str]) -> str:
         write_main_an0_bootstrap_stc(boot_stc, processor=MAIN_GPSIM_PROCESSOR)
         write_main_i2c_regfile_stc(
             i2c_stc,
-            devices=[
+            devices=devices
+            if devices is not None
+            else [
                 MainI2CRegFileDevice("cfg71", 0x71, registers={0x12: 0x34}),
                 MainI2CRegFileDevice("dsp34", 0x34),
             ],
@@ -159,3 +176,91 @@ def test_main_dsp_i2c_regfile_captures_stock_multi_byte_write(stock_main_hex: Pa
     assert _read_regfile(cli_text, 0x20) == 0x00
     assert _read_regfile(cli_text, 0x21) == 0x00
     assert _read_regfile(cli_text, 0x22) == 0x02
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_main_i2c_regfile_address_nack_count_nacks_first_cfg71_write(stock_main_hex: Path) -> None:
+    _require_gpsim()
+
+    cli_text = _run_main_i2c_regfile_probe(
+        stock_main_hex,
+        devices=[
+            MainI2CRegFileDevice("cfg71", 0x71, registers={0x12: 0x34}),
+            MainI2CRegFileDevice("dsp34", 0x34),
+        ],
+        lines=[
+            "cfg71.reg0d=0x55",
+            "cfg71.Address_Nack_Count=1",
+            "pc=0x18FE",
+            "break e 0x1990",
+            "run",
+            "cfg71.reg0d",
+            "cfg71.reg08",
+            "cfg71.Address_Nack_Count",
+        ],
+    )
+
+    assert _did_hit_break(cli_text, 0x1990)
+    assert _read_regfile(cli_text, 0x0D) == 0x55
+    assert _read_regfile(cli_text, 0x08) == 0x70
+    assert _read_last_scalar(cli_text) == 0x00
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_main_i2c_regfile_data_nack_count_nacks_first_cfg71_data_phase_byte(stock_main_hex: Path) -> None:
+    _require_gpsim()
+
+    cli_text = _run_main_i2c_regfile_probe(
+        stock_main_hex,
+        devices=[
+            MainI2CRegFileDevice("cfg71", 0x71, registers={0x12: 0x34}),
+            MainI2CRegFileDevice("dsp34", 0x34),
+        ],
+        lines=[
+            "cfg71.reg0d=0x55",
+            "cfg71.reg08=0x66",
+            "cfg71.Data_Nack_Count=1",
+            "pc=0x18FE",
+            "break e 0x1990",
+            "run",
+            "cfg71.reg0d",
+            "cfg71.reg08",
+            "cfg71.Data_Nack_Count",
+        ],
+    )
+
+    assert _did_hit_break(cli_text, 0x1990)
+    assert _read_regfile(cli_text, 0x0D) == 0x55
+    assert _read_regfile(cli_text, 0x08) == 0x70
+    assert _read_last_scalar(cli_text) == 0x00
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_main_i2c_regfile_data_stuck_sda_cycles_corrupts_active_stock_cfg71_write(stock_main_hex: Path) -> None:
+    _require_gpsim()
+
+    cli_text = _run_main_i2c_regfile_probe(
+        stock_main_hex,
+        devices=[
+            MainI2CRegFileDevice("cfg71", 0x71, registers={0x12: 0x34}),
+            MainI2CRegFileDevice("dsp34", 0x34),
+        ],
+        lines=[
+            "cfg71.reg0d=0x55",
+            "cfg71.reg08=0x66",
+            "cfg71.Data_Stuck_SDA_Cycles=50000000",
+            "pc=0x18FE",
+            "break e 0x1990",
+            "break c 7000000",
+            "run",
+            "cfg71.reg0d",
+            "cfg71.reg08",
+        ],
+    )
+
+    assert _did_hit_break(cli_text, 0x1990)
+    assert _read_regfile(cli_text, 0x0D) == 0x00
+    assert _read_regfile(cli_text, 0x08) == 0x66

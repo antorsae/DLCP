@@ -19,6 +19,7 @@ from .control_gpsim import (
     _read_reg,
 )
 from .gpsim import require_gpsim_binary
+from .hexio import parse_intel_hex
 from .main_gpsim import (
     MAIN_AN0_BOOT_EXIT_ADDR,
     MAIN_FAULT_FLAGS_ADDR,
@@ -41,6 +42,7 @@ from .manifests import (
     main_external_i2c_bypass,
     main_reset_to_appstart,
     main_serial_mailbox_hooks,
+    main_v24_stall_test_hooks,
     main_v25_timeout_test_hooks,
 )
 from .overlay import apply_overlays
@@ -61,6 +63,11 @@ _REGFILE_RE = re.compile(
     r"(?:[A-Za-z0-9_]+\.)?reg([0-9A-Fa-f]{2})\s*=\s*(?:\$|0x)([0-9A-Fa-f]+)",
     re.IGNORECASE,
 )
+_MODULE_INT_RE = re.compile(
+    r"(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)\s*=\s*((?:\$|0x)?[0-9A-Fa-f]+)",
+    re.IGNORECASE,
+)
+_SCALAR_HEX_RE = re.compile(r"^\s*(\$[0-9A-Fa-f]+|0x[0-9A-Fa-f]+|\d+)\s*$", re.MULTILINE)
 
 
 def _byte_cycles(fosc_hz: int, baud: int = BAUD_RATE) -> int:
@@ -74,6 +81,20 @@ def _sim_step_timeout(delta_cycles: int) -> float:
     # serial callbacks before the CLI prompt returns, especially with the V2.5
     # timeout-hook overlay enabled. A short sub-second timeout is too brittle.
     return max(15.0, delta / 100_000.0)
+
+
+def _is_v25_timeout_hook_image(main_hex: Path) -> bool:
+    mem = parse_intel_hex(main_hex)
+    return (
+        mem.get(0x5500) == 0x00
+        and mem.get(0x5501) == 0x0E
+        and mem.get(0x5502) == 0x0B
+        and mem.get(0x5503) == 0x6E
+        and mem.get(0x556E) == 0x00
+        and mem.get(0x556F) == 0x0E
+        and mem.get(0x5570) == 0x0B
+        and mem.get(0x5571) == 0x6E
+    )
 
 
 def _is_waiting_lcd(lcd: tuple[str, str]) -> bool:
@@ -115,6 +136,22 @@ def _parse_regfile_value(output: str, addr: int) -> int:
         if int(m.group(1), 16) == wanted:
             return int(m.group(2), 16) & 0xFF
     raise RuntimeError(f"missing regfile readback for reg{wanted:02x}")
+
+
+def _parse_module_int_value(output: str, attr_name: str) -> int:
+    wanted = attr_name.strip().lower()
+    for match in _MODULE_INT_RE.finditer(output):
+        if match.group(1).strip().lower() != wanted:
+            continue
+        value_text = match.group(2)
+        base = 16 if value_text.lower().startswith("0x") or value_text.startswith("$") else 10
+        return int(value_text.replace("$", "0x"), base) & 0xFFFFFFFF
+    scalar_matches = list(_SCALAR_HEX_RE.finditer(output))
+    if scalar_matches:
+        value_text = scalar_matches[-1].group(1)
+        base = 16 if value_text.lower().startswith("0x") or value_text.startswith("$") else 10
+        return int(value_text.replace("$", "0x"), base) & 0xFFFFFFFF
+    raise RuntimeError(f"missing module attribute readback for {attr_name}")
 
 
 @dataclass(frozen=True)
@@ -270,7 +307,10 @@ class MainChainHarness:
                 manifests.append(main_adc_boot_wait_hook(gpasm=gpasm))
                 self._uses_adc_boot_wait_hook = True
             if enable_timeout_test_hooks:
-                manifests.append(main_v25_timeout_test_hooks(gpasm=gpasm))
+                if _is_v25_timeout_hook_image(self.main_hex):
+                    manifests.append(main_v25_timeout_test_hooks(gpasm=gpasm))
+                else:
+                    manifests.append(main_v24_stall_test_hooks(gpasm=gpasm))
                 self._native_timeout_seed_addrs = (
                     MAIN_NATIVE_TIMEOUT_UART_SEED_ADDR,
                     MAIN_NATIVE_TIMEOUT_MSSP_SEED_ADDR,
@@ -355,6 +395,66 @@ class MainChainHarness:
             raise RuntimeError("external I2C regfile bus is not attached")
         output = self._issue(f"{device_name}.reg{addr & 0xFF:02x}", 5.0)
         return _parse_regfile_value(output, addr)
+
+    def read_i2c_attribute(self, device_name: str, attr_name: str) -> int:
+        if not self._uses_external_i2c_regfile_bus:
+            raise RuntimeError("external I2C regfile bus is not attached")
+        output = self._issue(f"{device_name}.{attr_name}", 5.0)
+        return _parse_module_int_value(output, attr_name)
+
+    def set_i2c_fault(
+        self,
+        device_name: str,
+        *,
+        address_nack_count: int | None = None,
+        address_stretch_scl_cycles: int | None = None,
+        data_nack_count: int | None = None,
+        data_stuck_sda_cycles: int | None = None,
+        hold_scl_low: bool | None = None,
+        stretch_scl_cycles: int | None = None,
+    ) -> None:
+        if not self._uses_external_i2c_regfile_bus:
+            raise RuntimeError("external I2C regfile bus is not attached")
+        if address_nack_count is not None:
+            self._issue(
+                f"{device_name}.Address_Nack_Count = {max(0, int(address_nack_count))}",
+                5.0,
+            )
+        if address_stretch_scl_cycles is not None:
+            self._issue(
+                f"{device_name}.Address_Stretch_SCL_Cycles = {max(0, int(address_stretch_scl_cycles))}",
+                5.0,
+            )
+        if data_nack_count is not None:
+            self._issue(
+                f"{device_name}.Data_Nack_Count = {max(0, int(data_nack_count))}",
+                5.0,
+            )
+        if data_stuck_sda_cycles is not None:
+            self._issue(
+                f"{device_name}.Data_Stuck_SDA_Cycles = {max(0, int(data_stuck_sda_cycles))}",
+                5.0,
+            )
+        if hold_scl_low is not None:
+            raise RuntimeError(
+                "Hold_SCL_Low is not exposed through the chain harness yet; "
+                "use address_stretch_scl_cycles or stretch_scl_cycles"
+            )
+        if stretch_scl_cycles is not None:
+            self._issue(
+                f"{device_name}.Stretch_SCL_Cycles = {max(0, int(stretch_scl_cycles))}",
+                5.0,
+            )
+
+    def clear_i2c_faults(self, device_name: str) -> None:
+        self.set_i2c_fault(
+            device_name,
+            address_nack_count=0,
+            address_stretch_scl_cycles=0,
+            data_nack_count=0,
+            data_stuck_sda_cycles=0,
+            stretch_scl_cycles=0,
+        )
 
     def close(self) -> None:
         try:
@@ -665,6 +765,30 @@ class SingleMainChainHarness:
 
     def clear_main_fault_flags(self) -> None:
         self.main.clear_fault_flags()
+
+    def set_main_i2c_fault(
+        self,
+        device_name: str = "cfg71",
+        *,
+        address_nack_count: int | None = None,
+        address_stretch_scl_cycles: int | None = None,
+        data_nack_count: int | None = None,
+        data_stuck_sda_cycles: int | None = None,
+        hold_scl_low: bool | None = None,
+        stretch_scl_cycles: int | None = None,
+    ) -> None:
+        self.main.set_i2c_fault(
+            device_name,
+            address_nack_count=address_nack_count,
+            address_stretch_scl_cycles=address_stretch_scl_cycles,
+            data_nack_count=data_nack_count,
+            data_stuck_sda_cycles=data_stuck_sda_cycles,
+            hold_scl_low=hold_scl_low,
+            stretch_scl_cycles=stretch_scl_cycles,
+        )
+
+    def clear_main_i2c_faults(self, device_name: str = "cfg71") -> None:
+        self.main.clear_i2c_faults(device_name)
 
     def step(self) -> ChainStepResult:
         if not self._blackout:

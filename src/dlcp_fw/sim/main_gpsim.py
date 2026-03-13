@@ -44,6 +44,12 @@ class MainI2CRegFileDevice:
     name: str
     slave_address: int
     registers: Mapping[int, int] | None = None
+    address_nack_count: int = 0
+    address_stretch_scl_cycles: int = 0
+    data_nack_count: int = 0
+    data_stuck_sda_cycles: int = 0
+    hold_scl_low: bool = False
+    stretch_scl_cycles: int = 0
 
 
 DEFAULT_MAIN_I2C_REGFILE_DEVICES: tuple[MainI2CRegFileDevice, ...] = (
@@ -58,6 +64,12 @@ def default_main_i2c_regfile_devices() -> list[MainI2CRegFileDevice]:
             device.name,
             device.slave_address,
             None if device.registers is None else dict(device.registers),
+            int(device.address_nack_count),
+            int(device.address_stretch_scl_cycles),
+            int(device.data_nack_count),
+            int(device.data_stuck_sda_cycles),
+            bool(device.hold_scl_low),
+            int(device.stretch_scl_cycles),
         )
         for device in DEFAULT_MAIN_I2C_REGFILE_DEVICES
     ]
@@ -123,6 +135,20 @@ def write_main_i2c_regfile_stc(
     for device in devices:
         lines.append(f"module load i2c_regfile {device.name}")
         lines.append(f"{device.name}.Slave_Address = {int(device.slave_address) & 0x7F}")
+        if int(device.address_nack_count) != 0:
+            lines.append(f"{device.name}.Address_Nack_Count = {int(device.address_nack_count)}")
+        if int(device.address_stretch_scl_cycles) > 0:
+            lines.append(
+                f"{device.name}.Address_Stretch_SCL_Cycles = {int(device.address_stretch_scl_cycles)}"
+            )
+        if int(device.data_nack_count) != 0:
+            lines.append(f"{device.name}.Data_Nack_Count = {int(device.data_nack_count)}")
+        if int(device.data_stuck_sda_cycles) > 0:
+            lines.append(f"{device.name}.Data_Stuck_SDA_Cycles = {int(device.data_stuck_sda_cycles)}")
+        if bool(device.hold_scl_low):
+            lines.append(f"{device.name}.Hold_SCL_Low = 1")
+        if int(device.stretch_scl_cycles) > 0:
+            lines.append(f"{device.name}.Stretch_SCL_Cycles = {int(device.stretch_scl_cycles)}")
         for addr, value in sorted((device.registers or {}).items()):
             lines.append(f"{device.name}.reg{addr & 0xFF:02x} = ${value & 0xFF:02x}")
 

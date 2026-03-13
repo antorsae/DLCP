@@ -65,6 +65,7 @@ public:
   bool shift_read_bit(bool x);
   bool shift_write_bit();
   virtual bool match_address();
+  virtual bool receive_data_byte(unsigned int data);
   virtual void put_data(unsigned int /* data */) {}
   virtual unsigned int get_data()
   {
@@ -72,6 +73,8 @@ public:
   }
   virtual void slave_transmit(bool /* yes */) {}
   void callback() override;
+  void set_scl_driving_state(bool new_state);
+  virtual void set_sda_driving_state(bool new_state);
 
   const char * state_name();
   I2C_SLAVE_SCL	*scl;	// I2C clock
@@ -83,6 +86,7 @@ protected:
   bool    sda_high = false;
   bool    nxtbit = false;
   bool    r_w = false;
+  bool    ack_rx_pending = true;
   unsigned int bit_count = 0;  // Current bit number for either Tx or Rx
   unsigned int xfr_data = 0;  // latched data from I2C.
 

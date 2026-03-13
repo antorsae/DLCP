@@ -24,6 +24,11 @@ General Public License for more details.
 #include "../src/i2c-ee.h"
 
 class Register;
+class Integer;
+class I2CRegFileSclApplyTrigger;
+class I2CRegFileStretchReleaseTrigger;
+class I2CRegFileSdaApplyTrigger;
+class I2CRegFileSdaReleaseTrigger;
 
 namespace I2CRegFile_Modules {
 
@@ -35,22 +40,60 @@ public:
   static Module *construct(const char *new_name);
   void create_iopin_map();
   bool match_address() override;
+  bool receive_data_byte(unsigned int data) override;
   void put_data(unsigned int data) override;
   unsigned int get_data() override;
   void slave_transmit(bool yes) override;
+  void release_timed_scl_hold();
+  void release_timed_sda_hold();
+  void set_address_nack_count(unsigned int count);
+  void set_address_stretch_scl_cycles(guint64 cycles);
+  void set_data_nack_count(unsigned int count);
+  void set_data_stuck_sda_cycles(guint64 cycles);
+  void set_hold_scl_low(bool hold_low);
+  void start_timed_scl_hold(guint64 cycles);
+  void start_timed_sda_hold(guint64 cycles);
+  void apply_scl_drive();
+  void apply_sda_drive();
+  void set_sda_driving_state(bool new_state) override;
 
 private:
   static constexpr unsigned int kRegisterCount = 256;
 
   Register **m_registers;
-  gpsimObject *m_slave_address_attr;
+  Integer *m_slave_address_attr;
+  Integer *m_address_nack_count_attr;
+  Integer *m_address_stretch_scl_cycles_attr;
+  Integer *m_data_nack_count_attr;
+  Integer *m_data_stuck_sda_cycles_attr;
+  Integer *m_hold_scl_low_attr;
+  Integer *m_stretch_scl_cycles_attr;
   unsigned int m_reg_addr;
+  unsigned int m_address_nack_count;
+  guint64 m_address_stretch_scl_cycles;
+  unsigned int m_data_nack_count;
+  guint64 m_data_stuck_sda_cycles;
+  bool m_hold_scl_low;
+  bool m_timed_scl_hold_active;
+  bool m_requested_sda_release;
+  bool m_timed_sda_hold_active;
+  guint64 m_timed_scl_release_cycle;
+  guint64 m_timed_sda_release_cycle;
+  I2CRegFileSclApplyTrigger *m_scl_apply_trigger;
+  I2CRegFileStretchReleaseTrigger *m_stretch_release_trigger;
+  I2CRegFileSdaApplyTrigger *m_sda_apply_trigger;
+  I2CRegFileSdaReleaseTrigger *m_sda_release_trigger;
 
   enum io_state_t {
     RX_REG_ADDR = 1,
     RX_REG_DATA,
     TX_REG_DATA
   } io_state;
+
+  void update_scl_drive();
+  void schedule_scl_drive_update();
+  void update_sda_drive();
+  void schedule_sda_drive_update();
 };
 
 } // end of namespace I2CRegFile_Modules

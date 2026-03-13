@@ -210,14 +210,39 @@ Location: `tests/sim/`
 - `test_main_gpsim_timer3_compare.py`
   - semantic-shim vs native no-shim Timer3 comparison checks
   - locks in the observed stock MAIN `0xF830` / prescale-2 Timer3 delay path
+- `test_chain_gpsim_v141_v24_v25_recovery.py`
+  - native-ring comparison harness for older CONTROL `V1.41`
+  - under the same wake-side UART-helper fault, `V2.4` remains stranded in
+    `WAITING FOR DLCP` after fault clear while `V2.5` reconnects
+  - this uses a simulation-only stock/V2.4 stall hook versus the real V2.5
+    timeout wrapper entry, so treat it as a comparison regression rather than a
+    direct hardware-faithful fault model
+- `test_chain_gpsim_v161b_v24_v25_i2c_faults.py`
+  - native-ring wake/reconnect characterization with the same external
+    `cfg71` address-phase SCL stretch, data-phase NACK, and bounded
+    data-triggered SDA-stuck faults on `V2.4` and `V2.5`
+  - for all three shared external faults, both pairs fall into
+    `WAITING FOR DLCP` while the fault is active and both reconnect once that
+    same fault is cleared or expires
+  - useful as a shared hardware-style I2C stressor, but it does not yet
+    reproduce the real-world V2.4-only stranded `WAITING FOR DLCP` symptom
+- `test_main_gpsim_i2c_regfile.py`
+  - direct stock MAIN probes for the generic external `cfg71` / `dsp34`
+    register-file bus
+  - now also locks in:
+    - address-phase NACK of a stock `cfg71` write
+    - data-phase NACK of a stock `cfg71` write
+    - bounded SDA-low corruption of an active stock `cfg71` write
 - `test_gpsim_multi_processor_uart_topology.py`
   - proves the repo-local gpsim build can host labeled `ctl` + `m0` + `m1`
-    in one process and attach `RC6`/`RC7` hop nodes for a two-powerbox chain
+  in one process and attach `RC6`/`RC7` hop nodes for a two-powerbox chain
 - `test_wire_chain_gpsim.py`
   - exercises stock CONTROL `<->` stock MAIN with a live RC6/RC7 bridge
   - keeps gpsim's native EUSART RX timing, `RCREG` FIFO, and overrun logic in play
-  - currently locks in MAIN-side real-UART progress and BF status replies without
-    claiming full CONTROL UI connection yet
+  - now also locks in no-fault DISPLAY connection for patched `V1.61b <-> V2.4`
+    and `V1.62b <-> V2.5`
+  - also covers stricter bridge-layer faults: one-way `MAIN -> CONTROL` reply
+    blackout and delayed reply delivery without reverting to RAM-ring injection
 - `test_gpsim_control_presets.py`
   - gpsim instruction-level CONTROL preset UI tests
   - boot default, screen navigation, serial frames, EEPROM persistence, volume volatility

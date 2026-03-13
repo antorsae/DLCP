@@ -128,6 +128,21 @@ When `bypass_i2c=False`, the chain harnesses also attach a default external
 I2C bus model to MAIN: pullups on `RB0/RB1` plus generic `i2c_regfile` slaves
 named `cfg71` (`0x71`) and `dsp34` (`0x34`).
 
+The generic `i2c_regfile` module now exposes fault knobs that can be driven
+from gpsim tests without patching MAIN firmware:
+
+- `Address_Nack_Count`: NACK the next `N` address phases, then resume ACK
+- `Address_Stretch_SCL_Cycles`: hold `SCL` low for `N` cycles after each
+  address match
+- `Data_Nack_Count`: NACK the next `N` data-phase bytes, then resume ACK
+- `Data_Stuck_SDA_Cycles`: hold `SDA` low for `N` cycles after each data-phase
+  byte; this can corrupt an in-flight stock write without patching firmware
+- `Stretch_SCL_Cycles`: immediately hold `SCL` low for `N` cycles, then release
+
+The chain harness currently exposes the safe runtime subset:
+`Address_Nack_Count`, `Address_Stretch_SCL_Cycles`, `Data_Nack_Count`,
+`Data_Stuck_SDA_Cycles`, and `Stretch_SCL_Cycles`.
+
 ### Serial transport model (LinkPipe)
 
 Each serial link is modelled as a byte-paced queue matching the PIC18 EUSART
@@ -155,15 +170,23 @@ individually — but preserves protocol correctness.
 - sender RC6 transitions are captured by gpsim `FileRecorder`
 - a host bridge rescales cycle timestamps between 3 MIPS CONTROL and 4 MIPS
   MAIN instruction clocks
+- each forwarded batch is rebased into the receiver's future before the next
+  receiver step, so separate gpsim processes do not lose pin edges whose
+  natural sender-relative timestamp is already in the receiver's past
 - receiver RC7 is driven by a streaming gpsim `FileStimulus`
 - each MCU's native EUSART performs the actual start-bit detect, majority
   sampling, `RCREG` buffering, and overrun behavior
 
 Current scope:
 
-- proven for stock CONTROL `<->` stock MAIN UART exchange on the MAIN side
+- proven for no-fault single-main UI connection on stock `V1.4 <-> V2.3`,
+  patched `V1.61b <-> V2.4`, and patched `V1.62b <-> V2.5`
 - supports `[CONTROL <-> MAIN0] <-> [MAIN1] ...` topology wiring in the harness
-- does not yet imply that CONTROL leaves `WAITING FOR DLCP` in the stock UI path
+- supports per-link transport faults at the bridge layer:
+  - one-direction frame blackout by dropping sender RC6 transitions before they
+    reach the receiver RC7 stimulus
+  - extra receiver-cycle delay on a specific hop without falling back to
+    mailbox/native-ring RAM injection
 
 ### Heartbeat model
 
@@ -324,9 +347,10 @@ firmware logic.
 1. **No RC1-to-MAIN feedback loop**.  The heartbeat (CONTROL toggling RC1,
    MAIN detecting via ADC, responding with BF/03/01) is replaced by
    synthetic bit3 and BF/03/01 injection.  This means the exact heartbeat
-   timing and the MAIN-side ADC threshold behaviour are not exercised.
-   The wire harness removes the UART part of this limitation for MAIN, but the
-   CONTROL-side WAITING/display state machine still needs separate work.
+   timing and the MAIN-side ADC threshold behaviour are not exercised in the
+   standalone CONTROL harness.  The live wire harness now proves the no-fault
+   CONTROL UI path with real UART timing, but it still does not model the full
+   RC1/AN0 heartbeat physics.
 
 2. **Button presses bypass pin-level simulation**.  Because gpsim stimuli
    cannot be toggled at runtime, buttons are injected at the RAM level
