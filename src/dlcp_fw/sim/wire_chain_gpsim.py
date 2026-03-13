@@ -8,15 +8,13 @@ injecting bytes directly into firmware RAM rings.
 
 from __future__ import annotations
 
-import os
-import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Dict
 
 from .chain_gpsim import MainChainHarness, _is_waiting_lcd
-from .control_gpsim import CONTROL_FOSC_HZ, GpsimControlHarness, TxTriplet, _parse_cycle, _read_reg
+from .control_gpsim import CONTROL_FOSC_HZ, GpsimControlHarness, TxTriplet, _read_reg
 
 CONTROL_TCY_HZ = CONTROL_FOSC_HZ // 4
 MAIN_TCY_HZ = 16_000_000 // 4
@@ -24,13 +22,6 @@ MAIN_TCY_HZ = 16_000_000 // 4
 
 def _scaled_cycles(cycles: int, *, from_hz: int, to_hz: int) -> int:
     return max(1, int((cycles * to_hz + (from_hz // 2)) // from_hz))
-
-
-def _run_session(issue, *, current_cycle: int, target_cycle: int, timeout_s: float) -> int:
-    if target_cycle <= current_cycle + 1:
-        return target_cycle
-    issue(f"break c {target_cycle}", 5.0)
-    return _parse_cycle(issue("run", timeout_s))
 
 
 def _attach_tx_recorder(issue, *, processor: str, tx_pin: str, recorder_name: str, out_path: Path) -> None:
@@ -66,56 +57,102 @@ class _StreamingUartBridge:
     def __init__(
         self,
         *,
+        name: str,
         sender_record_path: Path,
         receiver_fifo_path: Path,
         scale_num: int,
         scale_den: int,
         idle_voltage: int = 5,
     ) -> None:
+        self.name = name
         self.sender_record_path = sender_record_path
         self.receiver_fifo_path = receiver_fifo_path
         self.scale_num = scale_num
         self.scale_den = scale_den
         self.idle_voltage = idle_voltage
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._drop = False
+        self._extra_cycles = 0
+        self._sender_offset = 0
+        self._sender_partial = ""
+        self._last_receiver_cycle = 0
 
     def start(self) -> None:
-        self._thread.start()
+        self.receiver_fifo_path.write_text(f"0 {self.idle_voltage}\n", encoding="ascii")
 
     def close(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1.0)
+        return
 
-    def _run(self) -> None:
-        try:
-            with self.receiver_fifo_path.open("w", buffering=1, encoding="ascii") as fifo:
-                while not self.sender_record_path.exists() and not self._stop.is_set():
-                    time.sleep(0.01)
-                if self._stop.is_set():
-                    return
-                fifo.write(f"0 {self.idle_voltage}\n")
-                with self.sender_record_path.open("r", encoding="ascii", errors="replace") as record:
-                    while not self._stop.is_set():
-                        line = record.readline()
-                        if not line:
-                            time.sleep(0.005)
-                            continue
-                        parts = line.strip().split()
-                        if len(parts) != 2:
-                            continue
-                        try:
-                            sender_cycle = int(parts[0], 10)
-                            sender_level = int(float(parts[1]))
-                        except ValueError:
-                            continue
-                        receiver_cycle = (sender_cycle * self.scale_num + (self.scale_den // 2)) // self.scale_den
-                        receiver_voltage = self.idle_voltage if sender_level else 0
-                        fifo.write(f"{receiver_cycle} {receiver_voltage}\n")
-        except Exception:
-            # The harness closes gpsim sessions and FIFOs aggressively during teardown.
-            # Background bridge shutdown should stay silent and deterministic.
-            return
+    def configure(self, *, drop: bool | None = None, extra_cycles: int | None = None) -> None:
+        if drop is not None:
+            self._drop = bool(drop)
+        if extra_cycles is not None:
+            self._extra_cycles = max(0, int(extra_cycles))
+
+    def clear_fault(self) -> None:
+        self.configure(drop=False, extra_cycles=0)
+
+    def flush(self, *, receiver_min_cycle: int | None = None) -> int:
+        """Forward newly-recorded sender transitions into the receiver stimulus file.
+
+        The sender and receiver live in separate gpsim processes, so a batch may
+        only become available after the receiver has already advanced past the
+        sender's natural mapped cycle. In that case, shift the whole batch into
+        the receiver's future while preserving intra-batch spacing.
+        """
+        if not self.sender_record_path.exists():
+            return 0
+        with self.sender_record_path.open("r", encoding="ascii", errors="replace") as record:
+            record.seek(self._sender_offset)
+            chunk = record.read()
+            self._sender_offset = record.tell()
+        if not chunk:
+            return 0
+
+        blob = self._sender_partial + chunk
+        lines = blob.split("\n")
+        if blob and not blob.endswith("\n"):
+            self._sender_partial = lines.pop()
+        else:
+            self._sender_partial = ""
+
+        edges: list[tuple[int, int]] = []
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) != 2:
+                continue
+            try:
+                sender_cycle = int(parts[0], 10)
+                sender_level = int(float(parts[1]))
+            except ValueError:
+                continue
+            edges.append((sender_cycle, sender_level))
+
+        if not edges:
+            return 0
+        if self._drop:
+            return len(edges)
+
+        mapped_cycles = [
+            ((sender_cycle * self.scale_num + (self.scale_den // 2)) // self.scale_den) + self._extra_cycles
+            for sender_cycle, _ in edges
+        ]
+        batch_shift = 0
+        first_cycle = mapped_cycles[0]
+        min_target = self._last_receiver_cycle + 1
+        if receiver_min_cycle is not None:
+            min_target = max(min_target, receiver_min_cycle + 1)
+        if first_cycle < min_target:
+            batch_shift = min_target - first_cycle
+
+        with self.receiver_fifo_path.open("a", buffering=1, encoding="ascii") as fifo:
+            for mapped_cycle, (_, sender_level) in zip(mapped_cycles, edges):
+                receiver_cycle = mapped_cycle + batch_shift
+                if receiver_cycle <= self._last_receiver_cycle:
+                    receiver_cycle = self._last_receiver_cycle + 1
+                self._last_receiver_cycle = receiver_cycle
+                receiver_voltage = self.idle_voltage if sender_level else 0
+                fifo.write(f"{receiver_cycle} {receiver_voltage}\n")
+        return len(edges)
 
 
 @dataclass(frozen=True)
@@ -195,6 +232,7 @@ class WireMultiMainChainHarness:
         ]
 
         self._bridges: list[_StreamingUartBridge] = []
+        self._bridge_map: Dict[str, _StreamingUartBridge] = {}
         self._control_rx_activity = False
         self._control_rx_prev = (0, 0)
         self._main_rx_activity = [False] * main_units
@@ -226,6 +264,7 @@ class WireMultiMainChainHarness:
 
         def add_link(
             *,
+            link_name: str,
             sender_record_path: Path,
             sender_tcy_hz: int,
             receiver_issue,
@@ -234,13 +273,9 @@ class WireMultiMainChainHarness:
             receiver_tcy_hz: int,
             stimulus_name: str,
         ) -> None:
-            fifo_path = self.tmp_path / f"{stimulus_name}.fifo"
-            try:
-                fifo_path.unlink()
-            except FileNotFoundError:
-                pass
-            os.mkfifo(fifo_path)
+            fifo_path = self.tmp_path / f"{stimulus_name}.stim"
             bridge = _StreamingUartBridge(
+                name=link_name,
                 sender_record_path=sender_record_path,
                 receiver_fifo_path=fifo_path,
                 scale_num=receiver_tcy_hz,
@@ -255,8 +290,10 @@ class WireMultiMainChainHarness:
                 fifo_path=fifo_path,
             )
             self._bridges.append(bridge)
+            self._bridge_map[link_name] = bridge
 
         add_link(
+            link_name="ctl_to_m0",
             sender_record_path=control_tx,
             sender_tcy_hz=CONTROL_TCY_HZ,
             receiver_issue=self.mains[0]._issue,
@@ -266,6 +303,7 @@ class WireMultiMainChainHarness:
             stimulus_name="CTL2M0",
         )
         add_link(
+            link_name="m0_to_ctl",
             sender_record_path=main_tx_paths[0],
             sender_tcy_hz=MAIN_TCY_HZ,
             receiver_issue=self.control._issue,
@@ -277,6 +315,7 @@ class WireMultiMainChainHarness:
 
         for index in range(len(self.mains) - 1):
             add_link(
+                link_name=f"m{index}_to_m{index + 1}",
                 sender_record_path=main_tx_paths[index],
                 sender_tcy_hz=MAIN_TCY_HZ,
                 receiver_issue=self.mains[index + 1]._issue,
@@ -286,6 +325,7 @@ class WireMultiMainChainHarness:
                 stimulus_name=f"M{index}2M{index + 1}",
             )
             add_link(
+                link_name=f"m{index + 1}_to_m{index}",
                 sender_record_path=main_tx_paths[index + 1],
                 sender_tcy_hz=MAIN_TCY_HZ,
                 receiver_issue=self.mains[index]._issue,
@@ -317,6 +357,24 @@ class WireMultiMainChainHarness:
     def is_connected(self) -> bool:
         return bool(self.control.read_reg(0x01F) & 0x02)
 
+    def set_link_fault(
+        self,
+        link_name: str,
+        *,
+        drop: bool | None = None,
+        extra_cycles: int | None = None,
+    ) -> None:
+        try:
+            bridge = self._bridge_map[link_name]
+        except KeyError as exc:
+            names = ", ".join(sorted(self._bridge_map))
+            raise KeyError(f"unknown wire link {link_name!r}; known links: {names}") from exc
+        bridge.configure(drop=drop, extra_cycles=extra_cycles)
+
+    def clear_link_faults(self) -> None:
+        for bridge in self._bridge_map.values():
+            bridge.clear_fault()
+
     def control_rx_activity(self) -> bool:
         return self._control_rx_activity
 
@@ -347,58 +405,53 @@ class WireMultiMainChainHarness:
 
         return current_control
 
+    def _flush_bridges(
+        self,
+        *,
+        names: tuple[str, ...] | None = None,
+        receiver_min_cycle: int | None = None,
+    ) -> None:
+        if names is None:
+            bridges = tuple(self._bridges)
+        else:
+            bridges = tuple(self._bridge_map[name] for name in names)
+        for bridge in bridges:
+            bridge.flush(receiver_min_cycle=receiver_min_cycle)
+
     def step(self) -> WireChainStepResult:
-        results: dict[str, int] = {}
-        errors: list[Exception] = []
+        control_step = self.control.step()
+        control_tx = tuple(control_step.new_tx)
 
-        control_target = self.control.current_cycle + self.control_chunk_cycles
-        main_target = self._main_chunk_cycles
+        # Mirror native-ring standby propagation: CONTROL bit2 drives MAIN RC2.
+        standby_bus = 1 if (self.control.read_reg(0x01F) & 0x04) else 0
+        for main in self.mains:
+            main.set_standby_bus(standby_bus)
 
-        def run_control() -> None:
-            try:
-                results["control"] = _run_session(
-                    self.control._issue,
-                    current_cycle=self.control.current_cycle,
-                    target_cycle=control_target,
-                    timeout_s=max(30.0, self.control_chunk_cycles / 100_000.0),
-                )
-            except Exception as exc:
-                errors.append(exc)
-
-        def run_main(index: int, main: MainChainHarness) -> None:
-            try:
-                results[f"main{index}"] = _run_session(
-                    main._issue,
-                    current_cycle=main.current_cycle,
-                    target_cycle=main.current_cycle + main_target,
-                    timeout_s=max(30.0, main_target / 100_000.0),
-                )
-            except Exception as exc:
-                errors.append(exc)
-
-        threads = [threading.Thread(target=run_control)]
-        threads.extend(threading.Thread(target=run_main, args=(index, main)) for index, main in enumerate(self.mains))
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-        if errors:
-            raise RuntimeError(str(errors[0]))
-
-        self.control.current_cycle = results["control"]
-        control_tx = tuple(self.control._decoder.ingest(self.control.log_path))
-
+        # Forward CONTROL TX edges into MAIN input files before MAIN advances.
+        self._flush_bridges(
+            names=("ctl_to_m0",),
+            receiver_min_cycle=min(main.current_cycle for main in self.mains),
+        )
         main_new_tx: list[tuple[TxTriplet, ...]] = []
         main_snaps: list[WireMainSnapshot] = []
         for index, main in enumerate(self.mains):
-            main.current_cycle = results[f"main{index}"]
-            new_tx = tuple(main.decoder.ingest(main.log_path))
+            snap, new_tx_list = main.step()
+            new_tx = tuple(new_tx_list)
             main_new_tx.append(new_tx)
-        control_rx_rd, control_rx_wr = self._update_rx_activity()
-
-        for index, main in enumerate(self.mains):
-            snap = main.read_snapshot()
+            outgoing: list[str] = []
+            if index == 0:
+                outgoing.append("m0_to_ctl")
+            if index > 0:
+                outgoing.append(f"m{index}_to_m{index - 1}")
+            if index + 1 < len(self.mains):
+                outgoing.append(f"m{index}_to_m{index + 1}")
+            for name in outgoing:
+                if name.endswith("_to_ctl"):
+                    receiver_cycle = self.control.current_cycle
+                else:
+                    dst_index = int(name.rsplit("_to_m", 1)[1])
+                    receiver_cycle = self.mains[dst_index].current_cycle
+                self._bridge_map[name].flush(receiver_min_cycle=receiver_cycle)
             main_snaps.append(
                 WireMainSnapshot(
                     index=index,
@@ -410,11 +463,12 @@ class WireMultiMainChainHarness:
                     tx_frame_count=len(main.decoder.tx_frames),
                 )
             )
+        control_rx_rd, control_rx_wr = self._update_rx_activity()
 
         return WireChainStepResult(
-            lcd=self.control.lcd_lines(),
+            lcd=control_step.lcd,
             control_flags=self.control.read_reg(0x01F),
-            cycle=self.control.current_cycle,
+            cycle=control_step.cycle,
             control_tx=control_tx,
             control_rx_rd=control_rx_rd,
             control_rx_wr=control_rx_wr,
@@ -426,6 +480,22 @@ class WireMultiMainChainHarness:
         last: WireChainStepResult | None = None
         for _ in range(max(0, steps)):
             last = self.step()
+        return last
+
+    def run_until_connected(self, *, limit: int) -> WireChainStepResult | None:
+        last: WireChainStepResult | None = None
+        for _ in range(limit):
+            last = self.step()
+            if self.is_connected() and not _is_waiting_lcd(last.lcd):
+                return last
+        return last
+
+    def run_until_waiting(self, *, limit: int) -> WireChainStepResult | None:
+        last: WireChainStepResult | None = None
+        for _ in range(limit):
+            last = self.step()
+            if _is_waiting_lcd(last.lcd):
+                return last
         return last
 
     def run_until_main_reply(self, *, limit: int, main_index: int = 0) -> WireChainStepResult | None:
