@@ -1,0 +1,6 @@
+
+
+#set verbose 1
+load pwm_877a.cod
+scope.ch0 = 'portc1'
+scope.ch1 = 'portc2'

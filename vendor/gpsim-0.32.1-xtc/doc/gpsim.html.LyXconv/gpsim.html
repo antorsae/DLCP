@@ -1,0 +1,5436 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+<meta name="generator" content="http://www.nongnu.org/elyxer/"/>
+<meta name="create-date" content="2023-10-26"/>
+<link rel="stylesheet" href="http://www.nongnu.org/elyxer/lyx.css" type="text/css" media="screen"/>
+<title>gpsim</title>
+</head>
+<body>
+<div id="globalWrapper">
+
+<h1 class="title">
+gpsim
+</h1>
+<h2 class="Date">
+$Date:: 2022-01-23#$
+</h2>
+<div class="Standard">
+
+<div class="fulltoc">
+
+<div class="tocheader">
+Table of Contents
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter*-1">Chapter: Introduction</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Chapter-1">Chapter 1: gpsim - An Overview</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-1.1">Section 1.1: Making the executable</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-1.1.1">Subsection 1.1.1: Make Details - ./configure options</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-1.1.2">Subsection 1.1.2: RPMs</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-1.1.3">Subsection 1.1.3: Windows</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-1.2">Section 1.2: Running</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-1.3">Section 1.3: Requirements</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-2">Chapter 2: Command Line Interface</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-2.1">Section 2.1: attach</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.2">Section 2.2: break</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.3">Section 2.3: clear</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.4">Section 2.4: disassemble</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.5">Section 2.5: dump</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.6">Section 2.6: echo</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.7">Section 2.7: frequency</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.8">Section 2.8: help</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.9">Section 2.9: icd</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.10">Section 2.10: list </a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.11">Section 2.11: load</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.12">Section 2.12: macros</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.13">Section 2.13: module</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.14">Section 2.14: node</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.15">Section 2.15: processor</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.16">Section 2.16: quit</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.17">Section 2.17: reg</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.18">Section 2.18: run</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.19">Section 2.19: step</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.20">Section 2.20: symbol</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.21">Section 2.21: stimulus</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.22">Section 2.22: stopwatch</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.23">Section 2.23: trace</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.24">Section 2.24: version</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-2.25">Section 2.25: x</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-3">Chapter 3: Graphical User Interface</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-3.1">Section 3.1: Main window</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-3.1.1">Subsection 3.1.1: Menus</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-3.1.2">Subsection 3.1.2: Buttons</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-3.1.3">Subsection 3.1.3: Simulation mode</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-3.2">Section 3.2: Source Browsers</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-3.2.1">Subsection 3.2.1: .asm Browser</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-3.2.2">Subsection 3.2.2: Opcode view - the .obj Browser</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-3.3">Section 3.3: Register views</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.4">Section 3.4: Symbol view</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.5">Section 3.5: Watch view</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.6">Section 3.6: Stack viewer</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.7">Section 3.7: Breadboard</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.8">Section 3.8: Trace viewer</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.9">Section 3.9: Profile viewer</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.10">Section 3.10: Stopwatch</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-3.11">Section 3.11: Scope Window</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-4">Chapter 4: Scripting and Configuring</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-4.1">Section 4.1: Embedded Commands</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-4.1.1">Subsection 4.1.1: .sim macro</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-4.1.2">Subsection 4.1.2: .command macro</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-4.1.3">Subsection 4.1.3: .assert macro</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-4.2">Section 4.2: Sockets</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-5">Chapter 5: Assertions and Extended Breakpoints</a>
+</div><div class="tocindent">
+<div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-1">Subsection: Breakpoint Messages</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-5.1">Section 5.1: Assertions and Embedded Simulation commands</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-2">Subsection: Command Assertions</a>
+</div></div>
+</div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-6">Chapter 6: Trace and Log: What has happen?</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section*-1">Section: Saving Trace to a file</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section*-2">Section: Raw Traces</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-7">Chapter 7: Simulating the Real World: Stimuli</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-7.1">Section 7.1: How They Work</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-7.1.1">Subsection 7.1.1: Contention among stimuli</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-7.2">Section 7.2: I/O Pins</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-7.3">Section 7.3: Asynchronous Stimuli</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-7.3.1">Subsection 7.3.1: Analog Asynchronous Stimuli</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-7.4">Section 7.4: Extended Stimuli</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-7.5">Section 7.5: Limitations of the Stimulus Mechanism</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-7.5.1">Subsection 7.5.1: Propagation Delays</a>
+</div></div>
+</div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-8">Chapter 8: Modules</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-8.1">Section 8.1: gpsim Modules</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.1">Subsection 8.1.1: USART</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.2">Subsection 8.1.2: pulsegen</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.3">Subsection 8.1.3: FileStimulus</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.4">Subsection 8.1.4: FileRecorder</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.5">Subsection 8.1.5: PortStimulus</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.6">Subsection 8.1.6: Logic</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-3">Subsection: and2 - Two input AND gate</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-4">Subsection: or2 - Two input OR gate</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-5">Subsection: xor2 - Two input XOR gate</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-6">Subsection: not - Inverter</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-7">Subsection: TTL377 - Octal Latch</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-8">Subsection: TTL165 - Parallel to Serial Shift Register</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-9">Subsection: TTL595 - Serial to Parallel Shift Register</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.7">Subsection 8.1.7: I2C EEPROM</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.8">Subsection 8.1.8: Switches &amp; Resistors</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.9">Subsection 8.1.9: Voltage Sources, Resistors, and Capacitors</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.10">Subsection 8.1.10: LED_7SEGMENTS and LED</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-10">Subsection: led_7segments - 7 segment common cathode LED display</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-11">Subsection: Led - Simple LED</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.1.11">Subsection 8.1.11: I2C slave to Parallel port</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-8.2">Section 8.2: Extras Modules</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.1">Subsection 8.2.1: Temperature and humidity sensor - DHT11</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.2">Subsection 8.2.2: 64 x 8, Serial, I2C Real-Time Clock - DS1307</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.3">Subsection 8.2.3: High-Precision 1-Wire Digital Thermometer - DS1820 Family</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.4">Subsection 8.2.4: Character LCD - HD44780</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-12">Subsection: I/O Pins</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.5">Subsection 8.2.5: Graphic LCD - SED1530</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.6">Subsection 8.2.6: LCD_7Seg</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection-8.2.7">Subsection 8.2.7: Solar</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Section-8.3">Section 8.3: Writing new modules</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-9">Chapter 9: Symbolic Debugging</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Chapter-10">Chapter 10: Macros</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Chapter-11">Chapter 11: Hex Files</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Chapter-12">Chapter 12: The ICD- Not Supported in versions 0.21.0 and later</a>
+</div><div class="tocindent">
+<div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-13">Subsection: Special configuration of the code</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-14">Subsection: icdprog</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-15">Subsection: ICD usage</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Subsection*-16">Subsection: ICD TODO</a>
+</div></div>
+</div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-13">Chapter 13: Examples</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Chapter-14">Chapter 14: Regression Tests</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Chapter-15">Chapter 15: Theory of Operation</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-15.1">Section 15.1: Background</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.2">Section 15.2: Instructions</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.3">Section 15.3: General File Registers</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.4">Section 15.4: Special File Registers</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.5">Section 15.5: Example of an instruction</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.6">Section 15.6: Trace</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.7">Section 15.7: Breakpoints</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-15.8">Section 15.8: TIMER1 External input</a>
+</div></div>
+
+<div class="toc">
+<a class="Link" href="#toc-Chapter-16">Chapter 16: LICENSES</a>
+</div><div class="tocindent">
+
+<div class="toc">
+<a class="Link" href="#toc-Section-16.1">Section 16.1: Gpsim.lyx</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-16.2">Section 16.2: Gpsim</a>
+</div>
+<div class="toc">
+<a class="Link" href="#toc-Section-16.3">Section 16.3: Libraries libgpsim, libgpsim_modules, libgpsim_eXdbm </a>
+</div></div>
+</div>
+
+</div>
+</div>
+<h1 class="Chapter-">
+<a class="toc" name="toc-Chapter*-1"></a>Introduction
+</h1>
+<div class="Standard">
+gpsim is a full-featured software simulator for Microchip PIC microcontrollers distributed under the GNU General Public License and GNU Lesser Public License(see the LICENSE section).
+</div>
+<div class="Standard">
+gpsim has been designed to be as accurate as possible. Accuracy includes the entire PIC - from the core to the I/O pins and including ALL of the internal peripherals. Thus it’s possible to create stimuli and tie them to the I/O pins and test the PIC the same way you would in the real world.
+</div>
+<div class="Standard">
+gpsim has been designed to be as fast as possible. Real time simulation speeds of 20Mhz pics are possible.
+</div>
+<div class="Standard">
+gpsim can be controlled from either a graphical user interface (GUI), a command line interface (CLI) or by a remote process. Typical debugging features like breakpoints, single stepping, disassembling, memory inspect &amp; change, and so on are all supported. In addition, complex debugging features like real time tracing, assertions, conditional breaks, and plugin modules to name a few are also supported.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-1">1</a> gpsim - An Overview
+</h1>
+<div class="Standard">
+If you don’t care to wade through details, this chapter should help you get things up and running. The INSTALL and README files will provide more up-to-date information than this document, so please refer to those first.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-1.1">1.1</a> Making the executable
+</h2>
+<div class="Standard">
+gpsim’s executable is created in a manner that’s consistent with much of the other open source software:
+</div>
+<div class="Standard">
+
+<table>
+
+<tr>
+
+<td align="left" valign="top">
+command 
+</td>
+<td align="left" valign="top">
+description
+</td>
+</tr>
+<tr>
+
+<td align="left" valign="top">
+tar -xvzf gpsim-x.y.z.tar.gz
+</td>
+<td align="left" valign="top">
+expand the compressed tar file
+</td>
+</tr>
+<tr>
+
+<td align="left" valign="top">
+./configure
+</td>
+<td align="left" valign="top">
+Create a ’makefile’ unique to your system
+</td>
+</tr>
+<tr>
+
+<td align="left" valign="top">
+make
+</td>
+<td align="left" valign="top">
+compile gpsim
+</td>
+</tr>
+<tr>
+
+<td align="left" valign="top">
+make install
+</td>
+<td align="left" valign="top">
+install gpsim
+</td>
+</tr>
+</table>
+</div>
+<div class="Standard">
+The last step will require root privileges.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-1.1.1">1.1.1</a> Make Details - ./configure options
+</h3>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-1"></a>gui-less
+</h4>
+<div class="Standard">
+The default configuration will provide a gui (graphical user interface). The cli (command line interface) is still available, however many people prefer just to use the cli. These hardy souls may build a command-line only interface by configuring gpsim:
+</div>
+<pre class="LyX-Code">
+./configure --disable-gui
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-2"></a>debugging
+</h4>
+<div class="Standard">
+If you want to debug gpsim then you will probably use gdb. Consequently, you will want to disable shared libraries:
+</div>
+<pre class="LyX-Code">
+./configure --disable-shared
+</pre>
+<div class="Standard">
+This will create one, huge monolithic executable with symbolic information. 
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-1.1.2">1.1.2</a> RPMs
+</h3>
+<div class="Standard">
+gpsim is also available in RPM form from linux distributions such as Fedora.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-1.1.3">1.1.3</a> Windows
+</h3>
+<div class="Standard">
+Gpsim runs on Windows too.  Both release and snapshot gpsim apps can be installed and run on windows  machines.
+</div>
+<div class="Standard">
+The release version of the gpsim apps are generated on each new release of gpsim.  These can be downloaded from the following web site:
+</div>
+<blockquote class="Quote">
+https://sourceforge.net/projects/gpsim/files/gpsim-win32/
+</blockquote>
+<div class="Standard">
+The snapshot versions are generated from time to time from the then current source code and will contain bug fixes and new features added since the last release. These versions should work, but are not given the extra testing of a new release.  Snapshots can be downloaded from:
+</div>
+<blockquote class="Quote">
+https://sourceforge.net/projects/gpsim/files/snapshot_builds/gpsim-win32/
+</blockquote>
+<div class="Standard">
+If you wish to build your own windows version of gpsim, the late  Borut Razem has documented the process which can be found at this location:
+</div>
+<blockquote class="Quote">
+http://gpsim.sourceforge.net/gpsimWin32/gpsimWin32.html
+</blockquote>
+<h2 class="Section">
+<a class="toc" name="toc-Section-1.2">1.2</a> Running
+</h2>
+<div class="Standard">
+The executable created above is called: gpsim. The following command line options may be specified when gpsim is invoked.
+</div>
+<pre class="LyX-Code">
+gpsim [-?] [-p &lt;device&gt; [&lt;hex_file&gt;]] [[-c] &lt;stc_file&gt;] [[-s] &lt;symbol file&gt;]
+</pre>
+<pre class="LyX-Code">
+  -p, --processor=&lt;processor name&gt;     processor (e.g. -pp16c84 for the ’c84)
+</pre>
+<pre class="LyX-Code">
+  -c, --command=STRING                 startup command file (optional .stc files)
+</pre>
+<pre class="LyX-Code">
+  -s                                   .cod symbol file (optional .cod files)
+</pre>
+<pre class="LyX-Code">
+  -L, —                               colon separated list of directories to
+</pre>
+<pre class="LyX-Code">
+                                       search.
+</pre>
+<pre class="LyX-Code">
+  -v, --version                        gpsim version
+</pre>
+<pre class="LyX-Code">
+  -i, --cli                            command line mode only
+</pre>
+<pre class="LyX-Code">
+  -d, --icd=STRING                     use ICD (e.g. -d /dev/ttyS0).
+</pre>
+<pre class="LyX-Code">
+  Help options:
+</pre>
+<pre class="LyX-Code">
+  -?, --help                           Show this help message
+</pre>
+<pre class="LyX-Code">
+  --usage                              Display brief usage message
+</pre>
+<div class="Standard">
+Typically gpsim will be invoked like:
+</div>
+<pre class="LyX-Code">
+[My-Computer]$ gpsim  mypic-program.cod
+</pre>
+<div class="Standard">
+(The <i>[My-Computer]$</i> text is an example of a typical bash command prompt - you will only type the text after this prompt). This loads the .cod file generated by gputils.
+</div>
+<div class="Standard">
+Under Windows, gpsim can also be invoked by navigating through the Start/Program menu. This will open a DOS window to provide access to the command line interface. It’s also possible to open a DOS window (or CygWin bash session) and invoke gpsim from there.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-1.3">1.3</a> Requirements
+</h2>
+<div class="Standard">
+gpsim has been developed under Linux. It should build and run just fine under the popular Linux distributions like Fedora, Ubuntu, etc. gpsim has also been ported to the MAC, MicroSoft Windows, Solaris, and BSD. Two packages gpsim requires that may not be available with all Linux  distributions are readline and gtk (the gimp tool kit). The ./configure script should tell you if these packages are not installed on your system or if the revisions that are installed are too old. 
+</div>
+<div class="Standard">
+There are no minimum hardware requirements to run gpsim. Faster is better though!
+</div>
+<div class="Standard">
+gputils, the gnupic utilities package, is also very useful. gpsim will accept straight hex files, but if you want to do any symbolic debugging then you will want to use the .cod<span class="FootMarker"> [A→] </span>
+<span class="Foot">
+<span class="FootMarker">[→A] </span>.cod files are symbol files that were created by ByteCraft and are used by Microchip.
+</span> files that gputils produces. The .cod files are in the same format as the .cod files MPASM<span class="FootMarker"> [B→] </span>
+<span class="Foot">
+<span class="FootMarker">[→B] </span>MPASM is Microchip’s Assembler.
+</span> produces. 
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-2">2</a> Command Line Interface
+</h1>
+<div class="Standard">
+The command line interface is fairly straight-forward. The table below summarizes the available commands. Brief descriptions of these commands can also be displayed by typing <i>help</i> at the command line.
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+
+<div class="center">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+command
+</td>
+<td align="center" valign="top">
+summary
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+attach<a class="IndexEntry" name="entry-attach-0" href="#index-attach">↓</a>
+</td>
+<td align="center" valign="top">
+Attach stimuli to nodes 
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+break<a class="IndexEntry" name="entry-break-0" href="#index-break">↓</a>
+</td>
+<td align="center" valign="top">
+Set a break point
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+bus<a class="IndexEntry" name="entry-bus-0" href="#index-bus">↓</a>
+</td>
+<td align="center" valign="top">
+Add or display node busses
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+clear<a class="IndexEntry" name="entry-clear-0" href="#index-clear">↓</a>
+</td>
+<td align="center" valign="top">
+Remove a break point
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+disassemble<a class="IndexEntry" name="entry-disassemble-0" href="#index-disassemble">↓</a>
+</td>
+<td align="center" valign="top">
+Disassemble the current cpu
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+dump<a class="IndexEntry" name="entry-dump-0" href="#index-dump">↓</a>
+</td>
+<td align="center" valign="top">
+Display either the RAM or EEPROM 
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+frequency<a class="IndexEntry" name="entry-frequency-0" href="#index-frequency">↓</a>
+</td>
+<td align="center" valign="top">
+Set processor frequency
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+help<a class="IndexEntry" name="entry-help-0" href="#index-help">↓</a>
+</td>
+<td align="center" valign="top">
+Type help "command" for more help on a command
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+icd<a class="IndexEntry" name="entry-icd-0" href="#index-icd">↓</a>
+</td>
+<td align="center" valign="top">
+In Circuit Debugger support.
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+list<a class="IndexEntry" name="entry-list-0" href="#index-list">↓</a>
+</td>
+<td align="center" valign="top">
+Display source and list files
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+load<a class="IndexEntry" name="entry-load-0" href="#index-load">↓</a>
+</td>
+<td align="center" valign="top">
+Load either a hex or command file
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+log<a class="IndexEntry" name="entry-log-0" href="#index-log">↓</a>
+</td>
+<td align="center" valign="top">
+Log/record events to a file
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+node<a class="IndexEntry" name="entry-node-0" href="#index-node">↓</a>
+</td>
+<td align="center" valign="top">
+Add or display stimulus nodes
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+module<a class="IndexEntry" name="entry-module-0" href="#index-module">↓</a>
+</td>
+<td align="center" valign="top">
+Select &amp; Display modules
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+processor<a class="IndexEntry" name="entry-processor-0" href="#index-processor">↓</a>
+</td>
+<td align="center" valign="top">
+Add/list processors
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+quit<a class="IndexEntry" name="entry-quit-0" href="#index-quit">↓</a>
+</td>
+<td align="center" valign="top">
+Quit gpsim
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+reset
+</td>
+<td align="center" valign="top">
+Reset all or parts of the simulation
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+reg<a class="IndexEntry" name="entry-reg-0" href="#index-reg">↓</a>
+</td>
+<td align="center" valign="top">
+examine or modify register memory
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+run<a class="IndexEntry" name="entry-run-0" href="#index-run">↓</a>
+</td>
+<td align="center" valign="top">
+Execute the pic program
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+set<a class="IndexEntry" name="entry-set-0" href="#index-set">↓</a>
+</td>
+<td align="center" valign="top">
+display and control gpsim behavior flags
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+step<a class="IndexEntry" name="entry-step-0" href="#index-step">↓</a>
+</td>
+<td align="center" valign="top">
+Execute one or more instructions
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+stimulus<a class="IndexEntry" name="entry-stimulus-0" href="#index-stimulus">↓</a>
+</td>
+<td align="center" valign="top">
+Create a stimulus
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+stopwatch<a class="IndexEntry" name="entry-stopwatch-0" href="#index-stopwatch">↓</a>
+</td>
+<td align="center" valign="top">
+Measure time between events
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+symbol<a class="IndexEntry" name="entry-symbol-0" href="#index-symbol">↓</a>
+</td>
+<td align="center" valign="top">
+Add/list symbols
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+trace<a class="IndexEntry" name="entry-trace-0" href="#index-trace">↓</a>
+</td>
+<td align="center" valign="top">
+Dump the trace history
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+version<a class="IndexEntry" name="entry-version-0" href="#index-version">↓</a>
+</td>
+<td align="center" valign="top">
+Display gpsim’s version
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+x<a class="IndexEntry" name="entry-x-0" href="#index-x">↓</a>
+</td>
+<td align="center" valign="top">
+(deprecated) examine and/or modify memory
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+The built in ’help’ command provides additional online information.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.1">2.1</a> attach<a class="IndexEntry" name="entry-attach-1" href="#index-attach">↓</a>
+</h2>
+<pre class="LyX-Code">
+attach node1 stimulus1 [stimulus2 stimulus_N]
+</pre>
+<div class="Standard">
+Attach is used to define connections between one or more stimulus and a node. One node and at least one stimulus must be specified, but in general two or more stimuli are used. Attach can be viewed as wiring stimuli together, with the node acting as the wire. A stimulus is either a CPU or module I/O pin or a stimulus name.
+</div>
+<div class="Standard">
+Attach_pointN can have one of the following formats
+</div>
+<div class="Labeling">
+pin(&lt;number&gt;) or pin(&lt;symbol&gt;) 
+<span class="Separator">
+
+</span>
+</div>
+<ul>
+
+<li class="nested">
+
+<div class="Standard">
+This refers to a pin of the current active CPU. 
+</div>
+<div class="Standard">
+&lt;number&gt; is the pin number
+</div>
+<div class="Standard">
+&lt;symbol&gt; is an integer symbol whose value is a pin number
+</div>
+</li>
+</ul>
+<div class="Labeling">
+&lt;connection&gt; or pin(&lt;connection&gt;) 
+<span class="Separator">
+
+</span>
+</div>
+<ul>
+
+<li class="nested">
+
+<div class="Standard">
+These two forms are treated exactly the same ( i.e. the pin() has no meaning).
+</div>
+<div class="Standard">
+&lt;connection&gt; is a stimulus name or an I/O pin name.
+</div>
+<div class="Standard">
+I/O pin name can be just the pin name for the CPU or &lt;module_name&gt;.pin_name for a module or CPU
+</div>
+</li>
+</ul>
+<div class="Standard">
+Example
+</div>
+<pre class="LyX-Code">
+**gpsim&gt; load instructions_14bit.cod     # load code
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; module library libgpsim_modules #load module lib
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; module load usart U1            # create USART
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; node n1                         # define a node
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; node n2                         #define another node
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; symbol TWO=2                    #define symbol with value 2
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; attach n1 pin(1) pin(TWO)       #attach CPU pins 1 and 2
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; attach n1 U1.RXPIN              #add usart pin to n1
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; attach n2 portb0 pin(U1.TXPIN)  #connect portb0 to UASRT TX pin
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; node                            # show results
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.2">2.2</a> break<a class="IndexEntry" name="entry-break-1" href="#index-break">↓</a>
+</h2>
+<div class="Standard">
+The break command is used to set and examine break points. New break points are assigned a unique number. This number can be used to query or clear the break point. Break points halt the simulation when the condition associated with them is true. Break points are ignored during single stepping. See chapter <a class="Reference" href="#cha:Assertions-and-Extended">5↓</a> for more examples of breakpoints.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-3"></a>Examining break points
+</h4>
+<pre class="LyX-Code">
+break [bp_number]
+</pre>
+<div class="Standard">
+Break points can be examined by typing the break command without any options. Specific breaks can be queried by specifying the break point number. 
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-4"></a>Program Memory/Execution breaks
+</h4>
+<div class="Standard">
+The most common break point is an execution break point. This one halts execution whenever the program counter reaches the address at which the break point is set. The syntax is:
+</div>
+<pre class="LyX-Code">
+break e|r|w ADDRESS [,expr [,message]]
+</pre>
+<div class="Standard">
+The simulation halts when the address is executed, read, or written. The ADDRESS can be a symbol or a number. If the optional expression is specified, then it must evaluate to true before the simulation will halt. The optional message allows a description to be associated with the break. The read and write options only apply to those processors that can manipulate their own program memory.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-5"></a>Register Memory breaks
+</h4>
+<div class="Standard">
+gpsim can also associate break points with register accesses. This is useful for capturing bugs that stomp on RAM. E.g. you can say something like “halt execution whenever bit 4 of register 42 is cleared”. The command line syntax is:
+</div>
+<pre class="LyX-Code">
+break r|w|ch REGISTER [,expr [,message]]
+</pre>
+<div class="Standard">
+The simulation halts when <i>REGISTER</i> is read, written, or changed on write, and the optional expression evaluates to true.
+</div>
+<div class="Standard">
+Other syntaxes with a boolean expression are:
+</div>
+<pre class="LyX-Code">
+break r|w|ch REGISTER == value
+</pre>
+<div class="Standard">
+The simulation halts when <i>REGISTER</i> is assigned the specified value, and:
+</div>
+<pre class="LyX-Code">
+break r|w|ch REGISTER &amp; mask == value
+</pre>
+<div class="Standard">
+The simulation halts when specified bits in REGISTER are assigned the specified value.
+</div>
+<div class="Standard">
+Here’s an example of a register write break. This one will halt the simulation if any value is written to the variable named <i>temp1</i>. 
+</div>
+<pre class="LyX-Code">
+break w temp1
+</pre>
+<div class="Standard">
+Sometimes it’s necessary to specify an auxiliary condition with a break point. For example, there may be a temporary variable that is shared throughout the code. You may wish to trap writes to that variable only while executing a specific subroutine. For example, the following break point triggers when temp1 is written and while the program counter is in between the labels <i>func_start</i> and <i>func_end</i>:
+</div>
+<pre class="LyX-Code">
+break w temp1, (pc &gt;= func_start &amp;&amp; pc &lt; func_end)
+</pre>
+<div class="Standard">
+<i>TIP:</i> Use this type of break point if you suspect an interrupt routine is over writing a variable.
+</div>
+<div class="Standard">
+Another situation is one where you wish to trap writes to a variable only if some other variable is a certain value:
+</div>
+<pre class="LyX-Code">
+break w temp1, (CurTask &amp; 0x0f != 0b101)
+</pre>
+<div class="Standard">
+If the firmware writes to the variable temp1 then the simulation will halt if the lower nibble of CurTask is not equal to 5.
+</div>
+<div class="Standard">
+This example breaks only if the hex digit ’C’ is written to the upper nibble of temp1:
+</div>
+<pre class="LyX-Code">
+break w (temp1 &amp; 0b11110000) == 0b11000000
+</pre>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-1"></a>Processor exception breakpoints
+</h4>
+<div class="Standard">
+Stack overflow, underflow and watchdog timeout can also halt the simulation.
+</div>
+<pre class="LyX-Code">
+break so
+</pre>
+<pre class="LyX-Code">
+break su
+</pre>
+<pre class="LyX-Code">
+break wdt
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-6"></a>Attribute Breakpoints
+</h4>
+<pre class="LyX-Code">
+break <i>attribute</i>
+</pre>
+<div class="Standard">
+gpsim also supports a concept of <i>attribute breakpoints.</i> Attributes are parameters that gpsim and its modules expose to the user interface. For example, the simulator stopwatch exposes attributes which support  breakpoints. This feature is intend mainly for module writers to provide a mechanism for allowing the user to control the module.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-7"></a>Cycle counter Breakpoints
+</h4>
+<pre class="LyX-Code">
+break c <i>cycle_number</i>
+</pre>
+<div class="Standard">
+The cycle counter is gpsim’s time keeper. It increments once every instruction cycle. The ’c’ option to the break command allows a break point to be set at a particular value of the cycle counter.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.3">2.3</a> clear<a class="IndexEntry" name="entry-clear-1" href="#index-clear">↓</a>
+</h2>
+<pre class="LyX-Code">
+clear bp_number
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<div class="Standard">
+The clear command is used to clear break points. The break point number must be specified. The <i>break</i> command without any arguments displays all of the currently defined break points. This can be used to ascertain the break point number. Once cleared, a break point is deleted. <span class="FootMarker"> [C→] </span>
+<span class="Foot">
+<span class="FootMarker">[→C] </span>A break point disable/enable feature has been discussed and may be added a future date.
+</span>
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.4">2.4</a> disassemble<a class="IndexEntry" name="entry-disassemble-1" href="#index-disassemble">↓</a>
+</h2>
+<pre class="LyX-Code">
+disassemble [[begin:end] | [count]]
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<div class="Standard">
+The disassemble command decodes the program memory opcodes into their standard mnemonics. With no options, the <i>disassemble</i> command disassembles instructions surrounding the current program counter:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; disassemble
+</pre>
+<pre class="LyX-Code">
+current pc = 0x1c
+</pre>
+<pre class="LyX-Code">
+    0012 2a03 incf reg3,f,0
+</pre>
+<pre class="LyX-Code">
+    0014 0004 clrwdt
+</pre>
+<pre class="LyX-Code">
+    0016 5000 movf reg,w,0
+</pre>
+<pre class="LyX-Code">
+    0018 1001 iorwf reg1,w,0
+</pre>
+<pre class="LyX-Code">
+    001a 1002 iorwf reg2,w,0
+</pre>
+<pre class="LyX-Code">
+==&gt; 001c 1003 iorwf reg3,w,0
+</pre>
+<pre class="LyX-Code">
+    001e e1f4 bnz $-0x16 ;(0x8)
+</pre>
+<pre class="LyX-Code">
+    0020 d7ff bra $-0x0 ;(0x00020) 
+</pre>
+<div class="Standard">
+With a single numeric option, the <i>disassemble</i> command will disassemble given number of instructions starting with the instruction at the PC.
+</div>
+<div class="Standard">
+With a two numbers, the <i>disassemble</i> command will disassemble instructions starting and ending given number of instructions from the PC.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.5">2.5</a> dump<a class="IndexEntry" name="entry-dump-1" href="#index-dump">↓</a>
+</h2>
+<pre class="LyX-Code">
+dump [r | s | e [module_name [filename]]]
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<div class="Standard">
+dump r or dump with no options will display all of the file registers and special function registers.
+</div>
+<div class="Standard">
+dump s will display only special function registers.
+</div>
+<div class="Standard">
+dump e will display the contents of the processor EEPROM (if the pic being simulated contains any).
+</div>
+<div class="Standard">
+The ’dump e module_name’ command will display the contents of an EEPROM where  module_name can either be the name of a module or processor which contains an EEPROM.
+</div>
+<div class="Standard">
+The ’dump e module_name filename’ command dumps the contents of a module’s EEPROM, in Intel hex format, into the file with the given name. The ’load e’ command can later be used to read the dumped file thus allowing the contents of the EEPROM  to be preserved between runs of gpsim.
+</div>
+<div class="Standard">
+See the ’x’ command for examining and modifying individual registers.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.6">2.6</a> echo<a class="IndexEntry" name="entry-echo-0" href="#index-echo">↓</a>
+</h2>
+<div class="Standard">
+The echo command is used like a print statement within configuration files. It just lets you display information about your configuration file.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.7">2.7</a> frequency<a class="IndexEntry" name="entry-frequency-1" href="#index-frequency">↓</a>
+</h2>
+<div class="Standard">
+This command sets the oscillator frequency. By default gpsim uses 20 MHz oscillator. The oscillator frequency is used to compute time in seconds. Use this command to adjust this value. If no value is provided this command prints the current frequency. Note that PICs have an instruction frequency that’s a quarter of the oscillator frequency clock.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.8">2.8</a> help<a class="IndexEntry" name="entry-help-1" href="#index-help">↓</a>
+</h2>
+<pre class="LyX-Code">
+help [<i>command</i>]
+</pre>
+<div class="Standard">
+By itself, help will display all of the commands along with a brief description on how they work. With a command as a parameter help provides more extensive online help. The help command can also display information about attributes.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.9">2.9</a> icd<a class="IndexEntry" name="entry-icd-1" href="#index-icd">↓</a>
+</h2>
+<pre class="LyX-Code">
+icd [open &lt;port&gt;]
+</pre>
+<div class="Standard">
+The open command is used to enable ICD mode and specify the serial port where the ICD is. (e.g. "icd open /dev/ttyS0"). Without options (and after the icd is enabled), it will print some information about the ICD.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.10">2.10</a> list <a class="IndexEntry" name="entry-list-1" href="#index-list">↓</a>
+</h2>
+<div class="Standard">
+The list command allows you to view the source code while you are debugging.
+</div>
+<pre class="LyX-Code">
+list [[s | l] [*pc] [line_number1 [,line_number2]]]
+</pre>
+<div class="Standard">
+Without any options, list will use the last specified options.
+</div>
+<div class="Standard">
+list s will display lines in the source (or .asm) file.
+</div>
+<div class="Standard">
+list l will display lines in the .lst file.
+</div>
+<div class="Standard">
+list *pc will display either .asm or .lst lines around the PC. Without *pc use current PC as a reference.
+</div>
+<div class="Standard">
+Line numbers are relative to the line of the PC.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.11">2.11</a> load<a class="IndexEntry" name="entry-load-1" href="#index-load">↓</a>
+</h2>
+<div class="Standard">
+The load command is used to load a program file, a command file, or eeprom data.
+</div>
+<div class="Standard">
+Program file is usually used to program the physical part. A .hex file provides no symbolic information. .cod files on the other hand, do provide symbolic information. The only reason to use a hex file is when there’s no .cod file available.
+</div>
+<div class="Standard">
+The syntax for loading program files is:
+</div>
+<pre class="LyX-Code">
+load [processortype] programfile [label]
+</pre>
+<div class="Standard">
+Gpsim will automatically determine if the file is a .hex or .cod file. The optional <i>processortype</i> is needed if a .hex file is being loaded and the processor type  is not yet defined.
+</div>
+<div class="Standard">
+The optional <i>label</i> is used to identify the processor module on the breadboard  and as the prefix in the symbol table. If a label is not given then the processor type is used for this functionality. 
+</div>
+<pre class="LyX-Code">
+load [i] commandfile.stc
+</pre>
+<div class="Standard">
+Command files contain gpsim commands. These are extremely useful for creating a debugging environment that will be used repeatedly. Normally loading a command file residing in other directories changes working directory. This can be overridden with the ’i’ (include) option.
+</div>
+<pre class="LyX-Code">
+load e module_name file
+</pre>
+<div class="Standard">
+This command loads the contents of either a processor’s EEPROM or an EEPROM module from a file containing the data in Intel hex format. In either case the address of the first cell of the EEPROM is 0x0000. Used in conjunction with the ’dump e module_name filename’  command,  the contents of an EEPROM can be carried over from one run of gpsim to  another.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.12">2.12</a> macros<a class="IndexEntry" name="entry-macros-0" href="#index-macros">↓</a>
+</h2>
+<div class="Standard">
+Macros are defined like:
+</div>
+<pre class="LyX-Code">
+<i>name</i> macro [arg1, arg2, ..., argN]
+</pre>
+<pre class="LyX-Code">
+   macro body
+</pre>
+<pre class="LyX-Code">
+endm
+</pre>
+<div class="Standard">
+And they’re invoked by:
+</div>
+<pre class="LyX-Code">
+<i>name</i> param1, param2, ..., paramN
+</pre>
+<div class="Standard">
+Macros are a way of collecting several parameterized commands into one short command. The first line of a macro definition specifies the macro’s name and optional arguments. The <i>name</i> is used to invoke the macro. The arguments are text string place holders. When a macro is invoked, the parameters are aligned with the arguments. I.e. <i>param1</i> in the invocation can be thought of being assigned to <i>arg1</i> in the definition. The parameters replace the arguments in the macro body.
+</div>
+<div class="Standard">
+In the following example, a variable or attribute called <i>mac_flags</i> is being manipulated in an expression. The arguments <i>add</i> and <i>mask</i> appear in the macro body and provide a parameterized way of manipulating this expression.
+</div>
+<pre class="LyX-Code">
+mac_exp macro add, mask
+</pre>
+<pre class="LyX-Code">
+  mac_flags = (mac_flags+add) &amp; mask
+</pre>
+<pre class="LyX-Code">
+endm 
+</pre>
+<div class="Standard">
+Note that the indentation is arbitrary. The macro is invoked by:
+</div>
+<pre class="LyX-Code">
+mac_exp 1, 0b00001111 # increment the lower nibble
+</pre>
+<div class="Standard">
+The parameter <i>add</i> is replaced by the number <i>1</i> while <i>mask</i> is replaced with the binary number <i>0b00001111.</i> The invocation turns into the gpsim command:
+</div>
+<pre class="LyX-Code">
+mac_flags = (mac_flags+1) &amp; 0b00001111
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-8"></a>Nested Macros
+</h4>
+<div class="Standard">
+The macro body can contain any gpsim command. Of particular interest are macro invocations within other macros. Here’s another macro that invokes the one defined above.
+</div>
+<pre class="LyX-Code">
+# Nested macro example
+</pre>
+<pre class="LyX-Code">
+mac1 macro p1, p2
+</pre>
+<pre class="LyX-Code">
+  run
+</pre>
+<pre class="LyX-Code">
+  mac_exp p1, p2
+</pre>
+<pre class="LyX-Code">
+endm 
+</pre>
+<div class="Standard">
+And it could be used like:
+</div>
+<pre class="LyX-Code">
+mac1  1,      0b00001111   #  test lower nibble
+</pre>
+<pre class="LyX-Code">
+mac1  (1&lt;&lt;4), 0b11110000   #  test upper nibble
+</pre>
+<div class="Standard">
+The first invocation starts the simulator by executing a <i>run</i> command. When a break point is encountered, control returns to the command line and the <i>mac_exp</i> macro is invoked.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-9"></a>Displaying Defined Macros
+</h4>
+<div class="Standard">
+All currently defined macros can be displayed by typing the macro command without a name or arguments:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; macro
+</pre>
+<pre class="LyX-Code">
+mac1 macro p1 p2
+</pre>
+<pre class="LyX-Code">
+   run
+</pre>
+<pre class="LyX-Code">
+   mac_exp p1, p2
+</pre>
+<pre class="LyX-Code">
+endm
+</pre>
+<pre class="LyX-Code">
+mac_exp macro add mask
+</pre>
+<pre class="LyX-Code">
+    mac_flags = (mac_flags+add) &amp; mask
+</pre>
+<pre class="LyX-Code">
+endm 
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.13">2.13</a> module<a class="IndexEntry" name="entry-module-1" href="#index-module">↓</a>
+</h2>
+<div class="Standard">
+The <i>module</i> command is used to load and query external modules (see section <a class="Reference" href="#cha:Modules">8↓</a> for more information about gpsim modules). A module is a special piece of software that can extend gpsim in some manner. LED’s and switches are examples of modules. A module library is collection of modules.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-10"></a>Loading module libraries
+</h4>
+<pre class="LyX-Code">
+module lib <i>lib_name</i>
+</pre>
+<div class="Standard">
+The <i>lib</i> option is used to load a module library. Module libraries are system dependent shared libraries, i.e. on Windows they’re DLL’s and UNIX they’re shared libraries. This means that either the libraries should reside in a path where the OS knows libraries exist or that the full path name must be specified along with the <i>lib_name</i>. gpsim provides a module library with a few modules:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; module lib libgpsim_modules
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-11"></a>Displaying available modules
+</h4>
+<pre class="LyX-Code">
+module list
+</pre>
+<div class="Standard">
+The <i>list</i> option will display all of the modules that can be loaded. Here is an example of gpsim’s built-in modules.
+</div>
+<pre class="LyX-Code">
+gpsim&gt; module list
+</pre>
+<pre class="LyX-Code">
+Module Library Files
+</pre>
+<pre class="LyX-Code">
+libgpsim_modules.so
+</pre>
+<pre class="LyX-Code">
+   switch
+</pre>
+<pre class="LyX-Code">
+   and2
+</pre>
+<pre class="LyX-Code">
+   or2
+</pre>
+<pre class="LyX-Code">
+   xor2
+</pre>
+<pre class="LyX-Code">
+   not
+</pre>
+<pre class="LyX-Code">
+   led_7segments
+</pre>
+<pre class="LyX-Code">
+   led
+</pre>
+<pre class="LyX-Code">
+   push_button
+</pre>
+<pre class="LyX-Code">
+   PortStimulus
+</pre>
+<pre class="LyX-Code">
+   pullup
+</pre>
+<pre class="LyX-Code">
+   pulldown
+</pre>
+<pre class="LyX-Code">
+   pulsegen
+</pre>
+<pre class="LyX-Code">
+   Encoder
+</pre>
+<pre class="LyX-Code">
+   usart
+</pre>
+<pre class="LyX-Code">
+   TTL377
+</pre>
+<pre class="LyX-Code">
+   I2C-EEPROM2k
+</pre>
+<pre class="LyX-Code">
+   I2C-EEPROM16k
+</pre>
+<pre class="LyX-Code">
+   I2C-EEPROM256k
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-12"></a>Loading a specific module 
+</h4>
+<pre class="LyX-Code">
+module load module_type [module_name]
+</pre>
+<div class="Standard">
+Once a library has been loaded, specific modules can be instantiated. The <i>module_type</i> is what’s displayed by the <i>module list</i> command. The optional module name specifies what the instance is called. Here’s an example 
+</div>
+<pre class="LyX-Code">
+gpsim&gt; module load led D1 
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-13"></a>Display loaded modules
+</h4>
+<pre class="LyX-Code">
+module
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-14"></a>Querying modules
+</h4>
+<div class="Standard">
+Dumping modules and listing the pins is not yet implemented.
+</div>
+<pre class="LyX-Code">
+
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.14">2.14</a> node<a class="IndexEntry" name="entry-node-1" href="#index-node">↓</a>
+</h2>
+<pre class="LyX-Code">
+node [new_node1 new_node2 ...]
+</pre>
+<div class="Standard">
+The <i>node</i> command defines or queries “nodes”, used to connect external signals to the simulated PIC. If no new_node is specified then all of the nodes that have been defined are displayed. If a new_node is specified then it will be added to the node list. See the "attach" and "stimulus" commands to see how stimuli are added to the nodes.
+</div>
+<pre class="LyX-Code">
+examples:
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+node           // display the node list
+</pre>
+<pre class="LyX-Code">
+node n1 n2 n3  // create and add 3 new nodes to the list 
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.15">2.15</a> processor<a class="IndexEntry" name="entry-processor-1" href="#index-processor">↓</a>
+</h2>
+<pre class="LyX-Code">
+processor [new_processor_type [new_processor_name]] | [list] | [pins] 
+</pre>
+<div class="Standard">
+The <i>processor</i> command is used to either define a new processor or to query one that has already been defined. Normally there’s no need to explicitly define the processor since the symbol file already contains that information. The two exceptions are when a) the symbolic information is not available or b) you wish to override the processor specified in the symbol file. (See the <i>load</i> command on how the processor in a symbol file can be overridden.)
+</div>
+<div class="Standard">
+To see a list of the processors supported by gpsim, type ’<i>processor list</i>’. To display the state of the I/O processor, type ’<i>processor pins</i>’. For now, this will display the pin numbers and their current state.
+</div>
+<pre class="LyX-Code">
+examples:
+</pre>
+<pre class="LyX-Code">
+processor        // Display the processors you’ve already defined. 
+</pre>
+<pre class="LyX-Code">
+processor list   // Display the list of processors supported. 
+</pre>
+<pre class="LyX-Code">
+processor pins   // Display the processor package and pin state 
+</pre>
+<pre class="LyX-Code">
+processor p16cr84 fred   // Create a new processor. 
+</pre>
+<pre class="LyX-Code">
+processor p16c74 wilma   // and another. 
+</pre>
+<pre class="LyX-Code">
+processor p16c65         // Create one with no name.
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.16">2.16</a> quit<a class="IndexEntry" name="entry-quit-1" href="#index-quit">↓</a>
+</h2>
+<div class="Standard">
+Quit gpsim.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.17">2.17</a> reg<a class="IndexEntry" name="entry-reg-1" href="#index-reg">↓</a>
+</h2>
+<pre class="LyX-Code">
+reg examine/modify register memory
+</pre>
+<pre class="LyX-Code">
+    reg(SRC)[= EXPRESSION]
+</pre>
+<pre class="LyX-Code">
+      SRC is an expression which evaluates to the target
+</pre>
+<pre class="LyX-Code">
+        register address. The expression can be or contain
+</pre>
+<pre class="LyX-Code">
+        integers, register names (address of register is
+</pre>
+<pre class="LyX-Code">
+        used), REGnnn’s(nnn, a HEX memory address, is used),
+</pre>
+<pre class="LyX-Code">
+        and arithmetic operators such as + - &amp; ^.
+</pre>
+<pre class="LyX-Code">
+      EXPRESSION is an expression which evaluates to the
+</pre>
+<pre class="LyX-Code">
+       integer which is placed in SRC memory location.
+</pre>
+<pre class="LyX-Code">
+       EXPRESSION uses the same elements as SRC except 
+</pre>
+<pre class="LyX-Code">
+       register names (including REGnnn) return their
+</pre>
+<pre class="LyX-Code">
+       contents.
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+    Some examples:
+</pre>
+<pre class="LyX-Code">
+        **gpsim&gt; reg(0xf92)
+</pre>
+<pre class="LyX-Code">
+        trisa[0xf92] = 0x7f
+</pre>
+<pre class="LyX-Code">
+        **gpsim&gt; reg(REGf92)
+</pre>
+<pre class="LyX-Code">
+        trisa[0xf92] = 0x7f
+</pre>
+<pre class="LyX-Code">
+        **gpsim&gt; reg(trisa) = trisa &amp; $f0
+</pre>
+<pre class="LyX-Code">
+        trisa[0xf92] = 0x70 was 0x7f
+</pre>
+<pre class="LyX-Code">
+        **gpsim&gt; reg(0x20) = trisb
+</pre>
+<pre class="LyX-Code">
+        REG020[0x20] = 0xff was 0x0
+</pre>
+<pre class="LyX-Code">
+        **gpsim&gt; reg(0x20+1) = REG020
+</pre>
+<pre class="LyX-Code">
+        REG021[0x21] = 0xff was 0x0
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.18">2.18</a> run<a class="IndexEntry" name="entry-run-1" href="#index-run">↓</a>
+</h2>
+<div class="Standard">
+Start (or continue) simulation. The simulation will continue until the next break point is encountered.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.19">2.19</a> step<a class="IndexEntry" name="entry-step-1" href="#index-step">↓</a>
+</h2>
+<div class="Standard">
+Execute a single instruction, or a specified number of instructions.
+</div>
+<pre class="LyX-Code">
+step [over | n]
+</pre>
+<div class="Standard">
+With no arguments, the step command executes one instruction of the PIC code. If a numeric argument is given, this specifies a fixed number of instructions to simulate. The specific word “over” as an argument to step tells gpsim to run everything involved in the current instruction. This would normally be used on a CALL instruction, in which case the whole subroutine runs and the simulation stops after it returns.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.20">2.20</a> symbol<a class="IndexEntry" name="entry-symbol-1" href="#index-symbol">↓</a>
+</h2>
+<pre class="LyX-Code">
+symbol [symbol_name [symbol_type value]] 
+</pre>
+<div class="Standard">
+The <i>symbol</i> command is used to query and define symbols. If no options are specified, the whole symbol table is displayed. The creation of user defined symbols is limited at this time (see the online help for the current state of this command).
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.21">2.21</a> stimulus<a class="IndexEntry" name="entry-stimulus-1" href="#index-stimulus">↓</a>
+</h2>
+<pre class="LyX-Code">
+stimulus [[type] options]
+</pre>
+<div class="Standard">
+The <i>stimulus</i> command creates a signal that can be tied to a node or an attribute. If no options are specified then all currently defined stimuli are displayed. 
+</div>
+<div class="Standard">
+Note that in most cases it is easier to create a stimulus file then to type the command by hand. 
+</div>
+<div class="Standard">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+initial_state
+</td>
+<td align="center" valign="top">
+state at the start and at the rollover
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+start_cycle
+</td>
+<td align="center" valign="top">
+simulation cycle when the stimulus will begin
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+period
+</td>
+<td align="center" valign="top">
+stimulus period 
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+name
+</td>
+<td align="center" valign="top">
+specifies the stimulus name
+</td>
+</tr>
+</table>
+</div>
+<div class="Standard">
+Here’s an example of a stimulus that will generate two pulses and repeat this in 1000 cycles.
+</div>
+<pre class="LyX-Code">
+stimulus asynchronous_stimulus
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+# The initial state AND the state the stimulus is when 
+</pre>
+<pre class="LyX-Code">
+# it rolls over
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+initial_state 0
+</pre>
+<pre class="LyX-Code">
+start_cycle 0
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+# the asynchronous stimulus will roll over in ’period’
+</pre>
+<pre class="LyX-Code">
+# cycles. Delete this line if you don’t want a roll over.
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+period 1000
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+{ 100, 1,
+</pre>
+<pre class="LyX-Code">
+  200, 0,
+</pre>
+<pre class="LyX-Code">
+  300, 1,
+</pre>
+<pre class="LyX-Code">
+  400, 0 
+</pre>
+<pre class="LyX-Code">
+}
+</pre>
+<pre class="LyX-Code">
+# Give the stimulus a name:
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+name two_pulse_repeat
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+end
+</pre>
+<div class="Standard">
+A stimulus can be queried by typing its name at the command line:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; two_pulse_repeat 
+</pre>
+<pre class="LyX-Code">
+two_pulse_repeat attached to pulse_node
+</pre>
+<pre class="LyX-Code">
+  Vth=0V  Zth=250 ohms  Cth=0 F  nodeVoltage= 7.49998e-07V 
+</pre>
+<pre class="LyX-Code">
+  Driving=0 drivingState=0 drivenState=0 bitState=0
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+  states = 5
+</pre>
+<pre class="LyX-Code">
+    100 1
+</pre>
+<pre class="LyX-Code">
+    200 0
+</pre>
+<pre class="LyX-Code">
+    300 1
+</pre>
+<pre class="LyX-Code">
+    400 0
+</pre>
+<pre class="LyX-Code">
+    1000 0   
+</pre>
+<pre class="LyX-Code">
+initial=0   
+</pre>
+<pre class="LyX-Code">
+period=1000   
+</pre>
+<pre class="LyX-Code">
+start_cycle=0   
+</pre>
+<pre class="LyX-Code">
+Next break cycle=100 
+</pre>
+<div class="Standard">
+Even though this example uses 1’s and 0’s for the data, one can use integers, floating point numbers, or expressions instead. Integers are useful for supplying a stimulus to an attribute. Expressions are useful for abstracting the data. See Chapter <a class="Reference" href="#cha:Simulating-the-Real">7↓</a> for more discussion and examples of stimuli.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.22">2.22</a> stopwatch<a class="IndexEntry" name="entry-stopwatch-1" href="#index-stopwatch">↓</a><span class="FootMarker"> [D→] </span>
+<span class="Foot">
+<span class="FootMarker">[→D] </span>The stopwatch is really a collection of attributes and not a command. But the behavior is so similar to a command that it has been included here.
+</span>
+</h2>
+<pre class="LyX-Code">
+A timer for monitoring and controlling the simulation.  
+</pre>
+<pre class="LyX-Code">
+The units are in simulation cycles.
+</pre>
+<pre class="LyX-Code">
+  stopwatch.rollover - specifies rollover value.
+</pre>
+<pre class="LyX-Code">
+  stopwatch.direction - specifies count direction.
+</pre>
+<pre class="LyX-Code">
+  stopwatch.enable - enables counting if true. 
+</pre>
+<div class="Standard">
+Without any options, <i>stopwatch</i> will display the contents of the stopwatch timer. <i>stopwatch</i> is writable, so you may initialize it to whatever value you like. The behavior of the timer may be manipulated via the three attributes. The <i>.rollover</i> attribute is the number of cycles at which the stopwatch timer rolls over. The <i>.direction</i> and <i>.enable</i> attributes are boolean types. When true, the <i>.direction</i> attribute will instruction the stopwatch to count up.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.23">2.23</a> trace<a class="IndexEntry" name="entry-trace-1" href="#index-trace">↓</a>
+</h2>
+<pre class="LyX-Code">
+trace [dump_amount]
+</pre>
+<div class="Standard">
+<i>trace</i> will print out the most recent "dump_amount" traces. If no dump_amount is specified, then the entire trace buffer will be displayed.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.24">2.24</a> version
+</h2>
+<pre class="LyX-Code">
+version
+</pre>
+<div class="Standard">
+Display gpsim’s version. Note, this command will probably get replaced by an attribute with the same (or similar) name.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-2.25">2.25</a> x<a class="IndexEntry" name="entry-x-1" href="#index-x">↓</a>
+</h2>
+<div class="Standard">
+The <i>x</i> command is deprecated. It’s former use was to examine and modify memory. The preferred way to do this now is with expressions. The help for <i>x</i> now indicates this:
+</div>
+<pre class="LyX-Code">
+x examine command — deprecated
+</pre>
+<pre class="LyX-Code">
+  Instead of the using a special command to examine and modify
+</pre>
+<pre class="LyX-Code">
+  variables, it’s possible to directly access them using gpsim’s
+</pre>
+<pre class="LyX-Code">
+  expression parsing. For example, to examine a variable:
+</pre>
+<pre class="LyX-Code">
+gpsim&gt; my_variable
+</pre>
+<pre class="LyX-Code">
+my_variable [0x27] = 0x00 = 0b00000000
+</pre>
+<pre class="LyX-Code">
+  To modify a variable
+</pre>
+<pre class="LyX-Code">
+gpsim&gt; my_variable = 10
+</pre>
+<pre class="LyX-Code">
+  It’s also possible to assign the value of register to another
+</pre>
+<pre class="LyX-Code">
+gpsim&gt; my_variable = porta
+</pre>
+<pre class="LyX-Code">
+  Or to assign the results of an expression:
+</pre>
+<pre class="LyX-Code">
+gpsim&gt; my_variable = (porta ^ portc) &amp; 0x0f 
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-3">3</a> <a class="Label" name="cha:Graphical-User-Interface"> </a>Graphical User Interface
+</h1>
+<div class="Standard">
+FIXME: We could use a few illustrations here!
+</div>
+<div class="Standard">
+gpsim also provides a graphical user interface that simplifies some of the drudgery associated with the cli. It’s possible to open windows to view all the details about your debug environment. To get the most out of your debugging session, you will want to assemble your code with gpasm (the gnupic assembler) and use the symbolic .cod files it produces.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.1">3.1</a> Main window
+</h2>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-3.1.1">3.1.1</a> Menus
+</h3>
+<div class="Labeling">
+File-&gt;Open .stc or .cod files.
+</div>
+<div class="Labeling">
+File-&gt;Quit Quit gpsim
+</div>
+<div class="Labeling">
+Windows-&gt;* Open/Close the windows.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-3.1.2">3.1.2</a> Buttons
+</h3>
+<div class="Standard">
+(These are also found as keyboard bindings in the source windows.)
+</div>
+<div class="Labeling">
+Step Step one instruction
+</div>
+<div class="Labeling">
+Over Step until pc is after next instruction
+</div>
+<div class="Labeling">
+Finish Run to return address
+</div>
+<div class="Labeling">
+Run Run continuously
+</div>
+<div class="Labeling">
+Stop Stop execution
+</div>
+<div class="Labeling">
+Reset Reset CPU
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-3.1.3">3.1.3</a> Simulation mode
+</h3>
+<div class="Standard">
+This controls how gpsim simulates, and how the GUI updates.
+</div>
+<div class="Labeling">
+Never Don’t ever update the GUI when simulating. This is the fastest mode. You will have to stop simulation by pressing Ctrl-C in the command line  interface.
+</div>
+<div class="Labeling">
+x cycles Update the GUI every x cycles simulated.
+</div>
+<div class="Labeling">
+every cycle Update the GUI every cycle. (you see everything, if you have filled up on coffee :-)
+</div>
+<div class="Labeling">
+x ms animate Here you can slow down simulation with a delay between every cycle.
+</div>
+<div class="Labeling">
+realtime This will make gpsim try to synchronize simulation speed with wall clock time.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.2">3.2</a> Source Browsers
+</h2>
+<div class="Standard">
+gpsim provides two views of your source: ’.<i>asm’</i> and ’.<i>obj’</i> browsers. The ’.<i>asm’</i> browser is a color coded display of your pic source. 
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-3.2.1">3.2.1</a> .asm Browser
+</h3>
+<div class="Standard">
+When a .cod file with source is loaded, there should be something in this display. (TODO: add section about high level debugging).
+</div>
+<div class="Standard">
+There is an area to the left of the source, where symbols representing the program counter, breakpoints, etc are displayed. Double clicking in this area toggles breakpoints. You can drag these symbols up or down in order to move them and change the PC or move a breakpoint.
+</div>
+<div class="Standard">
+A right button click on the source pops up a menu with six items (the word ’here’ in some menu items denote the line in source the mouse pointer was on when right mouse button was clicked.):
+</div>
+<div class="Labeling">
+<b>Menu item Description</b>
+</div>
+<div class="Labeling">
+Find PC This menu item will find the PC and changed page tab and scroll the source view to the current PC.
+</div>
+<div class="Labeling">
+Run here This sets a breakpoint ’here’ and starts running until a breakpoint is hit.
+</div>
+<div class="Labeling">
+Move PC here This simply changes PC to the address that line ’here’ in source has.
+</div>
+<div class="Labeling">
+Breakpoint here Set a breakpoint ’here’.
+</div>
+<div class="Labeling">
+Profile start here Set a start marker for routine profiling here.
+</div>
+<div class="Labeling">
+Profile stop here Set a stop marker. (See the section for the profiling window.)
+</div>
+<div class="Labeling">
+Select symbol. This menu item is only available when some text is selected in the text widget. What it does is search the list of symbols for the selected word, and if it is found it is selected in the symbol window. Depending of type of symbol other things are also done, the same thing as when selecting a symbol in the symbol window: 
+<span class="Separator">
+
+</span>
+</div>
+<ul>
+
+<li class="nested">
+
+<ul>
+
+<li>
+If it is an address, then the opcode and source views display the address. 
+</li>
+<li>
+If it’s a register, the register viewer selects the cell.
+</li>
+<li>
+If it’s a constant, address, register or ioport, it is selected in the symbol window.
+</li>
+</ul>
+</li>
+</ul>
+<div class="Labeling">
+Find text This opens up a search dialog. Every time you hit the ’Find’ button, the current notebook page is found and the source in that page is used.
+</div>
+<div class="Labeling">
+Settings A dialog with which you can change the fonts used.
+</div>
+<div class="Labeling">
+Controls A submenu containing the simulation commands. (these are also found as keyboard bindings (recommended), or in the main window.)
+</div>
+<div class="Standard">
+These are the keyboard bindings:
+</div>
+<div class="Labeling">
+<b>Key command</b>
+</div>
+<div class="Labeling">
+s,S,F7 Step one instruction.
+</div>
+<div class="Labeling">
+o,O,F8 Step over instruction
+</div>
+<div class="Labeling">
+r,R,F9 Run continuously.
+</div>
+<div class="Labeling">
+Escape Stop simulation.
+</div>
+<div class="Labeling">
+f,F Run to return address
+</div>
+<div class="Labeling">
+1..9 Step n instructions
+</div>
+<div class="Labeling">
+ctrl-f Find text
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-3.2.2">3.2.2</a> Opcode view - the .obj Browser
+</h3>
+<div class="Standard">
+This window has two tabs. One with each memory cell on one line and information about address, hexadecimal value and decoded instruction (i.e. disassembly), and one with the program memory
+</div>
+<div class="Standard">
+displayed with sixteen memory cells per row and a configurable ASCII column.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-15"></a>The Assembly tab you can:
+</h4>
+<ul>
+
+<li>
+Double click on a line to toggle breakpoints.
+</li>
+<li>
+Right click to get a menu where the breakpoint can be set or cleared on the selected line.
+</li>
+<li>
+Under ’Settings’ you can change the font.
+</li>
+</ul>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-16"></a>The Opcode tab.
+</h4>
+<div class="Standard">
+Here the program memory is ordered as columns of sixteen memory cells per column and as many row as needed to contain all memory. 
+</div>
+<div class="Standard">
+The seventeenth column contains an ASCII representation of the program memory.
+</div>
+<div class="Standard">
+You can change font with the menu item ’Settings’.
+</div>
+<div class="Standard">
+The breakpoints can be set or cleared on one or more (drag the mouse to select more cells) addresses with the right click menu.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.3">3.3</a> Register views
+</h2>
+<div class="Standard">
+There are two similar register windows. One for the RAM and one for the EEPROM data, when available.
+</div>
+<div class="Standard">
+Here you see all registers in the current processor. Clicking on a cell displays it’s name and value above the sheet of registers. You can change values by entering it in the entry (or in the spreadsheet cell).
+</div>
+<div class="Standard">
+The following things can be done on one register, or a range of registers. (Selecting a range of registers is done by holding down left mouse button, moving cursor, and releasing button.)
+</div>
+<ul>
+
+<li>
+Set and clear breakpoints. Use the right mousebutton menu to pop up a menu where you can select set read, write, read value and write value breakpoints. You can also "clear breakpoints", notice the s in "clear breakpoints", every breakpoint on the registers are cleared. 
+</li>
+<li>
+Set and clear logging of registers. You can log reads, writes, reads/writes of specific values and to bits selected by a specified mask. You can select a different file name with ’set log filename...’. Default is "gpsim.log". You can choose LXT or ASCII format. LXT can be read with the program gtkwave. ASCII is default.
+</li>
+<li>
+Copy cells. You copy cells by dragging the border of the selected cell(s).
+</li>
+<li>
+Fill cells. Move mouse to lower right corner of the frame of the selected cell(s), and drag it. The one cell’s contents will be copied to the other cells.
+</li>
+<li>
+Watch them. Select the "Add Watch" menu item.
+</li>
+</ul>
+<div class="Standard">
+The cells have different background colors depending on if they represent:
+</div>
+<ul>
+
+<li>
+File Register (e.g. RAM): light cyan.
+</li>
+<li>
+Special Function Registers (e.g. STATUS,TMR0): dark cyan
+</li>
+<li>
+aliased register (e.g. the INDF located at address 0x80 is the same as the one located at address 0x00): gray
+</li>
+<li>
+invalid register: black. If all sixteen registers in a row are invalid, then the row is not shown.
+</li>
+<li>
+a register with one or more breakpoints: red. Logged registers are also red.
+</li>
+</ul>
+<div class="Standard">
+gpsim dynamically updates the registers as the simulation proceeds. Registers that change value between updates of the window during simulation are highlighted with a blue foreground color. 
+</div>
+<div class="Standard">
+The menu also has a ’settings’ item where you can change the font used.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.4">3.4</a> Symbol view
+</h2>
+<div class="Standard">
+This window, as its name suggests, displays symbols. All of the special function registers will have entries in the symbol viewer. If you are using .cod files then you will additionally have file registers (that are defined in cblocks), equates, and address labels.
+</div>
+<div class="Standard">
+You can filter out some symbol types using the buttons in the top of the window, and you can sort the rows by clicking on the column buttons (the ones reading ’symbol’, ’type’ and ’address’).
+</div>
+<div class="Standard">
+You can add the symbol to the watch window by right-clicking and selecting the "Add to watch window" menu item. This will add the ram register with address equal to the symbols value to the watch window.
+</div>
+<div class="Standard">
+The symbol viewer is linked to the other windows. For example, if you click on a symbol and:
+</div>
+<ul>
+
+<li>
+If it is an address, then the opcode and source views display the address.
+</li>
+<li>
+If it’s a register, the register viewer selects the cell.
+</li>
+</ul>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.5">3.5</a> Watch view
+</h2>
+<div class="Standard">
+This is not a output-only window as the name suggests (change name?). You can both view and change data. Double-clicking on a bit toggles the bit. You add variables here by marking them in a register viewer and select “Add watch” from menu. The right-click menu has the following items:
+</div>
+<ul>
+
+<li>
+Remove watch
+</li>
+<li>
+Set register value
+</li>
+<li>
+Clear Breakpoints
+</li>
+<li>
+Set break on read
+</li>
+<li>
+Set break on write
+</li>
+<li>
+Set break on read value
+</li>
+<li>
+Set break on write value
+</li>
+<li>
+Columns... 
+</li>
+</ul>
+<div class="Standard">
+"Columns...” opens up a window where you can select which of the following data to display:
+</div>
+<ul>
+
+<li>
+BP
+</li>
+<li>
+Type
+</li>
+<li>
+Name
+</li>
+<li>
+Address
+</li>
+<li>
+Dec
+</li>
+<li>
+Hex
+</li>
+<li>
+Bx (bits of word)
+</li>
+</ul>
+<div class="Standard">
+You can sort the list of watches by clicking on the column buttons. Clicking twice sorts the list backwards.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.6">3.6</a> Stack viewer
+</h2>
+<div class="Standard">
+This window displays current stack. Selecting an entry makes the code windows display the return address. Double clicking sets a breakpoint on the return address.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.7">3.7</a> Breadboard
+</h2>
+<div class="Standard">
+Here you can create/modify and examine the environment around the pic. Pins are displayed as an arrow. The direction of the arrow indicates if its an input or output pin. The color of the arrow indicates its state (green=low, red=high).
+</div>
+<div class="Standard">
+You can’t instantiate pic processors from here, you will have to do that from the command line, or from a .stc file.
+</div>
+<div class="Standard">
+Your can create nodes by clicking on the "new node" button. (A node is ’a piece of wire’ to which you can connect stimulus.) You can see the list of created nodes under the "nodes" item in the upper-left tree widget.
+</div>
+<div class="Standard">
+You can create connections to nodes by clicking on a pin, and then clicking on the button "Connect stimulus to node". This will bring up a list of nodes. Choose one by double-clicking on the one you like.
+</div>
+<div class="Standard">
+If you click on a pin that is already connected to a node, then you will see the node and its connections in the lower left part of the window. You can disconnect a stimulus by clicking on it and pressing the "remove stimulus" button.
+</div>
+<div class="Standard">
+When you want to add a module to the simulation, you first have to specify the library which contains the module you want. Click on the "add library" button and enter the library name (e.g. "libgpsim_modules.so"). Now you can click the "add module" button. Select the module you want from the list by double-clicking on it. Enter a name for the module (this has to be unique, and not used before). You now have to position the module. Move the mouse pointer to where you would like the module, and left-click.
+</div>
+<div class="Standard">
+If you middle-click on a pin, you will see how the pin is connected. Press the "trace all" to see all at
+</div>
+<div class="Standard">
+once, and "clear traces" to remove all (you will only remove the graphical trace, not the connection!). If the tracing doesn’t work, try moving the packages so that there are more space around the pins.
+</div>
+<div class="Standard">
+When you are done, you can save by clicking the "save configuration" button. You can then load this file from the command line like this (assuming the .cod file with your source is called "mycode.cod", and the file you just saved was called "mynets.stc":
+</div>
+<pre class="LyX-Code">
+gpsim -s mycode.cod -c mynets.stc
+</pre>
+<div class="Standard">
+You can’t load only the .stc file since this doesn’t contain the processor type and code. You can create (with an editor) your own .stc file (e.g. my_project.stc) and in that file put a command "load c mynets.stc" after you have loaded the .cod file. You then only have to load this file (gpsim -c my_project.stc).
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.8">3.8</a> Trace viewer
+</h2>
+<div class="Standard">
+This window shows the trace of instructions executed. See <a class="Reference" href="#trace">6↓</a>.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.9">3.9</a> Profile viewer
+</h2>
+<div class="Standard">
+This window show execution count for program memory addresses. The profile window must be opened before starting simulation, because the tracing is not enabled by default.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-2"></a>Instruction profile
+</h4>
+<div class="Standard">
+This shows the number of times each instruction are executed.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-3"></a>Instruction range profile
+</h4>
+<div class="Standard">
+Here you can group ranges of instruction into one entry. 
+</div>
+<div class="Standard">
+The right click menu contains:
+</div>
+<div class="Labeling">
+Remove range Remove an entry.
+</div>
+<div class="Labeling">
+Add range... Open a dialog from where you can add a range of instructions as an entry.
+</div>
+<div class="Labeling">
+Add all labels Add all code labels as ranges.
+</div>
+<div class="Labeling">
+Snapshot to plot Open a window containing a graph of the data. From this new window you can also save (postscript) or print it.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-17"></a>Register profile
+</h4>
+<div class="Standard">
+This shows the number of reads or writes the simulator does on register.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-18"></a>Routine profile
+</h4>
+<div class="Standard">
+Here you can see statistics about execution time for a selected routine. You mark the entry and exit points from the source browser (profile start/stop). If the routine you want to measure have multiple entry and/or exit points, then you have to put a marker on every entry point as well as (and especially) every exit point. Otherwise you will get bad data. 
+</div>
+<div class="Standard">
+When you have done that, gpsim will (as simulation goes by) store the execution times of that routine and calculate min/max/average/etc. You can also use the menu item ’Plot distribution’ to open a window displaying a histogram of the data. From this new window you can also save (in postscript) or print it.
+</div>
+<div class="Standard">
+You can also measure call period by switching the ’entry’ and ’exit’ points. If also want the time from reset (or some equal point) to the first ’entry’, then you must also put an ’entry’ point there.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.10">3.10</a> Stopwatch
+</h2>
+<div class="Standard">
+The stopwatch window shows a cycle counter and a re-settable counter. The cycle counter is the same as the one in the register window. It basically counts instructions. 
+</div>
+<div class="Standard">
+The other counter counts at the same rate as the cycle counter, but can be cleared by clicking the "clear" button (or preset by entering a number in the entry box). 
+</div>
+<div class="Standard">
+The up/down indicator denotes the direction the counter counts.
+</div>
+<div class="Standard">
+The rollover value specifies the range the cycle counter can be in (a modulo counter). For example, if the rollover value is specified to be 0x42, then whenever the resettable counter reaches 0x42 it will rollover to zero. If the counter is counting down, then when it reaches 0 the next state will be 0x41. If you don’t want is like this, then set the rollover value to something large.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-3.11">3.11</a> Scope Window
+</h2>
+<div class="Standard">
+FIXME: The scope window still needs some work...
+</div>
+<div class="Standard">
+The Scope Window graphs I/O pin states. It is similar to an oscilloscope or logic analyzer. It can be controlled either from the command line or from the GUI. Currently only the digital state of I/O pins are supported.
+</div>
+<div class="Standard">
+To use the scope window, each scope channel being used must first be connected to the stimulus being tracked. This can only be done on the command line (or via the .sim directive in the .asm file). The following example shows how this is done, but note that in the .sim command the ’”’s need to be escaped with a ’\’.
+</div>
+<pre class="LyX-Code">
+**gpsim&gt; scope.ch0 = “portc3”
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; scope.ch1 = “portc4”
+</pre>
+<div class="Standard">
+Once the data are captured, the scope window display may need to be altered to better see the data. In the GUI, the following keys can be used:
+</div>
+<div class="Labeling">
+z Zoom In
+</div>
+<div class="Labeling">
+Z Zoom out
+</div>
+<div class="Labeling">
+l Pan left
+</div>
+<div class="Labeling">
+r Pan right
+</div>
+<div class="Standard">
+In the command line, zooming and panning can be achieved by modifying the scope.start and scope.end variables.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-4">4</a> Scripting and Configuring
+</h1>
+<div class="Standard">
+gpsim does not have a native scripting language per se. However it is possible to place gpsim commands into a file and load them later. This is useful for loading modules and stimuli and connecting various devices together. By convention, gpsim’s configuration files have the extension <i>.stc</i>, for <i>st</i>artup <i>c</i>onfiguration. 
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-4.1">4.1</a> Embedded Commands
+</h2>
+<div class="Standard">
+If you’re using gputils, it is possible to embed configuration commands directly into your PIC assembly source. The gputils supplied include file <i>coff.inc</i> contains several macros that embed simulation command into a COFF and COD files.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-4.1.1">4.1.1</a> .sim macro
+</h3>
+<pre class="LyX-Code">
+; Simulator Command
+</pre>
+<pre class="LyX-Code">
+.sim macro x
+</pre>
+<pre class="LyX-Code">
+  .direct "e", x
+</pre>
+<pre class="LyX-Code">
+  endm
+</pre>
+<div class="Standard">
+The <tt><i>.sim</i></tt> <tt>macro allows gpsim configuration commands to be embedded in the PIC source. While gpsim loads a .cod file, the commands in the</tt> <tt><i>.sim</i></tt> <tt>macros are collected. After the .cod file is loaded, the commands are redirected to gpsim’s command line interpreter in the order they were received.</tt>
+</div>
+<div class="Standard">
+Here’s an example of switch module being loaded and configured:
+</div>
+<pre class="LyX-Code">
+ ;# Module libraries:
+</pre>
+<pre class="LyX-Code">
+ .sim "module library libgpsim_modules"
+</pre>
+<pre class="LyX-Code">
+ .sim "module load switch SW1"
+</pre>
+<pre class="LyX-Code">
+ .sim "SW1.state=false"
+</pre>
+<pre class="LyX-Code">
+ .sim "SW1.xpos = 216.0"
+</pre>
+<pre class="LyX-Code">
+ .sim "SW1.ypos = 156.0"
+</pre>
+<pre class="LyX-Code">
+ .sim "SW1.Ropen = 1.0e8"
+</pre>
+<div class="Standard">
+This loads gpsim’s module library, instantiates a switch module, and configures the switch’s attributes.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-4.1.2">4.1.2</a> .command macro
+</h3>
+<pre class="LyX-Code">
+.command macro x
+</pre>
+<pre class="LyX-Code">
+  .direct "c", x
+</pre>
+<pre class="LyX-Code">
+  endm
+</pre>
+<div class="Standard">
+The <tt><i>.command</i></tt> <tt>macro is similar to a</tt> <tt><i>.sim</i></tt> <tt>macro except that it associates a gpsim command with a particular instruction. This is useful for changing attribute values at different points of the program.</tt>
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-4.1.3">4.1.3</a> .assert macro
+</h3>
+<pre class="LyX-Code">
+; Assertion
+</pre>
+<pre class="LyX-Code">
+.assert macro x
+</pre>
+<pre class="LyX-Code">
+ .direct "a", x
+</pre>
+<pre class="LyX-Code">
+ endm
+</pre>
+<div class="Standard">
+The <i>.assert</i> macro provides a source code mechanism for setting breakpoints (see chapter <a class="Reference" href="#cha:Assertions-and-Extended">5↓</a>). An assertion is an expression associated with a specific instruction. It essentially means, “If the expression at this instruction evaluates to false, then halt the simulation.” 
+</div>
+<pre class="LyX-Code">
+   ; Close the switch. Because of capacitance, portc1 will go high after a delay:
+</pre>
+<pre class="LyX-Code">
+   ; R=145, C=4.2e-6 TC=6.11e-4 or 1527 cycles, 0-2 volts requires 0.51 Tc
+</pre>
+<pre class="LyX-Code">
+   .command "SW1.state=closed"
+</pre>
+<pre class="LyX-Code">
+        nop
+</pre>
+<pre class="LyX-Code">
+        ; portc0 should be same as portc1
+</pre>
+<pre class="LyX-Code">
+   .assert "(portc &amp; 3) == 0, \"SW1 closed, cap holds low\""
+</pre>
+<pre class="LyX-Code">
+        nop
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<div class="Standard">
+In this example, the <i>.command</i> macro writes to the switch module’s <i>.state</i> attribute (see section <a class="Reference" href="#subsec:Switches-&-Resistors">8.1.8↓</a>). Just prior to executing the first nop instruction, the switch will be closed. The <i>.assert</i> macro at the very next instruction makes sure that the expected state is seen on PORTC.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-4.2">4.2</a> Sockets
+</h2>
+<div class="Standard">
+gpsim supports a socket interface. This is inhibited by default. Advanced users may wish to study code in the <i>examples/scripts</i> subdirectory. This code is not distributed and is only available in the subversion repository.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-5">5</a> <a class="Label" name="cha:Assertions-and-Extended"> </a>Assertions and Extended Breakpoints
+</h1>
+<div class="Standard">
+gpsim supports a wide variety of breakpoints and assertions. Many of these were described with the break command. This section will illustrate how to extend the break command even further and introduce simulation assertions. 
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-1"></a>Breakpoint Messages
+</h3>
+<div class="Standard">
+A breakpoint message is an ASCII string that is displayed whenever a breakpoint is encountered. Any break point can have an associated message. The syntax at the command line is
+</div>
+<pre class="LyX-Code">
+break conditions, “<i>This is a breakpoint message</i>”
+</pre>
+<div class="Standard">
+The conditions are described above in the break command and are the conditions under which the break occurs. 
+</div>
+<div class="Standard">
+Breakpoint messages are useful for distinguishing among many different breakpoints. 
+</div>
+<pre class="LyX-Code">
+break w counter &amp; 0xf0 == 0x80, “Counter overflowed!”
+</pre>
+<div class="Standard">
+In this example, the user is monitoring the upper nibble of the variable counter and breaking whenever it is equal to 8. When the command is entered, gpsim will display:
+</div>
+<pre class="LyX-Code">
+break when bit pattern 1000XXXX is written to register counter(0x26). break #: 0x20 
+</pre>
+<div class="Standard">
+The breakpoint can be queried with the break command:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; <i>break 32</i>
+</pre>
+<pre class="LyX-Code">
+32: p18f452 register write value: [0x26] &amp; 0xf0 == 0x8
+</pre>
+<pre class="LyX-Code">
+    Message:Counter overflowed!
+</pre>
+<div class="Standard">
+When the simulation encounters the break, execution halts and the message is printed.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-5.1">5.1</a> Assertions and Embedded Simulation commands
+</h2>
+<div class="Standard">
+gpsim’s breakpoint design is a powerful tool that can catch many problems. The assertion design extends this power even further. An assertion is like a breakpoint that is defined in the program source code for a particular instruction. gpsim reads the breakpoint from a special message area in the .cod file. For example, you may have a routine that requires BANK 0 be selected. A gpsim assertion can be placed at the entry of the routine to verify that this is the case.
+</div>
+<pre class="LyX-Code">
+    .assert  "(status &amp; 0x60) == 0, \"Bank 0 must be selected!\""
+</pre>
+<div class="Standard">
+The syntax is identical to the extended breakpoint command. The expression is the condition that is checked. If the expression evaluates to false, then the code halts and prints the message. The <i>.assert</i> is a macro that is part of gputils. It requires a string as its input argument. Notice that the assertion message is embedded in the argument. gpasm and MPASM copy C’s method of placing a backslash in front of quotations that are part of a string.
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-2"></a>Command Assertions
+</h3>
+<div class="Standard">
+A command assertion is a gpsim associated with a particular instruction in your PIC source code. These are useful for changing the behavior of the simulation based on where the code executes. Almost any gpsim command can be placed in a command assertion. However, the most useful ones are assignment commands. For example:
+</div>
+<pre class="LyX-Code">
+.command “SW1.state = open”
+</pre>
+<div class="Standard">
+This assignment writes to the state attribute of a switch module named SW1. 
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-6">6</a> Trace and Log: What has happen?<a class="Label" name="trace"> </a>
+</h1>
+<div class="Standard">
+Inspecting the current state of your program is sometimes insufficient to determine the cause of a bug. Often times it’s useful to know the conditions that led up to the current state. gpsim provides a history or trace of everything that occurs - whether you want it or not - to help you diagnose these otherwise difficult to analyze bugs.
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+
+<div class="center">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top" colspan="1">
+What’s traced
+</td>
+<td align="center" valign="top">
+notes
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+program counter
+</td>
+<td align="center" valign="top">
+addresses executed
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+instructions
+</td>
+<td align="center" valign="top">
+opcode
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+register read
+</td>
+<td align="center" valign="top">
+value and location
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+register write
+</td>
+<td align="center" valign="top">
+value and location
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+cycle counter
+</td>
+<td align="center" valign="top">
+current value
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+skipped instructions
+</td>
+<td align="center" valign="top">
+addresses skipped
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+status register
+</td>
+<td align="center" valign="top">
+during implicit modification
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+interrupts
+</td>
+<td align="center" valign="top">
+
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+break points
+</td>
+<td align="center" valign="top">
+type
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+resets
+</td>
+<td align="center" valign="top">
+type
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+
+</td>
+<td align="center" valign="top">
+
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+
+</td>
+<td align="center" valign="top">
+
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+The ’trace’ command will dump the contents of the trace buffer. 
+</div>
+<div class="Standard">
+A large circular buffer (whose size is hard coded) stores the information for the trace buffer. When it fills, it will wrap around and write over the old history. The contents of the trace buffer are parsed into frames, where one frame corresponds to a simulation cycle.
+</div>
+<div class="Standard">
+Here’s an example of a trace output:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; trace
+</pre>
+<pre class="LyX-Code">
+0x00000000000026F6 p18f452 0x001C 0x1003 iorwf  reg3,w,0
+</pre>
+<pre class="LyX-Code">
+   Read: 0x00 from reg3(0x0003)
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0xE7 to W(0x0FE8) was 0xE7
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0x18 to status(0x0FD8) was 0x18
+</pre>
+<pre class="LyX-Code">
+0x00000000000026F7 p18f452 0x001E 0xE1F4 bnz    $-0x16  ;(0x8)
+</pre>
+<pre class="LyX-Code">
+0x00000000000026F8 p18f452 0x0008 0x3E00 incfsz reg,f,0
+</pre>
+<pre class="LyX-Code">
+   Read: 0xE4 from reg(0x0000)
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0xE5 to reg(0x0000) was 0xE4
+</pre>
+<pre class="LyX-Code">
+0x00000000000026F9 p18f452 0x000A 0xD004 bra    $+0xa   ;(0x00014) 0x00000000000026FA p18f452 0x0014 0x0004 clrwdt
+</pre>
+<pre class="LyX-Code">
+0x00000000000026FB p18f452 0x0016 0x5000 movf   reg,w,0
+</pre>
+<pre class="LyX-Code">
+   Read: 0xE5 from reg(0x0000)
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0xE5 to W(0x0FE8) was 0xE7
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0x18 to status(0x0FD8) was 0x18
+</pre>
+<pre class="LyX-Code">
+0x00000000000026FC p18f452 0x0018 0x1001 iorwf  reg1,w,0
+</pre>
+<pre class="LyX-Code">
+   Read: 0x03 from reg1(0x0001)
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0xE7 to W(0x0FE8) was 0xE5
+</pre>
+<pre class="LyX-Code">
+  Wrote: 0x18 to status(0x0FD8) was 0x18 
+</pre>
+<div class="Standard">
+Each trace frame begins with a new simulation cycle. Typically this will include a simulated instruction. Here’s each of the fields:
+</div>
+<pre class="LyX-Code">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+64-bit simulation cycle
+</td>
+<td align="center" valign="top">
+processor
+</td>
+<td align="center" valign="top">
+PC
+</td>
+<td align="center" valign="top">
+opcode
+</td>
+<td align="center" valign="top">
+instruction
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+0x00000000000026F6
+</td>
+<td align="center" valign="top">
+p18f452
+</td>
+<td align="center" valign="top">
+0x001C
+</td>
+<td align="center" valign="top">
+0x1003
+</td>
+<td align="center" valign="top">
+iorwf  reg3,w,0
+</td>
+</tr>
+</table>
+</pre>
+<div class="Standard">
+Other events that occur during the trace frame are indented. Typically these will be register read or write traces. The read traces show the value read. Write traces show the value written and the value that was previously in the register.
+</div>
+<h2 class="Section-">
+<a class="toc" name="toc-Section*-1"></a>Saving Trace to a file
+</h2>
+<div class="Standard">
+The trace buffer may contain thousands of entries making it difficult to search. The trace save feature will allow the trace buffer to be written to a file. 
+</div>
+<pre class="LyX-Code">
+gpsim&gt; trace save mytrace.log
+</pre>
+<div class="Standard">
+The entire contents of the trace buffer are decoded and written to the file. The format of the trace is the same as it is when displayed at the command line.
+</div>
+<h2 class="Section-">
+<a class="toc" name="toc-Section*-2"></a>Raw Traces
+</h2>
+<div class="Standard">
+The <i>raw</i> trace buffer is the trace buffer displayed in a minimally decoded form. This is primarily used for gpsim development. When saved to a file, the raw trace is not decoded at all. In addition, the processor’s state is written to the file. Thus third party tools can be written to create custom trace reports<span class="FootMarker"> [E→] </span>
+<span class="Foot">
+<span class="FootMarker">[→E] </span>FIXME - The dynamically created trace type information needs to be written to this file too. Without it, it is difficult to tell what each traced item is.
+</span>.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-7">7</a> <a class="Label" name="cha:Simulating-the-Real"> </a>Simulating the Real World: Stimuli<a class="IndexEntry" name="entry-Stimulus-0" href="#index-Stimulus">↓</a>
+</h1>
+<div class="Standard">
+Stimuli are extremely useful, if not necessary, for simulations. They provide a means for simulating interactions with the real world. 
+</div>
+<div class="Standard">
+The gpsim stimuli capability is designed to be accurate, efficient and flexible. The models for the PIC’s I/O pins mimic the real devices. For example, the open collector output on port A of a PIC16C84 can only drive low. Multiple I/O pins may be tied to one another so that the open collector on port A can get a pull up resistor from port B. The overhead for stimuli only occurs when a stimulus changes states. In other words, stimuli are not polled to determine their state.
+</div>
+<div class="Standard">
+Analog stimuli are also available. It’s possible to create voltage references and sources to simulate almost any kind of real world thing. For example, it’s possible to combine two analog stimuli together to create signals like DTMF tones. 
+</div>
+<div class="Standard">
+Note, however, that gpsim does not attempt to be a full electronic circuit simulator, and certain approximations made for efficiency will cause inaccuracy in complex simulation environments.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-7.1">7.1</a> How They Work
+</h2>
+<div class="Standard">
+In the simplest case, a stimulus acts a source for an I/O pin on a PIC. For example, you may want to simulate a clock and measure its period using TMR0. In this case, the stimulus is the source and the TMR0 input pin on the pic is the load. In gpsim you would create a stimulus for the clock using the stimulus command and connect it to the I/O pin using the node command. 
+</div>
+<div class="Standard">
+In general, you can have several ’sources’ and several ’loads’ that are interconnected with nodes<span class="FootMarker"> [F→] </span>
+<span class="Foot">
+<span class="FootMarker">[→F] </span>Although, gpsim is currently limited to ’one-port’ devices. In other words, it is assumed that ground serves as a common reference for the sources and the loads.
+</span>. A good analogy is a spice circuit. The spice netlist corresponds to a node-list in gpsim and the spice elements correspond to the stimuli sources and loads. This general approach makes it possible to create a variety of simulation environments. Here’s a list of different ways in which stimuli may be connected:
+</div>
+<ol>
+
+<li>
+Stimulus connected to one I/O pin
+</li>
+<li>
+Stimulus connected to several I/O pins
+</li>
+<li>
+Several stimuli connected to one I/O pin
+</li>
+<li>
+Several stimuli connected to several I/O pins
+</li>
+<li>
+I/O pins connected to I/O pins
+</li>
+</ol>
+<div class="Standard">
+The general technique for implementing stimuli is as follows:
+</div>
+<ol>
+
+<li>
+Define the stimulus or stimuli.
+</li>
+<li>
+Define a node.
+</li>
+<li>
+Attach the stimuli to the node.
+</li>
+</ol>
+<div class="Standard">
+More often than not, the stimulus definition will reside in a file.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-7.1.1">7.1.1</a> Contention among stimuli
+</h3>
+<div class="Standard">
+One of the problems with this nodal approach to modeling stimuli is that it’s possible for contention to exist. For example, if two I/O pins are connected to one another and driving in the opposite directions, there will be contention. gpsim resolves contention with attribute summing. Each stimulus - even if it’s an input - has an effect on the node. This effect is characterised by a voltage and an impedance. When a node is updated, gpsim performs a Thevenin voltage summing of all the stimuli together. The resultant voltage is then propagated to all connected stimuli as the current state of the node.
+</div>
+<div class="Standard">
+For example, in the port A open collector / port B weak pull-up connection example, gpsim assigns a voltage of 5V with an impedance of 20kohms to the pull up resistor, and a voltage of 0V with an impedance of 150ohms to the open collector if it is active, or 100Mohms if it’s not driving. The Thevenin sum will be roughly 0.05V if the output is driving, or 5V otherwise. Capacitive effects are not currently supported.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-7.2">7.2</a> I/O Pins
+</h2>
+<div class="Standard">
+gpsim models I/O pins as stimuli. Thus anywhere a stimulus is used, an I/O pin may be substituted. For example, you may want to tie two I/O pins to one another; like a port B pull up resistor to a port A open collector. gpsim automatically creates the I/O pin stimuli whenever a processor is created. All you need to do is to specify a node and then attach the stimuli to it. The names of these stimuli are formed by concatenating the port name with the bit position of the I/O pin. For example, bit 3 in port B is called portb3.
+</div>
+<div class="Standard">
+Here’s a list of the types of I/O pin stimuli that are supported:
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+
+<div class="center">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+I/O Pin Type
+</td>
+<td align="center" valign="top">
+Function
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+INPUT_ONLY
+</td>
+<td align="center" valign="top">
+Only accepts input (like MCLR)
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+BI_DIRECTIONAL
+</td>
+<td align="center" valign="top">
+Can be a source or a load (most I/O pins)
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+BI_DIRECTIONAL_PU
+</td>
+<td align="center" valign="top">
+PU=Pullup resistor (PORTB)
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+OPEN_COLLECTOR
+</td>
+<td align="center" valign="top">
+Can only drive low (RA4 on c84)
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+There is no special pin type for analog I/O pins. All pic analog inputs are multiplexed with digital inputs. The I/O pin definition will always be for the digital input. gpsim automatically knows when I/O pin is analog input.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-7.3">7.3</a> Asynchronous Stimuli
+</h2>
+<div class="Standard">
+Asynchronous stimuli are analog or digital stimuli that can change states at any given instant (limited to the resolution of the cycle counter). They can be defined to be repetitive too.
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+
+<div class="center">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+parameter
+</td>
+<td align="center" valign="top">
+function
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+start_cycle
+</td>
+<td align="center" valign="top">
+The # of cycles before the stimulus starts
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+cycles[]
+</td>
+<td align="center" valign="top">
+An array of cycle #’s
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+data[]
+</td>
+<td align="center" valign="top">
+Stimulus state for a cycle
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+period
+</td>
+<td align="center" valign="top">
+The # of cycles for one period
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+initial_state
+</td>
+<td align="center" valign="top">
+The initial state before data[0]
+</td>
+</tr>
+</table>
+</div>
+</div>
+<div class="Standard">
+
+<div class="0.3cm">
+
+</div>
+</div>
+<div class="Standard">
+When the stimulus is first initialized, it will be driven to the ’initial state’ and will remain there until the cpu’s instruction cycle counter matches the specified ’start’ cycle. After that, the two arrays ’cycles[]’ and ’data[]’ define the stimulus’ outputs. The size of the arrays are the same and correspond to the number of events that are to be created. So the event number, if you will, serves as the index into these arrays. The ’cycles[]’ array define when the events occur while the ’data[]’ array defines the states the stimulus will enter. The ’cycles[]’ are measured with respect to the ’start’ cycle. The asynchronous stimulus can be made periodic by specifying the number of cycles in the ’period’ parameter.
+</div>
+<div class="Standard">
+Here’s an example that generates three pulses and then repeats:
+</div>
+<pre class="LyX-Code">
+stimulus asynchronous_stimulus # or we could have used asy<br/>
+
+</pre>
+<pre class="LyX-Code">
+# The initial state AND the state the stimulus is when
+</pre>
+<pre class="LyX-Code">
+# it rolls over<br/>
+
+</pre>
+<pre class="LyX-Code">
+initial_state 1<br/>
+
+</pre>
+<pre class="LyX-Code">
+# all times are with respect to the cpu’s cycle counter
+</pre>
+<pre class="LyX-Code">
+start_cycle 100<br/>
+
+</pre>
+<pre class="LyX-Code">
+# the asynchronous stimulus will roll over in ’period’<br/>
+# cycles. Delete this line if you don’t want a roll over.
+</pre>
+<pre class="LyX-Code">
+period 5000<br/>
+
+</pre>
+<pre class="LyX-Code">
+# Now the cycles at which stimulus changes states are 
+</pre>
+<pre class="LyX-Code">
+# specified. The initial cycle was specified above. So <br/>
+# the first cycle specified below will toggle this state. 
+</pre>
+<pre class="LyX-Code">
+# In this example, the stimulus will start high. 
+</pre>
+<pre class="LyX-Code">
+# At cycle 100 the stimulus ’begins’. However nothing happens
+</pre>
+<pre class="LyX-Code">
+# until cycle 200+100.
+</pre>
+<pre class="LyX-Code">
+{ 200, 0,
+</pre>
+<pre class="LyX-Code">
+  300, 1,
+</pre>
+<pre class="LyX-Code">
+  400, 0,
+</pre>
+<pre class="LyX-Code">
+  600, 1,
+</pre>
+<pre class="LyX-Code">
+  1000, 0, 
+</pre>
+<pre class="LyX-Code">
+  3000, 1 }
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+# Give the stimulus a name:
+</pre>
+<pre class="LyX-Code">
+name asy_test<br/>
+
+</pre>
+<pre class="LyX-Code">
+# Finally, tell the command line interface that we’re done
+</pre>
+<pre class="LyX-Code">
+# with the stimulus
+</pre>
+<pre class="LyX-Code">
+end
+</pre>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-7.3.1">7.3.1</a> Analog Asynchronous Stimuli
+</h3>
+<div class="Standard">
+Analog Asynchronous Stimuli are identical to Synchronous Stimuli except the data points are floating point numbers. 
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-7.4">7.4</a> Extended Stimuli
+</h2>
+<div class="Standard">
+Discuss the extended stimuli in the modules/ directory. In particular, describe the <i>PulseGen</i> module and how it can complete replace the asynchronous stimuli. Also describe the <i>PullUp</i> and <i>PullDown</i> modules and how they can be manipulated into being general purpose DC voltage sources (FIXME, would it make sense to rename these modules?).
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-7.5">7.5</a> Limitations of the Stimulus Mechanism
+</h2>
+<div class="Standard">
+The simulation of external devices using gpsim stimuli and nodes is intended to assist in PIC software debugging, not electronic circuit design. As such it takes a simplified approach to certain things.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-7.5.1">7.5.1</a> Propagation Delays
+</h3>
+<div class="Standard">
+gpsim makes no attempt to simulate propagation delays in the circuit. Usually this is not a problem. However, when using modules<a class="Reference" href="#cha:Modules">8↓</a> to expand gpsim’s environment, it is possible to create situations where it matters. For example, daisy-chaining two or more shift registers with a shared clock relies on the propagation delay of the first register to ensure the second shifts the correct data in. Since gpsim does not simulate this delay, the results may be wrong<span class="FootMarker"> [G→] </span>
+<span class="Foot">
+<span class="FootMarker">[→G] </span>They may be right, it depends on execution order, which is subtle.
+</span>.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-8">8</a> Modules<a class="IndexEntry" name="entry-Modules-0" href="#index-Modules">↓</a><a class="Label" name="cha:Modules"> </a>
+</h1>
+<div class="Standard">
+gpsim has been designed to debug microprocessors. However, microprocessors are always a part of a system. And invariably, the bugs one often encounters are those that are a result of interfacing with a system. Modules provide users with a way to extend gpsim and simulate a system. For example, the <i>system</i> may be a processor with a few pull up resistors and switches or it may be a processor and an LCD display. gpsim provides a few modules that one may use either for debugging or as templates for creating new modules.
+</div>
+<div class="Standard">
+Note that gpsim’s modules are provided to facilitate debugging of the PIC code, not the hardware. gpsim does not attempt to be a circuit simulator by itself. If you need that functionality, the gpsim core can be embedded into third party simulators.
+</div>
+<div class="Standard">
+Modules reside in a library and are dynamically loaded with the <i>module</i> command. All modules have I/O pins which can connect to other modules or processors. Most modules provide <i>attributes</i> that allow the user to control a module’s behavior or query its internal state. For example, the USART module has transmit and receive baud rate attributes that may be configured:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; U1.txbaud = 9600   # set the transmit rate
+</pre>
+<pre class="LyX-Code">
+gpsim&gt; U1.rxbaud          # query the receiver rate
+</pre>
+<pre class="LyX-Code">
+9600
+</pre>
+<div class="Standard">
+The symbol command can be used to query all attributes of a module. 
+</div>
+<pre class="LyX-Code">
+gpsim&gt; symbol U1.     # note the period
+</pre>
+<pre class="LyX-Code">
+U1 = USARTModule
+</pre>
+<pre class="LyX-Code">
+U1.console = false
+</pre>
+<pre class="LyX-Code">
+U1.crlf = true
+</pre>
+<pre class="LyX-Code">
+U1.loop = true
+</pre>
+<pre class="LyX-Code">
+U1.rx = 0
+</pre>
+<pre class="LyX-Code">
+U1.rxbaud = 9600
+</pre>
+<pre class="LyX-Code">
+U1.tx = 0
+</pre>
+<pre class="LyX-Code">
+U1.txbaud = 9600
+</pre>
+<pre class="LyX-Code">
+U1.xpos = 72.00000000000000
+</pre>
+<pre class="LyX-Code">
+U1.ypos = 276.0000000000000
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<div class="Standard">
+Modules may provide help which can be accessed using the help command:
+</div>
+<pre class="LyX-Code">
+gpsim&gt; help U1
+</pre>
+<pre class="LyX-Code">
+USARTModule
+</pre>
+<pre class="LyX-Code">
+no description
+</pre>
+<div class="Standard">
+Well, the USART module isn’t the best example here! However, a better example is one of the USART attributes.
+</div>
+<pre class="LyX-Code">
+gpsim&gt; help U1.txbaud
+</pre>
+<pre class="LyX-Code">
+9600
+</pre>
+<pre class="LyX-Code">
+USART Module Transmitter baud rate
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-8.1">8.1</a> gpsim Modules
+</h2>
+<div class="Standard">
+gpsim provides a library of useful modules for simulation. The current version includes the following modules:
+</div>
+<div class="Standard">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+
+</td>
+<td align="center" valign="top">
+
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+pushbutton
+</td>
+<td align="center" valign="top">
+Toggle push button
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+pullup
+</td>
+<td align="center" valign="top">
+A resistor connected (nominally) to Vdd
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+pulldown
+</td>
+<td align="center" valign="top">
+A resistor connected (nominally) to Vss
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+usart
+</td>
+<td align="center" valign="top">
+A serial interface with a GUI terminal window
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+pulsegen
+</td>
+<td align="center" valign="top">
+Stimulus designed to synthesize square waves.
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+FileStimulus
+</td>
+<td align="center" valign="top">
+Stimulus taken from a file
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+FileRecorder
+</td>
+<td align="center" valign="top">
+Record pin level and time to a file
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+PortStimulus
+</td>
+<td align="center" valign="top">
+module with 8 IO pins
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+I2C-EEPROM2K
+</td>
+<td align="center" valign="top">
+A 256 byte I2C serial EEPROM like the 24LC024.
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+I2C-EEPROM16K
+</td>
+<td align="center" valign="top">
+A 2k byte I2C serial EEPROM like the 24LC16B.
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+I2C-EEPROM256K
+</td>
+<td align="center" valign="top">
+A 32k byte I2C serial EEPROM like the 24LC256.
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+i2c2par
+</td>
+<td align="center" valign="top">
+A slave I2C device with an 8 bit I/O port
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+switch
+</td>
+<td align="center" valign="top">
+Switch, which connects two nodes together
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+and2
+</td>
+<td align="center" valign="top">
+2-input logical AND gate
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+or2
+</td>
+<td align="center" valign="top">
+2-input logical OR gate
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+xor2
+</td>
+<td align="center" valign="top">
+2-input logical XOR gate
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+not
+</td>
+<td align="center" valign="top">
+Inverter (logical NOT gate)
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+led_7segments
+</td>
+<td align="center" valign="top">
+A 7-segment LED digit
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+led 
+</td>
+<td align="center" valign="top">
+A single pin LED which can be active either high or low 
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+TTL377
+</td>
+<td align="center" valign="top">
+A 74xx377 style 8-bit tristate latch
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+TTL165
+</td>
+<td align="center" valign="top">
+A 74xx165 parallel-in-serial-out shift register
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+TTL595
+</td>
+<td align="center" valign="top">
+A 74xx595 serial-in-parallel-out shift register
+</td>
+</tr>
+</table>
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.1">8.1.1</a> USART<a class="IndexEntry" name="entry-USART-module-0" href="#index-USART-module">↓</a>
+</h3>
+<div class="Standard">
+The USART module is a full duplex configurable USART. In graphics mode, the USART will display its output in a console. In addition, the console will accept keyboard input. 
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-19"></a>Attributes
+</h4>
+<div class="Standard">
+.tx - The <i>.tx</i> attribute writes to the USART transmit FIFO. Data written to this attribute will initiate a transmission. The USART supports a transmit FIFO, making it possible to stuff several bytes into the transmit queue while the program under test is paused. The attribute will take a byte, or a string.
+</div>
+<div class="Standard">
+.rx - The <i>.rx</i> attribute is the USART receiver register. Data received by the USART is available for querying through here.
+</div>
+<div class="Standard">
+.txbaud - The <i>.txbaud</i> attribute specifies the transmitter baud rate. 
+</div>
+<div class="Standard">
+.rxbaud - The .rxbaud attribute specifies the receiver baud rate.
+</div>
+<div class="Standard">
+.console - When set to <i>true</i>, the console window will display received data and will accept keyboard entries for the transmitter.
+</div>
+<div class="Standard">
+.crlf - When set to <i>true</i>, carriage returns and line feeds generate new lines in the console window. 
+</div>
+<div class="Standard">
+.hex - When set to <i>true</i>, the data is assumed to be binary and all bytes are shown in hex.
+</div>
+<div class="Standard">
+.loop - When set to true, received characters are looped back to the transmitter.
+</div>
+<div class="Standard">
+.xpos - horizontal position in breadboard window.
+</div>
+<div class="Standard">
+.ypos - vertical position in breadboard window.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-20"></a>I/O Pins
+</h4>
+<div class="Standard">
+.TXPIN - transmit pin
+</div>
+<div class="Standard">
+.RXPIN - receiver pin
+</div>
+<div class="Standard">
+.CTS - Clear to send pin. This can be left unconnected
+</div>
+<div class="Standard">
+.RTS - Request to send pin.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.2">8.1.2</a> pulsegen<a class="IndexEntry" name="entry-pulsegen-0" href="#index-pulsegen">↓</a>
+</h3>
+<div class="Standard">
+This a stimulus designed to synthesize periodic or once off square waves.
+</div>
+<div class="Standard">
+It has the following attributes:
+</div>
+<div class="Labeling">
+.set - Cycle where output first goes high 
+</div>
+<div class="Labeling">
+.clear - Cycle where output first goes low
+</div>
+<div class="Labeling">
+.delete - Edge at this cycle is ignored
+</div>
+<div class="Labeling">
+.period - Period in cycles when stimulus repeats
+</div>
+<div class="Standard">
+The set and clear attributes generate the edge states.
+</div>
+<div class="Standard">
+For example if the module is instantiated as PG, then
+</div>
+<div class="Standard">
+gpsim&gt; PG.set = 0x1000 
+</div>
+<div class="Standard">
+gpsim&gt; PG.clear = 0x2000
+</div>
+<div class="Standard">
+generate a rising edge at cycle 0x1000 and a falling edge at cycle 0x2000. Any number of edges can be specified and they may be in any order. The delete attribute removes an edge:
+</div>
+<div class="Standard">
+gpsim&gt; PG.delete = 0x2000 # remove the edge at cycle 0x2000
+</div>
+<div class="Standard">
+The period attribute tells how many cycles there are in a rollover. If period is 0, then the pulsegen is not periodic. If there are edges beyond the period time, then those will be ignored. 
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.3">8.1.3</a> FileStimulus<a class="IndexEntry" name="entry-FileStimulus-0" href="#index-FileStimulus">↓</a>
+</h3>
+<div class="Standard">
+.file - Name of input file. 
+</div>
+<div class="Standard">
+.pin - Output pin 
+</div>
+<div class="Standard">
+.xpos - module x position on breadboard 
+</div>
+<div class="Standard">
+.ypos - module y position on breadboard
+</div>
+<div class="Standard">
+The input file contains two columns of data seperated by one or more tabs and/or spaces.
+</div>
+<div class="Standard">
+The first column is the cycle in base 10. The second column is the pin drive voltage. 
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.4">8.1.4</a> FileRecorder<a class="IndexEntry" name="entry-FileRecorder-0" href="#index-FileRecorder">↓</a>
+</h3>
+<div class="Standard">
+.file - name of file or pipe to write data to 
+</div>
+<div class="Standard">
+.digital - is the signal digital (true) or analog (false) 
+</div>
+<div class="Standard">
+.pin - Input pin .xpos - module x position on breadboard 
+</div>
+<div class="Standard">
+.ypos - module y position on breadboard
+</div>
+<div class="Standard">
+The first column is the cycle that the pin state changes. 
+</div>
+<div class="Standard">
+If .digital=true, second column is pin state - high(1) or low(0) 
+</div>
+<div class="Standard">
+If .digital=false (default), second column is the input pin voltage. This mode makes output suitable for input to FileStimulus. 
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.5">8.1.5</a> PortStimulus<a class="IndexEntry" name="entry-PortStimulus-0" href="#index-PortStimulus">↓</a>
+</h3>
+<div class="Standard">
+The PortStimulus module provides an 8 bit IO port similar to processor ports.
+</div>
+<blockquote class="Quote">
+.portAdr - Output port register address 
+</blockquote>
+<blockquote class="Quote">
+.trisAdr - Tristate register address 
+</blockquote>
+<blockquote class="Quote">
+.latAdr - Output latch address 
+</blockquote>
+<blockquote class="Quote">
+.pullupAdr - Pullup register address 
+</blockquote>
+<blockquote class="Quote">
+.p1-.p8 - IO pins 
+</blockquote>
+<blockquote class="Quote">
+.xpos - module x position on breadboard 
+</blockquote>
+<blockquote class="Quote">
+.ypos - module y position on breadboard
+</blockquote>
+<blockquote class="Quote">
+Assuming the module is loaded with name P1, first declare data memory resgisters as follows: 
+</blockquote>
+<blockquote class="Quote">
+UDATA 0x10 
+</blockquote>
+<blockquote class="Quote">
+P1_Port RES 1 
+</blockquote>
+<blockquote class="Quote">
+P1_Tris RES 1 
+</blockquote>
+<blockquote class="Quote">
+P1_Lat RES 1 
+</blockquote>
+<blockquote class="Quote">
+P1_Pullup RES 1 
+</blockquote>
+<blockquote class="Quote">
+GLOBAL P1_Port, P1_Tris, P1_Lat, P1_Pullup 
+</blockquote>
+<blockquote class="Quote">
+...
+</blockquote>
+<blockquote class="Quote">
+;# specify the PortStimulus addresses. ; 
+</blockquote>
+<blockquote class="Quote">
+These are the PIC addresses to where the PortStimulus ; 
+</blockquote>
+<blockquote class="Quote">
+registers are mapped. 
+</blockquote>
+<blockquote class="Quote">
+.sim "P1.portAdr = &amp;P1_Port" 
+</blockquote>
+<blockquote class="Quote">
+.sim "P1.trisAdr = &amp;P1_Tris" 
+</blockquote>
+<blockquote class="Quote">
+.sim "P1.latAdr = &amp;P1_Lat" 
+</blockquote>
+<blockquote class="Quote">
+.sim "P1.pullupAdr = &amp;P1_Pullup"
+</blockquote>
+<blockquote class="Quote">
+Then to access the module register just do operations on the relevant data registers. i.e. movwf P1_Lat 
+</blockquote>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.6">8.1.6</a> Logic<a class="IndexEntry" name="entry-Logic-0" href="#index-Logic">↓</a>
+</h3>
+<div class="Standard">
+
+</div>
+<div class="Standard">
+The only attributes supported be the logic devices are the standard <i>.xpos</i> and <i>.ypos</i> breadboard positions. 
+<span class="greyedout">
+FIXME There should be attributes to specify the switching characteristics.
+</span>
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-3"></a>and2<a class="IndexEntry" name="entry-and2-0" href="#index-and2">↓</a> - Two input AND gate
+</h3>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-21"></a>I/O pins
+</h4>
+<div class="Standard">
+.in0 - First input
+</div>
+<div class="Standard">
+.in1 - First input
+</div>
+<div class="Standard">
+.out - Output
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-4"></a>or2<a class="IndexEntry" name="entry-or2-0" href="#index-or2">↓</a> - Two input OR gate
+</h3>
+<div class="Standard">
+.in0 - First input
+</div>
+<div class="Standard">
+.in1 - First input
+</div>
+<div class="Standard">
+.out - Output
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-5"></a>xor2<a class="IndexEntry" name="entry-xor2-0" href="#index-xor2">↓</a> - Two input XOR gate
+</h3>
+<div class="Standard">
+.in0 - First input
+</div>
+<div class="Standard">
+.in1 - First input
+</div>
+<div class="Standard">
+.out - Output
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-6"></a>not<a class="IndexEntry" name="entry-not-0" href="#index-not">↓</a> - Inverter
+</h3>
+<div class="Standard">
+.in0 - Input
+</div>
+<div class="Standard">
+.out - Output
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-7"></a>TTL377<a class="IndexEntry" name="entry-ttl377-0" href="#index-ttl377">↓</a> - Octal Latch
+</h3>
+<div class="Standard">
+The TTL377 module simulates an 8-bit parallel latch with output enable. It latches all bits simultaneously so that connecting an output to an input gives correct results. However, this is not guaranteed where multiple modules are so connected.
+</div>
+<div class="Standard">
+.D0..7 - Input
+</div>
+<div class="Standard">
+.Q0..7 - Output
+</div>
+<div class="Standard">
+.E - output enable
+</div>
+<div class="Standard">
+.CP - clock (rising edge)
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-8"></a>TTL165<a class="IndexEntry" name="entry-ttl165-0" href="#index-ttl165">↓</a> - Parallel to Serial Shift Register
+</h3>
+<div class="Standard">
+The TTL165 module simulates an 8-bit parallel input serial output shift register. It is particularly useful for connecting to a SPI peripheral. Note, however, that the common practice of daisy-chaining such shift registers is not guaranteed to simulate correctly.
+</div>
+<div class="Standard">
+.D0..7 - parallel input
+</div>
+<div class="Standard">
+.Ds - daisy-chain serial input
+</div>
+<div class="Standard">
+.Q7 - output
+</div>
+<div class="Standard">
+.nQ7 - inverted output
+</div>
+<div class="Standard">
+.CE - clock enable
+</div>
+<div class="Standard">
+.CP - clock (rising edge)
+</div>
+<div class="Standard">
+.PL - parallel load
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-9"></a>TTL595<a class="IndexEntry" name="entry-ttl595-0" href="#index-ttl595">↓</a> - Serial to Parallel Shift Register
+</h3>
+<div class="Standard">
+The TTL595 module simulates an 8-bit serial input parallel output shift register. It is particularly useful for connecting to a SPI peripheral. Note, however, that the common practice of daisy-chaining such shift registers is not guaranteed to simulate correctly.
+</div>
+<div class="Standard">
+.Q0..7 - parallel output
+</div>
+<div class="Standard">
+.Ds - serial input
+</div>
+<div class="Standard">
+.Qs - daisy-chain serial output
+</div>
+<div class="Standard">
+.OE - output enable (low for output, high for Z state)
+</div>
+<div class="Standard">
+.SCK - shift clock (rising edge)
+</div>
+<div class="Standard">
+.RCK - output latch clock (rising edge)
+</div>
+<div class="Standard">
+.MR - Shift register reset (clear on low)
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.7">8.1.7</a> I2C EEPROM<a class="IndexEntry" name="entry-I2C-EEPROM-0" href="#index-I2C-EEPROM">↓</a>
+</h3>
+<div class="Standard">
+There are currently three I2C EEPROMs supported: I2C-EEPROM2k, I2C-EEPROM16k, and I2C-EEPROM256K.
+</div>
+<div class="Standard">
+The commands ’dump e module_name filename’ and ’load e module_name filename’  can be used to save and restore the contents of the EEPROM module. This allows the contents of the EEPROM to be preserved between runs of gpsim.
+</div>
+<div class="Standard">
+The cells of the EEPROM can be examined and modified using the command interface with the commands ’module_name.eeData[index]’ and ’module_name.eeData[index] = new_value’. The following example shows loading an EEPROM module, setting cell 16 to ’0’ (0x30) and checking that the new value was written.
+</div>
+<pre class="LyX-Code">
+**gpsim&gt; module load I2C-EEPROM16k e2 
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt;  
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; e2.eeData[16] = $30 
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt; e2.eeData[16] 
+</pre>
+<pre class="LyX-Code">
+e2.eeData[$10] = $30
+</pre>
+<pre class="LyX-Code">
+**gpsim&gt;  
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-22"></a>I/O Pins
+</h4>
+<div class="Standard">
+.A0 - Chip select to set bit 0 of slave address
+</div>
+<div class="Standard">
+.A1 - Chip select to set bit 1 of slave address
+</div>
+<div class="Standard">
+.A2 - Chip select to set bit 2 of slave address
+</div>
+<div class="Standard">
+.SCL - I2C serial clock
+</div>
+<div class="Standard">
+.SDA - I2C serial data
+</div>
+<div class="Standard">
+.WP - Hardware write protect
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.8">8.1.8</a> <a class="Label" name="subsec:Switches-&-Resistors"> </a>Switches<a class="IndexEntry" name="entry-Switches-0" href="#index-Switches">↓</a> &amp; Resistors<a class="IndexEntry" name="entry-Resistors-0" href="#index-Resistors">↓</a>
+</h3>
+<div class="Standard">
+The <i>switch</i> module is a model of a simple two terminal switch. It may be controlled either from the command line or the breadboard GUI. The <i>switch</i> module’s open and closed resistance are controlled by attributes. Thus a two terminal resistor can be modeled as a switch that is always closed (or open).
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-23"></a>Attributes
+</h4>
+<div class="Standard">
+.Ropen - Switch resistance in ohms when the switch is opened.
+</div>
+<div class="Standard">
+.Rclosed - Switch resistance in ohms when the switch is closed.
+</div>
+<div class="Standard">
+.state - Switch state. The switch state takes the values of <i>open </i>or <i>closed</i>, although <i>false</i> for open and <i>true </i>for closed is supported for backward compatibility. The <i>.state</i> attribute is writable.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-24"></a>I/O Pins
+</h4>
+<div class="Standard">
+.A - One side
+</div>
+<div class="Standard">
+.B - The other side
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.9">8.1.9</a> Voltage Sources<a class="IndexEntry" name="entry-Voltage-Sources-0" href="#index-Voltage-Sources">↓</a>, Resistors<a class="IndexEntry" name="entry-Resistors-1" href="#index-Resistors">↓</a>, and Capacitors<a class="IndexEntry" name="entry-Capacitors-0" href="#index-Capacitors">↓</a>
+</h3>
+<div class="Standard">
+The <i>pullup</i> and <i>pulldown</i> modules are two terminal devices with one terminal tied to a voltage source. Their voltage, resistance, and pin capacitance are controllable via attributes. 
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-25"></a>Attributes
+</h4>
+<div class="Standard">
+.voltage - DC voltage
+</div>
+<div class="Standard">
+.resistance - resistance in ohms between the I/O pin and the voltage source.
+</div>
+<div class="Standard">
+.capacitance - capacitance in farads between the I/O pin and ground.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-26"></a>I/O Pins
+</h4>
+<div class="Standard">
+.pin - the only pin exposed.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.10">8.1.10</a> LED_7SEGMENTS<a class="IndexEntry" name="entry-7SEGMENTS-0" href="#index-7SEGMENTS">↓</a> and LED<a class="IndexEntry" name="entry-LED-0" href="#index-LED">↓</a>
+</h3>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-10"></a>led_7segments - 7 segment common cathode LED display
+</h3>
+<div class="Standard">
+The segments are numbered as per the following figure.
+</div>
+<pre class="LyX-Code">
+   ___
+</pre>
+<pre class="LyX-Code">
+5 | 0 | 1
+</pre>
+<pre class="LyX-Code">
+   ___
+</pre>
+<pre class="LyX-Code">
+4 | 6 | 2
+</pre>
+<pre class="LyX-Code">
+   ___
+</pre>
+<pre class="LyX-Code">
+    3
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-27"></a>I/O Pins
+</h4>
+<div class="Standard">
+.cc - common cathode
+</div>
+<div class="Standard">
+.seg0 - segment 0
+</div>
+<div class="Standard">
+.seg1 - segment 1
+</div>
+<div class="Standard">
+.seg2 - segment 2
+</div>
+<div class="Standard">
+.seg3 - segment 3
+</div>
+<div class="Standard">
+.seg4 - segment 4
+</div>
+<div class="Standard">
+.seg5 - segment 5
+</div>
+<div class="Standard">
+.seg6 - segment 6
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-11"></a>Led - Simple LED
+</h3>
+<div class="Standard">
+The simple LED is a single pin module internally tied to either Vss or Vdd.By default the LED is internally tied to Vdd(0V) and turns on when the pin is driven high.However, by setting the ActiveState parameter to low, the LED is internally tied to Vss(5V) and turns on when the pin is driven low.Like a real LED, the module will either sink or source current from  the driving line which may affect its logic level.
+</div>
+<div class="Standard">
+The LED color is by default red, but can be set to other colors.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-28"></a>Attributes
+</h4>
+<div class="Standard">
+color - LED color, possible values red, green, yellow, orange or blue
+</div>
+<div class="Standard">
+ActiveState - LED active state mode, possible values: high or low
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-29"></a>I/O Pin
+</h4>
+<div class="Standard">
+.in - drives LED
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.1.11">8.1.11</a> I2C slave to Parallel port<a class="IndexEntry" name="entry-i2c2par-0" href="#index-i2c2par">↓</a>
+</h3>
+<div class="Standard">
+The i2c2par is a 7 bit address I2C module with an 8 bit I/O port. The direction of the I/O port is determined from I2C R/<span class="formula"><span class="bar"><i>W</i></span></span> bit. When R/<span class="formula"><span class="bar"><i>W</i></span></span> is zero the I/O port outputs the data sent by the master device. Otherwise the port is set as an input port and when the master device requests data, the port is read and transmitted to the master. 
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-30"></a>Attributes
+</h4>
+<div class="Standard">
+.Slave_Address - I2C 7 bit device address
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-31"></a>I/O Pins
+</h4>
+<div class="Standard">
+.p0..7 - I/O pins
+</div>
+<div class="Standard">
+.SDA - I2C serial data
+</div>
+<div class="Standard">
+.SCL - I2c serial clock
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-8.2">8.2</a> Extras Modules
+</h2>
+<div class="Standard">
+In addition to the standard modules, modules largely supplied by third parties are supplied in the libgpsim_extras library. 
+</div>
+<div class="Standard">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+Name
+</td>
+<td align="center" valign="top">
+Alias
+</td>
+<td align="center" valign="top">
+Description
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+dht11
+</td>
+<td align="center" valign="top">
+dht11
+</td>
+<td align="center" valign="top">
+Temperature and humidity sensor 
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+DS1307
+</td>
+<td align="center" valign="top">
+ds1307
+</td>
+<td align="center" valign="top">
+64 x 8, Serial, I2C Real-Time Clock
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+DS1820
+</td>
+<td align="center" valign="top">
+ds1820
+</td>
+<td align="center" valign="top">
+High-Precision 1-Wire Digital Thermometer
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+DS18S20
+</td>
+<td align="center" valign="top">
+ds18s20
+</td>
+<td align="center" valign="top">
+High-Precision 1-Wire Digital Thermometer
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+DS18B20
+</td>
+<td align="center" valign="top">
+ds18b20
+</td>
+<td align="center" valign="top">
+High-Precision 1-Wire Digital Thermometer
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_display
+</td>
+<td align="center" valign="top">
+lcd_2X20
+</td>
+<td align="center" valign="top">
+LCD - HD44780 2X20
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_20x4
+</td>
+<td align="center" valign="top">
+lcd_20x4
+</td>
+<td align="center" valign="top">
+LCD - HD44780 4x20
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_dt161A
+</td>
+<td align="center" valign="top">
+lcd_2X8
+</td>
+<td align="center" valign="top">
+LCD - HD44780 2x8
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+LCD100X32
+</td>
+<td align="center" valign="top">
+LCD100X32
+</td>
+<td align="center" valign="top">
+LCD - SED1530 100x32
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+OSRAM128X64
+</td>
+<td align="center" valign="top">
+OSRAM128X64
+</td>
+<td align="center" valign="top">
+LCD - SSD0323 128x64
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_7Seg 
+</td>
+<td align="center" valign="top">
+lcd_7seg
+</td>
+<td align="center" valign="top">
+LCD - 7 segment no controler
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+Solar
+</td>
+<td align="center" valign="top">
+Solar
+</td>
+<td align="center" valign="top">
+Solar Panel, Controler, Battery
+</td>
+</tr>
+</table>
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.1">8.2.1</a> Temperature and humidity sensor - DHT11<a class="IndexEntry" name="entry-DHT11-0" href="#index-DHT11">↓</a>
+</h3>
+<div class="Standard">
+This module emulates the DHT11 temperature/humidity sensor using a single-wire interface.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-32"></a>Attributes
+</h4>
+<div class="Standard">
+temperature - Temperature degree C * 100
+</div>
+<div class="Standard">
+humidity - Relative humidity % * 100
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-33"></a>I/O Pins
+</h4>
+<div class="Standard">
+.pin - Serial I/O pin
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.2">8.2.2</a> 64 x 8, Serial, I2C Real-Time Clock - DS1307<a class="IndexEntry" name="entry-DS1307-0" href="#index-DS1307">↓</a>
+</h3>
+<div class="Standard">
+This module emulates the Dallas Semiconductor DS1307 Real-Time clock which also has 56 x 8 eeprom memory and connects via an I2C serial bus.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-34"></a>I/O Pins
+</h4>
+<div class="Standard">
+.SDA - Serial Data Line I/O pin
+</div>
+<div class="Standard">
+.SCL - Serial Clock Line I/O pin
+</div>
+<div class="Standard">
+.SQW - Square Wave Output
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.3">8.2.3</a> High-Precision 1-Wire Digital Thermometer - DS1820 Family<a class="IndexEntry" name="entry-DS1820-Family-0" href="#index-DS1820-Family">↓</a>
+</h3>
+<div class="Standard">
+These modules emulate the DS1820, DS18S20 and DS18B20 High-Precision 1-Wire Digital Thermometers.These devices uses a single-wire bus interface.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-35"></a>Attributes
+</h4>
+<div class="Standard">
+ROMCode - Device ROM code
+</div>
+<div class="Standard">
+temperature - Temperature of device
+</div>
+<div class="Standard">
+powered - Device is self powered
+</div>
+<div class="Standard">
+alarm_th - Temperature high alarm register
+</div>
+<div class="Standard">
+alarm_tl - Temperature low alarm register
+</div>
+<div class="Standard">
+config_register - Value of configuration register (ds18B20 only) 
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-36"></a>I/O Pins
+</h4>
+<div class="Standard">
+.pin - Serial I/O pin
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.4">8.2.4</a> Character LCD - HD44780<a class="IndexEntry" name="entry-HD44780-0" href="#index-HD44780">↓</a>
+</h3>
+<div class="Standard">
+The library libgpsim_lcd contains several LCD display formats using the HD44780 controller.
+</div>
+<div class="Standard">
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+Name
+</td>
+<td align="center" valign="top">
+Description
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_display
+</td>
+<td align="center" valign="top">
+20 col 2 row LCD
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_20x4
+</td>
+<td align="center" valign="top">
+20 col 4 row LCD
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+lcd_dt161A
+</td>
+<td align="center" valign="top">
+16 col 1 row LCD
+</td>
+</tr>
+</table>
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-12"></a>I/O Pins
+</h3>
+<div class="Standard">
+.DC - Data / command select
+</div>
+<div class="Standard">
+.RW - Read/Write select
+</div>
+<div class="Standard">
+.E - start data read/write
+</div>
+<div class="Standard">
+.d0-7 - data bus
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.5">8.2.5</a> Graphic LCD - SED1530<a class="IndexEntry" name="entry-SED1530-0" href="#index-SED1530">↓</a>
+</h3>
+<div class="Standard">
+This module emulates a 100X32 pixel graphics LCD based on dual SED1350  controllers.
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.6">8.2.6</a> LCD_7Seg<a class="IndexEntry" name="entry-LCD_7Seg-0" href="#index-LCD_7Seg">↓</a>
+</h3>
+<div class="Standard">
+A 7 segment LCD display without a controller. If common &gt; 2.5V, (cc- segn) &gt; 1.4V segment is on otherwise segment is off. 
+</div>
+<div class="Standard">
+The segments are numbered as per the following figure.
+</div>
+<pre class="LyX-Code">
+   ___
+</pre>
+<pre class="LyX-Code">
+5 | 0 | 1
+</pre>
+<pre class="LyX-Code">
+   ___
+</pre>
+<pre class="LyX-Code">
+4 | 6 | 2
+</pre>
+<pre class="LyX-Code">
+   ___
+</pre>
+<pre class="LyX-Code">
+    3
+</pre>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-37"></a>I/O Pins
+</h4>
+<div class="Standard">
+.cc - common
+</div>
+<div class="Standard">
+.seg0-6 - 7 segment drives
+</div>
+<h3 class="Subsection">
+<a class="toc" name="toc-Subsection-8.2.7">8.2.7</a> Solar<a class="IndexEntry" name="entry-Solar-0" href="#index-Solar">↓</a>
+</h3>
+<div class="Standard">
+This module emulates a 20 Watt solar panel, a 20mah battery, and a PWM controler for testing control strategies for the controler.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-38"></a>Attributes
+</h4>
+<div class="Standard">
+Aoffset - Voltage on Asol pin for zero panel current
+</div>
+<div class="Standard">
+Ascale - Voltage/Amp panel current scale factor for Asol
+</div>
+<div class="Standard">
+VSscale - scale factor for Vsol pin
+</div>
+<div class="Standard">
+VBscale - scale factor for Vbat pin
+</div>
+<div class="Standard">
+inductor - controler inductor size in Henries
+</div>
+<div class="Standard">
+BDOC - Battery degree of charge %
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-39"></a>I/O Pins
+</h4>
+<div class="Standard">
+.Vsol - Solar Panel output Voltage
+</div>
+<div class="Standard">
+.Asol - Solar Panel output current
+</div>
+<div class="Standard">
+.Vbat - Battery Voltage
+</div>
+<div class="Standard">
+.PWM - Pulse Width Modulation signal 
+</div>
+<div class="Standard">
+.OK - PWM is enabled
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-8.3">8.3</a> Writing new modules
+</h2>
+<div class="Standard">
+A module is a library of code. On Windows the library is a .DLL and on Unix a shared library. There are a few details that a module must adhere to, but in general the module has full access to gpsim’s API.
+</div>
+<div class="Standard">
+The easiest way to write a new module is to start from the source code from one of the existing modules. For example, suppose your project produces a serial bit-stream in PPM coding and you want to display the output during the simulation. The external module you need is similar to the usart module but not the same, so start by making a copy of the usart module and then modify it to work how you need.
+</div>
+<div class="Standard">
+To be able to load your module into gpsim it needs to be in a library. Usually you will be creating a new library just for one device, but sometimes you will have a few devices. Either way, the library must declare to gpsim what devices it contains. This is achieved with an array of Module_Types class instances, returned to gpsim by a function named “get_mod_list”. All gpsim module libraries must declare this function. You can copy the required template from the gpsim source – probably one of the “extras” modules is slightly cleaner than the main library. For our PPM decoder example, we might have a module_manager.cc containing the following code:
+</div>
+<pre class="LyX-Code">
+/* IN_MODULE should be defined for modules */
+</pre>
+<pre class="LyX-Code">
+#define IN_MODULE
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+#include &lt;stdio.h&gt;
+</pre>
+<pre class="LyX-Code">
+#include &lt;gpsim/modules.h&gt;
+</pre>
+<pre class="LyX-Code">
+#include "ppm.h"
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+Module_Types available_modules[] =
+</pre>
+<pre class="LyX-Code">
+{
+</pre>
+<pre class="LyX-Code">
+  { "ppm_display", "ppm_rx_iface", PpmDisplay::construct},
+</pre>
+<pre class="LyX-Code">
+  // No more modules
+</pre>
+<pre class="LyX-Code">
+  { NULL,NULL,NULL}
+</pre>
+<pre class="LyX-Code">
+};
+</pre>
+<pre class="LyX-Code">
+#ifdef __cplusplus
+</pre>
+<pre class="LyX-Code">
+extern "C" {
+</pre>
+<pre class="LyX-Code">
+#endif /* __cplusplus */
+</pre>
+<pre class="LyX-Code">
+/*****************************************************************
+</pre>
+<pre class="LyX-Code">
+ * get_mod_list - Report all of the modules in this library.
+</pre>
+<pre class="LyX-Code">
+ *
+</pre>
+<pre class="LyX-Code">
+ * This is a required function for gpsim compliant libraries.
+</pre>
+<pre class="LyX-Code">
+ */
+</pre>
+<pre class="LyX-Code">
+  Module_Types * get_mod_list(void)
+</pre>
+<pre class="LyX-Code">
+  {
+</pre>
+<pre class="LyX-Code">
+    return available_modules;
+</pre>
+<pre class="LyX-Code">
+  }
+</pre>
+<pre class="LyX-Code">
+#ifdef __cplusplus
+</pre>
+<pre class="LyX-Code">
+}
+</pre>
+<pre class="LyX-Code">
+#endif /* __cplusplus */
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<div class="Standard">
+This declares that this library provides one module, called ppm_display, implemented by the C++ class PpmDisplay. The class which implements the module must provide a static method “construct” to create a new instance of the class. For example:
+</div>
+<pre class="LyX-Code">
+Module * PpmDisplay::construct(const char *_new_name=0)
+</pre>
+<pre class="LyX-Code">
+{
+</pre>
+<pre class="LyX-Code">
+    PpmDisplay *ppmd = new PpmDisplay(_new_name);
+</pre>
+<pre class="LyX-Code">
+    ppmd-&gt;create_iopin_map();
+</pre>
+<pre class="LyX-Code">
+    ppmd-&gt;create_window(_new_name);
+</pre>
+<pre class="LyX-Code">
+    return ppmd;
+</pre>
+<pre class="LyX-Code">
+}
+</pre>
+<div class="Standard">
+Your module will need to include stimuli for its I/O connections. You can use the standard gpsim stimulus classes: IOPIN, io_bidirectional, io_bidirectional_pu, io_open_collector. In many cases, however, you will want to derive your own class from one of them. This will allow you to customise the actions when the node state changes. For example:
+</div>
+<pre class="LyX-Code">
+class DecoderPin : public IOPIN
+</pre>
+<pre class="LyX-Code">
+{
+</pre>
+<pre class="LyX-Code">
+private:
+</pre>
+<pre class="LyX-Code">
+    PpmDisplay * Parent;
+</pre>
+<pre class="LyX-Code">
+public:
+</pre>
+<pre class="LyX-Code">
+    DecoderPin ( PpmDisplay * parent, unsigned int b, const char * name=0 );
+</pre>
+<pre class="LyX-Code">
+    virtual void setDrivenState(bool new_state);
+</pre>
+<pre class="LyX-Code">
+};
+</pre>
+<div class="Standard">
+The only methods we provide here are the constructor and an overridden “setDrivenState”. This is because our PPM decoder needs to be told when the input pin changes state.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-9">9</a> Symbolic Debugging
+</h1>
+<div class="Standard">
+gpsim maintains a symbol table. 
+</div>
+<div class="Standard">
+&lt;write me&gt;
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-10">10</a> Macros
+</h1>
+<div class="Standard">
+&lt;write me&gt;
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-11">11</a> Hex Files
+</h1>
+<div class="Standard">
+The target code simulated by gpsim can be supplied by a hex file, or more specifically an Intel Hex file. gpsim accepts the format of hex provided by gpasm and mpasm. The hex file does not provide any symbolic information. It’s recommended that hex files only be used if 1) you suspect there’s a problem with the way .cod files are generated by your assembler or compiler OR 2) your assembler or compiler doesn’t generate .cod files. Also, you must supply a processor when loading hex files. See the load command.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-12">12</a> The ICD- Not Supported in versions 0.21.0 and later
+</h1>
+<div class="Standard">
+gpsim supports (partly) the first version of the ICD (as opposed to ICD2 (the round hockey-puck shaped one)). 
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-13"></a>Special configuration of the code
+</h3>
+<div class="Standard">
+Read the MPLAB ICD USER’s GUIDE. 
+</div>
+<div class="Standard">
+Here’s the short version:
+</div>
+<ul>
+
+<li>
+disable at least: brown out detection, low voltage programming and all code protection. It is probably good to turn of the watchdog too. see the MPLAB ICD USER’s GUIDE for more information. 
+</li>
+<li>
+have a NOP as the first instruction.
+</li>
+<li>
+Don’t touch RB6 or RB7.
+</li>
+<li>
+Don’t use the last stack level.
+</li>
+<li>
+Don’t use these registers and program words:<br/>
+
+<table>
+
+<tr>
+
+<td align="center" valign="top">
+Processor
+</td>
+<td align="center" valign="top">
+Register
+</td>
+<td align="center" valign="top">
+Program
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+-870/1/2
+</td>
+<td align="center" valign="top">
+0x70, 0xBB-0xBF
+</td>
+<td align="center" valign="top">
+0x6E0-0x7FF
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+-873/4
+</td>
+<td align="center" valign="top">
+0x6D, 0x1fD, 0xEB-0xF0, 0x1Eb-0x1F0
+</td>
+<td align="center" valign="top">
+0xEE0-0xFFF
+</td>
+</tr>
+<tr>
+
+<td align="center" valign="top">
+-876/7
+</td>
+<td align="center" valign="top">
+0x70, 0x1Eb-0x1Ef
+</td>
+<td align="center" valign="top">
+0x1F00-0x1FFF
+</td>
+</tr>
+</table>
+</li>
+</ul>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-14"></a>icdprog
+</h3>
+<div class="Standard">
+Download and install icdprog. 
+</div>
+<div class="Standard">
+Use icdprog to program the target with the hex file (<i>icdprog mycode.hex</i>).
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-15"></a>ICD usage
+</h3>
+<div class="Standard">
+Start gpsim like this:
+</div>
+<div class="Standard">
+<i>gpsim -d /dev/ttyS0 -s mycode.cod</i>
+</div>
+<div class="Standard">
+, assuming the ICD is connected to the first serial port.
+</div>
+<div class="Standard">
+Now you can type ’icd’ to see some information:
+</div>
+<div class="Standard">
+<i>**gpsim&gt; icd <br/>
+ICD version "2.31.00" was found. <br/>
+Target controller is 16F877 rev 13. <br/>
+Vdd: 5.2 Vpp: 13.3 <br/>
+Debug module is present</i>
+</div>
+<div class="Standard">
+2.31 is the firmware version. I have only tried this particular version...
+</div>
+<div class="Standard">
+You can step, reset, run, halt, set the breakpoint and read file registers. It works both from the GUI and the cli.
+</div>
+<h3 class="Subsection-">
+<a class="toc" name="toc-Subsection*-16"></a>ICD TODO
+</h3>
+<ul>
+
+<li>
+MPLAB has a setting for target CPU frequency, I have only tried with a 20MHz crystal, so there may be adjustments to be made to the serial port timeout settings in gpsim.
+</li>
+<li>
+The source, disassembly, watch, symbol and RAM windows works. And the rest doesn’t. I guess the breadboard should be able to work at least for the pic, but it doesn’t. 
+</li>
+<li>
+EEPROM support 
+</li>
+<li>
+modifying data 
+</li>
+<li>
+Fix the UI to give more feedback about what’s happening during long delays.
+</li>
+<li>
+Better error detection. gpsim doesn’t always see that the target is not functional.
+</li>
+</ul>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-13">13</a> Examples
+</h1>
+<div class="Standard">
+The <i>examples/</i> subdirectory contains several examples. The <i>examples/projects/</i> subdirectory demonstrate sample projects that can serve as templates for new projects. In addition, the <i>examples/modules</i> subdirectory contains several examples illustrating how to use gpsim’s various modules. Finally, as described in chapter <a class="Reference" href="#Regression-Tests">↓</a>, gpsim’s regression tests illustrate many powerful debugging techniques that have not been fully documented.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-40"></a>usart_gui example
+</h4>
+<div class="Standard">
+Each example contains a brief <i>README</i> explaining its purpose. For example, the <i>README</i> for the <i>usart_gui</i> example in the <i>examples/modules</i> directory contains
+</div>
+<pre class="LyX-Code">
+The tests the USART module with the GUI fix.
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+The code for a 16f628 PIC is used. The code first transmits a string of
+</pre>
+<pre class="LyX-Code">
+characters, which are instructions to the user, to the USART module which
+</pre>
+<pre class="LyX-Code">
+will then be displayed on its GUI. This verifies that the USART can receive
+</pre>
+<pre class="LyX-Code">
+serial data.
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+When the focus is on the USART GUI window, characters typed on the keyboard
+</pre>
+<pre class="LyX-Code">
+are sent from the USART to the PIC and then retransmitted from the PIC back
+</pre>
+<pre class="LyX-Code">
+to the USART.
+</pre>
+<pre class="LyX-Code">
+
+</pre>
+<pre class="LyX-Code">
+If all works, the typed characters will be displayed in the GUI text window
+</pre>
+<pre class="LyX-Code">
+of the USART. Both transmit and receive must be functioning for this to
+</pre>
+<pre class="LyX-Code">
+happen.
+</pre>
+<div class="Standard">
+<i>Fixme</i> - we really need to document all of the examples!
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-14">14</a> Regression Tests<a class="Label" name="cha:Regression-Tests"> </a>
+</h1>
+<div class="Standard">
+Starting with version 0.22.0, gpsim distributes regression tests. The purpose of a regression test is to validate correctness. The tests are designed to exercise many of the aspects of gpsim and gpsim’s modules. While designed primarily for developers, the regression tests also serve as a rich source of examples. There are many features gpsim’s developers will tuck away into a regression test and fail to document!
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-15">15</a> Theory of Operation
+</h1>
+<div class="Standard">
+This section is only provided for those who may be interested in how gpsim operates. The information in here is ’mostly’ accurate. However, as gpsim evolves so do the details of the theory of operation. Use the information provided here as a high level introduction and use the (well commented :]) source to learn the details.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.1">15.1</a> Background
+</h2>
+<div class="Standard">
+gpsim is written mostly in C++. Why? Well the main reason is to easily implement a hierarchical model of a pic. If you think about a microcontroller, it’s really easy to modularize the various components. C++ lends itself well to this conceptualization. Furthermore Microchip, like other microcontroller manufacturers, has created families of devices that are quite similar to one another. Again, the C++ provides ’inheritance’ that allows the relationships to be shared among the various models of pics.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.2">15.2</a> Instructions<a class="IndexEntry" name="entry-instructions-0" href="#index-instructions">↓</a>
+</h2>
+<div class="Standard">
+There’s a base class for the 14-bit instructions (I plan to go one step further and create a base class from which all pic instructions can be derived). It primarily serves two purposes: storage that is common for each instruction and a means for generically accessing virtual functions. The common information consists of a name - or more specifically the  instruction mnemonic, the opcode, and a pointer to the processor owning  the instruction. Some of the virtual functions are ’execute’ and ’name’. As the hex file is decoded, instances of the instructions are created and stored in an array called program_memory. The index into this array is the address at which the instruction resides. To execute an instruction the following code sequence is invoked:
+</div>
+<blockquote class="Quotation">
+program_memory[pc-&gt;value]-&gt;execute();
+</blockquote>
+<div class="Standard">
+which says, get the instruction at the current program index (pc-&gt;value) and invoke via the virtual function execute(). This approach allows execution break points to be easily set. A special break point instruction can replace the one residing in the program memory array. When ’execute’ is called the break point can be invoked.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-4"></a>Program memory
+</h4>
+<div class="Standard">
+Note that in the above discussion, the pc-&gt;value is referred to as the “program index”. On the 12-bit and 14-bit PIC cores this is unambiguous as the program memory is instruction-word-wide and the program counter increments by one for each instruction. On the PIC17 and PIC18 cores, however, the program memory is accessible through the TBLPTR in byte-wide form. The program counter increments by two for each instruction.
+</div>
+<div class="Standard">
+The program_memory array in gpsim is always an array of instructions. Thus the pc-&gt;value on a PIC18 is an index whose value is half of the PC register-triple value.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.3">15.3</a> General File Registers<a class="IndexEntry" name="entry-registers-0" href="#index-registers">↓</a>
+</h2>
+<div class="Standard">
+A file register is simulated by the ’file_register’ class. There is one instance of a ’file_register’ object for each file register in the PIC. All of the registers are collected together into an array called ’registers’ which is indexed by the registers’ corresponding PIC addresses. The array is linear and not banked like it is in the PIC. (Banking is handled during the simulation.)
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.4">15.4</a> Special File Registers
+</h2>
+<div class="Standard">
+Special file registers are all of the other registers that are not general file registers. This includes the core registers like status and option and also the peripheral registers like eeadr for the EEPROM. The special file registers are derived from the general file registers and are also stored in the ’registers’ array. There is one instance for each register - even if the register is accessible in more than one bank. So for example, there’s only one instance for the ’status’ register, however it may be accessed through the ’registers’ array in more than one place.
+</div>
+<div class="Standard">
+All file registers are accessed by the virtual functions ’put’ and ’get’. This is done for two main reasons. First, it conveniently encapsulates the breakpoint overhead (for register breakpoints) in the file register and not in the instruction. Second, and more important, it allows derived classes to implement the put and get more specifically. For example, a ’put’ to the indf register is a whole lot different than a put to the intcon register. In each case, the ’put’ initiates an action beyond simply storing a byte of data in an array. It also allows the following code sequence to be easily implemented:
+</div>
+<pre class="LyX-Code">
+movlw   trisa   ;Get the address of tris 
+</pre>
+<pre class="LyX-Code">
+movwf   fsr 
+</pre>
+<pre class="LyX-Code">
+movf    indf,w  ;Read trisa indirectly
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.5">15.5</a> Example of an instruction
+</h2>
+<div class="Standard">
+Here’s an example of the code for the movf instruction that illustrates what has been discussed above. Somewhere in gpsim the code sequence:
+</div>
+<pre class="LyX-Code">
+program_memory[pc-&gt;value]-&gt;execute();
+</pre>
+<div class="Standard">
+is executed. Let’s say that the pc is pointing to a movf instruction. The -&gt;execute() virtual function will invoke MOVF::execute. I’ve added extra comments (that aren’t in the main code) to illustrate in detail what’s happening.
+</div>
+<pre class="LyX-Code">
+void MOVF::execute(void)
+</pre>
+<pre class="LyX-Code">
+{
+</pre>
+<pre class="LyX-Code">
+  unsigned int source_value;
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // All instructions are ’traced’ (discussed below). It’s sufficient 
+</pre>
+<pre class="LyX-Code">
+  //to only store the opcode. However, even this may be unnecessary since 
+</pre>
+<pre class="LyX-Code">
+  //the program counter is also traced. Expect this to disappear in the 
+</pre>
+<pre class="LyX-Code">
+  //future... 
+</pre>
+<pre class="LyX-Code">
+  trace.instruction(opcode);
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // ’source’ is a pointer to a ’file_register’ object. It is initialized 
+</pre>
+<pre class="LyX-Code">
+  //by reading the ’registers’ array. Note that the index depends on the 
+</pre>
+<pre class="LyX-Code">
+  //’rp’ bits (actually just one bit) in the status register. Time is
+</pre>
+<pre class="LyX-Code">
+  // saved by caching rp as opposed to decoding the status register.
+</pre>
+<pre class="LyX-Code">
+  source = cpu-&gt;registers[cpu-&gt;rp | opcode&amp;REG_IN_INSTRUCTION_MASK];
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // We have no idea which register we are trying to access and how it 
+</pre>
+<pre class="LyX-Code">
+  //should be accessed or if there’s a breakpoint set on it. No problem,
+</pre>
+<pre class="LyX-Code">
+  //the virtual function ’get’ will resolve all of those details
+</pre>
+<pre class="LyX-Code">
+  // and ’do the right thing’.
+</pre>
+<pre class="LyX-Code">
+  source_value = source-&gt;get();
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // If the destination is W, then the constructor has already initialized 
+</pre>
+<pre class="LyX-Code">
+  //’destination’. Otherwise the destination and source are the same.
+</pre>
+<pre class="LyX-Code">
+  if(opcode&amp;DESTINATION_MASK)
+</pre>
+<pre class="LyX-Code">
+    destination = source;      // Result goes to source
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // Write the source value to the destination. Again, we have no idea 
+</pre>
+<pre class="LyX-Code">
+  // where the destination may be or
+</pre>
+<pre class="LyX-Code">
+  // or how the data should be written there.
+</pre>
+<pre class="LyX-Code">
+  destination-&gt;put(source_value);
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // The movf instruction will set Z (zero) bit in the status register
+</pre>
+<pre class="LyX-Code">
+  //if the source value was zero.
+</pre>
+<pre class="LyX-Code">
+  cpu-&gt;status.put_Z(0==source_value);
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+  // Finally, advance the pc by one.
+</pre>
+<pre class="LyX-Code">
+  cpu-&gt;pc-&gt;increment();
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<pre class="LyX-Code">
+}
+</pre>
+<pre class="LyX-Code">
+ 
+</pre>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.6">15.6</a> Trace
+</h2>
+<div class="Standard">
+Everything that is simulated is traced - <i>all</i> <i>of the time. The trace buffer is one huge circular buffer of integers. Information is or’ed with a trace token and then is stored in the trace buffer. No attempt is made to associate the items in the trace buffer while the simulator is simulating a PIC. Thus, if you look at the raw buffer you will see stuff like: cycle counter = ..., opcode fetch = ..., register read = ..., register write = ..., etc. However, this information is post processed to ascertain what happened and when it happened. It’s also possible to use this information to undo the simulation, or in other words you can step backwards. I don’t have this implemented yet though.</i>
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.7">15.7</a> Breakpoints
+</h2>
+<div class="Standard">
+Breakpoints fall into three categories: execution, register, and cycle.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-5"></a>Execution:
+</h4>
+<div class="Standard">
+For execution breakpoints a special instruction appropriately called ’Breakpoint_Instruction’ is created and placed into the program memory array at the location the break point is desired. The original instruction is saved in the newly created breakpoint instruction. When the break point is cleared, the original instruction is fetched from the break point instruction and placed back into the program memory array.
+</div>
+<div class="Standard">
+Note that this scheme has zero overhead. The simulation is only affected when the breakpoint is encountered.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-6"></a>Register:
+</h4>
+<div class="Standard">
+There are at least four different breakpoint types that can be set on a register: read any value, write any value, read a specific value, or write a specific value. Like the execution breakpoints, there are special breakpoint registers that replace a register object. So when the user sets a write breakpoint at register 0x20 for example, a new breakpoint object is created and insert into the file register array at location 0x20. When the simulator attempts to access register location 0x20, the breakpoint object will be accessed instead.
+</div>
+<div class="Standard">
+Note that this scheme too has zero overhead, accept when a breakpoint is encountered.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-7"></a>Cycle:
+</h4>
+<div class="Standard">
+Cycle breakpoints allow gpsim to alter execution at a specific instruction cycle. This is useful for running your simulation for a very specific amount of time. Internally, gpsim makes extensive use of the cycle breakpoints. For example, the TMR0 object can be programmed to generate a periodic cycle break point.
+</div>
+<div class="Standard">
+Cycle break points are implemented with a sorted doubly-linked list. The linked list contains two pieces of information (besides the links): the cycle at which the break is to occur and the call back function<span class="FootMarker"> [H→] </span>
+<span class="Foot">
+<span class="FootMarker">[→H] </span>A call back function is a pointer to a function. In this context, gpsim is given a pointer to the function that’s to be invoked (called) whenever a cycle break occurs. 
+</span> that’s to be invoked when the cycle does occur. The break logic is extremely simple. Whenever the cycle counter is advanced (that is, incremented), it’s compared to the next desired cycle break point. If there’s NO match, then we’re done. So the overhead for cycle breaks is the time required to implement a comparison. If there IS a match, then the call back function associated with this break point is invoked and the next break point in the doubly-linked list serves as the reference for the next cycle break.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-15.8">15.8</a> TIMER1 External input
+</h2>
+<div class="Standard">
+The timer1 module can support external input, on some processors, as either a crystal using two pins or a single pin drive.
+</div>
+<h4 class="Subsubsection-">
+<a class="toc" name="toc-Subsubsection*-41"></a>External Crystal
+</h4>
+<div class="Standard">
+If an external crystal, typically 32,768 KHz, is being used, then both T1OSCEN and TMR1CS in register T1CON should be true. Gpsim will then automatically simulate timer1 being driven at the crystal frequency which can be changed from the default frequency by changing the value of the processor symbol called tmr1_freq.
+</div>
+<h4 class="Subsubsection">
+<a class="toc" name="toc-Subsubsection-8"></a>Single pin drive
+</h4>
+<div class="Standard">
+If the single pin drive is being used, then the T1CON register bits for T1OSCEN should be false and TMR1CS true, and the T1CKI pin must be driven manually such as by a stimuli command.
+</div>
+<h1 class="Chapter">
+<a class="toc" name="toc-Chapter-16">16</a> LICENSES
+</h1>
+<h2 class="Section">
+<a class="toc" name="toc-Section-16.1">16.1</a> Gpsim.lyx
+</h2>
+<div class="Standard">
+Copyright  2000-2010
+</div>
+<div class="Standard">
+T. Scott Dattalo, Ralf Forsberg, Robert Pearce, Borut Razem and Roy Rankin
+</div>
+<div class="Standard">
+The source of this document is gpsim.lyx.
+</div>
+<div class="Standard">
+This document is free software; you can redistribute it and/or modify it under the terms of the <a class="IndexEntry" name="entry-GNU-GPL-0" href="#index-GNU-GPL">↓</a> GNU General Public License published by the Free Software Foundation; either version 2, or (at your option) any later version.
+</div>
+<div class="Standard">
+This document is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. 
+</div>
+<div class="Standard">
+You should have received a copy of the GNU General Public License along with gpsim; see the file COPYING. If not, write to the Free Software Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-16.2">16.2</a> Gpsim
+</h2>
+<div class="Standard">
+The Gpsim program is licensed under version 2 or higher of the GNU General Public License. Details of this license can be found in the COPYING file which should have come with this program. If not the license can be found at <a class="URL" href="http://www.gnu.org/licenses/gpl-2.0.html">http://www.gnu.org/licenses/gpl-2.0.html</a>.
+</div>
+<h2 class="Section">
+<a class="toc" name="toc-Section-16.3">16.3</a> Libraries libgpsim, libgpsim_modules, libgpsim_eXdbm 
+</h2>
+<div class="Standard">
+The libraries libgpsim, libgpsim_modules, and libgpsim_eXdbm are licensed under version 2.1 of the GNU Lesser General Public License. Details of this license can be found in the COPYING.LESSER file which should have come with the program. If not, the license can be found at <a class="URL" href="http://www.gnu.org/licenses/lgpl-2.1.html">http://www.gnu.org/licenses/lgpl-2.1.html</a>.
+</div>
+<div class="Standard">
+<h1 class="index">Index</h1>
+
+<p class="printindex">
+<i><a class="printindex" name="index-attach">attach</a>: </i><a class="Link" name="index-attach" href="#entry-attach-0">↑</a>, 
+<a class="Link" name="index-attach" href="#entry-attach-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-break">break</a>: </i><a class="Link" name="index-break" href="#entry-break-0">↑</a>, 
+<a class="Link" name="index-break" href="#entry-break-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-bus">bus</a>: </i><a class="Link" name="index-bus" href="#entry-bus-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-clear">clear</a>: </i><a class="Link" name="index-clear" href="#entry-clear-0">↑</a>, 
+<a class="Link" name="index-clear" href="#entry-clear-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-disassemble">disassemble</a>: </i><a class="Link" name="index-disassemble" href="#entry-disassemble-0">↑</a>, 
+<a class="Link" name="index-disassemble" href="#entry-disassemble-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-dump">dump</a>: </i><a class="Link" name="index-dump" href="#entry-dump-0">↑</a>, 
+<a class="Link" name="index-dump" href="#entry-dump-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-frequency">frequency</a>: </i><a class="Link" name="index-frequency" href="#entry-frequency-0">↑</a>, 
+<a class="Link" name="index-frequency" href="#entry-frequency-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-help">help</a>: </i><a class="Link" name="index-help" href="#entry-help-0">↑</a>, 
+<a class="Link" name="index-help" href="#entry-help-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-icd">icd</a>: </i><a class="Link" name="index-icd" href="#entry-icd-0">↑</a>, 
+<a class="Link" name="index-icd" href="#entry-icd-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-list">list</a>: </i><a class="Link" name="index-list" href="#entry-list-0">↑</a>, 
+<a class="Link" name="index-list" href="#entry-list-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-load">load</a>: </i><a class="Link" name="index-load" href="#entry-load-0">↑</a>, 
+<a class="Link" name="index-load" href="#entry-load-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-log">log</a>: </i><a class="Link" name="index-log" href="#entry-log-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-node">node</a>: </i><a class="Link" name="index-node" href="#entry-node-0">↑</a>, 
+<a class="Link" name="index-node" href="#entry-node-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-module">module</a>: </i><a class="Link" name="index-module" href="#entry-module-0">↑</a>, 
+<a class="Link" name="index-module" href="#entry-module-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-processor">processor</a>: </i><a class="Link" name="index-processor" href="#entry-processor-0">↑</a>, 
+<a class="Link" name="index-processor" href="#entry-processor-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-quit">quit</a>: </i><a class="Link" name="index-quit" href="#entry-quit-0">↑</a>, 
+<a class="Link" name="index-quit" href="#entry-quit-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-reg">reg</a>: </i><a class="Link" name="index-reg" href="#entry-reg-0">↑</a>, 
+<a class="Link" name="index-reg" href="#entry-reg-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-run">run</a>: </i><a class="Link" name="index-run" href="#entry-run-0">↑</a>, 
+<a class="Link" name="index-run" href="#entry-run-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-set">set</a>: </i><a class="Link" name="index-set" href="#entry-set-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-step">step</a>: </i><a class="Link" name="index-step" href="#entry-step-0">↑</a>, 
+<a class="Link" name="index-step" href="#entry-step-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-stimulus">stimulus</a>: </i><a class="Link" name="index-stimulus" href="#entry-stimulus-0">↑</a>, 
+<a class="Link" name="index-stimulus" href="#entry-stimulus-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-stopwatch">stopwatch</a>: </i><a class="Link" name="index-stopwatch" href="#entry-stopwatch-0">↑</a>, 
+<a class="Link" name="index-stopwatch" href="#entry-stopwatch-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-symbol">symbol</a>: </i><a class="Link" name="index-symbol" href="#entry-symbol-0">↑</a>, 
+<a class="Link" name="index-symbol" href="#entry-symbol-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-trace">trace</a>: </i><a class="Link" name="index-trace" href="#entry-trace-0">↑</a>, 
+<a class="Link" name="index-trace" href="#entry-trace-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-version">version</a>: </i><a class="Link" name="index-version" href="#entry-version-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-x">x</a>: </i><a class="Link" name="index-x" href="#entry-x-0">↑</a>, 
+<a class="Link" name="index-x" href="#entry-x-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-echo">echo</a>: </i><a class="Link" name="index-echo" href="#entry-echo-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-macros">macros</a>: </i><a class="Link" name="index-macros" href="#entry-macros-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Stimulus">Stimulus</a>: </i><a class="Link" name="index-Stimulus" href="#entry-Stimulus-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Modules">Modules</a>: </i><a class="Link" name="index-Modules" href="#entry-Modules-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-USART-module">USART module</a>: </i><a class="Link" name="index-USART-module" href="#entry-USART-module-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-pulsegen">pulsegen</a>: </i><a class="Link" name="index-pulsegen" href="#entry-pulsegen-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-FileStimulus">FileStimulus</a>: </i><a class="Link" name="index-FileStimulus" href="#entry-FileStimulus-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-FileRecorder">FileRecorder</a>: </i><a class="Link" name="index-FileRecorder" href="#entry-FileRecorder-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-PortStimulus">PortStimulus</a>: </i><a class="Link" name="index-PortStimulus" href="#entry-PortStimulus-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Logic">Logic</a>: </i><a class="Link" name="index-Logic" href="#entry-Logic-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-and2">and2</a>: </i><a class="Link" name="index-and2" href="#entry-and2-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-or2">or2</a>: </i><a class="Link" name="index-or2" href="#entry-or2-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-xor2">xor2</a>: </i><a class="Link" name="index-xor2" href="#entry-xor2-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-not">not</a>: </i><a class="Link" name="index-not" href="#entry-not-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-ttl377">ttl377</a>: </i><a class="Link" name="index-ttl377" href="#entry-ttl377-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-ttl165">ttl165</a>: </i><a class="Link" name="index-ttl165" href="#entry-ttl165-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-ttl595">ttl595</a>: </i><a class="Link" name="index-ttl595" href="#entry-ttl595-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-I2C-EEPROM">I2C EEPROM</a>: </i><a class="Link" name="index-I2C-EEPROM" href="#entry-I2C-EEPROM-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Switches">Switches</a>: </i><a class="Link" name="index-Switches" href="#entry-Switches-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Resistors">Resistors</a>: </i><a class="Link" name="index-Resistors" href="#entry-Resistors-0">↑</a>, 
+<a class="Link" name="index-Resistors" href="#entry-Resistors-1">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Voltage-Sources">Voltage Sources</a>: </i><a class="Link" name="index-Voltage-Sources" href="#entry-Voltage-Sources-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Capacitors">Capacitors</a>: </i><a class="Link" name="index-Capacitors" href="#entry-Capacitors-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-7SEGMENTS">7SEGMENTS</a>: </i><a class="Link" name="index-7SEGMENTS" href="#entry-7SEGMENTS-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-LED">LED</a>: </i><a class="Link" name="index-LED" href="#entry-LED-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-i2c2par">i2c2par</a>: </i><a class="Link" name="index-i2c2par" href="#entry-i2c2par-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-DHT11">DHT11</a>: </i><a class="Link" name="index-DHT11" href="#entry-DHT11-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-DS1307">DS1307</a>: </i><a class="Link" name="index-DS1307" href="#entry-DS1307-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-DS1820-Family">DS1820 Family</a>: </i><a class="Link" name="index-DS1820-Family" href="#entry-DS1820-Family-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-HD44780">HD44780</a>: </i><a class="Link" name="index-HD44780" href="#entry-HD44780-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-SED1530">SED1530</a>: </i><a class="Link" name="index-SED1530" href="#entry-SED1530-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-LCD_7Seg">LCD_7Seg</a>: </i><a class="Link" name="index-LCD_7Seg" href="#entry-LCD_7Seg-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-Solar">Solar</a>: </i><a class="Link" name="index-Solar" href="#entry-Solar-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-instructions">instructions</a>: </i><a class="Link" name="index-instructions" href="#entry-instructions-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-registers">registers</a>: </i><a class="Link" name="index-registers" href="#entry-registers-0">↑</a>
+</p>
+<p class="printindex">
+<i><a class="printindex" name="index-GNU-GPL">GNU GPL</a>: </i><a class="Link" name="index-GNU-GPL" href="#entry-GNU-GPL-0">↑</a>
+</p>
+</div>
+
+</div>
+</body>
+</html>

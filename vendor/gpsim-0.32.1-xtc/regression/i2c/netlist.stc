@@ -1,0 +1,12 @@
+p16f88.xpos = 96
+p16f88.ypos = 144
+
+module load pu pu1
+pu1.resistance = 10000
+pu1.xpos = 276
+pu1.ypos = 72
+
+module load pu pu2
+pu2.resistance = 10000
+pu2.xpos = 96
+pu2.ypos = 48

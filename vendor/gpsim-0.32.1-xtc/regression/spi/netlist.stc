@@ -1,0 +1,8 @@
+  .sim "p16f88.xpos = 72"
+  .sim "p16f88.ypos = 24"
+  .sim "pu1.xpos = 228"
+  .sim "pu1.ypos = 24"
+  .sim "pu2.xpos = 96"
+  .sim "pu2.ypos = 240"
+  .sim "not.xpos = 96"
+  .sim "not.ypos = 168"

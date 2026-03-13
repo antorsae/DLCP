@@ -1,0 +1,148 @@
+gplink-1.5.2 #1325 (Jan 30 2022)
+Map File - Created 03/12/26  16:26:25
+
+                                 Section Info
+                  Section       Type    Address   Location Size(Bytes)
+                ---------  ---------  ---------  ---------  ---------
+                  STARTUP       code   0x000000    program   0x000002
+                   HI_PRI       code   0x000008    program   0x000002
+                   LO_PRI       code   0x000018    program   0x000036
+                     MAIN       code   0x00004e    program   0x000094
+                 GPR_DATA      udata   0x000060       data   0x00000c
+
+
+
+                              Program Memory Usage
+                               Start         End
+                           ---------   ---------
+                            0x000000    0x000001
+                            0x000008    0x000009
+                            0x000018    0x00004d
+                            0x00004e    0x0000e1
+                            206 program addresses used
+
+
+
+                              Symbols - Sorted by Name
+                     Name    Address   Location    Storage File
+                ---------  ---------  ---------  --------- ---------
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x0000ca    program     static d2455.asm
+                  .direct   0x0000a8    program     static d2455.asm
+                  .direct   0x000086    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00006a    program     static d2455.asm
+                  .direct   0x0000c4    program     static d2455.asm
+                  .direct   0x0000c2    program     static d2455.asm
+                  .direct   0x000066    program     static d2455.asm
+                  .direct   0x000050    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+            ExitInterrupt   0x000042    program     static d2455.asm
+                       L1   0x00007a    program     static d2455.asm
+                       L2   0x00009c    program     static d2455.asm
+                       L3   0x0000b6    program     static d2455.asm
+                SecondsHi   0x00006b       data     extern d2455.asm
+                SecondsLo   0x00006a       data     extern d2455.asm
+                    Start   0x00004e    program     static d2455.asm
+            TMR0_RollOver   0x000064       data     static d2455.asm
+               TMR3H_Last   0x000069       data     static d2455.asm
+            TMR3H_Sampled   0x000068       data     static d2455.asm
+            TMR3_RollOver   0x000065       data     static d2455.asm
+             _MAIN_000076   0x0000c4    program     static d2455.asm
+                 bsr_temp   0x000062       data     static d2455.asm
+          checkTMR0IntEnd   0x00002e    program     static d2455.asm
+          checkTMR3IntEnd   0x000042    program     static d2455.asm
+     check_TMR0_interrupt   0x000024    program     static d2455.asm
+                  countHi   0x000067       data     extern d2455.asm
+                  countLo   0x000066       data     extern d2455.asm
+                       d1   0x0000cc    program     static d2455.asm
+                      d10   0x0000de    program     static d2455.asm
+                      d11   0x0000e0    program     static d2455.asm
+                       d2   0x0000ce    program     static d2455.asm
+                       d3   0x0000d0    program     static d2455.asm
+                       d4   0x0000d2    program     static d2455.asm
+                       d5   0x0000d4    program     static d2455.asm
+                       d6   0x0000d6    program     static d2455.asm
+                       d7   0x0000d8    program     static d2455.asm
+                       d8   0x0000da    program     static d2455.asm
+                       d9   0x0000dc    program     static d2455.asm
+                     done   0x0000c4    program     static d2455.asm
+                   failed   0x0000c6    program     static d2455.asm
+                 failures   0x000063       data     static d2455.asm
+               hi_pri_isr   0x00001a    program     static d2455.asm
+              status_temp   0x000061       data     static d2455.asm
+                    test2   0x000088    program     static d2455.asm
+                    test3   0x0000aa    program     static d2455.asm
+                   w_temp   0x000060       data     static d2455.asm
+
+
+
+                              Symbols - Sorted by Address
+                     Name    Address   Location    Storage File
+                ---------  ---------  ---------  --------- ---------
+               hi_pri_isr   0x00001a    program     static d2455.asm
+     check_TMR0_interrupt   0x000024    program     static d2455.asm
+          checkTMR0IntEnd   0x00002e    program     static d2455.asm
+          checkTMR3IntEnd   0x000042    program     static d2455.asm
+            ExitInterrupt   0x000042    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                  .direct   0x00004e    program     static d2455.asm
+                    Start   0x00004e    program     static d2455.asm
+                  .direct   0x000050    program     static d2455.asm
+                   w_temp   0x000060       data     static d2455.asm
+              status_temp   0x000061       data     static d2455.asm
+                 bsr_temp   0x000062       data     static d2455.asm
+                 failures   0x000063       data     static d2455.asm
+            TMR0_RollOver   0x000064       data     static d2455.asm
+            TMR3_RollOver   0x000065       data     static d2455.asm
+                  countLo   0x000066       data     extern d2455.asm
+                  .direct   0x000066    program     static d2455.asm
+                  countHi   0x000067       data     extern d2455.asm
+            TMR3H_Sampled   0x000068       data     static d2455.asm
+               TMR3H_Last   0x000069       data     static d2455.asm
+                  .direct   0x00006a    program     static d2455.asm
+                SecondsLo   0x00006a       data     extern d2455.asm
+                SecondsHi   0x00006b       data     extern d2455.asm
+                       L1   0x00007a    program     static d2455.asm
+                  .direct   0x000086    program     static d2455.asm
+                    test2   0x000088    program     static d2455.asm
+                       L2   0x00009c    program     static d2455.asm
+                  .direct   0x0000a8    program     static d2455.asm
+                    test3   0x0000aa    program     static d2455.asm
+                       L3   0x0000b6    program     static d2455.asm
+                  .direct   0x0000c2    program     static d2455.asm
+                     done   0x0000c4    program     static d2455.asm
+             _MAIN_000076   0x0000c4    program     static d2455.asm
+                  .direct   0x0000c4    program     static d2455.asm
+                   failed   0x0000c6    program     static d2455.asm
+                  .direct   0x0000ca    program     static d2455.asm
+                       d1   0x0000cc    program     static d2455.asm
+                       d2   0x0000ce    program     static d2455.asm
+                       d3   0x0000d0    program     static d2455.asm
+                       d4   0x0000d2    program     static d2455.asm
+                       d5   0x0000d4    program     static d2455.asm
+                       d6   0x0000d6    program     static d2455.asm
+                       d7   0x0000d8    program     static d2455.asm
+                       d8   0x0000da    program     static d2455.asm
+                       d9   0x0000dc    program     static d2455.asm
+                      d10   0x0000de    program     static d2455.asm
+                      d11   0x0000e0    program     static d2455.asm
+
+

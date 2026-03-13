@@ -1,0 +1,4 @@
+load p16f876a.cod
+proc p16f876a P1
+dump e ee dump.hex
+dump e P1 pdump.hex

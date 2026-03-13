@@ -1,0 +1,106 @@
+
+# This file was written by gpsim.
+
+# You can use this file for example like this:
+#     gpsim -s mycode.cod -c netlist.stc
+
+# If you want to add commands, you can create another .stc file
+# and load this file from it. Something like this:
+# ----------- myproject.stc ---------------
+# load s mycode.cod
+# frequency 12000000
+# load c netlist.stc
+# -----------------------------------------
+# You can then just load this new file:
+#     gpsim -c myproject.stc
+# and use netlist.stc whenever you save from the breadboard.
+#
+
+
+# Processor position:
+module library libgpsim_modules
+
+
+# Modules:
+p16f690.BreakOnReset = true
+p16f690.SafeMode = true
+p16f690.UnknownMode = true
+p16f690.WarnMode = true
+p16f690.tmr1_freq = 32768
+p16f690.xpos = 72
+p16f690.ypos = 72
+
+module load pullup R1
+R1.capacitance = 0
+R1.resistance = 10000
+R1.voltage = 2
+R1.xpos = 264
+R1.ypos = 36
+
+module load pullup R2
+R2.capacitance = 0
+R2.resistance = 10000
+R2.voltage = 2.5
+R2.xpos = 252
+R2.ypos = 96
+
+module load pullup R3
+R3.capacitance = 0
+R3.resistance = 10000
+R3.voltage = 4
+R3.xpos = 252
+R3.ypos = 156
+
+module load not not
+not.xpos = 108
+not.ypos = 360
+
+module load pu pu2
+pu2.capacitance = 0
+pu2.resistance = 10000
+pu2.voltage = 5
+pu2.xpos = 96
+pu2.ypos = 420
+
+module load usart U1
+U1.rxbaud = 4800
+U1.txbaud = 4800
+U1.xpos = 84
+U1.ypos = 264
+
+
+
+# Connections:
+node CVREF
+attach CVREF Cvref_pu Cvref_pd a2d_cvref cm1_cvref
+
+node V0.6REF
+attach V0.6REF vref_06v a2d_v06ref cm1_v06ref
+
+node n1
+attach n1 porta2 porta3 portc6
+
+node n2
+attach n2 porta0 porta5 R1.pin
+
+node n3
+attach n3 porta1 porta4 portb6 R2.pin
+
+node n4
+
+
+node PIC_tx
+attach PIC_tx portb7 U1.RXPIN
+
+node PIC_rx
+attach PIC_rx portb5 U1.TXPIN
+
+node sdo
+attach sdo not.in0 portc7 pu2.pin
+
+node sdi
+attach sdi portb4 not.out
+
+
+
+# End.

@@ -1,0 +1,3 @@
+load eusart.cod
+scope.ch0="portc6"
+scope.ch1="portc7"

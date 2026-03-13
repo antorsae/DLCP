@@ -1,0 +1,4 @@
+load resistor.cod
+load h eeprom.hex
+dump e
+

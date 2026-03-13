@@ -1,0 +1,224 @@
+
+# This file was written by gpsim.
+
+# You can use this file for example like this:
+#     gpsim -s mycode.cod -c netlist.stc
+
+# If you want to add commands, you can create another .stc file
+# and load this file from it. Something like this:
+# ----------- myproject.stc ---------------
+# load s mycode.cod
+# frequency 12000000
+# load c netlist.stc
+# -----------------------------------------
+# You can then just load this new file:
+#     gpsim -c myproject.stc
+# and use netlist.stc whenever you save from the breadboard.
+#
+
+load test.cod
+
+# Processor position:
+module library libgpsim_modules
+
+
+# Modules:
+p10f202.BreakOnReset = true
+p10f202.SafeMode = true
+p10f202.UnknownMode = true
+p10f202.WarnMode = true
+p10f202.xpos = 300
+p10f202.ypos = 132
+
+module load pullup pu
+pu.capacitance = 0
+pu.resistance = 10000
+pu.voltage = 5
+pu.xpos = 324
+pu.ypos = 660
+
+module load pulldown pd
+pd.capacitance = 0
+pd.resistance = 0
+pd.voltage = 5
+pd.xpos = 456
+pd.ypos = 660
+
+module load ttl595 sr0
+sr0.xpos = 108
+sr0.ypos = 84
+
+module load led leda0
+leda0.ActiveState = high
+leda0.color = red
+leda0.xpos = 36
+leda0.ypos = 36
+
+module load led leda1
+leda1.ActiveState = high
+leda1.color = red
+leda1.xpos = 72
+leda1.ypos = 36
+
+module load led leda2
+leda2.ActiveState = high
+leda2.color = red
+leda2.xpos = 108
+leda2.ypos = 36
+
+module load led leda3
+leda3.ActiveState = high
+leda3.color = red
+leda3.xpos = 144
+leda3.ypos = 36
+
+module load led leda4
+leda4.ActiveState = high
+leda4.color = red
+leda4.xpos = 180
+leda4.ypos = 36
+
+module load led leda5
+leda5.ActiveState = high
+leda5.color = red
+leda5.xpos = 216
+leda5.ypos = 36
+
+module load led leda6
+leda6.ActiveState = high
+leda6.color = red
+leda6.xpos = 252
+leda6.ypos = 36
+
+module load led leda7
+leda7.ActiveState = high
+leda7.color = red
+leda7.xpos = 288
+leda7.ypos = 36
+
+module load ttl595 sr1
+sr1.xpos = 468
+sr1.ypos = 84
+
+module load led ledb0
+ledb0.ActiveState = high
+ledb0.color = green
+ledb0.xpos = 396
+ledb0.ypos = 36
+
+module load led ledb1
+ledb1.ActiveState = high
+ledb1.color = green
+ledb1.xpos = 432
+ledb1.ypos = 36
+
+module load led ledb2
+ledb2.ActiveState = high
+ledb2.color = green
+ledb2.xpos = 468
+ledb2.ypos = 36
+
+module load led ledb3
+ledb3.ActiveState = high
+ledb3.color = green
+ledb3.xpos = 504
+ledb3.ypos = 36
+
+module load led ledb4
+ledb4.ActiveState = high
+ledb4.color = green
+ledb4.xpos = 540
+ledb4.ypos = 36
+
+module load led ledb5
+ledb5.ActiveState = high
+ledb5.color = green
+ledb5.xpos = 576
+ledb5.ypos = 36
+
+module load led ledb6
+ledb6.ActiveState = high
+ledb6.color = green
+ledb6.xpos = 612
+ledb6.ypos = 36
+
+module load led ledb7
+ledb7.ActiveState = high
+ledb7.color = green
+ledb7.xpos = 648
+ledb7.ypos = 36
+
+
+# Connections:
+node vcc
+attach vcc pu.pin sr0.MR sr1.MR
+
+node gnd
+attach gnd pd.pin sr0.OE sr1.OE
+
+node gp0
+attach gp0 gpio0 sr0.RCK sr1.RCK
+
+node gp1
+attach gp1 gpio1 sr0.SCK sr1.SCK
+
+node gp2
+attach gp2 gpio2 sr0.Ds
+
+node daisy01
+attach daisy01 sr0.Qs sr1.Ds
+
+node gp3
+attach gp3 gpio3
+
+node sr0q0
+attach sr0q0 sr0.Q0 leda0.in
+
+node sr0q1
+attach sr0q1 sr0.Q1 leda1.in
+
+node sr0q2
+attach sr0q2 sr0.Q2 leda2.in
+
+node sr0q3
+attach sr0q3 sr0.Q3 leda3.in
+
+node sr0q4
+attach sr0q4 sr0.Q4 leda4.in
+
+node sr0q5
+attach sr0q5 sr0.Q5 leda5.in
+
+node sr0q6
+attach sr0q6 sr0.Q6 leda6.in
+
+node sr0q7
+attach sr0q7 sr0.Q7 leda7.in
+
+node sr1q0
+attach sr1q0 sr1.Q0 ledb0.in
+
+node sr1q1
+attach sr1q1 sr1.Q1 ledb1.in
+
+node sr1q2
+attach sr1q2 sr1.Q2 ledb2.in
+
+node sr1q3
+attach sr1q3 sr1.Q3 ledb3.in
+
+node sr1q4
+attach sr1q4 sr1.Q4 ledb4.in
+
+node sr1q5
+attach sr1q5 sr1.Q5 ledb5.in
+
+node sr1q6
+attach sr1q6 sr1.Q6 ledb6.in
+
+node sr1q7
+attach sr1q7 sr1.Q7 ledb7.in
+
+
+
+# End.

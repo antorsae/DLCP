@@ -1,0 +1,3 @@
+proc pic16f690
+load p16f690.hex
+load p16f690.hex
