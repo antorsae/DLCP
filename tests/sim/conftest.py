@@ -9,10 +9,12 @@ from dlcp_fw.paths import (
     GPSIM_XTC_BIN_DIR,
     GPSIM_XTC_BINARY,
     PATCHED_CONTROL_HEX,
+    PATCHED_CONTROL_HEX_V141,
     PATCHED_CONTROL_HEX_V151B,
     PATCHED_CONTROL_HEX_V161B,
     PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX,
+    PATCHED_MAIN_HEX_V24,
     STOCK_CONTROL_HEX_V14,
     STOCK_MAIN_HEX,
 )
@@ -35,6 +37,20 @@ def patched_control_hex() -> Path:
     if not PATCHED_CONTROL_HEX.exists():
         raise RuntimeError(f"missing patched control HEX: {PATCHED_CONTROL_HEX}")
     return PATCHED_CONTROL_HEX
+
+
+@pytest.fixture(scope="session")
+def patched_main_hex_v24() -> Path:
+    if not PATCHED_MAIN_HEX_V24.exists():
+        raise RuntimeError(f"missing patched main HEX: {PATCHED_MAIN_HEX_V24}")
+    return PATCHED_MAIN_HEX_V24
+
+
+@pytest.fixture(scope="session")
+def patched_control_hex_v141() -> Path:
+    if not PATCHED_CONTROL_HEX_V141.exists():
+        raise RuntimeError(f"missing patched control HEX: {PATCHED_CONTROL_HEX_V141}")
+    return PATCHED_CONTROL_HEX_V141
 
 
 @pytest.fixture(scope="session")

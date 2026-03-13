@@ -548,6 +548,103 @@ end
 """
 
 
+_MAIN_V24_STALL_TEST_HOOK_ASM = r"""
+LIST P=18F2455
+#include <p18f2455.inc>
+
+; V2.4/stock MAIN simulation-only helper stall hook.
+;
+; Access-bank bytes 0x04E / 0x04F act as clearable helper gates:
+;   0x04E: UART wait helper (function_111)
+;   0x04F: MSSP wait helper (function_113)
+;
+; Non-zero = run the displaced stock helper prologue and continue.
+; Zero     = stay inside the helper until the seed byte is restored.
+;
+; This does not add any recovery logic. It only creates a clearable native-ring
+; stall so tests can compare stock/V2.4 behavior against the real V2.5 timeout
+; wrappers under the same control-side scenario.
+
+org 0x4896
+    goto sim_v24_uart_entry
+
+org 0x48B6
+    goto sim_v24_mssp_entry
+
+org 0x53F8
+sim_v24_uart_entry:
+    movwf 0x0B, ACCESS
+sim_v24_uart_wait:
+    movf 0x04E, W, ACCESS
+    bnz sim_v24_uart_continue
+    bra sim_v24_uart_wait
+sim_v24_uart_continue:
+    movf 0x0B, W, ACCESS
+    movff WREG, 0x003
+    goto 0x489A
+
+org 0x54BA
+sim_v24_mssp_entry:
+sim_v24_mssp_wait:
+    movf 0x04F, W, ACCESS
+    bnz sim_v24_mssp_continue
+    bra sim_v24_mssp_wait
+sim_v24_mssp_continue:
+    movff SSPCON2, 0x003
+    goto 0x48BA
+
+end
+"""
+
+
+def main_v24_stall_test_hooks(gpasm: str = "gpasm") -> OverlayManifest:
+    """Build simulation-only runtime stall hooks for stock/V2.4 MAIN wait helpers."""
+
+    with tempfile.TemporaryDirectory(prefix="main_v24_stall_hook_") as td:
+        td_path = Path(td)
+        asm = td_path / "main_v24_stall_hook.asm"
+        out_hex = td_path / "main_v24_stall_hook.hex"
+        asm.write_text(_MAIN_V24_STALL_TEST_HOOK_ASM, encoding="ascii")
+        subprocess.run(
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        patch_mem = parse_intel_hex(out_hex)
+
+    return OverlayManifest(
+        name="main_v24_stall_test_hooks",
+        preconditions={
+            0x4896: 0xE8,
+            0x4897: 0xCF,
+            0x4898: 0x03,
+            0x4899: 0xF0,
+            0x48B6: 0xC5,
+            0x48B7: 0xCF,
+            0x48B8: 0x03,
+            0x48B9: 0xF0,
+            0x53F8: 0xFF,
+            0x53F9: 0xFF,
+            0x53FA: 0xFF,
+            0x53FB: 0xFF,
+            0x53FC: 0xFF,
+            0x53FD: 0xFF,
+            0x53FE: 0xFF,
+            0x53FF: 0xFF,
+            0x54BA: 0xFF,
+            0x54BB: 0xFF,
+            0x54BC: 0xFF,
+            0x54BD: 0xFF,
+            0x54BE: 0xFF,
+            0x54BF: 0xFF,
+        },
+        byte_patches=patch_mem,
+        postconditions={},
+        description="Simulation-only MAIN V2.4 stall hook via access-bank seed bytes at 0x04E/0x04F",
+    )
+
+
 def main_v25_timeout_test_hooks(gpasm: str = "gpasm") -> OverlayManifest:
     """Build simulation-only runtime timeout hooks for MAIN V2.5 wait helpers."""
 
