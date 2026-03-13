@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -11,6 +10,7 @@ import pytest
 from dlcp_fw.patch.verify_presets_ab import check_control_v16b, parse_intel_hex
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V15B, STOCK_CONTROL_HEX_V16B
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness, TxTriplet
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.hexio import write_intel_hex
 
 
@@ -42,7 +42,7 @@ PROFILE_REGS: dict[str, dict[int, int]] = {
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 

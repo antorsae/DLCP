@@ -6,7 +6,9 @@ This is a fresh pin-level map from disassembly + board manuals, with confidence 
 - CONTROL firmware evidence: `control/disasm/v1.4_disasm.asm`
 - MAIN firmware evidence: `disasm/gpdasm_output.asm`
 - Board connector semantics: `DLCP-datasheet-R3.pdf` (J1/J2/J3/J7/J10-J17 tables), `DLCP-manual-R3.pdf` (control-chain behavior)
-- PIC multiplexing cross-check: `39632e.pdf` (PIC18F2455/2550/4455/4550 datasheet)
+- PIC multiplexing cross-check:
+  - MAIN: `39632e.pdf` (PIC18F2455/2550/4455/4550 datasheet)
+  - CONTROL: `PIC18F25K20` register map cross-check from gputils include definitions
 
 Legend:
 - `High`: directly read/written and behavior clear in firmware.
@@ -15,7 +17,12 @@ Legend:
 
 ---
 
-## CONTROL PIC (panel controller, PIC18F2550-class)
+## CONTROL PIC (panel controller, PIC18F25K20)
+
+Important note:
+- Older disassembly labels in this repo used `PIC18F2550` SFR names.
+- For CONTROL, addresses in the `0xF6C..0xF7F` block should now be interpreted as
+  `PIC18F25K20` registers such as `CM1CON0/CM2CON0/IOCB/ANSEL/ANSELH`, not USB endpoint registers.
 
 Boot GPIO setup:
 - `TRISA=0xDF`, `TRISB=0x3C`, `TRISC=0xBD`, `ADCON1=0x0F` at `control/disasm/v1.4_disasm.asm:604`, `control/disasm/v1.4_disasm.asm:607`, `control/disasm/v1.4_disasm.asm:609`, `control/disasm/v1.4_disasm.asm:615`.
@@ -51,7 +58,7 @@ Control board connector naming for buttons/display/IR is documented in `DLCP-man
 
 ---
 
-## MAIN PIC (DLCP processing board, PIC18F2550-class)
+## MAIN PIC (DLCP processing board, PIC18F2455)
 
 Boot GPIO/peripheral setup:
 - `TRISA=0x07`, `TRISB=0x00`, `TRISC=0x87` at `disasm/gpdasm_output.asm:6174`, `disasm/gpdasm_output.asm:6175`, `disasm/gpdasm_output.asm:6177`.
@@ -92,4 +99,3 @@ Board-level endpoint context (J3) for USB/MIDI/relay rails is documented in `DLC
 ## What is still not provable from firmware alone
 - Exact net mapping for MAIN outputs `RA6`, `RB2`, `RB3`, `RB4`, `RB5`, `RB6`, `RB7` to specific connector pins (relay control vs amp_enable vs LED) requires PCB netlist/schematic continuity.
 - The code clearly toggles these pins, but firmware symbols alone do not encode board-net names.
-

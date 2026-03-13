@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V14
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness, TxTriplet
+from dlcp_fw.sim.gpsim import gpsim_available
 
 
 WARMUP_CYCLES = 25_000_000
@@ -38,7 +38,7 @@ PROFILE_REGS: dict[str, dict[int, int]] = {
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 

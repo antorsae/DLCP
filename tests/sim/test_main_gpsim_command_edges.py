@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.main_gpsim import run_main_mailbox_gpsim
 from dlcp_fw.sim.protocol import SerialFrame
 
@@ -16,7 +16,7 @@ STOCK_MAIN_HEX = ROOT / "firmware" / "stock" / "main" / "DLCP Firmware V2.3.hex"
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 

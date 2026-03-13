@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.hexio import parse_intel_hex
 
 
@@ -20,7 +20,7 @@ CH_RAM_BASES = [0x0C1, 0x0C7, 0x0CD, 0x0D3, 0x0D9, 0x0DF]
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 

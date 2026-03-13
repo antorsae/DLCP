@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.sim.gpsim import GpsimRunConfig, run_gpsim
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.lcd import LcdState, decode_lcd_bytes
 from dlcp_fw.sim.manifests import control_reset_to_appstart
 from dlcp_fw.sim.overlay import apply_overlays
@@ -15,7 +15,7 @@ from dlcp_fw.sim.overlay import apply_overlays
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_gpsim_lcd_decode_boot_screen(patched_control_hex: Path) -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
     with tempfile.TemporaryDirectory(prefix="test_gpsim_lcd_") as td:

@@ -8,16 +8,15 @@ Uses the existing ``run_main_mailbox_gpsim()`` harness from ``dlcp_fw.sim/main_g
 
 from __future__ import annotations
 
-import shutil
-
 import pytest
 
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.main_gpsim import run_main_mailbox_gpsim
 from dlcp_fw.sim.protocol import SerialFrame
 
 
 def _require_gpsim():
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 

@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.paths import (
+    GPSIM_XTC_BIN_DIR,
+    GPSIM_XTC_BINARY,
     PATCHED_CONTROL_HEX,
     PATCHED_CONTROL_HEX_V151B,
     PATCHED_CONTROL_HEX_V161B,
+    PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX,
+    STOCK_CONTROL_HEX_V14,
+    STOCK_MAIN_HEX,
 )
+
+if GPSIM_XTC_BIN_DIR.exists():
+    os.environ["PATH"] = f"{GPSIM_XTC_BIN_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
+if GPSIM_XTC_BINARY.exists() and "DLCP_GPSIM_BIN" not in os.environ:
+    os.environ["DLCP_GPSIM_BIN"] = str(GPSIM_XTC_BINARY)
 
 
 @pytest.fixture(scope="session")
@@ -38,3 +49,24 @@ def patched_control_hex_v161b() -> Path:
     if not PATCHED_CONTROL_HEX_V161B.exists():
         raise RuntimeError(f"missing patched control HEX: {PATCHED_CONTROL_HEX_V161B}")
     return PATCHED_CONTROL_HEX_V161B
+
+
+@pytest.fixture(scope="session")
+def patched_control_hex_v162b() -> Path:
+    if not PATCHED_CONTROL_HEX_V162B.exists():
+        raise RuntimeError(f"missing patched control HEX: {PATCHED_CONTROL_HEX_V162B}")
+    return PATCHED_CONTROL_HEX_V162B
+
+
+@pytest.fixture(scope="session")
+def stock_main_hex() -> Path:
+    if not STOCK_MAIN_HEX.exists():
+        raise RuntimeError(f"missing stock main HEX: {STOCK_MAIN_HEX}")
+    return STOCK_MAIN_HEX
+
+
+@pytest.fixture(scope="session")
+def stock_control_hex_v14() -> Path:
+    if not STOCK_CONTROL_HEX_V14.exists():
+        raise RuntimeError(f"missing stock control HEX: {STOCK_CONTROL_HEX_V14}")
+    return STOCK_CONTROL_HEX_V14

@@ -25,8 +25,10 @@ from typing import Dict, List, Tuple
 import _bootstrap
 
 from dlcp_fw.paths import SIM_ARTIFACTS_DIR, STOCK_CONTROL_HEX_V14
+from dlcp_fw.sim.gpsim import require_gpsim_binary
 
 ROOT = _bootstrap.REPO_ROOT
+CONTROL_GPSIM_PROCESSOR = "p18f25k20"
 
 
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
@@ -196,7 +198,7 @@ def run_gpsim(hex_path: pathlib.Path, cycles: int, out_log: pathlib.Path, out_cl
     stc.write_text(
         "\n".join(
             [
-                "processor p18f2550",
+                f"processor {CONTROL_GPSIM_PROCESSOR}",
                 f"load {hex_path}",
                 f"log on {out_log}",
                 "log w porta",
@@ -214,8 +216,9 @@ def run_gpsim(hex_path: pathlib.Path, cycles: int, out_log: pathlib.Path, out_cl
         ),
         encoding="ascii",
     )
+    gpsim_bin = require_gpsim_binary()
     cp = subprocess.run(
-        ["gpsim", "-i", "-c", str(stc)],
+        [gpsim_bin, "-i", "-c", str(stc)],
         text=True,
         capture_output=True,
         check=True,

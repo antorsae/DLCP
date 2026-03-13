@@ -17,9 +17,9 @@ Adapted from ``GpsimControlSession`` in ``scripts/gpsim_tui_simulator.py``.
 from __future__ import annotations
 
 import os
+import pty
 import re
 import select
-import shutil
 import subprocess
 import tempfile
 import time
@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
+from .gpsim import require_gpsim_binary
 from .lcd import LcdByte, LcdState
 from .manifests import (
     control_disable_boot_wait,
@@ -43,11 +44,12 @@ from .paths import CONTROL_HEX_PATCHED
 # ---------------------------------------------------------------------------
 
 _PROMPT = b"**gpsim>"
-_CYCLE_RE = re.compile(r"^\s*0x([0-9A-Fa-f]+)\s+p18f2550", re.MULTILINE)
+_CYCLE_RE = re.compile(r"^\s*0x([0-9A-Fa-f]+)\s+p18f[0-9A-Za-z]+", re.MULTILINE)
 _REG_RE = re.compile(r"\[0x([0-9A-Fa-f]+)\]\s*=\s*0x([0-9A-Fa-f]+)")
 _TX_RE = re.compile(r"Wr(?:ite|ote):\s+0x([0-9A-Fa-f]+)\s+to txreg", re.IGNORECASE)
 
 CONTROL_FOSC_HZ = 12_000_000
+CONTROL_GPSIM_PROCESSOR = "p18f25k20"
 
 # Scan-bit mapping for function_023's debounced button result (1 = pressed).
 SCAN_BITS: Dict[str, int] = {
@@ -76,18 +78,17 @@ _HEARTBEAT_BF_INTERVAL = 5  # inject BF/03/01 every N steps
 class _CliSession:
     """Interactive gpsim subprocess wrapper (matching TUI's GpsimCliSession)."""
 
-    def __init__(self) -> None:
+    def __init__(self, gpsim_bin: str) -> None:
+        master_fd, slave_fd = pty.openpty()
         self.proc = subprocess.Popen(
-            ["gpsim", "-i"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            [gpsim_bin, "-i"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
         )
-        if self.proc.stdin is None or self.proc.stdout is None:
-            raise RuntimeError("failed to start gpsim")
-        self.stdin = self.proc.stdin
-        self.stdout = self.proc.stdout
-        self.fd = self.stdout.fileno()
+        os.close(slave_fd)
+        self.fd = master_fd
         self.buf = b""
         self._read_until_prompt(timeout_s=8.0, require=None)
 
@@ -98,11 +99,14 @@ class _CliSession:
         return os.read(self.fd, 4096)
 
     def _sync(self) -> None:
+        settle = time.monotonic() + 0.02
         while True:
-            data = self._read_available(0.0)
+            timeout_s = max(0.0, settle - time.monotonic())
+            data = self._read_available(timeout_s)
             if not data:
                 break
             self.buf += data
+            settle = time.monotonic() + 0.02
         idx = self.buf.rfind(_PROMPT)
         if idx >= 0:
             self.buf = self.buf[idx + len(_PROMPT):]
@@ -145,11 +149,8 @@ class _CliSession:
         if self.proc.poll() is not None:
             raise RuntimeError("gpsim exited unexpectedly")
         self._sync()
-        self.stdin.write((command + "\n").encode("ascii"))
-        self.stdin.flush()
-        return self._read_until_prompt(
-            timeout_s=timeout_s, require=command.encode("ascii")
-        )
+        os.write(self.fd, (command + "\n").encode("ascii"))
+        return self._read_until_prompt(timeout_s=timeout_s, require=None)
 
     def close(self) -> None:
         if self.proc.poll() is None:
@@ -161,6 +162,10 @@ class _CliSession:
             self.proc.wait(timeout=2.0)
         except Exception:
             self.proc.kill()
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
 
 
 def _read_reg(issue, addr: int) -> int:
@@ -349,16 +354,20 @@ class GpsimControlHarness:
         If True, force CONNECTED bit (0x01F.1) high before each step.
     heartbeat_reset_idle
         If True, reset 0x09D:0x09E before each step (default behavior).
+    disable_standby_check
+        If True, apply the simulation-only overlay that bypasses the normal
+        DISPLAY -> WAITING standby jump. Set False for robustness tests that
+        must observe the real WAITING / reconnect path.
     """
 
     # gpsim pin names and stimulus names for the 6 button inputs.
     _BTN_STIMULI = [
-        ("p18f2550.porta1", "stim_ra1"),  # SELECT (RA1)
-        ("p18f2550.porta2", "stim_ra2"),  # DOWN   (RA2)
-        ("p18f2550.porta3", "stim_ra3"),  # STBY   (RA3)
-        ("p18f2550.porta4", "stim_ra4"),  # RIGHT  (RA4)
-        ("p18f2550.portc0", "stim_rc0"),  # UP     (RC0)
-        ("p18f2550.portc5", "stim_rc5"),  # LEFT   (RC5)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta1", "stim_ra1"),  # SELECT (RA1)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta2", "stim_ra2"),  # DOWN   (RA2)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta3", "stim_ra3"),  # STBY   (RA3)
+        (f"{CONTROL_GPSIM_PROCESSOR}.porta4", "stim_ra4"),  # RIGHT  (RA4)
+        (f"{CONTROL_GPSIM_PROCESSOR}.portc0", "stim_rc0"),  # UP     (RC0)
+        (f"{CONTROL_GPSIM_PROCESSOR}.portc5", "stim_rc5"),  # LEFT   (RC5)
     ]
 
     def __init__(
@@ -372,19 +381,19 @@ class GpsimControlHarness:
         heartbeat_rx_mode: str = "full",
         heartbeat_force_connected: bool = False,
         heartbeat_reset_idle: bool = True,
+        disable_standby_check: bool = True,
     ) -> None:
-        if shutil.which("gpsim") is None:
-            raise RuntimeError("gpsim not found in PATH")
-
         if control_hex is None:
             control_hex = CONTROL_HEX_PATCHED
 
+        self._gpsim_bin = require_gpsim_binary()
         self.chunk_cycles = chunk_cycles
         self.hold_cycles = hold_cycles
         self._eeprom_file = eeprom_file
         self._heartbeat_rx_mode = heartbeat_rx_mode
         self._heartbeat_force_connected = heartbeat_force_connected
         self._heartbeat_reset_idle = heartbeat_reset_idle
+        self._disable_standby_check = disable_standby_check
         if self._heartbeat_rx_mode not in {"full", "connected_only", "none"}:
             raise ValueError(
                 "heartbeat_rx_mode must be one of: 'full', 'connected_only', 'none'"
@@ -398,10 +407,11 @@ class GpsimControlHarness:
         manifests = [control_reset_to_appstart()]
         if fast_boot:
             manifests.append(control_disable_boot_wait())
-        manifests.append(control_disable_standby_check_for_hex(control_hex))
+        if self._disable_standby_check:
+            manifests.append(control_disable_standby_check_for_hex(control_hex))
         apply_overlays(control_hex, self.sim_hex, manifests=manifests)
 
-        self._gpsim = _CliSession()
+        self._gpsim = _CliSession(self._gpsim_bin)
         self._issue = lambda c, t=10.0: self._gpsim.cmd(c, timeout_s=t)
 
         self._decoder = _LogDecoder()
@@ -409,6 +419,7 @@ class GpsimControlHarness:
         self._prev_active: set[str] = set()
 
         # Heartbeat model state
+        self._heartbeat_enabled = True
         self._waiting_entered = False
         self._heartbeat_active = False
         self._heartbeat_step = 0
@@ -416,7 +427,7 @@ class GpsimControlHarness:
         self._boot()
 
     def _boot(self) -> None:
-        self._issue("processor p18f2550", 5.0)
+        self._issue(f"processor {CONTROL_GPSIM_PROCESSOR}", 5.0)
         self._issue(f"load {self.sim_hex}", 10.0)
         self._issue(f"frequency {CONTROL_FOSC_HZ}", 5.0)
 
@@ -442,7 +453,7 @@ class GpsimControlHarness:
 
         mem = parse_intel_hex(path)
         # Prefer gpsim's native EEPROM loader for fidelity and speed.
-        out = self._issue(f"load e p18f2550 {path}", 10.0)
+        out = self._issue(f"load e {CONTROL_GPSIM_PROCESSOR} {path}", 10.0)
         lowered = out.lower()
         if "index" not in lowered and "error" not in lowered and "failed" not in lowered:
             return
@@ -510,6 +521,8 @@ class GpsimControlHarness:
         Without this, the firmware times out and re-enters the RECONNECT
         loop within a single chunk, showing 'Waiting for DLCP'.
         """
+        if not self._heartbeat_enabled:
+            return
         if self._heartbeat_active:
             self._heartbeat_step += 1
             cur = _read_reg(self._issue, 0x01F)
@@ -530,6 +543,8 @@ class GpsimControlHarness:
         - connected_only: inject only BF/03/01 (set CONNECTED)
         - none: no serial RX injection
         """
+        if not self._heartbeat_enabled:
+            return
         if self._heartbeat_active and (self._heartbeat_step % _HEARTBEAT_BF_INTERVAL == 0):
             if self._heartbeat_rx_mode == "full":
                 # Full MAIN status response: function_050 sends 5 frames.
@@ -557,6 +572,8 @@ class GpsimControlHarness:
         = 0x80) so we know the firmware has passed the boot screen and
         is actively processing serial data.
         """
+        if not self._heartbeat_enabled:
+            return
         if self._heartbeat_active:
             return
         if not self._waiting_entered:
@@ -624,6 +641,14 @@ class GpsimControlHarness:
                     self._heartbeat_post_step()
                 break
 
+    def pause_heartbeat(self) -> None:
+        """Disable synthetic MAIN assistance while keeping current sim state."""
+        self._heartbeat_enabled = False
+
+    def resume_heartbeat(self) -> None:
+        """Re-enable synthetic MAIN assistance after a deliberate blackout."""
+        self._heartbeat_enabled = True
+
     def press(self, key: str) -> None:
         """Schedule a button press.
 
@@ -663,6 +688,44 @@ class GpsimControlHarness:
     def read_reg(self, addr: int) -> int:
         """Read a single RAM/SFR register."""
         return _read_reg(self._issue, addr)
+
+    def inject_bytes(self, data: List[int]) -> bool:
+        """Inject raw bytes into the CONTROL RX ring buffer."""
+        return self._inject_rx_bytes(list(data))
+
+    def inject_triplet(self, frame: TxTriplet) -> bool:
+        """Inject one route/cmd/data triplet into the CONTROL RX ring buffer."""
+        return self._inject_rx_bytes([frame.route, frame.cmd, frame.data])
+
+    def inject_frames_fifo(
+        self, frames: List[List[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        """Inject complete frames with frame-aligned overrun semantics.
+
+        Each frame is a list of bytes (typically 3: route, cmd, data).
+        A frame is either fully delivered or fully dropped.
+
+        Returns (delivered_bytes, overrun_bytes).
+        """
+        rd = _read_reg(self._issue, 0x098)
+        wr = _read_reg(self._issue, 0x099)
+        delivered = 0
+        overruns = 0
+        limit = min(max(1, fifo_limit), 47)
+        for frame in frames:
+            used = (wr - rd) % 0x30
+            free = limit - used
+            if free < len(frame):
+                overruns += len(frame)
+                continue
+            for b in frame:
+                addr = 0x066 + (wr % 0x30)
+                self._issue(f"reg(0x{addr:03X})=0x{b & 0xFF:02X}", 5.0)
+                wr = (wr + 1) % 0x30
+                delivered += 1
+        if delivered > 0:
+            self._issue(f"reg(0x099)=0x{wr:02X}", 5.0)
+        return delivered, overruns
 
     def inject_host_commands(
         self,

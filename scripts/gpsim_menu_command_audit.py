@@ -25,12 +25,14 @@ from typing import Dict, Iterable, List, Sequence
 import _bootstrap
 
 from dlcp_fw.sim.hexio import parse_intel_hex, write_intel_hex
+from dlcp_fw.sim.gpsim import gpsim_available, require_gpsim_binary
 from dlcp_fw.sim.lcd import LcdState, decode_lcd_bytes
 from dlcp_fw.sim.manifests import control_disable_boot_wait, control_reset_to_appstart
 from dlcp_fw.sim.overlay import apply_overlays
 from dlcp_fw.paths import PATCHED_CONTROL_HEX, SIM_ARTIFACTS_DIR, STOCK_CONTROL_HEX_V14
 
 ROOT = _bootstrap.REPO_ROOT
+CONTROL_GPSIM_PROCESSOR = "p18f25k20"
 
 
 KEY_PIN: Dict[str, int] = {
@@ -44,8 +46,8 @@ KEY_PIN: Dict[str, int] = {
 
 HOOK_ORG = 0x7400
 HOOK_ASM = f"""
-LIST P=18F2550
-#include <p18f2550.inc>
+LIST P=18F25K20
+#include <p18f25k20.inc>
 
 org 0x044A
     goto sim_function_019
@@ -96,7 +98,7 @@ class GpsimScenarioResult:
 
 
 def _require_tools() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         raise RuntimeError("gpsim not found in PATH")
     if shutil.which("gpasm") is None:
         raise RuntimeError("gpasm not found in PATH")
@@ -115,7 +117,7 @@ def _build_sim_hex(src_hex: Path, out_hex: Path, gpasm: str) -> None:
         patch_hex = td_path / "hook.hex"
         asm.write_text(HOOK_ASM, encoding="ascii")
         subprocess.run(
-            [gpasm, "-p18f2550", "-o", str(patch_hex), str(asm)],
+            [gpasm, "-p18f25k20", "-o", str(patch_hex), str(asm)],
             check=True,
             capture_output=True,
             text=True,
@@ -186,7 +188,7 @@ def _scenario(
     stc = out_dir / "run.stc"
     log_path = out_dir / "gpsim.log"
     lines = [
-        "processor p18f2550",
+        f"processor {CONTROL_GPSIM_PROCESSOR}",
         f"load {sim_hex}",
     ]
     for idx, pin in enumerate(sorted(per_pin)):
@@ -221,9 +223,10 @@ def _scenario(
         ]
     )
     stc.write_text("\n".join(lines), encoding="ascii")
+    gpsim_bin = require_gpsim_binary()
 
     cp = subprocess.run(
-        ["gpsim", "-i", "-c", str(stc)],
+        [gpsim_bin, "-i", "-c", str(stc)],
         text=True,
         capture_output=True,
         check=False,

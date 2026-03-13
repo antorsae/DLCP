@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.main_model import MainUnitModel
 from dlcp_fw.sim.protocol import SerialFrame
@@ -19,7 +19,7 @@ STEP_COUNT = 12
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 

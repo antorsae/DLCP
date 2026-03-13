@@ -6,9 +6,10 @@
 - In `disasm/gpdasm_output.asm`, command decode around `0x1E48..0x1E6A` includes an existing handler branch for `0x1F`.
 - Preset patch uses new command `0x20` specifically to avoid collision.
 
-2. **Main MCU target should be treated as `PIC18F2550` (32KB), not `18F2455` (24KB).**
-- Firmware occupies high app addresses up to `0x5FFF` and uses bootloader/application layout consistent with 32KB part.
-- Patch builder updated to assemble for `18F2550`.
+2. **Main MCU physical target is `PIC18F2455`, not `PIC18F2550`.**
+- Physical inspection confirms the MAIN board MCU is `PIC18F2455`.
+- The earlier temporary switch to `PIC18F2550` was a tooling assumption, not a hardware confirmation.
+- The MAIN patch remains valid because the patch uses shared `18F2455/2550` SFR/config layouts relevant to the current hooks.
 
 3. **Control firmware `function_036` original `0x1E` data path is not a clean A/B channel already.**
 - Original code at `0x0C72` transmits cmd `0x1E`.
@@ -23,6 +24,12 @@
 - Example: `dsp_comm_analysis.py` prints speculative DSP guesses inconsistent with known TAS3108 hardware.
 - Example: several scripts infer semantics from pattern-matching without validating against control-flow.
 - Disassembly-level verification should remain primary.
+
+6. **Control MCU physical target is `PIC18F25K20`, not `PIC18F2550`.**
+- Physical inspection confirms the CONTROL board MCU is `PIC18F25K20`.
+- Earlier CONTROL disassembly labels in the `0xF6C..0xF7F` range were therefore interpreted with the wrong SFR names.
+- CONTROL patch builders are now retargeted to `PIC18F25K20`.
+- The repo-local `gpsim-xtc` fork now supports `p18f25k20`, so current CONTROL gpsim runs can use the real target. Older surrogate-model results should be treated as historical.
 
 ## Verified Technical Baselines
 
@@ -42,4 +49,3 @@
 - Validation:
   - `tools/verify_presets_ab.py`
   - `tools/sim_presets_ab.py`
-

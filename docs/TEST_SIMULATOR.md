@@ -41,8 +41,8 @@ Required:
 
 - `python3`
 - `gpasm` (for firmware patch build, not required for every test run)
-- repo-local `artifacts/tools/gpsim-xtc/bin/gpsim-xtc` (tests also see the
-  compatibility shim `artifacts/tools/gpsim-xtc/bin/gpsim`)
+- repo-local `scripts/gpsim-xtc` (tests also see the compatibility shim
+  `scripts/gpsim`)
 - `pytest` (test runner)
 
 Optional:

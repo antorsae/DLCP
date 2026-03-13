@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+build_dir="${repo_root}/artifacts/tools/gpsim-xtc/build"
+gpsim_wrapper="${build_dir}/gpsim/gpsim"
+module_dir="${build_dir}/modules/.libs"
+
+if [[ ! -x "${gpsim_wrapper}" ]]; then
+  echo "gpsim-xtc: missing build wrapper at ${gpsim_wrapper}" >&2
+  exit 1
+fi
+
+if [[ -d "${module_dir}" ]]; then
+  export GPSIM_MODULE_PATH="${module_dir}${GPSIM_MODULE_PATH:+:${GPSIM_MODULE_PATH}}"
+fi
+
+exec "${gpsim_wrapper}" "$@"

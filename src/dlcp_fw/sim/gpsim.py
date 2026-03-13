@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
+
+from dlcp_fw.paths import GPSIM_XTC_BINARY
 
 
 class GpsimError(RuntimeError):
@@ -16,6 +20,7 @@ class GpsimError(RuntimeError):
 class GpsimRunConfig:
     hex_path: Path
     cycles: int
+    processor: str = "p18f25k20"
     watch_writes: Sequence[str] = field(
         default_factory=lambda: ("porta", "portb", "trisa", "trisb", "lata", "latb")
     )
@@ -35,9 +40,45 @@ class GpsimRunResult:
         return self.stdout + self.stderr
 
 
+def resolve_gpsim_binary(*, required: bool = False) -> str | None:
+    candidates: list[str] = []
+    for env_name in ("DLCP_GPSIM_BIN", "GPSIM_BIN"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            candidates.append(env_value)
+    candidates.append(str(GPSIM_XTC_BINARY))
+    for name in ("gpsim-xtc", "gpsim"):
+        resolved = shutil.which(name)
+        if resolved:
+            candidates.append(resolved)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if Path(candidate).exists() or shutil.which(candidate):
+            return candidate
+
+    if required:
+        raise RuntimeError(
+            "gpsim executable not found; use scripts/gpsim-xtc "
+            "or set DLCP_GPSIM_BIN"
+        )
+    return None
+
+
+def gpsim_available() -> bool:
+    return resolve_gpsim_binary() is not None
+
+
+def require_gpsim_binary() -> str:
+    return resolve_gpsim_binary(required=True) or ""
+
+
 def _build_script(cfg: GpsimRunConfig, stc_path: Path, log_path: Path) -> None:
     lines = [
-        "processor p18f2550",
+        f"processor {cfg.processor}",
         f"load {cfg.hex_path}",
         f"log on {log_path}",
     ]
@@ -64,9 +105,10 @@ def run_gpsim(cfg: GpsimRunConfig, out_dir: Path) -> GpsimRunResult:
     log_path = out_dir / "gpsim.log"
     cli_path = out_dir / "gpsim_cli.txt"
     _build_script(cfg, stc, log_path)
+    gpsim_bin = require_gpsim_binary()
 
     cp = subprocess.run(
-        ["gpsim", "-i", "-c", str(stc)],
+        [gpsim_bin, "-i", "-c", str(stc)],
         text=True,
         capture_output=True,
         check=False,
