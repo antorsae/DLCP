@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-03-11
+Last updated: 2026-03-12
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -51,9 +51,12 @@ analysis/
 │   └── cli/
 ├── scripts/
 ├── tests/sim/
+├── vendor/
+│   └── gpsim-0.32.1-xtc/
 ├── artifacts/
 │   ├── sim/current/
 │   ├── reanalysis/
+│   ├── tools/gpsim-xtc/
 │   └── probes/
 └── dlcp_fw/            # namespace bootstrap package
 ```
@@ -68,7 +71,9 @@ Use these locations only:
 - Disassembly: `firmware/disasm/...`
 - PC reverse-engineering artifacts: `firmware/disasm/PC/...`
 - Binary dumps: `firmware/dumps/...`
+- Local third-party source forks: `vendor/...`
 - Generated runtime/test artifacts: `artifacts/sim/current/...`
+- Local tool builds/wrappers: `artifacts/tools/...`
 - Python package code: `src/dlcp_fw/...`
 - CLI entry scripts: `scripts/...`
 
@@ -111,7 +116,8 @@ Use these locations only:
 ### Dumps and references
 
 - Dumps: `firmware/dumps/{firmware.bin,code_only.bin,eeprom.bin,dlcp_flash_0800_7fff.bin,dlcp_probe_1000.bin}`
-- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,DLCP-manual-R3.pdf,tas3108.pdf,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.txt}`
+- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,DLCP-manual-R3.pdf,tas3108.pdf,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md}`
+  - For the PIC18F2455 datasheet, `39632e.pdf` is authoritative. Use `39632e.md` as the line-stable converted companion for repo citations.
 
 ## Source Code Map (`src/dlcp_fw`)
 
@@ -119,6 +125,8 @@ Use these locations only:
 
 Canonical constants used across scripts/tests:
 
+- `VENDOR_DIR`
+- `TOOLS_ARTIFACTS_DIR`
 - `STOCK_MAIN_HEX`
 - `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`
 - `STOCK_MAIN_DUMP_TABLE`
@@ -134,13 +142,21 @@ Canonical constants used across scripts/tests:
 - `PATCHED_CONTROL_HEX`
 - `PATCHED_CONTROL_HEX_V162B`
 - `SIM_ARTIFACTS_DIR`
+- `GPSIM_XTC_SOURCE_DIR`
+- `GPSIM_XTC_ARTIFACTS_DIR`
+- `GPSIM_XTC_BUILD_DIR`
+- `GPSIM_XTC_BIN_DIR`
+- `GPSIM_XTC_BINARY`
+- `GPSIM_XTC_COMPAT_BINARY`
+- `GPSIM_XTC_BUILD_BINARY`
+- `GPSIM_XTC_MODULE_DIR`
 
 Always prefer these constants over hardcoded paths.
 
 ### Simulation package (`src/dlcp_fw/sim`)
 
 - Core: `bus.py`, `protocol.py`, `scenarios.py`, `main_model.py`, `control_ui.py`
-- gpsim harness: `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `chain_gpsim.py`, `gpsim.py`
+- gpsim harness: `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `chain_gpsim.py`, `wire_chain_gpsim.py`, `gpsim.py`
 - support: `hexio.py`, `lcd.py`, `overlay.py`, `manifests.py`, `paths.py`
 
 ### Patch package (`src/dlcp_fw/patch`)
@@ -169,6 +185,8 @@ Contains migrated analysis scripts and utilities including:
 
 ### Canonical (new)
 
+- `scripts/gpsim-xtc`
+- `scripts/gpsim`
 - `scripts/simctl.py`
 - `scripts/gpsim_tui_simulator.py`
 - `scripts/gpsim_menu_command_audit.py`
@@ -188,6 +206,7 @@ Current suite includes:
 - Overlay/patch integrity: `test_overlay_engine.py`, `test_patch_compatibility.py`, `test_verify_presets_ab_*semantic_guards.py`
 - Robustness/waiting regression: `test_robustness_waiting.py`
 - Chain WAITING regression: `test_chain_gpsim_waiting.py`
+- Wire UART smoke regression: `test_wire_chain_gpsim.py`
 - Raw-main V2.5 chain characterization: `test_chain_gpsim_v25_recovery.py`
 - Raw-main V2.5 + V1.62b recovery: `test_chain_gpsim_v25_v162b_recovery.py`
 - MAIN V2.5 timeout probe: `test_main_v25_timeout_recovery.py`
@@ -224,6 +243,8 @@ Deep analysis docs:
 - `docs/analysis/HFD_v2.12-codex.md`
 - `docs/analysis/HFD_v2.12-RL-binary-patch-plan.md`
 - `docs/analysis/HFD_v4.97-codex.md`
+- `docs/analysis/GPSIM_18F25K20_PORT_PLAN.md`
+- `docs/analysis/GPSIM_MAIN_TIMER3_GAP_HANDOFF_PROMPT.md`
 - `docs/analysis/MAIN_AN0_STANDBY_TRACE.md`
 - `docs/analysis/MAIN_CLOCK_TIMING.md`
 - `docs/analysis/PIN_SEMANTICS.md`
@@ -244,6 +265,7 @@ Generated/ephemeral (ignored):
 
 - `artifacts/sim/current/...`
 - `artifacts/probes/...`
+- `artifacts/tools/gpsim-xtc/...`
 - `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `.venv*`, etc.
 
 ## Common Commands
@@ -263,6 +285,24 @@ Combine stock V2.3 main export fragments:
 
 ```bash
 python3 scripts/word_dump_to_ihex.py combine-v23-main-exports
+```
+
+Configure/build local gpsim fork:
+
+```bash
+mkdir -p artifacts/tools/gpsim-xtc/build
+cd artifacts/tools/gpsim-xtc/build
+env CPPFLAGS=-I/opt/homebrew/include LDFLAGS=-L/opt/homebrew/lib \
+  ../../../../vendor/gpsim-0.32.1-xtc/configure --disable-gui
+make -C src -j4 libgpsim.la
+make -C gpsim gpsim
+```
+
+Run local gpsim fork checks:
+
+```bash
+scripts/gpsim-xtc --version
+make -C vendor/gpsim-0.32.1-xtc/regression/p18f25k20 sim
 ```
 
 Run full test gate (gpsim-inclusive):

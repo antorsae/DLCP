@@ -18,7 +18,11 @@ htmlcov/
 artifacts/sim/current/
 artifacts/reanalysis/
 artifacts/probes/
+artifacts/tools/gpsim-xtc/
 
 sim_artifacts/
 tmp_gpsim_lcd_capture/
 *.stage*.hex
+
+# MPLAB X project folders generated alongside firmware images
+firmware/**/*.X/
