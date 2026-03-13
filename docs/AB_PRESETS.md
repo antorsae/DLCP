@@ -2,18 +2,25 @@
 
 Reliability-first A/B preset patches for:
 
-- MAIN `V2.3` stock -> patched `V2.4`
+- MAIN `V2.3` stock -> patched `V2.5`
 - CONTROL `V1.4` stock -> patched `V1.41`
 - CONTROL `V1.5b` stock -> patched `V1.51b`
-- CONTROL `V1.6b` stock -> patched `V1.61b`
+- CONTROL `V1.6b` stock -> patched `V1.61b` / `V1.62b`
 
 ## Status
 
 Current design status:
 
 - Working in the current test gate.
-- Full gpsim-inclusive suite passes: `211 passed`.
-- Full collect-only count: `211 tests collected`.
+- 2026-03-10 correction: the first `V2.5` MAIN artifact had a bad MSSP-idle wait helper and could strand real hardware before CONTROL ever left `WAITING FOR DLCP`; the current repo copy of `DLCP_Firmware_V2.5.hex` has been rebuilt with the fixed wait logic.
+- Current targeted `V1.62b` verification:
+  - `python3 -m dlcp_fw.patch.build_control_presets_ab_v162b`
+  - `python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v162b`
+  - `.venv_ep0/bin/python -m pytest -q tests/sim/test_verify_presets_ab_v162b_semantic_guards.py tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `14 passed`
+- Full collect-only count: `236 tests collected`.
+- `V2.5` keeps the `V2.4` A/B preset behavior and adds bounded UART/MSSP recovery in MAIN.
+- `V2.5` is intended to remain wire-compatible with current CONTROL `V1.61b`.
+- `V1.62b` keeps the `V1.61b` A/B preset behavior and adds CONTROL-side reconnect/parser hardening for `V2.5`.
 - `V1.61b` includes and preserves the real-hardware fix for the stale Setup LCD garbage issue.
 - Real-hardware confirmation: `DLCP_Firmware_V2.4.hex` + `DLCP_Control_V1.61b.hex` was flashed and verified working on a real unit.
 
@@ -144,11 +151,11 @@ Important stock behavior preserved:
 Version policy:
 
 - EEPROM tuple remains stock-style `2.30` at `0xF00080..0xF00082`
-- USB-visible application version is patched to `2.4`
+- USB-visible application version is patched to `2.5`
 
-## CONTROL Patch (`V1.41`, `V1.51b`, `V1.61b`)
+## CONTROL Patch (`V1.41`, `V1.51b`, `V1.61b`, `V1.62b`)
 
-Common design across all three CONTROL ports:
+Common design across all four CONTROL ports:
 
 - add `Preset` as top-level menu state `1`
 - keep `Volume`, `Input`, `Setup`
@@ -204,6 +211,22 @@ Key hook points:
 | Full-sync hook | `0x0B36` | Emit one queued preset retry per cycle, then continue stock `V1.6b` full-sync flow |
 | IR hook | `0x0DE6` | Add F1/F2 preset shortcuts before stock IR path |
 | TX helper target | `0x05EC` | Stock serial TX byte helper used by preset sender |
+
+### CONTROL `V1.62b`
+
+`V1.62b` keeps the `V1.61b` A/B preset hooks and adds CONTROL-side reconnect robustness intended for `MAIN V2.5`.
+
+Additional hook points:
+
+| Component | Address | Purpose |
+|---|---:|---|
+| Parser entry hook | `0x044A` | Recover UART/parser state on RX overrun before continuing stock parser flow |
+| Wake reconnect hook | `0x12BC` | Replace the stock `B1 04 00` forever loop with a stronger status handshake plus periodic UART/parser re-prime |
+
+Observed simulated effect:
+
+- `V2.5 + V1.61b` can still strand CONTROL in `WAITING FOR DLCP` after a wake-side MAIN fault.
+- `V2.5 + V1.62b` reaches `WAITING FOR DLCP`, then leaves it and returns to normal display once the transient MAIN fault is cleared.
 
 ## `V1.61b` Setup LCD Garbage Fix
 
@@ -272,6 +295,7 @@ python3 -m dlcp_fw.patch.build_main_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
+python3 -m dlcp_fw.patch.build_control_presets_ab_v162b
 ```
 
 Run static verification:
@@ -280,6 +304,7 @@ Run static verification:
 python3 -m dlcp_fw.patch.verify_presets_ab
 python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v151b --control-profile v15b
 python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v161b --control-profile v16b
+python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v162b
 ```
 
 Run full gpsim-inclusive test gate:
@@ -289,10 +314,10 @@ Run full gpsim-inclusive test gate:
 .venv_ep0/bin/python -m pytest -q tests/sim --collect-only
 ```
 
-Current result:
+Current targeted result:
 
-- `211 passed`
-- `211 tests collected`
+- `tests/sim/test_verify_presets_ab_v162b_semantic_guards.py` + `tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `14 passed`
+- `tests/sim --collect-only` -> `236 tests collected`
 
 ## Test Coverage Summary
 
@@ -311,6 +336,7 @@ Key coverage for the simplified design:
 | CONTROL EEPROM isolation for preset toggles | `tests/sim/test_control_gpsim_preset_eeprom_diff.py` |
 | `V1.51b` stock-delta preservation | `tests/sim/test_control_v15b_port_compatibility.py` |
 | `V1.61b` stock-delta preservation + setup-fix migration | `tests/sim/test_control_v16b_port_compatibility.py` |
+| `V1.62b` reconnect/parser hardening | `tests/sim/test_chain_gpsim_v25_v162b_recovery.py`, `tests/sim/test_verify_presets_ab_v162b_semantic_guards.py` |
 | Static semantic guards on all patched profiles | `tests/sim/test_verify_presets_ab_semantic_guards.py`, `tests/sim/test_verify_presets_ab_v15b_semantic_guards.py`, `tests/sim/test_verify_presets_ab_v16b_semantic_guards.py` |
 
 ## Flashing Notes
@@ -329,10 +355,11 @@ Practical order:
 
 Relevant release files:
 
-- `firmware/patched/releases/DLCP_Firmware_V2.4.hex`
+- `firmware/patched/releases/DLCP_Firmware_V2.5.hex`
 - `firmware/patched/releases/DLCP_Control_V1.41.hex`
 - `firmware/patched/releases/DLCP_Control_V1.51b.hex`
 - `firmware/patched/releases/DLCP_Control_V1.61b.hex`
+- `firmware/patched/releases/DLCP_Control_V1.62b.hex`
 
 Bench-verified pair:
 

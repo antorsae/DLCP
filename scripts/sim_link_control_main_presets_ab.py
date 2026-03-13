@@ -172,18 +172,23 @@ class CurrentLoopBusSim:
 
 def verify_patch_compat(main_mem: Dict[int, int], control_mem: Dict[int, int]) -> None:
     main_checks = {
-        0x1E64: 0x90,  # goto 0x5520 hook
-        0x2E6E: 0x20,  # goto 0x5440 hook
-        0x3DAC: 0x60,  # goto 0x54C0 hook
-        0x4028: 0x00,  # goto 0x5400 hook
-        0x5536: 0x20,  # xorlw 0x20 in cmd_tail_patch
+        0x1E64: {0x80, 0x90, 0x60},  # Legacy V2.4/V2.5 preset hook entry variants.
+        0x2E6E: {0x20},
+        0x3DAC: {0x60, 0x34},  # V2.4 or V2.5 cmd tail hook entry.
+        0x4028: {0x00},
     }
-    for addr, want in main_checks.items():
+    for addr, allowed in main_checks.items():
         got = main_mem.get(addr, 0xFF)
-        if got != want:
+        if got not in allowed:
+            want = ", ".join(f"0x{v:02X}" for v in sorted(allowed))
             raise RuntimeError(
-                f"main hex compatibility check failed at 0x{addr:04X}: got 0x{got:02X}, want 0x{want:02X}"
+                f"main hex compatibility check failed at 0x{addr:04X}: got 0x{got:02X}, want one of [{want}]"
             )
+    if not any(
+        main_mem.get(a, 0xFF) == 0x20 and main_mem.get(a + 1, 0xFF) == 0x0A
+        for a in range(0x54C0, 0x5600)
+    ):
+        raise RuntimeError("main hex compatibility check failed: missing cmd-tail xorlw 0x20 literal")
 
     control_checks = {
         0x0B53: 0xEF,  # goto full_sync_entry_stub (periodic preset resync hook)

@@ -12,6 +12,7 @@ from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX,
     PATCHED_CONTROL_HEX_V151B,
     PATCHED_CONTROL_HEX_V161B,
+    PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX,
     STOCK_CONTROL_HEX_V14,
     STOCK_CONTROL_HEX_V15B,
@@ -115,6 +116,33 @@ CONTROL_V16B = ControlProfile(
     setup_fix_required=True,
 )
 
+CONTROL_V162B = ControlProfile(
+    name="v162b",
+    startup_init=0x10B2,
+    startup_hook=0x111C,
+    version_literal=0x1152,
+    version_literal_byte=0x3D,
+    nav_right=0x1216,
+    nav_left=0x123A,
+    setup_index_fix=0x1406,
+    input_index_fix=0x191A,
+    dispatch_hook=0x11F0,
+    volume_hook=0x137A,
+    full_sync_hook=0x0B36,
+    ir_hook=0x0DE6,
+    parser_site=0x05D0,
+    parser_expected=(0x1D, 0x0E),
+    stock_ir_target=0x0DEC,
+    version_tuple=(0x01, 0x06, 0x32),
+    volume_header_addr=0x100C,
+    volume_header_text="Volume:         ",
+    usb_guard_addr=0x1000,
+    setup_fix_required=True,
+)
+
+CONTROL_STUB_LO = 0x7000
+CONTROL_STUB_HI = 0x7400
+
 
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
     mem: Dict[int, int] = {}
@@ -196,10 +224,15 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
             raise RuntimeError(f"main table copy mismatch at +0x{i:03X}: A=0x{a:02X} B=0x{b:02X}")
 
     main_hooks = {
-        0x1E64: 0x5500,
+        0x1E64: 0x54C0,
         0x2E6E: 0x5440,
-        0x3DAC: 0x54C0,
+        0x3DAC: 0x5468,
+        0x3E68: 0x4970,
         0x4028: 0x5400,
+        0x4368: 0x4982,
+        0x46BA: 0x4998,
+        0x4896: 0x49AE,
+        0x48B6: 0x542A,
     }
     for addr, want in main_hooks.items():
         got = _decode_goto_target(main_new, addr, label="main hook")
@@ -214,14 +247,18 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
         if new != orig:
             raise RuntimeError(f"main stock cmd03 path unexpectedly changed at 0x{addr:04X}")
 
+    for addr in range(0x6000, 0x8000):
+        if main_new.get(addr, 0xFF) != main_orig.get(addr, 0xFF):
+            raise RuntimeError(f"main patch writes beyond PIC18F2455 program space at 0x{addr:04X}")
+
     for literal in (0x1D, 0x1E, 0x20):
-        if _find_seq(main_new, [literal, 0x0A], lo=0x5500, hi=0x5560) is None:
+        if _find_seq(main_new, [literal, 0x0A], lo=0x54C0, hi=0x5510) is None:
             raise RuntimeError(f"main cmd-tail missing xorlw 0x{literal:02X}")
     for literal in (0x21, 0x22):
-        if _find_seq(main_new, [literal, 0x0A], lo=0x5500, hi=0x5560) is not None:
+        if _find_seq(main_new, [literal, 0x0A], lo=0x54C0, hi=0x5510) is not None:
             raise RuntimeError(f"main cmd-tail still contains removed xorlw 0x{literal:02X}")
 
-    if _count_seq(main_new, [0xBA, 0xEC, 0x22, 0xF0], lo=0x5500, hi=0x5560) < 2:
+    if _count_seq(main_new, [0xBA, 0xEC, 0x22, 0xF0], lo=0x54C0, hi=0x5510) < 2:
         raise RuntimeError("main cmd-tail missing dual apply calls for cmd=0x20")
 
     main_ver = [main_new.get(a, 0xFF) for a in (0xF00080, 0xF00081, 0xF00082)]
@@ -237,9 +274,57 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
 
     _expect_bytes(
         main_new,
-        {0x240C: 0x03, 0x2412: 0x02, 0x2416: 0x04},
+        {0x240C: 0x03, 0x2412: 0x02, 0x2416: 0x05},
         label="main USB version literal",
     )
+
+    if _count_seq(main_new, [0x00, 0x0E, 0x0B, 0x6E, 0x10, 0x0E, 0x0C, 0x6E], lo=0x5500, hi=0x55A0) < 6:
+        raise RuntimeError("main robustness patch missing timeout seed helpers")
+    if _find_seq(main_new, [0xD9, 0xEC, 0x23, 0xF0], lo=0x54AE, hi=0x54B8) is None:
+        raise RuntimeError("main robustness patch missing MSSP reinit helper call")
+    if _find_seq(main_new, [0x6A, 0xEF, 0x24, 0xF0], lo=0x49C8, hi=0x49CE) is None:
+        raise RuntimeError("main robustness patch missing hard-reset trampoline to 0x48D4")
+    if (
+        _find_seq(
+            main_new,
+            [
+                0xC5,
+                0xCF,
+                0x03,
+                0xF0,
+                0x1F,
+                0x0E,
+                0x03,
+                0x14,
+                0xD8,
+                0xA4,
+                0x03,
+                0xD0,
+                0xC7,
+                0xB4,
+                0x01,
+                0xD0,
+                0x05,
+                0xD0,
+                0x0B,
+                0x2E,
+                0xF5,
+                0xD7,
+                0x0C,
+                0x2E,
+                0xF3,
+                0xD7,
+                0x02,
+                0xD0,
+                0xD8,
+                0x90,
+            ],
+            lo=0x5576,
+            hi=0x5594,
+        )
+        is None
+    ):
+        raise RuntimeError("main robustness patch missing packed MSSP idle wait logic")
 
 
 def _check_control_profile(
@@ -271,19 +356,19 @@ def _check_control_profile(
     )
 
     boot_target = _decode_call_target(control_new, profile.startup_hook, label="control startup hook")
-    if not (0x7000 <= boot_target < 0x7300):
+    if not (CONTROL_STUB_LO <= boot_target < CONTROL_STUB_HI):
         raise RuntimeError(f"control startup hook target out of stub range: 0x{boot_target:04X}")
 
     dispatch_target = _decode_goto_target(control_new, profile.dispatch_hook, label="control dispatch hook")
-    if not (0x7000 <= dispatch_target < 0x7300):
+    if not (CONTROL_STUB_LO <= dispatch_target < CONTROL_STUB_HI):
         raise RuntimeError(f"control dispatch hook target out of stub range: 0x{dispatch_target:04X}")
 
     volume_target = _decode_goto_target(control_new, profile.volume_hook, label="control volume hook")
-    if not (0x7000 <= volume_target < 0x7300):
+    if not (CONTROL_STUB_LO <= volume_target < CONTROL_STUB_HI):
         raise RuntimeError(f"control volume hook target out of stub range: 0x{volume_target:04X}")
 
     full_sync_target = _decode_goto_target(control_new, profile.full_sync_hook, label="control full-sync hook")
-    if not (0x7000 <= full_sync_target < 0x7300):
+    if not (CONTROL_STUB_LO <= full_sync_target < CONTROL_STUB_HI):
         raise RuntimeError(f"control full-sync hook target out of stub range: 0x{full_sync_target:04X}")
 
     ir_target = _decode_goto_target(control_new, profile.ir_hook, label="control IR dispatch hook")
@@ -291,7 +376,7 @@ def _check_control_profile(
         raise RuntimeError(
             f"control IR dispatch hook target drifted to stock target (0x{profile.stock_ir_target:04X})"
         )
-    if not (0x7000 <= ir_target < 0x7300):
+    if not (CONTROL_STUB_LO <= ir_target < CONTROL_STUB_HI):
         raise RuntimeError(f"control IR dispatch hook target out of stub range: 0x{ir_target:04X}")
 
     parser_bytes = [control_new.get(profile.parser_site + i, 0xFF) for i in range(2)]
@@ -300,36 +385,36 @@ def _check_control_profile(
             f"control parser site drift at 0x{profile.parser_site:04X}: got {parser_bytes}, want {list(profile.parser_expected)}"
         )
 
-    if _find_seq(control_new, [0x74, 0x0E, 0xA9, 0x6E], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x74, 0x0E, 0xA9, 0x6E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control stub missing EEPROM[0x74] preset persistence")
-    if _find_seq(control_new, [0x73, 0x0E, 0xA9, 0x6E], lo=0x7000, hi=0x7300) is not None:
+    if _find_seq(control_new, [0x73, 0x0E, 0xA9, 0x6E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is not None:
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x73]")
-    if _find_seq(control_new, [0x72, 0x0E, 0xA9, 0x6E], lo=0x7000, hi=0x7300) is not None:
+    if _find_seq(control_new, [0x72, 0x0E, 0xA9, 0x6E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is not None:
         raise RuntimeError("control stub still writes preset persistence to EEPROM[0x72]")
 
-    if _find_seq(control_new, [0xB0, 0x0E], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0xB0, 0x0E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control stub missing route=0xB0 sender")
-    if _find_seq(control_new, [0x20, 0x0E], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x20, 0x0E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control stub missing cmd=0x20 sender")
-    if _find_seq(control_new, [0x02, 0x0E, 0x01, 0x01, 0x70, 0x6F], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x02, 0x0E, 0x01, 0x01, 0x70, 0x6F], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control stub missing 2-retry budget seed after explicit preset change")
-    if _count_seq(control_new, [0x01, 0x01, 0x03, 0x0E, 0x70, 0x6F], lo=0x7000, hi=0x7300) < 1:
+    if _count_seq(control_new, [0x01, 0x01, 0x03, 0x0E, 0x70, 0x6F], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) < 1:
         raise RuntimeError("control stub missing 3-retry seed signature")
-    if _find_seq(control_new, [0x71, 0x6B], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x71, 0x6B], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control stub missing reconnect shadow clear (0x171)")
-    if _find_seq(control_new, [0x71, 0x6F], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x71, 0x6F], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control stub missing reconnect shadow set (0x171)")
 
-    if _find_seq(control_new, [0x38, 0x0A], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x38, 0x0A], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x38 (F1->preset A)")
-    if _find_seq(control_new, [0x39, 0x0A], lo=0x7000, hi=0x7300) is None:
+    if _find_seq(control_new, [0x39, 0x0A], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
         raise RuntimeError("control IR preset shortcut missing xorlw 0x39 (F2->preset B)")
 
-    if _find_seq(control_new, [0x21, 0x0E], lo=0x7000, hi=0x7300) is not None:
+    if _find_seq(control_new, [0x21, 0x0E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is not None:
         raise RuntimeError("control stub still contains removed filename cmd literal 0x21")
-    if _find_seq(control_new, [0x22, 0x0E], lo=0x7000, hi=0x7300) is not None:
+    if _find_seq(control_new, [0x22, 0x0E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is not None:
         raise RuntimeError("control stub still contains removed filename cmd literal 0x22")
-    if _find_seq(control_new, [0x2F, 0x0E], lo=0x7000, hi=0x7300) is not None:
+    if _find_seq(control_new, [0x2F, 0x0E], lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is not None:
         raise RuntimeError("control stub still contains removed filename context literal 0x2F")
 
     version = [control_new.get(a, 0xFF) for a in (0xF00070, 0xF00071, 0xF00072)]
@@ -347,7 +432,7 @@ def _check_control_profile(
 
     if profile.setup_fix_required:
         seq = [0xBA, 0x51, 0x06, 0xE0, 0xBA, 0x6B, 0x01, 0x0E, 0xA9, 0x6E]
-        if _find_seq(control_new, seq, lo=0x7000, hi=0x7300) is None:
+        if _find_seq(control_new, seq, lo=CONTROL_STUB_LO, hi=CONTROL_STUB_HI) is None:
             raise RuntimeError("control stale setup-index clamp signature missing")
 
     if control_orig.get(profile.nav_right, 0xFF) != 0x02:
@@ -374,6 +459,33 @@ def check_control_v16b(control_orig: Dict[int, int], control_new: Dict[int, int]
     _check_control_profile(control_orig, control_new, CONTROL_V16B)
 
 
+def check_control_v162b(control_orig: Dict[int, int], control_new: Dict[int, int]) -> None:
+    _check_control_profile(control_orig, control_new, CONTROL_V162B)
+
+    parser_entry_target = _decode_goto_target(control_new, 0x044A, label="control parser entry hook")
+    if not (CONTROL_STUB_LO <= parser_entry_target < CONTROL_STUB_HI):
+        raise RuntimeError(
+            f"control parser entry hook target out of stub range: 0x{parser_entry_target:04X}"
+        )
+
+    reconnect_target = _decode_goto_target(control_new, 0x12BC, label="control reconnect hook")
+    if not (CONTROL_STUB_LO <= reconnect_target < CONTROL_STUB_HI):
+        raise RuntimeError(
+            f"control reconnect hook target out of stub range: 0x{reconnect_target:04X}"
+        )
+
+
+def _auto_control_profile(control_orig: Dict[int, int], control_new: Dict[int, int]) -> str:
+    if control_orig.get(0x10B2, 0xFF) == 0x1F and control_orig.get(0x111C, 0xFF) == 0x23:
+        new_version = tuple(control_new.get(a, 0xFF) for a in (0xF00070, 0xF00071, 0xF00072))
+        if new_version == CONTROL_V162B.version_tuple:
+            return "v162b"
+        return "v16b"
+    if control_orig.get(0x10F6, 0xFF) == 0x1F and control_orig.get(0x1160, 0xFF) == 0x1E:
+        return "v15b"
+    return "v14"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--main-orig", type=pathlib.Path, default=STOCK_MAIN_HEX)
@@ -382,7 +494,7 @@ def main() -> int:
     ap.add_argument("--control-new", type=pathlib.Path, default=PATCHED_CONTROL_HEX)
     ap.add_argument(
         "--control-profile",
-        choices=("auto", "v14", "v15b", "v16b"),
+        choices=("auto", "v14", "v15b", "v16b", "v162b"),
         default="auto",
         help="control firmware profile for verification (default: auto)",
     )
@@ -396,6 +508,11 @@ def main() -> int:
         action="store_true",
         help="shortcut: set --control-orig to stock V1.6b and --control-new to patched V1.61b",
     )
+    ap.add_argument(
+        "--control-new-v162b",
+        action="store_true",
+        help="shortcut: set --control-orig to stock V1.6b and --control-new to patched V1.62b",
+    )
     args = ap.parse_args()
 
     if args.control_new_v151b:
@@ -404,6 +521,11 @@ def main() -> int:
     if args.control_new_v161b:
         args.control_orig = STOCK_CONTROL_HEX_V16B
         args.control_new = PATCHED_CONTROL_HEX_V161B
+        args.control_profile = "v16b"
+    if args.control_new_v162b:
+        args.control_orig = STOCK_CONTROL_HEX_V16B
+        args.control_new = PATCHED_CONTROL_HEX_V162B
+        args.control_profile = "v162b"
 
     main_orig = parse_intel_hex(args.main_orig.resolve())
     main_new = parse_intel_hex(args.main_new.resolve())
@@ -414,17 +536,14 @@ def main() -> int:
 
     profile = args.control_profile
     if profile == "auto":
-        if control_orig.get(0x10B2, 0xFF) == 0x1F and control_orig.get(0x111C, 0xFF) == 0x23:
-            profile = "v16b"
-        elif control_orig.get(0x10F6, 0xFF) == 0x1F and control_orig.get(0x1160, 0xFF) == 0x1E:
-            profile = "v15b"
-        else:
-            profile = "v14"
+        profile = _auto_control_profile(control_orig, control_new)
 
     if profile == "v14":
         check_control(control_orig, control_new)
     elif profile == "v15b":
         check_control_v15b(control_orig, control_new)
+    elif profile == "v162b":
+        check_control_v162b(control_orig, control_new)
     else:
         check_control_v16b(control_orig, control_new)
 

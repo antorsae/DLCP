@@ -26,10 +26,10 @@ def verify_patch_compat(main_hex: Path, control_hex: Path) -> None:
     main_mem = parse_intel_hex(main_hex)
     control_mem = parse_intel_hex(control_hex)
     main_checks = {
-        0x1E64: 0x80,
-        0x2E6E: 0x20,
-        0x3DAC: 0x60,
-        0x4028: 0x00,
+        0x1E64: {0x80, 0x60},  # V2.4 or V2.5 hook entry.
+        0x2E6E: {0x20},
+        0x3DAC: {0x60, 0x34},  # V2.4 or V2.5 hook entry.
+        0x4028: {0x00},
     }
     control_checks = {
         0x0B53: 0xEF,  # goto full_sync_entry_stub (periodic preset resync hook)
@@ -38,16 +38,17 @@ def verify_patch_compat(main_hex: Path, control_hex: Path) -> None:
         0x1264: 0x03,  # nav wrap RIGHT = 3 (4-screen)
         0x1288: 0x03,  # nav wrap LEFT = 3 (4-screen)
     }
-    for addr, want in main_checks.items():
+    for addr, allowed in main_checks.items():
         got = main_mem.get(addr, 0xFF)
-        if got != want:
+        if got not in allowed:
+            want = ", ".join(f"0x{v:02X}" for v in sorted(allowed))
             raise RuntimeError(
-                f"main compatibility mismatch at 0x{addr:04X}: got 0x{got:02X} want 0x{want:02X}"
+                f"main compatibility mismatch at 0x{addr:04X}: got 0x{got:02X} want one of [{want}]"
             )
-    # cmd-tail must still include xorlw 0x20 guard in 0x5500..0x55FF.
+    # cmd-tail moved from 0x5516 in V2.4 to 0x54D6 in V2.5.
     if not any(
         main_mem.get(a, 0xFF) == 0x20 and main_mem.get(a + 1, 0xFF) == 0x0A
-        for a in range(0x5500, 0x5600)
+        for a in range(0x54C0, 0x5600)
     ):
         raise RuntimeError("main compatibility mismatch: missing cmd-tail xorlw 0x20 literal")
     for addr, want in control_checks.items():
