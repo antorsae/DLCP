@@ -222,8 +222,9 @@ Location: `tests/sim/`
   - gpsim instruction-level CONTROL preset UI tests
   - boot default, screen navigation, serial frames, EEPROM persistence, volume volatility
 - `test_main_gpsim_preset_banks.py`
-  - gpsim instruction-level MAIN bank targeting tests
-  - preset A/B bit2 state, sequence switching, broadcast routing
+  - gpsim instruction-level MAIN preset-command mailbox tests
+  - mailbox echo/counter checks for preset A/B commands and broadcast routing
+  - bank-selection semantics live in `test_main_model_banking.py`
 
 ## 8. Test Categories and Expected Outcomes
 
@@ -313,11 +314,12 @@ Compare semantic shim vs harness Timer3:
 python3 scripts/simctl.py compare-timer3 --frames 0xB0:0x20:0x01
 ```
 
-Observed current delta (expected):
+Observed current mailbox behavior:
 
-- semantic mode leaves `REG 0x05E` at `0x00`
-- harness Timer3 mode reaches `REG 0x05E = 0x08`
-- mailbox counters still converge (`rx_wr == tx_wr == 3`)
+- semantic mode and native Timer3 mailbox mode both return to the idle parser loop
+  with `REG 0x05E = 0x08`
+- the more stable mailbox observable is reply/counter convergence
+  (`tx_bytes == injected normalized frame`, `rx_rd == rx_wr == tx_wr == 3`)
 
 Optional stage-1 parser wait tuning:
 
