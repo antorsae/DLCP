@@ -3,7 +3,7 @@
 
 from dlcp_fw.paths import PATCHED_MAIN_HEX, SIM_ARTIFACTS_DIR
 from dlcp_fw.sim.hexio import parse_intel_hex
-from dlcp_fw.sim.manifests import main_reset_to_appstart, main_i2c_bypass
+from dlcp_fw.sim.manifests import main_reset_to_appstart
 from dlcp_fw.sim.overlay import apply_overlays
 
 MAIN_HEX = PATCHED_MAIN_HEX
@@ -20,7 +20,7 @@ for addr in [0x0000, 0x0001, 0x0002, 0x0003,
     print(f"  0x{addr:04X}: 0x{val:02X}")
 
 # Apply overlays and check
-manifests = [main_reset_to_appstart(), main_i2c_bypass()]
+manifests = [main_reset_to_appstart()]
 results = apply_overlays(MAIN_HEX, OUT_HEX, manifests)
 for r in results:
     print(f"Overlay '{r.manifest_name}': {r.changed_bytes} bytes changed")

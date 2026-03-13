@@ -13,7 +13,7 @@ from dlcp_fw.paths import STOCK_MAIN_HEX
 from dlcp_fw.sim.gpsim import gpsim_available, require_gpsim_binary
 from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.main_gpsim import build_seeded_main_sim_hex, run_main_cmd03_dispatch_gpsim
-from dlcp_fw.sim.manifests import main_i2c_bypass, main_reset_to_appstart, main_serial_mailbox_hooks
+from dlcp_fw.sim.manifests import main_reset_to_appstart, main_serial_mailbox_hooks
 from dlcp_fw.sim.overlay import apply_overlays
 
 
@@ -133,7 +133,7 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
         apply_overlays(
             seeded_hex,
             sim_hex,
-            manifests=[main_reset_to_appstart(), main_i2c_bypass(), main_serial_mailbox_hooks()],
+            manifests=[main_reset_to_appstart(), main_serial_mailbox_hooks()],
         )
 
         data = bytes(payload[:30])

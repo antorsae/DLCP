@@ -14,7 +14,7 @@ from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
 
 from .gpsim import require_gpsim_binary
 from .hexio import parse_intel_hex, write_intel_hex
-from .manifests import main_i2c_bypass, main_reset_to_appstart, main_serial_mailbox_hooks
+from .manifests import main_reset_to_appstart, main_serial_mailbox_hooks
 from .overlay import apply_overlays
 from .paths import MAIN_HEX_PATCHED, SIM_ARTIFACTS_DIR
 from .protocol import SerialFrame
@@ -37,6 +37,30 @@ MAIN_APP_PATCH_LIMIT = 0x5600
 _MAIN_EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
 _MAIN_CYCLE_LINE_RE = re.compile(r"^\s*0x([0-9A-Fa-f]+)\s+p18f[0-9A-Za-z]+", re.MULTILINE)
 _MAIN_AN0_BOOT_CYCLE_CACHE: dict[str, int] = {}
+
+
+@dataclass(frozen=True)
+class MainI2CRegFileDevice:
+    name: str
+    slave_address: int
+    registers: Mapping[int, int] | None = None
+
+
+DEFAULT_MAIN_I2C_REGFILE_DEVICES: tuple[MainI2CRegFileDevice, ...] = (
+    MainI2CRegFileDevice("cfg71", 0x71),
+    MainI2CRegFileDevice("dsp34", 0x34),
+)
+
+
+def default_main_i2c_regfile_devices() -> list[MainI2CRegFileDevice]:
+    return [
+        MainI2CRegFileDevice(
+            device.name,
+            device.slave_address,
+            None if device.registers is None else dict(device.registers),
+        )
+        for device in DEFAULT_MAIN_I2C_REGFILE_DEVICES
+    ]
 
 
 def _clamp_main_adc(adc: int) -> int:
@@ -81,6 +105,43 @@ def write_main_an0_bootstrap_stc(
         ),
         encoding="ascii",
     )
+
+
+def write_main_i2c_regfile_stc(
+    path: Path,
+    *,
+    devices: Sequence[MainI2CRegFileDevice],
+    processor: str = MAIN_GPSIM_PROCESSOR,
+    sda_node: str = "main_i2c_sda",
+    scl_node: str = "main_i2c_scl",
+) -> None:
+    lines = [
+        "module library libgpsim_modules",
+        "module load pullup main_i2c_sda_pullup",
+        "module load pullup main_i2c_scl_pullup",
+    ]
+    for device in devices:
+        lines.append(f"module load i2c_regfile {device.name}")
+        lines.append(f"{device.name}.Slave_Address = {int(device.slave_address) & 0x7F}")
+        for addr, value in sorted((device.registers or {}).items()):
+            lines.append(f"{device.name}.reg{addr & 0xFF:02x} = ${value & 0xFF:02x}")
+
+    sda_attach = [f"{processor}.portb0", "main_i2c_sda_pullup.pin"]
+    scl_attach = [f"{processor}.portb1", "main_i2c_scl_pullup.pin"]
+    for device in devices:
+        sda_attach.append(f"{device.name}.SDA")
+        scl_attach.append(f"{device.name}.SCL")
+
+    lines.extend(
+        [
+            f"node {sda_node}",
+            f"attach {sda_node} {' '.join(sda_attach)}",
+            f"node {scl_node}",
+            f"attach {scl_node} {' '.join(scl_attach)}",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="ascii")
 
 
 def _parse_main_exec_break(cli_text: str) -> int | None:

@@ -97,6 +97,10 @@ Framework package: `src/dlcp_fw/sim/`
     `DLCP Firmware V2.3-combined.hex` seed before gpsim-only overlays, so tests
     keep recovered boot/config/EEPROM/User-ID context by default.
   - simulation-only UART mailbox hooks for RX/TX probing.
+  - can attach real RB0/RB1 pullups plus generic `i2c_regfile` slave devices
+    for external MSSP/I2C runs; internal PIC `EECON1.WR` completion is native.
+  - higher-level chain harnesses now attach default `cfg71` (`0x71`) and
+    `dsp34` (`0x34`) generic regfile slaves whenever `bypass_i2c=False`.
 - `src/dlcp_fw/sim/main_gpsim_timer3.py`
   - native no-shim Timer3 compare harness.
   - observes the real `function_079` / `PIR2.TMR3IF` path before parser dispatch.
@@ -138,6 +142,13 @@ generated temp HEX copies used by gpsim/test runners.
    - patches reset vector to app start (`0x1000`) in gpsim
    - applied after MAIN sim materializes a seeded full-device temp HEX
      (`V2.3-combined` base + requested app bytes in `0x1000..0x55FF`)
+4. `main_external_i2c_bypass` / `main_internal_eeprom_bypass`
+   - split the old blanket `main_i2c_bypass`
+   - fidelity tests should keep internal EEPROM native and only use the
+     external-bus bypass when no real I2C slave model is attached
+   - `SingleMainChainHarness` and `WireMultiMainChainHarness` now attach the
+     default generic `cfg71` / `dsp34` external bus model when
+     `bypass_i2c=False`, so the bypass is opt-in
 4. `main_serial_mailbox_hooks`
    - hooks `function_109/087/111` to mailbox-backed RX/TX probes
    - hooks `function_079` with a Timer3-overflow shim for gpsim

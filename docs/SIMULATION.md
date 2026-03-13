@@ -124,6 +124,10 @@ MAIN gpsim harnesses materialize a seeded full-device temp HEX before overlays:
 - if the requested MAIN HEX already contains a programmed boot block, it is
   treated as a full-device image and used verbatim
 
+When `bypass_i2c=False`, the chain harnesses also attach a default external
+I2C bus model to MAIN: pullups on `RB0/RB1` plus generic `i2c_regfile` slaves
+named `cfg71` (`0x71`) and `dsp34` (`0x34`).
+
 ### Serial transport model (LinkPipe)
 
 Each serial link is modelled as a byte-paced queue matching the PIC18 EUSART
@@ -311,7 +315,9 @@ firmware logic.
 | `main_reset_to_appstart` | Redirect reset vector to app entry (0x1000) |
 | `main_serial_mailbox_hooks` | Replace UART ISR with mailbox-backed RX/TX for harness injection |
 | `main_adc_boot_wait_hook` | Legacy hook for harness paths that still patch through `function_024` (for example the UART-only Timer3 compare harness) |
-| `main_i2c_bypass` | Bypass I2C initialisation (TAS3108 not simulated) |
+| `main_external_i2c_bypass` | Bypass only external MSSP/I2C wait loops when no external bus model is attached |
+| `main_internal_eeprom_bypass` | Legacy compatibility hook for internal `EECON1.WR` polling; avoid in fidelity tests |
+| `main_i2c_bypass` | Legacy combined alias of the two overlays above |
 
 ## Known Limitations
 
@@ -327,9 +333,15 @@ firmware logic.
    (debounce state machine).  The pin-read and XOR-inversion path in
    function_023 is not exercised for pressed buttons.
 
-3. **I2C / TAS3108 not modelled**.  The TAS3108 audio DSP is not simulated.
-   I2C init is bypassed.  Volume/input changes are visible in CONTROL RAM
-   and serial frames but have no audio-side effect.
+3. **External I2C device semantics are still partial**.  gpsim now runs
+   MAIN's internal PIC EEPROM path natively and can attach real RB0/RB1
+   pullups plus generic `i2c_regfile` slaves for bus-level MSSP timing.
+   The higher-level chain harnesses use that generic bus model by default when
+   `bypass_i2c=False`.
+   That is enough to exercise stock `function_067`, `function_093`,
+   `function_072`, and `function_081` without any firmware bypass.
+   However the TAS3108 itself is still only represented as a generic
+   register-file slave, so audio/DSP algorithm behavior is not simulated.
 
 4. **Single-byte vs. frame-atomic injection**.  Real EUSART delivers bytes
    individually; the simulator injects 3-byte frames atomically.  This is
@@ -355,6 +367,7 @@ firmware logic.
 scripts/gpsim_tui_simulator.py  — TUI and co-simulation core
 src/dlcp_fw/sim/control_gpsim.py       — non-interactive CONTROL gpsim harness (tests)
 src/dlcp_fw/sim/main_gpsim.py          — MAIN gpsim harness (mailbox injection)
+                                       — includes AN0 bootstrap + external I2C regfile STC helpers
 src/dlcp_fw/sim/wire_chain_gpsim.py    — live wire UART chain harness
 src/dlcp_fw/sim/manifests.py           — overlay definitions
 src/dlcp_fw/sim/main_gpsim_timer3.py   — gpsim register helpers, Timer3 model

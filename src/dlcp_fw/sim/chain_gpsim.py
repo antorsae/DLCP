@@ -31,12 +31,14 @@ from .main_gpsim import (
     MAIN_GPSIM_PROCESSOR,
     MAIN_MAILBOX_TX_BASE,
     build_seeded_main_sim_hex,
+    default_main_i2c_regfile_devices,
     probe_main_an0_boot_exit_cycle,
     write_main_an0_bootstrap_stc,
+    write_main_i2c_regfile_stc,
 )
 from .manifests import (
     main_adc_boot_wait_hook,
-    main_i2c_bypass,
+    main_external_i2c_bypass,
     main_reset_to_appstart,
     main_serial_mailbox_hooks,
     main_v25_timeout_test_hooks,
@@ -55,6 +57,10 @@ MAIN_NATIVE_RX_SIZE = 0xC0
 MAIN_BOOT_EXIT_ADDR = MAIN_AN0_BOOT_EXIT_ADDR
 _EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
 _BP_EXEC_RE = re.compile(r"^\s*(\d+):\s+p18f[0-9A-Za-z]+\s+Execution at .*?\(0x([0-9A-Fa-f]+)\)", re.MULTILINE)
+_REGFILE_RE = re.compile(
+    r"(?:[A-Za-z0-9_]+\.)?reg([0-9A-Fa-f]{2})\s*=\s*(?:\$|0x)([0-9A-Fa-f]+)",
+    re.IGNORECASE,
+)
 
 
 def _byte_cycles(fosc_hz: int, baud: int = BAUD_RATE) -> int:
@@ -101,6 +107,14 @@ def _add_break_exec(issue, addr: int) -> int:
 
 def _clear_break(issue, bp_id: int) -> None:
     issue(f"clear {bp_id}", 5.0)
+
+
+def _parse_regfile_value(output: str, addr: int) -> int:
+    wanted = addr & 0xFF
+    for m in _REGFILE_RE.finditer(output):
+        if int(m.group(1), 16) == wanted:
+            return int(m.group(2), 16) & 0xFF
+    raise RuntimeError(f"missing regfile readback for reg{wanted:02x}")
 
 
 @dataclass(frozen=True)
@@ -242,12 +256,14 @@ class MainChainHarness:
         self._boot_bp_id: int | None = None
         self._boot_handoff_cycle = 0
         self._uses_adc_boot_wait_hook = False
+        self._i2c_regfile_devices = [] if bypass_i2c else default_main_i2c_regfile_devices()
+        self._uses_external_i2c_regfile_bus = bool(self._i2c_regfile_devices)
         self.current_loop_model = _MainCurrentLoopPinModel(idle_high=True, rc2_mode=rc2_mode)
 
         manifests = [main_reset_to_appstart()]
         if self.transport_mode == "mailbox":
             if bypass_i2c:
-                manifests.append(main_i2c_bypass())
+                manifests.append(main_external_i2c_bypass())
             manifests.append(main_serial_mailbox_hooks(gpasm=gpasm))
         else:
             if not self._use_native_an0_bootstrap:
@@ -260,7 +276,7 @@ class MainChainHarness:
                     MAIN_NATIVE_TIMEOUT_MSSP_SEED_ADDR,
                 )
             if bypass_i2c:
-                manifests.append(main_i2c_bypass())
+                manifests.append(main_external_i2c_bypass())
         build_seeded_main_sim_hex(main_hex, self.seeded_hex)
         apply_overlays(self.seeded_hex, self.sim_hex, manifests=manifests)
 
@@ -289,6 +305,14 @@ class MainChainHarness:
             )
             self._issue(f"load {an0_stc}", 10.0)
             self._boot_bp_id = _add_break_exec(self._issue, MAIN_BOOT_EXIT_ADDR)
+        if self._i2c_regfile_devices:
+            i2c_stc = self.tmp_path / "main_i2c_bus.stc"
+            write_main_i2c_regfile_stc(
+                i2c_stc,
+                devices=self._i2c_regfile_devices,
+                processor=MAIN_GPSIM_PROCESSOR,
+            )
+            self._issue(f"load {i2c_stc}", 10.0)
         self._issue(f"log on {self.log_path}", 5.0)
         self._issue("log w txreg", 5.0)
         if self.transport_mode == "mailbox":
@@ -321,6 +345,16 @@ class MainChainHarness:
     @property
     def uses_adc_boot_wait_hook(self) -> bool:
         return self._uses_adc_boot_wait_hook
+
+    @property
+    def uses_external_i2c_regfile_bus(self) -> bool:
+        return self._uses_external_i2c_regfile_bus
+
+    def read_i2c_regfile(self, device_name: str, addr: int) -> int:
+        if not self._uses_external_i2c_regfile_bus:
+            raise RuntimeError("external I2C regfile bus is not attached")
+        output = self._issue(f"{device_name}.reg{addr & 0xFF:02x}", 5.0)
+        return _parse_regfile_value(output, addr)
 
     def close(self) -> None:
         try:

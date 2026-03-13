@@ -49,6 +49,22 @@ def test_stock_single_main_chain_reaches_display(
 
 @pytest.mark.gpsim
 @pytest.mark.slow
+def test_chain_attaches_default_external_i2c_bus(
+    stock_control_hex_v14: Path,
+    stock_main_hex: Path,
+) -> None:
+    _require_gpsim()
+    pair = _new_pair(stock_control_hex_v14, stock_main_hex)
+    try:
+        assert pair.main.uses_external_i2c_regfile_bus is True
+        assert pair.main.read_i2c_regfile("cfg71", 0x00) == 0x00
+        assert pair.main.read_i2c_regfile("dsp34", 0x00) == 0x00
+    finally:
+        pair.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
 def test_stock_single_main_blackout_on_wake_shows_waiting(
     stock_control_hex_v14: Path,
     stock_main_hex: Path,

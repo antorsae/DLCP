@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Sequence
 
 from .hexio import parse_intel_hex
 from .overlay import OverlayManifest
@@ -231,75 +232,37 @@ def main_reset_to_appstart() -> OverlayManifest:
 
 
 _MAIN_SERIAL_MAILBOX_HOOK_ASM = r"""
-LIST P=18F2550
-#include <p18f2550.inc>
+LIST P=18F2455
+#include <p18f2455.inc>
 
 ; Hook UART helper routines used by serial parser:
+; - function_024: ADC wait/boot sequence helper (avoid ADC hang in gpsim)
+; - function_079: Timer3 delay (replaced with software shim for gpsim)
 ; - function_087: read next RX byte
 ; - function_109: RX available?
 ; - function_111: TX byte output
-; - function_079: Timer3 delay (replaced with software shim for gpsim)
-; - function_024: ADC wait/boot sequence helper (avoid ADC hang in gpsim)
+; - function_113: MSSP idle wait (with clearable test-stall flag)
 ;
 ; Mailbox RAM:
 ;   0x7C0 RX_RD
 ;   0x7C1 RX_WR
-;   0x7C2 TX_RD (reserved)
+;   0x7C2 TX_RD
 ;   0x7C3 TX_WR
-;   0x7C4..0x7C6 saved BSR scratch (hook-local)
+;   0x7C4..0x7C8 hook-local scratch / test fault flags
+;   0x7C7 bit0: force UART TX helper stall
+;   0x7C7 bit1: force MSSP wait helper stall
+;   0x740..0x77F TX circular buffer (64 bytes used)
 ;   0x780..0x7BF RX circular buffer (64 bytes used)
-;   0x7E0..0x7FF TX circular buffer (32 bytes used)
+; TXREG is still written for parity with the firmware under test, but gpsim
+; write logs are not used as the transport source of truth.
 
 org 0x45FA
-    goto sim_function_087
-org 0x45FE
-    nop
-
-org 0x4872
-    goto sim_function_109
-org 0x4876
-    nop
-
-org 0x4896
-    goto sim_function_111
-org 0x489A
-    nop
-
-; gpsim does not advance TMR3IF for this firmware path reliably.
-; Replace Timer3 wait routine with a software-equivalent delay shim.
-org 0x447E
-    goto sim_function_079
-org 0x4482
-    nop
-
-org 0x2D8C
-    goto sim_function_024
-org 0x2D90
-    nop
-
-org 0x7000
-sim_function_109:
-    movff BSR, 0x7C4
-    movlb 0x7
-    movf 0x0C1, W, BANKED
-    xorwf 0x0C0, W, BANKED
-    bnz sim109_has_data
-    clrw
-    movff 0x7C4, BSR
-    return 0x0
-sim109_has_data:
-    movlw 0x01
-    movff 0x7C4, BSR
-    return 0x0
-
 sim_function_087:
     movff BSR, 0x7C5
     clrf 0x004, ACCESS
-    movlb 0x7
-    movf 0x0C1, W, BANKED
-    xorwf 0x0C0, W, BANKED
+    call sim_function_109
+    iorlw 0x00
     bz sim087_done
-
     lfsr 0, 0x780
     movlb 0x7
     movf 0x0C0, W, BANKED
@@ -307,51 +270,38 @@ sim_function_087:
     addwf FSR0L, F, ACCESS
     movf INDF0, W, ACCESS
     movwf 0x004, ACCESS
-
-    movlb 0x7
     incf 0x0C0, F, BANKED
-
 sim087_done:
     movf 0x004, W, ACCESS
     movff 0x7C5, BSR
     return 0x0
 
-sim_function_111:
-    movff BSR, 0x7C6
-    movwf 0x003, ACCESS
-
-    lfsr 0, 0x7E0
+org 0x4872
+sim_function_109:
     movlb 0x7
-    movf 0x0C3, W, BANKED
-    andlw 0x1F
-    addwf FSR0L, F, ACCESS
-    movf 0x003, W, ACCESS
-    movwf INDF0, ACCESS
-
-    movlb 0x7
-    incf 0x0C3, F, BANKED
-
-    movff 0x003, TXREG
-    movf 0x003, W, ACCESS
-    movff 0x7C6, BSR
+    movf 0x0C1, W, BANKED
+    clrf PRODL, ACCESS
+    cpfseq 0x0C0, BANKED
+    incf PRODL, F, ACCESS
+    movf PRODL, W, ACCESS
     return 0x0
 
-org 0x7100
-sim_function_079:
-    bcf PIE2, TMR3IE, ACCESS
-    movlw 0x98
-    movwf T3CON, ACCESS
-    bsf T3CON, TMR3ON, ACCESS
+org 0x4896
+    goto sim_function_111
+org 0x489A
+    nop
 
+org 0x48B6
+    goto sim_function_113
+
+; gpsim does not advance TMR3IF for this firmware path reliably.
+; Replace Timer3 wait routine with a software-equivalent delay shim.
+org 0x447E
+sim_function_079:
 sim79_outer:
     movf 0x004, W, ACCESS
     iorwf 0x003, W, ACCESS
     bz sim79_done
-
-    ; Emulate one Timer3 overflow event per outer iteration.
-    bcf PIR2, TMR3IF, ACCESS
-    bsf PIR2, TMR3IF, ACCESS
-
     decf 0x003, F, ACCESS
     movf 0x003, W, ACCESS
     xorlw 0xFF
@@ -360,10 +310,24 @@ sim79_outer:
     bra sim79_outer
 
 sim79_done:
-    bcf T3CON, TMR3ON, ACCESS
     return 0x0
 
-org 0x7140
+org 0x4492
+sim_function_113:
+    movff BSR, 0x7C6
+sim113_poll:
+    movlb 0x7
+    btfsc 0x0C7, 1, BANKED
+    bra sim113_poll
+    movf SSPCON2, W, ACCESS
+    andlw 0x1F
+    bnz sim113_poll
+    btfsc SSPSTAT, R, ACCESS
+    bra sim113_poll
+    movff 0x7C6, BSR
+    retlw 0x1F
+
+org 0x2D8C
 sim_function_024:
     bcf INTCON, GIE, ACCESS
     bcf LATB, LATB2, ACCESS
@@ -373,6 +337,25 @@ sim_function_024:
     movlw 0x02
     movwf 0x89, BANKED
     goto 0x2DC8
+
+org 0x2D9E
+sim_function_111:
+    movff BSR, 0x7C6
+    movwf PRODL, ACCESS
+sim111_poll:
+    movlb 0x7
+    btfsc 0x0C7, 0, BANKED
+    bra sim111_poll
+    lfsr 0, 0x740
+    movf 0x0C3, W, BANKED
+    andlw 0x3F
+    addwf FSR0L, F, ACCESS
+    movf PRODL, W, ACCESS
+    movwf INDF0, ACCESS
+    incf 0x0C3, F, BANKED
+    movff PRODL, TXREG
+    movff 0x7C6, BSR
+    return 0x0
 
 end
 """
@@ -387,7 +370,7 @@ def main_serial_mailbox_hooks(gpasm: str = "gpasm") -> OverlayManifest:
         out_hex = td_path / "main_serial_hook.hex"
         asm.write_text(_MAIN_SERIAL_MAILBOX_HOOK_ASM, encoding="ascii")
         subprocess.run(
-            [gpasm, "-p18f2550", "-o", str(out_hex), str(asm)],
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
             check=True,
             capture_output=True,
             text=True,
@@ -407,25 +390,16 @@ def main_serial_mailbox_hooks(gpasm: str = "gpasm") -> OverlayManifest:
             0x45FB: 0x6A,
             0x4872: 0x00,  # function_109 prologue bytes: 00 01 ...
             0x4873: 0x01,
-            0x4896: 0xE8,  # function_111 prologue bytes: E8 CF ...
-            0x4897: 0xCF,
         },
         byte_patches=patch_mem,
-        postconditions={
-            0x2D8D: 0xEF,
-            0x447F: 0xEF,
-            # PIC18 GOTO second byte signature.
-            0x45FB: 0xEF,
-            0x4873: 0xEF,
-            0x4897: 0xEF,
-        },
+        postconditions={},
         description="Simulation-only main UART hooks: RAM mailbox RX/TX",
     )
 
 
 _MAIN_UART_MAILBOX_ONLY_HOOK_ASM = r"""
-LIST P=18F2550
-#include <p18f2550.inc>
+LIST P=18F2455
+#include <p18f2455.inc>
 
 ; Hook UART helper routines used by serial parser:
 ; - function_087: read next RX byte
@@ -435,50 +409,21 @@ LIST P=18F2550
 ; Mailbox RAM:
 ;   0x7C0 RX_RD
 ;   0x7C1 RX_WR
-;   0x7C2 TX_RD (reserved)
+;   0x7C2 TX_RD
 ;   0x7C3 TX_WR
-;   0x7C4..0x7C6 saved BSR scratch (hook-local)
+;   0x7C4..0x7C8 hook-local scratch / test fault flags
+;   0x7C7 bit0: force UART TX helper stall
+;   0x7C7 bit1: force MSSP wait helper stall
+;   0x740..0x77F TX circular buffer (64 bytes used)
 ;   0x780..0x7BF RX circular buffer (64 bytes used)
-;   0x7E0..0x7FF TX circular buffer (32 bytes used)
 
 org 0x45FA
-    goto sim_function_087
-org 0x45FE
-    nop
-
-org 0x4872
-    goto sim_function_109
-org 0x4876
-    nop
-
-org 0x4896
-    goto sim_function_111
-org 0x489A
-    nop
-
-org 0x7000
-sim_function_109:
-    movff BSR, 0x7C4
-    movlb 0x7
-    movf 0x0C1, W, BANKED
-    xorwf 0x0C0, W, BANKED
-    bnz sim109_has_data
-    clrw
-    movff 0x7C4, BSR
-    return 0x0
-sim109_has_data:
-    movlw 0x01
-    movff 0x7C4, BSR
-    return 0x0
-
 sim_function_087:
     movff BSR, 0x7C5
     clrf 0x004, ACCESS
-    movlb 0x7
-    movf 0x0C1, W, BANKED
-    xorwf 0x0C0, W, BANKED
+    call sim_function_109
+    iorlw 0x00
     bz sim087_done
-
     lfsr 0, 0x780
     movlb 0x7
     movf 0x0C0, W, BANKED
@@ -486,32 +431,45 @@ sim_function_087:
     addwf FSR0L, F, ACCESS
     movf INDF0, W, ACCESS
     movwf 0x004, ACCESS
-
-    movlb 0x7
     incf 0x0C0, F, BANKED
-
 sim087_done:
     movf 0x004, W, ACCESS
     movff 0x7C5, BSR
     return 0x0
 
+org 0x4872
+sim_function_109:
+    movlb 0x7
+    movf 0x0C1, W, BANKED
+    clrf PRODL, ACCESS
+    cpfseq 0x0C0, BANKED
+    incf PRODL, F, ACCESS
+    movf PRODL, W, ACCESS
+    return 0x0
+
+org 0x4896
+    goto sim_function_111
+org 0x489A
+    nop
+
+; Requires main_adc_boot_wait_hook in the same overlay stack. That companion
+; patch redirects function_024 before execution reaches this helper area.
+org 0x2D9E
 sim_function_111:
     movff BSR, 0x7C6
-    movwf 0x003, ACCESS
-
-    lfsr 0, 0x7E0
+    movwf PRODL, ACCESS
+sim111_poll:
     movlb 0x7
+    btfsc 0x0C7, 0, BANKED
+    bra sim111_poll
+    lfsr 0, 0x740
     movf 0x0C3, W, BANKED
-    andlw 0x1F
+    andlw 0x3F
     addwf FSR0L, F, ACCESS
-    movf 0x003, W, ACCESS
+    movf PRODL, W, ACCESS
     movwf INDF0, ACCESS
-
-    movlb 0x7
     incf 0x0C3, F, BANKED
-
-    movff 0x003, TXREG
-    movf 0x003, W, ACCESS
+    movff PRODL, TXREG
     movff 0x7C6, BSR
     return 0x0
 
@@ -528,7 +486,7 @@ def main_serial_mailbox_hooks_uart_only(gpasm: str = "gpasm") -> OverlayManifest
         out_hex = td_path / "main_uart_hook.hex"
         asm.write_text(_MAIN_UART_MAILBOX_ONLY_HOOK_ASM, encoding="ascii")
         subprocess.run(
-            [gpasm, "-p18f2550", "-o", str(out_hex), str(asm)],
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
             check=True,
             capture_output=True,
             text=True,
@@ -542,32 +500,118 @@ def main_serial_mailbox_hooks_uart_only(gpasm: str = "gpasm") -> OverlayManifest
             0x45FB: 0x6A,
             0x4872: 0x00,  # function_109 prologue bytes: 00 01 ...
             0x4873: 0x01,
-            0x4896: 0xE8,  # function_111 prologue bytes: E8 CF ...
-            0x4897: 0xCF,
         },
         byte_patches=patch_mem,
-        postconditions={
-            0x45FB: 0xEF,
-            0x4873: 0xEF,
-            0x4897: 0xEF,
-        },
+        postconditions={},
         description="Simulation-only UART hooks: mailbox-backed RX/TX probes",
     )
 
 
+_MAIN_V25_TIMEOUT_TEST_HOOK_ASM = r"""
+LIST P=18F2455
+#include <p18f2455.inc>
+
+; V2.5 MAIN simulation-only timeout test hook.
+;
+; Access-bank bytes 0x04E / 0x04F hold the timeout high-byte seed used by the
+; intercepted helpers:
+;   0x04E: UART wait helper (patch_wait_trmt_c)
+;   0x04F: MSSP wait helper (patch_wait_mssp_idle_c)
+; Tests write 0x10 for the normal V2.5 budget or 0x00 to force an immediate
+; timeout on the next helper call.
+;
+; The high-level V2.5 wrapper/recovery/reset code remains untouched.
+; Only the low-level wait helper entries are intercepted so tests can trigger
+; the real timeout/recovery paths on demand without overwriting the V2.5 patch
+; bodies that already live at 0x5500 and 0x556E.  Helper stubs must stay within
+; the valid 24 KiB PIC18F2455 flash range (< 0x6000).
+
+org 0x5500
+    clrf 0x0B, ACCESS
+    goto sim_patch_wait_trmt_entry
+
+org 0x556E
+    clrf 0x0B, ACCESS
+    goto sim_patch_wait_mssp_entry
+
+org 0x53F8
+sim_patch_wait_trmt_entry:
+    movf 0x04E, W, ACCESS
+    goto 0x5506
+
+org 0x54BA
+sim_patch_wait_mssp_entry:
+    movf 0x04F, W, ACCESS
+    goto 0x5574
+
+end
+"""
+
+
+def main_v25_timeout_test_hooks(gpasm: str = "gpasm") -> OverlayManifest:
+    """Build simulation-only runtime timeout hooks for MAIN V2.5 wait helpers."""
+
+    with tempfile.TemporaryDirectory(prefix="main_v25_timeout_hook_") as td:
+        td_path = Path(td)
+        asm = td_path / "main_v25_timeout_hook.asm"
+        out_hex = td_path / "main_v25_timeout_hook.hex"
+        asm.write_text(_MAIN_V25_TIMEOUT_TEST_HOOK_ASM, encoding="ascii")
+        subprocess.run(
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        patch_mem = parse_intel_hex(out_hex)
+
+    return OverlayManifest(
+        name="main_v25_timeout_test_hooks",
+        preconditions={
+            0x5500: 0x00,
+            0x5501: 0x0E,
+            0x5502: 0x0B,
+            0x5503: 0x6E,
+            0x5504: 0x10,
+            0x5505: 0x0E,
+            0x5506: 0x0C,
+            0x5507: 0x6E,
+            0x556E: 0x00,
+            0x556F: 0x0E,
+            0x5570: 0x0B,
+            0x5571: 0x6E,
+            0x5572: 0x10,
+            0x5573: 0x0E,
+            0x5574: 0x0C,
+            0x5575: 0x6E,
+            0x53F8: 0xFF,
+            0x53F9: 0xFF,
+            0x53FA: 0xFF,
+            0x53FB: 0xFF,
+            0x53FC: 0xFF,
+            0x53FD: 0xFF,
+            0x53FE: 0xFF,
+            0x53FF: 0xFF,
+            0x54BA: 0xFF,
+            0x54BB: 0xFF,
+            0x54BC: 0xFF,
+            0x54BD: 0xFF,
+            0x54BE: 0xFF,
+            0x54BF: 0xFF,
+        },
+        byte_patches=patch_mem,
+        postconditions={},
+        description="Simulation-only MAIN V2.5 timeout trigger hook via access-bank seed bytes at 0x04E/0x04F",
+    )
+
+
 _MAIN_ADC_BOOT_WAIT_HOOK_ASM = r"""
-LIST P=18F2550
-#include <p18f2550.inc>
+LIST P=18F2455
+#include <p18f2455.inc>
 
 ; gpsim does not resolve ADCON0.GO completion for this firmware boot path.
 ; Hook function_024 to bypass ADC wait loops while preserving side effects.
 
 org 0x2D8C
-    goto sim_function_024
-org 0x2D90
-    nop
-
-org 0x7090
 sim_function_024:
     bcf INTCON, GIE, ACCESS
     bcf LATB, LATB2, ACCESS
@@ -591,7 +635,7 @@ def main_adc_boot_wait_hook(gpasm: str = "gpasm") -> OverlayManifest:
         out_hex = td_path / "main_adc_hook.hex"
         asm.write_text(_MAIN_ADC_BOOT_WAIT_HOOK_ASM, encoding="ascii")
         subprocess.run(
-            [gpasm, "-p18f2550", "-o", str(out_hex), str(asm)],
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
             check=True,
             capture_output=True,
             text=True,
@@ -605,30 +649,53 @@ def main_adc_boot_wait_hook(gpasm: str = "gpasm") -> OverlayManifest:
             0x2D8D: 0x9E,
         },
         byte_patches=patch_mem,
-        postconditions={
-            0x2D8D: 0xEF,
-        },
+        postconditions={},
         description="Simulation-only ADC boot-wait bypass hook",
     )
 
 
-def main_i2c_bypass() -> OverlayManifest:
-    """
-    Bypass ALL I2C/MSSP and EEPROM polling loops in the MAIN firmware.
+def _build_main_poll_bypass(
+    *,
+    name: str,
+    description: str,
+    loops: Sequence[tuple[int, int, int]],
+    loops_3instr: Sequence[tuple[int, int, int]] = (),
+) -> OverlayManifest:
+    preconditions: dict[int, int] = {}
+    byte_patches: dict[int, int] = {}
 
-    gpsim does not emulate I2C peripherals or EEPROM write timing, so the
-    firmware hangs in tight polling loops.  Each btfsc/btfss + bra pair is
-    patched to bcf/bsf (satisfy the flag) + nop (skip the branch).
+    # 2-instruction loops: btfsc/btfss + bra
+    for addr, old_hi, new_hi in loops:
+        preconditions[addr + 1] = old_hi
+        preconditions[addr + 3] = 0xD7
+        byte_patches[addr + 1] = new_hi
+        byte_patches[addr + 2] = 0x00
+        byte_patches[addr + 3] = 0x00
 
-    Covers:
-      - SSPCON2 bits SEN/PEN/RSEN/ACKEN (I2C start/stop/restart/ack)
-      - PIR1.SSPIF (I2C operation complete)
-      - SSPSTAT.BF (I2C buffer full/empty)
-      - EECON1.WR (EEPROM write complete)
+    # 3-instruction loops: btfss + return + bra
+    for addr, old_hi, new_hi in loops_3instr:
+        preconditions[addr + 1] = old_hi
+        preconditions[addr + 5] = 0xD7
+        byte_patches[addr + 1] = new_hi
+        byte_patches[addr + 4] = 0x00
+        byte_patches[addr + 5] = 0x00
+
+    return OverlayManifest(
+        name=name,
+        preconditions=preconditions,
+        byte_patches=byte_patches,
+        description=description,
+    )
+
+
+def main_external_i2c_bypass() -> OverlayManifest:
     """
-    # All tight polling loops: (addr, current_hi_byte, patched_hi_byte)
-    # btfsc XX -> bcf XX:  0xBx -> 0x9x  (subtract 0x20)
-    # btfss XX -> bsf XX:  0xAx -> 0x8x  (subtract 0x20)
+    Bypass only external MSSP/I2C polling loops in the MAIN firmware.
+
+    This is a simulator workaround for runs that do not attach a real external
+    I2C bus/slave model. It intentionally does not touch internal PIC EEPROM
+    write-complete polling (`EECON1.WR`).
+    """
     loops = [
         # SSPCON2.SEN (bit 0) polling
         (0x2288, 0xB0, 0x90),
@@ -650,45 +717,76 @@ def main_i2c_bypass() -> OverlayManifest:
         # SSPSTAT.BF (bit 0) polling — btfsc at 0x3EB8, btfss at 0x466A
         (0x3EB8, 0xB0, 0x90),
         (0x466A, 0xA0, 0x80),
-        # EECON1.WR (bit 1) polling
+    ]
+    loops_3instr = [
+        # SSPCON2.PEN (bit 2) — btfss/return/bra pattern
+        (0x439C, 0xA4, 0x94),
+        (0x4510, 0xA4, 0x94),
+        (0x46D8, 0xA4, 0x94),
+    ]
+    return _build_main_poll_bypass(
+        name="main_external_i2c_bypass",
+        description="Simulation-only bypass: external MSSP/I2C polling loops",
+        loops=loops,
+        loops_3instr=loops_3instr,
+    )
+
+
+def main_internal_eeprom_bypass() -> OverlayManifest:
+    """
+    Bypass only internal PIC EEPROM/flash write-complete polling loops.
+
+    This exists as a temporary compatibility overlay. gpsim now handles the
+    normal `EECON1.WR` completion path used by MAIN tests, so new fidelity
+    tests should avoid this overlay.
+    """
+    loops = [
         (0x42D2, 0xB2, 0x92),
         (0x42EC, 0xB2, 0x92),
         (0x43F4, 0xB2, 0x92),
     ]
-
-    # 3-instruction loops: btfss REG,bit / return / bra
-    # Pattern: btfss skips return if bit set → loops; if clear → returns.
-    # Patch btfss→bcf to force bit clear, then fall through to return.
-    # bra becomes dead code but NOP it for safety.
-    loops_3instr = [
-        # SSPCON2.PEN (bit 2) — btfss/return/bra pattern
-        (0x439C, 0xA4, 0x94),  # btfss → bcf; bra at addr+4
-        (0x4510, 0xA4, 0x94),
-        (0x46D8, 0xA4, 0x94),
-    ]
-
-    preconditions = {}
-    byte_patches = {}
-
-    # 2-instruction loops: btfsc/btfss + bra
-    for addr, old_hi, new_hi in loops:
-        preconditions[addr + 1] = old_hi
-        preconditions[addr + 3] = 0xD7
-        byte_patches[addr + 1] = new_hi
-        byte_patches[addr + 2] = 0x00
-        byte_patches[addr + 3] = 0x00
-
-    # 3-instruction loops: btfss + return + bra
-    for addr, old_hi, new_hi in loops_3instr:
-        preconditions[addr + 1] = old_hi
-        preconditions[addr + 5] = 0xD7
-        byte_patches[addr + 1] = new_hi
-        byte_patches[addr + 4] = 0x00
-        byte_patches[addr + 5] = 0x00
-
-    return OverlayManifest(
-        name="main_i2c_bypass",
-        preconditions=preconditions,
-        byte_patches=byte_patches,
-        description="Simulation-only bypass: all I2C/MSSP/EEPROM polling loops",
+    return _build_main_poll_bypass(
+        name="main_internal_eeprom_bypass",
+        description="Simulation-only bypass: internal EEPROM/flash write polling loops",
+        loops=loops,
     )
+
+
+def main_i2c_bypass() -> OverlayManifest:
+    """
+    Legacy compatibility overlay for the old blanket MAIN I2C bypass.
+
+    Prefer `main_external_i2c_bypass()` for external-bus gaps and avoid
+    bypassing `EECON1.WR` unless a targeted regression proves it is required.
+    """
+    combined = _build_main_poll_bypass(
+        name="main_i2c_bypass",
+        description="Simulation-only bypass: all I2C/MSSP/EEPROM polling loops",
+        loops=[
+            # External MSSP/I2C
+            (0x2288, 0xB0, 0x90),
+            (0x3870, 0xB0, 0x90),
+            (0x4246, 0xB0, 0x90),
+            (0x4372, 0xB0, 0x90),
+            (0x44EA, 0xB0, 0x90),
+            (0x46C0, 0xB0, 0x90),
+            (0x4258, 0xB2, 0x92),
+            (0x231A, 0xB4, 0x94),
+            (0x389C, 0xB4, 0x94),
+            (0x4272, 0xB4, 0x94),
+            (0x426C, 0xB8, 0x98),
+            (0x3E92, 0xA6, 0x86),
+            (0x3EB8, 0xB0, 0x90),
+            (0x466A, 0xA0, 0x80),
+            # Internal EEPROM/flash write-complete polling
+            (0x42D2, 0xB2, 0x92),
+            (0x42EC, 0xB2, 0x92),
+            (0x43F4, 0xB2, 0x92),
+        ],
+        loops_3instr=[
+            (0x439C, 0xA4, 0x94),
+            (0x4510, 0xA4, 0x94),
+            (0x46D8, 0xA4, 0x94),
+        ],
+    )
+    return combined
