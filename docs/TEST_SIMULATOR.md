@@ -243,6 +243,13 @@ Location: `tests/sim/`
     and `V1.62b <-> V2.5`
   - also covers stricter bridge-layer faults: one-way `MAIN -> CONTROL` reply
     blackout and delayed reply delivery without reverting to RAM-ring injection
+  - wake perturbation characterization currently shows:
+    - `V1.61b + V2.4` and `V1.61b + V2.5` both strand under the tested bounded
+      `MAIN -> CONTROL` wake drop/delay faults
+    - `V1.62b + V2.4` and `V1.62b + V2.5` both recover after a bounded delayed
+      wake reply release
+  - so the wire harness now exercises same-fault wake perturbations on both
+    MAIN versions, but it still does not isolate a `V2.4`-only failure
 - `test_gpsim_control_presets.py`
   - gpsim instruction-level CONTROL preset UI tests
   - boot default, screen navigation, serial frames, EEPROM persistence, volume volatility

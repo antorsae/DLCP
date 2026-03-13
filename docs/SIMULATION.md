@@ -187,6 +187,12 @@ Current scope:
     reach the receiver RC7 stimulus
   - extra receiver-cycle delay on a specific hop without falling back to
     mailbox/native-ring RAM injection
+- current bounded wake-fault characterization does not yet show a clean
+  MAIN-only separation:
+  - with `V1.61b`, bounded `MAIN -> CONTROL` reply drop/delay wake faults can
+    strand both `V2.4` and `V2.5`
+  - with `V1.62b`, lighter bounded wake delays clear and both `V2.4` and
+    `V2.5` reconnect
 
 ### Heartbeat model
 

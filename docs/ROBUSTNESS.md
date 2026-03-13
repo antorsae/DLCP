@@ -335,6 +335,11 @@ Required harness changes:
    generic `cfg71` (`0x71`) and `dsp34` (`0x34`) `i2c_regfile` slaves when
    `bypass_i2c=False`. Fidelity tests should prefer the real
    `i2c_regfile` bus path over the bypass.
+   The fixed wire-UART harness now also supports bounded one-way wake-time
+   drop/delay faults on the real `RC6/RC7` path. Current characterization does
+   not show a clean MAIN-only split: with `V1.61b`, tested bounded wake faults
+   strand both `V2.4` and `V2.5`; with `V1.62b`, lighter bounded wake-delay
+   release tests reconnect both.
 3. Add test-only fault overlays for MAIN timeout paths.
    These should force persistent busy/stuck conditions in specific wait loops so the recovery code can be exercised deterministically.
 4. Persist LCD timelines and key events under `artifacts/sim/current/robustness/`.
