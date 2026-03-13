@@ -263,7 +263,10 @@ def main() -> int:
     p_main.add_argument("--gpasm", default="gpasm")
     p_main.add_argument("--keep", action="store_true", help="keep artifacts under artifacts/sim/current/")
 
-    p_cmp = sub.add_parser("compare-timer3", help="compare semantic Timer3 shim vs harness Timer3 model")
+    p_cmp = sub.add_parser(
+        "compare-timer3",
+        help="compare semantic Timer3 shim vs native unpatched Timer3 run",
+    )
     p_cmp.add_argument(
         "--frames",
         default="0xB0:0x20:0x01",

@@ -1,6 +1,20 @@
 # DLCP Robustness Plan
 
-Status: working design note for the next robustness releases.
+Status:
+
+- 2026-03-10 correction: the first `V2.5` MAIN artifact had a bad MSSP-idle wait implementation in the patched `function_113` path; the current repo copy of `DLCP_Firmware_V2.5.hex` has been rebuilt with stock-equivalent wait semantics. Treat any earlier exported/flashed `V2.5` copy as bad.
+- MAIN `V2.5` is now implemented on top of the `V2.4` A/B preset patch base.
+- CONTROL `V1.62b` is now implemented on top of the `V1.61b` A/B preset patch base.
+- 2026-03-11 correction: physical MCU inspection confirms CONTROL is `PIC18F25K20` and MAIN is `PIC18F2455`. CONTROL builders are now retargeted to `PIC18F25K20`. MAIN builders and MAIN gpsim harnesses are now retargeted to `PIC18F2455`.
+- 2026-03-12 update: the repo-local `gpsim-xtc` fork now supports `p18f25k20`, and CONTROL gpsim harnesses use the real target instead of the old `p18f2550` surrogate model.
+- 2026-03-11 MAIN `V2.5` timeout policy was hardened again: the patched wait loops now use 16-bit measured loop budgets instead of raw `0xFF` spins, first failure does local UART/MSSP reinit, and hard reset is only taken after a repeated failure in the same operation path.
+- Current rebuilt `DLCP_Firmware_V2.5.hex` SHA-256: `4f5024b9d5c7257b62e964ed03373bc3abb2430cfc4cc871c26d94ceab5a07ef`
+- A raw-main `gpsim` harness now exists and runs CONTROL against the real `V2.5` MAIN parser and timeout code via native-ring injection.
+- Current raw-main simulation status:
+  - basic CONTROL gpsim regressions now run on the real `p18f25k20` model from the repo-local `gpsim-xtc` fork
+  - MAIN-side native-ring runs now progress through the stock `function_079` Timer3 wait using native `p18f2455` Timer3 behavior; the earlier compare harness failure was in the repo harness, not the gpsim core overflow path
+  - earlier reconnect conclusions for `V2.5 + V1.61b` and `V2.5 + V1.62b` were collected before the `p18f25k20` port and should be treated as pre-port evidence pending revalidation under the new CONTROL model
+  - hardware bench validation of the rebuilt MAIN `V2.5` with `V1.61b` CONTROL is still pending and remains the release-critical next step
 
 Versioning assumption used in this document:
 
@@ -26,7 +40,8 @@ Direct validation sources:
 - `firmware/disasm/control/v1.6b_disasm.asm`
 - `firmware/stock/main/DLCP Firmware V2.3.hex`
 - `firmware/stock/control/DLCP Control Firmware V1.4.hex`
-- `firmware/reference/39632e.txt`
+- `firmware/reference/39632e.pdf` (authoritative)
+- `firmware/reference/39632e.md` (line-stable converted companion)
 
 ## Analysis Assessment
 
@@ -228,8 +243,10 @@ Work items:
 Acceptance criteria:
 
 - `V2.5 + V1.61b` boots reliably
-- `V2.5 + V1.61b` reconnects after transient MAIN fault
-- induced MAIN timeout no longer leads to permanent `WAITING FOR DLCP`
+- `V2.5 + V1.61b` recovers from transient active-path MAIN timeout faults
+- induced MAIN timeout no longer leads to permanent `WAITING FOR DLCP` during normal active-display operation
+- current raw-main `gpsim` also shows reconnect after clearing the induced wake / standby UART-timeout fault
+- hardware validation and comparative reconnect robustness vs `V1.62b` are still pending
 - volume/input/mute still work with existing `V1.61b`
 
 ### Phase 2: CONTROL `V1.62b`
@@ -238,23 +255,28 @@ Goal:
 
 - remove permanent wait behavior and improve transport recovery
 
-Work items:
+Implemented in the first `V1.62b` candidate:
 
-1. Add timeout/retry/reinit logic to CONTROL wait loops:
-   - boot wait
-   - reconnect wait
+1. Add a parser-entry hook at `0x044A`:
+   - preserve stock parser flow when no UART overrun is present
+   - on `OERR`, drain `RCREG`, reset UART cursors, and clear parser state
+2. Replace the weak wake reconnect loop at `0x12BC`:
+   - do not exit reconnect based on `BF 03` state alone
+   - require the same stronger non-`0x80` status handshake used by the stock boot path
+   - periodically re-prime UART/parser state while continuing to show `WAITING FOR DLCP`
+3. Preserve the reduced `V1.6b` sync pattern rather than reintroducing a large full-sync burst.
+4. Keep protocol fully compatible with both `V2.4` and `V2.5`.
+
+Remaining follow-up items:
+
+1. Decide whether the boot-side wait path should use the same stronger reconnect wrapper.
 2. Add RX ring full detection or controlled overwrite policy.
-3. Improve OERR recovery:
-   - drain `RCREG`
-   - reinitialize receive cleanly
-4. Add parser idle timeout so partial frames do not persist forever.
-5. Add timeout to TX enqueue full-spin paths.
-6. Preserve the reduced `V1.6b` sync pattern rather than reintroducing a large full-sync burst.
-7. Keep protocol fully compatible with both `V2.4` and `V2.5`.
+3. Add parser idle timeout so partial frames do not persist forever.
+4. Add timeout to TX enqueue full-spin paths.
 
 Acceptance criteria:
 
-- CONTROL no longer stays permanently in `WAITING FOR DLCP`
+- raw-main `gpsim` shows `V2.5 + V1.62b` recovering from the wake / reconnect `WAITING FOR DLCP` case that strands `V2.5 + V1.61b`
 - reconnect works after transient MAIN reset/recovery
 - no protocol change is required on MAIN for basic operation
 
@@ -288,6 +310,7 @@ The validation goal is not just "system boots". The tests must:
 
 - reproduce `WAITING FOR DLCP` on stock firmware under realistic fault conditions
 - show that `V2.5 + V1.61b` reduces or eliminates permanent hangs caused by transient MAIN failures
+- distinguish active-path recovery from standby-exit / reconnect recovery
 - show that `V2.5 + V1.62b` further reduces reconnect dwell and parser-related lockups
 - preserve the negative case where a genuinely absent MAIN still results in `WAITING FOR DLCP`
 
@@ -306,7 +329,12 @@ Required harness changes:
 1. CONTROL gpsim harness must support running without the standby-disable overlay.
    Current harness behavior keeps CONTROL in DISPLAY mode for standalone testing and hides the reconnect path that shows `WAITING FOR DLCP`.
 2. MAIN gpsim harness must support running without unconditional I2C bypass when testing MAIN deadlock behavior.
-   Current harness behavior skips exactly the MSSP/I2C paths that are one of the main suspected root causes.
+   Internal PIC `EECON1.WR` waits now run natively; only the external
+   MSSP/I2C bypass remains as an optional compatibility overlay when no
+   slave model is attached. The chain harness now defaults to attaching
+   generic `cfg71` (`0x71`) and `dsp34` (`0x34`) `i2c_regfile` slaves when
+   `bypass_i2c=False`. Fidelity tests should prefer the real
+   `i2c_regfile` bus path over the bypass.
 3. Add test-only fault overlays for MAIN timeout paths.
    These should force persistent busy/stuck conditions in specific wait loops so the recovery code can be exercised deterministically.
 4. Persist LCD timelines and key events under `artifacts/sim/current/robustness/`.
@@ -349,8 +377,8 @@ Method:
 Expected result:
 
 - stock `2.3 + 1.4`: CONTROL enters `WAITING FOR DLCP` and remains stuck
-- `V2.5 + V1.61b`: CONTROL may enter `WAITING FOR DLCP`, but exits after MAIN local recovery/reset
-- `V2.5 + V1.62b`: same as above, with shorter dwell and more reliable reconnect
+- `V2.5 + V1.61b`: active-path faults should recover locally, and current raw-main `gpsim` also shows recovery after the induced wake fault is cleared
+- `V2.5 + V1.62b`: same as above, with the reconnect-hardened CONTROL-side logic still expected to give lower dwell and better margin
 
 ### 3. Forced MAIN MSSP/I2C stuck-busy fault
 
@@ -482,6 +510,8 @@ Minimum required test coverage before release:
 - `V2.5 + V1.61b` transient MAIN-response blackout
 - `V2.5 + V1.61b` forced MAIN I2C-stall fault
 - `V2.5 + V1.61b` forced MAIN UART-TX stall
+- `V2.5 + V1.61b` raw-main runtime timeout recovery
+- `V2.5 + V1.61b` raw-main wake / reconnect timeout characterization
 - `V2.5 + V1.62b` reconnect parser-fault test
 - `V2.5 + V1.62b` burst-pressure / overflow test
 - transient MAIN fault during active volume changes
@@ -495,9 +525,11 @@ Minimum required test coverage before release:
 The release bars should be:
 
 - stock baseline tests must reproduce `WAITING FOR DLCP` and remain stuck within the test budget
-- `V2.5 + V1.61b` may still show `WAITING FOR DLCP` during a transient injected fault, but must recover after MAIN timeout/recovery
+- `V2.5 + V1.61b` must recover from transient active-path MAIN timeout faults without entering permanent `WAITING FOR DLCP`
+- current raw-main `gpsim` result shows `V2.5 + V1.61b` reconnecting after the induced wake fault is cleared; comparative reconnect robustness vs `V1.62b` still needs hardware validation
 - `V2.5 + V1.61b` must preserve all existing wire-visible semantics used by `V1.61b`
 - `V2.5 + V1.62b` must recover faster and more consistently than `V2.5 + V1.61b` in reconnect/parser-fault scenarios
+- the current raw-main `gpsim` result meets that wake / reconnect recovery bar for `V2.5 + V1.62b`
 - permanent no-main tests must still remain in `WAITING FOR DLCP`
 
 ## Bottom Line

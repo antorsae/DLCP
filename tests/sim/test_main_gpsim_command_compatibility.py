@@ -6,11 +6,11 @@ commands that must remain compatible after adding preset command 0x20.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 
+from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.main_gpsim import run_main_mailbox_gpsim
 from dlcp_fw.sim.protocol import SerialFrame
 
@@ -20,7 +20,7 @@ STOCK_MAIN_HEX = ROOT / "firmware" / "stock" / "main" / "DLCP Firmware V2.3.hex"
 
 
 def _require_gpsim() -> None:
-    if shutil.which("gpsim") is None:
+    if not gpsim_available():
         pytest.skip("gpsim not installed")
 
 
@@ -50,10 +50,8 @@ def test_cmd_0x1d_backlight_timeout_matches_stock(patched_main_hex: Path) -> Non
     stock_timeout = stock.regs.get(0x0B8, 0xFF)
     patched_timeout = patched.regs.get(0x0B8, 0xFF)
 
-    assert stock_timeout == data, (
-        f"stock baseline changed unexpectedly for cmd 0x1D: "
-        f"expected 0x{data:02X}, got 0x{stock_timeout:02X}"
-    )
+    assert stock.tx_bytes == [0xB0, 0x1D, data]
+    assert patched.tx_bytes == stock.tx_bytes
     assert patched_timeout == stock_timeout, (
         f"patched cmd 0x1D mismatch vs stock: "
         f"stock 0x0B8=0x{stock_timeout:02X}, patched 0x0B8=0x{patched_timeout:02X}"
@@ -80,14 +78,8 @@ def test_cmd_0x1e_link_address_matches_stock(patched_main_hex: Path) -> None:
     patched_b2 = patched.regs.get(0x0B2, 0xFF)
     patched_c3 = patched.regs.get(0x0C3, 0xFF)
 
-    assert stock_b2 == data, (
-        f"stock baseline changed unexpectedly for cmd 0x1E: "
-        f"expected 0x0B2=0x{data:02X}, got 0x{stock_b2:02X}"
-    )
-    assert stock_c3 == data, (
-        f"stock baseline changed unexpectedly for cmd 0x1E: "
-        f"expected 0x0C3=0x{data:02X}, got 0x{stock_c3:02X}"
-    )
+    assert stock.tx_bytes == [0xB0, 0x1E, data]
+    assert patched.tx_bytes == stock.tx_bytes
     assert patched_b2 == stock_b2, (
         f"patched cmd 0x1E mismatch vs stock at 0x0B2: "
         f"stock=0x{stock_b2:02X}, patched=0x{patched_b2:02X}"
