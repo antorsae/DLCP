@@ -83,6 +83,25 @@ private:
 };
 
 
+class I2CRegFileAddressStretchCountAttribute : public Integer {
+public:
+  explicit I2CRegFileAddressStretchCountAttribute(I2CRegFile_Modules::I2CRegFile *regfile)
+    : Integer(
+        "Address_Stretch_Count",
+        -1,
+        "Number of address matches to stretch (-1 = every match, 0 = disabled)"
+      ),
+      m_regfile(regfile)
+  {
+  }
+
+  void set(gint64 v) override;
+
+private:
+  I2CRegFile_Modules::I2CRegFile *m_regfile;
+};
+
+
 class I2CRegFileDataNackCountAttribute : public Integer {
 public:
   explicit I2CRegFileDataNackCountAttribute(I2CRegFile_Modules::I2CRegFile *regfile)
@@ -102,6 +121,25 @@ class I2CRegFileDataStuckSdaCyclesAttribute : public Integer {
 public:
   explicit I2CRegFileDataStuckSdaCyclesAttribute(I2CRegFile_Modules::I2CRegFile *regfile)
     : Integer("Data_Stuck_SDA_Cycles", 0, "Hold SDA low for N cycles after each data-phase byte"),
+      m_regfile(regfile)
+  {
+  }
+
+  void set(gint64 v) override;
+
+private:
+  I2CRegFile_Modules::I2CRegFile *m_regfile;
+};
+
+
+class I2CRegFileDataStuckSdaCountAttribute : public Integer {
+public:
+  explicit I2CRegFileDataStuckSdaCountAttribute(I2CRegFile_Modules::I2CRegFile *regfile)
+    : Integer(
+        "Data_Stuck_SDA_Count",
+        -1,
+        "Number of data-phase bytes to hold SDA low (-1 = every byte, 0 = disabled)"
+      ),
       m_regfile(regfile)
   {
   }
@@ -208,15 +246,19 @@ I2CRegFile::I2CRegFile(const char *_name)
     m_slave_address_attr(new I2CRegFileAddressAttribute(this)),
     m_address_nack_count_attr(new I2CRegFileAddressNackCountAttribute(this)),
     m_address_stretch_scl_cycles_attr(new I2CRegFileAddressStretchSCLCyclesAttribute(this)),
+    m_address_stretch_count_attr(new I2CRegFileAddressStretchCountAttribute(this)),
     m_data_nack_count_attr(new I2CRegFileDataNackCountAttribute(this)),
     m_data_stuck_sda_cycles_attr(new I2CRegFileDataStuckSdaCyclesAttribute(this)),
+    m_data_stuck_sda_count_attr(new I2CRegFileDataStuckSdaCountAttribute(this)),
     m_hold_scl_low_attr(new I2CRegFileHoldSCLLowAttribute(this)),
     m_stretch_scl_cycles_attr(new I2CRegFileStretchSCLCyclesAttribute(this)),
     m_reg_addr(0),
     m_address_nack_count(0),
     m_address_stretch_scl_cycles(0),
+    m_address_stretch_count(-1),
     m_data_nack_count(0),
     m_data_stuck_sda_cycles(0),
+    m_data_stuck_sda_count(-1),
     m_hold_scl_low(false),
     m_timed_scl_hold_active(false),
     m_requested_sda_release(true),
@@ -240,8 +282,10 @@ I2CRegFile::I2CRegFile(const char *_name)
   addSymbol(m_slave_address_attr);
   addSymbol(m_address_nack_count_attr);
   addSymbol(m_address_stretch_scl_cycles_attr);
+  addSymbol(m_address_stretch_count_attr);
   addSymbol(m_data_nack_count_attr);
   addSymbol(m_data_stuck_sda_cycles_attr);
+  addSymbol(m_data_stuck_sda_count_attr);
   addSymbol(m_hold_scl_low_attr);
   addSymbol(m_stretch_scl_cycles_attr);
 }
@@ -265,10 +309,14 @@ I2CRegFile::~I2CRegFile()
   delete m_address_nack_count_attr;
   removeSymbol(m_address_stretch_scl_cycles_attr);
   delete m_address_stretch_scl_cycles_attr;
+  removeSymbol(m_address_stretch_count_attr);
+  delete m_address_stretch_count_attr;
   removeSymbol(m_data_nack_count_attr);
   delete m_data_nack_count_attr;
   removeSymbol(m_data_stuck_sda_cycles_attr);
   delete m_data_stuck_sda_cycles_attr;
+  removeSymbol(m_data_stuck_sda_count_attr);
+  delete m_data_stuck_sda_count_attr;
   removeSymbol(m_hold_scl_low_attr);
   delete m_hold_scl_low_attr;
   removeSymbol(m_stretch_scl_cycles_attr);
@@ -287,8 +335,12 @@ I2CRegFile::~I2CRegFile()
 
 bool I2CRegFile::receive_data_byte(unsigned int data)
 {
-  if (m_data_stuck_sda_cycles != 0) {
+  if (m_data_stuck_sda_cycles != 0 && m_data_stuck_sda_count != 0) {
     start_timed_sda_hold(m_data_stuck_sda_cycles);
+    if (m_data_stuck_sda_count > 0) {
+      m_data_stuck_sda_count--;
+      m_data_stuck_sda_count_attr->Integer::set(static_cast<gint64>(m_data_stuck_sda_count));
+    }
   }
 
   if (m_data_nack_count != 0) {
@@ -348,7 +400,14 @@ bool I2CRegFile::match_address()
   }
 
   if (m_address_stretch_scl_cycles != 0) {
+    if (m_address_stretch_count == 0) {
+      return true;
+    }
     start_timed_scl_hold(m_address_stretch_scl_cycles);
+    if (m_address_stretch_count > 0) {
+      m_address_stretch_count--;
+      m_address_stretch_count_attr->Integer::set(static_cast<gint64>(m_address_stretch_count));
+    }
   }
 
   return true;
@@ -394,6 +453,12 @@ void I2CRegFile::set_address_stretch_scl_cycles(guint64 cycles)
 }
 
 
+void I2CRegFile::set_address_stretch_count(int count)
+{
+  m_address_stretch_count = count;
+}
+
+
 void I2CRegFile::set_data_nack_count(unsigned int count)
 {
   m_data_nack_count = count;
@@ -403,6 +468,12 @@ void I2CRegFile::set_data_nack_count(unsigned int count)
 void I2CRegFile::set_data_stuck_sda_cycles(guint64 cycles)
 {
   m_data_stuck_sda_cycles = cycles;
+}
+
+
+void I2CRegFile::set_data_stuck_sda_count(int count)
+{
+  m_data_stuck_sda_count = count;
 }
 
 
@@ -534,6 +605,16 @@ void I2CRegFileAddressStretchSCLCyclesAttribute::set(gint64 v)
 }
 
 
+void I2CRegFileAddressStretchCountAttribute::set(gint64 v)
+{
+  const int count = v < 0 ? -1 : static_cast<int>(v);
+  Integer::set(static_cast<gint64>(count));
+  if (m_regfile) {
+    m_regfile->set_address_stretch_count(count);
+  }
+}
+
+
 void I2CRegFileDataNackCountAttribute::set(gint64 v)
 {
   const unsigned int count = v <= 0 ? 0U : static_cast<unsigned int>(v);
@@ -550,6 +631,16 @@ void I2CRegFileDataStuckSdaCyclesAttribute::set(gint64 v)
   Integer::set(static_cast<gint64>(cycles));
   if (m_regfile) {
     m_regfile->set_data_stuck_sda_cycles(cycles);
+  }
+}
+
+
+void I2CRegFileDataStuckSdaCountAttribute::set(gint64 v)
+{
+  const int count = v < 0 ? -1 : static_cast<int>(v);
+  Integer::set(static_cast<gint64>(count));
+  if (m_regfile) {
+    m_regfile->set_data_stuck_sda_count(count);
   }
 }
 

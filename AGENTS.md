@@ -209,6 +209,7 @@ Current suite includes:
 - Wire UART smoke regression: `test_wire_chain_gpsim.py`
 - Raw-main V2.5 chain characterization: `test_chain_gpsim_v25_recovery.py`
 - Raw-main V2.5 + V1.62b recovery: `test_chain_gpsim_v25_v162b_recovery.py`
+- Wire-UART I2C wake characterization: `test_wire_chain_gpsim_i2c_faults.py`
 - MAIN V2.5 timeout probe: `test_main_v25_timeout_recovery.py`
 - Main behavior: `test_main_model_banking.py`, `test_main_dsp_refresh_behavior.py`, `test_main_gpsim_*`
 - Main fault injection: `test_main_gpsim_fault_injection.py`

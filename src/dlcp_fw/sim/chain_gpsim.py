@@ -408,8 +408,10 @@ class MainChainHarness:
         *,
         address_nack_count: int | None = None,
         address_stretch_scl_cycles: int | None = None,
+        address_stretch_count: int | None = None,
         data_nack_count: int | None = None,
         data_stuck_sda_cycles: int | None = None,
+        data_stuck_sda_count: int | None = None,
         hold_scl_low: bool | None = None,
         stretch_scl_cycles: int | None = None,
     ) -> None:
@@ -425,6 +427,11 @@ class MainChainHarness:
                 f"{device_name}.Address_Stretch_SCL_Cycles = {max(0, int(address_stretch_scl_cycles))}",
                 5.0,
             )
+        if address_stretch_count is not None:
+            self._issue(
+                f"{device_name}.Address_Stretch_Count = {max(-1, int(address_stretch_count))}",
+                5.0,
+            )
         if data_nack_count is not None:
             self._issue(
                 f"{device_name}.Data_Nack_Count = {max(0, int(data_nack_count))}",
@@ -433,6 +440,11 @@ class MainChainHarness:
         if data_stuck_sda_cycles is not None:
             self._issue(
                 f"{device_name}.Data_Stuck_SDA_Cycles = {max(0, int(data_stuck_sda_cycles))}",
+                5.0,
+            )
+        if data_stuck_sda_count is not None:
+            self._issue(
+                f"{device_name}.Data_Stuck_SDA_Count = {max(-1, int(data_stuck_sda_count))}",
                 5.0,
             )
         if hold_scl_low is not None:
@@ -451,8 +463,10 @@ class MainChainHarness:
             device_name,
             address_nack_count=0,
             address_stretch_scl_cycles=0,
+            address_stretch_count=-1,
             data_nack_count=0,
             data_stuck_sda_cycles=0,
+            data_stuck_sda_count=-1,
             stretch_scl_cycles=0,
         )
 
@@ -772,8 +786,10 @@ class SingleMainChainHarness:
         *,
         address_nack_count: int | None = None,
         address_stretch_scl_cycles: int | None = None,
+        address_stretch_count: int | None = None,
         data_nack_count: int | None = None,
         data_stuck_sda_cycles: int | None = None,
+        data_stuck_sda_count: int | None = None,
         hold_scl_low: bool | None = None,
         stretch_scl_cycles: int | None = None,
     ) -> None:
@@ -781,8 +797,10 @@ class SingleMainChainHarness:
             device_name,
             address_nack_count=address_nack_count,
             address_stretch_scl_cycles=address_stretch_scl_cycles,
+            address_stretch_count=address_stretch_count,
             data_nack_count=data_nack_count,
             data_stuck_sda_cycles=data_stuck_sda_cycles,
+            data_stuck_sda_count=data_stuck_sda_count,
             hold_scl_low=hold_scl_low,
             stretch_scl_cycles=stretch_scl_cycles,
         )

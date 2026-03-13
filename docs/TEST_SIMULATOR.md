@@ -231,8 +231,19 @@ Location: `tests/sim/`
     register-file bus
   - now also locks in:
     - address-phase NACK of a stock `cfg71` write
+    - one-shot address-phase SCL stretch count expiry on a stock `cfg71` write
     - data-phase NACK of a stock `cfg71` write
     - bounded SDA-low corruption of an active stock `cfg71` write
+    - one-shot data-triggered SDA-low count expiry on a stock `cfg71` write
+- `test_wire_chain_gpsim_i2c_faults.py`
+  - live wire-UART wake characterization with one-shot external `cfg71` I2C
+    faults that auto-expire on the next matching transaction instead of staying
+    active until the test clears them
+  - current result still does not isolate a MAIN-only split:
+    - `V1.61b + V2.4` and `V1.61b + V2.5` both remain stranded in
+      `WAITING FOR DLCP`
+    - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect after the same
+      one-shot external fault expires
 - `test_gpsim_multi_processor_uart_topology.py`
   - proves the repo-local gpsim build can host labeled `ctl` + `m0` + `m1`
   in one process and attach `RC6`/`RC7` hop nodes for a two-powerbox chain

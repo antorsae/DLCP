@@ -134,14 +134,19 @@ from gpsim tests without patching MAIN firmware:
 - `Address_Nack_Count`: NACK the next `N` address phases, then resume ACK
 - `Address_Stretch_SCL_Cycles`: hold `SCL` low for `N` cycles after each
   address match
+- `Address_Stretch_Count`: apply that address-phase SCL stretch to only the
+  next `N` matching address phases (`-1` means every match)
 - `Data_Nack_Count`: NACK the next `N` data-phase bytes, then resume ACK
 - `Data_Stuck_SDA_Cycles`: hold `SDA` low for `N` cycles after each data-phase
   byte; this can corrupt an in-flight stock write without patching firmware
+- `Data_Stuck_SDA_Count`: apply that data-triggered SDA-low fault to only the
+  next `N` data bytes (`-1` means every byte)
 - `Stretch_SCL_Cycles`: immediately hold `SCL` low for `N` cycles, then release
 
 The chain harness currently exposes the safe runtime subset:
-`Address_Nack_Count`, `Address_Stretch_SCL_Cycles`, `Data_Nack_Count`,
-`Data_Stuck_SDA_Cycles`, and `Stretch_SCL_Cycles`.
+`Address_Nack_Count`, `Address_Stretch_SCL_Cycles`, `Address_Stretch_Count`,
+`Data_Nack_Count`, `Data_Stuck_SDA_Cycles`, `Data_Stuck_SDA_Count`, and
+`Stretch_SCL_Cycles`.
 
 ### Serial transport model (LinkPipe)
 
@@ -193,6 +198,11 @@ Current scope:
     strand both `V2.4` and `V2.5`
   - with `V1.62b`, lighter bounded wake delays clear and both `V2.4` and
     `V2.5` reconnect
+  - with shared one-shot wake-time `cfg71` I2C faults, the same pattern still
+    holds:
+    - `V1.61b + V2.4` and `V1.61b + V2.5` both stay stranded in `WAITING FOR DLCP`
+    - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect once the one-shot
+      external fault expires
 
 ### Heartbeat model
 

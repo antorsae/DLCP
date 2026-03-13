@@ -46,8 +46,10 @@ class MainI2CRegFileDevice:
     registers: Mapping[int, int] | None = None
     address_nack_count: int = 0
     address_stretch_scl_cycles: int = 0
+    address_stretch_count: int = -1
     data_nack_count: int = 0
     data_stuck_sda_cycles: int = 0
+    data_stuck_sda_count: int = -1
     hold_scl_low: bool = False
     stretch_scl_cycles: int = 0
 
@@ -66,8 +68,10 @@ def default_main_i2c_regfile_devices() -> list[MainI2CRegFileDevice]:
             None if device.registers is None else dict(device.registers),
             int(device.address_nack_count),
             int(device.address_stretch_scl_cycles),
+            int(device.address_stretch_count),
             int(device.data_nack_count),
             int(device.data_stuck_sda_cycles),
+            int(device.data_stuck_sda_count),
             bool(device.hold_scl_low),
             int(device.stretch_scl_cycles),
         )
@@ -141,10 +145,14 @@ def write_main_i2c_regfile_stc(
             lines.append(
                 f"{device.name}.Address_Stretch_SCL_Cycles = {int(device.address_stretch_scl_cycles)}"
             )
+            if int(device.address_stretch_count) >= 0:
+                lines.append(f"{device.name}.Address_Stretch_Count = {int(device.address_stretch_count)}")
         if int(device.data_nack_count) != 0:
             lines.append(f"{device.name}.Data_Nack_Count = {int(device.data_nack_count)}")
         if int(device.data_stuck_sda_cycles) > 0:
             lines.append(f"{device.name}.Data_Stuck_SDA_Cycles = {int(device.data_stuck_sda_cycles)}")
+            if int(device.data_stuck_sda_count) >= 0:
+                lines.append(f"{device.name}.Data_Stuck_SDA_Count = {int(device.data_stuck_sda_count)}")
         if bool(device.hold_scl_low):
             lines.append(f"{device.name}.Hold_SCL_Low = 1")
         if int(device.stretch_scl_cycles) > 0:

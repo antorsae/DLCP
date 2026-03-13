@@ -375,6 +375,35 @@ class WireMultiMainChainHarness:
         for bridge in self._bridge_map.values():
             bridge.clear_fault()
 
+    def set_main_i2c_fault(
+        self,
+        device_name: str = "cfg71",
+        *,
+        main_index: int = 0,
+        address_nack_count: int | None = None,
+        address_stretch_scl_cycles: int | None = None,
+        address_stretch_count: int | None = None,
+        data_nack_count: int | None = None,
+        data_stuck_sda_cycles: int | None = None,
+        data_stuck_sda_count: int | None = None,
+        hold_scl_low: bool | None = None,
+        stretch_scl_cycles: int | None = None,
+    ) -> None:
+        self.mains[main_index].set_i2c_fault(
+            device_name,
+            address_nack_count=address_nack_count,
+            address_stretch_scl_cycles=address_stretch_scl_cycles,
+            address_stretch_count=address_stretch_count,
+            data_nack_count=data_nack_count,
+            data_stuck_sda_cycles=data_stuck_sda_cycles,
+            data_stuck_sda_count=data_stuck_sda_count,
+            hold_scl_low=hold_scl_low,
+            stretch_scl_cycles=stretch_scl_cycles,
+        )
+
+    def clear_main_i2c_faults(self, device_name: str = "cfg71", *, main_index: int = 0) -> None:
+        self.mains[main_index].clear_i2c_faults(device_name)
+
     def control_rx_activity(self) -> bool:
         return self._control_rx_activity
 

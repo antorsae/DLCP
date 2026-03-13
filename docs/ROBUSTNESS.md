@@ -339,7 +339,10 @@ Required harness changes:
    drop/delay faults on the real `RC6/RC7` path. Current characterization does
    not show a clean MAIN-only split: with `V1.61b`, tested bounded wake faults
    strand both `V2.4` and `V2.5`; with `V1.62b`, lighter bounded wake-delay
-   release tests reconnect both.
+   release tests reconnect both. The same remains true for the newer one-shot
+   external `cfg71` wake-time I2C faults: they now auto-expire on the next
+   `N` matching transactions, but the observed split is still primarily
+   CONTROL-side (`V1.61b` strands both MAIN versions; `V1.62b` reconnects both).
 3. Add test-only fault overlays for MAIN timeout paths.
    These should force persistent busy/stuck conditions in specific wait loops so the recovery code can be exercised deterministically.
 4. Persist LCD timelines and key events under `artifacts/sim/current/robustness/`.

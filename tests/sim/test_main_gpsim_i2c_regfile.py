@@ -264,3 +264,62 @@ def test_main_i2c_regfile_data_stuck_sda_cycles_corrupts_active_stock_cfg71_writ
     assert _did_hit_break(cli_text, 0x1990)
     assert _read_regfile(cli_text, 0x0D) == 0x00
     assert _read_regfile(cli_text, 0x08) == 0x66
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_main_i2c_regfile_address_stretch_count_expires_after_one_stock_cfg71_transaction(stock_main_hex: Path) -> None:
+    _require_gpsim()
+
+    cli_text = _run_main_i2c_regfile_probe(
+        stock_main_hex,
+        devices=[
+            MainI2CRegFileDevice("cfg71", 0x71, registers={0x12: 0x34}),
+            MainI2CRegFileDevice("dsp34", 0x34),
+        ],
+        lines=[
+            "cfg71.Address_Stretch_SCL_Cycles=35000",
+            "cfg71.Address_Stretch_Count=1",
+            "pc=0x18FE",
+            "break e 0x1990",
+            "run",
+            "cfg71.reg0d",
+            "cfg71.reg08",
+            "cfg71.Address_Stretch_Count",
+        ],
+    )
+
+    assert _did_hit_break(cli_text, 0x1990)
+    assert _read_regfile(cli_text, 0x0D) == 0x09
+    assert _read_regfile(cli_text, 0x08) == 0x70
+    assert _read_last_scalar(cli_text) == 0x00
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_main_i2c_regfile_data_stuck_sda_count_expires_after_one_faulted_byte(stock_main_hex: Path) -> None:
+    _require_gpsim()
+
+    cli_text = _run_main_i2c_regfile_probe(
+        stock_main_hex,
+        devices=[
+            MainI2CRegFileDevice("cfg71", 0x71, registers={0x12: 0x34}),
+            MainI2CRegFileDevice("dsp34", 0x34),
+        ],
+        lines=[
+            "cfg71.reg0d=0x55",
+            "cfg71.reg08=0x66",
+            "cfg71.Data_Stuck_SDA_Cycles=50000000",
+            "cfg71.Data_Stuck_SDA_Count=1",
+            "pc=0x18FE",
+            "break e 0x1990",
+            "break c 7000000",
+            "run",
+            "cfg71.reg0d",
+            "cfg71.reg08",
+            "cfg71.Data_Stuck_SDA_Count",
+        ],
+    )
+
+    assert _did_hit_break(cli_text, 0x1990)
+    assert _read_last_scalar(cli_text) == 0x00
