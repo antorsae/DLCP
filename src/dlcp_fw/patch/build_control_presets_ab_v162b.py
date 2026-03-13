@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Build a patched DLCP control firmware (v1.5b) with A/B preset support.
+Build a patched DLCP control firmware (v1.6b) with A/B preset support and
+reconnect robustness.
 
 Patch summary (reliability-first design):
 - Add Preset as a top-level menu screen between Volume and Input.
@@ -15,7 +16,12 @@ Patch summary (reliability-first design):
 - No filename request/parser/cache protocol is added.
 - IR F1/F2 shortcuts: RC5 0x38 -> preset A, RC5 0x39 -> preset B.
 - Preset state stored in state_flags bit6 (0x01F.6); persisted at EEPROM 0x74.
-- Firmware version policy: display/version tuple updated to 1.51b.
+- Preserves the V1.61b setup-index migration fix for stale EEPROM[0x01].
+- Adds CONTROL-side wake/reconnect robustness for MAIN V2.5:
+  - parser OERR recovery drains UART state and resets parser cursors
+  - wake reconnect waits for a fuller status handshake instead of BF/03 alone
+  - failed reconnect attempts periodically re-prime UART/parser state
+- Firmware version policy: display/version tuple updated to 1.62b.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ import subprocess
 import tempfile
 from typing import Dict, List, Tuple
 
-from dlcp_fw.paths import PATCHED_CONTROL_HEX_V151B, STOCK_CONTROL_HEX_V15B
+from dlcp_fw.paths import PATCHED_CONTROL_HEX_V162B, STOCK_CONTROL_HEX_V16B
 
 
 class HexParseError(RuntimeError):
@@ -37,77 +43,60 @@ PATCH_ASM = r"""
 LIST P=18F25K20
 #include <p18f25k20.inc>
 
-; ============================================================
-; Patch 0 - Startup flag init
-; ============================================================
-; Ensure custom state bits start from known values each boot.
-org 0x10F6
+org 0x10B2
     bcf 0x01F, 3, ACCESS
     bcf 0x01F, 4, ACCESS
 
-; ============================================================
-; Patch 1 - Startup preset load hook
-; ============================================================
-org 0x1160
+org 0x111C
     call preset_boot_init_wrapper
 
-; Version splash minor/patch component: 4 -> 51 (0x33)
-org 0x1196
-    movlw 0x33
+org 0x1152
+    movlw 0x3D
 
-; ============================================================
-; Patch 2 - Navigation wrap: 3 screens -> 4 screens
-; ============================================================
-org 0x1256
+org 0x1216
     movlw 0x03
 
-org 0x127A
+org 0x123A
     movlw 0x03
 
-; ============================================================
-; Patch 3 - String table index fixes
-; ============================================================
-org 0x148C
+org 0x1406
     movlw 0x02
     movwf 0x027, ACCESS
 
-org 0x19FA
+org 0x191A
     movlw 0x01
     movwf 0x027, ACCESS
 
-; ============================================================
-; Patch 4 - Dispatch redirect at label_205 (0x1230)
-; ============================================================
-org 0x1230
+org 0x11F0
     goto new_dispatch_stub
     nop
 
-; ============================================================
-; Patch 5 - Volume preset indicator hook
-; ============================================================
-org 0x13A0
+org 0x137A
     goto volume_indicator_stub
 
-; ============================================================
-; Patch 6 - Full-sync hook (function_028 entry)
-; ============================================================
-org 0x0B2C
+org 0x0B36
     goto full_sync_entry_stub
-    nop
 
-; ============================================================
-; Patch 7 - IR dispatch pre-hook
-; ============================================================
-org 0x0E32
+org 0x0DE6
     goto ir_dispatch_pre_stub
 
-; ============================================================
-; New code in erased flash area (0x7000+)
-; ============================================================
-org 0x7000
+org 0x044A
+    goto parser_entry_stub
 
+org 0x12BC
+    goto reconnect_wait_stub
+
+org 0x7000
 preset_boot_init_wrapper:
-    call 0x0A3C                 ; function_026 (stock settings load)
+    call 0x0A46                 ; function_026 (stock settings load)
+    movf 0x0BA, W, BANKED
+    bz preset_boot_setup_ok
+    clrf 0x0BA, BANKED
+    movlw 0x01
+    movwf EEADR, ACCESS
+    clrf WREG, ACCESS
+    call 0x01A2                 ; function_011 (EEPROM byte write)
+preset_boot_setup_ok:
     movlw 0x74
     call 0x0196                 ; function_010 (EEPROM byte read)
     movwf 0x027, ACCESS
@@ -119,8 +108,10 @@ preset_boot_init_wrapper:
 preset_boot_init_done:
     movlb 0x01
     movlw 0x03
-    movwf 0x70, BANKED          ; patch retry budget @ 0x170
-    clrf 0x71, BANKED           ; reconnect shadow @ 0x171
+    movwf 0x70, BANKED
+    clrf 0x71, BANKED
+    clrf 0x73, BANKED
+    clrf 0x74, BANKED
     movlb 0x00
     clrf 0xBF, BANKED
     return
@@ -164,28 +155,28 @@ ir_dispatch_done:
 
 ir_dispatch_passthrough:
     movlb 0x00
-    goto 0x0E38
+    goto 0x0DEC
 
 new_dispatch_stub:
     movlb 0x00
     decfsz 0xBF, W, BANKED
     goto check_state_2
     call preset_screen
-    goto 0x124A
+    goto 0x120A
 
 check_state_2:
     movlw 0x02
     cpfseq 0xBF, BANKED
     goto check_state_3
-    call 0x19F2
-    goto 0x124A
+    call 0x1912
+    goto 0x120A
 
 check_state_3:
     movlw 0x03
     cpfseq 0xBF, BANKED
-    goto 0x124A
-    call 0x1484
-    goto 0x124A
+    goto 0x120A
+    call 0x13FE
+    goto 0x120A
 
 volume_indicator_stub:
     movlw 0x80
@@ -196,8 +187,8 @@ volume_indicator_stub:
     btfsc 0x01F, 6, ACCESS
     movlw 'B'
     call 0x00EC
-    call 0x0CFE
-    goto 0x13A4
+    call 0x0CB2
+    goto 0x137E
 
 full_sync_entry_stub:
     movlb 0x01
@@ -218,18 +209,102 @@ fs_connected:
     movwf 0x70, BANKED
 fs_send_check:
     movf 0x70, F, BANKED
-    bz fs_loop_entry
+    bz fs_continue
     movlb 0x00
     call send_preset_frame_txonly
     movlb 0x01
     decf 0x70, F, BANKED
-fs_loop_entry:
+fs_continue:
     movlb 0x00
-    clrf 0x028, ACCESS
-    movlw 0x06
-    cpfslt 0x028, ACCESS
-    goto 0x0B82
-    goto 0x0B36
+    call 0x0C40                 ; function_031 (original)
+    goto 0x0B3A
+
+parser_entry_stub:
+    btfss RCSTA, OERR, ACCESS
+    goto parser_entry_continue
+    call control_uart_soft_recover
+parser_entry_continue:
+    goto 0x0456
+
+control_uart_soft_recover:
+    bcf PIE1, TXIE, ACCESS
+    bcf RCSTA, CREN, ACCESS
+    movf RCREG, W, ACCESS
+    movf RCREG, W, ACCESS
+    bsf RCSTA, CREN, ACCESS
+    movlb 0x00
+    clrf 0x096, BANKED
+    clrf 0x097, BANKED
+    clrf 0x098, BANKED
+    clrf 0x099, BANKED
+    clrf 0x0A6, BANKED
+    clrf 0x02F, ACCESS
+    clrf 0x030, ACCESS
+    return
+
+reconnect_wait_stub:
+    movlb 0x01
+    clrf 0x73, BANKED
+
+reconnect_wait_loop:
+    movlb 0x00
+    call 0x0B64                 ; function_029
+    movlw 0xC8
+    call 0x01BC                 ; function_012
+    call 0x044A                 ; robust parser wrapper
+
+    movlw 0x80
+    subwf 0x0B8, W, BANKED
+    skpz
+    movlw 0x01
+    movwf 0x018, ACCESS
+
+    movlw 0x80
+    subwf 0x0B9, W, BANKED
+    skpz
+    movlw 0x01
+    andwf 0x018, F, ACCESS
+
+    movlw 0x80
+    subwf 0x0A7, W, BANKED
+    skpz
+    movlw 0x01
+    andwf 0x018, F, ACCESS
+
+    movlw 0x80
+    subwf 0x0A1, W, BANKED
+    skpz
+    movlw 0x01
+    andwf 0x018, F, ACCESS
+
+    movf 0x018, F, ACCESS
+    bnz reconnect_wait_done
+
+    movlb 0x01
+    incf 0x73, F, BANKED
+    movlw 0x08
+    cpfseq 0x73, BANKED
+    goto reconnect_wait_loop
+    clrf 0x73, BANKED
+    movlb 0x00
+    call control_uart_soft_recover
+    goto reconnect_wait_loop
+
+reconnect_wait_done:
+    movlb 0x01
+    clrf 0x73, BANKED
+    movlb 0x00
+    bsf 0x01F, 1, ACCESS
+    movlw 0x61
+    movwf 0x09D, BANKED
+    movlw 0xEA
+    movwf 0x09E, BANKED
+    clrf 0x09F, BANKED
+    clrf 0x0A0, BANKED
+    bcf 0x01F, 5, ACCESS
+    movlw 0x01
+    movwf 0x032, ACCESS
+    goto 0x11D8
 
 preset_screen:
 prs_screen_draw:
@@ -312,13 +387,13 @@ prs_screen_draw:
     call 0x00EC
 
     movlb 0x01
-    clrf 0x72, BANKED           ; last drawn preset @ 0x172
+    clrf 0x72, BANKED
     btfsc 0x01F, 6, ACCESS
     incf 0x72, F, BANKED
 
 preset_loop:
     movlb 0x00
-    call 0x0CFE
+    call 0x0CB2
     movlb 0x00
     btfsc 0x01F, 3, ACCESS
     bcf 0x01F, 3, ACCESS
@@ -371,22 +446,22 @@ preset_exit_check:
 send_preset_frame_txonly:
     movlw 0xB0
     movwf 0x027, ACCESS
-    call 0x05E2
+    call 0x05EC
     movlw 0x20
     movwf 0x027, ACCESS
-    call 0x05E2
+    call 0x05EC
     clrf WREG, ACCESS
     btfsc 0x01F, 6, ACCESS
     movlw 0x01
     movwf 0x027, ACCESS
-    call 0x05E2
+    call 0x05EC
     return
 
 send_preset_frame:
     call send_preset_frame_txonly
     movlw 0x02
     movlb 0x01
-    movwf 0x70, BANKED         ; 1 immediate + 2 queued retries = 3 total sends
+    movwf 0x70, BANKED
     movlb 0x00
     movlw 0x74
     movwf EEADR, ACCESS
@@ -535,50 +610,58 @@ def summarize_diff(old_mem: Dict[int, int], new_mem: Dict[int, int]) -> int:
 
 
 def validate_expected(mem: Dict[int, int]) -> None:
-    """Validate original V1.5b firmware bytes at all patch points."""
+    """Validate original V1.6b firmware bytes at all patch points."""
     expected = {
+        # Patch -2: parser entry hook (original btfss RCSTA, OERR)
+        0x044A: 0xAB,
+        0x044B: 0xA2,
         # Patch 0: startup flag init hook (original bcf 0x01F,3)
-        0x10F6: 0x1F,
-        0x10F7: 0x96,
+        0x10B2: 0x1F,
+        0x10B3: 0x96,
         # Patch 1: startup preset hook (original call function_026)
-        0x1160: 0x1E,
-        0x1161: 0xEC,
-        0x1162: 0x05,
-        0x1163: 0xF0,
-        # Patch 1b: version literal (movlw 0x04)
-        0x1196: 0x04,
-        0x1197: 0x0E,
+        0x111C: 0x23,
+        0x111D: 0xEC,
+        0x111E: 0x05,
+        0x111F: 0xF0,
+        # Patch 1b: version literal (movlw 0x06)
+        0x1152: 0x06,
+        0x1153: 0x0E,
         # Patch 2: nav wrap literals (movlw 0x02)
-        0x1256: 0x02,
-        0x1257: 0x0E,
-        0x127A: 0x02,
-        0x127B: 0x0E,
+        0x1216: 0x02,
+        0x1217: 0x0E,
+        0x123A: 0x02,
+        0x123B: 0x0E,
+        # Patch 2b: wake reconnect hook (original call function_029)
+        0x12BC: 0xB2,
+        0x12BD: 0xEC,
+        0x12BE: 0x05,
+        0x12BF: 0xF0,
         # Patch 3: string table index (movff 0xBF, 0x027)
-        0x148C: 0xBF,
-        0x148D: 0xC0,
-        0x19FA: 0xBF,
-        0x19FB: 0xC0,
+        0x1406: 0xBF,
+        0x1407: 0xC0,
+        0x191A: 0xBF,
+        0x191B: 0xC0,
         # Patch 4: dispatch hook (decfsz 0xBF, W, BANKED)
-        0x1230: 0xBF,
-        0x1231: 0x2D,
-        # Patch 5: volume indicator hook (call function_042 = call 0x0CFE)
-        0x13A0: 0x7F,
-        0x13A1: 0xEC,
-        0x13A2: 0x06,
-        0x13A3: 0xF0,
-        # Patch 6: full-sync entry prologue
-        0x0B2C: 0x28,  # clrf 0x028, ACCESS
-        0x0B2D: 0x6A,
-        0x0B2E: 0x06,  # movlw 0x06
-        0x0B2F: 0x0E,
-        # Patch 7: IR dispatch pre-hook (original goto label_166)
-        0x0E32: 0x1C,
-        0x0E33: 0xEF,
-        0x0E34: 0x07,
-        0x0E35: 0xF0,
+        0x11F0: 0xBF,
+        0x11F1: 0x2D,
+        # Patch 5: volume indicator hook (call function_035 = call 0x0CB2)
+        0x137A: 0x59,
+        0x137B: 0xEC,
+        0x137C: 0x06,
+        0x137D: 0xF0,
+        # Patch 6: full-sync entry hook (call function_031 = call 0x0C40)
+        0x0B36: 0x20,
+        0x0B37: 0xEC,
+        0x0B38: 0x06,
+        0x0B39: 0xF0,
+        # Patch 7: IR dispatch pre-hook (original goto label_162)
+        0x0DE6: 0xF6,
+        0x0DE7: 0xEF,
+        0x0DE8: 0x06,
+        0x0DE9: 0xF0,
         # Patch 8: parser-tail hook site (original label_063: movlw 0x1D)
-        0x05C6: 0x1D,
-        0x05C7: 0x0E,
+        0x05D0: 0x1D,
+        0x05D1: 0x0E,
     }
     for a, want in expected.items():
         got = mem.get(a, 0xFF)
@@ -593,13 +676,13 @@ def main() -> int:
     ap.add_argument(
         "--in-hex",
         type=pathlib.Path,
-        default=STOCK_CONTROL_HEX_V15B,
-        help="input control v1.5b hex",
+        default=STOCK_CONTROL_HEX_V16B,
+        help="input control v1.6b hex",
     )
     ap.add_argument(
         "--out-hex",
         type=pathlib.Path,
-        default=PATCHED_CONTROL_HEX_V151B,
+        default=PATCHED_CONTROL_HEX_V162B,
         help="output patched control hex",
     )
     ap.add_argument("--gpasm", default="gpasm", help="gpasm executable (default: gpasm)")
@@ -619,11 +702,11 @@ def main() -> int:
     patch_mem = assemble_patch(args.gpasm)
     patch_written, patch_changed = apply_patch_bytes(new_mem, patch_mem)
 
-    # Keep CONTROL version tuple at 1.51 in EEPROM defaults.
+    # Keep CONTROL version tuple at 1.62 in EEPROM defaults.
     version_bytes = {
         0xF00070: 0x01,
-        0xF00071: 0x05,
-        0xF00072: 0x31,
+        0xF00071: 0x06,
+        0xF00072: 0x32,
     }
     ver_written = 0
     ver_changed = 0
@@ -644,14 +727,14 @@ def main() -> int:
         "code patch:",
         f"bytes={patch_written}",
         f"changed={patch_changed}",
-        "hooks=[0x10F6,0x1160,0x1196,0x0B2C,0x0E32,0x1256,0x127A,0x148C,0x19FA,0x1230,0x13A0]",
+        "hooks=[0x044A,0x0B36,0x0DE6,0x10B2,0x111C,0x1152,0x11F0,0x1216,0x123A,0x12BC,0x137A,0x1406,0x191A]",
         "stub_range=0x7000+",
     )
     print(
         "version patch:",
         f"bytes={ver_written}",
         f"changed={ver_changed}",
-        "eeprom=[0xF00070..0xF00072]=[0x01,0x05,0x31]",
+        "eeprom=[0xF00070..0xF00072]=[0x01,0x06,0x32]",
     )
     print(f"total bytes changed vs input: {total_diff}")
     return 0

@@ -34,8 +34,8 @@ class HexParseError(RuntimeError):
 
 
 PATCH_ASM = r"""
-LIST P=18F2550
-#include <p18f2550.inc>
+LIST P=18F25K20
+#include <p18f25k20.inc>
 
 org 0x1106
     bcf 0x01F, 3, ACCESS
@@ -471,7 +471,7 @@ def assemble_patch(gpasm: str) -> Dict[int, int]:
         out_hex = td_path / "control_presets_patch.hex"
         asm.write_text(PATCH_ASM, encoding="ascii")
         result = subprocess.run(
-            [gpasm, "-p18f2550", "-o", str(out_hex), str(asm)],
+            [gpasm, "-p18f25k20", "-o", str(out_hex), str(asm)],
             check=False,
             capture_output=True,
             text=True,
