@@ -216,24 +216,42 @@ def _read_ascii16(mem: Dict[int, int], addr: int) -> str:
     return bytes(mem.get(addr + i, 0x20) for i in range(16)).decode("ascii", "replace")
 
 
-def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
+def check_main(main_orig: Dict[int, int], main_new: Dict[int, int], *, variant: str | None = None) -> None:
+    if variant is None:
+        version_lo = main_new.get(0x2416, 0xFF)
+        if version_lo == 0x04:
+            variant = "v24"
+        elif version_lo == 0x05:
+            variant = "v25"
+        else:
+            raise RuntimeError(f"unable to infer MAIN variant from USB version literal 0x{version_lo:02X}")
+
     for i in range(0xA00):
         a = main_orig.get(0x5600 + i, 0xFF)
         b = main_new.get(0x4A00 + i, 0xFF)
         if a != b:
             raise RuntimeError(f"main table copy mismatch at +0x{i:03X}: A=0x{a:02X} B=0x{b:02X}")
 
-    main_hooks = {
-        0x1E64: 0x54C0,
-        0x2E6E: 0x5440,
-        0x3DAC: 0x5468,
-        0x3E68: 0x4970,
-        0x4028: 0x5400,
-        0x4368: 0x4982,
-        0x46BA: 0x4998,
-        0x4896: 0x49AE,
-        0x48B6: 0x542A,
-    }
+    main_hooks = (
+        {
+            0x1E64: 0x5500,
+            0x2E6E: 0x5440,
+            0x3DAC: 0x54C0,
+            0x4028: 0x5400,
+        }
+        if variant == "v24"
+        else {
+            0x1E64: 0x54C0,
+            0x2E6E: 0x5440,
+            0x3DAC: 0x5468,
+            0x3E68: 0x4970,
+            0x4028: 0x5400,
+            0x4368: 0x4982,
+            0x46BA: 0x4998,
+            0x4896: 0x49AE,
+            0x48B6: 0x542A,
+        }
+    )
     for addr, want in main_hooks.items():
         got = _decode_goto_target(main_new, addr, label="main hook")
         if got != want:
@@ -241,25 +259,53 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
                 f"main hook target mismatch at 0x{addr:04X}: got 0x{got:04X}, want 0x{want:04X}"
             )
 
-    for addr in (0x20BE, 0x27C0):
-        orig = [main_orig.get(addr + i, 0xFF) for i in range(4)]
-        new = [main_new.get(addr + i, 0xFF) for i in range(4)]
-        if new != orig:
-            raise RuntimeError(f"main stock cmd03 path unexpectedly changed at 0x{addr:04X}")
+    _expect_bytes(
+        main_new,
+        {
+            0x20BE: 0x01,
+            0x20BF: 0xD8,
+            0x20C0: 0x11,
+            0x20C1: 0xD0,
+            0x20C2: 0x60,
+            0x20C3: 0x0E,
+            0x20C4: 0x5E,
+            0x20C5: 0xB4,
+            0x20C6: 0x83,
+            0x20C7: 0x0E,
+            0x20C8: 0x0A,
+            0x20C9: 0x6E,
+            0x27C0: 0x60,
+            0x27C1: 0x0E,
+            0x27C2: 0x5E,
+            0x27C3: 0xB4,
+            0x27C4: 0x83,
+            0x27C5: 0x0E,
+            0x27C6: 0x0A,
+            0x27C7: 0x6E,
+        },
+        label="main filename A/B hook",
+    )
 
     for addr in range(0x6000, 0x8000):
         if main_new.get(addr, 0xFF) != main_orig.get(addr, 0xFF):
             raise RuntimeError(f"main patch writes beyond PIC18F2455 program space at 0x{addr:04X}")
 
+    cmd_lo, cmd_hi = (0x5500, 0x5540) if variant == "v24" else (0x54C0, 0x5510)
     for literal in (0x1D, 0x1E, 0x20):
-        if _find_seq(main_new, [literal, 0x0A], lo=0x54C0, hi=0x5510) is None:
+        if _find_seq(main_new, [literal, 0x0A], lo=cmd_lo, hi=cmd_hi) is None:
             raise RuntimeError(f"main cmd-tail missing xorlw 0x{literal:02X}")
     for literal in (0x21, 0x22):
-        if _find_seq(main_new, [literal, 0x0A], lo=0x54C0, hi=0x5510) is not None:
+        if _find_seq(main_new, [literal, 0x0A], lo=cmd_lo, hi=cmd_hi) is not None:
             raise RuntimeError(f"main cmd-tail still contains removed xorlw 0x{literal:02X}")
 
-    if _count_seq(main_new, [0xBA, 0xEC, 0x22, 0xF0], lo=0x54C0, hi=0x5510) < 2:
-        raise RuntimeError("main cmd-tail missing dual apply calls for cmd=0x20")
+    if _count_seq(main_new, [0x7E, 0x81], lo=cmd_lo, hi=cmd_hi) < 1:
+        raise RuntimeError("main cmd-tail missing filename service requeue after preset switch")
+    if _find_seq(main_new, [0x5E, 0x74], lo=cmd_lo, hi=cmd_hi) is None:
+        raise RuntimeError("main cmd-tail missing preset toggle (btg 0x05E,2)")
+    if _find_seq(main_new, [0x61, 0xEC, 0x10, 0xF0], lo=cmd_lo, hi=cmd_hi) is None:
+        raise RuntimeError("main cmd-tail missing filename slot reload call to 0x20C2")
+    if _count_seq(main_new, [0xBA, 0xEC, 0x22, 0xF0], lo=cmd_lo, hi=cmd_hi) < 1:
+        raise RuntimeError("main cmd-tail missing table apply call for cmd=0x20")
 
     main_ver = [main_new.get(a, 0xFF) for a in (0xF00080, 0xF00081, 0xF00082)]
     if main_ver != [0x02, 0x03, 0x30]:
@@ -274,57 +320,58 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int]) -> None:
 
     _expect_bytes(
         main_new,
-        {0x240C: 0x03, 0x2412: 0x02, 0x2416: 0x05},
+        {0x240C: 0x03, 0x2412: 0x02, 0x2416: 0x04 if variant == "v24" else 0x05},
         label="main USB version literal",
     )
 
-    if _count_seq(main_new, [0x00, 0x0E, 0x0B, 0x6E, 0x10, 0x0E, 0x0C, 0x6E], lo=0x5500, hi=0x55A0) < 6:
-        raise RuntimeError("main robustness patch missing timeout seed helpers")
-    if _find_seq(main_new, [0xD9, 0xEC, 0x23, 0xF0], lo=0x54AE, hi=0x54B8) is None:
-        raise RuntimeError("main robustness patch missing MSSP reinit helper call")
-    if _find_seq(main_new, [0x6A, 0xEF, 0x24, 0xF0], lo=0x49C8, hi=0x49CE) is None:
-        raise RuntimeError("main robustness patch missing hard-reset trampoline to 0x48D4")
-    if (
-        _find_seq(
-            main_new,
-            [
-                0xC5,
-                0xCF,
-                0x03,
-                0xF0,
-                0x1F,
-                0x0E,
-                0x03,
-                0x14,
-                0xD8,
-                0xA4,
-                0x03,
-                0xD0,
-                0xC7,
-                0xB4,
-                0x01,
-                0xD0,
-                0x05,
-                0xD0,
-                0x0B,
-                0x2E,
-                0xF5,
-                0xD7,
-                0x0C,
-                0x2E,
-                0xF3,
-                0xD7,
-                0x02,
-                0xD0,
-                0xD8,
-                0x90,
-            ],
-            lo=0x5576,
-            hi=0x5594,
-        )
-        is None
-    ):
-        raise RuntimeError("main robustness patch missing packed MSSP idle wait logic")
+    if variant == "v25":
+        if _count_seq(main_new, [0x00, 0x0E, 0x0B, 0x6E, 0x10, 0x0E, 0x0C, 0x6E], lo=0x5500, hi=0x55A0) < 6:
+            raise RuntimeError("main robustness patch missing timeout seed helpers")
+        if _find_seq(main_new, [0xD9, 0xEC, 0x23, 0xF0], lo=0x54AE, hi=0x54B8) is None:
+            raise RuntimeError("main robustness patch missing MSSP reinit helper call")
+        if _find_seq(main_new, [0x6A, 0xEF, 0x24, 0xF0], lo=0x49C8, hi=0x49CE) is None:
+            raise RuntimeError("main robustness patch missing hard-reset trampoline to 0x48D4")
+        if (
+            _find_seq(
+                main_new,
+                [
+                    0xC5,
+                    0xCF,
+                    0x03,
+                    0xF0,
+                    0x1F,
+                    0x0E,
+                    0x03,
+                    0x14,
+                    0xD8,
+                    0xA4,
+                    0x03,
+                    0xD0,
+                    0xC7,
+                    0xB4,
+                    0x01,
+                    0xD0,
+                    0x05,
+                    0xD0,
+                    0x0B,
+                    0x2E,
+                    0xF5,
+                    0xD7,
+                    0x0C,
+                    0x2E,
+                    0xF3,
+                    0xD7,
+                    0x02,
+                    0xD0,
+                    0xD8,
+                    0x90,
+                ],
+                lo=0x5576,
+                hi=0x5594,
+            )
+            is None
+        ):
+            raise RuntimeError("main robustness patch missing packed MSSP idle wait logic")
 
 
 def _check_control_profile(

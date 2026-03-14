@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dlcp_fw.sim.main_model import MainUnitModel
 
 
@@ -23,69 +25,158 @@ def _decode_filename_slot(slot: bytes) -> str:
     return "".join(chars)
 
 
-def test_cmd03_filename_roundtrip_and_command_log(patched_main_hex: Path) -> None:
-    m = MainUnitModel.from_hex("main", 1, patched_main_hex)
-    names = ["LX521.4 22MG10F-v5", "AB", "123456789012345678901234567890"]
+def _fixture_hex(request: pytest.FixtureRequest, fixture_name: str) -> Path:
+    return request.getfixturevalue(fixture_name)
 
-    for name in names:
-        payload = _encode_filename_payload(name)
-        m.usb_cmd03(0x09, payload)
-        out = m.usb_cmd03(0x08)
-        assert _decode_filename_slot(out) == name[:30]
 
-    assert len(m.usb_cmd03_log) == len(names) * 2
+@pytest.mark.parametrize(
+    "main_hex_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_cmd03_filename_roundtrip_tracks_active_preset(
+    request: pytest.FixtureRequest,
+    main_hex_fixture: str,
+) -> None:
+    m = MainUnitModel.from_hex("main", 1, _fixture_hex(request, main_hex_fixture))
+
+    m.usb_cmd03(0x09, _encode_filename_payload("ALPHA-A"))
+    assert _decode_filename_slot(m.usb_cmd03(0x08)) == "ALPHA-A"
+    assert m.persist_dirty_filename_to_eeprom() is True
+    assert _decode_filename_slot(m.filename_eeprom_bytes(0)) == "ALPHA-A"
+
+    m.set_preset(1)
+    assert _decode_filename_slot(m.usb_cmd03(0x08)) == ""
+
+    m.usb_cmd03(0x09, _encode_filename_payload("BRAVO-B"))
+    assert _decode_filename_slot(m.usb_cmd03(0x08)) == "BRAVO-B"
+    assert m.persist_dirty_filename_to_eeprom() is True
+    assert _decode_filename_slot(m.filename_eeprom_bytes(1)) == "BRAVO-B"
+
+    m.set_preset(0)
+    assert _decode_filename_slot(m.usb_cmd03(0x08)) == "ALPHA-A"
+    m.set_preset(1)
+    assert _decode_filename_slot(m.usb_cmd03(0x08)) == "BRAVO-B"
+
     assert all(evt.subcmd in (0x08, 0x09) for evt in m.usb_cmd03_log)
 
 
-def test_filename_persist_writes_only_eeprom_60_7e(patched_main_hex: Path) -> None:
-    m = MainUnitModel.from_hex("main", 1, patched_main_hex)
+@pytest.mark.parametrize(
+    "main_hex_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_filename_persist_writes_only_active_preset_slot(
+    request: pytest.FixtureRequest,
+    main_hex_fixture: str,
+) -> None:
+    m = MainUnitModel.from_hex("main", 1, _fixture_hex(request, main_hex_fixture))
+
     before = bytes(m.eeprom)
-
-    m.usb_cmd03(0x09, _encode_filename_payload("DSP-A"))
-    assert m.filename_dirty is True
+    m.usb_cmd03(0x09, _encode_filename_payload("PRESET-A"))
     assert m.persist_dirty_filename_to_eeprom() is True
-    after = bytes(m.eeprom)
+    after_a = bytes(m.eeprom)
+    changed_a = {idx for idx, (b, a) in enumerate(zip(before, after_a)) if b != a}
+    assert changed_a.issubset(set(range(0x60, 0x7E)))
+    assert _decode_filename_slot(after_a[0x60:0x7E]) == "PRESET-A"
+    assert set(after_a[0x83:0xA1]) == {0xFF}
 
-    changed = {idx for idx, (b, a) in enumerate(zip(before, after)) if b != a}
-    assert changed.issubset(set(range(0x60, 0x7F)))
-    assert 0x7E in changed
-    assert after[0x60:0x7E] == m.filename_ram_bytes()
-    assert (after[0x7E] & 0x7F) == ((before[0x7E] + 1) & 0x7F)
-    assert m.persist_dirty_filename_to_eeprom() is False
+    m.set_preset(1)
+    m.usb_cmd03(0x09, _encode_filename_payload("PRESET-B"))
+    assert m.persist_dirty_filename_to_eeprom() is True
+    after_b = bytes(m.eeprom)
+    changed_b = {idx for idx, (b, a) in enumerate(zip(after_a, after_b)) if b != a}
+    assert changed_b.issubset(set(range(0x83, 0xA1)))
+    assert _decode_filename_slot(after_b[0x60:0x7E]) == "PRESET-A"
+    assert _decode_filename_slot(after_b[0x83:0xA1]) == "PRESET-B"
 
 
-def test_boot_load_restores_filename_from_single_persisted_slot(patched_main_hex: Path) -> None:
-    m = MainUnitModel.from_hex("main", 1, patched_main_hex)
-    name = "BOOT-RESTORE-NAME"
+@pytest.mark.parametrize(
+    "main_hex_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_preset_switch_flushes_dirty_outgoing_slot_and_loads_incoming_slot(
+    request: pytest.FixtureRequest,
+    main_hex_fixture: str,
+) -> None:
+    m = MainUnitModel.from_hex("main", 1, _fixture_hex(request, main_hex_fixture))
 
-    m.usb_cmd03(0x09, _encode_filename_payload(name))
+    m.usb_cmd03(0x09, _encode_filename_payload("ALPHA"))
     m.persist_dirty_filename_to_eeprom()
-    m.ram[0x2C0 : 0x2C0 + 30] = b"\xFF" * 30
+    m.set_preset(1)
 
-    assert _decode_filename_slot(m.filename_ram_bytes()) == ""
-    m.boot_load_filename_from_eeprom()
-    assert _decode_filename_slot(m.filename_ram_bytes()) == name
+    m.usb_cmd03(0x09, _encode_filename_payload("BRAVO"))
+    assert m.filename_dirty is True
+    m.set_preset(0)
+
+    assert m.filename_dirty is False
+    assert _decode_filename_slot(m.filename_eeprom_bytes(1)) == "BRAVO"
+    assert _decode_filename_slot(m.filename_ram_bytes()) == "ALPHA"
+
+    m.set_preset(1)
+    assert _decode_filename_slot(m.filename_ram_bytes()) == "BRAVO"
 
 
-def test_cmd03_erase_clears_slot_and_persists_blank(patched_main_hex: Path) -> None:
-    m = MainUnitModel.from_hex("main", 1, patched_main_hex)
-    m.usb_cmd03(0x09, _encode_filename_payload("VOLATILE"))
+@pytest.mark.parametrize(
+    "main_hex_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_cmd03_erase_is_active_preset_local(
+    request: pytest.FixtureRequest,
+    main_hex_fixture: str,
+) -> None:
+    m = MainUnitModel.from_hex("main", 1, _fixture_hex(request, main_hex_fixture))
+
+    m.usb_cmd03(0x09, _encode_filename_payload("ALPHA"))
+    m.persist_dirty_filename_to_eeprom()
+    m.set_preset(1)
+    m.usb_cmd03(0x09, _encode_filename_payload("BRAVO"))
     m.persist_dirty_filename_to_eeprom()
 
     m.usb_cmd03(0x0A, b"")
     assert m.filename_ram_bytes() == bytes([0xFF] * 30)
     assert m.persist_dirty_filename_to_eeprom() is True
-    assert m.filename_eeprom_bytes() == bytes([0xFF] * 30)
+
+    assert _decode_filename_slot(m.filename_eeprom_bytes(0)) == "ALPHA"
+    assert m.filename_eeprom_bytes(1) == bytes([0xFF] * 30)
 
 
-def test_boot_load_clears_volatile_dirty_state(patched_main_hex: Path) -> None:
-    m = MainUnitModel.from_hex("main", 1, patched_main_hex)
-    m.usb_cmd03(0x09, _encode_filename_payload("VOLATILE-DIRTY"))
-    assert m.filename_dirty is True
+@pytest.mark.parametrize(
+    "main_hex_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_boot_load_defaults_to_a_and_switch_restores_b_slot(
+    request: pytest.FixtureRequest,
+    main_hex_fixture: str,
+) -> None:
+    m = MainUnitModel.from_hex("main", 1, _fixture_hex(request, main_hex_fixture))
 
+    m.usb_cmd03(0x09, _encode_filename_payload("ALPHA"))
+    m.persist_dirty_filename_to_eeprom()
+    m.set_preset(1)
+    m.usb_cmd03(0x09, _encode_filename_payload("BRAVO"))
+    m.persist_dirty_filename_to_eeprom()
+
+    m.ram[0x2C0 : 0x2C0 + 30] = b"\xFF" * 30
+    m.preset_idx = 0
     m.boot_load_filename_from_eeprom()
-    assert m.filename_dirty is False
-    assert m.persist_dirty_filename_to_eeprom() is False
+    assert _decode_filename_slot(m.filename_ram_bytes()) == "ALPHA"
+
+    m.set_preset(1)
+    assert _decode_filename_slot(m.filename_ram_bytes()) == "BRAVO"
 
 
 def test_disasm_anchors_for_cmd03_paths_remain_present() -> None:

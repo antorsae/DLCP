@@ -275,7 +275,8 @@ Generated/ephemeral (ignored):
 Build patched firmware:
 
 ```bash
-python3 -m dlcp_fw.patch.build_main_presets_ab
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v24
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v25
 python3 -m dlcp_fw.patch.build_control_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b

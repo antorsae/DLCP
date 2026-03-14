@@ -115,13 +115,14 @@ def test_usb_upload_in_active_preset_updates_flash_without_auto_apply(patched_ma
 
 
 def test_cmd20_stub_contains_apply_calls_in_built_hex() -> None:
-    """Patched cmd=0x20 stub still contains the two call-apply opcodes."""
+    """Patched cmd=0x20 stub still reaches the stock apply helper."""
     mem = parse_intel_hex(PATCHED_MAIN_HEX)
-    # call 0x4574 encoding appears twice in cmd_tail_patch (preset A / preset B branches).
+    # The current cmd=0x20 tail has one shared apply path after the preset
+    # change / filename-slot swap logic.
     want = [0xBA, 0xEC, 0x22, 0xF0]
     hits = [
         a
         for a in range(0x54C0, 0x5510)
         if all(mem.get(a + i, 0xFF) == want[i] for i in range(4))
     ]
-    assert len(hits) >= 2
+    assert len(hits) >= 1

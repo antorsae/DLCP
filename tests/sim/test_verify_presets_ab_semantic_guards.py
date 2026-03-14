@@ -22,6 +22,12 @@ def test_check_main_accepts_current_cmd_tail_guard(patched_main_hex: Path) -> No
     check_main(stock, patched)
 
 
+def test_check_main_accepts_v24_filename_banking(patched_main_hex_v24: Path) -> None:
+    stock = parse_intel_hex(STOCK_MAIN_HEX)
+    patched = parse_intel_hex(patched_main_hex_v24)
+    check_main(stock, patched, variant="v24")
+
+
 def test_main_patch_asm_is_byte_identical_under_2455_and_2550_headers() -> None:
     if shutil.which("gpasm") is None:
         pytest.skip("gpasm not installed")

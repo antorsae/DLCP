@@ -465,6 +465,7 @@ def run_main_mailbox_gpsim(
         0x7C3,
         MAIN_FAULT_FLAGS_ADDR,
     ]
+    watch_regs.extend(range(0x2C0, 0x2DE))
     watch_regs.extend(range(MAIN_MAILBOX_TX_BASE, MAIN_MAILBOX_TX_BASE + MAIN_MAILBOX_TX_SIZE))
 
     with tempfile.TemporaryDirectory(prefix="main_mailbox_sim_") as td:

@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """
-Build a patched DLCP main firmware HEX with A/B preset banks.
+Build patched DLCP MAIN firmware HEX images with A/B preset support.
 
 Patch strategy:
 1) Copy preset table A (0x5600..0x5FFF, 0xA00 bytes) to preset table B at
    0x4A00..0x53FF.
-2) Inject code stubs in erased app space to:
+2) Inject code stubs to:
    - remap table flash reads/writes/erases from 0x56xx..0x5Fxx to
      0x4Axx..0x53xx when preset B is active;
    - add current-loop command 0x20: set preset A/B and apply immediately
-     only when the requested preset changes.
+     only when the requested preset changes;
+   - keep the stock USB cmd03 filename command family, but make its backing
+     EEPROM/RAM storage preset-aware on MAIN only.
 3) Emit a full Intel HEX output.
 
 Reliability policy:
 - No current-loop filename transport (`0x21` / `0x22`) is added.
-- No preset-specific filename EEPROM/RAM banking is added.
+- CONTROL remains unchanged and still does not fetch/display DSP filenames.
+- MAIN USB filename commands operate on the active preset only.
+
+Filename storage policy:
+- Preset A filename keeps the stock EEPROM slot `0x60..0x7D`.
+- Preset B filename uses EEPROM `0x83..0xA0`.
+- Live RAM filename slot remains stock `0x02C0..0x02DD`.
+- Legacy single-slot upgrades naturally map to preset A; preset B starts blank.
 
 Version policy:
 - MAIN EEPROM tuple is kept at stock 2.30 (bytes 0x02, 0x03, 0x30 at
   0xF00080..0xF00082).
-- USB-reported firmware version literal is patched to 2.5 in application code.
+- USB-reported application version literal is patched to 2.4 or 2.5 depending
+  on the selected output variant.
 """
 
 from __future__ import annotations
@@ -30,16 +40,243 @@ import subprocess
 import tempfile
 from typing import Dict, List, Tuple
 
-from dlcp_fw.paths import PATCHED_MAIN_HEX, STOCK_MAIN_HEX
+from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25, STOCK_MAIN_HEX
 
 
 class HexParseError(RuntimeError):
     pass
 
 
-PATCH_ASM = r"""
+_FILENAME_BOOT_AND_PERSIST_PATCH = r"""
+org 0x20BE
+    rcall filename_load_active_slot
+    bra 0x20E4
+
+org 0x27C0
+filename_persist_active_slot:
+    movlw 0x60
+    btfsc 0x05E, 2, ACCESS
+    movlw 0x83
+    movwf 0x0A, ACCESS
+    lfsr 2, 0x02C0
+    movlw 0x1E
+    movwf 0x0B, ACCESS
+
+filename_persist_loop:
+    movff 0x00A, 0x007
+    clrf 0x08, ACCESS
+    movf POSTINC2, W, ACCESS
+    movwf 0x09, ACCESS
+    call 0x46DE
+    incf 0x0A, F, ACCESS
+    decfsz 0x0B, F, ACCESS
+    bra filename_persist_loop
+    movlb 0x0
+    bcf 0x0BD, 5, BANKED
+    bcf 0x07E, 0, BANKED
+    return
+
+org 0x20C2
+filename_load_active_slot:
+    movlw 0x60
+    btfsc 0x05E, 2, ACCESS
+    movlw 0x83
+    movwf 0x0A, ACCESS
+    lfsr 2, 0x02C0
+    movlw 0x1E
+    movwf 0x0B, ACCESS
+
+filename_load_loop:
+    movff 0x00A, 0x003
+    clrf 0x04, ACCESS
+    call 0x4884
+    movwf POSTINC2, ACCESS
+    incf 0x0A, F, ACCESS
+    decfsz 0x0B, F, ACCESS
+    bra filename_load_loop
+    return
+"""
+
+
+_CMD_TAIL_PATCH = r"""
+cmd_tail_patch:
+    ; Recreate old behavior for cmd=0x1D and cmd=0x1E, then add cmd=0x20.
+    movf 0x0A2, W, BANKED
+    xorlw 0x1D
+    btfsc STATUS, Z, ACCESS
+    goto 0x1E02
+
+    movf 0x0A2, W, BANKED
+    xorlw 0x1E
+    btfsc STATUS, Z, ACCESS
+    goto 0x1E1C
+
+    movf 0x0A2, W, BANKED
+    xorlw 0x20
+    bnz cmd_done
+
+    ; cmd 0x20: toggle preset only on actual change. Keep the existing USB
+    ; filename command family, but swap backing EEPROM/RAM slot with the active
+    ; preset and flush the outgoing slot first if cmd03 data is still dirty.
+    movf 0x0A3, W, BANKED
+    andlw 0x01
+    btfsc 0x05E, 2, ACCESS
+    xorlw 0x01
+    bz cmd_done
+    btfsc 0x0BD, 5, BANKED
+    call 0x27C0
+    bsf 0x07E, 0, BANKED
+    btg 0x05E, 2, ACCESS
+    call 0x20C2
+    call 0x4574
+
+cmd_done:
+    goto 0x1E6C
+"""
+
+
+PATCH_ASM_V24 = rf"""
 LIST P=18F2455
 #include <p18f2455.inc>
+
+{_FILENAME_BOOT_AND_PERSIST_PATCH}
+
+; --- Hooks into existing code ---
+org 0x1E64
+    goto cmd_tail_patch
+
+org 0x2E6E
+    goto function_025_patch
+org 0x2E72
+    nop
+
+org 0x3DAC
+    goto function_054_patch
+org 0x3DB0
+    nop
+
+org 0x4028
+    goto function_061_patch
+org 0x402C
+    nop
+org 0x402E
+    nop
+
+; --- New code in erased app region ---
+org 0x5400
+function_061_patch:
+    ; original prologue (replaced)
+    movff 0x003, 0x00B
+    movff 0x004, 0x00C
+
+    ; if PRESET_B=1 and address in 0x56xx..0x5Fxx (u16), remap to 0x4Axx..0x53xx
+    btfss 0x05E, 2, ACCESS
+    goto rd_done
+
+    movf 0x006, W, ACCESS
+    iorwf 0x005, W, ACCESS
+    bnz rd_done
+
+    movlw 0x56
+    subwf 0x00C, W, ACCESS
+    bnc rd_done
+
+    movlw 0x60
+    cpfslt 0x00C, ACCESS
+    goto rd_done
+
+    movlw 0x0C
+    subwf 0x00C, F, ACCESS
+
+rd_done:
+    goto 0x4030
+
+org 0x5440
+function_025_patch:
+    ; original prologue (replaced)
+    clrf 0x010, ACCESS
+    movff 0x003, 0x014
+
+    ; remap destination start high-byte for preset B
+    btfss 0x05E, 2, ACCESS
+    goto wr_done
+
+    movf 0x006, W, ACCESS
+    iorwf 0x005, W, ACCESS
+    bnz wr_done
+
+    movlw 0x56
+    subwf 0x004, W, ACCESS
+    bnc wr_done
+
+    movlw 0x60
+    cpfslt 0x004, ACCESS
+    goto wr_done
+
+    movlw 0x0C
+    subwf 0x004, F, ACCESS
+
+wr_done:
+    goto 0x2E74
+
+org 0x54C0
+function_054_patch:
+    ; original prologue (replaced)
+    clrf 0x00B, ACCESS
+    movff 0x003, 0x00C
+
+    ; remap erase start/end window for preset B
+    btfss 0x05E, 2, ACCESS
+    goto er_done
+
+    ; start address high-byte in +4 if upper words are zero
+    movf 0x006, W, ACCESS
+    iorwf 0x005, W, ACCESS
+    bnz er_chk_end
+
+    movlw 0x56
+    subwf 0x004, W, ACCESS
+    bnc er_chk_end
+
+    movlw 0x60
+    cpfslt 0x004, ACCESS
+    goto er_chk_end
+
+    movlw 0x0C
+    subwf 0x004, F, ACCESS
+
+er_chk_end:
+    ; end address high-byte in +8 if upper words are zero
+    movf 0x00A, W, ACCESS
+    iorwf 0x009, W, ACCESS
+    bnz er_done
+
+    movlw 0x56
+    subwf 0x008, W, ACCESS
+    bnc er_done
+
+    movlw 0x60
+    cpfslt 0x008, ACCESS
+    goto er_done
+
+    movlw 0x0C
+    subwf 0x008, F, ACCESS
+
+er_done:
+    goto 0x3DB2
+
+org 0x5500
+{_CMD_TAIL_PATCH}
+
+end
+"""
+
+
+PATCH_ASM_V25 = rf"""
+LIST P=18F2455
+#include <p18f2455.inc>
+
+{_FILENAME_BOOT_AND_PERSIST_PATCH}
 
 ; --- Hooks into existing code ---
 org 0x1E64
@@ -192,42 +429,7 @@ er_done:
     goto 0x3DB2
 
 org 0x54C0
-cmd_tail_patch:
-    ; Recreate old behavior for cmd=0x1D and cmd=0x1E, then add cmd=0x20.
-    movf 0x0A2, W, BANKED
-    xorlw 0x1D
-    btfsc STATUS, Z, ACCESS
-    goto 0x1E02
-
-    movf 0x0A2, W, BANKED
-    xorlw 0x1E
-    btfsc STATUS, Z, ACCESS
-    goto 0x1E1C
-
-    movf 0x0A2, W, BANKED
-    xorlw 0x20
-    bnz cmd_done
-
-    ; cmd 0x20: set preset (data byte low bit), then apply only on change
-    movf 0x0A3, W, BANKED
-    andlw 0x01
-    bnz preset_b
-
-preset_a:
-    btfss 0x05E, 2, ACCESS
-    goto cmd_done
-    bcf 0x05E, 2, ACCESS
-    call 0x4574
-    goto cmd_done
-
-preset_b:
-    btfsc 0x05E, 2, ACCESS
-    goto cmd_done
-    bsf 0x05E, 2, ACCESS
-    call 0x4574
-
-cmd_done:
-    goto 0x1E6C
+{_CMD_TAIL_PATCH}
 
 ; --- Robustness patch stubs ---
 ; Stock MAIN timing basis:
@@ -494,6 +696,13 @@ end
 """
 
 
+PATCH_ASM = PATCH_ASM_V25
+PATCH_ASM_BY_VARIANT = {
+    "v24": PATCH_ASM_V24,
+    "v25": PATCH_ASM_V25,
+}
+
+
 def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
     mem: Dict[int, int] = {}
     upper = 0
@@ -542,7 +751,6 @@ def parse_intel_hex(path: pathlib.Path) -> Dict[int, int]:
                     raise HexParseError(f"{path}:{lineno}: type 04 with ll={ll}")
                 upper = (data[0] << 8) | data[1]
             else:
-                # ignore other record types
                 continue
 
     return mem
@@ -589,12 +797,17 @@ def write_intel_hex(path: pathlib.Path, mem: Dict[int, int], chunk: int = 16) ->
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
 
-def assemble_patch(gpasm: str) -> Dict[int, int]:
-    with tempfile.TemporaryDirectory(prefix="dlcp_main_patch_") as td:
+def assemble_patch(gpasm: str, *, variant: str = "v25") -> Dict[int, int]:
+    try:
+        asm_text = PATCH_ASM_BY_VARIANT[variant]
+    except KeyError as exc:
+        raise ValueError(f"unsupported MAIN patch variant: {variant}") from exc
+
+    with tempfile.TemporaryDirectory(prefix=f"dlcp_main_patch_{variant}_") as td:
         td_path = pathlib.Path(td)
-        asm = td_path / "main_presets_patch.asm"
-        out_hex = td_path / "main_presets_patch.hex"
-        asm.write_text(PATCH_ASM, encoding="ascii")
+        asm = td_path / f"main_presets_patch_{variant}.asm"
+        out_hex = td_path / f"main_presets_patch_{variant}.hex"
+        asm.write_text(asm_text, encoding="ascii")
         subprocess.run(
             [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
             check=True,
@@ -658,7 +871,6 @@ def summarize_diff(old_mem: Dict[int, int], new_mem: Dict[int, int]) -> int:
 
 
 def set_main_eeprom_version_230(mem: Dict[int, int]) -> Tuple[int, int]:
-    """Set MAIN EEPROM version tuple back to stock 2.30."""
     desired = {
         0xF00080: 0x02,
         0xF00081: 0x03,
@@ -675,14 +887,12 @@ def set_main_eeprom_version_230(mem: Dict[int, int]) -> Tuple[int, int]:
     return written, changed
 
 
-def patch_usb_version_25(mem: Dict[int, int]) -> Tuple[int, int]:
-    """Patch USB info response literals so host sees MAIN firmware version 2.5."""
+def patch_usb_version(mem: Dict[int, int], *, variant: str) -> Tuple[int, int]:
+    version_lo = 0x04 if variant == "v24" else 0x05
     desired = {
-        # cmd=0x06, subcmd=0x03 response payload at label_245:
-        # [0x06, 0x03, 0x02, 0x05, ...] -> version 2.5
         0x240C: 0x03,
         0x2412: 0x02,
-        0x2416: 0x05,
+        0x2416: version_lo,
     }
     written = 0
     changed = 0
@@ -695,8 +905,18 @@ def patch_usb_version_25(mem: Dict[int, int]) -> Tuple[int, int]:
     return written, changed
 
 
+def default_output_hex_for_variant(variant: str) -> pathlib.Path:
+    return PATCHED_MAIN_HEX_V24 if variant == "v24" else PATCHED_MAIN_HEX_V25
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--variant",
+        choices=("v24", "v25"),
+        default="v25",
+        help="patched MAIN output variant (default: v25)",
+    )
     ap.add_argument(
         "--in-hex",
         type=pathlib.Path,
@@ -706,8 +926,8 @@ def main() -> int:
     ap.add_argument(
         "--out-hex",
         type=pathlib.Path,
-        default=PATCHED_MAIN_HEX,
-        help="output patched hex path",
+        default=None,
+        help="output patched hex path (defaults to the selected variant release path)",
     )
     ap.add_argument(
         "--gpasm",
@@ -721,24 +941,26 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    variant = str(args.variant)
     in_hex = args.in_hex.resolve()
-    out_hex = args.out_hex.resolve()
+    out_hex = (args.out_hex or default_output_hex_for_variant(variant)).resolve()
     out_hex.parent.mkdir(parents=True, exist_ok=True)
 
     base = parse_intel_hex(in_hex)
     new_mem = dict(base)
 
     table_written, table_changed = copy_table_a_to_b(new_mem, force=args.force_copy)
-    patch_mem = assemble_patch(args.gpasm)
+    patch_mem = assemble_patch(args.gpasm, variant=variant)
     patch_written, patch_changed = apply_patch_bytes(new_mem, patch_mem)
     eep_written, eep_changed = set_main_eeprom_version_230(new_mem)
-    usb_written, usb_changed = patch_usb_version_25(new_mem)
+    usb_written, usb_changed = patch_usb_version(new_mem, variant=variant)
     total_diff = summarize_diff(base, new_mem)
 
     write_intel_hex(out_hex, new_mem)
 
-    print(f"input:  {in_hex}")
-    print(f"output: {out_hex}")
+    print(f"variant: {variant}")
+    print(f"input:   {in_hex}")
+    print(f"output:  {out_hex}")
     print(
         "table copy A->B:",
         f"bytes={table_written}",
@@ -750,8 +972,8 @@ def main() -> int:
         "stub patch:",
         f"bytes={patch_written}",
         f"changed={patch_changed}",
-        "hook_addrs=[0x1E64,0x2E6E,0x3DAC,0x3E68,0x4028,0x4368,0x46BA,0x4896,0x48B6]",
-        "stub_regions=[0x4970..0x49FF,0x5400..0x55FF]",
+        "hook_addrs=[0x1E64,0x2E6E,0x3DAC,0x4028,0x20BE,0x27C0]",
+        "stub_regions=[0x20BE..0x20E2,0x27C0..0x27EA,0x5400..0x55FF]",
     )
     print(
         "eeprom version tuple:",
@@ -760,10 +982,10 @@ def main() -> int:
         "eeprom=[0xF00080..0xF00082]=[0x02,0x03,0x30]",
     )
     print(
-        "usb version patch:",
+        "usb version literal:",
         f"bytes={usb_written}",
         f"changed={usb_changed}",
-        "code=[0x240C,0x2412,0x2416]=[0x03,0x02,0x05]  # host reports 2.5",
+        f"app_version=2.{4 if variant == 'v24' else 5}",
     )
     print(f"total bytes changed vs input: {total_diff}")
     return 0

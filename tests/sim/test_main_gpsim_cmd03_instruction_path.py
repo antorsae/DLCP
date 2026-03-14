@@ -22,6 +22,10 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
+def _fixture_hex(request: pytest.FixtureRequest, fixture_name: str) -> Path:
+    return request.getfixturevalue(fixture_name)
+
+
 def _filename_slot_bytes(regs: dict[int, int]) -> bytes:
     return bytes(regs.get(addr, 0xFF) & 0xFF for addr in range(0x2C0, 0x2DE))
 
@@ -46,7 +50,17 @@ def _protected_sentinels() -> dict[int, int]:
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_cmd03_subcmd09_hits_label003_and_preserves_preset_related_ram(patched_main_hex) -> None:
+@pytest.mark.parametrize(
+    "patched_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_cmd03_subcmd09_hits_label003_and_preserves_preset_related_ram(
+    request: pytest.FixtureRequest,
+    patched_fixture: str,
+) -> None:
     _require_gpsim()
     sentinels = _protected_sentinels()
     payload = b"TEST\x00"
@@ -60,7 +74,7 @@ def test_cmd03_subcmd09_hits_label003_and_preserves_preset_related_ram(patched_m
     patched = run_main_cmd03_dispatch_gpsim(
         subcmd=0x09,
         payload=payload,
-        main_hex=patched_main_hex,
+        main_hex=_fixture_hex(request, patched_fixture),
         sentinel_regs=sentinels,
     )
 
@@ -84,8 +98,16 @@ def test_cmd03_subcmd09_hits_label003_and_preserves_preset_related_ram(patched_m
 
 @pytest.mark.gpsim
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    "patched_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
 def test_cmd03_subcmd0a_erases_filename_slot_without_touching_preset_related_ram(
-    patched_main_hex,
+    request: pytest.FixtureRequest,
+    patched_fixture: str,
 ) -> None:
     _require_gpsim()
     sentinels = _protected_sentinels()
@@ -95,7 +117,7 @@ def test_cmd03_subcmd0a_erases_filename_slot_without_touching_preset_related_ram
     res = run_main_cmd03_dispatch_gpsim(
         subcmd=0x0A,
         payload=b"",
-        main_hex=patched_main_hex,
+        main_hex=_fixture_hex(request, patched_fixture),
         sentinel_regs=sentinels,
     )
 
@@ -108,20 +130,35 @@ def test_cmd03_subcmd0a_erases_filename_slot_without_touching_preset_related_ram
         assert res.regs.get(addr) == want
 
 
-def test_cmd03_handler_bytes_match_stock_without_filename_hooks(patched_main_hex) -> None:
+@pytest.mark.parametrize(
+    "patched_fixture",
+    [
+        pytest.param("patched_main_hex_v24", id="v24"),
+        pytest.param("patched_main_hex", id="v25"),
+    ],
+)
+def test_cmd03_handler_body_matches_stock_but_filename_windows_are_patched(
+    request: pytest.FixtureRequest,
+    patched_fixture: str,
+) -> None:
     stock = parse_intel_hex(STOCK_MAIN_HEX)
-    patched = parse_intel_hex(patched_main_hex)
+    patched = parse_intel_hex(_fixture_hex(request, patched_fixture))
 
     for addr in range(0x10D0, 0x1132 + 1):
         assert patched.get(addr, 0xFF) == stock.get(addr, 0xFF)
 
-    for hook in (0x20BE, 0x27C0):
-        stock_bytes = [stock.get(hook + i, 0xFF) for i in range(4)]
-        patched_bytes = [patched.get(hook + i, 0xFF) for i in range(4)]
-        assert patched_bytes == stock_bytes, f"unexpected cmd03 hook at 0x{hook:04X}"
+    assert [patched.get(0x20BE + i, 0xFF) for i in range(4)] == [0x01, 0xD8, 0x11, 0xD0]
+    assert [patched.get(0x20C2 + i, 0xFF) for i in range(8)] == [0x60, 0x0E, 0x5E, 0xB4, 0x83, 0x0E, 0x0A, 0x6E]
+    assert [patched.get(0x27C0 + i, 0xFF) for i in range(8)] == [0x60, 0x0E, 0x5E, 0xB4, 0x83, 0x0E, 0x0A, 0x6E]
 
 
-def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> list[tuple[int, int]]:
+def _run_cmd03_persist_probe(
+    *,
+    main_hex: Path,
+    subcmd: int,
+    payload: bytes,
+    preset_idx: int = 0,
+) -> list[tuple[int, int]]:
     with tempfile.TemporaryDirectory(prefix="main_cmd03_eeprom_probe_") as td:
         tdp = Path(td)
         seeded_hex = tdp / "seeded.hex"
@@ -137,6 +174,7 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
         )
 
         data = bytes(payload[:30])
+        preset_bit = 0x04 if preset_idx else 0x00
         lines = ["processor p18f2455", f"load {sim_hex}", "break e 0x1BEA", "run"]
         for i in range(30):
             lines.append(f"reg(0x{(0x11C + i):03x})=0x00")
@@ -144,6 +182,7 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
             lines.append(f"reg(0x{(0x11C + i):03x})=0x{b:02X}")
         lines.extend(
             [
+                f"reg(0x05e)=0x{preset_bit:02X}",
                 "reg(0x11a)=0x03",
                 f"reg(0x11b)=0x{subcmd & 0xFF:02X}",
                 "reg(0x0c0)=0x01",
@@ -158,7 +197,7 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
                 "log w eeadr",
                 "log w eedata",
                 "pc=0x265C",
-                "break e 0x27EC",
+                "break e 0x27EA",
                 "run",
                 "log off",
                 "quit",
@@ -179,7 +218,7 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
         if cp.returncode != 0:
             raise RuntimeError(f"gpsim cmd03 EEPROM probe failed ({cp.returncode}):\n{cli}")
         assert "line_10d0(0x10d0)" in cli.lower()
-        assert "line_27ec(0x27ec)" in cli.lower()
+        assert "line_27ea(0x27ea)" in cli.lower()
 
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         addr_re = re.compile(r"Wr(?:ite|ote):\s+0x([0-9A-Fa-f]+)\s+to eeadr\(", re.IGNORECASE)
@@ -202,29 +241,40 @@ def _run_cmd03_persist_probe(*, main_hex: Path, subcmd: int, payload: bytes) -> 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_cmd03_persist_remains_stock_parity_without_generation_sideband(patched_main_hex) -> None:
+@pytest.mark.parametrize(
+    ("patched_fixture", "preset_idx", "expected_addrs"),
+    [
+        pytest.param("patched_main_hex_v24", 0, set(range(0x60, 0x7E)), id="v24_a"),
+        pytest.param("patched_main_hex_v24", 1, set(range(0x83, 0xA1)), id="v24_b"),
+        pytest.param("patched_main_hex", 0, set(range(0x60, 0x7E)), id="v25_a"),
+        pytest.param("patched_main_hex", 1, set(range(0x83, 0xA1)), id="v25_b"),
+    ],
+)
+def test_cmd03_persist_writes_active_slot_without_generation_sideband(
+    request: pytest.FixtureRequest,
+    patched_fixture: str,
+    preset_idx: int,
+    expected_addrs: set[int],
+) -> None:
     _require_gpsim()
     payload = bytes((i + 1) & 0xFF for i in range(30))
 
-    stock_writes = _run_cmd03_persist_probe(main_hex=STOCK_MAIN_HEX, subcmd=0x09, payload=payload)
-    patched_writes = _run_cmd03_persist_probe(main_hex=patched_main_hex, subcmd=0x09, payload=payload)
+    writes = _run_cmd03_persist_probe(
+        main_hex=_fixture_hex(request, patched_fixture),
+        subcmd=0x09,
+        payload=payload,
+        preset_idx=preset_idx,
+    )
 
-    expected_addrs = set(range(0x60, 0x7E))
-    stock_addrs = [a for a, _ in stock_writes]
-    patched_addrs = [a for a, _ in patched_writes]
-    assert stock_addrs and set(stock_addrs).issubset(expected_addrs)
-    assert patched_addrs and set(patched_addrs).issubset(expected_addrs)
-    assert expected_addrs.issubset(set(stock_addrs))
-    assert expected_addrs.issubset(set(patched_addrs))
-    assert 0x7E not in set(patched_addrs)
+    addrs = [a for a, _ in writes]
+    assert addrs and set(addrs).issubset(expected_addrs)
+    assert expected_addrs.issubset(set(addrs))
+    assert 0x7E not in set(addrs)
+    assert 0xA1 not in set(addrs)
 
-    def last_value_per_addr(writes: list[tuple[int, int]]) -> dict[int, int]:
-        out: dict[int, int] = {}
-        for addr, data in writes:
-            out[addr] = data
-        return out
-
-    stock_last = last_value_per_addr(stock_writes)
-    patched_last = last_value_per_addr(patched_writes)
-    for addr in range(0x60, 0x7E):
-        assert patched_last.get(addr) == stock_last.get(addr)
+    last: dict[int, int] = {}
+    for addr, data in writes:
+        last[addr] = data
+    expected_base = min(expected_addrs)
+    for i in range(30):
+        assert last.get(expected_base + i) == payload[i]

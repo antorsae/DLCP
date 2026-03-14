@@ -747,11 +747,7 @@ class MainGpsimSession:
 
     @staticmethod
     def _filename_eeprom_base(preset_idx: int) -> int:
-        return 0xA1 if (preset_idx & 0x01) else 0x60
-
-    @staticmethod
-    def _filename_generation_addr(preset_idx: int) -> int:
-        return 0xBF if (preset_idx & 0x01) else 0x7E
+        return 0x83 if (preset_idx & 0x01) else 0x60
 
     def _active_preset_idx(self) -> int:
         status_5e = _read_reg(self._issue, 0x05E)
@@ -791,11 +787,6 @@ class MainGpsimSession:
         base = self._filename_eeprom_base(pidx)
         for i, b in enumerate(slot):
             self._eeprom_write(base + i, b)
-        # Mirror MAIN firmware behavior: bump per-preset generation byte so
-        # CONTROL's generation-gated cache invalidates on repeated uploads.
-        gen_addr = self._filename_generation_addr(pidx)
-        gen = self._eeprom_read(gen_addr)
-        self._eeprom_write(gen_addr, (gen + 1) & 0xFF)
         return digest
 
     def inject_bytes(self, data: List[int]) -> bool:

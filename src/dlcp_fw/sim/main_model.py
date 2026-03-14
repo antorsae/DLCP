@@ -55,8 +55,8 @@ class MainUnitModel:
 
     _FILENAME_LEN = 0x1E
     _FILENAME_RAM_BASE = 0x2C0
-    _FILENAME_EEPROM_BASE = 0x60
-    _FILENAME_GEN_EEPROM = 0x7E
+    _FILENAME_EEPROM_BASE_A = 0x60
+    _FILENAME_EEPROM_BASE_B = 0x83
 
     @staticmethod
     def from_hex(name: str, link_addr: int, hex_path: Path) -> "MainUnitModel":
@@ -104,7 +104,10 @@ class MainUnitModel:
         normalized = 1 if idx else 0
         if normalized == self.preset_idx:
             return
+        if self.filename_dirty:
+            self.persist_dirty_filename_to_eeprom()
         self.preset_idx = normalized
+        self.boot_load_filename_from_eeprom()
         self.apply_table()
 
     def table_bytes(self, base: int = 0x5600) -> bytes:
@@ -170,14 +173,13 @@ class MainUnitModel:
         base = self._FILENAME_RAM_BASE
         return bytes(self.ram[base : base + self._FILENAME_LEN])
 
-    def filename_eeprom_bytes(self, preset_idx: int | None = None) -> bytes:
-        _ = preset_idx
-        base = self._FILENAME_EEPROM_BASE
-        return bytes(self.eeprom[base : base + self._FILENAME_LEN])
+    def _filename_eeprom_base(self, preset_idx: int | None = None) -> int:
+        idx = self.preset_idx if preset_idx is None else (1 if preset_idx else 0)
+        return self._FILENAME_EEPROM_BASE_B if idx else self._FILENAME_EEPROM_BASE_A
 
-    def filename_generation(self, preset_idx: int | None = None) -> int:
-        _ = preset_idx
-        return self.eeprom[self._FILENAME_GEN_EEPROM] & 0x7F
+    def filename_eeprom_bytes(self, preset_idx: int | None = None) -> bytes:
+        base = self._filename_eeprom_base(preset_idx)
+        return bytes(self.eeprom[base : base + self._FILENAME_LEN])
 
     def cmd03_set_filename(self, payload: bytes) -> bytes:
         slot = bytearray([0xFF] * self._FILENAME_LEN)
@@ -198,14 +200,13 @@ class MainUnitModel:
     def persist_dirty_filename_to_eeprom(self) -> bool:
         if not self.filename_dirty:
             return False
-        base = self._FILENAME_EEPROM_BASE
+        base = self._filename_eeprom_base()
         self.eeprom[base : base + self._FILENAME_LEN] = self.filename_ram_bytes()
-        self.eeprom[self._FILENAME_GEN_EEPROM] = (self.eeprom[self._FILENAME_GEN_EEPROM] + 1) & 0x7F
         self.filename_dirty = False
         return True
 
-    def boot_load_filename_from_eeprom(self) -> None:
-        base = self._FILENAME_EEPROM_BASE
+    def boot_load_filename_from_eeprom(self, preset_idx: int | None = None) -> None:
+        base = self._filename_eeprom_base(preset_idx)
         self._set_filename_ram_bytes(bytes(self.eeprom[base : base + self._FILENAME_LEN]))
         self.filename_dirty = False
 

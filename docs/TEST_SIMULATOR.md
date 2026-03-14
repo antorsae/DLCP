@@ -281,6 +281,16 @@ Location: `tests/sim/`
   - gpsim instruction-level MAIN preset-command mailbox tests
   - mailbox echo/counter checks for preset A/B commands and broadcast routing
   - bank-selection semantics live in `test_main_model_banking.py`
+- `test_main_dsp_filename_sim_validation.py`
+  - semantic MAIN A/B filename banking checks
+  - proves preset `A` and preset `B` keep independent EEPROM/RAM filename state
+- `test_main_gpsim_cmd03_instruction_path.py`
+  - strict instruction-level MAIN `cmd03` checks
+  - keeps the stock `cmd03` handler body intact while locking in A/B-aware
+    EEPROM persistence at `0x60..0x7D` and `0x83..0xA0`
+- `test_main_gpsim_filename_ab.py`
+  - direct gpsim `cmd=0x20` dispatch probe with seeded EEPROM filename slots
+  - proves the live MAIN RAM filename slot switches with preset `A/B`
 
 ## 8. Test Categories and Expected Outcomes
 

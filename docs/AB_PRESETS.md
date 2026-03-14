@@ -13,6 +13,11 @@ Current design status:
 
 - Working in the current test gate.
 - 2026-03-10 correction: the first `V2.5` MAIN artifact had a bad MSSP-idle wait helper and could strand real hardware before CONTROL ever left `WAITING FOR DLCP`; the current repo copy of `DLCP_Firmware_V2.5.hex` has been rebuilt with the fixed wait logic.
+- 2026-03-14 update: MAIN `V2.4` and `V2.5` now keep USB `cmd03` filename behavior A/B-consistent on MAIN only:
+  - preset `A` filename in EEPROM `0x60..0x7D`
+  - preset `B` filename in EEPROM `0x83..0xA0`
+  - live RAM filename slot remains stock `0x02C0..0x02DD`
+  - CONTROL still does not fetch or display filenames
 - Current targeted `V1.62b` verification:
   - `python3 -m dlcp_fw.patch.build_control_presets_ab_v162b`
   - `python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v162b`
@@ -44,6 +49,11 @@ Non-goals in the current design:
 - no `0x21` / `0x22` / `0x2F` / `0x30..0x37` filename side protocol
 - no periodic preset spam beyond bounded retry bursts
 - no attempt to turn CONTROL into the authority for per-unit DSP metadata
+
+Explicitly still in scope:
+
+- MAIN USB/HFD filename reads, writes, and erase remain supported
+- those USB filename operations now target the active preset only
 
 ## User-Visible Behavior
 
@@ -118,17 +128,21 @@ Patch strategy:
 1. Copy stock preset table `A` from `0x5600..0x5FFF` to table `B` at `0x4A00..0x53FF`.
 2. Remap flash read/write/erase access into the `B` window when preset `B` is active.
 3. Add idempotent current-loop `cmd=0x20` handling.
-4. Leave stock USB `cmd03` filename paths intact.
+4. Keep the stock USB `cmd03` command family intact, but patch its backing
+   filename load/persist paths so the active preset owns the visible filename.
 
 Patch map:
 
 | Component | Address | Purpose |
 |---|---:|---|
 | Table copy `A -> B` | `0x4A00..0x53FF` | Clone of stock DSP table bank |
+| Filename load hook | `0x20BE..0x20E2` | Load active preset filename from EEPROM into stock RAM slot at boot / helper call |
+| Filename persist hook | `0x27C0..0x27EA` | Persist stock RAM filename slot into active preset EEPROM slot |
 | Read remap stub | `0x5400` | Redirect reads from `0x56xx..0x5Fxx` to `0x4Axx..0x53xx` when `B` active |
 | Write remap stub | `0x5440` | Redirect table writes to `B` bank when `B` active |
 | Erase remap stub | `0x54C0` | Redirect table erase window to `B` bank when `B` active |
-| Command tail stub | `0x5500` | Preserve stock `0x1D` / `0x1E`, add idempotent `0x20` |
+| Command tail stub (`V2.4`) | `0x5500` | Preserve stock `0x1D` / `0x1E`, add idempotent `0x20` plus filename slot swap |
+| Command tail stub (`V2.5`) | `0x54C0` | Same as `V2.4`, but coexists with robustness stubs at `0x5500+` |
 | Hook sites | `0x1E64`, `0x2E6E`, `0x3DAC`, `0x4028` | Redirect to the stubs above |
 
 Runtime preset state:
@@ -140,18 +154,36 @@ Runtime preset state:
 `cmd=0x20` behavior:
 
 - if requested preset equals current preset: do nothing
-- if requested preset differs: update `0x05E.2`, then call the stock table-apply routine once
+- if requested preset differs:
+  - flush the outgoing filename slot first if USB `cmd03` data is still dirty
+  - update `0x05E.2`
+  - load the incoming preset filename into the stock RAM slot `0x02C0..0x02DD`
+  - call the stock table-apply routine once
+
+USB filename behavior:
+
+- USB `cmd03 0x08` still reads the live RAM filename slot
+- USB `cmd03 0x09` and `0x0A` still edit the same stock RAM slot and dirty bit
+- the active preset decides which EEPROM slot backs that RAM slot:
+  - preset `A`: `0x60..0x7D`
+  - preset `B`: `0x83..0xA0`
+- legacy single-slot devices migrate naturally:
+  - preset `A` keeps the old stored filename
+  - preset `B` starts blank (`0xFF`)
+- boot still starts from the stock `A` slot; CONTROL later reasserts preset `B`
+  in the normal system flow if needed
 
 Important stock behavior preserved:
 
-- stock USB `cmd03` handler bytes at `0x20BE` and `0x27C0` are unchanged
-- stock filename persistence behavior remains available for USB/HFD tooling
+- stock USB `cmd03` handler body at `0x10D0..0x1132` is unchanged
+- stock USB filename command family remains `0x08` read / `0x09` write / `0x0A` erase
+- stock RAM filename slot remains `0x02C0..0x02DD`
 - removed filename transport commands `0x21` / `0x22` are ignored on the current-loop path
 
 Version policy:
 
 - EEPROM tuple remains stock-style `2.30` at `0xF00080..0xF00082`
-- USB-visible application version is patched to `2.5`
+- USB-visible application version is patched to `2.4` or `2.5`
 
 ## CONTROL Patch (`V1.41`, `V1.51b`, `V1.61b`, `V1.62b`)
 
@@ -269,6 +301,11 @@ MAIN:
   - `A`: `0x5600..0x5FFF`
   - `B`: `0x4A00..0x53FF`
 - USB/HFD writes target the currently active bank through the stock write/erase path plus bank remap stubs
+- filename EEPROM slots are:
+  - `A`: `0x60..0x7D`
+  - `B`: `0x83..0xA0`
+- the live RAM filename slot stays stock at `0x02C0..0x02DD`
+- preset switch flushes a dirty outgoing filename slot before loading the incoming one
 
 ## Deliberate Removal of Filename Display
 
@@ -282,7 +319,7 @@ Reasons:
 
 Current policy:
 
-- MAIN still retains stock USB filename storage behavior for host tooling analysis/tests
+- MAIN keeps the stock USB filename command family, but its storage is now A/B-consistent on MAIN
 - CONTROL does not request or display DSP filenames
 - current-loop commands `0x21` / `0x22` / `0x2F` / `0x30..0x37` are not part of the shipped A/B design
 
@@ -291,7 +328,8 @@ Current policy:
 Build patched firmware:
 
 ```bash
-python3 -m dlcp_fw.patch.build_main_presets_ab
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v24
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v25
 python3 -m dlcp_fw.patch.build_control_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
@@ -327,7 +365,7 @@ Key coverage for the simplified design:
 |---|---|
 | MAIN bank mapping and idempotent `0x20` | `tests/sim/test_main_model_banking.py`, `tests/sim/test_main_gpsim_preset_banks.py` |
 | MAIN stock command compatibility | `tests/sim/test_main_gpsim_command_compatibility.py`, `tests/sim/test_main_gpsim_command_matrix.py`, `tests/sim/test_main_gpsim_command_edges.py` |
-| MAIN stock `cmd03` filename path left intact | `tests/sim/test_main_dsp_filename_sim_validation.py`, `tests/sim/test_main_gpsim_cmd03_instruction_path.py` |
+| MAIN USB filename A/B semantics | `tests/sim/test_main_dsp_filename_sim_validation.py`, `tests/sim/test_main_gpsim_cmd03_instruction_path.py`, `tests/sim/test_main_gpsim_filename_ab.py` |
 | MAIN DSP refresh behavior on preset switch | `tests/sim/test_main_dsp_refresh_behavior.py` |
 | CONTROL UI model behavior | `tests/sim/test_control_ui_and_persistence.py` |
 | CONTROL gpsim screen navigation and persistence | `tests/sim/test_gpsim_control_presets.py` |
