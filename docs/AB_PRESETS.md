@@ -28,6 +28,11 @@ Current design status:
 - `V1.62b` keeps the `V1.61b` A/B preset behavior and adds CONTROL-side reconnect/parser hardening for `V2.5`.
 - `V1.61b` includes and preserves the real-hardware fix for the stale Setup LCD garbage issue.
 - Real-hardware confirmation: `DLCP_Firmware_V2.4.hex` + `DLCP_Control_V1.61b.hex` was flashed and verified working on a real unit.
+- 2026-03-14 fix: `V1.62b` `control_uart_soft_recover` contained `bcf PIE1, TXIE` which
+  killed the TX interrupt during OERR recovery. On real hardware this dropped bytes from
+  the `cmd=0x03` standby frame, preventing MAIN from entering standby (CONTROL showed
+  `Zzz...` but PBS amps stayed active). Removed the instruction; real-hardware verified
+  with `V2.5 + V1.62b`. See `docs/analysis/V162B_STDBY_TXIE_BUG.md` for full write-up.
 
 This document supersedes the earlier filename-display design. The current patch set does **not** transport or display DSP filenames on the CONTROL LCD.
 

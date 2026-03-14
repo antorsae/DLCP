@@ -227,7 +227,6 @@ parser_entry_continue:
     goto 0x0456
 
 control_uart_soft_recover:
-    bcf PIE1, TXIE, ACCESS
     bcf RCSTA, CREN, ACCESS
     movf RCREG, W, ACCESS
     movf RCREG, W, ACCESS

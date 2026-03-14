@@ -16,6 +16,8 @@ from dlcp_fw.paths import (
     PATCHED_MAIN_HEX,
     PATCHED_MAIN_HEX_V24,
     STOCK_CONTROL_HEX_V14,
+    STOCK_CONTROL_HEX_V15B,
+    STOCK_CONTROL_HEX_V16B,
     STOCK_MAIN_HEX,
 )
 
@@ -86,3 +88,17 @@ def stock_control_hex_v14() -> Path:
     if not STOCK_CONTROL_HEX_V14.exists():
         raise RuntimeError(f"missing stock control HEX: {STOCK_CONTROL_HEX_V14}")
     return STOCK_CONTROL_HEX_V14
+
+
+@pytest.fixture(scope="session")
+def stock_control_hex_v15b() -> Path:
+    if not STOCK_CONTROL_HEX_V15B.exists():
+        raise RuntimeError(f"missing stock control HEX: {STOCK_CONTROL_HEX_V15B}")
+    return STOCK_CONTROL_HEX_V15B
+
+
+@pytest.fixture(scope="session")
+def stock_control_hex_v16b() -> Path:
+    if not STOCK_CONTROL_HEX_V16B.exists():
+        raise RuntimeError(f"missing stock control HEX: {STOCK_CONTROL_HEX_V16B}")
+    return STOCK_CONTROL_HEX_V16B
