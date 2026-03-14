@@ -148,6 +148,15 @@ The chain harness currently exposes the safe runtime subset:
 `Data_Nack_Count`, `Data_Stuck_SDA_Cycles`, `Data_Stuck_SDA_Count`, and
 `Stretch_SCL_Cycles`.
 
+The repo-local gpsim fork now also exposes processor-scoped internal MAIN fault
+knobs that can be armed from the chain harnesses without patching firmware:
+
+- `usart_trmt_busy_cycles` / `usart_trmt_busy_count`
+  - hold the EUSART transmit side busy before the next selected `TXREG -> TSR`
+    start, which keeps `TXSTA.TRMT` low
+- `ssp_stop_busy_cycles` / `ssp_stop_busy_count`
+  - hold the MSSP stop/idle path busy before the next selected stop phase
+
 ### Serial transport model (LinkPipe)
 
 Each serial link is modelled as a byte-paced queue matching the PIC18 EUSART
@@ -203,6 +212,12 @@ Current scope:
     - `V1.61b + V2.4` and `V1.61b + V2.5` both stay stranded in `WAITING FOR DLCP`
     - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect once the one-shot
       external fault expires
+  - the newer one-shot internal peripheral faults still show the same
+    CONTROL-side split:
+    - `V1.61b + V2.4` and `V1.61b + V2.5` both strand under one-shot
+      `TRMT`-busy and MSSP stop-busy wake faults
+    - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect after those same
+      one-shot internal faults expire
 
 ### Heartbeat model
 

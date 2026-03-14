@@ -32,6 +32,7 @@ License along with this library; if not, see
 #include "stimuli.h"
 #include "trace.h"
 #include "ui.h"
+#include "value.h"
 
 //#define DEBUG
 #if defined(DEBUG)
@@ -1026,13 +1027,16 @@ SSP_MODULE::SSP_MODULE(Processor *pCpu)
       m_sink_set(false),
       m_sdo_active(false),
       m_sdi_active(false),
-      m_sck_active(false)
+      m_sck_active(false),
+      m_stop_busy_cycles_attr(nullptr),
+      m_stop_busy_count_attr(nullptr)
 {
 }
 
 
 SSP_MODULE::~SSP_MODULE()
 {
+    unregister_fault_symbols();
     if (!m_sink_set)
     {
         delete m_SDI_Sink;
@@ -1064,6 +1068,60 @@ SSP_MODULE::~SSP_MODULE()
     delete m_i2c;
     delete m_ssp_if;
     delete m_bcl_if;
+}
+
+guint64 SSP_MODULE::consume_stop_busy_delay_cycles()
+{
+    if (!m_stop_busy_cycles_attr || !m_stop_busy_count_attr)
+        return 0;
+
+    gint64 cycles = 0;
+    gint64 count = 0;
+    m_stop_busy_cycles_attr->get(cycles);
+    m_stop_busy_count_attr->get(count);
+
+    if (cycles <= 0 || count == 0)
+        return 0;
+
+    if (count > 0)
+        m_stop_busy_count_attr->set(count - 1);
+
+    return static_cast<guint64>(cycles);
+}
+
+void SSP_MODULE::register_fault_symbols()
+{
+    if (!cpu || m_stop_busy_cycles_attr || m_stop_busy_count_attr)
+        return;
+
+    m_stop_busy_cycles_attr = new Integer(
+        "ssp_stop_busy_cycles",
+        0,
+        "Extra cycles to keep MSSP stop/idle busy before each selected stop phase"
+    );
+    m_stop_busy_count_attr = new Integer(
+        "ssp_stop_busy_count",
+        0,
+        "Remaining stop phases to delay; -1 keeps the MSSP stop busy delay armed"
+    );
+    cpu->addSymbol(m_stop_busy_cycles_attr);
+    cpu->addSymbol(m_stop_busy_count_attr);
+}
+
+void SSP_MODULE::unregister_fault_symbols()
+{
+    if (cpu && m_stop_busy_cycles_attr)
+    {
+        cpu->removeSymbol(m_stop_busy_cycles_attr);
+        delete m_stop_busy_cycles_attr;
+        m_stop_busy_cycles_attr = nullptr;
+    }
+    if (cpu && m_stop_busy_count_attr)
+    {
+        cpu->removeSymbol(m_stop_busy_count_attr);
+        delete m_stop_busy_count_attr;
+        m_stop_busy_count_attr = nullptr;
+    }
 }
 
 
@@ -2446,7 +2504,7 @@ void I2C::newSSPADD(unsigned int /* newTxByte */ )
 }
 
 
-void I2C::setBRG()
+void I2C::setBRG(guint64 extra_cycles)
 {
     if (future_cycle)
     {
@@ -2454,7 +2512,8 @@ void I2C::setBRG()
     }
 
     future_cycle = get_cycles().get() +
-                   ((m_sspadd->get() & 0x7f) / 4) + 1;
+                   ((m_sspadd->get() & 0x7f) / 4) + 1 +
+                   extra_cycles;
     get_cycles().set_break(future_cycle, this);
 }
 
@@ -2746,7 +2805,7 @@ void I2C::stop_bit()
 
     if (!m_sspmod->get_SDI_State())
     {
-        setBRG();
+        setBRG(m_sspmod->consume_stop_busy_delay_cycles());
 
     }
     else
@@ -2815,6 +2874,8 @@ void SSP_MODULE::initialize(
         m_SdoSource = new SDO_SignalSource(this, m_sdo);
         m_SdiSource = new SDI_SignalSource(this, m_sdi);
     }
+
+    register_fault_symbols();
 }
 
 
@@ -3676,5 +3737,3 @@ void _SSP1CON3::put(unsigned int new_value)
 
     put_value(new_value & ~ACKTIM); // ACKTIM not writable by user
 }
-
-

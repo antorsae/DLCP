@@ -401,6 +401,36 @@ class WireMultiMainChainHarness:
             stretch_scl_cycles=stretch_scl_cycles,
         )
 
+    def set_main_uart_fault(
+        self,
+        *,
+        main_index: int = 0,
+        trmt_busy_cycles: int | None = None,
+        trmt_busy_count: int | None = None,
+    ) -> None:
+        self.mains[main_index].set_uart_fault(
+            trmt_busy_cycles=trmt_busy_cycles,
+            trmt_busy_count=trmt_busy_count,
+        )
+
+    def clear_main_uart_faults(self, *, main_index: int = 0) -> None:
+        self.mains[main_index].clear_uart_faults()
+
+    def set_main_mssp_stop_fault(
+        self,
+        *,
+        main_index: int = 0,
+        stop_busy_cycles: int | None = None,
+        stop_busy_count: int | None = None,
+    ) -> None:
+        self.mains[main_index].set_mssp_stop_fault(
+            stop_busy_cycles=stop_busy_cycles,
+            stop_busy_count=stop_busy_count,
+        )
+
+    def clear_main_mssp_stop_faults(self, *, main_index: int = 0) -> None:
+        self.mains[main_index].clear_mssp_stop_faults()
+
     def clear_main_i2c_faults(self, device_name: str = "cfg71", *, main_index: int = 0) -> None:
         self.mains[main_index].clear_i2c_faults(device_name)
 

@@ -31,6 +31,10 @@ from .main_gpsim import (
     MAIN_FAULT_UART_TX_STALL,
     MAIN_GPSIM_PROCESSOR,
     MAIN_MAILBOX_TX_BASE,
+    MAIN_UART_TRMT_BUSY_COUNT_ATTR,
+    MAIN_UART_TRMT_BUSY_CYCLES_ATTR,
+    MAIN_MSSP_STOP_BUSY_COUNT_ATTR,
+    MAIN_MSSP_STOP_BUSY_CYCLES_ATTR,
     build_seeded_main_sim_hex,
     default_main_i2c_regfile_devices,
     probe_main_an0_boot_exit_cycle,
@@ -401,6 +405,50 @@ class MainChainHarness:
             raise RuntimeError("external I2C regfile bus is not attached")
         output = self._issue(f"{device_name}.{attr_name}", 5.0)
         return _parse_module_int_value(output, attr_name)
+
+    def read_uart_attribute(self, attr_name: str) -> int:
+        output = self._issue(attr_name, 5.0)
+        return _parse_module_int_value(output, attr_name)
+
+    def set_uart_fault(
+        self,
+        *,
+        trmt_busy_cycles: int | None = None,
+        trmt_busy_count: int | None = None,
+    ) -> None:
+        if trmt_busy_cycles is not None:
+            self._issue(
+                f"{MAIN_UART_TRMT_BUSY_CYCLES_ATTR} = {max(0, int(trmt_busy_cycles))}",
+                5.0,
+            )
+        if trmt_busy_count is not None:
+            self._issue(
+                f"{MAIN_UART_TRMT_BUSY_COUNT_ATTR} = {max(-1, int(trmt_busy_count))}",
+                5.0,
+            )
+
+    def clear_uart_faults(self) -> None:
+        self.set_uart_fault(trmt_busy_cycles=0, trmt_busy_count=0)
+
+    def set_mssp_stop_fault(
+        self,
+        *,
+        stop_busy_cycles: int | None = None,
+        stop_busy_count: int | None = None,
+    ) -> None:
+        if stop_busy_cycles is not None:
+            self._issue(
+                f"{MAIN_MSSP_STOP_BUSY_CYCLES_ATTR} = {max(0, int(stop_busy_cycles))}",
+                5.0,
+            )
+        if stop_busy_count is not None:
+            self._issue(
+                f"{MAIN_MSSP_STOP_BUSY_COUNT_ATTR} = {max(-1, int(stop_busy_count))}",
+                5.0,
+            )
+
+    def clear_mssp_stop_faults(self) -> None:
+        self.set_mssp_stop_fault(stop_busy_cycles=0, stop_busy_count=0)
 
     def set_i2c_fault(
         self,
@@ -779,6 +827,34 @@ class SingleMainChainHarness:
 
     def clear_main_fault_flags(self) -> None:
         self.main.clear_fault_flags()
+
+    def set_main_uart_fault(
+        self,
+        *,
+        trmt_busy_cycles: int | None = None,
+        trmt_busy_count: int | None = None,
+    ) -> None:
+        self.main.set_uart_fault(
+            trmt_busy_cycles=trmt_busy_cycles,
+            trmt_busy_count=trmt_busy_count,
+        )
+
+    def clear_main_uart_faults(self) -> None:
+        self.main.clear_uart_faults()
+
+    def set_main_mssp_stop_fault(
+        self,
+        *,
+        stop_busy_cycles: int | None = None,
+        stop_busy_count: int | None = None,
+    ) -> None:
+        self.main.set_mssp_stop_fault(
+            stop_busy_cycles=stop_busy_cycles,
+            stop_busy_count=stop_busy_count,
+        )
+
+    def clear_main_mssp_stop_faults(self) -> None:
+        self.main.clear_mssp_stop_faults()
 
     def set_main_i2c_fault(
         self,

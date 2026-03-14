@@ -33,6 +33,7 @@ License along with this library; if not, see
 
 class PicTrisRegister;
 class Processor;
+class Integer;
 class SDI_SignalSink;
 class SCL_SignalSink;
 class SS_SignalSink;
@@ -310,7 +311,7 @@ public:
     virtual void master_rx();
     virtual void ack_bit();
     virtual bool isIdle();
-    virtual void setBRG();
+    virtual void setBRG(guint64 extra_cycles = 0);
     virtual void clrBRG();
     virtual bool rx_byte();
     virtual void bus_collide();
@@ -422,6 +423,7 @@ public:
     virtual bool isI2CIdle() { return m_i2c->isIdle(); }
     virtual bool isI2CMaster() { return sspcon.isI2CMaster(sspcon.value.get()); }
     virtual bool isI2CSlave() { return sspcon.isI2CSlave(sspcon.value.get()); }
+    virtual guint64 consume_stop_busy_delay_cycles();
     virtual void releaseSDIpin();
     virtual void releaseSDOpin();
     virtual void releaseSCLpin();
@@ -458,6 +460,10 @@ protected:
     bool			m_sdo_active;
     bool			m_sdi_active;
     bool			m_sck_active;
+    Integer                 *m_stop_busy_cycles_attr;
+    Integer                 *m_stop_busy_count_attr;
+    void register_fault_symbols();
+    void unregister_fault_symbols();
 };
 
 

@@ -29,6 +29,7 @@ License along with this library; if not, see
 #include "processor.h"  // for Processor
 #include "stimuli.h"    // for IOPIN, SignalSink
 #include "trace.h"      // for Trace, trace
+#include "value.h"      // for Integer
 
 #define p_cpu ((Processor *)cpu)
 
@@ -39,6 +40,17 @@ License along with this library; if not, see
 #else
 #define Dprintf(arg) {}
 #endif
+
+namespace {
+
+std::string usart_fault_symbol_prefix(const std::string &txreg_name)
+{
+    if (!txreg_name.empty() && txreg_name.back() == '2')
+        return "usart2";
+    return "usart";
+}
+
+}  // namespace
 
 //--------------------------------------------------
 //
@@ -693,9 +705,14 @@ void _TXSTA::start_transmitting()
     }
 
 
-    // Set a callback breakpoint at the next SPBRG edge
+    // Set a callback breakpoint at the next SPBRG edge. Tests may inject
+    // a bounded extra delay here to keep TRMT low before the TSR starts.
     if(cpu)
-        get_cycles().set_break(spbrg->get_cpu_cycle(1), this);
+    {
+        guint64 start_cycle = spbrg->get_cpu_cycle(1);
+        start_cycle += mUSART->consume_trmt_busy_delay_cycles();
+        get_cycles().set_break(start_cycle, this);
+    }
 
 
     // The TSR now has data, so clear the Transmit Shift
@@ -1786,6 +1803,8 @@ void USART_MODULE::initialize(PIR *_pir,
     rcsta.txsta = &txsta;
     rcsta.txreg = txreg;
     rcsta.setIOpin(rx_pin);
+
+    register_fault_symbols();
 }
 
 void USART_MODULE::setIOpin(PinModule *pin, int data)
@@ -1812,6 +1831,25 @@ bool USART_MODULE::bIsTXempty()
     if (m_txif)
         return m_txif->Get();
     return pir ? pir->get_txif() : true;
+}
+
+guint64 USART_MODULE::consume_trmt_busy_delay_cycles()
+{
+    if (!m_trmt_busy_cycles_attr || !m_trmt_busy_count_attr)
+        return 0;
+
+    gint64 cycles = 0;
+    gint64 count = 0;
+    m_trmt_busy_cycles_attr->get(cycles);
+    m_trmt_busy_count_attr->get(count);
+
+    if (cycles <= 0 || count == 0)
+        return 0;
+
+    if (count > 0)
+        m_trmt_busy_count_attr->set(count - 1);
+
+    return static_cast<guint64>(cycles);
 }
 
 void USART_MODULE::emptyTX()
@@ -1866,7 +1904,10 @@ USART_MODULE::USART_MODULE(Processor *pCpu)
       txreg(nullptr), rcreg(nullptr), pir(nullptr),
       spbrgh(pCpu,"spbrgh","Serial Port Baud Rate high byte"),
       baudcon(pCpu,"baudcon","Serial Port Baud Rate Control"),
-      is_eusart(false)
+      m_cpu(pCpu),
+      is_eusart(false),
+      m_trmt_busy_cycles_attr(nullptr),
+      m_trmt_busy_count_attr(nullptr)
 {
     baudcon.txsta = &txsta;
     baudcon.rcsta = &rcsta;
@@ -1874,6 +1915,7 @@ USART_MODULE::USART_MODULE(Processor *pCpu)
 
 USART_MODULE::~USART_MODULE()
 {
+    unregister_fault_symbols();
 }
 
 void USART_MODULE::mk_rcif_int(PIR *reg, unsigned int bit)
@@ -1884,6 +1926,42 @@ void USART_MODULE::mk_rcif_int(PIR *reg, unsigned int bit)
 void USART_MODULE::mk_txif_int(PIR *reg, unsigned int bit)
 {
     m_txif = std::unique_ptr<InterruptSource>(new InterruptSource(reg, bit));
+}
+
+void USART_MODULE::register_fault_symbols()
+{
+    if (!m_cpu || !txreg || m_trmt_busy_cycles_attr || m_trmt_busy_count_attr)
+        return;
+
+    const std::string prefix = usart_fault_symbol_prefix(txreg->name());
+    m_trmt_busy_cycles_attr = new Integer(
+        (prefix + "_trmt_busy_cycles").c_str(),
+        0,
+        "Extra cycles to keep TRMT busy before each selected USART TSR start"
+    );
+    m_trmt_busy_count_attr = new Integer(
+        (prefix + "_trmt_busy_count").c_str(),
+        0,
+        "Remaining TSR starts to delay; -1 keeps the TRMT busy delay armed"
+    );
+    m_cpu->addSymbol(m_trmt_busy_cycles_attr);
+    m_cpu->addSymbol(m_trmt_busy_count_attr);
+}
+
+void USART_MODULE::unregister_fault_symbols()
+{
+    if (m_cpu && m_trmt_busy_cycles_attr)
+    {
+        m_cpu->removeSymbol(m_trmt_busy_cycles_attr);
+        delete m_trmt_busy_cycles_attr;
+        m_trmt_busy_cycles_attr = nullptr;
+    }
+    if (m_cpu && m_trmt_busy_count_attr)
+    {
+        m_cpu->removeSymbol(m_trmt_busy_count_attr);
+        delete m_trmt_busy_count_attr;
+        m_trmt_busy_count_attr = nullptr;
+    }
 }
 
 //--------------------------------------------------
@@ -1904,4 +1982,3 @@ void USART_MODULE::set_eusart(bool is_it)
         is_eusart = false;
     }
 }
-

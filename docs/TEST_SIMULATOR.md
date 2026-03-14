@@ -244,6 +244,19 @@ Location: `tests/sim/`
       `WAITING FOR DLCP`
     - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect after the same
       one-shot external fault expires
+- `test_wire_chain_gpsim_internal_faults.py`
+  - live wire-UART wake characterization with higher-fidelity internal MAIN
+    peripheral faults injected in gpsim core instead of by firmware overlays
+  - currently covers:
+    - one-shot EUSART `TRMT`-busy delay via processor symbols
+      `usart_trmt_busy_cycles` / `usart_trmt_busy_count`
+    - one-shot MSSP stop/idle busy delay via processor symbols
+      `ssp_stop_busy_cycles` / `ssp_stop_busy_count`
+  - current result still does not isolate a MAIN-only split:
+    - `V1.61b + V2.4` and `V1.61b + V2.5` both remain stranded in
+      `WAITING FOR DLCP`
+    - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect after the same
+      one-shot internal fault expires
 - `test_gpsim_multi_processor_uart_topology.py`
   - proves the repo-local gpsim build can host labeled `ctl` + `m0` + `m1`
   in one process and attach `RC6`/`RC7` hop nodes for a two-powerbox chain

@@ -31,6 +31,7 @@ License along with this library; if not, see
 
 class CLKSignalSink;
 class InterruptSource;
+class Integer;
 class PIR;
 class Processor;
 class RCSignalControl;
@@ -386,11 +387,17 @@ public:
     void mk_txif_int(PIR *reg, unsigned int bit);
     bool IsEUSART() { return is_eusart; }
     void set_eusart ( bool is_it );
+    guint64 consume_trmt_busy_delay_cycles();
 
 private:
+    Processor *m_cpu;
     bool is_eusart;
+    Integer *m_trmt_busy_cycles_attr;
+    Integer *m_trmt_busy_count_attr;
     std::unique_ptr<InterruptSource> m_rcif;
     std::unique_ptr<InterruptSource> m_txif;
+    void register_fault_symbols();
+    void unregister_fault_symbols();
 };
 
 

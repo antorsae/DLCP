@@ -343,6 +343,10 @@ Required harness changes:
    external `cfg71` wake-time I2C faults: they now auto-expire on the next
    `N` matching transactions, but the observed split is still primarily
    CONTROL-side (`V1.61b` strands both MAIN versions; `V1.62b` reconnects both).
+   The same remains true for newer higher-fidelity internal gpsim core faults:
+   one-shot EUSART `TRMT` busy delay and one-shot MSSP stop/idle busy delay
+   still separate `V1.61b` from `V1.62b` more clearly than they separate
+   `V2.4` from `V2.5`.
 3. Add test-only fault overlays for MAIN timeout paths.
    These should force persistent busy/stuck conditions in specific wait loops so the recovery code can be exercised deterministically.
 4. Persist LCD timelines and key events under `artifacts/sim/current/robustness/`.
