@@ -21,6 +21,8 @@ Patch summary (reliability-first design):
   - parser OERR recovery drains UART state and resets parser cursors
   - wake reconnect waits for a fuller status handshake instead of BF/03 alone
   - failed reconnect attempts periodically re-prime UART/parser state
+  - reconnect exit sends function_034 wake frame (stock-aligned; prevents
+    MAINs from remaining in standby gate after Zzz→WAITING→DISPLAY cycle)
 - Firmware version policy: display/version tuple updated to 1.62b.
 """
 
@@ -294,6 +296,7 @@ reconnect_wait_done:
     clrf 0x73, BANKED
     movlb 0x00
     bsf 0x01F, 1, ACCESS
+    call 0x0C98                     ; function_034: wake (bit1=1 -> data=0x01)
     movlw 0x61
     movwf 0x09D, BANKED
     movlw 0xEA

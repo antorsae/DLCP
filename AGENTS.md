@@ -207,6 +207,7 @@ Current suite includes:
 - Robustness/waiting regression: `test_robustness_waiting.py`
 - Chain WAITING regression: `test_chain_gpsim_waiting.py`
 - MAIN standby pin I/O + V1.62b TXIE guard: `test_main_stdby_pin_io.py`
+- V1.62b reconnect wake gate (semantic + DSP behavioral): `test_reconnect_wake_gate.py`
 - Wire UART smoke regression: `test_wire_chain_gpsim.py`
 - Raw-main V2.5 chain characterization: `test_chain_gpsim_v25_recovery.py`
 - Raw-main V2.5 + V1.62b recovery: `test_chain_gpsim_v25_v162b_recovery.py`
@@ -258,6 +259,7 @@ Deep analysis docs:
 - `docs/analysis/STOCK_SYNC_DEADLOCK_ANALYSIS_2026-03-08-gpt-5.2-pro.md`
 - `docs/analysis/STOCK_SYNC_DEADLOCK_ANALYSIS_2026-03-08-opus-4.6.md`
 - `docs/analysis/V162B_STDBY_TXIE_BUG.md`
+- `docs/analysis/V162B_RECONNECT_WAKE_BUG.md`
 
 ## Artifacts and Caches
 
