@@ -313,7 +313,19 @@ def test_v162b_wire_chain_standby_reconnect_dsp_gate() -> None:
         chain.press("STBY")
         chain.step()  # CONTROL exits Zzz; wake + first polls -> DROPPED
 
+        # Gate must still be closed: the stock wake at 0x1294 was dropped.
+        assert not (_read_reg(main_issue, _STATUS_5E) & 0x08), (
+            "gate opened during bridge-dropped step -- stock wake leaked"
+        )
+
         chain.clear_link_faults()
+
+        # Sanity: verify SFR restore is holding (SPBRG should be pre-standby).
+        cur_spbrg = _read_reg(main_issue, _SFR_SPBRG)
+        assert cur_spbrg == saved[_SFR_SPBRG], (
+            f"SPBRG drifted after restore: 0x{cur_spbrg:02X} "
+            f"(expected 0x{saved[_SFR_SPBRG]:02X})"
+        )
 
         # ---- Phase 5: reconnect ----
         last = chain.run_until_connected(limit=80)
