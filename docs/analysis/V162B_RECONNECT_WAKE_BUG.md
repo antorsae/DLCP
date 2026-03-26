@@ -128,28 +128,48 @@ Phase 2 reproduces the field bug at the I2C level.  Phase 3 proves the
 wake frame (which the fix causes CONTROL to send) restores command
 delivery.
 
-### Why no wire-chain end-to-end
+### Wire-chain end-to-end: `test_v162b_wire_chain_standby_reconnect_dsp_gate`
 
-A full CONTROL -> wire UART -> MAIN end-to-end through the
-standby/reconnect cycle is not included because:
+Full CONTROL + MAIN wire-chain (WireMultiMainChainHarness) through the
+standby/reconnect cycle.  Two obstacles were solved:
 
-1. **MAIN enters real standby in sim**: `function_051` switches the
-   oscillator (`OSCCON.SCS1`) and disables Timer0, changing the
-   effective baud rate and halting the main loop scheduler.  MAIN
-   cannot respond to CONTROL's reconnect polls, so CONTROL stays in
-   "Zzz..." indefinitely.  On real hardware, the bug requires
-   `function_051` to *partially fail* (I2C glitch), which cannot be
-   reliably reproduced in gpsim.
+**Obstacle 1 — MAIN enters real standby in sim.**  `function_051`
+switches the oscillator (`OSCCON.SCS1`), changes `SPBRG`, and disables
+Timer0.  gpsim models the oscillator switch (re-derives CPU frequency in
+`OSCCON::put()`), so the UART baud rate changes and MAIN becomes
+unreachable.
 
-2. **Display loop compensates**: even without the fix in
-   `reconnect_wait_done`, CONTROL's display loop periodically calls
-   `function_028` (full-sync) which calls `function_034` (wake).
-   The full-sync counter (`0x09F`/`0x0A0`) is reset to 0 in
-   `reconnect_wait_done` and triggers at count 0x4E (~78 display
-   loop iterations, ~20 seconds).  In the sim this fires before a
-   test can reliably assert the gate is closed, masking the bug.
-   On real hardware, the race window matters because user commands
-   (volume knob, button presses) arrive BEFORE the first full-sync.
+*Solution*: save MAIN's hardware SFRs (SPBRG, SPBRGH, OSCCON, T0CON,
+INTCON, TXSTA, RCSTA, sleep flag 0x095) before pressing STBY.  Inject
+I2C address NACKs on `dsp34` so function_051's three function_093 DSP
+shutdown writes fail (simulating the field I2C glitch).  After MAIN
+enters standby (0x5E.bit3 cleared, function_051 complete), restore the
+saved SFRs via gpsim register writes.  This models: active flag cleared,
+DSP shutdown failed, V2.5 timeout recovery restored UART/timer/oscillator.
+
+**Obstacle 2 — stock wake at 0x1294 compensates.**  Stock V1.6b code
+at 0x1292-0x1294 sends a wake frame (function_034) between the
+standby-exit logic and label_212.  V1.62b preserves this code.  If
+MAIN receives this wake, the gate reopens before reconnect_wait_done
+executes, masking the bug.
+
+*Solution*: drop the CONTROL→MAIN UART bridge for one chain step
+immediately after pressing STBY to wake.  This step contains the stock
+wake at 0x1294 plus the first reconnect polls — all are discarded.
+Restore the bridge on the next step so reconnect polls reach MAIN.
+Only reconnect_wait_done's function_034 call (the fix) can then send
+the wake frame.
+
+Test phases:
+1. Boot to DISPLAY, confirm DSP baseline (volume UP changes dsp34).
+2. Inject I2C fault on dsp34, press STBY → Zzz.
+3. Restore MAIN SFRs (simulate partial failure + V2.5 recovery).
+4. Drop CONTROL→MAIN bridge for one step (suppress stock wake).
+5. Press STBY to wake → reconnect → DISPLAY.
+6. Assert 0x5E.bit3 == 1 (gate open) and volume UP changes DSP.
+
+- Without fix: **FAILS** (0x5E.bit3 == 0 after reconnect)
+- With fix: **PASSES**
 
 ## Remaining uncertainty
 
@@ -162,6 +182,7 @@ point forward is validated:
 - `reconnect_wait_done` bypassed `function_034`: **verified in asm and hex**
 - DSP writes are blocked when gate is closed: **verified in sim at I2C level**
 - Wake frame reopens the gate: **verified in sim at I2C level**
+- Full standby → reconnect → gate + DSP cycle: **verified in wire-chain e2e sim**
 
 The fix is small, stock-aligned, and directly matched to the field
 symptom.  It is the right first fix regardless of the initiating fault.
