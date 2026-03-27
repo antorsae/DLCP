@@ -392,6 +392,8 @@ public:
     virtual void SS_SinkState(char);
     virtual void SCL_SinkState(char);
     virtual bool get_SDI_State() { return m_SDI_State; }
+    // Read SDA pin directly (bypasses cached m_SDI_State for I2C ACK sampling).
+    virtual bool get_SDI_PinState() { return m_sdi ? m_sdi->getPin().getState() : m_SDI_State; }
     virtual bool get_SCL_State() { return m_SCL_State; }
     virtual bool get_SS_State() { return m_SS_State; }
     virtual void Sck_toggle();

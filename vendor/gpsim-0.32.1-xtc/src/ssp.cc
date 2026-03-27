@@ -1575,11 +1575,14 @@ bool I2C::scl_clock_high()
     }
     else if (i2c_state == CLK_RX_ACK)
     {
-        bool n_ack = m_sspmod->get_SDI_State();
+        // Read SDA pin state directly (not the cached m_SDI_State)
+        // to pick up NACK from I2C slaves whose state-change callback
+        // may not have propagated through the node yet.
+        bool n_ack = m_sspmod->get_SDI_PinState();
 
         if (verbose & 2)
         {
-            std::cout << "I2C::scl_clock_high CLK_TX_ACK _ACK=" << n_ack <<
+            std::cout << "I2C::scl_clock_high CLK_RX_ACK _ACK=" << n_ack <<
                       " clock=" << get_cycles().get() << '\n';
         }
 
@@ -1706,6 +1709,11 @@ bool I2C::scl_clock_low()
         else if (bits_transfered == 8)
         {
             m_sspstat->put_value(m_sspstat->value.get() & ~_SSPSTAT::BF);
+
+            // Release SDA so the slave can drive it during the ACK
+            // phase.  Without this, the master's last data-bit level
+            // stays on SDA and masks the slave's ACK/NACK.
+            m_sspmod->setSDA(true);
 
             if (verbose & 2)
             {
@@ -2317,7 +2325,11 @@ void I2C_1::clock(bool clock_state)
             {
                 m_sspmod->set_sspif();
 
-                if (m_sspmod->get_SDI_State())  	// NACK
+                // Read SDA pin directly to catch NACKs from I2C slave
+                // modules whose state-change callbacks may not have
+                // propagated through the node yet.
+                bool sda_nack = m_sspmod->get_SDI_PinState();
+                if (sda_nack)  	// NACK
                 {
                     if (verbose)
                     {

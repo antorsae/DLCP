@@ -95,6 +95,7 @@ protected:
     START,
     RX_I2C_ADD,
     ACK_I2C_ADD,
+    NACK_I2C_ADD,   // address matched but NACKing (fault injection)
     RX_DATA,
     ACK_RX,
     ACK_WR,

@@ -231,9 +231,13 @@ void i2c_slave::callback()
                 }
                 else
                 {
-                    // not for us
-                    bus_state = IDLE;
-                    Vprintf((" - not for us\n"));
+                    // Address matched but NACKing (fault injection),
+                    // or address genuinely not for us.  Enter NACK
+                    // state so SDA stays released during the ACK
+                    // clock — the master can then detect the NACK
+                    // via ACKSTAT.
+                    bus_state = NACK_I2C_ADD;
+                    Vprintf((" - NACK\n"));
                 }
             }
 
@@ -302,6 +306,11 @@ void i2c_slave::callback()
     {
         switch (bus_state)
         {
+        case NACK_I2C_ADD :		// address NACK: release SDA then go idle
+            set_sda_driving_state(true);      // SDA stays high = NACK
+            bus_state = IDLE;
+            break;
+
         case ACK_I2C_ADD :		// after address ACK start to send data
             set_sda_driving_state(false);     // send ACK
             bus_state = ACK_WR;
