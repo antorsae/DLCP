@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.patch.verify_presets_ab import parse_intel_hex
-from dlcp_fw.paths import PATCHED_CONTROL_HEX_V162B, PATCHED_MAIN_HEX
+from dlcp_fw.paths import PATCHED_CONTROL_HEX_V162B, PATCHED_MAIN_HEX, PATCHED_MAIN_HEX_V26
 from dlcp_fw.sim.chain_gpsim import MainChainHarness
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
@@ -355,6 +355,100 @@ def test_v162b_wire_chain_standby_reconnect_dsp_gate() -> None:
             "volume UP did not change dsp34 registers after reconnect -- "
             "gate is nominally open but DSP commands are not reaching the bus"
         )
+
+    finally:
+        chain.close()
+
+
+# ---------------------------------------------------------------------------
+# V2.6 + V1.62b wire-chain: full standby cycle with DSP gate check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v26_v162b_wire_chain_standby_reconnect_dsp_gate() -> None:
+    """V2.6 MAIN + V1.62b CONTROL: full standby cycle with DSP verification.
+
+    Same scenario as the V2.5 test above but with V2.6 MAIN.
+    Verifies:
+    - Boot to DISPLAY, DSP baseline works
+    - Standby/reconnect cycle completes (wake gate reopened)
+    - Volume command after reconnect changes DSP registers
+    - V2.6's function_081 hook (ackstat_first_byte_check) does not
+      interfere with normal I2C writes
+    """
+    _require_gpsim()
+    if not PATCHED_MAIN_HEX_V26.exists():
+        pytest.skip(f"missing: {PATCHED_MAIN_HEX_V26.name}")
+    if not PATCHED_CONTROL_HEX_V162B.exists():
+        pytest.skip(f"missing: {PATCHED_CONTROL_HEX_V162B.name}")
+
+    chain = WireMultiMainChainHarness(
+        PATCHED_CONTROL_HEX_V162B,
+        PATCHED_MAIN_HEX_V26,
+        main_units=1,
+        fast_boot=False,
+        disable_standby_check=False,
+    )
+    try:
+        # Boot to DISPLAY
+        last = chain.run_until_connected(limit=80)
+        assert last is not None, "chain produced no steps"
+        assert chain.is_connected(), f"pair never connected; lcd={last.lcd!r}"
+
+        main = chain.mains[0]
+        main_issue = main._issue
+        assert _read_reg(main_issue, _STATUS_5E) & 0x08, "MAIN not active"
+
+        # DSP baseline
+        snap_a = _wire_dsp34_snapshot(main)
+        chain.press("UP")
+        chain.step_many(5)
+        diff_baseline = _dsp34_diff(snap_a, _wire_dsp34_snapshot(main))
+        assert len(diff_baseline) > 0, "DSP baseline broken on V2.6"
+
+        # Save SFRs, inject cfg71 fault, standby
+        saved: dict[int, int] = {}
+        for addr in _MAIN_SFR_RESTORE_SET:
+            saved[addr] = _read_reg(main_issue, addr)
+        chain.set_main_i2c_fault("cfg71", address_nack_count=100)
+
+        chain.press("STBY")
+        chain.step_many(20)
+        assert "ZZZ" in chain.lcd_lines()[0].upper()
+        assert not (_read_reg(main_issue, _STATUS_5E) & 0x08)
+
+        # Restore SFRs, clear faults
+        for addr, val in saved.items():
+            main_issue(f"reg(0x{addr:03X})=0x{val:02X}", 5.0)
+        chain.clear_main_i2c_faults("cfg71")
+
+        # Bridge suppression + wake
+        chain.set_link_fault("ctl_to_m0", drop=True)
+        chain.press("STBY")
+        chain.step()
+        assert not (_read_reg(main_issue, _STATUS_5E) & 0x08)
+        chain.clear_link_faults()
+        cur_spbrg = _read_reg(main_issue, _SFR_SPBRG)
+        assert cur_spbrg == saved[_SFR_SPBRG]
+
+        # Reconnect
+        last = chain.run_until_connected(limit=80)
+        assert last is not None, "V2.6: no steps after wake"
+        assert chain.is_connected(), f"V2.6 pair never reconnected; lcd={last.lcd!r}"
+        assert not chain.is_waiting(), f"V2.6 still WAITING; lcd={last.lcd!r}"
+
+        # Gate open
+        gate = _read_reg(main_issue, _STATUS_5E) & 0x08
+        assert gate != 0, "V2.6: gate closed after reconnect"
+
+        # DSP works after reconnect
+        snap_b = _wire_dsp34_snapshot(main)
+        chain.press("UP")
+        chain.step_many(5)
+        diff_post = _dsp34_diff(snap_b, _wire_dsp34_snapshot(main))
+        assert len(diff_post) > 0, "V2.6: volume UP failed after reconnect"
 
     finally:
         chain.close()

@@ -36,6 +36,7 @@ from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX,
     PATCHED_MAIN_HEX_V24,
+    PATCHED_MAIN_HEX_V26,
     STOCK_CONTROL_HEX_V14,
     STOCK_CONTROL_HEX_V15B,
     STOCK_CONTROL_HEX_V16B,
@@ -310,6 +311,7 @@ _MSSP_MAIN_COMBOS = [
     pytest.param(STOCK_MAIN_HEX, id="main_v23_stock"),
     pytest.param(PATCHED_MAIN_HEX_V24, id="main_v24"),
     pytest.param(PATCHED_MAIN_HEX, id="main_v25"),
+    pytest.param(PATCHED_MAIN_HEX_V26, id="main_v26"),
 ]
 
 

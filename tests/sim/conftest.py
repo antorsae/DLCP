@@ -15,6 +15,7 @@ from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX,
     PATCHED_MAIN_HEX_V24,
+    PATCHED_MAIN_HEX_V26,
     STOCK_CONTROL_HEX_V14,
     STOCK_CONTROL_HEX_V15B,
     STOCK_CONTROL_HEX_V16B,
@@ -46,6 +47,13 @@ def patched_main_hex_v24() -> Path:
     if not PATCHED_MAIN_HEX_V24.exists():
         raise RuntimeError(f"missing patched main HEX: {PATCHED_MAIN_HEX_V24}")
     return PATCHED_MAIN_HEX_V24
+
+
+@pytest.fixture(scope="session")
+def patched_main_hex_v26() -> Path:
+    if not PATCHED_MAIN_HEX_V26.exists():
+        raise RuntimeError(f"missing patched main HEX: {PATCHED_MAIN_HEX_V26}")
+    return PATCHED_MAIN_HEX_V26
 
 
 @pytest.fixture(scope="session")
