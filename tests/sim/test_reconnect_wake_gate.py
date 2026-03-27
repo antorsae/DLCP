@@ -213,7 +213,7 @@ def test_v162b_wire_chain_standby_reconnect_dsp_gate() -> None:
     Reproduces the V1.62b reconnect wake bug end-to-end:
 
     1. Boot to DISPLAY, confirm DSP baseline (volume UP changes dsp34).
-    2. Inject I2C fault on dsp34, press STBY -> Zzz.
+    2. Inject I2C fault on cfg71 (function_093 target), press STBY -> Zzz.
     3. Restore MAIN SFRs (simulate partial failure + V2.5 recovery).
     4. Drop CONTROL->MAIN bridge for one step to suppress the stock wake
        frame at 0x1294 (fired between standby-exit and reconnect_wait_stub).
@@ -278,9 +278,11 @@ def test_v162b_wire_chain_standby_reconnect_dsp_gate() -> None:
         for addr in _MAIN_SFR_RESTORE_SET:
             saved[addr] = _read_reg(main_issue, addr)
 
-        # Inject address NACKs on dsp34 so function_051's three
-        # function_093 I2C shutdown writes fail (simulates I2C glitch).
-        chain.set_main_i2c_fault("dsp34", address_nack_count=100)
+        # Inject address NACKs on cfg71 so function_051's three
+        # function_093 (i2c_secondary_dev_write) shutdown writes to
+        # address 0xE2 (device 0x71) fail.  function_093 writes to
+        # the secondary config/PBS device, NOT the TAS3108 (dsp34).
+        chain.set_main_i2c_fault("cfg71", address_nack_count=100)
 
         chain.press("STBY")
         chain.step_many(20)
@@ -299,7 +301,7 @@ def test_v162b_wire_chain_standby_reconnect_dsp_gate() -> None:
         for addr, val in saved.items():
             main_issue(f"reg(0x{addr:03X})=0x{val:02X}", 5.0)
 
-        chain.clear_main_i2c_faults("dsp34")
+        chain.clear_main_i2c_faults("cfg71")
 
         assert not (_read_reg(main_issue, _STATUS_5E) & 0x08), (
             "active flag unexpectedly set after SFR restore"

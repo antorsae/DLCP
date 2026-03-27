@@ -141,8 +141,10 @@ unreachable.
 
 *Solution*: save MAIN's hardware SFRs (SPBRG, SPBRGH, OSCCON, T0CON,
 INTCON, TXSTA, RCSTA, sleep flag 0x095) before pressing STBY.  Inject
-I2C address NACKs on `dsp34` so function_051's three function_093 DSP
-shutdown writes fail (simulating the field I2C glitch).  After MAIN
+I2C address NACKs on `cfg71` so function_051's three function_093
+(`i2c_secondary_dev_write`) shutdown writes to address 0xE2 (device 0x71)
+fail.  Note: function_093 writes to the secondary config/PBS device, NOT
+the TAS3108 (dsp34).  The DSP volume path uses function_081 → function_056.  After MAIN
 enters standby (0x5E.bit3 cleared, function_051 complete), restore the
 saved SFRs via gpsim register writes.  This models: active flag cleared,
 DSP shutdown failed, V2.5 timeout recovery restored UART/timer/oscillator.
