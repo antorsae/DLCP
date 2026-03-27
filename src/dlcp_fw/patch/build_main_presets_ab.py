@@ -724,9 +724,11 @@ org 0x44F0
 ; Place the wrapper in function_093's dead code zone (0x46BE, 36 bytes free)
 org 0x46BE
 ackstat_first_byte_check:
+    ; NOTE: BSR must be 0 on entry.  All callers (function_081 via the
+    ; volume dirty-bit service path) set BSR=0 before reaching 0x44F0.
     call 0x3E68                         ; function_056 (goes through V2.5 patch)
     btfsc SSPCON2, 6, ACCESS            ; ACKSTAT set? (slave NACKed address)
-    bsf 0x7F, 2, BANKED                ; Latch sticky I2C error (BSR=0 from caller)
+    bsf 0x7F, 2, BANKED                ; Latch sticky I2C error (BSR=0)
     return
 
 ; --- Fix B (DSP2): hook volume I2C write for conditional dirty clear ---
@@ -1127,6 +1129,22 @@ def main() -> int:
     eep_written, eep_changed = set_main_eeprom_version_230(new_mem)
     usb_written, usb_changed = patch_usb_version(new_mem, variant=variant)
     total_diff = summarize_diff(base, new_mem)
+
+    # V2.6 post-build guard: verify the ACKSTAT check encoding is present.
+    # btfsc SSPCON2,6,ACCESS = 0xBCC5.  Must appear in the 0x46BE-0x49FF
+    # range (ackstat_first_byte_check + patch_function_056_mode_bf).
+    if variant == "v26":
+        found_ackstat = False
+        for addr in range(0x46BE, 0x4A00, 2):
+            if new_mem.get(addr, 0xFF) == 0xC5 and new_mem.get(addr + 1, 0xFF) == 0xBC:
+                found_ackstat = True
+                break
+        if not found_ackstat:
+            raise RuntimeError(
+                "V2.6 post-build check FAILED: btfsc SSPCON2,6 (0xBCC5) "
+                "not found in 0x46BE..0x49FF — Fix A string replacement "
+                "may have silently failed"
+            )
 
     write_intel_hex(out_hex, new_mem)
 

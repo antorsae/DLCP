@@ -307,6 +307,9 @@ def _dsp34_diff(before: dict[int, int], after: dict[int, int]) -> list:
     return [(r, before[r], after[r]) for r in range(256) if before[r] != after[r]]
 
 
+# NOTE: V2.6 adds DSP ACKSTAT/commit robustness but does NOT fix the
+# MSSP STOP timeout (M2 deadlock chain).  Bus-clear and DSP ping are
+# V2.7 scope.  V2.6 is included here to verify it doesn't regress.
 _MSSP_MAIN_COMBOS = [
     pytest.param(STOCK_MAIN_HEX, id="main_v23_stock"),
     pytest.param(PATCHED_MAIN_HEX_V24, id="main_v24"),
