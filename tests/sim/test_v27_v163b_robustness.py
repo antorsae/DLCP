@@ -106,14 +106,19 @@ _BUS_CLEAR_VERSIONS = [
 def test_main_bus_clear_recovers_after_mssp_stop_fault(
     main_hex: Path,
 ) -> None:
-    """After I2C bus stuck (SDA held low by slave), bus-clear recovers.
+    """After extended MSSP STOP fault cascade, bus-clear recovers DSP.
 
-    Injects data_stuck_sda on dsp34 (simulates a slave holding SDA
-    low after a glitch).  This corrupts the I2C bus state.  After
-    clearing the fault, sends a NEW volume command.  V2.7's bus-clear
-    (9 SCL clocks + STOP) should recover the DSP path.
+    Uses the SAME fault scenario as the V2.6 MSSP cascade test
+    (stop_busy_cycles=5M, infinite count, 30 steps), which is
+    PROVEN to degrade the DSP path on V2.3-V2.6.
 
-    xfail on V2.3-V2.6 (no bus-clear, stuck SDA leaves bus broken).
+    V2.7's bus-clear (called from pen_timeout_hook and
+    patch_recover_mssp) should recover the I2C bus after the
+    cascade.  After clearing the fault, a new volume command
+    should reach the DSP.
+
+    xfail on V2.3-V2.6 (DSP path stays degraded — confirmed by
+    test_wire_extended_mssp_stop_fault_degrades_dsp_command_path).
     """
     _require_gpsim()
     _skip_missing(main_hex)
@@ -129,19 +134,15 @@ def test_main_bus_clear_recovers_after_mssp_stop_fault(
             harness.step()
         assert len(_dsp34_diff(snap_a, _dsp34_snapshot(harness))) > 0, "baseline broken"
 
-        # Inject stuck-SDA fault (slave holds SDA low for many cycles)
-        harness.set_i2c_fault(
-            "dsp34",
-            data_stuck_sda_cycles=5_000_000,
-            data_stuck_sda_count=-1,
-        )
+        # Inject extended MSSP STOP fault (same params as V2.6 cascade test)
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(15):
+        for _ in range(30):
             harness.step()
 
-        # Clear fault
-        harness.clear_i2c_faults("dsp34")
-        for _ in range(10):
+        # Clear fault and let firmware recover
+        harness.clear_mssp_stop_faults()
+        for _ in range(15):
             harness.step()
 
         # New volume command — V2.7 bus-clear should recover DSP path
@@ -152,7 +153,7 @@ def test_main_bus_clear_recovers_after_mssp_stop_fault(
         diff_recovery = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
 
         assert len(diff_recovery) > 0, (
-            "DSP path not recovered after stuck-SDA fault — "
+            "DSP path not recovered after MSSP STOP cascade — "
             "bus-clear did not restore I2C communication"
         )
 
