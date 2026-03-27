@@ -697,9 +697,155 @@ end
 
 
 PATCH_ASM = PATCH_ASM_V25
+
+# V2.6 DSP robustness fixes (additive to V2.5).
+# - Fix A (DSP1): ACKSTAT check in function_056_core success paths
+# - Fix B (DSP2): conditional dirty-bit clear with bounded retry
+# - Fix B' (DSP3): deferred volume commit (after verified I2C write)
+_V26_DSP_FIXES = r"""
+; === V2.6 DSP robustness (Fix A / B / B') ===
+
+; --- Fix A: patch function_056_core success returns to check ACKSTAT ---
+; The two success-return sites in patch_function_056_core are rewritten
+; by replacing the stock dead-code zone with a shared ACKSTAT latch.
+; We cannot modify the inline code (no space), so we redirect the two
+; success-return addresses to a shared check placed in dead code.
+;
+; (A is implemented inline: the V2.6 ASM replaces the patch_function_056_core
+;  block with a version that includes ACKSTAT checks on both success paths.
+;  See the sed-style replacement below.)
+
+; --- Fix B (DSP2): hook volume I2C write for conditional dirty clear ---
+org 0x1A5A
+    call volume_dsp_write_v26
+org 0x1A6E
+    nop
+
+; --- Fix B' (DSP3): NOP the premature volume commit ---
+org 0x1D6E
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+
+; --- Fix B+B' wrapper (placed in dead function_056 body at 0x3E6C) ---
+org 0x3E6C
+volume_dsp_write_v26:
+    bcf 0x07F, 2, ACCESS
+    call 0x44E4                     ; function_081
+
+    btfsc 0x07F, 2, ACCESS
+    bra vol_write_nacked
+
+    movlb 0x0
+    bcf 0x7E, 3, BANKED
+    movff 0x06E, 0x066
+    movff 0x06F, 0x067
+    movff 0x070, 0x068
+    movff 0x071, 0x069
+    movlw ~0x3C
+    andwf 0x07F, F, ACCESS
+    return
+
+vol_write_nacked:
+    bcf 0x07F, 2, ACCESS
+    movlw 0x08
+    addwf 0x07F, F, ACCESS
+    movf 0x07F, W, ACCESS
+    andlw 0x38
+    sublw 0x28
+    bc vol_retry_ok
+
+    movlb 0x0
+    bcf 0x7E, 3, BANKED
+    movlw ~0x3C
+    andwf 0x07F, F, ACCESS
+    return
+
+vol_retry_ok:
+    return
+"""
+
+# V2.6 replaces the function_056_core block with ACKSTAT-checking version.
+_V25_056_CORE = r"""patch_function_056_core:
+    movff 0x005, SSPBUF
+    btfsc SSPCON1, WCOL, ACCESS
+    bra patch_function_056_timeout
+
+    movf SSPCON1, W, ACCESS
+    andlw 0x0F
+    xorlw 0x08
+    bz patch_function_056_mode_bf
+
+    xorlw 0x03
+    bz patch_function_056_mode_bf
+
+    bsf SSPCON1, CKP, ACCESS
+    call patch_wait_sspif_c
+    bc patch_function_056_timeout
+    btfss SSPSTAT, R, ACCESS
+    movf SSPSTAT, W, ACCESS
+    bcf STATUS, C, ACCESS
+    return
+
+patch_function_056_mode_bf:
+    call patch_wait_bf_clear_c
+    bc patch_function_056_timeout
+    call function_113_patch
+    return
+
+patch_function_056_timeout:
+    bsf STATUS, C, ACCESS
+    return"""
+
+_V26_056_CORE = r"""patch_function_056_core:
+    movff 0x005, SSPBUF
+    btfsc SSPCON1, WCOL, ACCESS
+    bra patch_function_056_timeout
+
+    movf SSPCON1, W, ACCESS
+    andlw 0x0F
+    xorlw 0x08
+    bz patch_function_056_mode_bf
+
+    xorlw 0x03
+    bz patch_function_056_mode_bf
+
+    bsf SSPCON1, CKP, ACCESS
+    call patch_wait_sspif_c
+    bc patch_function_056_timeout
+    btfss SSPSTAT, R, ACCESS
+    movf SSPSTAT, W, ACCESS
+    btfsc SSPCON2, 6, ACCESS       ; Fix A: ACKSTAT check
+    bsf 0x07F, 2, ACCESS           ; Fix A: latch I2C error
+    bcf STATUS, C, ACCESS
+    return
+
+patch_function_056_mode_bf:
+    call patch_wait_bf_clear_c
+    bc patch_function_056_timeout
+    call function_113_patch
+    btfsc SSPCON2, 6, ACCESS       ; Fix A: ACKSTAT check
+    bsf 0x07F, 2, ACCESS           ; Fix A: latch I2C error
+    return
+
+patch_function_056_timeout:
+    bsf STATUS, C, ACCESS
+    return"""
+
+# Build V2.6 ASM: V2.5 base with Fix A core replacement + Fix B/B' additions
+PATCH_ASM_V26 = PATCH_ASM_V25.replace(_V25_056_CORE, _V26_056_CORE).replace(
+    "\nend\n", _V26_DSP_FIXES + "\nend\n"
+)
+
 PATCH_ASM_BY_VARIANT = {
     "v24": PATCH_ASM_V24,
     "v25": PATCH_ASM_V25,
+    "v26": PATCH_ASM_V26,
 }
 
 
@@ -888,7 +1034,7 @@ def set_main_eeprom_version_230(mem: Dict[int, int]) -> Tuple[int, int]:
 
 
 def patch_usb_version(mem: Dict[int, int], *, variant: str) -> Tuple[int, int]:
-    version_lo = 0x04 if variant == "v24" else 0x05
+    version_lo = {"v24": 0x04, "v25": 0x05, "v26": 0x06}.get(variant, 0x05)
     desired = {
         0x240C: 0x03,
         0x2412: 0x02,
@@ -906,15 +1052,20 @@ def patch_usb_version(mem: Dict[int, int], *, variant: str) -> Tuple[int, int]:
 
 
 def default_output_hex_for_variant(variant: str) -> pathlib.Path:
-    return PATCHED_MAIN_HEX_V24 if variant == "v24" else PATCHED_MAIN_HEX_V25
+    if variant == "v24":
+        return PATCHED_MAIN_HEX_V24
+    if variant == "v26":
+        from dlcp_fw.paths import FIRMWARE_PATCHED_DIR
+        return FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.6.hex"
+    return PATCHED_MAIN_HEX_V25
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--variant",
-        choices=("v24", "v25"),
-        default="v25",
+        choices=("v24", "v25", "v26"),
+        default="v26",
         help="patched MAIN output variant (default: v25)",
     )
     ap.add_argument(
@@ -985,7 +1136,7 @@ def main() -> int:
         "usb version literal:",
         f"bytes={usb_written}",
         f"changed={usb_changed}",
-        f"app_version=2.{4 if variant == 'v24' else 5}",
+        f"app_version=2.{dict(v24=4, v25=5, v26=6).get(variant, 5)}",
     )
     print(f"total bytes changed vs input: {total_diff}")
     return 0
