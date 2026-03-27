@@ -1595,6 +1595,14 @@ bool I2C::scl_clock_high()
             m_sspcon2->put_value(m_sspcon2->value.get() & ~_SSPCON2::ACKSTAT);
         }
 
+        // Fire SSPIF and go idle.  On real PIC hardware, SSPIF fires
+        // after each byte's ACK/NACK phase so the firmware can read
+        // ACKSTAT.  Without this, the firmware's SSPIF wait loop
+        // times out and the recovery path clears ACKSTAT.
+        m_sspmod->set_sspif();
+        m_sspstat->put_value(m_sspstat->value.get() & ~_SSPSTAT::RW);
+        i2c_state = eIDLE;
+
     }
     else if (i2c_state == CLK_RX_BYTE)
     {

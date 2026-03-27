@@ -715,6 +715,20 @@ _V26_DSP_FIXES = r"""
 ;  block with a version that includes ACKSTAT checks on both success paths.
 ;  See the sed-style replacement below.)
 
+; --- Fix A (DSP1): latch ACKSTAT after the address byte in function_081 ---
+; Hook function_081's first call function_056 at 0x44F0 to check ACKSTAT
+; immediately after the address byte TX, before subsequent bytes clear it.
+org 0x44F0
+    call ackstat_first_byte_check
+
+; Place the wrapper in function_093's dead code zone (0x46BE, 36 bytes free)
+org 0x46BE
+ackstat_first_byte_check:
+    call 0x3E68                         ; function_056 (goes through V2.5 patch)
+    btfsc SSPCON2, 6, ACCESS            ; ACKSTAT set? (slave NACKed address)
+    bsf 0x7F, 2, BANKED                ; Latch sticky I2C error (BSR=0 from caller)
+    return
+
 ; --- Fix B (DSP2): hook volume I2C write for conditional dirty clear ---
 org 0x1A5A
     call volume_dsp_write_v26
@@ -735,10 +749,11 @@ org 0x1D6E
 ; --- Fix B+B' wrapper (placed in dead function_056 body at 0x3E6C) ---
 org 0x3E6C
 volume_dsp_write_v26:
-    bcf 0x07F, 2, ACCESS
-    call 0x44E4                     ; function_081
+    bcf 0x7F, 2, BANKED               ; Clear error latch
+    call 0x44E4                         ; function_081 (address byte latches via hook)
 
-    btfsc 0x07F, 2, ACCESS
+    ; Fix A+B: check the error latch set by ackstat_first_byte_check
+    btfsc 0x7F, 2, BANKED
     bra vol_write_nacked
 
     movlb 0x0
@@ -747,26 +762,31 @@ volume_dsp_write_v26:
     movff 0x06F, 0x067
     movff 0x070, 0x068
     movff 0x071, 0x069
-    movlw ~0x3C
-    andwf 0x07F, F, ACCESS
+    ; Reset retry counter (0x07F bits 3-5)
+    movlw 0x07
+    andwf 0x7F, F, BANKED
     return
 
 vol_write_nacked:
-    bcf 0x07F, 2, ACCESS
+    ; I2C write failed.  Increment retry counter (bits 3-5 of 0x07F).
     movlw 0x08
-    addwf 0x07F, F, ACCESS
-    movf 0x07F, W, ACCESS
+    addwf 0x7F, F, BANKED
+
+    ; Check max retries (5 * 8 = 0x28 in the bit3-5 field)
+    movf 0x7F, W, BANKED
     andlw 0x38
     sublw 0x28
-    bc vol_retry_ok
+    bc vol_retry_ok                 ; carry set = not exceeded
 
+    ; Max retries: give up, clear dirty, reset counter
     movlb 0x0
     bcf 0x7E, 3, BANKED
-    movlw ~0x3C
-    andwf 0x07F, F, ACCESS
+    movlw 0x07
+    andwf 0x7F, F, BANKED
     return
 
 vol_retry_ok:
+    ; Dirty bit stays set -- retry next main loop iteration
     return
 """
 
@@ -820,8 +840,8 @@ _V26_056_CORE = r"""patch_function_056_core:
     bc patch_function_056_timeout
     btfss SSPSTAT, R, ACCESS
     movf SSPSTAT, W, ACCESS
-    btfsc SSPCON2, 6, ACCESS       ; Fix A: ACKSTAT check
-    bsf 0x07F, 2, ACCESS           ; Fix A: latch I2C error
+    ; Fix A: normal path not reached on PIC18F2455 I2C master
+    ; (I2C master always takes the BF path below)
     bcf STATUS, C, ACCESS
     return
 
@@ -829,8 +849,9 @@ patch_function_056_mode_bf:
     call patch_wait_bf_clear_c
     bc patch_function_056_timeout
     call function_113_patch
-    btfsc SSPCON2, 6, ACCESS       ; Fix A: ACKSTAT check
-    bsf 0x07F, 2, ACCESS           ; Fix A: latch I2C error
+    ; Fix A (DSP1): check ACKSTAT after I2C byte TX
+    btfsc SSPCON2, 6, ACCESS
+    bsf 0x7F, 2, BANKED
     return
 
 patch_function_056_timeout:
