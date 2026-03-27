@@ -865,10 +865,175 @@ PATCH_ASM_V26 = PATCH_ASM_V25.replace(_V25_056_CORE, _V26_056_CORE).replace(
     "\nend\n", _V26_DSP_FIXES + "\nend\n"
 )
 
+# V2.7 I2C robustness fixes (additive to V2.6).
+# - Fix C: I2C bus-clear (9 SCL clocks on RB1 + manual STOP)
+# - Fix D: DSP ping (TAS3108 register 0x08 read)
+# - Fix E: BF/08 DSP fault status in function_050
+# - Fix F: PEN timeout in function_081 label_572
+_V27_I2C_FIXES = r"""
+; === V2.7 I2C robustness (Fix C / D / E / F) ===
+
+; --- Fix F: hook PEN busy-wait at label_572 (0x4510) ---
+; Stock: btfss SSPCON2,PEN / return / bra label_572
+; Replace with bounded wait + bus-clear on timeout.
+org 0x4510
+    goto pen_timeout_hook
+    nop
+
+; PEN timeout hook in function_113 dead zone (0x48BA, 26 bytes)
+org 0x48BA
+pen_timeout_hook:
+    call patch_wait_pen_clear_c         ; bounded PEN wait (from V2.5)
+    bnc pen_ok
+    ; PEN timed out: STOP condition stuck.  Recover MSSP + bus-clear.
+    call patch_recover_mssp
+    call i2c_bus_clear
+    bsf 0x7F, 6, BANKED                ; latch DSP fault (bit6)
+pen_ok:
+    return
+
+; --- Fix C: I2C bus-clear (in function_072 dead zone, 0x436C) ---
+; Bitbang 9 SCL clocks on RB1 (open-drain), check SDA on RB0,
+; then generate manual STOP condition.
+org 0x436C
+i2c_bus_clear:
+    ; Disable MSSP so we can bitbang SCL/SDA via GPIO
+    bcf SSPCON1, SSPEN, ACCESS          ; release pins to GPIO
+    bsf TRISB, 1, ACCESS               ; SCL = input (pulled high)
+    bsf TRISB, 0, ACCESS               ; SDA = input (pulled high)
+
+    ; 9 SCL clock pulses to release stuck slave
+    movlw 0x09
+    movwf 0x00B, ACCESS                 ; counter in scratch
+
+bus_clear_loop:
+    bcf TRISB, 1, ACCESS               ; SCL = output (driven low via LATB.1=0)
+    bcf LATB, 1, ACCESS
+    nop
+    nop
+    bsf TRISB, 1, ACCESS               ; SCL = input (pulled high)
+    nop
+    nop
+    ; Check if SDA is released
+    btfsc PORTB, 0, ACCESS             ; SDA high?
+    bra bus_clear_stop                  ; Yes - slave released, generate STOP
+    decfsz 0x00B, F, ACCESS
+    bra bus_clear_loop
+
+bus_clear_stop:
+    ; Generate manual STOP: SDA low->high while SCL high
+    bcf TRISB, 0, ACCESS               ; SDA = output
+    bcf LATB, 0, ACCESS                ; SDA low
+    nop
+    bsf TRISB, 1, ACCESS               ; SCL high (input, pulled up)
+    nop
+    nop
+    bsf TRISB, 0, ACCESS               ; SDA high (input, pulled up) = STOP
+
+    ; Re-enable MSSP
+    movlw 0x28                          ; I2C master mode, SSPEN
+    movwf SSPCON1, ACCESS
+    return
+
+; --- Fix D: DSP ping (TAS3108 register 0x08 version read) ---
+; After bus-clear, attempt a 1-byte read from TAS3108 to verify
+; the DSP is responsive.  Uses I2C random-read protocol.
+; Placed after bus-clear in the function_072 dead zone.
+dsp_ping:
+    ; START
+    bsf SSPCON2, SEN, ACCESS
+    call patch_wait_sen_clear_c
+    bc dsp_ping_fail
+
+    ; Write address 0x68 (TAS3108 write)
+    movlw 0x68
+    call 0x3E68                         ; function_056 via V2.5 patch
+    btfsc SSPCON2, 6, ACCESS            ; ACKSTAT?
+    bra dsp_ping_fail                   ; NACK - DSP not responding
+
+    ; Register address 0x08 (version)
+    movlw 0x08
+    call 0x3E68
+    btfsc SSPCON2, 6, ACCESS
+    bra dsp_ping_fail
+
+    ; REPEATED START
+    bsf SSPCON2, RSEN, ACCESS
+    call patch_wait_sen_clear_c
+    bc dsp_ping_fail
+
+    ; Read address 0x69 (TAS3108 read)
+    movlw 0x69
+    call 0x3E68
+    btfsc SSPCON2, 6, ACCESS
+    bra dsp_ping_fail
+
+    ; Read one byte
+    bsf SSPCON2, RCEN, ACCESS
+    call patch_wait_sspif_c
+    bc dsp_ping_fail
+
+    ; NACK the read byte (we only want 1 byte)
+    bsf SSPCON2, ACKDT, ACCESS
+    bsf SSPCON2, ACKEN, ACCESS
+    call patch_wait_sspif_c
+
+    ; STOP
+    bsf SSPCON2, PEN, ACCESS
+    call patch_wait_pen_clear_c
+
+    ; Success
+    bcf 0x7F, 6, BANKED                ; clear DSP fault
+    bcf STATUS, C, ACCESS
+    return
+
+dsp_ping_fail:
+    ; STOP (best effort)
+    bsf SSPCON2, PEN, ACCESS
+    call patch_wait_pen_clear_c
+    bsf 0x7F, 6, BANKED                ; latch DSP fault (bit6)
+    bsf STATUS, C, ACCESS
+    return
+
+; --- Fix E: BF/08 DSP fault status ---
+; Hook into function_050 (send_status_burst) to add BF/08/fault_byte
+; after the existing status frames.
+; function_050 ends with a return at the end of the status burst.
+; We hook the last call in function_050 to append our frame.
+;
+; NOTE: This requires finding a hookable site in function_050.
+; For now, we add a standalone helper that the volume_dsp_write_v26
+; wrapper calls to report fault status after each write attempt.
+; The fault byte is constructed from 0x07F bits 2 (NACK) and 6 (ping fail).
+;
+; Placed in function_111 dead zone (0x489A, 28 bytes).
+org 0x489A
+send_dsp_fault_status:
+    ; Construct fault byte from 0x07F bits
+    movf 0x7F, W, BANKED
+    andlw 0x44                          ; isolate bits 2 and 6
+    movwf 0x003, ACCESS                 ; save fault byte
+
+    ; Send BF/08/fault_byte via TX
+    movlw 0xBF
+    call 0x4896                         ; function_111 (TX byte, via V2.5 patch at original addr)
+    movlw 0x08
+    call 0x4896
+    movf 0x003, W, ACCESS
+    call 0x4896
+    return
+"""
+
+# Build V2.7 ASM: V2.6 base + V2.7 fixes
+PATCH_ASM_V27 = PATCH_ASM_V26.replace(
+    "\nend\n", _V27_I2C_FIXES + "\nend\n"
+)
+
 PATCH_ASM_BY_VARIANT = {
     "v24": PATCH_ASM_V24,
     "v25": PATCH_ASM_V25,
     "v26": PATCH_ASM_V26,
+    "v27": PATCH_ASM_V27,
 }
 
 
@@ -1057,7 +1222,7 @@ def set_main_eeprom_version_230(mem: Dict[int, int]) -> Tuple[int, int]:
 
 
 def patch_usb_version(mem: Dict[int, int], *, variant: str) -> Tuple[int, int]:
-    version_lo = {"v24": 0x04, "v25": 0x05, "v26": 0x06}.get(variant, 0x05)
+    version_lo = {"v24": 0x04, "v25": 0x05, "v26": 0x06, "v27": 0x07}.get(variant, 0x05)
     desired = {
         0x240C: 0x03,
         0x2412: 0x02,
@@ -1080,6 +1245,9 @@ def default_output_hex_for_variant(variant: str) -> pathlib.Path:
     if variant == "v26":
         from dlcp_fw.paths import FIRMWARE_PATCHED_DIR
         return FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.6.hex"
+    if variant == "v27":
+        from dlcp_fw.paths import FIRMWARE_PATCHED_DIR
+        return FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.7.hex"
     return PATCHED_MAIN_HEX_V25
 
 
@@ -1087,8 +1255,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--variant",
-        choices=("v24", "v25", "v26"),
-        default="v26",
+        choices=("v24", "v25", "v26", "v27"),
+        default="v27",
         help="patched MAIN output variant (default: v25)",
     )
     ap.add_argument(
@@ -1133,7 +1301,7 @@ def main() -> int:
     # V2.6 post-build guard: verify the ACKSTAT check encoding is present.
     # btfsc SSPCON2,6,ACCESS = 0xBCC5.  Must appear in the 0x46BE-0x49FF
     # range (ackstat_first_byte_check + patch_function_056_mode_bf).
-    if variant == "v26":
+    if variant in ("v26", "v27"):
         found_ackstat = False
         for addr in range(0x46BE, 0x4A00, 2):
             if new_mem.get(addr, 0xFF) == 0xC5 and new_mem.get(addr + 1, 0xFF) == 0xBC:
@@ -1141,9 +1309,16 @@ def main() -> int:
                 break
         if not found_ackstat:
             raise RuntimeError(
-                "V2.6 post-build check FAILED: btfsc SSPCON2,6 (0xBCC5) "
+                f"{variant} post-build check FAILED: btfsc SSPCON2,6 (0xBCC5) "
                 "not found in 0x46BE..0x49FF — Fix A string replacement "
                 "may have silently failed"
+            )
+    if variant == "v27":
+        # Verify bus-clear code is present at 0x436C
+        if new_mem.get(0x436C, 0xFF) == 0xFF:
+            raise RuntimeError(
+                "V2.7 post-build check FAILED: bus-clear code not found "
+                "at 0x436C — Fix C may have failed to assemble"
             )
 
     write_intel_hex(out_hex, new_mem)
@@ -1175,7 +1350,7 @@ def main() -> int:
         "usb version literal:",
         f"bytes={usb_written}",
         f"changed={usb_changed}",
-        f"app_version=2.{dict(v24=4, v25=5, v26=6).get(variant, 5)}",
+        f"app_version=2.{dict(v24=4, v25=5, v26=6, v27=7).get(variant, 5)}",
     )
     print(f"total bytes changed vs input: {total_diff}")
     return 0

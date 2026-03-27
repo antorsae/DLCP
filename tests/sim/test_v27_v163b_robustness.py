@@ -24,6 +24,7 @@ import pytest
 from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX_V26,
+    PATCHED_MAIN_HEX_V27,
     STOCK_MAIN_HEX,
 )
 from dlcp_fw.sim.chain_gpsim import MainChainHarness
@@ -91,6 +92,10 @@ _BUS_CLEAR_VERSIONS = [
         PATCHED_MAIN_HEX_V26,
         marks=pytest.mark.xfail(reason="V2.6: no bus-clear", strict=True),
         id="main_v26",
+    ),
+    pytest.param(
+        PATCHED_MAIN_HEX_V27,
+        id="main_v27",
     ),
 ]
 
@@ -164,6 +169,10 @@ _PING_VERSIONS = [
         PATCHED_MAIN_HEX_V26,
         marks=pytest.mark.xfail(reason="V2.6: no DSP ping", strict=True),
         id="main_v26",
+    ),
+    pytest.param(
+        PATCHED_MAIN_HEX_V27,
+        id="main_v27",
     ),
 ]
 
@@ -342,10 +351,23 @@ def test_wire_v27_mssp_stop_cascade_full_recovery() -> None:
 # -----------------------------------------------------------------------
 
 
+_PEN_TIMEOUT_VERSIONS = [
+    pytest.param(
+        PATCHED_MAIN_HEX_V26,
+        marks=pytest.mark.xfail(reason="V2.6: PEN busy-wait unbounded", strict=True),
+        id="main_v26",
+    ),
+    pytest.param(
+        PATCHED_MAIN_HEX_V27,
+        id="main_v27",
+    ),
+]
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.xfail(reason="V2.6: PEN busy-wait unbounded", strict=True)
-def test_main_pen_timeout_recovers() -> None:
+@pytest.mark.parametrize("main_hex", _PEN_TIMEOUT_VERSIONS)
+def test_main_pen_timeout_recovers(main_hex: Path) -> None:
     """PEN busy-wait timeout prevents permanent hang on stuck STOP.
 
     Injects a single long MSSP STOP fault (stop_busy_cycles >> chunk),
@@ -361,9 +383,9 @@ def test_main_pen_timeout_recovers() -> None:
     true infinite loop, but the firmware doesn't recover cleanly).
     """
     _require_gpsim()
-    _skip_missing(PATCHED_MAIN_HEX_V26)
+    _skip_missing(main_hex)
 
-    harness = _new_main_harness(PATCHED_MAIN_HEX_V26)
+    harness = _new_main_harness(main_hex)
     try:
         _boot_and_activate(harness)
         harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
