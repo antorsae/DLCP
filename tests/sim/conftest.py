@@ -13,6 +13,7 @@ from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V151B,
     PATCHED_CONTROL_HEX_V161B,
     PATCHED_CONTROL_HEX_V162B,
+    PATCHED_CONTROL_HEX_V163B,
     PATCHED_MAIN_HEX,
     PATCHED_MAIN_HEX_V24,
     PATCHED_MAIN_HEX_V26,
@@ -90,6 +91,13 @@ def patched_control_hex_v162b() -> Path:
     if not PATCHED_CONTROL_HEX_V162B.exists():
         raise RuntimeError(f"missing patched control HEX: {PATCHED_CONTROL_HEX_V162B}")
     return PATCHED_CONTROL_HEX_V162B
+
+
+@pytest.fixture(scope="session")
+def patched_control_hex_v163b() -> Path:
+    if not PATCHED_CONTROL_HEX_V163B.exists():
+        raise RuntimeError(f"missing patched control HEX: {PATCHED_CONTROL_HEX_V163B}")
+    return PATCHED_CONTROL_HEX_V163B
 
 
 @pytest.fixture(scope="session")

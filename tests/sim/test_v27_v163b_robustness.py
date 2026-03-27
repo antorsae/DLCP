@@ -23,6 +23,7 @@ import pytest
 
 from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V162B,
+    PATCHED_CONTROL_HEX_V163B,
     PATCHED_MAIN_HEX_V26,
     PATCHED_MAIN_HEX_V27,
     STOCK_MAIN_HEX,
@@ -224,10 +225,23 @@ def test_main_dsp_ping_latches_fault_on_persistent_nack(
 # -----------------------------------------------------------------------
 
 
+_FAULT_REPORTING_COMBOS = [
+    pytest.param(
+        PATCHED_CONTROL_HEX_V162B, PATCHED_MAIN_HEX_V26,
+        marks=pytest.mark.xfail(reason="V2.6+V1.62b: no BF/08", strict=True),
+        id="v26_v162b",
+    ),
+    pytest.param(
+        PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V27,
+        id="v27_v163b",
+    ),
+]
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.xfail(reason="V2.6+V1.62b: no BF/08 fault reporting", strict=True)
-def test_wire_v27_v163b_dsp_fault_reporting() -> None:
+@pytest.mark.parametrize("control_hex, main_hex", _FAULT_REPORTING_COMBOS)
+def test_wire_dsp_fault_reporting(control_hex: Path, main_hex: Path) -> None:
     """CONTROL shows DSP fault indicator after MAIN reports BF/08.
 
     Wire-chain e2e: inject dsp34 NACKs, trigger volume command.
@@ -238,11 +252,11 @@ def test_wire_v27_v163b_dsp_fault_reporting() -> None:
     the fault, and a resync refreshes all settings.
     """
     _require_gpsim()
-    _skip_missing(PATCHED_MAIN_HEX_V26, PATCHED_CONTROL_HEX_V162B)
+    _skip_missing(main_hex, control_hex)
 
     chain = WireMultiMainChainHarness(
-        PATCHED_CONTROL_HEX_V162B,
-        PATCHED_MAIN_HEX_V26,
+        control_hex,
+        main_hex,
         main_units=1,
         fast_boot=False,
         disable_standby_check=False,
@@ -288,10 +302,25 @@ def test_wire_v27_v163b_dsp_fault_reporting() -> None:
 # -----------------------------------------------------------------------
 
 
+_CASCADE_RECOVERY_COMBOS = [
+    pytest.param(
+        PATCHED_CONTROL_HEX_V162B, PATCHED_MAIN_HEX_V26,
+        marks=pytest.mark.xfail(reason="V2.6+V1.62b: no recovery", strict=True),
+        id="v26_v162b",
+    ),
+    pytest.param(
+        PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V27,
+        id="v27_v163b",
+    ),
+]
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.xfail(reason="V2.6+V1.62b: no bus-clear/ping recovery", strict=True)
-def test_wire_v27_mssp_stop_cascade_full_recovery() -> None:
+@pytest.mark.parametrize("control_hex, main_hex", _CASCADE_RECOVERY_COMBOS)
+def test_wire_mssp_stop_cascade_full_recovery(
+    control_hex: Path, main_hex: Path,
+) -> None:
     """Extended MSSP STOP fault → bus-clear → DSP path recovers.
 
     Same scenario as the V2.6 MSSP cascade test but expecting FULL
@@ -301,11 +330,11 @@ def test_wire_v27_mssp_stop_cascade_full_recovery() -> None:
     xfail on V2.6 (DSP path stays degraded after MSSP fault).
     """
     _require_gpsim()
-    _skip_missing(PATCHED_MAIN_HEX_V26, PATCHED_CONTROL_HEX_V162B)
+    _skip_missing(main_hex, control_hex)
 
     chain = WireMultiMainChainHarness(
-        PATCHED_CONTROL_HEX_V162B,
-        PATCHED_MAIN_HEX_V26,
+        control_hex,
+        main_hex,
         main_units=1,
         fast_boot=False,
         disable_standby_check=False,
