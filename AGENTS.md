@@ -209,6 +209,7 @@ Current suite includes:
 - MAIN standby pin I/O + V1.62b TXIE guard: `test_main_stdby_pin_io.py`
 - V1.62b reconnect wake gate (semantic + DSP behavioral + wire-chain e2e): `test_reconnect_wake_gate.py`
 - Wire UART smoke regression: `test_wire_chain_gpsim.py`
+- Wire chain stock firmware fault injection: `test_wire_chain_gpsim_stock_faults.py`
 - Raw-main V2.5 chain characterization: `test_chain_gpsim_v25_recovery.py`
 - Raw-main V2.5 + V1.62b recovery: `test_chain_gpsim_v25_v162b_recovery.py`
 - Wire-UART I2C wake characterization: `test_wire_chain_gpsim_i2c_faults.py`
