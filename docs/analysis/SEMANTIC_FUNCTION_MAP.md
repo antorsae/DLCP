@@ -4,8 +4,11 @@ Working document: maps auto-generated labels (`function_NNN`, `label_NNN`)
 to human-readable names based on code analysis, simulation evidence, and
 patch comments.
 
-Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections applied
-(addresses, 0x01F bit assignments, function_072 direction, label_149 role).
+Status: **DRAFT r3** — opus-4.6 + codex-cli cross-reviewed 2026-03-27.  r2→r3:
+removed MAIN/CONTROL namespace collisions (function_074, function_083, function_111),
+fixed BF protocol table (05/06/07 swapped, removed phantom BF/04, added BF/29),
+added version-divergence notes for CONTROL functions 030–035 and 0x01F bits 4/5,
+added missing labels (label_201, label_216), fixed typos and cross-references.
 
 ## Conventions
 
@@ -31,7 +34,7 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 
 | Auto-name | Semantic name | Address | Confidence | Evidence |
 |-----------|--------------|---------|------------|----------|
-| function_024 | `adc_boot_gate` | 0x2D8C | certain | Waits AN0 >= 0x0236 (label_341). MAIN_AN0_STANDBY_TRACE. |
+| function_024 | `adc_boot_gate` | 0x2D8C | certain | Waits AN0 >= 0x0236 (label_341). Bug M9: no timeout. MAIN_AN0_STANDBY_TRACE. |
 | function_051 | `hw_standby_shutdown` | 0x3C0C | certain | I2C DSP shutdown, baud rate change, OSCCON switch, Timer0 disable, USB disable. V162B_RECONNECT_WAKE_BUG. |
 | function_116 | `usb_shutdown` | varies | likely | Clears UCON; final step of function_051. |
 
@@ -40,7 +43,7 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | Auto-name | Semantic name | Address | Confidence | Evidence |
 |-----------|--------------|---------|------------|----------|
 | function_056 | `i2c_byte_tx` | 0x3EB8 | certain | Writes SSPBUF, checks WCOL, waits SSPIF/BF. No ACKSTAT check. Codex-cli confirmed. |
-| function_072 | `i2c_tas3108_reg1f_write` | 0x4368 | certain | START, 0x68 (TAS3108 write addr), 0x1F, 0x00x3, data, STOP. Codex-cli review: write, NOT read. |
+| function_072 | `i2c_tas3108_reg1f_write` | 0x4368 | certain | START, 0x68 (TAS3108 write addr), 0x1F, 0x00 ×3, data, STOP. Codex-cli review: write, NOT read. |
 | function_081 | `i2c_tas3108_coeff_write` | 0x44E4 | certain | TAS3108 volume/coefficient write: 0x68, 0x30, bytes from 0x55-0x58. Codex-cli confirmed address. |
 | function_093 | `i2c_secondary_dev_write` | 0x46C0 | certain | START, 0xE2 (secondary dev 0x71 write addr), reg/data, STOP. NOT TAS3108. |
 | function_113 | `i2c_wait_bus_idle` | 0x48B6 | certain | Spins while SSPCON2[4:0]!=0 or SSPSTAT.R!=0. Bug M1: no timeout. |
@@ -55,6 +58,7 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | function_087 | `rx_ring_read` | 0x45FA | likely | Reads from native ring at 0x0200; checks write_idx != read_idx. |
 | function_050 | `send_status_burst` | 0x3B96 | certain | Emits BF/05, BF/07, BF/03, BF/06, BF/1D from cached RAM. Includes standby status. NOT DSP readback. Codex-cli verified. |
 | function_048 | `uart_rx_with_framing` | 0x3AA4 | likely | Waits for ':' + Intel HEX record + CR/LF (firmware update mode). |
+| function_083 | `uart_config` | 0x4546 | certain | Sets SPBRG=0x7F, TXSTA, RCSTA for 31,250 baud. Previously misattributed to CONTROL. |
 
 ### Flash / EEPROM
 
@@ -64,7 +68,7 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | function_054 | `flash_erase` | 0x3DAC | certain | Erases 64-byte blocks. Patched for preset remap. |
 | function_061 | `flash_read` | 0x4028 | certain | TBLRD*+ loop, copies to RAM. Patched for preset remap. |
 | function_069 | `flash_write_with_gie_off` | 0x42B8 | likely | GIE=0 during write. Bug M7: GIE never restored before return. |
-| function_074 | `flash_page_erase` | 0x7A92 | likely | 64-byte page erase for bootloader. |
+| function_074 | `tblrd_lookup` | 0x43C8 | certain | Masks W, adds 0x19, TBLRD from 0x10xx table. Previously misidentified as flash_page_erase at 0x7A92. |
 | function_075 | `eeprom_write_blocking` | 0x43EA | certain | 4ms GIE=0 window. Bug M3: guarantees OERR during serial RX. |
 
 ### Timer / delay / misc
@@ -95,7 +99,6 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | label_171 | `volume_cmd_handler` | 0x1D2A | certain | Computes 32-bit volume into 0x06E-0x071, compares with 0x066-0x069, sets dirty bit 0x7E.bit3 on change. State committed BEFORE I2C write. Codex-cli: address corrected, upgraded to certain. |
 | label_185 | `cmd_dispatch_xor_chain` | 0x1E2E | likely | XOR chain routing cmd 0x03-0x1E to handlers. |
 | label_341 | `adc_boot_gate_loop` | 0x2D8C | certain | Waits AN0 >= 0x0236. Inside function_024. |
-| label_483 | `oerr_handler` | 0x3B7C | certain | Toggles CREN. Bug: does NOT drain RCREG FIFO. Resets frame counter 0x098. |
 | label_529 | `an0_hysteresis_monitor` | 0x416E | certain | Runtime ADC check. High arm 0x0229, low trip 0x0228. |
 | label_605 | `uart_tx_trmt_busywait` | 0x489A | certain | Bug M2: infinite TRMT poll. |
 | label_607 | `main_processing_loop` | 0x48CA | certain | Top of main loop: calls function_026 / function_102. |
@@ -186,7 +189,6 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 |-----------|--------------|---------|------------|----------|
 | function_019 | `rx_parser_entry` | 0x044A | certain | Checks OERR, reads RX ring, parses 3-byte frames. Bug C4: no FIFO drain on OERR. |
 | function_020 | `tx_byte_enqueue` | 0x0608 (0x05EC) | certain | Enqueues to 48-byte TX ring. Bug C6: label_068 busy-wait if full. |
-| function_111 | `uart_tx_byte_sync` | 0x4896 | certain | Blocking TX via TRMT poll. Used in bootloader. |
 
 ### Serial protocol
 
@@ -196,11 +198,16 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | function_027 | `serial_tx_routed_frame` | 0x0B32 (0x0B16) | certain | Constructs [0xB0+route, cmd, data], calls function_020 3x. |
 | function_028 | `full_sync_burst` | 0x0B52 (0x0B36) | certain | Sends ~6 channel config frames + volume + input via function_027. |
 | function_029 | `poll_frame_send` | 0x0BD6 (0x0B64) | certain | Sends [B1, 04, 00] status poll to MAIN. |
-| function_030 | `input_frame_send` | (0x0C22) | certain | Sends input selection frame. Codex-cli added. V1.6b addr. |
-| function_031 | `volume_frame_send` | (0x0C40) | certain | Sends volume setting frame. Codex-cli corrected from "maybe_channel_config_send". |
-| function_033 | `mute_frame_send` | (0x0C7C) | certain | Sends mute on/off frame. Codex-cli added. |
-| function_034 | `standby_wake_broadcast` | 0x0C46 (0x0C98) | certain | Checks 0x01F.bit1: sends [B0, 03, 01] (wake) or [B0, 03, 00] (standby). V162B_RECONNECT_WAKE_BUG. |
-| function_035 | `display_loop_iteration` | 0x0C5C (0x0CB2) | certain | One iteration of the display loop. Sends status frames, checks buttons/IR. |
+| function_030 | `input_frame_send` | 0x0BEE (0x0C22) | certain | V1.6b: sends input selection frame. V1.4: sends cmd 0x17 channel config. Codex-cli added. |
+| function_031 | `volume_frame_send` | 0x0C04 (0x0C40) | certain | V1.6b: sends volume setting frame. V1.4: sends cmd 0x18 channel config. Codex-cli corrected. |
+| function_033 | `mute_frame_send` | 0x0C30 (0x0C7C) | certain | V1.6b: sends mute on/off frame. V1.4: sends cmd 0x1A channel config. Codex-cli added. |
+| function_034 | `standby_wake_broadcast` | 0x0C46 (0x0C98) | certain | V1.6b: checks 0x01F.bit1, sends [B0, 03, 01] (wake) or [B0, 03, 00] (standby). V1.4: sends cmd 0x1B channel config. V162B_RECONNECT_WAKE_BUG. |
+| function_035 | `display_loop_iteration` | 0x0C5C (0x0CB2) | certain | V1.6b: one iteration of the display loop, sends status frames, checks buttons/IR. V1.4: sends cmd 0x1C channel config. |
+
+> **Version note (functions 030–035):** These functions were completely refactored
+> between V1.4 and V1.6b. In V1.4 they are simple channel-config senders (cmds
+> 0x17–0x1C via function_027). In V1.6b they became dedicated input/volume/mute/
+> standby/display helpers. Semantic names follow V1.6b (the active development base).
 
 ### UI / menu
 
@@ -216,7 +223,6 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 |-----------|--------------|---------|------------|----------|
 | function_066 | `bootloader_oerr_handler` | 0x79EC | likely | OERR with timeout counter (unlike function_019). |
 | function_080 | `bootloader_prompt_send` | 0x7E60 | likely | Sends `:FW_Upd\r\n`. |
-| function_083 | `uart_config` | 0x4546 | likely | Sets SPBRG, TXSTA, RCSTA for 31,250 baud. |
 
 ---
 
@@ -229,11 +235,13 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | label_068 | `tx_full_busywait` | 0x0628 | certain | Bug C6: no timeout. |
 | label_166 | `ir_cmd_dispatch` | 0x0E4C (0x0E54) | likely | Routes IR command to handlers after debounce. |
 | label_195 | `app_init` | 0x1092 | likely | Splash screen, backlight, IRQ setup. |
+| label_201 | `post_connect_init` | 0x1100 | likely | RAM clear loop, clears 0x01F.bit3 (event_exit), EEPROM marker write, loads settings. V1.62b reconnect exit target. |
 | label_204 | `boot_handshake_wait` | 0x11DE | certain | Waits 4 params != 0x80. Bug C1: no timeout. |
 | label_205 | `check_connected` | 0x1226 | likely | Tests 0x01F.bit1. |
 | label_206 | `display_state_entry` | 0x122C | likely | Menu/volume screen loop entry. |
 | label_212 | `reconnect_wait_loop` | 0x12BC | certain | Polls MAIN, waits bit1=1. Bug C2: no timeout. Replaced by V1.62b's reconnect_wait_stub. |
 | label_214 | `standby_display` | 0x129E | likely | Prints "Zzz...", waits for button. |
+| label_216 | `reconnect_poll_loop` | 0x130A | certain | Polls MAIN (function_029), 200ms delay, parses RX (function_019), checks 0x01F.bit1; loops until connected. Bug C2: no timeout. |
 | label_284 | `bootloader_entry` | 0x7800 | certain | Reset vector target. |
 
 ---
@@ -248,8 +256,8 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | 0x01F | bit 1 | `connected` | Set by BF/03/01 response = DISPLAY mode. |
 | 0x01F | bit 2 | `rx_route_seen` | Set when parser latches route byte (0x04B8/0x04CA/0x04D2), cleared at 0x105A. Codex-cli corrected: NOT standby_bus. |
 | 0x01F | bit 3 | `event_exit` | Allows function_042 blocking loop to exit. |
-| 0x01F | bit 4 | `display_refresh_pending` | Set after UI/IR changes, cleared by display/update path. Codex-cli corrected: NOT mute_state. |
-| 0x01F | bit 5 | `mute_state` | 1=muted. Set/cleared by cmd=0x03 data=0x02/0x03 at 0x052A/0x054E; toggled by UI at 0x0E68. Codex-cli corrected: was listed as bit 4. |
+| 0x01F | bit 4 | V1.4: `mute_state`; V1.5b+: `display_refresh_pending` | **V1.4:** mute flag (bsf/bcf 0x4 at 0x0538/0x054E). **V1.5b/V1.6b:** display refresh flag; mute moved to bit 5. |
+| 0x01F | bit 5 | V1.5b+: `mute_state` | 1=muted. V1.5b/V1.6b only (bit 4 in V1.4). Set/cleared by cmd=0x03 data=0x02/0x03; toggled by UI at 0x0E68. |
 | 0x01F | bit 6 | `preset_b_active` | V1.62b patch only: 1=preset B. No stock V1.6b use. |
 | 0x01D | — | `ir_decoded_cmd` | RC5 command byte from function_017. |
 | 0x01E | — | `ir_decoded_addr` | RC5 address byte from function_017. |
@@ -263,10 +271,10 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | 0x09D:0x09E | — | `idle_timeout_counter` | 16-bit. Initial=0xEA61 (59,969). Decrements each function_035. Triggers reconnect at 0. |
 | 0x09F:0x0A0 | — | `full_sync_counter` | 16-bit. Triggers full_sync_burst at 0x4E20 (20,000). |
 | 0x0A6 | — | `frame_position` | Parser state: 0=route, 1=cmd, 2=data. |
-| 0x0A7 | — | `handshake_sentinel_3` | Initialized 0x80. Non-0x80 when MAIN responds. |
-| 0x0A1 | — | `handshake_sentinel_4` | Same. |
-| 0x0B8 | — | `handshake_sentinel_1` | Same. Likely ch1 volume from MAIN. |
+| 0x0B8 | — | `handshake_sentinel_1` | Initialized 0x80. Non-0x80 when MAIN responds. Likely ch1 volume from MAIN. |
 | 0x0B9 | — | `handshake_sentinel_2` | Same. Likely ch2 volume from MAIN. |
+| 0x0A7 | — | `handshake_sentinel_3` | Same. |
+| 0x0A1 | — | `handshake_sentinel_4` | Same. |
 | 0x0BB | — | `button_debounce_counter` | Increments until stable (threshold 4). |
 | 0x0BC | — | `button_last_scan` | Previous raw button state. |
 | 0x0BE | — | `button_debounced` | Stable button output. |
@@ -297,12 +305,16 @@ Status: **DRAFT r2** — codex-cli reviewed 2026-03-27.  Major corrections appli
 | Cmd | Data | Semantic name | Notes |
 |-----|------|--------------|-------|
 | 0x03 | 0/1 | `standby_status` | Reports 0x5E.bit3 value. |
-| 0x04 | — | `status_response` | Full status (volume, input, mute, source). |
-| 0x05 | val | `current_volume` | From cached RAM, NOT DSP readback. |
-| 0x06 | val | `current_source` | Source configuration. |
-| 0x07 | val | `current_input` | Input selection. |
+| 0x05 | val | `report_05f` | Data from RAM 0x05F. Semantic TBD. |
+| 0x06 | val | `current_input` | Input selection from RAM 0x099. |
+| 0x07 | val | `current_volume` | Volume: RAM 0x06E + 0x60 offset. NOT DSP readback. |
 | 0x18 | 0x01 | `power_on_notify` | Sent at boot. |
-| 0x1D | val | `display_timeout` | Display setting. |
+| 0x1D | val | `display_timeout` | Display setting from RAM 0x0B8. |
+| 0x29 | 0/1 | `cmd29_status` | Bit 1 of 0x5E. Sent by function_103, NOT part of status burst. |
+
+> **Note:** Inbound cmd 0x04 (`status_poll`) triggers function_050 which replies
+> with the burst above (BF/05, BF/07, BF/03, BF/06, BF/1D). There is no BF/04
+> response frame.
 
 ---
 
