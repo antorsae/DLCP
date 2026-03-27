@@ -1,4 +1,4 @@
-"""Wire-chain fault injection tests proving stock CONTROL bugs across V1.4/V1.5b/V1.6b.
+"""Wire-chain fault injection tests across CONTROL and MAIN firmware versions.
 
 All three stock CONTROL firmware versions shipped by Hypex contain
 identical UART and I2C handling code.  The vendor changed the UI
@@ -9,21 +9,21 @@ I2C busy-wait paths.
 These tests surface three hidden code issues:
 
 1. **No reconnect timeout (UART)**: a single transient MAIN TX stall
-   during the wake handshake causes CONTROL to enter the
-   no-timeout reconnect wait loop and stay there forever.  All
-   three stock versions are affected identically.
+   during the wake handshake causes CONTROL to enter the no-timeout
+   reconnect wait loop and stay there forever.  Stock V1.4/V1.5b/V1.6b
+   and patched V1.61b are all affected.  Only V1.62b recovers via its
+   ``control_uart_soft_recover`` retry mechanism.
 
-2. **Idle timeout with slow recovery (link)**: dropping MAIN->CONTROL
-   responses during normal DISPLAY mode triggers CONTROL's idle
-   counter to fire, entering WAITING.  Recovery requires a full
-   reconnect cycle.  The idle timeout threshold and recovery speed
-   are characterized.
+2. **No UART soft-recover (link)**: temporary MAIN->CONTROL link loss
+   during reconnect strands CONTROL in WAITING.  Stock versions and
+   V1.61b lack UART re-priming.  V1.62b's soft-recover (every 8 poll
+   iterations) allows recovery.
 
-3. **I2C STOP fault cascading to DSP corruption (I2C -> UART)**: an
-   extended MSSP STOP fault on MAIN blocks the main loop.  Serial
-   bytes from CONTROL accumulate in the 192-byte RX ring.  After
-   overflow, the frame parser reads corrupted data.  Subsequent DSP
-   commands are silently mis-routed or dropped.
+3. **MAIN I2C STOP busy-wait has no timeout (I2C -> DSP cascade)**: an
+   extended MSSP STOP fault on MAIN blocks its main loop.  Serial
+   bytes from CONTROL accumulate in the 192-byte RX ring (no overflow
+   detection).  CONTROL enters WAITING, DSP command path degrades.
+   This is a MAIN-side bug affecting V2.3 stock, V2.4, and V2.5.
 """
 from __future__ import annotations
 
@@ -32,18 +32,18 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import (
+    PATCHED_CONTROL_HEX_V161B,
     PATCHED_CONTROL_HEX_V162B,
     PATCHED_MAIN_HEX,
+    PATCHED_MAIN_HEX_V24,
     STOCK_CONTROL_HEX_V14,
     STOCK_CONTROL_HEX_V15B,
     STOCK_CONTROL_HEX_V16B,
+    STOCK_MAIN_HEX,
 )
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
-
-# PIC18F25K20 register for CONTROL UART status
-_RCSTA = 0xFAB
 
 # MAIN firmware status register (active gate at bit 3)
 _STATUS_5E = 0x05E
@@ -86,41 +86,63 @@ def _enter_standby(chain: WireMultiMainChainHarness) -> None:
 
 
 # -----------------------------------------------------------------------
-# Firmware combos: all three stock CONTROL versions + V2.5 MAIN.
-# MAIN version is irrelevant for the CONTROL-side bugs being tested.
+# Test 1 — UART: one-shot MAIN TX stall during reconnect
+#
+# Correct behavior: CONTROL should recover and reconnect.
+# xfail: stock V1.4/V1.5b/V1.6b and patched V1.61b lack reconnect
+#         timeout → stranded in WAITING permanently.
+# pass:  V1.62b has control_uart_soft_recover → recovers.
 # -----------------------------------------------------------------------
-_STOCK_CONTROL_VERSIONS = [
-    pytest.param(STOCK_CONTROL_HEX_V14, id="stock_v14"),
-    pytest.param(STOCK_CONTROL_HEX_V15B, id="stock_v15b"),
-    pytest.param(STOCK_CONTROL_HEX_V16B, id="stock_v16b"),
+
+_TX_STALL_COMBOS = [
+    pytest.param(
+        STOCK_CONTROL_HEX_V14,
+        marks=pytest.mark.xfail(reason="V1.4: no reconnect timeout", strict=True),
+        id="stock_v14",
+    ),
+    pytest.param(
+        STOCK_CONTROL_HEX_V15B,
+        marks=pytest.mark.xfail(reason="V1.5b: no reconnect timeout", strict=True),
+        id="stock_v15b",
+    ),
+    pytest.param(
+        STOCK_CONTROL_HEX_V16B,
+        marks=pytest.mark.xfail(reason="V1.6b: no reconnect timeout", strict=True),
+        id="stock_v16b",
+    ),
+    pytest.param(
+        PATCHED_CONTROL_HEX_V161B,
+        marks=pytest.mark.xfail(reason="V1.61b: retry but no soft-recover", strict=True),
+        id="patched_v161b",
+    ),
+    pytest.param(
+        PATCHED_CONTROL_HEX_V162B,
+        id="patched_v162b",
+    ),
 ]
-
-
-# =======================================================================
-# Test 1 — UART: one-shot MAIN TX stall strands ALL stock versions
-# =======================================================================
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.parametrize("control_hex", _STOCK_CONTROL_VERSIONS)
-def test_wire_stock_control_one_shot_tx_stall_no_reconnect(
+@pytest.mark.parametrize("control_hex", _TX_STALL_COMBOS)
+def test_wire_one_shot_tx_stall_reconnect_recovery(
     control_hex: Path,
 ) -> None:
-    """A single transient MAIN TX stall during wake strands stock CONTROL.
+    """CONTROL must reconnect after a single transient MAIN TX stall.
 
     Field trigger: standby-exit UART/clock race or current-loop
     driver hiccup delays MAIN's first status reply by ~6ms.
-
-    All three stock CONTROL versions (V1.4, V1.5b, V1.6b) enter
-    the no-timeout reconnect wait loop (label_204/label_212) and
-    never exit.  The vendor shipped three firmware releases without
-    adding a reconnect timeout or retry mechanism.
 
     Bug chain (from STOCK_SYNC_DEADLOCK_ANALYSIS):
       transient TX stall -> MAIN reply delayed past CONTROL's parse
       window -> handshake registers stay 0x80 -> reconnect loop
       iterates forever -> "Waiting for DLCP" permanently.
+
+    Stock V1.4/V1.5b/V1.6b enter the no-timeout reconnect wait loop
+    and never exit.  V1.61b adds retry logic but no UART soft-recover.
+    V1.62b adds ``control_uart_soft_recover`` every 8 poll iterations,
+    allowing recovery.  The vendor shipped three stock releases without
+    adding a reconnect timeout.
     """
     _require_gpsim()
     _skip_missing(control_hex, PATCHED_MAIN_HEX)
@@ -138,9 +160,7 @@ def test_wire_stock_control_one_shot_tx_stall_no_reconnect(
         # Inject one-shot MAIN TX stall (~6ms at 4MHz Tcy = 24,000 cycles)
         chain.set_main_uart_fault(trmt_busy_cycles=24_000, trmt_busy_count=1)
 
-        # Settle the Zzz display handler before waking.  V1.6b's UI
-        # refactor needs a few extra iterations to initialize the
-        # standby button scan state.
+        # Settle Zzz handler before waking.
         chain.step_many(3)
 
         # Wake: CONTROL exits Zzz, enters reconnect.
@@ -149,59 +169,78 @@ def test_wire_stock_control_one_shot_tx_stall_no_reconnect(
         assert held is not None, "pair produced no steps during wake"
         assert chain.is_waiting(), f"pair never entered WAITING: {held.lcd!r}"
 
-        # Stock CONTROL has no reconnect timeout.
-        # Run 80 more steps (~20 seconds sim time).  It should NEVER recover.
-        stuck = chain.run_until_connected(limit=80)
-        assert stuck is not None, "pair produced no steps after TX stall"
-        assert not chain.is_connected(), (
-            f"stock CONTROL unexpectedly reconnected after one-shot TX stall "
-            f"(this version has a reconnect timeout!): {stuck.lcd!r}"
-        )
-        assert chain.is_waiting(), (
-            f"stock CONTROL left WAITING without reconnecting: {stuck.lcd!r}"
+        # Give CONTROL enough time to recover (if it can).
+        # V1.62b's soft-recover fires every 8 polls; 120 steps is
+        # generous (~30s sim time, many soft-recover cycles).
+        recovered = chain.run_until_connected(limit=120)
+
+        # The correct behavior: CONTROL reconnects.
+        # xfail versions will fail here.
+        assert recovered is not None, "pair produced no steps after TX stall"
+        assert chain.is_connected(), (
+            f"CONTROL did not reconnect after one-shot TX stall: "
+            f"{recovered.lcd!r}"
         )
 
     finally:
         chain.close()
 
 
-# =======================================================================
-# Test 2 — UART link: asymmetric reply loss triggers idle timeout
-# =======================================================================
+# -----------------------------------------------------------------------
+# Test 2 — UART link: reply drop during reconnect
+#
+# Correct behavior: CONTROL should reconnect after link is restored.
+# xfail: stock V1.4/V1.5b/V1.6b and V1.61b lack UART soft-recover.
+# pass:  V1.62b recovers via soft-recover.
+# -----------------------------------------------------------------------
+
+_REPLY_DROP_COMBOS = [
+    pytest.param(
+        STOCK_CONTROL_HEX_V14,
+        marks=pytest.mark.xfail(reason="V1.4: no UART soft-recover", strict=True),
+        id="stock_v14",
+    ),
+    pytest.param(
+        STOCK_CONTROL_HEX_V16B,
+        marks=pytest.mark.xfail(reason="V1.6b: no UART soft-recover", strict=True),
+        id="stock_v16b",
+    ),
+    pytest.param(
+        PATCHED_CONTROL_HEX_V161B,
+        marks=pytest.mark.xfail(reason="V1.61b: retry but no soft-recover", strict=True),
+        id="patched_v161b",
+    ),
+    pytest.param(
+        PATCHED_CONTROL_HEX_V162B,
+        id="patched_v162b",
+    ),
+]
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.parametrize("control_hex", [
-    pytest.param(STOCK_CONTROL_HEX_V14, id="stock_v14"),
-    pytest.param(STOCK_CONTROL_HEX_V16B, id="stock_v16b"),
-])
-def test_wire_stock_control_reply_drop_during_wake_no_recovery(
+@pytest.mark.parametrize("control_hex", _REPLY_DROP_COMBOS)
+def test_wire_reply_drop_during_wake_reconnect_recovery(
     control_hex: Path,
 ) -> None:
-    """Dropping MAIN->CONTROL replies during wake strands stock CONTROL.
+    """CONTROL must reconnect after temporary MAIN->CONTROL link loss.
 
     Field trigger: current-loop connector intermittent open during
     standby-exit.  CONTROL exits Zzz, sends wake + reconnect polls,
-    but MAIN's responses are lost due to the open circuit.
+    but MAIN's responses are lost on the return path for a few
+    seconds (connector vibration, EMI burst).
 
-    CONTROL enters the reconnect wait loop (label_212) and polls
-    MAIN repeatedly.  MAIN responds to every poll.  But the responses
-    never reach CONTROL because the return path is broken.
-
-    The link fault is temporary (cleared after 3 steps).  On real
-    hardware this models a connector that re-seats after vibration.
-    But stock CONTROL's reconnect loop has no timeout, so it stays
-    in WAITING even after the link is restored -- because by then
-    CONTROL and MAIN are out of sync (CONTROL's parser saw no
-    data during the drop, so its handshake registers are still 0x80).
+    The link is restored after 3 steps.  CONTROL should re-prime the
+    UART and reconnect.  Stock versions and V1.61b lack UART
+    soft-recover and stay stranded in WAITING.  V1.62b's
+    ``control_uart_soft_recover`` (every 8 poll iterations) re-primes
+    the EUSART and allows recovery.
 
     Hidden issues surfaced:
     - Stock V1.4/V1.5b/V1.6b have no reconnect timeout.
-    - The reconnect wait loop polls indefinitely.
-    - No UART soft-recover (only V1.62b adds that).
-    - Once CONTROL misses the handshake window, it can never recover
-      without power cycle.
+    - V1.61b adds retry counting but no UART re-prime.
+    - Once CONTROL's parser desynchronizes during the link drop,
+      only V1.62b's explicit CREN toggle can recover it.
     """
     _require_gpsim()
     _skip_missing(control_hex, PATCHED_MAIN_HEX)
@@ -229,29 +268,21 @@ def test_wire_stock_control_reply_drop_during_wake_no_recovery(
         assert held is not None, "pair produced no steps during wake"
         assert chain.is_waiting(), f"pair never entered WAITING: {held.lcd!r}"
 
-        # Run a few more steps with link still broken
+        # Keep link broken for a few more steps
         chain.step_many(3)
         assert chain.is_waiting(), "CONTROL left WAITING while link still broken"
 
         # Restore link (connector re-seats)
         chain.clear_link_faults()
 
-        # Stock CONTROL has no reconnect timeout and no UART
-        # soft-recover.  Even with the link restored, CONTROL's
-        # poll/parse cycle may be desynchronized.  Run 80 steps and
-        # check if it ever reconnects.
-        recovered = chain.run_until_connected(limit=80)
-        assert recovered is not None, "pair produced no steps after link restore"
+        # Give CONTROL time to recover.
+        recovered = chain.run_until_connected(limit=120)
 
-        # Stock CONTROL should remain stranded in WAITING because
-        # the reconnect loop's poll/parse cycle doesn't re-prime
-        # the UART.  (V1.62b's soft-recover fixes this.)
-        assert not chain.is_connected(), (
-            f"stock CONTROL unexpectedly reconnected after reply drop — "
-            f"this version may have recovery logic: {recovered.lcd!r}"
-        )
-        assert chain.is_waiting(), (
-            f"stock CONTROL left WAITING without reconnecting: "
+        # The correct behavior: CONTROL reconnects.
+        # xfail versions will fail here.
+        assert recovered is not None, "pair produced no steps after link restore"
+        assert chain.is_connected(), (
+            f"CONTROL did not reconnect after reply drop + link restore: "
             f"{recovered.lcd!r}"
         )
 
@@ -259,9 +290,12 @@ def test_wire_stock_control_reply_drop_during_wake_no_recovery(
         chain.close()
 
 
-# =======================================================================
+# -----------------------------------------------------------------------
 # Test 3 — I2C cascade: MSSP STOP fault blocks MAIN, degrades DSP path
-# =======================================================================
+#
+# This is a MAIN-side bug: the I2C busy-wait at SSPSTAT.P has no
+# timeout.  Parametrized by MAIN version, not CONTROL version.
+# -----------------------------------------------------------------------
 
 
 def _dsp34_snapshot(main) -> dict[int, int]:
@@ -272,14 +306,18 @@ def _dsp34_diff(before: dict[int, int], after: dict[int, int]) -> list:
     return [(r, before[r], after[r]) for r in range(256) if before[r] != after[r]]
 
 
+_MSSP_MAIN_COMBOS = [
+    pytest.param(STOCK_MAIN_HEX, id="main_v23_stock"),
+    pytest.param(PATCHED_MAIN_HEX_V24, id="main_v24"),
+    pytest.param(PATCHED_MAIN_HEX, id="main_v25"),
+]
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.parametrize("control_hex", [
-    pytest.param(STOCK_CONTROL_HEX_V16B, id="stock_v16b"),
-    pytest.param(PATCHED_CONTROL_HEX_V162B, id="patched_v162b"),
-])
+@pytest.mark.parametrize("main_hex", _MSSP_MAIN_COMBOS)
 def test_wire_extended_mssp_stop_fault_degrades_dsp_command_path(
-    control_hex: Path,
+    main_hex: Path,
 ) -> None:
     """Extended MSSP STOP fault on MAIN blocks main loop, cascading to DSP.
 
@@ -291,31 +329,30 @@ def test_wire_extended_mssp_stop_fault_degrades_dsp_command_path(
     While MAIN is blocked on I2C, serial bytes from CONTROL accumulate
     in the 192-byte RX ring buffer at 0x0200.  The ring has NO
     overflow detection -- write_idx wraps silently past read_idx,
-    overwriting unread data.  When MAIN resumes after the fault clears,
-    the parser reads corrupted frames.
+    overwriting unread data.  When MAIN resumes, the parser reads
+    corrupted frames.
 
-    This test:
-    1. Boots to DISPLAY, confirms DSP baseline.
-    2. Injects an extended MSSP STOP fault (blocks every I2C op for
-       5M cycles, infinite count).
-    3. CONTROL keeps sending display-loop commands for many steps.
-    4. MAIN's RX ring fills and overflows.
-    5. Clears the fault.
-    6. Checks whether MAIN can still process volume commands correctly.
+    This is a MAIN-side bug.  All MAIN versions are affected:
+    - V2.3 (stock): no I2C timeout, no recovery.
+    - V2.4 (patched): A/B preset patch, same I2C path.
+    - V2.5 (patched): adds V2.5 timeout hooks, but the MSSP STOP
+      busy-wait is in a different code path than the timeout seed.
 
-    Expected:
-    - DSP command path is degraded or broken after ring overflow.
-    - CONTROL may enter WAITING (MAIN can't respond while blocked).
-    - Even after fault clears, DSP writes may fail silently due to
-      parser desynchronization from the ring overflow.
+    CONTROL version is held constant at V1.62b (best-case CONTROL
+    with reconnect soft-recover).
+
+    Expected outcome: the MSSP fault causes at least one observable
+    degradation — either CONTROL enters WAITING (MAIN can't respond)
+    or DSP command path is broken after recovery (volume UP has no
+    effect on dsp34 registers).
     """
     _require_gpsim()
-    _skip_missing(control_hex, PATCHED_MAIN_HEX)
+    _skip_missing(PATCHED_CONTROL_HEX_V162B, main_hex)
 
-    chain = _new_wire_chain(control_hex, PATCHED_MAIN_HEX)
+    chain = _new_wire_chain(PATCHED_CONTROL_HEX_V162B, main_hex)
     try:
         # Boot to DISPLAY
-        first = chain.run_until_connected(limit=60)
+        first = chain.run_until_connected(limit=80)
         assert first is not None, "pair never reached DISPLAY"
         assert chain.is_connected(), f"pair not connected; lcd={first.lcd!r}"
 
@@ -352,12 +389,9 @@ def test_wire_extended_mssp_stop_fault_degrades_dsp_command_path(
         fault_steps = 30
         chain.step_many(fault_steps)
 
-        # Check ring state: has it wrapped?
+        # Check ring state
         rx_rd_after = _read_reg(main_issue, 0x0C6)
         rx_wr_after = _read_reg(main_issue, 0x0C7)
-
-        # Calculate bytes accumulated (approximate).  The ring is 192 bytes
-        # (indices 0x00-0xBF).  If wr wrapped past rd, data was corrupted.
         ring_size = 0xC0  # 192 bytes
         used_before = (rx_wr_before - rx_rd_before) % ring_size
         used_after = (rx_wr_after - rx_rd_after) % ring_size
@@ -368,25 +402,18 @@ def test_wire_extended_mssp_stop_fault_degrades_dsp_command_path(
         # Let MAIN resume and process whatever is in the ring
         chain.step_many(10)
 
-        # Check if CONTROL entered WAITING (MAIN couldn't respond during fault)
+        # Check if CONTROL entered WAITING (MAIN couldn't respond)
         entered_waiting = chain.is_waiting()
 
         if entered_waiting:
-            # Try to recover
+            # Try to recover (V1.62b has soft-recover)
             recovered = chain.run_until_connected(limit=60)
-            # Stock CONTROL may or may not recover depending on parser state.
-            if recovered is not None and chain.is_connected():
-                # Recovered -- now check DSP integrity
-                pass
-            else:
-                # Still stuck -- this is the irrecoverable case.
-                # The MSSP fault cascaded to a permanent WAITING state
-                # because MAIN's ring overflow desynchronized the parser.
+            if not (recovered is not None and chain.is_connected()):
+                # Irrecoverable: MSSP fault cascaded to permanent WAITING
                 pytest.fail(
-                    f"CONTROL stuck in WAITING after MSSP fault cleared — "
-                    f"ring state: rd=0x{rx_rd_after:02X} wr=0x{rx_wr_after:02X} "
-                    f"used_before={used_before} used_after={used_after} "
-                    f"(ring overflow likely corrupted the frame parser)"
+                    f"CONTROL stuck in WAITING after MSSP fault cleared -- "
+                    f"ring: rd=0x{rx_rd_after:02X} wr=0x{rx_wr_after:02X} "
+                    f"used_before={used_before} used_after={used_after}"
                 )
 
         # DSP integrity check: volume UP after fault recovery
@@ -395,21 +422,15 @@ def test_wire_extended_mssp_stop_fault_degrades_dsp_command_path(
         chain.step_many(5)
         diff_post = _dsp34_diff(snap_b, _dsp34_snapshot(main))
 
-        # After extended I2C blocking, the DSP command path should be
-        # degraded.  MAIN's main loop was blocked for many steps,
-        # serial bytes accumulated, and CONTROL likely entered WAITING.
-        # Even after recovery, the DSP command path may be broken due
-        # to parser desync from ring overflow or residual I2C state.
-        #
-        # We assert that the fault DID cause observable degradation.
-        # If the DSP still works perfectly, the fault was too mild.
+        # Assert the fault DID cause observable degradation:
+        # either DSP path broken or CONTROL lost connection.
         dsp_degraded = len(diff_post) == 0
         control_lost = entered_waiting
 
         assert dsp_degraded or control_lost, (
             f"extended MSSP fault caused no observable degradation: "
             f"DSP still works ({len(diff_post)} changes) and CONTROL "
-            f"never entered WAITING — fault parameters may be too mild"
+            f"never entered WAITING -- fault may be too mild"
         )
 
     finally:
