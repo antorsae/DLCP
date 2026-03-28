@@ -1233,16 +1233,24 @@ _V27_SUCCESS_RETURN = r"""    movlw 0x07
     return"""
 
 _v27_asm = PATCH_ASM_V26
-# Step 1: Replace nack give-up with bus-clear+ping+report
+
+# Step 1: Add V2.7 I2C fixes (bus-clear, PEN hook) before end
+_v27_asm = _v27_asm.replace("\nend\n", _V27_I2C_FIXES + "\nend\n")
+
+# Step 2: Replace nack give-up with bus-clear+ping+report
+assert _V26_NACK_GIVE_UP in _v27_asm, "V2.7: nack give-up string not found"
 _v27_asm = _v27_asm.replace(_V26_NACK_GIVE_UP, _V27_NACK_GIVE_UP)
-# Step 2: Replace success return with status report
+
+# Step 3: Replace success return with status report
+assert _V26_SUCCESS_RETURN in _v27_asm, "V2.7: success return string not found"
 _v27_asm = _v27_asm.replace(_V26_SUCCESS_RETURN, _V27_SUCCESS_RETURN)
-# Step 3: Replace wait+cores region with repacked version
-_split_marker = _V25_WAIT_REGION
-_split_idx = _v27_asm.find(_split_marker)
-if _split_idx < 0:
-    raise RuntimeError("V2.7 repack: cannot find 'org 0x5500' in V2.6 ASM")
-PATCH_ASM_V27 = _v27_asm[:_split_idx] + _V27_REPACKED_REGION
+
+# Step 4: Remove old wait loops + 072/093 cores, append repacked version.
+# The old section runs from the LAST "org 0x5500" through the LAST "end".
+# We cut that entire section and replace with the repacked region.
+_last_5500 = _v27_asm.rfind("org 0x5500")
+assert _last_5500 >= 0, "V2.7: cannot find org 0x5500"
+PATCH_ASM_V27 = _v27_asm[:_last_5500] + _V27_REPACKED_REGION
 
 PATCH_ASM_BY_VARIANT = {
     "v24": PATCH_ASM_V24,
