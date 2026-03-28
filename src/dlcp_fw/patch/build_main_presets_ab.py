@@ -873,23 +873,27 @@ PATCH_ASM_V26 = PATCH_ASM_V25.replace(_V25_056_CORE, _V26_056_CORE).replace(
 _V27_I2C_FIXES = r"""
 ; === V2.7 I2C robustness (Fix C / D / E / F) ===
 
-; --- Fix F: hook PEN busy-wait at label_572 (0x4510) ---
-; Stock: btfss SSPCON2,PEN / return / bra label_572
-; Replace with bounded wait + bus-clear on timeout.
-org 0x4510
-    goto pen_timeout_hook
-    nop
+; --- Fix F: enhance MSSP recovery with bus-clear + ping ---
+; Instead of hooking the stock PEN wait at label_572 (which fires
+; during boot without I2C devices causing excessive timeouts), we
+; enhance the EXISTING V2.5 recovery path.  patch_recover_mssp is
+; already called by function_056_patch and function_113_patch on
+; timeout.  We extend it to also perform bus-clear and DSP ping.
 
-; PEN timeout hook in function_113 dead zone (0x48BA, 26 bytes)
+; patch_recover_mssp body is replaced via string substitution in
+; PATCH_ASM_V27 (see _V25_RECOVER_MSSP / _V27_RECOVER_MSSP below).
+; The label stays at 0x54AE but the body now jumps to the V2.7
+; enhanced recovery with bus-clear.
+
+; Enhanced MSSP recovery in function_113 dead zone (0x48BA, 26 bytes)
 org 0x48BA
-pen_timeout_hook:
-    call patch_wait_pen_clear_c         ; bounded PEN wait (from V2.5)
-    bnc pen_ok
-    ; PEN timed out: STOP condition stuck.  Recover MSSP + bus-clear.
-    call patch_recover_mssp
-    call i2c_bus_clear
-    bsf 0x7F, 6, BANKED                ; latch DSP fault (bit6)
-pen_ok:
+patch_recover_mssp_v27:
+    ; MSSP reset + bus-clear (only called when active, per check above)
+    movlw 0x80
+    movwf 0x003, ACCESS
+    movlw 0x08
+    call 0x47B2                         ; function_101: MSSP hard reset
+    call i2c_bus_clear                  ; 9 SCL clocks + STOP
     return
 
 ; --- Fix C: I2C bus-clear (in function_072 dead zone, 0x436C) ---
@@ -1024,8 +1028,30 @@ send_dsp_fault_status:
     return
 """
 
-# Build V2.7 ASM: V2.6 base + V2.7 fixes
+# V2.7 replaces patch_recover_mssp body with goto to enhanced version.
+_V25_RECOVER_MSSP = r"""patch_recover_mssp:
+    movlw 0x80
+    movwf 0x003, ACCESS
+    movlw 0x08
+    call 0x47B2
+    return"""
+
+_V27_RECOVER_MSSP = r"""patch_recover_mssp:
+    ; V2.7: enhanced recovery when active, stock when booting.
+    ; 0x05E.bit3 = 0 during boot (no I2C devices attached).
+    btfsc INTCON, GIE, ACCESS
+    goto patch_recover_mssp_v27
+    ; Stock recovery (boot-safe): same as V2.5
+    movlw 0x80
+    movwf 0x003, ACCESS
+    movlw 0x08
+    call 0x47B2
+    return"""
+
+# Build V2.7 ASM: V2.6 base + recover_mssp replacement + V2.7 fixes
 PATCH_ASM_V27 = PATCH_ASM_V26.replace(
+    _V25_RECOVER_MSSP, _V27_RECOVER_MSSP
+).replace(
     "\nend\n", _V27_I2C_FIXES + "\nend\n"
 )
 
