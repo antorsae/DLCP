@@ -171,6 +171,7 @@ Always prefer these constants over hardcoded paths.
 
 - Core: `bus.py`, `protocol.py`, `scenarios.py`, `main_model.py`, `control_ui.py`
 - gpsim harness: `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `chain_gpsim.py`, `wire_chain_gpsim.py`, `gpsim.py`
+- V3.0 tooling: `v30_symbols.py` (gpasm listing symbol parser, shifted ASM builder, assembly helper)
 - support: `hexio.py`, `lcd.py`, `overlay.py`, `manifests.py`, `paths.py`
 
 ### Patch package (`src/dlcp_fw/patch`)
@@ -237,13 +238,13 @@ Current suite includes:
 - Control behavior: `test_control_ui_and_persistence.py`, `test_gpsim_control_presets.py`, `test_control_v*b_port_compatibility.py`, `test_control_gpsim_*`
 - End-to-end/faults: `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
 - Flash/probe tools: `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
+- V3.0 source rewrite: `test_v30_equivalence.py` (hex integrity + source quality), `test_v30_gpsim_equivalence.py` (behavioral parity with stock)
+- V3.0 relocation safety: `test_v30_relocation.py` (10 structural + 6 gpsim behavioral shift tests)
 
-Recent verification (2026-03-09):
+Recent verification (2026-03-28):
 
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_chain_gpsim_v25_recovery.py tests/sim/test_chain_gpsim_waiting.py tests/sim/test_main_v25_timeout_recovery.py` -> `7 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_verify_presets_ab_v162b_semantic_guards.py tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `14 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_chain_gpsim_v25_recovery.py tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `8 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim --collect-only` -> `236 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `376 passed, 19 failed, 11 xfailed` (~12 min with 16 workers)
+- `.venv_ep0/bin/python -m pytest -q tests/sim --collect-only` -> `406 tests collected`
 
 ## Documentation Map
 
@@ -331,10 +332,10 @@ scripts/gpsim-xtc --version
 make -C vendor/gpsim-0.32.1-xtc/regression/p18f25k20 sim
 ```
 
-Run full test gate (gpsim-inclusive):
+Run full test gate (gpsim-inclusive, parallel):
 
 ```bash
-.venv_ep0/bin/python -m pytest -q tests/sim
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 ```
 
 Safe control flash preflight/live:
