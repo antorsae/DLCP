@@ -461,7 +461,6 @@ patch_wait_trmt_c:
     movwf 0x00B, ACCESS
     movlw timeout_hi
     movwf 0x00C, ACCESS
-
 patch_wait_trmt_loop:
     btfsc TXSTA, TRMT, ACCESS
     bra patch_wait_ok
@@ -476,7 +475,6 @@ patch_wait_sspif_c:
     movwf 0x00B, ACCESS
     movlw timeout_hi
     movwf 0x00C, ACCESS
-
 patch_wait_sspif_loop:
     btfsc PIR1, SSPIF, ACCESS
     bra patch_wait_ok
@@ -491,7 +489,6 @@ patch_wait_bf_clear_c:
     movwf 0x00B, ACCESS
     movlw timeout_hi
     movwf 0x00C, ACCESS
-
 patch_wait_bf_loop:
     btfss SSPSTAT, BF, ACCESS
     bra patch_wait_ok
@@ -506,7 +503,6 @@ patch_wait_sen_clear_c:
     movwf 0x00B, ACCESS
     movlw timeout_hi
     movwf 0x00C, ACCESS
-
 patch_wait_sen_loop:
     btfss SSPCON2, SEN, ACCESS
     bra patch_wait_ok
@@ -521,7 +517,6 @@ patch_wait_pen_clear_c:
     movwf 0x00B, ACCESS
     movlw timeout_hi
     movwf 0x00C, ACCESS
-
 patch_wait_pen_loop:
     btfss SSPCON2, PEN, ACCESS
     bra patch_wait_ok
@@ -536,7 +531,6 @@ patch_wait_mssp_idle_c:
     movwf 0x00B, ACCESS
     movlw timeout_hi
     movwf 0x00C, ACCESS
-
 patch_wait_mssp_loop:
     movff SSPCON2, 0x003
     movlw 0x1F
@@ -546,7 +540,6 @@ patch_wait_mssp_loop:
     btfsc SSPSTAT, R, ACCESS
     bra patch_wait_mssp_spin
     bra patch_wait_ok
-
 patch_wait_mssp_spin:
     decfsz 0x00B, F, ACCESS
     bra patch_wait_mssp_loop
@@ -561,6 +554,16 @@ patch_wait_ok:
 patch_wait_fail:
     bsf STATUS, C, ACCESS
     return
+
+; === Fix D: DSP ping in function_111 dead zone (0x489A, 12B) ===
+; Minimal: START + address ACK check.  Entry here, body via goto.
+; === Fix D: DSP ping split across two dead zones ===
+; Entry: function_111 dead zone (0x489A, 12 bytes)
+; Body:  function_113 dead zone (0x48BA, 26 bytes)
+; Fix D: DSP ping DEFERRED -- label_606 at 0x48C6 is a live jump
+; target (from 0x3DA8).  The function_113 dead zone is only 10 bytes
+; (0x48BA-0x48C5), not 26.  DSP ping needs 26 bytes minimum.
+; Requires wait loop repack (V2.8) to free space in 0x5500 region.
 
 org 0x4970
 function_056_patch:
@@ -760,28 +763,25 @@ volume_dsp_write_v26:
 
     movlb 0x0
     bcf 0x7E, 3, BANKED
+    bsf 0x7E, 7, BANKED            ; V2.7: mark boot complete (enables PEN hook)
     movff 0x06E, 0x066
     movff 0x06F, 0x067
     movff 0x070, 0x068
     movff 0x071, 0x069
-    ; Reset retry counter (0x07F bits 3-5)
     movlw 0x07
     andwf 0x7F, F, BANKED
     return
 
 vol_write_nacked:
-    ; I2C write failed.  Increment retry counter (bits 3-5 of 0x07F).
     movlw 0x08
     addwf 0x7F, F, BANKED
 
-    ; Check max retries (5 * 8 = 0x28 in the bit3-5 field)
     movf 0x7F, W, BANKED
     andlw 0x38
     sublw 0x28
-    bc vol_retry_ok                 ; carry set = not exceeded
+    bc vol_retry_ok
 
-    ; Max retries: give up, clear dirty, reset counter.
-    ; V2.7: attempt bus-clear before giving up (releases stuck slave).
+    ; Max retries: bus-clear + give up
     call i2c_bus_clear
     movlb 0x0
     bcf 0x7E, 3, BANKED
@@ -790,7 +790,6 @@ vol_write_nacked:
     return
 
 vol_retry_ok:
-    ; Dirty bit stays set -- retry next main loop iteration
     return
 """
 
@@ -887,8 +886,10 @@ _V27_I2C_FIXES = r"""
 ; The label stays at 0x54AE but the body now jumps to the V2.7
 ; enhanced recovery with bus-clear.
 
-; Enhanced recovery removed -- bus-clear is called directly from
-; volume_dsp_write_v26's max-retry path (post-boot only, safe).
+; Fix F (PEN timeout): DEFERRED -- 12B dead zone at 0x489A is too
+; small for boot-check + bounded wait + stock fallback (needs 20B).
+; The stock PEN wait is bounded by gpsim's BRG delay model.
+; On real hardware, PEN completes in ~100us (no practical risk).
 
 ; --- Fix C: I2C bus-clear (in function_072 dead zone, 0x436C) ---
 ; 54 bytes available (0x436C-0x43A1).  function_073 at 0x43A2 is ALIVE.
