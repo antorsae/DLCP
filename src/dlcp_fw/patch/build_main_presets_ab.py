@@ -781,8 +781,7 @@ vol_write_nacked:
     sublw 0x28
     bc vol_retry_ok
 
-    ; Max retries: bus-clear + give up
-    call i2c_bus_clear
+    ; Max retries: give up (V2.7 adds bus-clear+ping via string subst)
     movlb 0x0
     bcf 0x7E, 3, BANKED
     movlw 0x07
@@ -924,12 +923,276 @@ bus_clear_stop:
     movwf SSPCON1, ACCESS
     return
 
-; --- Fix D + E: DEFERRED ---
-; DSP ping (60B) and BF/08 status (24B) exceed available dead code.
-; function_072 zone: 54B used by bus-clear, ~4B left.
-; function_111 zone: only 12B (function_112 at 0x48A6 is alive).
-; Needs layout redesign (repack wait loops or use flash page swap).
+; Fix D/E/F: implemented in the repacked 0x5500 region.
+
+; --- Fix F: PEN timeout hook at label_572 (0x4510) ---
+org 0x4510
+    goto pen_timeout_hook
+org 0x4514
+    nop
 """
+
+# V2.7 repacks the wait loops and relocates cores to free 92 bytes
+# for Fix D (DSP ping), Fix E (BF/08 status), and Fix F (PEN hook).
+_V25_WAIT_REGION = r"""org 0x5500"""  # Marker for the start of the wait region
+
+_V27_REPACKED_REGION = r"""
+; === V2.7: relocated cores ===
+org 0x46BE
+patch_function_093_core:
+    bsf SSPCON2, SEN, ACCESS
+    call patch_wait_sen_clear_c
+    bc patch_function_093_ret
+    movlw 0xE2
+    rcall function_056_patch
+    movf 0x007, W, ACCESS
+    rcall function_056_patch
+    movf 0x006, W, ACCESS
+    rcall function_056_patch
+    bsf SSPCON2, PEN, ACCESS
+    goto patch_function_093_pen_tail
+patch_function_093_ret:
+    return
+
+org 0x489A
+ackstat_first_byte_check:
+    call 0x3E68
+    btfsc SSPCON2, 6, ACCESS
+    bsf 0x7F, 2, BANKED
+    return
+
+org 0x54BA
+patch_function_093_pen_tail:
+    call patch_wait_pen_clear_c
+    return
+
+; === V2.7: repacked wait loops with shared seed/tick ===
+org 0x5500
+patch_wait_seed_c:
+    clrf 0x00B, ACCESS
+    movlw timeout_hi
+    movwf 0x00C, ACCESS
+    bcf STATUS, C, ACCESS
+    return
+
+patch_wait_tick_c:
+    decfsz 0x00B, F, ACCESS
+    bra pw_tick_ok
+    decfsz 0x00C, F, ACCESS
+    bra pw_tick_ok
+    bsf STATUS, C, ACCESS
+    return
+pw_tick_ok:
+    bcf STATUS, C, ACCESS
+    return
+
+patch_wait_trmt_c:
+    rcall patch_wait_seed_c
+pw_trmt:
+    btfsc TXSTA, TRMT, ACCESS
+    return
+    rcall patch_wait_tick_c
+    bnc pw_trmt
+    return
+
+patch_wait_sspif_c:
+    rcall patch_wait_seed_c
+pw_sspif:
+    btfsc PIR1, SSPIF, ACCESS
+    return
+    rcall patch_wait_tick_c
+    bnc pw_sspif
+    return
+
+patch_wait_bf_clear_c:
+    rcall patch_wait_seed_c
+pw_bf:
+    btfss SSPSTAT, BF, ACCESS
+    return
+    rcall patch_wait_tick_c
+    bnc pw_bf
+    return
+
+patch_wait_sen_clear_c:
+    rcall patch_wait_seed_c
+pw_sen:
+    btfss SSPCON2, SEN, ACCESS
+    return
+    rcall patch_wait_tick_c
+    bnc pw_sen
+    return
+
+patch_wait_pen_clear_c:
+    rcall patch_wait_seed_c
+pw_pen:
+    btfss SSPCON2, PEN, ACCESS
+    return
+    rcall patch_wait_tick_c
+    bnc pw_pen
+    return
+
+patch_wait_mssp_idle_c:
+    rcall patch_wait_seed_c
+pw_mssp:
+    movff SSPCON2, 0x003
+    movlw 0x1F
+    andwf 0x003, W, ACCESS
+    bnz pw_mssp_spin
+    btfsc SSPSTAT, R, ACCESS
+    bra pw_mssp_spin
+    return
+pw_mssp_spin:
+    rcall patch_wait_tick_c
+    bnc pw_mssp
+    return
+
+; --- V2.7: relocated patch_function_072_core ---
+patch_function_072_core:
+    rcall patch_wait_mssp_idle_c
+    bc patch_function_072_ret
+    bsf SSPCON2, SEN, ACCESS
+    rcall patch_wait_sen_clear_c
+    bc patch_function_072_ret
+    movlw 0x68
+    call function_056_patch
+    movlw 0x1F
+    call function_056_patch
+    movlw 0x00
+    call function_056_patch
+    movlw 0x00
+    call function_056_patch
+    movlw 0x00
+    call function_056_patch
+    movf 0x006, W, ACCESS
+    call function_056_patch
+    bsf SSPCON2, PEN, ACCESS
+    rcall patch_wait_pen_clear_c
+patch_function_072_ret:
+    return
+
+; === Preserved function patches from V2.5 (at org 0x4970) ===
+org 0x4970
+function_056_patch:
+    movff WREG, 0x005
+    rcall patch_function_056_core
+    bnc function_056_done
+    call patch_recover_mssp
+    rcall patch_function_056_core
+    bc patch_hard_reset
+function_056_done:
+    return
+
+function_072_patch:
+    movff WREG, 0x006
+    call patch_function_072_core
+    bnc function_072_done
+    call patch_recover_mssp
+    call patch_function_072_core
+    bc patch_hard_reset
+function_072_done:
+    return
+
+function_093_patch:
+    movff WREG, 0x007
+    call patch_function_093_core
+    bnc function_093_done
+    call patch_recover_mssp
+    call patch_function_093_core
+    bc patch_hard_reset
+function_093_done:
+    return
+
+function_111_patch:
+    movff WREG, 0x003
+    call patch_wait_trmt_c
+    bnc function_111_send
+    call patch_recover_uart
+    call patch_wait_trmt_c
+    bc patch_hard_reset
+function_111_send:
+    movf 0x003, W, ACCESS
+    movwf TXREG, ACCESS
+    return
+
+patch_hard_reset:
+    goto 0x48D4
+
+patch_function_056_core:
+    movff 0x005, SSPBUF
+    btfsc SSPCON1, WCOL, ACCESS
+    bra patch_function_056_timeout
+    movf SSPCON1, W, ACCESS
+    andlw 0x0F
+    xorlw 0x08
+    bz patch_function_056_mode_bf
+    xorlw 0x03
+    bz patch_function_056_mode_bf
+    bsf SSPCON1, CKP, ACCESS
+    call patch_wait_sspif_c
+    bc patch_function_056_timeout
+    btfss SSPSTAT, R, ACCESS
+    movf SSPSTAT, W, ACCESS
+    bcf STATUS, C, ACCESS
+    return
+
+patch_function_056_mode_bf:
+    call patch_wait_bf_clear_c
+    bc patch_function_056_timeout
+    call function_113_patch
+    btfsc SSPCON2, 6, ACCESS
+    bsf 0x7F, 2, BANKED
+    return
+
+patch_function_056_timeout:
+    bsf STATUS, C, ACCESS
+    return
+
+; === Fix D: DSP ping ===
+dsp_ping:
+    bsf SSPCON2, SEN, ACCESS
+    call patch_wait_sen_clear_c
+    bc dsp_ping_nack
+    movlw 0x68
+    call 0x3E68
+    bsf SSPCON2, PEN, ACCESS
+    btfss SSPCON2, 6, ACCESS
+    bcf 0x7F, 6, BANKED
+    btfsc SSPCON2, 6, ACCESS
+dsp_ping_nack:
+    bsf 0x7F, 6, BANKED
+    return
+
+; === Fix E: BF/08 status TX ===
+send_dsp_fault_status:
+    movlb 0x00
+    movf 0x7F, W, BANKED
+    andlw 0x44
+    movwf 0x003, ACCESS
+    movlw 0xBF
+    call 0x4896
+    movlw 0x08
+    call 0x4896
+    movf 0x003, W, ACCESS
+    call 0x4896
+    return
+
+; === Fix F: PEN timeout hook ===
+pen_timeout_hook:
+    btfss 0x07E, 7, ACCESS
+    bra pen_stock
+    call patch_wait_pen_clear_c
+    bc pen_timeout
+    return
+pen_timeout:
+    call patch_recover_mssp
+    bsf 0x7F, 6, BANKED
+    return
+pen_stock:
+    btfss SSPCON2, PEN, ACCESS
+    return
+    bra pen_stock
+
+end"""
 
 # V2.7 replaces patch_recover_mssp body with goto to enhanced version.
 _V25_RECOVER_MSSP = r"""patch_recover_mssp:
@@ -946,12 +1209,40 @@ _V27_RECOVER_MSSP = r"""patch_recover_mssp:
     call 0x47B2
     return"""
 
-# Build V2.7 ASM: V2.6 base + recover_mssp replacement + V2.7 fixes
-PATCH_ASM_V27 = PATCH_ASM_V26.replace(
-    _V25_RECOVER_MSSP, _V27_RECOVER_MSSP
-).replace(
-    "\nend\n", _V27_I2C_FIXES + "\nend\n"
-)
+# Build V2.7 ASM: V2.6 base + repacked wait region + V2.7 I2C fixes
+# Step 1: Replace the entire wait+cores region (org 0x5500 through end)
+#         with the repacked version that includes Fix D/E/F.
+# Step 2: Add the PEN hook at 0x4510 and other V2.7 hook sites.
+# V2.7 wrapper enhancements (via string replacement in V2.6 wrapper)
+_V26_NACK_GIVE_UP = r"""    ; Max retries: give up (V2.7 adds bus-clear+ping via string subst)
+    movlb 0x0"""
+
+_V27_NACK_GIVE_UP = r"""    ; Max retries: bus-clear + ping + report + give up
+    call i2c_bus_clear
+    call dsp_ping
+    call send_dsp_fault_status
+    movlb 0x0"""
+
+_V26_SUCCESS_RETURN = r"""    movlw 0x07
+    andwf 0x7F, F, BANKED
+    return"""
+
+_V27_SUCCESS_RETURN = r"""    movlw 0x07
+    andwf 0x7F, F, BANKED
+    call send_dsp_fault_status
+    return"""
+
+_v27_asm = PATCH_ASM_V26
+# Step 1: Replace nack give-up with bus-clear+ping+report
+_v27_asm = _v27_asm.replace(_V26_NACK_GIVE_UP, _V27_NACK_GIVE_UP)
+# Step 2: Replace success return with status report
+_v27_asm = _v27_asm.replace(_V26_SUCCESS_RETURN, _V27_SUCCESS_RETURN)
+# Step 3: Replace wait+cores region with repacked version
+_split_marker = _V25_WAIT_REGION
+_split_idx = _v27_asm.find(_split_marker)
+if _split_idx < 0:
+    raise RuntimeError("V2.7 repack: cannot find 'org 0x5500' in V2.6 ASM")
+PATCH_ASM_V27 = _v27_asm[:_split_idx] + _V27_REPACKED_REGION
 
 PATCH_ASM_BY_VARIANT = {
     "v24": PATCH_ASM_V24,

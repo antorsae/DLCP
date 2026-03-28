@@ -167,7 +167,7 @@ _PING_VERSIONS = [
     ),
     pytest.param(
         PATCHED_MAIN_HEX_V27,
-        marks=pytest.mark.xfail(reason="V2.7: DSP ping needs 26B, only 10B at 0x48BA (label_606 live at 0x48C6)", strict=True),
+        
         id="main_v27",
     ),
 ]
@@ -227,7 +227,7 @@ _FAULT_REPORTING_COMBOS = [
     ),
     pytest.param(
         PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V27,
-        marks=pytest.mark.xfail(reason="V2.7: BF/08 TX needs 24B, no space (V2.8)", strict=True),
+        
         id="v27_v163b",
     ),
 ]
@@ -305,7 +305,7 @@ _CASCADE_RECOVERY_COMBOS = [
     ),
     pytest.param(
         PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V27,
-        marks=pytest.mark.xfail(reason="V2.7: cascade recovery needs DSP ping (deferred)", strict=True),
+        
         id="v27_v163b",
     ),
 ]
@@ -385,7 +385,7 @@ _PEN_TIMEOUT_VERSIONS = [
     ),
     pytest.param(
         PATCHED_MAIN_HEX_V27,
-        marks=pytest.mark.xfail(reason="V2.7: PEN hook needs 20B, only 12B available", strict=True),
+        
         id="main_v27",
     ),
 ]
