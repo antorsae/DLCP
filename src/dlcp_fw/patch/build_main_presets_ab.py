@@ -780,7 +780,9 @@ vol_write_nacked:
     sublw 0x28
     bc vol_retry_ok                 ; carry set = not exceeded
 
-    ; Max retries: give up, clear dirty, reset counter
+    ; Max retries: give up, clear dirty, reset counter.
+    ; V2.7: attempt bus-clear before giving up (releases stuck slave).
+    call i2c_bus_clear
     movlb 0x0
     bcf 0x7E, 3, BANKED
     movlw 0x07
@@ -885,126 +887,47 @@ _V27_I2C_FIXES = r"""
 ; The label stays at 0x54AE but the body now jumps to the V2.7
 ; enhanced recovery with bus-clear.
 
-; Enhanced MSSP recovery in function_113 dead zone (0x48BA, 26 bytes)
-org 0x48BA
-patch_recover_mssp_v27:
-    ; MSSP reset + bus-clear (only called when active, per check above)
-    movlw 0x80
-    movwf 0x003, ACCESS
-    movlw 0x08
-    call 0x47B2                         ; function_101: MSSP hard reset
-    call i2c_bus_clear                  ; 9 SCL clocks + STOP
-    return
+; Enhanced recovery removed -- bus-clear is called directly from
+; volume_dsp_write_v26's max-retry path (post-boot only, safe).
 
 ; --- Fix C: I2C bus-clear (in function_072 dead zone, 0x436C) ---
-; Bitbang 9 SCL clocks on RB1 (open-drain), check SDA on RB0,
-; then generate manual STOP condition.
+; 54 bytes available (0x436C-0x43A1).  function_073 at 0x43A2 is ALIVE.
 org 0x436C
 i2c_bus_clear:
-    ; Disable MSSP so we can bitbang SCL/SDA via GPIO
     bcf SSPCON1, SSPEN, ACCESS          ; release pins to GPIO
     bsf TRISB, 1, ACCESS               ; SCL = input (pulled high)
     bsf TRISB, 0, ACCESS               ; SDA = input (pulled high)
-
-    ; 9 SCL clock pulses to release stuck slave
     movlw 0x09
-    movwf 0x00B, ACCESS                 ; counter in scratch
-
+    movwf 0x00B, ACCESS
 bus_clear_loop:
-    bcf TRISB, 1, ACCESS               ; SCL = output (driven low via LATB.1=0)
+    bcf TRISB, 1, ACCESS               ; SCL low
     bcf LATB, 1, ACCESS
     nop
     nop
-    bsf TRISB, 1, ACCESS               ; SCL = input (pulled high)
+    bsf TRISB, 1, ACCESS               ; SCL high
     nop
     nop
-    ; Check if SDA is released
-    btfsc PORTB, 0, ACCESS             ; SDA high?
-    bra bus_clear_stop                  ; Yes - slave released, generate STOP
+    btfsc PORTB, 0, ACCESS             ; SDA released?
+    bra bus_clear_stop
     decfsz 0x00B, F, ACCESS
     bra bus_clear_loop
-
 bus_clear_stop:
-    ; Generate manual STOP: SDA low->high while SCL high
-    bcf TRISB, 0, ACCESS               ; SDA = output
+    bcf TRISB, 0, ACCESS               ; SDA output
     bcf LATB, 0, ACCESS                ; SDA low
     nop
-    bsf TRISB, 1, ACCESS               ; SCL high (input, pulled up)
+    bsf TRISB, 1, ACCESS               ; SCL high
     nop
     nop
-    bsf TRISB, 0, ACCESS               ; SDA high (input, pulled up) = STOP
-
-    ; Re-enable MSSP
-    movlw 0x28                          ; I2C master mode, SSPEN
+    bsf TRISB, 0, ACCESS               ; SDA high = STOP
+    movlw 0x28                          ; I2C master + SSPEN
     movwf SSPCON1, ACCESS
     return
 
-; --- Fix D: DSP ping (TAS3108 register 0x08 version read) ---
-; After bus-clear, attempt a 1-byte read from TAS3108 to verify
-; the DSP is responsive.  Uses I2C random-read protocol.
-; Placed after bus-clear in the function_072 dead zone.
-dsp_ping:
-    ; START
-    bsf SSPCON2, SEN, ACCESS
-    call patch_wait_sen_clear_c
-    bc dsp_ping_fail
-
-    ; Write address 0x68 (TAS3108 write)
-    movlw 0x68
-    call 0x3E68                         ; function_056 via V2.5 patch
-    btfsc SSPCON2, 6, ACCESS            ; ACKSTAT?
-    bra dsp_ping_fail                   ; NACK - DSP not responding
-
-    ; Register address 0x08 (version)
-    movlw 0x08
-    call 0x3E68
-    btfsc SSPCON2, 6, ACCESS
-    bra dsp_ping_fail
-
-    ; REPEATED START
-    bsf SSPCON2, RSEN, ACCESS
-    call patch_wait_sen_clear_c
-    bc dsp_ping_fail
-
-    ; Read address 0x69 (TAS3108 read)
-    movlw 0x69
-    call 0x3E68
-    btfsc SSPCON2, 6, ACCESS
-    bra dsp_ping_fail
-
-    ; Read one byte
-    bsf SSPCON2, RCEN, ACCESS
-    call patch_wait_sspif_c
-    bc dsp_ping_fail
-
-    ; NACK the read byte (we only want 1 byte)
-    bsf SSPCON2, ACKDT, ACCESS
-    bsf SSPCON2, ACKEN, ACCESS
-    call patch_wait_sspif_c
-
-    ; STOP
-    bsf SSPCON2, PEN, ACCESS
-    call patch_wait_pen_clear_c
-
-    ; Success
-    bcf 0x7F, 6, BANKED                ; clear DSP fault
-    bcf STATUS, C, ACCESS
-    return
-
-dsp_ping_fail:
-    ; STOP (best effort)
-    bsf SSPCON2, PEN, ACCESS
-    call patch_wait_pen_clear_c
-    bsf 0x7F, 6, BANKED                ; latch DSP fault (bit6)
-    bsf STATUS, C, ACCESS
-    return
-
-; --- Fix E: BF/08 DSP fault status ---
-; DEFERRED: send_dsp_fault_status requires relocation.
-; The function_111 dead zone (0x489A) is only 12 bytes -- function_112
-; at 0x48A6 is alive (called from volume handler at 0x1A72).
-; BF/08 sending will be added when space is found or the volume
-; wrapper is extended to include inline TX.
+; --- Fix D + E: DEFERRED ---
+; DSP ping (60B) and BF/08 status (24B) exceed available dead code.
+; function_072 zone: 54B used by bus-clear, ~4B left.
+; function_111 zone: only 12B (function_112 at 0x48A6 is alive).
+; Needs layout redesign (repack wait loops or use flash page swap).
 """
 
 # V2.7 replaces patch_recover_mssp body with goto to enhanced version.
@@ -1016,11 +939,6 @@ _V25_RECOVER_MSSP = r"""patch_recover_mssp:
     return"""
 
 _V27_RECOVER_MSSP = r"""patch_recover_mssp:
-    ; V2.7: enhanced recovery when active, stock when booting.
-    ; 0x05E.bit3 = 0 during boot (no I2C devices attached).
-    btfsc INTCON, GIE, ACCESS
-    goto patch_recover_mssp_v27
-    ; Stock recovery (boot-safe): same as V2.5
     movlw 0x80
     movwf 0x003, ACCESS
     movlw 0x08
