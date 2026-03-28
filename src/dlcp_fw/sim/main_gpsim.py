@@ -426,6 +426,7 @@ def run_main_mailbox_gpsim(
     keep_artifacts: bool = False,
     artifact_dir: Path | None = None,
     fault_flags: int = 0,
+    overlay_manifests: Sequence | None = None,
 ) -> MainGpsimResult:
     rx_bytes = _build_frame_bytes(frames)
     if len(rx_bytes) > 32:
@@ -476,11 +477,11 @@ def run_main_mailbox_gpsim(
         cli_path = tdp / "main_gpsim_cli.txt"
 
         build_seeded_main_sim_hex(main_hex, seeded_hex)
-        apply_overlays(
-            seeded_hex,
-            sim_hex,
-            manifests=[main_reset_to_appstart(), main_serial_mailbox_hooks(gpasm=gpasm)],
-        )
+        if overlay_manifests is not None:
+            manifests_list = list(overlay_manifests)
+        else:
+            manifests_list = [main_reset_to_appstart(), main_serial_mailbox_hooks(gpasm=gpasm)]
+        apply_overlays(seeded_hex, sim_hex, manifests=manifests_list)
 
         stc_path = cli_path.with_suffix(".stc")
         script_text = _build_script(

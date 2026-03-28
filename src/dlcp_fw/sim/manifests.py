@@ -397,6 +397,178 @@ def main_serial_mailbox_hooks(gpasm: str = "gpasm") -> OverlayManifest:
     )
 
 
+def _build_dynamic_mailbox_asm(symbols: dict[str, int]) -> str:
+    """Template the mailbox hook overlay ASM using symbol addresses."""
+    rx_ring_read = symbols["rx_ring_read"]
+    rx_ring_has_data = symbols["rx_ring_has_data"]
+    uart_tx = symbols["uart_tx_byte_blocking"]
+    i2c_wait = symbols["i2c_wait_bus_idle"]
+    timer3 = symbols["timer3_blocking_delay"]
+    adc_gate = symbols["adc_boot_gate"]
+    adc_exit = symbols["adc_boot_gate_exit"]
+    # sim_function_111 is placed after the 18-byte ADC hook (adc_gate + 0x12)
+    tx_body = adc_gate + 0x12
+    # sim_function_113 is placed after the 20-byte Timer3 shim (timer3 + 0x14)
+    mssp_body = timer3 + 0x14
+
+    return f"""\
+LIST P=18F2455
+#include <p18f2455.inc>
+
+; Dynamic mailbox hook overlay (shifted addresses from V3.0 symbol table)
+
+org 0x{rx_ring_read:04X}
+sim_function_087:
+    movff BSR, 0x7C5
+    clrf 0x004, ACCESS
+    call sim_function_109
+    iorlw 0x00
+    bz sim087_done
+    lfsr 0, 0x780
+    movlb 0x7
+    movf 0x0C0, W, BANKED
+    andlw 0x3F
+    addwf FSR0L, F, ACCESS
+    movf INDF0, W, ACCESS
+    movwf 0x004, ACCESS
+    incf 0x0C0, F, BANKED
+sim087_done:
+    movf 0x004, W, ACCESS
+    movff 0x7C5, BSR
+    return 0x0
+
+org 0x{rx_ring_has_data:04X}
+sim_function_109:
+    movlb 0x7
+    movf 0x0C1, W, BANKED
+    clrf PRODL, ACCESS
+    cpfseq 0x0C0, BANKED
+    incf PRODL, F, ACCESS
+    movf PRODL, W, ACCESS
+    return 0x0
+
+org 0x{uart_tx:04X}
+    goto sim_function_111
+org 0x{uart_tx + 4:04X}
+    nop
+
+org 0x{i2c_wait:04X}
+    goto sim_function_113
+
+org 0x{timer3:04X}
+sim_function_079:
+sim79_outer:
+    movf 0x004, W, ACCESS
+    iorwf 0x003, W, ACCESS
+    bz sim79_done
+    decf 0x003, F, ACCESS
+    movf 0x003, W, ACCESS
+    xorlw 0xFF
+    bnz sim79_outer
+    decf 0x004, F, ACCESS
+    bra sim79_outer
+sim79_done:
+    return 0x0
+
+org 0x{mssp_body:04X}
+sim_function_113:
+    movff BSR, 0x7C6
+sim113_poll:
+    movlb 0x7
+    btfsc 0x0C7, 1, BANKED
+    bra sim113_poll
+    movf SSPCON2, W, ACCESS
+    andlw 0x1F
+    bnz sim113_poll
+    btfsc SSPSTAT, R, ACCESS
+    bra sim113_poll
+    movff 0x7C6, BSR
+    retlw 0x1F
+
+org 0x{adc_gate:04X}
+sim_function_024:
+    bcf INTCON, GIE, ACCESS
+    bcf LATB, LATB2, ACCESS
+    movlb 0x0
+    movlw 0x37
+    movwf 0x88, BANKED
+    movlw 0x02
+    movwf 0x89, BANKED
+    goto 0x{adc_exit:04X}
+
+org 0x{tx_body:04X}
+sim_function_111:
+    movff BSR, 0x7C6
+    movwf PRODL, ACCESS
+sim111_poll:
+    movlb 0x7
+    btfsc 0x0C7, 0, BANKED
+    bra sim111_poll
+    lfsr 0, 0x740
+    movf 0x0C3, W, BANKED
+    andlw 0x3F
+    addwf FSR0L, F, ACCESS
+    movf PRODL, W, ACCESS
+    movwf INDF0, ACCESS
+    incf 0x0C3, F, BANKED
+    movff PRODL, TXREG
+    movff 0x7C6, BSR
+    return 0x0
+
+end
+"""
+
+
+def main_serial_mailbox_hooks_dynamic(
+    symbols: dict[str, int],
+    gpasm: str = "gpasm",
+) -> OverlayManifest:
+    """Build mailbox hook overlay using addresses from a V3.0 symbol table.
+
+    This is the dynamic variant of :func:`main_serial_mailbox_hooks` that
+    accepts shifted symbol addresses instead of hardcoding stock V2.3
+    addresses.  Used by the relocation shift test.
+    """
+    asm_text = _build_dynamic_mailbox_asm(symbols)
+
+    with tempfile.TemporaryDirectory(prefix="main_serial_hook_dyn_") as td:
+        td_path = Path(td)
+        asm = td_path / "main_serial_hook_dyn.asm"
+        out_hex = td_path / "main_serial_hook_dyn.hex"
+        asm.write_text(asm_text, encoding="ascii")
+        subprocess.run(
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        patch_mem = parse_intel_hex(out_hex)
+
+    # Precondition bytes are the same instruction encodings at shifted addrs
+    adc = symbols["adc_boot_gate"]
+    t3 = symbols["timer3_blocking_delay"]
+    rx = symbols["rx_ring_read"]
+    rxd = symbols["rx_ring_has_data"]
+    return OverlayManifest(
+        name="main_serial_mailbox_hooks_dynamic",
+        preconditions={
+            adc: 0xF2,
+            adc + 1: 0x9E,
+            t3: 0xA0,
+            t3 + 1: 0x92,
+            t3 + 2: 0x98,
+            t3 + 3: 0x0E,
+            rx: 0x04,
+            rx + 1: 0x6A,
+            rxd: 0x00,
+            rxd + 1: 0x01,
+        },
+        byte_patches=patch_mem,
+        postconditions={},
+        description="Simulation-only UART hooks (dynamic shifted addresses)",
+    )
+
+
 _MAIN_UART_MAILBOX_ONLY_HOOK_ASM = r"""
 LIST P=18F2455
 #include <p18f2455.inc>
