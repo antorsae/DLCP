@@ -1000,32 +1000,11 @@ dsp_ping_fail:
     return
 
 ; --- Fix E: BF/08 DSP fault status ---
-; Hook into function_050 (send_status_burst) to add BF/08/fault_byte
-; after the existing status frames.
-; function_050 ends with a return at the end of the status burst.
-; We hook the last call in function_050 to append our frame.
-;
-; NOTE: This requires finding a hookable site in function_050.
-; For now, we add a standalone helper that the volume_dsp_write_v26
-; wrapper calls to report fault status after each write attempt.
-; The fault byte is constructed from 0x07F bits 2 (NACK) and 6 (ping fail).
-;
-; Placed in function_111 dead zone (0x489A, 28 bytes).
-org 0x489A
-send_dsp_fault_status:
-    ; Construct fault byte from 0x07F bits
-    movf 0x7F, W, BANKED
-    andlw 0x44                          ; isolate bits 2 and 6
-    movwf 0x003, ACCESS                 ; save fault byte
-
-    ; Send BF/08/fault_byte via TX
-    movlw 0xBF
-    call 0x4896                         ; function_111 (TX byte, via V2.5 patch at original addr)
-    movlw 0x08
-    call 0x4896
-    movf 0x003, W, ACCESS
-    call 0x4896
-    return
+; DEFERRED: send_dsp_fault_status requires relocation.
+; The function_111 dead zone (0x489A) is only 12 bytes -- function_112
+; at 0x48A6 is alive (called from volume handler at 0x1A72).
+; BF/08 sending will be added when space is found or the volume
+; wrapper is extended to include inline TX.
 """
 
 # V2.7 replaces patch_recover_mssp body with goto to enhanced version.
@@ -1336,7 +1315,7 @@ def main() -> int:
         if not found_ackstat:
             raise RuntimeError(
                 f"{variant} post-build check FAILED: btfsc SSPCON2,6 (0xBCC5) "
-                "not found in 0x46BE..0x49FF — Fix A string replacement "
+                "not found in 0x46BE..0x49FF -- Fix A string replacement "
                 "may have silently failed"
             )
     if variant == "v27":
@@ -1344,7 +1323,7 @@ def main() -> int:
         if new_mem.get(0x436C, 0xFF) == 0xFF:
             raise RuntimeError(
                 "V2.7 post-build check FAILED: bus-clear code not found "
-                "at 0x436C — Fix C may have failed to assemble"
+                "at 0x436C -- Fix C may have failed to assemble"
             )
 
     write_intel_hex(out_hex, new_mem)
