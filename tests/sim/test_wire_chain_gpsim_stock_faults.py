@@ -41,6 +41,7 @@ from dlcp_fw.paths import (
     STOCK_CONTROL_HEX_V15B,
     STOCK_CONTROL_HEX_V16B,
     STOCK_MAIN_HEX,
+    V31_MAIN_HEX,
 )
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
@@ -315,6 +316,7 @@ _MSSP_MAIN_COMBOS = [
     pytest.param(PATCHED_MAIN_HEX_V24, id="main_v24"),
     pytest.param(PATCHED_MAIN_HEX, id="main_v25"),
     pytest.param(PATCHED_MAIN_HEX_V26, id="main_v26"),
+    pytest.param(V31_MAIN_HEX, id="main_v31"),
 ]
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25
+from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25, V31_MAIN_HEX
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
@@ -76,6 +76,7 @@ def test_stock_wire_single_main_chain_exchanges_real_uart_frames(
     [
         pytest.param("patched_control_hex_v161b", PATCHED_MAIN_HEX_V24, "v161b_v24", id="v161b_v24"),
         pytest.param("patched_control_hex_v162b", PATCHED_MAIN_HEX_V25, "v162b_v25", id="v162b_v25"),
+        pytest.param("patched_control_hex_v162b", V31_MAIN_HEX, "v162b_v31", id="v162b_v31"),
     ],
 )
 def test_wire_supported_patched_pairs_reach_display(

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import PATCHED_MAIN_HEX, PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V26, STOCK_MAIN_HEX
+from dlcp_fw.paths import PATCHED_MAIN_HEX, PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V26, STOCK_MAIN_HEX, V31_MAIN_HEX
 from dlcp_fw.sim.chain_gpsim import MainChainHarness
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
@@ -60,6 +60,7 @@ _MAIN_VERSIONS = [
     pytest.param(STOCK_MAIN_HEX, id="main_v23_stock"),
     pytest.param(PATCHED_MAIN_HEX_V24, id="main_v24"),
     pytest.param(PATCHED_MAIN_HEX, id="main_v25"),
+    pytest.param(V31_MAIN_HEX, id="main_v31"),
 ]
 
 
@@ -288,6 +289,118 @@ def test_main_v26_immune_to_dsp_deafness_chain() -> None:
         )
         assert stat_post == vol_post, (
             f"status RAM not committed after recovery: "
+            f"stat=0x{stat_post:02X} vol=0x{vol_post:02X}"
+        )
+
+    finally:
+        harness.close()
+
+
+# ---------------------------------------------------------------------------
+# V3.1 immunity: DSP deafness chain is FIXED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_main_v31_immune_to_dsp_deafness_chain() -> None:
+    """V3.1 detects I2C NACKs, keeps dirty bit, defers commit.
+
+    Same scenario as the deafness chain test above, but V3.1's
+    three fixes (A/B/B') prevent the silent deafness:
+
+    Fix A: ACKSTAT latched in 0x07F.bit2 after the address byte.
+    Fix B: dirty bit (0x07E.bit3) NOT cleared on NACK — retry counter
+           increments.  After max retries, gives up cleanly.
+    Fix B': status RAM (0x066) NOT committed until verified write.
+            CONTROL sees the old (correct) volume during NACKs.
+
+    After clearing the NACK fault, a new volume command succeeds
+    and both DSP and status RAM are updated correctly.
+    """
+    _require_gpsim()
+    if not V31_MAIN_HEX.exists():
+        pytest.skip(f"missing: {V31_MAIN_HEX.name}")
+
+    harness = MainChainHarness(
+        V31_MAIN_HEX,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        # ---- Boot and activate ----
+        for _ in range(20):
+            harness.step()
+        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        assert _read_reg(harness._issue, _STATUS_5E) & 0x08, "MAIN not active"
+
+        # ---- Baseline ----
+        snap_a = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        diff_baseline = _dsp34_diff(snap_a, _dsp34_snapshot(harness))
+        assert len(diff_baseline) > 0, "baseline broken"
+
+        vol_baseline = _read_reg(harness._issue, _VOLUME_REG)
+        stat_baseline = _read_reg(harness._issue, 0x066)
+
+        # ---- Phase 1: NACKed volume command ----
+        harness.set_i2c_fault("dsp34", address_nack_count=60000)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+        for _ in range(15):
+            harness.step()
+
+        flags_7e = _read_reg(harness._issue, _FLAGS_7E)
+        flags_7f = _read_reg(harness._issue, 0x07F)
+        stat_nack = _read_reg(harness._issue, 0x066)
+
+        err_latched = bool(flags_7f & 0x04)
+        retry_count = (flags_7f >> 3) & 0x07
+
+        # Fix A: ACKSTAT must have been detected (error flag was
+        # set at some point — the retry counter proves it even if
+        # the latch was cleared after max retries).
+        assert retry_count > 0 or err_latched, (
+            f"Fix A: no NACK detection — 0x07F=0x{flags_7f:02X} "
+            f"(err={err_latched}, retry={retry_count})"
+        )
+
+        # Fix B': status RAM must be UNCHANGED from baseline.
+        # CONTROL would still show the old (correct) volume.
+        assert stat_nack == stat_baseline, (
+            f"Fix B': status committed despite NACK — "
+            f"stat=0x{stat_nack:02X} (baseline=0x{stat_baseline:02X})"
+        )
+
+        # ---- Phase 2: recovery ----
+        # Clear NACKs and send a new volume.  V3.1 should accept it.
+        harness.clear_i2c_faults("dsp34")
+        snap_b = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        diff_recovery = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
+        stat_post = _read_reg(harness._issue, 0x066)
+        vol_post = _read_reg(harness._issue, _VOLUME_REG)
+
+        assert len(diff_recovery) > 0, (
+            "recovery failed: volume cmd after NACK clear did not "
+            "change DSP registers"
+        )
+        # The new volume (0x40) must be different from the NACKed one (0x30)
+        # and from the baseline (0x50).  status RAM must be committed.
+        assert vol_post != vol_baseline, (
+            f"recovery: volume register unchanged from baseline "
+            f"(0x{vol_post:02X} == 0x{vol_baseline:02X})"
+        )
+        assert stat_post == vol_post, (
+            f"V3.1 status RAM not committed after recovery: "
             f"stat=0x{stat_post:02X} vol=0x{vol_post:02X}"
         )
 

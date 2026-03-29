@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25
+from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25, V31_MAIN_HEX
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
@@ -37,6 +37,7 @@ def _enter_standby(chain: WireMultiMainChainHarness) -> None:
     [
         pytest.param(PATCHED_MAIN_HEX_V24, id="v161b_v24"),
         pytest.param(PATCHED_MAIN_HEX_V25, id="v161b_v25"),
+        pytest.param(V31_MAIN_HEX, id="v161b_v31"),
     ],
 )
 def test_wire_v161b_one_shot_uart_trmt_busy_strands_both_main_versions(
@@ -72,6 +73,7 @@ def test_wire_v161b_one_shot_uart_trmt_busy_strands_both_main_versions(
     [
         pytest.param(PATCHED_MAIN_HEX_V24, id="v162b_v24"),
         pytest.param(PATCHED_MAIN_HEX_V25, id="v162b_v25"),
+        pytest.param(V31_MAIN_HEX, id="v162b_v31"),
     ],
 )
 def test_wire_v162b_one_shot_uart_trmt_busy_recovers_both_main_versions(
@@ -108,6 +110,7 @@ def test_wire_v162b_one_shot_uart_trmt_busy_recovers_both_main_versions(
     [
         pytest.param(PATCHED_MAIN_HEX_V24, id="v161b_v24"),
         pytest.param(PATCHED_MAIN_HEX_V25, id="v161b_v25"),
+        pytest.param(V31_MAIN_HEX, id="v161b_v31"),
     ],
 )
 def test_wire_v161b_one_shot_mssp_stop_busy_strands_both_main_versions(
@@ -143,6 +146,7 @@ def test_wire_v161b_one_shot_mssp_stop_busy_strands_both_main_versions(
     [
         pytest.param(PATCHED_MAIN_HEX_V24, id="v162b_v24"),
         pytest.param(PATCHED_MAIN_HEX_V25, id="v162b_v25"),
+        pytest.param(V31_MAIN_HEX, id="v162b_v31"),
     ],
 )
 def test_wire_v162b_one_shot_mssp_stop_busy_recovers_both_main_versions(
