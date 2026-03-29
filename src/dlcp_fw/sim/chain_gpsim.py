@@ -737,91 +737,85 @@ class MainChainHarness:
         return result, data
 
     def usb_enumerate(self, *, timeout_steps: int = 80) -> None:
-        """Run USB enumeration: RESET → GET_DESCRIPTOR → SET_ADDRESS → SET_CONFIGURATION.
+        """Prepare firmware for USB HID exchange.
 
-        After this, the firmware should be in USB configured state.
+        Forces USB configured state and sets up EP1 BDs so that
+        usb_hid_exchange() can deliver HID reports via the SIE
+        token engine (triggering real TRNIF interrupts).
         """
-        import struct
+        # Set PORTC.0 high (VBUS detect)
+        try:
+            self._issue("portc0 = 1", 5.0)
+        except Exception:
+            pass
 
-        # Wait for firmware to enable USB (UCON.USBEN)
+        # Wait for USB module to be enabled
         for _ in range(timeout_steps):
             self.step()
             ucon = _read_reg(self._issue, 0xF6D)
-            if ucon & 0x01:  # USBEN
+            if ucon & 0x08:
                 break
-        else:
-            raise RuntimeError("Firmware did not enable USB within timeout")
 
-        # Bus reset
+        # Bus reset → triggers firmware USB init
         self.usb_bus_reset()
-        for _ in range(5):
+        for _ in range(20):
             self.step()
 
-        # GET_DESCRIPTOR(device) — standard USB control transfer
-        get_dev_desc = struct.pack("<BBHHH", 0x80, 0x06, 0x0100, 0x0000, 0x0012)
-        self.usb_ep0_setup(get_dev_desc)
-        for _ in range(5):
-            self.step()
-        _, dev_desc = self.usb_ep0_in()
-        for _ in range(3):
-            self.step()
-        self.usb_ep0_out_status()
-        for _ in range(3):
-            self.step()
+        # Force configured state + EP1 setup (bypasses EP0 enumeration)
+        self._issue("reg(0x0CD)=0x06", 5.0)  # USB configured state
+        self._issue("reg(0xF71)=0x1E", 5.0)  # UEP1 = interrupt EP enabled
 
-        # SET_ADDRESS(1)
-        set_addr = struct.pack("<BBHHH", 0x00, 0x05, 0x0001, 0x0000, 0x0000)
-        self.usb_ep0_setup(set_addr)
-        for _ in range(5):
-            self.step()
+        # Arm EP1 OUT BD (BD3 at 0x40C): buffer at 0x042C, 64 bytes
+        self._issue("reg(0x40C)=0x88", 5.0)  # UOWN=1, DTSEN=1
+        self._issue("reg(0x40D)=0x40", 5.0)  # cnt=64
+        self._issue("reg(0x40E)=0x2C", 5.0)  # adrl
+        self._issue("reg(0x40F)=0x04", 5.0)  # adrh
 
-        # GET_DESCRIPTOR(config)
-        get_cfg_desc = struct.pack("<BBHHH", 0x80, 0x06, 0x0200, 0x0000, 0x0040)
-        self.usb_ep0_setup(get_cfg_desc)
-        for _ in range(5):
-            self.step()
-        _, cfg_desc = self.usb_ep0_in()
-        for _ in range(3):
-            self.step()
-        self.usb_ep0_out_status()
-        for _ in range(3):
-            self.step()
+        # EP1 IN BD (BD4 at 0x410): firmware arms this after processing
+        self._issue("reg(0x410)=0x00", 5.0)  # UOWN=0 (CPU owns)
+        self._issue("reg(0x411)=0x40", 5.0)  # cnt=64
+        self._issue("reg(0x412)=0x6C", 5.0)  # adrl
+        self._issue("reg(0x413)=0x04", 5.0)  # adrh
 
-        # SET_CONFIGURATION(1)
-        set_cfg = struct.pack("<BBHHH", 0x00, 0x09, 0x0001, 0x0000, 0x0000)
-        self.usb_ep0_setup(set_cfg)
+        # Enable USB interrupt (UIE.TRNIE + UIE.URSTIE)
+        self._issue("reg(0xF69)=0x7B", 5.0)  # UIE
+
         for _ in range(5):
             self.step()
 
     def usb_hid_exchange(self, report: bytes, *, timeout_steps: int = 40) -> bytes:
-        """Send a 64-byte HID OUT report and read the IN response.
+        """Send a 64-byte HID OUT report via SIE and read response.
 
-        Pads report to 64 bytes if shorter. Returns up to 64 response bytes.
+        Writes the report to the EP1 OUT buffer (0x042C), triggers
+        the EP_OUT token via the SIE engine (fires TRNIF), then waits
+        for the firmware to process and arm EP1 IN with the response.
         """
         padded = (report + b"\x00" * 64)[:64]
 
-        # Wait for EP1 OUT BD to be armed (UOWN=1)
+        # Ensure EP1 OUT BD is armed
+        self._issue("reg(0x40C)=0x88", 5.0)  # UOWN=1, DTSEN=1
+        self._issue("reg(0x40D)=0x40", 5.0)  # cnt=64
+
+        # Write report to EP1 OUT buffer at 0x042C
+        self.usb_write_ram(0x042C, padded)
+
+        # Force USB configured state and clear any pending UIR flags
+        # (stale URSTIF from bus reset would cause firmware to reset 0xCD)
+        self._issue("reg(0x0CD)=0x06", 5.0)
+        # Clear all pending UIR flags (write 0xFF → W1C clears all bits)
+        self._issue("reg(0xF68)=0xFF", 5.0)
+
+        # Trigger EP1 OUT token via SIE (fires TRNIF → firmware processes)
+        self.usb_host_cmd(5, ep=1, length=64)  # USB_EP_OUT
+
+        # Let firmware process the HID command
         for _ in range(timeout_steps):
-            if self.usb_bd_uown(3):  # EP1 OUT BD
-                break
             self.step()
 
-        # Send HID report to EP1 OUT
-        self.usb_ep_out(1, padded)
-        for _ in range(10):
-            self.step()
-
-        # Wait for EP1 IN BD to be armed (firmware prepared response)
-        for _ in range(timeout_steps):
-            if self.usb_bd_uown(4):  # EP1 IN BD
-                break
-            self.step()
-
-        # Read response
-        _, response = self.usb_ep_in(1)
-        for _ in range(3):
-            self.step()
-
+        # Read response from firmware's response buffer (0x15A-0x199)
+        response = bytes(
+            _read_reg(self._issue, 0x15A + i) for i in range(64)
+        )
         return response
 
     def step(self) -> tuple[MainChainSnapshot, List[TxTriplet]]:

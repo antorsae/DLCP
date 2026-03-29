@@ -188,6 +188,7 @@ class USTAT_REG : public sfr_register
 public:
     USTAT_REG(Processor *cpu, const char *name, const char *desc, PIC18USB *usb);
     unsigned int get() override;
+    unsigned int get_value() override;
 
 private:
     PIC18USB *m_usb;

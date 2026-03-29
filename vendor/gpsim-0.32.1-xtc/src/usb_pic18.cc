@@ -83,17 +83,23 @@ uint8_t PIC18USB::read_sfr(unsigned addr) const
 void PIC18USB::write_sfr(unsigned addr, uint8_t val)
 {
     if (!m_cpu) return;
+    /* Use put_value() for internal writes — bypasses custom put() logic
+     * like UIR's write-1-to-clear.  This is the SIE writing to the
+     * register, not the firmware. */
     m_cpu->registers[addr]->put_value(val);
 }
 
 void PIC18USB::set_sfr_bit(unsigned addr, uint8_t mask)
 {
-    write_sfr(addr, read_sfr(addr) | mask);
+    /* Read current value, OR in the bits, write back via put_value() */
+    uint8_t cur = read_sfr(addr);
+    m_cpu->registers[addr]->put_value(cur | mask);
 }
 
 void PIC18USB::clear_sfr_bit(unsigned addr, uint8_t mask)
 {
-    write_sfr(addr, read_sfr(addr) & ~mask);
+    uint8_t cur = read_sfr(addr);
+    m_cpu->registers[addr]->put_value(cur & ~mask);
 }
 
 /* --- BD index mapping for UCFG.PPB mode 01 ---
@@ -402,13 +408,32 @@ void PIC18USB::host_command(unsigned cmd)
         m_host_cmd_attr->set(static_cast<gint64>(0));
 }
 
+/* --- Triggered attribute: calls host_command() on write --- */
+
+class UsbHostCmdAttr : public Integer
+{
+public:
+    UsbHostCmdAttr(PIC18USB *usb)
+        : Integer("usb_host_cmd", 0, "USB host command trigger"), m_usb(usb) {}
+
+    void set(gint64 v) override
+    {
+        Integer::set(v);
+        if (v != 0 && m_usb)
+            m_usb->host_command(static_cast<unsigned>(v));
+    }
+private:
+    PIC18USB *m_usb;
+};
+
+
 /* --- Symbol registration --- */
 
 void PIC18USB::register_host_symbols()
 {
     if (!m_cpu || m_host_cmd_attr) return;
 
-    m_host_cmd_attr = new Integer("usb_host_cmd", 0, "USB host command trigger");
+    m_host_cmd_attr = new UsbHostCmdAttr(this);
     m_host_ep_attr = new Integer("usb_host_ep", 0, "USB host target endpoint");
     m_host_len_attr = new Integer("usb_host_len", 0, "USB host payload length");
     m_host_result_attr = new Integer("usb_host_result", 0, "USB host last result");
@@ -482,6 +507,14 @@ USTAT_REG::USTAT_REG(Processor *cpu, const char *name, const char *desc, PIC18US
 
 unsigned int USTAT_REG::get()
 {
+    if (m_usb)
+        return m_usb->ustat_read();
+    return value.get();
+}
+
+unsigned int USTAT_REG::get_value()
+{
+    /* movff uses get_value(), so we must also return the FIFO value here */
     if (m_usb)
         return m_usb->ustat_read();
     return value.get();
