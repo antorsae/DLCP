@@ -661,6 +661,169 @@ class MainChainHarness:
         self._issue(f"reg(0x7C2)=0x{cur:02X}", 5.0)
         return new_frames
 
+    # --- USB peripheral helpers (requires gpsim USB SIE model) ---
+
+    def usb_host_cmd(self, cmd: int, *, ep: int = 0, length: int = 0) -> int:
+        """Issue a USB host command and return the result."""
+        self._issue(f"usb_host_ep = {ep}", 5.0)
+        self._issue(f"usb_host_len = {length}", 5.0)
+        self._issue(f"usb_host_cmd = {cmd}", 5.0)
+        out = self._issue("usb_host_result", 5.0)
+        return _parse_module_int_value(out, "usb_host_result")
+
+    def usb_read_ram(self, addr: int, count: int) -> bytes:
+        """Read bytes from USB Bank 4 RAM (0x400-0x7FF)."""
+        return bytes(_read_reg(self._issue, addr + i) for i in range(count))
+
+    def usb_write_ram(self, addr: int, data: bytes) -> None:
+        """Write bytes to USB Bank 4 RAM."""
+        for i, b in enumerate(data):
+            self._issue(f"reg(0x{(addr + i):03X})=0x{b:02X}", 5.0)
+
+    def usb_read_bd(self, bd_index: int) -> tuple[int, int, int, int]:
+        """Read a Buffer Descriptor (stat, cnt, adrl, adrh)."""
+        base = 0x400 + bd_index * 4
+        return tuple(_read_reg(self._issue, base + i) for i in range(4))
+
+    def usb_bd_addr(self, bd_index: int) -> int:
+        """Get the buffer address from a BD."""
+        _, _, adrl, adrh = self.usb_read_bd(bd_index)
+        return adrl | (adrh << 8)
+
+    def usb_bd_uown(self, bd_index: int) -> bool:
+        """Check if SIE owns the BD (UOWN bit)."""
+        stat, _, _, _ = self.usb_read_bd(bd_index)
+        return bool(stat & 0x80)
+
+    def usb_bus_reset(self) -> int:
+        """Issue USB bus reset."""
+        return self.usb_host_cmd(1)  # USB_BUS_RESET
+
+    def usb_ep0_setup(self, setup_packet: bytes) -> int:
+        """Send 8-byte SETUP packet to EP0 OUT."""
+        if len(setup_packet) != 8:
+            raise ValueError("SETUP packet must be 8 bytes")
+        # Write setup data into the EP0 OUT BD's buffer
+        bd_addr = self.usb_bd_addr(0)  # EP0 OUT even
+        self.usb_write_ram(bd_addr, setup_packet)
+        return self.usb_host_cmd(2)  # USB_EP0_SETUP
+
+    def usb_ep0_in(self) -> tuple[int, bytes]:
+        """Read EP0 IN response. Returns (result, data)."""
+        result = self.usb_host_cmd(3)  # USB_EP0_IN
+        _, cnt, adrl, adrh = self.usb_read_bd(2)  # EP0 IN BD
+        buf_addr = adrl | (adrh << 8)
+        data = self.usb_read_ram(buf_addr, cnt)
+        return result, data
+
+    def usb_ep0_out_status(self) -> int:
+        """Send zero-length OUT status stage."""
+        return self.usb_host_cmd(4)  # USB_EP0_OUT_STATUS
+
+    def usb_ep_out(self, ep: int, data: bytes) -> int:
+        """Send data to EPn OUT (e.g., HID report to EP1)."""
+        bd_idx = 3 + (ep - 1) * 2  # EPn OUT BD index (mode 01)
+        bd_addr = self.usb_bd_addr(bd_idx)
+        self.usb_write_ram(bd_addr, data)
+        return self.usb_host_cmd(5, ep=ep, length=len(data))
+
+    def usb_ep_in(self, ep: int) -> tuple[int, bytes]:
+        """Read data from EPn IN. Returns (result, data)."""
+        bd_idx = 3 + (ep - 1) * 2 + 1  # EPn IN BD index
+        result = self.usb_host_cmd(6, ep=ep)
+        _, cnt, adrl, adrh = self.usb_read_bd(bd_idx)
+        buf_addr = adrl | (adrh << 8)
+        data = self.usb_read_ram(buf_addr, cnt)
+        return result, data
+
+    def usb_enumerate(self, *, timeout_steps: int = 80) -> None:
+        """Run USB enumeration: RESET → GET_DESCRIPTOR → SET_ADDRESS → SET_CONFIGURATION.
+
+        After this, the firmware should be in USB configured state.
+        """
+        import struct
+
+        # Wait for firmware to enable USB (UCON.USBEN)
+        for _ in range(timeout_steps):
+            self.step()
+            ucon = _read_reg(self._issue, 0xF6D)
+            if ucon & 0x01:  # USBEN
+                break
+        else:
+            raise RuntimeError("Firmware did not enable USB within timeout")
+
+        # Bus reset
+        self.usb_bus_reset()
+        for _ in range(5):
+            self.step()
+
+        # GET_DESCRIPTOR(device) — standard USB control transfer
+        get_dev_desc = struct.pack("<BBHHH", 0x80, 0x06, 0x0100, 0x0000, 0x0012)
+        self.usb_ep0_setup(get_dev_desc)
+        for _ in range(5):
+            self.step()
+        _, dev_desc = self.usb_ep0_in()
+        for _ in range(3):
+            self.step()
+        self.usb_ep0_out_status()
+        for _ in range(3):
+            self.step()
+
+        # SET_ADDRESS(1)
+        set_addr = struct.pack("<BBHHH", 0x00, 0x05, 0x0001, 0x0000, 0x0000)
+        self.usb_ep0_setup(set_addr)
+        for _ in range(5):
+            self.step()
+
+        # GET_DESCRIPTOR(config)
+        get_cfg_desc = struct.pack("<BBHHH", 0x80, 0x06, 0x0200, 0x0000, 0x0040)
+        self.usb_ep0_setup(get_cfg_desc)
+        for _ in range(5):
+            self.step()
+        _, cfg_desc = self.usb_ep0_in()
+        for _ in range(3):
+            self.step()
+        self.usb_ep0_out_status()
+        for _ in range(3):
+            self.step()
+
+        # SET_CONFIGURATION(1)
+        set_cfg = struct.pack("<BBHHH", 0x00, 0x09, 0x0001, 0x0000, 0x0000)
+        self.usb_ep0_setup(set_cfg)
+        for _ in range(5):
+            self.step()
+
+    def usb_hid_exchange(self, report: bytes, *, timeout_steps: int = 40) -> bytes:
+        """Send a 64-byte HID OUT report and read the IN response.
+
+        Pads report to 64 bytes if shorter. Returns up to 64 response bytes.
+        """
+        padded = (report + b"\x00" * 64)[:64]
+
+        # Wait for EP1 OUT BD to be armed (UOWN=1)
+        for _ in range(timeout_steps):
+            if self.usb_bd_uown(3):  # EP1 OUT BD
+                break
+            self.step()
+
+        # Send HID report to EP1 OUT
+        self.usb_ep_out(1, padded)
+        for _ in range(10):
+            self.step()
+
+        # Wait for EP1 IN BD to be armed (firmware prepared response)
+        for _ in range(timeout_steps):
+            if self.usb_bd_uown(4):  # EP1 IN BD
+                break
+            self.step()
+
+        # Read response
+        _, response = self.usb_ep_in(1)
+        for _ in range(3):
+            self.step()
+
+        return response
+
     def step(self) -> tuple[MainChainSnapshot, List[TxTriplet]]:
         self._apply_pin_models()
         self._apply_fault_injection_state()
