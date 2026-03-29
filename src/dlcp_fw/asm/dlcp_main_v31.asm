@@ -7970,19 +7970,6 @@ wait_tick:
     bsf         STATUS, 0, ACCESS           ; C=1: timeout
     return      0
 
-wait_sspif_bounded:
-    call        wait_seed, 0x0
-wait_sspif_loop:
-    btfsc       PIR1, 3, ACCESS             ; SSPIF?
-    bra         wait_sspif_done
-    call        wait_tick, 0x0
-    bnc         wait_sspif_loop
-    return      0                           ; C=1: timed out
-wait_sspif_done:
-    bcf         PIR1, 3, ACCESS             ; clear SSPIF
-    bcf         STATUS, 0, ACCESS           ; C=0: success
-    return      0
-
 wait_trmt_bounded:
     call        wait_seed, 0x0
 wait_trmt_loop:
@@ -8032,26 +8019,6 @@ wait_pen_loop:
     return      0
 wait_pen_done:
     bcf         STATUS, 0, ACCESS
-    return      0
-
-; Extended PEN wait — larger timeout (~150k cycles) for post-boot PEN recovery.
-; Uses standard seed but loops the entire bounded wait multiple times.
-wait_pen_extended:
-    movlw       0x20                        ; outer loop: 32 repetitions
-    movwf       ram_0x00D, ACCESS
-wait_pen_ext_outer:
-    call        wait_seed, 0x0
-wait_pen_ext_inner:
-    btfss       SSPCON2, 2, ACCESS          ; PEN clear?
-    bra         wait_pen_ext_done
-    call        wait_tick, 0x0
-    bnc         wait_pen_ext_inner
-    decfsz      ram_0x00D, F, ACCESS
-    bra         wait_pen_ext_outer
-    bsf         STATUS, 0, ACCESS           ; C=1: timeout
-    return      0
-wait_pen_ext_done:
-    bcf         STATUS, 0, ACCESS           ; C=0: success
     return      0
 
 wait_bf_clear_bounded:
@@ -8206,10 +8173,57 @@ preset_select_handler:
     xorlw       0x01                        ; invert to compare
     btfsc       STATUS, 2, ACCESS           ; Z = no change
     goto        flow_main_uart_service_1be6_1e6c
+    ; Persist outgoing filename if dirty
+    btfsc       ram_0x0BD, 5, BANKED        ; filename dirty?
+    call        preset_persist_filename, 0x0
+    ; Toggle preset
+    movlb       0x0                         ; restore BSR after EEPROM ops
+    btg         active_flags, 2, ACCESS     ; toggle preset B bit
+    ; Reload filename from new EEPROM slot
+    call        preset_load_filename, 0x0
+    ; Trigger DSP re-apply and cmd03 dirty
+    movlb       0x0
     bsf         event_flags, 0, BANKED      ; cmd03 dirty
-    btg         active_flags, 2, ACCESS     ; toggle preset B
     bsf         event_flags, 3, BANKED      ; trigger DSP re-apply
+    call        main_core_service_4574, 0x0 ; re-apply preset table
     goto        flow_main_uart_service_1be6_1e6c
+
+; --- Persist dirty filename to EEPROM (outgoing preset slot) ---
+preset_persist_filename:
+    movlw       0x60
+    btfsc       active_flags, 2, ACCESS
+    movlw       0x83
+    movwf       ram_0x007, ACCESS
+    clrf        ram_0x008, ACCESS
+    lfsr        FSR2, 0x02C0
+    movlw       0x1E
+    movwf       ram_0x00A, ACCESS
+preset_pf_lp:
+    movff       POSTINC2, ram_0x009
+    call        main_flash_service_46de, 0x0
+    incf        ram_0x007, F, ACCESS
+    decfsz      ram_0x00A, F, ACCESS
+    bra         preset_pf_lp
+    bcf         ram_0x0BD, 5, BANKED
+    return      0
+
+; --- Load filename from EEPROM (incoming preset slot) ---
+preset_load_filename:
+    movlw       0x60
+    btfsc       active_flags, 2, ACCESS
+    movlw       0x83
+    movwf       ram_0x003, ACCESS
+    clrf        ram_0x004, ACCESS
+    lfsr        FSR2, 0x02C0
+    movlw       0x1E
+    movwf       ram_0x00A, ACCESS
+preset_lf_lp:
+    call        eeprom_read_byte, 0x0
+    movwf       POSTINC2
+    incf        ram_0x003, F, ACCESS
+    decfsz      ram_0x00A, F, ACCESS
+    bra         preset_lf_lp
+    return      0
 
 ; ---------------------------------------------------------------------------
 ; DSP Preset Table B (clone of Preset A)
