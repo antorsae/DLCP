@@ -35,6 +35,7 @@ License along with this library; if not, see
 #include "ssp.h"
 #include "stimuli.h"
 #include "ui.h"
+#include "usb_pic18.h"
 #include "value.h"
 
 /* Config Word defines */
@@ -946,12 +947,9 @@ P18F2455::P18F2455(const char *_name, const char *desc)
     : P18F2x21(_name, desc),
       ufrml(this, "ufrml", "USB Frame Number register Low"),
       ufrmh(this, "ufrmh", "USB Frame Number register High"),
-      uir(this, "uir", "USB Interrupt Status register"),
       uie(this, "uie", "USB Interrupt Enable register"),
       ueir(this, "ueir", "USB Error Interrupt Status register"),
       ueie(this, "ueie", "USB Error Interrupt Enable register"),
-      ustat(this, "ustat", "USB Transfer Status register"),
-      ucon(this, "ucon", "USB Control register"),
       uaddr(this, "uaddr", "USB Device Address register"),
       ucfg(this, "ucfg", "USB Configuration register"),
       uep0(this, "uep0", "USB Endpoint 0 Enable register"),
@@ -971,7 +969,11 @@ P18F2455::P18F2455(const char *_name, const char *desc)
       uep14(this, "uep14", "USB Endpoint 14 Enable register"),
       uep15(this, "uep15", "USB Endpoint 15 Enable register")
 {
-    std::cout << "\nP18F2455 does not support USB registers and functionality\n\n";
+    /* Create USB engine with active SFR hooks */
+    m_usb = new PIC18USB(this, nullptr);  /* PIR2 set in create_sfr_map */
+    ucon_reg = new UCON_REG(this, "ucon", "USB Control register", m_usb);
+    uir_reg = new UIR_REG(this, "uir", "USB Interrupt Status register", m_usb);
+    ustat_reg = new USTAT_REG(this, "ustat", "USB Transfer Status register", m_usb);
 
     if (verbose)
     {
@@ -984,12 +986,12 @@ P18F2455::~P18F2455()
 {
     remove_sfr_register(&ufrml);
     remove_sfr_register(&ufrmh);
-    remove_sfr_register(&uir);
+    if (uir_reg) { remove_sfr_register(uir_reg); delete uir_reg; }
     remove_sfr_register(&uie);
     remove_sfr_register(&ueir);
     remove_sfr_register(&ueie);
-    remove_sfr_register(&ustat);
-    remove_sfr_register(&ucon);
+    if (ustat_reg) { remove_sfr_register(ustat_reg); delete ustat_reg; }
+    if (ucon_reg) { remove_sfr_register(ucon_reg); delete ucon_reg; }
     remove_sfr_register(&uaddr);
     remove_sfr_register(&ucfg);
     remove_sfr_register(&uep0);
@@ -1008,6 +1010,7 @@ P18F2455::~P18F2455()
     remove_sfr_register(&uep13);
     remove_sfr_register(&uep14);
     remove_sfr_register(&uep15);
+    if (m_usb) { m_usb->remove_host_symbols(); delete m_usb; }
 }
 
 
@@ -1030,12 +1033,12 @@ void P18F2455::create_sfr_map()
                   );
     add_sfr_register(&ufrml, 0x0F66, RegisterValue(0, 0), "ufrm");
     add_sfr_register(&ufrmh, 0X0F67, RegisterValue(0, 0));
-    add_sfr_register(&uir, 0x0F68, RegisterValue(0, 0));
+    add_sfr_register(uir_reg, 0x0F68, RegisterValue(0, 0));
     add_sfr_register(&uie, 0x0F69, RegisterValue(0, 0));
     add_sfr_register(&ueir, 0x0F6A, RegisterValue(0, 0));
     add_sfr_register(&ueie, 0x0F6B, RegisterValue(0, 0));
-    add_sfr_register(&ustat, 0X0F6C, RegisterValue(0, 0));
-    add_sfr_register(&ucon, 0x0F6D, RegisterValue(0, 0));
+    add_sfr_register(ustat_reg, 0X0F6C, RegisterValue(0, 0));
+    add_sfr_register(ucon_reg, 0x0F6D, RegisterValue(0, 0));
     add_sfr_register(&uaddr, 0X0F6E, RegisterValue(0, 0));
     add_sfr_register(&ucfg, 0x0F6F, RegisterValue(0, 0));
     add_sfr_register(&uep0, 0x0F70, RegisterValue(0, 0));
@@ -1054,6 +1057,12 @@ void P18F2455::create_sfr_map()
     add_sfr_register(&uep13, 0x0F7D, RegisterValue(0, 0));
     add_sfr_register(&uep14, 0x0F7E, RegisterValue(0, 0));
     add_sfr_register(&uep15, 0x0F7F, RegisterValue(0, 0));
+    /* Wire USB engine to PIR2 (for USBIF interrupt) and register attrs */
+    if (m_usb)
+    {
+        m_usb->set_pir2(pir2);
+        m_usb->register_host_symbols();
+    }
 }
 
 

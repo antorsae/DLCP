@@ -434,16 +434,29 @@ public:
 };
 
 
+class PIC18USB;
+class UCON_REG;
+class UIR_REG;
+class USTAT_REG;
+
 class P18F2455 : public P18F2x21
 {
 public:
     P18F2455(const char *_name = nullptr, const char *desc = nullptr);
     ~P18F2455();
 
-    sfr_register ufrml, ufrmh, uir,  uie,  ueir,  ueie,  ustat,  ucon,
-                 uaddr, ucfg,  uep0, uep1, uep2,  uep3,  uep4,   uep5,
-                 uep6,  uep7,  uep8, uep9, uep10, uep11, uep12,  uep13,
-                 uep14,  uep15;
+    sfr_register ufrml, ufrmh;
+    UIR_REG     *uir_reg = nullptr;
+    sfr_register uie;
+    sfr_register ueir, ueie;
+    USTAT_REG   *ustat_reg = nullptr;
+    UCON_REG    *ucon_reg = nullptr;
+    sfr_register uaddr, ucfg;
+    sfr_register uep0, uep1, uep2, uep3, uep4, uep5,
+                 uep6, uep7, uep8, uep9, uep10, uep11, uep12, uep13,
+                 uep14, uep15;
+
+    PIC18USB    *m_usb = nullptr;
     PROCESSOR_TYPE isa() override { return _P18F2455_; }
 
     static Processor *construct(const char *name);
