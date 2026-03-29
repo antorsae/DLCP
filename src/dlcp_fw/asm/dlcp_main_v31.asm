@@ -3001,27 +3001,7 @@ flow_main_core_service_265c_2794:
 flow_main_core_service_265c_27bc:
     btfss       ram_0x0BD, 5, BANKED
     bra         flow_main_core_service_265c_27ec
-    movlw       0x60
-    movwf       ram_0x00A, ACCESS
-flow_main_core_service_265c_27c4:
-    movff       ram_0x00A, ram_0x007
-    clrf        ram_0x008, ACCESS
-    movlb       0x2
-    movlw       0x60
-    addwf       ram_0x00A, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x02
-    addwfc      FSR2H, F, ACCESS
-    movf        INDF2, W, ACCESS
-    movwf       ram_0x009, ACCESS
-    call        main_flash_service_46de, 0x0
-    incf        ram_0x00A, F, ACCESS
-    movlw       0x7D
-    cpfsgt      ram_0x00A, ACCESS
-    bra         flow_main_core_service_265c_27c4
-    movlb       0x0
-    bcf         ram_0x0BD, 5, BANKED
+    call        preset_persist_filename, 0x0
 flow_main_core_service_265c_27ec:
     bcf         event_flags, 0, BANKED
 flow_main_core_service_265c_27ee:

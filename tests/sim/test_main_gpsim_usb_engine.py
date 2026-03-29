@@ -162,7 +162,6 @@ def test_preset_ab_filename_isolation() -> None:
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-@pytest.mark.xfail(reason="gpsim EEPROM persist may not complete in time; forward-order test passes")
 def test_preset_ab_filename_reverse_order() -> None:
     """Upload B first, then A — both names preserved regardless of order."""
     _require_gpsim()
