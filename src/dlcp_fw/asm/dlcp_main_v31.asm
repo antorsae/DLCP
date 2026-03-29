@@ -6080,10 +6080,13 @@ flow_i2c_byte_tx_bf:
     bc          flow_i2c_byte_tx_exit
     call        i2c_wait_bus_idle, 0x0
     ; V3.1 Fix A: ACKSTAT check after successful master TX
-    ; BSR must be 0 for BANKED access to 0x07F (callers may have any BSR)
+    ; Save/restore BSR — callers may have any bank selected and stock
+    ; i2c_byte_tx never touched BSR.
+    movff       BSR, ram_0x00E              ; save caller's BSR
     movlb       0x0
     btfsc       SSPCON2, 6, ACCESS          ; ACKSTAT
     bsf         dsp_fault_flags, 2, BANKED
+    movff       ram_0x00E, BSR              ; restore caller's BSR
     movf        SSPCON2, W, ACCESS
 flow_i2c_byte_tx_exit:
     return      0
