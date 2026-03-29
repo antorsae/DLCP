@@ -2534,9 +2534,9 @@ flow_main_core_service_2328_240c:
     movlw       0x03
     movlb       0x1
     movwf       ram_0x05B, BANKED
-    movlw       0x02
+    movlw       0x03                        ; V3.1: major version = 3
     movwf       ram_0x05C, BANKED
-    movlw       0x03
+    movlw       0x01                        ; V3.1: minor version = 1
     movwf       ram_0x05D, BANKED
     movff       input_select, ram_0x15E
     clrf        ram_0x05F, BANKED

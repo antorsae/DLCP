@@ -1,4 +1,4 @@
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  1
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  1
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -57,7 +57,7 @@ Warning[215]: Processor superseded by command line.
   0000000A            00037 ram_0x00A                   EQU  0x00A
   0000000B            00038 ram_0x00B                   EQU  0x00B
   0000000C            00039 ram_0x00C                   EQU  0x00C
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  2
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  2
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -116,7 +116,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
   0000003F            00090 ram_0x03F                   EQU  0x03F
   00000040            00091 ram_0x040                   EQU  0x040
   00000041            00092 ram_0x041                   EQU  0x041
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  3
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  3
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -175,7 +175,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
   00000084            00143 ram_0x084                   EQU  0x084
   00000085            00144 ram_0x085                   EQU  0x085
   00000086            00145 ram_0x086                   EQU  0x086
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  4
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  4
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -234,7 +234,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
   000000BD            00196 ram_0x0BD                   EQU  0x0BD
   000000BE            00197 ram_0x0BE                   EQU  0x0BE
   000000BF            00198 ram_0x0BF                   EQU  0x0BF
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  5
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  5
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -293,7 +293,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
   000000F6            00249 ram_0x0F6                   EQU  0x0F6
   000000F7            00250 ram_0x0F7                   EQU  0x0F7
   000000F8            00251 ram_0x0F8                   EQU  0x0F8
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  6
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  6
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -352,7 +352,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
   00000178            00302 ram_0x178                   EQU  0x178
   0000019D            00303 ram_0x19D                   EQU  0x19D
   0000019E            00304 ram_0x19E                   EQU  0x19E
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  7
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  7
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -411,7 +411,7 @@ Warning[212]: __CONFIG has been deprecated for PIC18 devices. Use directive CONF
                       00025     __CONFIG  _CONFIG7L, 0x0F
 Warning[212]: __CONFIG has been deprecated for PIC18 devices. Use directive CONFIG.
 30000C 400F           00026     __CONFIG  _CONFIG7H, 0x40
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  8
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  8
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -470,7 +470,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00109A 030C 0044 004C 00063     dw  0x030C, 0x0044, 0x004C, 0x0043, 0x0050, 0x0000
        0043 0050 0000 
 0010A6                00064 usb_string_desc_0:  ; String Descriptor 0: LANGID
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE  9
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE  9
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -529,7 +529,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0010E6 DA64           00115     rcall       main_core_service_15b0
 0010E8 0EBE           00116     movlw       0xBE
 0010EA 2458           00117     addwf       i2c_coeff_3, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 10
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 10
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -588,7 +588,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001146 6FC2           00167     movwf       ram_0x0C2, BANKED
 001148 D7F0           00168     bra         flow_hid_command_dispatch_112a
 00114A                00169 flow_hid_command_dispatch_114a:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 11
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 11
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -647,7 +647,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0011A8 6ED9           00219     movwf       FSR2L, ACCESS
 0011AA 6ADA           00220     clrf        FSR2H, ACCESS
 0011AC 0E00           00221     movlw       0x00
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 12
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 12
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -706,7 +706,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00120A 0100           00271     movlb       0x0
 00120C 83A4           00272     bsf         ram_0x0A4, 1, BANKED
 00120E                00273 flow_hid_command_dispatch_120e:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 13
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 13
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -765,7 +765,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 001276 C136 F09E      00324     movff       ram_0x136, ram_0x09E
 00127A C138 F0B4      00325     movff       ram_0x138, ram_0x0B4
 00127E 51B3           00326     movf        input_select_mirror, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 14
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 14
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -824,7 +824,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0012D8 1A4C           00377     xorwf       ram_0x04C, F, ACCESS
 0012DA E002           00378     bz          flow_hid_command_dispatch_12e0
 0012DC 8B7E           00379     bsf         event_flags, 5, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 15
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 15
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -883,7 +883,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001344                00425 flow_hid_command_dispatch_1344:
 001344 C0A4 F0B0      00426     movff       ram_0x0A4, ram_0x0B0
 001348 C060 F0A5      00427     movff       ram_0x060, ram_0x0A5
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 16
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 16
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -942,7 +942,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0013BA                00478 flow_hid_command_dispatch_13ba:
 0013BA 98AB           00479     bcf         RCSTA, 4, ACCESS
 0013BC 805E           00480     bsf         active_flags, 0, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 17
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 17
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1001,7 +1001,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00141E 6ED9           00531     movwf       FSR2L, ACCESS
 001420 6ADA           00532     clrf        FSR2H, ACCESS
 001422 0E01           00533     movlw       0x01
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 18
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 18
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1060,7 +1060,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 001490 0101           00584     movlb       0x1
 001492 0E01           00585     movlw       0x01
 001494 6E04           00586     movwf       ram_0x004, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 19
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 19
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1119,7 +1119,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0014FA                00636 flow_hid_command_dispatch_14fa:
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
 0014FA 6BCB           00637     clrf        ram_0x0CB, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 20
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 20
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1178,7 +1178,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00155C 0A01           00687     xorlw       0x01
 00155E E101           00688     bnz         flow_hid_command_dispatch_1562
 001560 D5B7           00689     bra         flow_hid_command_dispatch_10d0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 21
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 21
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1237,7 +1237,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0015AC 6B1A           00740     clrf        ram_0x01A, BANKED
 0015AE 0012           00741     return      0
                       00742 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 22
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 22
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1296,7 +1296,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0015E8 6ED9           00792     movwf       FSR2L, ACCESS
 0015EA 6ADA           00793     clrf        FSR2H, ACCESS
 0015EC 0E01           00794     movlw       0x01
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 23
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 23
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1355,7 +1355,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001642 5D84           00842     subwf       ram_0x084, W, BANKED
 001644 0E77           00843     movlw       0x77
 001646 5985           00844     subwfb      ram_0x085, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 24
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 24
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1414,7 +1414,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0016A8 6EF6           00892     movwf       TBLPTRL, ACCESS
 0016AA 0E10           00893     movlw       HIGH(hex_lookup_table)
 0016AC 6EF7           00894     movwf       TBLPTRH, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 25
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 25
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1473,7 +1473,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00171A ECEF F01F      00945     call        intel_hex_checksum_update, 0x0
 00171E 0100           00946     movlb       0x0
 001720 1980           00947     xorwf       ram_0x080, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 26
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 26
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1532,7 +1532,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001796 5043           00997     movf        ram_0x043, W, ACCESS
 001798 E102           00998     bnz         flow_fw_update_relay_179e
 00179A D7AF           00999     bra         flow_fw_update_relay_16fa
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 27
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 27
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1591,7 +1591,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00180C 6FA1           01048     movwf       ram_0x0A1, BANKED
 00180E 6FA2           01049     movwf       ram_0x0A2, BANKED
 001810 6BA3           01050     clrf        ram_0x0A3, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 28
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 28
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1650,7 +1650,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 001888 6ED9           01101     movwf       FSR2L, ACCESS
 00188A 6ADA           01102     clrf        FSR2H, ACCESS
 00188C 0E9A           01103     movlw       0x9A
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 29
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 29
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1709,7 +1709,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       01153 ; Notes   : Converts low nibble to ASCII hex via program-memory lookup table.
                       01154 ; ---------------------------------------------------------------------------
 0018DE                01155 nibble_to_hex_ascii:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 30
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 30
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1768,7 +1768,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001938 ECA9 F023      01204     call        i2c_secondary_dev_write, 0x0
 00193C 0E30           01205     movlw       0x30
 00193E 6E06           01206     movwf       ram_0x006, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 31
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 31
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1827,7 +1827,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0019AA A77E           01256     btfss       event_flags, 3, BANKED
 0019AC D064           01257     bra         flow_cmd_dispatch_gated_1a76
 0019AE 985E           01258     bcf         active_flags, 4, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 32
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 32
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1886,7 +1886,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001A1A 0EEB           01308     movlw       0xEB
 001A1C 6E18           01309     movwf       ram_0x018, ACCESS
 001A1E 0E3D           01310     movlw       0x3D
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 33
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 33
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -1945,7 +1945,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 001AA8 6A55           01361     clrf        i2c_coeff_0, ACCESS
 001AAA 6A56           01362     clrf        i2c_coeff_1, ACCESS
 001AAC 6A57           01363     clrf        i2c_coeff_2, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 34
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 34
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2004,7 +2004,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001B0C EC21 F01C      01411     call        main_i2c_service_381c, 0x0
 001B10 0100           01412     movlb       0x0
 001B12 B5A4           01413     btfsc       ram_0x0A4, 2, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 35
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 35
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2063,7 +2063,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001B78 BBA4           01461     btfsc       ram_0x0A4, 5, BANKED
 001B7A D004           01462     bra         flow_cmd_dispatch_gated_1b84
 001B7C 0E5F           01463     movlw       0x5F
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 36
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 36
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2122,7 +2122,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       01513 
                       01514 
                       01515 ; ---------------------------------------------------------------------------
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 37
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 37
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2181,7 +2181,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001C36 B05E           01563     btfsc       active_flags, 0, ACCESS
 001C38 D127           01564     bra         flow_main_uart_service_1be6_1e80
 001C3A 500A           01565     movf        ram_0x00A, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 38
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 38
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2240,7 +2240,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001C98 D0ED           01612     bra         flow_main_uart_service_1be6_1e6c
 001C9A                01613 standby_request_handler:
 001C9A A65E           01614     btfss       active_flags, 3, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 39
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 39
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2299,7 +2299,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
 001CE2 B794           01661     btfsc       ram_0x094, 3, BANKED
 001CE4 D7F8           01662     bra         flow_main_uart_service_1be6_1cd6
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 40
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 40
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2358,7 +2358,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001D40 2208           01709     addwfc      ram_0x008, F, ACCESS
 001D42 C007 F06E      01710     movff       ram_0x007, computed_volume
 001D46 C008 F06F      01711     movff       ram_0x008, computed_volume_1
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 41
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 41
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2417,7 +2417,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001D9E E06A           01758     bz          flow_main_uart_service_1be6_1e6c
 001DA0 897E           01759     bsf         event_flags, 4, BANKED
 001DA2 C060 F0A5      01760     movff       ram_0x060, ram_0x0A5
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 42
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 42
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2476,7 +2476,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001E06 51B8           01805     movf        ram_0x0B8, W, BANKED
 001E08 19A3           01806     xorwf       ram_0x0A3, W, BANKED
 001E0A E034           01807     bz          flow_main_uart_service_1be6_1e6c
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 43
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 43
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2535,7 +2535,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001E64 0A01           01855     xorlw       0x01
 001E66 E0CD           01856     bz          flow_main_uart_service_1be6_1e02
 001E68 0A03           01857     xorlw       0x03
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 44
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 44
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2594,7 +2594,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 001EC0 EC8F F024      01908     call        eeprom_read_byte, 0x0
 001EC4 0100           01909     movlb       0x0
 001EC6 6F6E           01910     movwf       computed_volume, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 45
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 45
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2653,7 +2653,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 001F3C EC8F F024      01961     call        eeprom_read_byte, 0x0
 001F40 0100           01962     movlb       0x0
 001F42 6FC3           01963     movwf       ram_0x0C3, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 46
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 46
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2712,7 +2712,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 001F9A D002           02010     bra         flow_main_core_service_1e88_1f98
 001F9C 0E01           02011     movlw       0x01
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 47
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 47
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2771,7 +2771,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00200E B4D8           02058     btfsc       STATUS, 2, ACCESS
 002010 91B4           02059     bcf         ram_0x0B4, 0, BANKED
 002012 C0B4 F0B1      02060     movff       ram_0x0B4, ram_0x0B1
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 48
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 48
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2830,7 +2830,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00207A 659C           02109     cpfsgt      ram_0x09C, BANKED
 00207C D001           02110     bra         flow_main_core_service_1e88_2078
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 49
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 49
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2889,7 +2889,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0020E4 2A0A           02159     incf        ram_0x00A, F, ACCESS
 0020E6 0E7D           02160     movlw       0x7D
 0020E8 640A           02161     cpfsgt      ram_0x00A, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 50
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 50
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -2948,7 +2948,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002148 6A04           02211     clrf        ram_0x004, ACCESS
 00214A 0100           02212     movlb       0x0
 00214C 0EE3           02213     movlw       0xE3
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 51
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 51
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3007,7 +3007,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0021C4 D011           02264     bra         flow_main_i2c_service_2100_21e0
 0021C6                02265 flow_main_i2c_service_2100_21be:
 0021C6 C0A0 F1E0      02266     movff       ram_0x0A0, ram_0x1E0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 52
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 52
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3066,7 +3066,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002248 C0E6 F06D      02317     movff       ram_0x0E6, ram_0x06D
 00224C D020           02318     bra         flow_main_i2c_service_2100_2286
 00224E                02319 flow_main_i2c_service_2100_2246:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 53
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 53
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3125,7 +3125,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0022BC 62DF           02370     cpfseq      INDF2, ACCESS
 0022BE D005           02371     bra         flow_main_i2c_service_2100_22c2
 0022C0 6A55           02372     clrf        i2c_coeff_0, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 54
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 54
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3184,7 +3184,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       02423 
                       02424 
                       02425 ; ---------------------------------------------------------------------------
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 55
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 55
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3243,7 +3243,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 002386 D093           02474     bra         flow_main_core_service_2328_24a6
 002388                02475 flow_main_core_service_2328_2380:
 002388 C093 F15B      02476     movff       ram_0x093, ram_0x15B
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 56
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 56
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3302,7 +3302,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0023FE C062 F16E      02527     movff       ram_0x062, ram_0x16E
 002402 C063 F16F      02528     movff       ram_0x063, ram_0x16F
 002406 C064 F170      02529     movff       ram_0x064, ram_0x170
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 57
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 57
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3315,9 +3315,9 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002414 0E03           02534     movlw       0x03
 002416 0101           02535     movlb       0x1
 002418 6F5B           02536     movwf       ram_0x05B, BANKED
-00241A 0E02           02537     movlw       0x02
+00241A 0E03           02537     movlw       0x03                        ; V3.1: major version = 3
 00241C 6F5C           02538     movwf       ram_0x05C, BANKED
-00241E 0E03           02539     movlw       0x03
+00241E 0E01           02539     movlw       0x01                        ; V3.1: minor version = 1
 002420 6F5D           02540     movwf       ram_0x05D, BANKED
 002422 C099 F15E      02541     movff       input_select, ram_0x15E
 002426 6B5F           02542     clrf        ram_0x05F, BANKED
@@ -3361,7 +3361,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00247A                02580 flow_main_core_service_2328_2472:
 00247A 0100           02581     movlb       0x0
 00247C 51C1           02582     movf        ram_0x0C1, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 58
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 58
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3420,7 +3420,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       02633 
                       02634 ; ---------------------------------------------------------------------------
                       02635 ; Function: main_core_service_24c2
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 59
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 59
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3479,7 +3479,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002530 E009           02685     bz          flow_main_core_service_24c2_253c
 002532 502E           02686     movf        ram_0x02E, W, ACCESS
 002534 5C2D           02687     subwf       ram_0x02D, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 60
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 60
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3538,7 +3538,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00259C                02738 flow_main_core_service_24c2_2594:
 00259C 502D           02739     movf        ram_0x02D, W, ACCESS
 00259E 622E           02740     cpfseq      ram_0x02E, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 61
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 61
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3597,7 +3597,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0025FA                02791 flow_main_core_service_24c2_25f2:
 0025FA 6A2C           02792     clrf        ram_0x02C, ACCESS
 0025FC 5020           02793     movf        ram_0x020, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 62
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 62
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3656,7 +3656,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       02844 ; ---------------------------------------------------------------------------
 002658                02845 main_core_service_2650:
 002658 90D8           02846     bcf         STATUS, 0, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 63
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 63
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3715,7 +3715,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0026C6 6E07           02897     movwf       ram_0x007, ACCESS
 0026C8 C0C3 F009      02898     movff       ram_0x0C3, ram_0x009
 0026CC ECBC F023      02899     call        main_flash_service_46de, 0x0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 64
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 64
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3774,7 +3774,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002750 0100           02950     movlb       0x0
 002752 95BD           02951     bcf         ram_0x0BD, 2, BANKED
 002754                02952 flow_main_core_service_265c_274c:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 65
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 65
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3833,7 +3833,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0027C6 D016           03003     bra         flow_main_core_service_265c_27ec
 0027C8 0E60           03004     movlw       0x60
 0027CA 6E0A           03005     movwf       ram_0x00A, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 66
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 66
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3892,7 +3892,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 002814                03053 flow_main_i2c_service_27f0_280c:
 002814 0E01           03054     movlw       0x01
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 67
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 67
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -3951,7 +3951,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 002866 E102           03102     bnz         flow_main_i2c_service_27f0_2864
 002868 0E02           03103     movlw       0x02
 00286A 6F93           03104     movwf       ram_0x093, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 68
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 68
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4010,7 +4010,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0028B6 0A01           03151     xorlw       0x01
 0028B8 E0AB           03152     bz          flow_main_i2c_service_27f0_2808
 0028BA 0A03           03153     xorlw       0x03
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 69
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 69
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4069,7 +4069,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 002918 6F93           03201     movwf       ram_0x093, BANKED
 00291A                03202 flow_main_i2c_service_27f0_2912:
 00291A 05B6           03203     decf        ram_0x0B6, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 70
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 70
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4128,7 +4128,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002978 A4D8           03254     btfss       STATUS, 2, ACCESS
 00297A 837E           03255     bsf         event_flags, 1, BANKED
 00297C C093 F0AB      03256     movff       ram_0x093, ram_0x0AB
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 71
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 71
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4187,7 +4187,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0029F8 C032 F028      03305     movff       ram_0x032, ram_0x028
 0029FC 0E2F           03306     movlw       0x2F
 0029FE EC95 F01F      03307     call        main_core_service_3ec4, 0x0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 72
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 72
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4246,7 +4246,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002ABA C031 F031      03358     movff       ram_0x031, ram_0x031
 002ABE C032 F032      03359     movff       ram_0x032, ram_0x032
 002AC2 0012           03360     return      0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 73
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 73
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4305,7 +4305,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002B18 261E           03410     addwf       ram_0x01E, F, ACCESS
 002B1A C015 F024      03411     movff       ram_0x015, ram_0x024
 002B1E 5019           03412     movf        ram_0x019, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 74
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 74
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4364,7 +4364,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002B90 C006 F015      03463     movff       ram_0x006, ram_0x015
 002B94                03464 flow_main_core_service_2abc_2b8c:
 002B94 0012           03465     return      0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 75
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 75
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4423,7 +4423,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       03516 ; Notes   : Inferred flash helper routine. Calls: flash_read, flash_erase, flash_write.
                       03517 ; ---------------------------------------------------------------------------
 002BC0                03518 main_flash_service_2bb8:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 76
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 76
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4482,7 +4482,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 002C22 6E1B           03568     movwf       ram_0x01B, ACCESS
 002C24 0100           03569     movlb       0x0
 002C26 51C5           03570     movf        ram_0x0C5, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 77
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 77
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4541,7 +4541,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 002C98 0E03           03619     movlw       0x03
 002C9A 6E0A           03620     movwf       ram_0x00A, ACCESS
 002C9C 0E00           03621     movlw       0x00
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 78
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 78
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4600,7 +4600,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002CF6 6A0D           03672     clrf        ram_0x00D, ACCESS
 002CF8 6A0E           03673     clrf        ram_0x00E, ACCESS
 002CFA 6A0F           03674     clrf        ram_0x00F, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 79
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 79
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4659,7 +4659,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002D5E C01A F004      03725     movff       ram_0x01A, ram_0x004
 002D62 C01B F005      03726     movff       ram_0x01B, ram_0x005
 002D66 C01C F006      03727     movff       ram_0x01C, ram_0x006
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 80
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 80
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4718,7 +4718,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002DBA 6F88           03777     movwf       ram_0x088, BANKED
 002DBC 0E00           03778     movlw       0x00
 002DBE 205D           03779     addwfc      ram_0x05D, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 81
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 81
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4777,7 +4777,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002E2C ECB3 F022      03830     call        i2c_tas3108_coeff_write, 0x0
 002E30 EC06 F023      03831     call        main_core_service_4574, 0x0
 002E34 868A           03832     bsf         LATB, 3, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 82
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 82
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4836,7 +4836,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002E9E C006 F017      03883     movff       ram_0x006, ram_0x017
 002EA2 0E05           03884     movlw       0x05
 002EA4 6E0B           03885     movwf       ram_0x00B, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 83
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 83
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4895,7 +4895,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002F12 5008           03936     movf        ram_0x008, W, ACCESS
 002F14 1007           03937     iorwf       ram_0x007, W, ACCESS
 002F16 E003           03938     bz          flow_flash_write_2efc
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 84
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 84
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -4954,7 +4954,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002F70                03988 main_usb_service_2f4e:
 002F70 ECFB F023      03989     call        main_usb_service_475c, 0x0
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 85
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 85
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5013,7 +5013,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 002FDC 517A           04040     movf        ram_0x07A, W, BANKED
 002FDE 26D9           04041     addwf       FSR2L, F, ACCESS
 002FE0 517B           04042     movf        ram_0x07B, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 86
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 86
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5072,7 +5072,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003040 C026 F02A      04093     movff       ram_0x026, ram_0x02A
 003044 C027 F02B      04094     movff       ram_0x027, ram_0x02B
 003048 C028 F02C      04095     movff       ram_0x028, ram_0x02C
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 87
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 87
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5131,7 +5131,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0030AA 3E2E           04146     incfsz      ram_0x02E, F, ACCESS
 0030AC D7F9           04147     bra         flow_main_core_service_301a_307e
 0030AE D00C           04148     bra         flow_main_core_service_301a_30a6
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 88
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 88
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5190,7 +5190,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       04199 ; Function: main_core_service_30d8
                       04200 ; Address : 0x30D8
                       04201 ; Notes   : Inferred core helper routine. Calls: main_core_service_3188.
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 89
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 89
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5249,7 +5249,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003150 D7EE           04252     bra         flow_main_core_service_30d8_310c
 003152                04253 flow_main_core_service_30d8_3130:
 003152 0607           04254     decf        ram_0x007, F, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 90
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 90
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5308,7 +5308,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0031AC 3206           04304     rrcf        ram_0x006, F, ACCESS
 0031AE 3205           04305     rrcf        ram_0x005, F, ACCESS
 0031B0 3204           04306     rrcf        ram_0x004, F, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 91
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 91
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5367,7 +5367,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003202 E0ED           04353     bz          flow_main_core_service_3188_31bc
 003204 0A01           04354     xorlw       0x01
 003206                04355 flow_main_core_service_3188_31e4:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 92
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 92
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5426,7 +5426,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003256 E0DF           04401     bz          flow_main_core_service_3188_31f4
 003258 0A03           04402     xorlw       0x03
 00325A E0E3           04403     bz          flow_main_core_service_3188_3200
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 93
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 93
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5485,7 +5485,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0032B8 0E48           04450     movlw       0x48
 0032BA 0101           04451     movlb       0x1
 0032BC 6F16           04452     movwf       ram_0x016, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 94
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 94
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5544,7 +5544,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003318 0012           04500     return      0
                       04501 
                       04502 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 95
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 95
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5603,7 +5603,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00338A 6A06           04553     clrf        ram_0x006, ACCESS
 00338C 0E11           04554     movlw       0x11
 00338E ECA9 F023      04555     call        i2c_secondary_dev_write, 0x0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 96
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 96
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5662,7 +5662,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0033F4 5838           04605     subwfb      ram_0x038, W, ACCESS
 0033F6 E309           04606     bnc         flow_main_core_service_3398_33e8
 0033F8 C02F F02F      04607     movff       ram_0x02F, ram_0x02F
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 97
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 97
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5721,7 +5721,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00346E 67D1           04656     tstfsz      ram_0x0D1, BANKED
 003470 D03B           04657     bra         flow_main_core_service_3432_34c6
 003472 51CF           04658     movf        ram_0x0CF, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 98
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 98
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5780,7 +5780,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0034DC C072 FFD9      04708     movff       ram_0x072, FSR2L
 0034E0 C073 FFDA      04709     movff       ram_0x073, FSR2H
 0034E4 0E00           04710     movlw       0x00
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 99
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 99
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5839,7 +5839,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003560 0E07           04761     movlw       0x07
 003562 2610           04762     addwf       ram_0x010, F, ACCESS
 003564                04763 flow_main_core_service_34c8_3542:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 100
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 100
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5898,7 +5898,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0035B8 0E01           04813     movlw       0x01
 0035BA 0100           04814     movlb       0x0
 0035BC 6FFE           04815     movwf       ram_0x0FE, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 101
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 101
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -5957,7 +5957,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00361C 0E00           04864     movlw       0x00
 00361E 59E8           04865     subwfb      ram_0x0E8, W, BANKED
 003620 E20A           04866     bc          flow_main_flash_service_35f0_3610
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 102
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 102
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6016,7 +6016,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003676 EC1B F01C      04915     call        main_flash_service_3810, 0x0
 00367A                04916 flow_main_flash_service_35f0_3654:
 00367A D80E           04917     rcall       main_core_service_3672
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 103
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 103
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6075,7 +6075,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0036AE E142           04965     bnz         flow_main_core_service_3682_370e
 0036B0 D02C           04966     bra         flow_main_core_service_3682_36e4
 0036B2                04967 flow_main_core_service_3682_368c:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 104
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 104
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6134,7 +6134,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 00370A                05014 flow_main_core_service_3682_36e4:
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
 00370A 51D0           05015     movf        ram_0x0D0, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 105
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 105
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6193,7 +6193,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits are correct. Assuming bank 0 from now on.
 003754 6FC8           05064     movwf       ram_0x0C8, BANKED
 003756 51D3           05065     movf        ram_0x0D3, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 106
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 106
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6252,7 +6252,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0037BA 0012           05116     return      0
                       05117 
                       05118 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 107
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 107
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6311,7 +6311,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003808 C076 FFF7      05165     movff       ram_0x076, TBLPTRH
 00380C 6AF8           05166     clrf        TBLPTRU, ACCESS
 00380E 0E07           05167     movlw       0x07
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 108
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 108
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6370,7 +6370,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003850 0E04           05217     movlw       0x04
 003852 6E07           05218     movwf       ram_0x007, ACCESS
 003854 6A0A           05219     clrf        ram_0x00A, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 109
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 109
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6429,7 +6429,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0038C6                05270 flow_main_i2c_service_381c_38a0:
 0038C6 0012           05271     return      0
                       05272 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 110
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 110
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6488,7 +6488,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00394E D006           05322     bra         flow_adaptive_baud_select_3936
 003950 848A           05323     bsf         LATB, 2, ACCESS
 003952 6AB0           05324     clrf        SPBRGH, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 111
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 111
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6547,7 +6547,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0039B6 0E22           05374     movlw       0x22
 0039B8 6F11           05375     movwf       ram_0x011, BANKED
 0039BA 0E23           05376     movlw       0x23
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 112
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 112
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6606,7 +6606,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003A40 5052           05426     movf        ram_0x052, W, ACCESS
 003A42 EC5F F01F      05427     call        i2c_byte_tx, 0x0
 003A46 5051           05428     movf        ram_0x051, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 113
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 113
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6665,7 +6665,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003A98 6ADF           05477     clrf        INDF2, ACCESS
 003A9A 2A59           05478     incf        ram_0x059, F, ACCESS
 003A9C 0E3F           05479     movlw       0x3F
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 114
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 114
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6724,7 +6724,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003AFC 2008           05529     addwfc      ram_0x008, W, ACCESS
 003AFE 6EDA           05530     movwf       FSR2H, ACCESS
 003B00 C00F FFDF      05531     movff       ram_0x00F, INDF2
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 115
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 115
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6783,7 +6783,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003B54 817E           05582     bsf         event_flags, 0, BANKED
 003B56 94F2           05583     bcf         INTCON, 2, ACCESS
 003B58 9AF2           05584     bcf         INTCON, 5, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 116
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 116
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6842,7 +6842,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 003BB6 C001 FFD9      05634     movff       isr_save_fsr2l, FSR2L
 003BBA 0011           05635     retfie      1
                       05636 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 117
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 117
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6901,7 +6901,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       05687 ; Notes   : Inferred uart helper; touches timer,uart. Calls: i2c_secondary_dev_write, timer3_blocking_de
                             lay.
                       05688 ; ---------------------------------------------------------------------------
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 118
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 118
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -6960,7 +6960,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003C9A 6409           05739     cpfsgt      ram_0x009, ACCESS
 003C9C D7F0           05740     bra         flow_hw_standby_shutdown_3c58
 003C9E                05741 flow_hw_standby_shutdown_3c78:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 119
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 119
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7019,7 +7019,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003CF4 0E00           05792     movlw       0x00
 003CF6 6E06           05793     movwf       ram_0x006, ACCESS
 003CF8 3A06           05794     swapf       ram_0x006, F, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 120
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 120
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7078,7 +7078,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003D50 AE05           05845     btfss       ram_0x005, 7, ACCESS
 003D52 0E00           05846     movlw       0x00
 003D54 12DE           05847     iorwf       POSTINC2, F, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 121
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 121
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7137,7 +7137,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003DB8 EE10 F016      05898     lfsr        FSR1, 0x0016
 003DBC                05899 flow_main_flash_service_3ce8_3d96:
 003DBC 0009           05900     tblrd*+
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 122
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 122
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7196,7 +7196,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003E1A C00D FFF7      05951     movff       ram_0x00D, TBLPTRH
 003E1E C00C FFF6      05952     movff       ram_0x00C, TBLPTRL
 003E22 8EA6           05953     bsf         EECON1, 7, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 123
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 123
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7255,7 +7255,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003E76 0E00           06004     movlw       0x00
 003E78 5C0D           06005     subwf       ram_0x00D, W, ACCESS
 003E7A                06006 flow_main_core_service_3e0a_3e24:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 124
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 124
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7314,7 +7314,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003EE8                06057 flow_i2c_byte_tx_sspif:
 003EE8 A69E           06058     btfss       PIR1, 3, ACCESS
 003EEA D7FE           06059     bra         flow_i2c_byte_tx_sspif
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 125
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 125
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7373,7 +7373,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 003F48 C026 F017      06110     movff       ram_0x026, ram_0x017
 003F4C C027 F018      06111     movff       ram_0x027, ram_0x018
 003F50 C028 F019      06112     movff       ram_0x028, ram_0x019
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 126
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 126
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7432,7 +7432,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       06163 
                       06164 
                       06165 ; ---------------------------------------------------------------------------
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 127
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 127
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7491,7 +7491,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004030 2604           06216     addwf       ram_0x004, F, ACCESS
 004032                06217 flow_intel_hex_checksum_updat_3fcc:
 004032 5004           06218     movf        ram_0x004, W, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 128
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 128
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7550,7 +7550,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004086 6F10           06269     movwf       ram_0x010, BANKED
 004088 8710           06270     bsf         ram_0x010, 3, BANKED
 00408A 8F10           06271     bsf         ram_0x010, 7, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 129
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 129
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7609,7 +7609,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0040FE 0012           06322     return      0
                       06323 
                       06324 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 130
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 130
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7668,7 +7668,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004156 0E03           06375     movlw       0x03
 004158 0100           06376     movlb       0x0
 00415A 6FCD           06377     movwf       ram_0x0CD, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 131
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 131
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7727,7 +7727,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0041B0 6E09           06427     movwf       ram_0x009, ACCESS
 0041B2 D004           06428     bra         flow_main_adc_service_4124_413c
 0041B4                06429 flow_main_adc_service_4124_4134:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 132
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 132
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7786,7 +7786,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 004210 5D88           06479     subwf       ram_0x088, W, BANKED
 004212 0E02           06480     movlw       0x02
 004214 5989           06481     subwfb      ram_0x089, W, BANKED
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 133
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 133
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7845,7 +7845,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 004264 C012 F00A      06531     movff       ram_0x012, ram_0x00A
 004268 C013 F00B      06532     movff       ram_0x013, ram_0x00B
 00426C C014 F00C      06533     movff       ram_0x014, ram_0x00C
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 134
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 134
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7904,7 +7904,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       06582 ; Address : 0x423C
                       06583 ; Notes   : Inferred i2c helper; touches i2c. Calls: i2c_wait_bus_idle, i2c_byte_tx, main_i2c_service_46
                             4c.
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 135
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 135
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -7963,7 +7963,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00430E                06634 flow_main_core_service_427a_428e:
 00430E AE06           06635     btfss       ram_0x006, 7, ACCESS
 004310 D7FA           06636     bra         flow_main_core_service_427a_4286
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 136
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 136
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8022,7 +8022,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004366 6EA6           06687     movwf       EECON1, ACCESS
 004368 EC44 F022      06688     call        main_flash_service_4406, 0x0
 00436C                06689 flow_flash_write_with_gie_off_42ec:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 137
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 137
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8081,7 +8081,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0043B2 C039 F020      06740     movff       ram_0x039, ram_0x020
 0043B6 C03A F021      06741     movff       ram_0x03A, ram_0x021
 0043BA C03B F022      06742     movff       ram_0x03B, ram_0x022
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 138
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 138
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8140,7 +8140,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004430 1604           06793     andwf       ram_0x004, F, ACCESS
 004432 D80B           06794     rcall       tblrd_lookup
 004434 EC98 F024      06795     call        uart_tx_byte_blocking, 0x0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 139
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 139
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8199,7 +8199,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004484                06846 flow_eeprom_write_blocking_4402:
 004484 94A6           06847     bcf         EECON1, 2, ACCESS
 004486 0012           06848     return      0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 140
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 140
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8258,7 +8258,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0044C6 8F08           06897     bsf         ram_0x008, 7, BANKED
 0044C8                06898 flow_main_usb_service_4412_4446:
 0044C8 0012           06899     return      0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 141
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 141
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8317,7 +8317,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       06946 ; ---------------------------------------------------------------------------
 004500                06947 timer3_blocking_delay:
 004500 92A0           06948     bcf         PIE2, 1, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 142
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 142
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8376,7 +8376,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 00455A 0E0D           06999     movlw       0x0D
 00455C EC98 F024      07000     call        uart_tx_byte_blocking, 0x0
 004560 0E0A           07001     movlw       0x0A
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 143
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 143
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8435,7 +8435,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0045AE                07050 main_core_service_4516:
 0045AE 665F           07051     tstfsz      ram_0x05F, ACCESS
 0045B0 D00D           07052     bra         flow_main_core_service_4516_4534
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 144
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 144
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8494,7 +8494,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0045F6 8C94           07102     bsf         TRISC, 6, ACCESS
 0045F8 989D           07103     bcf         PIE1, 4, ACCESS
 0045FA 989E           07104     bcf         PIR1, 4, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 145
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 145
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8553,7 +8553,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 004646 D00E           07154     bra         flow_main_usb_service_45a2_45cc
 004648 A082           07155     btfss       PORTC, 0, ACCESS
 00464A D00C           07156     bra         flow_main_usb_service_45a2_45cc
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 146
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 146
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8612,7 +8612,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0046A0 25C6           07207     addwf       rx_ring_rd, W, BANKED
 0046A2 6ED9           07208     movwf       FSR2L, ACCESS
 0046A4 6ADA           07209     clrf        FSR2H, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 147
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 147
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8671,7 +8671,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0046E4 CFC6 F003      07258     movff       SSPCON1, ram_0x003
 0046E8 0E0F           07259     movlw       0x0F
 0046EA 1603           07260     andwf       ram_0x003, F, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 148
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 148
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8730,7 +8730,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004738 2A1A           07311     incf        ram_0x01A, F, ACCESS
 00473A                07312 flow_uart_tx_block_from_buffe_46a2:
 00473A D803           07313     rcall       main_core_service_46aa
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 149
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 149
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8789,7 +8789,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004784 1809           07364     xorwf       ram_0x009, W, ACCESS
 004786 E008           07365     bz          flow_main_flash_service_46de_46fe
 004788 C007 F003      07366     movff       ram_0x007, ram_0x003
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 150
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 150
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8848,7 +8848,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       07416 
                       07417 ; ---------------------------------------------------------------------------
                       07418 ; Function: ram_block_clear
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 151
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 151
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8907,7 +8907,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       07468 ; Notes   : Inferred timer helper; touches timer.
                       07469 ; ---------------------------------------------------------------------------
 004814                07470 main_timer_service_477a:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 152
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 152
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -8966,7 +8966,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 004860 8293           07520     bsf         TRISB, 1, ACCESS
 004862 8093           07521     bsf         TRISB, 0, ACCESS
 004864 8AC6           07522     bsf         SSPCON1, 5, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 153
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 153
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9025,7 +9025,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0048AC                07570 main_usb_service_4812:
 0048AC D005           07571     bra         flow_main_usb_service_4812_481e
 0048AE                07572 flow_main_usb_service_4812_4814:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 154
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 154
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9084,7 +9084,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       07623 ; Notes   : Emits BF/18/01 factory-reset status frame over UART.
                       07624 ; ---------------------------------------------------------------------------
 0048E8                07625 factory_reset_status_emit:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 155
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 155
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9143,7 +9143,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004926 80A6           07676     bsf         EECON1, 0, ACCESS
 004928 F000           07677     dw          0xF000
 00492A F000           07678     dw          0xF000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 156
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 156
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9202,7 +9202,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004972 B4C7           07729     btfsc       SSPSTAT, 2, ACCESS
 004974 D7F9           07730     bra         i2c_wait_bus_idle
 004976 0C1F           07731     retlw       0x1F
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 157
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 157
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9261,7 +9261,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
                       07782 ; ---------------------------------------------------------------------------
                       07783 ; Function: main_core_service_48fe
                       07784 ; Address : 0x48FE
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 158
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 158
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9320,7 +9320,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 0049E0 6A04           07834     clrf        ram_0x004, ACCESS
 0049E2 0E01           07835     movlw       0x01
 0049E4 6E03           07836     movwf       ram_0x003, ACCESS
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 159
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 159
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9379,7 +9379,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       07886 ; ---------------------------------------------------------------------------
                       07887 ; Function: main_core_service_495a
                       07888 ; Address : 0x495A
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 160
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 160
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9438,7 +9438,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004A1E 0012           07939     return      0
                       07940 
                       07941 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 161
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 161
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9497,7 +9497,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004A5A E3FB           07992     bnc         wait_trmt_loop
 004A5C 0012           07993     return      0
 004A5E                07994 wait_trmt_done:
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 162
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 162
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9556,7 +9556,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004AAC A4C5           08045     btfss       SSPCON2, 2, ACCESS          ; PEN clear?
 004AAE D007           08046     bra         wait_pen_ext_done
 004AB0 EC16 F025      08047     call        wait_tick, 0x0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 163
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 163
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9615,7 +9615,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004AFC 8293           08098     bsf         TRISB, 1, ACCESS            ; SCL high
 004AFE 0000           08099     nop
 004B00 0000           08100     nop
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 164
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 164
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9674,7 +9674,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
 004B54 500D           08149     movf        ram_0x00D, W, ACCESS
 004B56 EC98 F024      08150     call        uart_tx_byte_blocking, 0x0
 004B5A 0012           08151     return      0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 165
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 165
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9733,7 +9733,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
                       08199 ; ---------------------------------------------------------------------------
                       08200 ; Preset Select Handler (V2.4 — cmd=0x20)
                       08201 ; ---------------------------------------------------------------------------
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 166
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 166
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9792,7 +9792,7 @@ Message[1302]: RAM Bank undefined in this chunk of code. Ensure that bank bits a
        0000 0000      
 004CB0 0000 0000 0000 08230     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 167
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 167
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9851,7 +9851,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 4801 0014 
        0000 0000      
 004DD0 0000 0000 0000 08248     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 168
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 168
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9910,7 +9910,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 004EE0 0000 0000 0000 08265     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x5401, 0x0014, 0x0000, 0x0000
        0000 5401 0014 
        0000 0000      
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 169
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 169
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -9969,7 +9969,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000      
 005000 0000 0000 0000 08283     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x5F01, 0x0014, 0x0000, 0x0000
        0000 5F01 0014 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 170
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 170
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10028,7 +10028,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000 0000 
        0000 0000      
 005120 0000 0000 0000 08301     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x6A01, 0x0014, 0x0000, 0x0000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 171
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 171
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10087,7 +10087,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 005230 7401 0014 0000 08318     dw  0x7401, 0x0014, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
        0000 0000      
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 172
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 172
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10146,7 +10146,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000      
 005350 8001 0014 0000 08336     dw  0x8001, 0x0014, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 173
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 173
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10205,7 +10205,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000 0000 
        0000 0000      
 005470 8B01 0014 0000 08354     dw  0x8B01, 0x0014, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 174
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 174
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10264,7 +10264,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 005580 3401 0010 0000 08371     dw  0x3401, 0x0010, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
        0000 0000      
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 175
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 175
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10323,7 +10323,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 005660 3A01 0014 0000 08396     dw  0x3A01, 0x0014, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
        0000 0000      
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 176
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 176
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10382,7 +10382,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000      
 005780 C901 0004 0000 08414     dw  0xC901, 0x0004, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 177
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 177
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10441,7 +10441,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000 0000 
        0000 0000      
 0058A0 5101 0014 0000 08432     dw  0x5101, 0x0014, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 178
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 178
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10500,7 +10500,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 0059B0 0000 0000 0000 08449     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
        0000 0000      
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 179
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 179
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10559,7 +10559,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000      
 005AD0 0000 0000 0000 08467     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
        0000 0000 0000 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 180
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 180
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10618,7 +10618,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 7201 0014 
        0000 0000      
 005BF0 0000 0000 0000 08485     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 181
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 181
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10677,7 +10677,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
 005D00 0000 0000 0000 08502     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x7D01, 0x0014, 0x0000, 0x0000
        0000 7D01 0014 
        0000 0000      
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 182
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 182
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10736,7 +10736,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000      
 005E20 0000 0000 0000 08520     dw  0x0000, 0x0000, 0x0000, 0x0000, 0x8801, 0x0014, 0x0000, 0x0000
        0000 8801 0014 
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 183
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 183
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10795,7 +10795,7 @@ LOC    OBJECT CODE    LINE  SOURCE TEXT
        0000 0000 0000 
        0000 0000      
 005F40 0000 0000 3201 08538     dw  0x0000, 0x0000, 0x3201, 0x0010, 0x8000, 0x0000, 0x0000, 0x0000
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 184
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 184
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10854,7 +10854,7 @@ F00010 00 00 00 00 01 08557     db  0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0x
        FF             
 F00020 FF FF FF FF FF 08558     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  
                             ; ................
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 185
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 185
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10913,7 +10913,7 @@ F000C0 FF FF FF FF FF 08568     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x
        FF FF FF FF FF 
        FF FF FF FF FF 
        FF             
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 186
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 186
 
 
 LOC    OBJECT CODE    LINE  SOURCE TEXT
@@ -10936,7 +10936,7 @@ F000F0 FF FF FF FF FF 08571     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x
        02             
                       08572 
                       08573     END
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 187
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 187
 
 
 SYMBOL TABLE
@@ -10995,7 +10995,7 @@ BOR                               CONSTANT      00000000              0
 BRG16                             CONSTANT      00000003              3
 BRGH                              CONSTANT      00000002              2
 BSR                               CONSTANT      00000FE0           4064
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 188
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 188
 
 
 SYMBOL TABLE
@@ -11054,7 +11054,7 @@ CMIF                              CONSTANT      00000006              6
 CMIP                              CONSTANT      00000006              6
 CRC5EE                            CONSTANT      00000001              1
 CRC5EF                            CONSTANT      00000001              1
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 189
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 189
 
 
 SYMBOL TABLE
@@ -11113,7 +11113,7 @@ ENDP2                             CONSTANT      00000005              5
 ENDP3                             CONSTANT      00000006              6
 EPCONDIS                          CONSTANT      00000003              3
 EPHSHK                            CONSTANT      00000004              4
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 190
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 190
 
 
 SYMBOL TABLE
@@ -11172,7 +11172,7 @@ I2C_START                         CONSTANT      00000003              3
 I2C_STOP                          CONSTANT      00000004              4
 IDLEIE                            CONSTANT      00000004              4
 IDLEIF                            CONSTANT      00000004              4
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 191
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 191
 
 
 SYMBOL TABLE
@@ -11231,7 +11231,7 @@ LATB0                             CONSTANT      00000000              0
 LATB1                             CONSTANT      00000001              1
 LATB2                             CONSTANT      00000002              2
 LATB3                             CONSTANT      00000003              3
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 192
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 192
 
 
 SYMBOL TABLE
@@ -11290,7 +11290,7 @@ P                                 CONSTANT      00000004              4
 P1A                               CONSTANT      00000002              2
 PC                                CONSTANT      00000FF9           4089
 PCFG0                             CONSTANT      00000000              0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 193
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 193
 
 
 SYMBOL TABLE
@@ -11349,7 +11349,7 @@ PSSAC1                            CONSTANT      00000003              3
 R                                 CONSTANT      00000002              2
 RA0                               CONSTANT      00000000              0
 RA1                               CONSTANT      00000001              1
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 194
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 194
 
 
 SYMBOL TABLE
@@ -11408,7 +11408,7 @@ SCKP                              CONSTANT      00000004              4
 SCS0                              CONSTANT      00000000              0
 SCS1                              CONSTANT      00000001              1
 SE0                               CONSTANT      00000005              5
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 195
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 195
 
 
 SYMBOL TABLE
@@ -11467,7 +11467,7 @@ T0PS2                             CONSTANT      00000002              2
 T0SE                              CONSTANT      00000004              4
 T1CKPS0                           CONSTANT      00000004              4
 T1CKPS1                           CONSTANT      00000005              5
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 196
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 196
 
 
 SYMBOL TABLE
@@ -11526,7 +11526,7 @@ TMR3H                             CONSTANT      00000FB3           4019
 TMR3IE                            CONSTANT      00000001              1
 TMR3IF                            CONSTANT      00000001              1
 TMR3IP                            CONSTANT      00000001              1
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 197
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 197
 
 
 SYMBOL TABLE
@@ -11585,7 +11585,7 @@ TXIF                              CONSTANT      00000004              4
 TXIP                              CONSTANT      00000004              4
 TXREG                             CONSTANT      00000FAD           4013
 TXSTA                             CONSTANT      00000FAC           4012
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 198
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 198
 
 
 SYMBOL TABLE
@@ -11644,7 +11644,7 @@ WR                                CONSTANT      00000001              1
 WREG                              CONSTANT      00000FE8           4072
 WREN                              CONSTANT      00000002              2
 WRERR                             CONSTANT      00000003              3
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 199
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 199
 
 
 SYMBOL TABLE
@@ -11703,7 +11703,7 @@ _EBTRB_OFF_7H                     CONSTANT      000000FF            255
 _EBTRB_ON_7H                      CONSTANT      000000BF            191
 _FCMEN_OFF_1H                     CONSTANT      000000BF            191
 _FCMEN_ON_1H                      CONSTANT      000000FF            255
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 200
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 200
 
 
 SYMBOL TABLE
@@ -11762,7 +11762,7 @@ _WDTPS_4_2H                       CONSTANT      000000E5            229
 _WDTPS_8_2H                       CONSTANT      000000E7            231
 _WDTPS_16_2H                      CONSTANT      000000E9            233
 _WDTPS_32_2H                      CONSTANT      000000EB            235
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 201
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 201
 
 
 SYMBOL TABLE
@@ -11821,7 +11821,7 @@ __BANK_BITS                       CONSTANT      00000F00           3840
 __BANK_FIRST                      CONSTANT      00000000              0
 __BANK_INV                        CONSTANT      FFFFFFFF             -1
 __BANK_LAST                       CONSTANT      00000F00           3840
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 202
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 202
 
 
 SYMBOL TABLE
@@ -11880,7 +11880,7 @@ eeprom_read_byte                  ADDRESS       0000491E          18718
 eeprom_write_blocking             ADDRESS       0000445C          17500
 event_flags                       CONSTANT      0000007E            126
 factory_reset_status_emit         ADDRESS       000048E8          18664
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 203
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 203
 
 
 SYMBOL TABLE
@@ -11939,7 +11939,7 @@ flow_eeprom_write_blocking_4402   ADDRESS       00004484          17540
 flow_flash_erase_3dc0             ADDRESS       00003E16          15894
 flow_flash_erase_3dde             ADDRESS       00003E34          15924
 flow_flash_erase_3df4             ADDRESS       00003E4A          15946
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 204
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 204
 
 
 SYMBOL TABLE
@@ -11998,7 +11998,7 @@ flow_hid_command_dispatch_11ce    ADDRESS       000011CE           4558
 flow_hid_command_dispatch_11ec    ADDRESS       000011EC           4588
 flow_hid_command_dispatch_11ee    ADDRESS       000011EE           4590
 flow_hid_command_dispatch_11fa    ADDRESS       000011FA           4602
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 205
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 205
 
 
 SYMBOL TABLE
@@ -12057,7 +12057,7 @@ flow_hid_command_dispatch_1172    ADDRESS       00001172           4466
 flow_hid_command_dispatch_1324    ADDRESS       00001324           4900
 flow_hid_command_dispatch_1342    ADDRESS       00001342           4930
 flow_hid_command_dispatch_1344    ADDRESS       00001344           4932
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 206
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 206
 
 
 SYMBOL TABLE
@@ -12116,7 +12116,7 @@ flow_main_core_service_1e88_1f72  ADDRESS       00001F7A           8058
 flow_main_core_service_1e88_1f98  ADDRESS       00001FA0           8096
 flow_main_core_service_1e88_1fa6  ADDRESS       00001FAE           8110
 flow_main_core_service_1e88_1fb4  ADDRESS       00001FBC           8124
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 207
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 207
 
 
 SYMBOL TABLE
@@ -12175,7 +12175,7 @@ flow_main_core_service_24c2_25ea  ADDRESS       000025F2           9714
 flow_main_core_service_24c2_25f2  ADDRESS       000025FA           9722
 flow_main_core_service_24c2_253c  ADDRESS       00002544           9540
 flow_main_core_service_24c2_254e  ADDRESS       00002556           9558
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 208
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 208
 
 
 SYMBOL TABLE
@@ -12234,7 +12234,7 @@ flow_main_core_service_2328_24a6  ADDRESS       000024AE           9390
 flow_main_core_service_2328_232e  ADDRESS       00002336           9014
 flow_main_core_service_2328_234a  ADDRESS       00002352           9042
 flow_main_core_service_2328_235c  ADDRESS       00002364           9060
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 209
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 209
 
 
 SYMBOL TABLE
@@ -12293,7 +12293,7 @@ flow_main_core_service_3682_36ac  ADDRESS       000036D2          14034
 flow_main_core_service_3682_36b4  ADDRESS       000036DA          14042
 flow_main_core_service_3682_36ba  ADDRESS       000036E0          14048
 flow_main_core_service_3682_36c0  ADDRESS       000036E6          14054
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 210
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 210
 
 
 SYMBOL TABLE
@@ -12352,7 +12352,7 @@ flow_main_flash_service_35f0_365a  ADDRESS       00003680          13952
 flow_main_flash_service_35f0_3608  ADDRESS       0000362E          13870
 flow_main_flash_service_35f0_3610  ADDRESS       00003636          13878
 flow_main_flash_service_35f0_3638  ADDRESS       0000365E          13918
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 211
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 211
 
 
 SYMBOL TABLE
@@ -12411,7 +12411,7 @@ flow_main_i2c_service_381c_389c   ADDRESS       000038C2          14530
 flow_main_i2c_service_381c_3870   ADDRESS       00003896          14486
 flow_main_i2c_service_381c_3884   ADDRESS       000038AA          14506
 flow_main_i2c_service_381c_3894   ADDRESS       000038BA          14522
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 212
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 212
 
 
 SYMBOL TABLE
@@ -12470,7 +12470,7 @@ flow_main_uart_service_1be6_1d22  ADDRESS       00001D22           7458
 flow_main_uart_service_1be6_1d68  ADDRESS       00001D68           7528
 flow_main_uart_service_1be6_1d80  ADDRESS       00001D80           7552
 flow_main_uart_service_1be6_1d96  ADDRESS       00001D96           7574
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 213
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 213
 
 
 SYMBOL TABLE
@@ -12529,7 +12529,7 @@ flow_main_usb_service_4412_4426   ADDRESS       000044A8          17576
 flow_main_usb_service_4412_4442   ADDRESS       000044C4          17604
 flow_main_usb_service_4412_4446   ADDRESS       000044C8          17608
 flow_main_usb_service_4812_481e   ADDRESS       000048B8          18616
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 214
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 214
 
 
 SYMBOL TABLE
@@ -12588,7 +12588,7 @@ isr_save_fsr2l                    CONSTANT      00000001              1
 logical_volume                    CONSTANT      00000066            102
 logical_volume_1                  CONSTANT      00000067            103
 logical_volume_2                  CONSTANT      00000068            104
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 215
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 215
 
 
 SYMBOL TABLE
@@ -12647,7 +12647,7 @@ main_core_service_4574            ADDRESS       0000460C          17932
 main_core_service_4672            ADDRESS       0000470A          18186
 main_core_service_4924            ADDRESS       000049D6          18902
 main_core_service_4942            ADDRESS       000049F4          18932
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 216
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 216
 
 
 SYMBOL TABLE
@@ -12706,7 +12706,7 @@ preset_select_handler             ADDRESS       00004BB4          19380
 preset_table_a                    ADDRESS       00005600          22016
 preset_table_b                    ADDRESS       00004C00          19456
 ram_0x000                         CONSTANT      00000000              0
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 217
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 217
 
 
 SYMBOL TABLE
@@ -12765,7 +12765,7 @@ ram_0x033                         CONSTANT      00000033             51
 ram_0x034                         CONSTANT      00000034             52
 ram_0x035                         CONSTANT      00000035             53
 ram_0x036                         CONSTANT      00000036             54
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 218
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 218
 
 
 SYMBOL TABLE
@@ -12824,7 +12824,7 @@ ram_0x075                         CONSTANT      00000075            117
 ram_0x076                         CONSTANT      00000076            118
 ram_0x078                         CONSTANT      00000078            120
 ram_0x079                         CONSTANT      00000079            121
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 219
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 219
 
 
 SYMBOL TABLE
@@ -12883,7 +12883,7 @@ ram_0x0AE                         CONSTANT      000000AE            174
 ram_0x0AF                         CONSTANT      000000AF            175
 ram_0x0B0                         CONSTANT      000000B0            176
 ram_0x0B1                         CONSTANT      000000B1            177
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 220
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 220
 
 
 SYMBOL TABLE
@@ -12942,7 +12942,7 @@ ram_0x0E6                         CONSTANT      000000E6            230
 ram_0x0E7                         CONSTANT      000000E7            231
 ram_0x0E8                         CONSTANT      000000E8            232
 ram_0x0E9                         CONSTANT      000000E9            233
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 221
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 221
 
 
 SYMBOL TABLE
@@ -13001,7 +13001,7 @@ ram_0x15F                         CONSTANT      0000015F            351
 ram_0x16C                         CONSTANT      0000016C            364
 ram_0x16D                         CONSTANT      0000016D            365
 ram_0x16E                         CONSTANT      0000016E            366
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 222
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 222
 
 
 SYMBOL TABLE
@@ -13060,7 +13060,7 @@ tblrd_lookup                      ADDRESS       0000444A          17482
 timeout_hi                        CONSTANT      0000000C             12
 timeout_lo                        CONSTANT      0000000B             11
 timer0_irq_handler                ADDRESS       00003B4E          15182
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 223
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 223
 
 
 SYMBOL TABLE
@@ -13119,7 +13119,7 @@ wait_sspif_loop                   ADDRESS       00004A3C          19004
 wait_tick                         ADDRESS       00004A2C          18988
 wait_trmt_bounded                 ADDRESS       00004A4E          19022
 wait_trmt_done                    ADDRESS       00004A5E          19038
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 224
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 224
 
 
 SYMBOL TABLE
@@ -13178,7 +13178,7 @@ MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
 1AC0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 1B00 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 1B40 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 225
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 225
 
 
 MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
@@ -13237,7 +13237,7 @@ MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
 2840 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 2880 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 28C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 226
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 226
 
 
 MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
@@ -13296,7 +13296,7 @@ MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
 35C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 3600 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 3640 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 227
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 227
 
 
 MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
@@ -13355,7 +13355,7 @@ MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
 4340 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 4380 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 43C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 228
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 228
 
 
 MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
@@ -13414,7 +13414,7 @@ MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
 50C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 5100 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 5140 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 229
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 229
 
 
 MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
@@ -13473,7 +13473,7 @@ MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
 5E40 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 5E80 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
 5EC0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
-gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:21:48        PAGE 230
+gpasm-1.5.2 #1325 (Jan 30 2022) src/dlcp_fw/a   03/29/2026  18:54:47        PAGE 230
 
 
 MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
