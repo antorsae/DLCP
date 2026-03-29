@@ -38,6 +38,8 @@ PATCHED_MAIN_HEX_V27 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.7.hex"
 V30_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.0.hex"
 V30_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v30.asm"
 V30_MAIN_ASM_COMMENTS = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v30_comments.asm"
+V31_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31.asm"
+V31_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1.hex"
 # Active main patch alias: used by patched_main_hex fixture and tools.
 PATCHED_MAIN_HEX = PATCHED_MAIN_HEX_V27
 PATCHED_CONTROL_HEX_V141 = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.41.hex"

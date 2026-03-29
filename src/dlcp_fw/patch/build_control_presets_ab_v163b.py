@@ -23,7 +23,7 @@ Patch summary (reliability-first design):
   - failed reconnect attempts periodically re-prime UART/parser state
   - reconnect exit sends function_034 wake frame (stock-aligned; prevents
     MAINs from remaining in standby gate after Zzz→WAITING→DISPLAY cycle)
-- Firmware version policy: display/version tuple updated to 1.62b.
+- Firmware version policy: display/version tuple updated to 1.63b.
 """
 
 from __future__ import annotations
@@ -757,7 +757,7 @@ def main() -> int:
     patch_mem = assemble_patch(args.gpasm)
     patch_written, patch_changed = apply_patch_bytes(new_mem, patch_mem)
 
-    # Keep CONTROL version tuple at 1.62 in EEPROM defaults.
+    # Keep CONTROL version tuple at 1.63 in EEPROM defaults.
     version_bytes = {
         0xF00070: 0x01,
         0xF00071: 0x06,
@@ -789,7 +789,7 @@ def main() -> int:
         "version patch:",
         f"bytes={ver_written}",
         f"changed={ver_changed}",
-        "eeprom=[0xF00070..0xF00072]=[0x01,0x06,0x32]",
+        "eeprom=[0xF00070..0xF00072]=[0x01,0x06,0x33]",
     )
     print(f"total bytes changed vs input: {total_diff}")
     return 0

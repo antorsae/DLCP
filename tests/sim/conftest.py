@@ -23,6 +23,7 @@ from dlcp_fw.paths import (
     STOCK_CONTROL_HEX_V16B,
     STOCK_MAIN_HEX,
     V30_MAIN_HEX,
+    V31_MAIN_HEX,
 )
 
 if GPSIM_XTC_BIN_DIR.exists():
@@ -134,3 +135,10 @@ def stock_control_hex_v16b() -> Path:
     if not STOCK_CONTROL_HEX_V16B.exists():
         raise RuntimeError(f"missing stock control HEX: {STOCK_CONTROL_HEX_V16B}")
     return STOCK_CONTROL_HEX_V16B
+
+
+@pytest.fixture(scope="session")
+def v31_main_hex() -> Path:
+    if not V31_MAIN_HEX.exists():
+        raise RuntimeError(f"missing V3.1 main HEX: {V31_MAIN_HEX}")
+    return V31_MAIN_HEX
