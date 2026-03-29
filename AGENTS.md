@@ -240,11 +240,31 @@ Current suite includes:
 - Flash/probe tools: `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
 - V3.0 source rewrite: `test_v30_equivalence.py` (hex integrity + source quality), `test_v30_gpsim_equivalence.py` (behavioral parity with stock)
 - V3.0 relocation safety: `test_v30_relocation.py` (10 structural + 6 gpsim behavioral shift tests)
+- V3.1 robustness (Fix C/D/E/F): `test_v31_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
+- V3.1 review findings: `test_v31_review_findings.py` (BSR safety, degraded state, BF/08 payload, retry counter)
+- V3.1 happy path (4 versions): `test_v31_happy_path.py` (boot preset load, volume→DSP, computed volume)
+- V3.1 DSP boot equivalence: `test_v31_dsp_boot_equivalence.py` (all 256 DSP regs match stock V2.3/V2.4/V2.6)
+- V3.1 command matrix: `test_v31_command_matrix.py` (all 16 serial commands identical to stock V2.3)
+- V3.1 preset A/B + USB: `test_v31_usb_preset_ab.py` (model: upload bank mapping, flash isolation, config names)
+- V3.1 preset A/B (live gpsim): `test_main_gpsim_usb_engine.py` (filename forward+reverse order, stock compat)
+- V3.1 USB HID dispatch: `test_v31_usb_hid_dispatch.py` (filename RAM, cmd 0x20 switch, version staging)
+- V3.1 version labels: `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (2026-03-28):
+Recent verification (2026-03-30):
 
-- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `376 passed, 19 failed, 11 xfailed` (~12 min with 16 workers)
-- `.venv_ep0/bin/python -m pytest -q tests/sim --collect-only` -> `406 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `492 tests collected`
+
+V3.1-only gate (80 tests, ~8 min):
+
+```bash
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -k "v31"
+```
+
+Full test gate (all versions, parallel):
+
+```bash
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q
+```
 
 ## Documentation Map
 
@@ -257,6 +277,8 @@ Top-level docs:
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
 - `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (new V1.63b diagnostics page and V3.1+ per-PB counter catalog)
+- `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (requirements and process for the V3.1 MAIN size-reduction campaign)
+- `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (running experiment ledger, review inventory, and gate/blocker status for the V3.1 MAIN size campaign)
 
 Deep analysis docs:
 
