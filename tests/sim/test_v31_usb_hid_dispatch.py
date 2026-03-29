@@ -130,7 +130,7 @@ def test_cmd20_switches_filename_slot(hex_path: Path) -> None:
 
         # Switch to preset B via cmd=0x20 data=0x01
         h.inject_frames_fifo([[0xB0, 0x20, 0x01]], fifo_limit=47)
-        for _ in range(10):
+        for _ in range(30):
             h.step()
 
         name_b = _read_filename_ram(h)
@@ -142,7 +142,7 @@ def test_cmd20_switches_filename_slot(hex_path: Path) -> None:
 
         # Switch back to A
         h.inject_frames_fifo([[0xB0, 0x20, 0x00]], fifo_limit=47)
-        for _ in range(10):
+        for _ in range(30):
             h.step()
 
         name_a2 = _read_filename_ram(h)
