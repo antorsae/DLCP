@@ -52,6 +52,9 @@ class MainUnitModel:
     dsp_ingest: List[DspIngestEvent] = field(default_factory=list)
     usb_cmd03_log: List[UsbCmd03Event] = field(default_factory=list)
     tx_frames: List[SerialFrame] = field(default_factory=list)
+    # Preset B address layout (V2.4-V2.7: 0x4A00/0x0C00, V3.1: 0x4C00/0x0A00)
+    _preset_b_base: int = 0x4A00
+    _preset_b_remap_delta: int = 0x0C00
 
     _FILENAME_LEN = 0x1E
     _FILENAME_RAM_BASE = 0x2C0
@@ -68,7 +71,17 @@ class MainUnitModel:
                 flash[addr] = b
             if 0xF00000 <= addr <= 0xF000FF:
                 eeprom[addr - 0xF00000] = b
-        model = MainUnitModel(name=name, link_addr=link_addr, flash=flash, eeprom=eeprom)
+        # Auto-detect preset B base: V3.1+ uses 0x4C00, earlier uses 0x4A00.
+        # Check if flash at 0x4C00 matches flash at 0x5600 (preset B clone).
+        preset_b_base = 0x4A00
+        preset_b_delta = 0x0C00
+        if flash[0x4C00:0x4C10] == flash[0x5600:0x5610] and flash[0x4C00:0x4C04] != b"\xFF\xFF\xFF\xFF":
+            preset_b_base = 0x4C00
+            preset_b_delta = 0x0A00
+        model = MainUnitModel(
+            name=name, link_addr=link_addr, flash=flash, eeprom=eeprom,
+            _preset_b_base=preset_b_base, _preset_b_remap_delta=preset_b_delta,
+        )
         model.boot_load_filename_from_eeprom()
         return model
 
@@ -86,7 +99,7 @@ class MainUnitModel:
         if upper != 0:
             return logical_addr
         if 0x56 <= high <= 0x5F:
-            return logical_addr - 0x0C00
+            return logical_addr - self._preset_b_remap_delta
         return logical_addr
 
     def process_frame(self, frame: SerialFrame) -> bool:
@@ -118,7 +131,7 @@ class MainUnitModel:
 
     def apply_table(self) -> None:
         self.apply_count += 1
-        base = 0x4A00 if self.preset_idx else 0x5600
+        base = self._preset_b_base if self.preset_idx else 0x5600
         self.dsp_ingest.append(
             DspIngestEvent(
                 preset_idx=self.preset_idx,
