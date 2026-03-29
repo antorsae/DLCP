@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-03-27
+Last updated: 2026-03-29
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -256,6 +256,7 @@ Top-level docs:
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
+- `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (new V1.63b diagnostics page and V3.1+ per-PB counter catalog)
 
 Deep analysis docs:
 
