@@ -143,3 +143,11 @@ Test categories:
 - [`docs/SIMULATION.md`](docs/SIMULATION.md) — co-simulation architecture
 - [`docs/TEST_SIMULATOR.md`](docs/TEST_SIMULATOR.md) — test framework reference
 - [`CLAUDE.md`](CLAUDE.md) — full project index, canonical paths, build commands
+
+## Disclaimer
+
+**NO WARRANTY, EXPRESS OR IMPLIED.** The Hypex DLCP is end-of-life hardware. This firmware is released as a community bugfix, not a supported product. Use it entirely at your own risk.
+
+I make no guarantees of any kind — of correctness, fitness for purpose, or safety. I accept no responsibility for any outcome of using this firmware. If you brick your device, that is on you. Only flash these images if you are comfortable working with PIC microcontroller firmware and understand the risks.
+
+In the unlikely event that a flash goes wrong, recovery requires a [PICkit](https://www.microchip.com/en-us/development-tool/pg164150) programmer to re-flash the MCU directly.
