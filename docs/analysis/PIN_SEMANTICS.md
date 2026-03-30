@@ -2,6 +2,12 @@
 
 This is a fresh pin-level map from disassembly + board manuals, with confidence levels.
 
+Migration note (2026-03-30):
+
+- Path examples below use the pre-migration short form.
+- Translate `control/disasm/...` to `firmware/disasm/control/...`.
+- Translate `disasm/...` to `firmware/disasm/main/...`.
+
 ## Scope and Method
 - CONTROL firmware evidence: `control/disasm/v1.4_disasm.asm`
 - MAIN firmware evidence: `disasm/gpdasm_output.asm`

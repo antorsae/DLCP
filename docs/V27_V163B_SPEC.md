@@ -1,7 +1,7 @@
 # V2.7 MAIN + V1.63b CONTROL — Specification
 
 Date: 2026-03-27
-Status: draft
+Status: implemented (V2.7 hex committed; deferred fixes D/E/F superseded by V3.1 source rewrite)
 Depends on: V2.6 MAIN + V1.62b CONTROL (committed)
 
 ## Scope

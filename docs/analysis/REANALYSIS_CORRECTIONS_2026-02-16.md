@@ -1,9 +1,14 @@
 # DLCP Reanalysis Corrections (2026-02-16)
 
+Migration note (2026-03-30): path names in this historical correction log use
+the pre-migration layout. Map `disasm/...` to `firmware/disasm/...`,
+`patched/...` to `firmware/patched/releases/...`, builder/verification modules
+to `src/dlcp_fw/patch/...`, and script entrypoints to `scripts/...`.
+
 ## Corrected Findings
 
 1. **Main current-loop command `0x1F` is not free/unused.**
-- In `disasm/gpdasm_output.asm`, command decode around `0x1E48..0x1E6A` includes an existing handler branch for `0x1F`.
+- In `firmware/disasm/main/gpdasm_output.asm`, command decode around `0x1E48..0x1E6A` includes an existing handler branch for `0x1F`.
 - Preset patch uses new command `0x20` specifically to avoid collision.
 
 2. **Main MCU physical target is `PIC18F2455`, not `PIC18F2550`.**
@@ -41,11 +46,11 @@
 
 ## Resulting Patch Artifacts
 
-- `patched/DLCP_Firmware_V2.31.hex`
-- `patched/DLCP_Control_V1.41.hex`
+- `firmware/patched/releases/DLCP_Firmware_V2.31.hex`
+- `firmware/patched/releases/DLCP_Control_V1.41.hex`
 - Build scripts:
-  - `tools/build_main_presets_ab.py`
-  - `tools/build_control_presets_ab.py`
+  - `src/dlcp_fw/patch/build_main_presets_ab.py`
+  - `src/dlcp_fw/patch/build_control_presets_ab.py`
 - Validation:
-  - `tools/verify_presets_ab.py`
-  - `tools/sim_presets_ab.py`
+  - `src/dlcp_fw/patch/verify_presets_ab.py`
+  - `scripts/sim_presets_ab.py`

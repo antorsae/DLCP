@@ -1,6 +1,7 @@
 # V3.0 MAIN Source Rewrite — Implementation Prompt
 
 Date: 2026-03-28
+Status: completed (superseded by v2 below)
 Parent spec: `docs/V30_SOURCE_REWRITE_SPEC.md`
 
 ## Parent Spec Supersessions

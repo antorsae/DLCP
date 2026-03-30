@@ -5,7 +5,15 @@
 This document defines the simulation framework for validating DLCP preset functionality
 end-to-end with simulation-only overlays and deterministic tests.
 
-Current target matrix:
+Status note (2026-03-30):
+
+- This document captures the original preset-framework baseline around
+  `V2.5` / `V1.62b`.
+- The live `tests/sim` gate now spans stock, `V2.4`–`V2.7`, `V3.0` / `V3.1`,
+  and CONTROL `V1.4`–`V1.63b`; use `AGENTS.md` for the authoritative current
+  matrix.
+
+Original baseline target matrix:
 
 - Main firmware: `firmware/patched/releases/DLCP_Firmware_V2.5.hex`
 - Control firmware: `firmware/patched/releases/DLCP_Control_V1.62b.hex`
@@ -32,7 +40,7 @@ The framework must prove:
 Pass condition:
 
 - Full `tests/sim` suite passes.
-- Compatibility-byte checks pass for both patched HEX files.
+- Compatibility-byte checks pass for all target patched HEX files.
 - Scenario digests remain deterministic.
 
 ## 3. Toolchain Prerequisites
@@ -123,6 +131,7 @@ Subcommands:
 - `gpsim-lcd`
 - `main-gpsim`
 - `run-exhaustive`
+- `compare-timer3`
 
 ## 5. Hook Strategy (Simulation-Only)
 
@@ -336,7 +345,7 @@ Expected:
 Expected:
 
 - LCD column 15 shows `B` after saving B then cycling
-- EEPROM[0x73] = 1 after preset B selection
+- EEPROM[0x74] = 1 after preset B selection
 
 ### F) Fault robustness
 

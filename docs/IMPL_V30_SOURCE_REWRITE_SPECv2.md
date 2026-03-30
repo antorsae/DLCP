@@ -1,7 +1,18 @@
 # V3.0 Source Rewrite — Polished Implementation (v2)
 
 Date: 2026-03-28
+Status: completed
 Supersedes: `docs/IMPL_V30_SOURCE_REWRITE_SPEC.md` (Phase 1 implementation)
+
+Implementation note (2026-03-30):
+
+- The canonical committed V3.0 artifacts are `src/dlcp_fw/asm/dlcp_main_v30.asm`,
+  `src/dlcp_fw/asm/dlcp_main_v30_comments.asm`, and the relocation/test
+  infrastructure in `tests/sim/test_v30_relocation.py`.
+- Experimental scaffolding mentioned later in this historical plan, such
+  as `src/dlcp_fw/asm/dlcp_main_v30_shifted.asm` and
+  `scripts/annotate_immediates.py`, was not kept as a committed canonical
+  entrypoint/artifact.
 
 ## Context
 

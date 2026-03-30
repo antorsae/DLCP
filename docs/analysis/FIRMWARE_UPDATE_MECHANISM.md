@@ -1,5 +1,13 @@
 # DLCP Control Unit Firmware Update Mechanism - Complete Analysis
 
+Historical correction note (2026-03-30):
+
+- The CONTROL target in this document should be read as `PIC18F25K20`, not
+  `PIC18F2550`.
+- Older bootloader/disassembly writeups used `PIC18F2550`-style SFR names for
+  the `0xF6C..0xF7F` range; on the real CONTROL silicon those are legacy label
+  names, not a literal USB-endpoint block.
+
 ## Overview
 
 The DLCP control unit firmware can be updated through the main DLCP's USB connection,
@@ -11,7 +19,7 @@ HEX records sent over the serial link to the control unit's bootloader.
 ```
 ┌─────────────────┐     USB HID      ┌─────────────────┐   4mA Current    ┌─────────────────┐
 │  Hypex Filter   │  64-byte reports  │   Main DLCP     │   Loop UART     │  Control Unit   │
-│  Design (PC)    │ ───────────────► │  (PIC18F2455)   │ ──────────────► │  (PIC18F2550)   │
+│  Design (PC)    │ ───────────────► │  (PIC18F2455)   │ ──────────────► │ (PIC18F25K20)   │
 │                 │  Binary data      │                 │  Intel HEX      │                 │
 │                 │ ◄─────────────── │  Constructs HEX │  records        │  Bootloader at  │
 │                 │  Status/ACK       │  records, CRC   │ ◄────────────── │  0x7800-0x7FFF  │
@@ -239,7 +247,7 @@ label_473:
 
 ### 3.1 Bootloader Entry Point (0x7800)
 
-The **control** PIC18F2550 reset vector at 0x0000 always contains `GOTO 0x7800`, ensuring
+The **control bootloader** reset vector at 0x0000 always contains `GOTO 0x7800`, ensuring
 the bootloader runs first on every power-on or reset.
 
 ```asm
@@ -268,8 +276,9 @@ label_315:
   movlw   0xBD
   movwf   TRISC              ; RC1,RC6 outputs; RC0,2-5,7 inputs
 
-  ; Disable USB endpoints (USB not used in bootloader)
-  clrf    UEP10 through UEP15
+  ; Clear the legacy-disassembly 0xF76..0xF7B label block.
+  ; Older notes called these UEP10..UEP15, but on the confirmed
+  ; PIC18F25K20 target they are not literal USB endpoint registers.
 
   ; All pins digital
   movlw   0x0F

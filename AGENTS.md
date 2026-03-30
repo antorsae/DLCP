@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -12,8 +12,8 @@ If any file is moved/renamed, update this document in the same change.
 ## System Overview
 
 - Product: Hypex DLCP (Digital Loudspeaker Control Processor)
-- Main MCU: PIC18F2455-class firmware image (`V2.3` stock, patched `V2.4`/`V2.5`)
-- Control MCU: PIC18F25K20 firmware image (`V1.4`/`V1.5b`/`V1.6b` stock, patched `V1.41`/`V1.51b`/`V1.61b`/`V1.62b`)
+- Main MCU: PIC18F2455-class firmware image (`V2.3` stock, patched `V2.4`–`V2.7`, source-assembled `V3.0`/`V3.1`)
+- Control MCU: PIC18F25K20 firmware image (`V1.4`/`V1.5b`/`V1.6b` stock, patched `V1.41`/`V1.51b`/`V1.61b`/`V1.62b`/`V1.63b`)
 - DSP: TI TAS3108
 - Host interface: USB HID (`VID 0x04D8`, `PID 0xFF89`)
 - Inter-unit link: 31,250 baud current-loop serial (3-byte frames: route/cmd/data)
@@ -44,6 +44,7 @@ analysis/
 │   └── reference/
 ├── src/dlcp_fw/
 │   ├── paths.py
+│   ├── asm/
 │   ├── sim/
 │   ├── patch/
 │   ├── flash/
@@ -71,6 +72,7 @@ Use these locations only:
 - Disassembly: `firmware/disasm/...`
 - PC reverse-engineering artifacts: `firmware/disasm/PC/...`
 - Binary dumps: `firmware/dumps/...`
+- Assembly source (V3.x): `src/dlcp_fw/asm/...`
 - Local third-party source forks: `vendor/...`
 - Generated runtime/test artifacts: `artifacts/sim/current/...`
 - Local tool builds/wrappers: `artifacts/tools/...`
@@ -95,14 +97,26 @@ Use these locations only:
 - PC host app bundle: `firmware/stock/PC/HFD_v2.12/...`
 - PC host installer bundle: `firmware/stock/PC/HFD_v4.97/...`
 
-### Patched releases
+### Patched releases (binary-patched)
 
 - Main AB (legacy): `firmware/patched/releases/DLCP_Firmware_V2.4.hex`
 - Main AB + robustness: `firmware/patched/releases/DLCP_Firmware_V2.5.hex`
+- Main AB + DSP robustness: `firmware/patched/releases/DLCP_Firmware_V2.6.hex`
+- Main AB + bus-clear/ping/PEN: `firmware/patched/releases/DLCP_Firmware_V2.7.hex`
 - Control AB: `firmware/patched/releases/DLCP_Control_V1.41.hex`
 - Control AB (V1.5b port): `firmware/patched/releases/DLCP_Control_V1.51b.hex`
 - Control AB (V1.6b port): `firmware/patched/releases/DLCP_Control_V1.61b.hex`
 - Control AB + reconnect robustness: `firmware/patched/releases/DLCP_Control_V1.62b.hex`
+- Control AB + BF/08 fault indicator/resync: `firmware/patched/releases/DLCP_Control_V1.63b.hex`
+
+### Source-assembled releases (V3.x)
+
+- Main V3.0 (stock-equivalent rewrite): `firmware/patched/releases/DLCP_Firmware_V3.0.hex`
+- Main V3.1 (all features inline): `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
+- Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`
+- gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
+- Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm` and matching `DLCP_Firmware_V3.1_diag*` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
+- Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm` and matching `DLCP_Firmware_V3.1_diag*` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
 
 ### Disassembly
 
@@ -138,32 +152,16 @@ Regenerate after any semantic map update: `python3 scripts/annotate_disasm.py`
 
 Canonical constants used across scripts/tests:
 
-- `VENDOR_DIR`
-- `TOOLS_ARTIFACTS_DIR`
-- `STOCK_MAIN_HEX`
-- `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`
-- `STOCK_MAIN_DUMP_TABLE`
-- `STOCK_MAIN_DUMP_CONVERTED_HEX`
-- `STOCK_MAIN_COMBINED_HEX`
-- `STOCK_MAIN_CONFIG_BITS_EXPORT`
-- `STOCK_MAIN_EE_DATA_EXPORT`
-- `STOCK_MAIN_USER_ID_EXPORT`
-- `STOCK_CONTROL_HEX_V14`
-- `PATCHED_MAIN_HEX_V24`
-- `PATCHED_MAIN_HEX_V25`
-- `PATCHED_MAIN_HEX`
-- `PATCHED_CONTROL_HEX`
-- `PATCHED_CONTROL_HEX_V162B`
-- `SIM_ARTIFACTS_DIR`
-- `GPSIM_XTC_SOURCE_DIR`
-- `GPSIM_XTC_ARTIFACTS_DIR`
-- `GPSIM_XTC_BUILD_DIR`
-- `GPSIM_XTC_BIN_DIR`
-- `GPSIM_XTC_BINARY`
-- `GPSIM_XTC_COMPAT_BINARY`
-- `GPSIM_XTC_BUILD_BINARY`
-- `GPSIM_XTC_MODULE_DIR`
-- `SEMANTIC_FUNCTION_MAP`
+- Directory roots: `PROJECT_ROOT`, `DOCS_DIR`, `FIRMWARE_DIR`, `ARTIFACTS_DIR`, `SCRIPTS_DIR`, `VENDOR_DIR`, `TOOLS_ARTIFACTS_DIR`
+- Firmware dirs: `FIRMWARE_STOCK_DIR`, `FIRMWARE_PATCHED_DIR`, `FIRMWARE_DISASM_DIR`, `FIRMWARE_DUMPS_DIR`, `FIRMWARE_REFERENCE_DIR`
+- Stock main: `STOCK_MAIN_HEX`, `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`, `STOCK_MAIN_DUMP_TABLE`, `STOCK_MAIN_DUMP_CONVERTED_HEX`, `STOCK_MAIN_COMBINED_HEX`, `STOCK_MAIN_CONFIG_BITS_EXPORT`, `STOCK_MAIN_EE_DATA_EXPORT`, `STOCK_MAIN_USER_ID_EXPORT`
+- Stock control: `STOCK_CONTROL_HEX_V14`, `STOCK_CONTROL_HEX_V15B`, `STOCK_CONTROL_HEX_V16B`
+- Patched main: `PATCHED_MAIN_HEX_V24`, `PATCHED_MAIN_HEX_V25`, `PATCHED_MAIN_HEX_V26`, `PATCHED_MAIN_HEX_V27`, `PATCHED_MAIN_HEX` (alias for V2.7)
+- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX`, `V31_MAIN_ASM`
+- Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`
+- Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
+- Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`, `GPSIM_XTC_SOURCE_DIR`, `GPSIM_XTC_ARTIFACTS_DIR`, `GPSIM_XTC_BUILD_DIR`, `GPSIM_XTC_BIN_DIR`, `GPSIM_XTC_BINARY`, `GPSIM_XTC_COMPAT_BINARY`, `GPSIM_XTC_BUILD_BINARY`, `GPSIM_XTC_MODULE_DIR`
+- Docs: `SEMANTIC_FUNCTION_MAP`
 
 Always prefer these constants over hardcoded paths.
 
@@ -174,9 +172,15 @@ Always prefer these constants over hardcoded paths.
 - V3.0 tooling: `v30_symbols.py` (gpasm listing symbol parser, shifted ASM builder, assembly helper)
 - support: `hexio.py`, `lcd.py`, `overlay.py`, `manifests.py`, `paths.py`
 
+### Assembly source package (`src/dlcp_fw/asm`)
+
+- V3.0 stock-equivalent source: `dlcp_main_v30.asm`, `dlcp_main_v30_comments.asm` (canonical, zero auto-labels)
+- V3.1 full-feature source: `dlcp_main_v31.asm`
+- Support: `dlcp_main_ram.inc` (RAM equates), `region_manifest.py` (flash region metadata)
+
 ### Patch package (`src/dlcp_fw/patch`)
 
-- Builders: `build_main_presets_ab.py`, `build_control_presets_ab.py`, `build_control_presets_ab_v15b.py`, `build_control_presets_ab_v16b.py`, `build_control_presets_ab_v162b.py`
+- Builders: `build_main_presets_ab.py`, `build_control_presets_ab.py`, `build_control_presets_ab_v15b.py`, `build_control_presets_ab_v16b.py`, `build_control_presets_ab_v162b.py`, `build_control_presets_ab_v163b.py`
 - Verifiers: `verify_presets_ab.py`, `verify_isr_vectors.py`
 
 ### Flash/probe package (`src/dlcp_fw/flash`)
@@ -218,37 +222,79 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite includes:
+Current suite (69 test files, 492 tests collected):
 
-- Overlay/patch integrity: `test_overlay_engine.py`, `test_patch_compatibility.py`, `test_verify_presets_ab_*semantic_guards.py`
-- Robustness/waiting regression: `test_robustness_waiting.py`
-- Chain WAITING regression: `test_chain_gpsim_waiting.py`
-- MAIN standby pin I/O + V1.62b TXIE guard: `test_main_stdby_pin_io.py`
-- V1.62b reconnect wake gate (semantic + DSP behavioral + wire-chain e2e): `test_reconnect_wake_gate.py`
-- Wire UART smoke regression: `test_wire_chain_gpsim.py`
-- Wire chain stock firmware fault injection: `test_wire_chain_gpsim_stock_faults.py`
-- DSP deafness chain (DSP1/DSP2/DSP3 isolation): `test_main_dsp_deafness_chain.py`
-- Raw-main V2.5 chain characterization: `test_chain_gpsim_v25_recovery.py`
-- Raw-main V2.5 + V1.62b recovery: `test_chain_gpsim_v25_v162b_recovery.py`
-- Wire-UART I2C wake characterization: `test_wire_chain_gpsim_i2c_faults.py`
-- Wire-UART internal-fault wake characterization: `test_wire_chain_gpsim_internal_faults.py`
-- MAIN V2.5 timeout probe: `test_main_v25_timeout_recovery.py`
-- Main behavior: `test_main_model_banking.py`, `test_main_dsp_refresh_behavior.py`, `test_main_gpsim_*`
-- Main fault injection: `test_main_gpsim_fault_injection.py`
-- Control behavior: `test_control_ui_and_persistence.py`, `test_gpsim_control_presets.py`, `test_control_v*b_port_compatibility.py`, `test_control_gpsim_*`
-- End-to-end/faults: `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
-- Flash/probe tools: `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
-- V3.0 source rewrite: `test_v30_equivalence.py` (hex integrity + source quality), `test_v30_gpsim_equivalence.py` (behavioral parity with stock)
-- V3.0 relocation safety: `test_v30_relocation.py` (10 structural + 6 gpsim behavioral shift tests)
-- V3.1 robustness (Fix C/D/E/F): `test_v31_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
-- V3.1 review findings: `test_v31_review_findings.py` (BSR safety, degraded state, BF/08 payload, retry counter)
-- V3.1 happy path (4 versions): `test_v31_happy_path.py` (boot preset load, volume→DSP, computed volume)
-- V3.1 DSP boot equivalence: `test_v31_dsp_boot_equivalence.py` (all 256 DSP regs match stock V2.3/V2.4/V2.6)
-- V3.1 command matrix: `test_v31_command_matrix.py` (all 16 serial commands identical to stock V2.3)
-- V3.1 preset A/B + USB: `test_v31_usb_preset_ab.py` (model: upload bank mapping, flash isolation, config names)
-- V3.1 preset A/B (live gpsim): `test_main_gpsim_usb_engine.py` (filename forward+reverse order, stock compat)
-- V3.1 USB HID dispatch: `test_v31_usb_hid_dispatch.py` (filename RAM, cmd 0x20 switch, version staging)
-- V3.1 version labels: `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
+Overlay/patch integrity:
+- `test_overlay_engine.py`, `test_patch_compatibility.py`
+- `test_verify_presets_ab_semantic_guards.py`, `test_verify_presets_ab_v15b_semantic_guards.py`, `test_verify_presets_ab_v16b_semantic_guards.py`, `test_verify_presets_ab_v162b_semantic_guards.py`
+- `test_region_manifest.py`
+
+Robustness/recovery:
+- `test_robustness_waiting.py` (WAITING FOR DLCP regression)
+- `test_chain_gpsim_waiting.py` (chain WAITING regression)
+- `test_chain_gpsim_v25_recovery.py` (raw-main V2.5 chain characterization)
+- `test_chain_gpsim_v25_v162b_recovery.py` (V2.5 + V1.62b recovery)
+- `test_chain_gpsim_v141_v24_v25_recovery.py` (V1.41/V2.4/V2.5 chain recovery)
+- `test_chain_gpsim_v161b_v24_v25_i2c_faults.py` (V1.61b I2C fault chain)
+- `test_reconnect_wake_gate.py` (V1.62b reconnect wake gate)
+- `test_main_v25_timeout_recovery.py` (MAIN V2.5 timeout probe)
+
+Wire-chain/multi-PB:
+- `test_wire_chain_gpsim.py` (UART smoke regression)
+- `test_wire_chain_gpsim_stock_faults.py` (stock fault injection)
+- `test_wire_chain_gpsim_i2c_faults.py` (I2C wake characterization)
+- `test_wire_chain_gpsim_internal_faults.py` (internal-fault wake characterization)
+- `test_gpsim_multi_processor_uart_topology.py` (multi-processor UART)
+
+Main behavior:
+- `test_main_model_banking.py`, `test_main_dsp_refresh_behavior.py`
+- `test_main_dsp_deafness_chain.py` (DSP1/DSP2/DSP3 isolation)
+- `test_main_dsp_filename_sim_validation.py` (filename A/B simulation)
+- `test_main_stdby_pin_io.py` (standby pin I/O + V1.62b TXIE guard)
+- `test_main_gpsim_an0_boot.py`, `test_main_gpsim_cmd03_instruction_path.py`
+- `test_main_gpsim_command_compatibility.py`, `test_main_gpsim_command_edges.py`, `test_main_gpsim_command_matrix.py`
+- `test_main_gpsim_fault_injection.py`
+- `test_main_gpsim_filename_ab.py`, `test_main_gpsim_i2c_regfile.py`
+- `test_main_gpsim_mailbox.py`, `test_main_gpsim_preset_banks.py`
+- `test_main_gpsim_timer3_compare.py`
+- `test_main_gpsim_usb_engine.py` (USB SIE filename forward+reverse, stock compat)
+
+Control behavior:
+- `test_control_ui_and_persistence.py`, `test_gpsim_control_presets.py`, `test_gpsim_control_lcd.py`
+- `test_control_v15b_port_compatibility.py`, `test_control_v16b_port_compatibility.py`
+- `test_control_gpsim_command_emission_legacy.py`, `test_control_gpsim_full_config_persistence.py`
+- `test_control_gpsim_host_command_injection.py`, `test_control_gpsim_ir_compatibility.py`
+- `test_control_gpsim_ir_preset_switch.py`, `test_control_gpsim_preset_eeprom_diff.py`
+- `test_control_gpsim_response_parser.py`
+
+End-to-end/faults:
+- `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
+
+Flash/probe tools:
+- `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
+
+Tooling/analysis:
+- `test_word_dump_to_ihex.py`, `test_disasm_to_source.py`
+
+V2.7 + V1.63b:
+- `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
+
+V3.0 source rewrite:
+- `test_v30_equivalence.py` (hex integrity + source quality)
+- `test_v30_gpsim_equivalence.py` (behavioral parity with stock)
+- `test_v30_relocation.py` (10 structural + 6 gpsim behavioral shift tests)
+
+V3.1 source rewrite:
+- `test_v31_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
+- `test_v31_review_findings.py` (BSR safety, degraded state, BF/08 payload, retry counter)
+- `test_v31_happy_path.py` (boot preset load, volume→DSP, computed volume — 4 versions)
+- `test_v31_dsp_boot_equivalence.py` (all 256 DSP regs match stock V2.3/V2.4/V2.6)
+- `test_v31_command_matrix.py` (all 16 serial commands identical to stock V2.3)
+- `test_v31_usb_preset_ab.py` (upload bank mapping, flash isolation, config names)
+- `test_v31_usb_hid_dispatch.py` (filename RAM, cmd 0x20 switch, version staging)
+
+Version labels:
+- `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
 Recent verification (2026-03-30):
 
@@ -276,9 +322,16 @@ Top-level docs:
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
-- `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (new V1.63b diagnostics page and V3.1+ per-PB counter catalog)
-- `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (requirements and process for the V3.1 MAIN size-reduction campaign)
-- `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (running experiment ledger, review inventory, and gate/blocker status for the V3.1 MAIN size campaign)
+- `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
+- `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)
+- `docs/V30_SOURCE_REWRITE_SPEC.md` (V3.0 MAIN source-level rewrite specification)
+- `docs/IMPL_V30_SOURCE_REWRITE_SPEC.md` (V3.0 source rewrite implementation prompt)
+- `docs/IMPL_V30_SOURCE_REWRITE_SPECv2.md` (V3.0 source rewrite polished implementation — supersedes above)
+- `docs/V31_SOURCE_REWRITE_SPEC.md` (V3.1 MAIN source rewrite specification)
+- `docs/IMPL_V31_SOURCE_REWRITE_SPEC.md` (V3.1 source rewrite implementation prompt)
+- `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (draft future diagnostics page / counter protocol; not implemented in the committed V1.63b/V3.1 pair)
+- `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.1 MAIN size-reduction campaign requirements and process)
+- `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (size campaign experiment ledger and gate status)
 
 Deep analysis docs:
 
@@ -324,11 +377,20 @@ Build patched firmware:
 ```bash
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v24
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v25
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v26
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v27
 python3 -m dlcp_fw.patch.build_control_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v162b
+python3 -m dlcp_fw.patch.build_control_presets_ab_v163b
 python3 -m dlcp_fw.patch.verify_presets_ab
+```
+
+Assemble V3.1 source:
+
+```bash
+.venv_ep0/bin/python -c "from dlcp_fw.sim.v30_symbols import assemble_v30; from dlcp_fw.paths import V31_MAIN_ASM, V31_MAIN_HEX; assemble_v30(V31_MAIN_ASM, V31_MAIN_HEX)"
 ```
 
 Combine stock V2.3 main export fragments:

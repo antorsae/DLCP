@@ -52,21 +52,25 @@ Menu navigation wraps: **Volume** <-> **Preset** <-> **Input** <-> **Setup**
 
 Switching: UP/DOWN on the Preset page, or IR remote F1/F2 from any page.
 
-### Diagnostics page (V3.1 + V1.63b)
+### DSP Fault Reporting (V2.7/V3.1 + V1.63b)
 
-A new Diagnostics page exposes per-PB runtime fault counters: I2C faults, DSP fault episodes, recovery events, standby cycles, analog triggers. Counters survive resets and clear only on power-on.
+When the MAIN firmware detects a persistent DSP-path fault, it emits a
+`BF/08/<fault_byte>` status frame. `V1.63b` CONTROL adds the matching
+parser, latches a DSP-fault flag, shows `!` in the volume-header slot
+where `A` / `B` normally appears, and forces a full resync once MAIN
+reports the fault cleared.
 
 ```
-All clear:                  With activity:
-+----------------+          +----------------+
-|1:I D S B R A P |          |1:I2D S B1R1A P |
-|2:I D S B R A P |          |2:I D S1B1R A3P |
-+----------------+          +----------------+
++----------------+
+|Volume:        !|
+|-24.0 dB        |
++----------------+
 ```
 
-Rows 1/2 = PB1/PB2. Each letter is a counter category (I2C, DSP, Standby, Bring-up, Recovery, Analog, RA1-event); the character after it shows count (space=0, 1-9, A-E, +=15+).
-
-Full menu hierarchy: **Volume** <-> **Preset** <-> **Diagnostics** <-> **Input** <-> **Setup**
+The separate diagnostics-page/counter design in
+[`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](docs/V163B_DIAGNOSTICS_MENU_SPEC.md)
+is still a draft and is not implemented in the committed `V1.63b`
+CONTROL or `V3.1` MAIN hexes.
 
 ## Release status
 
@@ -74,7 +78,7 @@ Full menu hierarchy: **Volume** <-> **Preset** <-> **Diagnostics** <-> **Input**
 
 | Version | Type | Adds |
 |---------|------|------|
-| **V3.1** | Source-assembled | Full source rewrite. All V2.4-V2.7 features inline, diagnostics counters. |
+| **V3.1** | Source-assembled | Full source rewrite. All V2.4-V2.7 features inline, including BF/08 fault-status reporting. |
 | V3.0 | Source-assembled | Clean V2.3-equivalent rewrite, byte-exact behavioral parity proven. |
 | V2.7 | Binary-patched | V2.6 + I2C bus-clear, DSP ping, fault status frames, PEN timeout. |
 | V2.6 | Binary-patched | V2.5 + DSP ACKSTAT check, conditional dirty-bit, deferred volume commit. |
@@ -85,17 +89,17 @@ Full menu hierarchy: **Volume** <-> **Preset** <-> **Diagnostics** <-> **Input**
 
 | Version | Type | Adds |
 |---------|------|------|
-| **V1.63b** | Binary-patched | V1.62b + Diagnostics page (queries V3.1 MAIN counters over UART). |
+| **V1.63b** | Binary-patched | V1.62b + BF/08 fault parser, LCD `!` indicator, and resync-on-clear. |
 | V1.62b | Binary-patched | V1.61b + UART OERR recovery, bounded reconnect handshake. |
 | V1.61b | Binary-patched | A/B preset UI + V1.6b setup LCD garbage fix. |
 
 ### Recommended pair
 
-**V3.1 + V1.63b** for full robustness, A/B presets, and diagnostics.
+**V3.1 + V1.63b** for full robustness, A/B presets, and BF/08 fault reporting.
 
 **V2.5 + V1.62b** for the conservative binary-patched option.
 
-All versions are backward-compatible: V3.1 works with V1.62b (no diagnostics), V2.5 works with V1.61b (no reconnect hardening).
+All versions are backward-compatible: V3.1 works with V1.62b (no BF/08 fault UI/resync), V2.5 works with V1.61b (no reconnect hardening).
 
 ### Hex files
 
@@ -106,6 +110,10 @@ Releases in [`firmware/patched/releases/`](firmware/patched/releases/):
 - [`DLCP_Control_V1.62b.hex`](firmware/patched/releases/DLCP_Control_V1.62b.hex) — conservative CONTROL
 
 Earlier versions (V2.4-V2.7, V1.41-V1.61b) are also available in that directory.
+
+Source-assembled gpasm byproducts such as `.cod` and `.lst` may also be
+present beside `V3.x` outputs, but the `.hex` files are the canonical
+release artifacts.
 
 ## V3.x vs V2.x: source-assembled vs binary-patched
 
@@ -139,10 +147,10 @@ Test categories:
 
 - [`docs/AB_PRESETS.md`](docs/AB_PRESETS.md) — A/B preset design, protocol, patch maps
 - [`docs/ROBUSTNESS.md`](docs/ROBUSTNESS.md) — root cause analysis, failure chains, fix strategy
-- [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](docs/V163B_DIAGNOSTICS_MENU_SPEC.md) — diagnostics page and counter protocol
+- [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](docs/V163B_DIAGNOSTICS_MENU_SPEC.md) — draft future diagnostics page / counter protocol
 - [`docs/SIMULATION.md`](docs/SIMULATION.md) — co-simulation architecture
 - [`docs/TEST_SIMULATOR.md`](docs/TEST_SIMULATOR.md) — test framework reference
-- [`CLAUDE.md`](CLAUDE.md) — full project index, canonical paths, build commands
+- [`AGENTS.md`](AGENTS.md) — full project index, canonical paths, build commands
 
 ## Disclaimer
 

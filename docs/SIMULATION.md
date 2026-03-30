@@ -1,6 +1,11 @@
 # DLCP Co-Simulation Guide
 
-gpsim-backed co-simulation of CONTROL (V1.4) and MAIN (V2.3) firmware.
+gpsim-backed co-simulation for the DLCP stock pair and later patched/source
+variants. The stock `V1.4 <-> V2.3` pair remains the baseline example in this
+guide, but the same harness family also covers patched `V2.4`–`V2.7`,
+source-assembled `V3.0` / `V3.1`, and CONTROL `V1.41`–`V1.63b` as documented in
+`AGENTS.md`.
+
 MAIN now runs on the physical `p18f2455` model. CONTROL now runs on the
 physical `p18f25k20` model via the repo-local `gpsim-xtc` fork in
 `vendor/gpsim-0.32.1-xtc/`, built under `artifacts/tools/gpsim-xtc/`.
@@ -194,7 +199,8 @@ individually — but preserves protocol correctness.
 Current scope:
 
 - proven for no-fault single-main UI connection on stock `V1.4 <-> V2.3`,
-  patched `V1.61b <-> V2.4`, and patched `V1.62b <-> V2.5`
+  patched `V1.61b <-> V2.4`, patched `V1.62b <-> V2.5`, and patched
+  `V1.62b <-> V3.1`
 - supports `[CONTROL <-> MAIN0] <-> [MAIN1] ...` topology wiring in the harness
 - supports per-link transport faults at the bridge layer:
   - one-direction frame blackout by dropping sender RC6 transitions before they
@@ -423,13 +429,16 @@ scripts/gpsim_tui_simulator.py  — TUI and co-simulation core
 src/dlcp_fw/sim/control_gpsim.py       — non-interactive CONTROL gpsim harness (tests)
 src/dlcp_fw/sim/main_gpsim.py          — MAIN gpsim harness (mailbox injection)
                                        — includes AN0 bootstrap + external I2C regfile STC helpers
+src/dlcp_fw/sim/chain_gpsim.py         — one-MAIN gpsim co-simulation chain harness
 src/dlcp_fw/sim/wire_chain_gpsim.py    — live wire UART chain harness
 src/dlcp_fw/sim/manifests.py           — overlay definitions
 src/dlcp_fw/sim/main_gpsim_timer3.py   — gpsim register helpers, Timer3 model
+src/dlcp_fw/sim/v30_symbols.py         — gpasm listing symbol parser, shifted ASM builder, assembly helper
 src/dlcp_fw/sim/lcd.py                 — HD44780 LCD state machine
 src/dlcp_fw/sim/overlay.py             — HEX binary patching
 src/dlcp_fw/sim/hexio.py               — Intel HEX parse/write/checksum
 src/dlcp_fw/sim/protocol.py            — serial frame constants
+src/dlcp_fw/sim/paths.py               — sim-specific path utilities
 ```
 
 ### Test scripts

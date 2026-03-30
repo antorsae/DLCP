@@ -3,7 +3,7 @@
 ## Your mission
 
 You are working in `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`.
-Read `CLAUDE.md` (a.k.a. `AGENTS.md`) for full repo layout and conventions.
+Read `AGENTS.md` for full repo layout and conventions (`CLAUDE.md` is a compatibility mirror).
 Python venv: `.venv_ep0/bin/python`.  Run tests with `.venv_ep0/bin/python -m pytest`.
 
 **You have full access to modify the local gpsim fork** at

@@ -8,7 +8,7 @@ Status:
 - 2026-03-11 correction: physical MCU inspection confirms CONTROL is `PIC18F25K20` and MAIN is `PIC18F2455`. CONTROL builders are now retargeted to `PIC18F25K20`. MAIN builders and MAIN gpsim harnesses are now retargeted to `PIC18F2455`.
 - 2026-03-12 update: the repo-local `gpsim-xtc` fork now supports `p18f25k20`, and CONTROL gpsim harnesses use the real target instead of the old `p18f2550` surrogate model.
 - 2026-03-11 MAIN `V2.5` timeout policy was hardened again: the patched wait loops now use 16-bit measured loop budgets instead of raw `0xFF` spins, first failure does local UART/MSSP reinit, and hard reset is only taken after a repeated failure in the same operation path.
-- Current rebuilt `DLCP_Firmware_V2.5.hex` SHA-256: `4f5024b9d5c7257b62e964ed03373bc3abb2430cfc4cc871c26d94ceab5a07ef`
+- Current rebuilt `DLCP_Firmware_V2.5.hex` SHA-256: `1822159bb9fe5312b2e2d09173e2d8d8b1e843b7ed65412d06efa36aa6997717`
 - A raw-main `gpsim` harness now exists and runs CONTROL against the real `V2.5` MAIN parser and timeout code via native-ring injection.
 - Current raw-main simulation status:
   - basic CONTROL gpsim regressions now run on the real `p18f25k20` model from the repo-local `gpsim-xtc` fork
@@ -16,11 +16,11 @@ Status:
   - earlier reconnect conclusions for `V2.5 + V1.61b` and `V2.5 + V1.62b` were collected before the `p18f25k20` port and should be treated as pre-port evidence pending revalidation under the new CONTROL model
   - hardware bench validation of the rebuilt MAIN `V2.5` with `V1.61b` CONTROL is still pending and remains the release-critical next step
 
-Versioning assumption used in this document:
+Versioning (as of 2026-03-30):
 
-- MAIN next release: `V2.5`
-- CONTROL next release: `V1.62b`
-- Only the `V1.62b` CONTROL port is planned for release
+- MAIN releases: `V2.4` (A/B only), `V2.5` (+ robustness), `V2.6` (+ DSP ACKSTAT), `V2.7` (+ bus-clear/ping/PEN), `V3.0` (source rewrite), `V3.1` (all features inline)
+- CONTROL releases: `V1.41`–`V1.61b` (A/B), `V1.62b` (+ reconnect), `V1.63b` (+ BF/08 fault UI/resync)
+- This document was originally written targeting V2.5/V1.62b as next releases
 
 This document consolidates the stock deadlock findings, ranks the earlier analyses by trust level, and defines the implementation order needed to reduce `WAITING FOR DLCP` hangs without breaking deployed `V1.61b` control units.
 

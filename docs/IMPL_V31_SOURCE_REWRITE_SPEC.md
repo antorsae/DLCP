@@ -1,7 +1,13 @@
 # V3.1 MAIN Source Rewrite — Implementation Prompt
 
 Date: 2026-03-28
+Status: completed (V3.1 hex committed, 80-test gate passing)
 Parent spec: `docs/V31_SOURCE_REWRITE_SPEC.md`
+
+Implementation note (2026-03-30): the committed repo assembles V3.1 via
+the `assemble_v30(...)` helper command documented in `AGENTS.md`. The
+optional `scripts/build_v31.sh` snippet below was a planning example and
+is not a committed canonical entrypoint.
 
 ## Goal
 
@@ -123,7 +129,8 @@ assemble_v30(V31_MAIN_ASM, V31_MAIN_HEX, output_lst=V31_MAIN_ASM.with_suffix(".l
 symbols = parse_gpasm_symbols(V31_MAIN_ASM.with_suffix(".lst"))
 ```
 
-Or as a shell script (`scripts/build_v31.sh`):
+Or as a local throwaway shell script (`scripts/build_v31.sh` was a planning
+example and is not committed in the current tree):
 ```bash
 #!/bin/bash
 set -euo pipefail

@@ -1,5 +1,15 @@
 # DLCP Control Unit Firmware - Complete Disassembly Analysis
 
+Historical correction note (2026-03-30):
+
+- This analysis predates the consolidated MCU-target correction in
+  `docs/analysis/MCU_TARGET_CORRECTION_2026-03-11.md`.
+- Read CONTROL hardware references here as `PIC18F25K20`, not `PIC18F2550`.
+- Read MAIN hardware references here as `PIC18F2455`.
+- Where older disassembly text uses USB-style SFR names, treat them as legacy
+  label names rather than a claim that the CONTROL silicon exposes the same USB
+  peripheral block as `PIC18F2550`.
+
 ## Executive Summary
 
 The DLCP Control Unit is a PIC18F-based front panel controller providing a user interface (16x2 HD44780 LCD, 6 buttons, RC-5 IR receiver) for the main DLCP audio crossover. It communicates over a **31,250 baud UART** (MIDI standard rate) using a **3-byte binary protocol**: `sync_byte, command, data`. The control board handles volume (-96.0 to +18.0 dB), mute, input selection, standby, per-channel source routing, and backlight management. Up to 6 DLCP units can be daisy-chained with a single control board.
@@ -13,7 +23,7 @@ This analysis is based on full PIC18F disassembly of all three firmware versions
 ### Control Board MCU
 | Parameter | Value | Evidence |
 |-----------|-------|----------|
-| MCU Family | PIC18F2550-class (USB-capable, 32 KB flash) | Uses USB SFR symbols (`UEP*`, `UCFG`, `USTAT`, etc.) in disassembly; reset vector `GOTO 0x7800` bootloader pattern |
+| MCU Family | PIC18F25K20-class | Older disassembly symbols used `UEP*`/USB-style names, but the confirmed CONTROL target is `PIC18F25K20`; see MCU-target correction note above |
 | Flash | 32 KB (0x0000-0x7FFF) | Hex file: 33,046 bytes including config/EEPROM |
 | RAM | ~2 KB | Access bank + Bank 0 usage traced |
 | EEPROM | 256 bytes | EEPROM region in hex file |
@@ -94,7 +104,7 @@ ADCON1 = 0x0F: All analog pins disabled (digital I/O only)
 ```
 ┌──────────────┐   CAT5 cable (max 10m)   ┌──────────────┐
 │ Control Board │◄─────────────────────────│ Main PIC     │
-│ PIC18F25xx   │   4mA current-mode       │ PIC18F2550   │
+│ PIC18F25K20  │   4mA current-mode       │ PIC18F2455   │
 │ 12 MHz XT    │   optically isolated     │ 48 MHz HSPLL │
 │ 31,250 baud  │   via J3 Midi pins       │ 31,250 baud* │
 └──────────────┘                          └──────────────┘
@@ -725,7 +735,7 @@ Called repeatedly in display loops. Does:
                             │ 3-byte protocol: routing + cmd + data
 ┌───────────────────────────┼─────────────────────────────────┐
 │  ┌────────────────────────▼───────────────────────────────┐ │
-│  │           MAIN BOARD (PIC18F2550, 48 MHz HSPLL)        │ │
+│  │           MAIN BOARD (PIC18F2455, 48 MHz HSPLL)        │ │
 │  │  UART RX ISR → 192-byte ring buffer                    │ │
 │  │  Command dispatch: 13 commands (0x03-0x1E)             │ │
 │  │  Volume → 32-bit signed → dirty flag → I2C            │ │
@@ -777,5 +787,5 @@ SPBRG   = 0x7F  (default 93,750 baud @ 48 MHz)
 
 *Analysis completed: 2026-02-14*
 *Control firmware versions analyzed: V1.4, V1.5b, V1.6b (full PIC18F disassembly)*
-*Main firmware cross-referenced: V2.3 (PIC18F2550 disassembly)*
+*Main firmware cross-referenced: V2.3 (`PIC18F2455` hardware; older disassembly symbol sets may mention `PIC18F2550`)*
 *Confidence: High on all sections — verified from both sides of the serial link*

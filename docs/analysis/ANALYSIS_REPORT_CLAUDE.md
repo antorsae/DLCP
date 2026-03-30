@@ -1,5 +1,9 @@
 # HYPEX DLCP Firmware V2.3 Analysis Report (Corrected)
 
+Migration note (2026-03-30): older path examples in this report map to the
+current layout as follows: `analysis/*.bin` -> `firmware/dumps/*.bin`,
+`analysis/disasm/gpdasm_output.asm` -> `firmware/disasm/main/gpdasm_output.asm`.
+
 ## Executive Summary
 
 The DLCP firmware is a PIC18F24/25xx-family microcontroller application (on the
@@ -518,10 +522,10 @@ Most errors stem from two issues:
 | File | Description |
 |------|-------------|
 | `DLCP Firmware V2.3.hex` | Original firmware (Intel HEX, 58 KB text) |
-| `analysis/code_only.bin` | Code section binary (20,480 bytes, 0x1000-0x5FFF) |
-| `analysis/eeprom.bin` | EEPROM contents (256 bytes) |
-| `analysis/firmware.bin` | Full binary (sparse, 15 MB) |
-| `analysis/disasm/gpdasm_output.asm` | gpdasm full disassembly |
+| `firmware/dumps/code_only.bin` | Code section binary (20,480 bytes, 0x1000-0x5FFF) |
+| `firmware/dumps/eeprom.bin` | EEPROM contents (256 bytes) |
+| `firmware/dumps/firmware.bin` | Full binary (sparse, 15 MB) |
+| `firmware/disasm/main/gpdasm_output.asm` | gpdasm full disassembly |
 
 ## Tools Used
 

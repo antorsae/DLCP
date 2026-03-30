@@ -1,7 +1,7 @@
 # V3.1 MAIN Source Rewrite — Specification
 
 Date: 2026-03-28
-Status: draft
+Status: implemented (V3.1 hex committed, 80-test gate passing)
 Base: V3.0 MAIN source (stock V2.3 byte-identical)
 Pair: V1.63b CONTROL firmware
 

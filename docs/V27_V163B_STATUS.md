@@ -1,6 +1,7 @@
 # V2.7 MAIN + V1.63b CONTROL — Implementation Status
 
 Date: 2026-03-28
+Status: superseded by V3.1 source rewrite (all deferred fixes now implemented inline in `dlcp_main_v31.asm`)
 
 ## Implemented and verified
 

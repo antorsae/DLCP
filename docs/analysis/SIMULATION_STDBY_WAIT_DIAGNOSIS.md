@@ -1,5 +1,13 @@
 # DLCP Co-Simulation Diagnosis: Standby/Waiting Reconnect Loop
 
+Migration note (2026-03-30):
+
+- Path examples below predate the repo-layout migration.
+- Translate `control/disasm/...` to `firmware/disasm/control/...`.
+- Translate `disasm/...` to `firmware/disasm/main/...`.
+- Translate `tools/gpsim_tui_simulator.py` to `scripts/gpsim_tui_simulator.py`.
+- Translate `simfw/*` to `src/dlcp_fw/sim/*`.
+
 ## 1. Objective
 
 Build and validate a high-fidelity simulation of:

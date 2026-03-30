@@ -1,7 +1,7 @@
 # V3.0 MAIN — Source-Level Rewrite Specification
 
 Date: 2026-03-28
-Status: draft
+Status: implemented (V3.0 hex committed, byte-exact equivalence to stock V2.3 proven)
 Depends on: V2.3 stock firmware (baseline), annotated disassembly, SEMANTIC_FUNCTION_MAP.md
 
 ## Motivation
@@ -38,9 +38,9 @@ Create **V3.0**: a clean, assembler-ready PIC18F2455 source file that:
    from gpasm are acceptable as long as behavior is identical.
 2. Uses semantic labels, named RAM variables, structured macros, and
    comments — as if we had the original Hypex source.
-3. Becomes the new baseline for all future work (V3.1 = V3.0 + A/B
-   presets, V3.2 = V3.1 + robustness, etc.), eliminating binary
-   patching entirely.
+3. Becomes the new baseline for all future work. In the committed repo,
+   this was realized as `V3.1 = V3.0 + V2.4..V2.7 inline`, eliminating
+   binary patching for new MAIN development.
 
 **Baseline image**: `DLCP Firmware V2.3.hex` (app-only, starts at
 0x1000).  This is explicitly **not** the full-device recovery image
@@ -679,16 +679,13 @@ only.
 
 ## Future Work (not V3.0)
 
-Once V3.0 is validated, the following become straightforward source
-edits instead of binary patching:
+This draft originally projected a staged V3.1/V3.2/V3.3/V3.4 roadmap.
+In the committed repo, that plan was collapsed into:
 
-- **V3.1**: A/B preset support (currently V2.4 binary patch)
-- **V3.2**: Robustness — bounded wait loops (currently V2.5 binary patch)
-- **V3.3**: ACKSTAT checks (currently V2.6 binary patch)
-- **V3.4**: I2C bus-clear, DSP ping, fault reporting (currently V2.7,
-  blocked by space exhaustion)
-- **V3.5+**: Bug fixes for M1–M9, code restructuring, new features
-  — no longer constrained by available erased flash
+- **V3.1**: A/B presets + bounded waits + ACKSTAT checks + I2C
+  bus-clear/DSP ping/BF/08 fault reporting, all inline in source
+- Later work: size optimization, bug fixes for M1–M9, code
+  restructuring, and new features without binary-patch space pressure
 
 The source-level approach also enables:
 - Code size optimization (consolidate duplicated patterns)
@@ -722,7 +719,7 @@ Step 8 (gpsim) is the primary acceptance gate.
 
 ## File Locations
 
-All new files follow the path policy in `CLAUDE.md` (implementation
+All new files follow the path policy in `AGENTS.md` (implementation
 under `src/dlcp_fw/`, thin entrypoints under `scripts/`):
 
 | Deliverable | Path |
