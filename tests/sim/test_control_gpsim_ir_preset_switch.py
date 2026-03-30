@@ -8,10 +8,22 @@ import pytest
 
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness, TxTriplet
 from dlcp_fw.sim.gpsim import gpsim_available
+from dlcp_fw.paths import (
+    PATCHED_CONTROL_HEX_V141,
+    PATCHED_CONTROL_HEX_V162B,
+    PATCHED_CONTROL_HEX_V163B,
+    V31_MAIN_HEX,
+)
 
 
 WARMUP_CYCLES = 25_000_000
 STEP_COUNT = 10
+
+_CONTROL_VERSIONS = [
+    pytest.param(PATCHED_CONTROL_HEX_V141, id="v141"),
+    pytest.param(PATCHED_CONTROL_HEX_V162B, id="v162b"),
+    pytest.param(PATCHED_CONTROL_HEX_V163B, id="v163b"),
+]
 
 
 def _require_gpsim() -> None:
@@ -19,9 +31,9 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
-def _boot_harness(patched_control_hex: Path) -> GpsimControlHarness:
+def _boot_harness(control_hex: Path) -> GpsimControlHarness:
     h = GpsimControlHarness(
-        patched_control_hex,
+        control_hex,
         fast_boot=True,
         chunk_cycles=200_000,
         hold_cycles=120_000,
@@ -72,9 +84,10 @@ def _preset_frames(frames: list[TxTriplet]) -> list[tuple[int, int, int]]:
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_ir_f1_f2_switch_and_idempotent(patched_control_hex: Path) -> None:
+@pytest.mark.parametrize("control_hex", _CONTROL_VERSIONS)
+def test_ir_f1_f2_switch_and_idempotent(control_hex: Path) -> None:
     _require_gpsim()
-    h = _boot_harness(patched_control_hex)
+    h = _boot_harness(control_hex)
     try:
         _set_profile_hypex(h)
         _set_preset_idx(h, 0)
@@ -101,9 +114,10 @@ def test_ir_f1_f2_switch_and_idempotent(patched_control_hex: Path) -> None:
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_ir_wrong_address_does_not_switch_preset(patched_control_hex: Path) -> None:
+@pytest.mark.parametrize("control_hex", _CONTROL_VERSIONS)
+def test_ir_wrong_address_does_not_switch_preset(control_hex: Path) -> None:
     _require_gpsim()
-    h = _boot_harness(patched_control_hex)
+    h = _boot_harness(control_hex)
     try:
         _set_profile_hypex(h)
         _set_preset_idx(h, 0)
@@ -116,9 +130,10 @@ def test_ir_wrong_address_does_not_switch_preset(patched_control_hex: Path) -> N
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_ir_preset_switch_updates_volume_screen_indicator(patched_control_hex: Path) -> None:
+@pytest.mark.parametrize("control_hex", _CONTROL_VERSIONS)
+def test_ir_preset_switch_updates_volume_screen_indicator(control_hex: Path) -> None:
     _require_gpsim()
-    h = _boot_harness(patched_control_hex)
+    h = _boot_harness(control_hex)
     try:
         _set_profile_hypex(h)
         _set_preset_idx(h, 0)
@@ -146,9 +161,10 @@ def test_ir_preset_switch_updates_volume_screen_indicator(patched_control_hex: P
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_ir_preset_switch_rerenders_preset_screen(patched_control_hex: Path) -> None:
+@pytest.mark.parametrize("control_hex", _CONTROL_VERSIONS)
+def test_ir_preset_switch_rerenders_preset_screen(control_hex: Path) -> None:
     _require_gpsim()
-    h = _boot_harness(patched_control_hex)
+    h = _boot_harness(control_hex)
     try:
         _set_profile_hypex(h)
         _set_preset_idx(h, 0)
@@ -182,9 +198,10 @@ def test_ir_preset_switch_rerenders_preset_screen(patched_control_hex: Path) -> 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_ir_preset_switch_works_when_preset_not_visible(patched_control_hex: Path) -> None:
+@pytest.mark.parametrize("control_hex", _CONTROL_VERSIONS)
+def test_ir_preset_switch_works_when_preset_not_visible(control_hex: Path) -> None:
     _require_gpsim()
-    h = _boot_harness(patched_control_hex)
+    h = _boot_harness(control_hex)
     try:
         _set_profile_hypex(h)
         _set_preset_idx(h, 0)
@@ -209,3 +226,76 @@ def test_ir_preset_switch_works_when_preset_not_visible(patched_control_hex: Pat
         assert line1[15] == "B"
     finally:
         h.close()
+
+
+# ---------------------------------------------------------------------------
+# Wire-chain end-to-end: IR preset switch with V3.1 MAIN + V1.63b CONTROL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v31_v163b_ir_preset_switch_reaches_main() -> None:
+    """V3.1 MAIN + V1.63b CONTROL: IR F2 switches to preset B end-to-end.
+
+    Boots the wire chain, injects IR F2 (preset B) on CONTROL, and
+    verifies:
+    - CONTROL LCD updates to show 'B'
+    - The cmd 0x20 frame traverses the UART to MAIN
+    - MAIN's active_flags (0x05E) bit 2 flips to 1
+    - IR F1 switches back to A with matching state changes
+    """
+    from dlcp_fw.sim.control_gpsim import _read_reg
+    from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
+
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    if not V31_MAIN_HEX.exists():
+        pytest.skip(f"missing: {V31_MAIN_HEX.name}")
+    if not PATCHED_CONTROL_HEX_V163B.exists():
+        pytest.skip(f"missing: {PATCHED_CONTROL_HEX_V163B.name}")
+
+    chain = WireMultiMainChainHarness(
+        PATCHED_CONTROL_HEX_V163B,
+        V31_MAIN_HEX,
+        main_units=1,
+        fast_boot=True,
+    )
+    try:
+        result = chain.run_until_connected(limit=90)
+        assert result is not None and result.lcd is not None
+
+        # Confirm boot on preset A
+        l1, _ = chain.lcd_lines()
+        assert l1[15] == "A", f"expected preset A at boot, got: {l1!r}"
+
+        # Set up IR profile on CONTROL (Hypex profile: addr=0x10)
+        _set_profile_hypex(chain.control)
+
+        # IR F2 → preset B
+        chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
+        # Let frames propagate through UART bridge
+        chain.step_many(30)
+
+        l1, _ = chain.lcd_lines()
+        assert l1[15] == "B", f"LCD not updated to B after IR F2: {l1!r}"
+
+        # Check MAIN received the preset switch (active_flags bit 2)
+        main_preset_flags = _read_reg(chain.mains[0]._issue, 0x05E)
+        assert (main_preset_flags >> 2) & 1 == 1, (
+            f"MAIN preset bit not set to B: 0x05E=0x{main_preset_flags:02X}"
+        )
+
+        # IR F1 → back to preset A
+        chain.control.inject_decoded_ir_event(cmd=0x38, addr=0x10, steps=1)
+        chain.step_many(30)
+
+        l1, _ = chain.lcd_lines()
+        assert l1[15] == "A", f"LCD not updated to A after IR F1: {l1!r}"
+
+        main_preset_flags = _read_reg(chain.mains[0]._issue, 0x05E)
+        assert (main_preset_flags >> 2) & 1 == 0, (
+            f"MAIN preset bit not cleared to A: 0x05E=0x{main_preset_flags:02X}"
+        )
+    finally:
+        chain.close()

@@ -222,7 +222,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite (69 test files, 492 tests collected):
+Current suite (69 test files, 503 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -298,7 +298,7 @@ Version labels:
 
 Recent verification (2026-03-30):
 
-- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `492 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `503 tests collected`
 
 V3.1-only gate (80 tests, ~8 min):
 

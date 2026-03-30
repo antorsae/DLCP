@@ -129,7 +129,7 @@ release artifacts.
 
 ## Test suite
 
-The firmware is validated by a **492-test simulation suite** that exercises every firmware version across the full operational envelope.
+The firmware is validated by a **503-test simulation suite** that exercises every firmware version across the full operational envelope.
 
 The test infrastructure co-simulates **two daisy-chained DLCP units** (PB1 + PB2) using a [patched gpsim fork](vendor/gpsim-0.32.1-xtc/) that models the PIC18 MCUs cycle-accurately — MSSP/I2C, UART, USB SIE, and Timer peripherals. A Python harness drives the serial bus, injects faults, and verifies LCD output, DSP register state, and protocol behavior.
 
@@ -145,7 +145,7 @@ Test categories:
 - **Cross-version compatibility** — every MAIN/CONTROL version pair tested for interop
 
 ```bash
-.venv_ep0/bin/python -m pytest tests/sim -n 16 -q          # full gate, 492 tests
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q          # full gate, 503 tests
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q -k "v31" # V3.1 only, 80 tests
 ```
 

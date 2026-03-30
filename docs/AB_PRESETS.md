@@ -22,7 +22,7 @@ Current design status:
   - `python3 -m dlcp_fw.patch.build_control_presets_ab_v162b`
   - `python3 -m dlcp_fw.patch.verify_presets_ab --control-new-v162b`
   - `.venv_ep0/bin/python -m pytest -q tests/sim/test_verify_presets_ab_v162b_semantic_guards.py tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `14 passed`
-- Full collect-only count: `492 tests collected` (2026-03-30).
+- Full collect-only count: `503 tests collected` (2026-03-30).
 - `V2.5` keeps the `V2.4` A/B preset behavior and adds bounded UART/MSSP recovery in MAIN.
 - `V2.5` is intended to remain wire-compatible with current CONTROL `V1.61b`.
 - `V1.62b` keeps the `V1.61b` A/B preset behavior and adds CONTROL-side reconnect/parser hardening for `V2.5`.
@@ -360,7 +360,7 @@ Run full gpsim-inclusive test gate:
 Current targeted result:
 
 - `tests/sim/test_verify_presets_ab_v162b_semantic_guards.py` + `tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `14 passed`
-- `tests/sim --collect-only` -> `492 tests collected` (2026-03-30)
+- `tests/sim --collect-only` -> `503 tests collected` (2026-03-30)
 
 ## Test Coverage Summary
 
