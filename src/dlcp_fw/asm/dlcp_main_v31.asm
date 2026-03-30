@@ -4277,7 +4277,7 @@ flow_main_core_service_30d8_3186:
 ; ---------------------------------------------------------------------------
 ; Function: main_core_service_3188
 ; Address : 0x3188
-; Notes   : Inferred core helper routine. Calls: main_core_service_496e, main_core_service_496c, main_core_service_4080.
+; Notes   : Inferred core helper routine. Calls: main_core_service_496c, main_core_service_4080.
 ; ---------------------------------------------------------------------------
 main_core_service_3188:
     bcf         STATUS, 0, ACCESS
@@ -4343,7 +4343,6 @@ flow_main_core_service_3188_31e6:
     bnz         flow_main_core_service_3188_324a
     bra         flow_main_core_service_3188_3230
 flow_main_core_service_3188_31f4:
-    call        main_core_service_496e, 0x0
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_31fa:
     call        main_core_service_496c, 0x0
@@ -6676,7 +6675,7 @@ flow_flash_write_with_gie_off_42ec:
 ; ---------------------------------------------------------------------------
 ; Function: main_usb_service_42f4
 ; Address : 0x42F4
-; Notes   : Inferred usb helper; touches usb. Calls: main_core_service_3682, main_core_service_495a.
+; Notes   : Inferred usb helper; touches usb. Calls: main_core_service_3682, flow_main_core_service_3188_3194.
 ; ---------------------------------------------------------------------------
 main_usb_service_42f4:
     movlb       0x4
@@ -6705,7 +6704,7 @@ flow_main_usb_service_42f4_4316:
     clrf        ram_0x0E8, BANKED
     bcf         UCON, 4, ACCESS
     call        main_core_service_3682, 0x0
-    call        main_core_service_495a, 0x0
+    call        flow_main_core_service_3188_3194, 0x0
     goto        flow_main_core_service_3188_324c
 
 
@@ -7235,16 +7234,10 @@ main_usb_service_4624:
 ; Notes   : Inferred i2c helper; touches i2c.
 ; ---------------------------------------------------------------------------
 main_i2c_service_464c:
-    movff       SSPCON1, ram_0x003
-    movlw       0x0F
-    andwf       ram_0x003, F, ACCESS
-    movf        ram_0x003, W, ACCESS
+    movf        SSPCON1, W, ACCESS
+    andlw       0x0F
     xorlw       0x08
     bz          flow_main_i2c_service_464c_4668
-    movff       SSPCON1, ram_0x003
-    movlw       0x0F
-    andwf       ram_0x003, F, ACCESS
-    movf        ram_0x003, W, ACCESS
     xorlw       0x0B
     btfsc       STATUS, 2, ACCESS
 flow_main_i2c_service_464c_4668:
@@ -7376,7 +7369,7 @@ main_usb_service_4700:
 ; ---------------------------------------------------------------------------
 ; Function: main_usb_service_4720
 ; Address : 0x4720
-; Notes   : Inferred usb helper; touches timer,usb. Calls: main_core_service_496a.
+; Notes   : Inferred usb helper; touches timer,usb.
 ; ---------------------------------------------------------------------------
 main_usb_service_4720:
     movff       UIE, ram_0x092
@@ -7386,7 +7379,6 @@ main_usb_service_4720:
     bsf         UCON, 1, ACCESS
     bcf         PIR2, 5, ACCESS
     bsf         PIE2, 5, ACCESS
-    call        main_core_service_496a, 0x0
     bcf         PIE2, 5, ACCESS
     movlb       0x0
     movf        ram_0x092, W, BANKED
@@ -7631,16 +7623,12 @@ flow_main_uart_service_4860_4866:
 ; ---------------------------------------------------------------------------
 ; Function: rx_ring_has_data
 ; Address : 0x4872
-; Notes   : Checks whether RX ring has unread data (write index != read index).
+; Notes   : Checks whether RX ring has unread data (returns zero when write index == read index).
 ; ---------------------------------------------------------------------------
 rx_ring_has_data:
     movlb       0x0
     movf        rx_ring_wr, W, BANKED
-    clrf        PRODL, ACCESS
-    cpfseq      rx_ring_rd, BANKED
-    incf        PRODL, F, ACCESS
-    movff       PRODL, ram_0x003
-    movf        ram_0x003, W, ACCESS
+    xorwf       rx_ring_rd, W, BANKED
     return      0
 
 
@@ -7671,7 +7659,7 @@ uart_tx_byte_blocking:
     movf        ram_0x003, W, ACCESS
     return      0
 uart_tx_timeout:
-    call        recover_uart, 0x0
+    call        uart_config, 0x0
     call        wait_trmt_bounded, 0x0
     bc          v31_hard_reset_jump2
     movff       ram_0x003, TXREG
@@ -7864,15 +7852,6 @@ main_core_service_4954:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_core_service_495a
-; Address : 0x495A
-; Notes   : Inferred core helper routine.
-; ---------------------------------------------------------------------------
-main_core_service_495a:
-    goto        flow_main_core_service_3188_3194
-
-
-; ---------------------------------------------------------------------------
 ; Function: main_uart_service_495e
 ; Address : 0x495E
 ; Notes   : Inferred uart helper; touches uart.
@@ -7880,6 +7859,7 @@ main_core_service_495a:
 main_uart_service_495e:
     bsf         RCSTA, 4, ACCESS
     return      0
+
 
 ; ---------------------------------------------------------------------------
 ; Function: usb_disconnect_handler
@@ -7902,29 +7882,11 @@ main_i2c_service_4966:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_core_service_496a
-; Address : 0x496A
-; Notes   : Inferred core helper routine.
-; ---------------------------------------------------------------------------
-main_core_service_496a:
-    return      0
-
-
-; ---------------------------------------------------------------------------
 ; Function: main_core_service_496c
 ; Address : 0x496C
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_496c:
-    return      0
-
-
-; ---------------------------------------------------------------------------
-; Function: main_core_service_496e
-; Address : 0x496E
-; Notes   : Inferred core helper routine.
-; ---------------------------------------------------------------------------
-main_core_service_496e:
     return      0
 
 
@@ -7954,80 +7916,44 @@ wait_trmt_bounded:
     call        wait_seed, 0x0
 wait_trmt_loop:
     btfsc       TXSTA, 1, ACCESS            ; TRMT?
-    bra         wait_trmt_done
+    bra         wait_wait_done
     call        wait_tick, 0x0
     bnc         wait_trmt_loop
-    return      0
-wait_trmt_done:
-    bcf         STATUS, 0, ACCESS
-    return      0
-
-wait_mssp_idle_bounded:
-    call        wait_seed, 0x0
-wait_mssp_idle_loop:
-    movf        SSPCON2, W, ACCESS
-    andlw       0x1F
-    bnz         wait_mssp_idle_tick
-    btfsc       SSPSTAT, 2, ACCESS          ; R_NOT_W
-    bra         wait_mssp_idle_tick
-    bcf         STATUS, 0, ACCESS
-    return      0
-wait_mssp_idle_tick:
-    call        wait_tick, 0x0
-    bnc         wait_mssp_idle_loop
     return      0
 
 wait_sen_bounded:
     call        wait_seed, 0x0
 wait_sen_loop:
     btfss       SSPCON2, 0, ACCESS          ; SEN clear?
-    bra         wait_sen_done
+    bra         wait_wait_done
     call        wait_tick, 0x0
     bnc         wait_sen_loop
-    return      0
-wait_sen_done:
-    bcf         STATUS, 0, ACCESS
     return      0
 
 wait_pen_bounded:
     call        wait_seed, 0x0
 wait_pen_loop:
     btfss       SSPCON2, 2, ACCESS          ; PEN clear?
-    bra         wait_pen_done
+    bra         wait_wait_done
     call        wait_tick, 0x0
     bnc         wait_pen_loop
-    return      0
-wait_pen_done:
-    bcf         STATUS, 0, ACCESS
     return      0
 
 wait_bf_clear_bounded:
     call        wait_seed, 0x0
 wait_bf_clear_loop:
     btfss       SSPSTAT, 0, ACCESS          ; BF set?
-    bra         wait_bf_clear_done          ; BF=0: buffer empty, done
+    bra         wait_wait_done              ; BF=0: buffer empty, done
     call        wait_tick, 0x0
     bnc         wait_bf_clear_loop
     return      0                           ; C=1: timed out
-wait_bf_clear_done:
+wait_wait_done:
     bcf         STATUS, 0, ACCESS
     return      0
 
 ; ---------------------------------------------------------------------------
 ; Recovery Helpers
 ; ---------------------------------------------------------------------------
-recover_mssp:
-    movlw       0x80
-    movwf       SSPCON1, ACCESS             ; pre-clear MSSP (V2.7 pattern)
-    movwf       ram_0x003, ACCESS           ; SSPSTAT restore value (SMP=1)
-    movlw       0x28                        ; SSPCON1 value (I2C master + SSPEN)
-    call        mssp_hard_reset, 0x0
-    return      0
-
-recover_uart:
-    call        uart_config, 0x0
-    return      0
-
 ; ---------------------------------------------------------------------------
 ; I2C Bus Clear (Fix C) — 9 SCL clocks + manual STOP
 ; ---------------------------------------------------------------------------
