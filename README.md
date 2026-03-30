@@ -29,13 +29,19 @@ These compound into cascading failures, especially in daisy-chained multi-PB con
 
 Two independent DSP configuration banks (A and B) stored in MAIN flash. Each bank holds the complete DSP register set including filename metadata. Switching is instantaneous — the DSP reloads from the selected bank.
 
-**LCD menu** (CONTROL adds a new top-level Preset page):
+**LCD menu** (CONTROL adds a new top-level Preset page between Volume and Input):
 
 ```
 Volume screen:              Preset screen:
 +----------------+          +----------------+
-|Volume:        A|          |Preset          |
-|-24.0 dB        |          |Active: A       |
+|Volume:-17.0dB A|          |Preset          |
+|Auto Detect     |          |Active: A       |
++----------------+          +----------------+
+
+Input screen:               Setup screen:
++----------------+          +----------------+
+|Input:          |          |Setup           |
+|Auto Detect     |          |BL Timeout      |
 +----------------+          +----------------+
 ```
 
@@ -43,8 +49,8 @@ After switching to Preset B:
 
 ```
 +----------------+          +----------------+
-|Volume:        B|          |Preset          |
-|-24.0 dB        |          |Active: B       |
+|Volume:-17.0dB B|          |Preset          |
+|Auto Detect     |          |Active: B       |
 +----------------+          +----------------+
 ```
 
@@ -62,8 +68,8 @@ reports the fault cleared.
 
 ```
 +----------------+
-|Volume:        !|
-|-24.0 dB        |
+|Volume:-17.0dB !|
+|Auto Detect     |
 +----------------+
 ```
 
