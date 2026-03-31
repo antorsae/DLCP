@@ -82,44 +82,30 @@ CONTROL or `V3.1` MAIN hexes.
 
 ### MAIN firmware
 
-| Version | Type | Adds |
-|---------|------|------|
-| **V3.1** | Source-assembled | Full source rewrite. All V2.4-V2.7 features inline, including BF/08 fault-status reporting. |
-| V3.0 | Source-assembled | Clean V2.3-equivalent rewrite, byte-exact behavioral parity proven. |
-| V2.7 | Binary-patched | V2.6 + I2C bus-clear, DSP ping, fault status frames, PEN timeout. |
-| V2.6 | Binary-patched | V2.5 + DSP ACKSTAT check, conditional dirty-bit, deferred volume commit. |
-| V2.5 | Binary-patched | V2.4 + bounded timeouts on all UART/MSSP/I2C blocking waits. |
-| V2.4 | Binary-patched | A/B preset switching only (no robustness). |
+| Version | Type | Status | Adds |
+|---------|------|--------|------|
+| V3.1 | Source-assembled | **WIP** | Full source rewrite. All V2.4-V2.7 features inline. Unresolved issue under investigation. |
+| V3.0 | Source-assembled | Reference | Clean V2.3-equivalent rewrite, byte-exact behavioral parity proven. |
+| **V2.7** | Binary-patched | **Release** | V2.6 + I2C bus-clear, DSP ping, fault status frames, PEN timeout. |
+| V2.6 | Binary-patched | Release | V2.5 + DSP ACKSTAT check, conditional dirty-bit, deferred volume commit. |
+| V2.5 | Binary-patched | Release | V2.4 + bounded timeouts on all UART/MSSP/I2C blocking waits. |
+| V2.4 | Binary-patched | Release | A/B preset switching only (no robustness). |
 
 ### CONTROL firmware
 
-| Version | Type | Adds |
-|---------|------|------|
-| **V1.63b** | Binary-patched | V1.62b + BF/08 fault parser, LCD `!` indicator, and resync-on-clear. |
-| V1.62b | Binary-patched | V1.61b + UART OERR recovery, bounded reconnect handshake. |
-| V1.61b | Binary-patched | A/B preset UI + V1.6b setup LCD garbage fix. |
+| Version | Type | Status | Adds |
+|---------|------|--------|------|
+| **V1.63b** | Binary-patched | **Release** | V1.62b + BF/08 fault parser, LCD `!` indicator, and resync-on-clear. |
+| V1.62b | Binary-patched | Release | V1.61b + UART OERR recovery, bounded reconnect handshake. |
+| V1.61b | Binary-patched | Release | A/B preset UI + V1.6b setup LCD garbage fix. |
 
 ### Recommended pair
 
-**V3.1 + V1.63b** for full robustness, A/B presets, and BF/08 fault reporting.
+**[`DLCP_Firmware_V2.7.hex`](firmware/patched/releases/DLCP_Firmware_V2.7.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — full robustness, A/B presets, and BF/08 fault reporting.
 
-**V2.5 + V1.62b** for the conservative binary-patched option.
+All versions are backward-compatible: V2.7 works with V1.62b (no BF/08 fault UI/resync), V2.5 works with V1.61b (no reconnect hardening).
 
-All versions are backward-compatible: V3.1 works with V1.62b (no BF/08 fault UI/resync), V2.5 works with V1.61b (no reconnect hardening).
-
-### Hex files
-
-Releases in [`firmware/patched/releases/`](firmware/patched/releases/):
-
-- [`DLCP_Firmware_V3.1.hex`](firmware/patched/releases/DLCP_Firmware_V3.1.hex) — current MAIN
-- [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex) — current CONTROL
-- [`DLCP_Control_V1.62b.hex`](firmware/patched/releases/DLCP_Control_V1.62b.hex) — conservative CONTROL
-
-Earlier versions (V2.4-V2.7, V1.41-V1.61b) are also available in that directory.
-
-Source-assembled gpasm byproducts such as `.cod` and `.lst` may also be
-present beside `V3.x` outputs, but the `.hex` files are the canonical
-release artifacts.
+Earlier versions (V2.4-V2.6, V1.41-V1.62b) are also available in [`firmware/patched/releases/`](firmware/patched/releases/).
 
 ## V3.x vs V2.x: source-assembled vs binary-patched
 
