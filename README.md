@@ -66,7 +66,7 @@ Menu navigation wraps: **Volume** <-> **Preset** <-> **Input** <-> **Setup**
 
 Switching: UP/DOWN on the Preset page, or IR remote F1/F2 from any page.
 
-### DSP Fault Reporting (V2.7/V3.1 + V1.63b)
+### DSP Fault Reporting (V2.7+/V3.1 + V1.63b)
 
 When the MAIN firmware detects a persistent DSP-path fault, it emits a
 `BF/08/<fault_byte>` status frame. `V1.63b` CONTROL adds the matching
