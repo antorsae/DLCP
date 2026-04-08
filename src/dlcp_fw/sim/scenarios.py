@@ -114,7 +114,7 @@ def run_preset_ab_roundtrip(
         left_apply=left.apply_count,
         right_apply=right.apply_count,
         digest_a=left.table_digest(0x5600),
-        digest_b=left.table_digest(0x4A00),
+        digest_b=left.table_digest(left._preset_b_base),
         fault_profile=bus.fault,
     )
 

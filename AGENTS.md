@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-03-30
+Last updated: 2026-04-08
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -12,7 +12,7 @@ If any file is moved/renamed, update this document in the same change.
 ## System Overview
 
 - Product: Hypex DLCP (Digital Loudspeaker Control Processor)
-- Main MCU: PIC18F2455-class firmware image (`V2.3` stock, patched `V2.4`–`V2.7`, source-assembled `V3.0`/`V3.1`)
+- Main MCU: PIC18F2455-class firmware image (`V2.3` stock, patched `V2.4`–`V2.8`, source-assembled `V3.0`/`V3.1`)
 - Control MCU: PIC18F25K20 firmware image (`V1.4`/`V1.5b`/`V1.6b` stock, patched `V1.41`/`V1.51b`/`V1.61b`/`V1.62b`/`V1.63b`)
 - DSP: TI TAS3108
 - Host interface: USB HID (`VID 0x04D8`, `PID 0xFF89`)
@@ -103,6 +103,7 @@ Use these locations only:
 - Main AB + robustness: `firmware/patched/releases/DLCP_Firmware_V2.5.hex`
 - Main AB + DSP robustness: `firmware/patched/releases/DLCP_Firmware_V2.6.hex`
 - Main AB + bus-clear/ping/PEN: `firmware/patched/releases/DLCP_Firmware_V2.7.hex`
+- Main AB + delayed switch hold: `firmware/patched/releases/DLCP_Firmware_V2.8.hex`
 - Control AB: `firmware/patched/releases/DLCP_Control_V1.41.hex`
 - Control AB (V1.5b port): `firmware/patched/releases/DLCP_Control_V1.51b.hex`
 - Control AB (V1.6b port): `firmware/patched/releases/DLCP_Control_V1.61b.hex`
@@ -115,8 +116,7 @@ Use these locations only:
 - Main V3.1 (all features inline): `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 - Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
-- Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm` and matching `DLCP_Firmware_V3.1_diag*` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
-- Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm` and matching `DLCP_Firmware_V3.1_diag*` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
+- Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm`, `src/dlcp_fw/asm/dlcp_main_v31_with_nops.asm`, `src/dlcp_fw/asm/dlcp_main_v31_without_nops.asm`, and matching `DLCP_Firmware_V3.1_diag*` / `DLCP_Firmware_V3.1_WITH*_NOPS.hex` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
 
 ### Disassembly
 
@@ -156,8 +156,9 @@ Canonical constants used across scripts/tests:
 - Firmware dirs: `FIRMWARE_STOCK_DIR`, `FIRMWARE_PATCHED_DIR`, `FIRMWARE_DISASM_DIR`, `FIRMWARE_DUMPS_DIR`, `FIRMWARE_REFERENCE_DIR`
 - Stock main: `STOCK_MAIN_HEX`, `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`, `STOCK_MAIN_DUMP_TABLE`, `STOCK_MAIN_DUMP_CONVERTED_HEX`, `STOCK_MAIN_COMBINED_HEX`, `STOCK_MAIN_CONFIG_BITS_EXPORT`, `STOCK_MAIN_EE_DATA_EXPORT`, `STOCK_MAIN_USER_ID_EXPORT`
 - Stock control: `STOCK_CONTROL_HEX_V14`, `STOCK_CONTROL_HEX_V15B`, `STOCK_CONTROL_HEX_V16B`
-- Patched main: `PATCHED_MAIN_HEX_V24`, `PATCHED_MAIN_HEX_V25`, `PATCHED_MAIN_HEX_V26`, `PATCHED_MAIN_HEX_V27`, `PATCHED_MAIN_HEX` (alias for V2.7)
+- Patched main: `PATCHED_MAIN_HEX_V24`, `PATCHED_MAIN_HEX_V25`, `PATCHED_MAIN_HEX_V26`, `PATCHED_MAIN_HEX_V27`, `PATCHED_MAIN_HEX_V28`, `PATCHED_MAIN_HEX` (alias for V2.7)
 - Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX`, `V31_MAIN_ASM`
+  - `V31_MAIN_HEX` / `V31_MAIN_ASM` may be overridden for diagnostics with `DLCP_FW_V31_MAIN_HEX` / `DLCP_FW_V31_MAIN_ASM`
 - Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`
 - Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
 - Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`, `GPSIM_XTC_SOURCE_DIR`, `GPSIM_XTC_ARTIFACTS_DIR`, `GPSIM_XTC_BUILD_DIR`, `GPSIM_XTC_BIN_DIR`, `GPSIM_XTC_BINARY`, `GPSIM_XTC_COMPAT_BINARY`, `GPSIM_XTC_BUILD_BINARY`, `GPSIM_XTC_MODULE_DIR`
@@ -186,6 +187,7 @@ Always prefer these constants over hardcoded paths.
 ### Flash/probe package (`src/dlcp_fw/flash`)
 
 - Safe control flasher: `dlcp_control_flash.py`
+- EP0 flash window reader: `dlcp_ep0_flash_probe.py`
 - EEPROM shadow dump: `dlcp_ep0_eeprom_shadow_dump.py`
 - DSP filename A/B probe: `dsp_filename_ab_probe.py`
 
@@ -208,6 +210,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/gpsim-xtc`
 - `scripts/gpsim`
 - `scripts/simctl.py`
+- `scripts/dlcp_ep0_flash_probe.py`
 - `scripts/gpsim_tui_simulator.py`
 - `scripts/gpsim_menu_command_audit.py`
 - `scripts/gpsim_lcd_capture_decode.py`
@@ -222,7 +225,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite (69 test files, 503 tests collected):
+Current suite (71 test files, 554 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -272,6 +275,7 @@ End-to-end/faults:
 
 Flash/probe tools:
 - `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
+- `test_dlcp_ep0_flash_probe.py`
 
 Tooling/analysis:
 - `test_word_dump_to_ihex.py`, `test_disasm_to_source.py`
@@ -296,9 +300,11 @@ V3.1 source rewrite:
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (2026-03-30):
+Recent verification (2026-04-08):
 
-- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `503 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `554 tests collected`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `10 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
 
 V3.1-only gate (80 tests, ~8 min):
 
@@ -379,6 +385,7 @@ python3 -m dlcp_fw.patch.build_main_presets_ab --variant v24
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v25
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v26
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v27
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v28
 python3 -m dlcp_fw.patch.build_control_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b

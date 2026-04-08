@@ -34,7 +34,7 @@ def _new_pair(control_hex: Path, main_hex: Path) -> SingleMainChainHarness:
     ("main_fixture", "expect_recovery"),
     [
         pytest.param("patched_main_hex_v24", False, id="v141_v24"),
-        pytest.param("patched_main_hex", True, id="v141_v25"),
+        pytest.param("patched_main_hex_v25", True, id="v141_v25"),
     ],
 )
 def test_v141_wake_uart_helper_fault_separates_v24_from_v25(

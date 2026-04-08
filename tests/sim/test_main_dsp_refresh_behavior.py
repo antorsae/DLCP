@@ -50,6 +50,7 @@ def test_cmd20_refreshes_on_change_only_with_correct_bank_digest(patched_main_he
     Preset command refreshes DSP on actual A/B transitions only (idempotent steady state).
     """
     m = MainUnitModel.from_hex("main", 1, patched_main_hex)
+    expected_b_base = m._preset_b_base
 
     payload_a = build_payload(0x11)
     payload_b = build_payload(0x7C)
@@ -58,15 +59,15 @@ def test_cmd20_refreshes_on_change_only_with_correct_bank_digest(patched_main_he
 
     assert m.process_frame(SerialFrame(route=0xB0, cmd=0x20, data=0x01)) is True
     assert m.apply_count == 1
-    assert m.dsp_ingest[-1].table_base == 0x4A00
+    assert m.dsp_ingest[-1].table_base == expected_b_base
 
     m.upload_hfd_table(payload_b)  # now writes preset B bank
-    digest_b = m.table_digest(0x4A00)
+    digest_b = m.table_digest(expected_b_base)
 
     # Duplicate "set B" must not trigger extra apply.
     assert m.process_frame(SerialFrame(route=0xB0, cmd=0x20, data=0x01)) is True
     assert m.apply_count == 1
-    assert m.dsp_ingest[-1].table_base == 0x4A00
+    assert m.dsp_ingest[-1].table_base == expected_b_base
     assert m.dsp_ingest[-1].table_sha256 != digest_b
 
     # Changing preset does trigger apply and uses active bank content.
@@ -77,7 +78,7 @@ def test_cmd20_refreshes_on_change_only_with_correct_bank_digest(patched_main_he
 
     assert m.process_frame(SerialFrame(route=0xB0, cmd=0x20, data=0x01)) is True
     assert m.apply_count == 3
-    assert m.dsp_ingest[-1].table_base == 0x4A00
+    assert m.dsp_ingest[-1].table_base == expected_b_base
     assert m.dsp_ingest[-1].table_sha256 == digest_b
 
 
@@ -86,6 +87,7 @@ def test_usb_upload_in_active_preset_updates_flash_without_auto_apply(patched_ma
     Characterize reported bug: upload-in-place modifies B bank but does not auto-refresh DSP.
     """
     m = MainUnitModel.from_hex("main", 1, patched_main_hex)
+    expected_b_base = m._preset_b_base
 
     # Move to preset B once (this applies current B table once).
     m.set_preset(1)
@@ -94,14 +96,14 @@ def test_usb_upload_in_active_preset_updates_flash_without_auto_apply(patched_ma
 
     payload_b_v1 = build_payload(0x33)
     m.upload_hfd_table(payload_b_v1)
-    digest_v1 = m.table_digest(0x4A00)
+    digest_v1 = m.table_digest(expected_b_base)
     assert digest_v1 != initial_ingest_sha
     assert m.apply_count == 1
     assert m.dsp_ingest[-1].table_sha256 == initial_ingest_sha
 
     payload_b_v2 = build_payload(0x34)
     m.upload_hfd_table(payload_b_v2)
-    digest_v2 = m.table_digest(0x4A00)
+    digest_v2 = m.table_digest(expected_b_base)
     assert digest_v2 != digest_v1
     assert m.apply_count == 1
     assert m.dsp_ingest[-1].table_sha256 == initial_ingest_sha
@@ -110,19 +112,20 @@ def test_usb_upload_in_active_preset_updates_flash_without_auto_apply(patched_ma
     m.set_preset(0)
     m.set_preset(1)
     assert m.apply_count == 3
-    assert m.dsp_ingest[-1].table_base == 0x4A00
+    assert m.dsp_ingest[-1].table_base == expected_b_base
     assert m.dsp_ingest[-1].table_sha256 == digest_v2
 
 
 def test_cmd20_stub_contains_apply_calls_in_built_hex() -> None:
     """Patched cmd=0x20 stub still reaches the stock apply helper."""
     mem = parse_intel_hex(PATCHED_MAIN_HEX)
-    # The current cmd=0x20 tail has one shared apply path after the preset
-    # change / filename-slot swap logic.
+    # V2.8 routes cmd=0x20 through the delayed-switch helper at 0x55A2,
+    # so the apply call may no longer sit in the narrow 0x54C0 cmd-tail
+    # window used by earlier instant-switch variants.
     want = [0xBA, 0xEC, 0x22, 0xF0]
     hits = [
         a
-        for a in range(0x54C0, 0x5510)
+        for a in range(0x54C0, 0x5600)
         if all(mem.get(a + i, 0xFF) == want[i] for i in range(4))
     ]
     assert len(hits) >= 1

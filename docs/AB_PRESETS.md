@@ -2,7 +2,7 @@
 
 Reliability-first A/B preset patches for:
 
-- MAIN `V2.3` stock -> patched `V2.4`–`V2.7`, source-assembled `V3.0`/`V3.1`
+- MAIN `V2.3` stock -> patched `V2.4`–`V2.8`, source-assembled `V3.0`/`V3.1`
 - CONTROL `V1.4` stock -> patched `V1.41`
 - CONTROL `V1.5b` stock -> patched `V1.51b`
 - CONTROL `V1.6b` stock -> patched `V1.61b` / `V1.62b` / `V1.63b`
@@ -12,6 +12,14 @@ Reliability-first A/B preset patches for:
 Current design status:
 
 - Working in the current test gate.
+- 2026-04-08 update: MAIN `V2.8` and source `V3.1` now use delayed preset switching:
+  - capture mute state on entry
+  - mute only if not already muted
+  - wait `150 ms`
+  - switch/apply preset
+  - unmute only if the helper muted on entry
+  - targeted versions: MAIN `V2.8` and `V3.1+`
+  - wire-chain `gpsim` with CONTROL `V1.63b` stayed out of `WAITING FOR DLCP` during the `150 ms` MAIN-side hold
 - 2026-03-10 correction: the first `V2.5` MAIN artifact had a bad MSSP-idle wait helper and could strand real hardware before CONTROL ever left `WAITING FOR DLCP`; the current repo copy of `DLCP_Firmware_V2.5.hex` has been rebuilt with the fixed wait logic.
 - 2026-03-14 update: MAIN `V2.4` and `V2.5` now keep USB `cmd03` filename behavior A/B-consistent on MAIN only:
   - preset `A` filename in EEPROM `0x60..0x7D`
@@ -126,7 +134,7 @@ CONTROL retry policy:
 
 This is deliberate. The design trades immediate metadata richness for lower link complexity and better recovery characteristics.
 
-## MAIN Patch (`V2.4`)
+## MAIN Patch (`V2.4`–`V2.8`)
 
 Patch strategy:
 
@@ -148,6 +156,7 @@ Patch map:
 | Erase remap stub | `0x54C0` | Redirect table erase window to `B` bank when `B` active |
 | Command tail stub (`V2.4`) | `0x5500` | Preserve stock `0x1D` / `0x1E`, add idempotent `0x20` plus filename slot swap |
 | Command tail stub (`V2.5`) | `0x54C0` | Same as `V2.4`, but coexists with robustness stubs at `0x5500+` |
+| Delayed preset helper (`V2.8`) | `0x55A2..0x55F7` | Maybe-mute, `150 ms` hold, switch/apply, maybe-unmute |
 | Hook sites | `0x1E64`, `0x2E6E`, `0x3DAC`, `0x4028` | Redirect to the stubs above |
 
 Runtime preset state:
@@ -159,11 +168,19 @@ Runtime preset state:
 `cmd=0x20` behavior:
 
 - if requested preset equals current preset: do nothing
-- if requested preset differs:
+- if requested preset differs on `V2.4`–`V2.7`:
   - flush the outgoing filename slot first if USB `cmd03` data is still dirty
   - update `0x05E.2`
   - load the incoming preset filename into the stock RAM slot `0x02C0..0x02DD`
   - call the stock table-apply routine once
+- if requested preset differs on `V2.8` and `V3.1+`:
+  - capture whether MAIN is already muted when the helper starts
+  - if not muted: force mute synchronously
+  - wait `150 ms`
+  - update `0x05E.2`
+  - load the incoming preset filename into the stock RAM slot `0x02C0..0x02DD`
+  - call the stock table-apply routine once while muted
+  - if the helper muted on entry: queue the normal volume restore path to unmute
 
 USB filename behavior:
 
@@ -188,7 +205,7 @@ Important stock behavior preserved:
 Version policy:
 
 - EEPROM tuple remains stock-style `2.30` at `0xF00080..0xF00082`
-- USB-visible application version is patched to `2.4` or `2.5`
+- USB-visible application version is patched to `2.4` through `2.8`
 
 ## CONTROL Patch (`V1.41`, `V1.51b`, `V1.61b`, `V1.62b`)
 
@@ -303,8 +320,12 @@ MAIN:
 
 - bank selection is runtime state in `0x05E.2`
 - bank contents live in flash table windows:
-  - `A`: `0x5600..0x5FFF`
-  - `B`: `0x4A00..0x53FF`
+  - binary-patched `V2.4`–`V2.8`:
+    - `A`: `0x5600..0x5FFF`
+    - `B`: `0x4A00..0x53FF`
+  - source `V3.1+`:
+    - `A`: `0x5600..0x5FFF`
+    - `B`: `0x4C00..0x55FF`
 - USB/HFD writes target the currently active bank through the stock write/erase path plus bank remap stubs
 - filename EEPROM slots are:
   - `A`: `0x60..0x7D`
@@ -335,10 +356,14 @@ Build patched firmware:
 ```bash
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v24
 python3 -m dlcp_fw.patch.build_main_presets_ab --variant v25
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v26
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v27
+python3 -m dlcp_fw.patch.build_main_presets_ab --variant v28
 python3 -m dlcp_fw.patch.build_control_presets_ab
 python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v162b
+python3 -m dlcp_fw.patch.build_control_presets_ab_v163b
 ```
 
 Run static verification:
@@ -360,7 +385,8 @@ Run full gpsim-inclusive test gate:
 Current targeted result:
 
 - `tests/sim/test_verify_presets_ab_v162b_semantic_guards.py` + `tests/sim/test_chain_gpsim_v25_v162b_recovery.py` -> `14 passed`
-- `tests/sim --collect-only` -> `503 tests collected` (2026-03-30)
+- `tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed` (`V2.8 + V1.63b`, `V3.1 + V1.63b`)
+- `tests/sim --collect-only` -> `554 tests collected` (2026-04-08)
 
 ## Test Coverage Summary
 
@@ -399,10 +425,12 @@ Practical order:
 Relevant release files:
 
 - `firmware/patched/releases/DLCP_Firmware_V2.5.hex`
+- `firmware/patched/releases/DLCP_Firmware_V2.8.hex`
 - `firmware/patched/releases/DLCP_Control_V1.41.hex`
 - `firmware/patched/releases/DLCP_Control_V1.51b.hex`
 - `firmware/patched/releases/DLCP_Control_V1.61b.hex`
 - `firmware/patched/releases/DLCP_Control_V1.62b.hex`
+- `firmware/patched/releases/DLCP_Control_V1.63b.hex`
 
 Bench-verified pair:
 

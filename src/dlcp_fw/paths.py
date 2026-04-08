@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,12 +36,31 @@ PATCHED_MAIN_HEX_V24 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.4.hex"
 PATCHED_MAIN_HEX_V25 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.5.hex"
 PATCHED_MAIN_HEX_V26 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.6.hex"
 PATCHED_MAIN_HEX_V27 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.7.hex"
+PATCHED_MAIN_HEX_V28 = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.8.hex"
 V30_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.0.hex"
 V30_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v30.asm"
 V30_MAIN_ASM_COMMENTS = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v30_comments.asm"
-V31_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31.asm"
-V31_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1.hex"
-# Active main patch alias: used by patched_main_hex fixture and tools.
+
+
+def _path_override(env_name: str, default: Path) -> Path:
+    raw = os.environ.get(env_name)
+    if not raw:
+        return default
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
+
+
+V31_MAIN_ASM = _path_override(
+    "DLCP_FW_V31_MAIN_ASM",
+    PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31.asm",
+)
+V31_MAIN_HEX = _path_override(
+    "DLCP_FW_V31_MAIN_HEX",
+    FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1.hex",
+)
+# Active main patch alias: keep the established baseline for legacy tests/tools.
 PATCHED_MAIN_HEX = PATCHED_MAIN_HEX_V27
 PATCHED_CONTROL_HEX_V141 = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.41.hex"
 PATCHED_CONTROL_HEX_V151B = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.51b.hex"

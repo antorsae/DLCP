@@ -108,36 +108,14 @@ def test_check_main_rejects_mssp_idle_wait_logic_drift(patched_main_hex: Path) -
         0x0E,
         0x03,
         0x14,
-        0xD8,
-        0xA4,
-        0x03,
-        0xD0,
-        0xC7,
-        0xB4,
-        0x01,
-        0xD0,
-        0x05,
-        0xD0,
-        0x0B,
-        0x2E,
-        0xF5,
-        0xD7,
-        0x0C,
-        0x2E,
-        0xF3,
-        0xD7,
-        0x02,
-        0xD0,
-        0xD8,
-        0x90,
     ]
-    for addr in range(0x5576, 0x5594):
+    for addr in range(0x5558, 0x5562):
         if all(mut.get(addr + off, 0xFF) == byte for off, byte in enumerate(seq)):
             hit = addr
             break
     if hit is None:
         raise RuntimeError("test setup failed: MSSP idle wait signature not found")
-    mut[hit + 1] = 0xB4
+    mut[hit] = 0xC6
     with pytest.raises(RuntimeError, match="packed MSSP idle wait logic"):
         check_main(stock, mut)
 

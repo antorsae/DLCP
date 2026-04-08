@@ -223,12 +223,20 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int], *, variant: 
             variant = "v24"
         elif version_lo == 0x05:
             variant = "v25"
+        elif version_lo == 0x06:
+            variant = "v26"
+        elif version_lo == 0x07:
+            variant = "v27"
+        elif version_lo == 0x08:
+            variant = "v28"
         else:
             raise RuntimeError(f"unable to infer MAIN variant from USB version literal 0x{version_lo:02X}")
 
-    for i in range(0xA00):
+    table_b_base = 0x4A00
+    table_overlay_prefix = {"v24": 0x00, "v25": 0x00, "v26": 0x04, "v27": 0x54, "v28": 0x54}[variant]
+    for i in range(table_overlay_prefix, 0xA00):
         a = main_orig.get(0x5600 + i, 0xFF)
-        b = main_new.get(0x4A00 + i, 0xFF)
+        b = main_new.get(table_b_base + i, 0xFF)
         if a != b:
             raise RuntimeError(f"main table copy mismatch at +0x{i:03X}: A=0x{a:02X} B=0x{b:02X}")
 
@@ -298,14 +306,22 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int], *, variant: 
         if _find_seq(main_new, [literal, 0x0A], lo=cmd_lo, hi=cmd_hi) is not None:
             raise RuntimeError(f"main cmd-tail still contains removed xorlw 0x{literal:02X}")
 
-    if _count_seq(main_new, [0x7E, 0x81], lo=cmd_lo, hi=cmd_hi) < 1:
-        raise RuntimeError("main cmd-tail missing filename service requeue after preset switch")
-    if _find_seq(main_new, [0x5E, 0x74], lo=cmd_lo, hi=cmd_hi) is None:
-        raise RuntimeError("main cmd-tail missing preset toggle (btg 0x05E,2)")
-    if _find_seq(main_new, [0x61, 0xEC, 0x10, 0xF0], lo=cmd_lo, hi=cmd_hi) is None:
-        raise RuntimeError("main cmd-tail missing filename slot reload call to 0x20C2")
-    if _count_seq(main_new, [0xBA, 0xEC, 0x22, 0xF0], lo=cmd_lo, hi=cmd_hi) < 1:
-        raise RuntimeError("main cmd-tail missing table apply call for cmd=0x20")
+    helper_lo, helper_hi = cmd_lo, cmd_hi
+    if variant == "v28":
+        helper_lo, helper_hi = 0x55A2, 0x5600
+        if _find_seq(main_new, [0x96, 0x0E, 0x03, 0x6E], lo=helper_lo, hi=helper_hi) is None:
+            raise RuntimeError("main delayed preset helper missing 150 ms Timer3 seed")
+
+    if _count_seq(main_new, [0x7E, 0x81], lo=helper_lo, hi=helper_hi) < 1:
+        raise RuntimeError("main preset switch path missing filename service requeue after preset switch")
+    if _find_seq(main_new, [0x5E, 0x74], lo=helper_lo, hi=helper_hi) is None:
+        raise RuntimeError("main preset switch path missing preset toggle (btg 0x05E,2)")
+    if _find_seq(main_new, [0x61, 0xEC, 0x10, 0xF0], lo=helper_lo, hi=helper_hi) is None:
+        raise RuntimeError("main preset switch path missing filename slot reload call to 0x20C2")
+    if _count_seq(main_new, [0xBA, 0xEC, 0x22, 0xF0], lo=helper_lo, hi=helper_hi) < 1:
+        raise RuntimeError("main preset switch path missing table apply call for cmd=0x20")
+    if variant == "v28" and _find_seq(main_new, [0x7E, 0x87], lo=helper_lo, hi=helper_hi) is None:
+        raise RuntimeError("main delayed preset helper missing queued unmute/volume restore")
 
     main_ver = [main_new.get(a, 0xFF) for a in (0xF00080, 0xF00081, 0xF00082)]
     if main_ver != [0x02, 0x03, 0x30]:
@@ -320,13 +336,21 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int], *, variant: 
 
     _expect_bytes(
         main_new,
-        {0x240C: 0x03, 0x2412: 0x02, 0x2416: 0x04 if variant == "v24" else 0x05},
+        {
+            0x240C: 0x03,
+            0x2412: 0x02,
+            0x2416: {"v24": 0x04, "v25": 0x05, "v26": 0x06, "v27": 0x07, "v28": 0x08}[variant],
+        },
         label="main USB version literal",
     )
 
-    if variant == "v25":
-        if _count_seq(main_new, [0x00, 0x0E, 0x0B, 0x6E, 0x10, 0x0E, 0x0C, 0x6E], lo=0x5500, hi=0x55A0) < 6:
-            raise RuntimeError("main robustness patch missing timeout seed helpers")
+    if variant in {"v25", "v26", "v27", "v28"}:
+        if variant in {"v25", "v26"}:
+            if _count_seq(main_new, [0x00, 0x0E, 0x0B, 0x6E, 0x10, 0x0E, 0x0C, 0x6E], lo=0x5500, hi=0x55A0) < 6:
+                raise RuntimeError("main robustness patch missing timeout seed helpers")
+        else:
+            if _find_seq(main_new, [0x0B, 0x6A, 0x10, 0x0E, 0x0C, 0x6E], lo=0x5500, hi=0x5508) is None:
+                raise RuntimeError("main robustness patch missing shared timeout seed helper")
         if _find_seq(main_new, [0xD9, 0xEC, 0x23, 0xF0], lo=0x54AE, hi=0x54B8) is None:
             raise RuntimeError("main robustness patch missing MSSP reinit helper call")
         if _find_seq(main_new, [0x6A, 0xEF, 0x24, 0xF0], lo=0x49C8, hi=0x49CE) is None:
@@ -343,31 +367,9 @@ def check_main(main_orig: Dict[int, int], main_new: Dict[int, int], *, variant: 
                     0x0E,
                     0x03,
                     0x14,
-                    0xD8,
-                    0xA4,
-                    0x03,
-                    0xD0,
-                    0xC7,
-                    0xB4,
-                    0x01,
-                    0xD0,
-                    0x05,
-                    0xD0,
-                    0x0B,
-                    0x2E,
-                    0xF5,
-                    0xD7,
-                    0x0C,
-                    0x2E,
-                    0xF3,
-                    0xD7,
-                    0x02,
-                    0xD0,
-                    0xD8,
-                    0x90,
                 ],
-                lo=0x5576,
-                hi=0x5594,
+                lo=0x5558,
+                hi=0x5562,
             )
             is None
         ):

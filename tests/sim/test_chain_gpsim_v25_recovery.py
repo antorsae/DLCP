@@ -32,10 +32,10 @@ def _new_v25_pair(control_hex: Path, main_hex: Path) -> SingleMainChainHarness:
 @pytest.mark.slow
 def test_v25_v161b_native_ring_chain_reaches_display(
     patched_control_hex_v161b: Path,
-    patched_main_hex: Path,
+    patched_main_hex_v25: Path,
 ) -> None:
     _require_gpsim()
-    pair = _new_v25_pair(patched_control_hex_v161b, patched_main_hex)
+    pair = _new_v25_pair(patched_control_hex_v161b, patched_main_hex_v25)
     try:
         assert pair.main.uses_adc_boot_wait_hook is False
         last = pair.run_until_connected(limit=180)
@@ -59,11 +59,11 @@ def test_v25_v161b_native_ring_chain_reaches_display(
 )
 def test_v25_v161b_runtime_timeout_fault_recovers_without_waiting(
     patched_control_hex_v161b: Path,
-    patched_main_hex: Path,
+    patched_main_hex_v25: Path,
     fault_kwargs: dict[str, bool],
 ) -> None:
     _require_gpsim()
-    pair = _new_v25_pair(patched_control_hex_v161b, patched_main_hex)
+    pair = _new_v25_pair(patched_control_hex_v161b, patched_main_hex_v25)
     try:
         first = pair.run_until_connected(limit=180)
         assert first is not None, "pair never produced a step result"
@@ -87,10 +87,10 @@ def test_v25_v161b_runtime_timeout_fault_recovers_without_waiting(
 @pytest.mark.slow
 def test_v25_v161b_wake_uart_timeout_fault_recovers_after_fault_clear(
     patched_control_hex_v161b: Path,
-    patched_main_hex: Path,
+    patched_main_hex_v25: Path,
 ) -> None:
     _require_gpsim()
-    pair = _new_v25_pair(patched_control_hex_v161b, patched_main_hex)
+    pair = _new_v25_pair(patched_control_hex_v161b, patched_main_hex_v25)
     try:
         first = pair.run_until_connected(limit=180)
         assert first is not None, "pair never produced a step result"

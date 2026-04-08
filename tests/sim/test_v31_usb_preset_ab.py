@@ -1,7 +1,7 @@
 """USB HID, preset A/B, and config name tests for V3.1.
 
 Tests USB config upload, preset flash isolation, config name round-trips,
-and live gpsim cmd=0x20 dispatch. Parametrized across V2.4 and V3.1.
+and delayed-switch detection across V2.4, V2.8, and V3.1.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 
 from dlcp_fw.paths import (
     PATCHED_MAIN_HEX_V24,
+    PATCHED_MAIN_HEX_V28,
     V31_MAIN_ASM,
     V31_MAIN_HEX,
 )
@@ -42,6 +43,7 @@ def _decode_filename(resp: bytes) -> str:
 
 _PRESET_VERSIONS = [
     pytest.param(PATCHED_MAIN_HEX_V24, 0x4A00, 0x0C00, id="v24"),
+    pytest.param(PATCHED_MAIN_HEX_V28, 0x4A00, 0x0C00, id="v28"),
     pytest.param(V31_MAIN_HEX, 0x4C00, 0x0A00, id="v31"),
 ]
 
@@ -52,11 +54,17 @@ _PRESET_VERSIONS = [
 
 
 def test_v31_static_remap_constants() -> None:
-    """V3.1 ASM must have org 0x4C00 for preset B and remap delta 0x0A."""
+    """V3.1 ASM must keep the 0x4C00 layout and delayed preset helper."""
     _skip_missing(V31_MAIN_ASM)
     text = V31_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
 
     assert "org 0x4C00" in text, "preset B org 0x4C00 not found in V3.1 ASM"
+    assert "preset_delay_150ms:" in text, "delayed preset helper label missing"
+    delay_block = text[text.index("preset_delay_150ms:") : text.index("preset_force_mute:")]
+    assert "movlw       0x96" in delay_block, "150 ms literal missing from delayed preset helper"
+    assert "call        timer3_blocking_delay, 0x0" in delay_block, (
+        "Timer3 delay call missing from delayed preset helper"
+    )
 
     for anchor in ("flash_read:", "flash_write:", "flash_erase:"):
         idx = text.index(anchor)
@@ -211,7 +219,7 @@ def test_config_name_persists_to_correct_eeprom_slot(
 
 
 def test_model_autodetects_preset_b_base() -> None:
-    """MainUnitModel.from_hex auto-detects V3.1's 0x4C00 preset B base."""
+    """MainUnitModel.from_hex auto-detects the 0x4C00 preset-B layout."""
     _skip_missing(V31_MAIN_HEX)
     m = MainUnitModel.from_hex("main", 1, V31_MAIN_HEX)
     assert m._preset_b_base == 0x4C00, (
@@ -227,3 +235,10 @@ def test_model_v24_uses_legacy_preset_b_base() -> None:
     m = MainUnitModel.from_hex("main", 1, PATCHED_MAIN_HEX_V24)
     assert m._preset_b_base == 0x4A00
     assert m._preset_b_remap_delta == 0x0C00
+
+
+@pytest.mark.parametrize("hex_path", [PATCHED_MAIN_HEX_V28, V31_MAIN_HEX])
+def test_delayed_preset_switch_enabled_for_v28_and_v31(hex_path: Path) -> None:
+    _skip_missing(hex_path)
+    m = MainUnitModel.from_hex("main", 1, hex_path)
+    assert m.uses_delayed_preset_switch() is True

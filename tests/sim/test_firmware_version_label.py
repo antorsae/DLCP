@@ -20,6 +20,7 @@ from dlcp_fw.paths import (
     PATCHED_MAIN_HEX_V24,
     PATCHED_MAIN_HEX_V26,
     PATCHED_MAIN_HEX_V27,
+    PATCHED_MAIN_HEX_V28,
     STOCK_MAIN_HEX,
     V30_MAIN_HEX,
     V31_MAIN_HEX,
@@ -73,6 +74,7 @@ def _find_hid_version_bytes(hex_path: Path) -> tuple[int, int, int] | None:
 
 _HID_VERSION_CASES = [
     pytest.param(STOCK_MAIN_HEX, 0x02, 0x03, "2.3", id="v23_stock"),
+    pytest.param(PATCHED_MAIN_HEX_V28, 0x02, 0x08, "2.8", id="v28"),
     pytest.param(V31_MAIN_HEX, 0x03, 0x01, "3.1", id="v31"),
 ]
 
@@ -134,4 +136,14 @@ def test_eeprom_version_matches_label(
         f"got (0x{actual[0]:02X}, 0x{actual[1]:02X}, 0x{actual[2]:02X}), "
         f"expected (0x{expected_tuple[0]:02X}, 0x{expected_tuple[1]:02X}, "
         f"0x{expected_tuple[2]:02X})"
+    )
+
+
+def test_v28_eeprom_version_remains_stock_style() -> None:
+    """Binary-patched V2.8 keeps the stock-style EEPROM tuple."""
+    _skip_missing(PATCHED_MAIN_HEX_V28)
+    actual = _read_eeprom_version(PATCHED_MAIN_HEX_V28)
+    assert actual == (0x02, 0x03, 0x30), (
+        "V2.8 EEPROM tuple changed unexpectedly: "
+        f"got (0x{actual[0]:02X}, 0x{actual[1]:02X}, 0x{actual[2]:02X})"
     )

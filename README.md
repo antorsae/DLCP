@@ -27,7 +27,15 @@ These compound into cascading failures, especially in daisy-chained multi-PB con
 
 ### A/B Preset switching
 
-Two independent DSP configuration banks (A and B) stored in MAIN flash. Each bank holds the complete DSP register set including filename metadata. Switching is instantaneous — the DSP reloads from the selected bank.
+Two independent DSP configuration banks (A and B) stored in MAIN flash. Each bank holds the complete DSP register set including filename metadata.
+
+- `V2.4`-`V2.7`: switching is instantaneous
+- `V2.8` and `V3.1+`: MAIN briefly mutes, waits about `150 ms`, switches bank, reapplies the DSP image, then restores audio if it was not already muted
+
+The `V2.8` delayed-switch behavior was added for two reasons:
+
+- give a small silence cue that the A/B switch actually happened
+- avoid the audible blip from live-loading DSP coefficients while audio is playing
 
 **LCD menu** (CONTROL adds a new top-level Preset page between Volume and Input):
 
@@ -58,7 +66,7 @@ Menu navigation wraps: **Volume** <-> **Preset** <-> **Input** <-> **Setup**
 
 Switching: UP/DOWN on the Preset page, or IR remote F1/F2 from any page.
 
-### DSP Fault Reporting (V2.7/V3.1 + V1.63b)
+### DSP Fault Reporting (V2.7+/V3.1 + V1.63b)
 
 When the MAIN firmware detects a persistent DSP-path fault, it emits a
 `BF/08/<fault_byte>` status frame. `V1.63b` CONTROL adds the matching
@@ -84,8 +92,9 @@ CONTROL or `V3.1` MAIN hexes.
 
 | Version | Type | Status | Adds |
 |---------|------|--------|------|
-| V3.1 | Source-assembled | **WIP** | Full source rewrite. All V2.4-V2.7 features inline. Unresolved issue under investigation. |
+| V3.1 | Source-assembled | **WIP** | Full source rewrite. All V2.4-V2.8 features inline. Unresolved issue under investigation. |
 | V3.0 | Source-assembled | Reference | Clean V2.3-equivalent rewrite, byte-exact behavioral parity proven. |
+| **V2.8** | Binary-patched | **Release** | V2.7 + delayed mute/hold preset switch to provide an audible cue and avoid coefficient-load blips. |
 | **V2.7** | Binary-patched | **Release** | V2.6 + I2C bus-clear, DSP ping, fault status frames, PEN timeout. |
 | V2.6 | Binary-patched | Release | V2.5 + DSP ACKSTAT check, conditional dirty-bit, deferred volume commit. |
 | V2.5 | Binary-patched | Release | V2.4 + bounded timeouts on all UART/MSSP/I2C blocking waits. |
@@ -101,21 +110,21 @@ CONTROL or `V3.1` MAIN hexes.
 
 ### Recommended pair
 
-**[`DLCP_Firmware_V2.7.hex`](firmware/patched/releases/DLCP_Firmware_V2.7.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — full robustness, A/B presets, and BF/08 fault reporting.
+**[`DLCP_Firmware_V2.8.hex`](firmware/patched/releases/DLCP_Firmware_V2.8.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — full robustness, A/B presets, BF/08 fault reporting, and the delayed preset-switch mute/hold that gives a small audible cue while avoiding blips during live DSP coefficient reload.
 
-All versions are backward-compatible: V2.7 works with V1.62b (no BF/08 fault UI/resync), V2.5 works with V1.61b (no reconnect hardening).
+All versions are backward-compatible: V2.8 works with V1.62b (no BF/08 fault UI/resync), V2.5 works with V1.61b (no reconnect hardening).
 
-Earlier versions (V2.4-V2.6, V1.41-V1.62b) are also available in [`firmware/patched/releases/`](firmware/patched/releases/).
+Earlier versions (V2.4-V2.7, V1.41-V1.62b) are also available in [`firmware/patched/releases/`](firmware/patched/releases/).
 
 ## V3.x vs V2.x: source-assembled vs binary-patched
 
-**V2.x** releases are binary patches applied to the stock V2.3 hex image. Patch code is injected into dead zones and unused flash regions, with hooks redirecting execution. This works but is constrained by available free space and increasingly fragile as fixes stack up — V2.7 pushes the limits of what binary patching can sustain.
+**V2.x** releases are binary patches applied to the stock V2.3 hex image. Patch code is injected into dead zones and unused flash regions, with hooks redirecting execution. This works but is constrained by available free space and increasingly fragile as fixes stack up — V2.8 is effectively the last comfortable binary-patched stop before the source-based V3.x line becomes the practical place for further feature work.
 
 **V3.x** releases are assembled from a complete PIC18 source file ([`src/dlcp_fw/asm/dlcp_main_v31.asm`](src/dlcp_fw/asm/dlcp_main_v31.asm)). The source was reconstructed from the stock V2.3 disassembly, verified for byte-exact equivalence at V3.0, then extended with all robustness and preset features inline. This removes all space constraints and makes future development sustainable.
 
 ## Test suite
 
-The firmware is validated by a **503-test simulation suite** that exercises every firmware version across the full operational envelope.
+The firmware is validated by a **554-test simulation suite** that exercises every firmware version across the full operational envelope.
 
 The test infrastructure co-simulates **two daisy-chained DLCP units** (PB1 + PB2) using a [patched gpsim fork](vendor/gpsim-0.32.1-xtc/) that models the PIC18 MCUs cycle-accurately — MSSP/I2C, UART, USB SIE, and Timer peripherals. A Python harness drives the serial bus, injects faults, and verifies LCD output, DSP register state, and protocol behavior.
 
@@ -131,7 +140,7 @@ Test categories:
 - **Cross-version compatibility** — every MAIN/CONTROL version pair tested for interop
 
 ```bash
-.venv_ep0/bin/python -m pytest tests/sim -n 16 -q          # full gate, 503 tests
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q          # full gate, 554 tests
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q -k "v31" # V3.1 only, 80 tests
 ```
 
