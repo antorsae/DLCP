@@ -466,9 +466,8 @@ flow_hid_command_dispatch_13a2:
     movf        i2c_coeff_2, W, ACCESS
     xorlw       0x07
     bnz         flow_hid_command_dispatch_13ba
+    ; Robustness: cmd 0x07 always reseeds the flash upload cursor/page base.
     movlb       0x1
-    tstfsz      ram_0x01B, BANKED
-    bra         flow_hid_command_dispatch_13ba
     movlb       0x0
     clrf        ram_0x0C5, BANKED
     movlw       0x56
@@ -1331,7 +1330,6 @@ flow_cmd_dispatch_gated_19e6:
     btfss       STATUS, 2, ACCESS
     call        main_usb_service_45a2, 0x0
     movlb       0x0
-    nop                                     ; V3.1: dirty bit managed by volume_dsp_write
     bsf         ram_0x0BD, 0, BANKED
     call        main_timer_service_48a6, 0x0
 flow_cmd_dispatch_gated_1a76:
@@ -1730,14 +1728,6 @@ flow_main_uart_service_1be6_1d68:
 flow_main_uart_service_1be6_1d6c:
     bsf         event_flags, 3, BANKED
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d80:
     movf        computed_volume, W, BANKED
@@ -6981,15 +6971,17 @@ main_uart_service_44b2:
     goto        uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_tas3108_coeff_write (V3.1 enhanced — Fix F: boot-gated PEN)
-; Notes   : Bounded SEN wait. PEN wait is boot-gated: unbounded during boot
-;           (safe — DSP always ACKs during init), bounded after boot complete.
+; Function: i2c_tas3108_coeff_write
+; Notes   : Hardware fix: restore stock START/STOP waits for TAS3108
+;           coefficient writes. The bounded V3.1 path regressed real
+;           hardware DSP apply even though it passed simulation.
 ; ---------------------------------------------------------------------------
 i2c_tas3108_coeff_write:
     call        i2c_wait_bus_idle, 0x0
-    bsf         SSPCON2, 0, ACCESS          ; SEN = START
-    call        wait_sen_bounded, 0x0
-    bc          coeff_write_pen_done
+    bsf         SSPCON2, 0, ACCESS          ; stock START wait
+coeff_write_wait_sen_stock:
+    btfsc       SSPCON2, 0, ACCESS
+    bra         coeff_write_wait_sen_stock
     movlw       0x68
     call        i2c_byte_tx, 0x0
     movlw       0x30
@@ -6999,24 +6991,12 @@ i2c_tas3108_coeff_write:
     movff       i2c_coeff_2, ram_0x04B
     movff       i2c_coeff_3, ram_0x04C
     call        main_i2c_service_39a6, 0x0
-    bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
-    ; Fix F: boot-gated PEN wait — bounded after boot, stock during boot
-    btfss       event_flags, 7, BANKED      ; boot complete?
-    bra         coeff_write_pen_stock       ; no: stock unbounded (safe during DSP init)
-    call        wait_pen_bounded, 0x0
-    bc          coeff_write_pen_timeout
-    bra         coeff_write_pen_done
-coeff_write_pen_timeout:
-    ; PEN stuck: flag fault and force NACK for retry. On real HW the
-    ; watchdog would catch true hangs; in gpsim the test harness
-    ; force-clears SSPCON2 after clearing the fault model.
-    bsf         dsp_fault_flags, 6, BANKED  ; flag DSP fault
-    bsf         dsp_fault_flags, 2, BANKED  ; force NACK → volume_dsp_write retries
-    bra         coeff_write_pen_done
+    bsf         SSPCON2, 2, ACCESS          ; stock STOP wait
 coeff_write_pen_stock:
     btfss       SSPCON2, 2, ACCESS
     bra         coeff_write_pen_done
     bra         coeff_write_pen_stock
+coeff_write_pen_timeout:
 coeff_write_pen_done:
     return      0
 
@@ -8070,28 +8050,10 @@ vol_retry_ok:
     return      0                           ; dirty bit stays: main loop retries
 
 ; ---------------------------------------------------------------------------
-; Preset Select Handler (V2.4 — cmd=0x20)
+; Preset Select Handler (V3.1 delayed A/B switch — cmd=0x20)
 ; ---------------------------------------------------------------------------
 preset_select_handler:
-    movf        ram_0x0A3, W, BANKED        ; data byte: 0=A, 1=B
-    andlw       0x01
-    btfsc       active_flags, 2, ACCESS     ; current preset B?
-    xorlw       0x01                        ; invert to compare
-    btfsc       STATUS, 2, ACCESS           ; Z = no change
-    goto        flow_main_uart_service_1be6_1e6c
-    ; Persist outgoing filename if dirty
-    btfsc       ram_0x0BD, 5, BANKED        ; filename dirty?
-    call        preset_persist_filename, 0x0
-    ; Toggle preset
-    movlb       0x0                         ; restore BSR after EEPROM ops
-    btg         active_flags, 2, ACCESS     ; toggle preset B bit
-    ; Reload filename from new EEPROM slot
-    call        preset_load_filename, 0x0
-    ; Trigger DSP re-apply and cmd03 dirty
-    movlb       0x0
-    bsf         event_flags, 0, BANKED      ; cmd03 dirty
-    bsf         event_flags, 3, BANKED      ; trigger DSP re-apply
-    call        main_core_service_4574, 0x0 ; re-apply preset table
+    call        preset_select_delayed, 0x0
     goto        flow_main_uart_service_1be6_1e6c
 
 ; --- Persist dirty filename to EEPROM (outgoing preset slot) ---
@@ -8129,6 +8091,60 @@ preset_lf_lp:
     incf        ram_0x003, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
     bra         preset_lf_lp
+    return      0
+
+; --- Delayed preset switch helpers (V2.8 / V3.1+) ---
+preset_delay_150ms:
+    clrf        ram_0x004, ACCESS
+    movlw       0x96
+    movwf       ram_0x003, ACCESS
+    call        timer3_blocking_delay, 0x0
+    return      0
+
+preset_force_mute:
+    movlb       0x0
+    bsf         active_flags, 4, ACCESS
+    bsf         active_flags, 5, ACCESS
+    bcf         event_flags, 5, BANKED
+    clrf        i2c_coeff_0, ACCESS
+    clrf        i2c_coeff_1, ACCESS
+    clrf        i2c_coeff_2, ACCESS
+    clrf        i2c_coeff_3, ACCESS
+    call        i2c_tas3108_coeff_write, 0x0
+    return      0
+
+preset_select_delayed:
+    movf        ram_0x0A3, W, BANKED        ; data byte: 0=A, 1=B
+    andlw       0x01
+    btfsc       active_flags, 2, ACCESS     ; current preset B?
+    xorlw       0x01                        ; invert to compare
+    bz          preset_select_done          ; no change
+    btfsc       ram_0x0BD, 5, BANKED        ; filename dirty?
+    call        preset_persist_filename, 0x0
+    btfsc       active_flags, 4, ACCESS     ; already muted?
+    bra         preset_select_switch_only
+    call        preset_force_mute, 0x0
+    call        preset_delay_150ms, 0x0
+    btg         active_flags, 2, ACCESS
+    call        preset_load_filename, 0x0
+    movlb       0x0
+    bsf         event_flags, 0, BANKED      ; cmd03 dirty
+    call        main_core_service_4574, 0x0 ; apply new preset while muted
+    bcf         active_flags, 4, ACCESS
+    bcf         active_flags, 5, ACCESS
+    bsf         event_flags, 3, BANKED      ; restore prior volume on next pass
+    return      0
+
+preset_select_switch_only:
+    call        preset_delay_150ms, 0x0
+    btg         active_flags, 2, ACCESS
+    call        preset_load_filename, 0x0
+    movlb       0x0
+    bsf         event_flags, 0, BANKED      ; cmd03 dirty
+    call        main_core_service_4574, 0x0
+
+preset_select_done:
+    movlb       0x0
     return      0
 
 ; ---------------------------------------------------------------------------

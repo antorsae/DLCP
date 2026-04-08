@@ -12,6 +12,7 @@ from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V141,
     PATCHED_CONTROL_HEX_V162B,
     PATCHED_CONTROL_HEX_V163B,
+    PATCHED_MAIN_HEX_V28,
     V31_MAIN_HEX,
 )
 
@@ -229,14 +230,50 @@ def test_ir_preset_switch_works_when_preset_not_visible(control_hex: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# Wire-chain end-to-end: IR preset switch with V3.1 MAIN + V1.63b CONTROL
+# Wire-chain end-to-end: IR preset switch with delayed-switch MAIN + V1.63b CONTROL
 # ---------------------------------------------------------------------------
+
+
+def _step_until_chain_reaches_preset(chain, *, target_lcd: str, target_preset: int, limit: int = 80) -> None:
+    from dlcp_fw.sim.control_gpsim import _read_reg
+
+    for _ in range(limit):
+        step = chain.step()
+        assert not chain.is_waiting(), (
+            "CONTROL entered WAITING during delayed preset switch: "
+            f"lcd={step.lcd!r}"
+        )
+        line1, _ = chain.lcd_lines()
+        main_preset_flags = _read_reg(chain.mains[0]._issue, 0x05E)
+        if line1[15] == target_lcd and ((main_preset_flags >> 2) & 1) == target_preset:
+            assert chain.is_connected(), f"chain disconnected during preset switch: lcd={line1!r}"
+            return
+    pytest.fail(
+        f"preset switch did not settle to {target_lcd} within {limit} steps; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+
+
+def _step_chain_without_waiting(chain, *, steps: int) -> None:
+    for _ in range(steps):
+        step = chain.step()
+        assert not chain.is_waiting(), (
+            "CONTROL entered WAITING while draining preset retries: "
+            f"lcd={step.lcd!r}"
+        )
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v31_v163b_ir_preset_switch_reaches_main() -> None:
-    """V3.1 MAIN + V1.63b CONTROL: IR F2 switches to preset B end-to-end.
+@pytest.mark.parametrize(
+    "main_hex",
+    [
+        pytest.param(PATCHED_MAIN_HEX_V28, id="main_v28"),
+        pytest.param(V31_MAIN_HEX, id="main_v31"),
+    ],
+)
+def test_v163b_ir_preset_switch_reaches_main_without_waiting(main_hex: Path) -> None:
+    """Delayed-switch MAIN + V1.63b CONTROL: IR F1/F2 stay out of WAITING.
 
     Boots the wire chain, injects IR F2 (preset B) on CONTROL, and
     verifies:
@@ -244,20 +281,20 @@ def test_v31_v163b_ir_preset_switch_reaches_main() -> None:
     - The cmd 0x20 frame traverses the UART to MAIN
     - MAIN's active_flags (0x05E) bit 2 flips to 1
     - IR F1 switches back to A with matching state changes
+    - CONTROL never drops into WAITING during the 150 ms MAIN-side hold
     """
-    from dlcp_fw.sim.control_gpsim import _read_reg
     from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
     if not gpsim_available():
         pytest.skip("gpsim not installed")
-    if not V31_MAIN_HEX.exists():
-        pytest.skip(f"missing: {V31_MAIN_HEX.name}")
+    if not main_hex.exists():
+        pytest.skip(f"missing: {main_hex.name}")
     if not PATCHED_CONTROL_HEX_V163B.exists():
         pytest.skip(f"missing: {PATCHED_CONTROL_HEX_V163B.name}")
 
     chain = WireMultiMainChainHarness(
         PATCHED_CONTROL_HEX_V163B,
-        V31_MAIN_HEX,
+        main_hex,
         main_units=1,
         fast_boot=True,
     )
@@ -274,28 +311,12 @@ def test_v31_v163b_ir_preset_switch_reaches_main() -> None:
 
         # IR F2 → preset B
         chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
-        # Let frames propagate through UART bridge
-        chain.step_many(30)
-
-        l1, _ = chain.lcd_lines()
-        assert l1[15] == "B", f"LCD not updated to B after IR F2: {l1!r}"
-
-        # Check MAIN received the preset switch (active_flags bit 2)
-        main_preset_flags = _read_reg(chain.mains[0]._issue, 0x05E)
-        assert (main_preset_flags >> 2) & 1 == 1, (
-            f"MAIN preset bit not set to B: 0x05E=0x{main_preset_flags:02X}"
-        )
+        _step_until_chain_reaches_preset(chain, target_lcd="B", target_preset=1)
+        _step_chain_without_waiting(chain, steps=20)
 
         # IR F1 → back to preset A
         chain.control.inject_decoded_ir_event(cmd=0x38, addr=0x10, steps=1)
-        chain.step_many(30)
-
-        l1, _ = chain.lcd_lines()
-        assert l1[15] == "A", f"LCD not updated to A after IR F1: {l1!r}"
-
-        main_preset_flags = _read_reg(chain.mains[0]._issue, 0x05E)
-        assert (main_preset_flags >> 2) & 1 == 0, (
-            f"MAIN preset bit not cleared to A: 0x05E=0x{main_preset_flags:02X}"
-        )
+        _step_until_chain_reaches_preset(chain, target_lcd="A", target_preset=0)
+        _step_chain_without_waiting(chain, steps=20)
     finally:
         chain.close()

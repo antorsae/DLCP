@@ -13,13 +13,13 @@ def test_patch_compatibility_bytes(patched_main_hex, patched_control_hex) -> Non
 
 
 def test_main_v25_timeout_overlay_preserves_existing_wait_helper_bodies(
-    patched_main_hex,
+    patched_main_hex_v25,
     tmp_path,
 ) -> None:
-    base = parse_intel_hex(patched_main_hex)
+    base = parse_intel_hex(patched_main_hex_v25)
     out_hex = tmp_path / "main_v25_timeout_overlay.hex"
 
-    apply_overlay(patched_main_hex, out_hex, main_v25_timeout_test_hooks())
+    apply_overlay(patched_main_hex_v25, out_hex, main_v25_timeout_test_hooks())
     overlaid = parse_intel_hex(out_hex)
 
     for addr in range(0x5506, 0x556E):

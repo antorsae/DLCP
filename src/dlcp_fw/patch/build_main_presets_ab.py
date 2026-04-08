@@ -4,10 +4,10 @@ Build patched DLCP MAIN firmware HEX images with A/B preset support.
 
 Patch strategy:
 1) Copy preset table A (0x5600..0x5FFF, 0xA00 bytes) to preset table B at
-   0x4A00..0x53FF.
+   0x4A00..0x53FF for V2.4-V2.8.
 2) Inject code stubs to:
    - remap table flash reads/writes/erases from 0x56xx..0x5Fxx to
-     0x4Axx..0x53xx when preset B is active;
+     the active preset-B window when preset B is active;
    - add current-loop command 0x20: set preset A/B and apply immediately
      only when the requested preset changes;
    - keep the stock USB cmd03 filename command family, but make its backing
@@ -28,8 +28,8 @@ Filename storage policy:
 Version policy:
 - MAIN EEPROM tuple is kept at stock 2.30 (bytes 0x02, 0x03, 0x30 at
   0xF00080..0xF00082).
-- USB-reported application version literal is patched to 2.4 or 2.5 depending
-  on the selected output variant.
+- USB-reported application version literal is patched to the selected output
+  variant (2.4 through 2.8).
 """
 
 from __future__ import annotations
@@ -40,7 +40,13 @@ import subprocess
 import tempfile
 from typing import Dict, List, Tuple
 
-from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25, STOCK_MAIN_HEX
+from dlcp_fw.paths import (
+    FIRMWARE_PATCHED_DIR,
+    PATCHED_MAIN_HEX_V24,
+    PATCHED_MAIN_HEX_V25,
+    PATCHED_MAIN_HEX_V28,
+    STOCK_MAIN_HEX,
+)
 
 
 class HexParseError(RuntimeError):
@@ -129,6 +135,30 @@ cmd_tail_patch:
     btg 0x05E, 2, ACCESS
     call 0x20C2
     call 0x4574
+
+cmd_done:
+    goto 0x1E6C
+"""
+
+
+_CMD_TAIL_PATCH_V28 = r"""
+cmd_tail_patch:
+    ; Recreate old behavior for cmd=0x1D and cmd=0x1E, then add cmd=0x20.
+    movf 0x0A2, W, BANKED
+    xorlw 0x1D
+    btfsc STATUS, Z, ACCESS
+    goto 0x1E02
+
+    movf 0x0A2, W, BANKED
+    xorlw 0x1E
+    btfsc STATUS, Z, ACCESS
+    goto 0x1E1C
+
+    movf 0x0A2, W, BANKED
+    xorlw 0x20
+    bnz cmd_done
+
+    call preset_select_delayed
 
 cmd_done:
     goto 0x1E6C
@@ -1252,11 +1282,73 @@ _last_5500 = _v27_asm.rfind("org 0x5500")
 assert _last_5500 >= 0, "V2.7: cannot find org 0x5500"
 PATCH_ASM_V27 = _v27_asm[:_last_5500] + _V27_REPACKED_REGION
 
+_V28_PRESET_DELAY_HELPERS = r"""
+
+; === V2.8: delayed preset switch helpers ===
+preset_select_delayed:
+    movf 0x0A3, W, BANKED
+    andlw 0x01
+    btfsc 0x05E, 2, ACCESS
+    xorlw 0x01
+    bz preset_select_done
+    btfsc 0x0BD, 5, BANKED
+    call 0x27C0
+    btfsc 0x05E, 4, ACCESS
+    bra preset_select_switch_only
+    rcall preset_force_mute
+    rcall preset_delay_150ms
+    rcall preset_select_switch_apply
+    bcf 0x05E, 4, ACCESS
+    bcf 0x05E, 5, ACCESS
+    bsf 0x07E, 3, BANKED
+preset_select_done:
+    movlb 0x0
+    return
+
+preset_delay_150ms:
+    clrf 0x004, ACCESS
+    movlw 0x96
+    movwf 0x003, ACCESS
+    goto 0x447E
+
+preset_force_mute:
+    movlb 0x0
+    bsf 0x05E, 4, ACCESS
+    bsf 0x05E, 5, ACCESS
+    bcf 0x07E, 5, BANKED
+    clrf 0x055, ACCESS
+    clrf 0x056, ACCESS
+    clrf 0x057, ACCESS
+    clrf 0x058, ACCESS
+    goto 0x44E4
+
+preset_select_switch_apply:
+    btg 0x05E, 2, ACCESS
+    call 0x20C2
+    movlb 0x0
+    bsf 0x07E, 0, BANKED
+    call 0x4574
+    movlb 0x0
+    return
+
+preset_select_switch_only:
+    rcall preset_delay_150ms
+    bra preset_select_switch_apply
+"""
+
+PATCH_ASM_V28 = PATCH_ASM_V27.replace(_CMD_TAIL_PATCH, _CMD_TAIL_PATCH_V28)
+assert PATCH_ASM_V28 != PATCH_ASM_V27, "V2.8: cmd-tail replacement failed"
+_V28_ANCHOR = r"""patch_function_072_ret:
+    return"""
+assert _V28_ANCHOR in PATCH_ASM_V28, "V2.8: helper anchor missing after patch_function_072_ret"
+PATCH_ASM_V28 = PATCH_ASM_V28.replace(_V28_ANCHOR, _V28_ANCHOR + _V28_PRESET_DELAY_HELPERS, 1)
+
 PATCH_ASM_BY_VARIANT = {
     "v24": PATCH_ASM_V24,
     "v25": PATCH_ASM_V25,
     "v26": PATCH_ASM_V26,
     "v27": PATCH_ASM_V27,
+    "v28": PATCH_ASM_V28,
 }
 
 
@@ -1374,10 +1466,13 @@ def assemble_patch(gpasm: str, *, variant: str = "v25") -> Dict[int, int]:
         return parse_intel_hex(out_hex)
 
 
-def copy_table_a_to_b(mem: Dict[int, int], force: bool = False) -> Tuple[int, int]:
+def _table_b_layout_for_variant(variant: str) -> tuple[int, int]:
+    return 0x4A00, 0x0A00
+
+
+def copy_table_a_to_b(mem: Dict[int, int], *, variant: str, force: bool = False) -> Tuple[int, int]:
     src = 0x5600
-    dst = 0x4A00
-    size = 0x0A00
+    dst, size = _table_b_layout_for_variant(variant)
 
     for i in range(size):
         if (src + i) not in mem:
@@ -1445,7 +1540,7 @@ def set_main_eeprom_version_230(mem: Dict[int, int]) -> Tuple[int, int]:
 
 
 def patch_usb_version(mem: Dict[int, int], *, variant: str) -> Tuple[int, int]:
-    version_lo = {"v24": 0x04, "v25": 0x05, "v26": 0x06, "v27": 0x07}.get(variant, 0x05)
+    version_lo = {"v24": 0x04, "v25": 0x05, "v26": 0x06, "v27": 0x07, "v28": 0x08}.get(variant, 0x05)
     desired = {
         0x240C: 0x03,
         0x2412: 0x02,
@@ -1466,11 +1561,11 @@ def default_output_hex_for_variant(variant: str) -> pathlib.Path:
     if variant == "v24":
         return PATCHED_MAIN_HEX_V24
     if variant == "v26":
-        from dlcp_fw.paths import FIRMWARE_PATCHED_DIR
         return FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.6.hex"
     if variant == "v27":
-        from dlcp_fw.paths import FIRMWARE_PATCHED_DIR
         return FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V2.7.hex"
+    if variant == "v28":
+        return PATCHED_MAIN_HEX_V28
     return PATCHED_MAIN_HEX_V25
 
 
@@ -1478,9 +1573,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--variant",
-        choices=("v24", "v25", "v26", "v27"),
-        default="v27",
-        help="patched MAIN output variant (default: v25)",
+        choices=("v24", "v25", "v26", "v27", "v28"),
+        default="v28",
+        help="patched MAIN output variant (default: v28)",
     )
     ap.add_argument(
         "--in-hex",
@@ -1514,7 +1609,7 @@ def main() -> int:
     base = parse_intel_hex(in_hex)
     new_mem = dict(base)
 
-    table_written, table_changed = copy_table_a_to_b(new_mem, force=args.force_copy)
+    table_written, table_changed = copy_table_a_to_b(new_mem, variant=variant, force=args.force_copy)
     patch_mem = assemble_patch(args.gpasm, variant=variant)
     patch_written, patch_changed = apply_patch_bytes(new_mem, patch_mem)
     eep_written, eep_changed = set_main_eeprom_version_230(new_mem)
@@ -1524,7 +1619,7 @@ def main() -> int:
     # V2.6 post-build guard: verify the ACKSTAT check encoding is present.
     # btfsc SSPCON2,6,ACCESS = 0xBCC5.  Must appear in the 0x46BE-0x49FF
     # range (ackstat_first_byte_check + patch_function_056_mode_bf).
-    if variant in ("v26", "v27"):
+    if variant in ("v26", "v27", "v28"):
         found_ackstat = False
         for addr in range(0x46BE, 0x4A00, 2):
             if new_mem.get(addr, 0xFF) == 0xC5 and new_mem.get(addr + 1, 0xFF) == 0xBC:
@@ -1536,15 +1631,18 @@ def main() -> int:
                 "not found in 0x46BE..0x49FF -- Fix A string replacement "
                 "may have silently failed"
             )
-    if variant == "v27":
+    if variant in ("v27", "v28"):
         # Verify bus-clear code is present at 0x436C
         if new_mem.get(0x436C, 0xFF) == 0xFF:
             raise RuntimeError(
-                "V2.7 post-build check FAILED: bus-clear code not found "
+                f"{variant} post-build check FAILED: bus-clear code not found "
                 "at 0x436C -- Fix C may have failed to assemble"
             )
 
     write_intel_hex(out_hex, new_mem)
+
+    dst_lo, _ = _table_b_layout_for_variant(variant)
+    dst_hi = dst_lo + 0x0A00 - 1
 
     print(f"variant: {variant}")
     print(f"input:   {in_hex}")
@@ -1554,7 +1652,7 @@ def main() -> int:
         f"bytes={table_written}",
         f"changed={table_changed}",
         "src=0x5600..0x5FFF",
-        "dst=0x4A00..0x53FF",
+        f"dst=0x{dst_lo:04X}..0x{dst_hi:04X}",
     )
     print(
         "stub patch:",
@@ -1573,7 +1671,7 @@ def main() -> int:
         "usb version literal:",
         f"bytes={usb_written}",
         f"changed={usb_changed}",
-        f"app_version=2.{dict(v24=4, v25=5, v26=6, v27=7).get(variant, 5)}",
+        f"app_version=2.{dict(v24=4, v25=5, v26=6, v27=7, v28=8).get(variant, 5)}",
     )
     print(f"total bytes changed vs input: {total_diff}")
     return 0
