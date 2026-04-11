@@ -730,8 +730,12 @@ flow_hid_command_dispatch_159e:
     xorlw       0x01
     bz          flow_hid_command_dispatch_150a
     xorlw       0x03
-    bnz         flow_hid_command_dispatch_15a8
+    bnz         hid_cmd_diag_memread_probe
     bra         fw_update_init_sequence
+hid_cmd_diag_memread_probe:
+    xorlw       0x01
+    bnz         flow_hid_command_dispatch_15a8
+    goto        hid_cmd_diag_memread
 flow_hid_command_dispatch_15a8:
     bra         flow_hid_command_dispatch_154c
 flow_hid_command_dispatch_15aa:
@@ -8146,6 +8150,65 @@ preset_select_switch_only:
 preset_select_done:
     movlb       0x0
     return      0
+
+; ---------------------------------------------------------------------------
+; HID Diagnostic Memory Read (cmd=0x43)
+; Request : ram_0x11B=region (0=flash,1=eeprom), 0x11C/0x11D=addr, 0x11E=len
+; Response: 0x15A=cmd, 0x15B=status, 0x15C=len, 0x15D..=data (max 61 bytes)
+; ---------------------------------------------------------------------------
+hid_cmd_diag_memread:
+    movlb       0x1
+    lfsr        FSR2, 0x015A
+    movlw       0x43
+    movwf       POSTINC2, ACCESS
+    clrf        POSTINC2, ACCESS
+    movf        ram_0x11E, W, BANKED
+    movwf       POSTINC2, ACCESS
+    iorlw       0x00
+    bz          hid_cmd_diag_memread_bad_len
+    movlw       0x3D
+    cpfsgt      ram_0x11E, BANKED
+    bra         hid_cmd_diag_memread_len_ok
+hid_cmd_diag_memread_bad_len:
+    movlw       0x02
+    bra         hid_cmd_diag_memread_fail
+hid_cmd_diag_memread_len_ok:
+    movf        ram_0x11B, W, BANKED
+    bz          hid_cmd_diag_memread_flash
+    xorlw       0x01
+    bz          hid_cmd_diag_memread_eeprom
+    movlw       0x01
+    bra         hid_cmd_diag_memread_fail
+hid_cmd_diag_memread_flash:
+    movff       ram_0x11C, ram_0x003
+    movff       ram_0x11D, ram_0x004
+    clrf        ram_0x005, ACCESS
+    clrf        ram_0x006, ACCESS
+    movff       ram_0x11E, ram_0x007
+    clrf        ram_0x008, ACCESS
+    movlw       0x5D
+    movwf       ram_0x009, ACCESS
+    movlw       0x01
+    movwf       ram_0x00A, ACCESS
+    call        flash_read, 0x0
+    goto        flow_hid_command_dispatch_15aa
+hid_cmd_diag_memread_eeprom:
+    movf        ram_0x11C, W, BANKED
+    movwf       ram_0x003, ACCESS
+    clrf        ram_0x004, ACCESS
+    movf        ram_0x11E, W, BANKED
+    movwf       ram_0x00A, ACCESS
+    lfsr        FSR2, 0x015D
+hid_cmd_diag_memread_eeprom_lp:
+    call        eeprom_read_byte, 0x0
+    movwf       POSTINC2, ACCESS
+    incf        ram_0x003, F, ACCESS
+    decfsz      ram_0x00A, F, ACCESS
+    bra         hid_cmd_diag_memread_eeprom_lp
+    goto        flow_hid_command_dispatch_15aa
+hid_cmd_diag_memread_fail:
+    movwf       ram_0x05B, BANKED
+    goto        flow_hid_command_dispatch_15aa
 
 ; ---------------------------------------------------------------------------
 ; DSP Preset Table B (clone of Preset A)

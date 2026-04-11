@@ -43,3 +43,26 @@ def test_render_shadow_table_contains_headers() -> None:
     assert "EEP  RAM  Value  Symbol" in text
     assert "00   71" in text
     assert "5A" in text
+
+
+def test_dlcp_ep0_large_read_uses_repeated_e7_reads() -> None:
+    dev = shadow.DlcpEp0.__new__(shadow.DlcpEp0)
+    calls: list[tuple[int, int, bool, int]] = []
+
+    def fake_poke(addr: int, value: int, in_dir: bool, read_len: int = 0) -> bytes:
+        calls.append((addr, value, in_dir, read_len))
+        return bytes([len(calls)]) * read_len
+
+    dev._poke = fake_poke  # type: ignore[method-assign]
+
+    data = shadow.DlcpEp0.read_exact(dev, 0x210)
+
+    assert len(data) == 0x210
+    assert data[:0xFF] == bytes([1]) * 0xFF
+    assert data[0xFF : 0x1FE] == bytes([2]) * 0xFF
+    assert data[0x1FE :] == bytes([3]) * 0x12
+    assert calls == [
+        (0xE7, 0xFF, True, 0xFF),
+        (0xE7, 0xFF, True, 0xFF),
+        (0xE7, 0x12, True, 0x12),
+    ]

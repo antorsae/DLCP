@@ -40,7 +40,7 @@ PID_DEFAULT = 0xFF89
 
 START_DEFAULT = 0x0800
 SIZE_DEFAULT = 0x7800
-CHUNK_DEFAULT = 0x100
+CHUNK_DEFAULT = 0xFF
 
 TABLE_BASE = 0x5600
 TABLE_SIZE = 0x0A00
@@ -129,20 +129,18 @@ class DlcpEp0:
     def read_exact(self, n: int) -> bytes:
         if n <= 0:
             return b""
-        if n <= 0xFF:
-            data = self._poke(0xE7, n, in_dir=True, read_len=n)
-            if len(data) != n:
-                raise RuntimeError(f"short read: expected {n}, got {len(data)}")
-            return data
-        if n % 0x100 != 0:
-            raise ValueError("n > 255 must be a multiple of 256")
-        pages = n // 0x100
-        if pages > 0xFF:
-            raise ValueError("single transfer too large (max 0xFF00)")
-        data = self._poke(0xE8, pages, in_dir=True, read_len=n)
-        if len(data) != n:
-            raise RuntimeError(f"short read: expected {n}, got {len(data)}")
-        return data
+        # The hardware 0xE8 bulk-read path produces shifted/garbled captures on
+        # real DLCP units. Stream everything through the stable 0xE7 path.
+        out = bytearray()
+        remaining = n
+        while remaining:
+            chunk = min(remaining, 0xFF)
+            data = self._poke(0xE7, chunk, in_dir=True, read_len=chunk)
+            if len(data) != chunk:
+                raise RuntimeError(f"short read: expected {chunk}, got {len(data)}")
+            out.extend(data)
+            remaining -= chunk
+        return bytes(out)
 
 
 def dump_flash(
@@ -160,8 +158,6 @@ def dump_flash(
         raise ValueError("size must be > 0")
     if chunk <= 0:
         raise ValueError("chunk must be > 0")
-    if chunk > 0xFF and chunk % 0x100 != 0:
-        raise ValueError("chunk > 255 must be multiple of 0x100")
 
     dev = DlcpEp0(vid=vid, pid=pid)
     dev.set_pointer(start)

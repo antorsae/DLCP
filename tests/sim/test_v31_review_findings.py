@@ -381,15 +381,11 @@ def test_bf08_payload_bytes_on_dsp_fault() -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_pen_timeout_firmware_detects_before_sspcon2_poke() -> None:
-    """Verify firmware detects PEN timeout BEFORE gpsim workaround clears it.
+    """Canonical V3.1 should NOT latch a coeff-write PEN timeout in gpsim.
 
-    The test_main_pen_timeout_recovers test uses a gpsim poke
-    (p18f2455.sspcon2=0) to work around gpsim's limitation where
-    SSPCON2.PEN stays pending even after clear_mssp_stop_faults().
-
-    This test verifies that the firmware's bounded PEN wait DID
-    detect the timeout and set dsp_fault_flags before the poke.
-    If the poke masks a firmware bug, this test catches it.
+    The canonical hardware-fixed V3.1 restores stock coeff-write START/STOP
+    waits. That means gpsim's synthetic stuck-PEN model should not produce the
+    old bounded-wait fault latch before the explicit `SSPCON2` clear workaround.
     """
     _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
@@ -416,12 +412,13 @@ def test_pen_timeout_firmware_detects_before_sspcon2_poke() -> None:
         boot_complete = bool(_read_reg(harness._issue, _FLAGS_7E) & 0x80)
         assert boot_complete, "boot_complete not set — can't test PEN timeout"
 
-        # PEN fault — infinite count so pen_timeout's bit6 can't be
-        # cleared by a successful retry (every PEN is faulted)
+        # PEN fault — infinite count so any old bounded-wait latch would be
+        # observable if the canonical build still used it.
         harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
 
-        # Step with fine granularity and look for dsp_fault_flags.6
+        # Step with fine granularity and confirm the old bounded PEN fault
+        # latch does not appear before the gpsim workaround clears SSPCON2.
         fault6_seen = False
         for i in range(200):
             harness.step()
@@ -430,9 +427,9 @@ def test_pen_timeout_firmware_detects_before_sspcon2_poke() -> None:
                 fault6_seen = True
                 break
 
-        assert fault6_seen, (
-            f"dsp_fault_flags.6 never set during infinite PEN fault — "
-            f"bounded PEN wait / pen_timeout_handler not executing"
+        assert not fault6_seen, (
+            "canonical V3.1 unexpectedly latched the old bounded PEN timeout "
+            "fault before the gpsim SSPCON2 clear workaround"
         )
 
         # Clean up: clear faults and verify recovery

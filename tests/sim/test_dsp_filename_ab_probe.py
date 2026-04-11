@@ -51,3 +51,26 @@ def test_analyze_bytes_table_main_change() -> None:
     assert out.region_counts["dsp_table_main_5600_5eff"] == 2
     assert out.region_counts["dsp_table_tail_5f00_5fff"] == 0
     assert "dsp_table_main" in out.inference.lower() or "coefficient" in out.inference.lower()
+
+
+def test_dlcp_ep0_large_read_streams_via_repeated_e7() -> None:
+    dev = probe.DlcpEp0.__new__(probe.DlcpEp0)
+    calls: list[tuple[int, int, bool, int]] = []
+
+    def fake_poke(addr: int, value: int, in_dir: bool, read_len: int = 0) -> bytes:
+        calls.append((addr, value, in_dir, read_len))
+        return bytes([len(calls)]) * read_len
+
+    dev._poke = fake_poke  # type: ignore[method-assign]
+
+    data = probe.DlcpEp0.read_exact(dev, 0x240)
+
+    assert len(data) == 0x240
+    assert data[:0xFF] == bytes([1]) * 0xFF
+    assert data[0xFF : 0x1FE] == bytes([2]) * 0xFF
+    assert data[0x1FE :] == bytes([3]) * 0x42
+    assert calls == [
+        (0xE7, 0xFF, True, 0xFF),
+        (0xE7, 0xFF, True, 0xFF),
+        (0xE7, 0x42, True, 0x42),
+    ]

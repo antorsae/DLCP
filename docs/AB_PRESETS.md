@@ -12,6 +12,12 @@ Reliability-first A/B preset patches for:
 Current design status:
 
 - Working in the current test gate.
+- 2026-04-11 fix: source `V3.1` restored the stock guarded `cmd 0x07` HID upload reseed behavior.
+  - `cmd 0x07` now reseeds the DSP-table flash upload cursor only when upload byte `1` is `0`, matching stock `V2.3` / source `V3.0`
+  - this fixes HFD live coefficient uploads on real hardware; the earlier V3.1 unconditional reseed corrupted the logical slot order in the `0x5600` preset table
+  - the raw-table preset capture CLI is now `scripts/dlcp_read_coeffs.py`
+- 2026-04-11 update: canonical source `V3.1` now includes HID `cmd 0x43` diagnostic flash/EEPROM memread.
+  - `scripts/dlcp_read_coeffs.py` therefore works on canonical `DLCP_Firmware_V3.1.hex` and its USB-safe derivative, not only on the dedicated diag-memread variant
 - 2026-04-08 update: MAIN `V2.8` and source `V3.1` now use delayed preset switching:
   - capture mute state on entry
   - mute only if not already muted
@@ -326,6 +332,11 @@ MAIN:
   - source `V3.1+`:
     - `A`: `0x5600..0x5FFF`
     - `B`: `0x4C00..0x55FF`
+- `scripts/dlcp_main_flash.py --capture-b` now resolves the preset-B base from the
+  target HEX version before flashing:
+  - `V2.4`–`V2.8` -> `0x4A00`
+  - `V3.1+` -> `0x4C00`
+  - `V2.3` or unknown layout -> rejected before USB writes
 - USB/HFD writes target the currently active bank through the stock write/erase path plus bank remap stubs
 - filename EEPROM slots are:
   - `A`: `0x60..0x7D`
@@ -414,13 +425,18 @@ Patch scope:
 
 - no bootloader bytes are intentionally modified
 - no filename transport is required for the feature
-- A/B switching becomes active only when both MAIN and CONTROL are patched
+- UI/IR-driven A/B switching becomes active only when both MAIN and CONTROL are patched
+- USB-side EP0 preset switching is supported with patched MAIN alone on versions
+  that implement A/B banking; CONTROL will remain out of sync until separately updated
 
 Practical order:
 
 - safest operational order is usually MAIN first, CONTROL second
 - reason: stock CONTROL never emits `cmd=0x20`, so patching MAIN first is inert
-- patching CONTROL first is still non-destructive, but preset switching will not function until MAIN is patched
+- patching CONTROL first is still non-destructive, but CONTROL-driven preset switching
+  will not function until MAIN is patched
+- after MAIN is patched, USB-side EP0 switching and filename finalize already work
+  even if CONTROL is still stock
 
 Relevant release files:
 
