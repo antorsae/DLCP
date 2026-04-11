@@ -62,9 +62,10 @@ def test_v31_static_remap_constants() -> None:
     assert "preset_delay_150ms:" in text, "delayed preset helper label missing"
     delay_block = text[text.index("preset_delay_150ms:") : text.index("preset_force_mute:")]
     assert "movlw       0x96" in delay_block, "150 ms literal missing from delayed preset helper"
-    assert "call        timer3_blocking_delay, 0x0" in delay_block, (
-        "Timer3 delay call missing from delayed preset helper"
-    )
+    assert (
+        "call        timer3_blocking_delay, 0x0" in delay_block
+        or "rcall       timer3_blocking_delay" in delay_block
+    ), "Timer3 delay call missing from delayed preset helper"
 
     for anchor in ("flash_read:", "flash_write:", "flash_erase:"):
         idx = text.index(anchor)

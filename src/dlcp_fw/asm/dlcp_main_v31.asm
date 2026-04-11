@@ -639,7 +639,7 @@ flow_hid_command_dispatch_14fc:
     bnz         flow_hid_command_dispatch_1504
     bra         flow_hid_command_dispatch_13ca
 flow_hid_command_dispatch_1504:
-    call        fw_update_relay, 0x0
+    rcall       fw_update_relay
     bra         flow_hid_command_dispatch_13ca
 flow_hid_command_dispatch_150a:
     movff       ram_0x11E, i2c_coeff_1
@@ -1483,7 +1483,7 @@ flow_cmd_dispatch_gated_1b8a:
 flow_cmd_dispatch_gated_1baa:
     btfss       event_flags, 4, BANKED
     bra         flow_cmd_dispatch_gated_1bc8
-    call        main_i2c_service_2100, 0x0
+    rcall       main_i2c_service_2100
     movlb       0x0
     bcf         event_flags, 4, BANKED
     bsf         ram_0x0BD, 1, BANKED
@@ -1521,7 +1521,7 @@ main_uart_service_1be6:
     bra         flow_main_uart_service_1be6_1e78
 flow_main_uart_service_1be6_1bea:
     call        rx_ring_has_data, 0x0
-    iorlw       0x00
+
     bnz         flow_main_uart_service_1be6_1bf4
     bra         flow_main_uart_service_1be6_1e7c
 flow_main_uart_service_1be6_1bf4:
@@ -3242,7 +3242,7 @@ main_core_service_297e:
     movff       ram_0x030, ram_0x00E
     movff       ram_0x031, ram_0x00F
     movff       ram_0x032, ram_0x010
-    call        main_core_service_2ca8, 0x0
+    rcall       main_core_service_2ca8
     movff       ram_0x00D, ram_0x020
     movff       ram_0x00E, ram_0x021
     movff       ram_0x00F, ram_0x022
@@ -3253,7 +3253,7 @@ main_core_service_297e:
     movwf       ram_0x026, ACCESS
     movlw       0x3F
     movwf       ram_0x027, ACCESS
-    call        main_core_service_24c2, 0x0
+    rcall       main_core_service_24c2
     movff       ram_0x020, ram_0x02F
     movff       ram_0x021, ram_0x030
     movff       ram_0x022, ram_0x031
@@ -3417,7 +3417,7 @@ flow_main_core_service_2abc_2b52:
     movff       ram_0x022, ram_0x006
     movff       ram_0x01E, ram_0x007
     movff       ram_0x024, ram_0x008
-    call        main_core_service_30d8, 0x0
+    rcall       main_core_service_30d8
     movff       ram_0x003, ram_0x012
     movff       ram_0x004, ram_0x013
     movff       ram_0x005, ram_0x014
@@ -3581,7 +3581,7 @@ flow_main_flash_service_2bb8_2bf6:
     movwf       ram_0x00A, ACCESS
     movlw       0x00
     movwf       ram_0x009, ACCESS
-    call        flash_write, 0x0
+    rcall       flash_write
     movlw       0xC0
     movlb       0x0
     addwf       ram_0x082, F, BANKED
@@ -3688,7 +3688,7 @@ flow_main_core_service_2ca8_2d44:
     movff       ram_0x01C, ram_0x006
     movff       ram_0x01E, ram_0x007
     movff       ram_0x01F, ram_0x008
-    call        main_core_service_30d8, 0x0
+    rcall       main_core_service_30d8
     movff       ram_0x003, ram_0x00D
     movff       ram_0x004, ram_0x00E
     movff       ram_0x005, ram_0x00F
@@ -3791,7 +3791,7 @@ adc_boot_gate_exit:
     call        main_core_service_4574, 0x0
     bsf         LATB, 3, ACCESS
     call        main_core_service_4942, 0x0
-    call        main_i2c_service_32f8, 0x0
+    rcall       main_i2c_service_32f8
     call        main_core_service_4942, 0x0
     movlb       0x0
     bsf         event_flags, 1, BANKED
@@ -4397,7 +4397,7 @@ flow_main_core_service_3188_3278:
     movff       ram_0x0D5, ram_0x0E7
     movff       ram_0x0D6, ram_0x0E8
 flow_main_core_service_3188_3292:
-    call        main_flash_service_35f0, 0x0
+    rcall       main_flash_service_35f0
     movlw       0x48
     movlb       0x1
     movwf       ram_0x016, BANKED
@@ -4561,7 +4561,7 @@ flow_main_core_service_3398_33e8:
     movff       ram_0x030, ram_0x026
     movff       ram_0x031, ram_0x027
     movff       ram_0x032, ram_0x028
-    call        main_core_service_301a, 0x0
+    rcall       main_core_service_301a
     movff       ram_0x025, ram_0x00D
     movff       ram_0x026, ram_0x00E
     movff       ram_0x027, ram_0x00F
@@ -4784,7 +4784,7 @@ flow_main_i2c_service_355c_35bc:
     movwf       ram_0x009, ACCESS
     call        main_flash_service_46de, 0x0
     bsf         PORTB, 6, ACCESS
-    call        adaptive_baud_select, 0x0
+    rcall       adaptive_baud_select
     movlw       0x03
     movwf       ram_0x004, ACCESS
     movlw       0xE8
@@ -4843,7 +4843,7 @@ flow_main_flash_service_35f0_362c:
     movf        TABLAT, W, ACCESS
     bra         flow_main_flash_service_35f0_363c
 flow_main_flash_service_35f0_3638:
-    call        main_flash_service_3810, 0x0
+    rcall       main_flash_service_3810
 flow_main_flash_service_35f0_363c:
     rcall       main_core_service_3672
 flow_main_flash_service_35f0_363e:
@@ -4858,7 +4858,7 @@ flow_main_flash_service_35f0_3644:
     movf        TABLAT, W, ACCESS
     bra         flow_main_flash_service_35f0_3654
 flow_main_flash_service_35f0_3650:
-    call        main_flash_service_3810, 0x0
+    rcall       main_flash_service_3810
 flow_main_flash_service_35f0_3654:
     rcall       main_core_service_3672
 flow_main_flash_service_35f0_3656:
@@ -4917,7 +4917,7 @@ flow_main_core_service_3682_368c:
     movwf       ram_0x0CD, BANKED
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_3696:
-    call        main_flash_service_3796, 0x0
+    rcall       main_flash_service_3796
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_369c:
     call        main_usb_service_41fe, 0x0
@@ -4934,10 +4934,10 @@ flow_main_core_service_3682_36ac:
     movwf       ram_0x0E7, BANKED
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36b4:
-    call        main_core_service_3710, 0x0
+    rcall       main_core_service_3710
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36ba:
-    call        main_core_service_3432, 0x0
+    rcall       main_core_service_3432
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36c0:
     movlw       0x01
@@ -5186,15 +5186,15 @@ main_i2c_service_381c:
     clrf        ram_0x00A, ACCESS
     movlw       0x17
     movwf       ram_0x009, ACCESS
-    call        flash_read, 0x0
+    rcall       flash_read
     bsf         SSPCON2, 0, ACCESS
 flow_main_i2c_service_381c_3870:
     btfsc       SSPCON2, 0, ACCESS
     bra         flow_main_i2c_service_381c_3870
     movlw       0x68
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movf        ram_0x02F, W, ACCESS
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     clrf        ram_0x030, ACCESS
     bra         flow_main_i2c_service_381c_3894
 flow_main_i2c_service_381c_3884:
@@ -5203,7 +5203,7 @@ flow_main_i2c_service_381c_3884:
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movf        INDF2, W, ACCESS
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     incf        ram_0x030, F, ACCESS
 flow_main_i2c_service_381c_3894:
     movf        ram_0x031, W, ACCESS
@@ -5231,7 +5231,7 @@ main_core_service_38a2:
     movff       ram_0x042, ram_0x030
     movff       ram_0x043, ram_0x031
     movff       ram_0x044, ram_0x032
-    call        main_core_service_3398, 0x0
+    rcall       main_core_service_3398
     movff       ram_0x02F, ram_0x03D
     movff       ram_0x030, ram_0x03E
     movff       ram_0x031, ram_0x03F
@@ -5246,12 +5246,12 @@ main_core_service_38a2:
     movff       ram_0x047, ram_0x031
     movff       ram_0x048, ram_0x032
     movlw       0x41
-    call        main_core_service_3f1e, 0x0
+    rcall       main_core_service_3f1e
     movff       ram_0x041, ram_0x02F
     movff       ram_0x042, ram_0x030
     movff       ram_0x043, ram_0x031
     movff       ram_0x044, ram_0x032
-    call        main_core_service_3398, 0x0
+    rcall       main_core_service_3398
     movff       ram_0x02F, ram_0x041
     movff       ram_0x030, ram_0x042
     movff       ram_0x031, ram_0x043
@@ -5350,7 +5350,7 @@ main_i2c_service_39a6:
     movff       ram_0x013, ram_0x042
     movff       ram_0x014, ram_0x043
     movff       ram_0x015, ram_0x044
-    call        main_core_service_38a2, 0x0
+    rcall       main_core_service_38a2
     movff       ram_0x041, ram_0x04D
     movff       ram_0x042, ram_0x04E
     movff       ram_0x043, ram_0x04F
@@ -5366,11 +5366,11 @@ main_i2c_service_39a6:
     movff       ram_0x028, ram_0x054
     movf        ram_0x054, W, ACCESS
     andlw       0x0F
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movf        ram_0x053, W, ACCESS
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movf        ram_0x052, W, ACCESS
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movf        ram_0x051, W, ACCESS
     goto        i2c_byte_tx
 
@@ -5407,7 +5407,7 @@ flow_main_usb_service_3a26_3a40:
     movwf       ram_0x003, ACCESS
     movlw       0x40
     movwf       ram_0x005, ACCESS
-    call        main_core_service_3c82, 0x0
+    rcall       main_core_service_3c82
     movlw       0x01
     movlb       0x0
     movwf       ram_0x0C0, BANKED
@@ -5440,7 +5440,7 @@ flow_main_usb_service_3a26_3a7e:
     movwf       ram_0x003, ACCESS
     movlw       0x40
     movwf       ram_0x005, ACCESS
-    call        main_core_service_3fd0, 0x0
+    rcall       main_core_service_3fd0
     movlb       0x0
     clrf        ram_0x0C0, BANKED
 flow_main_usb_service_3a26_3aa2:
@@ -5461,7 +5461,7 @@ uart_rx_with_framing:
     call        main_timer_service_477a, 0x0
 flow_uart_rx_with_framing_3ab8:
     call        rx_ring_has_data, 0x0
-    iorlw       0x00
+
     bz          flow_uart_rx_with_framing_3b06
     movff       ram_0x00F, ram_0x00A
     call        rx_ring_read, 0x0
@@ -5586,45 +5586,42 @@ flow_main_isr_dispatch_3b8c:
 ; Notes   : Inferred uart helper routine. Calls: uart_tx_byte_blocking, main_core_service_492e.
 ; ---------------------------------------------------------------------------
 send_status_burst:
-    movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
     movlw       0x05
-    call        uart_tx_byte_blocking, 0x0
+    rcall       send_status_burst_preamble
     movf        ram_0x05F, W, ACCESS
     call        uart_tx_byte_blocking, 0x0
     call        main_core_service_492e, 0x0
-    movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
     movlw       0x07
-    call        uart_tx_byte_blocking, 0x0
+    rcall       send_status_burst_preamble
     movlb       0x0
     movf        computed_volume, W, BANKED
     addlw       0x60
     call        uart_tx_byte_blocking, 0x0
     call        main_core_service_492e, 0x0
-    movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
     movlw       0x03
-    call        uart_tx_byte_blocking, 0x0
+    rcall       send_status_burst_preamble
     movlw       0x01
     btfss       active_flags, 3, ACCESS
     movlw       0x00
     call        uart_tx_byte_blocking, 0x0
     call        main_core_service_492e, 0x0
-    movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
     movlw       0x06
-    call        uart_tx_byte_blocking, 0x0
+    rcall       send_status_burst_preamble
     movlb       0x0
     movf        input_select, W, BANKED
     call        uart_tx_byte_blocking, 0x0
     call        main_core_service_492e, 0x0
-    movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
     movlw       0x1D
-    call        uart_tx_byte_blocking, 0x0
+    rcall       send_status_burst_preamble
     movlb       0x0
     movf        ram_0x0B8, W, BANKED
+    goto        uart_tx_byte_blocking
+
+send_status_burst_preamble:
+    movwf       ram_0x00D, ACCESS
+    movlw       0xBF
+    call        uart_tx_byte_blocking, 0x0
+    movf        ram_0x00D, W, ACCESS
     goto        uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
@@ -5906,7 +5903,7 @@ flow_flash_erase_3dc0:
     movlw       0x01
     movwf       ram_0x00B, ACCESS
 flow_flash_erase_3dde:
-    call        main_flash_service_4406, 0x0
+    rcall       main_flash_service_4406
     movf        ram_0x00B, W, ACCESS
     btfss       STATUS, 2, ACCESS
     bsf         INTCON, 7, ACCESS
@@ -6349,7 +6346,7 @@ flow_main_usb_service_40d6_4102:
     movlb       0x1
     movwf       ram_0x016, BANKED
     movlw       0x00
-    call        main_core_service_4080, 0x0
+    rcall       main_core_service_4080
     movlw       0x01
     movwf       ram_0x096, BANKED
     clrf        ram_0x0CE, BANKED
@@ -6511,7 +6508,7 @@ flow_main_usb_service_41fe_4212:
     bz          flow_main_usb_service_41fe_4212
     movff       ram_0x0D1, ram_0x0EB
     movf        ram_0x0EB, W, BANKED
-    call        main_core_service_48fe, 0x0
+    rcall       main_core_service_48fe
     movlb       0x0
     tstfsz      ram_0x0D1, BANKED
     bra         flow_main_usb_service_41fe_4236
@@ -6530,22 +6527,22 @@ flow_main_usb_service_41fe_4238:
 ; ---------------------------------------------------------------------------
 i2c_secondary_dev_random_read:
     movff       WREG, ram_0x006
-    call        i2c_wait_bus_idle, 0x0
+    rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS
 flow_i2c_secondary_dev_random_4246:
     btfsc       SSPCON2, 0, ACCESS
     bra         flow_i2c_secondary_dev_random_4246
     movlw       0xE2
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movf        ram_0x006, W, ACCESS
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     bsf         SSPCON2, 1, ACCESS
 flow_i2c_secondary_dev_random_4258:
     btfsc       SSPCON2, 1, ACCESS
     bra         flow_i2c_secondary_dev_random_4258
     movlw       0xE3
-    call        i2c_byte_tx, 0x0
-    call        main_i2c_service_464c, 0x0
+    rcall       i2c_byte_tx
+    rcall       main_i2c_service_464c
     movwf       ram_0x007, ACCESS
     bsf         SSPCON2, 5, ACCESS
     bsf         SSPCON2, 4, ACCESS
@@ -6616,7 +6613,7 @@ flash_write_with_gie_off:
     tblwt*
     movlw       0xC4
     movwf       EECON1, ACCESS
-    call        main_flash_service_4406, 0x0
+    rcall       main_flash_service_4406
 flow_flash_write_with_gie_off_42d2:
     btfsc       EECON1, 1, ACCESS
     bra         flow_flash_write_with_gie_off_42d2
@@ -6629,7 +6626,7 @@ flow_flash_write_with_gie_off_42d2:
     tblwt*
     movlw       0xC4
     movwf       EECON1, ACCESS
-    call        main_flash_service_4406, 0x0
+    rcall       main_flash_service_4406
 flow_flash_write_with_gie_off_42ec:
     btfsc       EECON1, 1, ACCESS
     bra         flow_flash_write_with_gie_off_42ec
@@ -6702,24 +6699,24 @@ main_core_service_432e:
 ; ---------------------------------------------------------------------------
 i2c_tas3108_reg1f_write:
     movff       WREG, ram_0x006
-    call        i2c_wait_bus_idle, 0x0
+    rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
-    call        wait_sen_bounded, 0x0
+    rcall       wait_sen_bounded
     bc          i2c_reg1f_done
     movlw       0x68
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movlw       0x1F
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movlw       0x00
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movlw       0x00
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movlw       0x00
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movf        ram_0x006, W, ACCESS
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
-    call        wait_pen_bounded, 0x0
+    rcall       wait_pen_bounded
 i2c_reg1f_done:
     return      0
 
@@ -6736,12 +6733,12 @@ main_uart_service_43a2:
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     rcall       tblrd_lookup
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movwf       ram_0x005, ACCESS
     movff       ram_0x006, ram_0x004
     movlw       0x0F
     rcall       tblrd_lookup
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     xorwf       ram_0x005, F, ACCESS
     return      0
 
@@ -6930,18 +6927,18 @@ flow_timer3_blocking_delay_44a8:
 main_uart_service_44b2:
     movff       WREG, ram_0x01B
     movlw       0x0D
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x0A
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x0C
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x3A
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     clrf        ram_0x019, ACCESS
     movff       ram_0x01B, ram_0x018
-    call        uart_tx_block_from_buffer, 0x0
+    rcall       uart_tx_block_from_buffer
     movlw       0x0D
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x0A
     goto        uart_tx_byte_blocking
 
@@ -6952,15 +6949,15 @@ main_uart_service_44b2:
 ;           hardware DSP apply even though it passed simulation.
 ; ---------------------------------------------------------------------------
 i2c_tas3108_coeff_write:
-    call        i2c_wait_bus_idle, 0x0
+    rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS          ; stock START wait
 coeff_write_wait_sen_stock:
     btfsc       SSPCON2, 0, ACCESS
     bra         coeff_write_wait_sen_stock
     movlw       0x68
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movlw       0x30
-    call        i2c_byte_tx, 0x0
+    rcall       i2c_byte_tx
     movff       i2c_coeff_0, ram_0x049
     movff       i2c_coeff_1, ram_0x04A
     movff       i2c_coeff_2, ram_0x04B
@@ -7097,7 +7094,7 @@ main_usb_service_45a2:
     movwf       ram_0x003, ACCESS
     movlw       0x40
     movwf       ram_0x005, ACCESS
-    call        main_core_service_3fd0, 0x0
+    rcall       main_core_service_3fd0
 flow_main_usb_service_45a2_45cc:
     return      0
 
@@ -7131,8 +7128,8 @@ main_core_service_45ce:
 ; ---------------------------------------------------------------------------
 rx_ring_read:
     clrf        ram_0x004, ACCESS
-    call        rx_ring_has_data, 0x0
-    iorlw       0x00
+    rcall       rx_ring_has_data
+
     bz          flow_rx_ring_read_4620
     movlw       0x00
     movlb       0x0
@@ -7216,9 +7213,9 @@ flow_main_core_service_4672_467c:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_4672_467c
     movlw       0x1C
-    call        main_uart_service_44b2, 0x0
+    rcall       main_uart_service_44b2
     movlw       0x1C
-    call        main_uart_service_44b2, 0x0
+    rcall       main_uart_service_44b2
     movlw       0x1C
     goto        main_uart_service_44b2
 
@@ -7233,7 +7230,7 @@ uart_tx_block_from_buffer:
     bra         flow_uart_tx_block_from_buffe_46a2
 flow_uart_tx_block_from_buffe_469a:
     rcall       main_core_service_46aa
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     incf        ram_0x01A, F, ACCESS
 flow_uart_tx_block_from_buffe_46a2:
     rcall       main_core_service_46aa
@@ -7264,7 +7261,7 @@ main_core_service_46aa:
 i2c_secondary_dev_write:
     movff       WREG, ram_0x007
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
-    call        wait_sen_bounded, 0x0
+    rcall       wait_sen_bounded
     bc          i2c_secondary_done
     movlw       0xE2
     call        i2c_byte_tx, 0x0
@@ -7273,7 +7270,7 @@ i2c_secondary_dev_write:
     movf        ram_0x006, W, ACCESS
     call        i2c_byte_tx, 0x0
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
-    call        wait_pen_bounded, 0x0
+    rcall       wait_pen_bounded
 i2c_secondary_done:
     return      0
 
@@ -7286,13 +7283,13 @@ i2c_secondary_done:
 main_flash_service_46de:
     movff       ram_0x007, ram_0x003
     movff       ram_0x008, ram_0x004
-    call        eeprom_read_byte, 0x0
+    rcall       eeprom_read_byte
     xorwf       ram_0x009, W, ACCESS
     bz          flow_main_flash_service_46de_46fe
     movff       ram_0x007, ram_0x003
     movff       ram_0x008, ram_0x004
     movff       ram_0x009, ram_0x005
-    call        eeprom_write_blocking, 0x0
+    rcall       eeprom_write_blocking
 flow_main_flash_service_46de_46fe:
     return      0
 
@@ -7305,13 +7302,13 @@ flow_main_flash_service_46de_46fe:
 main_usb_service_4700:
     decf        usb_reinit_pending, W, BANKED
     btfsc       STATUS, 2, ACCESS
-    call        main_usb_service_4828, 0x0
+    rcall       main_usb_service_4828
     clrf        UCON, ACCESS
     movlw       0x15
     movwf       UCFG, ACCESS
     clrf        UIE, ACCESS
     bsf         UCON, 3, ACCESS
-    call        main_usb_service_40d6, 0x0
+    rcall       main_usb_service_40d6
     movlw       0x01
     movlb       0x0
     movwf       ram_0x0CD, BANKED
@@ -7376,12 +7373,12 @@ main_usb_service_475c:
     btfss       PORTC, 0, ACCESS
     bra         flow_main_usb_service_475c_476e
     btfss       UCON, 3, ACCESS
-    call        main_usb_service_4700, 0x0
+    rcall       main_usb_service_4700
     bra         flow_main_usb_service_475c_4778
 flow_main_usb_service_475c_476e:
     btfss       UCON, 3, ACCESS
     bra         flow_main_usb_service_475c_4778
-    call        usb_shutdown, 0x0
+    rcall       usb_shutdown
     clrf        usb_reinit_pending, BANKED
 flow_main_usb_service_475c_4778:
     return      0
@@ -7456,7 +7453,7 @@ periodic_service_loop:
     call        main_usb_service_3a26, 0x0
     call        main_uart_service_1be6, 0x0
     call        main_i2c_service_27f0, 0x0
-    call        standby_event_dispatch, 0x0
+    rcall       standby_event_dispatch
     call        main_core_service_265c, 0x0
     goto        an0_hysteresis_monitor
 
@@ -7478,9 +7475,9 @@ inline_data_table_47E6:  ; UART status strings for FW update
 ; ---------------------------------------------------------------------------
 report_cmd29_status:
     movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x29
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x01
     btfss       active_flags, 1, ACCESS
     movlw       0x00
@@ -7495,7 +7492,7 @@ report_cmd29_status:
 main_usb_service_4812:
     bra         flow_main_usb_service_4812_481e
 flow_main_usb_service_4812_4814:
-    call        usb_disconnect_handler, 0x0
+    rcall       usb_disconnect_handler
     decf        ram_0x003, F, ACCESS
     btfss       STATUS, 0, ACCESS
     decf        ram_0x004, F, ACCESS
@@ -7518,7 +7515,7 @@ main_usb_service_4828:
     movlw       0xFF
     setf        ram_0x004, ACCESS
     setf        ram_0x003, ACCESS
-    call        main_usb_service_4812, 0x0
+    rcall       main_usb_service_4812
     movlb       0x0
     clrf        ram_0x0CD, BANKED
     return      0
@@ -7530,7 +7527,7 @@ main_usb_service_4828:
 ; Notes   : Inferred usb helper; touches usb. Calls: main_core_service_4924.
 ; ---------------------------------------------------------------------------
 main_usb_service_483c:
-    call        main_core_service_4924, 0x0
+    rcall       main_core_service_4924
     bcf         UCON, 1, ACCESS
     bcf         UIE, 2, ACCESS
     bra         flow_main_usb_service_483c_4848
@@ -7549,9 +7546,9 @@ flow_main_usb_service_483c_4848:
 ; ---------------------------------------------------------------------------
 factory_reset_status_emit:
     movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x18
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x01
     goto        uart_tx_byte_blocking
 
@@ -7564,10 +7561,10 @@ factory_reset_status_emit:
 main_uart_service_4860:
     bra         flow_main_uart_service_4860_4866
 flow_main_uart_service_4860_4862:
-    call        rx_ring_read, 0x0
+    rcall       rx_ring_read
 flow_main_uart_service_4860_4866:
-    call        rx_ring_has_data, 0x0
-    iorlw       0x00
+    rcall       rx_ring_has_data
+
     btfsc       STATUS, 2, ACCESS
     return      0
     bra         flow_main_uart_service_4860_4862
@@ -7606,14 +7603,14 @@ eeprom_read_byte:
 ; ---------------------------------------------------------------------------
 uart_tx_byte_blocking:
     movff       WREG, ram_0x003
-    call        wait_trmt_bounded, 0x0
+    rcall       wait_trmt_bounded
     bc          uart_tx_timeout
     movff       ram_0x003, TXREG
     movf        ram_0x003, W, ACCESS
     return      0
 uart_tx_timeout:
-    call        uart_config, 0x0
-    call        wait_trmt_bounded, 0x0
+    rcall       uart_config
+    rcall       wait_trmt_bounded
     bc          v31_hard_reset_jump2
     movff       ram_0x003, TXREG
     movf        ram_0x003, W, ACCESS
@@ -7654,7 +7651,7 @@ flow_i2c_wait_bus_idle_48c6:
     call        main_i2c_service_355c, 0x0
 main_processing_loop:
     call        main_usb_service_2f4e, 0x0
-    call        periodic_service_loop, 0x0
+    rcall       periodic_service_loop
     bra         main_processing_loop
 
 ; ---------------------------------------------------------------------------
@@ -7679,7 +7676,7 @@ hard_reset:
 ; ---------------------------------------------------------------------------
 main_i2c_service_48e2:
     movlw       0x02
-    call        i2c_tas3108_reg1f_write, 0x0
+    rcall       i2c_tas3108_reg1f_write
     bcf         LATA, 3, ACCESS
     bcf         LATA, 4, ACCESS
     bcf         LATA, 5, ACCESS
@@ -7709,7 +7706,7 @@ main_core_service_48fe:
     movff       WREG, ram_0x003
     decf        ram_0x003, W, ACCESS
     btfsc       STATUS, 2, ACCESS
-    call        main_usb_service_4624, 0x0
+    rcall       main_usb_service_4624
     return      0
 
 
@@ -7729,7 +7726,7 @@ flow_main_usb_service_490c_4916:
     return      0
 flow_main_usb_service_490c_4918:
     btfsc       UCON, 3, ACCESS
-    call        main_usb_service_4828, 0x0
+    rcall       main_usb_service_4828
     clrf        usb_reinit_pending, BANKED
     goto        main_usb_service_475c
 
@@ -7764,7 +7761,7 @@ main_core_service_492e:
 ; Notes   : Inferred uart helper routine. Calls: uart_config.
 ; ---------------------------------------------------------------------------
 main_uart_service_4938:
-    call        uart_config, 0x0
+    rcall       uart_config
     bcf         active_flags, 0, ACCESS
     clrf        rx_frame_position, BANKED
     return      0
@@ -7866,38 +7863,38 @@ wait_tick:
     return      0
 
 wait_trmt_bounded:
-    call        wait_seed, 0x0
+    rcall       wait_seed
 wait_trmt_loop:
     btfsc       TXSTA, 1, ACCESS            ; TRMT?
     bra         wait_wait_done
-    call        wait_tick, 0x0
+    rcall       wait_tick
     bnc         wait_trmt_loop
     return      0
 
 wait_sen_bounded:
-    call        wait_seed, 0x0
+    rcall       wait_seed
 wait_sen_loop:
     btfss       SSPCON2, 0, ACCESS          ; SEN clear?
     bra         wait_wait_done
-    call        wait_tick, 0x0
+    rcall       wait_tick
     bnc         wait_sen_loop
     return      0
 
 wait_pen_bounded:
-    call        wait_seed, 0x0
+    rcall       wait_seed
 wait_pen_loop:
     btfss       SSPCON2, 2, ACCESS          ; PEN clear?
     bra         wait_wait_done
-    call        wait_tick, 0x0
+    rcall       wait_tick
     bnc         wait_pen_loop
     return      0
 
 wait_bf_clear_bounded:
-    call        wait_seed, 0x0
+    rcall       wait_seed
 wait_bf_clear_loop:
     btfss       SSPSTAT, 0, ACCESS          ; BF set?
     bra         wait_wait_done              ; BF=0: buffer empty, done
-    call        wait_tick, 0x0
+    rcall       wait_tick
     bnc         wait_bf_clear_loop
     return      0                           ; C=1: timed out
 wait_wait_done:
@@ -7945,12 +7942,12 @@ i2c_bus_clear_stop:
 ; ---------------------------------------------------------------------------
 dsp_ping:
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
-    call        wait_sen_bounded, 0x0
+    rcall       wait_sen_bounded
     bc          dsp_ping_nack
     movlw       0x68                        ; TAS3108 write addr
     call        i2c_byte_tx, 0x0
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
-    call        wait_pen_bounded, 0x0
+    rcall       wait_pen_bounded
     btfss       SSPCON2, 6, ACCESS          ; ACKSTAT?
     bcf         dsp_fault_flags, 6, BANKED  ; ACK: clear fault
     btfsc       SSPCON2, 6, ACCESS
@@ -7969,11 +7966,11 @@ send_dsp_fault_status:
     andlw       0x44                        ; bits 6 + 2
     movwf       ram_0x00D, ACCESS           ; save in ram_0x00D (uart_tx clobbers ram_0x003)
     movlw       0xBF
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movlw       0x08
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     movf        ram_0x00D, W, ACCESS
-    call        uart_tx_byte_blocking, 0x0
+    rcall       uart_tx_byte_blocking
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -7982,7 +7979,7 @@ send_dsp_fault_status:
 volume_dsp_write:
     movlb       0x0
     bcf         dsp_fault_flags, 2, BANKED  ; clear ACKSTAT latch
-    call        i2c_tas3108_coeff_write, 0x0
+    rcall       i2c_tas3108_coeff_write
     btfsc       dsp_fault_flags, 2, BANKED  ; NACKed?
     bra         vol_write_nacked
     ; Success: DSP responded, clear all fault state
@@ -7996,7 +7993,7 @@ volume_dsp_write:
     bcf         dsp_fault_flags, 6, BANKED  ; clear DSP fault (write worked)
     movlw       0xC7
     andwf       dsp_fault_flags, F, BANKED  ; clear retry counter, preserve bits 7,6
-    call        send_dsp_fault_status, 0x0
+    rcall       send_dsp_fault_status
     return      0
 vol_write_nacked:
     movlw       0x08
@@ -8009,11 +8006,11 @@ vol_write_nacked:
     ; If PEN stuck from fault model, skip I2C recovery to avoid corruption.
     btfsc       SSPCON2, 2, ACCESS          ; PEN pending?
     bra         vol_exhausted_skip_i2c
-    call        i2c_bus_clear, 0x0
-    call        dsp_ping, 0x0
+    rcall       i2c_bus_clear
+    rcall       dsp_ping
 vol_exhausted_skip_i2c:
     bsf         dsp_fault_flags, 6, BANKED  ; flag DSP fault
-    call        send_dsp_fault_status, 0x0
+    rcall       send_dsp_fault_status
     movlb       0x0
     bcf         event_flags, 3, BANKED
     movlw       0xC7
@@ -8026,7 +8023,7 @@ vol_retry_ok:
 ; Preset Select Handler (V3.1 delayed A/B switch — cmd=0x20)
 ; ---------------------------------------------------------------------------
 preset_select_handler:
-    call        preset_select_delayed, 0x0
+    rcall       preset_select_delayed
     goto        flow_main_uart_service_1be6_1e6c
 
 ; --- Persist dirty filename to EEPROM (outgoing preset slot) ---
@@ -8041,7 +8038,7 @@ preset_persist_filename:
     movwf       ram_0x00A, ACCESS
 preset_pf_lp:
     movff       POSTINC2, ram_0x009
-    call        main_flash_service_46de, 0x0
+    rcall       main_flash_service_46de
     incf        ram_0x007, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
     bra         preset_pf_lp
@@ -8059,7 +8056,7 @@ preset_load_filename:
     movlw       0x1E
     movwf       ram_0x00A, ACCESS
 preset_lf_lp:
-    call        eeprom_read_byte, 0x0
+    rcall       eeprom_read_byte
     movwf       POSTINC2
     incf        ram_0x003, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
@@ -8071,7 +8068,7 @@ preset_delay_150ms:
     clrf        ram_0x004, ACCESS
     movlw       0x96
     movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    rcall       timer3_blocking_delay
     return      0
 
 preset_force_mute:
@@ -8083,7 +8080,7 @@ preset_force_mute:
     clrf        i2c_coeff_1, ACCESS
     clrf        i2c_coeff_2, ACCESS
     clrf        i2c_coeff_3, ACCESS
-    call        i2c_tas3108_coeff_write, 0x0
+    rcall       i2c_tas3108_coeff_write
     return      0
 
 preset_select_delayed:
@@ -8093,28 +8090,28 @@ preset_select_delayed:
     xorlw       0x01                        ; invert to compare
     bz          preset_select_done          ; no change
     btfsc       ram_0x0BD, 5, BANKED        ; filename dirty?
-    call        preset_persist_filename, 0x0
+    rcall       preset_persist_filename
     btfsc       active_flags, 4, ACCESS     ; already muted?
     bra         preset_select_switch_only
-    call        preset_force_mute, 0x0
-    call        preset_delay_150ms, 0x0
+    rcall       preset_force_mute
+    rcall       preset_delay_150ms
     btg         active_flags, 2, ACCESS
-    call        preset_load_filename, 0x0
+    rcall       preset_load_filename
     movlb       0x0
     bsf         event_flags, 0, BANKED      ; cmd03 dirty
-    call        main_core_service_4574, 0x0 ; apply new preset while muted
+    rcall       main_core_service_4574 ; apply new preset while muted
     bcf         active_flags, 4, ACCESS
     bcf         active_flags, 5, ACCESS
     bsf         event_flags, 3, BANKED      ; restore prior volume on next pass
     return      0
 
 preset_select_switch_only:
-    call        preset_delay_150ms, 0x0
+    rcall       preset_delay_150ms
     btg         active_flags, 2, ACCESS
-    call        preset_load_filename, 0x0
+    rcall       preset_load_filename
     movlb       0x0
     bsf         event_flags, 0, BANKED      ; cmd03 dirty
-    call        main_core_service_4574, 0x0
+    rcall       main_core_service_4574
 
 preset_select_done:
     movlb       0x0
@@ -8169,7 +8166,7 @@ hid_cmd_diag_memread_eeprom:
     movwf       ram_0x00A, ACCESS
     lfsr        FSR2, 0x015D
 hid_cmd_diag_memread_eeprom_lp:
-    call        eeprom_read_byte, 0x0
+    rcall       eeprom_read_byte
     movwf       POSTINC2, ACCESS
     incf        ram_0x003, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS

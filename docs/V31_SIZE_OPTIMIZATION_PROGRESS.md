@@ -7,29 +7,38 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 
 ## Baseline Size Snapshot
 
-- Current baseline source: accepted recombined `W05-R01` current-main candidate
+- Current baseline source: accepted recombined `W06-R03` coordinator candidate
 - Baseline assembly: clean via `assemble_v30()`
 - Baseline collected validation suite: `89` selected tests across the full-file and targeted-node gate listed in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`
 - Baseline measured size:
+  - `used_bytes_pre_preset_b=14870`
+  - `last_used_pre_preset_b=0x4A79`
+  - `free_bytes_before_0x4C00=390`
+- Wave-launch baseline on current `main` before `W06`:
   - `used_bytes_pre_preset_b=15149`
   - `last_used_pre_preset_b=0x4B8F`
   - `free_bytes_before_0x4C00=112`
-- Wave-launch baseline on current `main` before `W05`:
+- Previous accepted campaign baseline (`W05-R01`):
+  - `used_bytes_pre_preset_b=15149`
+  - `last_used_pre_preset_b=0x4B8F`
+  - `free_bytes_before_0x4C00=112`
+- Historical pre-`W05` current-`main` baseline:
   - `used_bytes_pre_preset_b=15257`
   - `last_used_pre_preset_b=0x4BFB`
   - `free_bytes_before_0x4C00=4`
-- Previous accepted campaign baseline (`W02-R01`):
+- Previous accepted campaign baseline before current-main feature drift (`W02-R01`):
   - `used_bytes_pre_preset_b=15103`
   - `last_used_pre_preset_b=0x4B61`
   - `free_bytes_before_0x4C00=158`
+- Net improvement vs `W05-R01` / `W06` launch baseline:
+  - `-279` used bytes before Preset B
+  - `+278` free bytes before `0x4C00`
 - Net improvement vs pre-`W05` current-`main` baseline:
-  - `-108` used bytes before Preset B
-  - `+108` free bytes before `0x4C00`
+  - `-387` used bytes before Preset B
+  - `+386` free bytes before `0x4C00`
 - Net delta vs accepted `W02-R01` baseline:
-  - `+46` used bytes before Preset B
-  - `-46` free bytes before `0x4C00`
-  - post-`W02` feature additions still consume slack, but `W05-R01`
-    recovers most of the current-main regression.
+  - `-233` used bytes before Preset B
+  - `+232` free bytes before `0x4C00`
 
 ## Gate Status
 
@@ -37,6 +46,24 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - `89 tests collected`
   - file mix: 9 full files plus 5 targeted nodes from 4 additional
     files
+- `2026-04-11`: accepted `W06-R03` passed the refreshed parallel V3.1
+  gate with:
+  - `86 passed, 2 skipped, 1 xfailed in 495.97s (0:08:15)`
+  - skip detail: `tests/sim/test_v31_usb_hid_dispatch.py:221` —
+    `cmd 0x06 response not staged in RAM (no USB in gpsim)`
+  - expected `xfail`:
+    `tests/sim/test_v31_v163b_robustness.py::test_wire_mssp_stop_cascade_full_dsp_recovery`
+    — gpsim wire-chain STOP-state model still blocks the final
+    post-recovery DSP write in V3.1
+- `2026-04-11`: first `W06-R03` coordinator full-gate attempt failed
+  one static source assertion:
+  - `tests/sim/test_v31_usb_preset_ab.py::test_v31_static_remap_constants`
+  - root cause: the test hard-coded
+    `call        timer3_blocking_delay, 0x0` inside
+    `preset_delay_150ms`, but `W06-R03` legitimately shrank that local
+    call to `rcall       timer3_blocking_delay`
+  - fix: relax the static test to accept either `call` or `rcall` while
+    preserving the delayed-helper and `0x4C00` layout checks
 - `2026-04-11`: `W05-R01` passed the refreshed parallel V3.1 gate with:
   - `86 passed, 2 skipped, 1 xfailed in 493.63s (0:08:13)`
   - skip detail: `tests/sim/test_v31_usb_hid_dispatch.py:221` —
@@ -154,14 +181,17 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 | W05 | W05-E08 | `Peirce` | remove self-move cluster at `dlcp_main_v31.asm:6628-6629` | Delete 2 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -8 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
 | W05 | W05-R01a | `coordinator` | recombination of `W05-E01` through `W05-E08` on current `main` | Keep the full low-risk wave if the combined child passes | yes | 15127 | `0x4B79` | 134 | -130 | `16 passed` smoke + full gate `1 failed` (`test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`) | reject / regression | no | medium | Authoritative coordinator rebuild after freezing worker contamination. This child proved the `W05-E02` flag-changing rewrite was not safe. |
 | W05 | W05-R01 | `coordinator` | recombination of `W05-E01`, `W05-E03`, `W05-E04`, `W05-E05`, `W05-E06`, `W05-E07`, `W05-E08` on current `main` | Keep the dead literal deletes and self-move removals while backing out the regressing STATUS-sensitive zeroing rewrite | yes | 15149 | `0x4B8F` | 112 | -108 | `16 passed` smoke (`768.59s`); reconnect node `1 passed` (`82.96s`); full gate `86 passed, 2 skipped, 1 xfailed` (`493.63s`) | accepted baseline | yes | medium | Authoritative accepted baseline for current `main`. |
-| W06 | W06-E01 | TBD | `call` to `rcall` sweep (Part 1) | Replace `call` with `rcall` where target is definitively within ±1024 words | not run | n/a | n/a | n/a | -122 est | not run | queued | no | low | First half of 122 statically verified sites. |
-| W06 | W06-E02 | TBD | `call` to `rcall` sweep (Part 2) | Replace `call` with `rcall` where target is definitively within ±1024 words | not run | n/a | n/a | n/a | -122 est | not run | queued | no | low | Second half of 122 statically verified sites. |
-| W06 | W06-E03 | TBD | Tail-call optimization | Replace `call` + `return 0` with `bra` or `goto` based on target distance | not run | n/a | n/a | n/a | -40 est | not run | queued | no | low | 11 sites identified. |
-| W06 | W06-E04 | TBD | Redundant `iorlw 0x00` removal | Remove `iorlw 0x00` after `rx_ring_has_data` since it returns raw XOR difference | not run | n/a | n/a | n/a | -8 est | not run | queued | no | low | 4 sites identified in `main_uart_service_1be6`. |
-| W06 | W06-E05 | TBD | `send_status_burst` preamble helper | Extract `movlw <ID> / call uart_tx_byte_blocking` preamble | not run | n/a | n/a | n/a | -28 est | not run | queued | no | medium | 5 sites in `send_status_burst`, 2 in other emitters. |
-| W06 | W06-E06 | TBD | `movlw 0x00` + `movwf` → `clrf` (Safe Site 1) | Line 372: safely convert to `clrf` as `Z` flag is immediately clobbered by `xorwf` | not run | n/a | n/a | n/a | -2 est | not run | queued | no | low | Z flag equivalence verified statically. |
-| W06 | W06-E07 | TBD | `movlw 0x00` + `movwf` → `clrf` (Safe Sites 2 & 3) | Lines 5738 and 6206: safely convert to `clrf` as `Z` flag is immediately clobbered by `swapf` | not run | n/a | n/a | n/a | -4 est | not run | queued | no | low | Z flag equivalence verified statically. |
-| W06 | W06-E08 | TBD | Confirmation variant of `W06-E05` | Independent subagent re-applies `W06-E05` edits to guard against copy/paste error | not run | n/a | n/a | n/a | -28 est | not run | queued | no | low | Fills parallel wave slot per spec rule. |
+| W06 | W06-E01 | `coordinator` | `call` to `rcall` sweep (Part 1) | Convert the first 61 source-order bank-0 reachable `call` sites to `rcall` and rely on gpasm reach validation | yes | 15016 | `0x4B15` | 234 | -133 | not run individually | parent accepted into `W06-R03` | yes | low | First half of the 122-site reachable-call manifest. `last_used/free` improved by 122 B; non-`0xFF` used-byte count moved by 133 B after compaction. |
+| W06 | W06-E02 | `coordinator` | `call` to `rcall` sweep (Part 2) | Convert the remaining 61 source-order bank-0 reachable `call` sites to `rcall` and rely on gpasm reach validation | yes | 15027 | `0x4B15` | 234 | -122 | not run individually | parent accepted into `W06-R03` | yes | low | Second half of the 122-site reachable-call manifest. Exact source rewrite count matched the planned 61-site split. |
+| W06 | W06-E03 | `coordinator` | Tail-call optimization | Replace 11 audited `call` + label/`return 0` tails with `bra` or `goto` according to reach | yes | 15109 | `0x4B67` | 152 | -40 | smoke `1 failed, 31 passed` (`1555.72s`) | reject / regression | no | medium | Regressed `tests/sim/test_v31_happy_path.py::test_two_volumes_produce_different_computed_volume[v31]`; two distinct volume commands collapsed to the same `computed_volume`. |
+| W06 | W06-E04 | `coordinator` | Redundant `iorlw 0x00` removal | Remove the 4 `iorlw 0x00` instructions that still followed `rx_ring_has_data` after W02 made it return raw XOR difference | yes | 15141 | `0x4B87` | 120 | -8 | not run individually | parent accepted into `W06-R03` | yes | low | Removed the 4 remaining sites at the `rx_ring_has_data` callers in `main_uart_service_1be6`, `main_uart_service_44b2`, `main_core_service_45ce`, and `main_uart_service_4860`. |
+| W06 | W06-E05 | `coordinator` | `send_status_burst` preamble helper | Factor the repeated `BF/<id>` preamble into a local helper using `rcall`, without altering inter-frame delays | yes | 15123 | `0x4B75` | 138 | -26 | smoke `32 passed` (`1556.06s`) | parent accepted into `W06-R03` | yes | medium | Added `send_status_burst_preamble` local helper and kept the existing `main_core_service_492e` delay cadence intact. |
+| W06 | W06-E06 | `coordinator` | `movlw 0x00` + `movwf` → `clrf` (Safe Site 1) | Re-audit the queued line-372 rewrite and only land it if value semantics are genuinely unchanged | yes | 15149 | `0x4B8F` | 112 | 0 | not run | reject / static audit | no | low | No source edit landed. The queued site materializes a `0/1` selector into `ram_0x04C`; replacing it with `clrf` would change the stored value, not just STATUS. |
+| W06 | W06-E07 | `coordinator` | `movlw 0x00` + `movwf` → `clrf` (Safe Sites 2 & 3) | Re-audit the queued lines-5738/6206 rewrites and only land them if value semantics are genuinely unchanged | yes | 15149 | `0x4B8F` | 112 | 0 | not run | reject / static audit | no | low | No source edit landed. Both queued sites materialize a `0/1` value into `ram_0x006` before `swapf`/`rlncf`; `clrf` would force zero and is not behavior-neutral. |
+| W06 | W06-E08 | `coordinator` | Confirmation variant of `W06-E05` | Independently re-apply the `send_status_burst` helper to confirm the measured delta in a second isolated tree | yes | 15123 | `0x4B75` | 138 | -26 | not run | confirmation only | no | low | Confirmation variant matched `W06-E05` exactly on assembly and size metrics; no extra tests were run after `W06-E05` and `W06-R03` stayed green. |
+| W06 | W06-R01 | `coordinator` | recombination of `W06-E01`, `W06-E02`, `W06-E03`, `W06-E04` | Keep the full encoding/tail wave if the combined child preserves behavior | yes | 14845 | `0x4A7D` | 386 | -304 | smoke `1 failed, 31 passed` (`1554.09s`) | reject / regression | no | medium | Reproduced the `W06-E03` volume-computation regression in recombined form, so the entire tail-call family was dropped. |
+| W06 | W06-R02 | `coordinator` | recombination of `W06-E01`, `W06-E02`, `W06-E04` | Prepare the no-tail fallback candidate while `W06-E05` is still under smoke | yes | 14895 | `0x4A93` | 364 | -254 | not run | superseded by `W06-R03` | no | low | Fallback coordinator child measured cleanly but was not carried forward once the helper candidate passed smoke. |
+| W06 | W06-R03 | `coordinator` | recombination of `W06-E01`, `W06-E02`, `W06-E04`, `W06-E05` | Keep the full reachable `rcall` sweep, the 4 redundant-`iorlw` removals, and the green helper refactor while excluding the regressing tail-call family | yes | 14870 | `0x4A79` | 390 | -279 | smoke `32 passed` (`1555.70s`); full gate initial static failure; full gate rerun `86 passed, 2 skipped, 1 xfailed` (`495.97s`) | accepted baseline | yes | medium | Authoritative accepted W06 baseline. Initial full-gate failure was only the static `call`-string expectation in `test_v31_static_remap_constants`; after relaxing that test to accept `call` or `rcall`, the full 89-node gate passed cleanly. |
 
 ## Recombination Lineage
 
@@ -183,6 +213,19 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   coordinator checkout instead of staying inside their assigned
   worktrees. Parent rows are therefore advisory only; `W05-R01a` and
   `W05-R01` are the authoritative records.
+- `W06-R01` parents:
+  - `W05-R01` launch baseline
+  - `W06-E01`, `W06-E02`, `W06-E03`, `W06-E04`
+  - rejected because the `W06-E03` tail-call family broke
+    `test_two_volumes_produce_different_computed_volume[v31]`
+- `W06-R02` parents:
+  - `W05-R01` launch baseline
+  - `W06-E01`, `W06-E02`, `W06-E04`
+  - measured as the no-tail fallback and then superseded by `W06-R03`
+- `W06-R03` parents:
+  - `W05-R01` launch baseline
+  - `W06-E01`, `W06-E02`, `W06-E04`, `W06-E05`
+  - accepted after coordinator-only rebuild, helper smoke, and full-gate validation
 - `W04-R01` planned parents (pending `W03` closure and `W04` experiment results):
   - post-`W03` baseline (expected `W03-R01` if `W03` produces a successful recombination)
   - `W04-E01` encoding subs — `movlw 0x00` removal before `clrf`
@@ -206,13 +249,21 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   - removed 10 dead `movlw 0x00` instructions that immediately preceded `clrf`
   - removed 6 self-move clusters totaling 22 emitted `movff X, X` instructions
   - explicitly rejected the STATUS-mutating `movwf` → `clrf` rewrite family (`W05-E02`)
+- `W06-R03` accepted actions:
+  - converted all 122 statically verified bank-0 reachable `call` sites to `rcall`
+  - removed the 4 redundant `iorlw 0x00` instructions that still followed `rx_ring_has_data`
+  - factored the repeated `BF/<id>` `send_status_burst` preamble into a local `rcall`-reachable helper
+  - explicitly rejected the 11-site tail-call family (`W06-E03`) after a real happy-path regression
+  - explicitly rejected the queued `movwf` → `clrf` rewrites (`W06-E06`/`W06-E07`) after static re-audit showed they change stored values, not just flags
 - Current accepted baseline:
-  - `used_bytes_pre_preset_b=15149`
-  - `last_used_pre_preset_b=0x4B8F`
-  - `free_bytes_before_0x4C00=112`
+  - `used_bytes_pre_preset_b=14870`
+  - `last_used_pre_preset_b=0x4A79`
+  - `free_bytes_before_0x4C00=390`
 - Authoritative savings:
-  - `-108` bytes vs pre-`W05` current-main baseline
-  - `+108` free bytes before `0x4C00` vs pre-`W05` current-main baseline
+  - `-279` used bytes vs `W05-R01` / `W06` launch baseline
+  - `+278` free bytes before `0x4C00` vs `W05-R01` / `W06` launch baseline
+  - `-387` used bytes vs pre-`W05` current-main baseline
+  - `+386` free bytes before `0x4C00` vs pre-`W05` current-main baseline
 
 ## Cumulative Action Log
 
@@ -241,6 +292,19 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 - 2026-04-11: built first recombined `W05` child (`W05-R01a`) with all eight parents, measured `used=15127`, `last_used=0x4B79`, `free=134`, and ran the exact full gate. Result: `1 failed, 85 passed, 2 skipped, 1 xfailed`; failing node was `test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`.
 - 2026-04-11: isolated the `W05-R01a` regression to `W05-E02`; reverting only the `movwf` → `clrf` rewrite family restored the reconnect wake gate (`1 passed in 82.96s`).
 - 2026-04-11: built accepted `W05-R01` with `W05-E01` plus the six self-move clusters, measured `used=15149`, `last_used=0x4B8F`, `free=112`, passed smoke (`16 passed in 768.59s`), and passed the refreshed full gate (`86 passed, 2 skipped, 1 xfailed in 493.63s`).
+- 2026-04-11: re-measured the live `W06` launch baseline from the branch tip and confirmed it still matched `W05-R01` exactly: `used=15149`, `last_used=0x4B8F`, `free=112`.
+- 2026-04-11: executed `W06` entirely in isolated detached worktrees under `artifacts/reanalysis/size_opt_w06/`; no shared-workspace worker mutation was used for authoritative results.
+- 2026-04-11: derived the full 122-site bank-0 reachable-call manifest, the 11-site tail-call manifest, and the 4 remaining redundant `iorlw 0x00` sites directly from the assembled baseline listing.
+- 2026-04-11: re-audited the queued `W06-E06` / `W06-E07` `movwf` → `clrf` sites and rejected them without landing code; the stored values were load-bearing `0/1` booleans, so the original planning note was wrong.
+- 2026-04-11: `W06-E03` assembled and saved `40` used bytes, but failed smoke (`1 failed, 31 passed in 1555.72s`) at `test_two_volumes_produce_different_computed_volume[v31]`; the tail-call family was rejected.
+- 2026-04-11: `W06-E05` assembled to `used=15123`, `last_used=0x4B75`, `free=138` and passed smoke (`32 passed in 1556.06s`); `W06-E08` confirmed the same measurement in a second isolated tree.
+- 2026-04-11: `W06-R01` (`E01+E02+E03+E04`) reproduced the `W06-E03` regression and was rejected after smoke (`1 failed, 31 passed in 1554.09s`).
+- 2026-04-11: built `W06-R02` (`E01+E02+E04`) as the no-tail fallback, measured `used=14895`, `last_used=0x4A93`, `free=364`, and kept it in reserve.
+- 2026-04-11: built `W06-R03` (`E01+E02+E04+E05`), measured `used=14870`, `last_used=0x4A79`, `free=390`, and passed smoke (`32 passed in 1555.70s`).
+- 2026-04-11: first coordinator full-gate run of `W06-R03` failed one static source assertion in `test_v31_static_remap_constants` because the newly optimized `preset_delay_150ms` block legitimately used `rcall       timer3_blocking_delay` instead of the older `call        timer3_blocking_delay, 0x0` spelling.
+- 2026-04-11: relaxed `tests/sim/test_v31_usb_preset_ab.py::test_v31_static_remap_constants` to accept either `call` or `rcall` for that local delayed-preset helper edge while preserving the rest of the static layout assertions.
+- 2026-04-11: reran the full coordinator gate on `W06-R03` and got `86 passed, 2 skipped, 1 xfailed in 495.97s (0:08:15)`.
+- 2026-04-11: accepted `W06-R03` as the new campaign baseline.
 
 ## Dead Code Candidate List
 
@@ -261,8 +325,8 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 - Process note (2026-04-11): `W01-E01` rejection surfaced a measurement-methodology gap. Any experiment result claiming "no binary delta" must capture `used_bytes_pre_preset_b`, `last_used_pre_preset_b`, and `free_bytes_before_0x4C00` metrics AND a `mem[0x1000..0x4BFF]` content diff — not just file-size-on-disk. See new `## Measurement Gotchas` section in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`.
 - Process note (2026-04-11): flag-setting equivalence matters. `movlw 0x00` / `movwf F` is not semantically interchangeable with `clrf F` when downstream code can observe STATUS. `W05-E02` is the proof case; do not retry that family without explicit flag audits per site.
 - Next-wave priorities:
-  - refresh the stale `W03` / `W04` rows against current `main` and discard any plan that assumed the pre-`W05` layout
-  - prefer fresh low-risk locals first: wrapper removal audits near the tail of the stock block, localized USB helper consolidation, and additional I2C helper tightening that does not create new fixed-address code
-  - revisit zero-materialization only with explicit STATUS-proofed rewrites; do not retry blanket `movwf` → `clrf`
+  - launch the next wave from the accepted `W06-R03` baseline, not from the stale queued `W03` / `W04` plan rows
+  - do not revisit the `W06-E03` tail-call family without a narrower proof set; the 11-site batch regressed volume computation on the happy path
+  - do not revisit the queued `W06-E06` / `W06-E07` zero-materialization sites; their planning audit was wrong because those stores materialize boolean values
+  - prefer fresh low-risk locals first: additional helper/caller encoding substitutions, wrapper removals near the tail of the stock block, and localized USB/I2C tightening that does not create new fixed-address code
   - author the blocked-optimization prerequisite gpsim test for physical preset-B flash-write validation so a future wave can safely revisit shared preset-B remap helpers if more slack is needed
-  - execute the newly queued `W06` wave containing the `call`-to-`rcall` conversions, tail-call optimizations, and safe flag-audited zero-materialization cleanups.

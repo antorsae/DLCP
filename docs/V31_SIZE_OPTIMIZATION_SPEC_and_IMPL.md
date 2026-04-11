@@ -112,7 +112,7 @@ Notes:
 
 - This is the exact full suite currently used to validate V3.1.
 - Latest clean parallel result as of 2026-04-11:
-  - `86 passed, 2 skipped, 1 xfailed in 493.63s (0:08:13)`
+  - `86 passed, 2 skipped, 1 xfailed in 495.97s (0:08:15)`
   - skipped nodes: `tests/sim/test_v31_usb_hid_dispatch.py:221`
     because `cmd 0x06 response not staged in RAM (no USB in gpsim)`
 - expected `xfail` node:
@@ -125,6 +125,12 @@ Notes:
   regressions.
 - There is one active `xfail` node in this suite as of 2026-04-11, as
   recorded above.
+- `tests/sim/test_v31_usb_preset_ab.py::test_v31_static_remap_constants`
+  now intentionally accepts either
+  `call        timer3_blocking_delay, 0x0` or
+  `rcall       timer3_blocking_delay` inside `preset_delay_150ms`.
+  That assertion is guarding the delayed preset helper's existence and
+  layout, not the exact call encoding.
 - Normal execution mode for the full suite is parallel `pytest-xdist`,
   matching the repo-wide full test gate in `AGENTS.md`.
 - In auxiliary git worktrees that do not contain a built local
@@ -500,3 +506,4 @@ These are checkpoint artifacts, not a termination condition.
   `W04-E03..E05` to reopen self-move removal under content-diff
   validation.
 - 2026-04-11: Queued `W06` execution wave consisting of low-risk structure optimizations including 122 instances of `call` -> `rcall` conversion, `call`+`return 0` tail-call optimization into branches, removal of redundant `iorlw 0x00` ops, preamble extraction for `send_status_burst`, and safe flag-audited `movwf` -> `clrf` zero-materializations.
+- 2026-04-11: Accepted `W06-R03` after coordinator-only rebuild and full-gate validation. Accepted actions were the full 122-site reachable `call` -> `rcall` sweep, 4 redundant `iorlw 0x00` deletions after `rx_ring_has_data`, and the local `send_status_burst` preamble helper. Rejected actions were the 11-site tail-call family (`W06-E03`) after a real happy-path regression and the queued `movwf` -> `clrf` sites (`W06-E06` / `W06-E07`) after static re-audit showed their stored values were load-bearing booleans.
