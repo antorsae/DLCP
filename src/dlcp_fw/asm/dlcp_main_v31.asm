@@ -473,7 +473,6 @@ flow_hid_command_dispatch_13a2:
     clrf        ram_0x0C5, BANKED
     movlw       0x56
     movwf       ram_0x083, BANKED
-    movlw       0x00
     clrf        ram_0x082, BANKED
 flow_hid_command_dispatch_13ba:
     bcf         RCSTA, 4, ACCESS
@@ -548,7 +547,6 @@ flow_hid_command_dispatch_141a:
     call        main_core_service_265c, 0x0
     clrf        ram_0x008, ACCESS
     setf        ram_0x007, ACCESS
-    movlw       0x00
     clrf        ram_0x009, ACCESS
     call        main_flash_service_46de, 0x0
     call        hard_reset, 0x0
@@ -1340,7 +1338,6 @@ flow_cmd_dispatch_gated_19e6:
 flow_cmd_dispatch_gated_1a76:
     btfss       active_flags, 7, ACCESS
     bra         flow_cmd_dispatch_gated_1a9c
-    movlw       0x00
     clrf        i2c_coeff_0, ACCESS
     clrf        i2c_coeff_1, ACCESS
     clrf        i2c_coeff_2, ACCESS
@@ -1360,7 +1357,6 @@ flow_cmd_dispatch_gated_1a9c:
     bra         flow_cmd_dispatch_gated_1aca
     btfss       active_flags, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1ab6
-    movlw       0x00
     clrf        i2c_coeff_0, ACCESS
     clrf        i2c_coeff_1, ACCESS
     clrf        i2c_coeff_2, ACCESS
@@ -1879,7 +1875,6 @@ flow_main_uart_service_1be6_1e80:
 ; Notes   : Inferred core helper routine. Calls: eeprom_read_byte, main_flash_service_46de.
 ; ---------------------------------------------------------------------------
 main_core_service_1e88:
-    movlw       0x00
     clrf        ram_0x004, ACCESS
     clrf        ram_0x003, ACCESS
     call        eeprom_read_byte, 0x0
@@ -2688,10 +2683,6 @@ flow_main_core_service_24c2_2526:
     subwf       ram_0x028, W, ACCESS
     bnc         flow_main_core_service_24c2_254e
 flow_main_core_service_24c2_253c:
-    movff       ram_0x020, ram_0x020
-    movff       ram_0x021, ram_0x021
-    movff       ram_0x022, ram_0x022
-    movff       ram_0x023, ram_0x023
     bra         flow_main_core_service_24c2_263c
 flow_main_core_service_24c2_254e:
     movlw       0x06
@@ -2872,7 +2863,6 @@ main_core_service_265c:
     movwf       ram_0x007, ACCESS
     movff       computed_volume_2, ram_0x009
     call        main_flash_service_46de, 0x0
-    movlw       0x00
     clrf        ram_0x008, ACCESS
     clrf        ram_0x007, ACCESS
     movff       computed_volume_3, ram_0x009
@@ -3328,10 +3318,6 @@ main_core_service_297e:
     movff       ram_0x032, ram_0x028
     movlw       0x2F
     call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x02F
-    movff       ram_0x030, ram_0x030
-    movff       ram_0x031, ram_0x031
-    movff       ram_0x032, ram_0x032
     return      0
 
 
@@ -3797,7 +3783,6 @@ adc_boot_gate_exit:
     movlw       0x08
     call        mssp_hard_reset, 0x0
     bsf         LATA, 6, ACCESS
-    movlw       0x00
     clrf        i2c_coeff_0, ACCESS
     clrf        i2c_coeff_1, ACCESS
     clrf        i2c_coeff_2, ACCESS
@@ -4148,10 +4133,6 @@ flow_main_core_service_301a_30a6:
     addwfc      ram_0x027, F, ACCESS
     addwfc      ram_0x028, F, ACCESS
 flow_main_core_service_301a_30ba:
-    movff       ram_0x025, ram_0x025
-    movff       ram_0x026, ram_0x026
-    movff       ram_0x027, ram_0x027
-    movff       ram_0x028, ram_0x028
 flow_main_core_service_301a_30ca:
     return      0
 
@@ -4261,10 +4242,6 @@ flow_main_core_service_30d8_3148:
     movf        ram_0x008, W, ACCESS
     btfss       STATUS, 2, ACCESS
     bsf         ram_0x006, 7, ACCESS
-    movff       ram_0x003, ram_0x003
-    movff       ram_0x004, ram_0x004
-    movff       ram_0x005, ram_0x005
-    movff       ram_0x006, ram_0x006
 flow_main_core_service_30d8_3186:
     return      0
 
@@ -4578,10 +4555,6 @@ flow_main_core_service_3398_33cc:
     movlw       0x00
     subwfb      ram_0x038, W, ACCESS
     bnc         flow_main_core_service_3398_33e8
-    movff       ram_0x02F, ram_0x02F
-    movff       ram_0x030, ram_0x030
-    movff       ram_0x031, ram_0x031
-    movff       ram_0x032, ram_0x032
     bra         flow_main_core_service_3398_3430
 flow_main_core_service_3398_33e8:
     movff       ram_0x02F, ram_0x025
@@ -4711,7 +4684,6 @@ flow_main_core_service_34c8_34d4:
     movf        ram_0x011, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movlw       0x00
     clrf        INDF2, ACCESS
     decf        ram_0x011, F, ACCESS
 flow_main_core_service_34c8_3504:
@@ -6625,8 +6597,6 @@ flow_main_core_service_427a_42a4:
     decfsz      ram_0x007, F, ACCESS
     bra         flow_main_core_service_427a_4292
 flow_main_core_service_427a_42ae:
-    movff       ram_0x003, ram_0x003
-    movff       ram_0x004, ram_0x004
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -7084,7 +7054,6 @@ uart_config:
 main_core_service_4574:
     movlw       0x56
     movwf       ram_0x033, ACCESS
-    movlw       0x00
     clrf        ram_0x032, ACCESS
     clrf        ram_0x034, ACCESS
 flow_main_core_service_4574_457e:
@@ -7147,7 +7116,6 @@ main_core_service_45ce:
     clrf        ram_0x006, ACCESS
     movlw       0x96
     movwf       ram_0x007, ACCESS
-    movlw       0x00
     clrf        ram_0x008, ACCESS
     call        main_core_service_30d8, 0x0
     movff       ram_0x003, ram_0x00D

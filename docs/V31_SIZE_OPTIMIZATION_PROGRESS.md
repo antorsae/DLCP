@@ -1,54 +1,61 @@
 # V3.1 MAIN Size Optimization Progress
 
-Date: 2026-03-30
+Date: 2026-04-11
 Status: active
 Target source: `src/dlcp_fw/asm/dlcp_main_v31.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 
 ## Baseline Size Snapshot
 
-- Current baseline source: accepted recombined `W02-R01` working-tree candidate
+- Current baseline source: accepted recombined `W05-R01` current-main candidate
 - Baseline assembly: clean via `assemble_v30()`
-- Baseline collected validation suite: `80` selected tests across the full-file and targeted-node gate listed in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`
+- Baseline collected validation suite: `89` selected tests across the full-file and targeted-node gate listed in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`
 - Baseline measured size:
+  - `used_bytes_pre_preset_b=15149`
+  - `last_used_pre_preset_b=0x4B8F`
+  - `free_bytes_before_0x4C00=112`
+- Wave-launch baseline on current `main` before `W05`:
+  - `used_bytes_pre_preset_b=15257`
+  - `last_used_pre_preset_b=0x4BFB`
+  - `free_bytes_before_0x4C00=4`
+- Previous accepted campaign baseline (`W02-R01`):
   - `used_bytes_pre_preset_b=15103`
   - `last_used_pre_preset_b=0x4B61`
   - `free_bytes_before_0x4C00=158`
-- Previous accepted baseline:
-  - `used_bytes_pre_preset_b=15186`
-  - `last_used_pre_preset_b=0x4BB9`
-  - `free_bytes_before_0x4C00=70`
-- Net improvement vs accepted `W01-E02` baseline:
-  - `-83` used bytes before Preset B
-  - `+88` free bytes before `0x4C00`
-- Net improvement vs original pre-W01 source:
-  - `-100` used bytes before Preset B
-  - `+100` free bytes before `0x4C00`
+- Net improvement vs pre-`W05` current-`main` baseline:
+  - `-108` used bytes before Preset B
+  - `+108` free bytes before `0x4C00`
+- Net delta vs accepted `W02-R01` baseline:
+  - `+46` used bytes before Preset B
+  - `-46` free bytes before `0x4C00`
+  - post-`W02` feature additions still consume slack, but `W05-R01`
+    recovers most of the current-main regression.
 
 ## Gate Status
 
-- `2026-03-30`: coordinator reran the expanded parallel V3.1 gate on the accepted recombined candidate `W02-R01` with:
-  - `78 passed, 2 skipped in 507.86s (0:08:27)`
+- `2026-04-11`: coordinator collected the exact current V3.1 gate with:
+  - `89 tests collected`
+  - file mix: 9 full files plus 5 targeted nodes from 4 additional
+    files
+- `2026-04-11`: `W05-R01` passed the refreshed parallel V3.1 gate with:
+  - `86 passed, 2 skipped, 1 xfailed in 493.63s (0:08:13)`
   - skip detail: `tests/sim/test_v31_usb_hid_dispatch.py:221` —
     `cmd 0x06 response not staged in RAM (no USB in gpsim)`
-- `2026-03-30`: earlier accepted baseline `W01-E02` also passed the same gate with:
-  - `78 passed, 2 skipped in 511.93s (0:08:31)`
-- `2026-04-11`: current working tree has diverged from the `W02-R01`
-  accepted baseline due to post-`W02` feature additions that landed
-  outside this campaign:
-  - restored the stock guarded `cmd 0x07` HID upload reseed
-    (`dlcp_main_v31.asm:469-477`, see `docs/AB_PRESETS.md:15-17`)
-  - added the delayed preset switch helper cluster
-    (`dlcp_main_v31.asm:8097-8153`)
-  - possibly other small changes
-  - measured current state: `last_used_pre_preset_b=0x4B83`,
-    `free_bytes_before_0x4C00=124`
-  - delta vs `W02-R01` baseline: `+34` used bytes (features eat slack)
-  - `W04` experiments must measure against the current tree state,
-    not the frozen `W02-R01` numbers.
+  - expected `xfail`:
+    `tests/sim/test_v31_v163b_robustness.py::test_wire_mssp_stop_cascade_full_dsp_recovery`
+    — gpsim wire-chain STOP-state model still blocks the final
+    post-recovery DSP write in V3.1
+- `2026-04-11`: `W05-R01` also passed the local smoke gate with:
+  - `DLCP_GPSIM_BIN=/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis/scripts/gpsim-xtc ../analysis/.venv_ep0/bin/python -m pytest -q tests/sim/test_v31_happy_path.py`
+  - `16 passed in 768.59s (0:12:48)`
+- `2026-04-11`: first recombined `W05` child with all eight parents
+  (`W05-R01a`) assembled to `used=15127`, `last_used=0x4B79`,
+  `free=134`, but failed the reconnect wake gate and was rejected before
+  merge.
 - Acceptance gate command:
 
 ```bash
+DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 .venv_ep0/bin/python -m pytest -n 16 -q \
   tests/sim/test_firmware_version_label.py \
   tests/sim/test_main_gpsim_usb_engine.py \
@@ -107,7 +114,7 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 
 ## Wave Ledger
 
-| Wave | Experiment | Subagent | Scope | Hypothesis | Assembles | Used Bytes | Last Used | Free Bytes | Delta | Tests | Result | Merged | Risk | Notes |
+| Wave | Experiment | Executor | Scope | Hypothesis | Assembles | Used Bytes | Last Used | Free Bytes | Delta | Tests | Result | Merged | Risk | Notes |
 | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- | --- | --- | --- | --- |
 | W01 | W01-E01 | `coordinator` | apparent `movff X, X` no-op clusters | Removing self-move source noise will shrink emitted code | yes | 15203 | `0x4BC5` | 58 | 0 | not run | reject | no | low | No binary delta. These lines were not a usable size lever in this source build. |
 | W01 | W01-E02 | `coordinator` | `main_core_service_3188`, post-stock helper block, `uart_tx_byte_blocking` | Remove empty `main_core_service_496e` stub and replace one-call `recover_uart` wrapper with direct `uart_config` call | yes | 15186 | `0x4BB9` | 70 | -17 | `78 passed, 2 skipped` (parallel, `511.93s`) | accepted baseline | yes | low | Accepted baseline before W02 launched. |
@@ -137,6 +144,16 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 | W04 | W04-E07 | TBD | `send_status_burst` Variant A — extract `BF <id>` preamble helper, keep inter-frame `main_core_service_492e` calls | Reduce per-frame boilerplate in the 5-frame emitter at `dlcp_main_v31.asm:5616-5656` (baseline 118 B) | not run | n/a | n/a | n/a | -14 to -24 est | not run | queued (post-W03) | no | medium | 2026-04-11 Codex audit: no test asserts the TX byte order of `send_status_burst`; only RX synthetic injections at `src/dlcp_fw/sim/control_gpsim.py:538,557`. `call`-based Variant A saves only 14 B (below campaign 15 B threshold); `rcall`-based Variant A saves 24 B but requires all 5 call sites within ±1024 words of helper. `main_core_service_492e` tail-calls `timer3_blocking_delay` — inter-frame spacing is load-bearing, do not collapse. |
 | W04 | W04-E08 | TBD | Confirmation variant of `W04-E01` | Independent subagent re-applies the `W04-E01` edits and re-measures to guard against copy/paste error in the mechanical edit | not run | n/a | n/a | n/a | -20 est (matches E01) | not run | queued (post-W03) | no | low | Per spec `## Parallelism Rule` line 373-375: when fewer than 8 fresh ideas remain, fill slots with confirmation variants rather than dropping to serial. This slot validates that `W04-E01` produces the same measured delta in two independent runs. |
 | W04 | W04-R01 | `coordinator` | Recombine `W04-E01` + `W04-E02` + `W04-E06` + `W04-E07` on top of the post-`W03` baseline | Merge disjoint-scope low-risk wins after parent experiments land cleanly. Holds back `W04-E03..E05` for a separate recombination round after content-diff validation of self-move removal. | pending | n/a | n/a | n/a | -50 to -72 est | pending | pending | pending | low | Standard recombination per spec `## Experiment Recombination Rule`. Parent IDs captured in `## Recombination Lineage` below. `E03..E05` held back and recombined separately into `W04-R02` (next pass) once their content-diff validation is authoritative. |
+| W05 | W05-E01 | `Darwin` | audited dead `movlw 0x00` deletes before `clrf` at 10 sites | Remove W-independent zero literal loads | advisory only | n/a | n/a | n/a | -20 est | worker test run invalid before `DLCP_GPSIM_BIN` fix | parent kept only via coordinator recombination | yes | low | Worker isolation failed; authoritative evidence comes from `W05-R01a` / `W05-R01`, not the worker artifact. |
+| W05 | W05-E02 | `Zeno` | audited `movlw 0x00` / `movwf` collapses to `clrf` at 11 sites plus paired zero-store rewrite | Save 2 B per site without behavior change | advisory only | n/a | n/a | n/a | -22 est | caused `W05-R01a` reconnect gate regression | reject | no | medium | Rejected after coordinator proved that converting `movwf` to `clrf` perturbs STATUS and breaks `test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`. |
+| W05 | W05-E03 | `Harvey` | remove self-move cluster at `dlcp_main_v31.asm:2691-2694` | Delete 4 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -16 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
+| W05 | W05-E04 | `Mencius` | remove self-move cluster at `dlcp_main_v31.asm:3331-3334` | Delete 4 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -16 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
+| W05 | W05-E05 | `Copernicus` | remove self-move cluster at `dlcp_main_v31.asm:4151-4154` | Delete 4 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -16 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
+| W05 | W05-E06 | `Dewey` | remove self-move cluster at `dlcp_main_v31.asm:4264-4267` | Delete 4 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -16 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
+| W05 | W05-E07 | `Confucius` | remove self-move cluster at `dlcp_main_v31.asm:4581-4584` | Delete 4 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -16 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
+| W05 | W05-E08 | `Peirce` | remove self-move cluster at `dlcp_main_v31.asm:6628-6629` | Delete 2 emitted no-op `movff X, X` instructions | advisory only | n/a | n/a | n/a | -8 est | worker artifact contaminated | parent kept only via coordinator recombination | yes | medium | Accepted through `W05-R01`; standalone worker metrics were non-authoritative. |
+| W05 | W05-R01a | `coordinator` | recombination of `W05-E01` through `W05-E08` on current `main` | Keep the full low-risk wave if the combined child passes | yes | 15127 | `0x4B79` | 134 | -130 | `16 passed` smoke + full gate `1 failed` (`test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`) | reject / regression | no | medium | Authoritative coordinator rebuild after freezing worker contamination. This child proved the `W05-E02` flag-changing rewrite was not safe. |
+| W05 | W05-R01 | `coordinator` | recombination of `W05-E01`, `W05-E03`, `W05-E04`, `W05-E05`, `W05-E06`, `W05-E07`, `W05-E08` on current `main` | Keep the dead literal deletes and self-move removals while backing out the regressing STATUS-sensitive zeroing rewrite | yes | 15149 | `0x4B8F` | 112 | -108 | `16 passed` smoke (`768.59s`); reconnect node `1 passed` (`82.96s`); full gate `86 passed, 2 skipped, 1 xfailed` (`493.63s`) | accepted baseline | yes | medium | Authoritative accepted baseline for current `main`. |
 
 ## Recombination Lineage
 
@@ -146,6 +163,18 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 - `W02-E04` was rejected for no size gain.
 - The W02 subagents unexpectedly shared the live workspace, so parent byte counts above are advisory snapshots only.
 - `W02-R01` is the accepted recombined baseline for the next wave.
+- `W05-R01a` parents:
+  - current-main launch baseline
+  - `W05-E01`, `W05-E02`, `W05-E03`, `W05-E04`, `W05-E05`, `W05-E06`, `W05-E07`, `W05-E08`
+  - rejected because `W05-E02` changed STATUS semantics and broke the reconnect wake gate
+- `W05-R01` parents:
+  - current-main launch baseline
+  - `W05-E01`, `W05-E03`, `W05-E04`, `W05-E05`, `W05-E06`, `W05-E07`, `W05-E08`
+  - accepted after coordinator-only rebuild and full-gate validation
+- `W05` repeated the W02 isolation failure: several workers mutated the
+  coordinator checkout instead of staying inside their assigned
+  worktrees. Parent rows are therefore advisory only; `W05-R01a` and
+  `W05-R01` are the authoritative records.
 - `W04-R01` planned parents (pending `W03` closure and `W04` experiment results):
   - post-`W03` baseline (expected `W03-R01` if `W03` produces a successful recombination)
   - `W04-E01` encoding subs — `movlw 0x00` removal before `clrf`
@@ -165,13 +194,17 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - `recover_mssp`: removed after static unreferenced proof and full-gate validation
   - `main_core_service_496a`: removed empty wrapper and its only callsite
   - `main_core_service_495a`: removed single-use `goto` wrapper via direct call to `flow_main_core_service_3188_3194`
+- `W05-R01` accepted actions:
+  - removed 10 dead `movlw 0x00` instructions that immediately preceded `clrf`
+  - removed 6 self-move clusters totaling 22 emitted `movff X, X` instructions
+  - explicitly rejected the STATUS-mutating `movwf` → `clrf` rewrite family (`W05-E02`)
 - Current accepted baseline:
-  - `used_bytes_pre_preset_b=15103`
-  - `last_used_pre_preset_b=0x4B61`
-  - `free_bytes_before_0x4C00=158`
+  - `used_bytes_pre_preset_b=15149`
+  - `last_used_pre_preset_b=0x4B8F`
+  - `free_bytes_before_0x4C00=112`
 - Authoritative savings:
-  - `-83` bytes vs accepted `W01-E02` baseline
-  - `-100` bytes vs original pre-W01 source
+  - `-108` bytes vs pre-`W05` current-main baseline
+  - `+108` free bytes before `0x4C00` vs pre-`W05` current-main baseline
 
 ## Cumulative Action Log
 
@@ -193,13 +226,21 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 - 2026-04-11: logged the shared preset-B remap helper as a blocked optimization under `## Open Questions And Blocked Tooling`, with a prerequisite gpsim regression test to drive USB HID `cmd 0x07` + 8 data chunks with `active_flags.2 = 1` and verify `flash[0x4C00..0x4CBF]` content. Current preset-B write coverage is pure-Python via `MainUnitModel.upload_hfd_table` at `src/dlcp_fw/sim/main_model.py:183,191` and does not exercise the assembly remap prologue at all. This is a standing V3.1 coverage gap independent of the optimization campaign.
 - 2026-04-11: queued `W04` wave of 8 experiments (`W04-E01..E08`) against the post-`W03` baseline. Wave will launch after `W03-E01..E08` complete and any successful parents recombine into `W03-R01` (or equivalent). Realistic combined target for `W04-R01`: `-50` to `-72` bytes (low-risk floor). If `W04-E03..E05` self-move sweep lands cleanly, an additional `W04-R02` recombination is planned for another `-80` bytes.
 
+- 2026-04-11: measured the actual current-`main` launch baseline for `W05` at `used=15257`, `last_used=0x4BFB`, `free=4`; this superseded the stale `W04` planning numbers.
+- 2026-04-11: verified that the exact current V3.1 gate now collects `89` selected tests, not `80`.
+- 2026-04-11: `W05` again exposed worker-isolation failure — several workers mutated the coordinator checkout despite explicit worktree ownership. Coordinator rows, not worker rows, are authoritative.
+- 2026-04-11: fixed gpsim test execution in auxiliary worktrees by pinning `DLCP_GPSIM_BIN` to a built repo-local `scripts/gpsim-xtc` wrapper. The Homebrew `gpsim` fallback prints the banner but never emits the `**gpsim>` prompt expected by the harness.
+- 2026-04-11: built first recombined `W05` child (`W05-R01a`) with all eight parents, measured `used=15127`, `last_used=0x4B79`, `free=134`, and ran the exact full gate. Result: `1 failed, 85 passed, 2 skipped, 1 xfailed`; failing node was `test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`.
+- 2026-04-11: isolated the `W05-R01a` regression to `W05-E02`; reverting only the `movwf` → `clrf` rewrite family restored the reconnect wake gate (`1 passed in 82.96s`).
+- 2026-04-11: built accepted `W05-R01` with `W05-E01` plus the six self-move clusters, measured `used=15149`, `last_used=0x4B8F`, `free=112`, passed smoke (`16 passed in 768.59s`), and passed the refreshed full gate (`86 passed, 2 skipped, 1 xfailed in 493.63s`).
+
 ## Dead Code Candidate List
 
 | Label / Range | Why It Looks Dead | Static Evidence | Dynamic Evidence | Tests To Cover Removal | Risk | Decision |
 | --- | --- | --- | --- | --- | --- | --- |
 | `wait_mssp_idle_bounded` | Post-stock helper had no current source call sites | `rg` over `src/dlcp_fw/asm/dlcp_main_v31.asm` found no `call`, `goto`, or `bra` references before deletion | `W02-R01` full gate passed after deletion | full V3.1 gate plus I2C recovery and robustness files | high | removed in `W02-R01` |
 | `recover_mssp` | Post-stock helper had no current source call sites | `rg` over `src/dlcp_fw/asm/dlcp_main_v31.asm` found no `call`, `goto`, or `bra` references before deletion | `W02-R01` full gate passed after deletion | full V3.1 gate plus robustness files | high | removed in `W02-R01` |
-| `movff X, X` self-move cluster — ~22 instances across `dlcp_main_v31.asm` (first cluster at 2691-2694, additional sites include 3331-3332, and ~14 more scattered) | V2.3-stock fossils carried verbatim into the V3.1 source rewrite. Each `movff X, X` is functionally a no-op but the assembler emits a 4-byte `C0xx Fxxx` instruction. Listing-level confirmation: `firmware/patched/releases/DLCP_Firmware_V3.1.lst:3480` shows `00252E C020 F020` for the first site. | 2026-04-11 Codex review of cluster at 2691-2694: no `retfie` context, all ACCESS addressing, the cluster is the no-op branch of a conditional copy in `main_core_service_24c2` with sibling branch at 2673-2676 actually copying `ram_0x024..027` → `ram_0x020..023`. No gpsim probe references to `0x252E` or the affected symbols in `tests/sim/`. `assemble_v30()` at `src/dlcp_fw/sim/v30_symbols.py:80-128` does no post-processing or padding injection. | `W01-E01` rejected with "no binary delta" but its measurement method is not documented in the ledger and is inconsistent with `.lst` evidence. Reopened for content-diff validation — see `W04-E03..E05` above and new spec `## Measurement Gotchas`. | full V3.1 80-node gate, plus authoritative `mem[0x1000..0x4BFF]` content diff for each removed instruction | medium | reopened — validate `W04-E03` cluster first, then sweep `W04-E04` / `W04-E05` remaining sites in isolated worktrees |
+| `movff X, X` self-move cluster — 22 instances across `dlcp_main_v31.asm` | V2.3-stock fossils carried verbatim into the V3.1 source rewrite. Each `movff X, X` is functionally a no-op but the assembler emits a 4-byte `C0xx Fxxx` instruction. Listing-level confirmation: `firmware/patched/releases/DLCP_Firmware_V3.1.lst:3480` shows `00252E C020 F020` for the first site. | 2026-04-11 Codex review of cluster at 2691-2694: no `retfie` context, all ACCESS addressing, the cluster is the no-op branch of a conditional copy in `main_core_service_24c2` with sibling branch at 2673-2676 actually copying `ram_0x024..027` → `ram_0x020..023`. Same static pattern held for the additional clusters accepted in `W05-R01`. | `W05-R01` removed all 22 self-moves and passed the refreshed full V3.1 gate (`86 passed, 2 skipped, 1 xfailed`). | full V3.1 89-node gate | medium | removed in `W05-R01` |
 
 ## Open Questions And Blocked Tooling
 
@@ -208,9 +249,11 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - **Required test sketch** (from 2026-04-11 Codex review, patterns borrowed from `tests/sim/test_v31_combined_dsp_table_apply.py:288-395`): build seeded sim hex via `build_seeded_main_sim_hex`, apply overlays, write AN0 bootstrap + I2C regfile STCs, break at parser idle, set `active_flags.2 = 1`, inject 8 HID `cmd 0x07` chunks via `reg(0xFE8)` / `reg(0x11B)` / `reg(0x11C..131)` writes, run until hid_dispatch returns 8 times, then either (a) use gpsim's program-memory read command if available, or (b) call `flash_read` with `active_flags.2 = 0` and a payload that targets `0x4C00` to read the remapped bytes back into RAM, then probe RAM with `reg()` commands. Assert the buffer content equals the injected payload.
   - **Action**: the required test is a standing V3.1 coverage gap independent of this optimization. Write the test as a separate PR, verify it passes on the current post-`W03` baseline, then unblock `preset_b_remap_r04` helper consolidation as a future wave candidate (e.g. `W05-E0x`). Until that test exists and is green, leave `flash_read` / `flash_write` / `flash_erase` alone.
 - Process note: W02 showed that `spawn_agent` workers can mutate the live workspace unless isolation is enforced manually. Future waves must use per-experiment isolated worktrees under `artifacts/reanalysis/...` rather than relying on implicit fork isolation.
+- Process note (2026-04-11): W05 showed that even explicit worker-owned worktrees can still contaminate the coordinator checkout. Freeze workers as soon as contamination is detected and treat only coordinator remeasurement/retest as authoritative.
 - Process note (2026-04-11): `W01-E01` rejection surfaced a measurement-methodology gap. Any experiment result claiming "no binary delta" must capture `used_bytes_pre_preset_b`, `last_used_pre_preset_b`, and `free_bytes_before_0x4C00` metrics AND a `mem[0x1000..0x4BFF]` content diff — not just file-size-on-disk. See new `## Measurement Gotchas` section in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`.
+- Process note (2026-04-11): flag-setting equivalence matters. `movlw 0x00` / `movwf F` is not semantically interchangeable with `clrf F` when downstream code can observe STATUS. `W05-E02` is the proof case; do not retry that family without explicit flag audits per site.
 - Next-wave priorities:
-  - collect `W03-E01..W03-E08` results from the isolated worktrees and accept only coordinator-validated survivors
+  - refresh the stale `W03` / `W04` rows against current `main` and discard any plan that assumed the pre-`W05` layout
   - prefer fresh low-risk locals first: wrapper removal audits near the tail of the stock block, localized USB helper consolidation, and additional I2C helper tightening that does not create new fixed-address code
-  - after `W03` closes, launch `W04-E01..E08` per the ledger rows above (expected combined savings `-50` to `-72` B low-risk floor, with `W04-R02` self-move recombination adding `-80` B on top if `W04-E03..E05` validate)
-  - author the blocked-optimization prerequisite gpsim test for physical preset-B flash-write validation, separately from this size campaign, so that `W05` can unblock the shared remap helper if slack is needed
+  - revisit zero-materialization only with explicit STATUS-proofed rewrites; do not retry blanket `movwf` → `clrf`
+  - author the blocked-optimization prerequisite gpsim test for physical preset-B flash-write validation so a future wave can safely revisit shared preset-B remap helpers if more slack is needed
