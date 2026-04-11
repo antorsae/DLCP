@@ -7,8 +7,8 @@ This is the operator runbook for the recommended MAIN deployment as of
 
 - recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 - recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.63b.hex`
-- recommended flashing path: bake preset A/B captures into `V3.1.hex` at flash
-  time with `scripts/dlcp_main_flash.py`
+- recommended flashing path: use `scripts/dlcp_v31_release_flash.py`, which
+  bakes preset A/B captures into canonical `V3.1.hex` at flash time
 
 Non-canonical local experiment images such as `DLCP_Firmware_V3.1_diag*.hex`
 and `DLCP_Firmware_V3.1_WITH*_NOPS.hex` are not part of this release workflow.
@@ -30,21 +30,13 @@ it finalizes the active filename slot after flashing.
 PB1 (left):
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_main_flash.py \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
-  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
-  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
-  --all-ch L
+.venv_ep0/bin/python scripts/dlcp_v31_release_flash.py --left
 ```
 
 PB2 (right):
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_main_flash.py \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
-  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
-  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
-  --all-ch R
+.venv_ep0/bin/python scripts/dlcp_v31_release_flash.py --right
 ```
 
 What this does:
@@ -56,6 +48,18 @@ What this does:
 4. applies the requested all-channel route policy
 5. prints before/after device information so the flashed version, config name,
    and channel mapping are visible in one command
+
+Equivalent advanced form:
+
+```bash
+.venv_ep0/bin/python scripts/dlcp_main_flash.py \
+  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
+  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
+  --meta-a artifacts/LX521.4/LX521.4_22MG10F-v5.json \
+  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
+  --meta-b artifacts/LX521.4/LX521.4_22MG10F-v7.json \
+  --all-ch L
+```
 
 ## Quick Checks
 

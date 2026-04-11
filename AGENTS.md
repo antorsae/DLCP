@@ -196,6 +196,7 @@ Always prefer these constants over hardcoded paths.
 
 - Safe control flasher: `dlcp_control_flash.py`
 - Safe main flasher: `dlcp_main_flash.py`
+- Canonical V3.1 operator wrapper: `dlcp_v31_release_flash.py`
 - Preset query/switch helper: `dlcp_preset.py`
 - EP0 flash window reader: `dlcp_ep0_flash_probe.py`
 - EEPROM shadow dump: `dlcp_ep0_eeprom_shadow_dump.py`
@@ -224,6 +225,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/hardware_loop.py`
 - `scripts/dlcp_preset.py`
 - `scripts/dlcp_main_flash.py`
+- `scripts/dlcp_v31_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
 - `scripts/dlcp_ep0_flash_probe.py`
 - `scripts/gpsim_tui_simulator.py`
@@ -241,7 +243,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite (76 test files, 596 tests collected):
+Current suite (77 test files, 644 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -291,6 +293,7 @@ End-to-end/faults:
 
 Flash/probe tools:
 - `test_dlcp_main_flash.py`
+- `test_dlcp_v31_release_flash.py`
 - `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
 - `test_dlcp_ep0_flash_probe.py`
 
@@ -324,7 +327,7 @@ Version labels:
 
 Recent verification (2026-04-11):
 
-- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `596 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `644 tests collected`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_control_flash_safety.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `10 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_loop.py` -> `12 passed`

@@ -110,7 +110,7 @@ CONTROL or `V3.1` MAIN hexes.
 
 ### Recommended pair
 
-**[`DLCP_Firmware_V3.1.hex`](firmware/patched/releases/DLCP_Firmware_V3.1.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — recommended deployed pair. Flash MAIN through [`scripts/dlcp_main_flash.py`](scripts/dlcp_main_flash.py) with baked preset A/B captures and set the per-box routing with `--all-ch L` or `--all-ch R`.
+**[`DLCP_Firmware_V3.1.hex`](firmware/patched/releases/DLCP_Firmware_V3.1.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — recommended deployed pair. Flash MAIN through [`scripts/dlcp_v31_release_flash.py`](scripts/dlcp_v31_release_flash.py) so the canonical `V3.1` image, baked preset A/B captures, and per-box routing are applied as one operator-safe command.
 
 **[`DLCP_Firmware_V2.8.hex`](firmware/patched/releases/DLCP_Firmware_V2.8.hex)** remains the recommended legacy binary-patched MAIN when you explicitly want the last patch-on-stock image instead of the source-assembled `V3.1` line.
 
@@ -120,10 +120,11 @@ Earlier versions (`V2.4`-`V2.7`, `V1.41`-`V1.62b`) are also available in [`firmw
 
 ## Recommended V3.1 Deployment
 
-The canonical `V3.1` flasher can bake captured preset A/B tables directly into
-the image before flashing. This is the recommended real-hardware deployment
-path for MAIN. See [`docs/V31_RELEASE.md`](docs/V31_RELEASE.md) for the
-operator runbook.
+The recommended operator entrypoint is
+[`scripts/dlcp_v31_release_flash.py`](scripts/dlcp_v31_release_flash.py). It
+hardcodes the canonical `V3.1` image plus the local preset A/B capture paths
+under `artifacts/LX521.4/`, then forwards to the underlying
+[`scripts/dlcp_main_flash.py`](scripts/dlcp_main_flash.py) implementation.
 
 Place the captured tables under the ignored local artifact directory:
 
@@ -135,21 +136,13 @@ Verified working commands for a stereo pair:
 PB1 (left):
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_main_flash.py \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
-  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
-  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
-  --all-ch L
+.venv_ep0/bin/python scripts/dlcp_v31_release_flash.py --left
 ```
 
 PB2 (right):
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_main_flash.py \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
-  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
-  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
-  --all-ch R
+.venv_ep0/bin/python scripts/dlcp_v31_release_flash.py --right
 ```
 
 ## V3.x vs V2.x: source-assembled vs binary-patched
