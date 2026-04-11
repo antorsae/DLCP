@@ -147,8 +147,9 @@ Regenerate after any semantic map update: `python3 scripts/annotate_disasm.py`
 ### Dumps and references
 
 - Dumps: `firmware/dumps/{firmware.bin,code_only.bin,eeprom.bin,dlcp_flash_0800_7fff.bin,dlcp_probe_1000.bin}`
-- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,DLCP-manual-R3.pdf,tas3108.pdf,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md}`
+- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md}`
   - For the PIC18F2455 datasheet, `39632e.pdf` is authoritative. Use `39632e.md` as the line-stable converted companion for repo citations.
+  - For the TAS3108 datasheet, `tas3108.pdf` is authoritative. Use `tas3108.md` as the line-stable converted companion when repo citations are needed.
 
 ## Source Code Map (`src/dlcp_fw`)
 
