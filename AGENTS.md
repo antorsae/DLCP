@@ -116,6 +116,7 @@ Use these locations only:
 
 - Main V3.0 (stock-equivalent rewrite): `firmware/patched/releases/DLCP_Firmware_V3.0.hex`
 - Main V3.1 (all features inline): `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
+  - Recommended deployed MAIN release when flashed with baked preset A/B captures.
   - Canonical `V3.1` includes HID `cmd 0x43` diagnostic flash/EEPROM memread.
 - Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
@@ -354,6 +355,7 @@ Top-level docs:
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
+- `docs/V31_RELEASE.md` (recommended `V3.1` deployment workflow with baked preset A/B captures)
 - `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
 - `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)
 - `docs/V30_SOURCE_REWRITE_SPEC.md` (V3.0 MAIN source-level rewrite specification)

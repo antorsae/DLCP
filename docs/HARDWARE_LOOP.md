@@ -8,14 +8,18 @@ This document is the executable runbook for real-hardware DLCP DSP testing with:
 - DLCP USB audio output as `USB Audio DAC`
 - `UMIK-2` as the measurement microphone
 
-The target problem is the real-hardware stock `V2.3` vs broken `V3.1` DSP regression:
+Current release guidance:
 
-- stock `V2.3-combined.hex` is the known-good acoustic baseline
-- canonical `V3.1.hex` is the known-bad comparison point
-- `V3.1_diag_memread_usb_safe.hex` is an optional diagnostic/sparse-flash variant,
-  not the canonical comparison image
-- additional `V3.1` diagnostic variants are tested with the exact same preset A
-  bytes and the exact same acoustic procedure
+- stock `V2.3-combined.hex` remains a useful known-good acoustic baseline
+- canonical `V3.1.hex` with baked preset captures is the current recommended
+  deployed MAIN release
+- suspect local `V3.1` experiments are compared against those good references;
+  they are not canonical release images
+- `V3.1_diag_memread_usb_safe.hex` and related `V3.1_diag*` images are optional
+  local diagnostic artifacts only
+
+For the operator flashing workflow, use [`docs/V31_RELEASE.md`](V31_RELEASE.md).
+This runbook is for acoustic characterization and regression isolation.
 
 This runbook is written for a blank-context LLM agent. It assumes nothing
 beyond the repository checkout, the connected hardware, and the commands below.
@@ -90,13 +94,14 @@ These files must exist before the matrix run starts:
 - `presetA.bin`
 - `presetA.json`
 
-Expected firmware images:
+Expected release images:
 
 - `firmware/stock/main/DLCP Firmware V2.3-combined.hex`
 - `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
-- `firmware/patched/releases/DLCP_Firmware_V3.1_diag_stock_i2c_byte_tx.hex`
-- `firmware/patched/releases/DLCP_Firmware_V3.1_diag_stock_bf.hex`
-- `firmware/patched/releases/DLCP_Firmware_V3.1_diag_no_flash_remap_usb_safe.hex`
+
+Optional local suspect images:
+
+- any non-canonical `V3.1` experiment hex you explicitly want to compare
 - `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex`
   only when the test explicitly targets that diagnostic variant
 
@@ -243,9 +248,10 @@ Minimum contents per run:
 Before any broader matrix, do this exact two-point characterization first:
 
 1. flash stock `V2.3`, bake `presetA.bin`, run the sweep at amplitude `0.2`
-2. flash canonical broken `V3.1`, bake the exact same
-   `presetA.bin`, run the exact same sweep
+2. flash canonical `V3.1`, bake the exact same `presetA.bin`, run the exact
+   same sweep
 3. compare the second run against the first run
+4. only after both runs are acoustically sane, add suspect local images
 
 Signal quality rule for this host:
 
@@ -261,8 +267,8 @@ Comparison-band rule:
   intentionally want the pass/fail band to differ from the sweep
 
 The first run must establish that the acoustic measurement itself is healthy.
-The second run must establish that the known-bad firmware is measurably bad on
-the same hardware and mic placement.
+The second run must establish that the current release image is acoustically
+close to the known-good baseline on the same hardware and mic placement.
 
 ## Exact Baseline Command
 
@@ -309,13 +315,13 @@ Optional route normalization:
 Only use `--all-ch L` or `--all-ch R` if the whole comparison block uses the
 same route policy. Do not normalize only one side of a comparison.
 
-## Exact Known-Bad Comparison Command
+## Exact Release-Reference Comparison Command
 
 Run this immediately after the `V2.3` baseline, without moving the microphone:
 
 ```bash
 .venv_ep0/bin/python scripts/hardware_loop.py run-once \
-  --tag v31_broken_reference \
+  --tag v31_release_reference \
   --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
   --capture-a presetA.bin \
   --input-device "UMIK-2" \
@@ -328,11 +334,12 @@ Run this immediately after the `V2.3` baseline, without moving the microphone:
 
 Expected result:
 
-- `decision` should be `NOGO`
-- `classification` should usually be `FAIL_LOW_LEVEL` or `FAIL_SHAPE_MISMATCH`
+- `decision` should be `GO`
+- `classification` should usually be `PASS_MATCHES_BASELINE` or
+  `PASS_NEAR_BASELINE`
 
-If this run does not come back `NOGO`, do not start testing more `V3.1`
-variants yet. Fix the measurement setup first.
+If this run does not come back `GO`, do not start testing suspect local
+variants yet. Fix the measurement setup or the release image first.
 
 ## Exact Matrix Command
 
@@ -340,7 +347,7 @@ This is the canonical firmware-comparison matrix:
 
 ```bash
 .venv_ep0/bin/python scripts/hardware_loop.py run-matrix \
-  --tag v23_v31_dsp_matrix \
+  --tag v23_v31_release_matrix \
   --capture-a presetA.bin \
   --input-device "UMIK-2" \
   --output-device "USB Audio DAC" \
@@ -349,9 +356,8 @@ This is the canonical firmware-comparison matrix:
   --amplitude 0.2 \
   --hex "firmware/stock/main/DLCP Firmware V2.3-combined.hex" \
   --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1_diag_stock_i2c_byte_tx.hex \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1_diag_stock_bf.hex \
-  --hex firmware/patched/releases/DLCP_Firmware_V3.1_diag_no_flash_remap_usb_safe.hex
+  --hex <local_suspect_v31_a.hex> \
+  --hex <local_suspect_v31_b.hex>
 ```
 
 Behavior:
@@ -359,6 +365,7 @@ Behavior:
 - each candidate is baked with the same `presetA.bin`
 - each candidate is flashed before its measurement
 - the first run is stock `V2.3` and becomes the baseline for the remaining runs
+- the second run is canonical `V3.1` and serves as the release reference
 - each later run is compared against the baseline `response_mag.csv`
 
 If per-driver near-field measurements are required, rerun the same matrix with a
@@ -512,37 +519,34 @@ Run the matrix in this order:
 
 1. `DLCP Firmware V2.3-combined.hex`
 2. `DLCP_Firmware_V3.1.hex`
-3. `DLCP_Firmware_V3.1_diag_stock_i2c_byte_tx`
-4. `DLCP_Firmware_V3.1_diag_stock_bf`
-5. `DLCP_Firmware_V3.1_diag_no_flash_remap_usb_safe`
+3. one or more explicit suspect local `V3.1` experiment hexes
 
 Interpretation:
 
-If step 1 passes and step 2 fails:
+If step 1 passes and step 2 passes:
 
-- the regression is real on silicon
-- matching preset bytes in flash are not sufficient to prove DSP correctness
+- the measurement chain is healthy
+- the current release image is acoustically aligned with the known-good baseline
 
-If step 3 becomes `PASS_MATCHES_BASELINE` or `PASS_NEAR_BASELINE`:
+If step 2 fails:
 
-- the regression surface shrinks to the `V3.1` `i2c_byte_tx` rewrite
+- stop
+- do not interpret any suspect-image result until the release reference path is fixed
 
-If step 3 passes but step 4 fails:
+If step 2 passes and a suspect local image fails:
 
-- the likely fault is ACKSTAT or BSR handling, not just the BF wait policy
+- the regression is in the suspect delta, not in the release baseline
+- narrow investigation to the code changes unique to that suspect image
 
-If step 4 passes:
+If step 2 passes and a suspect local image also passes:
 
-- the likely fault is the bounded BF wait path
+- that suspect delta is probably not the acoustic regression boundary
+- move to the next suspect image or refine the experiment boundary
 
-If step 5 changes the outcome materially:
+If a suspect image changes only routing or level materially:
 
-- flash remap or active-bank selection is still in play
-
-If neither step 3 nor step 4 restores the baseline:
-
-- the next likely fault surface is outside low-level `i2c_byte_tx`
-- investigate TAS init ordering, `reg1F`, or another real-hardware timing path
+- suspect route policy, preset placement, or DSP load completeness before
+  assuming a lower-level timing fault
 
 ## Per-Driver Near-Field Procedure
 
@@ -606,9 +610,9 @@ A successful campaign should produce a `summary.json` that makes the firmware
 boundary obvious:
 
 - `V2.3` baseline classification
-- canonical `V3.1` failure classification
-- the first `V3.1` diagnostic variant that returns to
-  `PASS_MATCHES_BASELINE` or `PASS_NEAR_BASELINE`
+- canonical `V3.1` release-reference classification
+- the first suspect local image that diverges materially from the two good
+  references
 
 That is the point at which the firmware investigation should narrow to the code
 delta unique to that boundary, not continue as a broad search through flash

@@ -92,9 +92,9 @@ CONTROL or `V3.1` MAIN hexes.
 
 | Version | Type | Status | Adds |
 |---------|------|--------|------|
-| V3.1 | Source-assembled | **WIP** | Full source rewrite. All V2.4-V2.8 features inline. Unresolved issue under investigation. |
+| **V3.1** | Source-assembled | **Release** | Full source rewrite. All V2.4-V2.8 features inline. Recommended MAIN release when flashed with baked preset A/B captures. |
 | V3.0 | Source-assembled | Reference | Clean V2.3-equivalent rewrite, byte-exact behavioral parity proven. |
-| **V2.8** | Binary-patched | **Release** | V2.7 + delayed mute/hold preset switch to provide an audible cue and avoid coefficient-load blips. |
+| V2.8 | Binary-patched | Release | V2.7 + delayed mute/hold preset switch to provide an audible cue and avoid coefficient-load blips. |
 | **V2.7** | Binary-patched | **Release** | V2.6 + I2C bus-clear, DSP ping, fault status frames, PEN timeout. |
 | V2.6 | Binary-patched | Release | V2.5 + DSP ACKSTAT check, conditional dirty-bit, deferred volume commit. |
 | V2.5 | Binary-patched | Release | V2.4 + bounded timeouts on all UART/MSSP/I2C blocking waits. |
@@ -110,16 +110,20 @@ CONTROL or `V3.1` MAIN hexes.
 
 ### Recommended pair
 
-**[`DLCP_Firmware_V2.8.hex`](firmware/patched/releases/DLCP_Firmware_V2.8.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — full robustness, A/B presets, BF/08 fault reporting, and the delayed preset-switch mute/hold that gives a small audible cue while avoiding blips during live DSP coefficient reload.
+**[`DLCP_Firmware_V3.1.hex`](firmware/patched/releases/DLCP_Firmware_V3.1.hex) + [`DLCP_Control_V1.63b.hex`](firmware/patched/releases/DLCP_Control_V1.63b.hex)** — recommended deployed pair. Flash MAIN through [`scripts/dlcp_main_flash.py`](scripts/dlcp_main_flash.py) with baked preset A/B captures and set the per-box routing with `--all-ch L` or `--all-ch R`.
 
-All versions are backward-compatible: V2.8 works with V1.62b (no BF/08 fault UI/resync), V2.5 works with V1.61b (no reconnect hardening).
+**[`DLCP_Firmware_V2.8.hex`](firmware/patched/releases/DLCP_Firmware_V2.8.hex)** remains the recommended legacy binary-patched MAIN when you explicitly want the last patch-on-stock image instead of the source-assembled `V3.1` line.
 
-Earlier versions (V2.4-V2.7, V1.41-V1.62b) are also available in [`firmware/patched/releases/`](firmware/patched/releases/).
+All versions are backward-compatible: `V3.1` and `V2.8` work with `V1.63b`; `V2.8` works with `V1.62b` (no BF/08 fault UI/resync), and `V2.5` works with `V1.61b` (no reconnect hardening).
 
-## Real-Hardware V3.1 Preset-Bake Example
+Earlier versions (`V2.4`-`V2.7`, `V1.41`-`V1.62b`) are also available in [`firmware/patched/releases/`](firmware/patched/releases/).
+
+## Recommended V3.1 Deployment
 
 The canonical `V3.1` flasher can bake captured preset A/B tables directly into
-the image before flashing.
+the image before flashing. This is the recommended real-hardware deployment
+path for MAIN. See [`docs/V31_RELEASE.md`](docs/V31_RELEASE.md) for the
+operator runbook.
 
 Place the captured tables under the ignored local artifact directory:
 
@@ -179,6 +183,7 @@ Test categories:
 ## Documentation
 
 - [`docs/AB_PRESETS.md`](docs/AB_PRESETS.md) — A/B preset design, protocol, patch maps
+- [`docs/V31_RELEASE.md`](docs/V31_RELEASE.md) — recommended `V3.1` deployment workflow with baked preset A/B captures
 - [`docs/ROBUSTNESS.md`](docs/ROBUSTNESS.md) — root cause analysis, failure chains, fix strategy
 - [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](docs/V163B_DIAGNOSTICS_MENU_SPEC.md) — draft future diagnostics page / counter protocol
 - [`docs/SIMULATION.md`](docs/SIMULATION.md) — co-simulation architecture
