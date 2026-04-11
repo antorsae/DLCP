@@ -499,3 +499,4 @@ These are checkpoint artifacts, not a termination condition.
   `## Measurement Gotchas` subsection to this spec and scheduled
   `W04-E03..E05` to reopen self-move removal under content-diff
   validation.
+- 2026-04-11: Queued `W06` execution wave consisting of low-risk structure optimizations including 122 instances of `call` -> `rcall` conversion, `call`+`return 0` tail-call optimization into branches, removal of redundant `iorlw 0x00` ops, preamble extraction for `send_status_burst`, and safe flag-audited `movwf` -> `clrf` zero-materializations.
