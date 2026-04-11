@@ -116,6 +116,38 @@ All versions are backward-compatible: V2.8 works with V1.62b (no BF/08 fault UI/
 
 Earlier versions (V2.4-V2.7, V1.41-V1.62b) are also available in [`firmware/patched/releases/`](firmware/patched/releases/).
 
+## Real-Hardware V3.1 Preset-Bake Example
+
+The canonical `V3.1` flasher can bake captured preset A/B tables directly into
+the image before flashing.
+
+Place the captured tables under the ignored local artifact directory:
+
+- `artifacts/LX521.4/LX521.4_22MG10F-v5.bin`
+- `artifacts/LX521.4/LX521.4_22MG10F-v7.bin`
+
+Verified working commands for a stereo pair:
+
+PB1 (left):
+
+```bash
+.venv_ep0/bin/python scripts/dlcp_main_flash.py \
+  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
+  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
+  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
+  --all-ch L
+```
+
+PB2 (right):
+
+```bash
+.venv_ep0/bin/python scripts/dlcp_main_flash.py \
+  --hex firmware/patched/releases/DLCP_Firmware_V3.1.hex \
+  --capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin \
+  --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin \
+  --all-ch R
+```
+
 ## V3.x vs V2.x: source-assembled vs binary-patched
 
 **V2.x** releases are binary patches applied to the stock V2.3 hex image. Patch code is injected into dead zones and unused flash regions, with hooks redirecting execution. This works but is constrained by available free space and increasingly fragile as fixes stack up — V2.8 is effectively the last comfortable binary-patched stop before the source-based V3.x line becomes the practical place for further feature work.
