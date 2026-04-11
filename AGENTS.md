@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-08
+Last updated: 2026-04-11
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -55,6 +55,7 @@ analysis/
 ├── vendor/
 │   └── gpsim-0.32.1-xtc/
 ├── artifacts/
+│   ├── LX521.4/
 │   ├── sim/current/
 │   ├── reanalysis/
 │   ├── tools/gpsim-xtc/
@@ -75,6 +76,7 @@ Use these locations only:
 - Assembly source (V3.x): `src/dlcp_fw/asm/...`
 - Local third-party source forks: `vendor/...`
 - Generated runtime/test artifacts: `artifacts/sim/current/...`
+- Local manual preset captures: `artifacts/LX521.4/...`
 - Local tool builds/wrappers: `artifacts/tools/...`
 - Python package code: `src/dlcp_fw/...`
 - CLI entry scripts: `scripts/...`
@@ -114,9 +116,11 @@ Use these locations only:
 
 - Main V3.0 (stock-equivalent rewrite): `firmware/patched/releases/DLCP_Firmware_V3.0.hex`
 - Main V3.1 (all features inline): `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
+  - Canonical `V3.1` includes HID `cmd 0x43` diagnostic flash/EEPROM memread.
 - Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
 - Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm`, `src/dlcp_fw/asm/dlcp_main_v31_with_nops.asm`, `src/dlcp_fw/asm/dlcp_main_v31_without_nops.asm`, and matching `DLCP_Firmware_V3.1_diag*` / `DLCP_Firmware_V3.1_WITH*_NOPS.hex` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
+- Dedicated USB-safe memread artifact: `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex`
 
 ### Disassembly
 
@@ -157,7 +161,8 @@ Canonical constants used across scripts/tests:
 - Stock main: `STOCK_MAIN_HEX`, `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`, `STOCK_MAIN_DUMP_TABLE`, `STOCK_MAIN_DUMP_CONVERTED_HEX`, `STOCK_MAIN_COMBINED_HEX`, `STOCK_MAIN_CONFIG_BITS_EXPORT`, `STOCK_MAIN_EE_DATA_EXPORT`, `STOCK_MAIN_USER_ID_EXPORT`
 - Stock control: `STOCK_CONTROL_HEX_V14`, `STOCK_CONTROL_HEX_V15B`, `STOCK_CONTROL_HEX_V16B`
 - Patched main: `PATCHED_MAIN_HEX_V24`, `PATCHED_MAIN_HEX_V25`, `PATCHED_MAIN_HEX_V26`, `PATCHED_MAIN_HEX_V27`, `PATCHED_MAIN_HEX_V28`, `PATCHED_MAIN_HEX` (alias for V2.7)
-- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX`, `V31_MAIN_ASM`
+- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX_CANONICAL`, `V31_MAIN_ASM_CANONICAL`, `V31_MAIN_HEX`, `V31_MAIN_ASM`
+  - `V31_MAIN_HEX_CANONICAL` / `V31_MAIN_ASM_CANONICAL` are the repo-stable inputs for canonical V3.1 builders
   - `V31_MAIN_HEX` / `V31_MAIN_ASM` may be overridden for diagnostics with `DLCP_FW_V31_MAIN_HEX` / `DLCP_FW_V31_MAIN_ASM`
 - Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`
 - Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
@@ -182,14 +187,18 @@ Always prefer these constants over hardcoded paths.
 ### Patch package (`src/dlcp_fw/patch`)
 
 - Builders: `build_main_presets_ab.py`, `build_control_presets_ab.py`, `build_control_presets_ab_v15b.py`, `build_control_presets_ab_v16b.py`, `build_control_presets_ab_v162b.py`, `build_control_presets_ab_v163b.py`
+- V3.1 diagnostics/build helpers: `build_v31_cmd07_stock_guard_usb_safe.py`, `build_v31_diag_coeff_stock.py`, `build_v31_diag_memread_usb_safe.py`, `build_v31_diag_no_flash_remap_usb_safe.py`, `build_v31_diag_stock_bf.py`, `build_v31_diag_stock_bf_reg1f.py`, `build_v31_diag_stock_i2c_byte_tx.py`, `build_v31_diag_v27_pen_hook.py`, `build_v31_nop_variants.py`, `build_v31_usb_safe.py`, `bake_preset_capture.py`
 - Verifiers: `verify_presets_ab.py`, `verify_isr_vectors.py`
 
 ### Flash/probe package (`src/dlcp_fw/flash`)
 
 - Safe control flasher: `dlcp_control_flash.py`
+- Safe main flasher: `dlcp_main_flash.py`
+- Preset query/switch helper: `dlcp_preset.py`
 - EP0 flash window reader: `dlcp_ep0_flash_probe.py`
 - EEPROM shadow dump: `dlcp_ep0_eeprom_shadow_dump.py`
 - DSP filename A/B probe: `dsp_filename_ab_probe.py`
+- HID preset capture reader: `read_coeffs.py` (CLI: `scripts/dlcp_read_coeffs.py`)
 
 ### Analysis package (`src/dlcp_fw/analysis`)
 
@@ -210,6 +219,10 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/gpsim-xtc`
 - `scripts/gpsim`
 - `scripts/simctl.py`
+- `scripts/hardware_loop.py`
+- `scripts/dlcp_preset.py`
+- `scripts/dlcp_main_flash.py`
+- `scripts/dlcp_read_coeffs.py`
 - `scripts/dlcp_ep0_flash_probe.py`
 - `scripts/gpsim_tui_simulator.py`
 - `scripts/gpsim_menu_command_audit.py`
@@ -219,13 +232,14 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/sim_link_control_main_presets_ab.py`
 - `scripts/sim_control_ui_presets.py`
 - `scripts/flash_control_safe.sh`
+- `scripts/bake_preset_capture.py`
 - `scripts/test_full_boot.py`, `scripts/test_button_inject.py`
 - `scripts/word_dump_to_ihex.py`
 - `scripts/annotate_disasm.py`
 
 ## Tests (`tests/sim`)
 
-Current suite (71 test files, 554 tests collected):
+Current suite (76 test files, 596 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -274,11 +288,16 @@ End-to-end/faults:
 - `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
 
 Flash/probe tools:
+- `test_dlcp_main_flash.py`
 - `test_dlcp_control_flash_safety.py`, `test_dlcp_ep0_eeprom_shadow_dump.py`, `test_dsp_filename_ab_probe.py`
 - `test_dlcp_ep0_flash_probe.py`
 
 Tooling/analysis:
 - `test_word_dump_to_ihex.py`, `test_disasm_to_source.py`
+- `test_bake_preset_capture.py`
+
+Hardware-loop tooling:
+- `test_hardware_loop.py`
 
 V2.7 + V1.63b:
 - `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
@@ -296,14 +315,19 @@ V3.1 source rewrite:
 - `test_v31_command_matrix.py` (all 16 serial commands identical to stock V2.3)
 - `test_v31_usb_preset_ab.py` (upload bank mapping, flash isolation, config names)
 - `test_v31_usb_hid_dispatch.py` (filename RAM, cmd 0x20 switch, version staging)
+- `test_v31_diag_memread_usb_safe.py` (canonical + USB-safe diagnostic HID flash/EEPROM memory reads)
 
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (2026-04-08):
+Recent verification (2026-04-11):
 
-- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `554 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `596 tests collected`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_control_flash_safety.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `10 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_loop.py` -> `12 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_main_gpsim_portability.py tests/sim/test_v31_patch_builders.py` -> `13 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_bake_preset_capture.py tests/sim/test_v31_diag_memread_usb_safe.py` -> `4 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
 
 V3.1-only gate (80 tests, ~8 min):
@@ -323,6 +347,7 @@ Full test gate (all versions, parallel):
 Top-level docs:
 
 - `docs/AB_PRESETS.md` (A/B preset patch design, flashing, checks)
+- `docs/HARDWARE_LOOP.md` (real-hardware audio playback/capture workflow and firmware comparison matrix)
 - `docs/RECOVERY.md` (PICkit 5 readback recombination and full MAIN recovery image workflow)
 - `docs/ROBUSTNESS.md` (robustness findings, release policy, and implementation plan)
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
@@ -371,6 +396,7 @@ Reanalysis artifacts (local by default; ignored via `.gitignore`):
 
 Generated/ephemeral (ignored):
 
+- `artifacts/LX521.4/...`
 - `artifacts/sim/current/...`
 - `artifacts/probes/...`
 - `artifacts/tools/gpsim-xtc/...`

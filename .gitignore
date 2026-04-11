@@ -19,6 +19,7 @@ artifacts/sim/current/
 artifacts/reanalysis/
 artifacts/probes/
 artifacts/tools/gpsim-xtc/
+artifacts/LX521.4/
 
 sim_artifacts/
 tmp_gpsim_lcd_capture/
@@ -29,3 +30,24 @@ tmp_gpsim_lcd_capture/
 
 # MPLAB X project folders generated alongside firmware images
 firmware/**/*.X/
+
+# Local preset captures and metadata
+LX521.4_22MG10F-v5.bin
+LX521.4_22MG10F-v5.json
+LX521.4_22MG10F-v7.bin
+LX521.4_22MG10F-v7.json
+preset_b.bin
+preset_b.json
+
+# Local assembler/build byproducts
+firmware/patched/releases/*.cod
+src/dlcp_fw/asm/*.cod
+src/dlcp_fw/asm/*.hex
+src/dlcp_fw/asm/*.lst
+
+# Local baked preset release artifacts
+firmware/patched/releases/*_presetA.hex
+firmware/patched/releases/*_presetA.manifest.json
+
+# Local converted reference text dumps
+firmware/reference/*.txt
