@@ -9,6 +9,7 @@ from typing import Sequence
 
 from .hexio import parse_intel_hex
 from .overlay import OverlayManifest
+from .v30_symbols import load_gpasm_symbols_for_hex
 
 
 def control_reset_to_appstart() -> OverlayManifest:
@@ -398,7 +399,7 @@ def main_serial_mailbox_hooks(gpasm: str = "gpasm") -> OverlayManifest:
 
 
 def _build_dynamic_mailbox_asm(symbols: dict[str, int]) -> str:
-    """Template the mailbox hook overlay ASM using symbol addresses."""
+    """Template the mailbox hook overlay ASM using gpasm symbol addresses."""
     rx_ring_read = symbols["rx_ring_read"]
     rx_ring_has_data = symbols["rx_ring_has_data"]
     uart_tx = symbols["uart_tx_byte_blocking"]
@@ -515,19 +516,18 @@ sim111_poll:
     movff 0x7C6, BSR
     return 0x0
 
-end
-"""
+    end
+    """
 
 
 def main_serial_mailbox_hooks_dynamic(
     symbols: dict[str, int],
     gpasm: str = "gpasm",
 ) -> OverlayManifest:
-    """Build mailbox hook overlay using addresses from a V3.0 symbol table.
+    """Build mailbox hook overlay using addresses from a gpasm symbol table.
 
     This is the dynamic variant of :func:`main_serial_mailbox_hooks` that
-    accepts shifted symbol addresses instead of hardcoding stock V2.3
-    addresses.  Used by the relocation shift test.
+    accepts symbol addresses instead of hardcoding stock V2.3 addresses.
     """
     asm_text = _build_dynamic_mailbox_asm(symbols)
 
@@ -567,6 +567,105 @@ def main_serial_mailbox_hooks_dynamic(
         postconditions={},
         description="Simulation-only UART hooks (dynamic shifted addresses)",
     )
+
+
+def main_serial_mailbox_hooks_for_main_hex(
+    main_hex: Path,
+    gpasm: str = "gpasm",
+) -> OverlayManifest:
+    """Return a mailbox hook overlay that follows source-assembled labels.
+
+    Source-assembled MAIN images such as V3.x ship with a gpasm listing next
+    to the HEX. Prefer that symbol table so post-build layout changes do not
+    break V3.x gpsim overlays. Fall back to the stock fixed-address overlay for
+    older binary-only images with no listing.
+    """
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    required = {
+        "rx_ring_read",
+        "rx_ring_has_data",
+        "uart_tx_byte_blocking",
+        "i2c_wait_bus_idle",
+        "timer3_blocking_delay",
+        "adc_boot_gate",
+        "adc_boot_gate_exit",
+    }
+    if symbols is None or not required.issubset(symbols):
+        return main_serial_mailbox_hooks(gpasm=gpasm)
+    return main_serial_mailbox_hooks_dynamic(symbols, gpasm=gpasm)
+
+
+def _build_dynamic_mailbox_uart_only_asm(symbols: dict[str, int]) -> str:
+    """Template the UART-only mailbox hook overlay ASM using symbol addresses."""
+    rx_ring_read = symbols["rx_ring_read"]
+    rx_ring_has_data = symbols["rx_ring_has_data"]
+    uart_tx = symbols["uart_tx_byte_blocking"]
+    adc_gate = symbols["adc_boot_gate"]
+    tx_body = adc_gate + 0x12
+
+    return f"""\
+LIST P=18F2455
+#include <p18f2455.inc>
+
+; Dynamic UART-only mailbox hook overlay
+
+org 0x{rx_ring_read:04X}
+sim_function_087:
+    movff BSR, 0x7C5
+    clrf 0x004, ACCESS
+    call sim_function_109
+    iorlw 0x00
+    bz sim087_done
+    lfsr 0, 0x780
+    movlb 0x7
+    movf 0x0C0, W, BANKED
+    andlw 0x3F
+    addwf FSR0L, F, ACCESS
+    movf INDF0, W, ACCESS
+    movwf 0x004, ACCESS
+    incf 0x0C0, F, BANKED
+sim087_done:
+    movf 0x004, W, ACCESS
+    movff 0x7C5, BSR
+    return 0x0
+
+org 0x{rx_ring_has_data:04X}
+sim_function_109:
+    movlb 0x7
+    movf 0x0C1, W, BANKED
+    clrf PRODL, ACCESS
+    cpfseq 0x0C0, BANKED
+    incf PRODL, F, ACCESS
+    movf PRODL, W, ACCESS
+    return 0x0
+
+org 0x{uart_tx:04X}
+    goto sim_function_111
+org 0x{uart_tx + 4:04X}
+    nop
+
+; Requires main_adc_boot_wait_hook in the same overlay stack.
+org 0x{tx_body:04X}
+sim_function_111:
+    movff BSR, 0x7C6
+    movwf PRODL, ACCESS
+sim111_poll:
+    movlb 0x7
+    btfsc 0x0C7, 0, BANKED
+    bra sim111_poll
+    lfsr 0, 0x740
+    movf 0x0C3, W, BANKED
+    andlw 0x3F
+    addwf FSR0L, F, ACCESS
+    movf PRODL, W, ACCESS
+    movwf INDF0, ACCESS
+    incf 0x0C3, F, BANKED
+    movff PRODL, TXREG
+    movff 0x7C6, BSR
+    return 0x0
+
+end
+"""
 
 
 _MAIN_UART_MAILBOX_ONLY_HOOK_ASM = r"""
@@ -677,6 +776,59 @@ def main_serial_mailbox_hooks_uart_only(gpasm: str = "gpasm") -> OverlayManifest
         postconditions={},
         description="Simulation-only UART hooks: mailbox-backed RX/TX probes",
     )
+
+
+def main_serial_mailbox_hooks_uart_only_dynamic(
+    symbols: dict[str, int],
+    gpasm: str = "gpasm",
+) -> OverlayManifest:
+    """Build UART-only mailbox hook overlay using addresses from gpasm symbols."""
+    asm_text = _build_dynamic_mailbox_uart_only_asm(symbols)
+
+    with tempfile.TemporaryDirectory(prefix="main_uart_hook_dyn_") as td:
+        td_path = Path(td)
+        asm = td_path / "main_uart_hook_dyn.asm"
+        out_hex = td_path / "main_uart_hook_dyn.hex"
+        asm.write_text(asm_text, encoding="ascii")
+        subprocess.run(
+            [gpasm, "-p18f2455", "-o", str(out_hex), str(asm)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        patch_mem = parse_intel_hex(out_hex)
+
+    rx = symbols["rx_ring_read"]
+    rxd = symbols["rx_ring_has_data"]
+    return OverlayManifest(
+        name="main_serial_mailbox_hooks_uart_only_dynamic",
+        preconditions={
+            rx: 0x04,
+            rx + 1: 0x6A,
+            rxd: 0x00,
+            rxd + 1: 0x01,
+        },
+        byte_patches=patch_mem,
+        postconditions={},
+        description="Simulation-only UART hooks: mailbox-backed RX/TX probes (dynamic)",
+    )
+
+
+def main_serial_mailbox_hooks_uart_only_for_main_hex(
+    main_hex: Path,
+    gpasm: str = "gpasm",
+) -> OverlayManifest:
+    """Return a UART-only mailbox hook overlay that follows source labels."""
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    required = {
+        "rx_ring_read",
+        "rx_ring_has_data",
+        "uart_tx_byte_blocking",
+        "adc_boot_gate",
+    }
+    if symbols is None or not required.issubset(symbols):
+        return main_serial_mailbox_hooks_uart_only(gpasm=gpasm)
+    return main_serial_mailbox_hooks_uart_only_dynamic(symbols, gpasm=gpasm)
 
 
 _MAIN_V25_TIMEOUT_TEST_HOOK_ASM = r"""
@@ -999,6 +1151,54 @@ def main_external_i2c_bypass() -> OverlayManifest:
         loops=loops,
         loops_3instr=loops_3instr,
     )
+
+
+def main_external_i2c_bypass_dynamic(symbols: dict[str, int]) -> OverlayManifest:
+    """Build the external-I2C polling bypass from current gpasm symbols."""
+    return _build_main_poll_bypass(
+        name="main_external_i2c_bypass_dynamic",
+        description="Simulation-only bypass: external MSSP/I2C polling loops (dynamic)",
+        loops=[
+            (symbols["flow_main_i2c_service_2100_2288"], 0xB0, 0x90),
+            (symbols["flow_main_i2c_service_381c_3870"], 0xB0, 0x90),
+            (symbols["flow_i2c_byte_tx_sspif"], 0xA6, 0x86),
+            (symbols["flow_i2c_secondary_dev_random_4246"], 0xB0, 0x90),
+            (symbols["flow_i2c_secondary_dev_random_4258"], 0xB2, 0x92),
+            (symbols["flow_i2c_secondary_dev_random_426c"], 0xB8, 0x98),
+            (symbols["flow_i2c_secondary_dev_random_4272"], 0xB4, 0x94),
+            (symbols["coeff_write_wait_sen_stock"], 0xB0, 0x90),
+            (symbols["flow_main_i2c_service_464c_466a"], 0xA0, 0x80),
+        ],
+        loops_3instr=[
+            (symbols["flow_main_i2c_service_2100_231a"], 0xB4, 0x94),
+            (symbols["flow_main_i2c_service_381c_389c"], 0xB4, 0x94),
+            (symbols["coeff_write_pen_stock"], 0xB4, 0x94),
+        ],
+    )
+
+
+def main_external_i2c_bypass_for_main_hex(main_hex: Path) -> OverlayManifest:
+    """Return an external-I2C bypass overlay that tracks source labels."""
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    if symbols is None:
+        return main_external_i2c_bypass()
+    required = {
+        "flow_main_i2c_service_2100_2288",
+        "flow_main_i2c_service_2100_231a",
+        "flow_main_i2c_service_381c_3870",
+        "flow_main_i2c_service_381c_389c",
+        "flow_i2c_byte_tx_sspif",
+        "flow_i2c_secondary_dev_random_4246",
+        "flow_i2c_secondary_dev_random_4258",
+        "flow_i2c_secondary_dev_random_426c",
+        "flow_i2c_secondary_dev_random_4272",
+        "coeff_write_wait_sen_stock",
+        "coeff_write_pen_stock",
+        "flow_main_i2c_service_464c_466a",
+    }
+    if not required.issubset(symbols):
+        return main_external_i2c_bypass()
+    return main_external_i2c_bypass_dynamic(symbols)
 
 
 def main_internal_eeprom_bypass() -> OverlayManifest:

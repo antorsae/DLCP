@@ -132,7 +132,7 @@ def _parse_frames_arg(text: str) -> list[SerialFrame]:
 def cmd_main_gpsim(
     frames_arg: str,
     cycles: int,
-    parser_break: int,
+    parser_break: int | None,
     stage1_timeout: float,
     timer_model: str,
     gpasm: str,
@@ -257,7 +257,12 @@ def main() -> int:
         help="comma-separated route:cmd:data triples (ints, accepts 0xNN)",
     )
     p_main.add_argument("--cycles", type=int, default=120_000_000)
-    p_main.add_argument("--parser-break", type=lambda s: int(s, 0), default=0x1BEA)
+    p_main.add_argument(
+        "--parser-break",
+        type=lambda s: int(s, 0),
+        default=None,
+        help="optional parser breakpoint override; auto-resolves from labels when omitted",
+    )
     p_main.add_argument("--stage1-timeout", type=float, default=60.0)
     p_main.add_argument("--timer-model", choices=["semantic", "harness"], default="semantic")
     p_main.add_argument("--gpasm", default="gpasm")

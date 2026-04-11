@@ -14,10 +14,11 @@ from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
 
 from .gpsim import require_gpsim_binary
 from .hexio import parse_intel_hex, write_intel_hex
-from .manifests import main_reset_to_appstart, main_serial_mailbox_hooks
+from .manifests import main_reset_to_appstart, main_serial_mailbox_hooks_for_main_hex
 from .overlay import apply_overlays
 from .paths import MAIN_HEX_PATCHED, SIM_ARTIFACTS_DIR
 from .protocol import SerialFrame
+from .v30_symbols import find_code_signature, load_gpasm_symbols_for_hex
 
 MAIN_FAULT_FLAGS_ADDR = 0x7C7
 MAIN_NATIVE_TIMEOUT_UART_SEED_ADDR = 0x04E
@@ -35,12 +36,16 @@ MAIN_MAILBOX_TX_BASE = 0x740
 MAIN_MAILBOX_TX_SIZE = 0x40
 MAIN_ADC_VREF_VOLTS = 5.0
 MAIN_AN0_BOOT_ADC = 0x0237
-MAIN_AN0_BOOT_EXIT_ADDR = 0x2DC8
 MAIN_APP_PATCH_START = 0x1000
 MAIN_APP_PATCH_LIMIT = 0x5600
 _MAIN_EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
 _MAIN_CYCLE_LINE_RE = re.compile(r"^\s*0x([0-9A-Fa-f]+)\s+p18f[0-9A-Za-z]+", re.MULTILINE)
 _MAIN_AN0_BOOT_CYCLE_CACHE: dict[str, int] = {}
+_MAIN_AN0_BOOT_EXIT_SIG = bytes.fromhex("046a460e036e3fec22f0b06a7f0eaf6e")
+_MAIN_PARSER_BREAK_SIG = bytes.fromhex("39ec24f0000901e144d1fdec22f0")
+_MAIN_CMD03_LABEL003_SIG = bytes.fromhex("1bc197f000019751090a14e1020e586e")
+_MAIN_CMD03_RETURN_SIG = bytes.fromhex("01011a6b12001a0e5824d96eda6a010e")
+_MAIN_CMD03_DISPATCH_ENTRY_SIG = bytes.fromhex("01011a5156ec08f0040110bf0bd0")
 
 
 @dataclass(frozen=True)
@@ -196,6 +201,94 @@ def _parse_main_cycle(cli_text: str) -> int:
     return int(match.group(1), 16)
 
 
+def _require_code_signature_addr(main_hex: Path, *, name: str, signature: bytes) -> int:
+    addr = find_code_signature(Path(main_hex), signature)
+    if addr is None:
+        raise AssertionError(f"{Path(main_hex).name}: {name} signature not found")
+    return addr & 0xFFFF
+
+
+def _resolve_main_parser_break_addr(main_hex: Path, parser_break_addr: int | None) -> int:
+    if parser_break_addr is not None:
+        return parser_break_addr & 0xFFFF
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    if symbols is not None:
+        addr = symbols.get("flow_main_uart_service_1be6_1bea")
+        if addr is not None:
+            return addr & 0xFFFF
+    return _require_code_signature_addr(
+        Path(main_hex),
+        name="parser break",
+        signature=_MAIN_PARSER_BREAK_SIG,
+    )
+
+
+def resolve_main_an0_boot_exit_addr(main_hex: Path, boot_exit_addr: int | None = None) -> int:
+    if boot_exit_addr is not None:
+        return boot_exit_addr & 0xFFFF
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    if symbols is not None:
+        addr = symbols.get("adc_boot_gate_exit")
+        if addr is not None:
+            return addr & 0xFFFF
+    return _require_code_signature_addr(
+        Path(main_hex),
+        name="AN0 boot exit",
+        signature=_MAIN_AN0_BOOT_EXIT_SIG,
+    )
+
+
+def _resolve_main_cmd03_dispatch_addrs(
+    *,
+    main_hex: Path,
+    parser_break_addr: int | None,
+    label003_break_addr: int | None,
+    return_break_addr: int | None,
+    dispatch_entry_pc: int | None,
+) -> tuple[int, int, int, int]:
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    parser_addr = _resolve_main_parser_break_addr(main_hex, parser_break_addr)
+    label003_addr = (
+        label003_break_addr
+        if label003_break_addr is not None
+        else (symbols.get("flow_hid_command_dispatch_10d0") if symbols is not None else None)
+    )
+    if label003_addr is None:
+        label003_addr = _require_code_signature_addr(
+            Path(main_hex),
+            name="cmd03 label003 break",
+            signature=_MAIN_CMD03_LABEL003_SIG,
+        )
+    return_addr = (
+        return_break_addr
+        if return_break_addr is not None
+        else (symbols.get("flow_hid_command_dispatch_15aa") if symbols is not None else None)
+    )
+    if return_addr is None:
+        return_addr = _require_code_signature_addr(
+            Path(main_hex),
+            name="cmd03 return break",
+            signature=_MAIN_CMD03_RETURN_SIG,
+        )
+    dispatch_addr = (
+        dispatch_entry_pc
+        if dispatch_entry_pc is not None
+        else (symbols.get("flow_main_usb_service_3a26_3a7e") if symbols is not None else None)
+    )
+    if dispatch_addr is None:
+        dispatch_addr = _require_code_signature_addr(
+            Path(main_hex),
+            name="cmd03 dispatch entry",
+            signature=_MAIN_CMD03_DISPATCH_ENTRY_SIG,
+        )
+    return (
+        parser_addr,
+        label003_addr & 0xFFFF,
+        return_addr & 0xFFFF,
+        dispatch_addr & 0xFFFF,
+    )
+
+
 def build_seeded_main_sim_hex(
     main_hex: Path,
     output_hex: Path,
@@ -240,8 +333,9 @@ def build_seeded_main_sim_hex(
 def probe_main_an0_boot_exit_cycle(
     main_hex: Path,
     *,
-    boot_exit_addr: int = MAIN_AN0_BOOT_EXIT_ADDR,
+    boot_exit_addr: int | None = None,
 ) -> int:
+    boot_exit_addr = resolve_main_an0_boot_exit_addr(Path(main_hex), boot_exit_addr)
     cache_key = str(Path(main_hex).resolve())
     cached = _MAIN_AN0_BOOT_CYCLE_CACHE.get(cache_key)
     if cached is not None:
@@ -332,7 +426,7 @@ def _build_script(
         f"load {sim_hex}",
         f"log on {log_path}",
         "log w txreg",
-        # Stage 1: run boot/init until parser loop entry (0x1BEA).
+        # Stage 1: run boot/init until parser loop entry.
         f"break e 0x{parser_break_addr:04X}",
         "run",
         # Stage 2: inject mailbox after RAM init is complete.
@@ -421,7 +515,7 @@ def run_main_mailbox_gpsim(
     main_hex: Path = MAIN_HEX_PATCHED,
     gpasm: str = "gpasm",
     cycles: int = 120_000_000,
-    parser_break_addr: int = 0x1BEA,
+    parser_break_addr: int | None = None,
     stage1_timeout_s: float = 20.0,
     keep_artifacts: bool = False,
     artifact_dir: Path | None = None,
@@ -480,7 +574,11 @@ def run_main_mailbox_gpsim(
         if overlay_manifests is not None:
             manifests_list = list(overlay_manifests)
         else:
-            manifests_list = [main_reset_to_appstart(), main_serial_mailbox_hooks(gpasm=gpasm)]
+            manifests_list = [
+                main_reset_to_appstart(),
+                main_serial_mailbox_hooks_for_main_hex(main_hex, gpasm=gpasm),
+            ]
+        parser_break_addr_resolved = _resolve_main_parser_break_addr(main_hex, parser_break_addr)
         apply_overlays(seeded_hex, sim_hex, manifests=manifests_list)
 
         stc_path = cli_path.with_suffix(".stc")
@@ -488,7 +586,7 @@ def run_main_mailbox_gpsim(
             sim_hex=sim_hex,
             log_path=log_path,
             cycles=cycles,
-            parser_break_addr=parser_break_addr,
+            parser_break_addr=parser_break_addr_resolved,
             rx_bytes=rx_bytes,
             fault_flags=fault_flags,
             cli_path=cli_path,
@@ -511,11 +609,11 @@ def run_main_mailbox_gpsim(
         if cp.returncode != 0:
             raise RuntimeError(f"gpsim exited {cp.returncode}; inspect {cli_path}")
         parser_break_hit = bool(
-            re.search(rf"\b0x{parser_break_addr:04x}\b", cli_text, flags=re.IGNORECASE)
+            re.search(rf"\b0x{parser_break_addr_resolved:04x}\b", cli_text, flags=re.IGNORECASE)
         )
         if not parser_break_hit:
             raise RuntimeError(
-                f"gpsim did not reach parser break 0x{parser_break_addr:04X}; inspect {cli_path}"
+                f"gpsim did not reach parser break 0x{parser_break_addr_resolved:04X}; inspect {cli_path}"
             )
         if "cycle break:" not in cli_text:
             raise RuntimeError(f"gpsim did not hit cycle break; inspect {cli_path}")
@@ -560,10 +658,10 @@ def run_main_cmd03_dispatch_gpsim(
     payload: bytes = b"",
     main_hex: Path = MAIN_HEX_PATCHED,
     gpasm: str = "gpasm",
-    parser_break_addr: int = 0x1BEA,
-    label003_break_addr: int = 0x10D0,
-    return_break_addr: int = 0x15AA,
-    dispatch_entry_pc: int = 0x3A7E,
+    parser_break_addr: int | None = None,
+    label003_break_addr: int | None = None,
+    return_break_addr: int | None = None,
+    dispatch_entry_pc: int | None = None,
     sentinel_regs: Mapping[int, int] | None = None,
     timeout_s: float = 30.0,
     keep_artifacts: bool = False,
@@ -573,13 +671,25 @@ def run_main_cmd03_dispatch_gpsim(
     Run a strict instruction-level cmd=0x03 dispatch probe on MAIN firmware.
 
     The harness boots to parser idle, injects a command window at 0x11A..,
-    then jumps to the parser call-site (0x3A7E) and validates execution hits:
-    - label_003 (0x10D0): cmd=0x03 handler entry
-    - label_083 (0x15AA): command completion/return path
+    then jumps to the parser call-site and validates execution hits:
+    - label_003: cmd=0x03 handler entry
+    - label_083: command completion/return path
     """
     sub = subcmd & 0xFF
     data = bytes(payload[:30])
     sentinels = {int(k) & 0xFFF: int(v) & 0xFF for k, v in (sentinel_regs or {}).items()}
+    (
+        parser_break_addr_resolved,
+        label003_break_addr_resolved,
+        return_break_addr_resolved,
+        dispatch_entry_pc_resolved,
+    ) = _resolve_main_cmd03_dispatch_addrs(
+        main_hex=main_hex,
+        parser_break_addr=parser_break_addr,
+        label003_break_addr=label003_break_addr,
+        return_break_addr=return_break_addr,
+        dispatch_entry_pc=dispatch_entry_pc,
+    )
 
     watch_regs: List[int] = [
         0x05E,
@@ -618,14 +728,14 @@ def run_main_cmd03_dispatch_gpsim(
             sim_hex,
             manifests=[
                 main_reset_to_appstart(),
-                main_serial_mailbox_hooks(gpasm=gpasm),
+                main_serial_mailbox_hooks_for_main_hex(main_hex, gpasm=gpasm),
             ],
         )
 
         lines = [
             f"processor {MAIN_GPSIM_PROCESSOR}",
             f"load {sim_hex}",
-            f"break e 0x{parser_break_addr:04X}",
+            f"break e 0x{parser_break_addr_resolved:04X}",
             "run",
         ]
         for addr, val in sentinels.items():
@@ -642,10 +752,10 @@ def run_main_cmd03_dispatch_gpsim(
                 "reg(0x11a)=0x03",
                 f"reg(0x11b)=0x{sub:02X}",
                 "reg(0x0c0)=0x01",
-                f"pc=0x{dispatch_entry_pc:04X}",
-                f"break e 0x{label003_break_addr:04X}",
+                f"pc=0x{dispatch_entry_pc_resolved:04X}",
+                f"break e 0x{label003_break_addr_resolved:04X}",
                 "run",
-                f"break e 0x{return_break_addr:04X}",
+                f"break e 0x{return_break_addr_resolved:04X}",
                 "run",
             ]
         )
@@ -671,20 +781,20 @@ def run_main_cmd03_dispatch_gpsim(
         if cp.returncode != 0:
             raise RuntimeError(f"gpsim cmd03 probe exited {cp.returncode}; inspect {cli_path}")
 
-        parser_break_hit = _did_hit_break(cli_text, parser_break_addr)
-        label003_break_hit = _did_hit_break(cli_text, label003_break_addr)
-        return_break_hit = _did_hit_break(cli_text, return_break_addr)
+        parser_break_hit = _did_hit_break(cli_text, parser_break_addr_resolved)
+        label003_break_hit = _did_hit_break(cli_text, label003_break_addr_resolved)
+        return_break_hit = _did_hit_break(cli_text, return_break_addr_resolved)
         if not parser_break_hit:
             raise RuntimeError(
-                f"gpsim cmd03 probe did not reach parser break 0x{parser_break_addr:04X}; inspect {cli_path}"
+                f"gpsim cmd03 probe did not reach parser break 0x{parser_break_addr_resolved:04X}; inspect {cli_path}"
             )
         if not label003_break_hit:
             raise RuntimeError(
-                f"gpsim cmd03 probe did not hit label_003 at 0x{label003_break_addr:04X}; inspect {cli_path}"
+                f"gpsim cmd03 probe did not hit label_003 at 0x{label003_break_addr_resolved:04X}; inspect {cli_path}"
             )
         if not return_break_hit:
             raise RuntimeError(
-                f"gpsim cmd03 probe did not hit return break 0x{return_break_addr:04X}; inspect {cli_path}"
+                f"gpsim cmd03 probe did not hit return break 0x{return_break_addr_resolved:04X}; inspect {cli_path}"
             )
 
         regs = _parse_regs(cli_text)

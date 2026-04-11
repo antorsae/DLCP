@@ -52,13 +52,25 @@ def _path_override(env_name: str, default: Path) -> Path:
     return path.resolve()
 
 
-V31_MAIN_ASM = _path_override(
-    "DLCP_FW_V31_MAIN_ASM",
-    PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31.asm",
+V31_MAIN_ASM_CANONICAL = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31.asm"
+V31_MAIN_HEX_CANONICAL = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1.hex"
+V31_MAIN_ASM = _path_override("DLCP_FW_V31_MAIN_ASM", V31_MAIN_ASM_CANONICAL)
+V31_MAIN_HEX = _path_override("DLCP_FW_V31_MAIN_HEX", V31_MAIN_HEX_CANONICAL)
+V31_DIAG_MEMREAD_USB_SAFE_ASM = (
+    PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31_diag_memread_usb_safe.asm"
 )
-V31_MAIN_HEX = _path_override(
-    "DLCP_FW_V31_MAIN_HEX",
-    FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1.hex",
+V31_DIAG_MEMREAD_USB_SAFE_HEX = (
+    FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1_diag_memread_usb_safe.hex"
+)
+V31_CMD07_STOCK_GUARD_USB_SAFE_ASM = (
+    PROJECT_ROOT
+    / "src"
+    / "dlcp_fw"
+    / "asm"
+    / "dlcp_main_v31_cmd07_stock_guard_usb_safe.asm"
+)
+V31_CMD07_STOCK_GUARD_USB_SAFE_HEX = (
+    FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1_cmd07_stock_guard_usb_safe.hex"
 )
 # Active main patch alias: keep the established baseline for legacy tests/tools.
 PATCHED_MAIN_HEX = PATCHED_MAIN_HEX_V27

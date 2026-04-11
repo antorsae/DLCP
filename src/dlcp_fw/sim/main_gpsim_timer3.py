@@ -18,6 +18,8 @@ from .main_gpsim import (
     MAIN_MAILBOX_TX_BASE,
     MAIN_MAILBOX_TX_SIZE,
     MainGpsimResult,
+    _require_code_signature_addr,
+    _resolve_main_parser_break_addr,
     _mailbox_tx_bytes,
     build_seeded_main_sim_hex,
     run_main_mailbox_gpsim,
@@ -25,11 +27,12 @@ from .main_gpsim import (
 from .manifests import (
     main_adc_boot_wait_hook,
     main_reset_to_appstart,
-    main_serial_mailbox_hooks_uart_only,
+    main_serial_mailbox_hooks_uart_only_for_main_hex,
 )
 from .overlay import apply_overlays
 from .paths import MAIN_HEX_PATCHED, SIM_ARTIFACTS_DIR
 from .protocol import SerialFrame
+from .v30_symbols import load_gpasm_symbols_for_hex
 
 _PROMPT = b"**gpsim>"
 _EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
@@ -40,6 +43,7 @@ _REG_VALUE_RE = re.compile(r"\[0x([0-9A-Fa-f]+)\]\s*=\s*0x([0-9A-Fa-f]+)")
 _TXREG_LOG_RE = re.compile(r"Wr(?:ite|ote):\s+0x([0-9A-Fa-f]+)\s+to TXREG\(0x0FAD\)", re.IGNORECASE)
 MAIN_GPSIM_PROCESSOR = "p18f2455"
 MAIN_GPSIM_FOSC_HZ = 16_000_000
+_TIMER3_CLEAR_BREAK_SIG = bytes.fromhex("a192a1a2fed70306d8a0040604500310")
 
 
 @dataclass(frozen=True)
@@ -263,8 +267,8 @@ def run_main_mailbox_gpsim_harness_timer3(
     main_hex: Path = MAIN_HEX_PATCHED,
     gpasm: str = "gpasm",
     cycles: int = 120_000_000,
-    parser_break_addr: int = 0x1BEA,
-    timer_clear_break_addr: int = 0x449C,
+    parser_break_addr: int | None = None,
+    timer_clear_break_addr: int | None = None,
     stage1_timeout_s: float = 60.0,
     stage2_timeout_s: float = 30.0,
     keep_artifacts: bool = False,
@@ -273,6 +277,24 @@ def run_main_mailbox_gpsim_harness_timer3(
     rx_bytes = _frame_bytes(frames)
     if len(rx_bytes) > 32:
         raise ValueError(f"mailbox supports at most 32 bytes, got {len(rx_bytes)}")
+    parser_break_addr_resolved = _resolve_main_parser_break_addr(main_hex, parser_break_addr)
+    symbols = load_gpasm_symbols_for_hex(Path(main_hex))
+    timer_clear_symbol = (
+        symbols.get("flow_timer3_blocking_delay_449e") if symbols is not None else None
+    )
+    timer_clear_break_addr_resolved = (
+        timer_clear_break_addr
+        if timer_clear_break_addr is not None
+        else (
+            timer_clear_symbol
+            if timer_clear_symbol is not None
+            else _require_code_signature_addr(
+                Path(main_hex),
+                name="timer3 clear break",
+                signature=_TIMER3_CLEAR_BREAK_SIG,
+            )
+        )
+    ) & 0xFFFF
 
     with tempfile.TemporaryDirectory(prefix="main_mailbox_timer3_harness_") as td:
         tdp = Path(td)
@@ -289,7 +311,7 @@ def run_main_mailbox_gpsim_harness_timer3(
             sim_hex,
             manifests=[
                 main_reset_to_appstart(),
-                main_serial_mailbox_hooks_uart_only(gpasm=gpasm),
+                main_serial_mailbox_hooks_uart_only_for_main_hex(main_hex, gpasm=gpasm),
                 main_adc_boot_wait_hook(gpasm=gpasm),
             ],
         )
@@ -312,8 +334,8 @@ def run_main_mailbox_gpsim_harness_timer3(
             issue(f"log on {log_path}", 5.0)
             issue("log w txreg", 5.0)
 
-            parser_bp = _add_break_exec(issue, parser_break_addr)
-            timer_bp = _add_break_exec(issue, timer_clear_break_addr)
+            parser_bp = _add_break_exec(issue, parser_break_addr_resolved)
+            timer_bp = _add_break_exec(issue, timer_clear_break_addr_resolved)
             native_timer_seen = False
 
             stage1_deadline = time.monotonic() + stage1_timeout_s
@@ -324,7 +346,7 @@ def run_main_mailbox_gpsim_harness_timer3(
                 out = issue("run", max(1.0, remain))
                 if "Stack overflow" in out:
                     raise RuntimeError("gpsim stack overflow while waiting for parser break")
-                if _contains_exec_break(out, timer_clear_break_addr):
+                if _contains_exec_break(out, timer_clear_break_addr_resolved):
                     event = _capture_native_timer3_event(issue, cycle_now=_parse_cycle(out))
                     issue(f"break c {event.cycle_target}", 5.0)
                     out_overflow = issue("run", max(1.0, remain))
@@ -338,7 +360,7 @@ def run_main_mailbox_gpsim_harness_timer3(
                     _clear_break(issue, timer_bp)
                     timer_bp = -1
                     continue
-                if _contains_exec_break(out, parser_break_addr):
+                if _contains_exec_break(out, parser_break_addr_resolved):
                     parser_break_hit = True
                     break
                 if "Hit a Breakpoint!" not in out:

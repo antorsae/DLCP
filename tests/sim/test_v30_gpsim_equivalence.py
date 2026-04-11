@@ -38,13 +38,9 @@ def test_v30_an0_boot_gate_exit_cycle() -> None:
     """V3.0 must exit the AN0 boot gate at the exact stock cycle count."""
     _require_gpsim()
     v30 = _require_v30()
-    from dlcp_fw.sim.main_gpsim import (
-        MAIN_AN0_BOOT_EXIT_ADDR,
-        probe_main_an0_boot_exit_cycle,
-    )
+    from dlcp_fw.sim.main_gpsim import probe_main_an0_boot_exit_cycle
 
     cycle = probe_main_an0_boot_exit_cycle(v30)
-    assert MAIN_AN0_BOOT_EXIT_ADDR == 0x2DC8
     assert cycle == STOCK_MAIN_AN0_BOOT_EXIT_CYCLE
 
 

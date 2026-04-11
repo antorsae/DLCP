@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.sim.gpsim import gpsim_available
-from dlcp_fw.sim.main_gpsim import MAIN_AN0_BOOT_EXIT_ADDR, probe_main_an0_boot_exit_cycle
+from dlcp_fw.sim.main_gpsim import probe_main_an0_boot_exit_cycle
 
 STOCK_MAIN_AN0_BOOT_EXIT_CYCLE = 4_061_516
 PATCHED_MAIN_AN0_BOOT_EXIT_CYCLE = 4_061_234
@@ -30,5 +30,4 @@ def test_main_boot_gate_exits_with_real_an0_stimulus(
 
     main_hex = request.getfixturevalue(fixture_name)
     cycle = probe_main_an0_boot_exit_cycle(main_hex)
-    assert MAIN_AN0_BOOT_EXIT_ADDR == 0x2DC8
     assert cycle == expected_cycle

@@ -399,7 +399,7 @@ Observed current mailbox behavior:
 Optional stage-1 parser wait tuning:
 
 ```bash
-python3 scripts/simctl.py main-gpsim --stage1-timeout 30 --parser-break 0x1BEA
+python3 scripts/simctl.py main-gpsim --stage1-timeout 30
 ```
 
 Exhaustive gate:

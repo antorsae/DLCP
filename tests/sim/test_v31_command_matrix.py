@@ -1,8 +1,8 @@
 """V3.1 command matrix: every serial command must produce identical
 register state as stock V2.3.
 
-Uses MainChainHarness with native_ring transport (works with V3.1's
-shifted code, unlike run_main_mailbox_gpsim which needs fixed overlays).
+Uses MainChainHarness with native_ring transport. The shared mailbox
+gpsim overlays now resolve V3.x labels dynamically as well.
 """
 from __future__ import annotations
 

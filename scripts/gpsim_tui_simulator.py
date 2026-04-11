@@ -60,14 +60,26 @@ from dlcp_fw.sim.manifests import (
     control_disable_standby_check_for_hex,
     control_reset_to_appstart,
     main_adc_boot_wait_hook,
-    main_i2c_bypass,
+    main_external_i2c_bypass_for_main_hex,
     main_reset_to_appstart,
-    main_serial_mailbox_hooks,
-    main_serial_mailbox_hooks_uart_only,
+    main_serial_mailbox_hooks_for_main_hex,
+    main_serial_mailbox_hooks_uart_only_for_main_hex,
 )
 from dlcp_fw.sim.overlay import apply_overlays
+from dlcp_fw.sim.v30_symbols import find_code_signature, load_gpasm_symbols_for_hex
 
 ROOT = _bootstrap.REPO_ROOT
+_TIMER3_CLEAR_BREAK_SIG = bytes.fromhex("a192a1a2fed70306d8a0040604500310")
+
+
+def _resolve_timer3_clear_addr(main_hex: Path) -> int:
+    symbols = load_gpasm_symbols_for_hex(main_hex)
+    if symbols is None:
+        addr = find_code_signature(main_hex, _TIMER3_CLEAR_BREAK_SIG)
+        if addr is None:
+            raise AssertionError(f"{main_hex.name}: timer3 clear break signature not found")
+        return addr & 0xFFFF
+    return symbols["flow_timer3_blocking_delay_449e"] & 0xFFFF
 
 
 UP = "UP"
@@ -661,22 +673,22 @@ class MainGpsimSession:
 
         manifests = [main_reset_to_appstart()]
         if bypass_i2c:
-            manifests.append(main_i2c_bypass())
+            manifests.append(main_external_i2c_bypass_for_main_hex(main_hex))
         if timer3_mode == "harness":
             manifests.extend(
                 [
-                    main_serial_mailbox_hooks_uart_only(gpasm=gpasm),
+                    main_serial_mailbox_hooks_uart_only_for_main_hex(main_hex, gpasm=gpasm),
                     main_adc_boot_wait_hook(gpasm=gpasm),
                 ]
             )
         else:
-            manifests.append(main_serial_mailbox_hooks(gpasm=gpasm))
+            manifests.append(main_serial_mailbox_hooks_for_main_hex(main_hex, gpasm=gpasm))
 
         apply_overlays(main_hex, self.sim_hex, manifests=manifests)
 
         self._gpsim = GpsimCliSession()
         self._issue = lambda c, t=10.0: self._gpsim.cmd(c, timeout_s=t)
-        self._timer3_clear_addr = 0x449C
+        self._timer3_clear_addr = _resolve_timer3_clear_addr(main_hex)
         self._timer3_exec_bp_id: int | None = None
         self._boot()
 

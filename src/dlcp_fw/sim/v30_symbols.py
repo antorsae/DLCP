@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict
+
+from .hexio import parse_intel_hex
 
 
 def parse_gpasm_symbols(lst_path: Path) -> Dict[str, int]:
@@ -33,6 +36,49 @@ def parse_gpasm_symbols(lst_path: Path) -> Dict[str, int]:
         addr = int(m.group(2), 16)
         symbols[name] = addr
     return symbols
+
+
+@lru_cache(maxsize=None)
+def load_gpasm_symbols_for_hex(main_hex: Path) -> Dict[str, int] | None:
+    """Load gpasm symbols from the listing that sits beside *main_hex*.
+
+    Returns ``None`` when no ``.lst`` exists for the given HEX. This lets
+    stock/binary-patched images keep their existing fixed-address fallbacks,
+    while source-assembled images such as V3.x can resolve labels dynamically.
+    """
+    lst_path = Path(main_hex).with_suffix(".lst")
+    if not lst_path.exists():
+        return None
+    try:
+        symbols = parse_gpasm_symbols(lst_path)
+    except ValueError:
+        return None
+    return symbols or None
+
+
+@lru_cache(maxsize=None)
+def _load_code_window(
+    main_hex: Path,
+    start_addr: int,
+    end_addr: int,
+) -> bytes:
+    mem = parse_intel_hex(Path(main_hex))
+    return bytes(mem.get(addr, 0xFF) for addr in range(start_addr, end_addr))
+
+
+def find_code_signature(
+    main_hex: Path,
+    signature: bytes,
+    *,
+    start_addr: int = 0x1000,
+    end_addr: int = 0x5600,
+) -> int | None:
+    """Return the address of *signature* within the code window, if found."""
+    code = _load_code_window(Path(main_hex), start_addr, end_addr)
+    idx = code.find(signature)
+    if idx < 0:
+        return None
+    return start_addr + idx
 
 
 def assemble_v30(
@@ -64,14 +110,30 @@ def assemble_v30(
         raise RuntimeError(
             f"gpasm failed ({cp.returncode}):\n" + "\n".join(errors[:20])
         )
-    # gpasm writes .lst alongside the source file
-    auto_lst = asm_path.with_suffix(".lst")
-    if output_lst is not None and auto_lst.resolve() != output_lst.resolve():
-        if auto_lst.exists():
-            import shutil
-            shutil.copy2(auto_lst, output_lst)
-        else:
-            raise RuntimeError(f"gpasm did not produce listing at {auto_lst}")
+    # gpasm may place the listing beside the source file or beside the
+    # requested output basename, depending on invocation details.
+    auto_lsts = (
+        asm_path.with_suffix(".lst"),
+        output_hex.with_suffix(".lst"),
+    )
+    if output_lst is not None:
+        import shutil
+
+        existing_lsts = [path for path in auto_lsts if path.exists()]
+        if not existing_lsts:
+            raise RuntimeError(
+                "gpasm did not produce listing at any expected location: "
+                + ", ".join(str(path) for path in auto_lsts)
+            )
+        freshest_lst = max(
+            existing_lsts,
+            key=lambda path: (
+                path.stat().st_mtime_ns,
+                1 if path == output_hex.with_suffix(".lst") else 0,
+            ),
+        )
+        if freshest_lst.resolve() != output_lst.resolve():
+            shutil.copy2(freshest_lst, output_lst)
     return output_hex
 
 

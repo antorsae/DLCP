@@ -21,7 +21,6 @@ from .control_gpsim import (
 from .gpsim import require_gpsim_binary
 from .hexio import parse_intel_hex
 from .main_gpsim import (
-    MAIN_AN0_BOOT_EXIT_ADDR,
     MAIN_FAULT_FLAGS_ADDR,
     MAIN_FAULT_MSSP_WAIT_STALL,
     MAIN_NATIVE_TIMEOUT_MSSP_SEED_ADDR,
@@ -38,14 +37,15 @@ from .main_gpsim import (
     build_seeded_main_sim_hex,
     default_main_i2c_regfile_devices,
     probe_main_an0_boot_exit_cycle,
+    resolve_main_an0_boot_exit_addr,
     write_main_an0_bootstrap_stc,
     write_main_i2c_regfile_stc,
 )
 from .manifests import (
     main_adc_boot_wait_hook,
-    main_external_i2c_bypass,
+    main_external_i2c_bypass_for_main_hex,
     main_reset_to_appstart,
-    main_serial_mailbox_hooks,
+    main_serial_mailbox_hooks_for_main_hex,
     main_v24_stall_test_hooks,
     main_v25_timeout_test_hooks,
 )
@@ -60,7 +60,6 @@ BITS_PER_BYTE = 10
 EUSART_FIFO_DEPTH = 2
 MAIN_NATIVE_RX_BASE = 0x0200
 MAIN_NATIVE_RX_SIZE = 0xC0
-MAIN_BOOT_EXIT_ADDR = MAIN_AN0_BOOT_EXIT_ADDR
 _EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
 _BP_EXEC_RE = re.compile(r"^\s*(\d+):\s+p18f[0-9A-Za-z]+\s+Execution at .*?\(0x([0-9A-Fa-f]+)\)", re.MULTILINE)
 _REGFILE_RE = re.compile(
@@ -294,6 +293,11 @@ class MainChainHarness:
             and main_ra0_adc is None
         )
         self._native_an0_boot_pending = self._use_native_an0_bootstrap
+        self._main_boot_exit_addr = (
+            resolve_main_an0_boot_exit_addr(self.main_hex)
+            if self._use_native_an0_bootstrap
+            else None
+        )
         self._boot_bp_id: int | None = None
         self._boot_handoff_cycle = 0
         self._uses_adc_boot_wait_hook = False
@@ -304,8 +308,8 @@ class MainChainHarness:
         manifests = [main_reset_to_appstart()]
         if self.transport_mode == "mailbox":
             if bypass_i2c:
-                manifests.append(main_external_i2c_bypass())
-            manifests.append(main_serial_mailbox_hooks(gpasm=gpasm))
+                manifests.append(main_external_i2c_bypass_for_main_hex(self.main_hex))
+            manifests.append(main_serial_mailbox_hooks_for_main_hex(self.main_hex, gpasm=gpasm))
         else:
             if not self._use_native_an0_bootstrap:
                 manifests.append(main_adc_boot_wait_hook(gpasm=gpasm))
@@ -320,7 +324,7 @@ class MainChainHarness:
                     MAIN_NATIVE_TIMEOUT_MSSP_SEED_ADDR,
                 )
             if bypass_i2c:
-                manifests.append(main_external_i2c_bypass())
+                manifests.append(main_external_i2c_bypass_for_main_hex(self.main_hex))
         build_seeded_main_sim_hex(main_hex, self.seeded_hex)
         apply_overlays(self.seeded_hex, self.sim_hex, manifests=manifests)
 
@@ -333,9 +337,10 @@ class MainChainHarness:
         self._issue(f"load {self.sim_hex}", 10.0)
         self._issue(f"frequency {MAIN_FOSC_HZ}", 5.0)
         if self._use_native_an0_bootstrap:
+            assert self._main_boot_exit_addr is not None
             boot_exit_cycle = probe_main_an0_boot_exit_cycle(
                 self.main_hex,
-                boot_exit_addr=MAIN_BOOT_EXIT_ADDR,
+                boot_exit_addr=self._main_boot_exit_addr,
             )
             self._boot_handoff_cycle = (
                 ((boot_exit_cycle + self.chunk_cycles - 1) // self.chunk_cycles) * self.chunk_cycles + 1
@@ -348,7 +353,7 @@ class MainChainHarness:
                 processor=MAIN_GPSIM_PROCESSOR,
             )
             self._issue(f"load {an0_stc}", 10.0)
-            self._boot_bp_id = _add_break_exec(self._issue, MAIN_BOOT_EXIT_ADDR)
+            self._boot_bp_id = _add_break_exec(self._issue, self._main_boot_exit_addr)
         if self._i2c_regfile_devices:
             i2c_stc = self.tmp_path / "main_i2c_bus.stc"
             write_main_i2c_regfile_stc(
@@ -826,7 +831,8 @@ class MainChainHarness:
         self._issue(f"break c {target_cycle}", 5.0)
         out = self._issue("run", timeout_s)
         self.current_cycle = _parse_cycle(out)
-        if self._native_an0_boot_pending and _contains_exec_break(out, MAIN_BOOT_EXIT_ADDR):
+        if self._native_an0_boot_pending and _contains_exec_break(out, self._main_boot_exit_addr):
+            assert self._main_boot_exit_addr is not None
             if self._boot_bp_id is not None:
                 _clear_break(self._issue, self._boot_bp_id)
                 self._boot_bp_id = None
