@@ -274,6 +274,27 @@ print(f"free_bytes_before_0x4C00={0x4C00 - (last_used + 1)}")
 PY
 ```
 
+## Measurement Gotchas
+
+File-size-on-disk is not a valid delta signal for this campaign.
+
+- Every experiment that edits source upstream of `org 0x4C00` shifts
+  non-`0xFF` code bytes down, but the assembled `.hex` still pads out to
+  the Preset B anchor. The file size on disk therefore does not reflect
+  the actual change in used code bytes.
+- Use `used_bytes_pre_preset_b`, `last_used_pre_preset_b`, and
+  `free_bytes_before_0x4C00` from the measurement snippet above
+  exclusively. Any experiment result claiming "no binary delta" must
+  show those three numeric metrics, not a file-size comparison.
+- When reopening a previously rejected experiment, also diff
+  `mem[0x1000..0x4BFF]` content (not just the metrics) to confirm
+  whether the earlier rejection was a measurement artifact.
+- Prior experiment `W01-E01` (removal of `movff X, X` self-moves) was
+  rejected on the basis of "no binary delta" but its measurement method
+  is not documented in the ledger. Any reopening of that territory must
+  capture all three metrics plus a byte-for-byte content diff of the
+  code region to produce an authoritative verdict.
+
 ## Required Experiment Workflow
 
 1. Build the current baseline V3.1 source and record its measured size.
@@ -442,3 +463,9 @@ These are checkpoint artifacts, not a termination condition.
   V3.1 suite: 9 full files plus 5 targeted nodes from 4 additional files
 - 2026-03-30: validated the current accepted size candidate with the
   expanded parallel gate: `78 passed, 2 skipped in 511.93s`
+- 2026-04-11: external audit of `W01-E01` rejection found its "no binary
+  delta" result inconsistent with `.lst` evidence — each
+  `movff X, X` self-move emits 4 bytes of object code. Added the
+  `## Measurement Gotchas` subsection to this spec and scheduled
+  `W04-E03..E05` to reopen self-move removal under content-diff
+  validation.
