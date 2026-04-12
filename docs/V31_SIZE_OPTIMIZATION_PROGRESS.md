@@ -7,17 +7,21 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 
 ## Baseline Size Snapshot
 
-- Current baseline source: accepted recombined `W07-R01` coordinator candidate
+- Current baseline source: accepted recombined `W08-R01` coordinator candidate
 - Baseline assembly: clean via `assemble_v30()`
 - Baseline collected validation suite: `89` selected tests across the full-file and targeted-node gate listed in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`
 - Baseline measured size:
+  - `used_bytes_pre_preset_b=14477`
+  - `last_used_pre_preset_b=0x48F1`
+  - `free_bytes_before_0x4C00=782`
+- Wave-launch baseline on current `main` before `W08`:
   - `used_bytes_pre_preset_b=14719`
   - `last_used_pre_preset_b=0x49E1`
   - `free_bytes_before_0x4C00=542`
-- Wave-launch baseline on current `main` before `W07`:
-  - `used_bytes_pre_preset_b=14870`
-  - `last_used_pre_preset_b=0x4A79`
-  - `free_bytes_before_0x4C00=390`
+- Previous accepted campaign baseline (`W07-R01`):
+  - `used_bytes_pre_preset_b=14719`
+  - `last_used_pre_preset_b=0x49E1`
+  - `free_bytes_before_0x4C00=542`
 - Previous accepted campaign baseline (`W06-R03`):
   - `used_bytes_pre_preset_b=14870`
   - `last_used_pre_preset_b=0x4A79`
@@ -34,18 +38,21 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - `used_bytes_pre_preset_b=15103`
   - `last_used_pre_preset_b=0x4B61`
   - `free_bytes_before_0x4C00=158`
-- Net improvement vs `W06-R03` / `W07` launch baseline:
-  - `-151` used bytes before Preset B
-  - `+152` free bytes before `0x4C00`
+- Net improvement vs `W07-R01` / `W08` launch baseline:
+  - `-242` used bytes before Preset B
+  - `+240` free bytes before `0x4C00`
+- Net improvement vs `W06-R03`:
+  - `-393` used bytes before Preset B
+  - `+392` free bytes before `0x4C00`
 - Net improvement vs `W05-R01`:
-  - `-430` used bytes before Preset B
-  - `+430` free bytes before `0x4C00`
+  - `-672` used bytes before Preset B
+  - `+670` free bytes before `0x4C00`
 - Net improvement vs pre-`W05` current-`main` baseline:
-  - `-538` used bytes before Preset B
-  - `+538` free bytes before `0x4C00`
+  - `-780` used bytes before Preset B
+  - `+778` free bytes before `0x4C00`
 - Net delta vs accepted `W02-R01` baseline:
-  - `-384` used bytes before Preset B
-  - `+384` free bytes before `0x4C00`
+  - `-626` used bytes before Preset B
+  - `+624` free bytes before `0x4C00`
 
 ## Gate Status
 
@@ -53,6 +60,26 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - `89 tests collected`
   - file mix: 9 full files plus 5 targeted nodes from 4 additional
     files
+- `2026-04-12`: accepted `W08-R01` passed the refreshed parallel V3.1
+  gate with:
+  - `86 passed, 2 skipped, 1 xfailed in 499.94s (0:08:19)`
+  - skip detail: `tests/sim/test_v31_usb_hid_dispatch.py:221` —
+    `cmd 0x06 response not staged in RAM (no USB in gpsim)`
+  - expected `xfail`:
+    `tests/sim/test_v31_v163b_robustness.py::test_wire_mssp_stop_cascade_full_dsp_recovery`
+    — gpsim wire-chain STOP-state model still blocks the final
+    post-recovery DSP write in V3.1
+- `2026-04-12`: W08 surviving parents also passed focused pre-merge
+  smokes in their isolated worktrees:
+  - `W08-E01`: `21 passed in 1247.70s (0:20:47)`
+  - `W08-E03`: `8 passed, 1 xfailed in 625.75s (0:10:25)` with only
+    the known wire-chain STOP-state `xfail`
+  - `W08-E04`: canonical memread/dispatch checks `5 passed, 2 skipped
+    in 158.60s (0:02:38)`; the non-gate
+    `test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps`
+    stayed red because the derived USB-safe HEX was not rebuilt from the
+    new canonical release
+  - `W08-E05`: `24 passed in 1816.69s (0:30:16)`
 - `2026-04-12`: accepted `W07-R01` passed the refreshed parallel V3.1
   gate with:
   - `86 passed, 2 skipped, 1 xfailed in 503.92s (0:08:23)`
@@ -224,14 +251,15 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 | W07 | W07-E07 | `coordinator` | Micro-Optimizations | Merge `uart_tx_byte_blocking` tail, hoist `adaptive_baud_select` `clrf SPBRGH`, and inline single-instruction helpers in `main_flash_service` / `main_core_service` | yes | 14856 | `0x4A69` | 406 | -14 | not run | reject / proof-burden holdback | no | medium | The batch mixed a safe UART tail merge with a STATUS-mutating `clrf SPBRGH` hoist and helper removals for only 14 bytes total. Kept out of recombination to preserve the “extremely safe only” bar. |
 | W07 | W07-E08 | `coordinator` | Confirmation variant of W07-E01 | Independently verify the `cmd_dispatch_gated` rewrite to catch potential mapping edge cases | yes | 14783 | `0x4A21` | 478 | -87 | not run | confirmation only | no | low | Independent worktree matched `W07-E01` exactly on assembly and size metrics; no extra tests were run after the original parent and recombined child both stayed green. |
 | W07 | W07-R01 | `coordinator` | recombination of `W07-E01`, `W07-E02`, `W07-E03`, `W07-E06` on top of `W06-R03` | Keep the four disjoint green W07 parents while excluding the reconnect-regressing wrapper-inline batch and the low-gain holdbacks | yes | 14719 | `0x49E1` | 542 | -151 | smoke `31 passed, 1 xfailed` (`2169.14s`); full gate `86 passed, 2 skipped, 1 xfailed` (`503.92s`) | accepted baseline | yes | medium | Authoritative accepted W07 baseline. This hit the wave target without touching the rejected wrapper-inline and mixed micro-optimization families. |
-| W08 | W08-E01 | `coordinator` | `main_core_service_297e` counted-loop rewrite | Replace the 10x unrolled `movff ram_0x02F..032 -> ram_0x025..028 ; movlw 0x2F ; call main_core_service_3ec4` cluster with a semantically exact counted loop | not run | n/a | n/a | n/a | -150 to -190 est | not run | queued | no | high | Biggest remaining single source-level size lever from the 2026-04-12 audit. Must prove loop order, scratch-register lifetimes, and `main_core_service_3ec4` side effects stay exact. |
+| W08 | W08-E01 | `coordinator` | `main_core_service_297e` counted-loop rewrite | Replace the 10x unrolled `movff ram_0x02F..032 -> ram_0x025..028 ; movlw 0x2F ; call main_core_service_3ec4` cluster with a semantically exact counted loop | yes | 14529 | `0x4923` | 732 | -190 | `21 passed` (`1247.70s`) | parent accepted into `W08-R01` | yes | high | Reused `ram_0x011` as the loop counter only after auditing `main_core_service_3ec4` and its callees to confirm they never clobber it. |
 | W08 | W08-E02 | `coordinator` | Preset-B flash remap helper sharing | Consolidate the duplicated `0x56xx..0x5Fxx -> 0x4Cxx..0x53xx` remap prologues in `flash_read`, `flash_write`, and `flash_erase` into a shared helper | not run | n/a | n/a | n/a | -30 to -40 est | not run | queued / blocked on coverage | no | high | Do not run until the prerequisite gpsim test exists to exercise real assembly-side preset-B writes and reads through the remap prologues. |
-| W08 | W08-E03 | `coordinator` | Late-tail wrapper cluster | Inline or delete the tiny wrapper cluster around `main_core_service_4954`, `main_uart_service_495e`, `usb_disconnect_handler`, `main_i2c_service_4966`, and `main_core_service_496c` | not run | n/a | n/a | n/a | -30 to -40 est | not run | queued | no | medium | Similar family to the rejected `W07-E04`, but narrower and explicitly split so the `CLRWDT` / reconnect-sensitive wrappers can be audited one by one. |
-| W08 | W08-E04 | `coordinator` | Final redundant `iorlw 0x00` removal | Remove the lone remaining `iorlw 0x00` in `hid_cmd_diag_memread` after `movf ram_0x11E, W` already sets `STATUS.Z` | not run | n/a | n/a | n/a | -2 est | not run | queued | no | low | Straight encoding cleanup. `movwf POSTINC2` does not clobber `STATUS`, so this should mirror the safe W06 redundant-`iorlw` deletions. |
-| W08 | W08-E05 | `coordinator` | Computed-volume copy helper | Factor the 4-byte `computed_volume -> logical_volume` copy used at three sites into a shared local helper if call overhead still wins | not run | n/a | n/a | n/a | -18 est | not run | queued | no | medium | The same four `movff` instructions appear in three places; likely a modest but safe helper candidate if the call topology stays local. |
-| W08 | W08-E06 | `coordinator` | `main_i2c_service_2100` data-move ladders | Replace the repeated switch/copy ladders in `main_i2c_service_2100` with a smaller stock-equivalent structure | not run | n/a | n/a | n/a | -20 to -40 est | not run | queued | no | high | Higher-level stock-equivalent refactor. Keep isolated from the lower-risk helper and encoding candidates. |
-| W08 | W08-E07 | `coordinator` | `main_core_service_2328` boolean fanout | Compress the bit-to-byte fanout and repeated `movlw 0/1` materialization block without changing downstream flags or byte values | not run | n/a | n/a | n/a | -16 to -24 est | not run | queued | no | medium | Plausible win, but any rewrite must preserve the existing bank-switch and boolean-byte semantics exactly. |
-| W08 | W08-E08 | `coordinator` | `i2c_byte_tx` masked-mode classification | Audit whether the repeated mode-mask classification in `i2c_byte_tx` can be shared without disturbing the stock transaction structure | not run | n/a | n/a | n/a | -6 to -12 est | not run | queued / low priority | no | high | Lowest-priority W08 candidate. Expected gain is small and the routine remains behavior-critical on real hardware. |
+| W08 | W08-E03 | `coordinator` | Late-tail wrapper cluster | Inline or delete the tiny wrapper cluster around `main_core_service_4954`, `main_uart_service_495e`, `usb_disconnect_handler`, `main_i2c_service_4966`, and `main_core_service_496c` | yes | 14689 | `0x49C3` | 572 | -30 | `8 passed, 1 xfailed` (`625.75s`) | parent accepted into `W08-R01` | yes | medium | Narrower than rejected `W07-E04`: removed only the audited one-/two-call wrappers and kept the known STOP-state robustness `xfail` unchanged. |
+| W08 | W08-E04 | `coordinator` | Final redundant `iorlw 0x00` removal | Remove the lone remaining `iorlw 0x00` in `hid_cmd_diag_memread` after `movf ram_0x11E, W` already sets `STATUS.Z` | yes | 14717 | `0x49DF` | 544 | -2 | canonical checks `5 passed, 2 skipped` (`158.60s`) | parent accepted into `W08-R01` | yes | low | The only red follow-up was non-gate `test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps`, which reflects the derived USB-safe HEX not being rebuilt from the new canonical release. |
+| W08 | W08-E05 | `coordinator` | Computed-volume copy helper | Factor the 4-byte `computed_volume -> logical_volume` copy used at three sites into a shared local helper if call overhead still wins | yes | 14701 | `0x49CF` | 560 | -18 | `24 passed` (`1816.69s`) | parent accepted into `W08-R01` | yes | medium | Added `copy_computed_volume_to_logical_volume` in the late helper block and replaced the three mirrored copy sites with direct calls. |
+| W08 | W08-E06 | `coordinator` | `main_i2c_service_2100` data-move ladders | Replace the repeated switch/copy ladders in `main_i2c_service_2100` with a smaller stock-equivalent structure | not run | n/a | n/a | n/a | -20 to -40 est | not run | held / audit only | no | high | Static audit confirmed the savings are plausible, but any real shrink needs a new selector structure across seven banked source windows and four coefficient synthesis paths. Left isolated from `W08-R01`. |
+| W08 | W08-E07 | `coordinator` | `main_core_service_2328` boolean fanout | Compress the bit-to-byte fanout and repeated `movlw 0/1` materialization block without changing downstream flags or byte values | not run | n/a | n/a | n/a | -16 to -24 est | not run | held / audit only | no | medium | A `clrf`/conditional-`incf` family looks size-positive, but the bank-switch and STATUS proof burden was not worth mixing into the first recombination child. |
+| W08 | W08-E08 | `coordinator` | `i2c_byte_tx` masked-mode classification | Audit whether the repeated mode-mask classification in `i2c_byte_tx` can be shared without disturbing the stock transaction structure | not run | n/a | n/a | n/a | -6 to -12 est | not run | held / audit only | no | high | Small projected gain on a behavior-critical I2C path. Left unmodified until a later wave can isolate and prove the classification reuse. |
+| W08 | W08-R01 | `coordinator` | recombination of `W08-E01`, `W08-E03`, `W08-E04`, and `W08-E05` on top of `W07-R01` | Keep the four independently proven W08 parents while leaving the blocked remap helper and the three exploratory audits out of the first child | yes | 14477 | `0x48F1` | 782 | -242 | full gate `86 passed, 2 skipped, 1 xfailed` (`499.94s`) | accepted baseline | yes | medium | Authoritative accepted W08 baseline. The coordinator rebuild preserved the expected USB skip / STOP-state `xfail` pattern and expanded slack before `0x4C00` to `782` bytes. |
 
 ## Recombination Lineage
 
@@ -277,18 +305,15 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   `W07-R01` already met the wave target.
 - `W07-E08` was a confirmation-only rerun of `W07-E01` and matched it
   exactly on size metrics.
-- `W08-R01` planned parents:
+- `W08-R01` parents:
   - `W07-R01` launch baseline
-  - likely low-/medium-risk candidates `W08-E03`, `W08-E04`, `W08-E05`
-  - include `W08-E01` only if the counted-loop rewrite proves
-    semantically exact under smoke and full-gate validation
-- `W08-R02` planned parents:
-  - `W08-R01` accepted child, if any
-  - `W08-E02` only after the prerequisite preset-B remap coverage test
-    exists and passes on both the baseline and optimized candidate
-- `W08-E06`, `W08-E07`, and `W08-E08` are exploratory stock-equivalent
-  candidates and should not be bundled into the first recombination
-  child without individual proof.
+  - successful W08 parents `W08-E01`, `W08-E03`, `W08-E04`, `W08-E05`
+  - accepted after coordinator-only rebuild and the exact 89-node gate
+- `W08-E02` remains blocked until the prerequisite preset-B remap
+  coverage test exists and passes on both the baseline and optimized
+  candidate.
+- `W08-E06`, `W08-E07`, and `W08-E08` were held after static audit and
+  should remain isolated until a later wave gives them independent proof.
 - `W04-R01` planned parents (pending `W03` closure and `W04` experiment results):
   - post-`W03` baseline (expected `W03-R01` if `W03` produces a successful recombination)
   - `W04-E01` encoding subs — `movlw 0x00` removal before `clrf`
@@ -334,38 +359,50 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   - explicitly held out the low-gain `CLRWDT` / mixed micro-optimization
     batches (`W07-E05`, `W07-E07`) to preserve the “extremely safe
     only” bar
+- `W08-R01` accepted actions:
+  - rewrote the 10x repeated `main_core_service_297e` copy/apply cluster
+    as a counted loop using `ram_0x011` as a proven-safe loop counter
+  - inlined the audited late-tail wrapper cluster for
+    `main_core_service_4954`, `main_uart_service_495e`,
+    `usb_disconnect_handler`, `main_i2c_service_4966`, and the empty
+    `main_core_service_496c`
+  - removed the final redundant `iorlw 0x00` in
+    `hid_cmd_diag_memread`
+  - factored the repeated `computed_volume -> logical_volume` mirror
+    copy into `copy_computed_volume_to_logical_volume`
 - Current accepted baseline:
-  - `used_bytes_pre_preset_b=14719`
-  - `last_used_pre_preset_b=0x49E1`
-  - `free_bytes_before_0x4C00=542`
+  - `used_bytes_pre_preset_b=14477`
+  - `last_used_pre_preset_b=0x48F1`
+  - `free_bytes_before_0x4C00=782`
 - Authoritative savings:
-  - `-151` used bytes vs `W06-R03` / `W07` launch baseline
-  - `+152` free bytes before `0x4C00` vs `W06-R03` / `W07` launch baseline
-  - `-430` used bytes vs `W05-R01`
-  - `+430` free bytes before `0x4C00` vs `W05-R01`
-  - `-538` used bytes vs pre-`W05` current-main baseline
-  - `+538` free bytes before `0x4C00` vs pre-`W05` current-main baseline
+  - `-242` used bytes vs `W07-R01` / `W08` launch baseline
+  - `+240` free bytes before `0x4C00` vs `W07-R01` / `W08` launch baseline
+  - `-393` used bytes vs `W06-R03`
+  - `+392` free bytes before `0x4C00` vs `W06-R03`
+  - `-672` used bytes vs `W05-R01`
+  - `+670` free bytes before `0x4C00` vs `W05-R01`
+  - `-780` used bytes vs pre-`W05` current-main baseline
+  - `+778` free bytes before `0x4C00` vs pre-`W05` current-main baseline
 
-## Queued W08 Wave
+## Executed W08 Wave
 
 - Launch baseline: accepted `W07-R01`
   - `used_bytes_pre_preset_b=14719`
   - `last_used_pre_preset_b=0x49E1`
   - `free_bytes_before_0x4C00=542`
-- Estimated combined target: `~160` bytes, dominated by the
-  `main_core_service_297e` counted-loop rewrite plus several smaller
-  helper/dedup candidates
-- First-pass priority:
-  - `W08-E01` counted-loop rewrite in `main_core_service_297e`
-  - `W08-E03` narrower late-tail wrapper cleanup
-  - `W08-E04` final redundant `iorlw 0x00` removal
-  - `W08-E05` computed-volume copy helper
-- Explicit blocker:
-  - `W08-E02` stays blocked until the assembly-side preset-B remap
+- Executed first-pass parents:
+  - `W08-E01`, `W08-E03`, `W08-E04`, `W08-E05`
+- Explicit blocker carried forward:
+  - `W08-E02` remains blocked until the assembly-side preset-B remap
     coverage test exists and is green on the baseline
-- Exploratory only:
-  - `W08-E06`, `W08-E07`, and `W08-E08` are valid candidates but should
-    remain isolated from the first recombination child
+- Exploratory audits held for a later wave:
+  - `W08-E06`, `W08-E07`, and `W08-E08`
+- Accepted recombination:
+  - `W08-R01 = W08-E01 + W08-E03 + W08-E04 + W08-E05`
+  - `used_bytes_pre_preset_b=14477`
+  - `last_used_pre_preset_b=0x48F1`
+  - `free_bytes_before_0x4C00=782`
+  - full gate `86 passed, 2 skipped, 1 xfailed in 499.94s (0:08:19)`
 
 ## Cumulative Action Log
 
@@ -440,6 +477,32 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   helper/dedup candidates. `W08-E02` remains explicitly blocked on new
   preset-B remap coverage; `W08-E06..E08` are exploratory and should
   not dilute the lower-risk path.
+- 2026-04-12: created eight isolated detached worktrees under
+  `artifacts/reanalysis/size_opt_w08/` from the exact `W07-R01`
+  baseline and pinned `DLCP_GPSIM_BIN` to the sibling
+  `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis/scripts/gpsim-xtc`
+  wrapper because this W08 worktree has no local gpsim build.
+- 2026-04-12: assembled the first-pass W08 parents and recorded the
+  authoritative size deltas: `E01 -190`, `E03 -30`, `E04 -2`, `E05 -18`
+  bytes before Preset B; `E02` stayed blocked and `E06..E08` remained
+  audit-only holdbacks.
+- 2026-04-12: focused smokes stayed green on the surviving W08 parents:
+  `W08-E01` (`21 passed`), `W08-E03` (`8 passed, 1 xfailed`),
+  `W08-E04` canonical memread/dispatch checks (`5 passed, 2 skipped`),
+  and `W08-E05` (`24 passed`).
+- 2026-04-12: the auxiliary non-gate
+  `test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps`
+  failed for `W08-E04` because the derived USB-safe HEX was not rebuilt
+  from the updated canonical release. This did not block `W08-R01`
+  because the canonical V3.1 memread/dispatch checks stayed green and
+  the exact 89-node acceptance gate does not include that derived-artifact
+  assertion.
+- 2026-04-12: built recombined `W08-R01`
+  (`W08-E01 + W08-E03 + W08-E04 + W08-E05`) in the coordinator
+  checkout, measured `used=14477`, `last_used=0x48F1`, `free=782`, and
+  ran the exact full 89-node gate.
+- 2026-04-12: accepted `W08-R01` after the authoritative full gate
+  returned `86 passed, 2 skipped, 1 xfailed in 499.94s (0:08:19)`.
 
 ## Dead Code Candidate List
 
@@ -460,13 +523,10 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 - Process note (2026-04-11): `W01-E01` rejection surfaced a measurement-methodology gap. Any experiment result claiming "no binary delta" must capture `used_bytes_pre_preset_b`, `last_used_pre_preset_b`, and `free_bytes_before_0x4C00` metrics AND a `mem[0x1000..0x4BFF]` content diff — not just file-size-on-disk. See new `## Measurement Gotchas` section in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`.
 - Process note (2026-04-11): flag-setting equivalence matters. `movlw 0x00` / `movwf F` is not semantically interchangeable with `clrf F` when downstream code can observe STATUS. `W05-E02` is the proof case; do not retry that family without explicit flag audits per site.
 - Next-wave priorities:
-  - execute `W08` from the accepted `W07-R01` baseline, keeping the
-    same coordinator-authoritative isolated-worktree discipline
-  - start with `W08-E01`, `W08-E03`, `W08-E04`, and `W08-E05`, which
-    combine the largest plausible win with the clearest helper/encoding
-    cleanups
+  - treat `W08-R01` as the new accepted baseline for the next wave
   - keep `W08-E02` blocked until the assembly-side preset-B remap
-    coverage test is added and green
-  - keep `W08-E06..E08` isolated from the first recombination child;
-    they are legitimate candidates but carry much higher proof burden
-  - run `W04-E03..E05` self-move sweeps as a separate batch since their validation requires specific memory-diff tooling not currently integrated in the fast-gate workflow.
+    coverage test is added and green on both the baseline and a
+    candidate helper rewrite
+  - revisit `W08-E06..E08` only in isolated follow-up worktrees; they
+    remain legitimate future candidates but were not independently
+    proven during the `W08-R01` path

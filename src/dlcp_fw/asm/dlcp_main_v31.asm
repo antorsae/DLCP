@@ -412,10 +412,7 @@ flow_hid_command_dispatch_12e0:
 flow_hid_command_dispatch_1324:
     bsf         event_flags, 4, BANKED
     movff       input_select, input_select_mirror
-    movff       computed_volume, logical_volume
-    movff       computed_volume_1, logical_volume_1
-    movff       computed_volume_2, logical_volume_2
-    movff       computed_volume_3, logical_volume_3
+    call        copy_computed_volume_to_logical_volume, 0x0
     btfss       active_flags, 4, ACCESS
     bra         flow_hid_command_dispatch_1342
     bsf         active_flags, 5, ACCESS
@@ -1213,7 +1210,8 @@ cmd_dispatch_gated_i2c_pair:
     return      0
 flow_cmd_dispatch_gated_1966:
     call        main_core_service_4516, 0x0
-    call        main_core_service_4954, 0x0
+    movlw       0x01
+    call        i2c_tas3108_reg1f_write, 0x0
     bra         flow_cmd_dispatch_gated_1990
 flow_cmd_dispatch_gated_1970:
     movf        ram_0x093, W, BANKED
@@ -1334,7 +1332,7 @@ flow_cmd_dispatch_gated_1a76:
     clrf        i2c_coeff_3, ACCESS
     call        i2c_tas3108_coeff_write, 0x0
     call        main_core_service_4574, 0x0
-    call        main_uart_service_495e, 0x0
+    bsf         RCSTA, 4, ACCESS
     bcf         active_flags, 7, ACCESS
     movlb       0x0
     btfss       event_flags, 5, BANKED
@@ -1985,10 +1983,7 @@ flow_main_core_service_1e88_1fbc:
     movlw       0x01
     movwf       ram_0x0C3, BANKED
 flow_main_core_service_1e88_1fc6:
-    movff       computed_volume, logical_volume
-    movff       computed_volume_1, logical_volume_1
-    movff       computed_volume_2, logical_volume_2
-    movff       computed_volume_3, logical_volume_3
+    call        copy_computed_volume_to_logical_volume, 0x0
     movff       input_select, input_select_mirror
     movff       ram_0x060, ram_0x0A5
     movff       ram_0x061, ram_0x0A6
@@ -3217,66 +3212,17 @@ main_core_service_297e:
     movff       ram_0x021, ram_0x030
     movff       ram_0x022, ram_0x031
     movff       ram_0x023, ram_0x032
+    movlw       0x0A
+    movwf       ram_0x011, ACCESS
+flow_main_core_service_297e_apply_loop:
     movff       ram_0x02F, ram_0x025
     movff       ram_0x030, ram_0x026
     movff       ram_0x031, ram_0x027
     movff       ram_0x032, ram_0x028
     movlw       0x2F
     call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
-    movlw       0x2F
-    call        main_core_service_3ec4, 0x0
+    decfsz      ram_0x011, F, ACCESS
+    bra         flow_main_core_service_297e_apply_loop
     return      0
 
 
@@ -3718,7 +3664,7 @@ adc_boot_gate_exit:
     bcf         LATB, 4, ACCESS
     bcf         LATA, 6, ACCESS
     bcf         LATB, 3, ACCESS
-    call        main_i2c_service_4966, 0x0
+    bcf         SSPCON1, 5, ACCESS
     bsf         TRISB, 1, ACCESS
     bsf         TRISB, 0, ACCESS
     clrf        ram_0x004, ACCESS
@@ -4276,7 +4222,6 @@ flow_main_core_service_3188_31e6:
 flow_main_core_service_3188_31f4:
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_31fa:
-    call        main_core_service_496c, 0x0
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_3200:
     movlw       0x02
@@ -5351,7 +5296,7 @@ main_usb_service_3a26:
     btfsc       PORTC, 0, ACCESS
     bra         flow_main_usb_service_3a26_3a40
 flow_main_usb_service_3a26_3a3a:
-    call        main_uart_service_495e, 0x0
+    bsf         RCSTA, 4, ACCESS
     bra         flow_main_usb_service_3a26_3aa2
 flow_main_usb_service_3a26_3a40:
     tstfsz      ram_0x0C0, BANKED
@@ -6293,7 +6238,7 @@ main_usb_service_40d6:
     bra         flow_main_usb_service_40d6_4102
 flow_main_usb_service_40d6_40fc:
     bcf         UIR, 3, ACCESS
-    call        usb_disconnect_handler, 0x0
+    clrwdt
 flow_main_usb_service_40d6_4102:
     btfsc       UIR, 3, ACCESS
     bra         flow_main_usb_service_40d6_40fc
@@ -7447,7 +7392,7 @@ report_cmd29_status:
 main_usb_service_4812:
     bra         flow_main_usb_service_4812_481e
 flow_main_usb_service_4812_4814:
-    rcall       usb_disconnect_handler
+    clrwdt
     decf        ram_0x003, F, ACCESS
     btfss       STATUS, 0, ACCESS
     decf        ram_0x004, F, ACCESS
@@ -7746,52 +7691,11 @@ main_timer_service_494c:
     return      0
 
 
-; ---------------------------------------------------------------------------
-; Function: main_core_service_4954
-; Address : 0x4954
-; Notes   : Inferred core helper routine.
-; ---------------------------------------------------------------------------
-main_core_service_4954:
-    movlw       0x01
-    goto        i2c_tas3108_reg1f_write
-
-
-; ---------------------------------------------------------------------------
-; Function: main_uart_service_495e
-; Address : 0x495E
-; Notes   : Inferred uart helper; touches uart.
-; ---------------------------------------------------------------------------
-main_uart_service_495e:
-    bsf         RCSTA, 4, ACCESS
-    return      0
-
-
-; ---------------------------------------------------------------------------
-; Function: usb_disconnect_handler
-; Address : 0x4962
-; Notes   : Inferred core helper routine.
-; ---------------------------------------------------------------------------
-usb_disconnect_handler:
-    clrwdt
-    return      0
-
-
-; ---------------------------------------------------------------------------
-; Function: main_i2c_service_4966
-; Address : 0x4966
-; Notes   : Inferred i2c helper; touches i2c.
-; ---------------------------------------------------------------------------
-main_i2c_service_4966:
-    bcf         SSPCON1, 5, ACCESS
-    return      0
-
-
-; ---------------------------------------------------------------------------
-; Function: main_core_service_496c
-; Address : 0x496C
-; Notes   : Inferred core helper routine.
-; ---------------------------------------------------------------------------
-main_core_service_496c:
+copy_computed_volume_to_logical_volume:
+    movff       computed_volume, logical_volume
+    movff       computed_volume_1, logical_volume_1
+    movff       computed_volume_2, logical_volume_2
+    movff       computed_volume_3, logical_volume_3
     return      0
 
 
@@ -7941,10 +7845,7 @@ volume_dsp_write:
     movlb       0x0
     bcf         event_flags, 3, BANKED      ; clear volume dirty
     bsf         event_flags, 7, BANKED      ; boot-complete gate
-    movff       computed_volume, logical_volume
-    movff       computed_volume_1, logical_volume_1
-    movff       computed_volume_2, logical_volume_2
-    movff       computed_volume_3, logical_volume_3
+    call        copy_computed_volume_to_logical_volume, 0x0
     bcf         dsp_fault_flags, 6, BANKED  ; clear DSP fault (write worked)
     movlw       0xC7
     andwf       dsp_fault_flags, F, BANKED  ; clear retry counter, preserve bits 7,6
@@ -8085,7 +7986,6 @@ hid_cmd_diag_memread:
     clrf        POSTINC2, ACCESS
     movf        ram_0x11E, W, BANKED
     movwf       POSTINC2, ACCESS
-    iorlw       0x00
     bz          hid_cmd_diag_memread_bad_len
     movlw       0x3D
     cpfsgt      ram_0x11E, BANKED
