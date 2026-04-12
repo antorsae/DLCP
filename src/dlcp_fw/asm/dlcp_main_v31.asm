@@ -1180,47 +1180,37 @@ cmd_dispatch_gated:
 flow_cmd_dispatch_gated_18fe:
     movlw       0x09
     movwf       ram_0x006, ACCESS
-    movlw       0x0D
-    call        i2c_secondary_dev_write, 0x0
     movlw       0x70
-    movwf       ram_0x006, ACCESS
-    movlw       0x08
-    call        i2c_secondary_dev_write, 0x0
-    call        main_i2c_service_48e2, 0x0
+    rcall       cmd_dispatch_gated_i2c_pair
     bra         flow_cmd_dispatch_gated_1990
 flow_cmd_dispatch_gated_1918:
     movlw       0x0A
     movwf       ram_0x006, ACCESS
-    movlw       0x0D
-    call        i2c_secondary_dev_write, 0x0
     movlw       0xB0
-    movwf       ram_0x006, ACCESS
-    movlw       0x08
-    call        i2c_secondary_dev_write, 0x0
-    call        main_i2c_service_48e2, 0x0
+    rcall       cmd_dispatch_gated_i2c_pair
     bra         flow_cmd_dispatch_gated_1990
 flow_cmd_dispatch_gated_1932:
     movlw       0x08
     movwf       ram_0x006, ACCESS
-    movlw       0x0D
-    call        i2c_secondary_dev_write, 0x0
     movlw       0x30
-    movwf       ram_0x006, ACCESS
-    movlw       0x08
-    call        i2c_secondary_dev_write, 0x0
-    call        main_i2c_service_48e2, 0x0
+    rcall       cmd_dispatch_gated_i2c_pair
     bra         flow_cmd_dispatch_gated_1990
 flow_cmd_dispatch_gated_194c:
     movlw       0x0B
     movwf       ram_0x006, ACCESS
+    movlw       0xF0
+    rcall       cmd_dispatch_gated_i2c_pair
+    bra         flow_cmd_dispatch_gated_1990
+cmd_dispatch_gated_i2c_pair:
+    movwf       ram_0x00D, ACCESS
     movlw       0x0D
     call        i2c_secondary_dev_write, 0x0
-    movlw       0xF0
+    movf        ram_0x00D, W, ACCESS
     movwf       ram_0x006, ACCESS
     movlw       0x08
     call        i2c_secondary_dev_write, 0x0
     call        main_i2c_service_48e2, 0x0
-    bra         flow_cmd_dispatch_gated_1990
+    return      0
 flow_cmd_dispatch_gated_1966:
     call        main_core_service_4516, 0x0
     call        main_core_service_4954, 0x0
@@ -1377,101 +1367,70 @@ flow_cmd_dispatch_gated_1ab8:
 flow_cmd_dispatch_gated_1aca:
     btfss       event_flags, 6, BANKED
     bra         flow_cmd_dispatch_gated_1baa
+    movlw       0x5F
+    movwf       ram_0x014, ACCESS
+    movlb       0x0
     btfsc       ram_0x0A4, 0, BANKED
-    bra         flow_cmd_dispatch_gated_1ada
-    movlw       0x5F
-    movwf       ram_0x0F2, BANKED
+    bra         flow_cmd_dispatch_gated_1ad8
     movlw       0x1C
-    bra         flow_cmd_dispatch_gated_1ae0
-flow_cmd_dispatch_gated_1ada:
-    movlw       0x5F
-    movwf       ram_0x0F2, BANKED
+    bra         flow_cmd_dispatch_gated_1ada
+flow_cmd_dispatch_gated_1ad8:
     movlw       0x08
-flow_cmd_dispatch_gated_1ae0:
-    movwf       ram_0x0F1, BANKED
-    movff       ram_0x0F1, ram_0x013
-    movff       ram_0x0F2, ram_0x014
+flow_cmd_dispatch_gated_1ada:
+    movwf       ram_0x013, ACCESS
     call        main_i2c_service_381c, 0x0
     movlb       0x0
     btfsc       ram_0x0A4, 1, BANKED
-    bra         flow_cmd_dispatch_gated_1afc
-    movlw       0x5F
-    movwf       ram_0x0F4, BANKED
+    bra         flow_cmd_dispatch_gated_1aee
     movlw       0x44
-    bra         flow_cmd_dispatch_gated_1b02
-flow_cmd_dispatch_gated_1afc:
-    movlw       0x5F
-    movwf       ram_0x0F4, BANKED
+    bra         flow_cmd_dispatch_gated_1af0
+flow_cmd_dispatch_gated_1aee:
     movlw       0x30
-flow_cmd_dispatch_gated_1b02:
-    movwf       ram_0x0F3, BANKED
-    movff       ram_0x0F3, ram_0x013
-    movff       ram_0x0F4, ram_0x014
+flow_cmd_dispatch_gated_1af0:
+    movwf       ram_0x013, ACCESS
     call        main_i2c_service_381c, 0x0
     movlb       0x0
     btfsc       ram_0x0A4, 2, BANKED
-    bra         flow_cmd_dispatch_gated_1b1e
-    movlw       0x5F
-    movwf       ram_0x0F6, BANKED
+    bra         flow_cmd_dispatch_gated_1b04
     movlw       0x6C
-    bra         flow_cmd_dispatch_gated_1b24
-flow_cmd_dispatch_gated_1b1e:
-    movlw       0x5F
-    movwf       ram_0x0F6, BANKED
+    bra         flow_cmd_dispatch_gated_1b06
+flow_cmd_dispatch_gated_1b04:
     movlw       0x58
-flow_cmd_dispatch_gated_1b24:
-    movwf       ram_0x0F5, BANKED
-    movff       ram_0x0F5, ram_0x013
-    movff       ram_0x0F6, ram_0x014
+flow_cmd_dispatch_gated_1b06:
+    movwf       ram_0x013, ACCESS
     call        main_i2c_service_381c, 0x0
     movlb       0x0
     btfsc       ram_0x0A4, 3, BANKED
-    bra         flow_cmd_dispatch_gated_1b40
-    movlw       0x5F
-    movwf       ram_0x0F8, BANKED
+    bra         flow_cmd_dispatch_gated_1b1a
     movlw       0x94
-    bra         flow_cmd_dispatch_gated_1b46
-flow_cmd_dispatch_gated_1b40:
-    movlw       0x5F
-    movwf       ram_0x0F8, BANKED
+    bra         flow_cmd_dispatch_gated_1b1c
+flow_cmd_dispatch_gated_1b1a:
     movlw       0x80
-flow_cmd_dispatch_gated_1b46:
-    movwf       ram_0x0F7, BANKED
-    movff       ram_0x0F7, ram_0x013
-    movff       ram_0x0F8, ram_0x014
+flow_cmd_dispatch_gated_1b1c:
+    movwf       ram_0x013, ACCESS
     call        main_i2c_service_381c, 0x0
     movlb       0x0
     btfsc       ram_0x0A4, 4, BANKED
-    bra         flow_cmd_dispatch_gated_1b62
-    movlw       0x5F
-    movwf       ram_0x0FA, BANKED
+    bra         flow_cmd_dispatch_gated_1b30
     movlw       0xBC
-    bra         flow_cmd_dispatch_gated_1b68
-flow_cmd_dispatch_gated_1b62:
-    movlw       0x5F
-    movwf       ram_0x0FA, BANKED
+    bra         flow_cmd_dispatch_gated_1b32
+flow_cmd_dispatch_gated_1b30:
     movlw       0xA8
-flow_cmd_dispatch_gated_1b68:
-    movwf       ram_0x0F9, BANKED
-    movff       ram_0x0F9, ram_0x013
-    movff       ram_0x0FA, ram_0x014
+flow_cmd_dispatch_gated_1b32:
+    movwf       ram_0x013, ACCESS
     call        main_i2c_service_381c, 0x0
     movlb       0x0
     btfsc       ram_0x0A4, 5, BANKED
-    bra         flow_cmd_dispatch_gated_1b84
-    movlw       0x5F
-    movwf       ram_0x0FC, BANKED
+    bra         flow_cmd_dispatch_gated_1b46
     movlw       0xE4
-    bra         flow_cmd_dispatch_gated_1b8a
-flow_cmd_dispatch_gated_1b84:
-    movlw       0x5F
-    movwf       ram_0x0FC, BANKED
+    bra         flow_cmd_dispatch_gated_1b48
+flow_cmd_dispatch_gated_1b46:
     movlw       0xD0
-flow_cmd_dispatch_gated_1b8a:
-    movwf       ram_0x0FB, BANKED
-    movff       ram_0x0FB, ram_0x013
-    movff       ram_0x0FC, ram_0x014
+flow_cmd_dispatch_gated_1b48:
+    movwf       ram_0x013, ACCESS
     call        main_i2c_service_381c, 0x0
+    bra         flow_cmd_dispatch_gated_1b8c
+flow_cmd_dispatch_gated_1b8c:
     movlw       0x05
     movlb       0x0
     movwf       ram_0x0C1, BANKED
@@ -5553,13 +5512,11 @@ flow_main_isr_dispatch_3b58:
 uart_rx_irq_enqueue:
     btfss       PIR1, 5, ACCESS
     bra         flow_main_isr_dispatch_3b8c
-    movlw       0x00
     movlb       0x0
-    addwf       rx_ring_wr, W, BANKED
+    movf        rx_ring_wr, W, BANKED
     movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
     movlw       0x02
-    addwfc      FSR2H, F, ACCESS
+    movwf       FSR2H, ACCESS
     movff       RCREG, INDF2
     incf        rx_ring_wr, F, BANKED
     movlw       0xBF
@@ -5589,28 +5546,24 @@ send_status_burst:
     movlw       0x05
     rcall       send_status_burst_preamble
     movf        ram_0x05F, W, ACCESS
-    call        uart_tx_byte_blocking, 0x0
-    call        main_core_service_492e, 0x0
+    rcall       send_status_burst_postamble
     movlw       0x07
     rcall       send_status_burst_preamble
     movlb       0x0
     movf        computed_volume, W, BANKED
     addlw       0x60
-    call        uart_tx_byte_blocking, 0x0
-    call        main_core_service_492e, 0x0
+    rcall       send_status_burst_postamble
     movlw       0x03
     rcall       send_status_burst_preamble
     movlw       0x01
     btfss       active_flags, 3, ACCESS
     movlw       0x00
-    call        uart_tx_byte_blocking, 0x0
-    call        main_core_service_492e, 0x0
+    rcall       send_status_burst_postamble
     movlw       0x06
     rcall       send_status_burst_preamble
     movlb       0x0
     movf        input_select, W, BANKED
-    call        uart_tx_byte_blocking, 0x0
-    call        main_core_service_492e, 0x0
+    rcall       send_status_burst_postamble
     movlw       0x1D
     rcall       send_status_burst_preamble
     movlb       0x0
@@ -5623,6 +5576,10 @@ send_status_burst_preamble:
     call        uart_tx_byte_blocking, 0x0
     movf        ram_0x00D, W, ACCESS
     goto        uart_tx_byte_blocking
+
+send_status_burst_postamble:
+    call        uart_tx_byte_blocking, 0x0
+    goto        main_core_service_492e
 
 ; ---------------------------------------------------------------------------
 ; Function: hw_standby_shutdown
@@ -7131,13 +7088,11 @@ rx_ring_read:
     rcall       rx_ring_has_data
 
     bz          flow_rx_ring_read_4620
-    movlw       0x00
     movlb       0x0
-    addwf       rx_ring_rd, W, BANKED
+    movf        rx_ring_rd, W, BANKED
     movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
     movlw       0x02
-    addwfc      FSR2H, F, ACCESS
+    movwf       FSR2H, ACCESS
     movf        INDF2, W, ACCESS
     movwf       ram_0x004, ACCESS
     incf        rx_ring_rd, F, BANKED

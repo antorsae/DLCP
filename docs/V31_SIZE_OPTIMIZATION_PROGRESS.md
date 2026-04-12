@@ -1,23 +1,27 @@
 # V3.1 MAIN Size Optimization Progress
 
-Date: 2026-04-11
+Date: 2026-04-12
 Status: active
 Target source: `src/dlcp_fw/asm/dlcp_main_v31.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
 
 ## Baseline Size Snapshot
 
-- Current baseline source: accepted recombined `W06-R03` coordinator candidate
+- Current baseline source: accepted recombined `W07-R01` coordinator candidate
 - Baseline assembly: clean via `assemble_v30()`
 - Baseline collected validation suite: `89` selected tests across the full-file and targeted-node gate listed in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`
 - Baseline measured size:
+  - `used_bytes_pre_preset_b=14719`
+  - `last_used_pre_preset_b=0x49E1`
+  - `free_bytes_before_0x4C00=542`
+- Wave-launch baseline on current `main` before `W07`:
   - `used_bytes_pre_preset_b=14870`
   - `last_used_pre_preset_b=0x4A79`
   - `free_bytes_before_0x4C00=390`
-- Wave-launch baseline on current `main` before `W06`:
-  - `used_bytes_pre_preset_b=15149`
-  - `last_used_pre_preset_b=0x4B8F`
-  - `free_bytes_before_0x4C00=112`
+- Previous accepted campaign baseline (`W06-R03`):
+  - `used_bytes_pre_preset_b=14870`
+  - `last_used_pre_preset_b=0x4A79`
+  - `free_bytes_before_0x4C00=390`
 - Previous accepted campaign baseline (`W05-R01`):
   - `used_bytes_pre_preset_b=15149`
   - `last_used_pre_preset_b=0x4B8F`
@@ -30,15 +34,18 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - `used_bytes_pre_preset_b=15103`
   - `last_used_pre_preset_b=0x4B61`
   - `free_bytes_before_0x4C00=158`
-- Net improvement vs `W05-R01` / `W06` launch baseline:
-  - `-279` used bytes before Preset B
-  - `+278` free bytes before `0x4C00`
+- Net improvement vs `W06-R03` / `W07` launch baseline:
+  - `-151` used bytes before Preset B
+  - `+152` free bytes before `0x4C00`
+- Net improvement vs `W05-R01`:
+  - `-430` used bytes before Preset B
+  - `+430` free bytes before `0x4C00`
 - Net improvement vs pre-`W05` current-`main` baseline:
-  - `-387` used bytes before Preset B
-  - `+386` free bytes before `0x4C00`
+  - `-538` used bytes before Preset B
+  - `+538` free bytes before `0x4C00`
 - Net delta vs accepted `W02-R01` baseline:
-  - `-233` used bytes before Preset B
-  - `+232` free bytes before `0x4C00`
+  - `-384` used bytes before Preset B
+  - `+384` free bytes before `0x4C00`
 
 ## Gate Status
 
@@ -46,6 +53,22 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - `89 tests collected`
   - file mix: 9 full files plus 5 targeted nodes from 4 additional
     files
+- `2026-04-12`: accepted `W07-R01` passed the refreshed parallel V3.1
+  gate with:
+  - `86 passed, 2 skipped, 1 xfailed in 503.92s (0:08:23)`
+  - skip detail: `tests/sim/test_v31_usb_hid_dispatch.py:221` —
+    `cmd 0x06 response not staged in RAM (no USB in gpsim)`
+  - expected `xfail`:
+    `tests/sim/test_v31_v163b_robustness.py::test_wire_mssp_stop_cascade_full_dsp_recovery`
+    — gpsim wire-chain STOP-state model still blocks the final
+    post-recovery DSP write in V3.1
+- `2026-04-12`: accepted `W07-R01` also passed the coordinator smoke
+  gate with:
+  - `31 passed, 1 xfailed in 2169.14s (0:36:09)`
+  - expected `xfail`:
+    `tests/sim/test_v31_v163b_robustness.py::test_wire_mssp_stop_cascade_full_dsp_recovery`
+    — gpsim wire-chain STOP-state model still blocks post-recovery DSP
+    writes in V3.1
 - `2026-04-11`: accepted `W06-R03` passed the refreshed parallel V3.1
   gate with:
   - `86 passed, 2 skipped, 1 xfailed in 495.97s (0:08:15)`
@@ -192,14 +215,15 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 | W06 | W06-R01 | `coordinator` | recombination of `W06-E01`, `W06-E02`, `W06-E03`, `W06-E04` | Keep the full encoding/tail wave if the combined child preserves behavior | yes | 14845 | `0x4A7D` | 386 | -304 | smoke `1 failed, 31 passed` (`1554.09s`) | reject / regression | no | medium | Reproduced the `W06-E03` volume-computation regression in recombined form, so the entire tail-call family was dropped. |
 | W06 | W06-R02 | `coordinator` | recombination of `W06-E01`, `W06-E02`, `W06-E04` | Prepare the no-tail fallback candidate while `W06-E05` is still under smoke | yes | 14895 | `0x4A93` | 364 | -254 | not run | superseded by `W06-R03` | no | low | Fallback coordinator child measured cleanly but was not carried forward once the helper candidate passed smoke. |
 | W06 | W06-R03 | `coordinator` | recombination of `W06-E01`, `W06-E02`, `W06-E04`, `W06-E05` | Keep the full reachable `rcall` sweep, the 4 redundant-`iorlw` removals, and the green helper refactor while excluding the regressing tail-call family | yes | 14870 | `0x4A79` | 390 | -279 | smoke `32 passed` (`1555.70s`); full gate initial static failure; full gate rerun `86 passed, 2 skipped, 1 xfailed` (`495.97s`) | accepted baseline | yes | medium | Authoritative accepted W06 baseline. Initial full-gate failure was only the static `call`-string expectation in `test_v31_static_remap_constants`; after relaxing that test to accept `call` or `rcall`, the full 89-node gate passed cleanly. |
-| W07 | W07-E01 | TBD | `cmd_dispatch_gated` array mapping and hoisting | Eliminate redundant `0x5F` mapping into `ram_0x0F1..0x0FC` before `main_i2c_service_381c` across 6 branches | not run | n/a | n/a | n/a | -60 est | not run | queued (post-W06) | no | medium | Safely uses `ram_0x013/0x014` directly instead of copying through dead `0x0F` array. |
-| W07 | W07-E02 | TBD | `cmd_dispatch_gated` repetitive I2C writes | Create local helper to collapse 4 instances of repetitive `i2c_secondary_dev_write` sequences around `flow_cmd_dispatch_gated_18fe` | not run | n/a | n/a | n/a | -18 est | not run | queued (post-W06) | no | low | Reduces boilerplate for sequential write payload packing. |
-| W07 | W07-E03 | TBD | `send_status_burst` postamble helper | Extract sequential `uart_tx_byte_blocking` and `main_core_service_492e` calls into a shared `rcall` postamble helper | not run | n/a | n/a | n/a | -16 est | not run | queued (post-W06) | no | low | Extends `W06-E05` to the postamble side of the 4 bursts. |
-| W07 | W07-E04 | TBD | Single-call wrapper inlining (Part 1) | Inline `main_uart_service_4938`, `main_core_service_496c`, `main_i2c_service_4966`, and `main_timer_service_494c` | not run | n/a | n/a | n/a | -24 est | not run | queued (post-W06) | no | low | Inlines wrappers that are either a single instruction or only called once. |
-| W07 | W07-E05 | TBD | Single-call wrapper inlining (Part 2) | Inline `usb_disconnect_handler`, `main_core_service_4924`, and `main_core_service_4954` | not run | n/a | n/a | n/a | -12 est | not run | queued (post-W06) | no | low | Inlines remaining infrequent wrappers to save call/return overhead. |
-| W07 | W07-E06 | TBD | Direct Pointer Load in `rx_ring` | Eliminate +0 add logic for pointer load on ring buffer updates since Carry is discarded and overflow beyond 0x02BF is impossible | not run | n/a | n/a | n/a | -8 est | not run | queued (post-W06) | no | low | Replaces `addwf rx_ring_rd, W / addwfc FSR2H` with direct `movf / movwf FSR2H`. |
-| W07 | W07-E07 | TBD | Micro-Optimizations | Merge `uart_tx_byte_blocking` tail, hoist `adaptive_baud_select` `clrf SPBRGH`, and inline single-instruction helpers in `main_flash_service` / `main_core_service` | not run | n/a | n/a | n/a | -22 est | not run | queued (post-W06) | no | low | Batch of safe micro-optimizations. |
-| W07 | W07-E08 | TBD | Confirmation variant of W07-E01 | Independently verify the `cmd_dispatch_gated` rewrite to catch potential mapping edge cases | not run | n/a | n/a | n/a | -60 est | not run | queued (post-W06) | no | low | Sanity check for highest-value single edit in the wave. |
+| W07 | W07-E01 | `coordinator` | `cmd_dispatch_gated` array mapping and hoisting | Eliminate redundant `0x5F` mapping into `ram_0x0F1..0x0FC` before `main_i2c_service_381c` across 6 branches | yes | 14783 | `0x4A21` | 478 | -87 | smoke `31 passed, 1 xfailed` (`2169.78s`) | parent accepted into `W07-R01` | yes | medium | Replaced the dead `0x0F` staging array with direct `ram_0x013/0x014` loads and hoisted the common `0x5F` high byte once for the whole six-call block. |
+| W07 | W07-E02 | `coordinator` | `cmd_dispatch_gated` repetitive I2C writes | Create local helper to collapse 4 instances of repetitive `i2c_secondary_dev_write` sequences around `flow_cmd_dispatch_gated_18fe` | yes | 14831 | `0x4A51` | 430 | -39 | smoke `31 passed, 1 xfailed` (`2175.93s`) | parent accepted into `W07-R01` | yes | low | Added a local `cmd_dispatch_gated_i2c_pair` helper that preserves the original `0x0D` then `0x08` write order and reuses `ram_0x00D` as scratch for the second payload byte. |
+| W07 | W07-E03 | `coordinator` | `send_status_burst` postamble helper | Extract sequential `uart_tx_byte_blocking` and `main_core_service_492e` calls into a shared `rcall` postamble helper | yes | 14831 | `0x4A69` | 406 | -39 | smoke `31 passed, 1 xfailed` (`2176.39s`) | parent accepted into `W07-R01` | yes | low | Added `send_status_burst_postamble` for the first four delayed status bytes and kept the final undelayed `BF/1D` tail untouched. |
+| W07 | W07-E04 | `coordinator` | Single-call wrapper inlining (Part 1) | Inline `main_uart_service_4938`, `main_core_service_496c`, `main_i2c_service_4966`, and `main_timer_service_494c` | yes | 14848 | `0x4A63` | 412 | -22 | smoke `1 failed, 30 passed, 1 xfailed` (`2214.73s`) | reject / regression | no | medium | Regressed `tests/sim/test_reconnect_wake_gate.py::test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`. The helper-inline cluster was dropped intact rather than trying to salvage individual edits from the regressing batch. |
+| W07 | W07-E05 | `coordinator` | Single-call wrapper inlining (Part 2) | Inline `usb_disconnect_handler`, `main_core_service_4924`, and `main_core_service_4954` | yes | 14856 | `0x4A6B` | 404 | -14 | not run | reject / low-gain holdback | no | medium | Assembled cleanly, but the 14-byte gain was not worth changing the only-site `CLRWDT` topology and helper jump/return structure once `W07-R01` already met the wave target without it. |
+| W07 | W07-E06 | `coordinator` | Direct Pointer Load in `rx_ring` | Eliminate +0 add logic for pointer load on ring buffer updates since Carry is discarded and overflow beyond 0x02BF is impossible | yes | 14863 | `0x4A71` | 398 | -7 | smoke `31 passed, 1 xfailed` (`2174.00s`) | parent accepted into `W07-R01` | yes | low | Tight proof: both ring indices are bounded to `0x00..0xBF`, so the pointer high byte is always `0x02`, and the removed `Carry` output is dead before any consumer. |
+| W07 | W07-E07 | `coordinator` | Micro-Optimizations | Merge `uart_tx_byte_blocking` tail, hoist `adaptive_baud_select` `clrf SPBRGH`, and inline single-instruction helpers in `main_flash_service` / `main_core_service` | yes | 14856 | `0x4A69` | 406 | -14 | not run | reject / proof-burden holdback | no | medium | The batch mixed a safe UART tail merge with a STATUS-mutating `clrf SPBRGH` hoist and helper removals for only 14 bytes total. Kept out of recombination to preserve the “extremely safe only” bar. |
+| W07 | W07-E08 | `coordinator` | Confirmation variant of W07-E01 | Independently verify the `cmd_dispatch_gated` rewrite to catch potential mapping edge cases | yes | 14783 | `0x4A21` | 478 | -87 | not run | confirmation only | no | low | Independent worktree matched `W07-E01` exactly on assembly and size metrics; no extra tests were run after the original parent and recombined child both stayed green. |
+| W07 | W07-R01 | `coordinator` | recombination of `W07-E01`, `W07-E02`, `W07-E03`, `W07-E06` on top of `W06-R03` | Keep the four disjoint green W07 parents while excluding the reconnect-regressing wrapper-inline batch and the low-gain holdbacks | yes | 14719 | `0x49E1` | 542 | -151 | smoke `31 passed, 1 xfailed` (`2169.14s`); full gate `86 passed, 2 skipped, 1 xfailed` (`503.92s`) | accepted baseline | yes | medium | Authoritative accepted W07 baseline. This hit the wave target without touching the rejected wrapper-inline and mixed micro-optimization families. |
 
 ## Recombination Lineage
 
@@ -234,6 +258,17 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   - `W05-R01` launch baseline
   - `W06-E01`, `W06-E02`, `W06-E04`, `W06-E05`
   - accepted after coordinator-only rebuild, helper smoke, and full-gate validation
+- `W07-R01` parents:
+  - `W06-R03` launch baseline
+  - `W07-E01`, `W07-E02`, `W07-E03`, `W07-E06`
+  - accepted after coordinator-only rebuild, 32-node smoke, and the
+    full 89-node gate
+- `W07-E04` was rejected after a real reconnect-wake regression.
+- `W07-E05` and `W07-E07` were held out after assembly because their
+  low-gain wins did not justify the remaining proof burden once
+  `W07-R01` already met the wave target.
+- `W07-E08` was a confirmation-only rerun of `W07-E01` and matched it
+  exactly on size metrics.
 - `W04-R01` planned parents (pending `W03` closure and `W04` experiment results):
   - post-`W03` baseline (expected `W03-R01` if `W03` produces a successful recombination)
   - `W04-E01` encoding subs — `movlw 0x00` removal before `clrf`
@@ -263,15 +298,33 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   - factored the repeated `BF/<id>` `send_status_burst` preamble into a local `rcall`-reachable helper
   - explicitly rejected the 11-site tail-call family (`W06-E03`) after a real happy-path regression
   - explicitly rejected the queued `movwf` → `clrf` rewrites (`W06-E06`/`W06-E07`) after static re-audit showed they change stored values, not just flags
+- `W07-R01` accepted actions:
+  - removed the dead `ram_0x0F1..0x0FC` staging array from the
+    six-entry `cmd_dispatch_gated` flash-map block and hoisted the
+    common `0x5F` high byte directly into `ram_0x014`
+  - collapsed the four repeated `cmd_dispatch_gated` I2C write pairs
+    into a local `cmd_dispatch_gated_i2c_pair` helper while preserving
+    the original write order and `main_i2c_service_48e2` tail
+  - factored the first four delayed `send_status_burst` data writes
+    into a local `send_status_burst_postamble` helper
+  - replaced the `+0` ring-pointer materialization in both RX enqueue
+    and RX read paths with direct `0x02xx` pointer loads
+  - explicitly rejected the wrapper-inline batch (`W07-E04`) after a
+    reconnect wake regression
+  - explicitly held out the low-gain `CLRWDT` / mixed micro-optimization
+    batches (`W07-E05`, `W07-E07`) to preserve the “extremely safe
+    only” bar
 - Current accepted baseline:
-  - `used_bytes_pre_preset_b=14870`
-  - `last_used_pre_preset_b=0x4A79`
-  - `free_bytes_before_0x4C00=390`
+  - `used_bytes_pre_preset_b=14719`
+  - `last_used_pre_preset_b=0x49E1`
+  - `free_bytes_before_0x4C00=542`
 - Authoritative savings:
-  - `-279` used bytes vs `W05-R01` / `W06` launch baseline
-  - `+278` free bytes before `0x4C00` vs `W05-R01` / `W06` launch baseline
-  - `-387` used bytes vs pre-`W05` current-main baseline
-  - `+386` free bytes before `0x4C00` vs pre-`W05` current-main baseline
+  - `-151` used bytes vs `W06-R03` / `W07` launch baseline
+  - `+152` free bytes before `0x4C00` vs `W06-R03` / `W07` launch baseline
+  - `-430` used bytes vs `W05-R01`
+  - `+430` free bytes before `0x4C00` vs `W05-R01`
+  - `-538` used bytes vs pre-`W05` current-main baseline
+  - `+538` free bytes before `0x4C00` vs pre-`W05` current-main baseline
 
 ## Cumulative Action Log
 
@@ -313,6 +366,33 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 - 2026-04-11: relaxed `tests/sim/test_v31_usb_preset_ab.py::test_v31_static_remap_constants` to accept either `call` or `rcall` for that local delayed-preset helper edge while preserving the rest of the static layout assertions.
 - 2026-04-11: reran the full coordinator gate on `W06-R03` and got `86 passed, 2 skipped, 1 xfailed in 495.97s (0:08:15)`.
 - 2026-04-11: accepted `W06-R03` as the new campaign baseline.
+- 2026-04-12: launched `W07-E01..W07-E08` in isolated detached
+  worktrees under `artifacts/reanalysis/size_opt_w07/` from the exact
+  `W06-R03` baseline and remeasured every experiment in the coordinator
+  discipline.
+- 2026-04-12: assembled all eight `W07` experiments and recorded the
+  authoritative size deltas: `E01 -87`, `E02 -39`, `E03 -39`, `E04 -22`,
+  `E05 -14`, `E06 -7`, `E07 -14`, `E08 -87` bytes before Preset B.
+- 2026-04-12: smoke-tested `W07-E01`, `W07-E02`, `W07-E03`, and
+  `W07-E06`; all four returned `31 passed, 1 xfailed` with the expected
+  gpsim STOP-state `xfail`.
+- 2026-04-12: smoke-tested `W07-E04` and rejected it after a real
+  reconnect-wake regression:
+  `tests/sim/test_reconnect_wake_gate.py::test_v31_v163b_wire_chain_standby_reconnect_dsp_gate`.
+- 2026-04-12: held back `W07-E05` and `W07-E07` after assembly because
+  their 14-byte wins did not justify the remaining helper-semantics and
+  STATUS-proof burden once the larger green parents already met the
+  wave target.
+- 2026-04-12: confirmed `W07-E08` matched `W07-E01` exactly on
+  assembly and size metrics in an independent worktree.
+- 2026-04-12: built recombined `W07-R01`
+  (`W07-E01 + W07-E02 + W07-E03 + W07-E06`) in the coordinator
+  checkout, measured `used=14719`, `last_used=0x49E1`, `free=542`, and
+  passed smoke with `31 passed, 1 xfailed in 2169.14s (0:36:09)`.
+- 2026-04-12: ran the authoritative full 89-node parallel V3.1 gate on
+  `W07-R01` and got `86 passed, 2 skipped, 1 xfailed in 503.92s
+  (0:08:23)`.
+- 2026-04-12: accepted `W07-R01` as the new campaign baseline.
 
 ## Dead Code Candidate List
 
@@ -333,5 +413,6 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 - Process note (2026-04-11): `W01-E01` rejection surfaced a measurement-methodology gap. Any experiment result claiming "no binary delta" must capture `used_bytes_pre_preset_b`, `last_used_pre_preset_b`, and `free_bytes_before_0x4C00` metrics AND a `mem[0x1000..0x4BFF]` content diff — not just file-size-on-disk. See new `## Measurement Gotchas` section in `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`.
 - Process note (2026-04-11): flag-setting equivalence matters. `movlw 0x00` / `movwf F` is not semantically interchangeable with `clrf F` when downstream code can observe STATUS. `W05-E02` is the proof case; do not retry that family without explicit flag audits per site.
 - Next-wave priorities:
-  - launch `W07` execution wave from the accepted `W06-R03` baseline consisting of array-mapping elimination, local I2C helpers, wrapper inlining, and pointer-load tightening.
+  - derive `W08` from the accepted `W07-R01` baseline, keeping the same
+    coordinator-authoritative isolated-worktree discipline
   - run `W04-E03..E05` self-move sweeps as a separate batch since their validation requires specific memory-diff tooling not currently integrated in the fast-gate workflow.

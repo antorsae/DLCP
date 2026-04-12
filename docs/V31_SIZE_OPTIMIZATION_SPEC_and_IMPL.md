@@ -1,6 +1,6 @@
 # V3.1 MAIN Size Optimization Spec and Implementation Plan
 
-Date: 2026-04-11
+Date: 2026-04-12
 Status: draft
 Target source: `src/dlcp_fw/asm/dlcp_main_v31.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
@@ -62,7 +62,7 @@ observable V3.1 behavior, including:
 
 ## Full V3.1 Validation Suite
 
-As of 2026-04-11, the full V3.1 suite in this repo is 89 selected tests:
+As of 2026-04-12, the full V3.1 suite in this repo is 89 selected tests:
 9 full files plus 5 targeted nodes from 4 additional files. This was
 verified with:
 
@@ -111,8 +111,8 @@ Total: 89 selected tests
 Notes:
 
 - This is the exact full suite currently used to validate V3.1.
-- Latest clean parallel result as of 2026-04-11:
-  - `86 passed, 2 skipped, 1 xfailed in 495.97s (0:08:15)`
+- Latest clean parallel result as of 2026-04-12:
+  - `86 passed, 2 skipped, 1 xfailed in 503.92s (0:08:23)`
   - skipped nodes: `tests/sim/test_v31_usb_hid_dispatch.py:221`
     because `cmd 0x06 response not staged in RAM (no USB in gpsim)`
 - expected `xfail` node:
@@ -123,7 +123,7 @@ Notes:
   still remain part of the suite because they are part of the existing
   V3.1 validation files and help catch harness or shared-model
   regressions.
-- There is one active `xfail` node in this suite as of 2026-04-11, as
+- There is one active `xfail` node in this suite as of 2026-04-12, as
   recorded above.
 - `tests/sim/test_v31_usb_preset_ab.py::test_v31_static_remap_constants`
   now intentionally accepts either
@@ -508,3 +508,26 @@ These are checkpoint artifacts, not a termination condition.
 - 2026-04-11: Queued `W06` execution wave consisting of low-risk structure optimizations including 122 instances of `call` -> `rcall` conversion, `call`+`return 0` tail-call optimization into branches, removal of redundant `iorlw 0x00` ops, preamble extraction for `send_status_burst`, and safe flag-audited `movwf` -> `clrf` zero-materializations.
 - 2026-04-11: Accepted `W06-R03` after coordinator-only rebuild and full-gate validation. Accepted actions were the full 122-site reachable `call` -> `rcall` sweep, 4 redundant `iorlw 0x00` deletions after `rx_ring_has_data`, and the local `send_status_burst` preamble helper. Rejected actions were the 11-site tail-call family (`W06-E03`) after a real happy-path regression and the queued `movwf` -> `clrf` sites (`W06-E06` / `W06-E07`) after static re-audit showed their stored values were load-bearing booleans.
 - 2026-04-11: Queued `W07` execution wave. Target estimated size reduction: ~150-160 bytes. Features: array-mapping elimination in `cmd_dispatch_gated`, local helper for repetitive I2C payload writes, shared postamble for `send_status_burst`, pointer-load tightening in ring buffers, and several single-instruction wrapper inlinings.
+- 2026-04-12: Executed `W07` in eight isolated detached worktrees under
+  `artifacts/reanalysis/size_opt_w07/` and remeasured every experiment
+  in the coordinator checkout before any merge decision.
+- 2026-04-12: `W07-E01`, `W07-E02`, `W07-E03`, and `W07-E06` all passed
+  the established 32-node smoke gate with the expected lone wire-chain
+  STOP-state `xfail`. `W07-E04` regressed
+  `test_v31_v163b_wire_chain_standby_reconnect_dsp_gate` and was
+  rejected intact.
+- 2026-04-12: `W07-E05` and `W07-E07` assembled and saved 14 bytes each
+  but were intentionally held out because the remaining helper-semantics
+  and STATUS proof burden was not worth the gain once the larger green
+  parents already met the wave target. `W07-E08` confirmed `W07-E01`
+  exactly on size metrics in a second isolated tree.
+- 2026-04-12: Accepted `W07-R01` after coordinator-only recombination,
+  smoke, and full-gate validation. Accepted actions were direct
+  `ram_0x013/0x014` staging plus `0x5F` hoisting in
+  `cmd_dispatch_gated`, a new local `cmd_dispatch_gated_i2c_pair`
+  helper, the `send_status_burst` postamble helper, and direct `0x02xx`
+  pointer loads in the RX ring enqueue/read paths. The accepted child
+  measured `used_bytes_pre_preset_b=14719`,
+  `last_used_pre_preset_b=0x49E1`, `free_bytes_before_0x4C00=542`, then
+  passed the full 89-node gate with
+  `86 passed, 2 skipped, 1 xfailed in 503.92s (0:08:23)`.
