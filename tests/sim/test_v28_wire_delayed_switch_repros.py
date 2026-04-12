@@ -1,0 +1,337 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from dlcp_fw.paths import PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V28
+from dlcp_fw.sim.control_gpsim import _read_reg
+from dlcp_fw.sim.gpsim import gpsim_available
+from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
+
+_STATUS_5E = 0x05E
+_RX_RING_RD = 0x0C6
+_RX_RING_WR = 0x0C7
+_PRESET_B_BIT = 0x04
+_ACTIVE_BIT = 0x08
+_MUTE_BIT = 0x10
+
+_DELAYED_SWITCH_XFAIL = pytest.mark.xfail(
+    reason=(
+        "V2.8 known repro: delayed preset switch can desync CONTROL from a two-MAIN "
+        "wire chain or leave follow-up 0x03 commands ineffective"
+    ),
+    strict=True,
+)
+
+
+def _require_gpsim() -> None:
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+
+
+def _skip_missing(*paths: Path) -> None:
+    for path in paths:
+        if not path.exists():
+            pytest.skip(f"missing: {path.name}")
+
+
+def _new_v28_two_main_wire_chain(*, fast_boot: bool) -> WireMultiMainChainHarness:
+    return WireMultiMainChainHarness(
+        PATCHED_CONTROL_HEX_V163B,
+        PATCHED_MAIN_HEX_V28,
+        main_units=2,
+        fast_boot=fast_boot,
+        disable_standby_check=False,
+    )
+
+
+def _set_profile_hypex(chain: WireMultiMainChainHarness) -> None:
+    control = chain.control
+    control._issue("reg(0x020)=0x10", 5.0)
+    control._issue("reg(0x021)=0x32", 5.0)
+    control._issue("reg(0x022)=0x33", 5.0)
+    control._issue("reg(0x023)=0x34", 5.0)
+    control._issue("reg(0x024)=0x36", 5.0)
+    control._issue("reg(0x025)=0x37", 5.0)
+    control._issue("reg(0x026)=0x35", 5.0)
+
+
+def _main_status(chain: WireMultiMainChainHarness, index: int) -> int:
+    return _read_reg(chain.mains[index]._issue, _STATUS_5E)
+
+
+def _main_preset(chain: WireMultiMainChainHarness, index: int) -> int:
+    return 1 if (_main_status(chain, index) & _PRESET_B_BIT) else 0
+
+
+def _main_active(chain: WireMultiMainChainHarness, index: int) -> bool:
+    return bool(_main_status(chain, index) & _ACTIVE_BIT)
+
+
+def _main_muted(chain: WireMultiMainChainHarness, index: int) -> bool:
+    return bool(_main_status(chain, index) & _MUTE_BIT)
+
+
+def _main_debug_state(chain: WireMultiMainChainHarness, index: int) -> str:
+    status = _main_status(chain, index)
+    rx_rd = _read_reg(chain.mains[index]._issue, _RX_RING_RD)
+    rx_wr = _read_reg(chain.mains[index]._issue, _RX_RING_WR)
+    return (
+        f"main{index}(status_5e=0x{status:02X}, preset={1 if (status & _PRESET_B_BIT) else 0}, "
+        f"active={int(bool(status & _ACTIVE_BIT))}, muted={int(bool(status & _MUTE_BIT))}, "
+        f"rx_rd=0x{rx_rd:02X}, rx_wr=0x{rx_wr:02X})"
+    )
+
+
+def _assert_all_mains_preset(chain: WireMultiMainChainHarness, expected: int) -> None:
+    actual = [_main_preset(chain, idx) for idx in range(len(chain.mains))]
+    assert actual == [expected] * len(chain.mains), (
+        f"MAIN preset mismatch: expected {[expected] * len(chain.mains)}, got {actual}; "
+        f"lcd={chain.lcd_lines()!r}; "
+        f"states={[ _main_debug_state(chain, idx) for idx in range(len(chain.mains)) ]}"
+    )
+
+
+def _assert_all_mains_active(chain: WireMultiMainChainHarness, expected: bool) -> None:
+    actual = [_main_active(chain, idx) for idx in range(len(chain.mains))]
+    assert actual == [expected] * len(chain.mains), (
+        f"MAIN active mismatch: expected {[expected] * len(chain.mains)}, got {actual}; "
+        f"lcd={chain.lcd_lines()!r}; "
+        f"states={[ _main_debug_state(chain, idx) for idx in range(len(chain.mains)) ]}"
+    )
+
+
+def _assert_all_mains_muted(chain: WireMultiMainChainHarness, expected: bool) -> None:
+    actual = [_main_muted(chain, idx) for idx in range(len(chain.mains))]
+    assert actual == [expected] * len(chain.mains), (
+        f"MAIN mute mismatch: expected {[expected] * len(chain.mains)}, got {actual}; "
+        f"lcd={chain.lcd_lines()!r}; "
+        f"states={[ _main_debug_state(chain, idx) for idx in range(len(chain.mains)) ]}"
+    )
+
+
+def _step_without_waiting(
+    chain: WireMultiMainChainHarness,
+    *,
+    steps: int,
+    context: str,
+):
+    last = None
+    for _ in range(steps):
+        last = chain.step()
+        assert not chain.is_waiting(), (
+            f"CONTROL entered WAITING during {context}: lcd={last.lcd!r}"
+        )
+    return last
+
+
+def _toggle_mute_and_assert(
+    chain: WireMultiMainChainHarness,
+    *,
+    expected_muted: bool,
+    limit: int = 20,
+) -> None:
+    chain.press("S")
+    for _ in range(limit):
+        _step_without_waiting(chain, steps=1, context="mute toggle")
+        actual = [_main_muted(chain, idx) for idx in range(len(chain.mains))]
+        if actual == [expected_muted] * len(chain.mains):
+            return
+    pytest.fail(
+        f"mute toggle did not settle to {expected_muted} within {limit} steps; "
+        f"actual={[ _main_muted(chain, idx) for idx in range(len(chain.mains)) ]} "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+
+
+def _enter_standby(chain: WireMultiMainChainHarness, *, limit: int = 30) -> None:
+    chain.press("STBY")
+    for _ in range(limit):
+        chain.step()
+        if "ZZZ" in chain.lcd_lines()[0].upper():
+            return
+    pytest.fail(f"chain did not enter standby within {limit} steps; lcd={chain.lcd_lines()!r}")
+
+
+def _wake_and_reconnect(chain: WireMultiMainChainHarness, *, limit: int = 120):
+    chain.press("STBY")
+    last = chain.run_until_connected(limit=limit)
+    assert last is not None, "chain produced no steps while waiting to reconnect"
+    assert chain.is_connected(), f"chain never reconnected: lcd={last.lcd!r}"
+    assert not chain.is_waiting(), f"chain stayed in WAITING after wake: lcd={last.lcd!r}"
+    _assert_all_mains_active(chain, True)
+    return last
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@_DELAYED_SWITCH_XFAIL
+def test_v28_wire_two_main_rapid_ir_f1_f2_preserves_followup_mute() -> None:
+    _require_gpsim()
+    _skip_missing(PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V28)
+
+    chain = _new_v28_two_main_wire_chain(fast_boot=True)
+    try:
+        last = chain.run_until_connected(limit=100)
+        assert last is not None, "two-main wire chain never reached DISPLAY"
+        _set_profile_hypex(chain)
+
+        rapid_ir = [0x39, 0x38] * 4 + [0x39]
+        for cmd in rapid_ir:
+            chain.control.inject_decoded_ir_event(cmd=cmd, addr=0x10, steps=1)
+            _step_without_waiting(chain, steps=2, context="rapid preset toggle")
+
+        _step_without_waiting(chain, steps=80, context="rapid preset drain")
+        _assert_all_mains_preset(chain, 1)
+
+        _toggle_mute_and_assert(chain, expected_muted=True)
+        _toggle_mute_and_assert(chain, expected_muted=False)
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@_DELAYED_SWITCH_XFAIL
+def test_v28_wire_two_main_interleaved_mute_during_delayed_switch_preserves_state() -> None:
+    _require_gpsim()
+    _skip_missing(PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V28)
+
+    chain = _new_v28_two_main_wire_chain(fast_boot=True)
+    try:
+        last = chain.run_until_connected(limit=100)
+        assert last is not None, "two-main wire chain never reached DISPLAY"
+        _set_profile_hypex(chain)
+
+        chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
+        chain.press("S")
+
+        _step_without_waiting(chain, steps=30, context="preset switch + mute on")
+        _assert_all_mains_preset(chain, 1)
+        _assert_all_mains_muted(chain, True)
+
+        _toggle_mute_and_assert(chain, expected_muted=False)
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@_DELAYED_SWITCH_XFAIL
+def test_v28_wire_two_main_interleaved_standby_during_delayed_switch_reconnects_cleanly() -> None:
+    _require_gpsim()
+    _skip_missing(PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V28)
+
+    chain = _new_v28_two_main_wire_chain(fast_boot=False)
+    try:
+        last = chain.run_until_connected(limit=100)
+        assert last is not None, "two-main wire chain never reached DISPLAY"
+        _set_profile_hypex(chain)
+
+        chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
+        _enter_standby(chain)
+
+        _wake_and_reconnect(chain)
+        _assert_all_mains_preset(chain, 1)
+
+        _toggle_mute_and_assert(chain, expected_muted=True)
+        _toggle_mute_and_assert(chain, expected_muted=False)
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@_DELAYED_SWITCH_XFAIL
+def test_v28_wire_two_main_stop_fault_during_delayed_switch_recovers() -> None:
+    _require_gpsim()
+    _skip_missing(PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V28)
+
+    chain = _new_v28_two_main_wire_chain(fast_boot=False)
+    try:
+        last = chain.run_until_connected(limit=100)
+        assert last is not None, "two-main wire chain never reached DISPLAY"
+        _set_profile_hypex(chain)
+
+        ring_before = (
+            _read_reg(chain.mains[0]._issue, _RX_RING_RD),
+            _read_reg(chain.mains[0]._issue, _RX_RING_WR),
+        )
+
+        chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
+        chain.set_main_mssp_stop_fault(main_index=0, stop_busy_cycles=5_000_000, stop_busy_count=-1)
+        chain.step_many(30)
+
+        ring_after_fault = (
+            _read_reg(chain.mains[0]._issue, _RX_RING_RD),
+            _read_reg(chain.mains[0]._issue, _RX_RING_WR),
+        )
+
+        chain.clear_main_mssp_stop_faults(main_index=0)
+        try:
+            chain.mains[0]._issue("p18f2455.sspcon2 = 0", 5.0)
+        except Exception:
+            pass
+
+        recovered = chain.run_until_connected(limit=120)
+        assert recovered is not None, (
+            "chain produced no steps after delayed-switch STOP fault clear; "
+            f"ring_before={ring_before} ring_after_fault={ring_after_fault}"
+        )
+        assert chain.is_connected(), (
+            "chain never recovered after delayed-switch STOP fault; "
+            f"lcd={recovered.lcd!r} ring_before={ring_before} "
+            f"ring_after_fault={ring_after_fault}"
+        )
+        assert not chain.is_waiting(), (
+            "chain stayed in WAITING after delayed-switch STOP fault clear; "
+            f"lcd={recovered.lcd!r} ring_before={ring_before} "
+            f"ring_after_fault={ring_after_fault}"
+        )
+        _assert_all_mains_preset(chain, 1)
+
+        _toggle_mute_and_assert(chain, expected_muted=True)
+        _toggle_mute_and_assert(chain, expected_muted=False)
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@_DELAYED_SWITCH_XFAIL
+def test_v28_wire_two_main_preset_soak_under_reconnect_and_full_sync_keeps_both_mains_responsive() -> None:
+    _require_gpsim()
+    _skip_missing(PATCHED_CONTROL_HEX_V163B, PATCHED_MAIN_HEX_V28)
+
+    chain = _new_v28_two_main_wire_chain(fast_boot=False)
+    try:
+        last = chain.run_until_connected(limit=100)
+        assert last is not None, "two-main wire chain never reached DISPLAY"
+        _set_profile_hypex(chain)
+
+        for cycle, cmd in enumerate((0x39, 0x38, 0x39), start=1):
+            target_preset = 1 if cmd == 0x39 else 0
+            chain.control.inject_decoded_ir_event(cmd=cmd, addr=0x10, steps=1)
+            _step_without_waiting(
+                chain,
+                steps=40,
+                context=f"preset soak cycle {cycle} switch",
+            )
+            _assert_all_mains_preset(chain, target_preset)
+            _toggle_mute_and_assert(chain, expected_muted=True)
+            _toggle_mute_and_assert(chain, expected_muted=False)
+
+            _enter_standby(chain)
+            _wake_and_reconnect(chain)
+            _assert_all_mains_preset(chain, target_preset)
+
+            _step_without_waiting(
+                chain,
+                steps=40,
+                context=f"preset soak cycle {cycle} post-reconnect full-sync drain",
+            )
+            _toggle_mute_and_assert(chain, expected_muted=True)
+            _toggle_mute_and_assert(chain, expected_muted=False)
+    finally:
+        chain.close()

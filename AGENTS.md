@@ -148,7 +148,7 @@ Regenerate after any semantic map update: `python3 scripts/annotate_disasm.py`
 ### Dumps and references
 
 - Dumps: `firmware/dumps/{firmware.bin,code_only.bin,eeprom.bin,dlcp_flash_0800_7fff.bin,dlcp_probe_1000.bin}`
-- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md}`
+- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,dlcp.md,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md}`
   - For the PIC18F2455 datasheet, `39632e.pdf` is authoritative. Use `39632e.md` as the line-stable converted companion for repo citations.
   - For the TAS3108 datasheet, `tas3108.pdf` is authoritative. Use `tas3108.md` as the line-stable converted companion when repo citations are needed.
 
@@ -243,7 +243,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite (83 test files, 644 tests collected):
+Current suite (84 test files, 649 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -265,6 +265,7 @@ Wire-chain/multi-PB:
 - `test_wire_chain_gpsim_stock_faults.py` (stock fault injection)
 - `test_wire_chain_gpsim_i2c_faults.py` (I2C wake characterization)
 - `test_wire_chain_gpsim_internal_faults.py` (internal-fault wake characterization)
+- `test_v28_wire_delayed_switch_repros.py` (two-MAIN delayed-switch desync, mute/standby interleave, START/STOP fault, and soak repros)
 - `test_gpsim_multi_processor_uart_topology.py` (multi-processor UART)
 
 Main behavior:
@@ -327,13 +328,14 @@ Version labels:
 
 Recent verification (2026-04-11):
 
-- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `644 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `649 tests collected`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_control_flash_safety.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `10 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_loop.py` -> `12 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_main_gpsim_portability.py tests/sim/test_v31_patch_builders.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_bake_preset_capture.py tests/sim/test_v31_diag_memread_usb_safe.py` -> `4 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v28_wire_delayed_switch_repros.py` -> `5 xfailed`
 
 V3.1-only gate (80 tests, ~8 min):
 
