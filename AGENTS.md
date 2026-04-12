@@ -243,7 +243,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite (77 test files, 644 tests collected):
+Current suite (83 test files, 644 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -446,6 +446,7 @@ cd artifacts/tools/gpsim-xtc/build
 env CPPFLAGS=-I/opt/homebrew/include LDFLAGS=-L/opt/homebrew/lib \
   ../../../../vendor/gpsim-0.32.1-xtc/configure --disable-gui
 make -C src -j4 libgpsim.la
+make -C modules -j4 libgpsim_modules.la
 make -C gpsim gpsim
 ```
 
@@ -460,6 +461,37 @@ Run full test gate (gpsim-inclusive, parallel):
 
 ```bash
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
+```
+
+Branch/worktree workflow:
+
+```bash
+git worktree add ../analysis-<topic> -b feature/<topic> HEAD
+cd ../analysis-<topic>
+git branch --show-current
+git status --short
+```
+
+Recommended shell environment for repo-local gpsim in any worktree:
+
+```bash
+export PATH="$(pwd)/scripts:$PATH"
+export DLCP_GPSIM_BIN="$(pwd)/scripts/gpsim-xtc"
+```
+
+Notes:
+
+- `src/dlcp_fw/sim/gpsim.py` resolves gpsim in this order:
+  - `DLCP_GPSIM_BIN`
+  - `GPSIM_BIN`
+  - repo wrapper `scripts/gpsim-xtc`
+  - `gpsim-xtc` / `gpsim` on `PATH`
+- Prefer the repo wrapper `scripts/gpsim-xtc` or `DLCP_GPSIM_BIN="$(pwd)/scripts/gpsim-xtc"` over the system `gpsim`.
+- `scripts/gpsim-xtc` automatically exports `GPSIM_MODULE_PATH` to `artifacts/tools/gpsim-xtc/build/modules/.libs`.
+- If you bypass the wrapper and invoke the built binary directly, export:
+
+```bash
+export GPSIM_MODULE_PATH="$(pwd)/artifacts/tools/gpsim-xtc/build/modules/.libs${GPSIM_MODULE_PATH:+:$GPSIM_MODULE_PATH}"
 ```
 
 Safe control flash preflight/live:
