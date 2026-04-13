@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-12
+Last updated: 2026-04-13
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -475,26 +475,48 @@ git branch --show-current
 git status --short
 ```
 
-Recommended shell environment for repo-local gpsim in any worktree:
+Worktree shared-artifact setup:
 
 ```bash
-export PATH="$(pwd)/scripts:$PATH"
-export DLCP_GPSIM_BIN="$(pwd)/scripts/gpsim-xtc"
+export DLCP_WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
+export DLCP_TOOLS_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+
+mkdir -p "$DLCP_WORKTREE_ROOT/artifacts"
+if [ -e "$DLCP_WORKTREE_ROOT/artifacts/LX521.4" ] && [ ! -L "$DLCP_WORKTREE_ROOT/artifacts/LX521.4" ]; then
+  echo "Expected worktree artifacts/LX521.4 to be absent or a symlink; fix manually before continuing." >&2
+  exit 1
+fi
+ln -sfn "$DLCP_TOOLS_ROOT/artifacts/LX521.4" "$DLCP_WORKTREE_ROOT/artifacts/LX521.4"
+```
+
+Recommended shell environment in any worktree:
+
+```bash
+export DLCP_WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
+export DLCP_TOOLS_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+
+export DLCP_PYTHON="$DLCP_TOOLS_ROOT/.venv_ep0/bin/python"
+export DLCP_GPSIM_BIN="$DLCP_TOOLS_ROOT/scripts/gpsim-xtc"
+export PATH="$DLCP_WORKTREE_ROOT/scripts:$PATH"
 ```
 
 Notes:
 
+- `DLCP_WORKTREE_ROOT` is the active checkout/worktree you are editing.
+- `DLCP_TOOLS_ROOT` is the checkout that owns the shared `.venv_ep0` and compiled local `gpsim`. In the main checkout it resolves to the same directory as `DLCP_WORKTREE_ROOT`; in linked worktrees it resolves to the shared/base checkout.
+- New worktrees should expose `artifacts/LX521.4` as a symlink to `"$DLCP_TOOLS_ROOT/artifacts/LX521.4"` so they reuse the base checkout artifact tree.
+- Prefer `"$DLCP_PYTHON"` over guessing whether `.venv_ep0` exists inside the current worktree.
 - `src/dlcp_fw/sim/gpsim.py` resolves gpsim in this order:
   - `DLCP_GPSIM_BIN`
   - `GPSIM_BIN`
   - repo wrapper `scripts/gpsim-xtc`
   - `gpsim-xtc` / `gpsim` on `PATH`
-- Prefer the repo wrapper `scripts/gpsim-xtc` or `DLCP_GPSIM_BIN="$(pwd)/scripts/gpsim-xtc"` over the system `gpsim`.
-- `scripts/gpsim-xtc` automatically exports `GPSIM_MODULE_PATH` to `artifacts/tools/gpsim-xtc/build/modules/.libs`.
+- Prefer the shared wrapper `"$DLCP_GPSIM_BIN"` over the system `gpsim`.
+- `"$DLCP_GPSIM_BIN"` points to `scripts/gpsim-xtc`, which automatically exports `GPSIM_MODULE_PATH` to the matching `artifacts/tools/gpsim-xtc/build/modules/.libs`.
 - If you bypass the wrapper and invoke the built binary directly, export:
 
 ```bash
-export GPSIM_MODULE_PATH="$(pwd)/artifacts/tools/gpsim-xtc/build/modules/.libs${GPSIM_MODULE_PATH:+:$GPSIM_MODULE_PATH}"
+export GPSIM_MODULE_PATH="$DLCP_TOOLS_ROOT/artifacts/tools/gpsim-xtc/build/modules/.libs${GPSIM_MODULE_PATH:+:$GPSIM_MODULE_PATH}"
 ```
 
 Safe control flash preflight/live:
