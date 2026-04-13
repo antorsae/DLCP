@@ -26,6 +26,7 @@ from dlcp_fw.paths import (
     STOCK_MAIN_HEX,
     V30_MAIN_HEX,
     V31_MAIN_HEX,
+    V32_MAIN_HEX,
 )
 
 if GPSIM_XTC_BIN_DIR.exists():

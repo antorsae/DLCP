@@ -20,6 +20,7 @@ import pytest
 from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V163B,
     V31_MAIN_HEX,
+    V32_MAIN_HEX,
 )
 from dlcp_fw.sim.chain_gpsim import MainChainHarness
 from dlcp_fw.sim.control_gpsim import _read_reg
@@ -381,6 +382,92 @@ def test_main_pen_timeout_recovers() -> None:
         assert len(diff) > 0, (
             "DSP path broken after PEN timeout — V3.1 should recover "
             "from stuck STOP condition via bounded PEN wait + bus-clear"
+        )
+
+    finally:
+        harness.close()
+
+
+# -----------------------------------------------------------------------
+# V3.2 robustness regression — same scenarios, async preset job baseline
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_main_bus_clear_recovers_after_mssp_stop_fault() -> None:
+    """V3.2 preserves bus-clear recovery after MSSP STOP fault cascade."""
+    _require_gpsim()
+    _skip_missing(V32_MAIN_HEX)
+
+    harness = _new_main_harness(V32_MAIN_HEX)
+    try:
+        _boot_and_activate(harness)
+
+        snap_a = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        assert len(_dsp34_diff(snap_a, _dsp34_snapshot(harness))) > 0, "baseline broken"
+
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+        for _ in range(30):
+            harness.step()
+
+        harness.clear_mssp_stop_faults()
+        for _ in range(15):
+            harness.step()
+
+        snap_b = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        diff_recovery = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
+
+        assert len(diff_recovery) > 0, (
+            "V3.2 DSP path not recovered after MSSP STOP cascade"
+        )
+
+    finally:
+        harness.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_main_pen_timeout_recovers() -> None:
+    """V3.2 preserves PEN timeout recovery from stuck STOP condition."""
+    _require_gpsim()
+    _skip_missing(V32_MAIN_HEX)
+
+    harness = _new_main_harness(V32_MAIN_HEX)
+    try:
+        _boot_and_activate(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+
+        harness.set_mssp_stop_fault(stop_busy_cycles=50_000_000, stop_busy_count=1)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+        for _ in range(10):
+            harness.step()
+
+        harness.clear_mssp_stop_faults()
+        try:
+            harness._issue("p18f2455.sspcon2 = 0", 5.0)
+        except Exception:
+            pass
+        for _ in range(5):
+            harness.step()
+
+        snap = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+        for _ in range(30):
+            harness.step()
+        diff = _dsp34_diff(snap, _dsp34_snapshot(harness))
+
+        assert len(diff) > 0, (
+            "V3.2 DSP path broken after PEN timeout"
         )
 
     finally:
