@@ -387,6 +387,82 @@ def _wait_preset_job_idle(
     )
 
 
+def _wait_main_preset_job_state(
+    chain: WireMultiMainChainHarness,
+    *,
+    main_index: int,
+    expected_state: int,
+    limit: int = 120,
+    context: str,
+) -> None:
+    for _ in range(limit):
+        _step_without_waiting(chain, steps=1, context=context)
+        if _read_reg(chain.mains[main_index]._issue, _PRESET_JOB_STATE) == expected_state:
+            return
+    pytest.fail(
+        f"main{main_index} preset job did not reach state {expected_state} within {limit} steps; "
+        f"state=0x{_read_reg(chain.mains[main_index]._issue, _PRESET_JOB_STATE):02X} "
+        f"lcd={chain.lcd_lines()!r} "
+        f"debug={[_main_debug_state(chain, idx) for idx in range(len(chain.mains))]}"
+    )
+
+
+def _switch_to_preset_b_via_public_keys(chain: WireMultiMainChainHarness) -> None:
+    chain.press("R")
+    _step_without_waiting(chain, steps=1, context="enter preset screen")
+    chain.press("D")
+    _step_without_waiting(chain, steps=2, context="front-panel preset B select")
+
+
+def _return_to_volume_screen(chain: WireMultiMainChainHarness, *, limit: int = 12) -> None:
+    chain.press("L")
+    for _ in range(limit):
+        _step_without_waiting(chain, steps=1, context="return to volume screen")
+        if chain.lcd_lines()[0].startswith("Volume:"):
+            return
+    pytest.fail(f"control did not return to volume screen within {limit} steps; lcd={chain.lcd_lines()!r}")
+
+
+def _press_mute_and_assert_delivery(
+    chain: WireMultiMainChainHarness,
+    *,
+    limit: int = 12,
+) -> None:
+    before_control = len(chain.control.tx_frames())
+    before_rx = [
+        (
+            _read_reg(chain.mains[idx]._issue, _RX_RING_RD),
+            _read_reg(chain.mains[idx]._issue, _RX_RING_WR),
+        )
+        for idx in range(len(chain.mains))
+    ]
+    chain.press("S")
+    for _ in range(limit):
+        _step_without_waiting(chain, steps=1, context="mute traffic delivery")
+        new_frames = chain.control.tx_frames()[before_control:]
+        saw_mute_cmd = any(
+            f.route == 0xB0 and f.cmd == 0x03 and f.data in {0x02, 0x03}
+            for f in new_frames
+        )
+        after_rx = [
+            (
+                _read_reg(chain.mains[idx]._issue, _RX_RING_RD),
+                _read_reg(chain.mains[idx]._issue, _RX_RING_WR),
+            )
+            for idx in range(len(chain.mains))
+        ]
+        delivered = all(after_rx[idx] != before_rx[idx] for idx in range(len(chain.mains)))
+        if saw_mute_cmd and delivered:
+            return
+    pytest.fail(
+        "mute traffic did not reach both MAINs within "
+        f"{limit} steps; lcd={chain.lcd_lines()!r} "
+        f"control={[ (f.route, f.cmd, f.data) for f in chain.control.tx_frames()[before_control:] ]} "
+        f"rx_before={before_rx} "
+        f"rx_after={[(_read_reg(chain.mains[idx]._issue, _RX_RING_RD), _read_reg(chain.mains[idx]._issue, _RX_RING_WR)) for idx in range(len(chain.mains))]}"
+    )
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_wire_two_main_rapid_ir_f1_f2_preserves_followup_mute() -> None:
@@ -468,7 +544,6 @@ def test_v32_wire_two_main_interleaved_standby_during_delayed_switch_reconnects_
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-@_GPSIM_KEY_SCAN_XFAIL
 def test_v32_wire_two_main_stop_fault_during_delayed_switch_recovers() -> None:
     _require_gpsim()
     _skip_missing(PATCHED_CONTROL_HEX_V163B, V32_MAIN_HEX)
@@ -479,26 +554,36 @@ def test_v32_wire_two_main_stop_fault_during_delayed_switch_recovers() -> None:
         assert last is not None, "two-main wire chain never reached DISPLAY"
         _set_profile_hypex(chain)
 
+        _switch_to_preset_b_via_public_keys(chain)
+        _wait_main_preset_job_state(
+            chain,
+            main_index=0,
+            expected_state=0x03,
+            limit=120,
+            context="wait for main0 async apply",
+        )
+        apply_index_before_fault = _read_reg(chain.mains[0]._issue, 0x2E0)
+
         ring_before = (
             _read_reg(chain.mains[0]._issue, _RX_RING_RD),
             _read_reg(chain.mains[0]._issue, _RX_RING_WR),
         )
 
-        chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
-        _step_without_waiting(chain, steps=2, context="bridge IR to MAINs")
         chain.set_main_mssp_stop_fault(main_index=0, stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        chain.step_many(30)
+        chain.step_many(3)
 
         ring_after_fault = (
             _read_reg(chain.mains[0]._issue, _RX_RING_RD),
             _read_reg(chain.mains[0]._issue, _RX_RING_WR),
         )
+        assert _read_reg(chain.mains[0]._issue, _PRESET_JOB_STATE) == 0x03, (
+            "main0 left APPLY during persistent STOP fault instead of keeping the job retryable"
+        )
+        assert _read_reg(chain.mains[0]._issue, 0x2E0) == apply_index_before_fault, (
+            "main0 advanced the async preset-table index during the early STOP-timeout window"
+        )
 
         chain.clear_main_mssp_stop_faults(main_index=0)
-        try:
-            chain.mains[0]._issue("p18f2455.sspcon2 = 0", 5.0)
-        except Exception:
-            pass
 
         recovered = chain.run_until_connected(limit=120)
         assert recovered is not None, (
@@ -515,11 +600,14 @@ def test_v32_wire_two_main_stop_fault_during_delayed_switch_recovers() -> None:
             f"lcd={recovered.lcd!r} ring_before={ring_before} "
             f"ring_after_fault={ring_after_fault}"
         )
+        _wait_preset_job_idle(chain, limit=180, context="post-fault preset recovery")
         _assert_all_mains_preset(chain, 1)
+        _return_to_volume_screen(chain)
 
-
-        _toggle_mute_and_assert(chain, expected_muted=True)
-        _toggle_mute_and_assert(chain, expected_muted=False)
+        _press_mute_and_assert_delivery(chain)
+        _enter_standby(chain)
+        _wake_and_reconnect(chain)
+        _assert_all_mains_preset(chain, 1)
     finally:
         chain.close()
 

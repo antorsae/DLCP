@@ -502,8 +502,7 @@ class MainChainHarness:
             )
         if hold_scl_low is not None:
             raise RuntimeError(
-                "Hold_SCL_Low is not exposed through the chain harness yet; "
-                "use address_stretch_scl_cycles or stretch_scl_cycles"
+                "runtime Hold_SCL_Low toggling is not supported by the current gpsim build"
             )
         if stretch_scl_cycles is not None:
             self._issue(

@@ -7918,6 +7918,86 @@ vol_retry_ok:
     return      0                           ; dirty bit stays: main loop retries
 
 ; ---------------------------------------------------------------------------
+; Async Preset APPLY Helpers (V3.2 only)
+; Notes   : Keep legacy main_i2c_service_381c contract untouched.
+;           Return with C=0 on success, C=1 on bounded START/STOP timeout.
+; ---------------------------------------------------------------------------
+preset_job_apply_i2c_recover:
+    movlw       0x80                        ; restore stock SSPSTAT SMP state
+    movwf       ram_0x003, ACCESS
+    movlw       0x08                        ; SSPM master bits (SSPEN re-set in helper)
+    call        mssp_hard_reset, 0x0
+    rcall       i2c_bus_clear
+    movlb       0x0                         ; dsp_ping touches BANKED fault flags
+    rcall       dsp_ping
+    bsf         STATUS, 0, ACCESS           ; C=1: caller retries same table entry
+    return      0
+
+preset_job_apply_i2c_entry:
+    movff       ram_0x013, ram_0x003
+    movff       ram_0x014, ram_0x004
+    clrf        ram_0x005, ACCESS
+    clrf        ram_0x006, ACCESS
+    clrf        ram_0x008, ACCESS
+    movlw       0x04
+    movwf       ram_0x007, ACCESS
+    clrf        ram_0x00A, ACCESS
+    movlw       0x17
+    movwf       ram_0x009, ACCESS
+    call        flash_read, 0x0
+    movff       ram_0x018, ram_0x02F
+    movff       ram_0x019, ram_0x031
+    movlw       0x19
+    subwf       ram_0x031, W, ACCESS
+    bc          preset_job_apply_i2c_done
+    movlw       0x04
+    addwf       ram_0x013, W, ACCESS
+    movwf       ram_0x015, ACCESS
+    movlw       0x00
+    addwfc      ram_0x014, W, ACCESS
+    movwf       ram_0x016, ACCESS
+    movff       ram_0x015, ram_0x003
+    movff       ram_0x016, ram_0x004
+    clrf        ram_0x005, ACCESS
+    clrf        ram_0x006, ACCESS
+    movff       ram_0x031, ram_0x007
+    clrf        ram_0x008, ACCESS
+    clrf        ram_0x00A, ACCESS
+    movlw       0x17
+    movwf       ram_0x009, ACCESS
+    call        flash_read, 0x0
+    bsf         SSPCON2, 0, ACCESS
+    rcall       wait_sen_bounded
+    bc          preset_job_apply_i2c_timeout
+    movlw       0x68
+    call        i2c_byte_tx, 0x0
+    movf        ram_0x02F, W, ACCESS
+    call        i2c_byte_tx, 0x0
+    clrf        ram_0x030, ACCESS
+    bra         preset_job_apply_i2c_loop_check
+preset_job_apply_i2c_loop:
+    movf        ram_0x030, W, ACCESS
+    addlw       0x17
+    movwf       FSR2L, ACCESS
+    clrf        FSR2H, ACCESS
+    movf        INDF2, W, ACCESS
+    call        i2c_byte_tx, 0x0
+    incf        ram_0x030, F, ACCESS
+preset_job_apply_i2c_loop_check:
+    movf        ram_0x031, W, ACCESS
+    subwf       ram_0x030, W, ACCESS
+    bnc         preset_job_apply_i2c_loop
+    bsf         SSPCON2, 2, ACCESS
+    rcall       wait_pen_bounded
+    bc          preset_job_apply_i2c_timeout
+preset_job_apply_i2c_done:
+    bcf         STATUS, 0, ACCESS           ; C=0: success / benign no-op
+    return      0
+preset_job_apply_i2c_timeout:
+    rcall       preset_job_apply_i2c_recover
+    return      0
+
+; ---------------------------------------------------------------------------
 ; Preset Select Handler (V3.2 non-blocking — cmd=0x20)
 ; Parser entry: record target preset and start/coalesce the async preset job.
 ; Actual work is done by preset_job_service from the main loop.
@@ -8108,7 +8188,8 @@ preset_job_apply:
     ; Apply regular entry from tracked address
     movff       preset_job_tbl_lo, ram_0x013
     movff       preset_job_tbl_hi, ram_0x014
-    call        main_i2c_service_381c, 0x0
+    call        preset_job_apply_i2c_entry, 0x0
+    bc          preset_job_apply_retry      ; timeout: retry same entry next pass
 
     ; Advance address by 0x18 and increment index
     movlb       0x2
@@ -8119,12 +8200,17 @@ preset_job_apply:
     incf        preset_job_index, F, BANKED
     return      0
 
+preset_job_apply_retry:
+    movlb       0x2
+    return      0
+
 preset_job_apply_final:
     ; Final entry at flash address 0x5F00
     clrf        ram_0x013, ACCESS
     movlw       0x5F
     movwf       ram_0x014, ACCESS
-    call        main_i2c_service_381c, 0x0
+    call        preset_job_apply_i2c_entry, 0x0
+    bc          preset_job_apply_retry      ; timeout: stay in APPLY, keep final entry pending
 
     ; Advance to COMMIT
     movlb       0x2

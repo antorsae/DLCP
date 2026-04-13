@@ -33,6 +33,10 @@ _STATUS_5E = 0x05E
 _FLAGS_7E = 0x07E
 _FLAGS_7F = 0x07F
 _VOLUME_REG = 0x06E
+_PRESET_B_BIT = 0x04
+_PRESET_JOB_STATE = 0x2DE
+_PRESET_JOB_TARGET = 0x2DF
+_PRESET_JOB_INDEX = 0x2E0
 _DSP_FAULT_BIT = 6  # 0x07F.bit6: persistent DSP fault
 
 
@@ -82,6 +86,36 @@ def _force_clear_sspcon2(harness: MainChainHarness) -> None:
         harness._issue("p18f2455.sspcon2 = 0", 5.0)
     except Exception:
         pass
+
+
+def _inject_main_frame(harness: MainChainHarness, *, cmd: int, data: int) -> None:
+    delivered, overruns = harness.inject_frames_fifo([[0xB0, cmd, data]], fifo_limit=47)
+    assert delivered == 3 and overruns == 0, (
+        f"failed to inject MAIN frame B0/{cmd:02X}/{data:02X}: "
+        f"delivered={delivered} overruns={overruns}"
+    )
+
+
+def _wait_for_preset_job_state(
+    harness: MainChainHarness,
+    expected_state: int,
+    *,
+    limit: int = 160,
+) -> None:
+    for _ in range(limit):
+        harness.step()
+        if _read_reg(harness._issue, _PRESET_JOB_STATE) == expected_state:
+            return
+    raise AssertionError(
+        f"preset job did not reach state {expected_state} within {limit} steps: "
+        f"state=0x{_read_reg(harness._issue, _PRESET_JOB_STATE):02X} "
+        f"index=0x{_read_reg(harness._issue, _PRESET_JOB_INDEX):02X} "
+        f"target=0x{_read_reg(harness._issue, _PRESET_JOB_TARGET):02X}"
+    )
+
+
+def _wait_for_preset_job_idle(harness: MainChainHarness, *, limit: int = 320) -> None:
+    _wait_for_preset_job_state(harness, 0x00, limit=limit)
 
 
 # -----------------------------------------------------------------------
@@ -470,5 +504,101 @@ def test_v32_main_pen_timeout_recovers() -> None:
             "V3.2 DSP path broken after PEN timeout"
         )
 
+    finally:
+        harness.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_async_apply_stop_timeout_keeps_main_loop_responsive() -> None:
+    """A stuck STOP during async APPLY must return to the main loop."""
+    _require_gpsim()
+    _skip_missing(V32_MAIN_HEX)
+
+    harness = _new_main_harness(V32_MAIN_HEX)
+    try:
+        _boot_and_activate(harness)
+        _inject_main_frame(harness, cmd=0x20, data=0x01)
+        _wait_for_preset_job_state(harness, 0x03)
+        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
+            "async APPLY advanced past the first table entry before the STOP fault test armed"
+        )
+
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
+        _inject_main_frame(harness, cmd=0x20, data=0x00)
+        for _ in range(8):
+            harness.step()
+
+        assert _read_reg(harness._issue, _PRESET_JOB_STATE) == 0x03, (
+            "async APPLY left retryable state during persistent STOP fault"
+        )
+        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
+            "async APPLY advanced the table index during STOP timeout"
+        )
+        assert _read_reg(harness._issue, _PRESET_JOB_TARGET) == 0x00, (
+            "follow-up preset command was not consumed while STOP fault was active; "
+            "the APPLY path likely wedged instead of returning to the main loop"
+        )
+    finally:
+        harness.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_async_apply_stop_timeout_does_not_advance_index() -> None:
+    """A timed-out APPLY entry must stay queued until the fault clears."""
+    _require_gpsim()
+    _skip_missing(V32_MAIN_HEX)
+
+    harness = _new_main_harness(V32_MAIN_HEX)
+    try:
+        _boot_and_activate(harness)
+        _inject_main_frame(harness, cmd=0x20, data=0x01)
+        _wait_for_preset_job_state(harness, 0x03)
+
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
+        index_before = _read_reg(harness._issue, _PRESET_JOB_INDEX)
+        for _ in range(12):
+            harness.step()
+
+        assert index_before == 0x00, "test setup expected the first APPLY entry to be pending"
+        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == index_before, (
+            "async APPLY index advanced while STOP timeout recovery was still retrying"
+        )
+        assert _read_reg(harness._issue, _PRESET_JOB_STATE) == 0x03, (
+            "async APPLY left state 3 during a retryable STOP timeout"
+        )
+    finally:
+        harness.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_async_apply_stop_timeout_recovers_and_completes() -> None:
+    """Clearing a STOP fault must let the same async APPLY job finish cleanly."""
+    _require_gpsim()
+    _skip_missing(V32_MAIN_HEX)
+
+    harness = _new_main_harness(V32_MAIN_HEX)
+    try:
+        _boot_and_activate(harness)
+        _inject_main_frame(harness, cmd=0x20, data=0x01)
+        _wait_for_preset_job_state(harness, 0x03)
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
+        for _ in range(8):
+            harness.step()
+        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
+            "STOP timeout test lost the first pending APPLY entry before recovery"
+        )
+
+        harness.clear_mssp_stop_faults()
+        _wait_for_preset_job_idle(harness)
+
+        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x60, (
+            "async APPLY did not finish the 96 regular table entries after STOP fault recovery"
+        )
+        assert _read_reg(harness._issue, _STATUS_5E) & _PRESET_B_BIT, (
+            "preset B was not committed after STOP fault recovery"
+        )
     finally:
         harness.close()
