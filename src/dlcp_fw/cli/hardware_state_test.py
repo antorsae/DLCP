@@ -40,6 +40,8 @@ DEFAULT_MAIN_POLL_S = 0.1
 DEFAULT_LCD_TIMEOUT_S = 18.0
 DEFAULT_LCD_POLL_S = 0.1
 DEFAULT_LCD_PROBE_CAPTURES = 1
+DEFAULT_STANDBY_DWELL_S = 1.0
+DEFAULT_SOAK_ITERATIONS = 5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -296,6 +298,24 @@ def _parse_preset_sequence(sequence: str) -> list[str]:
     return actions
 
 
+def _parse_delays_ms(delays_ms: str) -> list[float]:
+    delays: list[float] = []
+    for item in delays_ms.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid delay value {text!r} in {delays_ms!r}") from exc
+        if value < 0:
+            raise RuntimeError(f"delay values must be >= 0, got {value!r}")
+        delays.append(value)
+    if not delays:
+        raise RuntimeError("delay list must contain at least one numeric value")
+    return delays
+
+
 def _camera_probe_kwargs_from_args(
     args: argparse.Namespace,
     *,
@@ -333,23 +353,86 @@ def _compact_role_observation(state: MainRoleState) -> dict[str, object]:
         "role": state.role,
         "active_preset": state.active_preset,
         "active_config_name": state.active_config_name,
+        "active_flags": _active_flags_value(state),
+        "active": _is_active_state(state),
+        "muted": _is_muted_state(state),
         "raw_window_hex": state.raw_window_hex,
         "mode": state.mode,
         "version": state.version,
     }
 
 
+def _active_flags_value(state: MainRoleState) -> int | None:
+    if not state.raw_window_hex or len(state.raw_window_hex) < 2:
+        return None
+    try:
+        return int(state.raw_window_hex[:2], 16)
+    except ValueError:
+        return None
+
+
+def _is_muted_flags(flags: int) -> bool:
+    # On the real rig, mute toggles the first ACTIVE_FLAGS byte from 0x08 to 0x38.
+    # The practical user-visible predicate is that either of the mute-intent bits
+    # in the 0x10/0x20 range is set.
+    return bool(flags & 0x30)
+
+
+def _is_active_flags(flags: int) -> bool:
+    return bool(flags & 0x08)
+
+
+def _is_muted_state(state: MainRoleState) -> bool | None:
+    flags = _active_flags_value(state)
+    if flags is None:
+        return None
+    return _is_muted_flags(flags)
+
+
+def _is_active_state(state: MainRoleState) -> bool | None:
+    flags = _active_flags_value(state)
+    if flags is None:
+        return None
+    return _is_active_flags(flags)
+
+
+def _read_pair_state(*, vid: int, pid: int) -> tuple[MainRoleState, MainRoleState]:
+    states = _collect_main_roles(vid=vid, pid=pid)
+    return _assert_left_right_roles(states)
+
+
+def _current_pair_preset(*, vid: int, pid: int) -> str:
+    left, right = _read_pair_state(vid=vid, pid=pid)
+    if left.active_preset not in {"A", "B"} or right.active_preset not in {"A", "B"}:
+        raise RuntimeError(
+            f"unable to determine current pair preset: left={left.active_preset!r} "
+            f"right={right.active_preset!r}"
+        )
+    if left.active_preset != right.active_preset:
+        raise RuntimeError(
+            f"pair is already split before scenario start: left={left.active_preset!r} "
+            f"right={right.active_preset!r}"
+        )
+    return left.active_preset
+
+
+def _next_preset_action_from_pair(*, vid: int, pid: int) -> str:
+    current = _current_pair_preset(vid=vid, pid=pid)
+    return "F2" if current == "A" else "F1"
+
+
 def _assert_lcd_consensus(
     summary: dict[str, object],
     *,
     expected_line1: str,
-    expected_line2: str,
+    expected_line2: str | None,
     context: str,
 ) -> None:
     consensus = summary["consensus"]
     actual_line1 = consensus["line1"]
     actual_line2 = consensus["line2"]
-    if actual_line1 != expected_line1 or actual_line2 != expected_line2:
+    line2_match = expected_line2 is None or actual_line2 == expected_line2
+    if actual_line1 != expected_line1 or not line2_match:
         raise RuntimeError(
             f"{context}: unexpected LCD consensus {actual_line1!r} / {actual_line2!r}; "
             f"expected {expected_line1!r} / {expected_line2!r}"
@@ -399,6 +482,27 @@ def _wait_for_main_pair_preset(
     timeout_s: float,
     poll_interval_s: float,
 ) -> dict[str, object]:
+    return _wait_for_main_pair_state(
+        vid=vid,
+        pid=pid,
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        expected_preset=expected_preset,
+        muted=None,
+        active=None,
+    )
+
+
+def _wait_for_main_pair_state(
+    *,
+    vid: int,
+    pid: int,
+    timeout_s: float,
+    poll_interval_s: float,
+    expected_preset: str | None,
+    muted: bool | None,
+    active: bool | None,
+) -> dict[str, object]:
     started = time.monotonic()
     deadline = started + max(0.0, timeout_s)
     left_reached_s: float | None = None
@@ -409,8 +513,7 @@ def _wait_for_main_pair_preset(
     last_right: MainRoleState | None = None
 
     while True:
-        states = _collect_main_roles(vid=vid, pid=pid)
-        left, right = _assert_left_right_roles(states)
+        left, right = _read_pair_state(vid=vid, pid=pid)
         last_left, last_right = left, right
         elapsed = time.monotonic() - started
         observations.append(
@@ -420,18 +523,28 @@ def _wait_for_main_pair_preset(
                 "right": _compact_role_observation(right),
             }
         )
-        if left.active_preset == expected_preset and left_reached_s is None:
+        left_match = _state_matches(
+            left,
+            expected_preset=expected_preset,
+            muted=muted,
+            active=active,
+        )
+        right_match = _state_matches(
+            right,
+            expected_preset=expected_preset,
+            muted=muted,
+            active=active,
+        )
+        if left_match and left_reached_s is None:
             left_reached_s = elapsed
-        if right.active_preset == expected_preset and right_reached_s is None:
+        if right_match and right_reached_s is None:
             right_reached_s = elapsed
-        if (
-            left.active_preset == expected_preset
-            and right.active_preset == expected_preset
-            and both_reached_s is None
-        ):
+        if left_match and right_match and both_reached_s is None:
             both_reached_s = elapsed
             return {
                 "expected_preset": expected_preset,
+                "muted": muted,
+                "active": active,
                 "timeout_s": timeout_s,
                 "poll_interval_s": poll_interval_s,
                 "left_reached_s": left_reached_s,
@@ -445,16 +558,37 @@ def _wait_for_main_pair_preset(
         time.sleep(max(0.0, poll_interval_s))
 
     raise RuntimeError(
-        f"timed out waiting for both MAINs to reach preset {expected_preset}; "
-        f"left={None if last_left is None else last_left.active_preset!r} "
-        f"right={None if last_right is None else last_right.active_preset!r}"
+        "timed out waiting for both MAINs to satisfy state "
+        f"(preset={expected_preset!r}, muted={muted!r}, active={active!r}); "
+        f"left={None if last_left is None else _compact_role_observation(last_left)!r} "
+        f"right={None if last_right is None else _compact_role_observation(last_right)!r}"
     )
+
+
+def _state_matches(
+    state: MainRoleState,
+    *,
+    expected_preset: str | None,
+    muted: bool | None,
+    active: bool | None,
+) -> bool:
+    if expected_preset is not None and state.active_preset != expected_preset:
+        return False
+    if muted is not None:
+        observed_muted = _is_muted_state(state)
+        if observed_muted is None or observed_muted != muted:
+            return False
+    if active is not None:
+        observed_active = _is_active_state(state)
+        if observed_active is None or observed_active != active:
+            return False
+    return True
 
 
 def _wait_for_lcd_target(
     *,
     expected_line1: str,
-    expected_line2: str,
+    expected_line2: str | None,
     timeout_s: float,
     poll_interval_s: float,
     probe_captures: int,
@@ -487,7 +621,7 @@ def _wait_for_lcd_target(
                 "summary_path": summary["summary_path"],
             }
         )
-        if line1 == expected_line1 and line2 == expected_line2:
+        if line1 == expected_line1 and (expected_line2 is None or line2 == expected_line2):
             return {
                 "expected_line1": expected_line1,
                 "expected_line2": expected_line2,
@@ -508,6 +642,311 @@ def _wait_for_lcd_target(
         f"timed out waiting for LCD {expected_line1!r} / {expected_line2!r}; "
         f"last consensus was {actual_line1!r} / {actual_line2!r}"
     )
+
+
+def _sleep_ms(delay_ms: float) -> float:
+    delay_s = max(0.0, delay_ms / 1000.0)
+    if delay_s > 0:
+        time.sleep(delay_s)
+    return delay_s
+
+
+def _try_read_pair_state(*, vid: int, pid: int) -> dict[str, object]:
+    try:
+        left, right = _read_pair_state(vid=vid, pid=pid)
+    except Exception as exc:
+        return {"reachable": False, "error": str(exc)}
+    return {"reachable": True, **_role_pair_payload(left, right)}
+
+
+def _run_preset_action_and_wait(
+    *,
+    action: str,
+    args: argparse.Namespace,
+    output_root: Path,
+    context: str,
+) -> dict[str, object]:
+    expected_preset = _expected_preset_for_action(action)
+    ir_template = args.ir_command_template or _default_flipper_ir_command_template(
+        port=args.flipper_port
+    )
+    ir_results = _execute_ir_sequence(
+        ir_template=ir_template,
+        steps=[IrSequenceStep(action=action)],
+    )
+    main_wait = _wait_for_main_pair_state(
+        vid=args.vid,
+        pid=args.pid,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.main_poll_s,
+        expected_preset=expected_preset,
+        muted=None,
+        active=True,
+    )
+    lcd_wait = _wait_for_lcd_target(
+        expected_line1="Volume",
+        expected_line2=f"Active: {expected_preset}",
+        timeout_s=args.lcd_timeout_s,
+        poll_interval_s=args.lcd_poll_s,
+        probe_captures=args.lcd_probe_captures,
+        args=args,
+        output_root=output_root / "lcd_wait",
+    )
+    left, right = _read_pair_state(vid=args.vid, pid=args.pid)
+    _assert_expected_role_pair(left, right, expected_preset=expected_preset, context=context)
+    return {
+        "context": context,
+        "expected_preset": expected_preset,
+        "ir_command_template": ir_template,
+        "ir_results": ir_results,
+        "main_wait": main_wait,
+        "lcd_wait": lcd_wait,
+        "after": _role_pair_payload(left, right),
+    }
+
+
+def _wait_for_lcd_usable_expected_preset(
+    *,
+    expected_preset: str,
+    args: argparse.Namespace,
+    output_root: Path,
+) -> dict[str, object]:
+    return _wait_for_lcd_target(
+        expected_line1="Volume",
+        expected_line2=f"Active: {expected_preset}",
+        timeout_s=args.lcd_timeout_s,
+        poll_interval_s=args.lcd_poll_s,
+        probe_captures=args.lcd_probe_captures,
+        args=args,
+        output_root=output_root,
+    )
+
+
+def _lcd_summary_contains_text(summary: dict[str, object], target: str) -> bool:
+    captures = summary.get("captures", [])
+    for capture in captures:
+        for obs in capture.get("observations", []):
+            text = str(obs.get("text", "")).strip()
+            if not text:
+                continue
+            if lcd_probe._looks_like(text, target, max_dist=2):
+                return True
+    return False
+
+
+def _wait_for_lcd_text_contains(
+    *,
+    target: str,
+    timeout_s: float,
+    poll_interval_s: float,
+    probe_captures: int,
+    args: argparse.Namespace,
+    output_root: Path,
+) -> dict[str, object]:
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_s)
+    probes: list[dict[str, object]] = []
+    last_summary: dict[str, object] | None = None
+
+    while True:
+        elapsed = time.monotonic() - started
+        summary = _probe_lcd(
+            **_camera_probe_kwargs_from_args(
+                args,
+                output_root=output_root,
+                skip_configure=True,
+                captures=probe_captures,
+            )
+        )
+        last_summary = summary
+        found = _lcd_summary_contains_text(summary, target)
+        probes.append(
+            {
+                "t_s": elapsed,
+                "found": found,
+                "summary_path": summary["summary_path"],
+                "line1": summary["consensus"]["line1"],
+                "line2": summary["consensus"]["line2"],
+            }
+        )
+        if found:
+            return {
+                "target": target,
+                "timeout_s": timeout_s,
+                "poll_interval_s": poll_interval_s,
+                "probe_captures": probe_captures,
+                "matched_at_s": elapsed,
+                "probes": probes,
+                "last_summary_path": summary["summary_path"],
+            }
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.0, poll_interval_s))
+
+    raise RuntimeError(
+        f"timed out waiting for LCD OCR to contain {target!r}; "
+        f"last summary path was {None if last_summary is None else last_summary['summary_path']!r}"
+    )
+
+
+def _resolve_ir_template(args: argparse.Namespace) -> str:
+    return args.ir_command_template or _default_flipper_ir_command_template(
+        port=args.flipper_port
+    )
+
+
+def _send_single_ir_action(*, args: argparse.Namespace, action: str) -> dict[str, object]:
+    return _execute_ir_sequence(
+        ir_template=_resolve_ir_template(args),
+        steps=[IrSequenceStep(action=action)],
+    )[0]
+
+
+def _ensure_pair_unmuted(
+    *,
+    args: argparse.Namespace,
+    output_root: Path,
+    context: str,
+) -> dict[str, object]:
+    left, right = _read_pair_state(vid=args.vid, pid=args.pid)
+    preset = _current_pair_preset(vid=args.vid, pid=args.pid)
+    already_unmuted = (_is_muted_state(left) is False) and (_is_muted_state(right) is False)
+    if already_unmuted:
+        return {
+            "context": context,
+            "performed": False,
+            "expected_preset": preset,
+            "before": _role_pair_payload(left, right),
+        }
+
+    ir_result = _send_single_ir_action(args=args, action="MUTE")
+    main_wait = _wait_for_main_pair_state(
+        vid=args.vid,
+        pid=args.pid,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.main_poll_s,
+        expected_preset=preset,
+        muted=False,
+        active=True,
+    )
+    lcd_wait = _wait_for_lcd_usable_expected_preset(
+        expected_preset=preset,
+        args=args,
+        output_root=output_root / "lcd_wait",
+    )
+    left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
+    return {
+        "context": context,
+        "performed": True,
+        "expected_preset": preset,
+        "ir_result": ir_result,
+        "main_wait": main_wait,
+        "lcd_wait": lcd_wait,
+        "after": _role_pair_payload(left_after, right_after),
+    }
+
+
+def _run_mute_toggle_cycle(
+    *,
+    expected_preset: str,
+    args: argparse.Namespace,
+    output_root: Path,
+    context: str,
+) -> dict[str, object]:
+    mute_on_ir = _send_single_ir_action(args=args, action="MUTE")
+    mute_on_main = _wait_for_main_pair_state(
+        vid=args.vid,
+        pid=args.pid,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.main_poll_s,
+        expected_preset=expected_preset,
+        muted=True,
+        active=True,
+    )
+    mute_on_lcd = _wait_for_lcd_text_contains(
+        target="Mute",
+        timeout_s=args.lcd_timeout_s,
+        poll_interval_s=args.lcd_poll_s,
+        probe_captures=args.lcd_probe_captures,
+        args=args,
+        output_root=output_root / "lcd_mute",
+    )
+    mute_off_ir = _send_single_ir_action(args=args, action="MUTE")
+    mute_off_main = _wait_for_main_pair_state(
+        vid=args.vid,
+        pid=args.pid,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.main_poll_s,
+        expected_preset=expected_preset,
+        muted=False,
+        active=True,
+    )
+    mute_off_lcd = _wait_for_lcd_usable_expected_preset(
+        expected_preset=expected_preset,
+        args=args,
+        output_root=output_root / "lcd_unmute",
+    )
+    left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
+    return {
+        "context": context,
+        "expected_preset": expected_preset,
+        "mute_on_ir": mute_on_ir,
+        "mute_on_main": mute_on_main,
+        "mute_on_lcd": mute_on_lcd,
+        "mute_off_ir": mute_off_ir,
+        "mute_off_main": mute_off_main,
+        "mute_off_lcd": mute_off_lcd,
+        "after": _role_pair_payload(left_after, right_after),
+    }
+
+
+def _run_standby_wake_cycle(
+    *,
+    expected_preset: str,
+    args: argparse.Namespace,
+    output_root: Path,
+    context: str,
+) -> dict[str, object]:
+    standby_ir = _send_single_ir_action(args=args, action="POWER")
+    standby_lcd = _wait_for_lcd_target(
+        expected_line1="Zzz...",
+        expected_line2=None,
+        timeout_s=args.lcd_timeout_s,
+        poll_interval_s=args.lcd_poll_s,
+        probe_captures=args.lcd_probe_captures,
+        args=args,
+        output_root=output_root / "lcd_standby",
+    )
+    standby_pair = _try_read_pair_state(vid=args.vid, pid=args.pid)
+    if args.standby_dwell_s > 0:
+        time.sleep(max(0.0, args.standby_dwell_s))
+    wake_ir = _send_single_ir_action(args=args, action="POWER")
+    wake_main = _wait_for_main_pair_state(
+        vid=args.vid,
+        pid=args.pid,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.main_poll_s,
+        expected_preset=expected_preset,
+        muted=False,
+        active=True,
+    )
+    wake_lcd = _wait_for_lcd_usable_expected_preset(
+        expected_preset=expected_preset,
+        args=args,
+        output_root=output_root / "lcd_wake",
+    )
+    left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
+    return {
+        "context": context,
+        "expected_preset": expected_preset,
+        "standby_ir": standby_ir,
+        "standby_lcd": standby_lcd,
+        "standby_pair": standby_pair,
+        "wake_ir": wake_ir,
+        "wake_main": wake_main,
+        "wake_lcd": wake_lcd,
+        "after": _role_pair_payload(left_after, right_after),
+    }
 
 
 def _run_preset_sequence_scenario(
@@ -725,6 +1164,222 @@ def _cmd_rapid_toggle_convergence(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_preset_mute_timing_sweep(args: argparse.Namespace) -> int:
+    delays_ms = _parse_delays_ms(args.delays_ms)
+    run_root = args.output_root / "preset_mute_timing_sweep" / time.strftime("%Y%m%d_%H%M%S")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    baseline_pair = _read_pair_state(vid=args.vid, pid=args.pid)
+    baseline_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "baseline",
+            skip_configure=args.skip_configure,
+        )
+    )
+    unmute_sync = _ensure_pair_unmuted(
+        args=args,
+        output_root=run_root / "ensure_unmuted",
+        context="preset_mute_timing_sweep.ensure_unmuted",
+    )
+
+    iterations: list[dict[str, object]] = []
+    for index, delay_ms in enumerate(delays_ms, start=1):
+        iteration_root = run_root / f"delay_{int(round(delay_ms)):04d}ms"
+        action = _next_preset_action_from_pair(vid=args.vid, pid=args.pid)
+        preset_phase = _run_preset_action_and_wait(
+            action=action,
+            args=args,
+            output_root=iteration_root / "preset",
+            context=f"preset_mute_timing_sweep.iteration_{index}.preset",
+        )
+        delay_s = _sleep_ms(delay_ms)
+        mute_phase = _run_mute_toggle_cycle(
+            expected_preset=preset_phase["expected_preset"],
+            args=args,
+            output_root=iteration_root / "mute_cycle",
+            context=f"preset_mute_timing_sweep.iteration_{index}.mute_cycle",
+        )
+        iterations.append(
+            {
+                "index": index,
+                "delay_ms": delay_ms,
+                "delay_s": delay_s,
+                "preset_phase": preset_phase,
+                "mute_cycle": mute_phase,
+            }
+        )
+
+    left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
+    final_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "final",
+            skip_configure=True,
+        )
+    )
+    payload = {
+        "scenario": "preset_mute_timing_sweep",
+        "run_root": str(run_root),
+        "delays_ms": delays_ms,
+        "before": _role_pair_payload(*baseline_pair),
+        "baseline_lcd": baseline_lcd,
+        "ensure_unmuted": unmute_sync,
+        "iterations": iterations,
+        "after": _role_pair_payload(left_after, right_after),
+        "final_lcd": final_lcd,
+    }
+    out_path = run_root / "result.json"
+    out_path.write_text(_json_dumps(payload), encoding="utf-8")
+    print(_json_dumps({"result_path": str(out_path), "status": "PASS"}))
+    return 0
+
+
+def _cmd_preset_standby_wake_timing_sweep(args: argparse.Namespace) -> int:
+    delays_ms = _parse_delays_ms(args.delays_ms)
+    run_root = args.output_root / "preset_standby_wake_timing_sweep" / time.strftime("%Y%m%d_%H%M%S")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    baseline_pair = _read_pair_state(vid=args.vid, pid=args.pid)
+    baseline_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "baseline",
+            skip_configure=args.skip_configure,
+        )
+    )
+    unmute_sync = _ensure_pair_unmuted(
+        args=args,
+        output_root=run_root / "ensure_unmuted",
+        context="preset_standby_wake_timing_sweep.ensure_unmuted",
+    )
+
+    iterations: list[dict[str, object]] = []
+    for index, delay_ms in enumerate(delays_ms, start=1):
+        iteration_root = run_root / f"delay_{int(round(delay_ms)):04d}ms"
+        action = _next_preset_action_from_pair(vid=args.vid, pid=args.pid)
+        preset_phase = _run_preset_action_and_wait(
+            action=action,
+            args=args,
+            output_root=iteration_root / "preset",
+            context=f"preset_standby_wake_timing_sweep.iteration_{index}.preset",
+        )
+        delay_s = _sleep_ms(delay_ms)
+        standby_phase = _run_standby_wake_cycle(
+            expected_preset=preset_phase["expected_preset"],
+            args=args,
+            output_root=iteration_root / "standby_wake",
+            context=f"preset_standby_wake_timing_sweep.iteration_{index}.standby_wake",
+        )
+        iterations.append(
+            {
+                "index": index,
+                "delay_ms": delay_ms,
+                "delay_s": delay_s,
+                "preset_phase": preset_phase,
+                "standby_wake": standby_phase,
+            }
+        )
+
+    left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
+    final_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "final",
+            skip_configure=True,
+        )
+    )
+    payload = {
+        "scenario": "preset_standby_wake_timing_sweep",
+        "run_root": str(run_root),
+        "delays_ms": delays_ms,
+        "before": _role_pair_payload(*baseline_pair),
+        "baseline_lcd": baseline_lcd,
+        "ensure_unmuted": unmute_sync,
+        "iterations": iterations,
+        "after": _role_pair_payload(left_after, right_after),
+        "final_lcd": final_lcd,
+    }
+    out_path = run_root / "result.json"
+    out_path.write_text(_json_dumps(payload), encoding="utf-8")
+    print(_json_dumps({"result_path": str(out_path), "status": "PASS"}))
+    return 0
+
+
+def _cmd_reconnect_responsiveness_soak(args: argparse.Namespace) -> int:
+    run_root = args.output_root / "reconnect_responsiveness_soak" / time.strftime("%Y%m%d_%H%M%S")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    baseline_pair = _read_pair_state(vid=args.vid, pid=args.pid)
+    baseline_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "baseline",
+            skip_configure=args.skip_configure,
+        )
+    )
+    unmute_sync = _ensure_pair_unmuted(
+        args=args,
+        output_root=run_root / "ensure_unmuted",
+        context="reconnect_responsiveness_soak.ensure_unmuted",
+    )
+
+    iterations: list[dict[str, object]] = []
+    for index in range(1, args.iterations + 1):
+        iteration_root = run_root / f"iteration_{index:03d}"
+        action = _next_preset_action_from_pair(vid=args.vid, pid=args.pid)
+        preset_phase = _run_preset_action_and_wait(
+            action=action,
+            args=args,
+            output_root=iteration_root / "preset",
+            context=f"reconnect_responsiveness_soak.iteration_{index}.preset",
+        )
+        standby_phase = _run_standby_wake_cycle(
+            expected_preset=preset_phase["expected_preset"],
+            args=args,
+            output_root=iteration_root / "standby_wake",
+            context=f"reconnect_responsiveness_soak.iteration_{index}.standby_wake",
+        )
+        mute_phase = _run_mute_toggle_cycle(
+            expected_preset=preset_phase["expected_preset"],
+            args=args,
+            output_root=iteration_root / "mute_cycle",
+            context=f"reconnect_responsiveness_soak.iteration_{index}.mute_cycle",
+        )
+        iterations.append(
+            {
+                "index": index,
+                "preset_phase": preset_phase,
+                "standby_wake": standby_phase,
+                "mute_cycle": mute_phase,
+            }
+        )
+
+    left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
+    final_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "final",
+            skip_configure=True,
+        )
+    )
+    payload = {
+        "scenario": "reconnect_responsiveness_soak",
+        "run_root": str(run_root),
+        "iterations_requested": args.iterations,
+        "before": _role_pair_payload(*baseline_pair),
+        "baseline_lcd": baseline_lcd,
+        "ensure_unmuted": unmute_sync,
+        "iterations": iterations,
+        "after": _role_pair_payload(left_after, right_after),
+        "final_lcd": final_lcd,
+    }
+    out_path = run_root / "result.json"
+    out_path.write_text(_json_dumps(payload), encoding="utf-8")
+    print(_json_dumps({"result_path": str(out_path), "status": "PASS"}))
+    return 0
+
+
 def _cmd_ir_preset_roundtrip(args: argparse.Namespace) -> int:
     run_root = args.output_root / "ir_preset_roundtrip" / time.strftime("%Y%m%d_%H%M%S")
     run_root.mkdir(parents=True, exist_ok=True)
@@ -844,6 +1499,18 @@ def _add_convergence_wait_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lcd-probe-captures", type=int, default=DEFAULT_LCD_PROBE_CAPTURES)
 
 
+def _add_delay_sweep_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--delays-ms",
+        default="50,100,250,500,1000",
+        help="comma-separated delays in milliseconds",
+    )
+
+
+def _add_standby_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--standby-dwell-s", type=float, default=DEFAULT_STANDBY_DWELL_S)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--vid", type=int, default=DEFAULT_VID)
@@ -883,6 +1550,38 @@ def build_parser() -> argparse.ArgumentParser:
     _add_convergence_wait_args(p_rapid)
     _add_camera_args(p_rapid)
     p_rapid.set_defaults(func=_cmd_rapid_toggle_convergence)
+
+    p_mute = sub.add_parser(
+        "preset-mute-timing-sweep",
+        help="for each delay, switch preset, then verify MUTE and MUTE-off preserve pair convergence",
+    )
+    _add_ir_transport_args(p_mute)
+    _add_delay_sweep_args(p_mute)
+    _add_convergence_wait_args(p_mute)
+    _add_camera_args(p_mute)
+    p_mute.set_defaults(func=_cmd_preset_mute_timing_sweep)
+
+    p_stby = sub.add_parser(
+        "preset-standby-wake-timing-sweep",
+        help="for each delay, switch preset, enter standby, then verify wake/reconnect preserves convergence",
+    )
+    _add_ir_transport_args(p_stby)
+    _add_delay_sweep_args(p_stby)
+    _add_standby_args(p_stby)
+    _add_convergence_wait_args(p_stby)
+    _add_camera_args(p_stby)
+    p_stby.set_defaults(func=_cmd_preset_standby_wake_timing_sweep)
+
+    p_soak = sub.add_parser(
+        "reconnect-responsiveness-soak",
+        help="repeat preset switch, standby/wake, and mute cycles to catch liveness regressions",
+    )
+    _add_ir_transport_args(p_soak)
+    p_soak.add_argument("--iterations", type=int, default=DEFAULT_SOAK_ITERATIONS)
+    _add_standby_args(p_soak)
+    _add_convergence_wait_args(p_soak)
+    _add_camera_args(p_soak)
+    p_soak.set_defaults(func=_cmd_reconnect_responsiveness_soak)
 
     p_ir = sub.add_parser(
         "ir-preset-roundtrip",

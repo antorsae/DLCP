@@ -61,6 +61,16 @@ def test_parse_preset_sequence_requires_f1_f2_actions() -> None:
         hw._parse_preset_sequence("F1,MUTE")
 
 
+def test_parse_delays_ms_parses_numeric_csv() -> None:
+    assert hw._parse_delays_ms("50, 100,250") == [50.0, 100.0, 250.0]
+
+    with pytest.raises(RuntimeError, match="delay list must contain at least one"):
+        hw._parse_delays_ms(" , ")
+
+    with pytest.raises(RuntimeError, match="invalid delay value"):
+        hw._parse_delays_ms("100,banana")
+
+
 def test_identify_mains_requires_exact_left_right(monkeypatch) -> None:
     left = hw.MainRoleState(
         path="left-path",
@@ -399,6 +409,201 @@ def test_rapid_toggle_command_expands_sequence_and_expected_target(monkeypatch, 
     assert call["expected_preset"] == "A"
     assert [step.action for step in call["steps"]] == ["F1", "F2", "F1"]
     assert [step.sleep_after_s for step in call["steps"]] == [0.25, 0.25, 0.0]
+
+
+def test_lcd_summary_contains_text_matches_observations() -> None:
+    summary = {
+        "captures": [
+            {
+                "observations": [
+                    {"text": "Volume:Mute    A"},
+                    {"text": "Auto Detect"},
+                ]
+            }
+        ]
+    }
+
+    assert hw._lcd_summary_contains_text(summary, "Mute") is True
+    assert hw._lcd_summary_contains_text(summary, "Zzz") is False
+
+
+def test_preset_mute_timing_sweep_command_writes_result(monkeypatch, tmp_path) -> None:
+    left_before = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_before = dataclasses.replace(
+        left_before,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+    left_after = dataclasses.replace(left_before, active_preset="B")
+    right_after = dataclasses.replace(right_before, active_preset="B")
+
+    states = iter([(left_before, right_before), (left_after, right_after)])
+    actions = iter(["F2", "F1"])
+    monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: next(states))
+    monkeypatch.setattr(
+        hw,
+        "_probe_lcd",
+        lambda **kwargs: {"consensus": {"line1": "Volume", "line2": "Active: B"}},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_ensure_pair_unmuted",
+        lambda **kwargs: {"performed": False},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_next_preset_action_from_pair",
+        lambda *, vid, pid: next(actions),
+    )
+    monkeypatch.setattr(
+        hw,
+        "_run_preset_action_and_wait",
+        lambda **kwargs: {"expected_preset": "B"},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_run_mute_toggle_cycle",
+        lambda **kwargs: {"after": {"left": {"active_preset": "B"}, "right": {"active_preset": "B"}}},
+    )
+    monkeypatch.setattr(hw, "_sleep_ms", lambda delay_ms: delay_ms / 1000.0)
+
+    rc = hw.main(
+        [
+            "--output-root",
+            str(tmp_path),
+            "preset-mute-timing-sweep",
+            "--delays-ms",
+            "100,250",
+        ]
+    )
+
+    assert rc == 0
+    result_files = list((tmp_path / "preset_mute_timing_sweep").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["delays_ms"] == [100.0, 250.0]
+    assert len(payload["iterations"]) == 2
+
+
+def test_preset_standby_wake_timing_sweep_command_writes_result(monkeypatch, tmp_path) -> None:
+    left_before = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_before = dataclasses.replace(
+        left_before,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+
+    monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_before, right_before))
+    monkeypatch.setattr(
+        hw,
+        "_probe_lcd",
+        lambda **kwargs: {"consensus": {"line1": "Volume", "line2": "Active: A"}},
+    )
+    monkeypatch.setattr(hw, "_ensure_pair_unmuted", lambda **kwargs: {"performed": False})
+    monkeypatch.setattr(hw, "_next_preset_action_from_pair", lambda *, vid, pid: "F2")
+    monkeypatch.setattr(hw, "_run_preset_action_and_wait", lambda **kwargs: {"expected_preset": "B"})
+    monkeypatch.setattr(hw, "_run_standby_wake_cycle", lambda **kwargs: {"after": {}})
+    monkeypatch.setattr(hw, "_sleep_ms", lambda delay_ms: delay_ms / 1000.0)
+
+    rc = hw.main(
+        [
+            "--output-root",
+            str(tmp_path),
+            "preset-standby-wake-timing-sweep",
+            "--delays-ms",
+            "250",
+        ]
+    )
+
+    assert rc == 0
+    result_files = list((tmp_path / "preset_standby_wake_timing_sweep").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["delays_ms"] == [250.0]
+    assert len(payload["iterations"]) == 1
+
+
+def test_reconnect_responsiveness_soak_command_writes_result(monkeypatch, tmp_path) -> None:
+    left_before = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_before = dataclasses.replace(
+        left_before,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+
+    monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_before, right_before))
+    monkeypatch.setattr(
+        hw,
+        "_probe_lcd",
+        lambda **kwargs: {"consensus": {"line1": "Volume", "line2": "Active: A"}},
+    )
+    monkeypatch.setattr(hw, "_ensure_pair_unmuted", lambda **kwargs: {"performed": False})
+    monkeypatch.setattr(hw, "_next_preset_action_from_pair", lambda *, vid, pid: "F2")
+    monkeypatch.setattr(hw, "_run_preset_action_and_wait", lambda **kwargs: {"expected_preset": "B"})
+    monkeypatch.setattr(hw, "_run_standby_wake_cycle", lambda **kwargs: {"after": {}})
+    monkeypatch.setattr(hw, "_run_mute_toggle_cycle", lambda **kwargs: {"after": {}})
+
+    rc = hw.main(
+        [
+            "--output-root",
+            str(tmp_path),
+            "reconnect-responsiveness-soak",
+            "--iterations",
+            "3",
+        ]
+    )
+
+    assert rc == 0
+    result_files = list((tmp_path / "reconnect_responsiveness_soak").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["iterations_requested"] == 3
+    assert len(payload["iterations"]) == 3
 
 
 def test_probe_main_role_state_reads_snapshot_and_memory(monkeypatch) -> None:

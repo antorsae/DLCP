@@ -249,7 +249,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (86 test files, 688 tests collected):
+Current suite (86 test files, 696 tests collected):
 
 Pytest markers:
 
@@ -319,7 +319,7 @@ Hardware-loop tooling:
 - `test_hardware_flipper_ir.py`, `test_hardware_loop.py`, `test_hardware_state_test.py`
 
 Live hardware (optional):
-- `tests/hardware/test_live_state_transitions.py` (preset convergence and rapid-toggle convergence on the real DLCP rig)
+- `tests/hardware/test_live_state_transitions.py` (preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, and reconnect responsiveness soak on the real DLCP rig)
 
 V2.7 + V1.63b:
 - `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
@@ -344,16 +344,17 @@ Version labels:
 
 Recent verification (latest 2026-04-14):
 
-- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `688 tests collected`
+- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `696 tests collected`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_control_flash_safety.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `22 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_loop.py` -> `12 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_flipper_ir.py tests/sim/test_hardware_state_test.py` -> `23 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_flipper_ir.py tests/sim/test_hardware_state_test.py` -> `28 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_main_gpsim_portability.py tests/sim/test_v31_patch_builders.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_bake_preset_capture.py tests/sim/test_v31_diag_memread_usb_safe.py` -> `4 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v28_wire_delayed_switch_repros.py` -> `5 xfailed`
-- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `2 passed`
+- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `5 tests collected`
+- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `5 skipped` (expected when camera or HID open-path access is unavailable in the current shell session)
 
 V3.1-only gate (80 tests, ~8 min):
 

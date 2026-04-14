@@ -580,6 +580,22 @@ Why it matters:
 - this is the best direct live-rig test for the “goes silent / mute ignored”
   symptom
 
+Implemented paths:
+
+- CLI:
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py preset-mute-timing-sweep \
+  --delays-ms 50,100,250,500,1000
+```
+
+- Optional live pytest:
+
+```bash
+.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py \
+  --run-hardware -k preset_mute_timing_sweep
+```
+
 ### 4. Preset then standby/wake timing sweep
 
 Goal:
@@ -602,6 +618,23 @@ Why it matters:
 
 - this is the strongest real-hardware discriminator between firmware bug and
   gpsim wake-model gap
+
+Implemented paths:
+
+- CLI:
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py preset-standby-wake-timing-sweep \
+  --delays-ms 50,100,250,500,1000 \
+  --standby-dwell-s 1.0
+```
+
+- Optional live pytest:
+
+```bash
+.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py \
+  --run-hardware -k preset_standby_wake_timing_sweep
+```
 
 ### 5. Reconnect and responsiveness soak
 
@@ -629,9 +662,26 @@ Why it matters:
 - this is the best practical liveness test for multi-unit convergence under
   normal user behavior rather than synthetic fault injection
 
+Implemented paths:
+
+- CLI:
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py reconnect-responsiveness-soak \
+  --iterations 5 \
+  --standby-dwell-s 1.0
+```
+
+- Optional live pytest:
+
+```bash
+.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py \
+  --run-hardware -k reconnect_responsiveness_soak
+```
+
 ## Recommended Implementation Order
 
-Implement in this order:
+Implemented in this order:
 
 1. preset-switch convergence baseline
 2. rapid-toggle final-state convergence
