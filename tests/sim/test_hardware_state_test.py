@@ -51,6 +51,16 @@ def test_render_ir_command_expands_action_tokens() -> None:
     ]
 
 
+def test_parse_preset_sequence_requires_f1_f2_actions() -> None:
+    assert hw._parse_preset_sequence("F1, f2 ,F1") == ["F1", "F2", "F1"]
+
+    with pytest.raises(RuntimeError, match="preset sequence must contain at least one"):
+        hw._parse_preset_sequence(" , ")
+
+    with pytest.raises(RuntimeError, match="expected preset action F1 or F2"):
+        hw._parse_preset_sequence("F1,MUTE")
+
+
 def test_identify_mains_requires_exact_left_right(monkeypatch) -> None:
     left = hw.MainRoleState(
         path="left-path",
@@ -225,6 +235,170 @@ def test_ir_preset_roundtrip_defaults_to_builtin_flipper_sender(monkeypatch, tmp
     assert len(seen_templates) == 1
     assert "hardware_flipper_ir.py" in seen_templates[0]
     assert "{action}" in seen_templates[0]
+
+
+def test_wait_for_main_pair_preset_tracks_left_right_and_both_times(monkeypatch) -> None:
+    left_a = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="00",
+    )
+    right_a = dataclasses.replace(
+        left_a,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="01",
+    )
+    left_b = dataclasses.replace(left_a, active_preset="B")
+    right_b = dataclasses.replace(right_a, active_preset="B")
+
+    states = iter(
+        [
+            [left_a, right_a],
+            [left_b, right_a],
+            [left_b, right_b],
+        ]
+    )
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: next(states))
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    payload = hw._wait_for_main_pair_preset(
+        vid=0x04D8,
+        pid=0xFF89,
+        expected_preset="B",
+        timeout_s=2.0,
+        poll_interval_s=0.0,
+    )
+
+    assert payload["expected_preset"] == "B"
+    assert payload["left_reached_s"] == pytest.approx(0.3)
+    assert payload["right_reached_s"] == pytest.approx(0.5)
+    assert payload["both_reached_s"] == pytest.approx(0.5)
+    assert payload["final"]["left"]["active_preset"] == "B"
+    assert payload["final"]["right"]["active_preset"] == "B"
+
+
+def test_preset_convergence_command_writes_result(monkeypatch, tmp_path) -> None:
+    left_before = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="00",
+    )
+    right_before = dataclasses.replace(
+        left_before,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="01",
+    )
+    left_after = dataclasses.replace(left_before, active_preset="B")
+    right_after = dataclasses.replace(right_before, active_preset="B")
+
+    states = iter([[left_before, right_before], [left_after, right_after]])
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: next(states))
+    monkeypatch.setattr(
+        hw,
+        "_probe_lcd",
+        lambda **kwargs: {"consensus": {"line1": "Volume", "line2": "Active: B"}},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_execute_ir_sequence",
+        lambda **kwargs: [{"action": "F2", "command": ["fake-ir", "F2"], "returncode": 0}],
+    )
+    monkeypatch.setattr(
+        hw,
+        "_wait_for_main_pair_preset",
+        lambda **kwargs: {
+            "expected_preset": "B",
+            "left_reached_s": 0.2,
+            "right_reached_s": 0.2,
+            "both_reached_s": 0.2,
+            "observations": [],
+            "final": {
+                "left": dataclasses.asdict(left_after),
+                "right": dataclasses.asdict(right_after),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        hw,
+        "_wait_for_lcd_target",
+        lambda **kwargs: {"matched_at_s": 0.3, "probes": [], "last_summary_path": "fake"},
+    )
+
+    rc = hw.main(
+        [
+            "--output-root",
+            str(tmp_path),
+            "preset-convergence",
+            "--action",
+            "F2",
+        ]
+    )
+
+    assert rc == 0
+    result_files = list((tmp_path / "preset_convergence").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["expected_preset"] == "B"
+    assert payload["after"]["left"]["active_preset"] == "B"
+    assert payload["sequence"] == [{"action": "F2", "sleep_after_s": 0.0}]
+
+
+def test_rapid_toggle_command_expands_sequence_and_expected_target(monkeypatch, tmp_path) -> None:
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        hw,
+        "_run_preset_sequence_scenario",
+        lambda **kwargs: seen.setdefault("call", kwargs) or (tmp_path / "result.json"),
+    )
+
+    rc = hw.main(
+        [
+            "--output-root",
+            str(tmp_path),
+            "rapid-toggle-convergence",
+            "--sequence",
+            "F1,F2,F1",
+            "--inter-press-ms",
+            "250",
+        ]
+    )
+
+    assert rc == 0
+    call = seen["call"]
+    assert call["scenario_name"] == "rapid_toggle_convergence"
+    assert call["expected_preset"] == "A"
+    assert [step.action for step in call["steps"]] == ["F1", "F2", "F1"]
+    assert [step.sleep_after_s for step in call["steps"]] == [0.25, 0.25, 0.0]
 
 
 def test_probe_main_role_state_reads_snapshot_and_memory(monkeypatch) -> None:

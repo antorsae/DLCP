@@ -9,6 +9,8 @@ from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+pytestmark = [pytest.mark.wire]
+
 _STATUS_5E = 0x05E
 _RX_RING_RD = 0x0C6
 _RX_RING_WR = 0x0C7

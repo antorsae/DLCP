@@ -166,6 +166,42 @@ Important properties:
 - This role classification is the required pre-flash gate. Do not flash by
   assumed USB order.
 
+## Preferred Test Split
+
+Current state:
+
+- deterministic simulator tests, gpsim tests, and mocked unit tests for the
+  hardware helper CLIs all live under `tests/sim/`
+- files such as `test_hardware_loop.py` and `test_hardware_state_test.py` are
+  **not** live-rig tests; they are unit tests around the helper code
+
+Preferred structure moving forward:
+
+- keep pure unit tests for hardware helper logic in `tests/sim/`
+- keep gpsim wire/current-loop tests in `tests/sim/` and mark them `wire`
+- add real live-rig tests under `tests/hardware/` when implemented and mark
+  them `hardware`
+
+Pytest policy:
+
+- `@pytest.mark.wire`
+  - means a gpsim current-loop/wire-chain test
+- `@pytest.mark.hardware`
+  - means a live hardware test that touches the real rig
+- live hardware tests are skipped by default
+- enable them explicitly with `--run-hardware`
+
+Recommended commands:
+
+```bash
+.venv_ep0/bin/python -m pytest tests/sim -m "wire" -q
+.venv_ep0/bin/python -m pytest tests/sim -m "gpsim and not wire" -q
+.venv_ep0/bin/python -m pytest tests -m hardware --run-hardware -q
+```
+
+This gives a clean answer to “what kind of test is this?” without mixing
+simulator-only regressions and rig-dependent validation in the same lane.
+
 ## Core Test Principle
 
 For the delayed-switch family of bugs, acceptance must be based on **observable
@@ -442,6 +478,174 @@ remote presses.
    - confirm both MAINs are reachable
    - confirm preset remains `B`
    - confirm `Mute` and `Unmute` still work
+
+## Five High-Impact Live Tests
+
+These are the first five live-rig tests worth implementing because they answer
+the current open questions in the delayed-switch branch with the least
+ambiguity.
+
+### 1. Preset-switch convergence baseline
+
+Goal:
+
+- prove one `F1` or `F2` request converges on both MAINs and the LCD
+
+Implementation:
+
+- add a hardware test that sends one IR preset command
+- poll both MAINs by explicit HID path until both report the target preset
+- capture repeated LCD OCR until the display returns to a usable `Volume` /
+  `Active: A|B` state
+- record left-settle time, right-settle time, and LCD recovery time
+
+Why it matters:
+
+- this is the foundation for all other live-rig tests
+- if the simplest preset switch does not converge cleanly, the higher-stress
+  cases are not interpretable
+
+Implemented paths:
+
+- CLI:
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py preset-convergence --action F2
+```
+
+- Optional live pytest:
+
+```bash
+.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py \
+  --run-hardware -k preset_convergence
+```
+
+### 2. Rapid-toggle final-state convergence
+
+Goal:
+
+- reproduce the user-reported “a few remote switches later things desync”
+  symptom with realistic button timing
+
+Implementation:
+
+- add a timed action-sequence runner that emits `F1/F2/F1/F2`
+- run it with inter-press delays such as `100 ms`, `250 ms`, and `500 ms`
+- require final convergence to the last requested preset on both MAINs
+- require the LCD to recover and a follow-up probe to succeed on both MAINs
+
+Why it matters:
+
+- this is the closest direct test of the real field complaint
+- it catches split-brain outcomes where PB1 and PB2 disagree after bursty use
+
+Implemented paths:
+
+- CLI:
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py rapid-toggle-convergence \
+  --sequence F1,F2,F1,F2 \
+  --inter-press-ms 250
+```
+
+- Optional live pytest:
+
+```bash
+.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py \
+  --run-hardware -k rapid_toggle_convergence
+```
+
+### 3. Preset then mute/unmute timing sweep
+
+Goal:
+
+- determine whether a follow-up mute shortly after a switch is ignored,
+  delayed, or leaves the chain in the wrong state
+
+Implementation:
+
+- add a hardware timing-sweep test: `F2`, then `MUTE` after
+  `50/100/250/500/1000 ms`
+- repeat `MUTE` again to test unmute
+- at minimum require:
+  - both MAINs remain reachable
+  - both MAINs stay on the expected preset
+  - the LCD remains usable before and after mute/unmute
+- if a stable MAIN-side mute bit becomes available through EP0, include that as
+  the state assertion
+
+Why it matters:
+
+- this is the best direct live-rig test for the “goes silent / mute ignored”
+  symptom
+
+### 4. Preset then standby/wake timing sweep
+
+Goal:
+
+- determine whether delayed-switch traffic interferes with standby entry or
+  reconnect after wake
+
+Implementation:
+
+- add a timing-sweep test: `F2`, then `POWER` after `50/100/250/500/1000 ms`
+- require the LCD to enter `Zzz...`
+- wake after a fixed dwell with another `POWER`
+- require:
+  - LCD leaves `Zzz...`
+  - CONTROL returns to a usable screen
+  - both MAINs reappear over USB
+  - both MAINs preserve the expected preset
+
+Why it matters:
+
+- this is the strongest real-hardware discriminator between firmware bug and
+  gpsim wake-model gap
+
+### 5. Reconnect and responsiveness soak
+
+Goal:
+
+- catch low-probability desync or “MAIN stops reacting after a while” failures
+
+Implementation:
+
+- build a looped scenario of:
+  - preset switch
+  - standby
+  - wake
+  - follow-up action such as mute or another preset switch
+- run 25 to 100 iterations
+- after each iteration require:
+  - LEFT reachable
+  - RIGHT reachable
+  - same final preset on both
+  - usable LCD
+- stop on first failure and retain artifacts for that iteration
+
+Why it matters:
+
+- this is the best practical liveness test for multi-unit convergence under
+  normal user behavior rather than synthetic fault injection
+
+## Recommended Implementation Order
+
+Implement in this order:
+
+1. preset-switch convergence baseline
+2. rapid-toggle final-state convergence
+3. preset then mute/unmute timing sweep
+4. preset then standby/wake timing sweep
+5. reconnect and responsiveness soak
+
+Reason:
+
+- the first two give the quickest signal on whether the branch still has a real
+  preset-convergence problem
+- the middle two directly target the user-visible regressions
+- the soak is highest value after the shorter tests are stable enough to trust
+  as building blocks
 
 ## How To Distinguish Real Bug vs. Harness Issue
 

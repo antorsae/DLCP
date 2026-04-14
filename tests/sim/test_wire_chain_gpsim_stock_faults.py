@@ -47,6 +47,8 @@ from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+pytestmark = [pytest.mark.wire]
+
 # MAIN firmware status register (active gate at bit 3)
 _STATUS_5E = 0x05E
 

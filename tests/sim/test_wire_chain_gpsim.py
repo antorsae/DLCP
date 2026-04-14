@@ -8,6 +8,8 @@ from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25, V31_MAIN_H
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+pytestmark = [pytest.mark.wire]
+
 
 def _require_gpsim() -> None:
     if not gpsim_available():

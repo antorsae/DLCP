@@ -35,6 +35,11 @@ from dlcp_fw.paths import ARTIFACTS_DIR, SCRIPTS_DIR
 
 DEFAULT_OUTPUT_ROOT = ARTIFACTS_DIR / "probes" / "hardware_state_test"
 DEFAULT_MEMORY_SIZE = ROUTE_RAM_BASE + ROUTE_LEN - ACTIVE_FLAGS_ADDR
+DEFAULT_MAIN_TIMEOUT_S = 10.0
+DEFAULT_MAIN_POLL_S = 0.1
+DEFAULT_LCD_TIMEOUT_S = 18.0
+DEFAULT_LCD_POLL_S = 0.1
+DEFAULT_LCD_PROBE_CAPTURES = 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +63,12 @@ class MainRoleState:
     mode: str = ""
     version: str | None = None
     warnings: list[str] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
+class IrSequenceStep:
+    action: str
+    sleep_after_s: float = 0.0
 
 
 def _json_dumps(data: object) -> str:
@@ -266,6 +277,322 @@ def _default_flipper_ir_command_template(*, port: str | None) -> str:
     return " ".join(tokens)
 
 
+def _normalize_preset_action(action: str) -> str:
+    normalized = action.strip().upper()
+    if normalized not in {"F1", "F2"}:
+        raise RuntimeError(f"expected preset action F1 or F2, got {action!r}")
+    return normalized
+
+
+def _expected_preset_for_action(action: str) -> str:
+    normalized = _normalize_preset_action(action)
+    return "A" if normalized == "F1" else "B"
+
+
+def _parse_preset_sequence(sequence: str) -> list[str]:
+    actions = [_normalize_preset_action(item) for item in sequence.split(",") if item.strip()]
+    if not actions:
+        raise RuntimeError("preset sequence must contain at least one F1/F2 action")
+    return actions
+
+
+def _camera_probe_kwargs_from_args(
+    args: argparse.Namespace,
+    *,
+    output_root: Path,
+    skip_configure: bool,
+    captures: int | None = None,
+) -> dict[str, object]:
+    return {
+        "camera_selector": args.camera_selector,
+        "vendor": args.vendor,
+        "product": args.product,
+        "address": args.address,
+        "zoom": args.zoom,
+        "focus": args.focus,
+        "exposure": args.exposure,
+        "gain": args.gain,
+        "sharpness": args.sharpness,
+        "captures": args.captures if captures is None else captures,
+        "warmup_s": args.warmup_s,
+        "skip_configure": skip_configure,
+        "output_root": output_root,
+    }
+
+
+def _role_pair_payload(left: MainRoleState, right: MainRoleState) -> dict[str, object]:
+    return {
+        "left": dataclasses.asdict(left),
+        "right": dataclasses.asdict(right),
+    }
+
+
+def _compact_role_observation(state: MainRoleState) -> dict[str, object]:
+    return {
+        "path": state.path,
+        "role": state.role,
+        "active_preset": state.active_preset,
+        "active_config_name": state.active_config_name,
+        "raw_window_hex": state.raw_window_hex,
+        "mode": state.mode,
+        "version": state.version,
+    }
+
+
+def _assert_lcd_consensus(
+    summary: dict[str, object],
+    *,
+    expected_line1: str,
+    expected_line2: str,
+    context: str,
+) -> None:
+    consensus = summary["consensus"]
+    actual_line1 = consensus["line1"]
+    actual_line2 = consensus["line2"]
+    if actual_line1 != expected_line1 or actual_line2 != expected_line2:
+        raise RuntimeError(
+            f"{context}: unexpected LCD consensus {actual_line1!r} / {actual_line2!r}; "
+            f"expected {expected_line1!r} / {expected_line2!r}"
+        )
+
+
+def _assert_expected_role_pair(
+    left: MainRoleState,
+    right: MainRoleState,
+    *,
+    expected_preset: str,
+    context: str,
+) -> None:
+    for item in (left, right):
+        if item.active_preset != expected_preset:
+            raise RuntimeError(
+                f"{context}: MAIN role {item.role} did not reach preset {expected_preset}: "
+                f"path={item.path} active_preset={item.active_preset!r}"
+            )
+
+
+def _execute_ir_sequence(
+    *,
+    ir_template: str,
+    steps: Sequence[IrSequenceStep],
+) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    for step in steps:
+        result = _send_ir(ir_template, action=step.action)
+        results.append(
+            {
+                "action": step.action,
+                "sleep_after_s": step.sleep_after_s,
+                **result,
+            }
+        )
+        if step.sleep_after_s > 0:
+            time.sleep(max(0.0, step.sleep_after_s))
+    return results
+
+
+def _wait_for_main_pair_preset(
+    *,
+    vid: int,
+    pid: int,
+    expected_preset: str,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> dict[str, object]:
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_s)
+    left_reached_s: float | None = None
+    right_reached_s: float | None = None
+    both_reached_s: float | None = None
+    observations: list[dict[str, object]] = []
+    last_left: MainRoleState | None = None
+    last_right: MainRoleState | None = None
+
+    while True:
+        states = _collect_main_roles(vid=vid, pid=pid)
+        left, right = _assert_left_right_roles(states)
+        last_left, last_right = left, right
+        elapsed = time.monotonic() - started
+        observations.append(
+            {
+                "t_s": elapsed,
+                "left": _compact_role_observation(left),
+                "right": _compact_role_observation(right),
+            }
+        )
+        if left.active_preset == expected_preset and left_reached_s is None:
+            left_reached_s = elapsed
+        if right.active_preset == expected_preset and right_reached_s is None:
+            right_reached_s = elapsed
+        if (
+            left.active_preset == expected_preset
+            and right.active_preset == expected_preset
+            and both_reached_s is None
+        ):
+            both_reached_s = elapsed
+            return {
+                "expected_preset": expected_preset,
+                "timeout_s": timeout_s,
+                "poll_interval_s": poll_interval_s,
+                "left_reached_s": left_reached_s,
+                "right_reached_s": right_reached_s,
+                "both_reached_s": both_reached_s,
+                "observations": observations,
+                "final": _role_pair_payload(left, right),
+            }
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.0, poll_interval_s))
+
+    raise RuntimeError(
+        f"timed out waiting for both MAINs to reach preset {expected_preset}; "
+        f"left={None if last_left is None else last_left.active_preset!r} "
+        f"right={None if last_right is None else last_right.active_preset!r}"
+    )
+
+
+def _wait_for_lcd_target(
+    *,
+    expected_line1: str,
+    expected_line2: str,
+    timeout_s: float,
+    poll_interval_s: float,
+    probe_captures: int,
+    args: argparse.Namespace,
+    output_root: Path,
+) -> dict[str, object]:
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_s)
+    probes: list[dict[str, object]] = []
+    last_summary: dict[str, object] | None = None
+
+    while True:
+        elapsed = time.monotonic() - started
+        summary = _probe_lcd(
+            **_camera_probe_kwargs_from_args(
+                args,
+                output_root=output_root,
+                skip_configure=True,
+                captures=probe_captures,
+            )
+        )
+        last_summary = summary
+        line1 = summary["consensus"]["line1"]
+        line2 = summary["consensus"]["line2"]
+        probes.append(
+            {
+                "t_s": elapsed,
+                "line1": line1,
+                "line2": line2,
+                "summary_path": summary["summary_path"],
+            }
+        )
+        if line1 == expected_line1 and line2 == expected_line2:
+            return {
+                "expected_line1": expected_line1,
+                "expected_line2": expected_line2,
+                "timeout_s": timeout_s,
+                "poll_interval_s": poll_interval_s,
+                "probe_captures": probe_captures,
+                "matched_at_s": elapsed,
+                "probes": probes,
+                "last_summary_path": summary["summary_path"],
+            }
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.0, poll_interval_s))
+
+    actual_line1 = None if last_summary is None else last_summary["consensus"]["line1"]
+    actual_line2 = None if last_summary is None else last_summary["consensus"]["line2"]
+    raise RuntimeError(
+        f"timed out waiting for LCD {expected_line1!r} / {expected_line2!r}; "
+        f"last consensus was {actual_line1!r} / {actual_line2!r}"
+    )
+
+
+def _run_preset_sequence_scenario(
+    *,
+    scenario_name: str,
+    steps: Sequence[IrSequenceStep],
+    expected_preset: str,
+    args: argparse.Namespace,
+) -> Path:
+    run_root = args.output_root / scenario_name / time.strftime("%Y%m%d_%H%M%S")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    states_before = _collect_main_roles(vid=args.vid, pid=args.pid)
+    left_before, right_before = _assert_left_right_roles(states_before)
+    baseline_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "baseline",
+            skip_configure=args.skip_configure,
+        )
+    )
+
+    ir_template = args.ir_command_template or _default_flipper_ir_command_template(
+        port=args.flipper_port
+    )
+    ir_results = _execute_ir_sequence(ir_template=ir_template, steps=steps)
+    main_wait = _wait_for_main_pair_preset(
+        vid=args.vid,
+        pid=args.pid,
+        expected_preset=expected_preset,
+        timeout_s=args.timeout_s,
+        poll_interval_s=args.main_poll_s,
+    )
+    expected_line2 = f"Active: {expected_preset}"
+    lcd_wait = _wait_for_lcd_target(
+        expected_line1="Volume",
+        expected_line2=expected_line2,
+        timeout_s=args.lcd_timeout_s,
+        poll_interval_s=args.lcd_poll_s,
+        probe_captures=args.lcd_probe_captures,
+        args=args,
+        output_root=run_root / "lcd_wait",
+    )
+    after_lcd = _probe_lcd(
+        **_camera_probe_kwargs_from_args(
+            args,
+            output_root=run_root / "after",
+            skip_configure=True,
+        )
+    )
+    states_after = _collect_main_roles(vid=args.vid, pid=args.pid)
+    left_after, right_after = _assert_left_right_roles(states_after)
+
+    _assert_expected_role_pair(
+        left_after,
+        right_after,
+        expected_preset=expected_preset,
+        context=scenario_name,
+    )
+    _assert_lcd_consensus(
+        after_lcd,
+        expected_line1="Volume",
+        expected_line2=expected_line2,
+        context=scenario_name,
+    )
+
+    payload = {
+        "scenario": scenario_name,
+        "run_root": str(run_root),
+        "expected_preset": expected_preset,
+        "baseline_lcd": baseline_lcd,
+        "ir_command_template": ir_template,
+        "sequence": [dataclasses.asdict(step) for step in steps],
+        "ir_results": ir_results,
+        "main_wait": main_wait,
+        "lcd_wait": lcd_wait,
+        "after_lcd": after_lcd,
+        "before": _role_pair_payload(left_before, right_before),
+        "after": _role_pair_payload(left_after, right_after),
+    }
+    out_path = run_root / "result.json"
+    out_path.write_text(_json_dumps(payload), encoding="utf-8")
+    return out_path
+
+
 def _probe_lcd(
     *,
     camera_selector: str,
@@ -366,6 +693,38 @@ def _cmd_identify_mains(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_preset_convergence(args: argparse.Namespace) -> int:
+    action = _normalize_preset_action(args.action)
+    out_path = _run_preset_sequence_scenario(
+        scenario_name="preset_convergence",
+        steps=[IrSequenceStep(action=action)],
+        expected_preset=_expected_preset_for_action(action),
+        args=args,
+    )
+    print(_json_dumps({"result_path": str(out_path), "status": "PASS"}))
+    return 0
+
+
+def _cmd_rapid_toggle_convergence(args: argparse.Namespace) -> int:
+    actions = _parse_preset_sequence(args.sequence)
+    inter_press_s = max(0.0, args.inter_press_ms / 1000.0)
+    steps = [
+        IrSequenceStep(
+            action=action,
+            sleep_after_s=(inter_press_s if index + 1 < len(actions) else 0.0),
+        )
+        for index, action in enumerate(actions)
+    ]
+    out_path = _run_preset_sequence_scenario(
+        scenario_name="rapid_toggle_convergence",
+        steps=steps,
+        expected_preset=_expected_preset_for_action(actions[-1]),
+        args=args,
+    )
+    print(_json_dumps({"result_path": str(out_path), "status": "PASS"}))
+    return 0
+
+
 def _cmd_ir_preset_roundtrip(args: argparse.Namespace) -> int:
     run_root = args.output_root / "ir_preset_roundtrip" / time.strftime("%Y%m%d_%H%M%S")
     run_root.mkdir(parents=True, exist_ok=True)
@@ -454,6 +813,37 @@ def _cmd_ir_preset_roundtrip(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_camera_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--camera-selector", default=lcd_probe.DEFAULT_CAMERA_NAME)
+    parser.add_argument("--vendor", type=int, default=lcd_probe.DEFAULT_CAMERA_VENDOR)
+    parser.add_argument("--product", type=int, default=lcd_probe.DEFAULT_CAMERA_PRODUCT)
+    parser.add_argument("--address", type=int, default=lcd_probe.DEFAULT_CAMERA_ADDRESS)
+    parser.add_argument("--zoom", type=int, default=lcd_probe.DEFAULT_CAMERA_ZOOM)
+    parser.add_argument("--focus", type=int, default=lcd_probe.DEFAULT_CAMERA_FOCUS)
+    parser.add_argument("--exposure", type=int, default=lcd_probe.DEFAULT_CAMERA_EXPOSURE)
+    parser.add_argument("--gain", type=int, default=lcd_probe.DEFAULT_CAMERA_GAIN)
+    parser.add_argument("--sharpness", type=int, default=lcd_probe.DEFAULT_CAMERA_SHARPNESS)
+    parser.add_argument("--captures", type=int, default=lcd_probe.DEFAULT_CAPTURE_COUNT)
+    parser.add_argument("--warmup-s", type=float, default=lcd_probe.DEFAULT_WARMUP_S)
+    parser.add_argument("--skip-configure", action="store_true")
+
+
+def _add_ir_transport_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ir-command-template",
+        help="optional command template used to send IR; supports {action}, {action_lower}, {action_upper}",
+    )
+    parser.add_argument("--flipper-port", help="optional Flipper serial port for the built-in sender")
+
+
+def _add_convergence_wait_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--timeout-s", type=float, default=DEFAULT_MAIN_TIMEOUT_S)
+    parser.add_argument("--main-poll-s", type=float, default=DEFAULT_MAIN_POLL_S)
+    parser.add_argument("--lcd-timeout-s", type=float, default=DEFAULT_LCD_TIMEOUT_S)
+    parser.add_argument("--lcd-poll-s", type=float, default=DEFAULT_LCD_POLL_S)
+    parser.add_argument("--lcd-probe-captures", type=int, default=DEFAULT_LCD_PROBE_CAPTURES)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--vid", type=int, default=DEFAULT_VID)
@@ -469,30 +859,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_roles.add_argument("--require-left-right", action="store_true", help="fail unless exactly one LEFT and one RIGHT are visible")
     p_roles.set_defaults(func=_cmd_identify_mains)
 
+    p_conv = sub.add_parser(
+        "preset-convergence",
+        help="send one real IR preset action and wait for both MAINs and the LCD to converge",
+    )
+    p_conv.add_argument("--action", required=True, help="preset IR action: F1 or F2")
+    _add_ir_transport_args(p_conv)
+    _add_convergence_wait_args(p_conv)
+    _add_camera_args(p_conv)
+    p_conv.set_defaults(func=_cmd_preset_convergence)
+
+    p_rapid = sub.add_parser(
+        "rapid-toggle-convergence",
+        help="send a timed F1/F2 sequence and verify final convergence on both MAINs and the LCD",
+    )
+    p_rapid.add_argument(
+        "--sequence",
+        required=True,
+        help="comma-separated preset IR actions, e.g. F1,F2,F1,F2",
+    )
+    p_rapid.add_argument("--inter-press-ms", type=float, default=250.0)
+    _add_ir_transport_args(p_rapid)
+    _add_convergence_wait_args(p_rapid)
+    _add_camera_args(p_rapid)
+    p_rapid.set_defaults(func=_cmd_rapid_toggle_convergence)
+
     p_ir = sub.add_parser(
         "ir-preset-roundtrip",
         help="send one preset-select IR action, then verify LCD and both MAIN memories",
     )
     p_ir.add_argument("--action", required=True, help="logical IR action name, e.g. F1 or F2")
     p_ir.add_argument("--expected-preset", choices=("A", "B"), required=True)
-    p_ir.add_argument(
-        "--ir-command-template",
-        help="optional command template used to send IR; supports {action}, {action_lower}, {action_upper}",
-    )
-    p_ir.add_argument("--flipper-port", help="optional Flipper serial port for the built-in sender")
+    _add_ir_transport_args(p_ir)
     p_ir.add_argument("--settle-s", type=float, default=1.0)
-    p_ir.add_argument("--camera-selector", default=lcd_probe.DEFAULT_CAMERA_NAME)
-    p_ir.add_argument("--vendor", type=int, default=lcd_probe.DEFAULT_CAMERA_VENDOR)
-    p_ir.add_argument("--product", type=int, default=lcd_probe.DEFAULT_CAMERA_PRODUCT)
-    p_ir.add_argument("--address", type=int, default=lcd_probe.DEFAULT_CAMERA_ADDRESS)
-    p_ir.add_argument("--zoom", type=int, default=lcd_probe.DEFAULT_CAMERA_ZOOM)
-    p_ir.add_argument("--focus", type=int, default=lcd_probe.DEFAULT_CAMERA_FOCUS)
-    p_ir.add_argument("--exposure", type=int, default=lcd_probe.DEFAULT_CAMERA_EXPOSURE)
-    p_ir.add_argument("--gain", type=int, default=lcd_probe.DEFAULT_CAMERA_GAIN)
-    p_ir.add_argument("--sharpness", type=int, default=lcd_probe.DEFAULT_CAMERA_SHARPNESS)
-    p_ir.add_argument("--captures", type=int, default=lcd_probe.DEFAULT_CAPTURE_COUNT)
-    p_ir.add_argument("--warmup-s", type=float, default=lcd_probe.DEFAULT_WARMUP_S)
-    p_ir.add_argument("--skip-configure", action="store_true")
+    _add_camera_args(p_ir)
     p_ir.set_defaults(func=_cmd_ir_preset_roundtrip)
 
     return ap
