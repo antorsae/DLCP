@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-13
+Last updated: 2026-04-14
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -222,6 +222,9 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/gpsim-xtc`
 - `scripts/gpsim`
 - `scripts/simctl.py`
+- `scripts/hardware_flipper_ir.py`
+- `scripts/hardware_lcd_probe.py`
+- `scripts/hardware_state_test.py`
 - `scripts/hardware_loop.py`
 - `scripts/dlcp_preset.py`
 - `scripts/dlcp_main_flash.py`
@@ -243,7 +246,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests/sim`)
 
-Current suite (84 test files, 649 tests collected):
+Current suite (85 test files, 682 tests collected):
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -303,7 +306,7 @@ Tooling/analysis:
 - `test_bake_preset_capture.py`
 
 Hardware-loop tooling:
-- `test_hardware_loop.py`
+- `test_hardware_flipper_ir.py`, `test_hardware_loop.py`, `test_hardware_state_test.py`
 
 V2.7 + V1.63b:
 - `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
@@ -326,12 +329,13 @@ V3.1 source rewrite:
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (2026-04-11):
+Recent verification (latest 2026-04-14):
 
-- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `649 tests collected`
+- `.venv_ep0/bin/python -m pytest tests/sim --collect-only -q` -> `682 tests collected`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_control_flash_safety.py` -> `13 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `10 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `22 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_loop.py` -> `12 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_flipper_ir.py tests/sim/test_hardware_state_test.py` -> `19 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_main_gpsim_portability.py tests/sim/test_v31_patch_builders.py` -> `13 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_bake_preset_capture.py tests/sim/test_v31_diag_memread_usb_safe.py` -> `4 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
@@ -354,6 +358,7 @@ Full test gate (all versions, parallel):
 Top-level docs:
 
 - `docs/AB_PRESETS.md` (A/B preset patch design, flashing, checks)
+- `docs/HARDWARE_TEST.md` (real-hardware state-transition validation runbook for two MAINs, CONTROL, IR, and LCD capture)
 - `docs/HARDWARE_LOOP.md` (real-hardware audio playback/capture workflow and firmware comparison matrix)
 - `docs/RECOVERY.md` (PICkit 5 readback recombination and full MAIN recovery image workflow)
 - `docs/ROBUSTNESS.md` (robustness findings, release policy, and implementation plan)
