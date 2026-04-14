@@ -74,3 +74,35 @@ def test_dlcp_ep0_large_read_streams_via_repeated_e7() -> None:
         (0xE7, 0xFF, True, 0xFF),
         (0xE7, 0x42, True, 0x42),
     ]
+
+
+def test_dump_flash_forwards_explicit_path(monkeypatch, tmp_path) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeEp0:
+        def __init__(self, vid: int, pid: int, path: bytes | None = None) -> None:
+            seen["path"] = path
+            self.ptr = 0
+
+        def set_pointer(self, addr16: int) -> None:
+            self.ptr = addr16
+
+        def read_exact(self, n: int) -> bytes:
+            return bytes([0x33] * n)
+
+    monkeypatch.setattr(probe, "DlcpEp0", FakeEp0)
+
+    out_path = tmp_path / "dump.bin"
+    data = probe.dump_flash(
+        out_path=out_path,
+        vid=0x04D8,
+        pid=0xFF89,
+        path=b"hid-main-b",
+        start=0x0800,
+        size=4,
+        chunk=2,
+    )
+
+    assert data == b"\x33\x33\x33\x33"
+    assert out_path.read_bytes() == data
+    assert seen["path"] == b"hid-main-b"

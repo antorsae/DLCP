@@ -201,13 +201,8 @@ def _untransmitted_diff_offset(got: bytes, expected: bytes) -> Optional[int]:
     return None
 
 
-def _probe_active_preset(*, vid: int, pid: int) -> str:
-    matches = _list_devices_with_mode(vid, pid)
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"EP0 preset probe requires exactly one matching device, found {len(matches)}"
-        )
-    ep0 = DlcpEp0(vid=vid, pid=pid)
+def _probe_active_preset(*, vid: int, pid: int, path: bytes | None = None) -> str:
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
     ep0.set_pointer(ACTIVE_FLAGS_ADDR)
     data = ep0.read_exact(1)
     if len(data) != 1:
@@ -382,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.list:
-        print(json.dumps(_list_devices_with_mode(args.vid, args.pid), indent=2))
+        print(json.dumps(_list_devices_with_mode(args.vid, args.pid), indent=2, default=str))
         return 0
 
     path = args.path.encode("utf-8") if args.path is not None else None
@@ -394,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
 
     active_preset: str | None = None
     try:
-        active_preset = _probe_active_preset(vid=args.vid, pid=args.pid)
+        active_preset = _probe_active_preset(vid=args.vid, pid=args.pid, path=path)
         print(f"  active preset: {active_preset}")
     except Exception as exc:
         print(f"  warning: active preset probe failed: {exc}")
@@ -445,7 +440,11 @@ def main(argv: list[str] | None = None) -> int:
             live_slot = _cmd03_write_filename_slot(dev, name_slot=name_slot_info[0])
             print(f"  wrote active filename RAM slot: {decode_filename_slot(live_slot)!r}")
             try:
-                changed = _force_active_filename_persist(vid=args.vid, pid=args.pid)
+                changed = _force_active_filename_persist(
+                    vid=args.vid,
+                    pid=args.pid,
+                    path=info_path,
+                )
             except Exception as exc:
                 print(f"  warning: active filename EEPROM persist trigger failed: {exc}")
             else:
@@ -463,7 +462,11 @@ def main(argv: list[str] | None = None) -> int:
     post_snapshot = _probe_device_snapshot(info=post_info, vid=args.vid, pid=args.pid)
     post_active_preset: str | None = None
     try:
-        post_active_preset = _probe_active_preset(vid=args.vid, pid=args.pid)
+        post_active_preset = _probe_active_preset(
+            vid=args.vid,
+            pid=args.pid,
+            path=post_info.path,
+        )
     except Exception:
         post_active_preset = active_preset
 

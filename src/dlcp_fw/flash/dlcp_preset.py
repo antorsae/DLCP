@@ -55,14 +55,16 @@ def _write_preset_switch_ep0(
     vid: int,
     pid: int,
     preset: str,
+    path: bytes | None = None,
 ) -> dict[str, int]:
-    return _request_active_preset_switch_ep0(vid=vid, pid=pid, preset=preset)
+    return _request_active_preset_switch_ep0(vid=vid, pid=pid, preset=preset, path=path)
 
 
 def _wait_for_active_preset(
     *,
     vid: int,
     pid: int,
+    path: bytes | None,
     expected: str,
     timeout_s: float,
     poll_interval_s: float,
@@ -74,7 +76,7 @@ def _wait_for_active_preset(
     last_exc: Optional[Exception] = None
     while True:
         try:
-            flags = _read_active_flags_ep0(vid=vid, pid=pid)
+            flags = _read_active_flags_ep0(vid=vid, pid=pid, path=path)
             last_flags = flags
             current = _active_preset_from_flags(flags)
             ready = current == expected and not (flags & ACTIVE_REAPPLY_MASK)
@@ -145,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     info_path = getattr(info, "path", None)
     print(f"  hid path: {_path_text(info_path)}")
 
-    active_preset = _probe_active_preset_ep0(vid=args.vid, pid=args.pid)
+    active_preset = _probe_active_preset_ep0(vid=args.vid, pid=args.pid, path=path)
     print(f"  active preset: {active_preset}")
 
     if args.info_only:
@@ -174,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         vid=args.vid,
         pid=args.pid,
         preset=target,
+        path=path,
     )
     if args.verbose:
         print(
@@ -188,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     confirmed = _wait_for_active_preset(
         vid=args.vid,
         pid=args.pid,
+        path=path,
         expected=target,
         timeout_s=max(0.0, args.verify_timeout_s),
         poll_interval_s=max(0.0, args.poll_interval_s),

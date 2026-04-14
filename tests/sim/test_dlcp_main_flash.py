@@ -15,11 +15,13 @@ from dlcp_fw.flash.dlcp_main_flash import (
     build_main_stream,
     decode_filename_slot,
     decode_route_entries,
+    _probe_device_snapshot,
     main,
     parse_intel_hex,
     parse_cmd06_version_response,
     run_preflight,
 )
+from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
 from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
 
 
@@ -148,6 +150,46 @@ def test_cli_info_only_does_not_require_hex(monkeypatch, capsys) -> None:
     assert "device info:" in out
     assert "version: 3.1" in out
     assert "active config: 'ConfigA'" in out
+
+
+def test_probe_device_snapshot_forwards_selected_path_to_ep0(monkeypatch) -> None:
+    info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"hid-main-b",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="SER-B",
+    )
+    seen: dict[str, object] = {}
+
+    class FakeDev:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._open_hid",
+        lambda path: FakeDev(),
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_cmd06_version",
+        lambda dev: VersionInfo(flag=0x03, major=0x03, minor=0x01),
+    )
+
+    def _fake_probe_ep0_app_ram(*, vid, pid, path=None):
+        seen["path"] = path
+        return "ConfigB", (RouteEntry(channel=1, value=1, label="R"),)
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_ep0_app_ram",
+        _fake_probe_ep0_app_ram,
+    )
+
+    snapshot = _probe_device_snapshot(info=info, vid=0x04D8, pid=0xFF89)
+
+    assert seen["path"] == b"hid-main-b"
+    assert snapshot.active_config_name == "ConfigB"
+    assert snapshot.active_routes == (RouteEntry(channel=1, value=1, label="R"),)
 
 
 def test_main_boot_ack_detector_accepts_expected_shapes() -> None:

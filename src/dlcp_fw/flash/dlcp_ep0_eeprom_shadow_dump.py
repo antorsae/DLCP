@@ -27,9 +27,15 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import pathlib
+import plistlib
+import subprocess
+import sys
 from datetime import datetime, timezone
+
+from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo, enumerate_devices
 
 
 VID_DEFAULT = 0x04D8
@@ -47,7 +53,13 @@ def idx_for_addr(addr: int) -> int:
 
 
 class DlcpEp0:
-    def __init__(self, vid: int, pid: int) -> None:
+    def __init__(
+        self,
+        vid: int,
+        pid: int,
+        path: bytes | None = None,
+        hid_info: HidDeviceInfo | None = None,
+    ) -> None:
         try:
             import usb.core  # type: ignore[import-not-found]
         except ImportError as exc:
@@ -56,9 +68,13 @@ class DlcpEp0:
             ) from exc
 
         self._usb_core = usb.core
-        dev = self._usb_core.find(idVendor=vid, idProduct=pid)
-        if dev is None:
-            raise RuntimeError(f"DLCP not found (VID:PID = {vid:04X}:{pid:04X})")
+        dev = _resolve_usb_device(
+            usb_core=self._usb_core,
+            vid=vid,
+            pid=pid,
+            path=path,
+            hid_info=hid_info,
+        )
         self.dev = dev
         self._prepare()
 
@@ -113,11 +129,184 @@ class DlcpEp0:
         return bytes(out)
 
 
+def _path_text(path: bytes | None) -> str:
+    if path is None:
+        return "<no-path>"
+    return path.decode("utf-8", errors="replace")
+
+
+def list_matching_devices_json(vid: int, pid: int) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for dev in enumerate_devices(vid, pid):
+        item = dataclasses.asdict(dev)
+        item["path"] = _path_text(dev.path)
+        out.append(item)
+    return out
+
+
+def _pick_hid_device_info(vid: int, pid: int, path: bytes | None) -> HidDeviceInfo:
+    devs = enumerate_devices(vid, pid)
+    if path is not None:
+        for dev in devs:
+            if dev.path == path:
+                return dev
+        raise RuntimeError("requested HID path was not found among matching devices")
+    if not devs:
+        raise RuntimeError(f"no HID device found for VID:PID {vid:04X}:{pid:04X}")
+    if len(devs) > 1:
+        raise RuntimeError(
+            f"multiple HID devices match {vid:04X}:{pid:04X}; use --list and pass --path"
+        )
+    return devs[0]
+
+
+def _safe_usb_string(dev, attr: str) -> str:
+    try:
+        value = getattr(dev, attr)
+    except Exception:
+        return ""
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _safe_usb_int(dev, attr: str):
+    try:
+        return getattr(dev, attr)
+    except Exception:
+        return None
+
+
+def _decode_macos_location_id(location_id: int) -> tuple[int, tuple[int, ...]]:
+    if location_id < 0:
+        raise ValueError("location_id must be >= 0")
+    hex_text = f"{location_id:08X}"
+    bus = int(hex_text[:2], 16)
+    ports = tuple(int(ch, 16) for ch in hex_text[2:] if ch != "0")
+    return bus, ports
+
+
+@functools.lru_cache(maxsize=1)
+def _macos_hid_device_index() -> dict[int, dict[str, object]]:
+    if sys.platform != "darwin":
+        return {}
+    proc = subprocess.run(
+        ["ioreg", "-a", "-r", "-c", "AppleUserUSBHostHIDDevice", "-l", "-w", "0"],
+        check=True,
+        capture_output=True,
+    )
+    payload = plistlib.loads(proc.stdout)
+    out: dict[int, dict[str, object]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        entry_id = item.get("IORegistryEntryID")
+        if isinstance(entry_id, int):
+            out[entry_id] = item
+    return out
+
+
+def _macos_location_id_for_hid_path(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None,
+) -> int | None:
+    if sys.platform != "darwin" or path is None:
+        return None
+    path_text = _path_text(path)
+    prefix = "DevSrvsID:"
+    if not path_text.startswith(prefix):
+        return None
+    try:
+        service_id = int(path_text[len(prefix) :], 10)
+    except ValueError:
+        return None
+    item = _macos_hid_device_index().get(service_id)
+    if item is None:
+        return None
+    if int(item.get("VendorID", -1)) != vid or int(item.get("ProductID", -1)) != pid:
+        return None
+    location_id = item.get("LocationID")
+    if isinstance(location_id, int):
+        return location_id
+    return None
+
+
+def _resolve_usb_device(
+    *,
+    usb_core,
+    vid: int,
+    pid: int,
+    path: bytes | None,
+    hid_info: HidDeviceInfo | None,
+):
+    matches = list(usb_core.find(find_all=True, idVendor=vid, idProduct=pid))
+    if not matches:
+        raise RuntimeError(f"DLCP not found (VID:PID = {vid:04X}:{pid:04X})")
+    if hid_info is None and path is None and len(matches) == 1:
+        return matches[0]
+
+    selected = hid_info
+    if selected is None:
+        selected = _pick_hid_device_info(vid, pid, path)
+
+    serial = (selected.serial_number or "").strip()
+    if serial:
+        serial_matches = [
+            dev
+            for dev in matches
+            if _safe_usb_string(dev, "serial_number").strip() == serial
+        ]
+        if len(serial_matches) == 1:
+            return serial_matches[0]
+        if len(serial_matches) > 1:
+            raise RuntimeError(
+                "multiple USB devices expose the same serial number "
+                f"{serial!r}; cannot disambiguate EP0 target"
+            )
+        if len(matches) == 1:
+            return matches[0]
+        raise RuntimeError(
+            "requested HID path selected serial "
+            f"{serial!r}, but pyusb could not match that serial across "
+            f"{len(matches)} USB devices"
+        )
+
+    location_id = _macos_location_id_for_hid_path(vid=vid, pid=pid, path=selected.path)
+    if location_id is not None:
+        bus, ports = _decode_macos_location_id(location_id)
+        topology_matches = [
+            dev
+            for dev in matches
+            if _safe_usb_int(dev, "bus") == bus
+            and tuple(_safe_usb_int(dev, "port_numbers") or ()) == ports
+        ]
+        if len(topology_matches) == 1:
+            return topology_matches[0]
+        if len(topology_matches) > 1:
+            raise RuntimeError(
+                "multiple USB devices match HID topology "
+                f"bus={bus} ports={ports}; cannot disambiguate EP0 target"
+            )
+
+    if len(matches) == 1:
+        return matches[0]
+
+    raise RuntimeError(
+        "multiple USB devices match "
+        f"{vid:04X}:{pid:04X}, but the selected HID device "
+        f"({_path_text(selected.path)}) does not expose a usable serial number; "
+        "EP0 cannot safely disambiguate the target"
+    )
+
+
 def capture_ram(
     *,
     out_path: pathlib.Path,
     vid: int,
     pid: int,
+    path: bytes | None,
     ram_start: int,
     ram_size: int,
     chunk: int,
@@ -131,7 +320,7 @@ def capture_ram(
     if chunk <= 0:
         raise ValueError("chunk must be > 0")
 
-    dev = DlcpEp0(vid=vid, pid=pid)
+    dev = DlcpEp0(vid=vid, pid=pid, path=path)
     dev.set_pointer(ram_start)
 
     out = bytearray()
@@ -220,10 +409,16 @@ def render_shadow_table(rows: list[dict[str, int | str]]) -> str:
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
+    if args.list:
+        print(json.dumps(list_matching_devices_json(args.vid, args.pid), indent=2))
+        return 0
+    if args.out is None:
+        raise SystemExit("--out is required unless --list is used")
     ram = capture_ram(
         out_path=args.out,
         vid=args.vid,
         pid=args.pid,
+        path=args.path.encode("utf-8") if args.path is not None else None,
         ram_start=args.ram_start,
         ram_size=args.ram_size,
         chunk=args.chunk,
@@ -282,10 +477,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cap = sub.add_parser("capture", help="capture RAM via EP0 primitive and decode EEPROM shadow")
     p_cap.add_argument("--vid", type=parse_int, default=VID_DEFAULT)
     p_cap.add_argument("--pid", type=parse_int, default=PID_DEFAULT)
+    p_cap.add_argument("--path", default=None, help="explicit HID path (UTF-8 text)")
+    p_cap.add_argument("--list", action="store_true", help="list matching HID devices and exit")
     p_cap.add_argument("--ram-start", type=parse_int, default=0x000)
     p_cap.add_argument("--ram-size", type=parse_int, default=0x200)
     p_cap.add_argument("--chunk", type=parse_int, default=0x100)
-    p_cap.add_argument("--out", type=pathlib.Path, required=True)
+    p_cap.add_argument("--out", type=pathlib.Path, default=None)
     p_cap.add_argument("--json-out", type=pathlib.Path, default=None)
 
     p_dec = sub.add_parser("decode", help="decode EEPROM shadow from existing RAM dump")
@@ -296,9 +493,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = _build_parser()
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.cmd == "capture":
         return _cmd_capture(args)
     if args.cmd == "decode":

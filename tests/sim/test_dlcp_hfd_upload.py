@@ -261,6 +261,65 @@ def test_cli_upload_uses_sidecar_name_and_runs_verify(monkeypatch, tmp_path, cap
     assert "upload complete" in out
 
 
+def test_cli_forwards_explicit_path_to_ep0_helpers(monkeypatch, tmp_path) -> None:
+    table_path = tmp_path / "presetA.bin"
+    table_path.write_bytes(_make_table())
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._pick_device",
+        lambda vid, pid, path: HidInfo(path=b"hid-main-b"),
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._probe_device_snapshot",
+        lambda **kwargs: DeviceSnapshot(
+            mode="app",
+            product_string="DLCP",
+            manufacturer_string="Hypex",
+            serial_number="123",
+            version=VersionInfo(flag=0x03, major=0x03, minor=0x01),
+            active_config_name="",
+            active_config_raw=b"",
+            active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+            warnings=(),
+        ),
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._print_device_snapshot",
+        lambda title, snapshot: None,
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._probe_active_preset",
+        lambda **kwargs: seen.__setitem__("probe_path", kwargs.get("path")) or "A",
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._open_hid",
+        lambda path: type("FakeDev", (), {"close": lambda self: None})(),
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._stream_upload",
+        lambda dev, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._cmd03_write_filename_slot",
+        lambda dev, name_slot: name_slot,
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._force_active_filename_persist",
+        lambda **kwargs: seen.__setitem__("persist_path", kwargs.get("path")) or True,
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_hfd_upload._verify_uploaded_active_bank",
+        lambda **kwargs: (True, []),
+    )
+
+    rc = main(["--path", "hid-main-b", "--table", str(table_path), "--name", "ConfigB"])
+
+    assert rc == 0
+    assert seen["probe_path"] == b"hid-main-b"
+    assert seen["persist_path"] == b"hid-main-b"
+
+
 class HidInfo:
     def __init__(self, path: bytes | None) -> None:
         self.vendor_id = 0x04D8

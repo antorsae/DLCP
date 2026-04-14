@@ -7,7 +7,9 @@ import pytest
 from dlcp_fw.paths import STOCK_CONTROL_HEX_V14
 from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_BOOT_START,
+    HidDeviceInfo,
     PreflightError,
+    _pick_device,
     bootloader_mismatch_addresses,
     main,
     parse_intel_hex,
@@ -74,3 +76,28 @@ def test_cli_blocks_unsafe_flags_without_force(patched_control_hex: Path) -> Non
 def test_cli_allows_unsafe_when_explicitly_forced(patched_control_hex: Path) -> None:
     rc = main(["--hex", str(patched_control_hex), "--preflight-only", "--no-verify", "--force-unsafe"])
     assert rc == 0
+
+
+def test_pick_device_rejects_ambiguous_auto_select(monkeypatch) -> None:
+    dev_a = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"path-a",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="A",
+    )
+    dev_b = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"path-b",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="B",
+    )
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_control_flash.enumerate_devices", lambda vid, pid: [dev_a, dev_b])
+
+    with pytest.raises(RuntimeError, match="multiple HID devices match"):
+        _pick_device(0x04D8, 0xFF89, None)
+
+    assert _pick_device(0x04D8, 0xFF89, b"path-b") == dev_b

@@ -224,18 +224,6 @@ def crc_stream(data: bytes) -> int:
     return crc
 
 
-def _find_default_device_path(vid: int, pid: int) -> Optional[bytes]:
-    import hid
-
-    for d in hid.enumerate():
-        if d.get("vendor_id") == vid and d.get("product_id") == pid:
-            # Prefer an interface that looks like HID (some platforms expose multiple)
-            p = d.get("path")
-            if p is not None:
-                return p
-    return None
-
-
 @dataclasses.dataclass(frozen=True)
 class HidDeviceInfo:
     vendor_id: int
@@ -266,6 +254,22 @@ def enumerate_devices(vid: int, pid: int) -> List[HidDeviceInfo]:
             )
         )
     return out
+
+
+def _pick_device(vid: int, pid: int, path: Optional[bytes]) -> HidDeviceInfo:
+    devs = enumerate_devices(vid, pid)
+    if path is not None:
+        for dev in devs:
+            if dev.path == path:
+                return dev
+        raise RuntimeError("requested HID path was not found among matching devices")
+    if not devs:
+        raise RuntimeError(f"no HID device found for VID:PID {vid:04X}:{pid:04X}")
+    if len(devs) > 1:
+        raise RuntimeError(
+            f"multiple HID devices match {vid:04X}:{pid:04X}; use --list and pass --path"
+        )
+    return devs[0]
 
 
 def _hid_write64(dev, payload64: bytes) -> None:
@@ -330,9 +334,10 @@ def flash_control(
 
     dev = hid.device()
     if path is None:
-        path = _find_default_device_path(vid, pid)
+        selected = _pick_device(vid, pid, None)
+        path = selected.path
         if path is None:
-            raise RuntimeError(f"no HID device found for VID:PID {vid:04x}:{pid:04x}")
+            raise RuntimeError("selected HID device has no path")
     dev.open_path(path)
     dev.set_nonblocking(False)
 

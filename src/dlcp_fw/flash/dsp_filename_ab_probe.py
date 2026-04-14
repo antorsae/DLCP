@@ -33,6 +33,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import DlcpEp0, list_matching_devices_json
 from dlcp_fw.paths import SIM_ARTIFACTS_DIR
 
 VID_DEFAULT = 0x04D8
@@ -73,81 +74,12 @@ def _slice_by_addr(data: bytes, dump_start: int, begin: int, end_excl: int) -> b
     return data[lo - dump_start : hi - dump_start]
 
 
-class DlcpEp0:
-    """EP0 helper (same primitive used in reanalysis_20260214/dlcp_ep0_flash_dump.py)."""
-
-    def __init__(self, vid: int, pid: int) -> None:
-        try:
-            import usb.core  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(
-                "pyusb is required for capture/run commands. Install with: "
-                "python3 -m pip install pyusb"
-            ) from exc
-        self._usb_core = usb.core
-        dev = self._usb_core.find(idVendor=vid, idProduct=pid)
-        if dev is None:
-            raise RuntimeError(f"DLCP not found (VID:PID = {vid:04X}:{pid:04X})")
-        self.dev = dev
-        self._prepare()
-
-    def _prepare(self) -> None:
-        try:
-            self.dev.set_configuration()
-        except self._usb_core.USBError:
-            pass
-
-    def _poke(self, addr: int, value: int, in_dir: bool, read_len: int = 0) -> bytes:
-        if not (0 <= value <= 0xFF):
-            raise ValueError(f"value out of range: 0x{value:02X}")
-
-        bm = 0x80 if in_dir else 0x00  # standard + device recipient
-        b_request = 0x0B
-        w_value = value
-        w_index = idx_for_addr(addr)
-        try:
-            if in_dir:
-                data = self.dev.ctrl_transfer(bm, b_request, w_value, w_index, read_len)
-                return bytes(data)
-            self.dev.ctrl_transfer(bm, b_request, w_value, w_index, None)
-            return b""
-        except self._usb_core.USBError as exc:
-            raise RuntimeError(
-                f"USB control transfer failed: {exc}\n"
-                "Try:\n"
-                "  1) quit HFD and any app using DLCP USB\n"
-                "  2) replug DLCP\n"
-                "  3) run via sudo"
-            ) from exc
-
-    def set_pointer(self, addr16: int) -> None:
-        lo = addr16 & 0xFF
-        hi = (addr16 >> 8) & 0xFF
-        self._poke(0x75, lo, in_dir=False)
-        self._poke(0x76, hi, in_dir=False)
-
-    def read_exact(self, n: int) -> bytes:
-        if n <= 0:
-            return b""
-        # The hardware 0xE8 bulk-read path produces shifted/garbled captures on
-        # real DLCP units. Stream everything through the stable 0xE7 path.
-        out = bytearray()
-        remaining = n
-        while remaining:
-            chunk = min(remaining, 0xFF)
-            data = self._poke(0xE7, chunk, in_dir=True, read_len=chunk)
-            if len(data) != chunk:
-                raise RuntimeError(f"short read: expected {chunk}, got {len(data)}")
-            out.extend(data)
-            remaining -= chunk
-        return bytes(out)
-
-
 def dump_flash(
     *,
     out_path: pathlib.Path,
     vid: int,
     pid: int,
+    path: bytes | None,
     start: int,
     size: int,
     chunk: int,
@@ -159,7 +91,7 @@ def dump_flash(
     if chunk <= 0:
         raise ValueError("chunk must be > 0")
 
-    dev = DlcpEp0(vid=vid, pid=pid)
+    dev = DlcpEp0(vid=vid, pid=pid, path=path)
     dev.set_pointer(start)
     out = bytearray()
     remaining = size
@@ -462,10 +394,16 @@ def write_markdown_report(
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
+    if args.list:
+        print(json.dumps(list_matching_devices_json(args.vid, args.pid), indent=2))
+        return 0
+    if args.out is None:
+        raise SystemExit("--out is required unless --list is used")
     dump_flash(
         out_path=args.out,
         vid=args.vid,
         pid=args.pid,
+        path=args.path.encode("utf-8") if args.path is not None else None,
         start=args.start,
         size=args.size,
         chunk=args.chunk,
@@ -509,6 +447,10 @@ def _prompt(msg: str, assume_yes: bool) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    if args.list:
+        print(json.dumps(list_matching_devices_json(args.vid, args.pid), indent=2))
+        return 0
+    path = args.path.encode("utf-8") if args.path is not None else None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
     out_dir = args.out_dir / f"{stamp}_{args.session_tag}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -522,6 +464,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         out_path=dump0,
         vid=args.vid,
         pid=args.pid,
+        path=path,
         start=args.start,
         size=args.size,
         chunk=args.chunk,
@@ -539,6 +482,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         out_path=dump1,
         vid=args.vid,
         pid=args.pid,
+        path=path,
         start=args.start,
         size=args.size,
         chunk=args.chunk,
@@ -556,6 +500,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         out_path=dump2,
         vid=args.vid,
         pid=args.pid,
+        path=path,
         start=args.start,
         size=args.size,
         chunk=args.chunk,
@@ -623,10 +568,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cap = sub.add_parser("capture", help="capture one flash snapshot via EP0 primitive")
     p_cap.add_argument("--vid", type=parse_int, default=VID_DEFAULT)
     p_cap.add_argument("--pid", type=parse_int, default=PID_DEFAULT)
+    p_cap.add_argument("--path", default=None, help="explicit HID path (UTF-8 text)")
+    p_cap.add_argument("--list", action="store_true", help="list matching HID devices and exit")
     p_cap.add_argument("--start", type=parse_int, default=START_DEFAULT)
     p_cap.add_argument("--size", type=parse_int, default=SIZE_DEFAULT)
     p_cap.add_argument("--chunk", type=parse_int, default=CHUNK_DEFAULT)
-    p_cap.add_argument("--out", type=pathlib.Path, required=True)
+    p_cap.add_argument("--out", type=pathlib.Path, default=None)
 
     p_an = sub.add_parser("analyze", help="analyze two existing dumps")
     p_an.add_argument("--before", type=pathlib.Path, required=True)
@@ -644,6 +591,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--vid", type=parse_int, default=VID_DEFAULT)
     p_run.add_argument("--pid", type=parse_int, default=PID_DEFAULT)
+    p_run.add_argument("--path", default=None, help="explicit HID path (UTF-8 text)")
+    p_run.add_argument("--list", action="store_true", help="list matching HID devices and exit")
     p_run.add_argument("--start", type=parse_int, default=START_DEFAULT)
     p_run.add_argument("--size", type=parse_int, default=SIZE_DEFAULT)
     p_run.add_argument("--chunk", type=parse_int, default=CHUNK_DEFAULT)
@@ -663,9 +612,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = _build_parser()
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.cmd == "capture":
         return _cmd_capture(args)

@@ -382,7 +382,7 @@ def test_cli_capture_b_rejects_v23_target_hex(monkeypatch, tmp_path: Path) -> No
 
 def test_apply_all_channel_mapping_updates_shadow_live_and_flags(monkeypatch) -> None:
     class FakeEp0:
-        def __init__(self, vid: int, pid: int) -> None:
+        def __init__(self, vid: int, pid: int, path: bytes | None = None) -> None:
             self.mem = bytearray(0x1000)
             self.ptr = 0
 
@@ -407,7 +407,7 @@ def test_apply_all_channel_mapping_updates_shadow_live_and_flags(monkeypatch) ->
 
     fake = FakeEp0(0x04D8, 0xFF89)
     # Re-run once so the assertions below inspect a concrete fake instance.
-    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.DlcpEp0", lambda vid, pid: fake)
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.DlcpEp0", lambda vid, pid, path=None: fake)
     routes = _apply_all_channel_mapping(vid=0x04D8, pid=0xFF89, route_label="R")
 
     assert all(entry.value == 1 and entry.label == "R" for entry in routes)
@@ -423,7 +423,7 @@ def test_force_active_filename_persist_sets_event_and_waits_for_dirty_clear(
     monkeypatch,
 ) -> None:
     class FakeEp0:
-        def __init__(self, vid: int, pid: int) -> None:
+        def __init__(self, vid: int, pid: int, path: bytes | None = None) -> None:
             self.mem = bytearray(0x1000)
             self.mem[ROUTE_DIRTY_FLAGS_ADDR] = FILENAME_DIRTY_MASK
             self.ptr = 0
@@ -444,7 +444,7 @@ def test_force_active_filename_persist_sets_event_and_waits_for_dirty_clear(
             return b""
 
     fake = FakeEp0(0x04D8, 0xFF89)
-    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.DlcpEp0", lambda vid, pid: fake)
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.DlcpEp0", lambda vid, pid, path=None: fake)
     monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _: None)
 
     changed = _force_active_filename_persist(vid=0x04D8, pid=0xFF89)
@@ -457,7 +457,7 @@ def test_force_active_filename_persist_sets_event_and_waits_for_dirty_clear(
 
 def test_force_active_filename_persist_returns_false_when_already_clean(monkeypatch) -> None:
     class FakeEp0:
-        def __init__(self, vid: int, pid: int) -> None:
+        def __init__(self, vid: int, pid: int, path: bytes | None = None) -> None:
             self.mem = bytearray(0x1000)
             self.ptr = 0
 
@@ -491,14 +491,14 @@ def test_switch_active_preset_ep0_waits_for_reapply_clear(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._request_active_preset_switch_ep0",
-        lambda *, vid, pid, preset: seen.append(preset) or {
+        lambda *, vid, pid, preset, path=None: seen.append(preset) or {
             "active_flags_before": 0x00,
             "active_flags_write": ACTIVE_REAPPLY_MASK | 0x04,
         },
     )
     monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._read_active_flags_ep0",
-        lambda *, vid, pid: next(flags),
+        lambda *, vid, pid, path=None: next(flags),
     )
     monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _: None)
     monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.monotonic", lambda: next(ticks))
@@ -536,7 +536,7 @@ def test_switch_active_preset_ep0_times_out_when_reapply_stays_pending(monkeypat
     )
     monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._read_active_flags_ep0",
-        lambda *, vid, pid: next(flags),
+        lambda *, vid, pid, path=None: next(flags),
     )
     monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _: None)
     monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.monotonic", lambda: next(ticks))

@@ -682,24 +682,25 @@ def _describe_active_flags(flags: int) -> str:
     return f"{preset} (active_flags=0x{flags:02X}, reapply {reapply})"
 
 
-def _read_active_flags_ep0(*, vid: int, pid: int) -> int:
-    matches = enumerate_devices(vid, pid)
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"EP0 preset probe requires exactly one matching device, found {len(matches)}"
-        )
-    ep0 = DlcpEp0(vid=vid, pid=pid)
+def _read_active_flags_ep0(*, vid: int, pid: int, path: bytes | None = None) -> int:
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
     return _ep0_read_byte(ep0, addr=ACTIVE_FLAGS_ADDR)
 
 
-def _probe_active_preset_ep0(*, vid: int, pid: int) -> str:
-    return _active_preset_from_flags(_read_active_flags_ep0(vid=vid, pid=pid))
+def _probe_active_preset_ep0(*, vid: int, pid: int, path: bytes | None = None) -> str:
+    return _active_preset_from_flags(_read_active_flags_ep0(vid=vid, pid=pid, path=path))
 
 
-def _request_active_preset_switch_ep0(*, vid: int, pid: int, preset: str) -> dict[str, int]:
+def _request_active_preset_switch_ep0(
+    *,
+    vid: int,
+    pid: int,
+    preset: str,
+    path: bytes | None = None,
+) -> dict[str, int]:
     if preset not in {"A", "B"}:
         raise ValueError(f"unsupported preset {preset!r}")
-    ep0 = DlcpEp0(vid=vid, pid=pid)
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
     before = _ep0_read_byte(ep0, addr=ACTIVE_FLAGS_ADDR)
     target = before & (~ACTIVE_PRESET_MASK & 0xFF)
     if preset == "B":
@@ -717,23 +718,24 @@ def _switch_active_preset_ep0(
     vid: int,
     pid: int,
     preset: str,
+    path: bytes | None = None,
     timeout_s: float = 2.0,
     poll_interval_s: float = 0.05,
     settle_s: float = 0.25,
     stable_reads: int = 2,
 ) -> str:
-    current_flags = _read_active_flags_ep0(vid=vid, pid=pid)
+    current_flags = _read_active_flags_ep0(vid=vid, pid=pid, path=path)
     current = _active_preset_from_flags(current_flags)
     if current == preset and not (current_flags & ACTIVE_REAPPLY_MASK):
         return current
-    _request_active_preset_switch_ep0(vid=vid, pid=pid, preset=preset)
+    _request_active_preset_switch_ep0(vid=vid, pid=pid, preset=preset, path=path)
     if settle_s > 0:
         time.sleep(settle_s)
     deadline = time.monotonic() + max(0.0, timeout_s)
     last_flags = current_flags
     consecutive_ready = 0
     while True:
-        last_flags = _read_active_flags_ep0(vid=vid, pid=pid)
+        last_flags = _read_active_flags_ep0(vid=vid, pid=pid, path=path)
         ready = (
             _active_preset_from_flags(last_flags) == preset
             and not (last_flags & ACTIVE_REAPPLY_MASK)
@@ -757,6 +759,7 @@ def _apply_all_channel_mapping(
     *,
     vid: int,
     pid: int,
+    path: bytes | None = None,
     route_label: str,
     settle_s: float = 0.15,
 ) -> tuple[RouteEntry, ...]:
@@ -765,7 +768,7 @@ def _apply_all_channel_mapping(
         raise ValueError(f"unsupported --all-ch value: {route_label!r}")
 
     expected = bytes([route_value] * ROUTE_LEN)
-    ep0 = DlcpEp0(vid=vid, pid=pid)
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
 
     for offset in range(ROUTE_LEN):
         _ep0_write_byte(ep0, addr=ROUTE_RAM_BASE + offset, value=route_value)
@@ -798,6 +801,7 @@ def _force_active_filename_persist(
     *,
     vid: int,
     pid: int,
+    path: bytes | None = None,
     timeout_s: float = 1.5,
     poll_s: float = 0.02,
 ) -> bool:
@@ -806,7 +810,7 @@ def _force_active_filename_persist(
     if poll_s <= 0:
         raise ValueError("poll_s must be > 0")
 
-    ep0 = DlcpEp0(vid=vid, pid=pid)
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
     dirty = _ep0_read_byte(ep0, addr=ROUTE_DIRTY_FLAGS_ADDR)
     if (dirty & FILENAME_DIRTY_MASK) == 0:
         return False
@@ -825,8 +829,13 @@ def _force_active_filename_persist(
             )
 
 
-def _probe_ep0_app_ram(*, vid: int, pid: int) -> tuple[str, tuple[RouteEntry, ...]]:
-    ep0 = DlcpEp0(vid=vid, pid=pid)
+def _probe_ep0_app_ram(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None = None,
+) -> tuple[str, tuple[RouteEntry, ...]]:
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
     route_raw = _read_ep0_window(ep0, start=ROUTE_RAM_BASE, size=ROUTE_LEN)
     filename_raw = _read_ep0_window(ep0, start=FILENAME_RAM_BASE, size=FILENAME_LEN)
     return decode_filename_slot(filename_raw), decode_route_entries(route_raw)
@@ -854,12 +863,11 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
 
     if mode != "bootloader":
         try:
-            matches = enumerate_devices(vid, pid)
-            if len(matches) != 1:
-                raise RuntimeError(
-                    f"EP0 RAM probe requires exactly one matching device, found {len(matches)}"
-                )
-            active_config_name, active_routes = _probe_ep0_app_ram(vid=vid, pid=pid)
+            active_config_name, active_routes = _probe_ep0_app_ram(
+                vid=vid,
+                pid=pid,
+                path=info.path,
+            )
             active_config_raw = active_config_name.encode("ascii", errors="ignore")
         except Exception as exc:
             warnings.append(f"EP0 RAM probe failed: {exc}")
@@ -1369,7 +1377,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise RuntimeError("post-flash app device has no HID path")
 
         if overlays:
-            initial_preset = _probe_active_preset_ep0(vid=args.vid, pid=args.pid)
+            initial_preset = _probe_active_preset_ep0(
+                vid=args.vid,
+                pid=args.pid,
+                path=post_dev.path,
+            )
             current_preset = initial_preset
             for overlay in overlays:
                 print(f"post-flash preset {overlay.preset} finalize:")
@@ -1378,6 +1390,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         vid=args.vid,
                         pid=args.pid,
                         preset=overlay.preset,
+                        path=post_dev.path,
                     )
                     current_preset = confirmed
                     print(f"  switched active preset for filename finalize: {confirmed}")
@@ -1397,6 +1410,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     forced = _force_active_filename_persist(
                         vid=args.vid,
                         pid=args.pid,
+                        path=post_dev.path,
                     )
                 except RuntimeError as exc:
                     print(
@@ -1443,6 +1457,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     vid=args.vid,
                     pid=args.pid,
                     preset=initial_preset,
+                    path=post_dev.path,
                 )
                 print(f"post-flash preset restore:\n  restored active preset: {restored}")
 
@@ -1451,6 +1466,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             routes = _apply_all_channel_mapping(
                 vid=args.vid,
                 pid=args.pid,
+                path=post_dev.path,
                 route_label=args.all_ch,
             )
             print(f"  requested all channels: {args.all_ch}")

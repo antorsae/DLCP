@@ -10,6 +10,7 @@ require a full dump workflow.
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 
 from dlcp_fw.flash import dsp_filename_ab_probe as ep0
@@ -59,13 +60,14 @@ def read_flash_window(
     *,
     vid: int,
     pid: int,
+    path: bytes | None,
     start: int,
     size: int,
     chunk: int,
 ) -> bytes:
     _validate_window(start=start, size=size, chunk=chunk)
 
-    dev = ep0.DlcpEp0(vid=vid, pid=pid)
+    dev = ep0.DlcpEp0(vid=vid, pid=pid, path=path)
     dev.set_pointer(start)
 
     out = bytearray()
@@ -102,6 +104,9 @@ def format_hexdump(start: int, data: bytes, *, width: int = 16) -> str:
 
 
 def _cmd_read(args: argparse.Namespace) -> int:
+    if args.list:
+        print(json.dumps(ep0.list_matching_devices_json(args.vid, args.pid), indent=2))
+        return 0
     if args.span is not None:
         start, size = parse_span(args.span)
     else:
@@ -111,6 +116,7 @@ def _cmd_read(args: argparse.Namespace) -> int:
     data = read_flash_window(
         vid=args.vid,
         pid=args.pid,
+        path=args.path.encode("utf-8") if args.path is not None else None,
         start=start,
         size=size,
         chunk=args.chunk,
@@ -147,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     read_p.add_argument("--width", type=int, default=16, help="hexdump bytes per line")
     read_p.add_argument("--vid", type=parse_int, default=VID_DEFAULT, help="USB vendor ID")
     read_p.add_argument("--pid", type=parse_int, default=PID_DEFAULT, help="USB product ID")
+    read_p.add_argument("--path", default=None, help="explicit HID path (UTF-8 text)")
+    read_p.add_argument("--list", action="store_true", help="list matching HID devices and exit")
     read_p.set_defaults(func=_cmd_read)
 
     return parser
@@ -156,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.cmd == "read" and args.span is None:
+    if args.cmd == "read" and args.span is None and not args.list:
         if args.start is None or args.size is None:
             parser.error("read requires either --span or both --start and --size")
 
