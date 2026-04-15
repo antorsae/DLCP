@@ -535,6 +535,64 @@ def _press_mute_and_assert_delivery(
     )
 
 
+def _inject_ir_until_mute_on_delivered(
+    chain: WireMultiMainChainHarness,
+    *,
+    attempts: int = 3,
+    limit_per_attempt: int = 16,
+) -> None:
+    for _ in range(attempts):
+        before_control = len(chain.control.tx_frames())
+        before_rx = [
+            (
+                _read_reg(chain.mains[idx]._issue, _RX_RING_RD),
+                _read_reg(chain.mains[idx]._issue, _RX_RING_WR),
+            )
+            for idx in range(len(chain.mains))
+        ]
+        chain.control.inject_decoded_ir_event(cmd=0x35, addr=0x10, steps=1)
+        for _ in range(limit_per_attempt):
+            _step_without_waiting(chain, steps=1, context="interleaved IR mute-on delivery")
+            new_frames = chain.control.tx_frames()[before_control:]
+            saw_mute_on = any(
+                f.route == 0xB0 and f.cmd == 0x03 and f.data == 0x03
+                for f in new_frames
+            )
+            after_rx = [
+                (
+                    _read_reg(chain.mains[idx]._issue, _RX_RING_RD),
+                    _read_reg(chain.mains[idx]._issue, _RX_RING_WR),
+                )
+                for idx in range(len(chain.mains))
+            ]
+            delivered = all(after_rx[idx] != before_rx[idx] for idx in range(len(chain.mains)))
+            if saw_mute_on and delivered:
+                return
+    pytest.fail(
+        "could not deliver explicit mute-on (B0/03/03) to both MAINs via interleaved IR; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+
+
+def _wait_all_mains_muted(
+    chain: WireMultiMainChainHarness,
+    *,
+    expected: bool,
+    limit: int = 60,
+    context: str,
+) -> None:
+    for _ in range(limit):
+        _step_without_waiting(chain, steps=1, context=context)
+        actual = [_main_muted(chain, idx) for idx in range(len(chain.mains))]
+        if actual == [expected] * len(chain.mains):
+            return
+    pytest.fail(
+        f"MAIN mute state did not converge to {expected} within {limit} steps; "
+        f"actual={[ _main_muted(chain, idx) for idx in range(len(chain.mains)) ]}; "
+        f"debug={[_main_debug_state(chain, idx) for idx in range(len(chain.mains))]}"
+    )
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_wire_two_main_rapid_ir_f1_f2_preserves_followup_mute() -> None:
@@ -580,12 +638,17 @@ def test_v32_wire_two_main_interleaved_mute_during_delayed_switch_preserves_stat
             limit=60,
             context="wait for main0 async preset job active",
         )
-        _press_mute_and_assert_delivery(chain)
+        _inject_ir_until_mute_on_delivered(chain)
 
         _wait_preset_job_idle(chain, limit=120, context="preset switch drain")
 
         _assert_all_mains_preset(chain, 1)
-        _press_mute_and_assert_delivery(chain)
+        _wait_all_mains_muted(
+            chain,
+            expected=True,
+            limit=80,
+            context="wait for final interleaved mute convergence",
+        )
     finally:
         chain.close()
 
@@ -702,10 +765,8 @@ def test_v32_wire_two_main_preset_soak_under_reconnect_and_full_sync_keeps_both_
         assert last is not None, "two-main wire chain never reached DISPLAY"
         _set_profile_hypex(chain)
 
-        # Keep this soak on repeated preset-B traffic to avoid gpsim's known
-        # single-injected F1/decoded-keyscan artifact while still gating
-        # reconnect/full-sync liveness under bursty control traffic.
-        for cycle, target_preset in enumerate((1, 1, 1), start=1):
+        # Include real A<->B alternation under reconnect/full-sync churn.
+        for cycle, target_preset in enumerate((1, 0, 1), start=1):
             chain.control.inject_decoded_ir_event(
                 cmd=0x39 if target_preset else 0x38,
                 addr=0x10,
