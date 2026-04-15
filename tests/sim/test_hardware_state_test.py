@@ -584,7 +584,7 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
         "_send_single_ir_action",
         lambda *, args, action: (actions.append(action) or {"action": action}),
     )
-    monkeypatch.setattr(hw, "_wait_for_lcd_target", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_wait_for_standby_lcd_entry", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_wait_for_main_pair_state", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
@@ -612,6 +612,62 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
     assert actions == ["STANDBY", "WAKE"]
     assert payload["after"]["left"]["active_preset"] == "B"
     assert payload["after"]["right"]["active_preset"] == "B"
+
+
+def test_wait_for_standby_lcd_entry_allows_guarded_blank_fallback(monkeypatch, tmp_path) -> None:
+    summaries = iter(
+        [
+            {
+                "consensus": {"line1": None, "line2": None},
+                "summary_path": str(tmp_path / "probe_1.json"),
+            },
+            {
+                "consensus": {"line1": None, "line2": None},
+                "summary_path": str(tmp_path / "probe_2.json"),
+            },
+        ]
+    )
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw, "_probe_lcd", lambda **kwargs: next(summaries))
+    monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"reachable": False, "error": "hid closed"})
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    args = SimpleNamespace(
+        vid=0x04D8,
+        pid=0xFF89,
+        camera_selector="cam",
+        vendor=1133,
+        product=2194,
+        address=5,
+        zoom=500,
+        focus=140,
+        exposure=156,
+        gain=80,
+        sharpness=200,
+        captures=1,
+        warmup_s=0.0,
+        standby_allow_blank_fallback=True,
+        standby_blank_consecutive=2,
+    )
+
+    payload = hw._wait_for_standby_lcd_entry(
+        timeout_s=2.0,
+        poll_interval_s=0.0,
+        probe_captures=1,
+        args=args,
+        output_root=tmp_path,
+        pre_standby_lcd_visible=True,
+    )
+
+    assert payload["matched_mode"] == "blank_fallback"
+    assert payload["blank_support_reason"] == "hid_unreachable"
+    assert payload["matched_at_s"] == pytest.approx(0.3)
 
 
 def test_reconnect_responsiveness_soak_command_writes_result(monkeypatch, tmp_path) -> None:

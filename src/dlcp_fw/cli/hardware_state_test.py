@@ -41,6 +41,7 @@ DEFAULT_LCD_TIMEOUT_S = 18.0
 DEFAULT_LCD_POLL_S = 0.1
 DEFAULT_LCD_PROBE_CAPTURES = 1
 DEFAULT_STANDBY_DWELL_S = 1.0
+DEFAULT_STANDBY_BLANK_CONSECUTIVE = 2
 DEFAULT_SOAK_ITERATIONS = 5
 
 
@@ -644,6 +645,127 @@ def _wait_for_lcd_target(
     )
 
 
+def _active_flags_from_pair_item(pair_item: object) -> int | None:
+    if not isinstance(pair_item, dict):
+        return None
+    raw_window = pair_item.get("raw_window_hex")
+    if not isinstance(raw_window, str) or len(raw_window) < 2:
+        return None
+    try:
+        return int(raw_window[:2], 16)
+    except ValueError:
+        return None
+
+
+def _standby_blank_support(pair_state: dict[str, object]) -> tuple[bool, str]:
+    if not pair_state.get("reachable"):
+        return True, "hid_unreachable"
+
+    left_flags = _active_flags_from_pair_item(pair_state.get("left"))
+    right_flags = _active_flags_from_pair_item(pair_state.get("right"))
+    if left_flags is not None and right_flags is not None:
+        if (not _is_active_flags(left_flags)) and (not _is_active_flags(right_flags)):
+            return True, "both_mains_inactive"
+        return False, "mains_still_active"
+    return False, "active_flags_unavailable"
+
+
+def _wait_for_standby_lcd_entry(
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    probe_captures: int,
+    args: argparse.Namespace,
+    output_root: Path,
+    pre_standby_lcd_visible: bool,
+) -> dict[str, object]:
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_s)
+    probes: list[dict[str, object]] = []
+    last_summary: dict[str, object] | None = None
+    consecutive_blank = 0
+    allow_blank_fallback = bool(getattr(args, "standby_allow_blank_fallback", True))
+    min_blank = max(1, int(getattr(args, "standby_blank_consecutive", DEFAULT_STANDBY_BLANK_CONSECUTIVE)))
+
+    while True:
+        elapsed = time.monotonic() - started
+        summary = _probe_lcd(
+            **_camera_probe_kwargs_from_args(
+                args,
+                output_root=output_root,
+                skip_configure=True,
+                captures=probe_captures,
+            )
+        )
+        last_summary = summary
+        line1 = summary["consensus"]["line1"]
+        line2 = summary["consensus"]["line2"]
+        probe_item = {
+            "t_s": elapsed,
+            "line1": line1,
+            "line2": line2,
+            "summary_path": summary["summary_path"],
+            "blank_consecutive": consecutive_blank,
+        }
+        if line1 == "Zzz...":
+            probes.append(probe_item)
+            return {
+                "expected_line1": "Zzz...",
+                "expected_line2": None,
+                "timeout_s": timeout_s,
+                "poll_interval_s": poll_interval_s,
+                "probe_captures": probe_captures,
+                "matched_at_s": elapsed,
+                "matched_mode": "lcd_zzz",
+                "probes": probes,
+                "last_summary_path": summary["summary_path"],
+            }
+
+        if line1 is None and line2 is None:
+            pair_state = _try_read_pair_state(vid=args.vid, pid=args.pid)
+            supported, reason = _standby_blank_support(pair_state)
+            probe_item["pair_state"] = pair_state
+            probe_item["blank_support_reason"] = reason
+            if supported:
+                consecutive_blank += 1
+                probe_item["blank_consecutive"] = consecutive_blank
+                if allow_blank_fallback and pre_standby_lcd_visible and consecutive_blank >= min_blank:
+                    probes.append(probe_item)
+                    return {
+                        "expected_line1": "Zzz...",
+                        "expected_line2": None,
+                        "timeout_s": timeout_s,
+                        "poll_interval_s": poll_interval_s,
+                        "probe_captures": probe_captures,
+                        "matched_at_s": elapsed,
+                        "matched_mode": "blank_fallback",
+                        "blank_support_reason": reason,
+                        "blank_consecutive_required": min_blank,
+                        "pre_standby_lcd_visible": pre_standby_lcd_visible,
+                        "probes": probes,
+                        "last_summary_path": summary["summary_path"],
+                    }
+            else:
+                consecutive_blank = 0
+                probe_item["blank_consecutive"] = consecutive_blank
+        else:
+            consecutive_blank = 0
+            probe_item["blank_consecutive"] = consecutive_blank
+
+        probes.append(probe_item)
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.0, poll_interval_s))
+
+    actual_line1 = None if last_summary is None else last_summary["consensus"]["line1"]
+    actual_line2 = None if last_summary is None else last_summary["consensus"]["line2"]
+    raise RuntimeError(
+        "timed out waiting for standby LCD entry "
+        "('Zzz...' or guarded blank fallback); "
+        f"last consensus was {actual_line1!r} / {actual_line2!r}"
+    )
+
+
 def _sleep_ms(delay_ms: float) -> float:
     delay_s = max(0.0, delay_ms / 1000.0)
     if delay_s > 0:
@@ -908,14 +1030,13 @@ def _run_standby_wake_cycle(
     context: str,
 ) -> dict[str, object]:
     standby_ir = _send_single_ir_action(args=args, action="STANDBY")
-    standby_lcd = _wait_for_lcd_target(
-        expected_line1="Zzz...",
-        expected_line2=None,
+    standby_lcd = _wait_for_standby_lcd_entry(
         timeout_s=args.lcd_timeout_s,
         poll_interval_s=args.lcd_poll_s,
         probe_captures=args.lcd_probe_captures,
         args=args,
         output_root=output_root / "lcd_standby",
+        pre_standby_lcd_visible=True,
     )
     standby_pair = _try_read_pair_state(vid=args.vid, pid=args.pid)
     if args.standby_dwell_s > 0:
@@ -1509,6 +1630,22 @@ def _add_delay_sweep_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_standby_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--standby-dwell-s", type=float, default=DEFAULT_STANDBY_DWELL_S)
+    parser.add_argument(
+        "--standby-blank-consecutive",
+        type=int,
+        default=DEFAULT_STANDBY_BLANK_CONSECUTIVE,
+        help=(
+            "number of consecutive None/None LCD probes required for guarded standby fallback "
+            "when backlight is too dim for OCR"
+        ),
+    )
+    parser.add_argument(
+        "--no-standby-blank-fallback",
+        action="store_false",
+        dest="standby_allow_blank_fallback",
+        help="require literal 'Zzz...' OCR for standby entry",
+    )
+    parser.set_defaults(standby_allow_blank_fallback=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

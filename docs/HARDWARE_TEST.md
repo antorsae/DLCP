@@ -613,7 +613,11 @@ Goal:
 Implementation:
 
 - add a timing-sweep test: `F2`, then `STANDBY` after `50/100/250/500/1000 ms`
-- require the LCD to enter `Zzz...`
+- require standby entry confirmation:
+  - preferred: LCD OCR reaches `Zzz...`
+  - guarded fallback (for very dim standby backlight): consecutive LCD `None/None`
+    probes after a known-good pre-standby LCD read, with supporting standby
+    evidence (for example HID not reachable during sleep)
 - wake after a fixed dwell with `WAKE`
 - require:
   - LCD leaves `Zzz...`
@@ -634,6 +638,16 @@ Implemented paths:
 .venv_ep0/bin/python scripts/hardware_state_test.py preset-standby-wake-timing-sweep \
   --delays-ms 50,100,250,500,1000 \
   --standby-dwell-s 1.0
+```
+
+Optional strict LCD mode (disable dim-backlight fallback and require literal
+`Zzz...`):
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py preset-standby-wake-timing-sweep \
+  --delays-ms 50,100,250,500,1000 \
+  --standby-dwell-s 1.0 \
+  --no-standby-blank-fallback
 ```
 
 - Optional live pytest:
