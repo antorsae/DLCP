@@ -419,6 +419,225 @@ def test_wait_for_main_pair_preset_accepts_unordered_pair_when_roles_unavailable
     assert payload["final"]["right"]["path"] == "path-z"
 
 
+def test_collect_wake_poll_sample_uses_sticky_path_role_mapping(monkeypatch) -> None:
+    main_unknown_a = hw.MainRoleState(
+        path="path-left",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="UNKNOWN",
+        active_preset="A",
+        active_config_name=None,
+        route_labels=[],
+        route_values=[],
+        raw_window_hex="08",
+    )
+    main_unknown_b = dataclasses.replace(
+        main_unknown_a,
+        path="path-right",
+        raw_window_hex="09",
+    )
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [main_unknown_a, main_unknown_b])
+
+    sample = hw._collect_wake_poll_sample(
+        vid=0x04D8,
+        pid=0xFF89,
+        expected_preset="A",
+        sticky_path_roles={"path-left": "LEFT", "path-right": "RIGHT"},
+        elapsed_s=0.2,
+    )
+
+    assert sample["functional_ready"] is True
+    assert sample["role_decode_ready"] is False
+    assert sample["effective_role_ready"] is True
+    assert sample["sticky_roles_used"] is True
+    assert [item["role_effective"] for item in sample["mains"]] == ["LEFT", "RIGHT"]
+
+
+def test_wait_for_wake_two_phase_allows_transient_unknown_roles(monkeypatch) -> None:
+    unknown_left = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="UNKNOWN",
+        active_preset="B",
+        active_config_name=None,
+        route_labels=[],
+        route_values=[],
+        raw_window_hex="08",
+    )
+    unknown_right = dataclasses.replace(
+        unknown_left,
+        path="right-path",
+        raw_window_hex="09",
+    )
+    decoded_left = dataclasses.replace(unknown_left, role="LEFT")
+    decoded_right = dataclasses.replace(unknown_right, role="RIGHT")
+    states = iter([[unknown_left, unknown_right], [decoded_left, decoded_right]])
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: next(states))
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    payload = hw._wait_for_wake_two_phase(
+        vid=0x04D8,
+        pid=0xFF89,
+        expected_preset="B",
+        timeout_s=5.0,
+        poll_interval_s=0.0,
+        wake_phase_a_timeout_s=1.0,
+        wake_phase_b_timeout_s=1.0,
+        wake_role_stable_polls=1,
+        wake_diagnostics_tail=10,
+        sticky_path_roles={"left-path": "LEFT", "right-path": "RIGHT"},
+    )
+
+    assert payload["phase_a_passed_at_s"] == pytest.approx(0.1)
+    assert payload["samples"][0]["functional_ready"] is True
+    assert payload["samples"][0]["role_decode_ready"] is False
+    assert payload["samples"][1]["role_decode_ready"] is True
+
+
+def test_wait_for_wake_two_phase_fails_with_role_decode_unstable(monkeypatch) -> None:
+    unknown_left = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="UNKNOWN",
+        active_preset="A",
+        active_config_name=None,
+        route_labels=[],
+        route_values=[],
+        raw_window_hex="08",
+    )
+    unknown_right = dataclasses.replace(
+        unknown_left,
+        path="right-path",
+        raw_window_hex="09",
+    )
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [unknown_left, unknown_right])
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    with pytest.raises(hw.WakeValidationError) as exc:
+        hw._wait_for_wake_two_phase(
+            vid=0x04D8,
+            pid=0xFF89,
+            expected_preset="A",
+            timeout_s=5.0,
+            poll_interval_s=0.0,
+            wake_phase_a_timeout_s=1.0,
+            wake_phase_b_timeout_s=0.25,
+            wake_role_stable_polls=2,
+            wake_diagnostics_tail=10,
+            sticky_path_roles={"left-path": "LEFT", "right-path": "RIGHT"},
+        )
+
+    assert exc.value.code == hw.WAKE_FAILURE_ROLE_DECODE_UNSTABLE
+    assert "WAKE_POLL_DIAGNOSTICS" in str(exc.value)
+
+
+def test_wait_for_wake_two_phase_tolerates_transient_hid_read_error(monkeypatch) -> None:
+    decoded_left = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    decoded_right = dataclasses.replace(
+        decoded_left,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+    calls = {"count": 0}
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    def fake_collect_main_roles(*, vid: int, pid: int):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("expected exactly 2 visible MAIN HID devices, found 0")
+        return [decoded_left, decoded_right]
+
+    monkeypatch.setattr(hw, "_collect_main_roles", fake_collect_main_roles)
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    payload = hw._wait_for_wake_two_phase(
+        vid=0x04D8,
+        pid=0xFF89,
+        expected_preset="A",
+        timeout_s=5.0,
+        poll_interval_s=0.0,
+        wake_phase_a_timeout_s=1.0,
+        wake_phase_b_timeout_s=1.0,
+        wake_role_stable_polls=1,
+        wake_diagnostics_tail=10,
+        sticky_path_roles={},
+    )
+
+    assert payload["samples"][0]["hid_read_ok"] is False
+    assert "found 0" in payload["samples"][0]["read_error"]
+    assert payload["samples"][1]["functional_ready"] is True
+
+
+def test_wait_for_wake_two_phase_failure_contains_sample_tail(monkeypatch) -> None:
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [])
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    with pytest.raises(hw.WakeValidationError) as exc:
+        hw._wait_for_wake_two_phase(
+            vid=0x04D8,
+            pid=0xFF89,
+            expected_preset="A",
+            timeout_s=5.0,
+            poll_interval_s=0.0,
+            wake_phase_a_timeout_s=0.25,
+            wake_phase_b_timeout_s=1.0,
+            wake_role_stable_polls=1,
+            wake_diagnostics_tail=3,
+            sticky_path_roles={},
+        )
+
+    text = str(exc.value)
+    assert exc.value.code == hw.WAKE_FAILURE_FUNCTIONAL_TIMEOUT
+    assert "WAKE_POLL_DIAGNOSTICS" in text
+    assert "\"sample_tail_count\"" in text
+
+
 def test_preset_convergence_command_writes_result(monkeypatch, tmp_path) -> None:
     left_before = hw.MainRoleState(
         path="left-path",
@@ -697,9 +916,10 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
         "_send_single_ir_action",
         lambda *, args, action: (actions.append(action) or {"action": action}),
     )
+    monkeypatch.setattr(hw, "_capture_sticky_path_roles", lambda **kwargs: {"path_roles": {}, "states": [], "error": None})
     monkeypatch.setattr(hw, "_wait_for_standby_lcd_entry", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
-    monkeypatch.setattr(hw, "_wait_for_main_pair_state", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_wait_for_wake_two_phase", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
     monkeypatch.setattr(hw.time, "sleep", lambda _: None)
@@ -713,6 +933,12 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
         lcd_poll_s=0.1,
         lcd_probe_captures=3,
         standby_dwell_s=0.0,
+        wake_phase_a_timeout_s=None,
+        wake_phase_b_timeout_s=None,
+        wake_role_stable_polls=2,
+        wake_diagnostics_tail=30,
+        wake_max_attempts=2,
+        wake_retry_delay_s=0.0,
     )
 
     payload = hw._run_standby_wake_cycle(
@@ -758,16 +984,22 @@ def test_run_standby_wake_cycle_retries_wake_on_main_timeout(monkeypatch, tmp_pa
         "_send_single_ir_action",
         lambda *, args, action: (actions.append(action) or {"action": action}),
     )
+    monkeypatch.setattr(hw, "_capture_sticky_path_roles", lambda **kwargs: {"path_roles": {}, "states": [], "error": None})
     monkeypatch.setattr(hw, "_wait_for_standby_lcd_entry", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
 
-    def fake_wait_for_main_pair_state(**kwargs):
+    def fake_wait_for_wake_two_phase(**kwargs):
         wait_calls["count"] += 1
         if wait_calls["count"] == 1:
-            raise RuntimeError("expected exactly 2 visible MAIN HID devices, found 0")
+            raise hw.WakeValidationError(
+                hw.WAKE_FAILURE_FUNCTIONAL_TIMEOUT,
+                "phase A functional wake gate did not converge before timeout",
+                samples=[{"t_s": 0.1, "read_error": "found 0"}],
+                diagnostics_tail=5,
+            )
         return {"ok": True}
 
-    monkeypatch.setattr(hw, "_wait_for_main_pair_state", fake_wait_for_main_pair_state)
+    monkeypatch.setattr(hw, "_wait_for_wake_two_phase", fake_wait_for_wake_two_phase)
     monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
     monkeypatch.setattr(hw.time, "sleep", lambda _: None)
@@ -783,6 +1015,10 @@ def test_run_standby_wake_cycle_retries_wake_on_main_timeout(monkeypatch, tmp_pa
         standby_dwell_s=0.0,
         wake_max_attempts=3,
         wake_retry_delay_s=0.0,
+        wake_phase_a_timeout_s=None,
+        wake_phase_b_timeout_s=None,
+        wake_role_stable_polls=2,
+        wake_diagnostics_tail=30,
     )
 
     payload = hw._run_standby_wake_cycle(
@@ -793,7 +1029,7 @@ def test_run_standby_wake_cycle_retries_wake_on_main_timeout(monkeypatch, tmp_pa
     )
 
     assert actions == ["STANDBY", "WAKE", "WAKE"]
-    assert payload["wake_wait_errors"] == ["expected exactly 2 visible MAIN HID devices, found 0"]
+    assert payload["wake_wait_errors"][0]["code"] == hw.WAKE_FAILURE_FUNCTIONAL_TIMEOUT
     assert payload["after"]["left"]["active_preset"] == "A"
     assert payload["after"]["right"]["active_preset"] == "A"
 

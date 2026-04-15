@@ -44,7 +44,12 @@ DEFAULT_STANDBY_DWELL_S = 1.0
 DEFAULT_STANDBY_BLANK_CONSECUTIVE = 2
 DEFAULT_WAKE_MAX_ATTEMPTS = 3
 DEFAULT_WAKE_RETRY_DELAY_S = 1.0
+DEFAULT_WAKE_ROLE_STABLE_POLLS = 3
+DEFAULT_WAKE_DIAGNOSTICS_TAIL = 30
 DEFAULT_SOAK_ITERATIONS = 5
+
+WAKE_FAILURE_FUNCTIONAL_TIMEOUT = "FUNCTIONAL_WAKE_TIMEOUT"
+WAKE_FAILURE_ROLE_DECODE_UNSTABLE = "ROLE_DECODE_UNSTABLE"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,6 +79,31 @@ class MainRoleState:
 class IrSequenceStep:
     action: str
     sleep_after_s: float = 0.0
+
+
+class WakeValidationError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        samples: list[dict[str, object]],
+        diagnostics_tail: int,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        self.code = code
+        self.samples = samples
+        self.diagnostics_tail = diagnostics_tail
+        self.details = details or {}
+        tail_count = max(1, diagnostics_tail)
+        tail = samples[-tail_count:]
+        payload = {
+            "classification": code,
+            "details": self.details,
+            "sample_tail_count": len(tail),
+            "sample_tail": tail,
+        }
+        super().__init__(f"{code}: {message}\nWAKE_POLL_DIAGNOSTICS:\n{json.dumps(payload, indent=2, sort_keys=True)}")
 
 
 def _json_dumps(data: object) -> str:
@@ -654,6 +684,217 @@ def _state_matches(
     return True
 
 
+def _capture_sticky_path_roles(*, vid: int, pid: int) -> dict[str, object]:
+    path_roles: dict[str, str] = {}
+    states_payload: list[dict[str, object]] = []
+    capture_error: str | None = None
+    try:
+        states = _collect_main_roles(vid=vid, pid=pid)
+    except Exception as exc:
+        states = []
+        capture_error = str(exc)
+
+    for state in sorted(states, key=lambda item: item.path):
+        states_payload.append(_compact_role_observation(state))
+        if state.role in {"LEFT", "RIGHT"}:
+            path_roles[state.path] = state.role
+
+    return {
+        "path_roles": path_roles,
+        "states": states_payload,
+        "error": capture_error,
+    }
+
+
+def _collect_wake_poll_sample(
+    *,
+    vid: int,
+    pid: int,
+    expected_preset: str,
+    sticky_path_roles: dict[str, str],
+    elapsed_s: float,
+) -> dict[str, object]:
+    sample: dict[str, object] = {
+        "t_s": elapsed_s,
+        "hid_read_ok": False,
+        "read_error": None,
+        "visible_paths": [],
+        "visible_count": 0,
+        "mains": [],
+        "functional_ready": False,
+        "role_decode_ready": False,
+        "effective_role_ready": False,
+        "sticky_roles_used": False,
+    }
+    try:
+        states = _collect_main_roles(vid=vid, pid=pid)
+    except Exception as exc:
+        sample["read_error"] = str(exc)
+        return sample
+
+    ordered_states = sorted(states, key=lambda item: item.path)
+    sample["hid_read_ok"] = True
+    sample["visible_count"] = len(ordered_states)
+    sample["visible_paths"] = [item.path for item in ordered_states]
+
+    mains_payload: list[dict[str, object]] = []
+    functional_matches: list[bool] = []
+    raw_left = raw_right = 0
+    effective_left = effective_right = 0
+    sticky_used = False
+
+    for item in ordered_states:
+        raw_role = item.role
+        sticky_role = sticky_path_roles.get(item.path)
+        effective_role = raw_role
+        role_from_sticky = False
+        if raw_role not in {"LEFT", "RIGHT"} and sticky_role in {"LEFT", "RIGHT"}:
+            effective_role = sticky_role
+            role_from_sticky = True
+            sticky_used = True
+        if raw_role == "LEFT":
+            raw_left += 1
+        elif raw_role == "RIGHT":
+            raw_right += 1
+        if effective_role == "LEFT":
+            effective_left += 1
+        elif effective_role == "RIGHT":
+            effective_right += 1
+
+        active_flags = _active_flags_value(item)
+        active = _is_active_state(item)
+        muted = _is_muted_state(item)
+        functional_match = _state_matches(
+            item,
+            expected_preset=expected_preset,
+            muted=False,
+            active=True,
+        )
+        functional_matches.append(functional_match)
+        mains_payload.append(
+            {
+                "path": item.path,
+                "role_raw": raw_role,
+                "role_effective": effective_role,
+                "role_from_sticky": role_from_sticky,
+                "active_preset": item.active_preset,
+                "active_flags": active_flags,
+                "active": active,
+                "muted": muted,
+                "raw_window_hex": item.raw_window_hex,
+                "version": item.version,
+                "functional_match": functional_match,
+            }
+        )
+
+    sample["mains"] = mains_payload
+    sample["sticky_roles_used"] = sticky_used
+    sample["functional_ready"] = len(ordered_states) == 2 and all(functional_matches)
+    sample["role_decode_ready"] = len(ordered_states) == 2 and raw_left == 1 and raw_right == 1
+    sample["effective_role_ready"] = len(ordered_states) == 2 and effective_left == 1 and effective_right == 1
+    return sample
+
+
+def _wait_for_wake_two_phase(
+    *,
+    vid: int,
+    pid: int,
+    expected_preset: str,
+    timeout_s: float,
+    poll_interval_s: float,
+    wake_phase_a_timeout_s: float | None,
+    wake_phase_b_timeout_s: float | None,
+    wake_role_stable_polls: int,
+    wake_diagnostics_tail: int,
+    sticky_path_roles: dict[str, str],
+) -> dict[str, object]:
+    phase_a_timeout_s = timeout_s if wake_phase_a_timeout_s is None else max(0.0, wake_phase_a_timeout_s)
+    phase_b_timeout_s = timeout_s if wake_phase_b_timeout_s is None else max(0.0, wake_phase_b_timeout_s)
+    stable_polls_required = max(1, int(wake_role_stable_polls))
+    diagnostics_tail = max(1, int(wake_diagnostics_tail))
+
+    started = time.monotonic()
+    phase_a_deadline = started + phase_a_timeout_s
+    phase_a_passed_at_s: float | None = None
+    phase_b_started_mono: float | None = None
+    phase_b_deadline: float | None = None
+    role_stable_count = 0
+    samples: list[dict[str, object]] = []
+
+    while True:
+        now = time.monotonic()
+        elapsed_s = now - started
+        sample = _collect_wake_poll_sample(
+            vid=vid,
+            pid=pid,
+            expected_preset=expected_preset,
+            sticky_path_roles=sticky_path_roles,
+            elapsed_s=elapsed_s,
+        )
+        sample["phase"] = "A" if phase_a_passed_at_s is None else "B"
+
+        if phase_a_passed_at_s is None:
+            if sample["functional_ready"]:
+                phase_a_passed_at_s = elapsed_s
+                phase_b_started_mono = now
+                phase_b_deadline = phase_b_started_mono + phase_b_timeout_s
+                role_stable_count = 1 if sample["role_decode_ready"] else 0
+            elif now >= phase_a_deadline:
+                sample["role_stable_count"] = role_stable_count
+                samples.append(sample)
+                raise WakeValidationError(
+                    WAKE_FAILURE_FUNCTIONAL_TIMEOUT,
+                    "phase A functional wake gate did not converge before timeout",
+                    samples=samples,
+                    diagnostics_tail=diagnostics_tail,
+                    details={
+                        "expected_preset": expected_preset,
+                        "phase_a_timeout_s": phase_a_timeout_s,
+                        "phase_b_timeout_s": phase_b_timeout_s,
+                        "role_stable_polls_required": stable_polls_required,
+                        "phase_a_passed_at_s": phase_a_passed_at_s,
+                    },
+                )
+        else:
+            if sample["role_decode_ready"]:
+                role_stable_count += 1
+            else:
+                role_stable_count = 0
+            if phase_b_deadline is not None and now >= phase_b_deadline and role_stable_count < stable_polls_required:
+                sample["role_stable_count"] = role_stable_count
+                samples.append(sample)
+                raise WakeValidationError(
+                    WAKE_FAILURE_ROLE_DECODE_UNSTABLE,
+                    "phase B role decode did not stabilize before timeout",
+                    samples=samples,
+                    diagnostics_tail=diagnostics_tail,
+                    details={
+                        "expected_preset": expected_preset,
+                        "phase_a_timeout_s": phase_a_timeout_s,
+                        "phase_b_timeout_s": phase_b_timeout_s,
+                        "role_stable_polls_required": stable_polls_required,
+                        "phase_a_passed_at_s": phase_a_passed_at_s,
+                        "phase_b_elapsed_s": (None if phase_b_started_mono is None else now - phase_b_started_mono),
+                    },
+                )
+
+        sample["role_stable_count"] = role_stable_count
+        samples.append(sample)
+
+        if phase_a_passed_at_s is not None and role_stable_count >= stable_polls_required:
+            return {
+                "expected_preset": expected_preset,
+                "phase_a_timeout_s": phase_a_timeout_s,
+                "phase_b_timeout_s": phase_b_timeout_s,
+                "role_stable_polls_required": stable_polls_required,
+                "phase_a_passed_at_s": phase_a_passed_at_s,
+                "phase_b_stable_at_s": elapsed_s,
+                "samples": samples,
+            }
+
+        time.sleep(max(0.0, poll_interval_s))
+
+
 def _wait_for_lcd_target(
     *,
     expected_line1: str,
@@ -1097,6 +1338,8 @@ def _run_standby_wake_cycle(
     output_root: Path,
     context: str,
 ) -> dict[str, object]:
+    pre_standby_identity = _capture_sticky_path_roles(vid=args.vid, pid=args.pid)
+    sticky_path_roles = dict(pre_standby_identity.get("path_roles", {}))
     standby_ir = _send_single_ir_action(args=args, action="STANDBY")
     standby_lcd = _wait_for_standby_lcd_entry(
         timeout_s=args.lcd_timeout_s,
@@ -1110,7 +1353,7 @@ def _run_standby_wake_cycle(
     if args.standby_dwell_s > 0:
         time.sleep(max(0.0, args.standby_dwell_s))
     wake_ir_attempts: list[dict[str, object]] = []
-    wake_wait_errors: list[str] = []
+    wake_wait_errors: list[dict[str, object]] = []
     wake_main: dict[str, object] | None = None
     wake_max_attempts = max(1, int(getattr(args, "wake_max_attempts", DEFAULT_WAKE_MAX_ATTEMPTS)))
     wake_retry_delay_s = max(0.0, float(getattr(args, "wake_retry_delay_s", DEFAULT_WAKE_RETRY_DELAY_S)))
@@ -1118,18 +1361,29 @@ def _run_standby_wake_cycle(
     for attempt in range(1, wake_max_attempts + 1):
         wake_ir_attempts.append(_send_single_ir_action(args=args, action="WAKE"))
         try:
-            wake_main = _wait_for_main_pair_state(
+            wake_main = _wait_for_wake_two_phase(
                 vid=args.vid,
                 pid=args.pid,
                 timeout_s=args.timeout_s,
                 poll_interval_s=args.main_poll_s,
                 expected_preset=expected_preset,
-                muted=False,
-                active=True,
+                wake_phase_a_timeout_s=args.wake_phase_a_timeout_s,
+                wake_phase_b_timeout_s=args.wake_phase_b_timeout_s,
+                wake_role_stable_polls=args.wake_role_stable_polls,
+                wake_diagnostics_tail=args.wake_diagnostics_tail,
+                sticky_path_roles=sticky_path_roles,
             )
             break
-        except RuntimeError as exc:
-            wake_wait_errors.append(str(exc))
+        except WakeValidationError as exc:
+            wake_wait_errors.append(
+                {
+                    "attempt": attempt,
+                    "code": exc.code,
+                    "message": str(exc),
+                }
+            )
+            if exc.code == WAKE_FAILURE_ROLE_DECODE_UNSTABLE:
+                raise
             if attempt >= wake_max_attempts:
                 raise
             if wake_retry_delay_s > 0:
@@ -1147,6 +1401,7 @@ def _run_standby_wake_cycle(
     return {
         "context": context,
         "expected_preset": expected_preset,
+        "pre_standby_identity": pre_standby_identity,
         "standby_ir": standby_ir,
         "standby_lcd": standby_lcd,
         "standby_pair": standby_pair,
@@ -1745,6 +2000,30 @@ def _add_standby_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=DEFAULT_WAKE_RETRY_DELAY_S,
         help="delay between WAKE retry attempts",
+    )
+    parser.add_argument(
+        "--wake-phase-a-timeout-s",
+        type=float,
+        default=None,
+        help="phase A timeout: functional wake gate (visible+active+preset converged); defaults to --timeout-s",
+    )
+    parser.add_argument(
+        "--wake-phase-b-timeout-s",
+        type=float,
+        default=None,
+        help="phase B timeout: LEFT/RIGHT role decode stabilization gate; defaults to --timeout-s",
+    )
+    parser.add_argument(
+        "--wake-role-stable-polls",
+        type=int,
+        default=DEFAULT_WAKE_ROLE_STABLE_POLLS,
+        help="consecutive polls with decoded LEFT/RIGHT required to pass wake phase B",
+    )
+    parser.add_argument(
+        "--wake-diagnostics-tail",
+        type=int,
+        default=DEFAULT_WAKE_DIAGNOSTICS_TAIL,
+        help="number of recent wake poll samples included in wake timeout diagnostics",
     )
     parser.set_defaults(standby_allow_blank_fallback=True)
 
