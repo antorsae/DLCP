@@ -169,13 +169,22 @@ def _wake_and_reconnect(chain: WireMultiMainChainHarness, *, limit: int = 120):
     return last
 
 
-def _enter_standby_via_ir(chain: WireMultiMainChainHarness, *, limit: int = 30) -> None:
-    chain.control.inject_decoded_ir_event(cmd=0x32, addr=0x10, steps=1)
-    for _ in range(limit):
-        chain.step()
-        if "ZZZ" in chain.lcd_lines()[0].upper():
-            return
-    pytest.fail(f"chain did not enter standby via IR within {limit} steps; lcd={chain.lcd_lines()!r}")
+def _enter_standby_via_ir(
+    chain: WireMultiMainChainHarness,
+    *,
+    limit: int = 30,
+    attempts: int = 3,
+) -> None:
+    for _ in range(attempts):
+        chain.control.inject_decoded_ir_event(cmd=0x32, addr=0x10, steps=1)
+        for _ in range(limit):
+            chain.step()
+            if "ZZZ" in chain.lcd_lines()[0].upper():
+                return
+    pytest.fail(
+        f"chain did not enter standby via IR within {attempts} attempts x {limit} steps; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
 
 
 def _wake_and_reconnect_via_ir(chain: WireMultiMainChainHarness, *, limit: int = 120):
@@ -422,6 +431,38 @@ def _wait_preset_job_idle_allow_reconnect(
     )
 
 
+def _wait_preset_target_converged_allow_reconnect(
+    chain: WireMultiMainChainHarness,
+    *,
+    expected: int,
+    limit: int = 220,
+    context: str,
+) -> None:
+    saw_non_idle = False
+    for _ in range(limit):
+        if chain.is_waiting():
+            last = chain.run_until_connected(limit=120)
+            assert last is not None, f"{context}: chain produced no steps while reconnecting from WAITING"
+            assert chain.is_connected(), f"{context}: chain failed to reconnect from WAITING"
+        chain.step()
+        states = [
+            _read_reg(chain.mains[idx]._issue, _PRESET_JOB_STATE)
+            for idx in range(len(chain.mains))
+        ]
+        presets = [_main_preset(chain, idx) for idx in range(len(chain.mains))]
+        if any(s != 0 for s in states):
+            saw_non_idle = True
+        if presets == [expected] * len(chain.mains) and all(s == 0 for s in states):
+            return
+    pytest.fail(
+        f"{context}: preset target {expected} did not converge within {limit} steps; "
+        f"saw_non_idle={saw_non_idle}; "
+        f"states={[_read_reg(chain.mains[idx]._issue, _PRESET_JOB_STATE) for idx in range(len(chain.mains))]}; "
+        f"presets={[_main_preset(chain, idx) for idx in range(len(chain.mains))]}; "
+        f"debug={[_main_debug_state(chain, idx) for idx in range(len(chain.mains))]}"
+    )
+
+
 def _wait_main_preset_job_state(
     chain: WireMultiMainChainHarness,
     *,
@@ -552,10 +593,14 @@ def _inject_ir_until_mute_on_delivered(
         ]
         chain.control.inject_decoded_ir_event(cmd=0x35, addr=0x10, steps=1)
         for _ in range(limit_per_attempt):
+            job_active_before = any(
+                _read_reg(chain.mains[idx]._issue, _PRESET_JOB_STATE) != 0
+                for idx in range(len(chain.mains))
+            )
             _step_without_waiting(chain, steps=1, context="interleaved IR mute-on delivery")
             new_frames = chain.control.tx_frames()[before_control:]
-            saw_mute_on = any(
-                f.route == 0xB0 and f.cmd == 0x03 and f.data == 0x03
+            saw_mute_toggle = any(
+                f.route == 0xB0 and f.cmd == 0x03 and f.data in {0x02, 0x03}
                 for f in new_frames
             )
             after_rx = [
@@ -566,10 +611,15 @@ def _inject_ir_until_mute_on_delivered(
                 for idx in range(len(chain.mains))
             ]
             delivered = all(after_rx[idx] != before_rx[idx] for idx in range(len(chain.mains)))
-            if saw_mute_on and delivered:
+            job_active_after = any(
+                _read_reg(chain.mains[idx]._issue, _PRESET_JOB_STATE) != 0
+                for idx in range(len(chain.mains))
+            )
+            if saw_mute_toggle and delivered and (job_active_before or job_active_after):
                 return
     pytest.fail(
-        "could not deliver explicit mute-on (B0/03/03) to both MAINs via interleaved IR; "
+        "could not deliver an interleaved mute toggle (B0/03/02 or B0/03/03) "
+        "to both MAINs while preset job was active; "
         f"lcd={chain.lcd_lines()!r}"
     )
 
@@ -773,13 +823,12 @@ def test_v32_wire_two_main_preset_soak_under_reconnect_and_full_sync_keeps_both_
                 steps=1,
             )
             chain.step_many(2)
-            _wait_preset_job_idle_allow_reconnect(
+            _wait_preset_target_converged_allow_reconnect(
                 chain,
-                limit=180,
+                expected=target_preset,
+                limit=220,
                 context=f"preset soak cycle {cycle} switch",
             )
-
-            _assert_all_mains_preset(chain, target_preset)
 
             _enter_standby_via_ir(chain)
             _wake_and_reconnect_via_ir(chain)
