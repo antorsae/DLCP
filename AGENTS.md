@@ -393,6 +393,7 @@ Top-level docs:
 - `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (draft future diagnostics page / counter protocol; not implemented in the committed V1.63b/V3.1 pair)
 - `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.1 MAIN size-reduction campaign requirements and process)
 - `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (size campaign experiment ledger and gate status)
+- `docs/V32_MAIN_HANG_HARDENING_PLAN.md` (V3.2 MAIN hang-prevention and fail-safe hardening roadmap for two-MAIN chains)
 
 Deep analysis docs:
 
