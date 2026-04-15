@@ -306,6 +306,119 @@ def test_wait_for_main_pair_preset_tracks_left_right_and_both_times(monkeypatch)
     assert payload["final"]["right"]["active_preset"] == "B"
 
 
+def test_wait_for_main_pair_preset_tolerates_transient_hid_loss(monkeypatch) -> None:
+    left_b = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="B",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_b = dataclasses.replace(
+        left_b,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+    states = iter(
+        [
+            RuntimeError("expected exactly 2 visible MAIN HID devices, found 0"),
+            (left_b, right_b),
+        ]
+    )
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    def fake_read_pair_state(*, vid: int, pid: int):
+        item = next(states)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(hw, "_read_pair_state", fake_read_pair_state)
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [])
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    payload = hw._wait_for_main_pair_preset(
+        vid=0x04D8,
+        pid=0xFF89,
+        expected_preset="B",
+        timeout_s=2.0,
+        poll_interval_s=0.0,
+    )
+
+    assert payload["expected_preset"] == "B"
+    assert payload["both_reached_s"] == pytest.approx(0.3)
+    assert payload["observations"][0]["error"] == "expected exactly 2 visible MAIN HID devices, found 0"
+    assert payload["final"]["left"]["active_preset"] == "B"
+    assert payload["final"]["right"]["active_preset"] == "B"
+
+
+def test_wait_for_main_pair_preset_accepts_unordered_pair_when_roles_unavailable(monkeypatch) -> None:
+    main_a = hw.MainRoleState(
+        path="path-z",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="UNKNOWN",
+        active_preset="A",
+        active_config_name=None,
+        route_labels=[],
+        route_values=[],
+        raw_window_hex="08",
+    )
+    main_b = dataclasses.replace(
+        main_a,
+        path="path-a",
+        active_preset="A",
+    )
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(
+        hw,
+        "_read_pair_state",
+        lambda *, vid, pid: (_ for _ in ()).throw(
+            RuntimeError(
+                "expected exactly one LEFT and one RIGHT MAIN from route memory; "
+                "got [{'path': 'path-z', 'role': 'UNKNOWN'}]"
+            )
+        ),
+    )
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [main_a, main_b])
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    payload = hw._wait_for_main_pair_preset(
+        vid=0x04D8,
+        pid=0xFF89,
+        expected_preset="A",
+        timeout_s=2.0,
+        poll_interval_s=0.0,
+    )
+
+    assert payload["matched_without_roles"] is True
+    assert payload["both_reached_s"] == pytest.approx(0.1)
+    assert payload["final"]["role_mapping"] == "unordered_path"
+    assert payload["final"]["left"]["path"] == "path-a"
+    assert payload["final"]["right"]["path"] == "path-z"
+
+
 def test_preset_convergence_command_writes_result(monkeypatch, tmp_path) -> None:
     left_before = hw.MainRoleState(
         path="left-path",
@@ -612,6 +725,77 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
     assert actions == ["STANDBY", "WAKE"]
     assert payload["after"]["left"]["active_preset"] == "B"
     assert payload["after"]["right"]["active_preset"] == "B"
+
+
+def test_run_standby_wake_cycle_retries_wake_on_main_timeout(monkeypatch, tmp_path) -> None:
+    actions: list[str] = []
+    wait_calls = {"count": 0}
+
+    left_after = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_after = dataclasses.replace(
+        left_after,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+
+    monkeypatch.setattr(
+        hw,
+        "_send_single_ir_action",
+        lambda *, args, action: (actions.append(action) or {"action": action}),
+    )
+    monkeypatch.setattr(hw, "_wait_for_standby_lcd_entry", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
+
+    def fake_wait_for_main_pair_state(**kwargs):
+        wait_calls["count"] += 1
+        if wait_calls["count"] == 1:
+            raise RuntimeError("expected exactly 2 visible MAIN HID devices, found 0")
+        return {"ok": True}
+
+    monkeypatch.setattr(hw, "_wait_for_main_pair_state", fake_wait_for_main_pair_state)
+    monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    args = SimpleNamespace(
+        vid=0x04D8,
+        pid=0xFF89,
+        timeout_s=5.0,
+        main_poll_s=0.1,
+        lcd_timeout_s=5.0,
+        lcd_poll_s=0.1,
+        lcd_probe_captures=3,
+        standby_dwell_s=0.0,
+        wake_max_attempts=3,
+        wake_retry_delay_s=0.0,
+    )
+
+    payload = hw._run_standby_wake_cycle(
+        expected_preset="A",
+        args=args,
+        output_root=tmp_path,
+        context="unit_test",
+    )
+
+    assert actions == ["STANDBY", "WAKE", "WAKE"]
+    assert payload["wake_wait_errors"] == ["expected exactly 2 visible MAIN HID devices, found 0"]
+    assert payload["after"]["left"]["active_preset"] == "A"
+    assert payload["after"]["right"]["active_preset"] == "A"
 
 
 def test_wait_for_standby_lcd_entry_allows_guarded_blank_fallback(monkeypatch, tmp_path) -> None:

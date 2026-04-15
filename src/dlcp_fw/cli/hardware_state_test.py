@@ -42,6 +42,8 @@ DEFAULT_LCD_POLL_S = 0.1
 DEFAULT_LCD_PROBE_CAPTURES = 1
 DEFAULT_STANDBY_DWELL_S = 1.0
 DEFAULT_STANDBY_BLANK_CONSECUTIVE = 2
+DEFAULT_WAKE_MAX_ATTEMPTS = 3
+DEFAULT_WAKE_RETRY_DELAY_S = 1.0
 DEFAULT_SOAK_ITERATIONS = 5
 
 
@@ -512,9 +514,73 @@ def _wait_for_main_pair_state(
     observations: list[dict[str, object]] = []
     last_left: MainRoleState | None = None
     last_right: MainRoleState | None = None
+    last_read_error: str | None = None
+
+    def _final_payload_from_unordered_states(states: list[MainRoleState]) -> dict[str, object]:
+        ordered = sorted(states, key=lambda item: item.path)
+        return {
+            "left": dataclasses.asdict(ordered[0]),
+            "right": dataclasses.asdict(ordered[1]),
+            "role_mapping": "unordered_path",
+        }
 
     while True:
-        left, right = _read_pair_state(vid=vid, pid=pid)
+        try:
+            left, right = _read_pair_state(vid=vid, pid=pid)
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            last_read_error = str(exc)
+            failure_observation: dict[str, object] = {
+                "t_s": elapsed,
+                "error": last_read_error,
+            }
+            try:
+                provisional_states = _collect_main_roles(vid=vid, pid=pid)
+            except Exception as provisional_exc:
+                failure_observation["provisional_error"] = str(provisional_exc)
+                provisional_states = []
+            if provisional_states:
+                failure_observation["provisional_mains"] = [
+                    _compact_role_observation(item) for item in provisional_states
+                ]
+            observations.append(failure_observation)
+
+            if len(provisional_states) == 2:
+                provisional_match = all(
+                    _state_matches(
+                        item,
+                        expected_preset=expected_preset,
+                        muted=muted,
+                        active=active,
+                    )
+                    for item in provisional_states
+                )
+                if provisional_match:
+                    if left_reached_s is None:
+                        left_reached_s = elapsed
+                    if right_reached_s is None:
+                        right_reached_s = elapsed
+                    if both_reached_s is None:
+                        both_reached_s = elapsed
+                    final_payload = _final_payload_from_unordered_states(provisional_states)
+                    return {
+                        "expected_preset": expected_preset,
+                        "muted": muted,
+                        "active": active,
+                        "timeout_s": timeout_s,
+                        "poll_interval_s": poll_interval_s,
+                        "left_reached_s": left_reached_s,
+                        "right_reached_s": right_reached_s,
+                        "both_reached_s": both_reached_s,
+                        "observations": observations,
+                        "final": final_payload,
+                        "matched_without_roles": True,
+                    }
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(max(0.0, poll_interval_s))
+            continue
+
         last_left, last_right = left, right
         elapsed = time.monotonic() - started
         observations.append(
@@ -553,6 +619,7 @@ def _wait_for_main_pair_state(
                 "both_reached_s": both_reached_s,
                 "observations": observations,
                 "final": _role_pair_payload(left, right),
+                "matched_without_roles": False,
             }
         if time.monotonic() >= deadline:
             break
@@ -561,6 +628,7 @@ def _wait_for_main_pair_state(
     raise RuntimeError(
         "timed out waiting for both MAINs to satisfy state "
         f"(preset={expected_preset!r}, muted={muted!r}, active={active!r}); "
+        f"last_read_error={last_read_error!r} "
         f"left={None if last_left is None else _compact_role_observation(last_left)!r} "
         f"right={None if last_right is None else _compact_role_observation(last_right)!r}"
     )
@@ -1041,16 +1109,35 @@ def _run_standby_wake_cycle(
     standby_pair = _try_read_pair_state(vid=args.vid, pid=args.pid)
     if args.standby_dwell_s > 0:
         time.sleep(max(0.0, args.standby_dwell_s))
-    wake_ir = _send_single_ir_action(args=args, action="WAKE")
-    wake_main = _wait_for_main_pair_state(
-        vid=args.vid,
-        pid=args.pid,
-        timeout_s=args.timeout_s,
-        poll_interval_s=args.main_poll_s,
-        expected_preset=expected_preset,
-        muted=False,
-        active=True,
-    )
+    wake_ir_attempts: list[dict[str, object]] = []
+    wake_wait_errors: list[str] = []
+    wake_main: dict[str, object] | None = None
+    wake_max_attempts = max(1, int(getattr(args, "wake_max_attempts", DEFAULT_WAKE_MAX_ATTEMPTS)))
+    wake_retry_delay_s = max(0.0, float(getattr(args, "wake_retry_delay_s", DEFAULT_WAKE_RETRY_DELAY_S)))
+
+    for attempt in range(1, wake_max_attempts + 1):
+        wake_ir_attempts.append(_send_single_ir_action(args=args, action="WAKE"))
+        try:
+            wake_main = _wait_for_main_pair_state(
+                vid=args.vid,
+                pid=args.pid,
+                timeout_s=args.timeout_s,
+                poll_interval_s=args.main_poll_s,
+                expected_preset=expected_preset,
+                muted=False,
+                active=True,
+            )
+            break
+        except RuntimeError as exc:
+            wake_wait_errors.append(str(exc))
+            if attempt >= wake_max_attempts:
+                raise
+            if wake_retry_delay_s > 0:
+                time.sleep(wake_retry_delay_s)
+
+    if wake_main is None:
+        raise RuntimeError("wake convergence did not complete after WAKE attempts")
+
     wake_lcd = _wait_for_lcd_usable_expected_preset(
         expected_preset=expected_preset,
         args=args,
@@ -1063,7 +1150,9 @@ def _run_standby_wake_cycle(
         "standby_ir": standby_ir,
         "standby_lcd": standby_lcd,
         "standby_pair": standby_pair,
-        "wake_ir": wake_ir,
+        "wake_ir": wake_ir_attempts[-1],
+        "wake_ir_attempts": wake_ir_attempts,
+        "wake_wait_errors": wake_wait_errors,
         "wake_main": wake_main,
         "wake_lcd": wake_lcd,
         "after": _role_pair_payload(left_after, right_after),
@@ -1644,6 +1733,18 @@ def _add_standby_args(parser: argparse.ArgumentParser) -> None:
         action="store_false",
         dest="standby_allow_blank_fallback",
         help="require literal 'Zzz...' OCR for standby entry",
+    )
+    parser.add_argument(
+        "--wake-max-attempts",
+        type=int,
+        default=DEFAULT_WAKE_MAX_ATTEMPTS,
+        help="maximum WAKE endpoint retries before failing convergence",
+    )
+    parser.add_argument(
+        "--wake-retry-delay-s",
+        type=float,
+        default=DEFAULT_WAKE_RETRY_DELAY_S,
+        help="delay between WAKE retry attempts",
     )
     parser.set_defaults(standby_allow_blank_fallback=True)
 

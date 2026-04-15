@@ -640,6 +640,9 @@ Implemented paths:
   --standby-dwell-s 1.0
 ```
 
+Wake reliability defaults to bounded endpoint retries (`--wake-max-attempts 3`,
+`--wake-retry-delay-s 1.0`) so missed IR packets do not fail immediately.
+
 Optional strict LCD mode (disable dim-backlight fallback and require literal
 `Zzz...`):
 
