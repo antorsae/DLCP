@@ -46,6 +46,9 @@ _MAIN_PARSER_BREAK_SIG = bytes.fromhex("39ec24f0000901e144d1fdec22f0")
 _MAIN_CMD03_LABEL003_SIG = bytes.fromhex("1bc197f000019751090a14e1020e586e")
 _MAIN_CMD03_RETURN_SIG = bytes.fromhex("01011a6b12001a0e5824d96eda6a010e")
 _MAIN_CMD03_DISPATCH_ENTRY_SIG = bytes.fromhex("01011a5156ec08f0040110bf0bd0")
+_MAIN_AN0_BOOT_EXIT_SIG_V32 = bytes.fromhex("046a460e036e4bec21f0b06a7f0eaf6e")
+_MAIN_PARSER_BREAK_SIG_V32 = bytes.fromhex("bcf05e8c010e986fe0d0010e5eb6")
+_MAIN_CMD03_DISPATCH_ENTRY_SIG_V32 = bytes.fromhex("01011a5156ec08f0040110bf0ad0")
 
 
 @dataclass(frozen=True)
@@ -208,6 +211,23 @@ def _require_code_signature_addr(main_hex: Path, *, name: str, signature: bytes)
     return addr & 0xFFFF
 
 
+def _require_code_signature_addr_any(
+    main_hex: Path,
+    *,
+    name: str,
+    signatures: Sequence[bytes],
+) -> int:
+    last_error: AssertionError | None = None
+    for signature in signatures:
+        try:
+            return _require_code_signature_addr(Path(main_hex), name=name, signature=signature)
+        except AssertionError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise AssertionError(f"{Path(main_hex).name}: {name} signature not found") from last_error
+    raise AssertionError(f"{Path(main_hex).name}: {name} signature list was empty")
+
+
 def _resolve_main_parser_break_addr(main_hex: Path, parser_break_addr: int | None) -> int:
     if parser_break_addr is not None:
         return parser_break_addr & 0xFFFF
@@ -216,10 +236,13 @@ def _resolve_main_parser_break_addr(main_hex: Path, parser_break_addr: int | Non
         addr = symbols.get("flow_main_uart_service_1be6_1bea")
         if addr is not None:
             return addr & 0xFFFF
-    return _require_code_signature_addr(
+    return _require_code_signature_addr_any(
         Path(main_hex),
         name="parser break",
-        signature=_MAIN_PARSER_BREAK_SIG,
+        signatures=(
+            _MAIN_PARSER_BREAK_SIG,
+            _MAIN_PARSER_BREAK_SIG_V32,
+        ),
     )
 
 
@@ -231,10 +254,13 @@ def resolve_main_an0_boot_exit_addr(main_hex: Path, boot_exit_addr: int | None =
         addr = symbols.get("adc_boot_gate_exit")
         if addr is not None:
             return addr & 0xFFFF
-    return _require_code_signature_addr(
+    return _require_code_signature_addr_any(
         Path(main_hex),
         name="AN0 boot exit",
-        signature=_MAIN_AN0_BOOT_EXIT_SIG,
+        signatures=(
+            _MAIN_AN0_BOOT_EXIT_SIG,
+            _MAIN_AN0_BOOT_EXIT_SIG_V32,
+        ),
     )
 
 
@@ -276,10 +302,13 @@ def _resolve_main_cmd03_dispatch_addrs(
         else (symbols.get("flow_main_usb_service_3a26_3a7e") if symbols is not None else None)
     )
     if dispatch_addr is None:
-        dispatch_addr = _require_code_signature_addr(
+        dispatch_addr = _require_code_signature_addr_any(
             Path(main_hex),
             name="cmd03 dispatch entry",
-            signature=_MAIN_CMD03_DISPATCH_ENTRY_SIG,
+            signatures=(
+                _MAIN_CMD03_DISPATCH_ENTRY_SIG,
+                _MAIN_CMD03_DISPATCH_ENTRY_SIG_V32,
+            ),
         )
     return (
         parser_addr,
