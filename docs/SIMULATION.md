@@ -3,7 +3,7 @@
 gpsim-backed co-simulation for the DLCP stock pair and later patched/source
 variants. The stock `V1.4 <-> V2.3` pair remains the baseline example in this
 guide, but the same harness family also covers patched `V2.4`–`V2.7`,
-source-assembled `V3.0` / `V3.1`, and CONTROL `V1.41`–`V1.63b` as documented in
+source-assembled `V3.0` / `V3.1`, and CONTROL `V1.41`–`V1.64b` as documented in
 `AGENTS.md`.
 
 MAIN now runs on the physical `p18f2455` model. CONTROL now runs on the

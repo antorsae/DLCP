@@ -26,13 +26,15 @@ def test_discover_flipper_serial_ports_filters_real_flipper_like_nodes(monkeypat
 
 def test_resolve_action_spec_supports_hypex_profile_actions_and_aliases() -> None:
     f2 = ir.resolve_action_spec("F2")
+    power = ir.resolve_action_spec("power")
     standby = ir.resolve_action_spec("standby")
     wake = ir.resolve_action_spec("wake")
     mute = ir.resolve_action_spec("mute")
 
     assert (f2.protocol, f2.address, f2.command) == ("RC5", 0x10, 0x39)
-    assert (standby.protocol, standby.address, standby.command) == ("RC5", 0x10, 0x32)
-    assert (wake.protocol, wake.address, wake.command) == ("RC5", 0x10, 0x32)
+    assert (power.protocol, power.address, power.command) == ("RC5", 0x10, 0x32)
+    assert (standby.protocol, standby.address, standby.command) == ("RC5", 0x10, 0x3A)
+    assert (wake.protocol, wake.address, wake.command) == ("RC5", 0x10, 0x3B)
     assert (mute.protocol, mute.address, mute.command) == ("RC5", 0x10, 0x35)
 
 

@@ -32,7 +32,7 @@ EOF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.61b.hex"
+DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.64b.hex"
 DEFAULT_BOOT_REF="${ROOT_DIR}/firmware/stock/control/DLCP Control Firmware V1.6b.hex"
 DEFAULT_PYTHON="${ROOT_DIR}/.venv_ep0/bin/python"
 

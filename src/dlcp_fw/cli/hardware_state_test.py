@@ -907,7 +907,7 @@ def _run_standby_wake_cycle(
     output_root: Path,
     context: str,
 ) -> dict[str, object]:
-    standby_ir = _send_single_ir_action(args=args, action="POWER")
+    standby_ir = _send_single_ir_action(args=args, action="STANDBY")
     standby_lcd = _wait_for_lcd_target(
         expected_line1="Zzz...",
         expected_line2=None,
@@ -920,7 +920,7 @@ def _run_standby_wake_cycle(
     standby_pair = _try_read_pair_state(vid=args.vid, pid=args.pid)
     if args.standby_dwell_s > 0:
         time.sleep(max(0.0, args.standby_dwell_s))
-    wake_ir = _send_single_ir_action(args=args, action="POWER")
+    wake_ir = _send_single_ir_action(args=args, action="WAKE")
     wake_main = _wait_for_main_pair_state(
         vid=args.vid,
         pid=args.pid,

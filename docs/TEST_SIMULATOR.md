@@ -10,7 +10,7 @@ Status note (2026-03-30):
 - This document captures the original preset-framework baseline around
   `V2.5` / `V1.62b`.
 - The live `tests/sim` gate now spans stock, `V2.4`–`V2.7`, `V3.0` / `V3.1`,
-  and CONTROL `V1.4`–`V1.63b`; use `AGENTS.md` for the authoritative current
+  and CONTROL `V1.4`–`V1.64b`; use `AGENTS.md` for the authoritative current
   matrix.
 
 Original baseline target matrix:

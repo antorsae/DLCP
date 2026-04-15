@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -551,6 +552,66 @@ def test_preset_standby_wake_timing_sweep_command_writes_result(monkeypatch, tmp
     payload = json.loads(result_files[0].read_text(encoding="utf-8"))
     assert payload["delays_ms"] == [250.0]
     assert len(payload["iterations"]) == 1
+
+
+def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> None:
+    actions: list[str] = []
+
+    left_after = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="B",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_after = dataclasses.replace(
+        left_after,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+
+    monkeypatch.setattr(
+        hw,
+        "_send_single_ir_action",
+        lambda *, args, action: (actions.append(action) or {"action": action}),
+    )
+    monkeypatch.setattr(hw, "_wait_for_lcd_target", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_wait_for_main_pair_state", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    args = SimpleNamespace(
+        vid=0x04D8,
+        pid=0xFF89,
+        timeout_s=5.0,
+        main_poll_s=0.1,
+        lcd_timeout_s=5.0,
+        lcd_poll_s=0.1,
+        lcd_probe_captures=3,
+        standby_dwell_s=0.0,
+    )
+
+    payload = hw._run_standby_wake_cycle(
+        expected_preset="B",
+        args=args,
+        output_root=tmp_path,
+        context="unit_test",
+    )
+
+    assert actions == ["STANDBY", "WAKE"]
+    assert payload["after"]["left"]["active_preset"] == "B"
+    assert payload["after"]["right"]["active_preset"] == "B"
 
 
 def test_reconnect_responsiveness_soak_command_writes_result(monkeypatch, tmp_path) -> None:

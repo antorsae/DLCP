@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-14
+Last updated: 2026-04-15
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -13,7 +13,7 @@ If any file is moved/renamed, update this document in the same change.
 
 - Product: Hypex DLCP (Digital Loudspeaker Control Processor)
 - Main MCU: PIC18F2455-class firmware image (`V2.3` stock, patched `V2.4`–`V2.8`, source-assembled `V3.0`/`V3.1`)
-- Control MCU: PIC18F25K20 firmware image (`V1.4`/`V1.5b`/`V1.6b` stock, patched `V1.41`/`V1.51b`/`V1.61b`/`V1.62b`/`V1.63b`)
+- Control MCU: PIC18F25K20 firmware image (`V1.4`/`V1.5b`/`V1.6b` stock, patched `V1.41`/`V1.51b`/`V1.61b`/`V1.62b`/`V1.63b`/`V1.64b`)
 - DSP: TI TAS3108
 - Host interface: USB HID (`VID 0x04D8`, `PID 0xFF89`)
 - Inter-unit link: 31,250 baud current-loop serial (3-byte frames: route/cmd/data)
@@ -114,6 +114,7 @@ Use these locations only:
 - Control AB (V1.6b port): `firmware/patched/releases/DLCP_Control_V1.61b.hex`
 - Control AB + reconnect robustness: `firmware/patched/releases/DLCP_Control_V1.62b.hex`
 - Control AB + BF/08 fault indicator/resync: `firmware/patched/releases/DLCP_Control_V1.63b.hex`
+- Control AB + BF/08 + IR endpoint standby/wake: `firmware/patched/releases/DLCP_Control_V1.64b.hex`
 
 ### Source-assembled releases (V3.x)
 
@@ -169,7 +170,7 @@ Canonical constants used across scripts/tests:
 - Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX_CANONICAL`, `V31_MAIN_ASM_CANONICAL`, `V31_MAIN_HEX`, `V31_MAIN_ASM`
   - `V31_MAIN_HEX_CANONICAL` / `V31_MAIN_ASM_CANONICAL` are the repo-stable inputs for canonical V3.1 builders
   - `V31_MAIN_HEX` / `V31_MAIN_ASM` may be overridden for diagnostics with `DLCP_FW_V31_MAIN_HEX` / `DLCP_FW_V31_MAIN_ASM`
-- Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`
+- Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`, `PATCHED_CONTROL_HEX_V164B`
 - Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
 - Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`, `GPSIM_XTC_SOURCE_DIR`, `GPSIM_XTC_ARTIFACTS_DIR`, `GPSIM_XTC_BUILD_DIR`, `GPSIM_XTC_BIN_DIR`, `GPSIM_XTC_BINARY`, `GPSIM_XTC_COMPAT_BINARY`, `GPSIM_XTC_BUILD_BINARY`, `GPSIM_XTC_MODULE_DIR`
 - Docs: `SEMANTIC_FUNCTION_MAP`
@@ -191,7 +192,7 @@ Always prefer these constants over hardcoded paths.
 
 ### Patch package (`src/dlcp_fw/patch`)
 
-- Builders: `build_main_presets_ab.py`, `build_control_presets_ab.py`, `build_control_presets_ab_v15b.py`, `build_control_presets_ab_v16b.py`, `build_control_presets_ab_v162b.py`, `build_control_presets_ab_v163b.py`
+- Builders: `build_main_presets_ab.py`, `build_control_presets_ab.py`, `build_control_presets_ab_v15b.py`, `build_control_presets_ab_v16b.py`, `build_control_presets_ab_v162b.py`, `build_control_presets_ab_v163b.py`, `build_control_presets_ab_v164b.py`
 - V3.1 diagnostics/build helpers: `build_v31_cmd07_stock_guard_usb_safe.py`, `build_v31_diag_coeff_stock.py`, `build_v31_diag_memread_usb_safe.py`, `build_v31_diag_no_flash_remap_usb_safe.py`, `build_v31_diag_stock_bf.py`, `build_v31_diag_stock_bf_reg1f.py`, `build_v31_diag_stock_i2c_byte_tx.py`, `build_v31_diag_v27_pen_hook.py`, `build_v31_nop_variants.py`, `build_v31_usb_safe.py`, `bake_preset_capture.py`
 - Verifiers: `verify_presets_ab.py`, `verify_isr_vectors.py`
 
@@ -446,6 +447,7 @@ python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v162b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v163b
+python3 -m dlcp_fw.patch.build_control_presets_ab_v164b
 python3 -m dlcp_fw.patch.verify_presets_ab
 ```
 

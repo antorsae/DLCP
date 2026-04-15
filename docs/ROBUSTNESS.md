@@ -19,7 +19,7 @@ Status:
 Versioning (as of 2026-03-30):
 
 - MAIN releases: `V2.4` (A/B only), `V2.5` (+ robustness), `V2.6` (+ DSP ACKSTAT), `V2.7` (+ bus-clear/ping/PEN), `V3.0` (source rewrite), `V3.1` (all features inline)
-- CONTROL releases: `V1.41`–`V1.61b` (A/B), `V1.62b` (+ reconnect), `V1.63b` (+ BF/08 fault UI/resync)
+- CONTROL releases: `V1.41`–`V1.61b` (A/B), `V1.62b` (+ reconnect), `V1.63b` (+ BF/08 fault UI/resync), `V1.64b` (+ explicit IR standby/wake endpoints)
 - This document was originally written targeting V2.5/V1.62b as next releases
 
 This document consolidates the stock deadlock findings, ranks the earlier analyses by trust level, and defines the implementation order needed to reduce `WAITING FOR DLCP` hangs without breaking deployed `V1.61b` control units.

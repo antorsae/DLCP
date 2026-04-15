@@ -34,7 +34,9 @@ ACTION_SPECS: tuple[IrActionSpec, ...] = (
     IrActionSpec("F1", "RC5", 0x10, 0x38),
     IrActionSpec("F2", "RC5", 0x10, 0x39),
     IrActionSpec("MUTE", "RC5", 0x10, 0x35),
-    IrActionSpec("POWER", "RC5", 0x10, 0x32, aliases=("STANDBY", "WAKE")),
+    IrActionSpec("POWER", "RC5", 0x10, 0x32, aliases=("POWER_TOGGLE", "FLIP")),
+    IrActionSpec("STANDBY", "RC5", 0x10, 0x3A, aliases=("STDBY",)),
+    IrActionSpec("WAKE", "RC5", 0x10, 0x3B),
     IrActionSpec("VOL_UP", "RC5", 0x10, 0x33, aliases=("VOLUME_UP",)),
     IrActionSpec("VOL_DOWN", "RC5", 0x10, 0x34, aliases=("VOLUME_DOWN",)),
     IrActionSpec("INPUT_UP", "RC5", 0x10, 0x36),
@@ -81,7 +83,7 @@ def resolve_action_spec(action: str) -> IrActionSpec:
     for spec in ACTION_SPECS:
         if key == spec.action or key in spec.aliases:
             return spec
-    available = sorted({spec.action for spec in ACTION_SPECS} | {"STANDBY", "WAKE"})
+    available = sorted(spec.action for spec in ACTION_SPECS)
     raise RuntimeError(f"unknown IR action {action!r}; available actions: {available}")
 
 
@@ -193,7 +195,7 @@ def send_ir_action(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--action", help="named IR action, e.g. F1, F2, MUTE, STANDBY, WAKE")
+    parser.add_argument("--action", help="named IR action, e.g. F1, F2, MUTE, POWER, STANDBY, WAKE")
     parser.add_argument("--port", help="Flipper Zero serial port; auto-detect when omitted")
     parser.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--idle-s", type=float, default=DEFAULT_IDLE_S)

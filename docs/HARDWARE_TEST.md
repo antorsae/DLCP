@@ -347,7 +347,14 @@ This sender uses the Hypex RC5 profile:
 - `F1` -> `0x38`
 - `F2` -> `0x39`
 - `Mute` -> `0x35`
-- `Standby` / `Wake` -> `0x32` (toggle semantics)
+- `Power` (legacy toggle) -> `0x32`
+- `Standby` (endpoint) -> `0x3A`
+- `Wake` (endpoint) -> `0x3B`
+
+Endpoint requirement:
+
+- `Standby`/`Wake` endpoint commands require CONTROL firmware `V1.64b` or newer.
+- On older CONTROL firmware, only `Power` toggle (`0x32`) is recognized.
 
 Canonical roundtrip command:
 
@@ -605,9 +612,9 @@ Goal:
 
 Implementation:
 
-- add a timing-sweep test: `F2`, then `POWER` after `50/100/250/500/1000 ms`
+- add a timing-sweep test: `F2`, then `STANDBY` after `50/100/250/500/1000 ms`
 - require the LCD to enter `Zzz...`
-- wake after a fixed dwell with another `POWER`
+- wake after a fixed dwell with `WAKE`
 - require:
   - LCD leaves `Zzz...`
   - CONTROL returns to a usable screen

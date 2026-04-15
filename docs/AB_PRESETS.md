@@ -5,7 +5,7 @@ Reliability-first A/B preset patches for:
 - MAIN `V2.3` stock -> patched `V2.4`–`V2.8`, source-assembled `V3.0`/`V3.1`
 - CONTROL `V1.4` stock -> patched `V1.41`
 - CONTROL `V1.5b` stock -> patched `V1.51b`
-- CONTROL `V1.6b` stock -> patched `V1.61b` / `V1.62b` / `V1.63b`
+- CONTROL `V1.6b` stock -> patched `V1.61b` / `V1.62b` / `V1.63b` / `V1.64b`
 
 ## Status
 
@@ -375,6 +375,7 @@ python3 -m dlcp_fw.patch.build_control_presets_ab_v15b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v16b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v162b
 python3 -m dlcp_fw.patch.build_control_presets_ab_v163b
+python3 -m dlcp_fw.patch.build_control_presets_ab_v164b
 ```
 
 Run static verification:
@@ -447,6 +448,7 @@ Relevant release files:
 - `firmware/patched/releases/DLCP_Control_V1.61b.hex`
 - `firmware/patched/releases/DLCP_Control_V1.62b.hex`
 - `firmware/patched/releases/DLCP_Control_V1.63b.hex`
+- `firmware/patched/releases/DLCP_Control_V1.64b.hex`
 
 Bench-verified pair:
 

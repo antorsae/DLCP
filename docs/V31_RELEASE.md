@@ -6,7 +6,7 @@ This is the operator runbook for the recommended MAIN deployment as of
 2026-04-11.
 
 - recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
-- recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.63b.hex`
+- recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.64b.hex`
 - recommended flashing path: use `scripts/dlcp_v31_release_flash.py`, which
   bakes preset A/B captures into canonical `V3.1.hex` at flash time
 
