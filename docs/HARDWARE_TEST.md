@@ -619,6 +619,14 @@ Implementation:
     probes after a known-good pre-standby LCD read, with supporting standby
     evidence (for example HID not reachable during sleep)
 - wake after a fixed dwell with `WAKE`
+- wake validation is two-phase:
+  - Phase A (`FUNCTIONAL_WAKE_TIMEOUT` on failure): both MAINs are visible and
+    responsive, active, and converged to the expected preset
+  - Phase B (`ROLE_DECODE_UNSTABLE` on failure): decoded LEFT/RIGHT identity
+    stabilizes for consecutive polls
+- path->role mapping captured before standby is used only as temporary identity
+  continuity during wake grace when raw decode is `UNKNOWN`; live decode is
+  still required to pass Phase B
 - require:
   - LCD leaves `Zzz...`
   - CONTROL returns to a usable screen
@@ -637,11 +645,17 @@ Implemented paths:
 ```bash
 .venv_ep0/bin/python scripts/hardware_state_test.py preset-standby-wake-timing-sweep \
   --delays-ms 50,100,250,500,1000 \
-  --standby-dwell-s 1.0
+  --standby-dwell-s 1.0 \
+  --wake-phase-a-timeout-s 15 \
+  --wake-phase-b-timeout-s 25 \
+  --wake-role-stable-polls 3
 ```
 
 Wake reliability defaults to bounded endpoint retries (`--wake-max-attempts 3`,
-`--wake-retry-delay-s 1.0`) so missed IR packets do not fail immediately.
+`--wake-retry-delay-s 1.0`) so missed IR packets do not fail immediately. On
+wake failure, the harness emits a structured tail of recent poll samples
+(`--wake-diagnostics-tail`, default `30`) including visibility, role decode,
+sticky-role usage, active/preset bits, and read errors.
 
 Optional strict LCD mode (disable dim-backlight fallback and require literal
 `Zzz...`):
