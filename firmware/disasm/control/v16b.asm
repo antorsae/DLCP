@@ -1,20 +1,157 @@
-000000:  ef00  goto    0x007800
+; ===========================================================================
+;          Hypex DLCP — CONTROL panel firmware V1.6b (raw gpdasm dump)
+; ===========================================================================
+; Source       : DLCP Control Firmware V1.6b.hex
+; Target MCU   : Microchip PIC18F25K20 @ ~16 MHz (4 MIPS)
+; Format       : raw `gpdasm -p18f25k20` output. One address per line:
+;                  AAAAAA:  HHHH  mnemonic  operands
+; Symbol model : NONE — no labels, no equates, no relocation. Addresses are
+;                hard-coded as instruction-byte offsets from 0x000000.
+; HEX policy   : COMMENT-ONLY edits. Never modify or relocate code; this
+;                file is a *reference* derived from the binary, not a
+;                source for assembly. Re-running gpdasm on the original
+;                .hex must reproduce the body byte-for-byte.
+;
+; ---------------------------------------------------------------------------
+; Image layout
+; ---------------------------------------------------------------------------
+;   0x000000        Reset vector             goto 0x007800 (label_284 / bootloader_entry)
+;   0x000008        High-priority IV         goto 0x0003A6 (label_032 / isr_entry)
+;   0x000018        Low-priority IV          calls 0x000190, then `bra .` halt at 0x000020
+;   0x000040        Secondary entry vector   goto 0x000366 (label_031, app cold-init)
+;   0x000048        Alternate IV (mirror)    goto 0x0003A6 (label_032 / isr_entry)
+;   0x000066+       Application body         LCD, EEPROM, IR, UART, menu, sync, display loop
+;   0x007800        Bootloader entry          (firmware-update protocol)
+;   0x008000        end of program memory (32 KB device)
+;
+; ---------------------------------------------------------------------------
+; Position in the V1.x release line
+; ---------------------------------------------------------------------------
+;   V1.4      Stock baseline (older codebase, ch1-6 raw config commands)
+;   V1.5b     First refactor: per-purpose serial helpers, displaced mute bit
+;             (mute moved to 0x01F.bit5; bit4 became display_refresh_pending)
+; * V1.6b    THIS FILE — current development base. Features:
+;             • input/volume/mute/standby/display dedicated frame senders
+;               (functions 030/031/033/034/035 — see SEMANTIC_FUNCTION_MAP)
+;             • full_sync_burst (function_028) emits 6 channel cfg + vol + input
+;             • IR RC5 decode in ISR (function_017 — BUG C3, blocks ~10 ms)
+;             • boot handshake polls four sentinels until each != 0x80
+;               (BUG C1 — no timeout; hard-fails if MAIN absent)
+;   V1.61b   V1.6b + binary AB-preset patch (preset_b_active in 0x01F.bit6)
+;   V1.62b   V1.61b + reconnect/UART soft-recover patches at 0x7000+
+;             (the wake-bug fix and OERR re-prime path; see V162B docs)
+;   V1.63b   V1.62b + BF/08 fault indicator/resync helpers
+;   V1.64b   V1.63b + IR endpoint standby/wake hardening
+;
+; ---------------------------------------------------------------------------
+; Serial protocol over the current loop (31,250 baud, 3-byte frame)
+; ---------------------------------------------------------------------------
+; CONTROL emits routed frames via function_027 (serial_tx_routed_frame):
+;   [0xB0+route, cmd, data] enqueued through function_020 (tx_byte_enqueue).
+; Frames received from MAIN on the 0xBF-prefixed return path are parsed by
+; function_019 (rx_parser_entry) — see the parser at 0x00044A.
+;
+; CONTROL → MAIN (route 0xB0=broadcast, 0xB1=addressed)
+;   0x03/00=standby_enter  0x03/01=wake  0x03/02=mute_on  0x03/03=mute_off
+;   0x04/00=status_poll    0x06/n=input_select   0x07/n=volume (offset 0x60)
+;   0x17..0x1C=channel src 0x1D=backlight  0x1E=link_addr  0x20=preset_select
+;
+; MAIN → CONTROL (route 0xBF) — parsed at 0x00044A:
+;   0x03=standby_status   0x05=raw_status   0x06=current_input
+;   0x07=current_volume   0x18=power_on_notify   0x1D=display_timeout
+;   0x29=cmd29_status (preset_b_active bit reflection)
+;
+; ---------------------------------------------------------------------------
+; RAM layout (bank 0 unless noted)
+; ---------------------------------------------------------------------------
+;   0x01D       ir_decoded_cmd        (RC5 cmd byte from function_017)
+;   0x01E       ir_decoded_addr       (RC5 addr byte)
+;   0x01F       control_flags         bit0=ir_armed   bit1=connected
+;                                     bit2=rx_route_seen
+;                                     bit3=event_exit
+;                                     bit4=display_refresh_pending (V1.6b)
+;                                     bit5=mute_state              (V1.6b)
+;                                     bit6=preset_b_active (V1.61b+ patch)
+;   0x027       tx_data_staging       (byte to enqueue via function_020)
+;   0x02F/0x030 rx_parsed_cmd / rx_parsed_data  (latched by parser)
+;   0x036..0x065  TX ring (48 bytes, hardware-driven by ISR via PIE1.TXIE)
+;   0x066..0x095  RX ring (48 bytes, written by RCIF in ISR)
+;   0x096        tx_ring_rd            (ISR consumer side)
+;   0x097        tx_ring_wr            (function_020 producer side)
+;   0x098        rx_ring_rd            (parser consumer)
+;   0x099        rx_ring_wr            (ISR producer)
+;   0x09D:0x09E  idle_timeout_counter  16-bit, init 0xEA61 (~60k)
+;   0x09F:0x0A0  full_sync_counter     16-bit, init 0x4E20 (~20k → fullsync)
+;   0x0A1        handshake_sentinel_4  init 0x80 — boot wait until != 0x80
+;   0x0A6        rx_frame_position     parser state (0=route, 1=cmd, 2=data)
+;   0x0A7        handshake_sentinel_3  init 0x80
+;   0x0B7       rx_ring_staging        (single-byte holding for parser)
+;   0x0B8       handshake_sentinel_1  init 0x80 (likely ch1 volume)
+;   0x0B9       handshake_sentinel_2  init 0x80 (likely ch2 volume)
+;   0x0BB       button_debounce_counter (threshold 4)
+;   0x0BC       button_last_scan
+;   0x0BE       button_debounced
+;   0x0BF       display_state_index   menu screen 0..3 (Vol/Preset/Input/Setup)
+;   0x0C1..0CC  saved settings (loaded by function_026 from EEPROM)
+;
+; ---------------------------------------------------------------------------
+; Pin map (PIC18F25K20)  — see docs/analysis/PIN_SEMANTICS.md
+; ---------------------------------------------------------------------------
+;   RA1=Select RA2=Down RA3=Standby RA4=Right        (active-low buttons)
+;   RA5=LCD RS                              RB0..RB3=LCD D4..D7
+;   RB4=LCD E                               RB5=IR RC5 input  RB6=aux output
+;   RC0=Up                                  RC1=panel illumination / pwr LED
+;   RC5=Left   RC6=UART TX (31,250 baud)    RC7=UART RX
+;   ADCON1=0x0F → all PORTA digital
+;
+; ---------------------------------------------------------------------------
+; Known long-standing bugs (cross-refs to docs/analysis/SEMANTIC_FUNCTION_MAP.md)
+; ---------------------------------------------------------------------------
+;   C1   boot_handshake_infinite_wait    label_204 @ 0x0011FE  CRITICAL
+;   C2   reconnect_infinite_wait         label_212/216 @ 0x012BC/0x001322  CRITICAL
+;   C3   ir_decode_blocks_isr_10ms       function_017 @ 0x00021E  HIGH
+;   C4   oerr_no_fifo_drain              function_019 @ 0x00044A  HIGH
+;   C5   no_frame_resync_timeout         parser 0x00044A..0x000606 HIGH
+;   C6   tx_full_busywait                label_068 @ 0x00062A  HIGH
+;   C7   fullsync_burst_saturates_link   function_028 @ 0x000B36 HIGH
+;   C8   no_watchdog_timer               WDTEN=0 (config bits)   MEDIUM
+; ===========================================================================
+
+; ---------------------------------------------------------------------------
+; Reset vector @ 0x000000 — jumps to bootloader at 0x007800 (label_284).
+; The bootloader decides whether to start the app at 0x000040 (cold-init
+; label_031 / function_001 etc.) or stay in firmware-update mode.
+; ---------------------------------------------------------------------------
+000000:  ef00  goto    0x007800             ; -> bootloader_entry (label_284)
 000002:  f03c
 000004:  ffff  dw      0xffff
 000006:  ffff  dw      0xffff
-000008:  efd3  goto    0x0003a6
+
+; ---------------------------------------------------------------------------
+; High-priority IV @ 0x000008 — vectors to label_032 (isr_entry @ 0x0003A6).
+; Handles TXIE (UART TX ring drain), RCIF (UART RX ring fill), RBIF (button
+; level change). Also calls function_017 (ir_rc5_decode) — BUG C3, blocks
+; ~10 ms during RC5 decode, the source of OERR latching on real hardware.
+; ---------------------------------------------------------------------------
+000008:  efd3  goto    0x0003a6             ; -> isr_entry (label_032)
 00000a:  f001
-00000c:  0e80  movlw   0x80
+00000c:  0e80  movlw   0x80                  ; (vector pad / unused stub)
 00000e:  6e01  movwf   0x01, 0x0
 000010:  0efe  movlw   0xfe
 000012:  ecc8  call    0x000190, 0x0
 000014:  f000
 000016:  0e01  movlw   0x01
-000018:  ecc8  call    0x000190, 0x0
+
+; ---------------------------------------------------------------------------
+; Low-priority IV @ 0x000018 — calls function_009 (uart_init @ 0x000190),
+; then halts at 0x000020 (`bra .`). Effectively unused: low-priority is
+; never armed; this region is a defensive dead-end.
+; ---------------------------------------------------------------------------
+000018:  ecc8  call    0x000190, 0x0        ; uart_init (function_009)
 00001a:  f000
 00001c:  0e75  movlw   0x75
 00001e:  6e0d  movwf   0x0d, 0x0
-000020:  d7ff  bra     0x000020
+000020:  d7ff  bra     0x000020             ; HALT — low-IV trap (never triggered)
 000022:  ffff  dw      0xffff
 000024:  ffff  dw      0xffff
 000026:  ffff  dw      0xffff
@@ -30,16 +167,23 @@
 00003a:  ffff  dw      0xffff
 00003c:  ffff  dw      0xffff
 00003e:  ffff  dw      0xffff
-000040:  efb3  goto    0x000366
+; ---------------------------------------------------------------------------
+; Secondary entry vector @ 0x000040 — bootloader jumps here to start the
+; app cold-init at 0x000366 (label_031). The intervening 4 dw FFFF + the
+; alternate IV at 0x000048 form a defensive trampoline so a misaligned
+; PC landing at 0x000040..0x00005E still reaches an interrupt handler or
+; init routine instead of executing 0xFF (sleep) opcodes.
+; ---------------------------------------------------------------------------
+000040:  efb3  goto    0x000366             ; -> app cold-init (label_031)
 000042:  f001
 000044:  ffff  dw      0xffff
 000046:  ffff  dw      0xffff
-000048:  efd3  goto    0x0003a6
+000048:  efd3  goto    0x0003a6             ; alt IV mirror -> isr_entry
 00004a:  f001
-00004c:  0e80  movlw   0x80
-00004e:  6e01  movwf   0x01, 0x0
+00004c:  0e80  movlw   0x80                  ; function_000 — defensive stub:
+00004e:  6e01  movwf   0x01, 0x0             ;   used only if PC drops here.
 000050:  0efe  movlw   0xfe
-000052:  ecc8  call    0x000190, 0x0
+000052:  ecc8  call    0x000190, 0x0        ;   call uart_init
 000054:  f000
 000056:  0e01  movlw   0x01
 000058:  ecc8  call    0x000190, 0x0
@@ -47,8 +191,21 @@
 00005c:  0e75  movlw   0x75
 00005e:  6e0d  movwf   0x0d, 0x0
 000060:  0e30  movlw   0x30
-000062:  efec  goto    0x0001d8
+000062:  efec  goto    0x0001d8             ; -> delay_parameter_unit (function_003)
 000064:  f000
+
+; ===========================================================================
+; function_001 @ 0x000066 — lcd_command
+; ---------------------------------------------------------------------------
+; Writes a command byte to the HD44780 LCD via the 4-bit nibble interface.
+; LCD signals (per PIN_SEMANTICS):
+;   RA5 = RS (0=command, 1=data)
+;   RB4 = E  (strobe)
+;   RB0..RB3 = D4..D7 (data nibble)
+; Stages W into 0x017, asserts RS=0 via clrf 0x01 + bsf 0x01,7 (the
+; high-bit pattern indicates command mode), then calls function_009 to
+; latch the byte through the nibble engine and return.
+; ===========================================================================
 000066:  6a01  clrf    0x01, 0x0
 000068:  8e01  bsf     0x01, 0x7, 0x0
 00006a:  6e17  movwf   0x17, 0x0
@@ -58,6 +215,15 @@
 000072:  5017  movf    0x17, 0x0, 0x0
 000074:  efc8  goto    0x000190
 000076:  f000
+; ===========================================================================
+; function_002 @ 0x000078 — delay_short_loop
+; ---------------------------------------------------------------------------
+; 16-bit delay loop scratch helper. Caller stages count via 0x07/0x10/0x11
+; and the routine spins, calling function_003 every iteration. Used to
+; implement variable-duration LCD setup waits (40 ms power-up, 4.5 ms
+; nibble-mode-set, 100 µs char delays). Combined with delay_parameter_unit
+; for the LCD HD44780 reset sequence at 0x000086+.
+; ===========================================================================
 000078:  6a07  clrf    0x07, 0x0
 00007a:  6e10  movwf   0x10, 0x0
 00007c:  6a11  clrf    0x11, 0x0
@@ -83,6 +249,14 @@
 0000a4:  d802  rcall   0x0000aa
 0000a6:  5010  movf    0x10, 0x0, 0x0
 0000a8:  d008  bra     0x0000ba
+; ===========================================================================
+; function_003 @ 0x0000AA — delay_parameter_unit
+; ---------------------------------------------------------------------------
+; Inner delay primitive used by function_002 / function_012. Counts down
+; the {0x10:0x11} pair through the {0x0C:0x0E:0x0F} scratch chain,
+; calling function_008 (0x0001F0 — 16-bit divide helper) on each tick to
+; advance the working pointer. Returns when the counter reaches zero.
+; ===========================================================================
 0000aa:  6e0e  movwf   0x0e, 0x0
 0000ac:  5011  movf    0x11, 0x0, 0x0
 0000ae:  6e0d  movwf   0x0d, 0x0
@@ -108,16 +282,36 @@
 0000d6:  efc8  goto    0x000190
 0000d8:  f000
 0000da:  0012  return  0x0
-0000dc:  6aa6  clrf    0xa6, 0x0
-0000de:  8ea6  bsf     0xa6, 0x7, 0x0
-0000e0:  0009  tblrd*+
+; ===========================================================================
+; function_004 @ 0x0000DC — lcd_string_write_rom
+; ---------------------------------------------------------------------------
+; Reads a NUL-terminated ASCII string from program memory via TBLRD*+,
+; passing each character to function_005 (lcd_char_write). Caller seeds
+; TBLPTR before calling. Returns when a 0x00 terminator is read.
+; Used by the menu/display-loop helpers to print fixed strings (SETUP,
+; VOLUME, INPUT, "Zzz...", "Waiting for DLCP", etc.).
+; ===========================================================================
+0000dc:  6aa6  clrf    0xa6, 0x0            ; EECON1 = 0
+0000de:  8ea6  bsf     0xa6, 0x7, 0x0       ; EEPGD=1 (program memory)
+0000e0:  0009  tblrd*+                       ; TABLAT = pgm[TBLPTR++]
 0000e2:  50f5  movf    0xf5, 0x0, 0x0
 0000e4:  e002  bz      0x0000ea
 0000e6:  d802  rcall   0x0000ec
 0000e8:  d7fb  bra     0x0000e0
 0000ea:  0012  return  0x0
+; ===========================================================================
+; function_005 @ 0x0000EC — lcd_char_write
+; ---------------------------------------------------------------------------
+; Writes one byte to the HD44780 LCD via the 4-bit nibble interface.
+;   • RS (LATA.5) selected by the BSR/W stage upstream
+;   • Latches high nibble (bits 7..4) on D4..D7 = LATB.0..3,
+;   • Pulses E (LATB.4) high then low (~450 ns at 16 MHz),
+;   • Repeats for low nibble.
+; Special-cases command bytes 0x01..0x03 (clear/home/entry-mode-set) which
+; need extra settle time — uses function_003 to hold E high a few µs longer.
+; ===========================================================================
 0000ec:  6e15  movwf   0x15, 0x0
-0000ee:  988a  bcf     0x8a, 0x4, 0x0
+0000ee:  988a  bcf     0x8a, 0x4, 0x0       ; LATB.4 (E) = 0 (idle)
 0000f0:  9a89  bcf     0x89, 0x5, 0x0
 0000f2:  9893  bcf     0x93, 0x4, 0x0
 0000f4:  9a92  bcf     0x92, 0x5, 0x0
@@ -198,28 +392,71 @@
 00018a:  80d8  setc
 00018c:  5015  movf    0x15, 0x0, 0x0
 00018e:  0012  return  0x0
-000190:  be01  btfsc   0x01, 0x7, 0x0
-000192:  ef76  goto    0x0000ec
+; ===========================================================================
+; function_009 @ 0x000190 — lcd_command_or_eeprom_read (shared dispatch)
+; function_010 @ 0x000196 — eeprom_read_byte (entry point shares tail)
+; ---------------------------------------------------------------------------
+; Dual-purpose entry block. PIC18F25K20 EEPROM uses the same EECON1 SFR
+; positions as program-memory access (0xA6=EECON1, 0xA7=EECON2, 0xA8=EEDATA,
+; 0xA9=EEADR), so a single read primitive serves both paths:
+;
+;   Entry function_009 (0x000190) — bit7 of 0x01 selects target:
+;     bit7 SET   → goto function_005 (LCD write at 0x0000EC)
+;     bit7 CLEAR → fall through into the EEPROM read body at 0x000196
+;
+;   Entry function_010 (0x000196) — direct EEPROM byte read:
+;     EEADR (0xA9) = W, EECON1 (0xA6) cleared, EECON1.RD (0xA6.0) set,
+;     return EEDATA (0xA8) in W. EEPROM read latency is one cycle on
+;     PIC18F25K20 so no NOP is needed before reading EEDATA.
+;
+; Used by function_026 (settings_load_eeprom) at boot, and by every later
+; routine that needs to read user-saved display/config bytes from EEPROM.
+; ===========================================================================
+000190:  be01  btfsc   0x01, 0x7, 0x0       ; LCD-mode flag (0x01.bit7) set?
+000192:  ef76  goto    0x0000ec             ;  yes -> tail to function_005 (LCD)
 000194:  f000
-000196:  6ea9  movwf   0xa9, 0x0
-000198:  6aa6  clrf    0xa6, 0x0
-00019a:  80a6  bsf     0xa6, 0x0, 0x0
-00019c:  50a8  movf    0xa8, 0x0, 0x0
-00019e:  2aa9  incf    0xa9, 0x1, 0x0
+; --- function_010 entry (eeprom_read_byte) ---
+000196:  6ea9  movwf   0xa9, 0x0            ; EEADR = W (read address)
+000198:  6aa6  clrf    0xa6, 0x0            ; EECON1 = 0 (EEPGD=0, CFGS=0)
+00019a:  80a6  bsf     0xa6, 0x0, 0x0       ; EECON1.RD = 1 (start read)
+00019c:  50a8  movf    0xa8, 0x0, 0x0       ; W = EEDATA (latched byte)
+00019e:  2aa9  incf    0xa9, 0x1, 0x0       ; EEADR++ (auto-advance for sequential reads)
 0001a0:  0012  return  0x0
-0001a2:  6ea8  movwf   0xa8, 0x0
+
+; ===========================================================================
+; function_011 @ 0x0001A2 — eeprom_write_byte (~3.3 ms, blocking)
+; ---------------------------------------------------------------------------
+; Writes W to EEPROM at address EEADR. Standard PIC18 unlock sequence:
+;   • EECON1.WREN = 1
+;   • EECON2 = 0x55, EECON2 = 0xAA
+;   • EECON1.WR = 1
+; Polls WR until completion (~3.3 ms typical). NOTE: this routine spins
+; with WREN/WR set, blocking interrupts via implicit GIE behaviour during
+; the unlock window. CONTROL has no WDT (BUG C8) so a stuck WR could
+; hang indefinitely on faulty silicon.
+; ===========================================================================
+0001a2:  6ea8  movwf   0xa8, 0x0            ; EEDATA = W
 0001a4:  6aa6  clrf    0xa6, 0x0
-0001a6:  84a6  bsf     0xa6, 0x2, 0x0
+0001a6:  84a6  bsf     0xa6, 0x2, 0x0       ; EECON1.WREN = 1
 0001a8:  0e55  movlw   0x55
-0001aa:  6ea7  movwf   0xa7, 0x0
+0001aa:  6ea7  movwf   0xa7, 0x0            ; EECON2 = 0x55
 0001ac:  0eaa  movlw   0xaa
-0001ae:  6ea7  movwf   0xa7, 0x0
-0001b0:  82a6  bsf     0xa6, 0x1, 0x0
-0001b2:  b2a6  btfsc   0xa6, 0x1, 0x0
+0001ae:  6ea7  movwf   0xa7, 0x0            ; EECON2 = 0xAA
+0001b0:  82a6  bsf     0xa6, 0x1, 0x0       ; EECON1.WR = 1 (start write)
+0001b2:  b2a6  btfsc   0xa6, 0x1, 0x0       ; spin while WR set
 0001b4:  d7fe  bra     0x0001b2
-0001b6:  94a6  bcf     0xa6, 0x2, 0x0
+0001b6:  94a6  bcf     0xa6, 0x2, 0x0       ; EECON1.WREN = 0
 0001b8:  2aa9  incf    0xa9, 0x1, 0x0
 0001ba:  0012  return  0x0
+
+; ===========================================================================
+; function_012 @ 0x0001BC — delay_short
+; ---------------------------------------------------------------------------
+; Caller stages count in W; routine spins ~200 cycles per unit (50 µs at
+; 16 MHz). Common values: W=0xC8 → ~10 ms, W=0x05 → ~250 µs (post-LCD-strobe
+; settle). Used everywhere a "short pause" is needed without commandeering
+; Timer3.
+; ===========================================================================
 0001bc:  6a0f  clrf    0x0f, 0x0
 0001be:  6e0e  movwf   0x0e, 0x0
 0001c0:  0eff  movlw   0xff
@@ -269,9 +506,31 @@
 000218:  d7ef  bra     0x0001f8
 00021a:  500c  movf    0x0c, 0x0, 0x0
 00021c:  0012  return  0x0
-00021e:  8a93  bsf     0x93, 0x5, 0x0
-000220:  6a15  clrf    0x15, 0x0
-000222:  6a14  clrf    0x14, 0x0
+; ===========================================================================
+; function_017 @ 0x00021E — ir_rc5_decode    *** BUG C3 ***
+; ---------------------------------------------------------------------------
+; RC5 IR remote decoder. Polls RB5 (LATB.5 readback at 0x81.5) collecting
+; 16 bits via a tight bit-bang loop. Stores decoded address into 0x01E
+; (ir_decoded_addr) and command into 0x01D (ir_decoded_cmd), then sets
+; 0x01F.bit0 (ir_armed) so the main event loop dispatches the IR command.
+;
+; *** BUG C3 (ir_decode_blocks_isr_10ms) ***
+; This routine is INVOKED FROM THE ISR (label_032 at 0x0003A6 jumps to
+; 0x000264 which calls here). The polling loop runs ~28,160 cycles, i.e.
+; ~7-10 ms with the BSF 0x93,5 at entry KEEPING THE OTHER ISR SOURCES
+; MASKED. During that window:
+;   • UART RX FIFO can fill (RCREG is 2 deep) — third byte → OERR.
+;   • Button RBIF events are missed.
+;   • TXIE-driven outgoing frames stall (function_034 standby/wake frame
+;     can be delayed by ~10 ms per IR press).
+; The OERR latch exposes BUG C4 in function_019 because the parser only
+; toggles CREN to clear OERR — it does NOT drain RCREG. Stale bytes in
+; the hardware FIFO then re-trigger the parser with phase-shifted data,
+; which is what produces the V162B "intermittent unresponsive" pattern.
+; ===========================================================================
+00021e:  8a93  bsf     0x93, 0x5, 0x0       ; LATB.5 — drive IR sense (debug?) / mask sources
+000220:  6a15  clrf    0x15, 0x0            ; bit accumulator hi
+000222:  6a14  clrf    0x14, 0x0            ; bit accumulator lo
 000224:  ee00  lfsr    0x0, 0x010
 000226:  f010
 000228:  0e01  movlw   0x01
@@ -433,46 +692,86 @@
 000360:  2020  addwfc  0x20, 0x0, 0x0
 000362:  2020  addwfc  0x20, 0x0, 0x0
 000364:  0000  nop
-000366:  6af8  clrf    0xf8, 0x0
-000368:  6a00  clrf    0x00, 0x0
-00036a:  6aab  clrf    0xab, 0x0
+; ===========================================================================
+; label_031 @ 0x000366 — app_cold_init (peripheral bring-up)
+; ---------------------------------------------------------------------------
+; Reached from the secondary entry vector at 0x000040 (bootloader hand-off
+; once it determines the app should run). Performs PIC18F25K20 peripheral
+; init in the canonical order:
+;   1. Clear core slots (TBLPTRU, BSR, ANSEL).
+;   2. TRISA = 0xDF, TRISB = 0x3C, TRISC = 0xBD  (per PIN_SEMANTICS:
+;      buttons inputs, LCD outputs, IR/UART configured for peripheral).
+;   3. Clear the TX/RX ring index pairs at 0x7A/0x7B/0x7E/0x7F.
+;   4. ADCON1 = 0x0F (all PORTA digital — buttons, no analog input).
+;   5. Drop UART/MSSP enable bits, clear OSCCON.IDLEN/SLPEN/SCS bits to
+;      stay in HS oscillator mode.
+;   6. Set TXSTA.TXEN (0xAC.5), RCSTA.SPEN (0xAB.7), enable RBIE for
+;      button interrupts.
+;   7. Tail-call into 0x00103C (label_195 / app_init splash + main entry).
+; The canonical TRIS values are documented in PIN_SEMANTICS table.
+; ===========================================================================
+000366:  6af8  clrf    0xf8, 0x0            ; TBLPTRU = 0
+000368:  6a00  clrf    0x00, 0x0            ; (bank 0 scratch clear)
+00036a:  6aab  clrf    0xab, 0x0            ; RCSTA = 0 (UART RX off temporarily)
 00036c:  0100  movlb   0x0
 00036e:  0edf  movlw   0xdf
-000370:  6e92  movwf   0x92, 0x0
+000370:  6e92  movwf   0x92, 0x0            ; TRISA = 0xDF (RA1..RA4 + RA6/7 in, RA5 out)
 000372:  0e3c  movlw   0x3c
-000374:  6e93  movwf   0x93, 0x0
+000374:  6e93  movwf   0x93, 0x0            ; TRISB = 0x3C (RB2..RB5 in: LCD bus turnaround + IR)
 000376:  0ebd  movlw   0xbd
-000378:  6e94  movwf   0x94, 0x0
+000378:  6e94  movwf   0x94, 0x0            ; TRISC = 0xBD (RC0/RC2..RC5/RC7 in, RC1/RC6 out)
 00037a:  6a7b  clrf    0x7b, 0x0
 00037c:  6a7a  clrf    0x7a, 0x0
 00037e:  6a7e  clrf    0x7e, 0x0
 000380:  6a7f  clrf    0x7f, 0x0
 000382:  0e0f  movlw   0x0f
-000384:  6ec1  movwf   0xc1, 0x0
-000386:  9e7d  bcf     0x7d, 0x7, 0x0
-000388:  9c7d  bcf     0x7d, 0x6, 0x0
-00038a:  987d  bcf     0x7d, 0x4, 0x0
+000384:  6ec1  movwf   0xc1, 0x0            ; ANSEL low = 0x0F (per-pin analog disable mask)
+000386:  9e7d  bcf     0x7d, 0x7, 0x0       ; OSCCON.IDLEN = 0
+000388:  9c7d  bcf     0x7d, 0x6, 0x0       ; OSCCON.IRCF2 = 0
+00038a:  987d  bcf     0x7d, 0x4, 0x0       ; OSCCON.IRCF0 = 0
 00038c:  0e05  movlw   0x05
-00038e:  6eaf  movwf   0xaf, 0x0
+00038e:  6eaf  movwf   0xaf, 0x0            ; SPBRG seed
 000390:  94ac  bcf     0xac, 0x2, 0x0
 000392:  96b8  bcf     0xb8, 0x3, 0x0
 000394:  98ac  bcf     0xac, 0x4, 0x0
-000396:  8eab  bsf     0xab, 0x7, 0x0
+000396:  8eab  bsf     0xab, 0x7, 0x0       ; RCSTA.SPEN = 1 (UART module on)
 000398:  9ed0  bcf     0xd0, 0x7, 0x0
-00039a:  989d  bcf     0x9d, 0x4, 0x0
+00039a:  989d  bcf     0x9d, 0x4, 0x0       ; PIE1.RCIE = 0 (RX IE armed later)
 00039c:  9a9d  bcf     0x9d, 0x5, 0x0
-00039e:  8aac  bsf     0xac, 0x5, 0x0
-0003a0:  88ab  bsf     0xab, 0x4, 0x0
-0003a2:  ef1e  goto    0x00103c
+00039e:  8aac  bsf     0xac, 0x5, 0x0       ; TXSTA.TXEN = 1 (TX enabled)
+0003a0:  88ab  bsf     0xab, 0x4, 0x0       ; RCSTA.CREN = 1 (RX enabled)
+0003a2:  ef1e  goto    0x00103c             ; -> label_195 / app_init (LCD splash, IRQ arm)
 0003a4:  f008
-0003a6:  cfd8  movff   0xfd8, 0x019
+; ===========================================================================
+; label_032 @ 0x0003A6 — isr_entry  (single high-priority ISR)
+; ---------------------------------------------------------------------------
+; Saves WREG (0xFD8), STATUS (0xFE0), BSR-related shadows (0xFE9, 0xFEA)
+; into RAM at 0x019..0x004 since CONTROL does NOT use the FAST shadow.
+; Then runs three separate handlers in sequence:
+;   • TX path: if TXIE (PIE1.4 @ 0x9D.4) AND TXIF (PIR1.4 @ 0x9E.4) and
+;     the TX ring (head 0x96, tail 0x97) is non-empty, pull a byte from
+;     the ring at 0x036+ and write to TXREG; clear TX flag if ring empty.
+;   • RX path: if RCIF (PIR1.5 @ 0x9E.5), copy RCREG (0xEB) into RX ring
+;     at 0x066+rx_ring_wr (0x99); increment + wrap rx_ring_wr at 0x30
+;     (48-byte ring).  No ring-overflow check — same hazard pattern as
+;     MAIN bug M6.
+;   • RBIF path: if RBIF (PIR2.bit5 — port-change interrupt for buttons),
+;     toggle/clear and run inline button-debounce (function_023 lazy
+;     entry) — actually this leg just sets a flag; the heavy debounce
+;     work lives in function_023 in the main loop.
+;   • If any flag indicates IR activity (RBIE was set and the bit is
+;     persistent), JUMP to function_017 (ir_rc5_decode) — this is the
+;     **BUG C3** invocation; the ISR will busy-poll RB5 for ~10 ms.
+; Restores BSR/STATUS/WREG and returns with retfie 1 (FAST not used).
+; ===========================================================================
+0003a6:  cfd8  movff   0xfd8, 0x019         ; save WREG
 0003a8:  f019
 0003aa:  6e1a  movwf   0x1a, 0x0
-0003ac:  cfe0  movff   0xfe0, 0x002
+0003ac:  cfe0  movff   0xfe0, 0x002         ; save STATUS
 0003ae:  f002
-0003b0:  cfe9  movff   0xfe9, 0x003
+0003b0:  cfe9  movff   0xfe9, 0x003         ; save BSR (or FSR0L)
 0003b2:  f003
-0003b4:  cfea  movff   0xfea, 0x004
+0003b4:  cfea  movff   0xfea, 0x004         ; save FSR0H or related
 0003b6:  f004
 0003b8:  0100  movlb   0x0
 0003ba:  6ae8  clrw
@@ -547,13 +846,36 @@
 000444:  c019  movff   0x019, 0xfd8
 000446:  ffd8
 000448:  0010  retfie  0x0
-00044a:  a2ab  btfss   0xab, 0x1, 0x0
-00044c:  ef2b  goto    0x000456
+
+; ===========================================================================
+; function_019 @ 0x00044A — rx_parser_entry  *** BUG C4 / C5 ***
+; ---------------------------------------------------------------------------
+; Top of the receive-path service routine. Called every iteration of the
+; main event loop (function_042) to drain the RX ring, decode 3-byte
+; [route, cmd, data] frames, and update internal state.
+;
+; *** BUG C4 (oerr_no_fifo_drain) ***
+; First check: btfss RCSTA.OERR (0xAB.1). If set, toggle CREN to clear,
+; then NOP, then re-arm CREN. This clears the OERR latch but DOES NOT
+; READ RCREG TWICE to drain the 2-deep hardware FIFO. Stale bytes left
+; in RCREG re-trigger the parser at the wrong frame phase, corrupting
+; subsequent frames until the parser happens to resync on a 0xB0/0xB1/
+; 0xBF route byte. The V1.62b fix (`control_uart_soft_recover` at 0x7000+)
+; addresses this with a 2x movf RCREG drain.
+;
+; *** BUG C5 (no_frame_resync_timeout) ***
+; The parser tracks position in 0x0A6 (rx_frame_position). If a partial
+; frame is received and the source dies, 0x0A6 stays mid-frame forever
+; — the next byte received (potentially several seconds later) is
+; misinterpreted. There is no per-frame timeout that resets 0x0A6 to 0.
+; ===========================================================================
+00044a:  a2ab  btfss   0xab, 0x1, 0x0       ; RCSTA.OERR set?
+00044c:  ef2b  goto    0x000456             ;  no -> skip OERR recovery
 00044e:  f002
-000450:  98ab  bcf     0xab, 0x4, 0x0
-000452:  0000  nop
-000454:  88ab  bsf     0xab, 0x4, 0x0
-000456:  5199  movf    0x99, 0x0, 0x1
+000450:  98ab  bcf     0xab, 0x4, 0x0       ; CREN = 0 (clear OERR latch)
+000452:  0000  nop                           ; *** BUG C4: no movf RCREG drain here ***
+000454:  88ab  bsf     0xab, 0x4, 0x0       ; CREN = 1 (re-enable RX)
+000456:  5199  movf    0x99, 0x0, 0x1       ; W = rx_ring_wr
 000458:  6398  cpfseq  0x98, 0x1
 00045a:  ef30  goto    0x000460
 00045c:  f002
@@ -756,29 +1078,59 @@
 0005e6:  ecaa  call    0x000f54, 0x0
 0005e8:  f007
 0005ea:  d72f  bra     0x00044a
-0005ec:  ee00  lfsr    0x0, 0x036
+; ===========================================================================
+; function_020 @ 0x0005EC — tx_byte_enqueue   (V1.6b @ 0x00060C in agent map)
+; ---------------------------------------------------------------------------
+; Enqueues 0x027 (tx_data_staging) into the 48-byte TX ring at 0x036+. The
+; ring is read by the ISR via PIE1.TXIE (kicked at the bottom of this
+; routine after committing the new tx_ring_wr).  Producer-side index is
+; 0x097, consumer-side is 0x096.  Wrapping at 0x30 (= 48 bytes).
+;
+; If the ring is FULL when the producer arrives, the routine drops into
+; the busy-wait at 0x00060C (label_068, BUG C6) — see annotation there.
+; ===========================================================================
+0005ec:  ee00  lfsr    0x0, 0x036           ; FSR0 = 0x0036 (TX ring base)
 0005ee:  f036
-0005f0:  5197  movf    0x97, 0x0, 0x1
-0005f2:  c027  movff   0x027, 0xfeb
+0005f0:  5197  movf    0x97, 0x0, 0x1       ; W = tx_ring_wr
+0005f2:  c027  movff   0x027, 0xfeb         ; INDF0 = tx_data_staging (write byte)
 0005f4:  ffeb
 0005f6:  2997  incf    0x97, 0x0, 0x1
 0005f8:  6e27  movwf   0x27, 0x0
-0005fa:  0e30  movlw   0x30
-0005fc:  5c27  subwf   0x27, 0x0, 0x0
+0005fa:  0e30  movlw   0x30                  ; ring size = 48 bytes
+0005fc:  5c27  subwf   0x27, 0x0, 0x0       ; wrap?
 0005fe:  a0d8  skpc
 000600:  ef03  goto    0x000606
 000602:  f003
 000604:  6a27  clrf    0x27, 0x0
-000606:  a89d  btfss   0x9d, 0x4, 0x0
-000608:  ef0a  goto    0x000614
+; ===========================================================================
+; label_068 (within function_020 path) @ 0x00060C — *** BUG C6 ***
+; ---------------------------------------------------------------------------
+; tx_full_busywait — when the producer has filled the 48-byte TX ring
+; (tx_ring_wr +1 == tx_ring_rd), this loop spins until the ISR consumes
+; a byte. There is NO timeout, NO backpressure mechanism, NO escalation.
+;
+; Fail mode: if the ISR cannot make progress (e.g. TXIE was killed by the
+; original V1.62b control_uart_soft_recover — see V162B_STDBY_TXIE_BUG;
+; or the EUSART hangs due to a hardware glitch with no WDT to recover),
+; CONTROL spins here forever. The standby/wake/preset frame queued just
+; before this point never reaches MAIN, and the user sees the "panel
+; works but PBs don't react" pattern.
+;
+; The V1.62b path went a step further by clearing PIE1.TXIE during OERR
+; recovery, *guaranteeing* a stranded byte. The 2026-03-14 bug fix
+; (V162B_STDBY_TXIE_BUG.md) removed the bcf PIE1, TXIE so this loop
+; can at least drain on the next ISR pass.
+; ===========================================================================
+000606:  a89d  btfss   0x9d, 0x4, 0x0       ; PIE1.TXIE armed?
+000608:  ef0a  goto    0x000614             ;  no -> skip and arm
 00060a:  f003
-00060c:  5027  movf    0x27, 0x0, 0x0
-00060e:  5d96  subwf   0x96, 0x0, 0x1
-000610:  b4d8  skpnz
-000612:  d7fc  bra     0x00060c
-000614:  c027  movff   0x027, 0x097
+00060c:  5027  movf    0x27, 0x0, 0x0       ; W = next-write index
+00060e:  5d96  subwf   0x96, 0x0, 0x1       ; compare to tx_ring_rd
+000610:  b4d8  skpnz                         ; equal? (ring full)
+000612:  d7fc  bra     0x00060c             ; *** BUG C6: spin forever if so ***
+000614:  c027  movff   0x027, 0x097         ; commit new tx_ring_wr
 000616:  f097
-000618:  889d  bsf     0x9d, 0x4, 0x0
+000618:  889d  bsf     0x9d, 0x4, 0x0       ; PIE1.TXIE = 1 (kick ISR)
 00061a:  0012  return  0x0
 00061c:  5230  movf    0x30, 0x1, 0x0
 00061e:  a4d8  skpz
@@ -1108,15 +1460,28 @@
 0008a6:  0e04  movlw   0x04
 0008a8:  6fb8  movwf   0xb8, 0x1
 0008aa:  0012  return  0x0
-0008ac:  6827  setf    0x27, 0x0
+
+; ===========================================================================
+; function_023 @ 0x0008AC — button_scan_debounce  (V1.6b address)
+; ---------------------------------------------------------------------------
+; Reads the 6 panel buttons from PORTA / PORTC into 0x027 (raw scan), then
+; debounces via a 4-tick stability counter at 0x0BB. Stable values land in
+; 0x0BE (button_debounced) which the IR/menu dispatcher consumes.
+;
+; Button → pin mapping (active LOW; PORTx.read inverted into 0x027 bit):
+;   0x027.bit0 = RA3 (Standby)   0x027.bit3 = RA1 (Select)
+;   0x027.bit1 = RC0 (Up)         0x027.bit4 = RA4 (Right)
+;   0x027.bit2 = RA2 (Down)       0x027.bit5 = RC5 (Left)
+; ===========================================================================
+0008ac:  6827  setf    0x27, 0x0            ; preset all bits high
 0008ae:  8027  bsf     0x27, 0x0, 0x0
-0008b0:  a680  btfss   0x80, 0x3, 0x0
+0008b0:  a680  btfss   0x80, 0x3, 0x0       ; PORTA.bit3 = Standby (active-low)
 0008b2:  9027  bcf     0x27, 0x0, 0x0
 0008b4:  8227  bsf     0x27, 0x1, 0x0
-0008b6:  a082  btfss   0x82, 0x0, 0x0
+0008b6:  a082  btfss   0x82, 0x0, 0x0       ; PORTC.bit0 = Up
 0008b8:  9227  bcf     0x27, 0x1, 0x0
 0008ba:  8427  bsf     0x27, 0x2, 0x0
-0008bc:  a480  btfss   0x80, 0x2, 0x0
+0008bc:  a480  btfss   0x80, 0x2, 0x0       ; PORTA.bit2 = Down
 0008be:  9427  bcf     0x27, 0x2, 0x0
 0008c0:  8627  bsf     0x27, 0x3, 0x0
 0008c2:  a280  btfss   0x80, 0x1, 0x0
@@ -1313,15 +1678,27 @@
 000a40:  ecd1  call    0x0001a2, 0x0
 000a42:  f000
 000a44:  0012  return  0x0
-000a46:  0e00  movlw   0x00
-000a48:  eccb  call    0x000196, 0x0
+
+; ===========================================================================
+; function_026 @ 0x000A46 — settings_load_eeprom  (V1.6b address)
+; ---------------------------------------------------------------------------
+; Reads saved settings from EEPROM at boot:
+;   EEPROM[0x00] -> 0x0BF (display_state_index, V1.6b)
+;   EEPROM[0x01] -> 0x0BA (some flag/mode byte)
+;   EEPROM[0x02..0x0B] -> 0x0C1..0x0CC (channel config, backlight, etc.)
+; Calls function_010 (0x000196) for each byte read. The values are then
+; reflected into the corresponding outgoing frames (input/volume/mute/
+; display) on the next periodic emission.
+; ===========================================================================
+000a46:  0e00  movlw   0x00                  ; EEPROM addr 0x00
+000a48:  eccb  call    0x000196, 0x0        ; function_010 — eeprom_read_byte
 000a4a:  f000
-000a4c:  6fbf  movwf   0xbf, 0x1
-000a4e:  0e01  movlw   0x01
+000a4c:  6fbf  movwf   0xbf, 0x1            ; 0x0BF = display_state_index
+000a4e:  0e01  movlw   0x01                  ; EEPROM addr 0x01
 000a50:  eccb  call    0x000196, 0x0
 000a52:  f000
-000a54:  6fba  movwf   0xba, 0x1
-000a56:  0e02  movlw   0x02
+000a54:  6fba  movwf   0xba, 0x1            ; 0x0BA = mode flag (V1.6b)
+000a56:  0e02  movlw   0x02                  ; EEPROM addr 0x02
 000a58:  eccb  call    0x000196, 0x0
 000a5a:  f000
 000a5c:  6fc0  movwf   0xc0, 0x1
@@ -1417,23 +1794,55 @@
 000b10:  ec3c  call    0x001478, 0x0
 000b12:  f00a
 000b14:  0012  return  0x0
+
+; ===========================================================================
+; function_027 @ 0x000B16 — serial_tx_routed_frame
+; ---------------------------------------------------------------------------
+; Builds the standard 3-byte CONTROL→MAIN frame and enqueues it via
+; function_020. Inputs:
+;   • W bit pattern → 0xB0 + route (0 broadcast, 1 addressed)
+;   • 0x033 = route bits  • 0x034 = cmd byte  • 0x035 = data byte
+; The full_sync_counter at 0x09F:0x0A0 is reset on every successful frame
+; emission (so the periodic full_sync_burst trigger is debounced by any
+; explicit traffic).
+; Used by every other function_028..035 helper as the actual UART driver.
+; ===========================================================================
 000b16:  0eb0  movlw   0xb0
-000b18:  2433  addwf   0x33, 0x0, 0x0
-000b1a:  6e27  movwf   0x27, 0x0
-000b1c:  ecf6  call    0x0005ec, 0x0
+000b18:  2433  addwf   0x33, 0x0, 0x0       ; W = 0xB0 | route
+000b1a:  6e27  movwf   0x27, 0x0            ; tx_data_staging
+000b1c:  ecf6  call    0x0005ec, 0x0        ; function_020 (enqueue route byte)
 000b1e:  f002
-000b20:  c034  movff   0x034, 0x027
+000b20:  c034  movff   0x034, 0x027         ; tx_data_staging = cmd
 000b22:  f027
-000b24:  ecf6  call    0x0005ec, 0x0
+000b24:  ecf6  call    0x0005ec, 0x0        ; function_020 (enqueue cmd byte)
 000b26:  f002
-000b28:  c035  movff   0x035, 0x027
+000b28:  c035  movff   0x035, 0x027         ; tx_data_staging = data
 000b2a:  f027
-000b2c:  ecf6  call    0x0005ec, 0x0
+000b2c:  ecf6  call    0x0005ec, 0x0        ; function_020 (enqueue data byte)
 000b2e:  f002
-000b30:  6b9f  clrf    0x9f, 0x1
-000b32:  6ba0  clrf    0xa0, 0x1
+000b30:  6b9f  clrf    0x9f, 0x1            ; reset full_sync_counter low
+000b32:  6ba0  clrf    0xa0, 0x1            ; reset full_sync_counter high
 000b34:  0012  return  0x0
-000b36:  ec20  call    0x000c40, 0x0
+
+; ===========================================================================
+; function_028 @ 0x000B36 — full_sync_burst    *** BUG C7 ***
+; ---------------------------------------------------------------------------
+; Emits the 5-frame full status sync to MAIN: volume, input, mute,
+; backlight, standby/wake — each with a ~250 µs inter-frame delay
+; (function_012 with W=0x05). Triggered when full_sync_counter at
+; 0x09F:0x0A0 overflows past 0x4E20 (about 20,000 idle ticks ≈ depends
+; on event-loop period).
+;
+; *** BUG C7 (fullsync_burst_saturates_link) ***
+; Five 3-byte frames + 4 inter-frame gaps = ~17 bytes back-to-back over
+; the 31,250-baud link (~5.5 ms wire time). MAIN's RX ring is 192 bytes
+; so this in itself does not overflow it, but combined with any in-flight
+; user command (volume nudge during burst) the RX side can stack up
+; faster than main_uart_service_1be6 drains it. The V3.2 hardening plan
+; calls for either rate-limiting bursts to one frame per main loop pass,
+; or moving sync to a request/response model.
+; ===========================================================================
+000b36:  ec20  call    0x000c40, 0x0        ; function_031 — volume_frame_send
 000b38:  f006
 000b3a:  0e05  movlw   0x05
 000b3c:  ecde  call    0x0001bc, 0x0
@@ -1456,15 +1865,24 @@
 000b5e:  ec4c  call    0x000c98, 0x0
 000b60:  f006
 000b62:  0012  return  0x0
-000b64:  0eb1  movlw   0xb1
+
+; ===========================================================================
+; function_029 @ 0x000B64 — poll_frame_send
+; ---------------------------------------------------------------------------
+; Emits [B1, 04, 00] — addressed status_poll. MAIN's parser treats cmd=0x04
+; as the "respond with full status burst" trigger (bypasses the active
+; gate, so even MAINs in standby reply). This is the heartbeat used by
+; reconnect_wait_loop (label_212) to test whether MAIN is responding.
+; ===========================================================================
+000b64:  0eb1  movlw   0xb1                  ; route = 0xB1 (addressed)
 000b66:  6e27  movwf   0x27, 0x0
-000b68:  ecf6  call    0x0005ec, 0x0
+000b68:  ecf6  call    0x0005ec, 0x0        ; enqueue route
 000b6a:  f002
-000b6c:  0e04  movlw   0x04
+000b6c:  0e04  movlw   0x04                  ; cmd = 0x04 (status_poll)
 000b6e:  6e27  movwf   0x27, 0x0
 000b70:  ecf6  call    0x0005ec, 0x0
 000b72:  f002
-000b74:  6a27  clrf    0x27, 0x0
+000b74:  6a27  clrf    0x27, 0x0            ; data = 0x00
 000b76:  ecf6  call    0x0005ec, 0x0
 000b78:  f002
 000b7a:  0012  return  0x0
@@ -1551,30 +1969,47 @@
 000c1c:  6e35  movwf   0x35, 0x0
 000c1e:  df7b  rcall   0x000b16
 000c20:  0012  return  0x0
-000c22:  0eb0  movlw   0xb0
+; ===========================================================================
+; function_030 @ 0x000C22 — input_frame_send  (V1.6b refactor)
+; ---------------------------------------------------------------------------
+; Emits [B0, 0x06, <0x0B8>] — broadcast input selection. 0x0B8 is the
+; cached input value (also one of the boot handshake sentinels; MAIN
+; overwrites it during status burst response). NOTE: in V1.4 this same
+; address held a *channel_17_config* sender — refactor moved to dedicated
+; helpers per cmd in V1.5b+.
+; ===========================================================================
+000c22:  0eb0  movlw   0xb0                  ; broadcast route
 000c24:  6e27  movwf   0x27, 0x0
 000c26:  ecf6  call    0x0005ec, 0x0
 000c28:  f002
-000c2a:  0e06  movlw   0x06
+000c2a:  0e06  movlw   0x06                  ; cmd = 0x06 (input_select)
 000c2c:  6e27  movwf   0x27, 0x0
 000c2e:  ecf6  call    0x0005ec, 0x0
 000c30:  f002
-000c32:  c0b8  movff   0x0b8, 0x027
+000c32:  c0b8  movff   0x0b8, 0x027         ; data = current input (handshake_sentinel_1)
 000c34:  f027
 000c36:  ecf6  call    0x0005ec, 0x0
 000c38:  f002
-000c3a:  6b9f  clrf    0x9f, 0x1
+000c3a:  6b9f  clrf    0x9f, 0x1            ; reset full_sync_counter
 000c3c:  6ba0  clrf    0xa0, 0x1
 000c3e:  0012  return  0x0
+
+; ===========================================================================
+; function_031 @ 0x000C40 — volume_frame_send  (V1.6b refactor)
+; ---------------------------------------------------------------------------
+; Emits [B0, 0x07, <0x0B9>] — broadcast volume.  0x0B9 holds the cached
+; current volume byte (with the protocol's 0x60 offset baked in by MAIN
+; on its side). Same V1.4→V1.6b refactor pattern as function_030.
+; ===========================================================================
 000c40:  0eb0  movlw   0xb0
 000c42:  6e27  movwf   0x27, 0x0
 000c44:  ecf6  call    0x0005ec, 0x0
 000c46:  f002
-000c48:  0e07  movlw   0x07
+000c48:  0e07  movlw   0x07                  ; cmd = 0x07 (volume_set)
 000c4a:  6e27  movwf   0x27, 0x0
 000c4c:  ecf6  call    0x0005ec, 0x0
 000c4e:  f002
-000c50:  c0b9  movff   0x0b9, 0x027
+000c50:  c0b9  movff   0x0b9, 0x027         ; data = current volume (handshake_sentinel_2)
 000c52:  f027
 000c54:  ecf6  call    0x0005ec, 0x0
 000c56:  f002
@@ -1596,43 +2031,84 @@
 000c76:  6b9f  clrf    0x9f, 0x1
 000c78:  6ba0  clrf    0xa0, 0x1
 000c7a:  0012  return  0x0
-000c7c:  6a33  clrf    0x33, 0x0
+; ===========================================================================
+; function_033 @ 0x000C7C — mute_frame_send
+; ---------------------------------------------------------------------------
+; Emits [B0, 0x03, 0x02/0x03] (broadcast mute_on/mute_off) based on
+; 0x01F.bit5 (mute_state — the V1.6b new bit position; in V1.4 it lived
+; in 0x01F.bit4, but bit4 was repurposed for display_refresh_pending in
+; V1.5b+). Same cmd byte as standby/wake; data discriminates.
+; ===========================================================================
+000c7c:  6a33  clrf    0x33, 0x0            ; route = 0xB0 broadcast
 000c7e:  0e03  movlw   0x03
-000c80:  6e34  movwf   0x34, 0x0
-000c82:  aa1f  btfss   0x1f, 0x5, 0x0
-000c84:  ef48  goto    0x000c90
+000c80:  6e34  movwf   0x34, 0x0            ; cmd = 0x03 (cmd03 family)
+000c82:  aa1f  btfss   0x1f, 0x5, 0x0       ; mute_state set (V1.6b bit5)?
+000c84:  ef48  goto    0x000c90             ;  no -> data = 0x03 (mute_off)
 000c86:  f006
-000c88:  0e02  movlw   0x02
+000c88:  0e02  movlw   0x02                  ; yes -> data = 0x02 (mute_on)
 000c8a:  6e35  movwf   0x35, 0x0
 000c8c:  ef4a  goto    0x000c94
 000c8e:  f006
-000c90:  0e03  movlw   0x03
+000c90:  0e03  movlw   0x03                  ; data = 0x03 (mute_off)
 000c92:  6e35  movwf   0x35, 0x0
-000c94:  df40  rcall   0x000b16
+000c94:  df40  rcall   0x000b16             ; -> function_027
 000c96:  0012  return  0x0
-000c98:  6a33  clrf    0x33, 0x0
+; ===========================================================================
+; function_034 @ 0x000C98 — standby_wake_broadcast
+; ---------------------------------------------------------------------------
+; THIS IS THE WAKE/STANDBY ROUTE THAT V1.62b RECONNECT BUG TARGETED.
+; Emits [B0, 0x03, 0/1] — broadcast standby_enter or wake based on
+; 0x01F.bit1 (connected) at call time:
+;    bit1 SET (DISPLAY mode)  → data = 0x01 (wake) — opens MAIN's gate
+;    bit1 CLEAR (Zzz mode)    → data = 0x00 (standby) — closes the gate
+;
+; Stock V1.6b calls this from 0x001294 (the line right before label_212)
+; after the user releases STBY, ensuring every MAIN reopens its
+; active_flags.bit3. The V1.62b reconnect_wait_stub initially OMITTED
+; this call, leaving MAINs deaf to all subsequent volume/mute/preset
+; commands until power cycle (V162B_RECONNECT_WAKE_BUG.md). The fix:
+; explicit `call 0x000C98` after `bsf 0x01F, 1` in reconnect_wait_done.
+; ===========================================================================
+000c98:  6a33  clrf    0x33, 0x0            ; route bits = 0 (broadcast = 0xB0)
 000c9a:  0e03  movlw   0x03
-000c9c:  6e34  movwf   0x34, 0x0
-000c9e:  b21f  btfsc   0x1f, 0x1, 0x0
-000ca0:  ef55  goto    0x000caa
+000c9c:  6e34  movwf   0x34, 0x0            ; cmd = 0x03 (standby/wake/mute)
+000c9e:  b21f  btfsc   0x1f, 0x1, 0x0       ; connected (DISPLAY mode)?
+000ca0:  ef55  goto    0x000caa             ;  yes -> data = 0x01 (wake)
 000ca2:  f006
-000ca4:  6a35  clrf    0x35, 0x0
+000ca4:  6a35  clrf    0x35, 0x0            ;  no  -> data = 0x00 (standby)
 000ca6:  ef57  goto    0x000cae
 000ca8:  f006
-000caa:  0e01  movlw   0x01
+000caa:  0e01  movlw   0x01                  ; data = 0x01 (wake)
 000cac:  6e35  movwf   0x35, 0x0
-000cae:  df33  rcall   0x000b16
+000cae:  df33  rcall   0x000b16             ; -> function_027 (emit frame)
 000cb0:  0012  return  0x0
-000cb2:  86f2  bsf     0xf2, 0x3, 0x0
-000cb4:  ec56  call    0x0008ac, 0x0
+; ===========================================================================
+; function_035 @ 0x000CB2 — display_loop_iteration   (V1.6b refactor)
+; ---------------------------------------------------------------------------
+; One iteration of the display/menu loop. Steps:
+;   1. Set INTCON3.RBIE (PIE for button RBIF).
+;   2. Call function_023 (button_scan_debounce @ 0x0008AC) — reads the
+;      6 button GPIOs, debounces (threshold 4 stable samples), updates
+;      0x0BE (button_debounced).
+;   3. Call function_019 (rx_parser_entry @ 0x00044A) — drain RX ring.
+;   4. Decrement 16-bit idle_timeout_counter at 0x09D:0x09E (init 0xEA61
+;      = ~60 k iterations). When it crosses zero AND we are still in
+;      DISPLAY mode, the panel transitions to standby ("Zzz...").
+;   5. Decrement 16-bit full_sync_counter at 0x09F:0x0A0 (init 0x4E20).
+;      When it overflows, calls function_028 (full_sync_burst — BUG C7).
+; This routine is the periodic "while not in event loop" handler called
+; from the main display path.
+; ===========================================================================
+000cb2:  86f2  bsf     0xf2, 0x3, 0x0       ; INTCON3.RBIE = 1 (button IRQ on)
+000cb4:  ec56  call    0x0008ac, 0x0        ; function_023 — button_scan_debounce
 000cb6:  f004
-000cb8:  ec25  call    0x00044a, 0x0
+000cb8:  ec25  call    0x00044a, 0x0        ; function_019 — rx_parser_entry
 000cba:  f002
-000cbc:  519e  movf    0x9e, 0x0, 0x1
-000cbe:  0aea  xorlw   0xea
+000cbc:  519e  movf    0x9e, 0x0, 0x1       ; W = idle_timeout_hi
+000cbe:  0aea  xorlw   0xea                  ; cmp to 0xEA (init high byte)
 000cc0:  0e60  movlw   0x60
 000cc2:  b4d8  skpnz
-000cc4:  199d  xorwf   0x9d, 0x0, 0x1
+000cc4:  199d  xorwf   0x9d, 0x0, 0x1       ; check init low byte too
 000cc6:  a4d8  skpz
 000cc8:  ef67  goto    0x000cce
 000cca:  f006
@@ -2280,32 +2756,59 @@
 0011ce:  6b9f  clrf    0x9f, 0x1
 0011d0:  6ba0  clrf    0xa0, 0x1
 0011d2:  9a1f  bcf     0x1f, 0x5, 0x0
+; ===========================================================================
+; label_201 @ 0x0011D8 — post_connect_init
+; ---------------------------------------------------------------------------
+; Reached after boot_handshake_wait completes (all four sentinels !=
+; 0x80). Clears 0x01F.bit3 (event_exit) so the main event loop can return,
+; reads display_state_index (0x0BF) to decide which screen to render
+; (0=Volume, 1=Preset[V1.62b+], 2=Input, 3=Setup), and writes a marker
+; byte to EEPROM (~0x44 in code path) indicating connected state.
+; ---------------------------------------------------------------------------
 0011d4:  0e01  movlw   0x01
 0011d6:  6e32  movwf   0x32, 0x0
-0011d8:  a21f  btfss   0x1f, 0x1, 0x0
-0011da:  ef28  goto    0x001250
+0011d8:  a21f  btfss   0x1f, 0x1, 0x0       ; 0x1F.bit1 = connected?
+0011da:  ef28  goto    0x001250             ;  no -> jump out (back to standby/wait)
 0011dc:  f009
-0011de:  961f  bcf     0x1f, 0x3, 0x0
-0011e0:  53bf  movf    0xbf, 0x1, 0x1
+0011de:  961f  bcf     0x1f, 0x3, 0x0       ; 0x1F.bit3 (event_exit) = 0
+0011e0:  53bf  movf    0xbf, 0x1, 0x1       ; W = display_state_index
 0011e2:  a4d8  skpz
 0011e4:  eff8  goto    0x0011f0
 0011e6:  f008
-0011e8:  ec68  call    0x0012d0, 0x0
+0011e8:  ec68  call    0x0012d0, 0x0        ; display_state == 0 -> volume screen
 0011ea:  f009
 0011ec:  ef05  goto    0x00120a
 0011ee:  f009
-0011f0:  2dbf  decfsz  0xbf, 0x0, 0x1
+0011f0:  2dbf  decfsz  0xbf, 0x0, 0x1       ; display_state -- == 0 ? (state==1)
 0011f2:  efff  goto    0x0011fe
 0011f4:  f008
-0011f6:  ec89  call    0x001912, 0x0
+0011f6:  ec89  call    0x001912, 0x0        ; display_state == 1 -> setup/preset screen
 0011f8:  f00c
 0011fa:  ef05  goto    0x00120a
 0011fc:  f009
+
+; ===========================================================================
+; label_204 @ 0x0011FE — boot_handshake_wait    *** BUG C1 ***
+; ---------------------------------------------------------------------------
+; Polls four handshake sentinels (0x0B8, 0x0B9, 0x0A7, 0x0A1) until each
+; differs from 0x80 — the value MAIN's full status burst eventually
+; overwrites with real channel volume / config bytes. Calls 0x0013FE on
+; each iteration which kicks the periodic poll/refresh.
+;
+; *** BUG C1 (boot_handshake_infinite_wait) ***
+; If MAIN never responds (chain broken, MAIN unflashed, MAIN stuck in
+; firmware-update bootloader, etc.) this loop runs forever. The LCD shows
+; "Waiting for DLCP" indefinitely; the only escape is power cycle.
+; CONTROL has no WDT (BUG C8), so the loop is unrecoverable. The V1.62b
+; "reconnect_wait_stub" patch at 0x7000+ replaces the analogous reconnect
+; loop (label_212/216) with a soft-recover + bounded retry pattern, but
+; the BOOT handshake here was NOT touched by V1.62b.
+; ===========================================================================
 0011fe:  0e02  movlw   0x02
-001200:  63bf  cpfseq  0xbf, 0x1
-001202:  ef05  goto    0x00120a
+001200:  63bf  cpfseq  0xbf, 0x1            ; display_state_index == 2 ?
+001202:  ef05  goto    0x00120a             ;  no -> skip handshake check
 001204:  f009
-001206:  ecff  call    0x0013fe, 0x0
+001206:  ecff  call    0x0013fe, 0x0        ; *** C1: poll/refresh, no timeout ***
 001208:  f009
 00120a:  96d8  clrov
 00120c:  ab9a  btfss   0x9a, 0x5, 0x1
@@ -2320,7 +2823,20 @@
 00121e:  6bbf  clrf    0xbf, 0x1
 001220:  ef13  goto    0x001226
 001222:  f009
-001224:  2bbf  incf    0xbf, 0x1, 0x1
+
+; ===========================================================================
+; label_206 @ 0x001224 — display_state_entry
+; ---------------------------------------------------------------------------
+; Increments 0x0BF (display_state_index) — cycles the menu screen on each
+; re-entry. Display state values:
+;   0 = Volume     1 = Preset (V1.62b/V1.61b only — preset A/B selector)
+;   2 = Input      3 = Setup
+; Stock V1.6b only uses 0/2/3; V1.61b+ patch enables preset state via
+; 0x01F.bit6 (preset_b_active). The clrov / btfss 0x9A.bit4 sequence
+; below is the V1.6b mode-disable check that skips the Preset slot
+; (it's always odd -> overflow check after increment).
+; ===========================================================================
+001224:  2bbf  incf    0xbf, 0x1, 0x1       ; display_state_index++
 001226:  96d8  clrov
 001228:  a99a  btfss   0x9a, 0x4, 0x1
 00122a:  86d8  setov
@@ -2395,17 +2911,40 @@
 0012b4:  0e88  movlw   0x88
 0012b6:  ecdf  call    0x0001be, 0x0
 0012b8:  f000
-0012ba:  921f  bcf     0x1f, 0x1, 0x0
-0012bc:  ecb2  call    0x000b64, 0x0
+; ===========================================================================
+; label_212 @ 0x0012BC — reconnect_wait_loop    *** BUG C2 ***
+; ---------------------------------------------------------------------------
+; Reconnect/Zzz... → DISPLAY transition. Drops 0x01F.bit1 (connected),
+; then loops:
+;   1. function_029 (poll_frame_send @ 0x000B64): emits [B1, 04, 00] on UART
+;   2. delay 200 ms (function_012 with W=0xC8)
+;   3. function_019 (rx_parser_entry @ 0x00044A): drains RX
+;   4. test 0x01F.bit1 — if set, MAIN replied -> jump to label_201
+;
+; *** BUG C2 (reconnect_infinite_wait) ***
+; If MAIN never returns the BF/03/01 frame that sets bit1, this loop
+; spins forever. The LCD shows "Waiting for DLCP". CONTROL never sends a
+; wake frame to MAIN if MAIN's active gate has been cleared by an earlier
+; broadcast standby — so this poll is silent on the wire from MAIN's
+; perspective. The V1.62b patch replaces this exact loop with
+; reconnect_wait_stub at 0x7000+ which:
+;   • bounds the wait to 8 retries before soft-recovering
+;   • emits the wake frame (function_034) explicitly on exit (this fixes
+;     the V162B_RECONNECT_WAKE_BUG — without that wake call, MAIN's
+;     active_flags.bit3 stays cleared and every command is silently
+;     dropped at MAIN's cmd_dispatch_gated label_144).
+; ===========================================================================
+0012ba:  921f  bcf     0x1f, 0x1, 0x0       ; clear connected (entering reconnect mode)
+0012bc:  ecb2  call    0x000b64, 0x0        ; function_029 — emit poll [B1,04,00]
 0012be:  f005
-0012c0:  0ec8  movlw   0xc8
-0012c2:  ecde  call    0x0001bc, 0x0
+0012c0:  0ec8  movlw   0xc8                  ; W = 200 (200 ms unit)
+0012c2:  ecde  call    0x0001bc, 0x0        ; function_012 — short delay
 0012c4:  f000
-0012c6:  ec25  call    0x00044a, 0x0
+0012c6:  ec25  call    0x00044a, 0x0        ; function_019 — drain RX (parse reply)
 0012c8:  f002
-0012ca:  a21f  btfss   0x1f, 0x1, 0x0
-0012cc:  d7f7  bra     0x0012bc
-0012ce:  d784  bra     0x0011d8
+0012ca:  a21f  btfss   0x1f, 0x1, 0x0       ; connected flag now set?
+0012cc:  d7f7  bra     0x0012bc             ; *** BUG C2: spin forever otherwise ***
+0012ce:  d784  bra     0x0011d8             ; reconnected -> goto label_201
 0012d0:  0e80  movlw   0x80
 0012d2:  6e01  movwf   0x01, 0x0
 0012d4:  ec33  call    0x000066, 0x0
@@ -2418,10 +2957,21 @@
 0012e2:  6e29  movwf   0x29, 0x0
 0012e4:  eca0  call    0x000940, 0x0
 0012e6:  f004
+
+; ===========================================================================
+; label_214 @ 0x0012E8 — standby_display ("Zzz...")
+; ---------------------------------------------------------------------------
+; Renders the standby screen on the LCD: "Zzz..." centered, backlight on.
+; Sets 0x01.bit7 (LCD-mode flag for function_009 dispatch), then sends
+; LCD command 0x87 (set DDRAM address) followed by the "Zzz..." string
+; via function_004 / function_005. The screen stays here until a button
+; press triggers the wake transition, which goes through
+; reconnect_wait_loop (label_212, 0x0012BC, BUG C2).
+; ===========================================================================
 0012e8:  0e80  movlw   0x80
-0012ea:  6e01  movwf   0x01, 0x0
-0012ec:  0e87  movlw   0x87
-0012ee:  ec33  call    0x000066, 0x0
+0012ea:  6e01  movwf   0x01, 0x0            ; LCD-mode flag = 1
+0012ec:  0e87  movlw   0x87                  ; LCD cmd: DDRAM address 0x07 (mid line)
+0012ee:  ec33  call    0x000066, 0x0        ; function_001 — lcd_command
 0012f0:  f000
 0012f2:  ba1f  btfsc   0x1f, 0x5, 0x0
 0012f4:  efaa  goto    0x001354
@@ -2693,7 +3243,29 @@
 001508:  2020  addwfc  0x20, 0x0, 0x0
 00150a:  2020  addwfc  0x20, 0x0, 0x0
 00150c:  2020  addwfc  0x20, 0x0, 0x0
-00150e:  c0ba  movff   0x0ba, 0x027
+
+; ===========================================================================
+; function_042 @ 0x00150E — main_event_loop  (V1.6b address)
+; ---------------------------------------------------------------------------
+; The CONTROL panel's top-level event loop. Runs forever after boot setup
+; (label_195) completes. Per-iteration:
+;   1. Stage 0x0BA value into 0x027 (tx_data_staging) — staged for later
+;      send if menu state changed.
+;   2. Enable RBIE (button port-change interrupt).
+;   3. Call function_023 (button_scan_debounce) and function_019
+;      (rx_parser_entry) to absorb input/output edges.
+;   4. Decrement idle_timeout_counter (0x09D:0x09E init 0xEA61).
+;      When zero → trigger transition to standby_display (label_214).
+;   5. Decrement full_sync_counter (0x09F:0x0A0 init 0x4E20).
+;      When zero → call function_028 (full_sync_burst — BUG C7).
+;   6. Check handshake sentinels (0x0B8/0x0B9/0x0A7/0x0A1) — if any has
+;      changed from 0x80 to a real value, the corresponding cached value
+;      gets reflected back to MAIN through function_034/035.
+; The loop blocks for the full_sync_counter and idle_timeout overflows;
+; user input is handled through the RBIF interrupt and processed by
+; lazy debounce on the next iteration.
+; ===========================================================================
+00150e:  c0ba  movff   0x0ba, 0x027         ; stage menu/mode flag for forwarding
 001510:  f027
 001512:  0e13  movlw   0x13
 001514:  6e2a  movwf   0x2a, 0x0
@@ -15358,7 +15930,36 @@
 0077fa:  ffff  dw      0xffff
 0077fc:  ffff  dw      0xffff
 0077fe:  ffff  dw      0xffff
-007800:  ef7f  goto    0x007afe
+
+; ===========================================================================
+; ===========================================================================
+; BOOTLOADER REGION (0x007800 — 0x007FFF)
+; ===========================================================================
+; The 2 KB bootloader resides in the upper window of the 32 KB device.
+; The reset vector at 0x000000 jumps here unconditionally; the bootloader
+; then either:
+;   • Stays in firmware-update protocol (if the host issues an Intel HEX
+;     stream over UART matching the expected protocol, see HFD docs).
+;   • Drops into the application by jumping to 0x000040 (the secondary
+;     entry vector that calls label_031 / app_cold_init at 0x000366).
+;
+; The bootloader is also the manual recovery target: holding UP+DOWN
+; (without SELECT) for ~5.5 s on the front panel triggers
+; function_082 (bootloader_manual_entry @ 0x007F02) which stays in this
+; region waiting for new firmware over UART.
+;
+; This region is preserved BIT-FOR-BIT across V1.4/V1.5b/V1.6b/V1.6Xb
+; releases — the ABI patches at 0x7000 (V1.61b+) sit just BELOW the
+; bootloader, in the gap between the application end and 0x7800.
+; ===========================================================================
+
+; ===========================================================================
+; label_284 @ 0x007800 — bootloader_entry
+; ---------------------------------------------------------------------------
+; First instruction in bootloader; jumps over 0x007804..0x007AFC table /
+; data area to the actual bootloader main at 0x007AFE.
+; ===========================================================================
+007800:  ef7f  goto    0x007afe             ; -> bootloader main loop
 007802:  f03d
 007804:  6e0d  movwf   0x0d, 0x0
 007806:  0e03  movlw   0x03
@@ -15741,12 +16342,23 @@
 007af8:  646f  cpfsgt  0x6f, 0x0
 007afa:  2065  addwfc  0x65, 0x0, 0x0
 007afc:  0000  nop
-007afe:  6af8  clrf    0xf8, 0x0
+
+; ===========================================================================
+; bootloader_main @ 0x007AFE
+; ---------------------------------------------------------------------------
+; Entry from bootloader_entry. Performs minimal init (zero TBLPTRU/BSR),
+; arms UART RX/TX (TXSTA, RCSTA, BAUDCON), and enters the firmware-update
+; protocol read loop — function_066 (bootloader_oerr_handler at 0x79EC)
+; and function_080 (bootloader_prompt_send at 0x7E60) live in this
+; region. The protocol is a host-driven Intel HEX upload similar to the
+; MAIN bootloader path; the prompt sent on TX is `:FW_Upd\r\n`.
+; ===========================================================================
+007afe:  6af8  clrf    0xf8, 0x0            ; TBLPTRU = 0
 007b00:  6a00  clrf    0x00, 0x0
 007b02:  0e05  movlw   0x05
-007b04:  6eaf  movwf   0xaf, 0x0
+007b04:  6eaf  movwf   0xaf, 0x0            ; SPBRG seed
 007b06:  0e20  movlw   0x20
-007b08:  6eac  movwf   0xac, 0x0
+007b08:  6eac  movwf   0xac, 0x0            ; TXSTA
 007b0a:  0e90  movlw   0x90
 007b0c:  6eab  movwf   0xab, 0x0
 007b0e:  0100  movlb   0x0
@@ -16255,10 +16867,24 @@
 007efc:  2a1f  incf    0x1f, 0x1, 0x0
 007efe:  e1f2  bnz     0x007ee4
 007f00:  0012  return  0x0
-007f02:  6a1f  clrf    0x1f, 0x0
-007f04:  0e0b  movlw   0x0b
-007f06:  601f  cpfslt  0x1f, 0x0
-007f08:  d025  bra     0x007f54
+
+; ===========================================================================
+; function_082 @ 0x007F02 — bootloader_manual_entry
+; ---------------------------------------------------------------------------
+; Manual firmware-update trigger: requires UP+DOWN held (with SELECT NOT
+; pressed) for ~5.5 seconds at boot. Polls PORTC.bit0 (Up) and PORTA.bit2
+; (Down) plus PORTA.bit1 (Select). On 11 successful 500 ms iterations
+; (0x0B), enters the bootloader's HEX-receive loop instead of dropping
+; into the application at 0x000040.
+;
+; Used by users to recover from a bricked main-image flash, or to
+; intentionally force firmware update without the host triggering it via
+; function_080's bootloader_prompt path.
+; ===========================================================================
+007f02:  6a1f  clrf    0x1f, 0x0            ; counter = 0
+007f04:  0e0b  movlw   0x0b                  ; need 11 stable 500 ms polls
+007f06:  601f  cpfslt  0x1f, 0x0            ; counter < 11?
+007f08:  d025  bra     0x007f54             ; threshold reached -> stay in bootloader
 007f0a:  0e01  movlw   0x01
 007f0c:  b082  btfsc   0x82, 0x0, 0x0
 007f0e:  6ae8  clrw

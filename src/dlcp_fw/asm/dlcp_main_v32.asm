@@ -1,21 +1,140 @@
+; ===========================================================================
+;                    Hypex DLCP — MAIN firmware V3.2
+; ===========================================================================
+; Target MCU : Microchip PIC18F2455 @ 16 MHz (4 MIPS), USB-FS HID device
+; USB IDs    : VID 0x04D8, PID 0xFF89  (string "DLCP" / "Hypex BV")
+; Peripherals: MSSP (I2C master to TAS3108 DSP @ 0x68 + secondary dev @ 0x71),
+;              EUSART (current-loop RS-485-style, 31,250 baud, 3-byte frames),
+;              Timer0 (heartbeat / debounce), Timer3 (DSP ping + preset hold),
+;              ADC AN0 (rail standby sense — threshold ~0x0228 / 0x0236),
+;              GPIOs RA3-RA5 (source select), RA6/RB3-RB6 (relays/aux).
+;
+; Image map (post-build, gpasm output -p18f2455):
+;   0x1000 .. 0x10AB  USB descriptors + ASCII hex lookup table (read-only data)
+;   0x10AC .. 0x4C00  Application code  (HID dispatch, parser, ISR, services)
+;   0x4C00 .. 0x55FE  DSP preset table B (slot used in V2.4+ A/B patch path)
+;   0x5600 .. 0x57FE  DSP preset table A (stock-aligned, pinned to flash top)
+;   0xF00000+         EEPROM data — config bytes, version marker (V3.2 = 03/02/32)
+;
+; Build      : gpasm -p18f2455 -o DLCP_Firmware_V3.2.hex dlcp_main_v32.asm
+;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)
+;
+; ---------------------------------------------------------------------------
+; Position in the V2.x/V3.x release line
+; ---------------------------------------------------------------------------
+;   V2.3   Stock Hypex MAIN binary (reference baseline).
+;   V2.4   First A/B preset binary patch on stock V2.3.
+;   V2.5   V2.4 + I2C/MSSP timeout recovery (stock-bus-clear + DSP ping).
+;   V2.6   + DSP NACK-aware volume retry (Fix B / Fix B').
+;   V2.7   + bus-clear/ping/PEN integration (pairs with CONTROL V1.63b).
+;   V2.8   + delayed-switch synchronous helper (BLOCKING — caused desync bug).
+;   V3.0   Source-equivalent rewrite of V2.3 (zero functional change).
+;   V3.1   V3.0 + all robustness features inline (recommended deployment).
+; * V3.2   THIS FILE — V3.1 + asynchronous preset job state machine,
+;          bounded START/STOP waits in apply path, mute/preset coalescing,
+;          standby/reconnect cancellation, EEPROM marker bumped to 03/02/32.
+;
+; The V3.2 work targets the field failure pattern documented in
+; docs/V32_MAIN_HANG_HARDENING_PLAN.md and docs/V28_DELAYED_SWITCH_REMEDIATION_PLAN.md
+; (CONTROL keeps sending 0x03 commands but one or both MAINs stop reacting after
+; rapid preset toggles or interleaved standby/mute traffic).
+;
+; ---------------------------------------------------------------------------
+; Serial protocol over the current loop (31,250 baud, 3-byte frame)
+; ---------------------------------------------------------------------------
+;   route byte : 0xB0 = broadcast (MAIN0 + MAIN1)        ← active_flags.0 = 0
+;                0xB1 = addressed unit only              ← active_flags.0 = 1
+;                0xBF = MAIN-to-CONTROL response prefix
+;   cmd byte   : 0x03=stdby/wake/mute, 0x04=status_poll, 0x06=input_select,
+;                0x07=volume, 0x17..0x1C=channel cfg, 0x1D=disp timeout,
+;                0x1E=link addr, 0x20=preset_select (V2.4+).
+;   data byte  : depends on cmd. cmd=0x03/data: 0=standby, 1=wake,
+;                2=mute_on, 3=mute_off.
+;
+; CONTROL gates ALL command processing on the active gate
+; (active_flags.bit3). cmd=0x03/data=0 broadcasts close every gate
+; system-wide. The wake frame (cmd=0x03/data=1) reopens them. Failure to
+; emit the wake frame is the V1.62b reconnect bug — see
+; docs/analysis/V162B_RECONNECT_WAKE_BUG.md.
+;
+; ---------------------------------------------------------------------------
+; Top-level service architecture (main loop = main_processing_loop @ 0x48C6)
+; ---------------------------------------------------------------------------
+;   periodic_service_loop:
+;     1. main_usb_service_3a26   — USB SIE / HID OUT processing
+;     2. main_uart_service_1be6  — RX ring drain + 3-byte parser + forward
+;     3. preset_job_service      — V3.2 async preset state machine (NEW)
+;     4. main_i2c_service_27f0   — DSP refresh / dirty bit drain
+;     5. standby_event_dispatch  — react to event_flags.bit2 (stdby/wake)
+;     6. main_core_service_265c  — assorted housekeeping
+;     7. an0_hysteresis_monitor  — rail-rise / rail-fall classification
+;
+; All paths are non-blocking by V3.2 convention except the legacy
+; main_i2c_service_381c sites that V3.2 hardening has not yet boundified.
+;
+; ---------------------------------------------------------------------------
+; Known long-standing bugs (cross-refs to docs/analysis/SEMANTIC_FUNCTION_MAP.md)
+; ---------------------------------------------------------------------------
+;   M1  i2c_busywait_no_timeout       — i2c_wait_bus_idle (still stock/raw)
+;   M2  uart_tx_trmt_busywait         — addressed by wait_trmt_bounded (V3.1+)
+;   M3  eeprom_write_disables_gie     — eeprom_write_blocking, ~4 ms GIE-off
+;   M4  oerr_no_fifo_drain            — UART OERR recovery (label_483)
+;   M5  timer3_blocking_delay         — replaced by ISR-tick HOLDING in V3.2
+;   M6  rx_ring_no_overflow_detect    — silent overwrite at 0x0200 ring
+;   M7  flash_write_gie_leak          — flash_write_with_gie_off
+;   M8  no_clrwdt_main_loop           — only usb_disconnect_handler clears WDT
+;   M9  adc_boot_gate_no_timeout      — adc_boot_gate (waits AN0 ≥ 0x0236)
+;
+; ===========================================================================
+
     LIST P=18F2455
     #include <p18f2455.inc>
     #include "dlcp_main_ram.inc"
 
-; V3.2 named RAM aliases (multi-purpose registers)
-dsp_fault_flags         EQU  0x07F   ; bit2=ACKSTAT, bit6=DSP ping, bits[5:3]=retry
-timeout_lo              EQU  0x00B   ; bounded wait countdown low byte
-timeout_hi              EQU  0x00C   ; bounded wait countdown high byte
-saved_w                 EQU  0x005   ; saved WREG for i2c_byte_tx
+; ---------------------------------------------------------------------------
+; V3.2 named RAM aliases (multi-purpose / state-machine slots)
+; ---------------------------------------------------------------------------
+; dsp_fault_flags packs:
+;   bit2 (mask 0x04) : ACKSTAT latch — set by i2c_tas3108_coeff_write/reg1f
+;                      when SSPCON2.ACKSTAT was 1 (NACK) on the last byte.
+;                      Drives volume_dsp_write retry/escalation.
+;   bit6 (mask 0x40) : DSP_FAULT — set by dsp_ping NACK or after retries
+;                      exhausted. Forwarded to CONTROL via BF/08 frame.
+;   bits[5:3] (mask 0x38) : retry counter for volume_dsp_write (0..5×0x08).
+; Note: bits 0/1/7 are reserved for periodic_service handshake plumbing.
+dsp_fault_flags         EQU  0x07F
 
-; V3.2 preset job state machine (bank 2 — after filename buffer at 0x2C0-0x2DD)
+; Shared 16-bit timeout countdown used by every wait_*_bounded helper.
+; Seeded to ~0x1000 (see wait_seed). Each wait_tick decrements; carry set on 0.
+; Caveat: helpers share the slot — only one bounded wait may be active at a
+; time. All call sites are call-then-poll, so this is safe.
+timeout_lo              EQU  0x00B
+timeout_hi              EQU  0x00C
+
+; saved_w is the cooperative WREG-spill slot used by i2c_byte_tx so callers
+; can supply the byte in W and recover it post-write without using a SCRATCH
+; that ISR/preset-apply also touches.
+saved_w                 EQU  0x005
+
+; ---------------------------------------------------------------------------
+; V3.2 preset job state machine — placed in BSR=2 immediately after the
+; filename staging buffer at 0x2C0..0x2DD. 7 bytes total.
+; The state machine is advanced ONCE per main-loop pass from
+; periodic_service_loop, so each transition is observable in well under the
+; UART byte time and command latency stays bounded.
+; ---------------------------------------------------------------------------
 preset_job_state        EQU  0x2DE   ; 0=IDLE,1=PENDING,2=HOLDING,3=APPLY,4=COMMIT
-preset_job_target       EQU  0x2DF   ; requested preset (0=A, 1=B)
-preset_job_index        EQU  0x2E0   ; table-apply entry counter (0-96)
-preset_job_delay        EQU  0x2E1   ; hold-delay ms countdown
-preset_job_flags        EQU  0x2E2   ; bit0=we_force_muted, bit1=user_mute_desired
-preset_job_tbl_lo       EQU  0x2E3   ; current table-read address low byte
-preset_job_tbl_hi       EQU  0x2E4   ; current table-read address high byte
+preset_job_target       EQU  0x2DF   ; requested preset (0=A, 1=B). May be re-armed
+                                     ; mid-job to coalesce rapid CONTROL F1/F2 toggles.
+preset_job_index        EQU  0x2E0   ; APPLY: table entry counter, 0..0x60.
+                                     ; index 0x60 redirects to final entry @ flash 0x5F00.
+preset_job_delay        EQU  0x2E1   ; HOLDING: ms remaining (reserved — ISR path uses
+                                     ; ram_0x08C/0x08D Timer3 countdown instead).
+preset_job_flags        EQU  0x2E2   ; bit0=we_force_muted (preset_force_mute did the mute),
+                                     ; bit1=user_mute_desired (latched user intent during job).
+                                     ; Drives whether COMMIT/CANCEL restores volume or stays muted.
+preset_job_tbl_lo       EQU  0x2E3   ; APPLY: 16-bit pointer into preset table B (0x5600 ... 0x5800).
+preset_job_tbl_hi       EQU  0x2E4   ; Pre-incremented by 0x18 after each successful entry.
 
 
 ; ---------------------------------------------------------------------------
@@ -35,52 +154,72 @@ preset_job_tbl_hi       EQU  0x2E4   ; current table-read address high byte
     __CONFIG  _CONFIG7H, 0x40
 
 ; ---------------------------------------------------------------------------
-; App Entry (0x1000)
+; App Entry / Interrupt Vector Stub (0x1000)
+; ---------------------------------------------------------------------------
+; Hypex MAIN images live above the bootloader at 0x1000. The bootloader's
+; reset vector at 0x0000 jumps here; the bootloader's HW interrupt vector at
+; 0x0008 jumps to 0x1008 below, hence the FSR2 spill + ISR call sequence
+; that occupies words 0x1008..0x1012. flow_app_entry_1014 then jumps to the
+; cold-init path (flow_main_flash_service_3ce8_3d4e).
 ; ---------------------------------------------------------------------------
     org 0x1000
-    goto        flow_app_entry_1014
+    goto        flow_app_entry_1014                 ; 0x1000 user reset trampoline
     dw          0xFFFF
     dw          0xFFFF
-    movff       FSR2L, isr_save_fsr2l
+    movff       FSR2L, isr_save_fsr2l               ; 0x1008 ISR shadow vector entry
     movff       FSR2H, isr_save_fsr2h
-    call        main_isr_dispatch, 0x1
+    call        main_isr_dispatch, 0x1              ; FAST=1: shadow STATUS/W/BSR
 flow_app_entry_1014:
-    goto        flow_main_flash_service_3ce8_3d4e
+    goto        flow_main_flash_service_3ce8_3d4e   ; cold init / boot
 
 ; ---------------------------------------------------------------------------
 ; USB Descriptors and Data Tables (0x1018-0x10AB)
 ; ---------------------------------------------------------------------------
-hex_lookup_sentinel:  ; NUL byte sentinel
+; All USB descriptors are read via TBLRD from the descriptor pull engine in
+; main_usb_service_*. Bytes are word-packed little-endian; sub-labels below
+; are byte offsets used directly as TBLPTR values. nibble_to_hex_ascii uses
+; hex_lookup_table to convert a low nibble to its ASCII representation
+; (0..9 → '0'..'9', 0xA..0xF → 'A'..'F').
+; ---------------------------------------------------------------------------
+hex_lookup_sentinel:  ; NUL byte at hex_lookup_table-1 terminates string scans
     dw  0x3000, 0x3231, 0x3433, 0x3635, 0x3837, 0x4139, 0x4342, 0x4544
-    dw  0xA646, 0x9A72
-usb_config_descriptor:  ; USB Configuration Descriptor
+    dw  0xA646, 0x9A72                                   ; padding + descriptor ptr table seed
+
+usb_config_descriptor:  ; USB Configuration Descriptor (1 cfg, 1 if, bus-powered, 100 mA)
     dw  0x0209, 0x0029, 0x0101, 0x8000, 0x0932, 0x0004, 0x0200, 0x0003
     dw  0x0000
-usb_hid_descriptor:  ; USB HID Descriptor
+
+usb_hid_descriptor:  ; USB HID Descriptor (HID 1.11, country=0, 1 report)
     dw  0x2109, 0x0111, 0x0100, 0x1D22, 0x0700, 0x8105, 0x4003, 0x0100
-usb_ep1_out_descriptor:  ; Endpoint 1 OUT (interrupt)
+
+usb_ep1_out_descriptor:  ; Endpoint 1 OUT (interrupt, 64 B); HID report descriptor follows
     dw  0x0507, 0x0301, 0x0040, 0x0601, 0xFF00, 0x0109, 0x01A1, 0x0119
     dw  0x4029, 0x0015, 0xFF26, 0x7500, 0x9508, 0x8140, 0x1900, 0x2901
     dw  0x9140, 0xC000
-usb_string_desc_1:  ; String Descriptor 1: "Hypex BV"
+
+usb_string_desc_1:  ; "Hypex BV"  (UTF-16LE, vendor name)
     dw  0x0316, 0x0048, 0x0079, 0x0070, 0x0065, 0x0078, 0x0020, 0x0042
     dw  0x0056, 0x0000, 0x0000
-usb_device_descriptor:  ; USB Device Descriptor
+
+usb_device_descriptor:  ; USB Device Descriptor — VID=0x04D8 PID=0xFF89 (Hypex/DLCP)
     dw  0x0112, 0x0200, 0x0000, 0x0800, 0x04D8, 0xFF89, 0x0001, 0x0201
     dw  0x0100
-usb_string_desc_2:  ; String Descriptor 2: "DLCP"
+
+usb_string_desc_2:  ; "DLCP"  (UTF-16LE, product name)
     dw  0x030C, 0x0044, 0x004C, 0x0043, 0x0050, 0x0000
-usb_string_desc_0:  ; String Descriptor 0: LANGID
+
+usb_string_desc_0:  ; LANGID descriptor — 0x0409 (English-US)
     dw  0x0304, 0x0409
-usb_data_pad:  ; Padding to code boundary
+
+usb_data_pad:  ; padding word so first instruction lands on a code boundary
     dw  0x0000
 
-; Sub-labels at odd byte addresses (EQU offsets)
-hex_lookup_table  EQU  hex_lookup_sentinel + 0x1  ; ASCII hex digits: 0-9, A-F
-string_desc_ptr_table  EQU  hex_lookup_sentinel + 0x11  ; String descriptor offset table
-usb_interface_descriptor  EQU  usb_config_descriptor + 0x9  ; USB Interface Descriptor
-usb_ep1_in_descriptor  EQU  usb_hid_descriptor + 0x9  ; Endpoint 1 IN (interrupt)
-usb_hid_report_descriptor  EQU  usb_ep1_out_descriptor + 0x7  ; HID Report Descriptor
+; Sub-labels at odd byte addresses (EQU offsets — used directly as TBLPTR seeds)
+hex_lookup_table          EQU  hex_lookup_sentinel + 0x1   ; ASCII '0'..'F' table base
+string_desc_ptr_table     EQU  hex_lookup_sentinel + 0x11  ; index→string-desc offset table
+usb_interface_descriptor  EQU  usb_config_descriptor + 0x9 ; USB Interface Descriptor (HID class)
+usb_ep1_in_descriptor     EQU  usb_hid_descriptor + 0x9    ; Endpoint 1 IN (interrupt, 64 B)
+usb_hid_report_descriptor EQU  usb_ep1_out_descriptor + 0x7; HID report (vendor-defined, 64 B in/out)
 
 ; ---------------------------------------------------------------------------
 ; Application Code
@@ -88,9 +227,21 @@ usb_hid_report_descriptor  EQU  usb_ep1_out_descriptor + 0x7  ; HID Report Descr
 
 
 ; ---------------------------------------------------------------------------
-; Function: hid_command_dispatch
+; Function: hid_command_dispatch          (USB HID OUT report decoder)
 ; Address : 0x10AC
-; Notes   : USB HID command decode and top-level command/state dispatch.
+; ---------------------------------------------------------------------------
+; Decodes the 8-byte HID OUT report staged at 0x01ED and routes by report
+; opcode in W (loaded from byte 0). The first 7 bytes are mirrored into the
+; staging area at 0x004D so handlers can both work on a stable copy and emit
+; the response from the same buffer.
+;
+; XOR cmp 0x42 ('B'): branch to the legacy XOR-trampoline (hid_cmd_xor_dispatch);
+; otherwise fall through to the per-opcode XOR chain. Opcodes covered include
+; configuration upload (0x09/0x0A), preset bake helpers (0x06/0x07), HID-driven
+; firmware-update entry (the fw_update_relay path), and the V3.1 diagnostic
+; flash/EEPROM memread (0x43, see hid_cmd_diag_memread). Each handler ends by
+; jumping into flow_hid_command_dispatch_15aa to commit the response and
+; signal completion to the SIE.
 ; ---------------------------------------------------------------------------
 hid_command_dispatch:
     movff       WREG, i2c_coeff_2
@@ -780,9 +931,23 @@ main_core_service_15be:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: fw_update_relay
+; Function: fw_update_relay                (USB-HID -> UART firmware update bridge)
 ; Address : 0x15CE
-; Notes   : Inferred flash helper; touches flash. Calls: main_uart_service_43a2, uart_tx_byte_blocking, uart_rx_with_framing.
+; ---------------------------------------------------------------------------
+; Bridges firmware-update payload between the USB host and the downstream
+; PB on the current loop. Once the host sends the FW-update HID command,
+; this routine:
+;   1. Stages the 8-byte HID OUT report at FSR2=0x01E5 and copies it into
+;      the working buffer at FSR1=0x001D.
+;   2. Forwards each Intel HEX record to the downstream UART through
+;      main_uart_service_43a2 (which uses tblrd_lookup + uart_tx_byte_blocking
+;      to emit the ASCII hex pair).
+;   3. Reads the response back via uart_rx_with_framing and returns it
+;      through the USB IN endpoint.
+; This routine ONLY runs in firmware-update mode (entered by HID opcode);
+; it has no role in normal command flow. The protocol is essentially
+; "USB HID = full-duplex Intel HEX over UART" so PB1 can flash both itself
+; and the downstream PB2 from a single host connection.
 ; ---------------------------------------------------------------------------
 fw_update_relay:
     lfsr        FSR2, 0x01E5
@@ -1156,9 +1321,13 @@ flow_fw_update_relay_18dc:
 
 
 ; ---------------------------------------------------------------------------
-; Function: nibble_to_hex_ascii
+; Function: nibble_to_hex_ascii            (low nibble -> ASCII '0'..'F')
 ; Address : 0x18DE
-; Notes   : Converts low nibble to ASCII hex via program-memory lookup table.
+; ---------------------------------------------------------------------------
+; Caller stages the nibble in ram_0x01B; W is the AND mask (typically 0x0F)
+; that selects which nibble to consume. Returns the ASCII byte in TABLAT
+; via tblrd of hex_lookup_table[ram_0x01B]. Mirror of tblrd_lookup which
+; uses ram_0x004 for the firmware-update path.
 ; ---------------------------------------------------------------------------
 nibble_to_hex_ascii:
     andwf       ram_0x01B, F, ACCESS
@@ -1171,9 +1340,25 @@ nibble_to_hex_ascii:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: cmd_dispatch_gated
+; Function: cmd_dispatch_gated            (gated post-parse command dispatcher)
 ; Address : 0x18EE
-; Notes   : Inferred i2c helper routine. Calls: i2c_secondary_dev_write, main_i2c_service_48e2, main_core_service_4516.
+; ---------------------------------------------------------------------------
+; Called by every incoming serial command after main_uart_service_1be6 has
+; staged route/cmd/data. The first instruction tests active_flags.bit3 — the
+; "active gate" — and silently drops the command at cmd_gate_reject when it
+; is clear.  This single gate is what made the V1.62b CONTROL reconnect bug
+; visible: a missed wake frame leaves every command discarded here.
+;
+; Below the gate, this routine fans out the per-cmd work:
+;   • input-channel I2C pair updates (dispatch by ram_0x093 = parsed cmd_low)
+;   • DSP volume/mute/preset apply through volume_dsp_write (Fix B/B') —
+;     the only V3.1+ verified-write path
+;   • V3.2 reconnect (active_flags.bit7) cancels any in-flight preset job,
+;     mutes the DSP, and replays the preset table from main_core_service_4574
+;
+; Calls: i2c_secondary_dev_write, main_i2c_service_48e2, main_core_service_4516,
+;        volume_dsp_write, i2c_tas3108_coeff_write, main_i2c_service_381c,
+;        main_i2c_service_2100, main_usb_service_45a2, main_timer_service_48a6.
 ; ---------------------------------------------------------------------------
 cmd_dispatch_gated:
     movff       WREG, ram_0x0FD
@@ -1488,9 +1673,32 @@ cmd_gate_reject:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_uart_service_1be6
+; Function: main_uart_service_1be6        (UART parser + downstream forwarder)
 ; Address : 0x1BE6
-; Notes   : Inferred uart helper routine. Calls: rx_ring_has_data, rx_ring_read, uart_tx_byte_blocking.
+; ---------------------------------------------------------------------------
+; Drains the native RX ring (0x0200, indices rx_ring_rd/rx_ring_wr) one byte
+; per pass, runs a 3-byte frame parser keyed on rx_frame_position (0=route,
+; 1=cmd, 2=data), and forwards every non-addressed byte downstream as the
+; PB1->PB2 chain link.
+;
+; Frame discrimination by route byte:
+;   0xB0 -> broadcast: clear active_flags.bit0 (rx_route_is_b1=0)
+;   0xB1 -> addressed: set active_flags.bit0
+;   else  -> non-route data, force-pass through; if a stray BF/04 status,
+;            drop the cmd byte by one (pre-V3.1 protocol artefact).
+;
+; Once cmd+data are latched into ram_0x0A2/ram_0x0A3, control falls into
+; cmd_dispatch_xor_chain which routes by cmd byte to one of:
+;     cmd03_subdispatch (standby/wake/mute on/off)
+;     cmd04_status_response, cmd06_input_select_handler, volume_cmd_handler,
+;     channel-config and preset_select_handler (V3.2: queues only).
+;
+; V3.2 invariant: every handler returns through flow_main_uart_service_1be6_1e6c
+; in bounded time.  No handler may block the parser; long-running work is
+; deferred to preset_job_service.
+;
+; Calls: rx_ring_has_data, rx_ring_read, uart_tx_byte_blocking,
+;        send_status_burst, volume_dsp_write, preset_select_handler.
 ; ---------------------------------------------------------------------------
 main_uart_service_1be6:
     clrf        ram_0x009, ACCESS
@@ -1534,10 +1742,18 @@ flow_main_uart_service_1be6_1c1c:
     xorlw       0xBF
     btfss       STATUS, 2, ACCESS
     decf        ram_0x00A, F, ACCESS
+; ---------------------------------------------------------------------------
+; parser_route_phase_handler
+; Receives a route byte (0xB0/0xB1/0xBF/...) and decides whether to forward
+; it downstream. PB1 forwards every byte that is NOT addressed to itself
+; (active_flags.bit0 == 0); PB2 (last on chain) silently consumes its own
+; addressed traffic. This is the chain-link forward path that makes a
+; multi-MAIN install behave as one current loop to CONTROL.
+; ---------------------------------------------------------------------------
 parser_route_phase_handler:
-    btfsc       active_flags, 0, ACCESS
-    bra         flow_main_uart_service_1be6_1e80
-    movf        ram_0x00A, W, ACCESS
+    btfsc       active_flags, 0, ACCESS              ; addressed to us?
+    bra         flow_main_uart_service_1be6_1e80     ; yes -> consume locally
+    movf        ram_0x00A, W, ACCESS                 ; no  -> echo to next link
     call        uart_tx_byte_blocking, 0x0
     bra         flow_main_uart_service_1be6_1e80
 flow_main_uart_service_1be6_1c42:
@@ -1570,41 +1786,68 @@ flow_main_uart_service_1be6_1c6e:
     movlw       0x01
     movwf       rx_frame_position, BANKED
     bra         cmd_dispatch_xor_chain
+; ---------------------------------------------------------------------------
+; wake_request_handler                     (cmd=0x03 data=0x01)
+; Sets active_flags.bit3 (open the gate) and raises event_flags.bit2 only if
+; the gate was previously closed (so a wake against an already-open gate
+; doesn't re-trigger adc_boot_gate). The XOR-then-AND-then-XOR dance is the
+; stock idiom for "set bit3 unconditionally, set bit2 only if was clear".
+; This is the wake frame that V1.62b CONTROL was failing to send after
+; reconnect — see V162B_RECONNECT_WAKE_BUG.md.
+; ---------------------------------------------------------------------------
 wake_request_handler:
     movlw       0x01
-    btfsc       active_flags, 3, ACCESS
-    movlw       0x00
-    movwf       ram_0x005, ACCESS
+    btfsc       active_flags, 3, ACCESS              ; gate already open?
+    movlw       0x00                                 ; yes -> ram_0x005 = 0
+    movwf       ram_0x005, ACCESS                    ; ram_0x005 = (gate-was-closed) ? 1 : 0
     rlncf       ram_0x005, F, ACCESS
-    rlncf       ram_0x005, F, ACCESS
+    rlncf       ram_0x005, F, ACCESS                 ; shifted into bit2 mask position
     movf        event_flags, W, BANKED
     xorwf       ram_0x005, W, ACCESS
-    andlw       0xFB
-    xorwf       ram_0x005, W, ACCESS
+    andlw       0xFB                                 ; preserve every bit except bit2
+    xorwf       ram_0x005, W, ACCESS                 ; OR in bit2 if we computed it
     movwf       event_flags, BANKED
-    btfsc       event_flags, 2, BANKED
-    bsf         active_flags, 3, ACCESS
+    btfsc       event_flags, 2, BANKED               ; event raised?
+    bsf         active_flags, 3, ACCESS              ; open the gate
     bra         flow_main_uart_service_1be6_1e6c
+
+; ---------------------------------------------------------------------------
+; standby_request_handler                  (cmd=0x03 data=0x00)
+; Symmetric inverse of wake: clear active_flags.bit3 (close the gate) and
+; raise event_flags.bit2 to schedule hw_standby_shutdown. If the gate was
+; already closed, just clear event_flags.bit2 (no further action). This is
+; the broadcast that closes EVERY MAIN's gate on the chain — once closed,
+; cmd_dispatch_gated drops every command at cmd_gate_reject until a wake
+; reopens it.
+; ---------------------------------------------------------------------------
 standby_request_handler:
-    btfss       active_flags, 3, ACCESS
-    bra         flow_main_uart_service_1be6_1ca2
-    bsf         event_flags, 2, BANKED
+    btfss       active_flags, 3, ACCESS              ; gate currently open?
+    bra         flow_main_uart_service_1be6_1ca2     ; no  -> just consume the event
+    bsf         event_flags, 2, BANKED               ; yes -> raise standby event
     bra         flow_main_uart_service_1be6_1ca6
 flow_main_uart_service_1be6_1ca2:
     movlb       0x0
-    bcf         event_flags, 2, BANKED
+    bcf         event_flags, 2, BANKED               ; gate was already closed
 flow_main_uart_service_1be6_1ca6:
     btfsc       event_flags, 2, BANKED
-    bcf         active_flags, 3, ACCESS
+    bcf         active_flags, 3, ACCESS              ; close the gate (BROADCAST drops all MAINs)
     bra         flow_main_uart_service_1be6_1e6c
+; ---------------------------------------------------------------------------
+; cmd03_mute_on_handler                    (cmd=0x03 data=0x02 — mute on)
+; Sets the user mute (active_flags.bit4). If a preset job is in flight,
+; latches user-mute-desired in preset_job_flags.bit1 so COMMIT/CANCEL stays
+; muted instead of restoring the previous state. The xor/and dance below
+; computes whether a DSP refresh is needed (event_flags.bit5 set) by
+; comparing user-mute (bit4) against the shadow forced-mute (bit5).
+; ---------------------------------------------------------------------------
 cmd03_mute_on_handler:
-    btfsc       ram_0x094, 3, BANKED
+    btfsc       ram_0x094, 3, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1cd6
-    bsf         active_flags, 4, ACCESS
+    bsf         active_flags, 4, ACCESS              ; user mute on
     ; V3.2: if preset job active, record user wants mute
     movlb       0x2
-    tstfsz      preset_job_state, BANKED
-    bsf         preset_job_flags, 1, BANKED
+    tstfsz      preset_job_state, BANKED             ; skip if IDLE
+    bsf         preset_job_flags, 1, BANKED          ; latch user_mute_desired
     movlb       0x0
     movlw       0x01
     btfss       active_flags, 4, ACCESS
@@ -1637,17 +1880,28 @@ flow_main_uart_service_1be6_1cd6:
     movwf       ram_0x0BC, BANKED
     bcf         ram_0x094, 3, BANKED
     bra         flow_main_uart_service_1be6_1e6c
+; ---------------------------------------------------------------------------
+; cmd03_mute_off_handler                   (cmd=0x03 data=0x03 — mute off)
+; If we are currently force-muted by an in-flight preset job
+; (preset_job_flags.bit0 set), the cmd is RECORDED but NOT executed —
+; preset_job COMMIT or CANCEL will release the mute when the table apply
+; completes. Otherwise we drop the user mute (active_flags.bit4) and run
+; the same DSP-refresh logic as cmd03_mute_on (event_flags.bit5 dirtying).
+; This guard is the V3.2 fix for "preset switch goes silent" — without it,
+; a user who pressed unmute during the 150 ms preset hold would get a
+; brief loud burst because the table wasn't fully applied yet.
+; ---------------------------------------------------------------------------
 cmd03_mute_off_handler:
-    btfsc       ram_0x094, 3, BANKED
+    btfsc       ram_0x094, 3, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1cd6
     ; V3.2: during a force-muted preset job, suppress the actual mute-off
     ; so the DSP stays muted while the table apply is in progress.
     ; Only record the user's desire for COMMIT to act on later.
     movlb       0x2
-    tstfsz      preset_job_state, BANKED      ; skip next if IDLE
-    btfss       preset_job_flags, 0, BANKED   ; skip next if force-muted
+    tstfsz      preset_job_state, BANKED             ; skip next if IDLE
+    btfss       preset_job_flags, 0, BANKED          ; skip next if force-muted
     bra         cmd03_mute_off_apply
-    bcf         preset_job_flags, 1, BANKED   ; record: user wants unmute
+    bcf         preset_job_flags, 1, BANKED          ; record: user wants unmute
     movlb       0x0
     bra         flow_main_uart_service_1be6_1e6c
 cmd03_mute_off_apply:
@@ -1668,46 +1922,86 @@ cmd03_mute_off_apply:
     xorwf       ram_0x005, F, ACCESS
     bnz         flow_main_uart_service_1be6_1cc8
     bra         flow_main_uart_service_1be6_1cca
+; ---------------------------------------------------------------------------
+; cmd03_subdispatch                        (cmd=0x03 data → handler)
+; Routes cmd=0x03 by data byte to one of four handlers. The XOR-chain idiom
+; saves one cycle per case vs. independent compares; cumulative XOR values
+; must add up to the data byte exactly when the case matches.
+;   data=0x00 → standby_request_handler
+;   data=0x01 → wake_request_handler
+;   data=0x02 → cmd03_mute_on_handler
+;   data=0x03 → cmd03_mute_off_handler
+; Any other data falls through to "no-op consume" (1e6c).
+; ---------------------------------------------------------------------------
 cmd03_subdispatch:
     movf        ram_0x0A3, W, BANKED
-    bz          standby_request_handler
+    bz          standby_request_handler              ; data=0x00
     xorlw       0x01
-    bz          wake_request_handler
-    xorlw       0x03
-    bz          cmd03_mute_on_handler
+    bz          wake_request_handler                 ; data=0x01
+    xorlw       0x03                                 ; cumulative XOR == data ?
+    bz          cmd03_mute_on_handler                ; data=0x02
     xorlw       0x01
-    bz          cmd03_mute_off_handler
+    bz          cmd03_mute_off_handler               ; data=0x03
     bra         flow_main_uart_service_1be6_1e6c
+
+; ---------------------------------------------------------------------------
+; cmd04_status_response                    (cmd=0x04 data=0x00 — status_poll)
+; Bypasses the active gate: CONTROL can poll for status even from standby.
+; Emits the BF/05, BF/07, BF/03, BF/06, BF/1D burst from cached RAM via
+; send_status_burst. There is no BF/04 reply frame.
+; ---------------------------------------------------------------------------
 cmd04_status_response:
     call        send_status_burst, 0x0
     bra         flow_main_uart_service_1be6_1e6c
+
+; ---------------------------------------------------------------------------
+; cmd06_input_select_handler               (cmd=0x06 — input source)
+; Updates input_select (0x099) and its mirror (0x0B3). When ram_0x094.bit0
+; is set (HID-driven query mode), the routine instead RETURNS the current
+; value via ram_0x0BC and clears the bit, so the caller's status burst
+; carries it back.
+; ---------------------------------------------------------------------------
 cmd06_input_select_handler:
-    btfsc       ram_0x094, 0, BANKED
+    btfsc       ram_0x094, 0, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1d22
-    movff       ram_0x0A3, input_select
+    movff       ram_0x0A3, input_select              ; commit new input
     movff       input_select, input_select_mirror
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d22:
     movff       input_select, ram_0x0BC
     bcf         ram_0x094, 0, BANKED
     bra         flow_main_uart_service_1be6_1e6c
+; ---------------------------------------------------------------------------
+; volume_cmd_handler                       (cmd=0x07 — volume set)
+; Computes new 32-bit volume from data byte: data is sent biased by 0x60
+; (0x60 = 0 dB), so the routine adds 0xFFA0 (i.e. -0x60) and sign-extends
+; to 32 bits in computed_volume[0..3]. If the new value differs from the
+; cached logical_volume[0..3], event_flags.bit3 (volume_dirty) is set so
+; the next periodic_service_loop pass calls volume_dsp_write to push the
+; coefficient into the DSP.
+;
+; V3.1 Fix B': the helper deliberately does NOT copy computed→logical
+; here. The copy happens inside volume_dsp_write only after a verified
+; successful I2C write (ACKSTAT==0). The old behavior unconditionally
+; cleared the dirty bit, so a NACK was silent (DSP2 bug).
+; ---------------------------------------------------------------------------
 volume_cmd_handler:
-    btfsc       ram_0x094, 1, BANKED
+    btfsc       ram_0x094, 1, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1d80
-    movlw       0xA0
+    movlw       0xA0                                 ; -0x60 low byte (two's complement)
     movwf       ram_0x005, ACCESS
-    setf        ram_0x006, ACCESS
-    movf        ram_0x0A3, W, BANKED
+    setf        ram_0x006, ACCESS                    ; 0xFFFF... high byte
+    movf        ram_0x0A3, W, BANKED                 ; data byte
     movwf       ram_0x007, ACCESS
     clrf        ram_0x008, ACCESS
     movf        ram_0x005, W, ACCESS
-    addwf       ram_0x007, F, ACCESS
+    addwf       ram_0x007, F, ACCESS                 ; data + 0xA0 (8-bit)
     movf        ram_0x006, W, ACCESS
-    addwfc      ram_0x008, F, ACCESS
+    addwfc      ram_0x008, F, ACCESS                 ; carry → upper byte
     movff       ram_0x007, computed_volume
     movff       ram_0x008, computed_volume_1
     movlw       0x00
-    btfsc       computed_volume_1, 7, BANKED
+    btfsc       computed_volume_1, 7, BANKED         ; sign-extend to 32 bits
     movlw       0xFF
     movwf       computed_volume_2, BANKED
     movwf       computed_volume_3, BANKED
@@ -2160,9 +2454,15 @@ flow_main_core_service_1e88_20c2:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_i2c_service_2100
+; Function: main_i2c_service_2100          (DSP/secondary device sync burst)
 ; Address : 0x2100
-; Notes   : Inferred i2c helper; touches i2c. Calls: ram_block_clear, i2c_wait_bus_idle, main_core_service_4448.
+; ---------------------------------------------------------------------------
+; Long composite I2C-update routine triggered from cmd_dispatch_gated when
+; event_flags.bit4 (input/route dirty) is set. Clears the working RAM at
+; 0x04D7 area, then re-runs the channel-config / DSP-sync sequence (touches
+; the secondary device 0x71 for amp routing AND the TAS3108 for the
+; coefficient block). Used during initial wake and after channel config
+; changes; not part of the volume-only fast path.
 ; ---------------------------------------------------------------------------
 main_i2c_service_2100:
     clrf        ram_0x004, ACCESS
@@ -2989,9 +3289,20 @@ flow_main_core_service_265c_27ee:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_i2c_service_27f0
+; Function: main_i2c_service_27f0          (periodic DSP/secondary refresh)
 ; Address : 0x27F0
-; Notes   : Inferred i2c helper routine. Calls: i2c_secondary_dev_write, i2c_secondary_dev_random_read.
+; ---------------------------------------------------------------------------
+; Periodic-loop slot 4 (called from periodic_service_loop). Active gate
+; (active_flags.bit3) gated. Performs:
+;   • ram_0x0BB watchdog increment (cleared elsewhere on activity); when it
+;     exceeds 0x64 (~100 service ticks), dispatches a refresh of the
+;     secondary device (0x71) state via i2c_secondary_dev_write.
+;   • Reads current ram_0x05F status from secondary via
+;     i2c_secondary_dev_random_read.
+;   • Compares against expected and queues channel/source-select fixups
+;     into ram_0x093 for the next cmd_dispatch_gated pass.
+; This is the slow-housekeeping I2C path; the fast volume/preset paths go
+; through volume_dsp_write and preset_job_apply_i2c_entry respectively.
 ; ---------------------------------------------------------------------------
 main_i2c_service_27f0:
     btfss       active_flags, 3, ACCESS
@@ -3657,9 +3968,31 @@ main_core_service_2d80:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: adc_boot_gate
+; Function: adc_boot_gate                  (rail-rise wait + DSP cold init)
 ; Address : 0x2D8C
-; Notes   : Inferred uart helper; touches adc,timer,uart. Calls: timer3_blocking_delay, main_i2c_service_4966, mssp_hard_reset.
+; ---------------------------------------------------------------------------
+; Phase A — RAIL WAIT (BUG M9: unbounded). With INTCON.GIE=0, samples AN0
+;   (12-bit ADC) every 10 ms and stores ram_0x088:089. Loop exits when
+;   ram_0x088:089 ≥ 0x0236 (i.e. supply rail is up). There is no timeout: a
+;   stuck rail blocks here forever. The V3.2 hardening plan workstream 5
+;   would gate this with a watchdog.
+;
+; Phase B — DSP COLD BRING-UP. Once the rail is good:
+;   • 70 ms timer3 settle
+;   • OSCCON.SCS1 = 0 (HS oscillator selected), SPBRG = 0x7F (31,250 baud)
+;   • Drop LATB.bit4, LATA.bit6 (amp enable lines), drop LATB.bit3
+;   • SSPCON1.SSPEN = 0, tristate RB0/RB1 (release SDA/SCL)
+;   • 100 ms idle, then a 1500 ms (5 * 256 + 0xDC) settle while LATB.bit4
+;     is asserted (PSU stable indicator)
+;   • mssp_hard_reset with W=0x08 (SSPM master) and ram_0x003=0x80 (SMP=1)
+;   • Re-arm I2C and write zero coefficient to TAS3108 (mute the DSP),
+;     then run main_core_service_4574 (preset table apply)
+;   • Bring LATB.bit3 back up (amp enable), set the housekeeping event
+;     flags so cmd_dispatch_gated does the volume/mute/preset reconciliation,
+;     then re-arm Timer0 (TMR0=0xA471, ~50 ms) and INTCON.T0IE.
+;
+; This is the routine called from standby_event_dispatch when the gate is
+; reopened — i.e. when CONTROL sends a wake B0/03/01 frame after standby.
 ; ---------------------------------------------------------------------------
 adc_boot_gate:
     bcf         INTCON, 7, ACCESS
@@ -3764,8 +4097,28 @@ adc_boot_gate_exit:
     goto        flow_main_usb_service_490c_4918
 
 ; ---------------------------------------------------------------------------
-; Function: flash_write (V3.1: preset B address remap prologue)
-; Notes   : Remaps 0x56xx-0x5Fxx to 0x4Axx-0x53xx when preset B active.
+; Function: flash_write                    (program-memory write w/ A/B remap)
+; Address : 0x2E6E
+; ---------------------------------------------------------------------------
+; Stock body (flash_write_stock) is the original Hypex 64-byte tblwt loop:
+;   • input: ram_0x003..006 = byte-address (24-bit + zero MSB)
+;            ram_0x007:008  = byte-length (16-bit countdown)
+;            FSR2 (ram_0x009:00A) = source byte pointer
+;   • aligns the start to a 32-byte block (right-shift 5, add 0x20, recover),
+;     then for each block copies up to 32 bytes via TBLWT*, sets EECON1 for
+;     program memory write (EEPGD=1, CFGS=0, WREN=1), runs the
+;     unlock-then-WR sequence in main_flash_service_4406, and reloads the
+;     next 32-byte block. INTCON.GIE is preserved across the unlock.
+;
+; V3.1+ prologue: when active_flags.bit2 (preset B) is set AND the target
+; falls in the 0x56xx-0x5FFF flash window, the address ram_0x004 byte is
+; pulled down by 0x0A so writes land in the alternate preset table at
+; 0x4Cxx-0x55FF (the "preset B" slot built into V2.4+/V3.x images). This
+; remap is the binary-patched A/B preset machinery preserved at source level.
+;
+; BUG M7 (flash_write_with_gie_off): GIE is intentionally cleared during
+; writes; the leak is in the wrapper which can return without restoring GIE
+; on certain control-flow paths.
 ; ---------------------------------------------------------------------------
 flash_write:
     btfss       active_flags, 2, ACCESS     ; preset B active?
@@ -5095,28 +5448,51 @@ main_flash_service_3810:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_i2c_service_381c
+; Function: main_i2c_service_381c          (legacy preset table-entry I2C apply)
 ; Address : 0x381C
-; Notes   : Inferred i2c helper; touches i2c. Calls: flash_read, i2c_byte_tx.
+; ---------------------------------------------------------------------------
+; This is the synchronous, UNBOUNDED preset apply path inherited from V2.x.
+; It reads one preset table entry from flash (24 bytes, ram_0x013:014 ->
+; flash, count 0x17 to ram_0x02F), then issues a single I2C burst to the
+; TAS3108 DSP at write addr 0x68 with up to 24 data bytes.
+;
+; CRITICAL HAZARDS (V3.2 hardening targets):
+;   • SSPCON2.SEN poll at flow_main_i2c_service_381c_3870 has NO timeout
+;     (legacy stock pattern — this is a fixed-iteration pulse on healthy
+;     hardware, but a stuck START condition will hang here forever).
+;   • SSPCON2.PEN poll at flow_main_i2c_service_381c_389c has NO timeout
+;     (same hazard, on STOP).
+;   • i2c_byte_tx is V3.1+ bounded inside, but a SEN/PEN hang upstream
+;     leaves any half-applied table entry uncommitted.
+;
+; The V3.2 async path (preset_job_apply_i2c_entry) is a near-clone of this
+; routine that wraps the same flash_read + I2C burst pattern with the
+; bounded wait_sen/pen_bounded helpers and the
+; preset_job_apply_i2c_recover bus-clear/ping path. Field-debugged callers
+; (delayed-switch path) MUST use that copy — this stock body is preserved
+; only for the few non-preset call sites that have not yet been migrated.
+;
+; Called from: main_i2c_service_27f0 (DSP I2C refresh), cmd_dispatch_gated
+;              (channel sync), some legacy reconnect/wake paths.
 ; ---------------------------------------------------------------------------
 main_i2c_service_381c:
-    movff       ram_0x013, ram_0x003
+    movff       ram_0x013, ram_0x003                ; copy 16-bit flash addr (caller staged)
     movff       ram_0x014, ram_0x004
-    clrf        ram_0x005, ACCESS
+    clrf        ram_0x005, ACCESS                   ; high byte and TBLPTRU = 0
     clrf        ram_0x006, ACCESS
     clrf        ram_0x008, ACCESS
-    movlw       0x04
+    movlw       0x04                                ; first read: 4-byte header (TAS reg + len)
     movwf       ram_0x007, ACCESS
     clrf        ram_0x00A, ACCESS
-    movlw       0x17
+    movlw       0x17                                ; FSR2 dest = 0x0017 (RAM scratch)
     movwf       ram_0x009, ACCESS
     call        flash_read, 0x0
-    movff       ram_0x018, ram_0x02F
-    movff       ram_0x019, ram_0x031
-    movlw       0x19
+    movff       ram_0x018, ram_0x02F                ; ram_0x02F = TAS reg byte
+    movff       ram_0x019, ram_0x031                ; ram_0x031 = byte count
+    movlw       0x19                                ; >= 25 -> end-of-table sentinel
     subwf       ram_0x031, W, ACCESS
     bc          flow_main_i2c_service_381c_38a0
-    movlw       0x04
+    movlw       0x04                                ; advance past header
     addwf       ram_0x013, W, ACCESS
     movwf       ram_0x015, ACCESS
     movlw       0x00
@@ -5126,25 +5502,25 @@ main_i2c_service_381c:
     movff       ram_0x016, ram_0x004
     clrf        ram_0x005, ACCESS
     clrf        ram_0x006, ACCESS
-    movff       ram_0x031, ram_0x007
+    movff       ram_0x031, ram_0x007                ; second read = data block
     clrf        ram_0x008, ACCESS
     clrf        ram_0x00A, ACCESS
-    movlw       0x17
+    movlw       0x17                                ; FSR2 dest = 0x0017 (overlay)
     movwf       ram_0x009, ACCESS
     rcall       flash_read
-    bsf         SSPCON2, 0, ACCESS
+    bsf         SSPCON2, 0, ACCESS                  ; SEN — START
 flow_main_i2c_service_381c_3870:
-    btfsc       SSPCON2, 0, ACCESS
+    btfsc       SSPCON2, 0, ACCESS                  ; <-- M1 unbounded SEN poll
     bra         flow_main_i2c_service_381c_3870
-    movlw       0x68
+    movlw       0x68                                ; TAS3108 write address
     rcall       i2c_byte_tx
-    movf        ram_0x02F, W, ACCESS
+    movf        ram_0x02F, W, ACCESS                ; reg byte
     rcall       i2c_byte_tx
     clrf        ram_0x030, ACCESS
     bra         flow_main_i2c_service_381c_3894
 flow_main_i2c_service_381c_3884:
     movf        ram_0x030, W, ACCESS
-    addlw       0x17
+    addlw       0x17                                ; data buffer at 0x0017+i
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movf        INDF2, W, ACCESS
@@ -5154,9 +5530,9 @@ flow_main_i2c_service_381c_3894:
     movf        ram_0x031, W, ACCESS
     subwf       ram_0x030, W, ACCESS
     bnc         flow_main_i2c_service_381c_3884
-    bsf         SSPCON2, 2, ACCESS
+    bsf         SSPCON2, 2, ACCESS                  ; PEN — STOP
 flow_main_i2c_service_381c_389c:
-    btfsc       SSPCON2, 2, ACCESS
+    btfsc       SSPCON2, 2, ACCESS                  ; <-- M1 unbounded PEN poll
     bra         flow_main_i2c_service_381c_389c
 flow_main_i2c_service_381c_38a0:
     return      0
@@ -5204,9 +5580,23 @@ main_core_service_38a2:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: adaptive_baud_select
+; Function: adaptive_baud_select           (chain-role strap → UART/oscillator)
 ; Address : 0x3926
-; Notes   : Inferred uart helper; touches adc,timer,uart. Calls: main_uart_service_4938.
+; ---------------------------------------------------------------------------
+; Reads PORTC.bit2 (the chain-role strap, see PIN_SEMANTICS RC2) and selects
+; the UART baud + oscillator path:
+;   PORTC.RC2 = 1 (chain role): SPBRG=0x3F  (62,500 baud), OSCCON.SCS1=1
+;                               (slow internal osc), LATB.bit2 high (chain
+;                               status indicator).
+;   PORTC.RC2 = 0 (master role): SPBRG=0x7F (31,250 baud, the protocol baud),
+;                               OSCCON.SCS1=0 (HS osc), LATB.bit2 low.
+; Then drives every output low (LATB.{2..7}, LATA.{3..6}), runs
+; main_uart_service_4938 to bring up the EUSART, enables GIE/PEIE, clears
+; the parser/event/active flag bytes (event_flags, active_flags, ram_0x07F,
+; ram_0x0BD, ram_0x0BB, etc.), and pre-seeds the bank-1 register pointer
+; cache (ram_0x00F..0x015 = 0x20..0x28) used by the I2C secondary writes.
+; This is the post-cold-reset peripheral configuration path; do NOT confuse
+; it with hw_standby_shutdown (which performs the inverse OSCCON change).
 ; ---------------------------------------------------------------------------
 adaptive_baud_select:
     btfss       PORTC, 2, ACCESS
@@ -5321,9 +5711,27 @@ main_i2c_service_39a6:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_usb_service_3a26
+; Function: main_usb_service_3a26          (HID OUT consume / dispatch arbiter)
 ; Address : 0x3A26
-; Notes   : Inferred usb helper; touches usb. Calls: main_uart_service_495e, main_core_service_3c82, hid_command_dispatch.
+; ---------------------------------------------------------------------------
+; Top-of-loop slot in periodic_service_loop. Decides whether the device is
+; in "USB attached + active gate open + sense pin reading 1" state and only
+; in that state will pull a complete HID OUT report and call
+; hid_command_dispatch.
+;
+; Path summary:
+;   • If USB is suspended (UCON.SUSPND=1) OR active gate is closed (no host
+;     allowed to drive the device) OR PORTC.bit0 is low (current-loop RX
+;     line idle), force CREN=1 (re-prime UART RX) and return without
+;     touching USB.
+;   • Otherwise inspect ram_0x0C0 (HID-staging "owned by us" flag): if
+;     clear, run main_core_service_3c82 to copy the SETUP into the working
+;     buffer at 0x015A and then zero the response buffer at bank 1 offsets
+;     0x5A..0x99.
+;   • If HID-staging is set (a complete OUT report has been latched), call
+;     hid_command_dispatch with the opcode in W; on completion, copy 0x40
+;     bytes back to bank 1 offset 0x5A as the IN reply via
+;     main_core_service_3fd0.
 ; ---------------------------------------------------------------------------
 main_usb_service_3a26:
     movlb       0x0
@@ -5392,9 +5800,17 @@ flow_main_usb_service_3a26_3aa2:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: uart_rx_with_framing
+; Function: uart_rx_with_framing           (Intel-HEX framing for FW-update)
 ; Address : 0x3AA4
-; Notes   : Inferred uart helper routine. Calls: main_timer_service_477a, rx_ring_has_data, rx_ring_read.
+; ---------------------------------------------------------------------------
+; Synchronous receive loop used during firmware-update mode. Waits for a
+; ':' lead-in via the RX ring, then collects an Intel HEX record of the
+; declared length, terminated by CR/LF. Used by fw_update_relay (USB-HID →
+; UART firmware update relay) so a host can flash both MAINs in a chain.
+;
+; Note: this path is only entered after the host issues the FW-update HID
+; command; it is NOT part of normal runtime serial parsing (which goes
+; through main_uart_service_1be6).
 ; ---------------------------------------------------------------------------
 uart_rx_with_framing:
     clrf        ram_0x00E, ACCESS
@@ -5456,77 +5872,112 @@ flow_uart_rx_with_framing_3b16:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: main_isr_dispatch
+; Function: main_isr_dispatch              (single high-priority ISR)
 ; Address : 0x3B1E
-; Notes   : Inferred uart helper; touches timer,uart.
+; ---------------------------------------------------------------------------
+; Reached from the bootloader's IV at 0x0008 -> the FSR2 spill stub at 0x1008.
+; FAST=1 was used on the call so STATUS/W/BSR are already shadowed; FSR2L/H
+; were spilled into isr_save_fsr2l/h (restored before retfie 1).
+;
+; Sources serviced (in priority/poll order):
+;   1. T0IF  : Timer0 1-second tick — sets event_flags.bit0; clears T0IE/TMR0ON
+;              so the main loop must re-arm.
+;   2. TMR3IF: Timer3 reload (preset HOLDING countdown clock). Pre-loads
+;              0xF830 for ~10 ms tick. Decrements 16-bit ram_0x08C/0x08D;
+;              when it reaches zero, disables T3 + PIE2 so HOLDING in
+;              preset_job_service sees the zero and advances to APPLY.
+;   3. RCIF  : UART RX byte. Stores RCREG into ring at 0x0200+rx_ring_wr,
+;              wraps at 0xC0 (192-byte ring). BUG M6: no overflow detection
+;              if rx_ring_wr catches up to rx_ring_rd; oldest byte is silently
+;              overwritten. The V3.2 hardening plan workstream 2 calls for a
+;              full/overflow flag here.
+;   4. OERR  : RCSTA.OERR set → toggle CREN to clear, force parser resync via
+;              rx_frame_position=0 and active_flags.bit0=1 so the next byte is
+;              treated as a route byte. BUG M4: does NOT drain the 2-deep
+;              RCREG FIFO before re-enabling CREN, leaving stale bytes in the
+;              hardware FIFO that the next pass will re-read.
 ; ---------------------------------------------------------------------------
 main_isr_dispatch:
-    pop
-    btfss       PIR2, 5, ACCESS
+    pop                                              ; discard call-frame return (FAST=1)
+    btfss       PIR2, 5, ACCESS                      ; Timer1? (event-out, unused)
     bra         timer0_irq_handler
     bcf         PIR2, 5, ACCESS
     bcf         PIE2, 5, ACCESS
 timer0_irq_handler:
-    btfss       INTCON, 2, ACCESS
+    btfss       INTCON, 2, ACCESS                    ; T0IF — Timer0 overflow?
     bra         timer3_irq_handler
     movlb       0x0
-    bsf         event_flags, 0, BANKED
-    bcf         INTCON, 2, ACCESS
-    bcf         INTCON, 5, ACCESS
-    bcf         T0CON, 7, ACCESS
+    bsf         event_flags, 0, BANKED               ; raise t0_tick for main loop
+    bcf         INTCON, 2, ACCESS                    ; clear T0IF
+    bcf         INTCON, 5, ACCESS                    ; mask T0IE (re-armed by main loop)
+    bcf         T0CON, 7, ACCESS                     ; stop Timer0 (re-armed by main loop)
 timer3_irq_handler:
-    btfss       PIR2, 1, ACCESS
+    btfss       PIR2, 1, ACCESS                      ; TMR3IF — preset HOLDING tick?
     bra         uart_rx_irq_enqueue
-    bcf         T3CON, 0, ACCESS
-    movlw       0xF8
+    bcf         T3CON, 0, ACCESS                     ; pause Timer3 during reload
+    movlw       0xF8                                 ; reload 0xF830 → ~10 ms @ Fosc/4
     movwf       TMR3H, ACCESS
     movlw       0x30
     movwf       TMR3L, ACCESS
     bsf         T3CON, 0, ACCESS
-    bcf         PIR2, 1, ACCESS
+    bcf         PIR2, 1, ACCESS                      ; clear TMR3IF
     movlb       0x0
-    movf        ram_0x08D, W, BANKED
+    movf        ram_0x08D, W, BANKED                 ; HOLDING countdown {hi,lo}
     iorwf       ram_0x08C, W, BANKED
-    bz          flow_main_isr_dispatch_3b58
-    decf        ram_0x08C, F, BANKED
-    btfss       STATUS, 0, ACCESS
+    bz          flow_main_isr_dispatch_3b58          ; reached zero -> stop Timer3
+    decf        ram_0x08C, F, BANKED                 ; 16-bit countdown decrement
+    btfss       STATUS, 0, ACCESS                    ; borrow into hi byte?
     decf        ram_0x08D, F, BANKED
     bra         uart_rx_irq_enqueue
 flow_main_isr_dispatch_3b58:
-    bcf         T3CON, 0, ACCESS
-    bcf         PIE2, 1, ACCESS
+    bcf         T3CON, 0, ACCESS                     ; HOLDING expired: T3 off
+    bcf         PIE2, 1, ACCESS                      ; mask Timer3 IE until next job
 uart_rx_irq_enqueue:
-    btfss       PIR1, 5, ACCESS
+    btfss       PIR1, 5, ACCESS                      ; RCIF — UART byte arrived?
     bra         flow_main_isr_dispatch_3b8c
     movlb       0x0
-    movf        rx_ring_wr, W, BANKED
+    movf        rx_ring_wr, W, BANKED                ; FSR2 = 0x0200 + rx_ring_wr
     movwf       FSR2L, ACCESS
     movlw       0x02
     movwf       FSR2H, ACCESS
-    movff       RCREG, INDF2
+    movff       RCREG, INDF2                         ; copy RX byte into ring
     incf        rx_ring_wr, F, BANKED
-    movlw       0xBF
-    cpfsgt      rx_ring_wr, BANKED
+    movlw       0xBF                                 ; ring size = 0xC0 (192 bytes)
+    cpfsgt      rx_ring_wr, BANKED                   ; wr > 0xBF -> wrap
     bra         uart_oerr_recover
-    clrf        rx_ring_wr, BANKED
+    clrf        rx_ring_wr, BANKED                   ; wrap to 0
 uart_oerr_recover:
-    btfss       RCSTA, 1, ACCESS
+    btfss       RCSTA, 1, ACCESS                     ; OERR? (RX overrun)
     bra         flow_main_isr_dispatch_3b8c
-    bcf         RCSTA, 4, ACCESS
-    dw          0xF000
-    bsf         RCSTA, 4, ACCESS
-    bsf         active_flags, 0, ACCESS
+    bcf         RCSTA, 4, ACCESS                     ; CREN=0 -> clear OERR latch
+    dw          0xF000                               ; (NOP word — pad / decode quiesce)
+    bsf         RCSTA, 4, ACCESS                     ; CREN=1 (re-arm RX). BUG M4: no FIFO drain
+    bsf         active_flags, 0, ACCESS              ; force route_is_b1 so next byte = route
     movlb       0x0
-    clrf        rx_frame_position, BANKED
+    clrf        rx_frame_position, BANKED            ; resync parser to expect a route byte
 flow_main_isr_dispatch_3b8c:
-    movff       isr_save_fsr2h, FSR2H
+    movff       isr_save_fsr2h, FSR2H                ; restore FSR2 spilled at vector entry
     movff       isr_save_fsr2l, FSR2L
-    retfie      1
+    retfie      1                                    ; FAST=1: pop shadow STATUS/W/BSR
 
 ; ---------------------------------------------------------------------------
-; Function: send_status_burst
+; Function: send_status_burst              (CONTROL status burst — cmd 0x04)
 ; Address : 0x3B96
-; Notes   : Inferred uart helper routine. Calls: uart_tx_byte_blocking, main_core_service_492e.
+; ---------------------------------------------------------------------------
+; Emits five BF/<cmd>/<data> frames in fixed order:
+;   BF/05/<ram_0x05F>           cmd=0x05 status byte (raw)
+;   BF/07/<computed_volume+0x60> cmd=0x07 current volume (with 0x60 offset)
+;   BF/03/<active_gate>         cmd=0x03 current standby state (1=active)
+;   BF/06/<input_select>        cmd=0x06 current input
+;   BF/1D/<ram_0x0B8>           cmd=0x1D current display backlight setting
+;
+; Each frame is 3 bytes; preamble emits the 0xBF prefix and cmd byte through
+; uart_tx_byte_blocking (V3.1: bounded TRMT wait), and postamble emits the
+; data byte then runs main_core_service_492e to insert a Timer3 1 ms inter-
+; frame delay so the receiver's 3-byte parser does not re-sync.
+;
+; Cross-ref: docs/analysis/SEMANTIC_FUNCTION_MAP.md — note that BF/29 is sent
+; separately by report_cmd29_status, NOT here.
 ; ---------------------------------------------------------------------------
 send_status_burst:
     movlw       0x05
@@ -5568,9 +6019,28 @@ send_status_burst_postamble:
     goto        main_core_service_492e
 
 ; ---------------------------------------------------------------------------
-; Function: hw_standby_shutdown
+; Function: hw_standby_shutdown            (full hardware standby sequence)
 ; Address : 0x3C0C
-; Notes   : Inferred uart helper; touches timer,uart. Calls: i2c_secondary_dev_write, timer3_blocking_delay.
+; ---------------------------------------------------------------------------
+; Reached from standby_event_dispatch when active_flags.bit3 has been cleared
+; by a cmd=0x03 standby broadcast (or USB-driven path). Performs, in order:
+;   1. Three I2C writes to secondary device 0x71 (regs 0x1B/0x1C/0x1D=0):
+;      drops audio rails / clears amp enable. These use function_093 not the
+;      DSP path, so a DSP I2C glitch CANNOT mask the standby (the V1.62b
+;      "PBs don't power down" field bug was caused by these writes failing).
+;   2. Branches on PORTC.bit2 (chain-role strap) to set the OSCCON.SCS1
+;      bit, SPBRG (baud) and chain LATB.bit2 indicator into the role-correct
+;      low-power oscillator setting.
+;   3. Drops LATB.bit4, LATA.bit6, RA3/RA4/RA5 (relay/source select bits).
+;   4. Compares ram_0x088:089 against 0x0228 (rail trip threshold). If still
+;      above threshold, runs a 4-iteration toggle loop that pulses the 0x1C
+;      register on the secondary device with a 250 ms timer3 delay between
+;      pulses (this is the controlled rail discharge to suppress pop).
+;   5. Drops LATB.bit3, stops Timer0 (T0CON.bit7=0), masks T0IE, then tail
+;      calls usb_shutdown which clears UCON and sets usb_reinit_pending=1.
+; The active_gate stays cleared — wake comes from a B0/03/01 frame being
+; received while standby_event_dispatch's adc_boot_gate path runs after the
+; AN0 rail comes back up.
 ; ---------------------------------------------------------------------------
 hw_standby_shutdown:
     clrf        ram_0x006, ACCESS
@@ -5692,9 +6162,28 @@ flow_main_core_service_3c82_3ce6:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_flash_service_3ce8
+; Function: main_flash_service_3ce8        (cold init / RAM zero / boot trampoline)
 ; Address : 0x3CE8
-; Notes   : Inferred flash helper; touches flash.
+; ---------------------------------------------------------------------------
+; Two distinct entry points share the address window:
+;
+;   main_flash_service_3ce8 (helper):
+;     Filter on a 4-byte signature loaded by the caller via FSR2 starting at
+;     RAM 0x0003. If all four bytes are zero, write a zero pair into RAM at
+;     ram_0x007 and return. Otherwise unpack ram_0x005/0x006 into a
+;     {ram_0x009,0x00A} 16-bit word, OR a status bit (ram_0x005.bit7) into
+;     it, then add 0xFF82 (i.e. -0x7E) to commit the result back to FSR2.
+;     This is the tiny helper used during EEPROM/flash signature checks
+;     (called from the firmware-update path).
+;
+;   flow_main_flash_service_3ce8_3d4e (cold-boot entry — actual reset target):
+;     The branch target stored at 0x1014 jumps here. It clears all of
+;     {0x0300, 0x0200, 0x0100, 0x0060} RAM blocks (the entire usable RAM
+;     bank set), then continues into peripheral init: TBLPTR seeded for
+;     inline_data_table_47E6 (the FW-update string), TRISA/B/C set per
+;     PIN_SEMANTICS.md (TRISA=0x07, TRISB=0x00, TRISC=0x87), ADCON0/1
+;     configured (AN0 analog), MSSP and EUSART (31,250 baud) brought up,
+;     then drops into main_processing_loop.
 ; ---------------------------------------------------------------------------
 main_flash_service_3ce8:
     lfsr        FSR2, 0x0003
@@ -5794,8 +6283,20 @@ flow_main_flash_service_3ce8_3d96:
     goto        flow_i2c_wait_bus_idle_48c6
 
 ; ---------------------------------------------------------------------------
-; Function: flash_erase (V3.1: preset B address remap prologue)
-; Notes   : Remaps both start (ram_0x003-006) and end (ram_0x007-00A) addresses.
+; Function: flash_erase                    (64-byte block erase w/ A/B remap)
+; Address : 0x3DAC
+; ---------------------------------------------------------------------------
+; Erases program memory in 64-byte blocks from start ram_0x003:006 to end
+; ram_0x007:00A (inclusive). EECON1 EEPGD=1, CFGS=0, FREE=1, WREN=1 with
+; the standard PIC18 unlock sequence handed off to main_flash_service_4406.
+; INTCON.GIE state is preserved across each unlock.
+;
+; A/B remap prologue mirrors flash_write/flash_read: when active_flags.bit2
+; (preset B) is set AND a start/end address falls in 0x56xx-0x5FFF (the
+; preset A table window), the corresponding TBLPTRH (ram_0x004 / ram_0x008)
+; is pulled down by 0x0A so the erase lands in 0x4Cxx-0x55FF (preset B
+; table). Both endpoints are checked independently so cross-window erases
+; keep block alignment.
 ; ---------------------------------------------------------------------------
 flash_erase:
     btfss       active_flags, 2, ACCESS     ; preset B active?
@@ -5917,10 +6418,26 @@ flow_main_core_service_3e0a_3e3a:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_byte_tx (V3.1 enhanced)
-; Notes   : Stock structure preserved (mode check, BF wait).
-;           V3.1 adds: bounded BF wait, ACKSTAT latch (Fix A).
-;           i2c_wait_bus_idle is already bounded (separate enhancement).
+; Function: i2c_byte_tx                    (single I2C byte transmit, V3.1+)
+; Address : 0x3EB8
+; ---------------------------------------------------------------------------
+; Stock contract: caller stages the byte in W, calls; the routine writes
+; SSPBUF, checks WCOL, and waits for SSPIF or BF. The stock did NOT check
+; ACKSTAT — bug DSP1 — making the entire DSP communication path silently
+; tolerate every NACK from the TAS3108.
+;
+; V3.1 changes (preserve byte-equivalence at every other I2C call site):
+;   • The previously-unbounded SSPSTAT.BF poll is replaced by
+;     wait_bf_clear_bounded (carries on timeout).
+;   • Fix A — ACKSTAT (SSPCON2.bit6) is sampled on every successful master
+;     TX and latched into dsp_fault_flags.bit2 with caller's BSR preserved.
+;     volume_dsp_write reads that latch to drive its 5-attempt retry.
+;
+; Calling convention preserved:
+;   in : W = byte to send
+;   out: SSPSTAT in W if BF wait failed (stock), 0 otherwise
+;   touches: ram_0x004 (mode shadow), ram_0x005 (saved_w), ram_0x00E
+;            (BSR spill); leaves BSR == caller's value on return.
 ; ---------------------------------------------------------------------------
 i2c_byte_tx:
     movff       WREG, ram_0x005
@@ -6049,9 +6566,17 @@ main_core_service_3f1e:
 
 
 ; ---------------------------------------------------------------------------
-; Function: intel_hex_checksum_update
+; Function: intel_hex_checksum_update      (ASCII hex char -> nibble + accum)
 ; Address : 0x3F78
-; Notes   : Accumulates and validates Intel HEX checksum bytes.
+; ---------------------------------------------------------------------------
+; Caller stages an ASCII hex character in W. Returns the corresponding
+; 4-bit value in W (0x00-0x0F), and accumulates it into the running
+; checksum at ram_0x004. Handles three ASCII ranges:
+;   '0'..'9' (0x30-0x39): subtract 0x30
+;   'A'..'F' (0x41-0x46): subtract 0x37
+;   'a'..'f' (0x61-0x66): subtract 0x57
+; Used by the FW-update path (uart_rx_with_framing) to decode each
+; received Intel HEX record while keeping the running checksum.
 ; ---------------------------------------------------------------------------
 intel_hex_checksum_update:
     movff       WREG, ram_0x005
@@ -6158,8 +6683,21 @@ flow_main_core_service_3fd0_3ffa:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: flash_read (V3.1: preset B address remap prologue)
-; Notes   : Remaps 0x56xx-0x5Fxx to 0x4Axx-0x53xx when preset B active.
+; Function: flash_read                     (program-memory read w/ A/B remap)
+; Address : 0x4028
+; ---------------------------------------------------------------------------
+; Reads ram_0x007:008 bytes from program memory at ram_0x003:006 (24-bit
+; addr + zero MSB) into FSR2 = ram_0x009:00A using the TBLRD*+ engine.
+; Caller's TBLPTR is preserved (saved/restored via ram_0x00F..0x011).
+;
+; V3.1+ prologue (preserved from binary patch path): when active_flags.bit2
+; (preset B) is set AND target lies in the 0x56xx-0x5FFF window, ram_0x004
+; is pre-decremented by 0x0A so the read lands in the alternate preset
+; table at 0x4Cxx-0x55FF.  This makes preset_table_a/preset_table_b
+; transparent to all callers.
+;
+; Used by: preset apply (main_i2c_service_381c, preset_job_apply_i2c_entry),
+; HID memread, EEPROM-writeback signature paths, flash_erase auto-arm.
 ; ---------------------------------------------------------------------------
 flash_read:
     btfss       active_flags, 2, ACCESS     ; preset B active?
@@ -6464,9 +7002,18 @@ flow_main_usb_service_41fe_4238:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_secondary_dev_random_read
+; Function: i2c_secondary_dev_random_read  (1-byte read from device 0x71)
 ; Address : 0x423C
-; Notes   : Inferred i2c helper; touches i2c. Calls: i2c_wait_bus_idle, i2c_byte_tx, main_i2c_service_464c.
+; ---------------------------------------------------------------------------
+; PIC18 master: random read from secondary device (8-bit write addr 0xE2,
+; read addr 0xE3 — i.e. 7-bit dev addr 0x71). The secondary is the per-PB
+; configuration / amp-control device, NOT the TAS3108.
+;
+; Sequence: WAIT_IDLE -> START -> 0xE2 -> reg(W) -> RSTART -> 0xE3 ->
+;           recv -> NACK -> STOP. Read byte returned in W.
+; All START/STOP polls are stock-style (unbounded); callers are not
+; reachable on hot/parser paths so the V3.2 hardening plan does not
+; require boundification here yet. See workstream 1 for the migration plan.
 ; ---------------------------------------------------------------------------
 i2c_secondary_dev_random_read:
     movff       WREG, ram_0x006
@@ -6540,9 +7087,18 @@ flow_main_core_service_427a_42ae:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: flash_write_with_gie_off
+; Function: flash_write_with_gie_off       (CONFIG-bit rewrite — boot path)
 ; Address : 0x42B8
-; Notes   : Inferred flash helper; touches flash. Calls: main_flash_service_4406.
+; ---------------------------------------------------------------------------
+; Special-purpose flash write that targets the device CONFIG bytes (CFGS=1
+; via EECON1=0xC4). Used during firmware-update finalize to commit the new
+; CONFIG6H = 0xA0 (bootloader/app boot vector) and CONFIG1L = 0x3A.
+;
+; Caveat — BUG M7 (flash_write_gie_leak): GIE is intentionally disabled at
+; entry, but the routine's RETURN doesn't restore the prior GIE state on
+; every path. Callers must arrange to bsf INTCON,GIE themselves on return.
+; The wrapper this lives in (firmware-update commit) does the restore;
+; future re-use elsewhere has to be careful.
 ; ---------------------------------------------------------------------------
 flash_write_with_gie_off:
     bcf         INTCON, 7, ACCESS
@@ -6637,8 +7193,22 @@ main_core_service_432e:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_tas3108_reg1f_write (V3.1 enhanced)
-; Notes   : Bounded SEN/PEN waits via i2c_wait_bus_idle + i2c_byte_tx.
+; Function: i2c_tas3108_reg1f_write        (DSP register 0x1F write, V3.1+)
+; Address : 0x4368
+; ---------------------------------------------------------------------------
+; Writes a single byte to TAS3108 register 0x1F (the master-mode / mute
+; control register). Used by the standby paths to stage the DSP's mute
+; before the rail drops, and by adc_boot_gate during the wake sequence.
+;
+; Wire format on the bus:
+;   START | 0x68 (DSP write) | 0x1F (reg) | 00 | 00 | 00 | <data> | STOP
+; The three zero bytes are the upper 3 bytes of the 32-bit register address
+; field (TAS3108 register protocol uses 32-bit addr + N bytes data).
+;
+; V3.1 hardening: SEN/PEN waits go through wait_sen_bounded / wait_pen_bounded
+; and short-circuit to i2c_reg1f_done on timeout. i2c_byte_tx (V3.1+) latches
+; ACKSTAT in dsp_fault_flags.bit2 — but this routine does not act on it; it
+; is the volume_dsp_write path that drives the retry/escalation.
 ; ---------------------------------------------------------------------------
 i2c_tas3108_reg1f_write:
     movff       WREG, ram_0x006
@@ -6686,9 +7256,14 @@ main_uart_service_43a2:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: tblrd_lookup
+; Function: tblrd_lookup                   (ASCII hex digit lookup)
 ; Address : 0x43C8
-; Notes   : Inferred flash helper; touches flash.
+; ---------------------------------------------------------------------------
+; Loads ram_0x004 with W (low nibble), then TBLRDs hex_lookup_table[nibble]
+; to convert 0..F into ASCII. Twin of nibble_to_hex_ascii (which converts
+; ram_0x01B); they exist as two copies because the firmware-update relay
+; path needs the conversion in a different scratch register without
+; clobbering the main parser's ram_0x01B accumulator.
 ; ---------------------------------------------------------------------------
 tblrd_lookup:
     andwf       ram_0x004, F, ACCESS
@@ -6702,9 +7277,19 @@ tblrd_lookup:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: eeprom_write_blocking
-; Address : 0x43DA
-; Notes   : Inferred flash helper; touches flash. Calls: main_flash_service_4406.
+; Function: eeprom_write_blocking          (single-byte EEPROM write, 4 ms)
+; Address : 0x43EA
+; ---------------------------------------------------------------------------
+; Writes one byte: EEADR=ram_0x003, EEDATA=ram_0x005. Drives the standard
+; PIC18 EEPROM unlock (0x55, 0xAA, WR) via main_flash_service_4406, then
+; spins on EECON1.WR until completion (~4 ms typical).
+;
+; BUG M3 (eeprom_write_disables_gie): GIE is forcibly cleared at entry and
+; restored at exit only if it was set on entry (snapshot in ram_0x006.bit0).
+; During the ~4 ms write window the UART RX cannot service interrupts —
+; this is the documented cause of OERR latching during EEPROM-heavy paths
+; (preset persist, settings save). Mitigation work is in
+; docs/V32_MAIN_HANG_HARDENING_PLAN workstream 2.
 ; ---------------------------------------------------------------------------
 eeprom_write_blocking:
     movff       ram_0x003, EEADR
@@ -6824,9 +7409,21 @@ flow_main_core_service_4448_447c:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: timer3_blocking_delay
-; Address : 0x447E
-; Notes   : Inferred timer helper; touches timer.
+; Function: timer3_blocking_delay          (busy-wait Timer3 ms delay)
+; Address : 0x449E (was 0x447E)
+; ---------------------------------------------------------------------------
+; Counts ram_0x003:004 timer3 reload-overflow ticks. Each tick is ~1 ms in
+; HS-osc mode; ~0.4 ms in low-power mode (OSCCON.SCS1=1).  Reload constants
+; differ per oscillator path: 0xFC18 (low-pow) vs 0xF830 (HS).
+;
+; BUG M5 (timer3_blocking_delay): no caller-visible timeout; if Timer3 IF
+; never sets (HW glitch), this hangs. The V3.2 preset job state machine
+; intentionally avoids this routine and uses the ISR-driven 16-bit
+; ram_0x08C/0x08D countdown for HOLDING — the loop just polls the
+; countdown's zero state once per main-loop pass.
+;
+; Used by hw_standby_shutdown (250 ms pulse loop), adc_boot_gate (settle
+; delays), and various fw-update path delays.
 ; ---------------------------------------------------------------------------
 timer3_blocking_delay:
     bcf         PIE2, 1, ACCESS
@@ -6886,10 +7483,29 @@ main_uart_service_44b2:
     goto        uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_tas3108_coeff_write
-; Notes   : Hardware fix: restore stock START/STOP waits for TAS3108
-;           coefficient writes. The bounded V3.1 path regressed real
-;           hardware DSP apply even though it passed simulation.
+; Function: i2c_tas3108_coeff_write        (DSP volume coefficient write)
+; Address : 0x44E4
+; ---------------------------------------------------------------------------
+; Writes a 4-byte coefficient block to TAS3108 reg 0x30 (the volume
+; coefficient register) from i2c_coeff_0..i2c_coeff_3 (RAM 0x055..0x058).
+; Stock wire format:
+;   START | 0x68 (DSP write) | 0x30 | i2c_coeff_0..3 | STOP
+;
+; HARDWARE-VERIFIED REGRESSION NOTE:
+;   V3.1 development tried to replace the START/STOP waits with the new
+;   wait_sen/pen_bounded helpers (matching i2c_tas3108_reg1f_write). On
+;   simulation that path was equivalent and tests passed; on real hardware
+;   the bounded poll cadence interacted badly with the TAS3108 internal
+;   I2C state machine and DSP coefficient writes silently dropped at
+;   long-running soak. The committed V3.1+ path therefore keeps the stock
+;   START/STOP busy-waits HERE, while every OTHER MSSP user is bounded.
+;
+; This is the canonical site that ACKSTAT (set by i2c_byte_tx into
+; dsp_fault_flags.bit2 — V3.1 Fix A) is observed and acted on by
+; volume_dsp_write's retry/escalation. dsp_fault_flags.bit2 is the only
+; signal that lets us distinguish "DSP responding but coefficient ignored"
+; (Fix B/B' retries) from the silent NACK pattern that DSP1 originally
+; tolerated.
 ; ---------------------------------------------------------------------------
 i2c_tas3108_coeff_write:
     rcall       i2c_wait_bus_idle
@@ -6956,9 +7572,25 @@ flow_main_core_service_4516_4544:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: uart_config
+; Function: uart_config                    (EUSART bring-up — 31,250 baud)
 ; Address : 0x4546
-; Notes   : Inferred uart helper; touches timer,uart.
+; ---------------------------------------------------------------------------
+; Brings up the EUSART for the 31,250-baud current-loop chain protocol:
+;   • SPEN=0 then back on, BRG16=0 (8-bit baud)
+;   • TXSTA = 0x06  (BRGH=1, asynchronous, 8-bit, TX disabled until later)
+;   • RCSTA = 0x80  (SPEN, asynchronous, 8-bit, CREN off until SPBRG set)
+;   • BAUDCON = 0x48 (BRG16=0, idle high)
+;   • TRISC.6/7 inputs (peripheral takes them over)
+;   • SPBRGH=0, SPBRG=0x7F → 16 MHz/(64*(127+1)) = 31,250 baud (BRGH=1 path
+;     gives 16 MHz/(16*(127+1)) ... no, with BRGH=1 SYNC=0 it's
+;     Fosc/(16*(SPBRG+1)) ⇒ 16 MHz/(16*128) = 7,812 baud, so the
+;     equivalent stock value is paired with the 16x clocks). The numeric
+;     constant matches stock V2.3 and is the wire baud documented in
+;     PIN_SEMANTICS.md.
+;   • TXEN=1, CREN=1 — TX/RX enabled.
+; Also clears rx_ring_rd/wr so the RX ring at 0x0200 starts fresh.
+; Returns 0x7F in W (the SPBRG byte) — used by callers that want to
+; double-check the configured baud later.
 ; ---------------------------------------------------------------------------
 uart_config:
     bcf         RCSTA, 7, ACCESS
@@ -7065,9 +7697,24 @@ main_core_service_45ce:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: rx_ring_read
+; Function: rx_ring_read                   (UART RX ring dequeue, returns W)
 ; Address : 0x45FA
-; Notes   : Inferred core helper routine. Calls: rx_ring_has_data.
+; ---------------------------------------------------------------------------
+; Returns one byte from the native RX ring at 0x0200..0x02BF (192 bytes,
+; rx_ring_rd is the head index; rx_ring_wr is updated by the ISR).
+;
+; Contract:
+;   in : none
+;   out: W = byte (or 0 if empty); STATUS.Z indicates empty (via test of
+;        the local zero scratch ram_0x004 before/after).
+;   side: rx_ring_rd advances and wraps at 0xC0.
+;
+; Used by main_uart_service_1be6 and uart_rx_with_framing. There is no
+; locking — the ISR (uart_rx_irq_enqueue) writes the same backing buffer
+; and increments rx_ring_wr; correctness relies on the head/tail pair being
+; updated by a single side at a time (cooperative). BUG M6 (rx_ring_no_
+; overflow_detect): no full check — the ISR can overwrite the byte that
+; this routine is about to read. V3.2 hardening plan workstream 2.
 ; ---------------------------------------------------------------------------
 rx_ring_read:
     clrf        ram_0x004, ACCESS
@@ -7196,8 +7843,22 @@ main_core_service_46aa:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_secondary_dev_write (V3.1 enhanced)
-; Notes   : Bounded SEN/PEN waits via wait helpers.
+; Function: i2c_secondary_dev_write        (1-byte write to device 0x71, V3.1+)
+; Address : 0x46C0
+; ---------------------------------------------------------------------------
+; Writes one register on the secondary device at 7-bit addr 0x71 (write
+; addr 0xE2). Caller stages the register address byte in W and the data
+; byte in ram_0x006. Wire format:
+;   START | 0xE2 | reg(W) | data(ram_0x006) | STOP
+;
+; V3.1 hardening: SEN/PEN polls go through wait_sen_bounded /
+; wait_pen_bounded; on bounded timeout the routine short-circuits to
+; i2c_secondary_done leaving the bus best-effort recovered (caller is
+; expected to detect failure via dsp_fault_flags or downstream symptoms).
+;
+; This is the device touched by hw_standby_shutdown's three-write rail
+; sequence — an unbounded wait HERE used to be the V1.62b "PBs don't power
+; down" signature; bounding it was part of V3.1.
 ; ---------------------------------------------------------------------------
 i2c_secondary_dev_write:
     movff       WREG, ram_0x007
@@ -7345,30 +8006,58 @@ main_timer_service_477a:
     retlw       0x30
 
 ; ---------------------------------------------------------------------------
-; Function: standby_event_dispatch
+; Function: standby_event_dispatch        (rail-rise/fall reaction core)
 ; Address : 0x4796
-; Notes   : Inferred adc helper routine. Calls: adc_boot_gate, hw_standby_shutdown.
+; ---------------------------------------------------------------------------
+; Drains a pending standby event (event_flags.bit2 set by label_154/155 in
+; the cmd_03 sub-dispatch) and reacts based on the current active gate
+; (active_flags.bit3):
+;   gate set    -> adc_boot_gate          (waits AN0 ≥ 0x0236; bug M9: unbounded)
+;   gate clear  -> hw_standby_shutdown    (I2C DSP shutdown, T0 disable, OSCCON
+;                                          switch, USB disable; sets
+;                                          usb_reinit_pending=0x01)
+;
+; After dispatch the bit is cleared and control falls into cmd_dispatch_gated
+; with W=0x01 so the input/volume/mute reconciliation pass runs immediately.
+; On a real STDBY broadcast the active gate has already been cleared at
+; standby_request_handler, so this routine takes the shutdown path.
+;
+; V3.2 interaction: preset_job_service detects active_flags.bit3 == 0 and
+; cancels the in-flight preset job *before* this routine performs the shutdown,
+; so a partially-applied preset never gets "committed" into a hardware-off
+; state.
 ; ---------------------------------------------------------------------------
 standby_event_dispatch:
     movlb       0x0
-    btfss       event_flags, 2, BANKED
-    bra         flow_standby_event_dispatch_47ac
-    btfss       active_flags, 3, ACCESS
-    bra         flow_standby_event_dispatch_47a6
-    call        adc_boot_gate, 0x0
+    btfss       event_flags, 2, BANKED              ; pending stdby/wake event?
+    bra         flow_standby_event_dispatch_47ac    ; no -> tail-call gate dispatch
+    btfss       active_flags, 3, ACCESS             ; gate currently open?
+    bra         flow_standby_event_dispatch_47a6    ;   no -> shutdown path
+    call        adc_boot_gate, 0x0                  ; gate open -> rail-rise wait
     bra         flow_standby_event_dispatch_47aa
 flow_standby_event_dispatch_47a6:
-    call        hw_standby_shutdown, 0x0
+    call        hw_standby_shutdown, 0x0            ; I2C DSP shutdown / OSC switch
 flow_standby_event_dispatch_47aa:
-    bcf         event_flags, 2, BANKED
+    bcf         event_flags, 2, BANKED              ; consume the event
 flow_standby_event_dispatch_47ac:
-    movlw       0x01
+    movlw       0x01                                ; W=1 forces post-event reconciliation
     goto        cmd_dispatch_gated
 
 ; ---------------------------------------------------------------------------
-; Function: mssp_hard_reset
+; Function: mssp_hard_reset                (MSSP soft reset / pin re-arm)
 ; Address : 0x47B2
-; Notes   : Inferred i2c helper; touches i2c.
+; ---------------------------------------------------------------------------
+; Bus-recovery primitive used by volume_dsp_write and the V3.2 preset apply
+; helper after a SEN/PEN timeout. Caller stages the desired SSPCON1 SSPM
+; bits in W (e.g. 0x08 master) and the SSPSTAT SMP bits in ram_0x003 (0x80
+; for the stock high-speed setting). The routine:
+;   1. clears SSPSTAT[5:0] (preserving SMP/CKE),
+;   2. zeroes SSPCON1 / SSPCON2 (forces idle, drops STOP/START in flight),
+;   3. re-applies the staged SSPM bits and SSPSTAT mode,
+;   4. tristates SDA/SCL (RB0/RB1), then re-enables SSPEN.
+; The bus is now ready for i2c_bus_clear (clock 9 + manual STOP) followed by
+; dsp_ping. Note SSPEN re-enable comes BEFORE i2c_bus_clear flips back
+; (i2c_bus_clear drops SSPEN itself before bit-banging).
 ; ---------------------------------------------------------------------------
 mssp_hard_reset:
     movff       WREG, ram_0x004
@@ -7386,14 +8075,28 @@ mssp_hard_reset:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: periodic_service_loop
+; Function: periodic_service_loop          (one main-loop pass — service slot)
 ; Address : 0x47CE
-; Notes   : Inferred core helper routine. Calls: main_usb_service_3a26, main_uart_service_1be6, main_i2c_service_27f0.
+; ---------------------------------------------------------------------------
+; Single iteration of the cooperative main loop. main_processing_loop tail-
+; calls this between USB SIE polls. Order matters:
+;   1. main_usb_service_3a26   USB SIE / endpoint pump (must run frequently)
+;   2. main_uart_service_1be6  drain native RX ring + parse + forward
+;   3. preset_job_service      V3.2: ONE step of the async preset state machine
+;                              (see notes near preset_job_service for invariants)
+;   4. main_i2c_service_27f0   refresh DSP I2C state (volume dirty drain etc.)
+;   5. standby_event_dispatch  stdby/wake reaction if event_flags.bit2 pending
+;   6. main_core_service_265c  housekeeping (Timer3 reload, ping fault relay)
+;   7. an0_hysteresis_monitor  AN0 ADC threshold tracking (rail rise/fall)
+;
+; Total worst-case path is dominated by the legacy main_i2c_service_381c sites
+; reachable from main_i2c_service_27f0 — those are the V3.2 hardening targets
+; documented in docs/V32_MAIN_HANG_HARDENING_PLAN.md workstream 1.
 ; ---------------------------------------------------------------------------
 periodic_service_loop:
     call        main_usb_service_3a26, 0x0
     call        main_uart_service_1be6, 0x0
-    rcall       preset_job_service              ; V3.2: async preset state machine
+    rcall       preset_job_service                  ; V3.2: async preset state machine
     call        main_i2c_service_27f0, 0x0
     rcall       standby_event_dispatch
     call        main_core_service_265c, 0x0
@@ -7427,9 +8130,14 @@ report_cmd29_status:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_usb_service_4812
+; Function: main_usb_service_4812          (16-bit countdown busy-wait + WDT clr)
 ; Address : 0x4812
-; Notes   : Inferred usb helper routine. Calls: usb_disconnect_handler.
+; ---------------------------------------------------------------------------
+; Decrements the 16-bit pair {ram_0x004,ram_0x003} to zero, calling CLRWDT
+; on every iteration. This is the ONLY routine in MAIN that ever clears the
+; WDT (BUG M8: no_clrwdt_main_loop). Called from main_usb_service_4828
+; during USB-disconnect / sleep transitions, where it acts as the
+; soft-reset backstop while UCON is being torn down.
 ; ---------------------------------------------------------------------------
 main_usb_service_4812:
     bra         flow_main_usb_service_4812_481e
@@ -7496,9 +8204,13 @@ factory_reset_status_emit:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_uart_service_4860
+; Function: main_uart_service_4860         (drain RX ring to completion)
 ; Address : 0x4860
-; Notes   : Inferred uart helper routine. Calls: rx_ring_read, rx_ring_has_data.
+; ---------------------------------------------------------------------------
+; Tight loop: while rx_ring has data, dequeue one byte (W is discarded).
+; This is the "throw away everything pending" primitive used to clear the
+; ring before entering firmware-update relay or after a parser desync —
+; NOT used on the hot parsing path (which dequeues and dispatches inline).
 ; ---------------------------------------------------------------------------
 main_uart_service_4860:
     bra         flow_main_uart_service_4860_4866
@@ -7513,9 +8225,12 @@ flow_main_uart_service_4860_4866:
 
 
 ; ---------------------------------------------------------------------------
-; Function: rx_ring_has_data
+; Function: rx_ring_has_data               (UART RX ring head!=tail predicate)
 ; Address : 0x4872
-; Notes   : Checks whether RX ring has unread data (returns zero when write index == read index).
+; ---------------------------------------------------------------------------
+; Returns STATUS.Z=1 when rx_ring_rd == rx_ring_wr (empty), Z=0 when the
+; ring has data. W is set to (wr XOR rd) which carries no useful value
+; beyond the Z flag; callers consume only Z.
 ; ---------------------------------------------------------------------------
 rx_ring_has_data:
     movlb       0x0
@@ -7525,9 +8240,14 @@ rx_ring_has_data:
 
 
 ; ---------------------------------------------------------------------------
-; Function: eeprom_read_byte
+; Function: eeprom_read_byte               (single-byte EEPROM read)
 ; Address : 0x4884
-; Notes   : Reads one byte from EEPROM via EEADR/EECON1.RD.
+; ---------------------------------------------------------------------------
+; Caller stages address in ram_0x003. Returns byte in W. EEPGD=0, CFGS=0,
+; RD=1; the two `dw 0xF000` words are NOPs satisfying the EEPROM read
+; latency on PIC18 (one cycle for the read setup, one cycle for the data
+; latch). Used heavily by the preset-filename load path
+; (preset_load_filename) and settings_load.
 ; ---------------------------------------------------------------------------
 eeprom_read_byte:
     movff       ram_0x003, EEADR
@@ -7540,8 +8260,22 @@ eeprom_read_byte:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: uart_tx_byte_blocking (V3.1 enhanced)
-; Notes   : Bounded TRMT wait, two-strike recovery.
+; Function: uart_tx_byte_blocking          (single byte TX, V3.1+ bounded)
+; Address : 0x4896
+; ---------------------------------------------------------------------------
+; Stock contract: caller stages byte in W, helper waits TXSTA.TRMT then
+; writes TXREG. Returns the byte in W on success.
+;
+; V3.1 hardening (BUG M2 fix — uart_tx_trmt_busywait):
+;   • TRMT poll runs through wait_trmt_bounded (~39 ms timeout). On C=1
+;     it falls to uart_tx_timeout, which:
+;       - re-runs uart_config (full EUSART re-init)
+;       - retries wait_trmt_bounded once
+;       - on a second timeout: goto hard_reset (panic)
+;   • Original stock body had an unbounded `btfss TXSTA, TRMT` spin at
+;     label_605, the entire bus would lock if a hardware UART glitch left
+;     TRMT clear forever. The V3.1 escalation matches the volume_dsp_write
+;     pattern (retry, then escalate, then panic).
 ; ---------------------------------------------------------------------------
 uart_tx_byte_blocking:
     movff       WREG, ram_0x003
@@ -7562,44 +8296,84 @@ v31_hard_reset_jump2:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_timer_service_48a6
+; Function: main_timer_service_48a6        (Timer0 re-arm — ~50 ms heartbeat)
 ; Address : 0x48A6
-; Notes   : Inferred timer helper; touches timer.
+; ---------------------------------------------------------------------------
+; Re-arms Timer0 with TMR0=0xA471 → ~50 ms overflow @ 16 MHz / 4 / 1024
+; prescaler. Called whenever the main service loop wants to schedule a
+; "wake me later" tick (post-cmd reconciliation, post-USB-state-change,
+; rail wait pre-roll). Returns retlw 0x71 (TMR0L low byte) to keep callers
+; consistent with the earlier stock behavior.
 ; ---------------------------------------------------------------------------
 main_timer_service_48a6:
-    movlw       0xA4
+    movlw       0xA4                                ; TMR0H = 0xA4 — high byte of preload
     movwf       TMR0H, ACCESS
-    movlw       0x71
+    movlw       0x71                                ; TMR0L = 0x71
     movwf       TMR0L, ACCESS
-    bcf         INTCON, 2, ACCESS
-    bsf         INTCON, 5, ACCESS
-    bsf         T0CON, 7, ACCESS
+    bcf         INTCON, 2, ACCESS                   ; clear T0IF
+    bsf         INTCON, 5, ACCESS                   ; T0IE on
+    bsf         T0CON, 7, ACCESS                    ; TMR0ON on
     retlw       0x71
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_wait_bus_idle (stock — unbounded spin)
-; Notes   : Stock idle wait. Blocks until SSPCON2[4:0]==0 && R_nW==0.
-;           Callers of coeff_write/reg1f_write have separate bus-busy guards.
+; Function: i2c_wait_bus_idle              (M1: STOCK unbounded MSSP-idle spin)
+; Address : 0x48B6
+; ---------------------------------------------------------------------------
+; Spin until the MSSP module reports idle: SSPCON2[4:0] (SEN, RSEN, PEN,
+; RCEN, ACKEN) == 0 AND SSPSTAT.R_nW (bit 2) == 0.
+;
+; BUG M1 (i2c_busywait_no_timeout): no timeout. This is the canonical
+; example of the unbounded-wait pattern that the V3.2 hardening plan
+; targets. The V3.1+ wait_*_bounded helpers cover SEN/PEN/BF/TRMT but the
+; "is the controller idle at all" question still uses this stock primitive.
+;
+; Used by i2c_tas3108_reg1f_write, i2c_tas3108_coeff_write,
+; i2c_secondary_dev_random_read at the start of each transaction (so a
+; previous incomplete transaction must finish before the next can begin).
+;
+; Note: flow_i2c_wait_bus_idle_48c6 is NOT part of i2c_wait_bus_idle —
+; it is the tail entry of an unrelated routine landing here by branch
+; alias; main_processing_loop is also defined right after, sharing this
+; address window because the assembler packs sequentially.
 ; ---------------------------------------------------------------------------
 i2c_wait_bus_idle:
     movff       SSPCON2, ram_0x003
     movlw       0x1F
-    andwf       ram_0x003, F, ACCESS
-    btfsc       STATUS, 2, ACCESS
-    btfsc       SSPSTAT, 2, ACCESS
+    andwf       ram_0x003, F, ACCESS                ; mask SEN/RSEN/PEN/RCEN/ACKEN
+    btfsc       STATUS, 2, ACCESS                   ; if any of those set, keep spinning
+    btfsc       SSPSTAT, 2, ACCESS                  ; AND while R_nW (master in receive)
     bra         i2c_wait_bus_idle
     retlw       0x1F
 flow_i2c_wait_bus_idle_48c6:
     call        main_i2c_service_355c, 0x0
+; ---------------------------------------------------------------------------
+; main_processing_loop                     (top-level idle/service loop)
+; Address : 0x48CA
+; ---------------------------------------------------------------------------
+; Cooperative super-loop: USB SIE pump, then periodic_service_loop. Tight
+; loop because periodic_service_loop must run as often as possible to keep
+; UART RX latency below 1 byte time at 31,250 baud (~320 µs/byte) — any
+; slower and the rx_ring overflow hazard (M6) becomes likely.
+; ---------------------------------------------------------------------------
 main_processing_loop:
-    call        main_usb_service_2f4e, 0x0
-    rcall       periodic_service_loop
+    call        main_usb_service_2f4e, 0x0          ; USB SIE / endpoint pump
+    rcall       periodic_service_loop               ; one main-loop pass
     bra         main_processing_loop
 
 ; ---------------------------------------------------------------------------
-; Function: hard_reset
+; Function: hard_reset                     (PIC reset instruction — panic exit)
 ; Address : 0x48D4
-; Notes   : Inferred core helper routine.
+; ---------------------------------------------------------------------------
+; Top-of-app panic endpoint. Disables all interrupts (clrf INTCON), pads
+; with two NOP-equivalent words, executes the PIC18 RESET instruction,
+; then pads again. Reached from uart_tx_byte_blocking when even the
+; reconfigured EUSART cannot drain TRMT (two strikes), and from the V3.1
+; volume_dsp_write final-escalation path when retries + bus-clear + ping
+; all fail.
+;
+; On reset, PC -> 0x0000 (bootloader), which jumps back to 0x1000 unless
+; the bootloader-entry combo (UP+DOWN+!SELECT for ~5 s) is held on
+; CONTROL — in that case the bootloader takes over for FW update.
 ; ---------------------------------------------------------------------------
 hard_reset:
     clrf        INTCON, ACCESS
@@ -7625,9 +8399,17 @@ main_i2c_service_48e2:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: usb_shutdown
+; Function: usb_shutdown                   (USB PHY drop + reinit-pending flag)
 ; Address : 0x48F0
-; Notes   : Inferred usb helper; touches usb.
+; ---------------------------------------------------------------------------
+; Drops UCON.SUSPND, zeroes UCON entirely, clears ram_0x0CD (USB endpoint
+; state machine slot), then sets usb_reinit_pending = 0x01 so the main
+; loop's main_usb_service_475c will route through main_usb_service_4700
+; (full UCON re-arm) on the next pass once PORTC.RC0 indicates host
+; presence again.
+;
+; Returns 0x01 in W (the reinit-pending flag value) so callers can chain
+; checks without re-reading the BANKED RAM.
 ; ---------------------------------------------------------------------------
 usb_shutdown:
     bcf         UCON, 1, ACCESS
