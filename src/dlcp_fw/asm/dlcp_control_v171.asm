@@ -1112,13 +1112,49 @@ flow_rx_parser_entry_05D0:                                                  ; ad
 
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
+        goto    v171_bf08_case_check                      ; not 0x1D — try V1.71 BF/08
         movf    0xa7, W, B                                  ; reg: 0x0a7
         subwf   rx_parsed_data, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
         movff   rx_parsed_data, 0x0a7                    ; reg1: 0x030
         call    control_core_service_0F54, 0x0                           ; dest: 0x000f54
+        bra     flow_rx_parser_entry_05EA                 ; 0x1D handled — exit
+
+v171_bf08_case_check:
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.63b): BF/08 DSP-fault dispatch case
+        ; ---------------------------------------------------------------
+        ; MAIN V3.1+ emits BF/08 routed frames whose data byte carries
+        ; the current DSP fault state (0 = clear, non-zero = fault code).
+        ; Store the payload byte at the fixed V1.63b RAM slot
+        ; (bf08_fault_byte at 0x0BC) so downstream menu/LCD code can
+        ; display the fault code, and reflect the fault state into
+        ; control_flags.DSP_FAULT_BIT.  On a 1→0 transition, clear the
+        ; full-sync counter pair so the main loop re-emits the full
+        ; status burst immediately (V1.63b resync-on-clear).
+        movlw   0x08                                        ; CMD dsp_fault
+        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        goto    flow_rx_parser_entry_05EA                 ; not BF/08 — exit
+
+        movff   rx_parsed_data, bf08_fault_byte         ; store payload byte
+        movf    rx_parsed_data, W, A
+        bnz     v171_bf08_set_fault
+
+        ; Payload == 0 — clear fault.  If the bit was already clear this
+        ; is a no-op; if it was set, force a full-sync resync so MAIN
+        ; gets a fresh status burst on the next loop iteration.
+        btfss   control_flags, DSP_FAULT_BIT, A
+        bra     flow_rx_parser_entry_05EA                 ; already clear
+        bcf     control_flags, DSP_FAULT_BIT, A
+        movlb   0x01
+        clrf    0x9F, BANKED                             ; full_sync_lo = 0
+        clrf    0xA0, BANKED                             ; full_sync_hi = 0
+        movlb   0x00
+        bra     flow_rx_parser_entry_05EA
+
+v171_bf08_set_fault:
+        bsf     control_flags, DSP_FAULT_BIT, A
 
 flow_rx_parser_entry_05EA:                                                  ; address: 0x0005ea
 
@@ -3347,15 +3383,16 @@ flow_standby_display_1360:                                                  ; ad
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
         ; ---------------------------------------------------------------
-        ; V1.71 inline (V1.61b): preset A/B indicator at row 0 column 15
+        ; V1.71 inline (V1.61b + V1.63b): preset A/B / DSP-fault indicator
         ; ---------------------------------------------------------------
-        ; Before the per-frame display_loop_iteration call, write either
-        ; 'A' or 'B' at the rightmost column of the top LCD row based on
-        ; control_flags.PRESET_BIT.  0x8F = LCD DDRAM command for
-        ; (row 0, col 15).  This is the same code the V1.61b binary
-        ; overlay's volume_indicator_stub emitted, but inlined here so
-        ; the Volume / Input-type screen render loop flows without a
-        ; jump-out hook.
+        ; Before the per-frame display_loop_iteration call, write one
+        ; character at row 0, column 15 of the LCD:
+        ;   DSP_FAULT_BIT set  → '!'   (V1.63b fault indicator)
+        ;   DSP_FAULT_BIT clear, PRESET_BIT set   → 'B'
+        ;   DSP_FAULT_BIT clear, PRESET_BIT clear → 'A'
+        ; The DSP fault takes precedence over the preset letter because
+        ; a fault is the operator-visible signal that requires action.
+        ; 0x8F is the HD44780 DDRAM command for (row 0, col 15).
         movlw   0x80
         movwf   (Common_RAM + 1), A                    ; LCD command mode
         movlw   0x8F                                   ; row 0, col 15
@@ -3363,6 +3400,8 @@ flow_standby_display_1360:                                                  ; ad
         movlw   'A'
         btfsc   control_flags, PRESET_BIT, A
         movlw   'B'
+        btfsc   control_flags, DSP_FAULT_BIT, A        ; V1.63b: fault overrides
+        movlw   '!'
         call    lcd_char_write, 0x0
 
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2

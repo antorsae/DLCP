@@ -74,13 +74,17 @@ DSP_FAULT_BIT              equ  0x07
 ; Addresses chosen from free GPR slots per the IMPL spec audit; see
 ; docs/V16B_SOURCE_REWRITE_SPEC.md §Runtime state for the full map.
 ;
-; ``button_last_scan`` lives at 0x0BC in stock — V1.63b co-opted that
-; slot for the BF/08 fault byte.  V1.71 keeps the same address so the
-; wire-format is V1.63b-identical (tests that probe 0x0BC continue to
-; work).  ``button_last_scan`` logic in stock preserves its semantics
-; during non-fault windows since the fault byte is only written on a
-; BF/08 RX event.
-bf08_fault_byte            equ  0x0BC   ; collision with button_last_scan by design
+; The V1.63b binary overlay didn't actually store a fault byte — it
+; only touched ``control_flags.DSP_FAULT_BIT``.  V1.71 adds the fault
+; byte store as a new V1.71 feature (spec §V1.63b row on fault byte).
+; A survey of free GPR slots in the V1.6b code finds 0x0AB safe:
+; no direct ``movwf 0x0ab`` / ``movf 0x0ab`` in the stock disasm, and
+; no ``lfsr`` pointing into 0x0A8..0x0AF.  Using 0x0CD instead would
+; collide with the ``lfsr 0x0, 0x0cd`` / ``clrf POSTINC0`` pattern
+; used by a settings-clear routine; 0x0BC collides with the button-
+; scan write cycle.  0x0AB is the cleanest choice in the gap between
+; ``cmd1d_setting_cache`` (0xA7) and ``rx_ring_staging`` (0xB7).
+bf08_fault_byte            equ  0x0AB   ; unreferenced in stock V1.6b
 
 ; RC5 codes that V1.71 dispatches (documented here for cross-reference
 ; with the annotator and ir_dispatch edits).
