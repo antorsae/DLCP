@@ -45,6 +45,70 @@ STOCK_HEX = REPO_ROOT / "firmware" / "stock" / "control" / "DLCP Control Firmwar
 V16B_REFERENCE = REPO_ROOT / "firmware" / "disasm" / "control" / "v16b.asm"
 RAM_INC_NAME = "dlcp_control_ram.inc"
 
+# ---------------------------------------------------------------------------
+# Immediate-value annotation table (spec §B2 / C2)
+# ---------------------------------------------------------------------------
+#
+# Maps recognized CONTROL literal constants to a short human-readable
+# label.  The annotation pass appends ``  ; <meaning>`` after the
+# instruction (only when no meaningful comment already exists), letting
+# readers of the commented source understand why a particular byte
+# appears without having to cross-reference the protocol table.
+#
+# Categories (priority order per spec §B2):
+#   CMD   — CONTROL→MAIN serial command byte
+#   ROUTE — route byte (broadcast, addressed, or return)
+#   RC5   — IR RC5 command code
+#   SFR   — SFR config write (BAUDCON/etc.)
+#
+# The table is intentionally conservative: only literals whose meaning
+# is fully determined by their value (i.e. not context-dependent) get
+# annotated.  A ``movlw 0x03`` in a different context may not be a
+# serial command byte, so the annotator only touches lines whose
+# context (nearby movwf / call) fits the category's footprint.
+
+_CMD_VALUES: Dict[int, str] = {
+    0x03: "CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)",
+    0x04: "CMD status_poll",
+    0x05: "CMD raw_status (MAIN→CONTROL echo)",
+    0x06: "CMD input_select",
+    0x07: "CMD volume (offset 0x60)",
+    0x08: "CMD dsp_fault (V1.63b+ BF/08 payload)",
+    0x17: "CMD channel_src_1",
+    0x18: "CMD channel_src_2 / power_on_notify (on BF return)",
+    0x19: "CMD channel_src_3",
+    0x1A: "CMD channel_src_4",
+    0x1B: "CMD channel_src_5",
+    0x1C: "CMD channel_src_6",
+    0x1D: "CMD shared_cmd1d_setting (BL timeout / profile)",
+    0x1E: "CMD link_address",
+    0x20: "CMD preset_select",
+    0x29: "CMD cmd29_status (preset_b_active bit reflect)",
+    0x43: "CMD diag_memread (V3.1+ HID flash/EEPROM read)",
+}
+
+_ROUTE_VALUES: Dict[int, str] = {
+    0xB0: "ROUTE broadcast CONTROL→MAIN",
+    0xB1: "ROUTE addressed MAIN#1",
+    0xB2: "ROUTE addressed MAIN#2",
+    0xB3: "ROUTE addressed MAIN#3",
+    0xB4: "ROUTE addressed MAIN#4",
+    0xB5: "ROUTE addressed MAIN#5",
+    0xB6: "ROUTE addressed MAIN#6",
+    0xBF: "ROUTE MAIN→CONTROL return",
+}
+
+# Canonical Hypex RC5 codes (subset documented in SEMANTIC_FUNCTION_MAP).
+_RC5_VALUES: Dict[int, str] = {
+    0x0C: "RC5 0x0C standby toggle",
+    0x10: "RC5 0x10 volume up",
+    0x11: "RC5 0x11 volume down",
+    0x12: "RC5 0x12 mute",
+    0x1F: "RC5 0x1F channel up",
+    0x20: "RC5 0x20 preset next",
+    0x21: "RC5 0x21 preset prev / channel down",
+}
+
 # RAM names that appear as ``equ`` in dlcp_control_ram.inc.  Order matches
 # the source; this is the authoritative mapping used for the RAM-equate
 # substitution pass.
@@ -424,6 +488,34 @@ _APP_CODE_FLOOR = 0x004C
 # ``0x2011`` or ``0x3210`` that appear in config-table loads.
 _APP_CODE_CEILING = 0x1C00
 
+# RAM cells known to flow into TBLPTR in the V1.6b firmware (discovered
+# by searching for ``movff ram, TBLPTR*`` and ``addwf ram, W; movwf
+# TBLPTR*`` patterns).  Pattern B only rewrites literal loads whose
+# destination RAM pair matches one of these — otherwise we risk
+# rewriting counter/scratch pairs like (0x1B, 0x1C) whose shifted
+# values would silently differ from stock.
+_POINTER_RAM_PAIRS: set[tuple[int, int]] = {
+    (0x29, 0x2A),  # function_024 menu title pointer (LOW=0x29, HIGH=0x2A)
+}
+
+# Semantic names for the TBLPTR anchor addresses we know about.  Keeps
+# the commented source readable ("menu_title_table" vs "tbl_100C") and
+# documents intent so V1.71 edits can refer to named tables.
+_TBLPTR_SEMANTIC_NAMES: Dict[int, str] = {
+    0x0304: "lcd_str_firmware_v",
+    0x0310: "lcd_str_waiting_for_dlcp",
+    0x0322: "lcd_str_standby_zzz",
+    0x0334: "lcd_str_waiting_for_dlcp_alt",
+    0x0346: "lcd_str_db_suffix",
+    0x0354: "lcd_str_mute",
+    0x100C: "menu_title_table",
+    0x13EE: "menu_setup_bl_timeout_entry",
+    0x1572: "menu_source_channel_table",
+    0x15E2: "menu_routing_table",
+    0x1622: "menu_input_cat_spdif_table",
+    0x1882: "menu_input_auto_detect_table",
+}
+
 _MOVLW_RE = re.compile(r"^(\s*)movlw\s+0x(?P<lit>[0-9A-Fa-f]+)\s*(?P<tail>;.*)?$")
 _MOVWF_TBLPTR_RE = re.compile(
     r"^(\s*)movwf\s+TBLPTR(?P<half>[LH])\s*,?\s*A?\s*(;.*)?$"
@@ -467,7 +559,7 @@ def _rewrite_tblptr_literals(text: str) -> str:
             return existing_labels[addr]
         if addr in new_labels:
             return new_labels[addr]
-        name = f"tbl_{addr:04X}"
+        name = _TBLPTR_SEMANTIC_NAMES.get(addr, f"tbl_{addr:04X}")
         new_labels[addr] = name
         return name
 
@@ -526,17 +618,16 @@ def _rewrite_tblptr_literals(text: str) -> str:
                 indent_hi, indent_lo = m3.group(1), m1.group(1)
             strict = False  # direct TBLPTR writes are unambiguous
 
-        # Pattern B: literal→ram_X + literal→ram_Y where X,Y are adjacent
-        # 8-bit RAM cells used as a 16-bit pointer elsewhere.  Only rewrite
-        # when (HIGH<<8|LOW) lands in the application code region.
+        # Pattern B: literal→ram_X + literal→ram_Y where the RAM pair is
+        # a known 16-bit TBLPTR pointer (``_POINTER_RAM_PAIRS``).  Adjacent
+        # scratch/counter pairs like (0x1B, 0x1C) are skipped — they
+        # happen to look like pointer loads in stock V1.6b but their
+        # shifted values are irrelevant.
         elif m2_ram and m4_ram:
             ram_x = int(m2_ram.group("off"), 0)
             ram_y = int(m4_ram.group("off"), 0)
-            # Adjacent-cell pair only.
-            if abs(ram_x - ram_y) == 1:
-                # HIGH is stored in the higher-numbered cell (convention
-                # observed for 0x029/0x02A and adjacent pointer stores in
-                # V1.6b — lower cell = LOW byte, upper cell = HIGH byte).
+            lo_cell, hi_cell = sorted((ram_x, ram_y))
+            if (lo_cell, hi_cell) in _POINTER_RAM_PAIRS:
                 if ram_x > ram_y:
                     hi_val, lo_val = k1, k2
                     hi_idx, lo_idx = i, i + 2
@@ -596,6 +687,127 @@ def _rewrite_tblptr_literals(text: str) -> str:
             f"{label}:                                                  ; address: 0x{addr:06x}  (tblptr anchor)",
         )
 
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Pass: annotate immediate values (spec §B2 / C2)
+# ---------------------------------------------------------------------------
+#
+# The annotator appends ``  ; <meaning>`` to ``movlw 0xNN`` lines whose
+# literal matches one of the CMD / ROUTE / RC5 tables above AND whose
+# context identifies the literal as that category.  Context matching is
+# deliberately narrow: a literal byte that also appears as, say, a loop
+# counter would produce a misleading comment if we annotated
+# unconditionally.  Current rules:
+#
+# * ROUTE bytes 0xB0..0xB6, 0xBF: always annotated (no other context
+#   produces these values as immediate literals in stock V1.6b).
+# * CMD bytes: annotated when the immediately-following line is a
+#   ``movwf tx_data_staging`` / ``movwf (Common_RAM + 0x27)`` / direct
+#   ``call tx_byte_enqueue`` (the stock CONTROL pattern for emitting a
+#   frame byte) OR when the preceding ``cpfseq`` / ``xorlw`` compares
+#   against a cmd byte in an RX-parser dispatch.
+# * RC5 codes: annotated when the literal appears in an ``xorlw 0xNN``
+#   / ``cpfseq ir_decoded_cmd`` comparison inside the IR dispatch body.
+# * Lines that already carry an explanatory trailing comment (``; reg:
+#   0xNN``, ``; dest: 0x...``, ``; shifted via label``, etc.) are left
+#   untouched — we don't clobber gpdasm-supplied or converter-supplied
+#   commentary.
+
+# Only literal-operand mnemonics.  ``cpfseq`` / ``cpfslt`` / ``cpfsgt``
+# are byte-oriented file-register instructions whose operand is a RAM
+# address, not a literal — matching them here would misclassify every
+# ``cpfseq 0xb6, B`` as a ROUTE load.
+_IMM_TOKEN_RE = re.compile(
+    r"^(?P<indent>\s*)"
+    r"(?P<mn>movlw|addlw|sublw|iorlw|xorlw|retlw|mullw|andlw)"
+    r"\s+(?P<operand>0x[0-9A-Fa-f]+)(?P<rest>\b.*)?$"
+)
+
+
+def _annotate_immediates(text: str) -> str:
+    """Append semantic annotations to recognized immediate-value loads.
+
+    Conservative: only annotates literal values whose meaning is
+    unambiguous in the CONTROL V1.6b protocol (route bytes, known
+    CMD bytes in TX-frame context, RC5 codes in IR-dispatch context).
+    Never overwrites an existing non-stock comment.
+    """
+    lines = text.split("\n")
+    out: List[str] = []
+
+    def _append_suffix(raw: str, suffix: str) -> str:
+        # Preserve any existing gpdasm/our trailing comment: annotations
+        # go BEFORE the existing ``; `` if present, joined by a middle
+        # dot so multi-line greps stay usable.
+        if ";" in raw:
+            # Insert before existing comment.
+            head, _, comment = raw.rpartition(";")
+            head = head.rstrip()
+            return f"{head:<60}; {suffix} · {comment.strip()}"
+        return f"{raw:<60}; {suffix}"
+
+    def _nearby_text(i: int, window: int = 3) -> str:
+        start = max(0, i - window)
+        end = min(len(lines), i + window + 1)
+        return "\n".join(lines[start:end]).lower()
+
+    def _tx_frame_context(i: int) -> bool:
+        near = _nearby_text(i, window=3)
+        return (
+            "tx_data_staging" in near
+            or "tx_byte_enqueue" in near
+            or "common_ram + 39" in near  # tx_data_staging at 0x027
+            or "serial_tx_routed_frame" in near
+            or "volume_frame_send" in near
+            or "input_frame_send" in near
+            or "mute_frame_send" in near
+            or "standby_wake_broadcast" in near
+            or "cmd1d_setting_frame_send" in near
+            or "poll_frame_send" in near
+            or "full_sync_burst" in near
+        )
+
+    def _rx_parser_context(i: int) -> bool:
+        near = _nearby_text(i, window=4)
+        return "rx_parsed_cmd" in near or "rx_parser_entry" in near
+
+    def _ir_dispatch_context(i: int) -> bool:
+        near = _nearby_text(i, window=6)
+        return "ir_decoded_cmd" in near or "ir_decoded_addr" in near or "ir_rc5_decode" in near
+
+    for i, raw in enumerate(lines):
+        m = _IMM_TOKEN_RE.match(raw)
+        if not m:
+            out.append(raw)
+            continue
+        try:
+            value = int(m.group("operand"), 16)
+        except ValueError:
+            out.append(raw)
+            continue
+
+        suffix: Optional[str] = None
+
+        if value in _ROUTE_VALUES:
+            suffix = _ROUTE_VALUES[value]
+        elif value in _CMD_VALUES and (_tx_frame_context(i) or _rx_parser_context(i)):
+            suffix = _CMD_VALUES[value]
+        elif value in _RC5_VALUES and _ir_dispatch_context(i):
+            suffix = _RC5_VALUES[value]
+
+        if suffix is None:
+            out.append(raw)
+            continue
+
+        # Skip if the existing trailing comment already mentions the
+        # semantic suffix.  Keeps idempotency so the annotator can be
+        # re-run without bloating lines.
+        if suffix.split()[0] in raw:
+            out.append(raw)
+            continue
+        out.append(_append_suffix(raw, suffix))
     return "\n".join(out)
 
 
@@ -801,6 +1013,12 @@ def main(argv: Optional[List[str]] = None) -> int:
              "so ROM-data pointers survive a code shift",
     )
     ap.add_argument(
+        "--annotate-immediates",
+        action="store_true",
+        help="annotate recognized immediate-value loads (CMD bytes, ROUTE bytes, "
+             "RC5 codes) with trailing semantic comments",
+    )
+    ap.add_argument(
         "--with-function-headers",
         action="store_true",
         help="prepend curated function header banners from v16b.asm",
@@ -848,6 +1066,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.convert_tblptr_literals:
         text = _rewrite_tblptr_literals(text)
+
+    if args.annotate_immediates:
+        text = _annotate_immediates(text)
 
     if args.banner != "none":
         banner = V17_BYTE_IDENTICAL_BANNER if args.banner == "v17" else V17_COMMENTS_BANNER

@@ -678,12 +678,14 @@ flow_local_0300:                                                  ; address: 0x0
 
         bsf     (Common_RAM + 9), 0x2, A                    ; reg: 0x009
         return  0x0
+lcd_str_firmware_v:                                                  ; address: 0x000304  (tblptr anchor)
         setf    (Common_RAM + 70), B                        ; reg: 0x046
         negf    0x72, B                                     ; reg: 0x072
         cpfslt  0x77, B                                     ; reg: 0x077
         cpfsgt  0x72, B                                     ; reg: 0x072
         subfwb  (Common_RAM + 32), F, A                     ; reg: 0x020
         nop
+lcd_str_waiting_for_dlcp:                                                  ; address: 0x000310  (tblptr anchor)
         cpfslt  (Common_RAM + 87), B                        ; reg: 0x057
         btg     0x69, 0x2, A                                ; reg: 0xf69
         movwf   0x69, A                                     ; reg: 0xf69
@@ -693,6 +695,7 @@ flow_local_0300:                                                  ; address: 0x0
         dcfsnz  (Common_RAM + 68), W, A                     ; reg: 0x044
         movf    (Common_RAM + 67), W, A                     ; reg: 0x043
         nop
+lcd_str_standby_zzz:                                                  ; address: 0x000322  (tblptr anchor)
         btg     (Common_RAM + 90), 0x5, A                   ; reg: 0x05a
         decfsz  CM2CON0, F, A                               ; reg: 0xf7a
         decfsz  (Common_RAM + 46), F, A                     ; reg: 0x02e
@@ -702,6 +705,7 @@ flow_local_0300:                                                  ; address: 0x0
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         nop
+lcd_str_waiting_for_dlcp_alt:                                                  ; address: 0x000334  (tblptr anchor)
         cpfslt  (Common_RAM + 87), B                        ; reg: 0x057
         btg     0x69, 0x2, A                                ; reg: 0xf69
         movwf   0x69, A                                     ; reg: 0xf69
@@ -711,6 +715,7 @@ flow_local_0300:                                                  ; address: 0x0
         dcfsnz  (Common_RAM + 68), W, A                     ; reg: 0x044
         movf    (Common_RAM + 67), W, A                     ; reg: 0x043
         nop
+lcd_str_db_suffix:                                                  ; address: 0x000346  (tblptr anchor)
         rrncf   0x64, F, A                                  ; reg: 0xf64
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -718,6 +723,7 @@ flow_local_0300:                                                  ; address: 0x0
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         dw      0x0020                                      ; ' '
+lcd_str_mute:                                                  ; address: 0x000354  (tblptr anchor)
         btg     (Common_RAM + 77), 0x2, B                   ; reg: 0x04d
         cpfsgt  0x74, B                                     ; reg: 0x074
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -913,16 +919,16 @@ flow_local_048A:                                                  ; address: 0x0
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         clrf    (Common_RAM + 11), A                        ; reg: 0x00b
         movf    (Common_RAM + 10), W, A                     ; reg: 0x00a
-        xorlw   0xb1
+        xorlw   0xb1                                        ; ROUTE addressed MAIN#1
         iorwf   (Common_RAM + 11), W, A                     ; reg: 0x00b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_local_04AC                                   ; dest: 0x0004ac
-        movlw   0xb1
+        movlw   0xb1                                        ; ROUTE addressed MAIN#1
         movwf   0xb6, B                                     ; reg: 0x0b6
 
 flow_local_04AC:                                                  ; address: 0x0004ac
 
-        movlw   0xb0
+        movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         cpfseq  0xb6, B                                     ; reg: 0x0b6
         goto    flow_local_04BE                                   ; dest: 0x0004be
         movlw   0x01
@@ -932,7 +938,7 @@ flow_local_04AC:                                                  ; address: 0x0
 
 flow_local_04BE:                                                  ; address: 0x0004be
 
-        movlw   0xb1
+        movlw   0xb1                                        ; ROUTE addressed MAIN#1
         cpfseq  0xb6, B                                     ; reg: 0x0b6
         goto    flow_local_04D0                                   ; dest: 0x0004d0
         movlw   0x01
@@ -976,7 +982,7 @@ flow_local_04F8:                                                  ; address: 0x0
         movff   0x0b6, rx_parsed_data                    ; reg2: 0x030
         movlw   0x01
         movwf   0xa6, B                                     ; reg: 0x0a6
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
         goto    flow_local_0556                                   ; dest: 0x000556
         decfsz  rx_parsed_data, W, A                     ; reg: 0x030
@@ -1026,17 +1032,17 @@ flow_local_0552:                                                  ; address: 0x0
 
 flow_local_0556:                                                  ; address: 0x000556
 
-        movlw   0x04
+        movlw   0x04                                        ; CMD status_poll
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
         goto    flow_local_0562                                   ; dest: 0x000562
         goto    flow_local_05EA                                   ; dest: 0x0005ea
 
 flow_local_0562:                                                  ; address: 0x000562
 
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
         goto    flow_local_057A                                   ; dest: 0x00057a
-        movlw   0x04
+        movlw   0x04                                        ; CMD status_poll
         cpfslt  rx_parsed_data, A                        ; reg: 0x030
         goto    flow_local_0576                                   ; dest: 0x000576
         movff   rx_parsed_data, 0x0a1                    ; reg1: 0x030
@@ -1047,7 +1053,7 @@ flow_local_0576:                                                  ; address: 0x0
 
 flow_local_057A:                                                  ; address: 0x00057a
 
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
         goto    flow_local_05AC                                   ; dest: 0x0005ac
         movlw   0x01
@@ -1071,7 +1077,7 @@ flow_local_05A8:                                                  ; address: 0x0
 
 flow_local_05AC:                                                  ; address: 0x0005ac
 
-        movlw   0x07
+        movlw   0x07                                        ; CMD volume (offset 0x60)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
         goto    flow_local_05D0                                   ; dest: 0x0005d0
         movlw   0x73
@@ -1093,7 +1099,7 @@ flow_local_05CC:                                                  ; address: 0x0
 
 flow_local_05D0:                                                  ; address: 0x0005d0
 
-        movlw   0x1d
+        movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
         goto    flow_local_05EA                                   ; dest: 0x0005ea
         movf    0xa7, W, B                                  ; reg: 0x0a7
@@ -1742,10 +1748,10 @@ control_core_service_0990:                                               ; addre
 
 flow_local_09AE:                                                  ; address: 0x0009ae
 
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         cpfslt  tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0A3A                                   ; dest: 0x000a3a
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         addwf   tx_data_staging, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0c1
@@ -1773,7 +1779,7 @@ flow_local_09AE:                                                  ; address: 0x0
         movf    tx_data_staging, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
-        movlw   0x1b
+        movlw   0x1b                                        ; CMD channel_src_5
         addwf   tx_data_staging, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0d9
@@ -1834,10 +1840,10 @@ settings_load_eeprom:                                               ; address: 0
 
 flow_local_0A60:                                                  ; address: 0x000a60
 
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         cpfslt  tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0AFA                                   ; dest: 0x000afa
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         addwf   tx_data_staging, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
@@ -1865,7 +1871,7 @@ flow_local_0A60:                                                  ; address: 0x0
         lfsr    0x0, 0x0d3
         movf    tx_data_staging, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
-        movlw   0x1b
+        movlw   0x1b                                        ; CMD channel_src_5
         addwf   tx_data_staging, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
@@ -1923,7 +1929,7 @@ flow_local_0B10:                                                  ; address: 0x0
 ; serial_tx_routed_frame:
 serial_tx_routed_frame:                                               ; address: 0x000b16
 
-        movlw   0xb0
+        movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         addwf   (Common_RAM + 51), W, A                     ; reg: 0x033
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
@@ -1958,16 +1964,16 @@ serial_tx_routed_frame:                                               ; address:
 full_sync_burst:                                               ; address: 0x000b36
 
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    input_frame_send, 0x0                           ; dest: 0x000c22
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    mute_frame_send, 0x0                           ; dest: 0x000c7c
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    cmd1d_setting_frame_send, 0x0                           ; dest: 0x000c5e
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
         return  0x0
@@ -1984,10 +1990,10 @@ full_sync_burst:                                               ; address: 0x000b
 ; poll_frame_send:
 poll_frame_send:                                               ; address: 0x000b64
 
-        movlw   0xb1
+        movlw   0xb1                                        ; ROUTE addressed MAIN#1
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movlw   0x04
+        movlw   0x04                                        ; CMD status_poll
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         clrf    tx_data_staging, A                        ; reg: 0x027
@@ -2085,10 +2091,10 @@ flow_local_0C1E:                                                  ; address: 0x0
 ; input_frame_send:
 input_frame_send:                                               ; address: 0x000c22
 
-        movlw   0xb0
+        movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movff   0x0b8, tx_data_staging                    ; reg2: 0x027
@@ -2108,10 +2114,10 @@ input_frame_send:                                               ; address: 0x000
 ; volume_frame_send:
 volume_frame_send:                                               ; address: 0x000c40
 
-        movlw   0xb0
+        movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movlw   0x07
+        movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movff   0x0b9, tx_data_staging                    ; reg2: 0x027
@@ -2134,10 +2140,10 @@ volume_frame_send:                                               ; address: 0x00
 ; cmd1d_setting_frame_send:
 cmd1d_setting_frame_send:                                               ; address: 0x000c5e
 
-        movlw   0xb0
+        movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movlw   0x1d
+        movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movff   0x0a7, tx_data_staging                    ; reg2: 0x027
@@ -2159,7 +2165,7 @@ cmd1d_setting_frame_send:                                               ; addres
 mute_frame_send:                                               ; address: 0x000c7c
 
         clrf    (Common_RAM + 51), A                        ; reg: 0x033
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
         btfss   control_flags, 0x5, A                   ; reg: 0x01f
         goto    flow_local_0C90                                   ; dest: 0x000c90
@@ -2198,7 +2204,7 @@ flow_local_0C94:                                                  ; address: 0x0
 standby_wake_broadcast:                                               ; address: 0x000c98
 
         clrf    (Common_RAM + 51), A                        ; reg: 0x033
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
         btfsc   control_flags, 0x1, A                   ; reg: 0x01f
         goto    flow_local_0CAA                                   ; dest: 0x000caa
@@ -2513,7 +2519,7 @@ flow_local_0E7C:                                                  ; address: 0x0
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_local_0E94                                   ; dest: 0x000e94
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         movwf   tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0EBE                                   ; dest: 0x000ebe
 
@@ -2521,7 +2527,7 @@ flow_local_0E94:                                                  ; address: 0x0
 
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
         goto    flow_local_0EA2                                   ; dest: 0x000ea2
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0EBE                                   ; dest: 0x000ebe
 
@@ -2530,7 +2536,7 @@ flow_local_0EA2:                                                  ; address: 0x0
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
         goto    flow_local_0EB2                                   ; dest: 0x000eb2
-        movlw   0x07
+        movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0EBE                                   ; dest: 0x000ebe
 
@@ -2539,7 +2545,7 @@ flow_local_0EB2:                                                  ; address: 0x0
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
         goto    flow_local_0EBE                                   ; dest: 0x000ebe
-        movlw   0x08
+        movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
         movwf   tx_data_staging, A                        ; reg: 0x027
 
 flow_local_0EBE:                                                  ; address: 0x000ebe
@@ -2560,7 +2566,7 @@ flow_local_0ED0:                                                  ; address: 0x0
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
         movlw   0x58
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
-        movlw   0x1b
+        movlw   0x1b                                        ; CMD channel_src_5
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         call    control_core_service_076A, 0x0                           ; dest: 0x00076a
         rcall   input_frame_send                                ; dest: 0x000c22
@@ -2574,7 +2580,7 @@ flow_local_0EE6:                                                  ; address: 0x0
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_local_0EFE                                   ; dest: 0x000efe
-        movlw   0x05
+        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         movwf   tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0F28                                   ; dest: 0x000f28
 
@@ -2582,7 +2588,7 @@ flow_local_0EFE:                                                  ; address: 0x0
 
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
         goto    flow_local_0F0C                                   ; dest: 0x000f0c
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0F28                                   ; dest: 0x000f28
 
@@ -2591,7 +2597,7 @@ flow_local_0F0C:                                                  ; address: 0x0
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
         goto    flow_local_0F1C                                   ; dest: 0x000f1c
-        movlw   0x07
+        movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
         goto    flow_local_0F28                                   ; dest: 0x000f28
 
@@ -2600,7 +2606,7 @@ flow_local_0F1C:                                                  ; address: 0x0
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
         goto    flow_local_0F28                                   ; dest: 0x000f28
-        movlw   0x08
+        movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
         movwf   tx_data_staging, A                        ; reg: 0x027
 
 flow_local_0F28:                                                  ; address: 0x000f28
@@ -2621,7 +2627,7 @@ flow_local_0F38:                                                  ; address: 0x0
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
         movlw   0x58
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
-        movlw   0x1b
+        movlw   0x1b                                        ; CMD channel_src_5
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         call    control_core_service_076A, 0x0                           ; dest: 0x00076a
         rcall   input_frame_send                                ; dest: 0x000c22
@@ -2739,6 +2745,7 @@ flow_local_1008:                                                  ; address: 0x0
 flow_local_100A:                                                  ; address: 0x00100a
 
         return  0x0
+menu_title_table:                                                  ; address: 0x00100c  (tblptr anchor)
         movwf   (Common_RAM + 86), B                        ; reg: 0x056
         btg     0x6c, 0x2, B                                ; reg: 0x06c
         cpfsgt  0x6d, B                                     ; reg: 0x06d
@@ -2859,7 +2866,7 @@ flow_local_10DA:                                                  ; address: 0x0
         movlw   0x71
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   tx_data_staging, A                        ; reg: 0x027
-        movlw   0x06
+        movlw   0x06                                        ; CMD input_select
         subwf   tx_data_staging, W, A                     ; reg: 0x027
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_local_10F6                                   ; dest: 0x0010f6
@@ -2894,9 +2901,9 @@ flow_local_10F6:                                                  ; address: 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movlw   0x03
+        movlw   HIGH(lcd_str_firmware_v)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   0x04
+        movlw   LOW(lcd_str_firmware_v)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
         movlw   0x80
@@ -2920,9 +2927,9 @@ flow_local_10F6:                                                  ; address: 0x0
         movwf   0xa1, B                                     ; reg: 0x0a1
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movlw   0x03
+        movlw   HIGH(lcd_str_waiting_for_dlcp)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   0x10
+        movlw   LOW(lcd_str_waiting_for_dlcp)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
@@ -3048,9 +3055,9 @@ flow_local_1250:                                                  ; address: 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movlw   0x03
+        movlw   HIGH(lcd_str_standby_zzz)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   0x22
+        movlw   LOW(lcd_str_standby_zzz)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
 
@@ -3078,9 +3085,9 @@ flow_local_126E:                                                  ; address: 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movlw   0x03
+        movlw   HIGH(lcd_str_waiting_for_dlcp_alt)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   0x34
+        movlw   LOW(lcd_str_waiting_for_dlcp_alt)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
@@ -3110,9 +3117,9 @@ control_core_service_12D0:                                               ; addre
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         movff   0x0bf, tx_data_staging                    ; reg2: 0x027
-        movlw   0x10
+        movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x0c
+        movlw   LOW(menu_title_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
@@ -3162,27 +3169,27 @@ flow_local_132E:                                                  ; address: 0x0
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
         movlw   0x30
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
-        movlw   0x03
+        movlw   HIGH(lcd_str_db_suffix)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   0x46
+        movlw   LOW(lcd_str_db_suffix)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
         goto    flow_local_1360                                   ; dest: 0x001360
 
 flow_local_1354:                                                  ; address: 0x001354
 
-        movlw   0x03
+        movlw   HIGH(lcd_str_mute)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   0x54
+        movlw   LOW(lcd_str_mute)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
 
 flow_local_1360:                                                  ; address: 0x001360
 
         movff   0x0b7, tx_data_staging                    ; reg2: 0x027
-        movlw   0x18
+        movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x82
+        movlw   LOW(menu_input_auto_detect_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3253,6 +3260,7 @@ flow_local_13CE:                                                  ; address: 0x0
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     standby_display                                   ; dest: 0x0012e8
         return  0x0
+menu_setup_bl_timeout_entry:                                                  ; address: 0x0013ee  (tblptr anchor)
         dcfsnz  (Common_RAM + 66), W, A                     ; reg: 0x042
         subfwb  (Common_RAM + 32), W, A                     ; reg: 0x020
         negf    0x69, B                                     ; reg: 0x069
@@ -3268,15 +3276,15 @@ control_core_service_13FE:                                               ; addre
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         movff   0x0bf, tx_data_staging                    ; reg2: 0x027
-        movlw   0x10
+        movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x0c
+        movlw   LOW(menu_title_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         movff   0x0ba, tx_data_staging                    ; reg2: 0x027
-        movlw   0x13
+        movlw   HIGH(menu_setup_bl_timeout_entry)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0xee
+        movlw   LOW(menu_setup_bl_timeout_entry)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movff   0x0ba, 0x0a5
         clrf    0xa4, B                                     ; reg: 0x0a4
@@ -3431,9 +3439,9 @@ flow_local_14CC:                                                  ; address: 0x0
 main_event_loop:                                               ; address: 0x00150e
 
         movff   0x0ba, tx_data_staging                    ; reg2: 0x027
-        movlw   0x13
+        movlw   HIGH(menu_setup_bl_timeout_entry)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0xee
+        movlw   LOW(menu_setup_bl_timeout_entry)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3478,6 +3486,7 @@ flow_local_1558:                                                  ; address: 0x0
         bra     flow_local_1532                                   ; dest: 0x001532
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         return  0x0
+menu_source_channel_table:                                                  ; address: 0x001572  (tblptr anchor)
         movwf   (Common_RAM + 83), B                        ; reg: 0x053
         btg     0x75, 0x1, A                                ; reg: 0xf75
         cpfsgt  0x63, B                                     ; reg: 0x063
@@ -3534,6 +3543,7 @@ flow_local_1558:                                                  ; address: 0x0
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
+menu_routing_table:                                                  ; address: 0x0015e2  (tblptr anchor)
         cpfsgt  (Common_RAM + 76), B                        ; reg: 0x04c
         btg     0x66, 0x2, A                                ; reg: 0xf66
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -3566,6 +3576,7 @@ flow_local_1558:                                                  ; address: 0x0
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
+menu_input_cat_spdif_table:                                                  ; address: 0x001622  (tblptr anchor)
         rrncf   (Common_RAM + 67), W, B                     ; reg: 0x043
         decfsz  (Common_RAM + 84), F, B                     ; reg: 0x054
         rlncf   (Common_RAM + 65), W, B                     ; reg: 0x041
@@ -3589,18 +3600,18 @@ flow_local_1642:                                                  ; address: 0x0
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         movff   0x0ba, tx_data_staging                    ; reg2: 0x027
-        movlw   0x13
+        movlw   HIGH(menu_setup_bl_timeout_entry)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0xee
+        movlw   LOW(menu_setup_bl_timeout_entry)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
 flow_local_165A:                                                  ; address: 0x00165a
 
         movff   0x0c0, tx_data_staging                    ; reg2: 0x027
-        movlw   0x15
+        movlw   HIGH(menu_source_channel_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x72
+        movlw   LOW(menu_source_channel_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3674,12 +3685,12 @@ flow_local_16E8:                                                  ; address: 0x0
 
 flow_local_16FA:                                                  ; address: 0x0016fa
 
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   0xa4, B                                     ; reg: 0x0a4
         movff   0x0a5, tx_data_staging                    ; reg2: 0x027
-        movlw   0x15
+        movlw   HIGH(menu_routing_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0xe2
+        movlw   LOW(menu_routing_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3696,9 +3707,9 @@ flow_local_1718:                                                  ; address: 0x0
         movlw   0x01
         movwf   0xa4, B                                     ; reg: 0x0a4
         movff   0x0a5, tx_data_staging                    ; reg2: 0x027
-        movlw   0x16
+        movlw   HIGH(menu_input_cat_spdif_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x22
+        movlw   LOW(menu_input_cat_spdif_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3882,6 +3893,7 @@ flow_local_1876:                                                  ; address: 0x0
 flow_local_1880:                                                  ; address: 0x001880
 
         return  0x0
+menu_input_auto_detect_table:                                                  ; address: 0x001882  (tblptr anchor)
         btg     (Common_RAM + 65), 0x2, B                   ; reg: 0x041
         movwf   0x74, B                                     ; reg: 0x074
         rlncf   (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -3961,18 +3973,18 @@ control_core_service_1912:                                               ; addre
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         movff   0x0bf, tx_data_staging                    ; reg2: 0x027
-        movlw   0x10
+        movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x0c
+        movlw   LOW(menu_title_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
 flow_local_192A:                                                  ; address: 0x00192a
 
         movff   0x0b7, tx_data_staging                    ; reg2: 0x027
-        movlw   0x18
+        movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   0x82
+        movlw   LOW(menu_input_auto_detect_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movff   0x0b7, 0x0a5
         movf    0xa1, F, B                                  ; reg: 0x0a1
@@ -5067,7 +5079,7 @@ flow_local_7E0E:                                                  ; address: 0x0
 
 flow_local_7E18:                                                  ; address: 0x007e18
 
-        movlw   0x10
+        movlw   0x10                                        ; RC5 0x10 volume up
         cpfslt  control_flags, A                        ; reg: 0x01f
         bra     flow_local_7E5C                                   ; dest: 0x007e5c
         lfsr    0x0, 0x071
