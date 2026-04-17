@@ -288,7 +288,7 @@ class MemSnapshot:
     unit_count: int
     menu_state: int
     setup_sel: int
-    bl_timeout: int
+    cmd1d_setting: int
     portc: int
     trisc: int
     latc: int
@@ -1512,7 +1512,7 @@ class GpsimControlSession:
         unit_count = _read_reg(self._issue, 0x0A1)
         menu_state = _read_reg(self._issue, 0x0BF)
         setup_sel = _read_reg(self._issue, 0x0A5)
-        bl_timeout = _read_reg(self._issue, 0x0A7)
+        cmd1d_setting = _read_reg(self._issue, 0x0A7)
 
         unit0 = UnitMemState(
             link=_read_reg(self._issue, 0x0E5),
@@ -1546,7 +1546,7 @@ class GpsimControlSession:
             unit_count=unit_count,
             menu_state=menu_state,
             setup_sel=setup_sel,
-            bl_timeout=bl_timeout,
+            cmd1d_setting=cmd1d_setting,
             portc=_read_reg(self._issue, 0xF82),
             trisc=_read_reg(self._issue, 0xF94),
             latc=_read_reg(self._issue, 0xF8B),
@@ -1970,7 +1970,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
         # uninitialised RAM (all zeros at reset).
         if not _heartbeat_active:
             w = (ctl_mem.input_sel, ctl_mem.volume,
-                 ctl_mem.bl_timeout, ctl_mem.unit_count)
+                 ctl_mem.cmd1d_setting, ctl_mem.unit_count)
             if not _waiting_entered:
                 if all(v == 0x80 for v in w):
                     _waiting_entered = True

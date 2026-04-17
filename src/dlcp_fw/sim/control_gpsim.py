@@ -594,7 +594,7 @@ class GpsimControlHarness:
                 # MAIN simulator these would stay at 0x80 forever.
                 self._issue("reg(0x0B8)=0x00", 5.0)  # input_sel = Auto
                 self._issue("reg(0x0B9)=0x33", 5.0)  # volume = default
-                self._issue("reg(0x0A7)=0x01", 5.0)  # bl_timeout
+                self._issue("reg(0x0A7)=0x01", 5.0)  # cmd1d_setting
                 self._issue("reg(0x0A1)=0x01", 5.0)  # unit_count = 1
 
     def warmup(self, cycles: int) -> None:

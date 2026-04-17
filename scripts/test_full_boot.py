@@ -56,7 +56,7 @@ def _waiting_vars(ctl) -> tuple[int, int, int, int]:
     return (
         _read_reg(ctl._issue, 0x0B8),  # input_sel
         _read_reg(ctl._issue, 0x0B9),  # volume
-        _read_reg(ctl._issue, 0x0A7),  # bl_timeout
+        _read_reg(ctl._issue, 0x0A7),  # cmd1d_setting
         _read_reg(ctl._issue, 0x0A1),  # unit_count
     )
 

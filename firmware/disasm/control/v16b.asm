@@ -31,8 +31,8 @@
 ;   V1.5b     First refactor: per-purpose serial helpers, displaced mute bit
 ;             (mute moved to 0x01F.bit5; bit4 became display_refresh_pending)
 ; * V1.6b    THIS FILE — current development base. Features:
-;             • input/volume/cmd0x1D-setting/mute/standby dedicated frame
-;               senders plus display_loop_iteration (functions 030..035)
+;             • dedicated frame senders 030..034 = input / volume /
+;               cmd0x1D-setting / mute / standby; 035 = display_loop_iteration
 ;             • full_sync_burst (function_028) emits the 5-frame V1.6b
 ;               status burst: volume, input, mute, cmd0x1D setting, standby
 ;             • IR RC5 decode in ISR (function_017 — BUG C3, blocks ~10 ms)

@@ -108,7 +108,7 @@ while control.current_cycle < WARMUP:
     # Detect WAITING loop
     if not _heartbeat_active:
         w = (ctl_mem.input_sel, ctl_mem.volume,
-             ctl_mem.bl_timeout, ctl_mem.unit_count)
+             ctl_mem.cmd1d_setting, ctl_mem.unit_count)
         if not _waiting_entered:
             if all(v == 0x80 for v in w):
                 _waiting_entered = True
