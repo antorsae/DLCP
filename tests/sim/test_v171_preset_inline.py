@@ -259,3 +259,104 @@ def test_v171_non_preset_ir_does_not_emit_preset_frame(v171_hex: Path) -> None:
         assert _preset_frame(0x01) not in tx
     finally:
         h.close()
+
+
+# ---------------------------------------------------------------------------
+# Preset boot init: EEPROM 0x74 → PRESET_BIT (V1.71 inline of V1.61b)
+# ---------------------------------------------------------------------------
+
+def _write_preset_eeprom_image(path: Path, preset_byte: int) -> None:
+    """Write an Intel HEX EEPROM image with byte 0x74 = ``preset_byte``.
+
+    gpsim's ``load e`` expects EEPROM data at the raw 0x00..0xFF
+    addresses (no 0xF00000 extension); we produce a minimal single-
+    record image setting the preset slot.
+    """
+    addr = 0x0074
+    data = bytes([preset_byte & 0xFF])
+    ll = len(data)
+    total = ll + ((addr >> 8) & 0xFF) + (addr & 0xFF) + 0x00 + sum(data)
+    cc = (~total + 1) & 0xFF
+    record = f":{ll:02X}{addr:04X}00{data.hex().upper()}{cc:02X}"
+    path.write_text(record + "\n" + ":00000001FF\n", encoding="ascii")
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v171_preset_boot_init_byte_01_sets_preset_bit(
+    v171_hex: Path, tmp_path: Path
+) -> None:
+    """EEPROM[0x74] = 0x01 → PRESET_BIT set after settings_load_eeprom runs."""
+    _require_gpsim()
+    ee_path = tmp_path / "preset_b.hex"
+    _write_preset_eeprom_image(ee_path, 0x01)
+    h = GpsimControlHarness(
+        v171_hex,
+        fast_boot=False,
+        eeprom_file=ee_path,
+        chunk_cycles=600_000,
+        heartbeat_rx_mode="full",
+    )
+    try:
+        h.warmup(25_000_000)
+        flags = h.read_reg(CONTROL_FLAGS_ADDR)
+        assert flags & (1 << PRESET_BIT), (
+            f"PRESET_BIT not set after boot with EEPROM[0x74]=0x01 "
+            f"(flags=0x{flags:02X})"
+        )
+    finally:
+        h.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v171_preset_boot_init_byte_00_clears_preset_bit(
+    v171_hex: Path, tmp_path: Path
+) -> None:
+    """EEPROM[0x74] = 0x00 → PRESET_BIT clear after boot."""
+    _require_gpsim()
+    ee_path = tmp_path / "preset_a.hex"
+    _write_preset_eeprom_image(ee_path, 0x00)
+    h = GpsimControlHarness(
+        v171_hex,
+        fast_boot=False,
+        eeprom_file=ee_path,
+        chunk_cycles=600_000,
+        heartbeat_rx_mode="full",
+    )
+    try:
+        h.warmup(25_000_000)
+        flags = h.read_reg(CONTROL_FLAGS_ADDR)
+        assert not (flags & (1 << PRESET_BIT)), (
+            f"PRESET_BIT unexpectedly set after boot with EEPROM[0x74]=0x00 "
+            f"(flags=0x{flags:02X})"
+        )
+    finally:
+        h.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v171_preset_boot_init_any_nonzero_nonone_defaults_to_a(
+    v171_hex: Path, tmp_path: Path
+) -> None:
+    """EEPROM[0x74] = 0xFF (erased) → PRESET_BIT clear (defaults to A)."""
+    _require_gpsim()
+    ee_path = tmp_path / "preset_erased.hex"
+    _write_preset_eeprom_image(ee_path, 0xFF)
+    h = GpsimControlHarness(
+        v171_hex,
+        fast_boot=False,
+        eeprom_file=ee_path,
+        chunk_cycles=600_000,
+        heartbeat_rx_mode="full",
+    )
+    try:
+        h.warmup(25_000_000)
+        flags = h.read_reg(CONTROL_FLAGS_ADDR)
+        assert not (flags & (1 << PRESET_BIT)), (
+            f"PRESET_BIT not clear on erased EEPROM[0x74]=0xFF "
+            f"(flags=0x{flags:02X})"
+        )
+    finally:
+        h.close()

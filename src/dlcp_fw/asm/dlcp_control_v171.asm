@@ -2968,6 +2968,24 @@ flow_ccs_0FA0_10F6:                                                  ; address: 
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    settings_load_eeprom, 0x0                           ; dest: 0x000a46
+
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.61b): preset boot init
+        ; ---------------------------------------------------------------
+        ; Read persisted preset byte from EEPROM slot 0x74 and reflect
+        ; it into control_flags.PRESET_BIT so the rest of the boot path
+        ; sees the last-saved preset state.  EEPROM byte 0x01 means
+        ; preset B; any other value (typically 0x00 or erased 0xFF) is
+        ; preset A.  The IR dispatch inline helper
+        ; (v171_send_preset_frame_and_persist) writes the same encoding.
+        movlw   EEPROM_PRESET_STATE_ADDR                      ; 0x74
+        call    eeprom_read_byte, 0x0
+        bcf     control_flags, PRESET_BIT, A                 ; default = preset A
+        xorlw   0x01
+        bnz     v171_preset_boot_init_done
+        bsf     control_flags, PRESET_BIT, A                 ; byte was 0x01 → preset B
+v171_preset_boot_init_done:
+
         movlw   0x01
         movwf   (Common_RAM + 15), A                        ; reg: 0x00f
         movlw   0xf4
