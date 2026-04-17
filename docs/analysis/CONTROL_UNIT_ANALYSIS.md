@@ -152,7 +152,8 @@ Three interrupt sources handled in single ISR (no priority levels, IPEN=0):
 
 ### Two Configurable Remote Profiles
 
-Selected by register 0x0A7 (remote type):
+Selected by register 0x0A7 (the shared `cmd=0x1D` setup byte; values `0x03`
+and `0x04` select the RC-5 profile):
 
 **Profile 1 (type 0x04): Custom Hypex remote, address 0x10**
 
@@ -597,11 +598,11 @@ Called repeatedly in display loops. Does:
 | 0x09B-09C | btn_repeat | Button auto-repeat timer (16-bit) |
 | 0x09D-09E | idle_timer | Display idle/dim timeout (16-bit) |
 | 0x09F-0A0 | comm_idle | Communication idle counter |
-| 0x0A1 | main_param | Operational parameter from main unit |
+| 0x0A1 | raw_status | Raw status byte from MAIN (also boot sentinel #4) |
 | 0x0A4 | setup_max | Setup sub-menu max items |
 | 0x0A5 | setup_sel | Setup sub-menu current selection |
 | 0x0A6 | proto_state | Serial protocol state machine counter |
-| 0x0A7 | bl_timeout | Backlight timeout setting |
+| 0x0A7 | cmd1d_setting | Shared cmd `0x1D` setup byte; used for backlight/timeout state and the local IR profile selector |
 | 0x0B0-0B3 | tick_count | 32-bit tick counter |
 | 0x0B4-0B5 | vol_preset | Volume preset/dim values |
 | 0x0B6 | rx_byte | Current UART byte being processed |

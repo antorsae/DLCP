@@ -46,7 +46,7 @@
 ;                0xB1 = addressed unit only              ← active_flags.0 = 1
 ;                0xBF = MAIN-to-CONTROL response prefix
 ;   cmd byte   : 0x03=stdby/wake/mute, 0x04=status_poll, 0x06=input_select,
-;                0x07=volume, 0x17..0x1C=channel cfg, 0x1D=disp timeout,
+;                0x07=volume, 0x17..0x1C=channel cfg, 0x1D=shared setup byte,
 ;                0x1E=link addr, 0x20=preset_select (V2.4+).
 ;   data byte  : depends on cmd. cmd=0x03/data: 0=standby, 1=wake,
 ;                2=mute_on, 3=mute_off.
@@ -116,6 +116,18 @@ timeout_hi              EQU  0x00C
 ; that ISR/preset-apply also touches.
 saved_w                 EQU  0x005
 
+; Stock A/B preset plumbing that V3.2 still relies on.
+; The live HID-visible filename always sits in the stock RAM slot at 0x02C0
+; and is backed by EEPROM 0x60..0x7D (preset A) or 0x83..0xA0 (preset B).
+preset_filename_ram_base EQU  0x02C0
+preset_filename_len      EQU  0x1E
+preset_filename_eeprom_a EQU  0x60
+preset_filename_eeprom_b EQU  0x83
+current_cmd_data         EQU  0x0A3   ; parser-staged data byte (route/cmd live in nearby bank-0 slots)
+filename_dirty_flags     EQU  0x0BD   ; bit5 = stock filename RAM slot dirty
+preset_hold_timer_lo     EQU  0x08C   ; Timer3 ISR countdown low byte used by HOLDING
+preset_hold_timer_hi     EQU  0x08D   ; Timer3 ISR countdown high byte used by HOLDING
+
 ; ---------------------------------------------------------------------------
 ; V3.2 preset job state machine — placed in BSR=2 immediately after the
 ; filename staging buffer at 0x2C0..0x2DD. 7 bytes total.
@@ -127,14 +139,17 @@ preset_job_state        EQU  0x2DE   ; 0=IDLE,1=PENDING,2=HOLDING,3=APPLY,4=COMM
 preset_job_target       EQU  0x2DF   ; requested preset (0=A, 1=B). May be re-armed
                                      ; mid-job to coalesce rapid CONTROL F1/F2 toggles.
 preset_job_index        EQU  0x2E0   ; APPLY: table entry counter, 0..0x60.
-                                     ; index 0x60 redirects to final entry @ flash 0x5F00.
+                                     ; index 0x60 redirects to the final LOGICAL entry @ 0x5F00
+                                     ; (flash_read remaps that to 0x5500 when preset B is active).
 preset_job_delay        EQU  0x2E1   ; HOLDING: ms remaining (reserved — ISR path uses
-                                     ; ram_0x08C/0x08D Timer3 countdown instead).
+                                     ; preset_hold_timer_lo/hi Timer3 countdown instead).
 preset_job_flags        EQU  0x2E2   ; bit0=we_force_muted (preset_force_mute did the mute),
                                      ; bit1=user_mute_desired (latched user intent during job).
                                      ; Drives whether COMMIT/CANCEL restores volume or stays muted.
-preset_job_tbl_lo       EQU  0x2E3   ; APPLY: 16-bit pointer into preset table B (0x5600 ... 0x5800).
-preset_job_tbl_hi       EQU  0x2E4   ; Pre-incremented by 0x18 after each successful entry.
+preset_job_tbl_lo       EQU  0x2E3   ; APPLY: logical TBLPTR seed inside the stock-aligned
+preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read remaps that
+                                     ; window to 0x4C00..0x55FF whenever active_flags.bit2
+                                     ; says preset B is active. Pre-incremented by 0x18 per entry.
 
 
 ; ---------------------------------------------------------------------------
@@ -5969,7 +5984,7 @@ flow_main_isr_dispatch_3b8c:
 ;   BF/07/<computed_volume+0x60> cmd=0x07 current volume (with 0x60 offset)
 ;   BF/03/<active_gate>         cmd=0x03 current standby state (1=active)
 ;   BF/06/<input_select>        cmd=0x06 current input
-;   BF/1D/<ram_0x0B8>           cmd=0x1D current display backlight setting
+;   BF/1D/<ram_0x0B8>           cmd=0x1D current shared setup/timeout byte
 ;
 ; Each frame is 3 bytes; preamble emits the 0xBF prefix and cmd byte through
 ; uart_tx_byte_blocking (V3.1: bounded TRMT wait), and postamble emits the
@@ -8786,7 +8801,7 @@ preset_job_apply_i2c_timeout:
 ; ---------------------------------------------------------------------------
 preset_select_handler:
     movlb       0x0
-    movf        ram_0x0A3, W, BANKED        ; data byte: 0=A, 1=B
+    movf        current_cmd_data, W, BANKED ; data byte: 0=A, 1=B
     andlw       0x01
     movlb       0x2
     movwf       preset_job_target, BANKED   ; store requested preset
@@ -8809,13 +8824,13 @@ preset_select_handler_done:
 
 ; --- Persist dirty filename to EEPROM (outgoing preset slot) ---
 preset_persist_filename:
-    movlw       0x60
+    movlw       preset_filename_eeprom_a
     btfsc       active_flags, 2, ACCESS
-    movlw       0x83
+    movlw       preset_filename_eeprom_b
     movwf       ram_0x007, ACCESS
     clrf        ram_0x008, ACCESS
-    lfsr        FSR2, 0x02C0
-    movlw       0x1E
+    lfsr        FSR2, preset_filename_ram_base
+    movlw       preset_filename_len
     movwf       ram_0x00A, ACCESS
 preset_pf_lp:
     movff       POSTINC2, ram_0x009
@@ -8823,18 +8838,18 @@ preset_pf_lp:
     incf        ram_0x007, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
     bra         preset_pf_lp
-    bcf         ram_0x0BD, 5, BANKED
+    bcf         filename_dirty_flags, 5, BANKED
     return      0
 
 ; --- Load filename from EEPROM (incoming preset slot) ---
 preset_load_filename:
-    movlw       0x60
+    movlw       preset_filename_eeprom_a
     btfsc       active_flags, 2, ACCESS
-    movlw       0x83
+    movlw       preset_filename_eeprom_b
     movwf       ram_0x003, ACCESS
     clrf        ram_0x004, ACCESS
-    lfsr        FSR2, 0x02C0
-    movlw       0x1E
+    lfsr        FSR2, preset_filename_ram_base
+    movlw       preset_filename_len
     movwf       ram_0x00A, ACCESS
 preset_lf_lp:
     rcall       eeprom_read_byte
@@ -8893,7 +8908,7 @@ preset_job_ret:
 preset_job_pending:
     ; Persist dirty filename for outgoing preset
     movlb       0x0
-    btfsc       ram_0x0BD, 5, BANKED
+    btfsc       filename_dirty_flags, 5, BANKED
     rcall       preset_persist_filename
 
     ; Force mute if user is not already muted
@@ -8926,8 +8941,8 @@ preset_job_pending_timer:
 preset_job_holding:
     ; Check if the ISR-driven Timer3 countdown has reached zero
     movlb       0x0
-    movf        ram_0x08D, W, BANKED
-    iorwf       ram_0x08C, W, BANKED
+    movf        preset_hold_timer_hi, W, BANKED
+    iorwf       preset_hold_timer_lo, W, BANKED
     bnz         preset_job_holding_wait     ; still counting
 
     ; After coalescing, check if target still differs from current
@@ -8946,6 +8961,10 @@ preset_job_holding:
     bsf         event_flags, 0, BANKED
 
     ; Initialize table-apply state
+    ; Always seed the STOCK-aligned logical preset window at 0x5600.
+    ; flash_read remaps that window to 0x4C00..0x55FF automatically when
+    ; active_flags.bit2 says preset B is now active, so callers never seed
+    ; a physical 0x4Cxx base directly.
     movlb       0x2
     clrf        preset_job_index, BANKED
     clrf        preset_job_tbl_lo, BANKED
@@ -8987,7 +9006,7 @@ preset_job_apply_retry:
     return      0
 
 preset_job_apply_final:
-    ; Final entry at flash address 0x5F00
+    ; Final logical entry at 0x5F00 (flash_read remaps to 0x5500 for preset B).
     clrf        ram_0x013, ACCESS
     movlw       0x5F
     movwf       ram_0x014, ACCESS

@@ -31,9 +31,10 @@
 ;   V1.5b     First refactor: per-purpose serial helpers, displaced mute bit
 ;             (mute moved to 0x01F.bit5; bit4 became display_refresh_pending)
 ; * V1.6b    THIS FILE — current development base. Features:
-;             • input/volume/mute/standby/display dedicated frame senders
-;               (functions 030/031/033/034/035 — see SEMANTIC_FUNCTION_MAP)
-;             • full_sync_burst (function_028) emits 6 channel cfg + vol + input
+;             • input/volume/cmd0x1D-setting/mute/standby dedicated frame
+;               senders plus display_loop_iteration (functions 030..035)
+;             • full_sync_burst (function_028) emits the 5-frame V1.6b
+;               status burst: volume, input, mute, cmd0x1D setting, standby
 ;             • IR RC5 decode in ISR (function_017 — BUG C3, blocks ~10 ms)
 ;             • boot handshake polls four sentinels until each != 0x80
 ;               (BUG C1 — no timeout; hard-fails if MAIN absent)
@@ -54,11 +55,12 @@
 ; CONTROL → MAIN (route 0xB0=broadcast, 0xB1=addressed)
 ;   0x03/00=standby_enter  0x03/01=wake  0x03/02=mute_on  0x03/03=mute_off
 ;   0x04/00=status_poll    0x06/n=input_select   0x07/n=volume (offset 0x60)
-;   0x17..0x1C=channel src 0x1D=backlight  0x1E=link_addr  0x20=preset_select
+;   0x17..0x1C=channel src 0x1D=shared setup/timeout byte  0x1E=link_addr
+;   0x20=preset_select
 ;
 ; MAIN → CONTROL (route 0xBF) — parsed at 0x00044A:
 ;   0x03=standby_status   0x05=raw_status   0x06=current_input
-;   0x07=current_volume   0x18=power_on_notify   0x1D=display_timeout
+;   0x07=current_volume   0x18=power_on_notify   0x1D=cmd0x1D setting echo
 ;   0x29=cmd29_status (preset_b_active bit reflection)
 ;
 ; ---------------------------------------------------------------------------
@@ -82,12 +84,17 @@
 ;   0x099        rx_ring_wr            (ISR producer)
 ;   0x09D:0x09E  idle_timeout_counter  16-bit, init 0xEA61 (~60k)
 ;   0x09F:0x0A0  full_sync_counter     16-bit, init 0x4E20 (~20k → fullsync)
-;   0x0A1        handshake_sentinel_4  init 0x80 — boot wait until != 0x80
+;   0x0A1        raw_status_cache      boot sentinel #4, init 0x80 until BF/05;
+;                                     later caches MAIN raw-status byte
 ;   0x0A6        rx_frame_position     parser state (0=route, 1=cmd, 2=data)
-;   0x0A7        handshake_sentinel_3  init 0x80
+;   0x0A7        cmd1d_setting_cache  boot sentinel #3, init 0x80 until BF/1D;
+;                                     later caches the shared cmd0x1D setup byte
+;                                     reused by local IR/profile logic
 ;   0x0B7       rx_ring_staging        (single-byte holding for parser)
-;   0x0B8       handshake_sentinel_1  init 0x80 (likely ch1 volume)
-;   0x0B9       handshake_sentinel_2  init 0x80 (likely ch2 volume)
+;   0x0B8       input_select_cache    boot sentinel #1, init 0x80 until BF/06;
+;                                     later caches current input selection
+;   0x0B9       volume_cache          boot sentinel #2, init 0x80 until BF/07;
+;                                     later caches current volume byte
 ;   0x0BB       button_debounce_counter (threshold 4)
 ;   0x0BC       button_last_scan
 ;   0x0BE       button_debounced
@@ -1003,6 +1010,10 @@
 000550:  861f  bsf     0x1f, 0x3, 0x0
 000552:  eff5  goto    0x0005ea
 000554:  f002
+; BF/05 -> raw_status_cache (0x0A1), BF/06 -> input_select_cache (0x0B8),
+; BF/07 -> volume_cache (0x0B9), BF/1D -> cmd1d_setting_cache (0x0A7).
+; These four caches also double as the boot handshake sentinels that start
+; at 0x80 and transition to real values once MAIN's status burst arrives.
 000556:  0e04  movlw   0x04
 000558:  622f  cpfseq  0x2f, 0x0
 00055a:  efb1  goto    0x000562
@@ -1986,7 +1997,7 @@
 000c2c:  6e27  movwf   0x27, 0x0
 000c2e:  ecf6  call    0x0005ec, 0x0
 000c30:  f002
-000c32:  c0b8  movff   0x0b8, 0x027         ; data = current input (handshake_sentinel_1)
+000c32:  c0b8  movff   0x0b8, 0x027         ; data = current input (input_select_cache)
 000c34:  f027
 000c36:  ecf6  call    0x0005ec, 0x0
 000c38:  f002
@@ -2009,13 +2020,23 @@
 000c4a:  6e27  movwf   0x27, 0x0
 000c4c:  ecf6  call    0x0005ec, 0x0
 000c4e:  f002
-000c50:  c0b9  movff   0x0b9, 0x027         ; data = current volume (handshake_sentinel_2)
+000c50:  c0b9  movff   0x0b9, 0x027         ; data = current volume (volume_cache)
 000c52:  f027
 000c54:  ecf6  call    0x0005ec, 0x0
 000c56:  f002
 000c58:  6b9f  clrf    0x9f, 0x1
 000c5a:  6ba0  clrf    0xa0, 0x1
 000c5c:  0012  return  0x0
+; ===========================================================================
+; function_032 @ 0x000C5E — cmd1d_setting_frame_send  (V1.6b refactor)
+; ---------------------------------------------------------------------------
+; Emits [B0, 0x1D, <0x0A7>] — broadcast the shared cmd0x1D setup byte.
+; 0x0A7 is the runtime cache for that byte and also boot handshake sentinel
+; #3: it starts at 0x80 and is replaced by MAIN's BF/1D status once the link
+; is up. In V1.6b the same cached byte also feeds the local IR/profile helper
+; at 0x000F54, so treating it as a generic cmd0x1D setting is safer than
+; assuming it is only an LCD timeout.
+; ===========================================================================
 000c5e:  0eb0  movlw   0xb0
 000c60:  6e27  movwf   0x27, 0x0
 000c62:  ecf6  call    0x0005ec, 0x0

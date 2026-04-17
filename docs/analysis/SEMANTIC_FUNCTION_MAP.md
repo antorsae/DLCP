@@ -271,10 +271,10 @@ added missing labels (label_201, label_216), fixed typos and cross-references.
 | 0x09D:0x09E | — | `idle_timeout_counter` | 16-bit. Initial=0xEA61 (59,969). Decrements each function_035. Triggers reconnect at 0. |
 | 0x09F:0x0A0 | — | `full_sync_counter` | 16-bit. Triggers full_sync_burst at 0x4E20 (20,000). |
 | 0x0A6 | — | `frame_position` | Parser state: 0=route, 1=cmd, 2=data. |
-| 0x0B8 | — | `handshake_sentinel_1` | Initialized 0x80. Non-0x80 when MAIN responds. Likely ch1 volume from MAIN. |
-| 0x0B9 | — | `handshake_sentinel_2` | Same. Likely ch2 volume from MAIN. |
-| 0x0A7 | — | `handshake_sentinel_3` | Same. |
-| 0x0A1 | — | `handshake_sentinel_4` | Same. |
+| 0x0B8 | — | `input_select_cache` | Boot sentinel #1. Initialized 0x80; parser updates from BF/06 and function_030 sends it as cmd 0x06. |
+| 0x0B9 | — | `volume_cache` | Boot sentinel #2. Initialized 0x80; parser updates from BF/07 and function_031 sends it as cmd 0x07. |
+| 0x0A7 | — | `cmd1d_setting_cache` | Boot sentinel #3. Initialized 0x80; parser updates from BF/1D, function_032 sends it as cmd 0x1D, and local IR/profile helper 0x0F54 reuses it. |
+| 0x0A1 | — | `raw_status_cache` | Boot sentinel #4. Initialized 0x80; parser updates from BF/05 and UI/status code branches on its low values. |
 | 0x0BB | — | `button_debounce_counter` | Increments until stable (threshold 4). |
 | 0x0BC | — | `button_last_scan` | Previous raw button state. |
 | 0x0BE | — | `button_debounced` | Stable button output. |
