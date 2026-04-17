@@ -112,22 +112,33 @@ def test_v171_phase_a_config_bits_byte_identical(v171_hex: Path) -> None:
         )
 
 
-def test_v171_phase_a_scaffolding_still_matches_stock(v171_hex: Path) -> None:
-    """Full byte-identity during Phase A — before any features inline.
+def test_v171_app_code_has_grown_past_stock(v171_hex: Path) -> None:
+    """Once Phase B features inline, the V1.71 app code tail exceeds stock V1.6b.
 
-    Once V1.71 features start landing this test is expected to fail and
-    will be replaced by the feature-level parity tests.  Keep it as a
-    checkpoint that captures the clean scaffolding state at commit time.
+    This is the positive signal that inline feature work is landing
+    (and the negative signal if feature code has been accidentally
+    reverted).  Stock V1.6b app code ends at 0x1A0B; V1.71 must end
+    strictly later than that, and strictly before the pinned
+    bootloader at 0x7800.
     """
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
     built = parse_intel_hex(v171_hex)
-    addrs = set(stock.keys()) | set(built.keys())
-    diffs = [a for a in sorted(addrs) if stock.get(a, 0xFF) != built.get(a, 0xFF)]
-    assert not diffs, (
-        f"V1.71 scaffolding diverges from stock V1.6b at {len(diffs)} addresses; "
-        f"first 5: {[(hex(a), hex(stock.get(a, 0xFF)), hex(built.get(a, 0xFF))) for a in diffs[:5]]}.  "
-        "Phase A must stay byte-identical; move the failing feature into "
-        "Phase B / C / D / E and replace this test with the relevant parity gate."
+
+    def _tail(mem) -> int:
+        return max(
+            (a for a, b in mem.items() if a < 0x7800 and b != 0xFF),
+            default=-1,
+        )
+
+    stock_tail = _tail(stock)
+    v171_tail = _tail(built)
+    assert stock_tail == 0x1A0B, f"stock tail regression: 0x{stock_tail:04X}"
+    assert v171_tail > stock_tail, (
+        f"V1.71 app code not growing past stock (tail 0x{v171_tail:04X} "
+        f"vs stock 0x{stock_tail:04X}) — has feature inlining regressed?"
+    )
+    assert v171_tail < 0x7800, (
+        f"V1.71 app code overruns bootloader: tail=0x{v171_tail:04X} ≥ 0x7800"
     )
 
 
