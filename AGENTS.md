@@ -344,6 +344,8 @@ V1.71 CONTROL feature-bearing source rewrite:
 - `test_v171_preset_inline.py` (V1.61b: IR 0x38/0x39 A/B shortcuts, boot init from EEPROM 0x74, A↔B toggle, idempotence)
 - `test_v171_ir_endpoints.py` (V1.64b: IR 0x3A/0x3B explicit standby/wake endpoints, first-frame ordering)
 - `test_v171_fault_indicator.py` (V1.63b: BF/08 DSP-fault parser, bf08_fault_byte store at 0x0AB, DSP_FAULT_BIT set/clear, no-op on clean clear)
+- `test_v171_reconnect_wake.py` (V1.62b: OERR soft-recover clears latch + re-enables CREN, parser continues after OERR, can still process fresh BF/08 frame)
+- `test_v171_v31_chain.py` (V1.71 × V3.1 MAIN chain parity gate: reach Volume screen, blackout/wake → WAITING)
 
 V3.1 source rewrite:
 - `test_v31_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
