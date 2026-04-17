@@ -190,6 +190,7 @@ Always prefer these constants over hardcoded paths.
 - V3.0 stock-equivalent source: `dlcp_main_v30.asm`, `dlcp_main_v30_comments.asm` (canonical, zero auto-labels)
 - V3.1 full-feature source: `dlcp_main_v31.asm`
 - V1.7 CONTROL stock-equivalent source: `dlcp_control_v17.asm` (auto-labeled), `dlcp_control_v17_comments.asm` (canonical, zero auto-labels); shift-test source `dlcp_control_v17_shifted.asm` is generated on demand, not committed
+- V1.71 CONTROL feature-bearing source: `dlcp_control_v171.asm` (cloned from V1.7 commented source; inlines V1.61b–V1.64b features per `docs/V16B_SOURCE_REWRITE_SPEC.md`)
 - Support: `dlcp_main_ram.inc` (RAM equates), `dlcp_control_ram.inc` (CONTROL RAM equates), `region_manifest.py` (flash region metadata)
 
 ### Patch package (`src/dlcp_fw/patch`)

@@ -40,7 +40,57 @@ button_debounced           equ  0x0BE    ; debounced state
 display_state_index        equ  0x0BF    ; menu screen 0..3 (Vol/Preset/Input/Setup)
 saved_settings_base        equ  0x0C1    ; loaded by eeprom_settings_load (0x0C1..0x0CC)
 
-; --- V1.71 additions (not used by V1.7 byte-identical source) ---
-; Equates intentionally left for the V1.71 edits to place in free GPR slots
-; after an audit against ``button_last_scan`` (0x0BC) overlap risk noted in
-; docs/IMPL_V16B_SOURCE_REWRITE_SPEC.md Phase 1 step 2.
+; --- V1.71 additions ---
+; V1.71 inlines the features from V1.61b (presets), V1.62b (reconnect
+; robustness), V1.63b (BF/08 fault handler), and V1.64b (IR endpoints).
+; These equates are inert for the byte-identical V1.7 source (their
+; values never appear as references there); V1.71 activates them.
+;
+; Flag bits on ``control_flags`` (0x01F):
+;   bit 0  IR_ARMED             stock
+;   bit 1  CONNECTED            stock (display vs WAITING)
+;   bit 2  STANDBY_BUS          stock
+;   bit 3  RECONNECT_PENDING    V1.62b
+;   bit 4  RECONNECT_PRIMED     V1.62b / also display_refresh_pending (V1.6b)
+;   bit 5  RECONNECT_WAIT_DONE  V1.62b / also mute_state (V1.6b)
+;   bit 6  PRESET_BIT           V1.61b (0 = preset A, 1 = preset B)
+;   bit 7  DSP_FAULT_BIT        V1.63b (sticky DSP fault)
+;
+; Stock V1.6b uses bits 4 and 5 for ``display_refresh_pending`` and
+; ``mute_state``; V1.71 either preserves those semantics or migrates
+; them to adjacent flag bits — the IMPL spec documents the exact
+; mapping.  Bit names below are the V1.71 canonical labels.
+
+IR_ARMED                   equ  0x00
+CONNECTED                  equ  0x01
+STANDBY_BUS                equ  0x02
+RECONNECT_PENDING          equ  0x03
+RECONNECT_PRIMED           equ  0x04    ; stock V1.6b: display_refresh_pending
+RECONNECT_WAIT_DONE        equ  0x05    ; stock V1.6b: mute_state
+PRESET_BIT                 equ  0x06
+DSP_FAULT_BIT              equ  0x07
+
+; V1.71 scratch/storage cells (BF/08 fault handler + wake-frame emitter).
+; Addresses chosen from free GPR slots per the IMPL spec audit; see
+; docs/V16B_SOURCE_REWRITE_SPEC.md §Runtime state for the full map.
+;
+; ``button_last_scan`` lives at 0x0BC in stock — V1.63b co-opted that
+; slot for the BF/08 fault byte.  V1.71 keeps the same address so the
+; wire-format is V1.63b-identical (tests that probe 0x0BC continue to
+; work).  ``button_last_scan`` logic in stock preserves its semantics
+; during non-fault windows since the fault byte is only written on a
+; BF/08 RX event.
+bf08_fault_byte            equ  0x0BC   ; collision with button_last_scan by design
+
+; RC5 codes that V1.71 dispatches (documented here for cross-reference
+; with the annotator and ir_dispatch edits).
+RC5_POWER_TOGGLE           equ  0x32
+RC5_PRESET_A               equ  0x38
+RC5_PRESET_B               equ  0x39
+RC5_STANDBY_ENTER          equ  0x3A    ; V1.64b explicit standby
+RC5_WAKE                   equ  0x3B    ; V1.64b explicit wake
+
+; EEPROM slot for V1.71 preset-state byte.  V1.61b binary overlay
+; pinned address 0x74; V1.71 preserves it so EEPROM images remain
+; interchangeable between the overlay and the source build.
+EEPROM_PRESET_STATE_ADDR   equ  0x74
