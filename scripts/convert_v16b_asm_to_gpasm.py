@@ -109,6 +109,29 @@ _RC5_VALUES: Dict[int, str] = {
     0x21: "RC5 0x21 preset prev / channel down",
 }
 
+# REGISTER_VALUE annotations: ``movlw K; movwf SFR, A`` sequences in
+# peripheral init blocks.  Keyed by (sfr_name, value) so the annotator
+# only fires when the bit pattern is one of the documented peripheral
+# configurations, avoiding false positives on generic loop counters.
+#
+# Values documented against the PIC18F25K20 peripheral reference and
+# v1.6b_disasm context (UART/current-loop init, ADC init, TRIS masks
+# for LCD + IR pin layout).
+_SFR_VALUE_MEANINGS: Dict[tuple[str, int], str] = {
+    ("TRISA", 0xDF): "TRISA: RA1..RA4 input (buttons), RA5 output (LCD RS)",
+    ("TRISB", 0x3C): "TRISB: RB0..RB3 output (LCD D4..D7 muxed), RB2/RB3 inputs, RB4 E strobe",
+    ("TRISC", 0xBD): "TRISC: RC6 TX, RC7 RX, RC1 output (LED), RC0/RC5 inputs (buttons)",
+    ("ANSEL", 0x00): "ANSEL: all AN0..AN7 digital (cleared)",
+    ("ANSELH", 0x00): "ANSELH: all AN8..AN12 digital (cleared)",
+    ("ADCON1", 0x0F): "ADCON1: all PORTA digital (vendor init)",
+    ("SPBRG", 0x05): "SPBRG: 31250 baud @ 4MIPS (BRG16=0 BRGH=0 → SPBRG=5)",
+    ("SPBRGH", 0x00): "SPBRGH: high byte zero (8-bit baud generator)",
+    # TXSTA / RCSTA typically get bit-bang via bsf/bcf rather than movlw.
+    # The bare movlw→movwf pattern we target does not fire on those.
+    ("PIE1", 0x00): "PIE1: clear all peripheral interrupt enables",
+    ("RCON", 0x00): "RCON: clear IPEN (single-priority ISR)",
+}
+
 # RAM names that appear as ``equ`` in dlcp_control_ram.inc.  Order matches
 # the source; this is the authoritative mapping used for the RAM-equate
 # substitution pass.
@@ -217,6 +240,20 @@ def _load_v16b_auto_to_name() -> Dict[str, str]:
     return mapping
 
 
+def _extra_semantic_overrides() -> Dict[int, str]:
+    """Hand-curated address → semantic-name overrides.
+
+    Some functions have clear semantic identities in ``v16b.asm``'s
+    prose but aren't captured by the structured banner / arrow
+    patterns.  Adding them here promotes them out of the
+    ``control_core_service_XXXX`` placeholder pool so V1.71 edits can
+    reference them by name.
+    """
+    return {
+        0x004C: "app_entry_defensive_stub",
+    }
+
+
 def _load_semantic_names_by_address() -> Dict[int, str]:
     """Parse v16b.asm to build ``{address: semantic_name}`` mapping.
 
@@ -243,6 +280,11 @@ def _load_semantic_names_by_address() -> Dict[int, str]:
     # therefore risks renaming multiple distinct labels to the same
     # semantic name and collapsing their addresses.  Only the
     # banner-anchored patterns above are authoritative.
+
+    # Hand-curated overrides for functions whose v16b.asm identity is
+    # clear from prose even when the banner pattern did not pick them up.
+    for addr, name in _extra_semantic_overrides().items():
+        mapping.setdefault(addr, name)
     return mapping
 
 
@@ -691,6 +733,83 @@ def _rewrite_tblptr_literals(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pass: scope flow_local_XXXX labels under their parent function
+# ---------------------------------------------------------------------------
+#
+# After the generic semantic-rename pass, unmapped internal jump targets
+# carry the neutral ``flow_local_XXXX`` name.  Those names are globally
+# unique (one per address) but lose an important piece of context: which
+# function the label belongs to.  This pass walks the source top-down,
+# tracks the most recent top-level label (i.e. not another ``flow_``,
+# ``tbl_``, ``lcd_str_``, ``menu_``, ``vector_``, ``isr_`` prefix), and
+# rewrites ``flow_local_<addr>`` to ``flow_<parent>_<addr>`` so the call
+# graph reads without cross-referencing the address.
+
+_FLOW_LOCAL_LABEL_RE = re.compile(
+    r"^(?P<name>flow_local_[0-9A-Fa-f]+)\b"
+)
+_PARENT_LABEL_RE = re.compile(
+    r"^(?P<name>[A-Za-z_][\w]*)\s*:\s*;\s*address:\s*0x(?P<addr>[0-9A-Fa-f]+)"
+)
+_FLOW_TOKEN_RE = re.compile(r"\b(flow_local_[0-9A-Fa-f]+)\b")
+
+_NON_PARENT_PREFIXES = (
+    "flow_",
+    "tbl_",
+    "lcd_str_",
+    "menu_",
+    "vector_",
+    "isr_",  # isr_entry is a true function but handled by semantic map
+)
+
+
+def _is_parent_label(name: str) -> bool:
+    """Return True if *name* looks like a top-level function entry."""
+    if name.startswith(_NON_PARENT_PREFIXES):
+        return False
+    return True
+
+
+def _short_parent(name: str, max_len: int = 24) -> str:
+    """Trim long parent names for label prefixing."""
+    if len(name) <= max_len:
+        return name
+    # Compact ``control_core_service_XXXX`` → ``ccs_XXXX``.
+    if name.startswith("control_core_service_"):
+        return "ccs_" + name[len("control_core_service_"):]
+    return name[:max_len]
+
+
+def _scope_flow_labels(text: str) -> str:
+    """Rename ``flow_local_<addr>`` to ``flow_<parent>_<addr>`` globally."""
+    lines = text.split("\n")
+    rename_map: Dict[str, str] = {}
+    current_parent: Optional[str] = None
+    for line in lines:
+        mp = _PARENT_LABEL_RE.match(line)
+        if mp is not None:
+            name = mp.group("name")
+            if _is_parent_label(name):
+                current_parent = _short_parent(name)
+                continue
+            # Sub-label — if it's a flow_local, schedule rename.
+            mf = _FLOW_LOCAL_LABEL_RE.match(line)
+            if mf is not None and current_parent is not None:
+                orig = mf.group("name")
+                addr_suffix = orig[len("flow_local_"):]
+                new_name = f"flow_{current_parent}_{addr_suffix}"
+                rename_map[orig] = new_name
+    if not rename_map:
+        return text
+
+    def _sub(match: re.Match[str]) -> str:
+        orig = match.group(1)
+        return rename_map.get(orig, orig)
+
+    return _FLOW_TOKEN_RE.sub(_sub, text)
+
+
+# ---------------------------------------------------------------------------
 # Pass: annotate immediate values (spec §B2 / C2)
 # ---------------------------------------------------------------------------
 #
@@ -723,6 +842,11 @@ _IMM_TOKEN_RE = re.compile(
     r"^(?P<indent>\s*)"
     r"(?P<mn>movlw|addlw|sublw|iorlw|xorlw|retlw|mullw|andlw)"
     r"\s+(?P<operand>0x[0-9A-Fa-f]+)(?P<rest>\b.*)?$"
+)
+# ``movwf <sfr_name>, A`` follow-up line — captures the SFR's symbolic
+# name so the annotator can look up the peripheral-specific value meaning.
+_MOVWF_SFR_RE = re.compile(
+    r"^\s*movwf\s+(?P<sfr>[A-Z][A-Z0-9_]+)\b"
 )
 
 
@@ -775,7 +899,20 @@ def _annotate_immediates(text: str) -> str:
 
     def _ir_dispatch_context(i: int) -> bool:
         near = _nearby_text(i, window=6)
-        return "ir_decoded_cmd" in near or "ir_decoded_addr" in near or "ir_rc5_decode" in near
+        if "ir_decoded_cmd" in near or "ir_decoded_addr" in near or "ir_rc5_decode" in near:
+            return True
+        # RC5 lookup-table init pattern:
+        #   movlw <addr>; movwf (Common_RAM + 32)    ; IR address slot
+        #   movlw <cmd>;  movwf (Common_RAM + 33..38) ; IR cmd slots
+        # The code at flow_local_0F7C / _0F9E (documented in v16b.asm as
+        # the menu-state-dependent IR-code table init) seeds these
+        # cells just before the dispatch body comparing ``cpfseq
+        # (Common_RAM + 33..38), ir_decoded_cmd``.  Accept the write
+        # into any of those slots as IR dispatch context.
+        for slot in (33, 34, 35, 36, 37, 38):
+            if f"common_ram + {slot})" in near:
+                return True
+        return False
 
     for i, raw in enumerate(lines):
         m = _IMM_TOKEN_RE.match(raw)
@@ -796,6 +933,14 @@ def _annotate_immediates(text: str) -> str:
             suffix = _CMD_VALUES[value]
         elif value in _RC5_VALUES and _ir_dispatch_context(i):
             suffix = _RC5_VALUES[value]
+        elif m.group("mn") == "movlw" and i + 1 < len(lines):
+            # REGISTER_VALUE: match ``movlw K`` immediately followed by
+            # ``movwf SFR, A`` where (SFR, K) is in the peripheral map.
+            nxt = _MOVWF_SFR_RE.match(lines[i + 1])
+            if nxt is not None:
+                key = (nxt.group("sfr"), value)
+                if key in _SFR_VALUE_MEANINGS:
+                    suffix = _SFR_VALUE_MEANINGS[key]
 
         if suffix is None:
             out.append(raw)
@@ -1019,6 +1164,12 @@ def main(argv: Optional[List[str]] = None) -> int:
              "RC5 codes) with trailing semantic comments",
     )
     ap.add_argument(
+        "--scope-flow-labels",
+        action="store_true",
+        help="rename flow_local_XXXX to flow_<parent_function>_<XXXX> using "
+             "the enclosing function label",
+    )
+    ap.add_argument(
         "--with-function-headers",
         action="store_true",
         help="prepend curated function header banners from v16b.asm",
@@ -1066,6 +1217,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.convert_tblptr_literals:
         text = _rewrite_tblptr_literals(text)
+
+    if args.scope_flow_labels:
+        text = _scope_flow_labels(text)
 
     if args.annotate_immediates:
         text = _annotate_immediates(text)

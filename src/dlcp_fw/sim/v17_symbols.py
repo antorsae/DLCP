@@ -18,7 +18,15 @@ from .v30_symbols import parse_gpasm_symbols
 parse_v17_symbols = parse_gpasm_symbols
 
 
-_VECTOR_BLOCK_END_LABEL = "control_core_service_004C"
+# First application-code label after the vector block at stock 0x004C.
+# The canonical commented source promotes ``control_core_service_004C``
+# to ``app_entry_defensive_stub`` via the semantic-override table; the
+# shift builder checks both names to stay compatible across polish
+# passes that rename the defensive stub.
+_VECTOR_BLOCK_END_LABELS = (
+    "app_entry_defensive_stub",
+    "control_core_service_004C",
+)
 _BOOTLOADER_LABEL = "bootloader_entry"
 _RAM_INC_NAME = "dlcp_control_ram.inc"
 _SHIFT_WORDS = 0x111  # 0x111 NOP words = 0x222 bytes (matches spec §A4)
@@ -133,7 +141,9 @@ def build_shifted_asm(source_asm: Path, output_asm: Path) -> Path:
             bootloader_pinned = True
             continue
 
-        if not padding_inserted and line.startswith(f"{_VECTOR_BLOCK_END_LABEL}:"):
+        if not padding_inserted and any(
+            line.startswith(f"{label}:") for label in _VECTOR_BLOCK_END_LABELS
+        ):
             out.append("")
             out.append("; --- Relocation safety padding (shift test) ---")
             out.append(
@@ -147,7 +157,8 @@ def build_shifted_asm(source_asm: Path, output_asm: Path) -> Path:
 
     if not padding_inserted:
         raise RuntimeError(
-            f"Could not find '{_VECTOR_BLOCK_END_LABEL}:' to anchor padding"
+            "Could not find first-app-code label to anchor padding; "
+            f"expected one of: {', '.join(_VECTOR_BLOCK_END_LABELS)}"
         )
     if not bootloader_pinned:
         raise RuntimeError("Could not pin bootloader at 0x7800")

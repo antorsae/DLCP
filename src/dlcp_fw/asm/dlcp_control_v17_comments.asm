@@ -82,7 +82,7 @@ flow_local_0040:                                                  ; address: 0x0
         dw      0xffff
         goto    isr_entry                                   ; dest: 0x0003a6
 
-control_core_service_004C:                                               ; address: 0x00004c
+app_entry_defensive_stub:                                               ; address: 0x00004c
 
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -156,7 +156,7 @@ delay_short_loop:                                               ; address: 0x000
         movlw   0x0a
         rcall   delay_parameter_unit                                ; dest: 0x0000aa
         movf    (Common_RAM + 16), W, A                     ; reg: 0x010
-        bra     flow_local_00BA                                   ; dest: 0x0000ba
+        bra     flow_delay_parameter_unit_00BA                                   ; dest: 0x0000ba
 
 
 ; ===========================================================================
@@ -178,28 +178,28 @@ delay_parameter_unit:                                               ; address: 0
         call    control_core_service_01F0, 0x0                           ; dest: 0x0001f0
         movf    (Common_RAM + 12), W, A                     ; reg: 0x00c
 
-flow_local_00BA:                                                  ; address: 0x0000ba
+flow_delay_parameter_unit_00BA:                                                  ; address: 0x0000ba
 
         movwf   (Common_RAM + 12), A                        ; reg: 0x00c
         dcfsnz  (Common_RAM + 6), F, A                      ; reg: 0x006
         bcf     Common_RAM, 0x3, A                          ; reg: 0x000
         movf    (Common_RAM + 7), W, A                      ; reg: 0x007
-        bz      flow_local_00CA
+        bz      flow_delay_parameter_unit_00CA
         subwf   (Common_RAM + 6), W, A                      ; reg: 0x006
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        bra     flow_local_00DA                                   ; dest: 0x0000da
+        bra     flow_delay_parameter_unit_00DA                                   ; dest: 0x0000da
 
-flow_local_00CA:                                                  ; address: 0x0000ca
+flow_delay_parameter_unit_00CA:                                                  ; address: 0x0000ca
 
         movf    (Common_RAM + 12), W, A                     ; reg: 0x00c
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bcf     Common_RAM, 0x3, A                          ; reg: 0x000
         btfsc   Common_RAM, 0x3, A                          ; reg: 0x000
-        bra     flow_local_00DA                                   ; dest: 0x0000da
+        bra     flow_delay_parameter_unit_00DA                                   ; dest: 0x0000da
         addlw   0x30
         goto    lcd_command_or_eeprom_read                                ; dest: 0x000190
 
-flow_local_00DA:                                                  ; address: 0x0000da
+flow_delay_parameter_unit_00DA:                                                  ; address: 0x0000da
 
         return  0x0
 
@@ -219,15 +219,15 @@ lcd_string_write_rom:                                               ; address: 0
         clrf    EECON1, A                                   ; reg: 0xfa6
         bsf     EECON1, EEPGD, A                            ; reg: 0xfa6, bit: 7
 
-flow_local_00E0:                                                  ; address: 0x0000e0
+flow_lcd_string_write_rom_00E0:                                                  ; address: 0x0000e0
 
         tblrd*+
         movf    TABLAT, W, A                                ; reg: 0xff5
-        bz      flow_local_00EA
+        bz      flow_lcd_string_write_rom_00EA
         rcall   lcd_char_write                                ; dest: 0x0000ec
-        bra     flow_local_00E0                                   ; dest: 0x0000e0
+        bra     flow_lcd_string_write_rom_00E0                                   ; dest: 0x0000e0
 
-flow_local_00EA:                                                  ; address: 0x0000ea
+flow_lcd_string_write_rom_00EA:                                                  ; address: 0x0000ea
 
         return  0x0
 
@@ -255,7 +255,7 @@ lcd_char_write:                                               ; address: 0x0000e
         andwf   TRISB, F, A                                 ; reg: 0xf93
         movf    (Common_RAM + 21), W, A                     ; reg: 0x015
         btfsc   Common_RAM, 0x1, A                          ; reg: 0x000
-        goto    flow_local_0146                                   ; dest: 0x000146
+        goto    flow_ccs_0144_0146                                   ; dest: 0x000146
         movlw   0x3a
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0x98
@@ -284,17 +284,17 @@ lcd_char_write:                                               ; address: 0x0000e
         rcall   control_core_service_0144                                ; dest: 0x000144
         bsf     Common_RAM, 0x1, A                          ; reg: 0x000
         movf    (Common_RAM + 21), W, A                     ; reg: 0x015
-        bra     flow_local_0146                                   ; dest: 0x000146
+        bra     flow_ccs_0144_0146                                   ; dest: 0x000146
 
 control_core_service_0144:                                               ; address: 0x000144
 
         bsf     Common_RAM, 0x0, A                          ; reg: 0x000
 
-flow_local_0146:                                                  ; address: 0x000146
+flow_ccs_0144_0146:                                                  ; address: 0x000146
 
         movwf   (Common_RAM + 20), A                        ; reg: 0x014
         btfss   Common_RAM, 0x0, A                          ; reg: 0x000
-        bra     flow_local_0162                                   ; dest: 0x000162
+        bra     flow_ccs_0144_0162                                   ; dest: 0x000162
         bcf     LATA, LATA5, A                              ; reg: 0xf89, bit: 5
         sublw   0x03
         bnc     control_core_service_016A
@@ -306,11 +306,11 @@ flow_local_0146:                                                  ; address: 0x0
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
         return  0x0
 
-flow_local_0162:                                                  ; address: 0x000162
+flow_ccs_0144_0162:                                                  ; address: 0x000162
 
         bsf     Common_RAM, 0x0, A                          ; reg: 0x000
         sublw   0xfe
-        bz      flow_local_018C
+        bz      flow_ccs_016E_018C
         bsf     LATA, LATA5, A                              ; reg: 0xf89, bit: 5
 
 control_core_service_016A:                                               ; address: 0x00016a
@@ -335,7 +335,7 @@ control_core_service_016E:                                               ; addre
         call    control_core_service_01D6, 0x0                           ; dest: 0x0001d6
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
 
-flow_local_018C:                                                  ; address: 0x00018c
+flow_ccs_016E_018C:                                                  ; address: 0x00018c
 
         movf    (Common_RAM + 21), W, A                     ; reg: 0x015
         return  0x0
@@ -401,10 +401,10 @@ eeprom_write_byte:                                               ; address: 0x00
         movwf   EECON2, A                                   ; reg: 0xfa7
         bsf     EECON1, WR, A                               ; reg: 0xfa6, bit: 1
 
-flow_local_01B2:                                                  ; address: 0x0001b2
+flow_eeprom_write_byte_01B2:                                                  ; address: 0x0001b2
 
         btfsc   EECON1, WR, A                               ; reg: 0xfa6, bit: 1
-        bra     flow_local_01B2                                   ; dest: 0x0001b2
+        bra     flow_eeprom_write_byte_01B2                                   ; dest: 0x0001b2
         bcf     EECON1, WREN, A                             ; reg: 0xfa6, bit: 2
         incf    EEADR, F, A                                 ; reg: 0xfa9
         return  0x0
@@ -427,14 +427,14 @@ control_core_service_01BE:                                               ; addre
 
         movwf   (Common_RAM + 14), A                        ; reg: 0x00e
 
-flow_local_01C0:                                                  ; address: 0x0001c0
+flow_ccs_01BE_01C0:                                                  ; address: 0x0001c0
 
         movlw   0xff
         addwf   (Common_RAM + 14), F, A                     ; reg: 0x00e
         addwfc  (Common_RAM + 15), F, A                     ; reg: 0x00f
-        bra     flow_local_01C8                                   ; dest: 0x0001c8
+        bra     flow_ccs_01BE_01C8                                   ; dest: 0x0001c8
 
-flow_local_01C8:                                                  ; address: 0x0001c8
+flow_ccs_01BE_01C8:                                                  ; address: 0x0001c8
 
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         return  0x0
@@ -442,7 +442,7 @@ flow_local_01C8:                                                  ; address: 0x0
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0xe5
         rcall   control_core_service_01D8                                ; dest: 0x0001d8
-        bra     flow_local_01C0                                   ; dest: 0x0001c0
+        bra     flow_ccs_01BE_01C0                                   ; dest: 0x0001c0
 
 control_core_service_01D6:                                               ; address: 0x0001d6
 
@@ -453,19 +453,19 @@ control_core_service_01D8:                                               ; addre
         addlw   0xfa
         movwf   (Common_RAM + 12), A                        ; reg: 0x00c
         nop
-        bnc     flow_local_01E6
-        bra     flow_local_01E2                                   ; dest: 0x0001e2
+        bnc     flow_ccs_01D8_01E6
+        bra     flow_ccs_01D8_01E2                                   ; dest: 0x0001e2
 
-flow_local_01E2:                                                  ; address: 0x0001e2
+flow_ccs_01D8_01E2:                                                  ; address: 0x0001e2
 
         decf    (Common_RAM + 12), F, A                     ; reg: 0x00c
-        bc      flow_local_01E2
+        bc      flow_ccs_01D8_01E2
 
-flow_local_01E6:                                                  ; address: 0x0001e6
+flow_ccs_01D8_01E6:                                                  ; address: 0x0001e6
 
         decf    (Common_RAM + 12), F, A                     ; reg: 0x00c
         decf    (Common_RAM + 13), F, A                     ; reg: 0x00d
-        bc      flow_local_01E2
+        bc      flow_ccs_01D8_01E2
         nop
         return  0x0
 
@@ -476,7 +476,7 @@ control_core_service_01F0:                                               ; addre
         movlw   0x10
         movwf   PRODL, A                                    ; reg: 0xff3
 
-flow_local_01F8:                                                  ; address: 0x0001f8
+flow_ccs_01F0_01F8:                                                  ; address: 0x0001f8
 
         rlcf    (Common_RAM + 13), W, A                     ; reg: 0x00d
         rlcf    (Common_RAM + 16), F, A                     ; reg: 0x010
@@ -485,19 +485,19 @@ flow_local_01F8:                                                  ; address: 0x0
         subwf   (Common_RAM + 16), W, A                     ; reg: 0x010
         movf    (Common_RAM + 15), W, A                     ; reg: 0x00f
         subwfb  (Common_RAM + 17), W, A                     ; reg: 0x011
-        bnc     flow_local_0212
+        bnc     flow_ccs_01F0_0212
         movf    (Common_RAM + 14), W, A                     ; reg: 0x00e
         subwf   (Common_RAM + 16), F, A                     ; reg: 0x010
         movf    (Common_RAM + 15), W, A                     ; reg: 0x00f
         subwfb  (Common_RAM + 17), F, A                     ; reg: 0x011
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
 
-flow_local_0212:                                                  ; address: 0x000212
+flow_ccs_01F0_0212:                                                  ; address: 0x000212
 
         rlcf    (Common_RAM + 12), F, A                     ; reg: 0x00c
         rlcf    (Common_RAM + 13), F, A                     ; reg: 0x00d
         decfsz  PRODL, F, A                                 ; reg: 0xff3
-        bra     flow_local_01F8                                   ; dest: 0x0001f8
+        bra     flow_ccs_01F0_01F8                                   ; dest: 0x0001f8
         movf    (Common_RAM + 12), W, A                     ; reg: 0x00c
         return  0x0
 
@@ -536,21 +536,21 @@ ir_rc5_decode:                                               ; address: 0x00021e
         movlw   0xba
         call    control_core_service_01D8, 0x0                           ; dest: 0x0001d8
         btfsc   PORTB, RB5, A                               ; reg: 0xf81, bit: 5
-        bra     flow_local_02E4                                   ; dest: 0x0002e4
+        bra     flow_ir_rc5_decode_02E4                                   ; dest: 0x0002e4
 
-flow_local_0236:                                                  ; address: 0x000236
+flow_ir_rc5_decode_0236:                                                  ; address: 0x000236
 
         movlw   0x03
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0x76
         call    control_core_service_01D8, 0x0                           ; dest: 0x0001d8
         incf    (Common_RAM + 21), F, A                     ; reg: 0x015
-        movlw   0x20
+        movlw   0x20                                        ; RC5 0x20 preset next
         cpfsgt  (Common_RAM + 21), A                        ; reg: 0x015
-        bra     flow_local_024A                                   ; dest: 0x00024a
-        bra     flow_local_025E                                   ; dest: 0x00025e
+        bra     flow_ir_rc5_decode_024A                                   ; dest: 0x00024a
+        bra     flow_ir_rc5_decode_025E                                   ; dest: 0x00025e
 
-flow_local_024A:                                                  ; address: 0x00024a
+flow_ir_rc5_decode_024A:                                                  ; address: 0x00024a
 
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
         btfsc   PORTB, RB5, A                               ; reg: 0xf81, bit: 5
@@ -558,15 +558,15 @@ flow_local_024A:                                                  ; address: 0x0
         rlcf    INDF0, F, A                                 ; reg: 0xfef
         incf    (Common_RAM + 20), F, A                     ; reg: 0x014
         btfss   (Common_RAM + 20), 0x3, A                   ; reg: 0x014
-        bra     flow_local_025C                                   ; dest: 0x00025c
+        bra     flow_ir_rc5_decode_025C                                   ; dest: 0x00025c
         movf    POSTINC0, F, A                              ; reg: 0xfee
         clrf    (Common_RAM + 20), A                        ; reg: 0x014
 
-flow_local_025C:                                                  ; address: 0x00025c
+flow_ir_rc5_decode_025C:                                                  ; address: 0x00025c
 
-        bra     flow_local_0236                                   ; dest: 0x000236
+        bra     flow_ir_rc5_decode_0236                                   ; dest: 0x000236
 
-flow_local_025E:                                                  ; address: 0x00025e
+flow_ir_rc5_decode_025E:                                                  ; address: 0x00025e
 
         lfsr    0x0, 0x010
         clrf    (Common_RAM + 5), A                         ; reg: 0x005
@@ -581,7 +581,7 @@ flow_local_025E:                                                  ; address: 0x0
         incf    (Common_RAM + 20), F, A                     ; reg: 0x014
         rcall   control_core_service_02EE                                ; dest: 0x0002ee
         btfsc   (Common_RAM + 9), 0x2, A                    ; reg: 0x009
-        bra     flow_local_02E4                                   ; dest: 0x0002e4
+        bra     flow_ir_rc5_decode_02E4                                   ; dest: 0x0002e4
         clrf    (Common_RAM + 5), A                         ; reg: 0x005
         rlcf    INDF0, F, A                                 ; reg: 0xfef
         rlcf    (Common_RAM + 5), F, A                      ; reg: 0x005
@@ -590,13 +590,13 @@ flow_local_025E:                                                  ; address: 0x0
         incf    (Common_RAM + 20), F, A                     ; reg: 0x014
         rcall   control_core_service_02EE                                ; dest: 0x0002ee
         btfsc   (Common_RAM + 9), 0x2, A                    ; reg: 0x009
-        bra     flow_local_02E4                                   ; dest: 0x0002e4
+        bra     flow_ir_rc5_decode_02E4                                   ; dest: 0x0002e4
         rrcf    (Common_RAM + 9), F, A                      ; reg: 0x009
         rlcf    (Common_RAM + 14), F, A                     ; reg: 0x00e
         movlw   0x05
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
 
-flow_local_0296:                                                  ; address: 0x000296
+flow_ir_rc5_decode_0296:                                                  ; address: 0x000296
 
         clrf    (Common_RAM + 5), A                         ; reg: 0x005
         rlcf    INDF0, F, A                                 ; reg: 0xfef
@@ -605,23 +605,23 @@ flow_local_0296:                                                  ; address: 0x0
         rlcf    (Common_RAM + 5), F, A                      ; reg: 0x005
         incf    (Common_RAM + 20), F, A                     ; reg: 0x014
         btfss   (Common_RAM + 20), 0x2, A                   ; reg: 0x014
-        bra     flow_local_02AA                                   ; dest: 0x0002aa
+        bra     flow_ir_rc5_decode_02AA                                   ; dest: 0x0002aa
         movf    POSTINC0, F, A                              ; reg: 0xfee
         clrf    (Common_RAM + 20), A                        ; reg: 0x014
 
-flow_local_02AA:                                                  ; address: 0x0002aa
+flow_ir_rc5_decode_02AA:                                                  ; address: 0x0002aa
 
         rcall   control_core_service_02EE                                ; dest: 0x0002ee
         btfsc   (Common_RAM + 9), 0x2, A                    ; reg: 0x009
-        bra     flow_local_02E4                                   ; dest: 0x0002e4
+        bra     flow_ir_rc5_decode_02E4                                   ; dest: 0x0002e4
         rrcf    (Common_RAM + 9), F, A                      ; reg: 0x009
         rlcf    (Common_RAM + 13), F, A                     ; reg: 0x00d
         decfsz  (Common_RAM + 8), F, A                      ; reg: 0x008
-        bra     flow_local_0296                                   ; dest: 0x000296
+        bra     flow_ir_rc5_decode_0296                                   ; dest: 0x000296
         movlw   0x06
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
 
-flow_local_02BC:                                                  ; address: 0x0002bc
+flow_ir_rc5_decode_02BC:                                                  ; address: 0x0002bc
 
         clrf    (Common_RAM + 5), A                         ; reg: 0x005
         rlcf    INDF0, F, A                                 ; reg: 0xfef
@@ -630,24 +630,24 @@ flow_local_02BC:                                                  ; address: 0x0
         rlcf    (Common_RAM + 5), F, A                      ; reg: 0x005
         incf    (Common_RAM + 20), F, A                     ; reg: 0x014
         btfss   (Common_RAM + 20), 0x2, A                   ; reg: 0x014
-        bra     flow_local_02D0                                   ; dest: 0x0002d0
+        bra     flow_ir_rc5_decode_02D0                                   ; dest: 0x0002d0
         movf    POSTINC0, F, A                              ; reg: 0xfee
         clrf    (Common_RAM + 20), A                        ; reg: 0x014
 
-flow_local_02D0:                                                  ; address: 0x0002d0
+flow_ir_rc5_decode_02D0:                                                  ; address: 0x0002d0
 
         rcall   control_core_service_02EE                                ; dest: 0x0002ee
         btfsc   (Common_RAM + 9), 0x2, A                    ; reg: 0x009
-        bra     flow_local_02E4                                   ; dest: 0x0002e4
+        bra     flow_ir_rc5_decode_02E4                                   ; dest: 0x0002e4
         rrcf    (Common_RAM + 9), F, A                      ; reg: 0x009
         rlcf    (Common_RAM + 12), F, A                     ; reg: 0x00c
         decfsz  (Common_RAM + 8), F, A                      ; reg: 0x008
-        bra     flow_local_02BC                                   ; dest: 0x0002bc
+        bra     flow_ir_rc5_decode_02BC                                   ; dest: 0x0002bc
         movf    (Common_RAM + 12), W, A                     ; reg: 0x00c
         bcf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
         return  0x0
 
-flow_local_02E4:                                                  ; address: 0x0002e4
+flow_ir_rc5_decode_02E4:                                                  ; address: 0x0002e4
 
         movlw   0xff
         movwf   (Common_RAM + 12), A                        ; reg: 0x00c
@@ -659,18 +659,18 @@ control_core_service_02EE:                                               ; addre
 
         clrf    (Common_RAM + 9), A                         ; reg: 0x009
         decfsz  (Common_RAM + 5), W, A                      ; reg: 0x005
-        bra     flow_local_02F8                                   ; dest: 0x0002f8
+        bra     flow_ccs_02EE_02F8                                   ; dest: 0x0002f8
         bsf     (Common_RAM + 9), 0x0, A                    ; reg: 0x009
         return  0x0
 
-flow_local_02F8:                                                  ; address: 0x0002f8
+flow_ccs_02EE_02F8:                                                  ; address: 0x0002f8
 
         movlw   0x02
         cpfseq  (Common_RAM + 5), A                         ; reg: 0x005
-        bra     flow_local_0300                                   ; dest: 0x000300
+        bra     flow_ccs_02EE_0300                                   ; dest: 0x000300
         return  0x0
 
-flow_local_0300:                                                  ; address: 0x000300
+flow_ccs_02EE_0300:                                                  ; address: 0x000300
 
         bsf     (Common_RAM + 9), 0x2, A                    ; reg: 0x009
         return  0x0
@@ -736,22 +736,22 @@ app_cold_init:                                                  ; address: 0x000
         clrf    Common_RAM, A                               ; reg: 0x000
         clrf    RCSTA, A                                    ; reg: 0xfab
         movlb   0x0
-        movlw   0xdf
+        movlw   0xdf                                        ; TRISA: RA1..RA4 input (buttons), RA5 output (LCD RS)
         movwf   TRISA, A                                    ; reg: 0xf92
-        movlw   0x3c
+        movlw   0x3c                                        ; TRISB: RB0..RB3 output (LCD D4..D7 muxed), RB2/RB3 inputs, RB4 E strobe
         movwf   TRISB, A                                    ; reg: 0xf93
-        movlw   0xbd
+        movlw   0xbd                                        ; TRISC: RC6 TX, RC7 RX, RC1 output (LED), RC0/RC5 inputs (buttons)
         movwf   TRISC, A                                    ; reg: 0xf94
         clrf    CM1CON0, A                                  ; reg: 0xf7b
         clrf    CM2CON0, A                                  ; reg: 0xf7a
         clrf    ANSEL, A                                    ; reg: 0xf7e
         clrf    ANSELH, A                                   ; reg: 0xf7f
-        movlw   0x0f
+        movlw   0x0f                                        ; ADCON1: all PORTA digital (vendor init)
         movwf   ADCON1, A                                   ; reg: 0xfc1
         bcf     IOCB, IOCB7, A                              ; reg: 0xf7d, bit: 7
         bcf     IOCB, IOCB6, A                              ; reg: 0xf7d, bit: 6
         bcf     IOCB, IOCB4, A                              ; reg: 0xf7d, bit: 4
-        movlw   0x05
+        movlw   0x05                                        ; SPBRG: 31250 baud @ 4MIPS (BRG16=0 BRGH=0 → SPBRG=5)
         movwf   SPBRG, A                                    ; reg: 0xfaf
         bcf     TXSTA, BRGH, A                              ; reg: 0xfac, bit: 2
         bcf     BAUDCON, BRG16, A                           ; reg: 0xfb8, bit: 3
@@ -762,7 +762,7 @@ app_cold_init:                                                  ; address: 0x000
         bcf     PIE1, RCIE, A                               ; reg: 0xf9d, bit: 5
         bsf     TXSTA, TXEN, A                              ; reg: 0xfac, bit: 5
         bsf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4
-        goto    flow_local_103C                                   ; dest: 0x00103c
+        goto    flow_ccs_0FA0_103C                                   ; dest: 0x00103c
 
 isr_entry:                                                  ; address: 0x0003a6
 
@@ -781,14 +781,14 @@ isr_entry:                                                  ; address: 0x0003a6
         movlw   0x01
         andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_03F6                                   ; dest: 0x0003f6
+        goto    flow_app_cold_init_03F6                                   ; dest: 0x0003f6
         movf    0x96, W, B                                  ; reg: 0x096
         cpfseq  0x97, B                                     ; reg: 0x097
-        goto    flow_local_03DE                                   ; dest: 0x0003de
+        goto    flow_app_cold_init_03DE                                   ; dest: 0x0003de
         bcf     PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
-        goto    flow_local_03F6                                   ; dest: 0x0003f6
+        goto    flow_app_cold_init_03F6                                   ; dest: 0x0003f6
 
-flow_local_03DE:                                                  ; address: 0x0003de
+flow_app_cold_init_03DE:                                                  ; address: 0x0003de
 
         lfsr    0x0, 0x036
         movf    0x96, W, B                                  ; reg: 0x096
@@ -798,13 +798,13 @@ flow_local_03DE:                                                  ; address: 0x0
         movlw   0x30
         subwf   0x96, W, B                                  ; reg: 0x096
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_03F6                                   ; dest: 0x0003f6
+        goto    flow_app_cold_init_03F6                                   ; dest: 0x0003f6
         clrf    0x96, B                                     ; reg: 0x096
 
-flow_local_03F6:                                                  ; address: 0x0003f6
+flow_app_cold_init_03F6:                                                  ; address: 0x0003f6
 
         btfss   PIR1, RCIF, A                               ; reg: 0xf9e, bit: 5
-        goto    flow_local_0414                                   ; dest: 0x000414
+        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
         lfsr    0x0, 0x066
         movf    0x99, W, B                                  ; reg: 0x099
         movff   RCREG, PLUSW0                               ; reg1: 0xfae, reg2: 0xfeb
@@ -812,29 +812,29 @@ flow_local_03F6:                                                  ; address: 0x0
         movlw   0x30
         subwf   0x99, W, B                                  ; reg: 0x099
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0414                                   ; dest: 0x000414
+        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
         clrf    0x99, B                                     ; reg: 0x099
 
-flow_local_0414:                                                  ; address: 0x000414
+flow_app_cold_init_0414:                                                  ; address: 0x000414
 
         btfss   INTCON, RBIF, A                             ; reg: 0xff2, bit: 0
-        goto    flow_local_0436                                   ; dest: 0x000436
+        goto    flow_app_cold_init_0436                                   ; dest: 0x000436
         movf    (Common_RAM + 28), W, A                     ; reg: 0x01c
         iorwf   (Common_RAM + 27), W, A                     ; reg: 0x01b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0434                                   ; dest: 0x000434
+        goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         btfss   control_flags, 0x0, A                   ; reg: 0x01f
-        goto    flow_local_0434                                   ; dest: 0x000434
+        goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         rcall   ir_rc5_decode                                ; dest: 0x00021e
         movwf   ir_decoded_cmd, A                        ; reg: 0x01d
         movff   (Common_RAM + 13), ir_decoded_addr        ; reg1: 0x00d, reg2: 0x01e
         bcf     control_flags, 0x0, A                   ; reg: 0x01f
 
-flow_local_0434:                                                  ; address: 0x000434
+flow_app_cold_init_0434:                                                  ; address: 0x000434
 
         bcf     INTCON, RBIF, A                             ; reg: 0xff2, bit: 0
 
-flow_local_0436:                                                  ; address: 0x000436
+flow_app_cold_init_0436:                                                  ; address: 0x000436
 
         movff   (Common_RAM + 3), FSR0L                     ; reg1: 0x003, reg2: 0xfe9
         movff   (Common_RAM + 4), FSR0H                     ; reg1: 0x004, reg2: 0xfea
@@ -870,19 +870,19 @@ flow_local_0436:                                                  ; address: 0x0
 rx_parser_entry:                                               ; address: 0x00044a
 
         btfss   RCSTA, OERR, A                              ; reg: 0xfab, bit: 1
-        goto    flow_local_0456                                   ; dest: 0x000456
+        goto    flow_rx_parser_entry_0456                                   ; dest: 0x000456
         bcf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4
         nop
         bsf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4
 
-flow_local_0456:                                                  ; address: 0x000456
+flow_rx_parser_entry_0456:                                                  ; address: 0x000456
 
         movf    0x99, W, B                                  ; reg: 0x099
         cpfseq  0x98, B                                     ; reg: 0x098
-        goto    flow_local_0460                                   ; dest: 0x000460
+        goto    flow_rx_parser_entry_0460                                   ; dest: 0x000460
         return  0x0
 
-flow_local_0460:                                                  ; address: 0x000460
+flow_rx_parser_entry_0460:                                                  ; address: 0x000460
 
         lfsr    0x0, 0x066
         movf    0x98, W, B                                  ; reg: 0x098
@@ -892,24 +892,24 @@ flow_local_0460:                                                  ; address: 0x0
         movlw   0x30
         subwf   0x98, W, B                                  ; reg: 0x098
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0478                                   ; dest: 0x000478
+        goto    flow_rx_parser_entry_0478                                   ; dest: 0x000478
         clrf    0x98, B                                     ; reg: 0x098
 
-flow_local_0478:                                                  ; address: 0x000478
+flow_rx_parser_entry_0478:                                                  ; address: 0x000478
 
         movlw   0xfe
         cpfseq  0xb6, B                                     ; reg: 0x0b6
-        goto    flow_local_048A                                   ; dest: 0x00048a
+        goto    flow_rx_parser_entry_048A                                   ; dest: 0x00048a
         movff   0x0b6, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         bra     rx_parser_entry                                ; dest: 0x00044a
 
-flow_local_048A:                                                  ; address: 0x00048a
+flow_rx_parser_entry_048A:                                                  ; address: 0x00048a
 
         movlw   0x80
         subwf   0xb6, W, B                                  ; reg: 0x0b6
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_04D6                                   ; dest: 0x0004d6
+        goto    flow_rx_parser_entry_04D6                                   ; dest: 0x0004d6
         movlw   0xf1
         andwf   0xb6, W, B                                  ; reg: 0x0b6
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
@@ -918,89 +918,89 @@ flow_local_048A:                                                  ; address: 0x0
         xorlw   0xb1                                        ; ROUTE addressed MAIN#1
         iorwf   (Common_RAM + 11), W, A                     ; reg: 0x00b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_04AC                                   ; dest: 0x0004ac
+        goto    flow_rx_parser_entry_04AC                                   ; dest: 0x0004ac
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
         movwf   0xb6, B                                     ; reg: 0x0b6
 
-flow_local_04AC:                                                  ; address: 0x0004ac
+flow_rx_parser_entry_04AC:                                                  ; address: 0x0004ac
 
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         cpfseq  0xb6, B                                     ; reg: 0x0b6
-        goto    flow_local_04BE                                   ; dest: 0x0004be
+        goto    flow_rx_parser_entry_04BE                                   ; dest: 0x0004be
         movlw   0x01
         movwf   0xa6, B                                     ; reg: 0x0a6
         bsf     control_flags, 0x2, A                   ; reg: 0x01f
-        goto    flow_local_04D4                                   ; dest: 0x0004d4
+        goto    flow_rx_parser_entry_04D4                                   ; dest: 0x0004d4
 
-flow_local_04BE:                                                  ; address: 0x0004be
+flow_rx_parser_entry_04BE:                                                  ; address: 0x0004be
 
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
         cpfseq  0xb6, B                                     ; reg: 0x0b6
-        goto    flow_local_04D0                                   ; dest: 0x0004d0
+        goto    flow_rx_parser_entry_04D0                                   ; dest: 0x0004d0
         movlw   0x01
         movwf   0xa6, B                                     ; reg: 0x0a6
         bsf     control_flags, 0x2, A                   ; reg: 0x01f
-        goto    flow_local_04D4                                   ; dest: 0x0004d4
+        goto    flow_rx_parser_entry_04D4                                   ; dest: 0x0004d4
 
-flow_local_04D0:                                                  ; address: 0x0004d0
+flow_rx_parser_entry_04D0:                                                  ; address: 0x0004d0
 
         clrf    0xa6, B                                     ; reg: 0x0a6
         bsf     control_flags, 0x2, A                   ; reg: 0x01f
 
-flow_local_04D4:                                                  ; address: 0x0004d4
+flow_rx_parser_entry_04D4:                                                  ; address: 0x0004d4
 
         bra     rx_parser_entry                                ; dest: 0x00044a
 
-flow_local_04D6:                                                  ; address: 0x0004d6
+flow_rx_parser_entry_04D6:                                                  ; address: 0x0004d6
 
         movf    0xa6, F, B                                  ; reg: 0x0a6
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_04E0                                   ; dest: 0x0004e0
+        goto    flow_rx_parser_entry_04E0                                   ; dest: 0x0004e0
         incf    0xa6, F, B                                  ; reg: 0x0a6
 
-flow_local_04E0:                                                  ; address: 0x0004e0
+flow_rx_parser_entry_04E0:                                                  ; address: 0x0004e0
 
         movlw   0x02
         cpfslt  0xa6, B                                     ; reg: 0x0a6
-        goto    flow_local_04EA                                   ; dest: 0x0004ea
+        goto    flow_rx_parser_entry_04EA                                   ; dest: 0x0004ea
         bra     rx_parser_entry                                ; dest: 0x00044a
 
-flow_local_04EA:                                                  ; address: 0x0004ea
+flow_rx_parser_entry_04EA:                                                  ; address: 0x0004ea
 
         movlw   0x02
         cpfseq  0xa6, B                                     ; reg: 0x0a6
-        goto    flow_local_04F8                                   ; dest: 0x0004f8
+        goto    flow_rx_parser_entry_04F8                                   ; dest: 0x0004f8
         movff   0x0b6, rx_parsed_cmd                    ; reg2: 0x02f
         bra     rx_parser_entry                                ; dest: 0x00044a
 
-flow_local_04F8:                                                  ; address: 0x0004f8
+flow_rx_parser_entry_04F8:                                                  ; address: 0x0004f8
 
         movff   0x0b6, rx_parsed_data                    ; reg2: 0x030
         movlw   0x01
         movwf   0xa6, B                                     ; reg: 0x0a6
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_local_0556                                   ; dest: 0x000556
+        goto    flow_rx_parser_entry_0556                                   ; dest: 0x000556
         decfsz  rx_parsed_data, W, A                     ; reg: 0x030
-        goto    flow_local_0514                                   ; dest: 0x000514
+        goto    flow_rx_parser_entry_0514                                   ; dest: 0x000514
         bsf     control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_0552                                   ; dest: 0x000552
+        goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
 
-flow_local_0514:                                                  ; address: 0x000514
+flow_rx_parser_entry_0514:                                                  ; address: 0x000514
 
         movf    rx_parsed_data, F, A                     ; reg: 0x030
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0522                                   ; dest: 0x000522
+        goto    flow_rx_parser_entry_0522                                   ; dest: 0x000522
         bcf     control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_0552                                   ; dest: 0x000552
+        goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
 
-flow_local_0522:                                                  ; address: 0x000522
+flow_rx_parser_entry_0522:                                                  ; address: 0x000522
 
         movlw   0x02
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0540                                   ; dest: 0x000540
+        goto    flow_rx_parser_entry_0540                                   ; dest: 0x000540
         btfsc   control_flags, 0x5, A                   ; reg: 0x01f
-        goto    flow_local_053C                                   ; dest: 0x00053c
+        goto    flow_rx_parser_entry_053C                                   ; dest: 0x00053c
         movlw   0x2f
         movwf   0xb4, B                                     ; reg: 0x0b4
         movlw   0x75
@@ -1008,104 +1008,104 @@ flow_local_0522:                                                  ; address: 0x0
         bsf     control_flags, 0x5, A                   ; reg: 0x01f
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
 
-flow_local_053C:                                                  ; address: 0x00053c
+flow_rx_parser_entry_053C:                                                  ; address: 0x00053c
 
-        goto    flow_local_0552                                   ; dest: 0x000552
+        goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
 
-flow_local_0540:                                                  ; address: 0x000540
+flow_rx_parser_entry_0540:                                                  ; address: 0x000540
 
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0552                                   ; dest: 0x000552
+        goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
         btfss   control_flags, 0x5, A                   ; reg: 0x01f
-        goto    flow_local_0552                                   ; dest: 0x000552
+        goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
         bcf     control_flags, 0x5, A                   ; reg: 0x01f
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
 
-flow_local_0552:                                                  ; address: 0x000552
+flow_rx_parser_entry_0552:                                                  ; address: 0x000552
 
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
 
-flow_local_0556:                                                  ; address: 0x000556
+flow_rx_parser_entry_0556:                                                  ; address: 0x000556
 
         movlw   0x04                                        ; CMD status_poll
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_local_0562                                   ; dest: 0x000562
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_0562                                   ; dest: 0x000562
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
 
-flow_local_0562:                                                  ; address: 0x000562
+flow_rx_parser_entry_0562:                                                  ; address: 0x000562
 
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_local_057A                                   ; dest: 0x00057a
+        goto    flow_rx_parser_entry_057A                                   ; dest: 0x00057a
         movlw   0x04                                        ; CMD status_poll
         cpfslt  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0576                                   ; dest: 0x000576
+        goto    flow_rx_parser_entry_0576                                   ; dest: 0x000576
         movff   rx_parsed_data, 0x0a1                    ; reg1: 0x030
 
-flow_local_0576:                                                  ; address: 0x000576
+flow_rx_parser_entry_0576:                                                  ; address: 0x000576
 
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
 
-flow_local_057A:                                                  ; address: 0x00057a
+flow_rx_parser_entry_057A:                                                  ; address: 0x00057a
 
         movlw   0x06                                        ; CMD input_select
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_local_05AC                                   ; dest: 0x0005ac
+        goto    flow_rx_parser_entry_05AC                                   ; dest: 0x0005ac
         movlw   0x01
         subwf   (Common_RAM + 50), W, A                     ; reg: 0x032
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_05A8                                   ; dest: 0x0005a8
+        goto    flow_rx_parser_entry_05A8                                   ; dest: 0x0005a8
         movlw   0x09
         cpfslt  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_05A8                                   ; dest: 0x0005a8
+        goto    flow_rx_parser_entry_05A8                                   ; dest: 0x0005a8
         movf    0xb8, W, B                                  ; reg: 0x0b8
         subwf   rx_parsed_data, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_05A8                                   ; dest: 0x0005a8
+        goto    flow_rx_parser_entry_05A8                                   ; dest: 0x0005a8
         movff   rx_parsed_data, 0x0b8                    ; reg1: 0x030
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
         call    control_core_service_061C, 0x0                           ; dest: 0x00061c
 
-flow_local_05A8:                                                  ; address: 0x0005a8
+flow_rx_parser_entry_05A8:                                                  ; address: 0x0005a8
 
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
 
-flow_local_05AC:                                                  ; address: 0x0005ac
+flow_rx_parser_entry_05AC:                                                  ; address: 0x0005ac
 
         movlw   0x07                                        ; CMD volume (offset 0x60)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_local_05D0                                   ; dest: 0x0005d0
+        goto    flow_rx_parser_entry_05D0                                   ; dest: 0x0005d0
         movlw   0x73
         cpfslt  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_05CC                                   ; dest: 0x0005cc
+        goto    flow_rx_parser_entry_05CC                                   ; dest: 0x0005cc
         movf    0xb9, W, B                                  ; reg: 0x0b9
         subwf   rx_parsed_data, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_05C8                                   ; dest: 0x0005c8
+        goto    flow_rx_parser_entry_05C8                                   ; dest: 0x0005c8
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
 
-flow_local_05C8:                                                  ; address: 0x0005c8
+flow_rx_parser_entry_05C8:                                                  ; address: 0x0005c8
 
         movff   rx_parsed_data, 0x0b9                    ; reg1: 0x030
 
-flow_local_05CC:                                                  ; address: 0x0005cc
+flow_rx_parser_entry_05CC:                                                  ; address: 0x0005cc
 
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
 
-flow_local_05D0:                                                  ; address: 0x0005d0
+flow_rx_parser_entry_05D0:                                                  ; address: 0x0005d0
 
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
         movf    0xa7, W, B                                  ; reg: 0x0a7
         subwf   rx_parsed_data, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_05EA                                   ; dest: 0x0005ea
+        goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
         movff   rx_parsed_data, 0x0a7                    ; reg1: 0x030
         call    control_core_service_0F54, 0x0                           ; dest: 0x000f54
 
-flow_local_05EA:                                                  ; address: 0x0005ea
+flow_rx_parser_entry_05EA:                                                  ; address: 0x0005ea
 
         bra     rx_parser_entry                                ; dest: 0x00044a
 
@@ -1119,7 +1119,7 @@ flow_local_05EA:                                                  ; address: 0x0
 ; 0x097, consumer-side is 0x096.  Wrapping at 0x30 (= 48 bytes).
 ;
 ; If the ring is FULL when the producer arrives, the routine drops into
-; the busy-wait at 0x00060C (flow_local_062A, BUG C6) — see annotation there.
+; the busy-wait at 0x00060C (flow_ccs_061C_062A, BUG C6) — see annotation there.
 ; ===========================================================================
 ; tx_byte_enqueue:
 tx_byte_enqueue:                                               ; address: 0x0005ec
@@ -1132,22 +1132,22 @@ tx_byte_enqueue:                                               ; address: 0x0005
         movlw   0x30
         subwf   tx_data_staging, W, A                     ; reg: 0x027
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0606                                   ; dest: 0x000606
+        goto    flow_tx_byte_enqueue_0606                                   ; dest: 0x000606
         clrf    tx_data_staging, A                        ; reg: 0x027
 
-flow_local_0606:                                                  ; address: 0x000606
+flow_tx_byte_enqueue_0606:                                                  ; address: 0x000606
 
         btfss   PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
-        goto    flow_local_0614                                   ; dest: 0x000614
+        goto    flow_tx_byte_enqueue_0614                                   ; dest: 0x000614
 
-flow_local_060C:                                                  ; address: 0x00060c
+flow_tx_byte_enqueue_060C:                                                  ; address: 0x00060c
 
         movf    tx_data_staging, W, A                     ; reg: 0x027
         subwf   0x96, W, B                                  ; reg: 0x096
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_060C                                   ; dest: 0x00060c
+        bra     flow_tx_byte_enqueue_060C                                   ; dest: 0x00060c
 
-flow_local_0614:                                                  ; address: 0x000614
+flow_tx_byte_enqueue_0614:                                                  ; address: 0x000614
 
         movff   tx_data_staging, 0x097                    ; reg1: 0x027
         bsf     PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
@@ -1157,220 +1157,220 @@ control_core_service_061C:                                               ; addre
 
         movf    rx_parsed_data, F, A                     ; reg: 0x030
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_062A                                   ; dest: 0x00062a
+        goto    flow_ccs_061C_062A                                   ; dest: 0x00062a
         clrf    0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_062A:                                                  ; address: 0x00062a
+flow_ccs_061C_062A:                                                  ; address: 0x00062a
 
         decfsz  rx_parsed_data, W, A                     ; reg: 0x030
-        goto    flow_local_0638                                   ; dest: 0x000638
+        goto    flow_ccs_061C_0638                                   ; dest: 0x000638
         movlw   0x05
         movwf   0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_0638:                                                  ; address: 0x000638
+flow_ccs_061C_0638:                                                  ; address: 0x000638
 
         movlw   0x02
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0658                                   ; dest: 0x000658
+        goto    flow_ccs_061C_0658                                   ; dest: 0x000658
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0650                                   ; dest: 0x000650
+        goto    flow_ccs_061C_0650                                   ; dest: 0x000650
         movlw   0x06
         movwf   0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_0654                                   ; dest: 0x000654
+        goto    flow_ccs_061C_0654                                   ; dest: 0x000654
 
-flow_local_0650:                                                  ; address: 0x000650
+flow_ccs_061C_0650:                                                  ; address: 0x000650
 
         movlw   0x01
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0654:                                                  ; address: 0x000654
+flow_ccs_061C_0654:                                                  ; address: 0x000654
 
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_0658:                                                  ; address: 0x000658
+flow_ccs_061C_0658:                                                  ; address: 0x000658
 
         movlw   0x03
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0686                                   ; dest: 0x000686
+        goto    flow_ccs_061C_0686                                   ; dest: 0x000686
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_067E                                   ; dest: 0x00067e
+        goto    flow_ccs_061C_067E                                   ; dest: 0x00067e
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_0676                                   ; dest: 0x000676
+        goto    flow_ccs_061C_0676                                   ; dest: 0x000676
         movlw   0x01
         movwf   0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_067A                                   ; dest: 0x00067a
+        goto    flow_ccs_061C_067A                                   ; dest: 0x00067a
 
-flow_local_0676:                                                  ; address: 0x000676
+flow_ccs_061C_0676:                                                  ; address: 0x000676
 
         movlw   0x07
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_067A:                                                  ; address: 0x00067a
+flow_ccs_061C_067A:                                                  ; address: 0x00067a
 
-        goto    flow_local_0682                                   ; dest: 0x000682
+        goto    flow_ccs_061C_0682                                   ; dest: 0x000682
 
-flow_local_067E:                                                  ; address: 0x00067e
+flow_ccs_061C_067E:                                                  ; address: 0x00067e
 
         movlw   0x02
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0682:                                                  ; address: 0x000682
+flow_ccs_061C_0682:                                                  ; address: 0x000682
 
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_0686:                                                  ; address: 0x000686
+flow_ccs_061C_0686:                                                  ; address: 0x000686
 
         movlw   0x04
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_06C4                                   ; dest: 0x0006c4
+        goto    flow_ccs_061C_06C4                                   ; dest: 0x0006c4
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_06BC                                   ; dest: 0x0006bc
+        goto    flow_ccs_061C_06BC                                   ; dest: 0x0006bc
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_06A0                                   ; dest: 0x0006a0
+        goto    flow_ccs_061C_06A0                                   ; dest: 0x0006a0
         movlw   0x02
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06A0:                                                  ; address: 0x0006a0
+flow_ccs_061C_06A0:                                                  ; address: 0x0006a0
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_06AC                                   ; dest: 0x0006ac
+        goto    flow_ccs_061C_06AC                                   ; dest: 0x0006ac
         movlw   0x01
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06AC:                                                  ; address: 0x0006ac
+flow_ccs_061C_06AC:                                                  ; address: 0x0006ac
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_06B8                                   ; dest: 0x0006b8
+        goto    flow_ccs_061C_06B8                                   ; dest: 0x0006b8
         movlw   0x08
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06B8:                                                  ; address: 0x0006b8
+flow_ccs_061C_06B8:                                                  ; address: 0x0006b8
 
-        goto    flow_local_06C0                                   ; dest: 0x0006c0
+        goto    flow_ccs_061C_06C0                                   ; dest: 0x0006c0
 
-flow_local_06BC:                                                  ; address: 0x0006bc
+flow_ccs_061C_06BC:                                                  ; address: 0x0006bc
 
         movlw   0x03
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06C0:                                                  ; address: 0x0006c0
+flow_ccs_061C_06C0:                                                  ; address: 0x0006c0
 
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_06C4:                                                  ; address: 0x0006c4
+flow_ccs_061C_06C4:                                                  ; address: 0x0006c4
 
         movlw   0x05
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0702                                   ; dest: 0x000702
+        goto    flow_ccs_061C_0702                                   ; dest: 0x000702
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_06FA                                   ; dest: 0x0006fa
+        goto    flow_ccs_061C_06FA                                   ; dest: 0x0006fa
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_06DE                                   ; dest: 0x0006de
+        goto    flow_ccs_061C_06DE                                   ; dest: 0x0006de
         movlw   0x03
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06DE:                                                  ; address: 0x0006de
+flow_ccs_061C_06DE:                                                  ; address: 0x0006de
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_06EA                                   ; dest: 0x0006ea
+        goto    flow_ccs_061C_06EA                                   ; dest: 0x0006ea
         movlw   0x02
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06EA:                                                  ; address: 0x0006ea
+flow_ccs_061C_06EA:                                                  ; address: 0x0006ea
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_06F6                                   ; dest: 0x0006f6
+        goto    flow_ccs_061C_06F6                                   ; dest: 0x0006f6
         movlw   0x01
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06F6:                                                  ; address: 0x0006f6
+flow_ccs_061C_06F6:                                                  ; address: 0x0006f6
 
-        goto    flow_local_06FE                                   ; dest: 0x0006fe
+        goto    flow_ccs_061C_06FE                                   ; dest: 0x0006fe
 
-flow_local_06FA:                                                  ; address: 0x0006fa
+flow_ccs_061C_06FA:                                                  ; address: 0x0006fa
 
         movlw   0x04
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_06FE:                                                  ; address: 0x0006fe
+flow_ccs_061C_06FE:                                                  ; address: 0x0006fe
 
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_0702:                                                  ; address: 0x000702
+flow_ccs_061C_0702:                                                  ; address: 0x000702
 
         movlw   0x06
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0730                                   ; dest: 0x000730
+        goto    flow_ccs_061C_0730                                   ; dest: 0x000730
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_0714                                   ; dest: 0x000714
+        goto    flow_ccs_061C_0714                                   ; dest: 0x000714
         movlw   0x04
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0714:                                                  ; address: 0x000714
+flow_ccs_061C_0714:                                                  ; address: 0x000714
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0720                                   ; dest: 0x000720
+        goto    flow_ccs_061C_0720                                   ; dest: 0x000720
         movlw   0x03
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0720:                                                  ; address: 0x000720
+flow_ccs_061C_0720:                                                  ; address: 0x000720
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_072C                                   ; dest: 0x00072c
+        goto    flow_ccs_061C_072C                                   ; dest: 0x00072c
         movlw   0x02
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_072C:                                                  ; address: 0x00072c
+flow_ccs_061C_072C:                                                  ; address: 0x00072c
 
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_0730:                                                  ; address: 0x000730
+flow_ccs_061C_0730:                                                  ; address: 0x000730
 
         movlw   0x07
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0754                                   ; dest: 0x000754
+        goto    flow_ccs_061C_0754                                   ; dest: 0x000754
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0744                                   ; dest: 0x000744
+        goto    flow_ccs_061C_0744                                   ; dest: 0x000744
         movlw   0x04
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0744:                                                  ; address: 0x000744
+flow_ccs_061C_0744:                                                  ; address: 0x000744
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0750                                   ; dest: 0x000750
+        goto    flow_ccs_061C_0750                                   ; dest: 0x000750
         movlw   0x03
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0750:                                                  ; address: 0x000750
+flow_ccs_061C_0750:                                                  ; address: 0x000750
 
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
-flow_local_0754:                                                  ; address: 0x000754
+flow_ccs_061C_0754:                                                  ; address: 0x000754
 
         movlw   0x08
         cpfseq  rx_parsed_data, A                        ; reg: 0x030
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0768                                   ; dest: 0x000768
+        goto    flow_ccs_061C_0768                                   ; dest: 0x000768
         movlw   0x04
         movwf   0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0768:                                                  ; address: 0x000768
+flow_ccs_061C_0768:                                                  ; address: 0x000768
 
         return  0x0
 
@@ -1378,213 +1378,213 @@ control_core_service_076A:                                               ; addre
 
         movf    0xb7, F, B                                  ; reg: 0x0b7
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0778                                   ; dest: 0x000778
+        goto    flow_ccs_076A_0778                                   ; dest: 0x000778
         clrf    0xb8, B                                     ; reg: 0x0b8
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_0778:                                                  ; address: 0x000778
+flow_ccs_076A_0778:                                                  ; address: 0x000778
 
         decfsz  0xb7, W, B                                  ; reg: 0x0b7
-        goto    flow_local_07B4                                   ; dest: 0x0007b4
+        goto    flow_ccs_076A_07B4                                   ; dest: 0x0007b4
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_07AC                                   ; dest: 0x0007ac
+        goto    flow_ccs_076A_07AC                                   ; dest: 0x0007ac
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_0790                                   ; dest: 0x000790
+        goto    flow_ccs_076A_0790                                   ; dest: 0x000790
         movlw   0x03
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_0790:                                                  ; address: 0x000790
+flow_ccs_076A_0790:                                                  ; address: 0x000790
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_079C                                   ; dest: 0x00079c
+        goto    flow_ccs_076A_079C                                   ; dest: 0x00079c
         movlw   0x04
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_079C:                                                  ; address: 0x00079c
+flow_ccs_076A_079C:                                                  ; address: 0x00079c
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_07A8                                   ; dest: 0x0007a8
+        goto    flow_ccs_076A_07A8                                   ; dest: 0x0007a8
         movlw   0x05
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_07A8:                                                  ; address: 0x0007a8
+flow_ccs_076A_07A8:                                                  ; address: 0x0007a8
 
-        goto    flow_local_07B0                                   ; dest: 0x0007b0
+        goto    flow_ccs_076A_07B0                                   ; dest: 0x0007b0
 
-flow_local_07AC:                                                  ; address: 0x0007ac
+flow_ccs_076A_07AC:                                                  ; address: 0x0007ac
 
         movlw   0x02
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_07B0:                                                  ; address: 0x0007b0
+flow_ccs_076A_07B0:                                                  ; address: 0x0007b0
 
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_07B4:                                                  ; address: 0x0007b4
+flow_ccs_076A_07B4:                                                  ; address: 0x0007b4
 
         movlw   0x02
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_07F2                                   ; dest: 0x0007f2
+        goto    flow_ccs_076A_07F2                                   ; dest: 0x0007f2
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_07EA                                   ; dest: 0x0007ea
+        goto    flow_ccs_076A_07EA                                   ; dest: 0x0007ea
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_07CE                                   ; dest: 0x0007ce
+        goto    flow_ccs_076A_07CE                                   ; dest: 0x0007ce
         movlw   0x04
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_07CE:                                                  ; address: 0x0007ce
+flow_ccs_076A_07CE:                                                  ; address: 0x0007ce
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_07DA                                   ; dest: 0x0007da
+        goto    flow_ccs_076A_07DA                                   ; dest: 0x0007da
         movlw   0x05
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_07DA:                                                  ; address: 0x0007da
+flow_ccs_076A_07DA:                                                  ; address: 0x0007da
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_07E6                                   ; dest: 0x0007e6
+        goto    flow_ccs_076A_07E6                                   ; dest: 0x0007e6
         movlw   0x06
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_07E6:                                                  ; address: 0x0007e6
+flow_ccs_076A_07E6:                                                  ; address: 0x0007e6
 
-        goto    flow_local_07EE                                   ; dest: 0x0007ee
+        goto    flow_ccs_076A_07EE                                   ; dest: 0x0007ee
 
-flow_local_07EA:                                                  ; address: 0x0007ea
+flow_ccs_076A_07EA:                                                  ; address: 0x0007ea
 
         movlw   0x03
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_07EE:                                                  ; address: 0x0007ee
+flow_ccs_076A_07EE:                                                  ; address: 0x0007ee
 
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_07F2:                                                  ; address: 0x0007f2
+flow_ccs_076A_07F2:                                                  ; address: 0x0007f2
 
         movlw   0x03
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_0830                                   ; dest: 0x000830
+        goto    flow_ccs_076A_0830                                   ; dest: 0x000830
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0828                                   ; dest: 0x000828
+        goto    flow_ccs_076A_0828                                   ; dest: 0x000828
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_080C                                   ; dest: 0x00080c
+        goto    flow_ccs_076A_080C                                   ; dest: 0x00080c
         movlw   0x05
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_080C:                                                  ; address: 0x00080c
+flow_ccs_076A_080C:                                                  ; address: 0x00080c
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0818                                   ; dest: 0x000818
+        goto    flow_ccs_076A_0818                                   ; dest: 0x000818
         movlw   0x06
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_0818:                                                  ; address: 0x000818
+flow_ccs_076A_0818:                                                  ; address: 0x000818
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0824                                   ; dest: 0x000824
+        goto    flow_ccs_076A_0824                                   ; dest: 0x000824
         movlw   0x07
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_0824:                                                  ; address: 0x000824
+flow_ccs_076A_0824:                                                  ; address: 0x000824
 
-        goto    flow_local_082C                                   ; dest: 0x00082c
+        goto    flow_ccs_076A_082C                                   ; dest: 0x00082c
 
-flow_local_0828:                                                  ; address: 0x000828
+flow_ccs_076A_0828:                                                  ; address: 0x000828
 
         movlw   0x04
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_082C:                                                  ; address: 0x00082c
+flow_ccs_076A_082C:                                                  ; address: 0x00082c
 
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_0830:                                                  ; address: 0x000830
+flow_ccs_076A_0830:                                                  ; address: 0x000830
 
         movlw   0x04
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_086E                                   ; dest: 0x00086e
+        goto    flow_ccs_076A_086E                                   ; dest: 0x00086e
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0866                                   ; dest: 0x000866
+        goto    flow_ccs_076A_0866                                   ; dest: 0x000866
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_084A                                   ; dest: 0x00084a
+        goto    flow_ccs_076A_084A                                   ; dest: 0x00084a
         movlw   0x06
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_084A:                                                  ; address: 0x00084a
+flow_ccs_076A_084A:                                                  ; address: 0x00084a
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0856                                   ; dest: 0x000856
+        goto    flow_ccs_076A_0856                                   ; dest: 0x000856
         movlw   0x07
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_0856:                                                  ; address: 0x000856
+flow_ccs_076A_0856:                                                  ; address: 0x000856
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0862                                   ; dest: 0x000862
+        goto    flow_ccs_076A_0862                                   ; dest: 0x000862
         movlw   0x08
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_0862:                                                  ; address: 0x000862
+flow_ccs_076A_0862:                                                  ; address: 0x000862
 
-        goto    flow_local_086A                                   ; dest: 0x00086a
+        goto    flow_ccs_076A_086A                                   ; dest: 0x00086a
 
-flow_local_0866:                                                  ; address: 0x000866
+flow_ccs_076A_0866:                                                  ; address: 0x000866
 
         movlw   0x05
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_086A:                                                  ; address: 0x00086a
+flow_ccs_076A_086A:                                                  ; address: 0x00086a
 
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_086E:                                                  ; address: 0x00086e
+flow_ccs_076A_086E:                                                  ; address: 0x00086e
 
         movlw   0x05
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_087E                                   ; dest: 0x00087e
+        goto    flow_ccs_076A_087E                                   ; dest: 0x00087e
         movlw   0x01
         movwf   0xb8, B                                     ; reg: 0x0b8
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_087E:                                                  ; address: 0x00087e
+flow_ccs_076A_087E:                                                  ; address: 0x00087e
 
         movlw   0x06
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_088E                                   ; dest: 0x00088e
+        goto    flow_ccs_076A_088E                                   ; dest: 0x00088e
         movlw   0x02
         movwf   0xb8, B                                     ; reg: 0x0b8
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_088E:                                                  ; address: 0x00088e
+flow_ccs_076A_088E:                                                  ; address: 0x00088e
 
         movlw   0x07
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_089E                                   ; dest: 0x00089e
+        goto    flow_ccs_076A_089E                                   ; dest: 0x00089e
         movlw   0x03
         movwf   0xb8, B                                     ; reg: 0x0b8
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
-flow_local_089E:                                                  ; address: 0x00089e
+flow_ccs_076A_089E:                                                  ; address: 0x00089e
 
         movlw   0x08
         cpfseq  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_08AA                                   ; dest: 0x0008aa
+        goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
         movlw   0x04
         movwf   0xb8, B                                     ; reg: 0x0b8
 
-flow_local_08AA:                                                  ; address: 0x0008aa
+flow_ccs_076A_08AA:                                                  ; address: 0x0008aa
 
         return  0x0
 
@@ -1628,59 +1628,59 @@ button_scan_debounce:                                               ; address: 0
         movf    tx_data_staging, W, A                     ; reg: 0x027
         subwf   0xbc, W, B                                  ; reg: 0x0bc
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_08EA                                   ; dest: 0x0008ea
+        goto    flow_button_scan_debounce_08EA                                   ; dest: 0x0008ea
         clrf    0xbb, B                                     ; reg: 0x0bb
         movff   tx_data_staging, 0x0bc                    ; reg1: 0x027
-        goto    flow_local_08FC                                   ; dest: 0x0008fc
+        goto    flow_button_scan_debounce_08FC                                   ; dest: 0x0008fc
 
-flow_local_08EA:                                                  ; address: 0x0008ea
+flow_button_scan_debounce_08EA:                                                  ; address: 0x0008ea
 
         movlw   0x04
         cpfslt  0xbb, B                                     ; reg: 0x0bb
-        goto    flow_local_08F8                                   ; dest: 0x0008f8
+        goto    flow_button_scan_debounce_08F8                                   ; dest: 0x0008f8
         incf    0xbb, F, B                                  ; reg: 0x0bb
-        goto    flow_local_08FC                                   ; dest: 0x0008fc
+        goto    flow_button_scan_debounce_08FC                                   ; dest: 0x0008fc
 
-flow_local_08F8:                                                  ; address: 0x0008f8
+flow_button_scan_debounce_08F8:                                                  ; address: 0x0008f8
 
         movff   0x0bc, 0x0be
 
-flow_local_08FC:                                                  ; address: 0x0008fc
+flow_button_scan_debounce_08FC:                                                  ; address: 0x0008fc
 
         clrf    0x9a, B                                     ; reg: 0x09a
         movf    0xbe, W, B                                  ; reg: 0x0be
         subwf   0xbd, W, B                                  ; reg: 0x0bd
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0918                                   ; dest: 0x000918
+        goto    flow_button_scan_debounce_0918                                   ; dest: 0x000918
         movff   0x0be, 0x0bd
         clrf    0x9b, B                                     ; reg: 0x09b
         clrf    0x9c, B                                     ; reg: 0x09c
         movff   0x0be, 0x09a
-        goto    flow_local_0924                                   ; dest: 0x000924
+        goto    flow_button_scan_debounce_0924                                   ; dest: 0x000924
 
-flow_local_0918:                                                  ; address: 0x000918
+flow_button_scan_debounce_0918:                                                  ; address: 0x000918
 
         rrcf    0xbe, W, B                                  ; reg: 0x0be
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0924                                   ; dest: 0x000924
+        goto    flow_button_scan_debounce_0924                                   ; dest: 0x000924
         infsnz  0x9b, F, B                                  ; reg: 0x09b
         incf    0x9c, F, B                                  ; reg: 0x09c
 
-flow_local_0924:                                                  ; address: 0x000924
+flow_button_scan_debounce_0924:                                                  ; address: 0x000924
 
         movlw   0xc9
         subwf   0x9b, W, B                                  ; reg: 0x09b
         movlw   0x32
         subwfb  0x9c, W, B                                  ; reg: 0x09c
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_093E                                   ; dest: 0x00093e
+        goto    flow_button_scan_debounce_093E                                   ; dest: 0x00093e
         movlw   0x28
         movwf   0x9b, B                                     ; reg: 0x09b
         movlw   0x23
         movwf   0x9c, B                                     ; reg: 0x09c
         movff   0x0be, 0x09a
 
-flow_local_093E:                                                  ; address: 0x00093e
+flow_button_scan_debounce_093E:                                                  ; address: 0x00093e
 
         return  0x0
 
@@ -1702,11 +1702,11 @@ control_core_service_0940:                                               ; addre
         addwfc  (Common_RAM + 42), F, A                     ; reg: 0x02a
         clrf    tx_data_staging, A                        ; reg: 0x027
 
-flow_local_0964:                                                  ; address: 0x000964
+flow_ccs_0940_0964:                                                  ; address: 0x000964
 
         movlw   0x10
         cpfslt  tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_098E                                   ; dest: 0x00098e
+        goto    flow_ccs_0940_098E                                   ; dest: 0x00098e
         movf    tx_data_staging, W, A                     ; reg: 0x027
         addwf   (Common_RAM + 41), W, A                     ; reg: 0x029
         movwf   TBLPTRL, A                                  ; reg: 0xff6
@@ -1721,9 +1721,9 @@ flow_local_0964:                                                  ; address: 0x0
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
         incf    tx_data_staging, F, A                     ; reg: 0x027
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_0964                                   ; dest: 0x000964
+        bra     flow_ccs_0940_0964                                   ; dest: 0x000964
 
-flow_local_098E:                                                  ; address: 0x00098e
+flow_ccs_0940_098E:                                                  ; address: 0x00098e
 
         return  0x0
 
@@ -1742,11 +1742,11 @@ control_core_service_0990:                                               ; addre
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         clrf    tx_data_staging, A                        ; reg: 0x027
 
-flow_local_09AE:                                                  ; address: 0x0009ae
+flow_ccs_0990_09AE:                                                  ; address: 0x0009ae
 
         movlw   0x06                                        ; CMD input_select
         cpfslt  tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0A3A                                   ; dest: 0x000a3a
+        goto    flow_ccs_0990_0A3A                                   ; dest: 0x000a3a
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         addwf   tx_data_staging, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
@@ -1798,9 +1798,9 @@ flow_local_09AE:                                                  ; address: 0x0
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         incf    tx_data_staging, F, A                     ; reg: 0x027
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_09AE                                   ; dest: 0x0009ae
+        bra     flow_ccs_0990_09AE                                   ; dest: 0x0009ae
 
-flow_local_0A3A:                                                  ; address: 0x000a3a
+flow_ccs_0990_0A3A:                                                  ; address: 0x000a3a
 
         movlw   0x73
         movwf   EEADR, A                                    ; reg: 0xfa9
@@ -1834,11 +1834,11 @@ settings_load_eeprom:                                               ; address: 0
         movwf   0xc0, B                                     ; reg: 0x0c0
         clrf    tx_data_staging, A                        ; reg: 0x027
 
-flow_local_0A60:                                                  ; address: 0x000a60
+flow_settings_load_eeprom_0A60:                                                  ; address: 0x000a60
 
         movlw   0x06                                        ; CMD input_select
         cpfslt  tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0AFA                                   ; dest: 0x000afa
+        goto    flow_settings_load_eeprom_0AFA                                   ; dest: 0x000afa
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         addwf   tx_data_staging, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
@@ -1890,9 +1890,9 @@ flow_local_0A60:                                                  ; address: 0x0
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         incf    tx_data_staging, F, A                     ; reg: 0x027
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_0A60                                   ; dest: 0x000a60
+        bra     flow_settings_load_eeprom_0A60                                   ; dest: 0x000a60
 
-flow_local_0AFA:                                                  ; address: 0x000afa
+flow_settings_load_eeprom_0AFA:                                                  ; address: 0x000afa
 
         movlw   0x73
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
@@ -1900,11 +1900,11 @@ flow_local_0AFA:                                                  ; address: 0x0
         movlw   0x05
         subwf   0xeb, W, B                                  ; reg: 0x0eb
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0B10                                   ; dest: 0x000b10
+        goto    flow_settings_load_eeprom_0B10                                   ; dest: 0x000b10
         movlw   0x01
         movwf   0xeb, B                                     ; reg: 0x0eb
 
-flow_local_0B10:                                                  ; address: 0x000b10
+flow_settings_load_eeprom_0B10:                                                  ; address: 0x000b10
 
         call    control_core_service_1478, 0x0                           ; dest: 0x001478
         return  0x0
@@ -2065,11 +2065,11 @@ poll_frame_send:                                               ; address: 0x000b
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
         movf    (Common_RAM + 53), F, A                     ; reg: 0x035
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0C1E                                   ; dest: 0x000c1e
-        movlw   0x03
+        goto    flow_poll_frame_send_0C1E                                   ; dest: 0x000c1e
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
 
-flow_local_0C1E:                                                  ; address: 0x000c1e
+flow_poll_frame_send_0C1E:                                                  ; address: 0x000c1e
 
         rcall   serial_tx_routed_frame                                ; dest: 0x000b16
         return  0x0
@@ -2164,17 +2164,17 @@ mute_frame_send:                                               ; address: 0x000c
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
         btfss   control_flags, 0x5, A                   ; reg: 0x01f
-        goto    flow_local_0C90                                   ; dest: 0x000c90
+        goto    flow_mute_frame_send_0C90                                   ; dest: 0x000c90
         movlw   0x02
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
-        goto    flow_local_0C94                                   ; dest: 0x000c94
+        goto    flow_mute_frame_send_0C94                                   ; dest: 0x000c94
 
-flow_local_0C90:                                                  ; address: 0x000c90
+flow_mute_frame_send_0C90:                                                  ; address: 0x000c90
 
-        movlw   0x03
+        movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
 
-flow_local_0C94:                                                  ; address: 0x000c94
+flow_mute_frame_send_0C94:                                                  ; address: 0x000c94
 
         rcall   serial_tx_routed_frame                                ; dest: 0x000b16
         return  0x0
@@ -2203,16 +2203,16 @@ standby_wake_broadcast:                                               ; address:
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
         btfsc   control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_0CAA                                   ; dest: 0x000caa
+        goto    flow_standby_wake_broadcast_0CAA                                   ; dest: 0x000caa
         clrf    (Common_RAM + 53), A                        ; reg: 0x035
-        goto    flow_local_0CAE                                   ; dest: 0x000cae
+        goto    flow_standby_wake_broadcast_0CAE                                   ; dest: 0x000cae
 
-flow_local_0CAA:                                                  ; address: 0x000caa
+flow_standby_wake_broadcast_0CAA:                                                  ; address: 0x000caa
 
         movlw   0x01
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
 
-flow_local_0CAE:                                                  ; address: 0x000cae
+flow_standby_wake_broadcast_0CAE:                                                  ; address: 0x000cae
 
         rcall   serial_tx_routed_frame                                ; dest: 0x000b16
         return  0x0
@@ -2240,7 +2240,7 @@ display_loop_iteration:                                               ; address:
 
         bsf     INTCON, RBIE, A                             ; reg: 0xff2, bit: 3
 
-flow_local_0CB4:                                                  ; address: 0x000cb4
+flow_display_loop_iteration_0CB4:                                                  ; address: 0x000cb4
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
@@ -2250,21 +2250,21 @@ flow_local_0CB4:                                                  ; address: 0x0
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         xorwf   0x9d, W, B                                  ; reg: 0x09d
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0CCE                                   ; dest: 0x000cce
+        goto    flow_display_loop_iteration_0CCE                                   ; dest: 0x000cce
         rcall   control_core_service_0990                                ; dest: 0x000990
 
-flow_local_0CCE:                                                  ; address: 0x000cce
+flow_display_loop_iteration_0CCE:                                                  ; address: 0x000cce
 
         movlw   0x61
         subwf   0x9d, W, B                                  ; reg: 0x09d
         movlw   0xea
         subwfb  0x9e, W, B                                  ; reg: 0x09e
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0CE0                                   ; dest: 0x000ce0
+        goto    flow_display_loop_iteration_0CE0                                   ; dest: 0x000ce0
         infsnz  0x9d, F, B                                  ; reg: 0x09d
         incf    0x9e, F, B                                  ; reg: 0x09e
 
-flow_local_0CE0:                                                  ; address: 0x000ce0
+flow_display_loop_iteration_0CE0:                                                  ; address: 0x000ce0
 
         call    control_core_service_0DCE, 0x0                           ; dest: 0x000dce
         movf    0xa0, W, B                                  ; reg: 0x0a0
@@ -2273,30 +2273,30 @@ flow_local_0CE0:                                                  ; address: 0x0
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         xorwf   0x9f, W, B                                  ; reg: 0x09f
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0CFE                                   ; dest: 0x000cfe
+        goto    flow_display_loop_iteration_0CFE                                   ; dest: 0x000cfe
         rcall   full_sync_burst                                ; dest: 0x000b36
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
-        goto    flow_local_0D02                                   ; dest: 0x000d02
+        goto    flow_display_loop_iteration_0D02                                   ; dest: 0x000d02
 
-flow_local_0CFE:                                                  ; address: 0x000cfe
+flow_display_loop_iteration_0CFE:                                                  ; address: 0x000cfe
 
         infsnz  0x9f, F, B                                  ; reg: 0x09f
         incf    0xa0, F, B                                  ; reg: 0x0a0
 
-flow_local_0D02:                                                  ; address: 0x000d02
+flow_display_loop_iteration_0D02:                                                  ; address: 0x000d02
 
         btfsc   control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_0D10                                   ; dest: 0x000d10
+        goto    flow_display_loop_iteration_0D10                                   ; dest: 0x000d10
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bcf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
-        goto    flow_local_0D7A                                   ; dest: 0x000d7a
+        goto    flow_display_loop_iteration_0D7A                                   ; dest: 0x000d7a
 
-flow_local_0D10:                                                  ; address: 0x000d10
+flow_display_loop_iteration_0D10:                                                  ; address: 0x000d10
 
         movf    0xeb, F, B                                  ; reg: 0x0eb
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0D76                                   ; dest: 0x000d76
+        goto    flow_display_loop_iteration_0D76                                   ; dest: 0x000d76
         movf    0xec, W, B                                  ; reg: 0x0ec
         subwf   0xb0, W, B                                  ; reg: 0x0b0
         movf    0xed, W, B                                  ; reg: 0x0ed
@@ -2310,15 +2310,15 @@ flow_local_0D10:                                                  ; address: 0x0
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         xorlw   0x80
         btfss   STATUS, N, A                                ; reg: 0xfd8, bit: 4
-        goto    flow_local_0D3E                                   ; dest: 0x000d3e
+        goto    flow_display_loop_iteration_0D3E                                   ; dest: 0x000d3e
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bcf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
-        goto    flow_local_0D72                                   ; dest: 0x000d72
+        goto    flow_display_loop_iteration_0D72                                   ; dest: 0x000d72
 
-flow_local_0D3E:                                                  ; address: 0x000d3e
+flow_display_loop_iteration_0D3E:                                                  ; address: 0x000d3e
 
         btfss   control_flags, 0x5, A                   ; reg: 0x01f
-        goto    flow_local_0D64                                   ; dest: 0x000d64
+        goto    flow_display_loop_iteration_0D64                                   ; dest: 0x000d64
         infsnz  0xb4, F, B                                  ; reg: 0x0b4
         incf    0xb5, F, B                                  ; reg: 0x0b5
         movf    0xb5, W, B                                  ; reg: 0x0b5
@@ -2327,22 +2327,22 @@ flow_local_0D3E:                                                  ; address: 0x0
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         xorwf   0xb4, W, B                                  ; reg: 0x0b4
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0D60                                   ; dest: 0x000d60
+        goto    flow_display_loop_iteration_0D60                                   ; dest: 0x000d60
         btg     PORTC, RC1, A                               ; reg: 0xf82, bit: 1
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         clrf    0xb4, B                                     ; reg: 0x0b4
         clrf    0xb5, B                                     ; reg: 0x0b5
 
-flow_local_0D60:                                                  ; address: 0x000d60
+flow_display_loop_iteration_0D60:                                                  ; address: 0x000d60
 
-        goto    flow_local_0D68                                   ; dest: 0x000d68
+        goto    flow_display_loop_iteration_0D68                                   ; dest: 0x000d68
 
-flow_local_0D64:                                                  ; address: 0x000d64
+flow_display_loop_iteration_0D64:                                                  ; address: 0x000d64
 
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bsf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
 
-flow_local_0D68:                                                  ; address: 0x000d68
+flow_display_loop_iteration_0D68:                                                  ; address: 0x000d68
 
         incf    0xb0, F, B                                  ; reg: 0x0b0
         movlw   0x00
@@ -2350,16 +2350,16 @@ flow_local_0D68:                                                  ; address: 0x0
         addwfc  0xb2, F, B                                  ; reg: 0x0b2
         addwfc  0xb3, F, B                                  ; reg: 0x0b3
 
-flow_local_0D72:                                                  ; address: 0x000d72
+flow_display_loop_iteration_0D72:                                                  ; address: 0x000d72
 
-        goto    flow_local_0D7A                                   ; dest: 0x000d7a
+        goto    flow_display_loop_iteration_0D7A                                   ; dest: 0x000d7a
 
-flow_local_0D76:                                                  ; address: 0x000d76
+flow_display_loop_iteration_0D76:                                                  ; address: 0x000d76
 
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bsf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
 
-flow_local_0D7A:                                                  ; address: 0x000d7a
+flow_display_loop_iteration_0D7A:                                                  ; address: 0x000d7a
 
         movlw   0x00
         movf    0x9a, F, B                                  ; reg: 0x09a
@@ -2371,7 +2371,7 @@ flow_local_0D7A:                                                  ; address: 0x0
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_0CB4                                   ; dest: 0x000cb4
+        bra     flow_display_loop_iteration_0CB4                                   ; dest: 0x000cb4
         movlw   0x00
         movf    0x9a, F, B                                  ; reg: 0x09a
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -2382,26 +2382,26 @@ flow_local_0D7A:                                                  ; address: 0x0
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0DB0                                   ; dest: 0x000db0
+        goto    flow_display_loop_iteration_0DB0                                   ; dest: 0x000db0
         clrf    0xb3, B                                     ; reg: 0x0b3
         clrf    0xb2, B                                     ; reg: 0x0b2
         clrf    0xb1, B                                     ; reg: 0x0b1
         clrf    0xb0, B                                     ; reg: 0x0b0
 
-flow_local_0DB0:                                                  ; address: 0x000db0
+flow_display_loop_iteration_0DB0:                                                  ; address: 0x000db0
 
         bcf     control_flags, 0x4, A                   ; reg: 0x01f
         rrcf    0x9a, W, B                                  ; reg: 0x09a
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0DC8                                   ; dest: 0x000dc8
+        goto    flow_display_loop_iteration_0DC8                                   ; dest: 0x000dc8
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x0, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_0DC8                                   ; dest: 0x000dc8
+        goto    flow_display_loop_iteration_0DC8                                   ; dest: 0x000dc8
         btg     control_flags, 0x1, A                   ; reg: 0x01f
 
-flow_local_0DC8:                                                  ; address: 0x000dc8
+flow_display_loop_iteration_0DC8:                                                  ; address: 0x000dc8
 
         clrf    0x9d, B                                     ; reg: 0x09d
         clrf    0x9e, B                                     ; reg: 0x09e
@@ -2411,88 +2411,88 @@ control_core_service_0DCE:                                               ; addre
 
         movf    (Common_RAM + 27), F, A                     ; reg: 0x01b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0DDE                                   ; dest: 0x000dde
+        goto    flow_ccs_0DCE_0DDE                                   ; dest: 0x000dde
         movf    (Common_RAM + 28), F, A                     ; reg: 0x01c
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0DE4                                   ; dest: 0x000de4
+        goto    flow_ccs_0DCE_0DE4                                   ; dest: 0x000de4
 
-flow_local_0DDE:                                                  ; address: 0x000dde
+flow_ccs_0DCE_0DDE:                                                  ; address: 0x000dde
 
         decf    (Common_RAM + 27), F, A                     ; reg: 0x01b
         movlw   0x00
         subwfb  (Common_RAM + 28), F, A                     ; reg: 0x01c
 
-flow_local_0DE4:                                                  ; address: 0x000de4
+flow_ccs_0DCE_0DE4:                                                  ; address: 0x000de4
 
         btfss   control_flags, 0x0, A                   ; reg: 0x01f
-        goto    flow_local_0DEC                                   ; dest: 0x000dec
+        goto    flow_ccs_0DCE_0DEC                                   ; dest: 0x000dec
         return  0x0
 
-flow_local_0DEC:                                                  ; address: 0x000dec
+flow_ccs_0DCE_0DEC:                                                  ; address: 0x000dec
 
         movf    ir_decoded_addr, W, A                     ; reg: 0x01e
         cpfseq  (Common_RAM + 32), A                        ; reg: 0x020
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 33), A                        ; reg: 0x021
-        goto    flow_local_0E0C                                   ; dest: 0x000e0c
+        goto    flow_ccs_0DCE_0E0C                                   ; dest: 0x000e0c
         movlw   0x50
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0xc3
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         btg     control_flags, 0x1, A                   ; reg: 0x01f
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
-flow_local_0E0C:                                                  ; address: 0x000e0c
+flow_ccs_0DCE_0E0C:                                                  ; address: 0x000e0c
 
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 34), A                        ; reg: 0x022
-        goto    flow_local_0E32                                   ; dest: 0x000e32
+        goto    flow_ccs_0DCE_0E32                                   ; dest: 0x000e32
         movlw   0xd0
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0x07
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         movlw   0x72
         cpfslt  0xb9, B                                     ; reg: 0x0b9
-        goto    flow_local_0E2E                                   ; dest: 0x000e2e
+        goto    flow_ccs_0DCE_0E2E                                   ; dest: 0x000e2e
         incf    0xb9, F, B                                  ; reg: 0x0b9
         bcf     control_flags, 0x5, A                   ; reg: 0x01f
         rcall   volume_frame_send                                ; dest: 0x000c40
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
 
-flow_local_0E2E:                                                  ; address: 0x000e2e
+flow_ccs_0DCE_0E2E:                                                  ; address: 0x000e2e
 
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
-flow_local_0E32:                                                  ; address: 0x000e32
+flow_ccs_0DCE_0E32:                                                  ; address: 0x000e32
 
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 35), A                        ; reg: 0x023
-        goto    flow_local_0E58                                   ; dest: 0x000e58
+        goto    flow_ccs_0DCE_0E58                                   ; dest: 0x000e58
         movlw   0xd0
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0x07
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         movf    0xb9, F, B                                  ; reg: 0x0b9
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0E54                                   ; dest: 0x000e54
+        goto    flow_ccs_0DCE_0E54                                   ; dest: 0x000e54
         decf    0xb9, F, B                                  ; reg: 0x0b9
         bcf     control_flags, 0x5, A                   ; reg: 0x01f
         rcall   volume_frame_send                                ; dest: 0x000c40
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
 
-flow_local_0E54:                                                  ; address: 0x000e54
+flow_ccs_0DCE_0E54:                                                  ; address: 0x000e54
 
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
-flow_local_0E58:                                                  ; address: 0x000e58
+flow_ccs_0DCE_0E58:                                                  ; address: 0x000e58
 
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 38), A                        ; reg: 0x026
-        goto    flow_local_0E7C                                   ; dest: 0x000e7c
+        goto    flow_ccs_0DCE_0E7C                                   ; dest: 0x000e7c
         movlw   0x2f
         movwf   0xb4, B                                     ; reg: 0x0b4
         movlw   0x75
@@ -2505,58 +2505,58 @@ flow_local_0E58:                                                  ; address: 0x0
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
         rcall   mute_frame_send                                ; dest: 0x000c7c
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
-flow_local_0E7C:                                                  ; address: 0x000e7c
+flow_ccs_0DCE_0E7C:                                                  ; address: 0x000e7c
 
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 37), A                        ; reg: 0x025
-        goto    flow_local_0EE6                                   ; dest: 0x000ee6
+        goto    flow_ccs_0DCE_0EE6                                   ; dest: 0x000ee6
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0E94                                   ; dest: 0x000e94
+        goto    flow_ccs_0DCE_0E94                                   ; dest: 0x000e94
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0EBE                                   ; dest: 0x000ebe
+        goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
 
-flow_local_0E94:                                                  ; address: 0x000e94
+flow_ccs_0DCE_0E94:                                                  ; address: 0x000e94
 
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_0EA2                                   ; dest: 0x000ea2
+        goto    flow_ccs_0DCE_0EA2                                   ; dest: 0x000ea2
         movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0EBE                                   ; dest: 0x000ebe
+        goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
 
-flow_local_0EA2:                                                  ; address: 0x000ea2
+flow_ccs_0DCE_0EA2:                                                  ; address: 0x000ea2
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0EB2                                   ; dest: 0x000eb2
+        goto    flow_ccs_0DCE_0EB2                                   ; dest: 0x000eb2
         movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0EBE                                   ; dest: 0x000ebe
+        goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
 
-flow_local_0EB2:                                                  ; address: 0x000eb2
+flow_ccs_0DCE_0EB2:                                                  ; address: 0x000eb2
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0EBE                                   ; dest: 0x000ebe
+        goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
         movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
         movwf   tx_data_staging, A                        ; reg: 0x027
 
-flow_local_0EBE:                                                  ; address: 0x000ebe
+flow_ccs_0DCE_0EBE:                                                  ; address: 0x000ebe
 
         movf    0xb7, F, B                                  ; reg: 0x0b7
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0ECC                                   ; dest: 0x000ecc
+        goto    flow_ccs_0DCE_0ECC                                   ; dest: 0x000ecc
         decf    0xb7, F, B                                  ; reg: 0x0b7
-        goto    flow_local_0ED0                                   ; dest: 0x000ed0
+        goto    flow_ccs_0DCE_0ED0                                   ; dest: 0x000ed0
 
-flow_local_0ECC:                                                  ; address: 0x000ecc
+flow_ccs_0DCE_0ECC:                                                  ; address: 0x000ecc
 
         movff   tx_data_staging, 0x0b7                    ; reg1: 0x027
 
-flow_local_0ED0:                                                  ; address: 0x000ed0
+flow_ccs_0DCE_0ED0:                                                  ; address: 0x000ed0
 
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
@@ -2566,58 +2566,58 @@ flow_local_0ED0:                                                  ; address: 0x0
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         call    control_core_service_076A, 0x0                           ; dest: 0x00076a
         rcall   input_frame_send                                ; dest: 0x000c22
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
-flow_local_0EE6:                                                  ; address: 0x000ee6
+flow_ccs_0DCE_0EE6:                                                  ; address: 0x000ee6
 
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 36), A                        ; reg: 0x024
-        goto    flow_local_0F4E                                   ; dest: 0x000f4e
+        goto    flow_ccs_0DCE_0F4E                                   ; dest: 0x000f4e
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_0EFE                                   ; dest: 0x000efe
+        goto    flow_ccs_0DCE_0EFE                                   ; dest: 0x000efe
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0F28                                   ; dest: 0x000f28
+        goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
 
-flow_local_0EFE:                                                  ; address: 0x000efe
+flow_ccs_0DCE_0EFE:                                                  ; address: 0x000efe
 
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_0F0C                                   ; dest: 0x000f0c
+        goto    flow_ccs_0DCE_0F0C                                   ; dest: 0x000f0c
         movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0F28                                   ; dest: 0x000f28
+        goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
 
-flow_local_0F0C:                                                  ; address: 0x000f0c
+flow_ccs_0DCE_0F0C:                                                  ; address: 0x000f0c
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0F1C                                   ; dest: 0x000f1c
+        goto    flow_ccs_0DCE_0F1C                                   ; dest: 0x000f1c
         movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_0F28                                   ; dest: 0x000f28
+        goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
 
-flow_local_0F1C:                                                  ; address: 0x000f1c
+flow_ccs_0DCE_0F1C:                                                  ; address: 0x000f1c
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_0F28                                   ; dest: 0x000f28
+        goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
         movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
         movwf   tx_data_staging, A                        ; reg: 0x027
 
-flow_local_0F28:                                                  ; address: 0x000f28
+flow_ccs_0DCE_0F28:                                                  ; address: 0x000f28
 
         movf    tx_data_staging, W, A                     ; reg: 0x027
         cpfslt  0xb7, B                                     ; reg: 0x0b7
-        goto    flow_local_0F36                                   ; dest: 0x000f36
+        goto    flow_ccs_0DCE_0F36                                   ; dest: 0x000f36
         incf    0xb7, F, B                                  ; reg: 0x0b7
-        goto    flow_local_0F38                                   ; dest: 0x000f38
+        goto    flow_ccs_0DCE_0F38                                   ; dest: 0x000f38
 
-flow_local_0F36:                                                  ; address: 0x000f36
+flow_ccs_0DCE_0F36:                                                  ; address: 0x000f36
 
         clrf    0xb7, B                                     ; reg: 0x0b7
 
-flow_local_0F38:                                                  ; address: 0x000f38
+flow_ccs_0DCE_0F38:                                                  ; address: 0x000f38
 
         bsf     control_flags, 0x3, A                   ; reg: 0x01f
         bsf     control_flags, 0x4, A                   ; reg: 0x01f
@@ -2627,13 +2627,13 @@ flow_local_0F38:                                                  ; address: 0x0
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         call    control_core_service_076A, 0x0                           ; dest: 0x00076a
         rcall   input_frame_send                                ; dest: 0x000c22
-        goto    flow_local_0F50                                   ; dest: 0x000f50
+        goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
-flow_local_0F4E:                                                  ; address: 0x000f4e
+flow_ccs_0DCE_0F4E:                                                  ; address: 0x000f4e
 
         bsf     control_flags, 0x0, A                   ; reg: 0x01f
 
-flow_local_0F50:                                                  ; address: 0x000f50
+flow_ccs_0DCE_0F50:                                                  ; address: 0x000f50
 
         bsf     control_flags, 0x0, A                   ; reg: 0x01f
         return  0x0
@@ -2642,8 +2642,8 @@ control_core_service_0F54:                                               ; addre
 
         movlw   0x04
         cpfseq  0xa7, B                                     ; reg: 0x0a7
-        goto    flow_local_0F7C                                   ; dest: 0x000f7c
-        movlw   0x10
+        goto    flow_ccs_0F54_0F7C                                   ; dest: 0x000f7c
+        movlw   0x10                                        ; RC5 0x10 volume up
         movwf   (Common_RAM + 32), A                        ; reg: 0x020
         movlw   0x32
         movwf   (Common_RAM + 33), A                        ; reg: 0x021
@@ -2657,28 +2657,28 @@ control_core_service_0F54:                                               ; addre
         movwf   (Common_RAM + 36), A                        ; reg: 0x024
         movlw   0x37
         movwf   (Common_RAM + 37), A                        ; reg: 0x025
-        goto    flow_local_0F9E                                   ; dest: 0x000f9e
+        goto    flow_ccs_0F54_0F9E                                   ; dest: 0x000f9e
 
-flow_local_0F7C:                                                  ; address: 0x000f7c
+flow_ccs_0F54_0F7C:                                                  ; address: 0x000f7c
 
         movlw   0x03
         cpfseq  0xa7, B                                     ; reg: 0x0a7
-        goto    flow_local_0F9E                                   ; dest: 0x000f9e
+        goto    flow_ccs_0F54_0F9E                                   ; dest: 0x000f9e
         clrf    (Common_RAM + 32), A                        ; reg: 0x020
-        movlw   0x0c
+        movlw   0x0c                                        ; RC5 0x0C standby toggle
         movwf   (Common_RAM + 33), A                        ; reg: 0x021
-        movlw   0x10
+        movlw   0x10                                        ; RC5 0x10 volume up
         movwf   (Common_RAM + 34), A                        ; reg: 0x022
-        movlw   0x11
+        movlw   0x11                                        ; RC5 0x11 volume down
         movwf   (Common_RAM + 35), A                        ; reg: 0x023
-        movlw   0x20
+        movlw   0x20                                        ; RC5 0x20 preset next
         movwf   (Common_RAM + 36), A                        ; reg: 0x024
-        movlw   0x21
+        movlw   0x21                                        ; RC5 0x21 preset prev / channel down
         movwf   (Common_RAM + 37), A                        ; reg: 0x025
         movlw   0x0d
         movwf   (Common_RAM + 38), A                        ; reg: 0x026
 
-flow_local_0F9E:                                                  ; address: 0x000f9e
+flow_ccs_0F54_0F9E:                                                  ; address: 0x000f9e
 
         return  0x0
 
@@ -2693,7 +2693,7 @@ control_core_service_0FA0:                                               ; addre
         call    lcd_command, 0x0                           ; dest: 0x000066
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
-flow_local_0FBA:                                                  ; address: 0x000fba
+flow_ccs_0FA0_0FBA:                                                  ; address: 0x000fba
 
         rcall   display_loop_iteration                                ; dest: 0x000cb2
         movlw   0x00
@@ -2706,39 +2706,39 @@ flow_local_0FBA:                                                  ; address: 0x0
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_0FBA                                   ; dest: 0x000fba
+        bra     flow_ccs_0FA0_0FBA                                   ; dest: 0x000fba
         rrcf    0x9a, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_0FEC                                   ; dest: 0x000fec
+        goto    flow_ccs_0FA0_0FEC                                   ; dest: 0x000fec
         movf    0xa5, W, B                                  ; reg: 0x0a5
         cpfseq  0xa4, B                                     ; reg: 0x0a4
-        goto    flow_local_0FEA                                   ; dest: 0x000fea
+        goto    flow_ccs_0FA0_0FEA                                   ; dest: 0x000fea
         clrf    0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_0FEC                                   ; dest: 0x000fec
+        goto    flow_ccs_0FA0_0FEC                                   ; dest: 0x000fec
 
-flow_local_0FEA:                                                  ; address: 0x000fea
+flow_ccs_0FA0_0FEA:                                                  ; address: 0x000fea
 
         incf    0xa5, F, B                                  ; reg: 0x0a5
 
-flow_local_0FEC:                                                  ; address: 0x000fec
+flow_ccs_0FA0_0FEC:                                                  ; address: 0x000fec
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_100A                                   ; dest: 0x00100a
+        goto    flow_ccs_0FA0_100A                                   ; dest: 0x00100a
         movf    0xa5, F, B                                  ; reg: 0x0a5
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_1008                                   ; dest: 0x001008
+        goto    flow_ccs_0FA0_1008                                   ; dest: 0x001008
         movff   0x0a4, 0x0a5
-        goto    flow_local_100A                                   ; dest: 0x00100a
+        goto    flow_ccs_0FA0_100A                                   ; dest: 0x00100a
 
-flow_local_1008:                                                  ; address: 0x001008
+flow_ccs_0FA0_1008:                                                  ; address: 0x001008
 
         decf    0xa5, F, B                                  ; reg: 0x0a5
 
-flow_local_100A:                                                  ; address: 0x00100a
+flow_ccs_0FA0_100A:                                                  ; address: 0x00100a
 
         return  0x0
 menu_title_table:                                                  ; address: 0x00100c  (tblptr anchor)
@@ -2767,7 +2767,7 @@ menu_title_table:                                                  ; address: 0x
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
 
-flow_local_103C:                                                  ; address: 0x00103c
+flow_ccs_0FA0_103C:                                                  ; address: 0x00103c
 
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bcf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
@@ -2794,51 +2794,51 @@ flow_local_103C:                                                  ; address: 0x0
         lfsr    0x0, 0x0c1
         movlw   0x06
 
-flow_local_106E:                                                  ; address: 0x00106e
+flow_ccs_0FA0_106E:                                                  ; address: 0x00106e
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_106E                                   ; dest: 0x00106e
+        bra     flow_ccs_0FA0_106E                                   ; dest: 0x00106e
         lfsr    0x0, 0x0c7
         movlw   0x06
 
-flow_local_107A:                                                  ; address: 0x00107a
+flow_ccs_0FA0_107A:                                                  ; address: 0x00107a
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_107A                                   ; dest: 0x00107a
+        bra     flow_ccs_0FA0_107A                                   ; dest: 0x00107a
         lfsr    0x0, 0x0cd
         movlw   0x06
 
-flow_local_1086:                                                  ; address: 0x001086
+flow_ccs_0FA0_1086:                                                  ; address: 0x001086
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_1086                                   ; dest: 0x001086
+        bra     flow_ccs_0FA0_1086                                   ; dest: 0x001086
         lfsr    0x0, 0x0d3
         movlw   0x06
 
-flow_local_1092:                                                  ; address: 0x001092
+flow_ccs_0FA0_1092:                                                  ; address: 0x001092
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_1092                                   ; dest: 0x001092
+        bra     flow_ccs_0FA0_1092                                   ; dest: 0x001092
         lfsr    0x0, 0x0d9
         movlw   0x06
 
-flow_local_109E:                                                  ; address: 0x00109e
+flow_ccs_0FA0_109E:                                                  ; address: 0x00109e
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_109E                                   ; dest: 0x00109e
+        bra     flow_ccs_0FA0_109E                                   ; dest: 0x00109e
         lfsr    0x0, 0x0df
         movlw   0x06
 
-flow_local_10AA:                                                  ; address: 0x0010aa
+flow_ccs_0FA0_10AA:                                                  ; address: 0x0010aa
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_10AA                                   ; dest: 0x0010aa
+        bra     flow_ccs_0FA0_10AA                                   ; dest: 0x0010aa
         clrf    (Common_RAM + 50), A                        ; reg: 0x032
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
         bcf     control_flags, 0x4, A                   ; reg: 0x01f
@@ -2851,13 +2851,13 @@ flow_local_10AA:                                                  ; address: 0x0
         movlw   0x01
         subwf   tx_data_staging, W, A                     ; reg: 0x027
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_10DA                                   ; dest: 0x0010da
+        goto    flow_ccs_0FA0_10DA                                   ; dest: 0x0010da
         movlw   0x70
         movwf   EEADR, A                                    ; reg: 0xfa9
         movlw   0x01
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
 
-flow_local_10DA:                                                  ; address: 0x0010da
+flow_ccs_0FA0_10DA:                                                  ; address: 0x0010da
 
         movlw   0x71
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
@@ -2865,13 +2865,13 @@ flow_local_10DA:                                                  ; address: 0x0
         movlw   0x06                                        ; CMD input_select
         subwf   tx_data_staging, W, A                     ; reg: 0x027
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_10F6                                   ; dest: 0x0010f6
+        goto    flow_ccs_0FA0_10F6                                   ; dest: 0x0010f6
         movlw   0x71
         movwf   EEADR, A                                    ; reg: 0xfa9
         movlw   0x06
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
 
-flow_local_10F6:                                                  ; address: 0x0010f6
+flow_ccs_0FA0_10F6:                                                  ; address: 0x0010f6
 
         clrf    0xbc, B                                     ; reg: 0x0bc
         clrf    0xbe, B                                     ; reg: 0x0be
@@ -2886,7 +2886,7 @@ flow_local_10F6:                                                  ; address: 0x0
         movwf   (Common_RAM + 15), A                        ; reg: 0x00f
         movlw   0x2c
         call    control_core_service_01BE, 0x0                           ; dest: 0x0001be
-        call    control_core_service_004C, 0x0                           ; dest: 0x00004c
+        call    app_entry_defensive_stub, 0x0                           ; dest: 0x00004c
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    settings_load_eeprom, 0x0                           ; dest: 0x000a46
@@ -2935,7 +2935,7 @@ flow_local_10F6:                                                  ; address: 0x0
         movlw   0xa0
         call    control_core_service_01BE, 0x0                           ; dest: 0x0001be
 
-flow_local_118C:                                                  ; address: 0x00118c
+flow_ccs_0FA0_118C:                                                  ; address: 0x00118c
 
         call    poll_frame_send, 0x0                           ; dest: 0x000b64
         movlw   0xc8
@@ -2962,7 +2962,7 @@ flow_local_118C:                                                  ; address: 0x0
         movlw   0x01
         andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_118C                                   ; dest: 0x00118c
+        bra     flow_ccs_0FA0_118C                                   ; dest: 0x00118c
         movlw   0x61
         movwf   0x9d, B                                     ; reg: 0x09d
         movlw   0xea
@@ -2976,78 +2976,78 @@ flow_local_118C:                                                  ; address: 0x0
 post_connect_init:                                                  ; address: 0x0011d8
 
         btfss   control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_1250                                   ; dest: 0x001250
+        goto    flow_display_state_entry_1250                                   ; dest: 0x001250
 
-flow_local_11DE:                                                  ; address: 0x0011de
+flow_post_connect_init_11DE:                                                  ; address: 0x0011de
 
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
         movf    0xbf, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_11F0                                   ; dest: 0x0011f0
+        goto    flow_post_connect_init_11F0                                   ; dest: 0x0011f0
         call    control_core_service_12D0, 0x0                           ; dest: 0x0012d0
-        goto    flow_local_120A                                   ; dest: 0x00120a
+        goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
 
-flow_local_11F0:                                                  ; address: 0x0011f0
+flow_post_connect_init_11F0:                                                  ; address: 0x0011f0
 
         decfsz  0xbf, W, B                                  ; reg: 0x0bf
         goto    boot_handshake_wait                                   ; dest: 0x0011fe
         call    control_core_service_1912, 0x0                           ; dest: 0x001912
-        goto    flow_local_120A                                   ; dest: 0x00120a
+        goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
 
 boot_handshake_wait:                                                  ; address: 0x0011fe
 
         movlw   0x02
         cpfseq  0xbf, B                                     ; reg: 0x0bf
-        goto    flow_local_120A                                   ; dest: 0x00120a
+        goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
         call    control_core_service_13FE, 0x0                           ; dest: 0x0013fe
 
-flow_local_120A:                                                  ; address: 0x00120a
+flow_boot_handshake_wait_120A:                                                  ; address: 0x00120a
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x5, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_1226                                   ; dest: 0x001226
+        goto    flow_display_state_entry_1226                                   ; dest: 0x001226
         movlw   0x02
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    display_state_entry                                   ; dest: 0x001224
         clrf    0xbf, B                                     ; reg: 0x0bf
-        goto    flow_local_1226                                   ; dest: 0x001226
+        goto    flow_display_state_entry_1226                                   ; dest: 0x001226
 
 display_state_entry:                                                  ; address: 0x001224
 
         incf    0xbf, F, B                                  ; reg: 0x0bf
 
-flow_local_1226:                                                  ; address: 0x001226
+flow_display_state_entry_1226:                                                  ; address: 0x001226
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x4, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_1244                                   ; dest: 0x001244
+        goto    flow_display_state_entry_1244                                   ; dest: 0x001244
         movf    0xbf, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_1242                                   ; dest: 0x001242
+        goto    flow_display_state_entry_1242                                   ; dest: 0x001242
         movlw   0x02
         movwf   0xbf, B                                     ; reg: 0x0bf
-        goto    flow_local_1244                                   ; dest: 0x001244
+        goto    flow_display_state_entry_1244                                   ; dest: 0x001244
 
-flow_local_1242:                                                  ; address: 0x001242
+flow_display_state_entry_1242:                                                  ; address: 0x001242
 
         decf    0xbf, F, B                                  ; reg: 0x0bf
 
-flow_local_1244:                                                  ; address: 0x001244
+flow_display_state_entry_1244:                                                  ; address: 0x001244
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         btfsc   control_flags, 0x1, A                   ; reg: 0x01f
-        bra     flow_local_11DE                                   ; dest: 0x0011de
-        goto    flow_local_12CE                                   ; dest: 0x0012ce
+        bra     flow_post_connect_init_11DE                                   ; dest: 0x0011de
+        goto    flow_reconnect_wait_loop_12CE                                   ; dest: 0x0012ce
 
-flow_local_1250:                                                  ; address: 0x001250
+flow_display_state_entry_1250:                                                  ; address: 0x001250
 
         bcf     control_flags, 0x1, A                   ; reg: 0x01f
         call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
-        call    control_core_service_004C, 0x0                           ; dest: 0x00004c
+        call    app_entry_defensive_stub, 0x0                           ; dest: 0x00004c
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
@@ -3057,7 +3057,7 @@ flow_local_1250:                                                  ; address: 0x0
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
 
-flow_local_126E:                                                  ; address: 0x00126e
+flow_display_state_entry_126E:                                                  ; address: 0x00126e
 
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
@@ -3071,7 +3071,7 @@ flow_local_126E:                                                  ; address: 0x0
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_126E                                   ; dest: 0x00126e
+        bra     flow_display_state_entry_126E                                   ; dest: 0x00126e
         clrf    0xb3, B                                     ; reg: 0x0b3
         clrf    0xb2, B                                     ; reg: 0x0b2
         clrf    0xb1, B                                     ; reg: 0x0b1
@@ -3103,7 +3103,7 @@ reconnect_wait_loop:                                                  ; address:
         btfss   control_flags, 0x1, A                   ; reg: 0x01f
         bra     reconnect_wait_loop                                   ; dest: 0x0012bc
 
-flow_local_12CE:                                                  ; address: 0x0012ce
+flow_reconnect_wait_loop_12CE:                                                  ; address: 0x0012ce
 
         bra     post_connect_init                                   ; dest: 0x0011d8
 
@@ -3126,28 +3126,28 @@ standby_display:                                                  ; address: 0x0
         movlw   0x87
         call    lcd_command, 0x0                           ; dest: 0x000066
         btfsc   control_flags, 0x5, A                   ; reg: 0x01f
-        goto    flow_local_1354                                   ; dest: 0x001354
+        goto    flow_standby_display_1354                                   ; dest: 0x001354
         movlw   0x60
         cpfslt  0xb9, B                                     ; reg: 0x0b9
-        goto    flow_local_1310                                   ; dest: 0x001310
+        goto    flow_standby_display_1310                                   ; dest: 0x001310
         movlw   0x2d
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
         movf    0xb9, W, B                                  ; reg: 0x0b9
         sublw   0x60
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_132E                                   ; dest: 0x00132e
+        goto    flow_standby_display_132E                                   ; dest: 0x00132e
 
-flow_local_1310:                                                  ; address: 0x001310
+flow_standby_display_1310:                                                  ; address: 0x001310
 
         movlw   0x60
         cpfseq  0xb9, B                                     ; reg: 0x0b9
-        goto    flow_local_1322                                   ; dest: 0x001322
+        goto    flow_standby_display_1322                                   ; dest: 0x001322
         movlw   0x60
         subwf   0xb9, W, B                                  ; reg: 0x0b9
         movwf   tx_data_staging, A                        ; reg: 0x027
-        goto    flow_local_132E                                   ; dest: 0x00132e
+        goto    flow_standby_display_132E                                   ; dest: 0x00132e
 
-flow_local_1322:                                                  ; address: 0x001322
+flow_standby_display_1322:                                                  ; address: 0x001322
 
         movlw   0x2b
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
@@ -3155,7 +3155,7 @@ flow_local_1322:                                                  ; address: 0x0
         subwf   0xb9, W, B                                  ; reg: 0x0b9
         movwf   tx_data_staging, A                        ; reg: 0x027
 
-flow_local_132E:                                                  ; address: 0x00132e
+flow_standby_display_132E:                                                  ; address: 0x00132e
 
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3170,9 +3170,9 @@ flow_local_132E:                                                  ; address: 0x0
         movlw   LOW(lcd_str_db_suffix)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
-        goto    flow_local_1360                                   ; dest: 0x001360
+        goto    flow_standby_display_1360                                   ; dest: 0x001360
 
-flow_local_1354:                                                  ; address: 0x001354
+flow_standby_display_1354:                                                  ; address: 0x001354
 
         movlw   HIGH(lcd_str_mute)                          ; shifted via label
         movwf   TBLPTRH, A                                  ; reg: 0xff7
@@ -3180,7 +3180,7 @@ flow_local_1354:                                                  ; address: 0x0
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
 
-flow_local_1360:                                                  ; address: 0x001360
+flow_standby_display_1360:                                                  ; address: 0x001360
 
         movff   0x0b7, tx_data_staging                    ; reg2: 0x027
         movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
@@ -3196,41 +3196,41 @@ flow_local_1360:                                                  ; address: 0x0
         rrcf    0x9a, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_1398                                   ; dest: 0x001398
+        goto    flow_standby_display_1398                                   ; dest: 0x001398
         movlw   0x72
         cpfslt  0xb9, B                                     ; reg: 0x0b9
-        goto    flow_local_1392                                   ; dest: 0x001392
+        goto    flow_standby_display_1392                                   ; dest: 0x001392
         incf    0xb9, F, B                                  ; reg: 0x0b9
 
-flow_local_1392:                                                  ; address: 0x001392
+flow_standby_display_1392:                                                  ; address: 0x001392
 
         bcf     control_flags, 0x5, A                   ; reg: 0x01f
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
 
-flow_local_1398:                                                  ; address: 0x001398
+flow_standby_display_1398:                                                  ; address: 0x001398
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_13B4                                   ; dest: 0x0013b4
+        goto    flow_standby_display_13B4                                   ; dest: 0x0013b4
         movf    0xb9, F, B                                  ; reg: 0x0b9
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_13AE                                   ; dest: 0x0013ae
+        goto    flow_standby_display_13AE                                   ; dest: 0x0013ae
         decf    0xb9, F, B                                  ; reg: 0x0b9
 
-flow_local_13AE:                                                  ; address: 0x0013ae
+flow_standby_display_13AE:                                                  ; address: 0x0013ae
 
         bcf     control_flags, 0x5, A                   ; reg: 0x01f
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
 
-flow_local_13B4:                                                  ; address: 0x0013b4
+flow_standby_display_13B4:                                                  ; address: 0x0013b4
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x3, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_13CE                                   ; dest: 0x0013ce
+        goto    flow_standby_display_13CE                                   ; dest: 0x0013ce
         btg     control_flags, 0x5, A                   ; reg: 0x01f
         movlw   0x2f
         movwf   0xb4, B                                     ; reg: 0x0b4
@@ -3238,7 +3238,7 @@ flow_local_13B4:                                                  ; address: 0x0
         movwf   0xb5, B                                     ; reg: 0x0b5
         call    mute_frame_send, 0x0                           ; dest: 0x000c7c
 
-flow_local_13CE:                                                  ; address: 0x0013ce
+flow_standby_display_13CE:                                                  ; address: 0x0013ce
 
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
@@ -3291,19 +3291,19 @@ control_core_service_13FE:                                               ; addre
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         btfss   control_flags, 0x3, A                   ; reg: 0x01f
-        goto    flow_local_1442                                   ; dest: 0x001442
+        goto    flow_ccs_13FE_1442                                   ; dest: 0x001442
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
 
-flow_local_1442:                                                  ; address: 0x001442
+flow_ccs_13FE_1442:                                                  ; address: 0x001442
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x3, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_1452                                   ; dest: 0x001452
+        goto    flow_ccs_13FE_1452                                   ; dest: 0x001452
         call    main_event_loop, 0x0                           ; dest: 0x00150e
 
-flow_local_1452:                                                  ; address: 0x001452
+flow_ccs_13FE_1452:                                                  ; address: 0x001452
 
         movlw   0x01
         btfsc   control_flags, 0x1, A                   ; reg: 0x01f
@@ -3328,7 +3328,7 @@ flow_local_1452:                                                  ; address: 0x0
 control_core_service_1478:                                               ; address: 0x001478
 
         decfsz  0xeb, W, B                                  ; reg: 0x0eb
-        goto    flow_local_1490                                   ; dest: 0x001490
+        goto    flow_ccs_1478_1490                                   ; dest: 0x001490
         clrf    0xef, B                                     ; reg: 0x0ef
         movlw   0x08
         movwf   0xee, B                                     ; reg: 0x0ee
@@ -3336,13 +3336,13 @@ control_core_service_1478:                                               ; addre
         movwf   0xed, B                                     ; reg: 0x0ed
         movlw   0x3a
         movwf   0xec, B                                     ; reg: 0x0ec
-        goto    flow_local_14CC                                   ; dest: 0x0014cc
+        goto    flow_ccs_1478_14CC                                   ; dest: 0x0014cc
 
-flow_local_1490:                                                  ; address: 0x001490
+flow_ccs_1478_1490:                                                  ; address: 0x001490
 
         movlw   0x02
         cpfseq  0xeb, B                                     ; reg: 0x0eb
-        goto    flow_local_14AA                                   ; dest: 0x0014aa
+        goto    flow_ccs_1478_14AA                                   ; dest: 0x0014aa
         clrf    0xef, B                                     ; reg: 0x0ef
         movlw   0x22
         movwf   0xee, B                                     ; reg: 0x0ee
@@ -3350,13 +3350,13 @@ flow_local_1490:                                                  ; address: 0x0
         movwf   0xed, B                                     ; reg: 0x0ed
         movlw   0xeb
         movwf   0xec, B                                     ; reg: 0x0ec
-        goto    flow_local_14CC                                   ; dest: 0x0014cc
+        goto    flow_ccs_1478_14CC                                   ; dest: 0x0014cc
 
-flow_local_14AA:                                                  ; address: 0x0014aa
+flow_ccs_1478_14AA:                                                  ; address: 0x0014aa
 
         movlw   0x03
         cpfseq  0xeb, B                                     ; reg: 0x0eb
-        goto    flow_local_14C4                                   ; dest: 0x0014c4
+        goto    flow_ccs_1478_14C4                                   ; dest: 0x0014c4
         clrf    0xef, B                                     ; reg: 0x0ef
         movlw   0x55
         movwf   0xee, B                                     ; reg: 0x0ee
@@ -3364,16 +3364,16 @@ flow_local_14AA:                                                  ; address: 0x0
         movwf   0xed, B                                     ; reg: 0x0ed
         movlw   0x44
         movwf   0xec, B                                     ; reg: 0x0ec
-        goto    flow_local_14CC                                   ; dest: 0x0014cc
+        goto    flow_ccs_1478_14CC                                   ; dest: 0x0014cc
 
-flow_local_14C4:                                                  ; address: 0x0014c4
+flow_ccs_1478_14C4:                                                  ; address: 0x0014c4
 
         clrf    0xef, B                                     ; reg: 0x0ef
         clrf    0xee, B                                     ; reg: 0x0ee
         clrf    0xed, B                                     ; reg: 0x0ed
         clrf    0xec, B                                     ; reg: 0x0ec
 
-flow_local_14CC:                                                  ; address: 0x0014cc
+flow_ccs_1478_14CC:                                                  ; address: 0x0014cc
 
         return  0x0
         tstfsz  (Common_RAM + 79), A                        ; reg: 0x04f
@@ -3414,7 +3414,7 @@ flow_local_14CC:                                                  ; address: 0x0
 ; main_event_loop @ 0x00150E — main_event_loop  (V1.6b address)
 ; ---------------------------------------------------------------------------
 ; The CONTROL panel's top-level event loop. Runs forever after boot setup
-; (flow_local_1092) completes. Per-iteration:
+; (flow_ccs_0FA0_1092) completes. Per-iteration:
 ;   1. Stage 0x0BA value into 0x027 (tx_data_staging) — staged for later
 ;      send if menu state changed.
 ;   2. Enable RBIE (button port-change interrupt).
@@ -3450,7 +3450,7 @@ main_event_loop:                                               ; address: 0x0015
         movlw   0xce
         movwf   0xa2, B                                     ; reg: 0x0a2
 
-flow_local_1532:                                                  ; address: 0x001532
+flow_main_event_loop_1532:                                                  ; address: 0x001532
 
         movff   0x0eb, 0x0a5
         call    control_core_service_0FA0, 0x0                           ; dest: 0x000fa0
@@ -3464,11 +3464,11 @@ flow_local_1532:                                                  ; address: 0x0
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_1558                                   ; dest: 0x001558
+        goto    flow_main_event_loop_1558                                   ; dest: 0x001558
         movff   0x0a5, 0x0eb
         rcall   control_core_service_1478                                ; dest: 0x001478
 
-flow_local_1558:                                                  ; address: 0x001558
+flow_main_event_loop_1558:                                                  ; address: 0x001558
 
         clrf    WREG, A                                     ; reg: 0xfe8
         btfsc   0x9a, 0x3, B                                ; reg: 0x09a
@@ -3479,7 +3479,7 @@ flow_local_1558:                                                  ; address: 0x0
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_1532                                   ; dest: 0x001532
+        bra     flow_main_event_loop_1532                                   ; dest: 0x001532
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         return  0x0
 menu_source_channel_table:                                                  ; address: 0x001572  (tblptr anchor)
@@ -3590,7 +3590,7 @@ menu_input_cat_spdif_table:                                                  ; a
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
 
-flow_local_1642:                                                  ; address: 0x001642
+flow_main_event_loop_1642:                                                  ; address: 0x001642
 
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -3602,7 +3602,7 @@ flow_local_1642:                                                  ; address: 0x0
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
-flow_local_165A:                                                  ; address: 0x00165a
+flow_main_event_loop_165A:                                                  ; address: 0x00165a
 
         movff   0x0c0, tx_data_staging                    ; reg2: 0x027
         movlw   HIGH(menu_source_channel_table)                          ; shifted via label
@@ -3616,70 +3616,70 @@ flow_local_165A:                                                  ; address: 0x0
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         movlw   0x06
         cpfslt  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_1718                                   ; dest: 0x001718
+        goto    flow_main_event_loop_1718                                   ; dest: 0x001718
         movf    0xc0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_1692                                   ; dest: 0x001692
+        goto    flow_main_event_loop_1692                                   ; dest: 0x001692
         lfsr    0x0, 0x0c1
         movf    0xba, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_16FA                                   ; dest: 0x0016fa
+        goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
-flow_local_1692:                                                  ; address: 0x001692
+flow_main_event_loop_1692:                                                  ; address: 0x001692
 
         decfsz  0xc0, W, B                                  ; reg: 0x0c0
-        goto    flow_local_16A6                                   ; dest: 0x0016a6
+        goto    flow_main_event_loop_16A6                                   ; dest: 0x0016a6
         lfsr    0x0, 0x0c7
         movf    0xba, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_16FA                                   ; dest: 0x0016fa
+        goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
-flow_local_16A6:                                                  ; address: 0x0016a6
+flow_main_event_loop_16A6:                                                  ; address: 0x0016a6
 
         movlw   0x02
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_16BC                                   ; dest: 0x0016bc
+        goto    flow_main_event_loop_16BC                                   ; dest: 0x0016bc
         lfsr    0x0, 0x0cd
         movf    0xba, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_16FA                                   ; dest: 0x0016fa
+        goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
-flow_local_16BC:                                                  ; address: 0x0016bc
+flow_main_event_loop_16BC:                                                  ; address: 0x0016bc
 
         movlw   0x03
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_16D2                                   ; dest: 0x0016d2
+        goto    flow_main_event_loop_16D2                                   ; dest: 0x0016d2
         lfsr    0x0, 0x0d3
         movf    0xba, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_16FA                                   ; dest: 0x0016fa
+        goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
-flow_local_16D2:                                                  ; address: 0x0016d2
+flow_main_event_loop_16D2:                                                  ; address: 0x0016d2
 
         movlw   0x04
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_16E8                                   ; dest: 0x0016e8
+        goto    flow_main_event_loop_16E8                                   ; dest: 0x0016e8
         lfsr    0x0, 0x0d9
         movf    0xba, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_16FA                                   ; dest: 0x0016fa
+        goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
-flow_local_16E8:                                                  ; address: 0x0016e8
+flow_main_event_loop_16E8:                                                  ; address: 0x0016e8
 
         movlw   0x05
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_16FA                                   ; dest: 0x0016fa
+        goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
         lfsr    0x0, 0x0df
         movf    0xba, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   0xa5, B                                     ; reg: 0x0a5
 
-flow_local_16FA:                                                  ; address: 0x0016fa
+flow_main_event_loop_16FA:                                                  ; address: 0x0016fa
 
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   0xa4, B                                     ; reg: 0x0a4
@@ -3692,9 +3692,9 @@ flow_local_16FA:                                                  ; address: 0x0
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xcb
         call    lcd_command, 0x0                           ; dest: 0x000066
-        goto    flow_local_173C                                   ; dest: 0x00173c
+        goto    flow_main_event_loop_173C                                   ; dest: 0x00173c
 
-flow_local_1718:                                                  ; address: 0x001718
+flow_main_event_loop_1718:                                                  ; address: 0x001718
 
         lfsr    0x0, 0x0e5
         movf    0xba, W, B                                  ; reg: 0x0ba
@@ -3712,94 +3712,94 @@ flow_local_1718:                                                  ; address: 0x0
         movlw   0xc9
         call    lcd_command, 0x0                           ; dest: 0x000066
 
-flow_local_173C:                                                  ; address: 0x00173c
+flow_main_event_loop_173C:                                                  ; address: 0x00173c
 
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         btfss   control_flags, 0x3, A                   ; reg: 0x01f
-        goto    flow_local_1754                                   ; dest: 0x001754
+        goto    flow_main_event_loop_1754                                   ; dest: 0x001754
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
         btfss   control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_1754                                   ; dest: 0x001754
-        bra     flow_local_1642                                   ; dest: 0x001642
+        goto    flow_main_event_loop_1754                                   ; dest: 0x001754
+        bra     flow_main_event_loop_1642                                   ; dest: 0x001642
 
-flow_local_1754:                                                  ; address: 0x001754
+flow_main_event_loop_1754:                                                  ; address: 0x001754
 
         rrcf    0x9a, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_1772                                   ; dest: 0x001772
+        goto    flow_main_event_loop_1772                                   ; dest: 0x001772
         movf    0xa5, W, B                                  ; reg: 0x0a5
         cpfseq  0xa4, B                                     ; reg: 0x0a4
-        goto    flow_local_176C                                   ; dest: 0x00176c
+        goto    flow_main_event_loop_176C                                   ; dest: 0x00176c
         clrf    0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_176E                                   ; dest: 0x00176e
+        goto    flow_main_event_loop_176E                                   ; dest: 0x00176e
 
-flow_local_176C:                                                  ; address: 0x00176c
+flow_main_event_loop_176C:                                                  ; address: 0x00176c
 
         incf    0xa5, F, B                                  ; reg: 0x0a5
 
-flow_local_176E:                                                  ; address: 0x00176e
+flow_main_event_loop_176E:                                                  ; address: 0x00176e
 
         call    control_core_service_17E8, 0x0                           ; dest: 0x0017e8
 
-flow_local_1772:                                                  ; address: 0x001772
+flow_main_event_loop_1772:                                                  ; address: 0x001772
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_1794                                   ; dest: 0x001794
+        goto    flow_main_event_loop_1794                                   ; dest: 0x001794
         movf    0xa5, F, B                                  ; reg: 0x0a5
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_178E                                   ; dest: 0x00178e
+        goto    flow_main_event_loop_178E                                   ; dest: 0x00178e
         movff   0x0a4, 0x0a5
-        goto    flow_local_1790                                   ; dest: 0x001790
+        goto    flow_main_event_loop_1790                                   ; dest: 0x001790
 
-flow_local_178E:                                                  ; address: 0x00178e
+flow_main_event_loop_178E:                                                  ; address: 0x00178e
 
         decf    0xa5, F, B                                  ; reg: 0x0a5
 
-flow_local_1790:                                                  ; address: 0x001790
+flow_main_event_loop_1790:                                                  ; address: 0x001790
 
         call    control_core_service_17E8, 0x0                           ; dest: 0x0017e8
 
-flow_local_1794:                                                  ; address: 0x001794
+flow_main_event_loop_1794:                                                  ; address: 0x001794
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x5, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_17B0                                   ; dest: 0x0017b0
+        goto    flow_main_event_loop_17B0                                   ; dest: 0x0017b0
         movlw   0x06
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_17AE                                   ; dest: 0x0017ae
+        goto    flow_main_event_loop_17AE                                   ; dest: 0x0017ae
         clrf    0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_17B0                                   ; dest: 0x0017b0
+        goto    flow_main_event_loop_17B0                                   ; dest: 0x0017b0
 
-flow_local_17AE:                                                  ; address: 0x0017ae
+flow_main_event_loop_17AE:                                                  ; address: 0x0017ae
 
         incf    0xc0, F, B                                  ; reg: 0x0c0
 
-flow_local_17B0:                                                  ; address: 0x0017b0
+flow_main_event_loop_17B0:                                                  ; address: 0x0017b0
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x4, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_17CE                                   ; dest: 0x0017ce
+        goto    flow_main_event_loop_17CE                                   ; dest: 0x0017ce
         movf    0xc0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_17CC                                   ; dest: 0x0017cc
+        goto    flow_main_event_loop_17CC                                   ; dest: 0x0017cc
         movlw   0x06
         movwf   0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_17CE                                   ; dest: 0x0017ce
+        goto    flow_main_event_loop_17CE                                   ; dest: 0x0017ce
 
-flow_local_17CC:                                                  ; address: 0x0017cc
+flow_main_event_loop_17CC:                                                  ; address: 0x0017cc
 
         decf    0xc0, F, B                                  ; reg: 0x0c0
 
-flow_local_17CE:                                                  ; address: 0x0017ce
+flow_main_event_loop_17CE:                                                  ; address: 0x0017ce
 
         clrf    WREG, A                                     ; reg: 0xfe8
         btfsc   0x9a, 0x3, B                                ; reg: 0x09a
@@ -3810,7 +3810,7 @@ flow_local_17CE:                                                  ; address: 0x0
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_165A                                   ; dest: 0x00165a
+        bra     flow_main_event_loop_165A                                   ; dest: 0x00165a
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         return  0x0
 
@@ -3819,74 +3819,74 @@ control_core_service_17E8:                                               ; addre
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         movlw   0x06
         cpfslt  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_1876                                   ; dest: 0x001876
+        goto    flow_ccs_17E8_1876                                   ; dest: 0x001876
         movf    0xc0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_180A                                   ; dest: 0x00180a
+        goto    flow_ccs_17E8_180A                                   ; dest: 0x00180a
         lfsr    0x0, 0x0c1
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
-        goto    flow_local_1872                                   ; dest: 0x001872
+        goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
-flow_local_180A:                                                  ; address: 0x00180a
+flow_ccs_17E8_180A:                                                  ; address: 0x00180a
 
         decfsz  0xc0, W, B                                  ; reg: 0x0c0
-        goto    flow_local_181E                                   ; dest: 0x00181e
+        goto    flow_ccs_17E8_181E                                   ; dest: 0x00181e
         lfsr    0x0, 0x0c7
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
-        goto    flow_local_1872                                   ; dest: 0x001872
+        goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
-flow_local_181E:                                                  ; address: 0x00181e
+flow_ccs_17E8_181E:                                                  ; address: 0x00181e
 
         movlw   0x02
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_1834                                   ; dest: 0x001834
+        goto    flow_ccs_17E8_1834                                   ; dest: 0x001834
         lfsr    0x0, 0x0cd
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
-        goto    flow_local_1872                                   ; dest: 0x001872
+        goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
-flow_local_1834:                                                  ; address: 0x001834
+flow_ccs_17E8_1834:                                                  ; address: 0x001834
 
         movlw   0x03
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_184A                                   ; dest: 0x00184a
+        goto    flow_ccs_17E8_184A                                   ; dest: 0x00184a
         lfsr    0x0, 0x0d3
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
-        goto    flow_local_1872                                   ; dest: 0x001872
+        goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
-flow_local_184A:                                                  ; address: 0x00184a
+flow_ccs_17E8_184A:                                                  ; address: 0x00184a
 
         movlw   0x04
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_1860                                   ; dest: 0x001860
+        goto    flow_ccs_17E8_1860                                   ; dest: 0x001860
         lfsr    0x0, 0x0d9
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
-        goto    flow_local_1872                                   ; dest: 0x001872
+        goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
-flow_local_1860:                                                  ; address: 0x001860
+flow_ccs_17E8_1860:                                                  ; address: 0x001860
 
         movlw   0x05
         cpfseq  0xc0, B                                     ; reg: 0x0c0
-        goto    flow_local_1872                                   ; dest: 0x001872
+        goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
         lfsr    0x0, 0x0df
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
 
-flow_local_1872:                                                  ; address: 0x001872
+flow_ccs_17E8_1872:                                                  ; address: 0x001872
 
-        goto    flow_local_1880                                   ; dest: 0x001880
+        goto    flow_ccs_17E8_1880                                   ; dest: 0x001880
 
-flow_local_1876:                                                  ; address: 0x001876
+flow_ccs_17E8_1876:                                                  ; address: 0x001876
 
         lfsr    0x0, 0x0e5
         movf    0xba, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
 
-flow_local_1880:                                                  ; address: 0x001880
+flow_ccs_17E8_1880:                                                  ; address: 0x001880
 
         return  0x0
 menu_input_auto_detect_table:                                                  ; address: 0x001882  (tblptr anchor)
@@ -3975,7 +3975,7 @@ control_core_service_1912:                                               ; addre
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
 
-flow_local_192A:                                                  ; address: 0x00192a
+flow_ccs_1912_192A:                                                  ; address: 0x00192a
 
         movff   0x0b7, tx_data_staging                    ; reg2: 0x027
         movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
@@ -3985,37 +3985,37 @@ flow_local_192A:                                                  ; address: 0x0
         movff   0x0b7, 0x0a5
         movf    0xa1, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_194A                                   ; dest: 0x00194a
+        goto    flow_ccs_1912_194A                                   ; dest: 0x00194a
         movlw   0x05
         movwf   0xa4, B                                     ; reg: 0x0a4
-        goto    flow_local_1974                                   ; dest: 0x001974
+        goto    flow_ccs_1912_1974                                   ; dest: 0x001974
 
-flow_local_194A:                                                  ; address: 0x00194a
+flow_ccs_1912_194A:                                                  ; address: 0x00194a
 
         decfsz  0xa1, W, B                                  ; reg: 0x0a1
-        goto    flow_local_1958                                   ; dest: 0x001958
+        goto    flow_ccs_1912_1958                                   ; dest: 0x001958
         movlw   0x06
         movwf   0xa4, B                                     ; reg: 0x0a4
-        goto    flow_local_1974                                   ; dest: 0x001974
+        goto    flow_ccs_1912_1974                                   ; dest: 0x001974
 
-flow_local_1958:                                                  ; address: 0x001958
+flow_ccs_1912_1958:                                                  ; address: 0x001958
 
         movlw   0x02
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_1968                                   ; dest: 0x001968
+        goto    flow_ccs_1912_1968                                   ; dest: 0x001968
         movlw   0x07
         movwf   0xa4, B                                     ; reg: 0x0a4
-        goto    flow_local_1974                                   ; dest: 0x001974
+        goto    flow_ccs_1912_1974                                   ; dest: 0x001974
 
-flow_local_1968:                                                  ; address: 0x001968
+flow_ccs_1912_1968:                                                  ; address: 0x001968
 
         movlw   0x03
         cpfseq  0xa1, B                                     ; reg: 0x0a1
-        goto    flow_local_1974                                   ; dest: 0x001974
+        goto    flow_ccs_1912_1974                                   ; dest: 0x001974
         movlw   0x08
         movwf   0xa4, B                                     ; reg: 0x0a4
 
-flow_local_1974:                                                  ; address: 0x001974
+flow_ccs_1912_1974:                                                  ; address: 0x001974
 
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -4024,60 +4024,60 @@ flow_local_1974:                                                  ; address: 0x0
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         btfss   control_flags, 0x3, A                   ; reg: 0x01f
-        goto    flow_local_1996                                   ; dest: 0x001996
+        goto    flow_ccs_1912_1996                                   ; dest: 0x001996
         bcf     control_flags, 0x3, A                   ; reg: 0x01f
         btfss   control_flags, 0x1, A                   ; reg: 0x01f
-        goto    flow_local_1996                                   ; dest: 0x001996
+        goto    flow_ccs_1912_1996                                   ; dest: 0x001996
         bra     control_core_service_1912                                ; dest: 0x001912
 
-flow_local_1996:                                                  ; address: 0x001996
+flow_ccs_1912_1996:                                                  ; address: 0x001996
 
         rrcf    0x9a, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_local_19C0                                   ; dest: 0x0019c0
+        goto    flow_ccs_1912_19C0                                   ; dest: 0x0019c0
         movf    0xa5, W, B                                  ; reg: 0x0a5
         cpfseq  0xa4, B                                     ; reg: 0x0a4
-        goto    flow_local_19AE                                   ; dest: 0x0019ae
+        goto    flow_ccs_1912_19AE                                   ; dest: 0x0019ae
         clrf    0xa5, B                                     ; reg: 0x0a5
-        goto    flow_local_19B0                                   ; dest: 0x0019b0
+        goto    flow_ccs_1912_19B0                                   ; dest: 0x0019b0
 
-flow_local_19AE:                                                  ; address: 0x0019ae
+flow_ccs_1912_19AE:                                                  ; address: 0x0019ae
 
         incf    0xa5, F, B                                  ; reg: 0x0a5
 
-flow_local_19B0:                                                  ; address: 0x0019b0
+flow_ccs_1912_19B0:                                                  ; address: 0x0019b0
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         movff   0x0a5, 0x0b7
         call    control_core_service_076A, 0x0                           ; dest: 0x00076a
         call    input_frame_send, 0x0                           ; dest: 0x000c22
 
-flow_local_19C0:                                                  ; address: 0x0019c0
+flow_ccs_1912_19C0:                                                  ; address: 0x0019c0
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfss   0x9a, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        goto    flow_local_19EE                                   ; dest: 0x0019ee
+        goto    flow_ccs_1912_19EE                                   ; dest: 0x0019ee
         movf    0xa5, F, B                                  ; reg: 0x0a5
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        goto    flow_local_19DC                                   ; dest: 0x0019dc
+        goto    flow_ccs_1912_19DC                                   ; dest: 0x0019dc
         movff   0x0a4, 0x0a5
-        goto    flow_local_19DE                                   ; dest: 0x0019de
+        goto    flow_ccs_1912_19DE                                   ; dest: 0x0019de
 
-flow_local_19DC:                                                  ; address: 0x0019dc
+flow_ccs_1912_19DC:                                                  ; address: 0x0019dc
 
         decf    0xa5, F, B                                  ; reg: 0x0a5
 
-flow_local_19DE:                                                  ; address: 0x0019de
+flow_ccs_1912_19DE:                                                  ; address: 0x0019de
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         movff   0x0a5, 0x0b7
         call    control_core_service_076A, 0x0                           ; dest: 0x00076a
         call    input_frame_send, 0x0                           ; dest: 0x000c22
 
-flow_local_19EE:                                                  ; address: 0x0019ee
+flow_ccs_1912_19EE:                                                  ; address: 0x0019ee
 
         clrf    WREG, A                                     ; reg: 0xfe8
         btfsc   0x9a, 0x5, B                                ; reg: 0x09a
@@ -4092,7 +4092,7 @@ flow_local_19EE:                                                  ; address: 0x0
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_local_192A                                   ; dest: 0x00192a
+        bra     flow_ccs_1912_192A                                   ; dest: 0x00192a
         return  0x0
         dw      0xffff
         dw      0xffff
@@ -16123,29 +16123,29 @@ flow_local_19EE:                                                  ; address: 0x0
 
 bootloader_entry:                                                  ; address: 0x007800
 
-        goto    flow_local_7AFE                                   ; dest: 0x007afe
+        goto    flow_ccs_7ADA_7AFE                                   ; dest: 0x007afe
 
 control_core_service_7804:                                               ; address: 0x007804
 
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0x03
-        bra     flow_local_780E                                   ; dest: 0x00780e
+        bra     flow_ccs_780A_780E                                   ; dest: 0x00780e
 
 control_core_service_780A:                                               ; address: 0x00780a
 
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0x04
 
-flow_local_780E:                                                  ; address: 0x00780e
+flow_ccs_780A_780E:                                                  ; address: 0x00780e
 
         movwf   (Common_RAM + 7), A                         ; reg: 0x007
         movf    (Common_RAM + 14), W, A                     ; reg: 0x00e
         subwf   (Common_RAM + 12), W, A                     ; reg: 0x00c
-        bnz     flow_local_781A
+        bnz     flow_ccs_780A_781A
         movf    (Common_RAM + 13), W, A                     ; reg: 0x00d
         subwf   (Common_RAM + 11), W, A                     ; reg: 0x00b
 
-flow_local_781A:                                                  ; address: 0x00781a
+flow_ccs_780A_781A:                                                  ; address: 0x00781a
 
         movlw   0x04
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
@@ -16185,9 +16185,9 @@ control_core_service_784E:                                               ; addre
         clrf    (Common_RAM + 5), A                         ; reg: 0x005
         movlw   0x80
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
-        bra     flow_local_7856                                   ; dest: 0x007856
+        bra     flow_ccs_784E_7856                                   ; dest: 0x007856
 
-flow_local_7856:                                                  ; address: 0x007856
+flow_ccs_784E_7856:                                                  ; address: 0x007856
 
         clrf    (Common_RAM + 15), A                        ; reg: 0x00f
         clrf    (Common_RAM + 16), A                        ; reg: 0x010
@@ -16195,7 +16195,7 @@ flow_local_7856:                                                  ; address: 0x0
         clrf    (Common_RAM + 17), A                        ; reg: 0x011
         bcf     (Common_RAM + 7), 0x5, A                    ; reg: 0x007
 
-flow_local_7860:                                                  ; address: 0x007860
+flow_ccs_784E_7860:                                                  ; address: 0x007860
 
         rcall   control_core_service_7A3C                                ; dest: 0x007a3c
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
@@ -16205,26 +16205,26 @@ flow_local_7860:                                                  ; address: 0x0
         bsf     (Common_RAM + 7), 0x5, A                    ; reg: 0x007
         addlw   0x2d
         addlw   0xc6
-        bc      flow_local_7878
+        bc      flow_ccs_784E_7878
         addlw   0x0a
-        bnc     flow_local_7860
-        bra     flow_local_7882                                   ; dest: 0x007882
+        bnc     flow_ccs_784E_7860
+        bra     flow_ccs_784E_7882                                   ; dest: 0x007882
 
-flow_local_7878:                                                  ; address: 0x007878
+flow_ccs_784E_7878:                                                  ; address: 0x007878
 
         addlw   0xf3
-        bc      flow_local_7860
+        bc      flow_ccs_784E_7860
         addlw   0x06
-        bnc     flow_local_7860
+        bnc     flow_ccs_784E_7860
         addlw   0x0a
 
-flow_local_7882:                                                  ; address: 0x007882
+flow_ccs_784E_7882:                                                  ; address: 0x007882
 
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0x04
         movwf   (Common_RAM + 14), A                        ; reg: 0x00e
 
-flow_local_7888:                                                  ; address: 0x007888
+flow_ccs_784E_7888:                                                  ; address: 0x007888
 
         bcf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
         rlcf    (Common_RAM + 15), F, A                     ; reg: 0x00f
@@ -16232,33 +16232,33 @@ flow_local_7888:                                                  ; address: 0x0
         rlcf    (Common_RAM + 17), F, A                     ; reg: 0x011
         rlcf    (Common_RAM + 18), F, A                     ; reg: 0x012
         decfsz  (Common_RAM + 14), F, A                     ; reg: 0x00e
-        bra     flow_local_7888                                   ; dest: 0x007888
+        bra     flow_ccs_784E_7888                                   ; dest: 0x007888
         movf    (Common_RAM + 13), W, A                     ; reg: 0x00d
         iorwf   (Common_RAM + 15), F, A                     ; reg: 0x00f
         decf    (Common_RAM + 5), F, A                      ; reg: 0x005
-        bz      flow_local_78BA
+        bz      flow_ccs_784E_78BA
         rcall   control_core_service_7A3C                                ; dest: 0x007a3c
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         return  0x0
         addlw   0xc6
-        bc      flow_local_78AE
+        bc      flow_ccs_784E_78AE
         addlw   0x0a
-        bnc     flow_local_78BA
-        bra     flow_local_7882                                   ; dest: 0x007882
+        bnc     flow_ccs_784E_78BA
+        bra     flow_ccs_784E_7882                                   ; dest: 0x007882
 
-flow_local_78AE:                                                  ; address: 0x0078ae
+flow_ccs_784E_78AE:                                                  ; address: 0x0078ae
 
         addlw   0xf3
-        bc      flow_local_78BA
+        bc      flow_ccs_784E_78BA
         addlw   0x06
-        bnc     flow_local_78BA
+        bnc     flow_ccs_784E_78BA
         addlw   0x0a
-        bra     flow_local_7882                                   ; dest: 0x007882
+        bra     flow_ccs_784E_7882                                   ; dest: 0x007882
 
-flow_local_78BA:                                                  ; address: 0x0078ba
+flow_ccs_784E_78BA:                                                  ; address: 0x0078ba
 
         btfss   (Common_RAM + 7), 0x5, A                    ; reg: 0x007
-        bra     flow_local_78D4                                   ; dest: 0x0078d4
+        bra     flow_ccs_784E_78D4                                   ; dest: 0x0078d4
         comf    (Common_RAM + 15), F, A                     ; reg: 0x00f
         comf    (Common_RAM + 16), F, A                     ; reg: 0x010
         comf    (Common_RAM + 17), F, A                     ; reg: 0x011
@@ -16271,7 +16271,7 @@ flow_local_78BA:                                                  ; address: 0x0
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         incf    (Common_RAM + 18), F, A                     ; reg: 0x012
 
-flow_local_78D4:                                                  ; address: 0x0078d4
+flow_ccs_784E_78D4:                                                  ; address: 0x0078d4
 
         movf    (Common_RAM + 15), W, A                     ; reg: 0x00f
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
@@ -16303,30 +16303,30 @@ control_core_service_78FA:                                               ; addre
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         addlw   0x07
         addlw   0x0a
-        bra     flow_local_7906                                   ; dest: 0x007906
+        bra     flow_ccs_78FA_7906                                   ; dest: 0x007906
 
-flow_local_7906:                                                  ; address: 0x007906
+flow_ccs_78FA_7906:                                                  ; address: 0x007906
 
         movwf   (Common_RAM + 11), A                        ; reg: 0x00b
         dcfsnz  (Common_RAM + 4), F, A                      ; reg: 0x004
         bcf     Common_RAM, 0x3, A                          ; reg: 0x000
         movf    (Common_RAM + 5), W, A                      ; reg: 0x005
-        bz      flow_local_7916
+        bz      flow_ccs_78FA_7916
         subwf   (Common_RAM + 4), W, A                      ; reg: 0x004
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        bra     flow_local_7924                                   ; dest: 0x007924
+        bra     flow_ccs_78FA_7924                                   ; dest: 0x007924
 
-flow_local_7916:                                                  ; address: 0x007916
+flow_ccs_78FA_7916:                                                  ; address: 0x007916
 
         movf    (Common_RAM + 11), W, A                     ; reg: 0x00b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bcf     Common_RAM, 0x3, A                          ; reg: 0x000
         btfsc   Common_RAM, 0x3, A                          ; reg: 0x000
-        bra     flow_local_7924                                   ; dest: 0x007924
+        bra     flow_ccs_78FA_7924                                   ; dest: 0x007924
         addlw   0x30
         bra     control_core_service_7A34                                ; dest: 0x007a34
 
-flow_local_7924:                                                  ; address: 0x007924
+flow_ccs_78FA_7924:                                                  ; address: 0x007924
 
         return  0x0
 
@@ -16334,7 +16334,7 @@ control_core_service_7926:                                               ; addre
 
         movwf   (Common_RAM + 15), A                        ; reg: 0x00f
 
-flow_local_7928:                                                  ; address: 0x007928
+flow_ccs_7926_7928:                                                  ; address: 0x007928
 
         movf    (Common_RAM + 4), W, A                      ; reg: 0x004
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -16348,22 +16348,22 @@ flow_local_7928:                                                  ; address: 0x0
         infsnz  (Common_RAM + 15), F, A                     ; reg: 0x00f
         incf    (Common_RAM + 16), F, A                     ; reg: 0x010
         decf    (Common_RAM + 4), F, A                      ; reg: 0x004
-        bra     flow_local_7928                                   ; dest: 0x007928
+        bra     flow_ccs_7926_7928                                   ; dest: 0x007928
 
 control_core_service_7946:                                               ; address: 0x007946
 
         clrf    EECON1, A                                   ; reg: 0xfa6
         bsf     EECON1, EEPGD, A                            ; reg: 0xfa6, bit: 7
 
-flow_local_794A:                                                  ; address: 0x00794a
+flow_ccs_7946_794A:                                                  ; address: 0x00794a
 
         tblrd*+
         movf    TABLAT, W, A                                ; reg: 0xff5
-        bz      flow_local_7954
+        bz      flow_ccs_7946_7954
         rcall   control_core_service_7956                                ; dest: 0x007956
-        bra     flow_local_794A                                   ; dest: 0x00794a
+        bra     flow_ccs_7946_794A                                   ; dest: 0x00794a
 
-flow_local_7954:                                                  ; address: 0x007954
+flow_ccs_7946_7954:                                                  ; address: 0x007954
 
         return  0x0
 
@@ -16378,7 +16378,7 @@ control_core_service_7956:                                               ; addre
         andwf   TRISB, F, A                                 ; reg: 0xf93
         movf    (Common_RAM + 20), W, A                     ; reg: 0x014
         btfsc   Common_RAM, 0x1, A                          ; reg: 0x000
-        bra     flow_local_79A6                                   ; dest: 0x0079a6
+        bra     flow_ccs_79A4_79A6                                   ; dest: 0x0079a6
         movlw   0x3a
         movwf   (Common_RAM + 12), A                        ; reg: 0x00c
         movlw   0x98
@@ -16407,17 +16407,17 @@ control_core_service_7956:                                               ; addre
         rcall   control_core_service_79A4                                ; dest: 0x0079a4
         bsf     Common_RAM, 0x1, A                          ; reg: 0x000
         movf    (Common_RAM + 20), W, A                     ; reg: 0x014
-        bra     flow_local_79A6                                   ; dest: 0x0079a6
+        bra     flow_ccs_79A4_79A6                                   ; dest: 0x0079a6
 
 control_core_service_79A4:                                               ; address: 0x0079a4
 
         bsf     Common_RAM, 0x0, A                          ; reg: 0x000
 
-flow_local_79A6:                                                  ; address: 0x0079a6
+flow_ccs_79A4_79A6:                                                  ; address: 0x0079a6
 
         movwf   (Common_RAM + 19), A                        ; reg: 0x013
         btfss   Common_RAM, 0x0, A                          ; reg: 0x000
-        bra     flow_local_79C0                                   ; dest: 0x0079c0
+        bra     flow_ccs_79A4_79C0                                   ; dest: 0x0079c0
         bcf     LATA, LATA5, A                              ; reg: 0xf89, bit: 5
         sublw   0x03
         bnc     control_core_service_79C8
@@ -16429,11 +16429,11 @@ flow_local_79A6:                                                  ; address: 0x0
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
         return  0x0
 
-flow_local_79C0:                                                  ; address: 0x0079c0
+flow_ccs_79A4_79C0:                                                  ; address: 0x0079c0
 
         bsf     Common_RAM, 0x0, A                          ; reg: 0x000
         sublw   0xfe
-        bz      flow_local_79E8
+        bz      flow_ccs_79CC_79E8
         bsf     LATA, LATA5, A                              ; reg: 0xf89, bit: 5
 
 control_core_service_79C8:                                               ; address: 0x0079c8
@@ -16458,7 +16458,7 @@ control_core_service_79CC:                                               ; addre
         rcall   control_core_service_7AC0                                ; dest: 0x007ac0
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
 
-flow_local_79E8:                                                  ; address: 0x0079e8
+flow_ccs_79CC_79E8:                                                  ; address: 0x0079e8
 
         movf    (Common_RAM + 20), W, A                     ; reg: 0x014
         return  0x0
@@ -16473,16 +16473,16 @@ control_core_service_79EC:                                               ; addre
         clrf    (Common_RAM + 13), A                        ; reg: 0x00d
         clrf    (Common_RAM + 14), A                        ; reg: 0x00e
 
-flow_local_79FE:                                                  ; address: 0x0079fe
+flow_ccs_79EC_79FE:                                                  ; address: 0x0079fe
 
         nop
-        bra     flow_local_7A02                                   ; dest: 0x007a02
+        bra     flow_ccs_79EC_7A02                                   ; dest: 0x007a02
 
-flow_local_7A02:                                                  ; address: 0x007a02
+flow_ccs_79EC_7A02:                                                  ; address: 0x007a02
 
         nop
         btfsc   PIR1, RCIF, A                               ; reg: 0xf9e, bit: 5
-        bra     flow_local_7A24                                   ; dest: 0x007a24
+        bra     flow_ccs_79EC_7A24                                   ; dest: 0x007a24
         setf    WREG, A                                     ; reg: 0xfe8
         addwf   (Common_RAM + 13), F, A                     ; reg: 0x00d
         addwfc  (Common_RAM + 14), F, A                     ; reg: 0x00e
@@ -16492,13 +16492,13 @@ flow_local_7A02:                                                  ; address: 0x0
         return  0x0
         infsnz  (Common_RAM + 13), W, A                     ; reg: 0x00d
         incfsz  (Common_RAM + 14), W, A                     ; reg: 0x00e
-        bra     flow_local_79FE                                   ; dest: 0x0079fe
+        bra     flow_ccs_79EC_79FE                                   ; dest: 0x0079fe
         movlw   0xb7
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         clrf    (Common_RAM + 14), A                        ; reg: 0x00e
-        bra     flow_local_7A02                                   ; dest: 0x007a02
+        bra     flow_ccs_79EC_7A02                                   ; dest: 0x007a02
 
-flow_local_7A24:                                                  ; address: 0x007a24
+flow_ccs_79EC_7A24:                                                  ; address: 0x007a24
 
         movf    RCREG, W, A                                 ; reg: 0xfae
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0
@@ -16548,10 +16548,10 @@ control_core_service_7A54:                                               ; addre
         movwf   EECON2, A                                   ; reg: 0xfa7
         bsf     EECON1, WR, A                               ; reg: 0xfa6, bit: 1
 
-flow_local_7A64:                                                  ; address: 0x007a64
+flow_ccs_7A54_7A64:                                                  ; address: 0x007a64
 
         btfsc   EECON1, WR, A                               ; reg: 0xfa6, bit: 1
-        bra     flow_local_7A64                                   ; dest: 0x007a64
+        bra     flow_ccs_7A54_7A64                                   ; dest: 0x007a64
         bcf     EECON1, WREN, A                             ; reg: 0xfa6, bit: 2
         incf    EEADR, F, A                                 ; reg: 0xfa9
         return  0x0
@@ -16562,7 +16562,7 @@ control_core_service_7A6E:                                               ; addre
         tblwt*
         incf    TBLPTRL, W, A                               ; reg: 0xff6
         andlw   0x1f
-        bnz     flow_local_7A8A
+        bnz     flow_ccs_7A6E_7A8A
         movlw   0x84
         movwf   EECON1, A                                   ; reg: 0xfa6
         movlw   0x55
@@ -16570,13 +16570,13 @@ control_core_service_7A6E:                                               ; addre
         movlw   0xaa
         movwf   EECON2, A                                   ; reg: 0xfa7
         bsf     EECON1, WR, A                               ; reg: 0xfa6, bit: 1
-        bra     flow_local_7A88                                   ; dest: 0x007a88
+        bra     flow_ccs_7A6E_7A88                                   ; dest: 0x007a88
 
-flow_local_7A88:                                                  ; address: 0x007a88
+flow_ccs_7A6E_7A88:                                                  ; address: 0x007a88
 
         bcf     EECON1, WREN, A                             ; reg: 0xfa6, bit: 2
 
-flow_local_7A8A:                                                  ; address: 0x007a8a
+flow_ccs_7A6E_7A8A:                                                  ; address: 0x007a8a
 
         infsnz  TBLPTRL, F, A                               ; reg: 0xff6
         incf    TBLPTRH, F, A                               ; reg: 0xff7
@@ -16607,14 +16607,14 @@ control_core_service_7AA8:                                               ; addre
 
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
 
-flow_local_7AAA:                                                  ; address: 0x007aaa
+flow_ccs_7AA8_7AAA:                                                  ; address: 0x007aaa
 
         movlw   0xff
         addwf   (Common_RAM + 13), F, A                     ; reg: 0x00d
         addwfc  (Common_RAM + 14), F, A                     ; reg: 0x00e
-        bra     flow_local_7AB2                                   ; dest: 0x007ab2
+        bra     flow_ccs_7AA8_7AB2                                   ; dest: 0x007ab2
 
-flow_local_7AB2:                                                  ; address: 0x007ab2
+flow_ccs_7AA8_7AB2:                                                  ; address: 0x007ab2
 
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         return  0x0
@@ -16622,7 +16622,7 @@ flow_local_7AB2:                                                  ; address: 0x0
         movwf   (Common_RAM + 12), A                        ; reg: 0x00c
         movlw   0xe5
         rcall   control_core_service_7AC2                                ; dest: 0x007ac2
-        bra     flow_local_7AAA                                   ; dest: 0x007aaa
+        bra     flow_ccs_7AA8_7AAA                                   ; dest: 0x007aaa
 
 control_core_service_7AC0:                                               ; address: 0x007ac0
 
@@ -16633,34 +16633,34 @@ control_core_service_7AC2:                                               ; addre
         addlw   0xfa
         movwf   (Common_RAM + 11), A                        ; reg: 0x00b
         nop
-        bnc     flow_local_7AD0
-        bra     flow_local_7ACC                                   ; dest: 0x007acc
+        bnc     flow_ccs_7AC2_7AD0
+        bra     flow_ccs_7AC2_7ACC                                   ; dest: 0x007acc
 
-flow_local_7ACC:                                                  ; address: 0x007acc
+flow_ccs_7AC2_7ACC:                                                  ; address: 0x007acc
 
         decf    (Common_RAM + 11), F, A                     ; reg: 0x00b
-        bc      flow_local_7ACC
+        bc      flow_ccs_7AC2_7ACC
 
-flow_local_7AD0:                                                  ; address: 0x007ad0
+flow_ccs_7AC2_7AD0:                                                  ; address: 0x007ad0
 
         decf    (Common_RAM + 11), F, A                     ; reg: 0x00b
         decf    (Common_RAM + 12), F, A                     ; reg: 0x00c
-        bc      flow_local_7ACC
+        bc      flow_ccs_7AC2_7ACC
         nop
         return  0x0
 
 control_core_service_7ADA:                                               ; address: 0x007ada
 
         dcfsnz  PRODL, F, A                                 ; reg: 0xff3
-        bra     flow_local_7AE2                                   ; dest: 0x007ae2
+        bra     flow_ccs_7ADA_7AE2                                   ; dest: 0x007ae2
         movf    POSTINC1, F, A                              ; reg: 0xfe6
         bra     control_core_service_7ADA                                ; dest: 0x007ada
 
-flow_local_7AE2:                                                  ; address: 0x007ae2
+flow_ccs_7ADA_7AE2:                                                  ; address: 0x007ae2
 
         movff   POSTINC1, POSTINC0                          ; reg1: 0xfe6, reg2: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_7AE2                                   ; dest: 0x007ae2
+        bra     flow_ccs_7ADA_7AE2                                   ; dest: 0x007ae2
         return  0x0
         movwf   (Common_RAM + 66), B                        ; reg: 0x042
         btg     0x6f, 0x2, A                                ; reg: 0xf6f
@@ -16672,28 +16672,28 @@ flow_local_7AE2:                                                  ; address: 0x0
         addwfc  0x65, W, A                                  ; reg: 0xf65
         nop
 
-flow_local_7AFE:                                                  ; address: 0x007afe
+flow_ccs_7ADA_7AFE:                                                  ; address: 0x007afe
 
         clrf    TBLPTRU, A                                  ; reg: 0xff8
         clrf    Common_RAM, A                               ; reg: 0x000
-        movlw   0x05
+        movlw   0x05                                        ; SPBRG: 31250 baud @ 4MIPS (BRG16=0 BRGH=0 → SPBRG=5)
         movwf   SPBRG, A                                    ; reg: 0xfaf
         movlw   0x20
         movwf   TXSTA, A                                    ; reg: 0xfac
         movlw   0x90
         movwf   RCSTA, A                                    ; reg: 0xfab
         movlb   0x0
-        movlw   0xdf
+        movlw   0xdf                                        ; TRISA: RA1..RA4 input (buttons), RA5 output (LCD RS)
         movwf   TRISA, A                                    ; reg: 0xf92
-        movlw   0x3c
+        movlw   0x3c                                        ; TRISB: RB0..RB3 output (LCD D4..D7 muxed), RB2/RB3 inputs, RB4 E strobe
         movwf   TRISB, A                                    ; reg: 0xf93
-        movlw   0xbd
+        movlw   0xbd                                        ; TRISC: RC6 TX, RC7 RX, RC1 output (LED), RC0/RC5 inputs (buttons)
         movwf   TRISC, A                                    ; reg: 0xf94
         clrf    CM1CON0, A                                  ; reg: 0xf7b
         clrf    CM2CON0, A                                  ; reg: 0xf7a
         clrf    ANSEL, A                                    ; reg: 0xf7e
         clrf    ANSELH, A                                   ; reg: 0xf7f
-        movlw   0x0f
+        movlw   0x0f                                        ; ADCON1: all PORTA digital (vendor init)
         movwf   ADCON1, A                                   ; reg: 0xfc1
         movlw   0x05
         rcall   control_core_service_7AA6                                ; dest: 0x007aa6
@@ -16715,40 +16715,40 @@ flow_local_7AFE:                                                  ; address: 0x0
         rcall   bootloader_manual_entry                                ; dest: 0x007f02
         rrcf    0x82, W, B                                  ; reg: 0x082
         rrcf    WREG, F, A                                  ; reg: 0xfe8
-        bc      flow_local_7B7C
+        bc      flow_ccs_7ADA_7B7C
         movlw   0xff
         rcall   control_core_service_7A48                                ; dest: 0x007a48
         movwf   control_flags, A                        ; reg: 0x01f
         decfsz  control_flags, W, A                     ; reg: 0x01f
-        bra     flow_local_7B68                                   ; dest: 0x007b68
+        bra     flow_ccs_7ADA_7B68                                   ; dest: 0x007b68
         setf    EEADR, A                                    ; reg: 0xfa9
         movlw   0x77
         rcall   control_core_service_7A54                                ; dest: 0x007a54
         goto    flow_local_0040                                   ; dest: 0x000040
-        bra     flow_local_7B7A                                   ; dest: 0x007b7a
+        bra     flow_ccs_7ADA_7B7A                                   ; dest: 0x007b7a
 
-flow_local_7B68:                                                  ; address: 0x007b68
+flow_ccs_7ADA_7B68:                                                  ; address: 0x007b68
 
         movlw   0x02
         cpfseq  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7B7A                                   ; dest: 0x007b7a
+        bra     flow_ccs_7ADA_7B7A                                   ; dest: 0x007b7a
         movlw   0xfe
         movwf   EEADR, A                                    ; reg: 0xfa9
         movlw   0x01
         rcall   control_core_service_7A54                                ; dest: 0x007a54
         goto    flow_local_0040                                   ; dest: 0x000040
 
-flow_local_7B7A:                                                  ; address: 0x007b7a
+flow_ccs_7ADA_7B7A:                                                  ; address: 0x007b7a
 
-        bra     flow_local_7B82                                   ; dest: 0x007b82
+        bra     flow_ccs_7ADA_7B82                                   ; dest: 0x007b82
 
-flow_local_7B7C:                                                  ; address: 0x007b7c
+flow_ccs_7ADA_7B7C:                                                  ; address: 0x007b7c
 
         setf    EEADR, A                                    ; reg: 0xfa9
         movlw   0x00
         rcall   control_core_service_7A54                                ; dest: 0x007a54
 
-flow_local_7B82:                                                  ; address: 0x007b82
+flow_ccs_7ADA_7B82:                                                  ; address: 0x007b82
 
         bsf     TXSTA, TXEN, A                              ; reg: 0xfac, bit: 5
         bsf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4
@@ -16767,11 +16767,11 @@ flow_local_7B82:                                                  ; address: 0x0
         lfsr    0x0, 0x024
         movlw   0x1f
 
-flow_local_7BA4:                                                  ; address: 0x007ba4
+flow_ccs_7ADA_7BA4:                                                  ; address: 0x007ba4
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_7BA4                                   ; dest: 0x007ba4
+        bra     flow_ccs_7ADA_7BA4                                   ; dest: 0x007ba4
         bcf     INTCON, GIE, A                              ; reg: 0xff2, bit: 7
         movlw   0x40
         movwf   ir_decoded_cmd, A                        ; reg: 0x01d
@@ -16779,11 +16779,11 @@ flow_local_7BA4:                                                  ; address: 0x0
         clrf    (Common_RAM + 32), A                        ; reg: 0x020
         clrf    (Common_RAM + 33), A                        ; reg: 0x021
 
-flow_local_7BB6:                                                  ; address: 0x007bb6
+flow_ccs_7ADA_7BB6:                                                  ; address: 0x007bb6
 
         clrf    (Common_RAM + 8), A                         ; reg: 0x008
 
-flow_local_7BB8:                                                  ; address: 0x007bb8
+flow_ccs_7ADA_7BB8:                                                  ; address: 0x007bb8
 
         lfsr    0x0, 0x076
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
@@ -16795,89 +16795,89 @@ flow_local_7BB8:                                                  ; address: 0x0
         incf    (Common_RAM + 8), F, A                      ; reg: 0x008
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
         sublw   0x06
-        bnz     flow_local_7BB8
+        bnz     flow_ccs_7ADA_7BB8
         rcall   control_core_service_7E60                                ; dest: 0x007e60
 
-flow_local_7BD6:                                                  ; address: 0x007bd6
+flow_ccs_7ADA_7BD6:                                                  ; address: 0x007bd6
 
         lfsr    0x0, 0x043
         movlw   0x2e
 
-flow_local_7BDC:                                                  ; address: 0x007bdc
+flow_ccs_7ADA_7BDC:                                                  ; address: 0x007bdc
 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
-        bra     flow_local_7BDC                                   ; dest: 0x007bdc
+        bra     flow_ccs_7ADA_7BDC                                   ; dest: 0x007bdc
         movlw   0xf4
         movwf   (Common_RAM + 2), A                         ; reg: 0x002
         movlw   0x01
         movwf   (Common_RAM + 6), A                         ; reg: 0x006
 
-flow_local_7BEA:                                                  ; address: 0x007bea
+flow_ccs_7ADA_7BEA:                                                  ; address: 0x007bea
 
         rcall   control_core_service_79EC                                ; dest: 0x0079ec
-        bnc     flow_local_7BB6
+        bnc     flow_ccs_7ADA_7BB6
         sublw   0x3a
-        bnz     flow_local_7BEA
+        bnz     flow_ccs_7ADA_7BEA
         lfsr    0x1, 0x043
 
-flow_local_7BF6:                                                  ; address: 0x007bf6
+flow_ccs_7ADA_7BF6:                                                  ; address: 0x007bf6
 
         rcall   control_core_service_79EC                                ; dest: 0x0079ec
-        bnc     flow_local_7BB6
+        bnc     flow_ccs_7ADA_7BB6
         sublw   0x0d
-        bnz     flow_local_7C02
+        bnz     flow_ccs_7ADA_7C02
         clrf    POSTINC1, A                                 ; reg: 0xfe6
-        bra     flow_local_7C0A                                   ; dest: 0x007c0a
+        bra     flow_ccs_7ADA_7C0A                                   ; dest: 0x007c0a
 
-flow_local_7C02:                                                  ; address: 0x007c02
+flow_ccs_7ADA_7C02:                                                  ; address: 0x007c02
 
         movf    RCREG, W, A                                 ; reg: 0xfae
         movwf   POSTINC1, A                                 ; reg: 0xfe6
-        bz      flow_local_7C0A
-        bra     flow_local_7BF6                                   ; dest: 0x007bf6
+        bz      flow_ccs_7ADA_7C0A
+        bra     flow_ccs_7ADA_7BF6                                   ; dest: 0x007bf6
 
-flow_local_7C0A:                                                  ; address: 0x007c0a
+flow_ccs_7ADA_7C0A:                                                  ; address: 0x007c0a
 
         bcf     0x82, 0x0, B                                ; reg: 0x082
         clrf    control_flags, A                        ; reg: 0x01f
 
-flow_local_7C0E:                                                  ; address: 0x007c0e
+flow_ccs_7ADA_7C0E:                                                  ; address: 0x007c0e
 
         movlw   0x06
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7C2A                                   ; dest: 0x007c2a
+        bra     flow_ccs_7ADA_7C2A                                   ; dest: 0x007c2a
         lfsr    0x0, 0x043
         movf    control_flags, W, A                     ; reg: 0x01f
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
         movlw   0x30
         subwf   (Common_RAM + 8), W, A                      ; reg: 0x008
-        bz      flow_local_7C26
+        bz      flow_ccs_7ADA_7C26
         bsf     0x82, 0x0, B                                ; reg: 0x082
 
-flow_local_7C26:                                                  ; address: 0x007c26
+flow_ccs_7ADA_7C26:                                                  ; address: 0x007c26
 
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7C0E
+        bnz     flow_ccs_7ADA_7C0E
 
-flow_local_7C2A:                                                  ; address: 0x007c2a
+flow_ccs_7ADA_7C2A:                                                  ; address: 0x007c2a
 
         rrcf    0x82, W, B                                  ; reg: 0x082
-        bc      flow_local_7C30
-        bra     flow_local_7F56                                   ; dest: 0x007f56
+        bc      flow_ccs_7ADA_7C30
+        bra     flow_bootloader_manual_entry_7F56                                   ; dest: 0x007f56
 
-flow_local_7C30:                                                  ; address: 0x007c30
+flow_ccs_7ADA_7C30:                                                  ; address: 0x007c30
 
         clrf    (Common_RAM + 34), A                        ; reg: 0x022
         clrf    (Common_RAM + 35), A                        ; reg: 0x023
         clrf    control_flags, A                        ; reg: 0x01f
 
-flow_local_7C36:                                                  ; address: 0x007c36
+flow_ccs_7ADA_7C36:                                                  ; address: 0x007c36
 
         movlw   0x14
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7C74                                   ; dest: 0x007c74
+        bra     flow_ccs_7ADA_7C74                                   ; dest: 0x007c74
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
         movf    control_flags, W, A                     ; reg: 0x01f
@@ -16898,9 +16898,9 @@ flow_local_7C36:                                                  ; address: 0x0
         movf    (Common_RAM + 26), W, A                     ; reg: 0x01a
         addwfc  (Common_RAM + 35), F, A                     ; reg: 0x023
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7C36
+        bnz     flow_ccs_7ADA_7C36
 
-flow_local_7C74:                                                  ; address: 0x007c74
+flow_ccs_7ADA_7C74:                                                  ; address: 0x007c74
 
         movf    (Common_RAM + 34), W, A                     ; reg: 0x022
         sublw   0xff
@@ -16927,9 +16927,9 @@ flow_local_7C74:                                                  ; address: 0x0
         movff   (Common_RAM + 16), (Common_RAM + 33)        ; reg1: 0x010, reg2: 0x021
         movf    (Common_RAM + 32), W, A                     ; reg: 0x020
         cpfseq  (Common_RAM + 34), A                        ; reg: 0x022
-        bra     flow_local_7E5E                                   ; dest: 0x007e5e
+        bra     flow_ccs_7ADA_7E5E                                   ; dest: 0x007e5e
         tstfsz  (Common_RAM + 33), A                        ; reg: 0x021
-        bra     flow_local_7E5E                                   ; dest: 0x007e5e
+        bra     flow_ccs_7ADA_7E5E                                   ; dest: 0x007e5e
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
         movlw   0x03
@@ -16947,15 +16947,15 @@ flow_local_7C74:                                                  ; address: 0x0
         clrf    (Common_RAM + 9), A                         ; reg: 0x009
         movf    (Common_RAM + 9), W, A                      ; reg: 0x009
         iorwf   (Common_RAM + 8), W, A                      ; reg: 0x008
-        bz      flow_local_7CE8
+        bz      flow_ccs_7ADA_7CE8
         movlw   0x00
-        bra     flow_local_7CEA                                   ; dest: 0x007cea
+        bra     flow_ccs_7ADA_7CEA                                   ; dest: 0x007cea
 
-flow_local_7CE8:                                                  ; address: 0x007ce8
+flow_ccs_7ADA_7CE8:                                                  ; address: 0x007ce8
 
         movlw   0x01
 
-flow_local_7CEA:                                                  ; address: 0x007cea
+flow_ccs_7ADA_7CEA:                                                  ; address: 0x007cea
 
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         movff   ir_decoded_cmd, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
@@ -16971,15 +16971,15 @@ flow_local_7CEA:                                                  ; address: 0x0
         movlw   0x40
         call    control_core_service_7804, 0x0                           ; dest: 0x007804
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
-        bz      flow_local_7D22
+        bz      flow_ccs_7ADA_7D22
         movf    ir_decoded_addr, W, A                     ; reg: 0x01e
         iorwf   ir_decoded_cmd, W, A                     ; reg: 0x01d
-        bz      flow_local_7D22
+        bz      flow_ccs_7ADA_7D22
         movff   ir_decoded_addr, TBLPTRH                  ; reg1: 0x01e, reg2: 0xff7
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         rcall   control_core_service_7A90                                ; dest: 0x007a90
 
-flow_local_7D22:                                                  ; address: 0x007d22
+flow_ccs_7ADA_7D22:                                                  ; address: 0x007d22
 
         movff   ir_decoded_cmd, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
         movff   ir_decoded_addr, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
@@ -16994,14 +16994,14 @@ flow_local_7D22:                                                  ; address: 0x0
         movlw   0x40
         call    control_core_service_7804, 0x0                           ; dest: 0x007804
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
-        bz      flow_local_7DA4
+        bz      flow_ccs_7ADA_7DA4
         clrf    control_flags, A                        ; reg: 0x01f
 
-flow_local_7D4C:                                                  ; address: 0x007d4c
+flow_ccs_7ADA_7D4C:                                                  ; address: 0x007d4c
 
         movlw   0x08
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7DA4                                   ; dest: 0x007da4
+        bra     flow_ccs_7ADA_7DA4                                   ; dest: 0x007da4
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
         movf    control_flags, W, A                     ; reg: 0x01f
@@ -17033,9 +17033,9 @@ flow_local_7D4C:                                                  ; address: 0x0
         movf    (Common_RAM + 32), W, A                     ; reg: 0x020
         rcall   control_core_service_7A6E                                ; dest: 0x007a6e
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7D4C
+        bnz     flow_ccs_7ADA_7D4C
 
-flow_local_7DA4:                                                  ; address: 0x007da4
+flow_ccs_7ADA_7DA4:                                                  ; address: 0x007da4
 
         movlw   0x3a
         rcall   control_core_service_7A2A                                ; dest: 0x007a2a
@@ -17052,15 +17052,15 @@ flow_local_7DA4:                                                  ; address: 0x0
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         xorlw   0x40
         iorwf   ir_decoded_addr, W, A                     ; reg: 0x01e
-        bnz     flow_local_7E0E
+        bnz     flow_ccs_7ADA_7E0E
         movlw   0x08
         movwf   control_flags, A                        ; reg: 0x01f
 
-flow_local_7DCA:                                                  ; address: 0x007dca
+flow_ccs_7ADA_7DCA:                                                  ; address: 0x007dca
 
         movlw   0x10
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7E08                                   ; dest: 0x007e08
+        bra     flow_ccs_7ADA_7E08                                   ; dest: 0x007e08
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
         movf    control_flags, W, A                     ; reg: 0x01f
@@ -17080,27 +17080,27 @@ flow_local_7DCA:                                                  ; address: 0x0
         movf    control_flags, W, A                     ; reg: 0x01f
         movff   (Common_RAM + 8), PLUSW0                    ; reg1: 0x008, reg2: 0xfeb
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7DCA
+        bnz     flow_ccs_7ADA_7DCA
 
-flow_local_7E08:                                                  ; address: 0x007e08
+flow_ccs_7ADA_7E08:                                                  ; address: 0x007e08
 
         setf    EEADR, A                                    ; reg: 0xfa9
         movlw   0x00
         rcall   control_core_service_7A54                                ; dest: 0x007a54
 
-flow_local_7E0E:                                                  ; address: 0x007e0e
+flow_ccs_7ADA_7E0E:                                                  ; address: 0x007e0e
 
         movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
         xorlw   0x50
         iorwf   ir_decoded_addr, W, A                     ; reg: 0x01e
-        bnz     flow_local_7E5E
+        bnz     flow_ccs_7ADA_7E5E
         clrf    control_flags, A                        ; reg: 0x01f
 
-flow_local_7E18:                                                  ; address: 0x007e18
+flow_ccs_7ADA_7E18:                                                  ; address: 0x007e18
 
         movlw   0x10                                        ; RC5 0x10 volume up
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7E5C                                   ; dest: 0x007e5c
+        bra     flow_ccs_7ADA_7E5C                                   ; dest: 0x007e5c
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
         movf    control_flags, W, A                     ; reg: 0x01f
@@ -17123,15 +17123,15 @@ flow_local_7E18:                                                  ; address: 0x0
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7E18
+        bnz     flow_ccs_7ADA_7E18
 
-flow_local_7E5C:                                                  ; address: 0x007e5c
+flow_ccs_7ADA_7E5C:                                                  ; address: 0x007e5c
 
         rcall   control_core_service_7E94                                ; dest: 0x007e94
 
-flow_local_7E5E:                                                  ; address: 0x007e5e
+flow_ccs_7ADA_7E5E:                                                  ; address: 0x007e5e
 
-        bra     flow_local_7BD6                                   ; dest: 0x007bd6
+        bra     flow_ccs_7ADA_7BD6                                   ; dest: 0x007bd6
 
 control_core_service_7E60:                                               ; address: 0x007e60
 
@@ -17190,11 +17190,11 @@ control_core_service_7E94:                                               ; addre
         movlw   0x08
         movwf   control_flags, A                        ; reg: 0x01f
 
-flow_local_7EE4:                                                  ; address: 0x007ee4
+flow_ccs_7E94_7EE4:                                                  ; address: 0x007ee4
 
         movlw   0x20
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7F00                                   ; dest: 0x007f00
+        bra     flow_ccs_7E94_7F00                                   ; dest: 0x007f00
         movff   control_flags, TBLPTRL                  ; reg1: 0x01f, reg2: 0xff6
         clrf    TBLPTRH, A                                  ; reg: 0xff7
         lfsr    0x0, 0x024
@@ -17202,9 +17202,9 @@ flow_local_7EE4:                                                  ; address: 0x0
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    control_core_service_7A6E, 0x0                           ; dest: 0x007a6e
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7EE4
+        bnz     flow_ccs_7E94_7EE4
 
-flow_local_7F00:                                                  ; address: 0x007f00
+flow_ccs_7E94_7F00:                                                  ; address: 0x007f00
 
         return  0x0
 
@@ -17227,11 +17227,11 @@ bootloader_manual_entry:                                               ; address
 
         clrf    control_flags, A                        ; reg: 0x01f
 
-flow_local_7F04:                                                  ; address: 0x007f04
+flow_bootloader_manual_entry_7F04:                                                  ; address: 0x007f04
 
         movlw   0x0b
         cpfslt  control_flags, A                        ; reg: 0x01f
-        bra     flow_local_7F54                                   ; dest: 0x007f54
+        bra     flow_bootloader_manual_entry_7F54                                   ; dest: 0x007f54
         movlw   0x01
         btfsc   PORTC, RC0, A                               ; reg: 0xf82, bit: 0
         clrf    WREG, A                                     ; reg: 0xfe8
@@ -17244,7 +17244,7 @@ flow_local_7F04:                                                  ; address: 0x0
         btfsc   PORTA, RA1, A                               ; reg: 0xf80, bit: 1
         movlw   0x01
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
-        bz      flow_local_7F4A
+        bz      flow_bootloader_manual_entry_7F4A
         movlw   0x01
         movwf   (Common_RAM + 14), A                        ; reg: 0x00e
         movlw   0xf4
@@ -17261,21 +17261,21 @@ flow_local_7F04:                                                  ; address: 0x0
         btfsc   PORTA, RA1, A                               ; reg: 0xf80, bit: 1
         movlw   0x01
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
-        bz      flow_local_7F4A
+        bz      flow_bootloader_manual_entry_7F4A
         bsf     0x82, 0x1, B                                ; reg: 0x082
 
-flow_local_7F4A:                                                  ; address: 0x007f4a
+flow_bootloader_manual_entry_7F4A:                                                  ; address: 0x007f4a
 
         movlw   0x0a
         call    control_core_service_7AA6, 0x0                           ; dest: 0x007aa6
         incf    control_flags, F, A                     ; reg: 0x01f
-        bnz     flow_local_7F04
+        bnz     flow_bootloader_manual_entry_7F04
 
-flow_local_7F54:                                                  ; address: 0x007f54
+flow_bootloader_manual_entry_7F54:                                                  ; address: 0x007f54
 
         return  0x0
 
-flow_local_7F56:                                                  ; address: 0x007f56
+flow_bootloader_manual_entry_7F56:                                                  ; address: 0x007f56
 
         rcall   control_core_service_7E94                                ; dest: 0x007e94
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
