@@ -182,13 +182,15 @@ Always prefer these constants over hardcoded paths.
 - Core: `bus.py`, `protocol.py`, `scenarios.py`, `main_model.py`, `control_ui.py`
 - gpsim harness: `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `chain_gpsim.py`, `wire_chain_gpsim.py`, `gpsim.py`
 - V3.0 tooling: `v30_symbols.py` (gpasm listing symbol parser, shifted ASM builder, assembly helper)
+- V1.7 CONTROL tooling: `v17_symbols.py` (K20 assembly helper, CONTROL shifted-source builder, `parse_v17_symbols`)
 - support: `hexio.py`, `lcd.py`, `overlay.py`, `manifests.py`, `paths.py`
 
 ### Assembly source package (`src/dlcp_fw/asm`)
 
 - V3.0 stock-equivalent source: `dlcp_main_v30.asm`, `dlcp_main_v30_comments.asm` (canonical, zero auto-labels)
 - V3.1 full-feature source: `dlcp_main_v31.asm`
-- Support: `dlcp_main_ram.inc` (RAM equates), `region_manifest.py` (flash region metadata)
+- V1.7 CONTROL stock-equivalent source: `dlcp_control_v17.asm` (auto-labeled), `dlcp_control_v17_comments.asm` (canonical, zero auto-labels); shift-test source `dlcp_control_v17_shifted.asm` is generated on demand, not committed
+- Support: `dlcp_main_ram.inc` (RAM equates), `dlcp_control_ram.inc` (CONTROL RAM equates), `region_manifest.py` (flash region metadata)
 
 ### Patch package (`src/dlcp_fw/patch`)
 
@@ -330,6 +332,12 @@ V3.0 source rewrite:
 - `test_v30_gpsim_equivalence.py` (behavioral parity with stock)
 - `test_v30_relocation.py` (10 structural + 6 gpsim behavioral shift tests)
 
+V1.7 CONTROL source rewrite:
+- `test_v17_equivalence.py` (hex integrity vs stock V1.6b, RAM equates, source quality)
+- `test_v17_relocation.py` (structural shift test: vector block, bootloader pin, 0x222-byte label shift; gpsim standalone + dynamic-overlay parity)
+- `test_v17_chain.py` (chain parity: V1.7 rebuild and V1.7 shifted + stock MAIN V2.3 reach the Volume screen and fall back to WAITING on blackout/wake)
+- `test_v17_shifted_full_parity.py` (18 behavioral parity scenarios: idle warmup, volume up/down/mixed, menu select + mixed nav, STBY toggle, BF/03/05/06/07/1D parser echo, volume and input sweeps, press→RX echo, IR dispatch (volume/preset/standby), boot full-sync burst, host preset select, host cmd1d sweep)
+
 V3.1 source rewrite:
 - `test_v31_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
 - `test_v31_review_findings.py` (BSR safety, degraded state, BF/08 payload, retry counter)
@@ -394,6 +402,8 @@ Top-level docs:
 - `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.1 MAIN size-reduction campaign requirements and process)
 - `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (size campaign experiment ledger and gate status)
 - `docs/V32_MAIN_HANG_HARDENING_PLAN.md` (V3.2 MAIN hang-prevention and fail-safe hardening roadmap for two-MAIN chains)
+- `docs/V16B_SOURCE_REWRITE_SPEC.md` (V1.71 CONTROL feature-bearing source rewrite specification)
+- `docs/IMPL_V16B_SOURCE_REWRITE_SPEC.md` (V1.7 CONTROL byte-identical source rebuild — polished implementation, parent of V1.71)
 
 Deep analysis docs:
 

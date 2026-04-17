@@ -58,6 +58,18 @@ V31_MAIN_ASM = _path_override("DLCP_FW_V31_MAIN_ASM", V31_MAIN_ASM_CANONICAL)
 V31_MAIN_HEX = _path_override("DLCP_FW_V31_MAIN_HEX", V31_MAIN_HEX_CANONICAL)
 V32_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v32.asm"
 V32_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.2.hex"
+V17_CONTROL_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17.asm"
+V17_CONTROL_ASM_COMMENTS = (
+    PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17_comments.asm"
+)
+V17_CONTROL_ASM_SHIFTED = (
+    PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17_shifted.asm"
+)
+V17_CONTROL_HEX = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17.hex"
+V17_CONTROL_HEX_COMMENTS = (
+    PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17_comments.hex"
+)
+V17_CONTROL_RAM_INC = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_ram.inc"
 V31_DIAG_MEMREAD_USB_SAFE_ASM = (
     PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v31_diag_memread_usb_safe.asm"
 )

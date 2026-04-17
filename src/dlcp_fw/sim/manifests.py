@@ -152,8 +152,64 @@ def control_disable_standby_check_v16b() -> OverlayManifest:
     )
 
 
+def control_disable_standby_check_dynamic(symbols: dict[str, int]) -> OverlayManifest:
+    """Symbol-lookup variant of the standby-check overlay.
+
+    Resolves the standby-check jump site via the V1.7 ``post_connect_init``
+    symbol (post_connect_init + 2 is the ``goto`` that dispatches to the
+    DISPLAY-WAIT / standby handler).  The overlay NOPs the 2-word goto
+    so the main loop always falls through to active-display mode.
+
+    Raises ``KeyError`` if the required symbol is missing.
+    """
+    base = symbols["post_connect_init"]
+    jump_addr = base + 2
+    return OverlayManifest(
+        name="control_disable_standby_check_dynamic",
+        preconditions={
+            # The goto opcode high byte is always 0xEF; low byte and target
+            # fragment depend on shifted target, so we only check the
+            # opcode+reserved bits.  (Byte 0 is the signed low 8 bits of
+            # the 21-bit target.)
+            jump_addr + 0x1: 0xEF,
+            jump_addr + 0x3: 0xF0,
+        },
+        byte_patches={
+            jump_addr + 0x0: 0x00,
+            jump_addr + 0x1: 0x00,
+            jump_addr + 0x2: 0x00,
+            jump_addr + 0x3: 0x00,
+        },
+        postconditions={
+            jump_addr + 0x0: 0x00,
+            jump_addr + 0x1: 0x00,
+            jump_addr + 0x2: 0x00,
+            jump_addr + 0x3: 0x00,
+        },
+        description=(
+            "Simulation-only (dynamic): NOP standby jump at "
+            f"post_connect_init+2 = 0x{jump_addr:04X}"
+        ),
+    )
+
+
 def control_disable_standby_check_for_hex(control_hex: Path) -> OverlayManifest:
-    """Select the standby-check overlay matching the control firmware layout."""
+    """Select the standby-check overlay matching the control firmware layout.
+
+    Resolution order:
+
+    1.  If a ``.lst`` sits beside ``control_hex`` and exposes the V1.7
+        ``post_connect_init`` symbol, use the symbol-lookup overlay.
+        This handles both the byte-identical V1.7 rebuild and the
+        0x222-shifted V1.7 (and any future V1.71 builds) without
+        hardcoded addresses.
+    2.  Otherwise fall back to the V1.4 / V1.5b / V1.6b byte-signature
+        dispatch below, preserving stock control-hex compatibility.
+    """
+    symbols = load_gpasm_symbols_for_hex(Path(control_hex))
+    if symbols is not None and "post_connect_init" in symbols:
+        return control_disable_standby_check_dynamic(symbols)
+
     mem = parse_intel_hex(control_hex)
     if (
         mem.get(0x1228, 0xFF) == 0x4F
@@ -180,6 +236,25 @@ def control_disable_standby_check_for_hex(control_hex: Path) -> OverlayManifest:
         "unsupported control standby-jump layout: expected V1.4 site 0x1228, "
         "V1.5b site 0x121A, or V1.6b site 0x11DA"
     )
+
+
+def control_overlays_dynamic(symbols: dict[str, int]) -> list[OverlayManifest]:
+    """V1.7 / V1.71 overlay stack built from a gpasm symbol table.
+
+    Produces the simulation overlays needed to boot a source-assembled
+    CONTROL image (V1.7 byte-identical rebuild, V1.7 shifted, or V1.71)
+    under the stock ``GpsimControlHarness``.  Symbol lookup replaces the
+    hardcoded stock addresses in the legacy overlays.
+
+    Required symbols:
+      * ``post_connect_init`` — anchors the standby-jump NOP patch.
+
+    Returns a list that callers can prepend to or append around.
+    """
+    return [
+        control_reset_to_appstart(),
+        control_disable_standby_check_dynamic(symbols),
+    ]
 
 
 def main_reset_to_appstart() -> OverlayManifest:
