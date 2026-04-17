@@ -3289,11 +3289,21 @@ reconnect_wait_loop:                                                  ; address:
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
-        btfss   control_flags, 0x1, A                   ; reg: 0x01f
+        btfss   control_flags, CONNECTED, A             ; reg: 0x01f
         bra     reconnect_wait_loop                                   ; dest: 0x0012bc
 
 flow_reconnect_wait_loop_12CE:                                                  ; address: 0x0012ce
 
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.62b): wake frame on reconnect exit
+        ; ---------------------------------------------------------------
+        ; Closes V162B_RECONNECT_WAKE_BUG: after the reconnect-wait
+        ; loop sees CONNECTED rise (MAIN returned), CONTROL must
+        ; broadcast [B0, 0x03, 0x01] so MAIN wakes from its own
+        ; standby state.  Stock V1.6b fell straight through to
+        ; post_connect_init without a wake frame, leaving MAIN
+        ; half-awake and missing display updates.
+        rcall   standby_wake_broadcast                      ; dest: 0x000c98
         bra     post_connect_init                                   ; dest: 0x0011d8
 
 control_core_service_12D0:                                               ; address: 0x0012d0
