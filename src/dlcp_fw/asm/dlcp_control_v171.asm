@@ -886,9 +886,30 @@ rx_parser_entry:                                               ; address: 0x0004
 
         btfss   RCSTA, OERR, A                              ; reg: 0xfab, bit: 1
         goto    flow_rx_parser_entry_0456                                   ; dest: 0x000456
-        bcf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4
-        nop
-        bsf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.62b): full UART soft-recover on OERR
+        ; ---------------------------------------------------------------
+        ; Stock V1.6b only toggles CREN to clear the OERR latch, which
+        ; leaves RCREG partially loaded and the parser state-machine
+        ; mid-frame — the cascading symptom of BUG C4 (oerr_no_fifo_drain)
+        ; documented in v16b.asm.  V1.62b does a full soft-recover:
+        ; drain RCREG twice, re-enable CREN, then reset the TX/RX ring
+        ; pointers and the parser's cmd/data/position latches so the
+        ; next byte starts a clean frame.  Inline here so the head of
+        ; the parser always runs the V1.62b recovery and never the
+        ; stock single-toggle.
+        bcf     RCSTA, CREN, A
+        movf    RCREG, W, A                                 ; drain byte 1
+        movf    RCREG, W, A                                 ; drain byte 2 (EUSART FIFO depth 2)
+        bsf     RCSTA, CREN, A
+        movlb   0x00
+        clrf    tx_ring_rd, BANKED                          ; 0x096
+        clrf    tx_ring_wr, BANKED                          ; 0x097
+        clrf    rx_ring_rd, BANKED                          ; 0x098
+        clrf    rx_ring_wr, BANKED                          ; 0x099
+        clrf    rx_frame_position, BANKED                   ; 0x0A6
+        clrf    rx_parsed_cmd, A                            ; 0x02F
+        clrf    rx_parsed_data, A                           ; 0x030
 
 flow_rx_parser_entry_0456:                                                  ; address: 0x000456
 
