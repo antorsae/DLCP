@@ -112,6 +112,38 @@ def test_v171_phase_a_config_bits_byte_identical(v171_hex: Path) -> None:
         )
 
 
+def test_v171_eeprom_matches_stock_except_version_and_preset(v171_hex: Path) -> None:
+    """Gate 6: EEPROM byte-identical to stock except version (0x71-0x73) and preset (0x74)."""
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    built = parse_intel_hex(v171_hex)
+    allowed_diff_addrs = {0xF00071, 0xF00072, 0xF00073, 0xF00074}
+    for addr in range(0xF00000, 0xF00100):
+        if addr in allowed_diff_addrs:
+            continue
+        assert built.get(addr, 0xFF) == stock.get(addr, 0xFF), (
+            f"EEPROM byte diverges at 0x{addr:06X}: "
+            f"stock=0x{stock.get(addr, 0xFF):02X} v171=0x{built.get(addr, 0xFF):02X}"
+        )
+
+
+def test_v171_eeprom_version_tuple_bumped(v171_hex: Path) -> None:
+    """Version tuple at EEPROM 0x70..0x73 reflects V1.71 identifier (not V1.6b)."""
+    stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
+    built = parse_intel_hex(v171_hex)
+    # Must differ from stock V1.6b tuple 01 06 30 01.
+    stock_tuple = tuple(stock.get(a, 0xFF) for a in range(0xF00070, 0xF00074))
+    v171_tuple = tuple(built.get(a, 0xFF) for a in range(0xF00070, 0xF00074))
+    assert stock_tuple == (0x01, 0x06, 0x30, 0x01), (
+        f"unexpected stock V1.6b version tuple: {stock_tuple!r}"
+    )
+    assert v171_tuple != stock_tuple, (
+        f"V1.71 version tuple not bumped from stock: {v171_tuple!r}"
+    )
+    # Must encode V1.71 somewhere (minor byte at 0x71 is 0x07, ASCII at 0x72 is '1').
+    assert v171_tuple[1] == 0x07, f"V1.71 minor byte != 0x07: {v171_tuple!r}"
+    assert v171_tuple[2] == 0x31, f"V1.71 sub byte (ASCII '1') != 0x31: {v171_tuple!r}"
+
+
 def test_v171_app_code_has_grown_past_stock(v171_hex: Path) -> None:
     """Once Phase B features inline, the V1.71 app code tail exceeds stock V1.6b.
 

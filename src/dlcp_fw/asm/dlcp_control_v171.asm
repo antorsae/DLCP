@@ -3288,6 +3288,26 @@ flow_standby_display_1360:                                                  ; ad
         movlw   0xc0
         call    lcd_command, 0x0                           ; dest: 0x000066
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
+
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.61b): preset A/B indicator at row 0 column 15
+        ; ---------------------------------------------------------------
+        ; Before the per-frame display_loop_iteration call, write either
+        ; 'A' or 'B' at the rightmost column of the top LCD row based on
+        ; control_flags.PRESET_BIT.  0x8F = LCD DDRAM command for
+        ; (row 0, col 15).  This is the same code the V1.61b binary
+        ; overlay's volume_indicator_stub emitted, but inlined here so
+        ; the Volume / Input-type screen render loop flows without a
+        ; jump-out hook.
+        movlw   0x80
+        movwf   (Common_RAM + 1), A                    ; LCD command mode
+        movlw   0x8F                                   ; row 0, col 15
+        call    lcd_command, 0x0
+        movlw   'A'
+        btfsc   control_flags, PRESET_BIT, A
+        movlw   'B'
+        call    lcd_char_write, 0x0
+
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         rrcf    0x9a, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
@@ -5591,11 +5611,13 @@ flow_bootloader_manual_entry_7F56:                                              
         db      0xff
         db      0xff
         db      0xff
-        db      0x01
-        db      0x06
-        db      0x30                                        ; '0'
-        db      0x01
-        db      0xff
+        ; V1.71 (V1.61b): version tuple at EEPROM 0x70..0x73 bumped to 1.71
+        ; encoding: 0x01 0x07 '1' 0x01 (major, minor, ASCII sub, reserved)
+        db      0x01                                        ; EEPROM 0x70: major
+        db      0x07                                        ; EEPROM 0x71: minor (V1.7 family)
+        db      0x31                                        ; EEPROM 0x72: '1' (V1.71)
+        db      0x01                                        ; EEPROM 0x73: reserved
+        db      0xff                                        ; EEPROM 0x74: preset byte (erased = A default)
         db      0xff
         db      0xff
         db      0xff
