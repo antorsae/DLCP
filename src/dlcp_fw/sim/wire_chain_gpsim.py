@@ -8,16 +8,27 @@ injecting bytes directly into firmware RAM rings.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Dict
+from typing import Dict, Sequence
 
-from .chain_gpsim import MainChainHarness, _is_waiting_lcd
+from .chain_gpsim import BAUD_RATE, BITS_PER_BYTE, MainChainHarness, _is_waiting_lcd
 from .control_gpsim import CONTROL_FOSC_HZ, GpsimControlHarness, TxTriplet, _read_reg
 
 CONTROL_TCY_HZ = CONTROL_FOSC_HZ // 4
 MAIN_TCY_HZ = 16_000_000 // 4
+
+# One 8N1 byte-time measured in MAIN instruction cycles. Useful as a
+# `bridge_shift_warn_threshold` for tests asserting that the receiver's
+# clock never drifts a full character past the sender's delivery window.
+MAIN_BYTE_CYCLES = (BITS_PER_BYTE * MAIN_TCY_HZ) // BAUD_RATE
+
+# PIC18F2455 RCSTA: SPEN RX9 SREN CREN ADDEN FERR OERR RX9D
+# Bit1=OERR (overrun), bit2=FERR (framing). 0x06 covers both.
+_MAIN_RCSTA_ADDR = 0xFAB
+_RCSTA_UART_ERR_MASK = 0x06
 
 
 def _scaled_cycles(cycles: int, *, from_hz: int, to_hz: int) -> int:
@@ -52,7 +63,14 @@ def _attach_rx_stimulus(
 
 
 class _StreamingUartBridge:
-    """Convert one sender's recorded pin transitions into another pin stream."""
+    """Convert one sender's recorded pin transitions into another pin stream.
+
+    Tracks how much each flushed batch had to be shifted forward because the
+    receiver's simulated clock had already advanced past the batch's natural
+    mapped cycle. A non-zero shift preserves causality but loses the original
+    sender→receiver timing relationship, and can mask races. Tests with strict
+    timing expectations should assert a ceiling on `max_shift_cycles`.
+    """
 
     def __init__(
         self,
@@ -63,6 +81,7 @@ class _StreamingUartBridge:
         scale_num: int,
         scale_den: int,
         idle_voltage: int = 5,
+        shift_warn_threshold: int | None = None,
     ) -> None:
         self.name = name
         self.sender_record_path = sender_record_path
@@ -75,6 +94,11 @@ class _StreamingUartBridge:
         self._sender_offset = 0
         self._sender_partial = ""
         self._last_receiver_cycle = 0
+        self._shift_warn_threshold = shift_warn_threshold
+        self.total_edges = 0
+        self.shift_events = 0
+        self.total_shift_cycles = 0
+        self.max_shift_cycles = 0
 
     def start(self) -> None:
         self.receiver_fifo_path.write_text(f"0 {self.idle_voltage}\n", encoding="ascii")
@@ -144,6 +168,21 @@ class _StreamingUartBridge:
         if first_cycle < min_target:
             batch_shift = min_target - first_cycle
 
+        if batch_shift > 0:
+            self.shift_events += 1
+            self.total_shift_cycles += batch_shift
+            if batch_shift > self.max_shift_cycles:
+                self.max_shift_cycles = batch_shift
+            if (
+                self._shift_warn_threshold is not None
+                and batch_shift > self._shift_warn_threshold
+            ):
+                warnings.warn(
+                    f"wire bridge {self.name!r} shifted batch by {batch_shift} cycles "
+                    f"(> threshold {self._shift_warn_threshold}); sender→receiver timing lost",
+                    stacklevel=2,
+                )
+
         with self.receiver_fifo_path.open("a", buffering=1, encoding="ascii") as fifo:
             for mapped_cycle, (_, sender_level) in zip(mapped_cycles, edges):
                 receiver_cycle = mapped_cycle + batch_shift
@@ -152,6 +191,7 @@ class _StreamingUartBridge:
                 self._last_receiver_cycle = receiver_cycle
                 receiver_voltage = self.idle_voltage if sender_level else 0
                 fifo.write(f"{receiver_cycle} {receiver_voltage}\n")
+        self.total_edges += len(edges)
         return len(edges)
 
 
@@ -164,6 +204,13 @@ class WireMainSnapshot:
     rx_rd: int
     rx_wr: int
     tx_frame_count: int
+    rcsta: int = 0  # RCSTA (0xFAB) — bit2=FERR, bit1=OERR
+    booted: bool = True  # False while held in boot-delay
+
+    @property
+    def uart_errors(self) -> int:
+        """FERR|OERR bits latched by the EUSART since last clear."""
+        return self.rcsta & _RCSTA_UART_ERR_MASK
 
 
 @dataclass(frozen=True)
@@ -192,9 +239,21 @@ class WireMultiMainChainHarness:
         control_chunk_cycles: int = 1_000_000,
         hold_cycles: int = 240_000,
         disable_standby_check: bool = False,
+        main_boot_delay_cycles: Sequence[int] | None = None,
+        bridge_shift_warn_threshold: int | None = None,
     ) -> None:
         if main_units < 1:
             raise ValueError("main_units must be >= 1")
+
+        boot_delays = (
+            [0] * main_units if main_boot_delay_cycles is None else list(main_boot_delay_cycles)
+        )
+        if len(boot_delays) != main_units:
+            raise ValueError(
+                f"main_boot_delay_cycles must have length {main_units}, got {len(boot_delays)}"
+            )
+        if any(v < 0 for v in boot_delays):
+            raise ValueError("main_boot_delay_cycles entries must be >= 0")
 
         self._tmp = TemporaryDirectory(prefix="gpsim_wire_chain_")
         self.tmp_path = Path(self._tmp.name)
@@ -204,6 +263,10 @@ class WireMultiMainChainHarness:
             from_hz=CONTROL_TCY_HZ,
             to_hz=MAIN_TCY_HZ,
         )
+        # Shift-warning is opt-in: tests that care about strict timing should
+        # pass a threshold (e.g. `ONE_UART_BYTE_CYCLES`). Existing tests keep
+        # the silent default.
+        self._bridge_shift_warn_threshold = bridge_shift_warn_threshold
 
         self.control = GpsimControlHarness(
             control_hex,
@@ -234,9 +297,11 @@ class WireMultiMainChainHarness:
         self._bridges: list[_StreamingUartBridge] = []
         self._bridge_map: Dict[str, _StreamingUartBridge] = {}
         self._control_rx_activity = False
-        self._control_rx_prev = (0, 0)
         self._main_rx_activity = [False] * main_units
-        self._main_rx_prev = [(0, 0)] * main_units
+        # Remaining boot-hold budget in CONTROL-domain cycles. While >0 for a
+        # given MAIN, step() skips that MAIN and decrements the budget by the
+        # control chunk, modelling a delayed/staggered power-on.
+        self._main_boot_delay_remaining = list(boot_delays)
 
         self._attach_uart_transport()
 
@@ -280,6 +345,7 @@ class WireMultiMainChainHarness:
                 receiver_fifo_path=fifo_path,
                 scale_num=receiver_tcy_hz,
                 scale_den=sender_tcy_hz,
+                shift_warn_threshold=self._bridge_shift_warn_threshold,
             )
             bridge.start()
             _attach_rx_stimulus(
@@ -450,19 +516,40 @@ class WireMultiMainChainHarness:
         return (_read_reg(self.control._issue, 0x098), _read_reg(self.control._issue, 0x099))
 
     def _update_rx_activity(self) -> tuple[int, int]:
-        control_rx_rd, control_rx_wr = self._read_control_rx_state()
-        current_control = (control_rx_rd, control_rx_wr)
-        if current_control != self._control_rx_prev or current_control != (0, 0):
+        current_control = self._read_control_rx_state()
+        # Activity is a latch: set once the ring pointers ever leave reset
+        # state. No need to compare to a prior snapshot since the latch is
+        # monotonic — once True, stays True.
+        if current_control != (0, 0):
             self._control_rx_activity = True
-        self._control_rx_prev = current_control
 
         for index, main in enumerate(self.mains):
-            current_main = (_read_reg(main._issue, 0x0C6), _read_reg(main._issue, 0x0C7))
-            if current_main != self._main_rx_prev[index] or current_main != (0, 0):
+            current_main = (
+                _read_reg(main._issue, 0x0C6),
+                _read_reg(main._issue, 0x0C7),
+            )
+            if current_main != (0, 0):
                 self._main_rx_activity[index] = True
-            self._main_rx_prev[index] = current_main
 
         return current_control
+
+    def bridge_shift_stats(self) -> Dict[str, Dict[str, int]]:
+        """Return per-link batch-shift counters.
+
+        Keys are link names (e.g. "ctl_to_m0", "m0_to_m1"). Each value has
+        `total_edges`, `shift_events`, `total_shift_cycles`, `max_shift_cycles`.
+        Tests with strict timing expectations should assert a ceiling on
+        `max_shift_cycles` for the bridges they care about.
+        """
+        return {
+            name: {
+                "total_edges": bridge.total_edges,
+                "shift_events": bridge.shift_events,
+                "total_shift_cycles": bridge.total_shift_cycles,
+                "max_shift_cycles": bridge.max_shift_cycles,
+            }
+            for name, bridge in self._bridge_map.items()
+        }
 
     def _flush_bridges(
         self,
@@ -486,14 +573,43 @@ class WireMultiMainChainHarness:
         for main in self.mains:
             main.set_standby_bus(standby_bus)
 
-        # Forward CONTROL TX edges into MAIN input files before MAIN advances.
+        # Forward CONTROL TX edges into MAIN[0]'s input file before MAIN
+        # advances. The bridge has a single receiver, so the cycle gate
+        # should be MAIN[0]'s clock specifically — previously used min()
+        # across all MAINs which could let stale batches land before
+        # MAIN[0]'s current cycle and trigger spurious batch_shift.
         self._flush_bridges(
             names=("ctl_to_m0",),
-            receiver_min_cycle=min(main.current_cycle for main in self.mains),
+            receiver_min_cycle=self.mains[0].current_cycle,
         )
         main_new_tx: list[tuple[TxTriplet, ...]] = []
         main_snaps: list[WireMainSnapshot] = []
         for index, main in enumerate(self.mains):
+            booted = self._main_boot_delay_remaining[index] <= 0
+            if not booted:
+                # MAIN[index] is still held in the staggered-boot window.
+                # Keep its gpsim session paused for this harness step and
+                # decrement the remaining budget by the CONTROL cycle chunk.
+                # The MAIN's .stim FIFO continues to accumulate incoming
+                # edges from bridge flushes; they will be replayed once
+                # this MAIN starts stepping.
+                self._main_boot_delay_remaining[index] -= self.control_chunk_cycles
+                main_new_tx.append(())
+                main_snaps.append(
+                    WireMainSnapshot(
+                        index=index,
+                        cycle=main.current_cycle,
+                        status_5e=0,
+                        flags_7e=0,
+                        rx_rd=0,
+                        rx_wr=0,
+                        tx_frame_count=len(main.decoder.tx_frames),
+                        rcsta=0,
+                        booted=False,
+                    )
+                )
+                continue
+
             snap, new_tx_list = main.step()
             new_tx = tuple(new_tx_list)
             main_new_tx.append(new_tx)
@@ -511,6 +627,7 @@ class WireMultiMainChainHarness:
                     dst_index = int(name.rsplit("_to_m", 1)[1])
                     receiver_cycle = self.mains[dst_index].current_cycle
                 self._bridge_map[name].flush(receiver_min_cycle=receiver_cycle)
+            rcsta = _read_reg(main._issue, _MAIN_RCSTA_ADDR) & 0xFF
             main_snaps.append(
                 WireMainSnapshot(
                     index=index,
@@ -520,6 +637,8 @@ class WireMultiMainChainHarness:
                     rx_rd=snap.mailbox_rd,
                     rx_wr=snap.mailbox_wr,
                     tx_frame_count=len(main.decoder.tx_frames),
+                    rcsta=rcsta,
+                    booted=True,
                 )
             )
         control_rx_rd, control_rx_wr = self._update_rx_activity()
