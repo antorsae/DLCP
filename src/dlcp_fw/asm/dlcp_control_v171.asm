@@ -2651,21 +2651,32 @@ flow_ccs_0DCE_0F4E:                                                  ; stock IR 
 flow_ccs_0DCE_0F50:                                                  ; stock IR dispatch exit (no stock case matched)
 
         ; ---------------------------------------------------------------
-        ; V1.71 inline (V1.61b): preset IR shortcuts
+        ; V1.71 inline (V1.61b + V1.64b): preset + standby/wake IR shortcuts
         ; ---------------------------------------------------------------
         ; The stock IR dispatch reaches this label when ir_decoded_cmd
         ; did not match any of the menu-configured IR codes stored in
-        ; RAM(0x21..0x26).  V1.61b adds RC5 0x38 (preset A) and 0x39
-        ; (preset B) as fixed shortcuts; check them inline here before
-        ; re-arming the IR gate.  Any other unmapped code falls through
-        ; to the re-arm path unchanged.
+        ; RAM(0x21..0x26).  V1.71 adds four fixed IR shortcuts on top:
+        ;
+        ;   RC5 0x38 → preset A   (V1.61b)
+        ;   RC5 0x39 → preset B   (V1.61b)
+        ;   RC5 0x3A → standby    (V1.64b explicit-standby endpoint)
+        ;   RC5 0x3B → wake       (V1.64b explicit-wake endpoint)
+        ;
+        ; All four are handled inline before re-arming the IR gate; any
+        ; other unmapped code falls through to the stock re-arm path.
         movf    ir_decoded_cmd, W, A
         xorlw   RC5_PRESET_A                             ; 0x38
         bz      v171_ir_preset_a_case
         movf    ir_decoded_cmd, W, A
         xorlw   RC5_PRESET_B                             ; 0x39
         bz      v171_ir_preset_b_case
-        ; Not a preset shortcut — standard re-arm + return.
+        movf    ir_decoded_cmd, W, A
+        xorlw   RC5_STANDBY_ENTER                        ; 0x3A
+        bz      v171_ir_standby_case
+        movf    ir_decoded_cmd, W, A
+        xorlw   RC5_WAKE                                 ; 0x3B
+        bz      v171_ir_wake_case
+        ; Not a V1.71 shortcut — standard re-arm + return.
         bsf     control_flags, IR_ARMED, A
         return  0x0
 
@@ -2686,6 +2697,52 @@ v171_ir_preset_b_case:
 
 v171_ir_preset_done:
         bsf     control_flags, IR_ARMED, A
+        return  0x0
+
+v171_ir_standby_case:
+        ; V1.64b explicit standby (RC5 0x3A): emit [B0, 0x03, 0x00]
+        ; and set event_exit.  Unlike the RC5 power-toggle (stock 0x32)
+        ; this endpoint forces standby regardless of current state.
+        rcall   v171_send_standby_cmd_frame
+        bsf     control_flags, 0x3, A                    ; event_exit
+        bra     v171_ir_endpoint_done
+
+v171_ir_wake_case:
+        ; V1.64b explicit wake (RC5 0x3B): emit [B0, 0x03, 0x01] and
+        ; set event_exit.  Forces wake regardless of current state.
+        rcall   v171_send_wake_cmd_frame
+        bsf     control_flags, 0x3, A                    ; event_exit
+
+v171_ir_endpoint_done:
+        bsf     control_flags, IR_ARMED, A
+        return  0x0
+
+v171_send_standby_cmd_frame:
+        ; Emit [0xB0, 0x03, 0x00] — broadcast CMD standby/wake with
+        ; data = 0 (standby).  Rides the normal TX pipeline via
+        ; tx_byte_enqueue.
+        movlw   0xB0
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x03
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        clrf    tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        return  0x0
+
+v171_send_wake_cmd_frame:
+        ; Emit [0xB0, 0x03, 0x01] — broadcast CMD standby/wake with
+        ; data = 1 (wake).  Rides the normal TX pipeline.
+        movlw   0xB0
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x03
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x01
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
         return  0x0
 
 v171_send_preset_frame_and_persist:
