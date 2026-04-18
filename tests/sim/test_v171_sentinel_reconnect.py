@@ -1,0 +1,184 @@
+"""V1.71 Phase C.3: sentinel-driven reconnect loop behavior.
+
+Spec §Feature inventory rows on "Reconnect handshake state" and
+"Full-sync retry on missing echo":
+
+    V1.62b reconnect_wait_body polls 4 boot sentinels
+    (input_select_cache 0x0B8, volume_cache 0x0B9,
+    cmd1d_setting_cache 0x0A7, raw_status_cache 0x0A1) each
+    initialised to 0x80 and clearing when MAIN replies with the
+    corresponding BF frame.  When all four are non-0x80, exit;
+    otherwise increment the per-cycle counter in bank-1 0x73,
+    retry with a full UART soft-recover every 8 iterations.
+
+Verifiable from the standalone harness:
+
+* Source-level structure checks on the sentinel loop.
+* Loop exits when harness heartbeat fills the sentinels.
+* With heartbeat paused, the firmware stays in / returns to the
+  loop (does not hang, does not crash) — at minimum, the parser
+  cycle count keeps advancing.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
+from dlcp_fw.sim.gpsim import gpsim_available
+
+try:
+    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
+    from dlcp_fw.sim.v17_symbols import assemble_v17
+    _IMPORT_OK = True
+except Exception:  # pragma: no cover
+    _IMPORT_OK = False
+
+
+CONTROL_FLAGS_ADDR = 0x01F
+CONNECTED_BIT = 1
+INPUT_SELECT_CACHE_ADDR = 0x0B8
+VOLUME_CACHE_ADDR = 0x0B9
+CMD1D_SETTING_CACHE_ADDR = 0x0A7
+RAW_STATUS_CACHE_ADDR = 0x0A1
+
+
+def _require_gpsim() -> None:
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    if not _IMPORT_OK:
+        pytest.skip("control_gpsim harness not importable")
+
+
+@pytest.fixture(scope="module")
+def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("v171_sentinel")
+    (tmp / V17_CONTROL_RAM_INC.name).write_bytes(V17_CONTROL_RAM_INC.read_bytes())
+    asm = tmp / V171_CONTROL_ASM.name
+    asm.write_bytes(V171_CONTROL_ASM.read_bytes())
+    hex_out = tmp / "dlcp_control_v171.hex"
+    assemble_v17(asm, hex_out)
+    return hex_out
+
+
+def _boot(hex_path: Path) -> GpsimControlHarness:
+    return GpsimControlHarness(
+        hex_path,
+        fast_boot=False,
+        chunk_cycles=600_000,
+        heartbeat_rx_mode="full",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Source-level guards
+# ---------------------------------------------------------------------------
+
+def test_v171_source_replaces_reconnect_loop_with_sentinel_body() -> None:
+    """reconnect_wait_loop body must contain the sentinel-check block."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    start = text.find("reconnect_wait_loop:")
+    assert start >= 0, "reconnect_wait_loop label missing"
+    end = text.find("v171_reconnect_wait_done:", start)
+    assert end > start, "v171_reconnect_wait_done marker missing"
+    loop_body = text[start:end]
+    required = [
+        "V1.71 inline (V1.62b): full sentinel-driven reconnect loop",
+        "v171_reconnect_wait_body",
+        "v171_reconnect_wait_done",
+        "input_select_cache",
+        "volume_cache",
+        "cmd1d_setting_cache",
+        "raw_status_cache",
+        "0x73, BANKED",                      # per-cycle retry counter
+        "0x08",                              # 8-iteration retry threshold
+    ]
+    missing = [m for m in required if m not in loop_body]
+    assert not missing, f"sentinel loop markers missing: {missing}"
+
+
+def test_v171_source_embeds_uart_soft_recover_in_sentinel_loop() -> None:
+    """Every 8 iterations, the sentinel loop runs a UART soft-recover."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    start = text.find("reconnect_wait_loop:")
+    end = text.find("v171_reconnect_wait_done:", start)
+    assert start >= 0 and end > start
+    loop_body = text[start:end]
+    # The 8-retry path does the same soft-recover as the parser head
+    # (RCSTA CREN toggle + RCREG double-drain + ring / state reset).
+    for marker in (
+        "bcf     RCSTA, CREN, A",
+        "bsf     RCSTA, CREN, A",
+        "movf    RCREG, W, A",
+        "clrf    tx_ring_rd, BANKED",
+        "clrf    rx_ring_rd, BANKED",
+        "clrf    rx_frame_position, BANKED",
+    ):
+        assert marker in loop_body, (
+            f"sentinel loop missing UART soft-recover step: {marker!r}"
+        )
+
+
+def test_v171_source_emits_wake_and_reseeds_idle_timer_on_loop_exit() -> None:
+    """Exit path: wake frame + reload idle timer to 0xEA61 + zero full-sync."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    start = text.find("v171_reconnect_wait_done:")
+    end = text.find("post_connect_init", start)
+    assert start >= 0 and end > start
+    exit_body = text[start:end]
+    for marker in (
+        "standby_wake_broadcast",
+        "idle_timeout_lo",
+        "idle_timeout_hi",
+        "full_sync_lo",
+        "full_sync_hi",
+        "0x61",                              # idle timer low init
+        "0xEA",                              # idle timer high init
+        "RECONNECT_WAIT_DONE",
+    ):
+        assert marker in exit_body, (
+            f"reconnect exit path missing marker: {marker!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral: boot proceeds past reconnect loop when heartbeat is on
+# ---------------------------------------------------------------------------
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v171_sentinel_loop_exits_when_heartbeat_fills_sentinels(v171_hex: Path) -> None:
+    """After warmup, all 4 sentinels are non-0x80 and CONNECTED is set.
+
+    Heartbeat "full" injects BF/06, BF/07, BF/1D, BF/03 periodically.
+    Each frame's parser dispatch writes its respective sentinel slot
+    (non-0x80 values from the stored volume / input / cmd1d / raw
+    status).  Once all four clear, the V1.71 sentinel loop exits,
+    emits the wake frame, and sets CONNECTED.  Warmup of 25M cycles
+    is 8+ heartbeat rounds — plenty.
+    """
+    _require_gpsim()
+    h = _boot(v171_hex)
+    try:
+        h.warmup(25_000_000)
+        flags = h.read_reg(CONTROL_FLAGS_ADDR)
+        assert flags & (1 << CONNECTED_BIT), (
+            f"CONTROL did not reach CONNECTED; sentinel loop may be stuck "
+            f"(flags=0x{flags:02X})"
+        )
+        # Sentinels — each must have moved off the initial 0x80.
+        for name, addr in (
+            ("input_select_cache", INPUT_SELECT_CACHE_ADDR),
+            ("volume_cache", VOLUME_CACHE_ADDR),
+            ("cmd1d_setting_cache", CMD1D_SETTING_CACHE_ADDR),
+            ("raw_status_cache", RAW_STATUS_CACHE_ADDR),
+        ):
+            value = h.read_reg(addr)
+            assert value != 0x80, (
+                f"sentinel {name} still 0x80 after warmup — heartbeat may "
+                f"have been paused; got 0x{value:02X}"
+            )
+    finally:
+        h.close()
