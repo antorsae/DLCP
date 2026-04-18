@@ -2031,6 +2031,48 @@ serial_tx_routed_frame:                                               ; address:
 ; full_sync_burst:
 full_sync_burst:                                               ; address: 0x000b36
 
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.61b): preset-frame retry counter
+        ; ---------------------------------------------------------------
+        ; Full-sync is the periodic MAIN status broadcast.  V1.61b adds
+        ; a preset-switch frame to the burst, retried up to 3 times so
+        ; MAIN catches it even if the first pass is lost (power-cycle
+        ; or reconnect race).
+        ;
+        ; State:
+        ;   bank-1 RAM 0x70   preset retry counter (3 → 0)
+        ;   bank-1 RAM 0x71   preset primed flag (arm on connect edge)
+        ;
+        ; Flow:
+        ;   - Not CONNECTED: reset primed = 0 so next connect re-arms.
+        ;   - CONNECTED and primed == 0: arm primed = 1 and, if counter
+        ;     is zero, init counter = 3 (arm retry window).
+        ;   - If counter > 0: emit preset frame, decrement counter.
+        ;   - Continue into the stock full-sync body.
+        movlb   0x01
+        btfsc   control_flags, CONNECTED, A
+        bra     v171_fs_connected
+        clrf    0x71, BANKED                                ; reset primed
+        bra     v171_fs_send_check
+v171_fs_connected:
+        movf    0x71, F, BANKED
+        bnz     v171_fs_send_check                         ; already primed — skip init
+        movlw   0x01
+        movwf   0x71, BANKED                               ; primed = 1
+        movf    0x70, F, BANKED
+        bnz     v171_fs_send_check                         ; counter already armed
+        movlw   0x03
+        movwf   0x70, BANKED                               ; arm 3 retries
+v171_fs_send_check:
+        movf    0x70, F, BANKED
+        bz      v171_fs_continue                           ; counter zero — skip emit
+        movlb   0x00
+        rcall   v171_send_preset_frame_and_persist
+        movlb   0x01
+        decf    0x70, F, BANKED                            ; retry -= 1
+v171_fs_continue:
+        movlb   0x00
+
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
         call    delay_short, 0x0                           ; dest: 0x0001bc
@@ -2830,6 +2872,155 @@ v171_send_preset_frame_and_persist:
         call    eeprom_write_byte, 0x0
         return  0x0
 
+v171_preset_screen:
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.61b): preset A/B menu screen body
+        ; ---------------------------------------------------------------
+        ; Renders the Preset screen (row 0 "Preset          ", row 1
+        ; "Active: A       " or "Active: B       "), runs a tight
+        ; button-poll loop that toggles PRESET_BIT on UP/DOWN and
+        ; exits on LEFT / RIGHT / SELECT.  Bank-1 RAM 0x72 snapshots
+        ; the active preset bit so the screen redraws only when the
+        ; user actually flipped state, avoiding mid-frame flicker.
+        ; Port of the V1.61b binary-overlay preset_screen, inlined
+        ; here so there is no jump-out to an `org 0x7000` stub.
+v171_prs_screen_draw:
+        ; Row 0: "Preset          " (16 characters)
+        movlw   0x80
+        movwf   (Common_RAM + 1), A
+        movlw   0x80                                       ; LCD cursor row 0 col 0
+        call    lcd_command, 0x0
+        movlw   'P'
+        call    lcd_char_write, 0x0
+        movlw   'r'
+        call    lcd_char_write, 0x0
+        movlw   'e'
+        call    lcd_char_write, 0x0
+        movlw   's'
+        call    lcd_char_write, 0x0
+        movlw   'e'
+        call    lcd_char_write, 0x0
+        movlw   't'
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+
+        ; Row 1: "Active: X       " where X is A or B based on PRESET_BIT.
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
+        movlw   'A'
+        call    lcd_char_write, 0x0
+        movlw   'c'
+        call    lcd_char_write, 0x0
+        movlw   't'
+        call    lcd_char_write, 0x0
+        movlw   'i'
+        call    lcd_char_write, 0x0
+        movlw   'v'
+        call    lcd_char_write, 0x0
+        movlw   'e'
+        call    lcd_char_write, 0x0
+        movlw   ':'
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   'A'
+        btfsc   control_flags, PRESET_BIT, A
+        movlw   'B'
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+
+        ; Snapshot PRESET_BIT in bank-1 0x72 for dirty-check on next loop
+        movlb   0x01
+        clrf    0x72, BANKED
+        btfsc   control_flags, PRESET_BIT, A
+        incf    0x72, F, BANKED
+
+v171_preset_loop:
+        movlb   0x00
+        call    display_loop_iteration, 0x0
+        ; Compare current PRESET_BIT against snapshot — if flipped,
+        ; redraw; otherwise fall through to button scan.
+        movlb   0x00
+        btfsc   control_flags, 0x3, A                    ; event_exit bit?
+        bcf     control_flags, 0x3, A
+        clrf    WREG, A
+        btfsc   control_flags, PRESET_BIT, A
+        movlw   0x01
+        movlb   0x01
+        xorwf   0x72, W, BANKED
+        movlb   0x00
+        bz      v171_prs_check_up
+        goto    v171_prs_screen_draw
+
+v171_prs_check_up:
+        btfss   0x9a, 0x1, B                              ; UP pressed?
+        goto    v171_prs_check_down
+        btfss   control_flags, PRESET_BIT, A             ; already A?
+        goto    v171_preset_loop                          ; yes — nothing to do
+        bcf     control_flags, PRESET_BIT, A             ; flip to A
+        rcall   v171_send_preset_frame_and_persist
+        goto    v171_prs_screen_draw
+
+v171_prs_check_down:
+        btfss   0x9a, 0x2, B                              ; DOWN pressed?
+        goto    v171_preset_exit_check
+        btfsc   control_flags, PRESET_BIT, A             ; already B?
+        goto    v171_preset_loop                          ; yes — nothing to do
+        bsf     control_flags, PRESET_BIT, A             ; flip to B
+        rcall   v171_send_preset_frame_and_persist
+        goto    v171_prs_screen_draw
+
+v171_preset_exit_check:
+        bcf     control_flags, 0x3, A                    ; clear event_exit
+        clrf    WREG, A
+        btfsc   0x9a, 0x5, B                              ; RIGHT pressed?
+        movlw   0x01
+        movwf   (Common_RAM + 24), A                      ; ram_0x018
+        clrf    WREG, A
+        btfsc   0x9a, 0x4, B                              ; LEFT pressed?
+        movlw   0x01
+        iorwf   (Common_RAM + 24), F, A
+        movlw   0x01
+        btfsc   control_flags, CONNECTED, A              ; disconnected → exit
+        clrf    WREG, A
+        iorwf   (Common_RAM + 24), F, A
+        btfsc   STATUS, Z, A
+        bra     v171_preset_loop                          ; no exit condition — loop
+        movlb   0x00
+        return  0x0
+
 control_core_service_0F54:                                               ; address: 0x000f54
 
         movlw   0x04
@@ -3199,14 +3390,32 @@ flow_post_connect_init_11DE:                                                  ; 
 
 flow_post_connect_init_11F0:                                                  ; address: 0x0011f0
 
-        decfsz  0xbf, W, B                                  ; reg: 0x0bf
-        goto    boot_handshake_wait                                   ; dest: 0x0011fe
-        call    control_core_service_1912, 0x0                           ; dest: 0x001912
-        goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.61b): 4-way menu dispatch
+        ; ---------------------------------------------------------------
+        ; Stock V1.6b had 3 menu states (0 = Volume, 1 = Input, 2 = Setup)
+        ; and dispatched them via decfsz / cpfseq against 0xBF.  V1.71
+        ; inserts Preset as state 1 (Vol / Preset / Input / Setup),
+        ; shifting Input to state 2 and Setup to state 3.  Nav wrap
+        ; literals downstream at stock 0x1216 and 0x123A are also
+        ; bumped from 0x02 to 0x03 so navigation cycles through the
+        ; full 4-screen ring.
+        movlb   0x00
+        decfsz  0xbf, W, B                                  ; state - 1 == 0?
+        goto    v171_menu_ck_state_2
+        rcall   v171_preset_screen                          ; state == 1 → Preset
+        goto    flow_boot_handshake_wait_120A
+
+v171_menu_ck_state_2:
+        movlw   0x02
+        cpfseq  0xbf, B
+        goto    boot_handshake_wait                         ; fall through to state=3 check
+        call    control_core_service_1912, 0x0             ; state == 2 → Input
+        goto    flow_boot_handshake_wait_120A
 
 boot_handshake_wait:                                                  ; address: 0x0011fe
 
-        movlw   0x02
+        movlw   0x03                                        ; V1.71: state == 3 now Setup (was 2)
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
         call    control_core_service_13FE, 0x0                           ; dest: 0x0013fe
@@ -3218,7 +3427,9 @@ flow_boot_handshake_wait_120A:                                                  
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_display_state_entry_1226                                   ; dest: 0x001226
-        movlw   0x02
+        ; V1.71: nav DOWN upper-bound bumped from 2 → 3 for the new
+        ; Vol/Preset/Input/Setup ring (V1.61b).
+        movlw   0x03
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    display_state_entry                                   ; dest: 0x001224
         clrf    0xbf, B                                     ; reg: 0x0bf
@@ -3238,7 +3449,8 @@ flow_display_state_entry_1226:                                                  
         movf    0xbf, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_state_entry_1242                                   ; dest: 0x001242
-        movlw   0x02
+        ; V1.71: nav UP wrap target bumped from 2 → 3 (wraps 0 → 3).
+        movlw   0x03
         movwf   0xbf, B                                     ; reg: 0x0bf
         goto    flow_display_state_entry_1244                                   ; dest: 0x001244
 
@@ -3306,25 +3518,119 @@ flow_display_state_entry_126E:                                                  
 
 reconnect_wait_loop:                                                  ; address: 0x0012bc
 
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.62b): full sentinel-driven reconnect loop
+        ; ---------------------------------------------------------------
+        ; Stock V1.6b just polled MAIN and waited for CONNECTED to rise.
+        ; V1.62b expands this to:
+        ;   - Every iteration: poll, wait 0xC8, run parser.
+        ;   - Check 4 boot sentinels (input_select_cache 0xB8,
+        ;     volume_cache 0xB9, cmd1d_setting_cache 0xA7,
+        ;     raw_status_cache 0xA1): each is initialized to 0x80 and
+        ;     clears to a legitimate value when MAIN emits the
+        ;     corresponding BF reply.
+        ;   - If ALL four sentinels are non-0x80 (i.e. cleared), exit.
+        ;   - Otherwise increment the retry counter in bank-1 0x73.
+        ;     Every 8 iterations, soft-recover UART to flush any
+        ;     stalled RX state and keep trying.
+        ;
+        ; Zero bank-1 0x73 on entry so each reconnect attempt starts
+        ; with a fresh retry counter.
+        movlb   0x01
+        clrf    0x73, BANKED
+
+v171_reconnect_wait_body:
+        movlb   0x00
         call    poll_frame_send, 0x0                           ; dest: 0x000b64
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
-        btfss   control_flags, CONNECTED, A             ; reg: 0x01f
-        bra     reconnect_wait_loop                                   ; dest: 0x0012bc
+
+        ; Accumulate sentinel-cleared bits into ram_0x018.
+        ; Each block: if sentinel != 0x80 → set ram_0x018 to 1, else
+        ; AND 1 (first test initializes, subsequent tests AND-reduce).
+        movlw   0x80
+        subwf   input_select_cache, W, A                     ; 0xB8
+        clrf    WREG, A
+        btfss   STATUS, Z, A
+        movlw   0x01
+        movwf   (Common_RAM + 24), A                        ; ram_0x018
+
+        movlw   0x80
+        subwf   volume_cache, W, A                           ; 0xB9
+        clrf    WREG, A
+        btfss   STATUS, Z, A
+        movlw   0x01
+        andwf   (Common_RAM + 24), F, A
+
+        movlw   0x80
+        subwf   cmd1d_setting_cache, W, A                    ; 0xA7
+        clrf    WREG, A
+        btfss   STATUS, Z, A
+        movlw   0x01
+        andwf   (Common_RAM + 24), F, A
+
+        movlw   0x80
+        subwf   raw_status_cache, W, A                       ; 0xA1
+        clrf    WREG, A
+        btfss   STATUS, Z, A
+        movlw   0x01
+        andwf   (Common_RAM + 24), F, A
+
+        movf    (Common_RAM + 24), F, A
+        bnz     v171_reconnect_wait_done                    ; all sentinels cleared
+
+        ; Not done yet — increment retry counter.
+        movlb   0x01
+        incf    0x73, F, BANKED
+        movlw   0x08
+        cpfseq  0x73, BANKED
+        bra     v171_reconnect_wait_body                    ; still under 8 — keep polling
+        clrf    0x73, BANKED                                ; 8 retries hit — reset counter
+
+        ; 8 polls without full sentinel clear → kick the UART through
+        ; the full V1.62b soft-recover.  The parser-entry inline
+        ; already knows how to do this on an OERR latch, so force an
+        ; OERR by toggling CREN and let the head of rx_parser_entry
+        ; run its recovery on the next loop iteration.
+        bcf     RCSTA, CREN, A
+        movf    RCREG, W, A
+        movf    RCREG, W, A
+        bsf     RCSTA, CREN, A
+        movlb   0x00
+        clrf    tx_ring_rd, BANKED
+        clrf    tx_ring_wr, BANKED
+        clrf    rx_ring_rd, BANKED
+        clrf    rx_ring_wr, BANKED
+        clrf    rx_frame_position, BANKED
+        clrf    rx_parsed_cmd, A
+        clrf    rx_parsed_data, A
+        bra     v171_reconnect_wait_body
+
+v171_reconnect_wait_done:
+        movlb   0x01
+        clrf    0x73, BANKED                                ; clear retry counter
+        movlb   0x00
+        bsf     control_flags, CONNECTED, A                ; mark connected
 
 flow_reconnect_wait_loop_12CE:                                                  ; address: 0x0012ce
 
-        ; ---------------------------------------------------------------
-        ; V1.71 inline (V1.62b): wake frame on reconnect exit
-        ; ---------------------------------------------------------------
-        ; Closes V162B_RECONNECT_WAKE_BUG: after the reconnect-wait
-        ; loop sees CONNECTED rise (MAIN returned), CONTROL must
-        ; broadcast [B0, 0x03, 0x01] so MAIN wakes from its own
-        ; standby state.  Stock V1.6b fell straight through to
-        ; post_connect_init without a wake frame, leaving MAIN
-        ; half-awake and missing display updates.
-        rcall   standby_wake_broadcast                      ; dest: 0x000c98
+        ; V1.71 (V1.62b): wake frame on reconnect exit (closes the
+        ; V162B_RECONNECT_WAKE_BUG gap) plus the V1.62b state re-init:
+        ; reload idle timer to stock 0xEA61, zero the full-sync
+        ; counter for an immediate burst, clear RECONNECT_WAIT_DONE
+        ; (bit 5) and seed control_flags bit 0x032 = 1 so the
+        ; post-connect path resumes correctly.
+        call    standby_wake_broadcast, 0x0                 ; dest: 0x000c98
+        movlw   0x61
+        movwf   idle_timeout_lo, BANKED                     ; 0x9D
+        movlw   0xEA
+        movwf   idle_timeout_hi, BANKED                     ; 0x9E
+        clrf    full_sync_lo, BANKED                        ; 0x9F
+        clrf    full_sync_hi, BANKED                        ; 0xA0
+        bcf     control_flags, RECONNECT_WAIT_DONE, A       ; bit 5
+        movlw   0x01
+        movwf   (Common_RAM + 50), A                        ; 0x032
         bra     post_connect_init                                   ; dest: 0x0011d8
 
 control_core_service_12D0:                                               ; address: 0x0012d0
