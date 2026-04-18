@@ -345,6 +345,9 @@ V1.71 CONTROL feature-bearing source rewrite:
 - `test_v171_ir_endpoints.py` (V1.64b: IR 0x3A/0x3B explicit standby/wake endpoints, first-frame ordering)
 - `test_v171_fault_indicator.py` (V1.63b: BF/08 DSP-fault parser, bf08_fault_byte store at 0x0AB, DSP_FAULT_BIT set/clear, no-op on clean clear)
 - `test_v171_reconnect_wake.py` (V1.62b: OERR soft-recover clears latch + re-enables CREN, parser continues after OERR, can still process fresh BF/08 frame)
+- `test_v171_preset_menu.py` (V1.61b Phase B.4: preset screen body symbols, 4-way nav wrap literals, state=1 dispatch to v171_preset_screen)
+- `test_v171_full_sync_retry.py` (V1.61b Phase B.5: retry counter block at full_sync_burst head, reuses v171_send_preset_frame_and_persist, preset frame appears in post-connect TX)
+- `test_v171_sentinel_reconnect.py` (V1.62b Phase C.3: sentinel-check body markers, UART soft-recover embedded, wake + idle-timer reload on exit, sentinels clear after heartbeat warmup)
 - `test_v171_v31_chain.py` (V1.71 × V3.1 MAIN chain parity gate: reach Volume screen, blackout/wake → WAITING)
 
 V3.1 source rewrite:
