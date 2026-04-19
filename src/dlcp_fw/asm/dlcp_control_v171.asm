@@ -1221,29 +1221,29 @@ v171_bf2x_check_upper:
         movlw   0x01
         movwf   FSR0H, A
         movff   rx_parsed_data, INDF0                     ; *(slot) = data
-        ; Defer present-mask update + target toggle to the LAST
-        ; frame (BF/27, col_offset == 6).  Without this, BF/21 would
-        ; set present.bit0 → next v171_diag_loop iter would see the
-        ; change → redraw → armed would clear the poll countdown →
-        ; loop would immediately fire the PB2 query (if target
-        ; toggled here), and PB1's remaining frames would arrive with
-        ; the wrong target indexed and land in the PB2 slot.
+        ; Mark the screen dirty so check_redraw redraws on the next
+        ; loop iteration even when v171_diag_present is unchanged.
+        ; Without this, the screen freezes against later counter
+        ; updates once both PBs have been seen present at least once.
+        movlb   0x01
+        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        ; Defer present-mask update + target toggle + pending-clear to
+        ; the LAST frame (BF/27, col_offset == 6).  Toggling target
+        ; mid-burst would corrupt the cache index for remaining
+        ; frames in the same reply.
         movlw   0x06
         cpfseq  (Common_RAM + 4), A                        ; col_offset == 6 (BF/27)?
-        bra     flow_rx_parser_entry_05EA                 ; not last frame — skip update
-        ; Last frame received: mark this PB present so the renderer
-        ; drops "n/a", and toggle target so the NEXT cadence query
-        ; goes to the OTHER PB.  Toggle happens HERE (not in the
-        ; cadence loop) so target stays stable for the entire
-        ; query/reply round-trip — without this, the cadence (which
-        ; can fire many times per chain step in simulation) toggles
-        ; target before the in-flight reply lands, corrupting the
-        ; cache index.
-        movlb   0x01
+        bra     flow_rx_parser_entry_05EA                 ; not last frame — exit
+        ; Last frame received.  Mark this PB present so the renderer
+        ; drops "n/a", clear PENDING (cadence skip-on-silent gate),
+        ; and toggle target so the next cadence query goes to the
+        ; OTHER PB.  Target toggle is HERE (not in the cadence loop)
+        ; so target stays stable for the full query/reply round-trip.
         movlw   0x01                                      ; PB1 mask
         btfsc   v171_diag_target, 0, BANKED
         movlw   0x02                                      ; PB2 mask
         iorwf   v171_diag_present, F, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
         btg     v171_diag_target, 0, BANKED               ; flip for next query
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
@@ -3405,13 +3405,22 @@ v171_diag_loop:
         movf    v171_diag_poll_lo, W, BANKED
         iorwf   v171_diag_poll_hi, W, BANKED
         bnz     v171_diag_loop_dec
-        ; Countdown expired — issue a query for the CURRENT target.
-        ; Target only toggles on BF/24 reception (in v171_bf2x_case_check)
-        ; so it stays stable from query-send through reply-complete.
-        ; Without this discipline, the cadence (which can fire many times
-        ; per chain step in simulation) toggles target before the in-flight
-        ; reply lands, causing PB2's BF/21..23 to land in PB1's cache slot
-        ; (and worse, present.bit1 to set even though the cache is empty).
+        ; Countdown expired.  Normally target only toggles on BF/27
+        ; reception (in v171_bf2x_case_check) so it stays stable for
+        ; the full query/reply round-trip.  But that means a SILENT
+        ; or unsupported PB would never advance the target — polling
+        ; would lock onto the silent slot forever and the responding
+        ; PB would never get re-queried.  Skip-on-silent gate: if
+        ; PENDING is still set when the cadence expires, the previous
+        ; query never completed, so advance target now (and clear
+        ; PENDING) before sending the next query.
+        movlb   0x01
+        btfss   v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
+        bra     v171_diag_send_now                         ; previous reply landed
+        ; Previous query timed out — skip the silent target.
+        btg     v171_diag_target, 0, BANKED
+v171_diag_send_now:
+        bsf     v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
         movlb   0x00
         rcall   v171_diag_send_query
         movlb   0x01
@@ -3432,17 +3441,22 @@ v171_diag_loop_dec_lo_only:
         movlb   0x00
 
 v171_diag_check_redraw:
-        ; Cheap dirty check: redraw the screen if the present mask
-        ; changed since the last draw.  Snapshot lives in BANK 1
-        ; (v171_diag_present_snap) — must NOT be the access-bank
-        ; ram_0x005 scratch cell because display_loop_iteration and
-        ; the LCD char-write helpers stomp it on every tick.
+        ; Redraw the screen if EITHER the present mask changed since
+        ; the last draw OR the parser case set the DIRTY flag (a fresh
+        ; counter value landed in the cache).  Snapshot + flag both
+        ; live in BANK 1 — must NOT be the access-bank ram_0x005
+        ; scratch cell because display_loop_iteration and the LCD
+        ; char-write helpers stomp it on every tick.
         movlb   0x01
+        btfsc   v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        bra     v171_diag_do_redraw                        ; cache changed
         movf    v171_diag_present, W, BANKED
         xorwf   v171_diag_present_snap, W, BANKED
-        bz      v171_diag_redraw_skip
+        bz      v171_diag_redraw_skip                      ; no change
+v171_diag_do_redraw:
         movf    v171_diag_present, W, BANKED
         movwf   v171_diag_present_snap, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
         movlb   0x00
         goto    v171_diag_screen_draw
 v171_diag_redraw_skip:
@@ -3533,6 +3547,21 @@ v171_diag_emit_nib_sat:
 ; raw via tx_byte_enqueue keeps the diagnostics traffic page-local.
 ; ---------------------------------------------------------------------------
 v171_diag_send_query:
+        ; Best-effort frame atomicity: tx_byte_enqueue (Layer 1) drops
+        ; a single byte on TX-ring saturation and signals via
+        ; STATUS.C=1.  Without checking C between bytes, all three
+        ; bytes get attempted independently.  We bail on the first
+        ; dropped byte so we don't keep pumping the rest of an already-
+        ; broken frame.  MAIN's route handler treats every Bx byte as
+        ; a frame start (resets frame_pos), so a partial fragment that
+        ; landed on the wire ahead of the abort gets cleaned up by the
+        ; next genuine route byte from CONTROL or another source — no
+        ; permanent mis-framing.  The next cadence expiry retries the
+        ; whole frame after the ring has drained.
+        ;
+        ; tx_byte_enqueue lives at ~0x05EC; this routine sits past
+        ; 0x18xx so rcall overflows the 11-bit relative range and we
+        ; must use the absolute call, FAST-zero variant.
         ; --- byte 0: route ---
         movlw   0xB1                                       ; default = PB1 query
         movlb   0x01
@@ -3540,17 +3569,21 @@ v171_diag_send_query:
         movlw   0xB2
         movlb   0x00
         movwf   tx_data_staging, A
-        ; tx_byte_enqueue lives at ~0x05EC; this routine sits past
-        ; 0x18xx so rcall overflows the 11-bit relative range and we
-        ; must use the absolute call, FAST-zero variant.
         call    tx_byte_enqueue, 0x0
+        bc      v171_diag_send_query_aborted               ; ring saturated
         ; --- byte 1: cmd 0x21 ---
         movlw   0x21
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_diag_send_query_aborted
         ; --- byte 2: data 0x00 ---
         clrf    tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        ; (final byte — no need to check; failure here just drops
+        ; the data byte but the remainder of the frame is already on
+        ; the wire and MAIN will treat it as a malformed B1/0x21/?? —
+        ; the cadence retry will issue a clean follow-up).
+v171_diag_send_query_aborted:
         return  0x0
 
 

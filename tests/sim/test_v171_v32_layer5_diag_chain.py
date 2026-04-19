@@ -1,6 +1,6 @@
 """V1.71 × V3.2 Layer 5 Phase C: wire-chain diagnostics page integration.
 
-End-to-end validation of the cmd 0x21 / BF/21..24 protocol with V1.71
+End-to-end validation of the cmd 0x21 / BF/21..27 protocol with V1.71
 CONTROL and V3.2 MAIN co-simulated on the wire-chain harness.  This is
 the trust-band counterpart to:
 
@@ -13,20 +13,26 @@ Phase C exercises the *protocol contract* end-to-end:
 
 1. CONTROL navigates to the Diagnostics screen and emits ``B1/0x21/0x00``
    then ``B2/0x21/0x00`` queries on cadence.
-2. Both MAINs reply with the BF/21..24 burst.
+2. Both MAINs reply with the BF/21..27 burst (7 frames, one counter
+   per frame; the original 4-frame packed-nibble scheme was retired
+   2026-04-19 — see Phase A docstring for the rationale).
 3. CONTROL parses each frame into the right per-PB cache slot.
 4. The compact 16×2 LCD layout renders the cached values per spec.
 
 Per ``docs/SIMULATION_FIDELITY.md`` §"2026-04-18 correction", gpsim is
 faithful for the preset-apply / IR / button race classes that Phase C
-needs (TAS3108 byte timing matches real hardware within 20 %).  Tests
-here use ``control_chunk_cycles=60_000`` to keep RX-frame delivery
-sub-chunk where the spec recommends.
+needs (TAS3108 byte timing matches real hardware within 20 %).
 
-Phase C v1 covers the high-impact subset of the spec's 15-case test
-matrix; the per-counter primary tests (I2C / DSP / RCV / S / B / AN0
-/ RA1) are added incrementally as the per-counter fault-injection
+Phase C v1 covers the protocol-contract subset of the spec's 15-case
+test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /
+AN0 / RA1) are added incrementally as the per-counter fault-injection
 hooks become available.
+
+Four tests are xfailed pending the wire-chain-harness fix in Task #22
+(PB2 reply path through the m1_to_m0 → m0_to_ctl bridge does not
+deliver the BF/2N reply back to CONTROL).  PB1 reply path is verified
+working; the firmware works correctly on real hardware where the chain
+is a true current loop rather than a bidirectional bridge pair.
 """
 
 from __future__ import annotations

@@ -6,7 +6,10 @@ at 0x12A) per ``docs/V163B_DIAGNOSTICS_MENU_SPEC.md``:
 * RAM allocation in ``dlcp_main_ram.inc``
 * ``diag_inc_sat`` macro definition
 * Counter increment hooks at the seven named V3.x code paths
-* ``cmd21_diag_query_handler`` reply burst (BF/21..24, packed nibbles)
+* ``cmd21_diag_query_handler`` reply burst (7 frames BF/21..27,
+  one counter per frame in the data byte's low nibble — the original
+  4-frame packed scheme was retired 2026-04-19 because data bytes
+  >= 0x80 were re-interpreted as routes by the chain forwarder)
 * ``ra1_edge_monitor`` invocation from ``periodic_service_loop``
 * RCON-gated POR/BOR clear logic in cold init
 
@@ -64,11 +67,19 @@ ALL_COUNTER_ADDRS = (
 
 @pytest.fixture(scope="module")
 def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    # Reassemble in-place — V32_MAIN_HEX is the canonical output path the
-    # whole repo uses, so the artifact this fixture builds matches what
-    # other tests / live tooling will pick up.
-    assemble_v30(V32_MAIN_ASM, V32_MAIN_HEX)
-    return V32_MAIN_HEX
+    # Build into the module's own tmp dir rather than the canonical
+    # V32_MAIN_HEX path so xdist parallel runs don't race on the same
+    # file (an earlier in-place rebuild caused other workers' reads of
+    # V32_MAIN_HEX to see a partially-written hex during the seconds
+    # gpasm was emitting bytes).  The .lst that v32_layer5_symbols_resolve
+    # parses lives next to the hex, so the symbol-resolve test still
+    # works against the tmp build.  Other tests that consume the
+    # canonical V32_MAIN_HEX directly continue to read the on-disk file
+    # (which the build pipeline keeps current).
+    tmp = tmp_path_factory.mktemp("v32_layer5")
+    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
+    assemble_v30(V32_MAIN_ASM, hex_out)
+    return hex_out
 
 
 def _equ_address(text: str, name: str) -> int | None:
@@ -420,3 +431,29 @@ def test_v32_layer5_diag_block_clears_on_cold_start(v32_hex: Path) -> None:
         # variant slots in trivially.
     finally:
         h.close()
+
+
+def test_v32_cmd21_re_asserts_movlb_before_each_diag_read() -> None:
+    """Coverage for MED #1 (2026-04-19 review): cmd21_diag_query_handler
+    must re-assert ``movlb 0x01`` before each ``movf diag_X, W, BANKED``
+    read.  Without this, a TRMT timeout in the middle of the burst
+    routes through ``uart_tx_timeout`` → ``uart_config`` which does an
+    unconditional ``movlb 0x0`` and never restores BSR — subsequent
+    BANKED diag reads then come from bank 0, producing garbage data
+    that may violate the < 0x80 chain-forwarder invariant the
+    seven-frame protocol relies on.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    start = _label_offset(text, "cmd21_diag_query_handler")
+    assert start >= 0
+    end = text.find("flow_main_uart_service_1be6_1e6c", start)
+    body = text[start:end]
+    # 7 movlb 0x01 statements (one before each diag_X read).  Use a
+    # word-boundary anchor on the right so 0x010 etc. don't match.
+    movlb_count = len(re.findall(r"\bmovlb\s+0x01\b(?!\d)", body))
+    assert movlb_count >= 7, (
+        f"cmd21 handler must re-assert movlb 0x01 before each of the "
+        f"7 diag reads (found {movlb_count}); ensures BSR safety even "
+        f"if a previous uart_tx_byte_blocking call took the timeout "
+        f"fallback that clobbers BSR"
+    )

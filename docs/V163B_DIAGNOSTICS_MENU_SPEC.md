@@ -138,19 +138,30 @@ This relies on the existing route handling:
 - `B1` is consumed by the local PB
 - `B2` is forwarded/decremented by PB1 and becomes `B1` at PB2
 
-Chosen reply burst from MAIN:
+Chosen reply burst from MAIN (revised 2026-04-19 — supersedes the
+original 4-frame packed scheme):
 
-- `BF 21 <ID>` where high nibble = `I`, low nibble = `D`
-- `BF 22 <SB>` where high nibble = `S`, low nibble = `B`
-- `BF 23 <RA>` where high nibble = `R`, low nibble = `A`
-- `BF 24 <0P>` where high nibble = `0`, low nibble = `P`
+- `BF 21 <I>` data byte = diag_i  (low nibble; high nibble = 0)
+- `BF 22 <D>` data byte = diag_d
+- `BF 23 <S>` data byte = diag_s
+- `BF 24 <B>` data byte = diag_b
+- `BF 25 <R>` data byte = diag_r
+- `BF 26 <A>` data byte = diag_a
+- `BF 27 <P>` data byte = diag_p  (last frame; CONTROL clears the
+                                   pending flag and toggles next-target
+                                   in its parser case for this cmd)
 
 Notes:
 
-- Reply bytes are packed nibbles, not ASCII
-- `0x0F` means saturated display state `+`
-- No separate overflow frame is needed
-- `BF/08` remains unchanged for live DSP-fault indication
+- Reply data bytes carry ONE counter per frame in the LOW nibble
+  (high nibble forced to 0).  The earlier 4-frame packed scheme
+  (`pack(I,D)` / `pack(S,B)` / `pack(R,A)` / `pack(0,P)`) was retired
+  because high counter values produced data bytes >= 0x80, which both
+  the K20 CONTROL parser and the chain forwarder re-interpret as
+  route bytes — corrupting PB2's reply path through PB1's forwarder.
+  Single-counter frames keep every data byte in 0x00..0x0F.
+- `0x0F` is the saturating maximum — CONTROL renders it as `+`.
+- `BF/08` remains unchanged for live DSP-fault indication.
 
 ## Code Paths To Monitor
 
@@ -275,22 +286,32 @@ This is required so fault evidence survives:
 
 ### MAIN reply behavior
 
-On `cmd=0x21`, MAIN immediately emits the 4-frame packed reply burst:
+On `cmd=0x21`, MAIN immediately emits the 7-frame single-counter
+reply burst (revised 2026-04-19):
 
-- `BF 21 <ID>`
-- `BF 22 <SB>`
-- `BF 23 <RA>`
-- `BF 24 <0P>`
+- `BF 21 <I>` data byte = diag_i  (low nibble; high nibble = 0)
+- `BF 22 <D>` data byte = diag_d
+- `BF 23 <S>` data byte = diag_s
+- `BF 24 <B>` data byte = diag_b
+- `BF 25 <R>` data byte = diag_r
+- `BF 26 <A>` data byte = diag_a
+- `BF 27 <P>` data byte = diag_p
 
 No periodic emission is added outside this explicit request path.
+Each data byte is in 0x00..0x0F; CONTROL packs the seven values into
+its 7-byte per-PB cache verbatim.
 
 ## CONTROL-Side Requirements
 
-`V1.63b` diagnostics page must:
+`V1.71` diagnostics page must:
 
 - poll the first two PBs using the addressed `0x21` query path
-- cache the returned packed replies
+- cache the seven returned counter values per PB (one cell each)
 - render the compact single-screen encoding above
+- skip a silent or unsupported PB after a single timed-out cadence
+  cycle so the responding PB keeps refreshing
+- redraw the LCD whenever the cache changes, not only when the
+  per-PB present mask changes
 - never block the existing volume/input/setup behavior if a PB does not answer
 
 Recommended behavior on missing support:

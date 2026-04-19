@@ -4,10 +4,18 @@ Adds the "Diagnostics" top-level menu page (state 2 in the new
 Vol/Preset/Diagnostics/Input/Setup ring) per
 ``docs/V163B_DIAGNOSTICS_MENU_SPEC.md``:
 
-* RAM cache for per-PB packed counter bytes (BANK 1, 0x80..0x8B)
+* RAM cache for per-PB diag counters (BANK 1, 14 bytes at 0x80..0x8D
+  — 7 cells per PB, one counter per cell with the value in the low
+  nibble; the original 4-byte packed-nibble layout was retired
+  2026-04-19, see Phase A docstring for the rationale)
+* Flag byte at 0x094 with DIRTY (cache changed since last redraw) and
+  PENDING (query in flight, awaiting BF/27) bits
 * ``v171_diag_screen`` page body that renders the spec layout
-* ``v171_diag_send_query`` raw 3-byte enqueue (route / 0x21 / 0x00)
-* ``v171_bf2x_case_check`` parser case for BF/21..24 replies
+* ``v171_diag_send_query`` 3-byte enqueue (route / 0x21 / 0x00) with
+  STATUS.C-checked frame atomicity on TX-ring saturation
+* ``v171_bf2x_case_check`` parser case for BF/21..27 replies — sets
+  DIRTY on every cache write; on BF/27 (last frame) also clears
+  PENDING, sets present-mask bit, and toggles target
 * ``v171_diag_emit_nib_w`` nibble-to-LCD-char encoder
 * Menu dispatch: state 2 → diag, state 3 → Input, state 4 → Setup
 * Nav wrap upper bound bumped from 0x03 to 0x04
@@ -15,7 +23,8 @@ Vol/Preset/Diagnostics/Input/Setup ring) per
 Three tiers, mirroring the Layer 1 / Layer 2 / Phase A test layout:
 
 * **Tier A — source-level structural**: pin RAM EQUs, label locations,
-  menu dispatch wiring, nav-wrap literals, parser-case insertion.
+  menu dispatch wiring, nav-wrap literals, parser-case insertion,
+  flag-byte semantics, silent-PB cadence skip.
 
 * **Tier B — build verification**: V1.71 source assembles cleanly and
   every new symbol resolves at the expected addresses.
@@ -307,7 +316,7 @@ def test_diag_send_query_uses_b1_or_b2_route_and_cmd_21() -> None:
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_send_query")
     assert off >= 0, "v171_diag_send_query label missing"
-    body = text[off:off + 1500]
+    body = text[off:off + 2500]
     assert re.search(r"movlw\s+0xB1", body), "PB1 route literal missing"
     assert re.search(r"movlw\s+0xB2", body), "PB2 route literal missing"
     assert re.search(r"movlw\s+0x21", body), "cmd 0x21 literal missing"
@@ -514,3 +523,158 @@ def test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup(
             )
     finally:
         h.close()
+
+
+# ===========================================================================
+# Coverage gaps surfaced by 2026-04-19 review — structural assertions for
+# the dirty-flag and pending-flag fixes that close them.
+# ===========================================================================
+
+
+def test_v171_diag_flags_byte_pinned_and_bit_aliases() -> None:
+    """``v171_diag_flags`` byte must EQU at 0x094 with the spec'd bit
+    aliases.  The flag byte holds:
+
+      bit 0  V171_DIAG_FLAG_DIRTY    cache changed since last redraw
+                                     (set on every BF/2N parser write)
+      bit 1  V171_DIAG_FLAG_PENDING  query in flight, awaiting BF/27
+                                     (set on cadence query-send,
+                                     cleared on BF/27 reception)
+
+    Pinning here documents the bit assignment so a future change has to
+    update both ram.inc and this test together.
+    """
+    text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+    assert _equ_address(text, "v171_diag_flags") == 0x094
+    assert _equ_address(text, "V171_DIAG_FLAG_DIRTY") == 0x00
+    assert _equ_address(text, "V171_DIAG_FLAG_PENDING") == 0x01
+
+
+def test_diag_parser_sets_dirty_on_every_bf2x_write() -> None:
+    """Coverage for HIGH #1: redraw on counter change with stable present.
+
+    Without the dirty flag the screen freezes once both PBs have been
+    seen present at least once — the only redraw trigger was
+    ``v171_diag_present XOR snap``.  The fix sets DIRTY in
+    ``v171_bf2x_case_check`` after every cache write so the next
+    ``v171_diag_check_redraw`` triggers regardless of present-mask
+    movement.  This test guards that the bsf is BEFORE the
+    ``cpfseq col_offset == 6`` BF/27 gate (so it fires for ALL frames,
+    not just the last one).
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_bf2x_case_check")
+    assert off >= 0
+    body = text[off:off + 4000]
+    # Locate the cache write (movff rx_parsed_data, INDF0) and the
+    # BF/27 gate (cpfseq with W=0x06).  bsf DIRTY must sit between them.
+    write_pos = body.find("movff   rx_parsed_data, INDF0")
+    gate_pos = body.find("cpfseq  (Common_RAM + 4), A")
+    assert write_pos >= 0 and gate_pos > write_pos
+    between = body[write_pos:gate_pos]
+    assert re.search(
+        r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_DIRTY,\s*BANKED",
+        between,
+    ), (
+        "DIRTY flag must be set after the cache write but BEFORE the "
+        "BF/27-only gate — otherwise BF/21..26 writes don't redraw"
+    )
+
+
+def test_diag_check_redraw_honors_dirty_flag() -> None:
+    """Coverage for HIGH #1: ``v171_diag_check_redraw`` must redraw on
+    DIRTY=1 even when present-mask snapshot matches.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_check_redraw")
+    assert off >= 0
+    body = text[off:off + 1200]
+    # btfsc on DIRTY must come BEFORE the present-XOR check, and bra
+    # to the redraw path on DIRTY=1.
+    btfsc_pos = body.find("btfsc   v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED")
+    xor_pos = body.find("xorwf   v171_diag_present_snap")
+    assert 0 <= btfsc_pos < xor_pos, (
+        "DIRTY check must run before the present-XOR (so cache changes "
+        "trigger redraw without needing a present-mask change)"
+    )
+    # The redraw path must clear DIRTY so the next iter is idempotent.
+    assert re.search(
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_DIRTY,\s*BANKED",
+        body,
+    ), "redraw path must clear DIRTY after redraw fires"
+
+
+def test_diag_loop_advances_target_on_silent_pb() -> None:
+    """Coverage for HIGH #2: silent-PB skip-on-pending in the cadence loop.
+
+    Without this gate, a silent or unsupported PB would never advance
+    the target (which only flips on BF/27 reception), pinning the poll
+    loop on the missing slot forever.  The fix: cadence checks
+    PENDING; if still set when the next cadence fires, advance target
+    BEFORE sending so the responding PB gets re-queried.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_loop")
+    assert off >= 0
+    # Window through the cadence-expired path (~600 chars covers it).
+    body = text[off:off + 1600]
+    # btfss on PENDING + bra to skip the toggle: when PENDING is SET
+    # (silent), don't skip → btg target.
+    assert re.search(
+        r"btfss\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        body,
+    ), "silent-PB gate must check PENDING before sending"
+    assert re.search(
+        r"btg\s+v171_diag_target,\s*0,\s*BANKED",
+        body,
+    ), "silent-PB gate must toggle target when PENDING is still set"
+    # The cadence path must SET PENDING after sending so the next
+    # cadence can detect a no-reply.
+    assert re.search(
+        r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        body,
+    ), "cadence path must set PENDING when issuing a query"
+
+
+def test_diag_parser_clears_pending_on_bf27() -> None:
+    """Coverage for HIGH #2: BF/27 reception must clear PENDING so the
+    NEXT cadence sees a "reply landed" state and doesn't skip target."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_bf2x_case_check")
+    assert off >= 0
+    body = text[off:off + 4000]
+    # PENDING clear must be inside the col_offset == 6 (BF/27) path.
+    gate_pos = body.find("cpfseq  (Common_RAM + 4), A")
+    assert gate_pos >= 0
+    after_gate = body[gate_pos:gate_pos + 1000]
+    assert re.search(
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        after_gate,
+    ), "BF/27 path must clear PENDING"
+
+
+def test_diag_send_query_aborts_on_tx_saturation() -> None:
+    """Coverage for MED #2: v171_diag_send_query must check STATUS.C
+    after each tx_byte_enqueue and bail on saturation, rather than
+    always pumping all three bytes.  Without this, a saturated TX ring
+    could emit fragments like B1 or B1/0x21 on the wire.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_send_query")
+    assert off >= 0
+    body = text[off:off + 2500]
+    # Two bc (branch on carry) checks — one after route, one after cmd.
+    # The third byte (data) doesn't need a check (per implementation
+    # comment — see asm).
+    bc_count = len(re.findall(r"\n\s+bc\s+v171_diag_send_query_aborted", body))
+    assert bc_count >= 2, (
+        f"send_query must bc-check after route + cmd enqueues "
+        f"(found {bc_count} bc instructions)"
+    )
+    # And the abort label must exist as a return target.
+    assert "v171_diag_send_query_aborted:" in body, (
+        "abort label missing — bc has no target"
+    )
+
+
+# V32-side BSR safety test lives in test_v32_layer5_diag_counters.py.

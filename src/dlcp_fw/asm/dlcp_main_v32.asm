@@ -8877,17 +8877,18 @@ cmd21_diag_query_handler:
     ;   BF/26 = diag_a
     ;   BF/27 = diag_p  (last frame; CONTROL uses this to mark PB
     ;                    present and toggle next-target)
-    ; Set BSR=1 once; uart_tx_byte_blocking → wait_trmt_bounded
-    ; uses access-bank only, so BSR stays at 1 throughout the burst.
-    ; This compact form emits each frame in 6 bytes of value-load
-    ; code (movlw + rcall + movlw + rcall for the BF/2N prefix +
-    ; movf + rcall for the data) instead of 8 bytes via ram_0x00D
-    ; staging — saves 14 bytes total vs the staged form.
-    movlb       0x01
+    ; BSR safety: each `movf diag_X, W, BANKED` re-asserts
+    ; `movlb 0x01` because the uart_tx_byte_blocking timeout fallback
+    ; (uart_tx_timeout → uart_config) does an unconditional
+    ; `movlb 0x0` and never restores BSR.  Without re-asserting,
+    ; a TRMT timeout mid-burst would drop subsequent reads to bank 0,
+    ; producing garbage data bytes that could violate the < 0x80
+    ; chain-forwarder invariant the seven-frame protocol relies on.
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x21
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_i, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8895,6 +8896,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x22
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_d, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8902,6 +8904,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x23
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_s, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8909,6 +8912,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x24
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_b, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8916,6 +8920,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x25
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_r, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8923,6 +8928,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x26
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_a, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8930,6 +8936,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x27
     rcall       uart_tx_byte_blocking
+    movlb       0x01
     movf        diag_p, W, BANKED
     rcall       uart_tx_byte_blocking
 

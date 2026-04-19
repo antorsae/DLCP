@@ -224,6 +224,26 @@ v171_diag_present_snap     equ  0x092
 ; movlb 0x01 around access AND reload BSR after every
 ; lcd_char_write call (which can change BSR internally).
 v171_diag_lcd_pad_count    equ  0x093
+; Bit-flag byte for the diagnostics page state machine:
+;   bit 0  V171_DIAG_FLAG_DIRTY       cache changed since last redraw
+;                                     (set by BF/2N parser case on every
+;                                     cache write; cleared by check_redraw
+;                                     after the screen redraws).  Without
+;                                     this, the redraw only fires on
+;                                     present-mask changes, so once both
+;                                     PBs have replied at least once the
+;                                     LCD freezes against later updates.
+;   bit 1  V171_DIAG_FLAG_PENDING     query in flight, awaiting BF/27
+;                                     (set by the cadence path when
+;                                     issuing a query; cleared by the
+;                                     parser case on BF/27 reception).
+;                                     If still set on the next cadence
+;                                     expiry, target advances anyway so
+;                                     a silent or unsupported PB can't
+;                                     pin the poll target forever.
+v171_diag_flags            equ  0x094
+V171_DIAG_FLAG_DIRTY       equ  0x00
+V171_DIAG_FLAG_PENDING     equ  0x01
 
 ; Poll cadence reload value.  Each v171_diag_screen tick decrements
 ; the 16-bit countdown by 1; with display_loop_iteration on the K20
