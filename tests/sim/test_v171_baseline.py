@@ -185,3 +185,78 @@ def test_v171_banner_identifies_feature_scope() -> None:
     # overlays whose features it inlines.
     for marker in ("V1.71", "V1.61b", "V1.62b", "V1.63b", "V1.64b"):
         assert marker in text[:2000], f"banner missing marker: {marker}"
+
+
+# ---------------------------------------------------------------------------
+# Hex-format coverage (HFD + bootloader CRC compatibility)
+# ---------------------------------------------------------------------------
+
+
+def test_v171_hex_covers_full_program_flash_app_window(v171_hex: Path) -> None:
+    """The V1.71 hex must explicitly cover every byte of the K20 program-
+    flash app window (0x0000..0x77FF) with 16-byte data records.
+
+    Background: gpasm by default omits records for any 16-byte chunk
+    that is all-0xFF (the erased-flash default), producing a sparse
+    hex of ~10 KB instead of the full 32 KB.  Two consumers reject
+    sparse hex:
+
+      * HFD's hex validator: pops a "Failed to load firmware (File
+        load failed: Invalid hex file (not suited for DLCP))" dialog.
+      * The K20 stock bootloader's post-stream CRC verify: computes
+        its checksum over the bytes IT receives, which differs from
+        the host-precomputed CRC over the full 32 KB region, so the
+        verify step returns NACK.
+
+    assemble_v17() pads the program-flash region with explicit 0xFF
+    records via pad_hex_program_flash_app() to fix both consumers.
+    This test asserts that fix stays in place — a regression here
+    means a future operator's HFD load will silently bounce.
+    """
+    text = v171_hex.read_text(encoding="ascii")
+    seg_high16 = 0
+    app_window_records = 0
+    bootloader_records = 0
+    other_segment_records = 0
+    seen_app_addrs: set[int] = set()
+    for line in text.splitlines():
+        if not line.startswith(":") or len(line) < 11:
+            continue
+        sz = int(line[1:3], 16)
+        addr = int(line[3:7], 16)
+        rt = int(line[7:9], 16)
+        if rt == 0x04:
+            seg_high16 = int(line[9:13], 16)
+            continue
+        if rt != 0x00:
+            continue
+        if seg_high16 != 0x0000:
+            other_segment_records += 1
+            continue
+        if 0x0000 <= addr < 0x7800:
+            app_window_records += 1
+            for off in range(sz):
+                seen_app_addrs.add(addr + off)
+        elif 0x7800 <= addr < 0x8000:
+            bootloader_records += 1
+    expected_records = (0x7800 - 0x0000) // 16  # 1920 records
+    assert app_window_records >= expected_records, (
+        f"V1.71 hex has only {app_window_records} 16-byte records in the "
+        f"program-flash app window 0x0000..0x77FF; expected at least "
+        f"{expected_records} (full coverage).  pad_hex_program_flash_app "
+        f"is supposed to fill 0xFF gaps after gpasm — has it regressed?"
+    )
+    expected_app_bytes = 0x7800 - 0x0000  # 30720 bytes
+    assert len(seen_app_addrs) == expected_app_bytes, (
+        f"V1.71 hex covers only {len(seen_app_addrs)} unique app-window "
+        f"bytes; expected exactly {expected_app_bytes} (every byte of "
+        f"0x0000..0x77FF).  Sparse hex is rejected by HFD and produces "
+        f"a bootloader CRC mismatch."
+    )
+    # Bootloader region must also be present (preserved verbatim from
+    # the V1.6b stock bootloader by the V1.7 source build).
+    assert bootloader_records >= 128, (
+        f"V1.71 hex missing bootloader-region (0x7800..0x7FFF) records: "
+        f"got {bootloader_records}, expected >= 128 (16-byte records "
+        f"covering the full 2 KB bootloader)"
+    )
