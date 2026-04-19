@@ -1156,7 +1156,7 @@ v171_bf08_case_check:
         ; status burst immediately (V1.63b resync-on-clear).
         movlw   0x08                                        ; CMD dsp_fault
         cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
-        goto    flow_rx_parser_entry_05EA                 ; not BF/08 — exit
+        goto    v171_bf2x_case_check                      ; not BF/08 — try BF/2N (Layer 5)
 
         movff   rx_parsed_data, bf08_fault_byte         ; store payload byte
         movf    rx_parsed_data, W, A
@@ -1176,6 +1176,77 @@ v171_bf08_case_check:
 
 v171_bf08_set_fault:
         bsf     control_flags, DSP_FAULT_BIT, A
+        bra     flow_rx_parser_entry_05EA
+
+v171_bf2x_case_check:
+        ; ---------------------------------------------------------------
+        ; V1.71 inline (Layer 5 Phase B): BF/21..27 diagnostics replies
+        ; ---------------------------------------------------------------
+        ; V3.2+ MAIN emits a 7-frame BF/2N burst in response to a
+        ; cmd 0x21 query (see docs/V163B_DIAGNOSTICS_MENU_SPEC.md).
+        ; Each frame carries ONE counter value in the low nibble of
+        ; the data byte (high nibble = 0).  An earlier draft packed
+        ; two counters per byte but produced data >= 0x80 for any
+        ; high counter > 7, which the K20 parser and MAIN's chain
+        ; forwarder re-interpret as a route byte — causing PB2's
+        ; reply frames to corrupt the parser state.
+        ;
+        ; PB1 slot = v171_diag_pb1_i..p (0x080..0x086)
+        ; PB2 slot = v171_diag_pb2_i..p (0x087..0x08D)
+        ; The +7 offset for PB2 is encoded by adding 7 to the base
+        ; when target.0 is set.
+        ;
+        ; Range gate: accept cmd 0x21..0x27 only.
+        movlw   0x21
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x21? → exit
+        bra     v171_bf2x_check_upper
+        bra     flow_rx_parser_entry_05EA
+v171_bf2x_check_upper:
+        movlw   0x28
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x28? → ok
+        bra     flow_rx_parser_entry_05EA                 ; cmd >= 0x28 → exit
+        ; Compute byte offset: (cmd - 0x21) gives 0..6 (I, D, S, B, R, A, P).
+        movlw   0x21
+        subwf   rx_parsed_cmd, W, A
+        movwf   (Common_RAM + 4), A                       ; col_offset
+        ; Compute slot base: PB1 base = v171_diag_pb1_i (0x80),
+        ; PB2 base = v171_diag_pb2_i (0x87).  Add 7 if target bit0 set.
+        movlb   0x01
+        movlw   v171_diag_pb1_i
+        btfsc   v171_diag_target, 0, BANKED
+        movlw   v171_diag_pb2_i
+        addwf   (Common_RAM + 4), W, A                    ; W = base + col_offset
+        ; Write payload via FSR0 in BANK 1 (0x180..0x18D physical).
+        movwf   FSR0L, A
+        movlw   0x01
+        movwf   FSR0H, A
+        movff   rx_parsed_data, INDF0                     ; *(slot) = data
+        ; Defer present-mask update + target toggle to the LAST
+        ; frame (BF/27, col_offset == 6).  Without this, BF/21 would
+        ; set present.bit0 → next v171_diag_loop iter would see the
+        ; change → redraw → armed would clear the poll countdown →
+        ; loop would immediately fire the PB2 query (if target
+        ; toggled here), and PB1's remaining frames would arrive with
+        ; the wrong target indexed and land in the PB2 slot.
+        movlw   0x06
+        cpfseq  (Common_RAM + 4), A                        ; col_offset == 6 (BF/27)?
+        bra     flow_rx_parser_entry_05EA                 ; not last frame — skip update
+        ; Last frame received: mark this PB present so the renderer
+        ; drops "n/a", and toggle target so the NEXT cadence query
+        ; goes to the OTHER PB.  Toggle happens HERE (not in the
+        ; cadence loop) so target stays stable for the entire
+        ; query/reply round-trip — without this, the cadence (which
+        ; can fire many times per chain step in simulation) toggles
+        ; target before the in-flight reply lands, corrupting the
+        ; cache index.
+        movlb   0x01
+        movlw   0x01                                      ; PB1 mask
+        btfsc   v171_diag_target, 0, BANKED
+        movlw   0x02                                      ; PB2 mask
+        iorwf   v171_diag_present, F, BANKED
+        btg     v171_diag_target, 0, BANKED               ; flip for next query
+        movlb   0x00
+        bra     flow_rx_parser_entry_05EA
 
 flow_rx_parser_entry_05EA:                                                  ; address: 0x0005ea
 
@@ -1190,8 +1261,32 @@ flow_rx_parser_entry_05EA:                                                  ; ad
 ; routine after committing the new tx_ring_wr).  Producer-side index is
 ; 0x097, consumer-side is 0x096.  Wrapping at 0x30 (= 48 bytes).
 ;
-; If the ring is FULL when the producer arrives, the routine drops into
-; the busy-wait at 0x00060C (flow_ccs_061C_062A, BUG C6) — see annotation there.
+; *** V1.71 Layer 1 fix for BUG C6 (tx_byte_enqueue_busy_wait) ***
+; The V1.6b body busy-waited indefinitely at 0x00060C while the ring
+; was at the producer/consumer collision boundary, on the assumption
+; that the TX ISR would advance tx_ring_rd within a few microseconds.
+; In practice this assumption fails whenever MAIN's main_uart_service
+; pauses for tens of milliseconds (V3.2 legacy 97-iter preset apply,
+; standby/wake handshake, etc.) — CONTROL stalls inside this routine,
+; misses status responses, and the LCD eventually drops to WAITING.
+;
+; V1.71 replaces the indefinite busy-wait with a bounded 256-tick
+; budget.  On a healthy chain the loop exits on the first iteration
+; (one-cycle TX ISR latency), so steady-state behavior is unchanged.
+; On a saturated chain the budget expires, the byte is dropped
+; (tx_ring_wr is NOT committed, so the byte sitting in tx_ring_base
+; gets overwritten by the next caller), v171_tx_saturate_count is
+; bumped (saturating at 0xFF, see ram.inc for slot rationale), and
+; the routine returns with C=1 so callers can decide whether to
+; retry, log, or escalate.  Existing callers that ignore C continue
+; to function — they just lose the byte rather than hanging the
+; whole CONTROL main loop.
+;
+; Calling convention (V1.71):
+;   in : tx_data_staging (0x027) holds the byte to enqueue
+;   out: STATUS.C = 0 on commit, 1 on saturation (byte dropped)
+;        v171_tx_saturate_count incremented on saturation
+;        tx_data_staging, v171_tx_enq_retry are clobbered scratch
 ; ===========================================================================
 ; tx_byte_enqueue:
 tx_byte_enqueue:                                               ; address: 0x0005ec
@@ -1212,17 +1307,43 @@ flow_tx_byte_enqueue_0606:                                                  ; ad
         btfss   PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
         goto    flow_tx_byte_enqueue_0614                                   ; dest: 0x000614
 
+        ; V1.71 Layer 1: bounded retry replaces V1.6b indefinite busy-wait.
+        ; setf gives 256 polls before saturation (~0.5 ms wall time at
+        ; 4 MIPS — comfortably longer than worst-case TX ISR latency on
+        ; a healthy link, and bounded enough that CONTROL's main loop
+        ; can't be stalled by a wedged downstream).
+        setf    v171_tx_enq_retry, A                        ; reg: 0x02d (256-tick budget)
+
 flow_tx_byte_enqueue_060C:                                                  ; address: 0x00060c
 
         movf    tx_data_staging, W, A                     ; reg: 0x027
         subwf   0x96, W, B                                  ; reg: 0x096
-        btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     flow_tx_byte_enqueue_060C                                   ; dest: 0x00060c
+        btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
+        bra     flow_tx_byte_enqueue_0614                   ; room available — commit
+        decfsz  v171_tx_enq_retry, F, A                     ; reg: 0x02d (decrement budget)
+        bra     flow_tx_byte_enqueue_060C                   ; budget remains — re-poll
+
+        ; --- V1.71 Layer 1 saturation path ---
+        ; Budget exhausted.  Bump saturating counter (clamped at 0xFF
+        ; so prolonged saturation doesn't roll back to zero), set C=1,
+        ; and return without committing tx_ring_wr.  The byte already
+        ; written to tx_ring_base[old_wr] is NOT visible to the ISR
+        ; (it never bumps tx_ring_wr) and will be overwritten on the
+        ; next successful enqueue.
+        movlb   0x01
+        incfsz  v171_tx_saturate_count, F, BANKED           ; reg: 0x0ad
+        bra     v171_tx_enq_saturate_done
+        setf    v171_tx_saturate_count, BANKED              ; reg: 0x0ad (clamp at 0xFF)
+v171_tx_enq_saturate_done:
+        movlb   0x00
+        bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0 (C=1 = saturated)
+        return  0x0
 
 flow_tx_byte_enqueue_0614:                                                  ; address: 0x000614
 
         movff   tx_data_staging, 0x097                    ; reg1: 0x027
         bsf     PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
+        bcf     STATUS, C, A                                ; reg: 0xfd8, bit: 0 (C=0 = success)
         return  0x0
 
 control_core_service_061C:                                               ; address: 0x00061c
@@ -2011,82 +2132,98 @@ serial_tx_routed_frame:                                               ; address:
 
 
 ; ===========================================================================
-; full_sync_burst @ 0x000B36 — full_sync_burst    *** BUG C7 ***
+; full_sync_burst @ 0x000B36 — V1.71 Layer 2 one-frame-per-call dispatch
 ; ---------------------------------------------------------------------------
-; Emits the 5-frame full status sync to MAIN: volume, input, mute,
-; backlight, standby/wake — each with a ~250 µs inter-frame delay
-; (delay_short with W=0x05). Triggered when full_sync_counter at
-; 0x09F:0x0A0 overflows past 0x4E20 (about 20,000 idle ticks ≈ depends
-; on event-loop period).
+; *** V1.71 Layer 2 fix for BUG C7 (fullsync_burst_saturates_link) ***
 ;
-; *** BUG C7 (fullsync_burst_saturates_link) ***
-; Five 3-byte frames + 4 inter-frame gaps = ~17 bytes back-to-back over
-; the 31,250-baud link (~5.5 ms wire time). MAIN's RX ring is 192 bytes
-; so this in itself does not overflow it, but combined with any in-flight
-; user command (volume nudge during burst) the RX side can stack up
-; faster than main_uart_service_1be6 drains it. The V3.2 hardening plan
-; calls for either rate-limiting bursts to one frame per main loop pass,
-; or moving sync to a request/response model.
+; The V1.6b body emitted 5 status frames back-to-back (volume, input,
+; mute, cmd1d_setting, standby_wake) with ~250 µs inter-frame delays.
+; Total wire-time: ~17 bytes ≈ 5.5 ms at 31,250 baud, which under
+; combined load (e.g. user volume nudge during burst, MAIN in 97-iter
+; preset apply not draining its RX ring) caused MAIN's RX to stack
+; up faster than main_uart_service_1be6 could process — the same
+; saturation symptom that triggered the WAITING regression in the
+; rapid_ir wire-chain test.
+;
+; V1.71 Layer 2 replaces the burst with a one-frame-per-call state
+; machine.  Each invocation of full_sync_burst (still called from
+; the existing label_147 trigger ~every 80,000 main-loop iterations)
+; advances v171_full_sync_step (1..6, wraps 6→1) and emits a single
+; frame.  Six full triggers complete one cycle, ~480 ms apart at
+; typical iteration rate — well above the chain's drain rate, so
+; the link never saturates.
+;
+; Step encoding (see dlcp_control_ram.inc):
+;   1 = volume_frame_send          (V1.6b stock)
+;   2 = input_frame_send            (V1.6b stock)
+;   3 = mute_frame_send             (V1.6b stock)
+;   4 = cmd1d_setting_frame_send    (V1.6b stock)
+;   5 = standby_wake_broadcast      (V1.6b stock)
+;   6 = v171_send_preset_frame_txonly  *** Layer 2 NEW ***
+;
+; Step 6 is the architectural fix for the preset-desync issue: instead
+; of CONTROL relying on the V1.61b retry queue (events tied to
+; reconnect / IR press) to push preset state down to MAIN, preset is
+; now value-bearing in the periodic broadcast — emitted every full-
+; sync cycle just like volume / input / mute / cmd1d_setting / standby.
+; CONTROL doesn't need feedback from MAIN to confirm preset state —
+; broadcasting the intended target every cycle naturally reconciles
+; any divergence (post-wake, post-reflash, post-reset, etc.) within
+; one cycle, exactly the way volume already works.  The V1.61b
+; 0x070/0x071 retry counter machinery is therefore DEAD; the slot
+; v171_full_sync_step repurposes 0x070 (see ram.inc rationale).
+;
+; The V1.6b inter-frame delay_short calls are also dropped — natural
+; iteration spacing between full_sync_burst triggers (orders of
+; magnitude longer than the 250 µs delay) gives the chain plenty of
+; time to drain between frames.
+;
+; Each step emits via tail-call (goto, not call) into the corresponding
+; frame_send helper.  No return overhead, no shared epilogue.
 ; ===========================================================================
 ; full_sync_burst:
 full_sync_burst:                                               ; address: 0x000b36
 
-        ; ---------------------------------------------------------------
-        ; V1.71 inline (V1.61b): preset-frame retry counter
-        ; ---------------------------------------------------------------
-        ; Full-sync is the periodic MAIN status broadcast.  V1.61b adds
-        ; a preset-switch frame to the burst, retried up to 3 times so
-        ; MAIN catches it even if the first pass is lost (power-cycle
-        ; or reconnect race).
-        ;
-        ; State:
-        ;   bank-1 RAM 0x70   preset retry counter (3 → 0)
-        ;   bank-1 RAM 0x71   preset primed flag (arm on connect edge)
-        ;
-        ; Flow:
-        ;   - Not CONNECTED: reset primed = 0 so next connect re-arms.
-        ;   - CONNECTED and primed == 0: arm primed = 1 and, if counter
-        ;     is zero, init counter = 3 (arm retry window).
-        ;   - If counter > 0: emit preset frame, decrement counter.
-        ;   - Continue into the stock full-sync body.
+        ; --- Advance step (1..6, wrap 6 → 1) ---
         movlb   0x01
-        btfsc   control_flags, CONNECTED, A
-        bra     v171_fs_connected
-        clrf    0x71, BANKED                                ; reset primed
-        bra     v171_fs_send_check
-v171_fs_connected:
-        movf    0x71, F, BANKED
-        bnz     v171_fs_send_check                         ; already primed — skip init
+        incf    v171_full_sync_step, F, BANKED              ; reg: 0x070
+        movlw   0x06
+        cpfsgt  v171_full_sync_step, BANKED                 ; if step > 6, fall through to wrap
+        bra     v171_fs_step_in_range
         movlw   0x01
-        movwf   0x71, BANKED                               ; primed = 1
-        movf    0x70, F, BANKED
-        bnz     v171_fs_send_check                         ; counter already armed
-        movlw   0x03
-        movwf   0x70, BANKED                               ; arm 3 retries
-v171_fs_send_check:
-        movf    0x70, F, BANKED
-        bz      v171_fs_continue                           ; counter zero — skip emit
-        movlb   0x00
-        rcall   v171_send_preset_frame_and_persist
-        movlb   0x01
-        decf    0x70, F, BANKED                            ; retry -= 1
-v171_fs_continue:
+        movwf   v171_full_sync_step, BANKED                 ; wrap step → 1
+
+v171_fs_step_in_range:
+        ; --- Dispatch on step ---
+        ; W ← step (1..6); decrement chain matches the active step.
+        movf    v171_full_sync_step, W, BANKED
         movlb   0x00
 
-        call    volume_frame_send, 0x0                           ; dest: 0x000c40
-        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        call    delay_short, 0x0                           ; dest: 0x0001bc
-        call    input_frame_send, 0x0                           ; dest: 0x000c22
-        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        call    delay_short, 0x0                           ; dest: 0x0001bc
-        call    mute_frame_send, 0x0                           ; dest: 0x000c7c
-        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        call    delay_short, 0x0                           ; dest: 0x0001bc
-        call    cmd1d_setting_frame_send, 0x0                           ; dest: 0x000c5e
-        movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        call    delay_short, 0x0                           ; dest: 0x0001bc
-        call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
-        return  0x0
+        addlw   0xFF                                        ; W -= 1; Z if step was 1
+        bnz     v171_fs_try_step_2
+        goto    volume_frame_send                           ; step 1: volume
+v171_fs_try_step_2:
+        addlw   0xFF                                        ; Z if step was 2
+        bnz     v171_fs_try_step_3
+        goto    input_frame_send                            ; step 2: input
+v171_fs_try_step_3:
+        addlw   0xFF                                        ; Z if step was 3
+        bnz     v171_fs_try_step_4
+        goto    mute_frame_send                             ; step 3: mute
+v171_fs_try_step_4:
+        addlw   0xFF                                        ; Z if step was 4
+        bnz     v171_fs_try_step_5
+        goto    cmd1d_setting_frame_send                    ; step 4: cmd1d_setting
+v171_fs_try_step_5:
+        addlw   0xFF                                        ; Z if step was 5
+        bnz     v171_fs_try_step_6
+        goto    standby_wake_broadcast                      ; step 5: standby/wake
+v171_fs_try_step_6:
+        ; Step must be 6 (wrap above clamps to 1..6); emit preset
+        ; without persisting to EEPROM (every-cycle broadcast must not
+        ; chew through the 100k-write endurance budget).  User-initiated
+        ; preset changes still go through v171_send_preset_frame_and_persist.
+        goto    v171_send_preset_frame_txonly               ; step 6: preset
 
 
 ; ===========================================================================
@@ -2844,14 +2981,13 @@ v171_send_wake_cmd_frame:
         call    tx_byte_enqueue, 0x0
         return  0x0
 
-v171_send_preset_frame_and_persist:
+v171_send_preset_frame_txonly:
         ; ---------------------------------------------------------------
-        ; V1.71 inline helper: emit [B0, 0x20, preset_byte] and persist
-        ; preset state byte to EEPROM slot 0x74.
-        ; preset_byte = 0 when PRESET_BIT clear (A), 1 when set (B).
-        ; The TX frame goes through tx_byte_enqueue so it rides the
-        ; normal ISR-drained UART pipeline; the EEPROM write is blocking
-        ; (~3.3 ms) via the stock eeprom_write_byte helper.
+        ; V1.71 Layer 2 helper: emit [B0, 0x20, preset_byte] only, NO
+        ; EEPROM write.  preset_byte = 0 when PRESET_BIT clear (A),
+        ; 1 when set (B).  Used by full_sync_burst's periodic emit so
+        ; broadcasting preset every full-sync cycle does NOT chew
+        ; through the EEPROM endurance budget (~100k writes/cell).
         ; ---------------------------------------------------------------
         movlw   0xB0                                     ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A
@@ -2864,6 +3000,17 @@ v171_send_preset_frame_and_persist:
         movlw   0x01
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        return  0x0
+
+v171_send_preset_frame_and_persist:
+        ; ---------------------------------------------------------------
+        ; V1.71 inline helper: emit [B0, 0x20, preset_byte] AND persist
+        ; preset state byte to EEPROM slot 0x74.  Used by user-initiated
+        ; paths (IR press, front-panel U/D in preset menu) where we
+        ; want the new state to survive a power cycle.  Periodic
+        ; broadcasts must use v171_send_preset_frame_txonly instead.
+        ; ---------------------------------------------------------------
+        rcall   v171_send_preset_frame_txonly
         movlw   EEPROM_PRESET_STATE_ADDR                 ; 0x74
         movwf   EEADR, A
         clrf    WREG, A
@@ -3020,6 +3167,392 @@ v171_preset_exit_check:
         bra     v171_preset_loop                          ; no exit condition — loop
         movlb   0x00
         return  0x0
+
+
+; ===========================================================================
+; V1.71 Layer 5 Phase B — Diagnostics page
+; ---------------------------------------------------------------------------
+; Renders the per-PB diagnostics counters fetched from V3.2+ MAIN's
+; cmd 0x21 reply burst.  Layout per docs/V163B_DIAGNOSTICS_MENU_SPEC.md:
+;
+;   Row 0: "1:IxDxSxBxRxAxPx"
+;   Row 1: "2:IxDxSxBxRxAxPx"
+;
+; where x is the per-counter character in {' ', '1'..'9', 'A'..'E', '+'}:
+;   0     → ' '
+;   1..9  → '1'..'9'
+;   A..E  → 'A'..'E'
+;   F     → '+'  (saturated display state)
+;
+; If a PB has never replied (v171_diag_present bit clear), the entire
+; row is overwritten with "n:n/a            " so the user can tell a
+; never-supported PB apart from a present-but-quiet one.  Single-PB
+; chains render the missing slot as "--" per spec.
+;
+; The screen body loops calling display_loop_iteration each tick.  A
+; 16-bit countdown (v171_diag_poll_lo/hi) gates the next cmd 0x21
+; query; on each expiry we alternate between PB1 and PB2 so each PB
+; refreshes at half the cadence (≈ once per 2 s at the 0x80 reload).
+; Exits on RIGHT / LEFT (menu nav) or disconnect (CONNECTED clear),
+; matching the V1.61b preset-screen exit semantics.
+; ===========================================================================
+
+v171_diag_screen:
+        ; First-entry setup: if no PB has ever replied, initialize
+        ; target=0 so the very first cadence-driven query goes to PB1
+        ; per spec.  Target now toggles only on BF/24 reception (not in
+        ; the cadence loop), so we don't pre-flip it any more.
+        ; Subsequent entries pick up the existing alternating target
+        ; without a reset.
+        movlb   0x01
+        movf    v171_diag_present, F, BANKED
+        bnz     v171_diag_screen_skip_init
+        bcf     v171_diag_target, 0, BANKED
+v171_diag_screen_skip_init:
+        movlb   0x00
+
+v171_diag_screen_draw:
+        ; ----- Row 0 (PB1 line) -----
+        movlw   0x80                                       ; LCD cursor row 0 col 0
+        call    lcd_command, 0x0
+        movlw   '1'
+        call    lcd_char_write, 0x0
+        movlw   ':'
+        call    lcd_char_write, 0x0
+        ; PB1 present? If not, render "n/a" and pad the rest.
+        movlb   0x01
+        btfss   v171_diag_present, 0, BANKED              ; PB1 ever replied?
+        bra     v171_diag_pb1_render_na
+        movlb   0x00
+        ; Render counter values (each cache cell holds one counter as
+        ; low nibble; high nibble already 0 by the BF/2N reply format).
+        movlw   'I'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_i, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'D'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_d, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'S'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_s, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'B'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_b, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'R'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_r, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'A'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_a, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'P'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb1_p, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        bra     v171_diag_screen_row1
+
+v171_diag_pb1_render_na:
+        movlb   0x00
+        movlw   'n'
+        call    lcd_char_write, 0x0
+        movlw   '/'
+        call    lcd_char_write, 0x0
+        movlw   'a'
+        call    lcd_char_write, 0x0
+        ; Pad remaining 11 columns with spaces.  Counter lives in
+        ; BANK 1 because lcd_char_write's internal helper saves FSR0H
+        ; into ram_0x004 — using ram_0x004 as our loop counter would
+        ; get silently clobbered every iteration.
+        movlb   0x01
+        movlw   0x0B
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+v171_diag_pb1_pad_loop:
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlb   0x01                                       ; lcd_char_write may have touched BSR
+        decfsz  v171_diag_lcd_pad_count, F, BANKED
+        bra     v171_diag_pb1_pad_loop_continue
+        movlb   0x00
+        bra     v171_diag_pb1_pad_done
+v171_diag_pb1_pad_loop_continue:
+        movlb   0x00
+        bra     v171_diag_pb1_pad_loop
+v171_diag_pb1_pad_done:
+
+v171_diag_screen_row1:
+        ; ----- Row 1 (PB2 line) -----
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
+        movlw   '2'
+        call    lcd_char_write, 0x0
+        movlw   ':'
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        btfss   v171_diag_present, 1, BANKED              ; PB2 ever replied?
+        bra     v171_diag_pb2_render_na
+        movlb   0x00
+        movlw   'I'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_i, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'D'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_d, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'S'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_s, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'B'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_b, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'R'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_r, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'A'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_a, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlw   'P'
+        rcall   v171_diag_emit_letter
+        movlb   0x01
+        movf    v171_diag_pb2_p, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        bra     v171_diag_screen_armed
+
+v171_diag_pb2_render_na:
+        movlb   0x00
+        movlw   'n'
+        call    lcd_char_write, 0x0
+        movlw   '/'
+        call    lcd_char_write, 0x0
+        movlw   'a'
+        call    lcd_char_write, 0x0
+        ; Same scratch-cell story as v171_diag_pb1_render_na — counter
+        ; in BANK 1, reload BSR after every lcd_char_write call.
+        movlb   0x01
+        movlw   0x0B
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+v171_diag_pb2_pad_loop:
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        decfsz  v171_diag_lcd_pad_count, F, BANKED
+        bra     v171_diag_pb2_pad_loop_continue
+        movlb   0x00
+        bra     v171_diag_pb2_pad_done
+v171_diag_pb2_pad_loop_continue:
+        movlb   0x00
+        bra     v171_diag_pb2_pad_loop
+v171_diag_pb2_pad_done:
+
+v171_diag_screen_armed:
+        ; First entry primes an immediate query so the LCD doesn't sit
+        ; on a stale cache during the first poll cadence.  Force the
+        ; countdown to 0 so the very next loop iteration enqueues a
+        ; query for the current target slot.  Also snapshot the present
+        ; mask here so the first v171_diag_check_redraw doesn't fire a
+        ; spurious redraw against an uninitialized snapshot byte.
+        movlb   0x01
+        clrf    v171_diag_poll_lo, BANKED
+        clrf    v171_diag_poll_hi, BANKED
+        movf    v171_diag_present, W, BANKED
+        movwf   v171_diag_present_snap, BANKED
+        movlb   0x00
+
+v171_diag_loop:
+        call    display_loop_iteration, 0x0
+        movlb   0x00
+        ; Decrement the 16-bit poll countdown.  When it reaches zero,
+        ; enqueue a cmd 0x21 query for the current target PB and reload.
+        movlb   0x01
+        movf    v171_diag_poll_lo, W, BANKED
+        iorwf   v171_diag_poll_hi, W, BANKED
+        bnz     v171_diag_loop_dec
+        ; Countdown expired — issue a query for the CURRENT target.
+        ; Target only toggles on BF/24 reception (in v171_bf2x_case_check)
+        ; so it stays stable from query-send through reply-complete.
+        ; Without this discipline, the cadence (which can fire many times
+        ; per chain step in simulation) toggles target before the in-flight
+        ; reply lands, causing PB2's BF/21..23 to land in PB1's cache slot
+        ; (and worse, present.bit1 to set even though the cache is empty).
+        movlb   0x00
+        rcall   v171_diag_send_query
+        movlb   0x01
+        movlw   V171_DIAG_POLL_RELOAD_LO
+        movwf   v171_diag_poll_lo, BANKED
+        movlw   V171_DIAG_POLL_RELOAD_HI
+        movwf   v171_diag_poll_hi, BANKED
+        movlb   0x00
+        bra     v171_diag_check_redraw
+
+v171_diag_loop_dec:
+        ; 16-bit decrement with borrow.
+        movf    v171_diag_poll_lo, W, BANKED
+        bnz     v171_diag_loop_dec_lo_only
+        decf    v171_diag_poll_hi, F, BANKED
+v171_diag_loop_dec_lo_only:
+        decf    v171_diag_poll_lo, F, BANKED
+        movlb   0x00
+
+v171_diag_check_redraw:
+        ; Cheap dirty check: redraw the screen if the present mask
+        ; changed since the last draw.  Snapshot lives in BANK 1
+        ; (v171_diag_present_snap) — must NOT be the access-bank
+        ; ram_0x005 scratch cell because display_loop_iteration and
+        ; the LCD char-write helpers stomp it on every tick.
+        movlb   0x01
+        movf    v171_diag_present, W, BANKED
+        xorwf   v171_diag_present_snap, W, BANKED
+        bz      v171_diag_redraw_skip
+        movf    v171_diag_present, W, BANKED
+        movwf   v171_diag_present_snap, BANKED
+        movlb   0x00
+        goto    v171_diag_screen_draw
+v171_diag_redraw_skip:
+        movlb   0x00
+
+v171_diag_check_buttons:
+        bcf     control_flags, 0x3, A                      ; clear event_exit
+        clrf    WREG, A
+        btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
+        movlw   0x01
+        movwf   (Common_RAM + 24), A                       ; ram_0x018
+        clrf    WREG, A
+        btfsc   0x9a, 0x4, B                               ; LEFT pressed?
+        movlw   0x01
+        iorwf   (Common_RAM + 24), F, A
+        movlw   0x01
+        btfsc   control_flags, CONNECTED, A                ; disconnected → exit
+        clrf    WREG, A
+        iorwf   (Common_RAM + 24), F, A
+        btfsc   STATUS, Z, A
+        bra     v171_diag_loop                             ; no exit — keep ticking
+        movlb   0x00
+        return  0x0
+
+
+; ---------------------------------------------------------------------------
+; v171_diag_emit_letter — write the constant column-letter (W) to the LCD.
+; Splits out the common 'I'/'D'/'S'/'B'/'R'/'A'/'P' banner-letter call so
+; the row-render code stays compact.  W must be loaded by the caller.
+; ---------------------------------------------------------------------------
+v171_diag_emit_letter:
+        call    lcd_char_write, 0x0
+        return  0x0
+
+
+; ---------------------------------------------------------------------------
+; v171_diag_emit_nib_w — encode the low nibble of W per the diagnostics
+; spec and write the resulting character to the LCD.  Uses ram_0x004 as
+; scratch so callers don't need to preserve it.
+;
+; Encoding:
+;   0       → ' '   (0x20)
+;   1..9    → '1'..'9'  (0x31..0x39)
+;   A..E    → 'A'..'E'  (0x41..0x45)
+;   F       → '+'   (0x2B, saturated display state)
+; ---------------------------------------------------------------------------
+v171_diag_emit_nib_w:
+        andlw   0x0F
+        movwf   (Common_RAM + 4), A
+        bz      v171_diag_emit_nib_zero
+        movlw   0x0F
+        cpfslt  (Common_RAM + 4), A                        ; if nib >= 0x0F
+        bra     v171_diag_emit_nib_sat
+        movlw   0x0A
+        cpfslt  (Common_RAM + 4), A                        ; if nib >= 0x0A
+        bra     v171_diag_emit_nib_alpha
+        ; nib in 1..9 → '1'..'9'
+        movlw   0x30
+        addwf   (Common_RAM + 4), W, A
+        call    lcd_char_write, 0x0
+        return  0x0
+v171_diag_emit_nib_alpha:
+        ; nib in A..E → 'A'..'E'  (0x41 = 'A' = 0x0A + 0x37)
+        movlw   0x37
+        addwf   (Common_RAM + 4), W, A
+        call    lcd_char_write, 0x0
+        return  0x0
+v171_diag_emit_nib_zero:
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        return  0x0
+v171_diag_emit_nib_sat:
+        movlw   '+'
+        call    lcd_char_write, 0x0
+        return  0x0
+
+
+; ---------------------------------------------------------------------------
+; v171_diag_send_query — enqueue a 3-byte cmd 0x21 query for the current
+; target PB.  Route is computed from v171_diag_target (0 → 0xB1 PB1,
+; 1 → 0xB2 PB2).  Reuses the raw tx_byte_enqueue path (Layer-1 bounded);
+; if any byte saturates the ring it is silently dropped — the caller will
+; naturally retry on the next poll-cadence expiry.
+;
+; Per spec, do NOT use the routed-frame helper (full_sync_burst path) —
+; that would clobber the periodic-broadcast counter and cause the chain
+; to re-burst the entire status set on every diagnostics query.  Going
+; raw via tx_byte_enqueue keeps the diagnostics traffic page-local.
+; ---------------------------------------------------------------------------
+v171_diag_send_query:
+        ; --- byte 0: route ---
+        movlw   0xB1                                       ; default = PB1 query
+        movlb   0x01
+        btfsc   v171_diag_target, 0, BANKED                ; bit0 set → PB2 instead
+        movlw   0xB2
+        movlb   0x00
+        movwf   tx_data_staging, A
+        ; tx_byte_enqueue lives at ~0x05EC; this routine sits past
+        ; 0x18xx so rcall overflows the 11-bit relative range and we
+        ; must use the absolute call, FAST-zero variant.
+        call    tx_byte_enqueue, 0x0
+        ; --- byte 1: cmd 0x21 ---
+        movlw   0x21
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        ; --- byte 2: data 0x00 ---
+        clrf    tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        return  0x0
+
 
 control_core_service_0F54:                                               ; address: 0x000f54
 
@@ -3391,15 +3924,20 @@ flow_post_connect_init_11DE:                                                  ; 
 flow_post_connect_init_11F0:                                                  ; address: 0x0011f0
 
         ; ---------------------------------------------------------------
-        ; V1.71 inline (V1.61b): 4-way menu dispatch
+        ; V1.71 inline (V1.61b + Layer 5): 5-way menu dispatch
         ; ---------------------------------------------------------------
         ; Stock V1.6b had 3 menu states (0 = Volume, 1 = Input, 2 = Setup)
         ; and dispatched them via decfsz / cpfseq against 0xBF.  V1.71
-        ; inserts Preset as state 1 (Vol / Preset / Input / Setup),
-        ; shifting Input to state 2 and Setup to state 3.  Nav wrap
-        ; literals downstream at stock 0x1216 and 0x123A are also
-        ; bumped from 0x02 to 0x03 so navigation cycles through the
-        ; full 4-screen ring.
+        ; first inserted Preset as state 1 (Vol / Preset / Input / Setup),
+        ; then Layer 5 inserts Diagnostics as state 2:
+        ;   0 = Volume (default fall-through)
+        ;   1 = Preset       → v171_preset_screen
+        ;   2 = Diagnostics  → v171_diag_screen          (Layer 5 Phase B)
+        ;   3 = Input        → control_core_service_1912 (was state 2)
+        ;   4 = Setup        → control_core_service_13FE (was state 3)
+        ; Nav wrap literals downstream are bumped from 0x03 to 0x04 so
+        ; navigation cycles through the full 5-screen ring per
+        ; docs/V163B_DIAGNOSTICS_MENU_SPEC.md "Menu Placement".
         movlb   0x00
         decfsz  0xbf, W, B                                  ; state - 1 == 0?
         goto    v171_menu_ck_state_2
@@ -3409,13 +3947,20 @@ flow_post_connect_init_11F0:                                                  ; 
 v171_menu_ck_state_2:
         movlw   0x02
         cpfseq  0xbf, B
-        goto    boot_handshake_wait                         ; fall through to state=3 check
-        call    control_core_service_1912, 0x0             ; state == 2 → Input
+        goto    v171_menu_ck_state_3                        ; not 2 — try Input
+        rcall   v171_diag_screen                            ; state == 2 → Diagnostics
+        goto    flow_boot_handshake_wait_120A
+
+v171_menu_ck_state_3:
+        movlw   0x03                                        ; Layer 5: Input shifted 2 → 3
+        cpfseq  0xbf, B
+        goto    boot_handshake_wait                         ; fall through to state=4 check
+        call    control_core_service_1912, 0x0              ; state == 3 → Input
         goto    flow_boot_handshake_wait_120A
 
 boot_handshake_wait:                                                  ; address: 0x0011fe
 
-        movlw   0x03                                        ; V1.71: state == 3 now Setup (was 2)
+        movlw   0x04                                        ; Layer 5: Setup shifted 3 → 4
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
         call    control_core_service_13FE, 0x0                           ; dest: 0x0013fe
@@ -3427,9 +3972,10 @@ flow_boot_handshake_wait_120A:                                                  
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_display_state_entry_1226                                   ; dest: 0x001226
-        ; V1.71: nav DOWN upper-bound bumped from 2 → 3 for the new
-        ; Vol/Preset/Input/Setup ring (V1.61b).
-        movlw   0x03
+        ; V1.71: nav DOWN upper-bound bumped from 2 → 3 for the V1.61b
+        ; Vol/Preset/Input/Setup ring; Layer 5 bumps it from 3 → 4 so
+        ; the new Vol/Preset/Diagnostics/Input/Setup ring wraps cleanly.
+        movlw   0x04
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    display_state_entry                                   ; dest: 0x001224
         clrf    0xbf, B                                     ; reg: 0x0bf
@@ -3449,8 +3995,10 @@ flow_display_state_entry_1226:                                                  
         movf    0xbf, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_state_entry_1242                                   ; dest: 0x001242
-        ; V1.71: nav UP wrap target bumped from 2 → 3 (wraps 0 → 3).
-        movlw   0x03
+        ; V1.71: nav UP wrap target bumped from 2 → 3 (V1.61b ring),
+        ; then Layer 5 bumps it 3 → 4 so the 5-screen ring wraps
+        ; cleanly (UP at state 0 → state 4 = Setup).
+        movlw   0x04
         movwf   0xbf, B                                     ; reg: 0x0bf
         goto    flow_display_state_entry_1244                                   ; dest: 0x001244
 

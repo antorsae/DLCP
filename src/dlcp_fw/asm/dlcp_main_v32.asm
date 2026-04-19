@@ -169,6 +169,28 @@ preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read 
     __CONFIG  _CONFIG7H, 0x40
 
 ; ---------------------------------------------------------------------------
+; V3.2 Layer 5 — saturating diagnostic counter increment macro
+; ---------------------------------------------------------------------------
+; Used by the diag_i / diag_d / diag_s / diag_b / diag_r / diag_a / diag_p
+; instrumentation hooks placed at the named V3.x code paths per
+; docs/V163B_DIAGNOSTICS_MENU_SPEC.md.  Each counter is one byte at
+; 0x123..0x129 (bank 1, see dlcp_main_ram.inc).  The counters saturate at
+; 0x0F so the cmd 0x21 reply burst's packed-nibble encoding fits.
+;
+; Side effects: clobbers BSR (caller must re-establish if it cares).
+; Most hook sites are at routine returns / tail-calls where BSR is reset
+; on the next instruction anyway — see hook annotations.
+;
+; Usage:    diag_inc_sat   diag_i
+diag_inc_sat MACRO counter
+    movlb   0x01
+    movlw   0x0F
+    cpfslt  counter, BANKED            ; skip if counter < 0x0F
+    bra     $+4                         ; (executed when counter >= 0x0F → no inc)
+    incf    counter, F, BANKED          ; (executed when counter < 0x0F → inc)
+    ENDM
+
+; ---------------------------------------------------------------------------
 ; App Entry / Interrupt Vector Stub (0x1000)
 ; ---------------------------------------------------------------------------
 ; Hypex MAIN images live above the bootloader at 0x1000. The bootloader's
@@ -721,7 +743,7 @@ flow_hid_command_dispatch_141a:
     setf        ram_0x007, ACCESS
     clrf        ram_0x009, ACCESS
     call        main_flash_service_46de, 0x0
-    call        hard_reset, 0x0
+    goto        flash_entry_quiet_shutdown      ; V3.2+: pop-free reset path
     bra         flow_hid_command_dispatch_15aa
 fw_update_init_sequence:
     movlb       0x0
@@ -2157,6 +2179,9 @@ flow_main_uart_service_1be6_1e48:
     xorlw       0x3E                            ; V3.1: cumulative 0x1E ^ 0x3E = 0x20
     btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x20
     goto        preset_select_handler
+    xorlw       0x01                            ; V3.2 Layer 5: cumulative 0x20 ^ 0x01 = 0x21
+    btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x21 (diagnostics query)
+    goto        cmd21_diag_query_handler
 flow_main_uart_service_1be6_1e6c:
     btfss       active_flags, 6, ACCESS
     bra         flow_main_uart_service_1be6_1e80
@@ -5471,7 +5496,7 @@ main_flash_service_3810:
 ; flash, count 0x17 to ram_0x02F), then issues a single I2C burst to the
 ; TAS3108 DSP at write addr 0x68 with up to 24 data bytes.
 ;
-; CRITICAL HAZARDS (V3.2 hardening targets):
+; CRITICAL HAZARDS (V3.2 hardening targets — workstream 1 deferred):
 ;   • SSPCON2.SEN poll at flow_main_i2c_service_381c_3870 has NO timeout
 ;     (legacy stock pattern — this is a fixed-iteration pulse on healthy
 ;     hardware, but a stuck START condition will hang here forever).
@@ -5486,6 +5511,18 @@ main_flash_service_3810:
 ; preset_job_apply_i2c_recover bus-clear/ping path. Field-debugged callers
 ; (delayed-switch path) MUST use that copy — this stock body is preserved
 ; only for the few non-preset call sites that have not yet been migrated.
+;
+; W1 ATTEMPT NOTE (2026-04-17): a bounded-wait + recover wrapper here
+; broke test_v32_main_bus_clear_recovers_after_mssp_stop_fault and
+; test_v32_main_pen_timeout_recovers in test_v31_v163b_robustness.py.
+; Root cause: the recover path returns `0` to the caller, which signals
+; "table entry applied" to main_core_service_4574 and cmd_dispatch_gated.
+; During a multi-loop fault window the caller advances past entries that
+; were never written, losing dirty state. A future M1 needs either
+; (a) a return-value contract change so callers honor a "retry" signal,
+; or (b) per-call internal retry with a bounded counter. Until then the
+; legacy unbounded behavior is the only one that satisfies both
+; robustness tests and the V3.2 wire-chain convergence gates.
 ;
 ; Called from: main_i2c_service_27f0 (DSP I2C refresh), cmd_dispatch_gated
 ;              (channel sync), some legacy reconnect/wake paths.
@@ -5522,10 +5559,10 @@ main_i2c_service_381c:
     clrf        ram_0x00A, ACCESS
     movlw       0x17                                ; FSR2 dest = 0x0017 (overlay)
     movwf       ram_0x009, ACCESS
-    rcall       flash_read
+    call        flash_read, 0x0                     ; was rcall — Layer 5 push flash_read out of range
     bsf         SSPCON2, 0, ACCESS                  ; SEN — START
 flow_main_i2c_service_381c_3870:
-    btfsc       SSPCON2, 0, ACCESS                  ; <-- M1 unbounded SEN poll
+    btfsc       SSPCON2, 0, ACCESS                  ; <-- M1 unbounded SEN poll (W1 deferred)
     bra         flow_main_i2c_service_381c_3870
     movlw       0x68                                ; TAS3108 write address
     rcall       i2c_byte_tx
@@ -5547,7 +5584,7 @@ flow_main_i2c_service_381c_3894:
     bnc         flow_main_i2c_service_381c_3884
     bsf         SSPCON2, 2, ACCESS                  ; PEN — STOP
 flow_main_i2c_service_381c_389c:
-    btfsc       SSPCON2, 2, ACCESS                  ; <-- M1 unbounded PEN poll
+    btfsc       SSPCON2, 2, ACCESS                  ; <-- M1 unbounded PEN poll (W1 deferred)
     bra         flow_main_i2c_service_381c_389c
 flow_main_i2c_service_381c_38a0:
     return      0
@@ -6252,6 +6289,23 @@ flow_main_flash_service_3ce8_3d04:
 flow_main_flash_service_3ce8_3d4c:
     return      0
 flow_main_flash_service_3ce8_3d4e:
+    ; --- V3.2 Layer 5: preserve diag block across non-POR/BOR resets ---
+    ; Save the 8-byte diag block (diag_i..diag_ra1_prev at 0x123..0x12A)
+    ; to access-bank scratch BEFORE the bank-1 wipe loop wipes it.  After
+    ; all wipes, RCON inspection decides whether to restore (non-POR/BOR
+    ; reset) or leave the just-wiped zeros (POR/BOR cold start) — see
+    ; docs/V163B_DIAGNOSTICS_MENU_SPEC.md "MAIN init / clear behavior".
+    ; Saved into ram_0x00B..ram_0x012 (access-bank lower 0x00..0x5F is
+    ; OUTSIDE every wipe range, so the saved bytes survive the loops).
+    movff       diag_i,        ram_0x00B
+    movff       diag_d,        ram_0x00C
+    movff       diag_s,        ram_0x00D
+    movff       diag_b,        ram_0x00E
+    movff       diag_r,        ram_0x00F
+    movff       diag_a,        ram_0x010
+    movff       diag_p,        ram_0x011
+    movff       diag_ra1_prev, ram_0x012
+
     lfsr        FSR0, 0x0300
     movlw       0xC0
 flow_main_flash_service_3ce8_3d54:
@@ -6276,6 +6330,28 @@ flow_main_flash_service_3ce8_3d78:
     clrf        POSTINC0, ACCESS
     decf        WREG, F, ACCESS
     bnz         flow_main_flash_service_3ce8_3d78
+
+    ; --- V3.2 Layer 5: RCON-gated diag block restore ---
+    ; If RCON.BOR == 0: this was a POR or BOR (silicon clears both bits
+    ; on either event); leave the just-wiped zeros in the diag block.
+    ; If RCON.BOR == 1: this was MCLR / RESET-instr / WDT (firmware set
+    ; BOR=1 after the last POR/BOR handling); restore the saved counters
+    ; so fault evidence survives recovery.  Then unconditionally set
+    ; RCON.BOR=1 + RCON.POR=1 so the next reset's cause can be classified.
+    btfss       RCON, 0, ACCESS                    ; skip restore if BOR=0 (POR/BOR cold start)
+    bra         diag_post_rcon_check
+    movff       ram_0x00B, diag_i
+    movff       ram_0x00C, diag_d
+    movff       ram_0x00D, diag_s
+    movff       ram_0x00E, diag_b
+    movff       ram_0x00F, diag_r
+    movff       ram_0x010, diag_a
+    movff       ram_0x011, diag_p
+    movff       ram_0x012, diag_ra1_prev
+diag_post_rcon_check:
+    bsf         RCON, 0, ACCESS                    ; arm BOR detection for next reset
+    bsf         RCON, 1, ACCESS                    ; arm POR detection for next reset
+
     clrf        ram_0x05F, ACCESS
     clrf        active_flags, ACCESS
     movlw       LOW(inline_data_table_47E6)         ; TBLPTR -> inline_data_table_47E6
@@ -6502,9 +6578,12 @@ flow_i2c_byte_tx_bf:
     ; i2c_byte_tx never touched BSR.
     movff       BSR, ram_0x00E              ; save caller's BSR
     movlb       0x0
-    btfsc       SSPCON2, 6, ACCESS          ; ACKSTAT
-    bsf         dsp_fault_flags, 2, BANKED
-    movff       ram_0x00E, BSR              ; restore caller's BSR
+    btfss       SSPCON2, 6, ACCESS          ; skip if NACK (ACKSTAT=1)
+    bra         flow_i2c_byte_tx_was_ack
+    bsf         dsp_fault_flags, 2, BANKED  ; latch ACKSTAT fault
+    diag_inc_sat diag_i                      ; V3.2 Layer 5: count I2C transport fault
+flow_i2c_byte_tx_was_ack:
+    movff       ram_0x00E, BSR              ; restore caller's BSR (also undoes any macro BSR clobber)
     movf        SSPCON2, W, ACCESS
 flow_i2c_byte_tx_exit:
     return      0
@@ -6930,6 +7009,8 @@ an0_hysteresis_monitor:
     bc          flow_main_adc_service_4124_41ae
     bcf         active_flags, 3, ACCESS
     bsf         event_flags, 2, BANKED
+    diag_inc_sat diag_a                              ; V3.2 Layer 5: count AN0-triggered standby
+    movlb       0x0                                  ; macro clobbers BSR; restore for the bra below
 flow_main_adc_service_4124_41ae:
     clrf        ram_0x0A1, BANKED
     bra         flow_main_adc_service_4124_41b4
@@ -8048,9 +8129,11 @@ standby_event_dispatch:
     bra         flow_standby_event_dispatch_47ac    ; no -> tail-call gate dispatch
     btfss       active_flags, 3, ACCESS             ; gate currently open?
     bra         flow_standby_event_dispatch_47a6    ;   no -> shutdown path
+    diag_inc_sat diag_b                              ; V3.2 Layer 5: count bring-up dispatch
     call        adc_boot_gate, 0x0                  ; gate open -> rail-rise wait
     bra         flow_standby_event_dispatch_47aa
 flow_standby_event_dispatch_47a6:
+    diag_inc_sat diag_s                              ; V3.2 Layer 5: count standby dispatch
     call        hw_standby_shutdown, 0x0            ; I2C DSP shutdown / OSC switch
 flow_standby_event_dispatch_47aa:
     bcf         event_flags, 2, BANKED              ; consume the event
@@ -8115,7 +8198,35 @@ periodic_service_loop:
     call        main_i2c_service_27f0, 0x0
     rcall       standby_event_dispatch
     call        main_core_service_265c, 0x0
+    rcall       ra1_edge_monitor                    ; V3.2 Layer 5: diag_p edge counter
     goto        an0_hysteresis_monitor
+
+; ---------------------------------------------------------------------------
+; ra1_edge_monitor — V3.2 Layer 5 RA1 edge counter (diag_p)
+; ---------------------------------------------------------------------------
+; Polled once per periodic_service_loop pass (= main_processing_loop tick,
+; tens of µs).  Compares PORTA bit 1 against diag_ra1_prev shadow byte;
+; on either edge (0→1 or 1→0) bumps diag_p (saturating at 0x0F).  Tested
+; via gpsim by toggling RA1 in the harness; no real-hardware function is
+; assigned to RA1 in V3.2, so this is pure observability infrastructure
+; per docs/V163B_DIAGNOSTICS_MENU_SPEC.md "RA1-trigger path" section.
+; ---------------------------------------------------------------------------
+ra1_edge_monitor:
+    movff       BSR, ram_0x00E                  ; save caller BSR
+    movlb       0x01                            ; switch to bank 1 for diag_*
+    movf        PORTA, W, ACCESS                ; W = PORTA snapshot
+    andlw       0x02                            ; isolate RA1
+    xorwf       diag_ra1_prev, W, BANKED        ; W = current ^ prev (bit 1 only)
+    btfsc       STATUS, 2, ACCESS               ; if Z (no edge), skip increment
+    bra         ra1_no_edge
+    ; Edge detected — refresh shadow and bump counter.
+    movf        PORTA, W, ACCESS
+    andlw       0x02
+    movwf       diag_ra1_prev, BANKED
+    diag_inc_sat diag_p                          ; macro re-asserts movlb 0x01
+ra1_no_edge:
+    movff       ram_0x00E, BSR                  ; restore caller BSR
+    return      0
 
 ; ---------------------------------------------------------------------------
 ; Inline Data Table (0x47E6-0x47FB)
@@ -8437,6 +8548,48 @@ usb_shutdown:
 
 
 ; ---------------------------------------------------------------------------
+; Function: flash_entry_quiet_shutdown      (V3.2+ pop-free flash entry)
+; ---------------------------------------------------------------------------
+; Called ONLY from the flash-trigger handler in flow_hid_command_dispatch_13d0
+; after EEPROM[0xFF]=0 has been committed. Drives the same sequence that
+; hw_standby_shutdown uses to land the amp inputs at a known quiescent point
+; BEFORE the PIC18 RESET instruction tristates every pin.
+;
+; Deliberately OMITS the parts of hw_standby_shutdown that would break flash
+; entry: no OSCCON.SCS1 change (USB needs HS osc until RESET), no SPBRG/UCON
+; change (RESET disconnects USB cleanly), no T0/INTCON teardown (Timer3
+; settle still needs the tick source), no 4 x 250 ms rail-bleed loop.
+;
+; Falls into hard_reset; never returns on normal completion. Bounded-wait
+; failures inside i2c_secondary_dev_write / i2c_tas3108_coeff_write still
+; reach the goto hard_reset at the bottom — worst case is a single click,
+; never a hang.
+; ---------------------------------------------------------------------------
+flash_entry_quiet_shutdown:
+    rcall       preset_force_mute               ; (1) DSP coefficients = 0
+    clrf        ram_0x006, ACCESS               ; (2) drop audio rails via 0x71
+    movlw       0x1B
+    call        i2c_secondary_dev_write, 0x0
+    clrf        ram_0x006, ACCESS
+    movlw       0x1C
+    call        i2c_secondary_dev_write, 0x0
+    clrf        ram_0x006, ACCESS
+    movlw       0x1D
+    call        i2c_secondary_dev_write, 0x0
+    bcf         LATB, 4, ACCESS                 ; (3) amp enable - graceful
+    bcf         LATA, 6, ACCESS                 ;     drop to LOW while pins
+    bcf         LATA, 3, ACCESS                 ;     are still being driven
+    bcf         LATA, 4, ACCESS                 ;     (RESET would tristate
+    bcf         LATA, 5, ACCESS                 ;     them in one Tcy)
+    clrf        ram_0x004, ACCESS               ; (4) 100 ms timer3 settle
+    movlw       0x64
+    movwf       ram_0x003, ACCESS
+    call        timer3_blocking_delay, 0x0
+    bcf         LATB, 3, ACCESS                 ; (5) final amp gate down
+    goto        hard_reset                      ; (6) now do the RESET
+
+
+; ---------------------------------------------------------------------------
 ; Function: main_core_service_48fe
 ; Address : 0x48FE
 ; Notes   : Inferred core helper routine. Calls: main_usb_service_4624.
@@ -8672,6 +8825,117 @@ send_dsp_fault_status:
     return      0
 
 ; ---------------------------------------------------------------------------
+; cmd 0x21 — Diagnostics counter reply burst (V3.2 Layer 5)
+; ---------------------------------------------------------------------------
+; Reached from main_uart_service_1be6 dispatch when CONTROL sends
+; [B0/B1/B2, 0x21, 0x00].  Emits four BF/2N reply frames containing the
+; seven diagnostic counters packed two-per-byte (high nibble = first
+; counter, low nibble = second counter):
+;
+;   BF/21  high=diag_i  low=diag_d   (I2C transport, DSP fault)
+;   BF/22  high=diag_s  low=diag_b   (standby, bring-up)
+;   BF/23  high=diag_r  low=diag_a   (recovery, AN0)
+;   BF/24  high=0       low=diag_p   (RA1)
+;
+; Each counter byte saturates at 0x0F so it fits in one nibble.  See
+; docs/V163B_DIAGNOSTICS_MENU_SPEC.md for the protocol contract and
+; CONTROL-side rendering details.
+;
+; Caller convention:
+;   in : nothing — reads diag_i..diag_p (0x123..0x129) directly.
+;   out: returns via flow_main_uart_service_1be6_1e6c (the parser tail
+;        used by every cmd handler), so dispatch+forwarding to PB2 stays
+;        consistent with stock cmd handlers.
+;   side: clobbers ram_0x00D (pack scratch) and ram_0x004 (low-nibble
+;         tmp).  uart_tx_byte_blocking is bounded so a wedged TX path
+;         cannot hang here.
+; ---------------------------------------------------------------------------
+cmd21_diag_query_handler:
+    ; ---------------------------------------------------------------
+    ; V3.2 Layer 5 Phase B revision: 7 single-counter frames
+    ; ---------------------------------------------------------------
+    ; The original packed-nibble design (4 frames carrying pack(I,D),
+    ; pack(S,B), pack(R,A), pack(0,P)) hit a chain-protocol invariant:
+    ; data bytes >= 0x80 get re-interpreted as routes by the K20
+    ; CONTROL parser AND by MAIN's chain forwarder for PB2 traffic.
+    ; Counter values where the "high nibble" counter exceeds 7 would
+    ; produce data bytes >= 0x80 (e.g. diag_i=12, diag_d=2 → 0xC2)
+    ; which the forwarder treats as a route byte, dropping the data
+    ; and corrupting the parser frame state.
+    ;
+    ; Fix: emit 7 frames, one per counter, with the counter value in
+    ; the LOW nibble of the data byte (high nibble forced to 0).
+    ; Data is then always 0..0x0F < 0x80 — passes through chain
+    ; forwarders intact regardless of which PB sourced the reply.
+    ;
+    ; Frame schedule:
+    ;   BF/21 = diag_i  (low nibble; high nibble = 0)
+    ;   BF/22 = diag_d
+    ;   BF/23 = diag_s
+    ;   BF/24 = diag_b
+    ;   BF/25 = diag_r
+    ;   BF/26 = diag_a
+    ;   BF/27 = diag_p  (last frame; CONTROL uses this to mark PB
+    ;                    present and toggle next-target)
+    ; Set BSR=1 once; uart_tx_byte_blocking → wait_trmt_bounded
+    ; uses access-bank only, so BSR stays at 1 throughout the burst.
+    ; This compact form emits each frame in 6 bytes of value-load
+    ; code (movlw + rcall + movlw + rcall for the BF/2N prefix +
+    ; movf + rcall for the data) instead of 8 bytes via ram_0x00D
+    ; staging — saves 14 bytes total vs the staged form.
+    movlb       0x01
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x21
+    rcall       uart_tx_byte_blocking
+    movf        diag_i, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x22
+    rcall       uart_tx_byte_blocking
+    movf        diag_d, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x23
+    rcall       uart_tx_byte_blocking
+    movf        diag_s, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x24
+    rcall       uart_tx_byte_blocking
+    movf        diag_b, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x25
+    rcall       uart_tx_byte_blocking
+    movf        diag_r, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x26
+    rcall       uart_tx_byte_blocking
+    movf        diag_a, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x27
+    rcall       uart_tx_byte_blocking
+    movf        diag_p, W, BANKED
+    rcall       uart_tx_byte_blocking
+
+    goto        flow_main_uart_service_1be6_1e6c
+
+; ---------------------------------------------------------------------------
 ; Volume DSP Write (Fix B + B' + recovery)
 ; ---------------------------------------------------------------------------
 volume_dsp_write:
@@ -8701,9 +8965,16 @@ vol_write_nacked:
     ; If PEN stuck from fault model, skip I2C recovery to avoid corruption.
     btfsc       SSPCON2, 2, ACCESS          ; PEN pending?
     bra         vol_exhausted_skip_i2c
+    diag_inc_sat diag_r                      ; V3.2 Layer 5: count recovery branch entry
     rcall       i2c_bus_clear
     rcall       dsp_ping
 vol_exhausted_skip_i2c:
+    movlb       0x0                          ; macro / dsp_ping may leave BSR != 0
+    btfsc       dsp_fault_flags, 6, BANKED  ; V3.2 Layer 5: skip diag_d if already SET (no transition)
+    bra         vol_diag_d_skip
+    diag_inc_sat diag_d                      ; (executed only on 0→1 transition)
+vol_diag_d_skip:
+    movlb       0x0                          ; restore BSR for the existing bsf line
     bsf         dsp_fault_flags, 6, BANKED  ; flag DSP fault
     rcall       send_dsp_fault_status
     movlb       0x0
@@ -9480,7 +9751,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x32, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 version
+    db  0x03, 0x02, 0x33, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop flash entry (rev 0x33)
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

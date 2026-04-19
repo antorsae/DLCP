@@ -1,18 +1,22 @@
-"""V1.71 Phase B.5: full-sync preset retry counter behavior.
+"""V1.71 Phase B.5 → superseded by Layer 2: preset is now value-bearing.
 
-Spec §Feature inventory row on "Full-sync burst":
+Originally guarded the V1.61b 3-retry preset-frame counter at the
+head of ``full_sync_burst``.  V1.71 Layer 2 (BUG C7 fix) removes the
+retry counter machinery entirely and makes preset value-bearing in
+the periodic broadcast — emitted on step 6 of the new one-frame-per-
+call dispatch alongside volume / input / mute / cmd1d / standby.
 
-    Preset change enqueues 3 retries of the preset-switch frame
-    [B0, 0x20, preset_byte] sent to MAIN on each full-sync cycle.
+The structural retry-counter assertions that used to live here are
+gone (Layer 2 explicitly removes the V1.61b 0x70/0x71 retry block).
+Their inverse — "the retry block is GONE" and "Layer 2 emits preset
+without the V1.61b primed handshake" — lives in
+``test_v171_layer2_full_sync_step.py``.
 
-Verifiable observables from the standalone CONTROL harness:
-
-* After boot with PRESET_BIT = 1, the initial full-sync rounds emit
-  the preset frame at least twice (counter arms at 3 on connect
-  edge, decrements once per full-sync until it reaches zero).
-* Source check: the retry-counter block + bank-1 0x70/0x71 RAM
-  references live at the head of ``full_sync_burst`` — guards
-  against a rebase accidentally dropping the retry feature.
+Only one behavioral assertion remains here: the TX stream contains
+at least one preset frame after a few full-sync periods.  This is
+intentionally a duplicate of the Layer 2 file's stronger assertion,
+kept here as a smoke-level guard so a Phase-A-style regression catches
+any future rebase that breaks the periodic preset emission.
 """
 
 from __future__ import annotations
@@ -66,59 +70,29 @@ def _boot(hex_path: Path) -> GpsimControlHarness:
 
 
 # ---------------------------------------------------------------------------
-# Source-level guards (stable regardless of gpsim timing)
-# ---------------------------------------------------------------------------
-
-def test_v171_source_hosts_preset_retry_counter_at_full_sync_entry() -> None:
-    """Retry counter block must live at the head of full_sync_burst."""
-    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    start = text.find("full_sync_burst:")
-    assert start >= 0, "full_sync_burst label missing"
-    # The inline retry block anchors a stable comment.
-    retry_block = text[start:start + 4000]
-    for marker in (
-        "V1.71 inline (V1.61b): preset-frame retry counter",
-        "v171_fs_connected",
-        "v171_fs_send_check",
-        "v171_fs_continue",
-        "0x71, BANKED",  # primed flag
-        "0x70, BANKED",  # retry counter
-    ):
-        assert marker in retry_block, (
-            f"retry-counter marker missing from full_sync_burst: {marker!r}"
-        )
-
-
-def test_v171_source_uses_v171_send_preset_helper_from_full_sync() -> None:
-    """The retry block must reuse the shared v171_send_preset_frame_and_persist."""
-    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    start = text.find("full_sync_burst:")
-    retry_block = text[start:start + 4000]
-    assert "v171_send_preset_frame_and_persist" in retry_block, (
-        "full-sync retry must reuse v171_send_preset_frame_and_persist"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Behavioral: preset frame appears in TX during the first full-sync cycles
+# Behavioral: preset frame appears in TX during the periodic full-sync cycle
 # ---------------------------------------------------------------------------
 
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_full_sync_emits_preset_frame_after_connect(v171_hex: Path) -> None:
-    """After warmup (CONNECTED + primed), the TX stream contains at least
-    one [B0, 0x20, preset_byte] frame from the full-sync retry path.
+    """After warmup the TX stream contains at least one preset frame.
 
-    The initial value of PRESET_BIT is determined by EEPROM 0x74
-    (defaults to 0 = preset A for erased EEPROM).  We accept either
-    preset frame — the retry counter fires regardless.
+    Under Layer 2, preset is value-bearing in the periodic full-sync:
+    every 6th trigger of ``full_sync_burst`` lands on step 6 and
+    emits ``[B0, 0x20, preset_byte]`` via
+    ``v171_send_preset_frame_txonly``.  The initial preset bit is
+    determined by EEPROM 0x74 (defaults to 0 = preset A for erased
+    EEPROM); either frame value is acceptable here.
+
+    Warmup is generous (≥80M cycles) to make sure step 6 has cycled
+    around at least once even if the trigger period varies.
     """
     _require_gpsim()
     h = _boot(v171_hex)
     try:
-        h.warmup(25_000_000)
-        # Allow a couple of full-sync periods to elapse.
-        for _ in range(80):
+        h.warmup(80_000_000)
+        for _ in range(160):
             h.step()
         tx = {(f.route, f.cmd, f.data) for f in h.tx_frames()}
         assert PRESET_FRAME_A in tx or PRESET_FRAME_B in tx, (

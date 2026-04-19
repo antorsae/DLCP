@@ -267,6 +267,37 @@ ram_0x11F                   EQU  0x11F
 ram_0x120                   EQU  0x120
 ram_0x121                   EQU  0x121
 ram_0x122                   EQU  0x122
+
+; --- V3.2 Layer 5 (V163B_DIAGNOSTICS_MENU_SPEC.md) MAIN counter block ---
+; 7 saturating-byte counters (one per diagnostic event class) plus a 1-byte
+; RA1 edge-detect shadow.  Lives in the unused gap between ram_0x122 and
+; ram_0x12C (verified empty in V3.2 source — no movf / movff / lfsr touches
+; this range).  Reset only on POR/BOR (gated by RCON inspection at cold
+; start); preserved across firmware reset, watchdog recovery, and standby/
+; wake cycles so fault evidence survives.
+;
+; Each counter increments on the named V3.x code path (see asm hooks),
+; saturates at 0x0F (LCD displays 1..9 / A..E / + at saturation), and is
+; reported in packed-nibble form via the cmd 0x21 reply burst:
+;
+;   BF/21 <ID>   high nibble = diag_i (I2C transport faults)
+;                low  nibble = diag_d (DSP-fault episodes)
+;   BF/22 <SB>   high = diag_s (standby/shutdown dispatches)
+;                low  = diag_b (bring-up / wake dispatches)
+;   BF/23 <RA>   high = diag_r (recovery branch entries)
+;                low  = diag_a (AN0 standby triggers)
+;   BF/24 <0P>   high = 0 (reserved / padding)
+;                low  = diag_p (RA1 edge events)
+diag_i                      EQU  0x123    ; I — i2c_byte_tx ACKSTAT + coeff_write_pen_timeout
+diag_d                      EQU  0x124    ; D — dsp_fault_flags.6 0→1 transition
+diag_s                      EQU  0x125    ; S — standby_event_dispatch → hw_standby_shutdown
+diag_b                      EQU  0x126    ; B — standby_event_dispatch → adc_boot_gate
+diag_r                      EQU  0x127    ; R — volume_dsp_write retry-exhausted recovery
+diag_a                      EQU  0x128    ; A — an0_hysteresis_monitor low-threshold trip
+diag_p                      EQU  0x129    ; P — RA1 edge event hook
+diag_ra1_prev               EQU  0x12A    ; previous RA1 sample (edge-detect shadow)
+; 0x12B reserved (alignment + future RCON-cause persistence)
+
 ram_0x12C                   EQU  0x12C
 ram_0x12D                   EQU  0x12D
 ram_0x12E                   EQU  0x12E

@@ -98,3 +98,141 @@ RC5_WAKE                   equ  0x3B    ; V1.64b explicit wake
 ; pinned address 0x74; V1.71 preserves it so EEPROM images remain
 ; interchangeable between the overlay and the source build.
 EEPROM_PRESET_STATE_ADDR   equ  0x74
+
+; --- V1.71 Layer 2: one-frame-per-call full-sync state machine ---
+; Replaces the V1.6b back-to-back 5-frame burst at full_sync_burst with
+; a state machine that emits one frame per main-loop trigger.  Spreads
+; chain traffic across multiple iterations so the 31,250-baud link
+; never saturates, and makes preset value-bearing alongside volume /
+; input / mute / cmd1d_setting / standby_wake (BUG C7 fix).
+;
+; v171_full_sync_step — REPURPOSES the V1.61b preset retry counter
+;   slot.  Lives in BANK 1 at offset 0x70 (physical address 0x170);
+;   the EQU value below is the BANKED-form 8-bit operand; full_sync_burst
+;   sets BSR=1 before manipulating it.  gpsim CLI reads via the
+;   physical address: `reg(0x170)`, NOT `reg(0x070)` (which would
+;   read the bank-0 GPR slot of the same offset).
+;
+;   Encoding (1..6, wraps 6→1):
+;     1 = volume_frame_send due
+;     2 = input_frame_send due
+;     3 = mute_frame_send due
+;     4 = cmd1d_setting_frame_send due
+;     5 = standby_wake_broadcast due
+;     6 = preset frame due (v171_send_preset_frame_txonly, no EEPROM)
+;   Initial value is 0 (uninitialized RAM); first call increments to 1
+;   and emits volume.  No "idle" state — full_sync_burst always emits
+;   the next frame on every trigger.
+v171_full_sync_step        equ  0x070
+;
+; Note: 0x071 (V1.61b "preset primed flag") and the V1.61b preset
+; retry mechanism it gated are now DEAD.  Layer 2 makes preset
+; value-bearing in the periodic broadcast, so the event-driven retry
+; queue is no longer needed.  The slot is intentionally left
+; un-defined here so any stray reference produces an assembler error
+; rather than silently picking up new semantics.
+
+; --- V1.71 Layer 1: bounded tx_byte_enqueue ---
+; Replaces the V1.6b indefinite busy-wait at tx_byte_enqueue when the
+; producer would collide with the ISR consumer (BUG C6).  The bounded
+; form gives the TX ISR a fixed budget of poll iterations to advance
+; tx_ring_rd; if it fails to do so, the byte is dropped (NOT committed
+; to tx_ring_wr), v171_tx_saturate_count is bumped (saturating at
+; 0xFF), and tx_byte_enqueue returns C=1 so callers can react.
+;
+; v171_tx_enq_retry — ACCESS-bank scratch byte used only inside the
+;   bounded retry loop.  Caller must not depend on its value across
+;   the call.  Address chosen as the only free slot in the v1.71
+;   0x028..0x02F scratch range (0x028..0x02C and 0x02E..0x02F are
+;   live; 0x02D has no live reference).
+v171_tx_enq_retry          equ  0x02D
+;
+; v171_tx_saturate_count — saturating counter of tx-ring-full events.
+;   Lives in BANK 1 at offset 0xAD (physical address 0x1AD); the EQU
+;   value below is the BANKED-form 8-bit operand; tx_byte_enqueue
+;   sets BSR=1 before incrementing.  gpsim CLI reads via the physical
+;   address: `reg(0x1AD)`, NOT `reg(0x0AD)` (which would read the
+;   bank-0 GPR slot of the same offset).  Reset only on POR/BOR or
+;   explicit clear; preserved across ordinary firmware reset.
+;   Surfaced via the future Layer 5 diagnostics page if added to the
+;   cmd 0x21 reply table.
+v171_tx_saturate_count     equ  0x0AD
+
+; --- V1.71 Layer 5 Phase B: CONTROL diagnostics page ---
+; Per-PB cache of the seven BF/2N reply payloads from V3.2+ MAIN's
+; cmd 0x21 diagnostics burst.  Each payload byte carries one counter
+; in the LOW nibble (high nibble = 0).  An earlier draft packed two
+; counters per byte but produced data >= 0x80 for any high counter
+; > 7, which the chain forwarder treats as a route byte (corrupting
+; PB2's reply specifically — PB1's reply path is direct).  See
+; docs/V163B_DIAGNOSTICS_MENU_SPEC.md.
+;
+; Cache ordering matches the BF/2N replies:
+;   *_i  = diag_i  (BF/21) — I2C transport faults
+;   *_d  = diag_d  (BF/22) — DSP fault episodes
+;   *_s  = diag_s  (BF/23) — standby dispatches
+;   *_b  = diag_b  (BF/24) — bring-up dispatches
+;   *_r  = diag_r  (BF/25) — recovery branch entries
+;   *_a  = diag_a  (BF/26) — AN0-triggered standby
+;   *_p  = diag_p  (BF/27) — RA1 edge events (LAST FRAME)
+;
+; All cache slots live in BANK 1 (physical 0x180..0x18D).  The EQU
+; values are BANKED-form 8-bit operands; callers must `movlb 0x01`
+; before access.  gpsim CLI reads via the PHYSICAL address — e.g.
+; `reg(0x180)` not `reg(0x080)` (which would be the bank-0 GPR slot).
+;
+; Cache survives ordinary firmware reset / reconnect (uninitialized
+; RAM keeps its value through soft reset on PIC18); cleared only on
+; POR/BOR, the same gate as the MAIN-side diag block.
+v171_diag_pb1_i            equ  0x080
+v171_diag_pb1_d            equ  0x081
+v171_diag_pb1_s            equ  0x082
+v171_diag_pb1_b            equ  0x083
+v171_diag_pb1_r            equ  0x084
+v171_diag_pb1_a            equ  0x085
+v171_diag_pb1_p            equ  0x086
+v171_diag_pb2_i            equ  0x087
+v171_diag_pb2_d            equ  0x088
+v171_diag_pb2_s            equ  0x089
+v171_diag_pb2_b            equ  0x08A
+v171_diag_pb2_r            equ  0x08B
+v171_diag_pb2_a            equ  0x08C
+v171_diag_pb2_p            equ  0x08D
+
+; Poll-state cells (also BANK 1):
+;   v171_diag_target   = 0 → query PB1 next, 1 → query PB2 next
+;   v171_diag_present  = bit0 set when PB1 has ever replied,
+;                         bit1 set when PB2 has ever replied
+;                         (used to render "n/a" for never-seen PBs)
+;   v171_diag_poll_lo/hi = 16-bit countdown until the next query
+;                          enqueue.  Decremented once per
+;                          v171_diag_screen tick.  Reset to
+;                          V171_DIAG_POLL_RELOAD on each query.
+v171_diag_target           equ  0x08E
+v171_diag_present          equ  0x08F
+v171_diag_poll_lo          equ  0x090
+v171_diag_poll_hi          equ  0x091
+; Snapshot of v171_diag_present at the last screen draw — used by
+; v171_diag_check_redraw to fire a screen redraw only when the
+; present mask actually changed.  Lives in BANK 1 (not in the
+; access-bank ram_0x005 scratch cell that other routines clobber).
+v171_diag_present_snap     equ  0x092
+; LCD pad-loop counter for the n/a render path.  Must NOT live in
+; access-bank ram_0x004 because lcd_char_write's internal helper
+; routines clobber it (movff FSR0H, ram_0x004 in
+; control_core_service_*).  Callers that use this cell must
+; movlb 0x01 around access AND reload BSR after every
+; lcd_char_write call (which can change BSR internally).
+v171_diag_lcd_pad_count    equ  0x093
+
+; Poll cadence reload value.  Each v171_diag_screen tick decrements
+; the 16-bit countdown by 1; with display_loop_iteration on the K20
+; control loop the per-tick wall time is on the order of single-digit
+; ms.  Spec calls for "500 ms to 1 s cadence is sufficient".
+; 0x0080 ticks (~1 s cadence) gives the firmware enough time for one
+; full query/reply round-trip before the next cadence expires.
+; A faster cadence (e.g. 0x10) was tried and races against the
+; reply arrival: the second cadence toggles target before the
+; in-flight reply lands, corrupting the cache index.
+V171_DIAG_POLL_RELOAD_LO   equ  0x80
+V171_DIAG_POLL_RELOAD_HI   equ  0x00
