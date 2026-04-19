@@ -142,6 +142,21 @@ def _label_offset(text: str, label: str) -> int:
     return m.start() if m else -1
 
 
+def _label_body(text: str, start_label: str, end_label: str) -> str:
+    """Return source text from ``start_label:`` up to (exclusive) the
+    next occurrence of ``end_label:``.  Use this instead of a fixed
+    char-window when in-line documentation can grow and shrink the
+    routine's footprint between revisions.
+    """
+    start = _label_offset(text, start_label)
+    if start < 0:
+        return ""
+    end = _label_offset(text[start:], end_label)
+    if end < 0:
+        return text[start:]
+    return text[start:start + end]
+
+
 # ===========================================================================
 # Tier A — source-level structural assertions
 # ===========================================================================
@@ -248,8 +263,9 @@ def test_diag_screen_label_exists_and_initializes_target() -> None:
     """``v171_diag_screen:`` must be a top-level label, and its first
     body block must initialize ``v171_diag_target`` from the present mask
     (target=0 on first entry so the very first cadence-driven query goes
-    to PB1 per spec; toggle now happens on BF/24 reception, not in the
-    cadence loop, so we don't pre-flip it any more)."""
+    to PB1 per spec; toggle now happens on BF/27 reception (the LAST
+    frame of the 7-frame burst), not in the cadence loop, so we don't
+    pre-flip it any more)."""
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_screen")
     assert off >= 0, "v171_diag_screen label missing"
@@ -316,7 +332,9 @@ def test_diag_send_query_uses_b1_or_b2_route_and_cmd_21() -> None:
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_send_query")
     assert off >= 0, "v171_diag_send_query label missing"
-    body = text[off:off + 2500]
+    # Anchor body to next top-level label so growing the routine's
+    # in-line documentation doesn't truncate the body window.
+    body = _label_body(text, "v171_diag_send_query", "control_core_service_0F54")
     assert re.search(r"movlw\s+0xB1", body), "PB1 route literal missing"
     assert re.search(r"movlw\s+0xB2", body), "PB2 route literal missing"
     assert re.search(r"movlw\s+0x21", body), "cmd 0x21 literal missing"
@@ -654,22 +672,23 @@ def test_diag_parser_clears_pending_on_bf27() -> None:
 
 
 def test_diag_send_query_aborts_on_tx_saturation() -> None:
-    """Coverage for MED #2: v171_diag_send_query must check STATUS.C
-    after each tx_byte_enqueue and bail on saturation, rather than
-    always pumping all three bytes.  Without this, a saturated TX ring
-    could emit fragments like B1 or B1/0x21 on the wire.
+    """Coverage for MED #2 (revised 2026-04-19 round 2): v171_diag_send_query
+    must check STATUS.C after EVERY tx_byte_enqueue (including the final
+    data byte) and bail on saturation, rather than always pumping all
+    three bytes.  Without the final-byte check, a saturated TX ring
+    could drop the data byte but leave 'B1 21' on the wire — MAIN would
+    eventually frame-recover but only on the next route byte.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    off = _label_offset(text, "v171_diag_send_query")
-    assert off >= 0
-    body = text[off:off + 2500]
-    # Two bc (branch on carry) checks — one after route, one after cmd.
-    # The third byte (data) doesn't need a check (per implementation
-    # comment — see asm).
+    body = _label_body(text, "v171_diag_send_query", "control_core_service_0F54")
+    assert body, "v171_diag_send_query label missing"
+    # Three bc (branch on carry) checks — one after every byte
+    # enqueue (route, cmd, data).  The final-byte check was added in
+    # the 2026-04-19 round-2 review fix.
     bc_count = len(re.findall(r"\n\s+bc\s+v171_diag_send_query_aborted", body))
-    assert bc_count >= 2, (
-        f"send_query must bc-check after route + cmd enqueues "
-        f"(found {bc_count} bc instructions)"
+    assert bc_count >= 3, (
+        f"send_query must bc-check after EVERY enqueue (route + cmd + data); "
+        f"found {bc_count} bc instructions but need >= 3"
     )
     # And the abort label must exist as a return target.
     assert "v171_diag_send_query_aborted:" in body, (
@@ -677,4 +696,126 @@ def test_diag_send_query_aborts_on_tx_saturation() -> None:
     )
 
 
+def test_diag_send_query_clears_pending_on_abort() -> None:
+    """Coverage for F2 round 2 (2026-04-19): on TX-ring saturation,
+    v171_diag_send_query must CLEAR the PENDING flag before returning.
+    Otherwise the next cadence expiry sees PENDING-still-set and
+    advances target — falsely classifying local TX-ring saturation as
+    remote PB silence and round-robin'ing past the original target.
+    Clearing PENDING on abort makes the next cadence retry the SAME
+    target, which is what the "whole-frame retry" comment claims.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    abort_body = _label_body(
+        text, "v171_diag_send_query_aborted", "control_core_service_0F54"
+    )
+    assert abort_body, "abort label missing"
+    end_ret = abort_body.find("return")
+    assert end_ret > 0, "abort path missing return"
+    abort_body = abort_body[:end_ret + 20]
+    # The abort path must clear PENDING.
+    assert re.search(
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        abort_body,
+    ), (
+        "abort path must clear PENDING — otherwise local TX-ring "
+        "saturation gets misclassified as remote PB silence by the "
+        "cadence loop's PENDING-still-set gate"
+    )
+    # And it must re-assert BANK 1 first (tx_byte_enqueue may have
+    # left BSR anywhere).
+    bank_assert_pos = abort_body.find("movlb   0x01")
+    bcf_pos = abort_body.find("bcf")
+    assert 0 <= bank_assert_pos < bcf_pos, (
+        "abort path must movlb 0x01 before bcf v171_diag_flags so the "
+        "flag-byte access lands in the right bank regardless of where "
+        "tx_byte_enqueue left BSR"
+    )
+
+
 # V32-side BSR safety test lives in test_v32_layer5_diag_counters.py.
+
+
+# ===========================================================================
+# F1 (2026-04-19 round 2): spec-collapse — single sentinel for both
+# "topology absent" and "PB silent / unsupported".
+# ===========================================================================
+
+
+def test_diag_renderer_uses_single_sentinel_no_topology_byte() -> None:
+    """The chain protocol does not give CONTROL an independent way to
+    distinguish "PB2 doesn't exist" from "PB2 exists but is silent or
+    doesn't support cmd 0x21" — every probe goes through the same
+    diag query path.  Spec was revised 2026-04-19 to retire the
+    draft's `--` rendering and use `n/a` for both cases.
+
+    This test pins the design decision: the renderer must gate solely
+    on ``v171_diag_present`` (one bit per PB, set on first BF/27
+    reception) — no separate ``v171_diag_topology`` symbol, no `--`
+    literal in the render path, and no second sentinel render block.
+    A future change that re-introduces topology detection would also
+    have to update this test, which forces the spec-section update.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    # No separate topology state.
+    assert "v171_diag_topology" not in text, (
+        "no separate topology byte allowed — spec collapse uses "
+        "v171_diag_present alone for both 'topology absent' and "
+        "'PB silent' cases"
+    )
+    ram = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+    assert "v171_diag_topology" not in ram, (
+        "no v171_diag_topology equ allowed in ram.inc — spec collapse"
+    )
+    # No `--` literal in the render path (must use 'n/a' for both).
+    render_body = _label_body(text, "v171_diag_screen", "v171_diag_emit_letter")
+    assert "'-'" not in render_body, (
+        "no '-' character literal in render path — spec collapse "
+        "uses 'n/a' for both topology-absent and silent-PB cases"
+    )
+    # Both PB rows must gate on the same v171_diag_present bit pattern.
+    # PB1 row gates on bit 0; PB2 row gates on bit 1.
+    assert re.search(
+        r"btfss\s+v171_diag_present,\s*0,\s*BANKED",
+        render_body,
+    ), "PB1 row must gate on v171_diag_present bit 0"
+    assert re.search(
+        r"btfss\s+v171_diag_present,\s*1,\s*BANKED",
+        render_body,
+    ), "PB2 row must gate on v171_diag_present bit 1"
+
+
+def test_diag_renderer_na_path_count_matches_pb_count() -> None:
+    """Each PB row has exactly ONE sentinel-render path
+    (``v171_diag_pbN_render_na``), not two (per the original spec's
+    `--` vs `n/a` distinction).  Adding a second per-PB sentinel
+    block would re-introduce the topology-vs-silence distinction the
+    2026-04-19 revision retired.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    pb1_na = re.findall(r"^v171_diag_pb1_render_\w+:", text, re.MULTILINE)
+    pb2_na = re.findall(r"^v171_diag_pb2_render_\w+:", text, re.MULTILINE)
+    assert pb1_na == ["v171_diag_pb1_render_na:"], (
+        f"PB1 must have exactly one sentinel render path; got {pb1_na}"
+    )
+    assert pb2_na == ["v171_diag_pb2_render_na:"], (
+        f"PB2 must have exactly one sentinel render path; got {pb2_na}"
+    )
+
+
+def test_diag_renderer_collapse_documented_in_spec() -> None:
+    """Spec must explicitly call out the 2026-04-19 collapse decision
+    so future readers don't re-introduce the `--` vs `n/a` distinction
+    based on the draft's earlier wording.  The relevant CONTROL-side
+    requirements line must mention `n/a` and the rationale.
+    """
+    from dlcp_fw.paths import DOCS_DIR
+    spec = (DOCS_DIR / "V163B_DIAGNOSTICS_MENU_SPEC.md").read_text(encoding="utf-8")
+    # Spec must mention the collapse decision and the rationale.
+    assert "retired" in spec.lower() and "--" in spec, (
+        "spec must document that the `--` rendering was retired in favor "
+        "of single `n/a` sentinel"
+    )
+    assert "topology absence" in spec.lower() or "topology" in spec.lower(), (
+        "spec must explain the topology-vs-silence collapse rationale"
+    )

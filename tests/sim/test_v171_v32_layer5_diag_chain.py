@@ -45,10 +45,11 @@ import pytest
 from dlcp_fw.paths import (
     V17_CONTROL_RAM_INC,
     V171_CONTROL_ASM,
-    V32_MAIN_HEX,
+    V32_MAIN_ASM,
 )
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.v17_symbols import assemble_v17
+from dlcp_fw.sim.v30_symbols import assemble_v30
 
 try:
     from dlcp_fw.sim.control_gpsim import _read_reg
@@ -106,6 +107,28 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
+@pytest.fixture(scope="module")
+def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build V3.2 MAIN from current source into a module-scoped tmp dir.
+
+    Phase C used to consume the canonical ``V32_MAIN_HEX`` directly, but
+    that path is only refreshed by an external build pipeline — if a
+    Phase A / Phase B source change landed since the last canonical
+    rebuild, Phase C silently tested the stale binary.  Building from
+    ``V32_MAIN_ASM`` here guarantees Phase C and Phase A see the same
+    source-derived artifact, eliminating the source/hex skew blind
+    spot called out in the 2026-04-19 review.
+
+    Module-scoped so the ~3-second gpasm step runs once per file.  The
+    ``tmp_path_factory.mktemp`` location is per-worker under xdist, so
+    parallel runs cannot race on a shared output path.
+    """
+    tmp = tmp_path_factory.mktemp("v32_layer5_chain")
+    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
+    assemble_v30(V32_MAIN_ASM, hex_out)
+    return hex_out
+
+
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
@@ -113,46 +136,49 @@ def _require_gpsim() -> None:
         pytest.skip("wire_chain_gpsim harness not importable")
 
 
-def _require_v32_hex() -> None:
-    if not V32_MAIN_HEX.exists():
-        pytest.skip(f"missing V3.2 MAIN hex: {V32_MAIN_HEX.name}")
+def _require_v32_hex(v32_hex: Path) -> None:
+    if not v32_hex.exists():
+        pytest.skip(f"missing V3.2 MAIN hex: {v32_hex.name}")
 
 
-# PB2 reply path through the wire-chain bridge doesn't reach CONTROL
-# in the current ``WireMultiMainChainHarness``.  Probe data shows:
-#   - PB1 query→reply works perfectly: PB1 cache fills with PB1's
-#     diag values.
-#   - PB2 query goes out (CONTROL emits B2/0x21/0x00, PB1 forwards as
-#     B1 to PB2), but PB2's BF/2N reply does not surface as cache writes
-#     in CONTROL.  ``v171_diag_present`` never reaches 0x03 on the
-#     two-MAIN chain even though MAIN1.diag_i is verified set in MAIN1's
-#     gpsim instance.
+# PB2 reply doesn't surface in CONTROL even though the wire-chain
+# bridges DO deliver bytes upstream.  Originally diagnosed (incorrectly)
+# as a chain-bridge transport bug; the 2026-04-19 canary
+# (test_v171_v32_layer5_chain_pb2_bridge_canary below) re-attributed
+# the failure: bridges m0_to_m1 / m1_to_m0 / m0_to_ctl all show
+# 137k+ edges flowing during a 250-step diag-page run, ctl_to_m0
+# carries the queries, and ``v171_diag_present`` reaches 0x01 (PB1) —
+# but never 0x03 (PB1 + PB2).  Bytes ARE flowing through every hop;
+# the problem is upstream of the parser-cache write.
 #
-# The protocol on real hardware is bidirectional: PB2 reply travels
-# upstream through PB1's forwarder back to CONTROL.  In the harness,
-# the m1_to_m0 → m0_to_ctl bridge chain doesn't currently propagate
-# PB2's reply.  Diagnosis points to the chain bridge implementation,
-# not the Layer 5 firmware (which works correctly for PB1 and would
-# work for PB2 on hardware).
+# Working hypothesis (needs probe — Task #22): in the multi-MAIN
+# gpsim topology, MAIN0's TX is replicated to BOTH m0_to_m1 (downstream)
+# and m0_to_ctl (upstream), unlike a real current loop where the
+# current physically travels in one direction per polarity.  Every
+# BF byte that MAIN0 forwards upstream from MAIN1 ALSO echoes back
+# downstream into MAIN1's RX, which forwards it back upstream to
+# MAIN0...  The parser may be either dropping these mis-framed echoes
+# or having v171_diag_target toggle out from under the in-flight reply.
 #
 # Phase A (MAIN-side counters + reply burst) is verified independently;
 # Phase B (CONTROL-side parser + render) is verified standalone.  The
-# two-MAIN end-to-end gate that requires PB2 reply is xfailed here
-# pending a chain-bridge investigation that's broader than Layer 5.
+# two-MAIN end-to-end gate is xfailed here pending the parser-vs-echo
+# investigation in Task #22.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
-        "Wire-chain harness's m1_to_m0 → m0_to_ctl bridge doesn't "
-        "deliver PB2's BF/2N reply back to CONTROL.  PB1 reply works; "
-        "PB2 reply doesn't surface in CONTROL cache.  Verified by probe "
-        "with distinct MAIN0/MAIN1 diag values: PB1 cache fills (1..7), "
-        "PB2 cache stays at zero.  Bridge issue, not Layer 5 firmware."
+        "Bytes flow through every wire-chain bridge (verified by canary "
+        "below), but CONTROL never sets v171_diag_present bit 1 for "
+        "PB2.  Suspected root cause: gpsim two-MAIN topology echoes "
+        "MAIN0's TX into BOTH downstream and upstream paths, creating "
+        "a feedback loop that interferes with target-tracking parser "
+        "state.  Tracked in Task #22 for targeted probing."
     ),
     strict=False,
     run=False,
 )
 
 
-def _new_chain(v171_hex_path: Path) -> WireMultiMainChainHarness:
+def _new_chain(v171_hex_path: Path, v32_hex_path: Path) -> WireMultiMainChainHarness:
     """Two-MAIN chain with V1.71 CONTROL + V3.2 MAIN.
 
     Settings mirror the working V3.2 wire-chain tests in
@@ -164,7 +190,7 @@ def _new_chain(v171_hex_path: Path) -> WireMultiMainChainHarness:
     """
     return WireMultiMainChainHarness(
         v171_hex_path,
-        V32_MAIN_HEX,
+        v32_hex_path,
         main_units=2,
         fast_boot=False,
         disable_standby_check=False,
@@ -279,7 +305,7 @@ def _wait_for_pb_present(
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
-def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(v171_hex: Path, v32_hex: Path) -> None:
     """At boot, neither PB has replied, so CONTROL's diag cache and
     present mask must be zero across the chain warmup.
 
@@ -290,9 +316,9 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(v171_hex: Path) -> None:
     diag cache).
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -315,24 +341,25 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(v171_hex: Path) -> None:
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(v171_hex: Path, v32_hex: Path) -> None:
     """Navigating to Diagnostics drives CONTROL's poll loop, which
     alternates queries between PB1 and PB2.  After enough chain steps
     for the cadence to fire twice (once per PB), both ``v171_diag_present``
     bits must be set, demonstrating that:
 
     1. CONTROL emits ``B1/0x21/0x00`` and the V3.2 MAIN at PB1 replies
-       with the BF/21..24 burst, which CONTROL parses into the PB1 cache.
+       with the 7-frame BF/21..27 burst (one counter per frame, low-
+       nibble data), which CONTROL parses into the PB1 cache.
     2. CONTROL emits ``B2/0x21/0x00``, PB1 forwards (decremented to B1),
-       PB2 consumes and replies, the BF/* burst flows back upstream
+       PB2 consumes and replies, the BF/21..27 burst flows back upstream
        through PB1's forwarder, and CONTROL parses into the PB2 cache.
 
     This is the protocol-contract end-to-end gate.
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -359,7 +386,7 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(v171_hex: Path) -> No
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_pb_cache_isolation(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_pb_cache_isolation(v171_hex: Path, v32_hex: Path) -> None:
     """Forcing distinct counter values into PB1 vs PB2's diag block must
     surface as distinct CONTROL cache slots after the next poll.
 
@@ -370,9 +397,9 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(v171_hex: Path) -> None:
     PB on reply arrival.
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -415,7 +442,7 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(v171_hex: Path) -> None:
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_lcd_renders_zero_idle(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_lcd_renders_zero_idle(v171_hex: Path, v32_hex: Path) -> None:
     """Idle Diagnostics page (counters all zero) renders the spec layout
     "1:I D S B R A P" / "2:I D S B R A P" — every nibble char is a
     space, so the row reads as letter-space-letter-space etc.
@@ -423,9 +450,9 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(v171_hex: Path) -> None:
     Per spec §"LCD Examples" — All clear case.
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -459,16 +486,16 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(v171_hex: Path) -> None:
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(v171_hex: Path, v32_hex: Path) -> None:
     """Spec §"LCD Examples" — Some-activity case.
 
     PB1: diag_i=2, diag_b=1, diag_r=1
     PB2: diag_s=1, diag_b=1, diag_a=3
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -498,16 +525,16 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(v171_hex: Path) -> Non
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
-def test_v171_v32_layer5_chain_lcd_renders_saturation_plus(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_lcd_renders_saturation_plus(v171_hex: Path, v32_hex: Path) -> None:
     """Saturated counter (0x0F) must render as '+' per the encoding.
 
     Forces diag_i=0x0F on PB1; expects '+' between 'I' and 'D' in
     line 0.
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -532,7 +559,7 @@ def test_v171_v32_layer5_chain_lcd_renders_saturation_plus(v171_hex: Path) -> No
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
-def test_v171_v32_layer5_chain_no_query_off_diag_page(v171_hex: Path) -> None:
+def test_v171_v32_layer5_chain_no_query_off_diag_page(v171_hex: Path, v32_hex: Path) -> None:
     """Without entering the Diagnostics page, neither PB should ever
     receive a cmd 0x21 query.  We assert this indirectly: after enough
     chain warmup for the steady-state status burst to cycle several
@@ -544,9 +571,9 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(v171_hex: Path) -> None:
     stream for absence of B1/0x21 frames.
     """
     _require_gpsim()
-    _require_v32_hex()
+    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex)
+    chain = _new_chain(v171_hex, v32_hex)
     try:
         last = chain.run_until_connected(limit=200)
         assert last is not None, "chain never reached DISPLAY"
@@ -562,6 +589,157 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(v171_hex: Path) -> None:
             f"diag_present non-zero without entering Diagnostics page: "
             f"0x{present:02X}; PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
             f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
+        )
+    finally:
+        chain.close()
+
+
+# ===========================================================================
+# F4 + xfail Group A canary (2026-04-19 round 2): split into two tests.
+#
+# (1) Always-on transport canary — proves bytes actually flow through
+#     EVERY chain bridge during a diag-page run.  If a future change
+#     breaks the harness's bridge plumbing this catches it loudly,
+#     instead of silently masking it under the Group-A xfail.
+#
+# (2) Hop-attribution canary — same probe but also asserts CONTROL
+#     parses PB2's reply.  Currently expected to fail at hop (e) with
+#     ALL bridges flowing (137k+ edges each); the failure message
+#     points at the parser-vs-echo issue tracked in Task #22.  Marked
+#     xfail run=True so the hop-attribution report fires every CI run
+#     and we notice immediately when the underlying issue is fixed.
+# ===========================================================================
+
+
+def _diag_canary_run(
+    chain: WireMultiMainChainHarness,
+) -> tuple[dict[str, int], int, tuple[int, ...]]:
+    """Drive a diag-page poll cycle and snapshot per-hop deltas.
+
+    Returns (hop_deltas, present_mask, pb2_cache).  Pre-loads MAIN1's
+    diag_p = 0x07 so a successful PB2 reply has a distinct payload.
+    """
+    last = chain.run_until_connected(limit=200)
+    assert last is not None, "chain never reached DISPLAY"
+    assert chain.is_connected() and not chain.is_waiting(), (
+        f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    )
+    _set_main_diag_block(chain, 1, diag_p=0x07)
+    pre_stats = chain.bridge_shift_stats()
+    _navigate_to_diagnostics(chain)
+    # 250 chain steps ≥ 2 cadence cycles at the default chunk
+    # (~125 steps per V171_DIAG_POLL_RELOAD = 0x80 ticks); long
+    # enough for both PB1 + PB2 queries to be issued and (in a
+    # working bridge) for both replies to land.
+    for _ in range(250):
+        chain.step()
+        if (_diag_present(chain) & 0x02) == 0x02:
+            break
+    post_stats = chain.bridge_shift_stats()
+    deltas = {
+        link: post_stats.get(link, {}).get("total_edges", 0)
+              - pre_stats.get(link, {}).get("total_edges", 0)
+        for link in ("ctl_to_m0", "m0_to_m1", "m1_to_m0", "m0_to_ctl")
+    }
+    return deltas, _diag_present(chain), _diag_pb_cache(chain, 1)
+
+
+@pytest.mark.gpsim
+@pytest.mark.wire
+@pytest.mark.slow
+def test_v171_v32_layer5_chain_bridges_all_carry_traffic(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """Always-on transport canary: during a Diagnostics-page poll run
+    on a 2-MAIN chain, every wire-chain bridge MUST carry traffic.
+    This is purely a harness-plumbing assertion — it does NOT depend on
+    CONTROL successfully parsing any reply.  If a future harness change
+    silently breaks one of the bridges (e.g. `m1_to_m0` stops
+    forwarding MAIN1's TX into MAIN0's RX), this canary catches it
+    immediately rather than letting the Group-A xfails silently mask
+    a separate regression.
+    """
+    _require_gpsim()
+    _require_v32_hex(v32_hex)
+
+    chain = _new_chain(v171_hex, v32_hex)
+    try:
+        deltas, _present, _pb2 = _diag_canary_run(chain)
+        for link in ("ctl_to_m0", "m0_to_m1", "m1_to_m0", "m0_to_ctl"):
+            assert deltas[link] > 0, (
+                f"transport canary: bridge {link!r} carried zero edges "
+                f"during a Diagnostics-page poll run — harness plumbing "
+                f"is broken.  All hop deltas: {deltas}"
+            )
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.wire
+@pytest.mark.slow
+@pytest.mark.xfail(
+    reason=(
+        "Hop-attribution canary: bytes flow through every bridge "
+        "(transport canary above passes) but CONTROL never sets "
+        "v171_diag_present bit 1.  Suspected gpsim two-MAIN echo loop "
+        "(MAIN0 TX replicated into both downstream + upstream paths) "
+        "interferes with target-tracking parser state.  Tracked as "
+        "Task #22; runs every cycle so the hop-attribution report is "
+        "fresh and we notice immediately when the underlying fix lands."
+    ),
+    strict=False,
+    run=True,
+)
+def test_v171_v32_layer5_chain_pb2_bridge_canary(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """Hop-attribution canary for the PB2 query → reply path.
+
+    Same probe as the transport canary, but also asserts the CONTROL-
+    side parser landed PB2's reply.  Decomposes into hops:
+
+        a. ``ctl_to_m0`` edges  — CONTROL emitted bytes for MAIN0
+        b. ``m0_to_m1``  edges  — MAIN0 forwarded query downstream
+        c. ``m1_to_m0``  edges  — PB2 transmitted reply upstream
+        d. ``m0_to_ctl`` edges  — MAIN0 forwarded reply to CONTROL
+        e. ``v171_diag_present`` bit 1  — parser landed PB2 reply
+        f. ``v171_diag_pb2_p`` == 0x07  — BF/27 payload landed in cache
+
+    Currently expected to fail at hop (e) with hops (a)..(d) all
+    showing 137k+ edges of traffic.  When the underlying parser-vs-
+    echo issue (Task #22) is fixed, this XPASSes and the 4 Group-A
+    tests at ``_V171_V32_PB2_BRIDGE_XFAIL`` should also start XPASS'ing
+    — at which point all five xfail markers in this file can be
+    removed and Task #22 closed.
+    """
+    _require_gpsim()
+    _require_v32_hex(v32_hex)
+
+    chain = _new_chain(v171_hex, v32_hex)
+    try:
+        deltas, present, pb2_cache = _diag_canary_run(chain)
+        report = (
+            f"hop edges (post − pre) — {deltas}; "
+            f"v171_diag_present=0x{present:02X}, "
+            f"PB2 cache={[hex(v) for v in pb2_cache]}"
+        )
+        # Hops (a)..(d) belong to the always-on transport canary, so
+        # surface them only on the value-carrying assertions below.
+        assert deltas["ctl_to_m0"] > 0, f"hop (a) ctl_to_m0 silent: {report}"
+        assert deltas["m0_to_m1"] > 0, f"hop (b) m0_to_m1 silent: {report}"
+        assert deltas["m1_to_m0"] > 0, f"hop (c) m1_to_m0 silent: {report}"
+        assert deltas["m0_to_ctl"] > 0, f"hop (d) m0_to_ctl silent: {report}"
+        # Hops (e) + (f): CONTROL parsed the BF/27 reply correctly.
+        assert (present & 0x02) == 0x02, (
+            f"hop (e) — bytes flowed through every bridge but CONTROL "
+            f"never set v171_diag_present bit 1; v171_bf2x_case_check "
+            f"did not fire for PB2's BF/27.  {report}"
+        )
+        assert pb2_cache[6] == 0x07, (
+            f"hop (f) — PB2 marked present but BF/27 payload (diag_p) "
+            f"did not land in the cache slot; expected 0x07, got "
+            f"0x{pb2_cache[6]:02X}.  {report}"
         )
     finally:
         chain.close()

@@ -8828,27 +8828,35 @@ send_dsp_fault_status:
 ; cmd 0x21 — Diagnostics counter reply burst (V3.2 Layer 5)
 ; ---------------------------------------------------------------------------
 ; Reached from main_uart_service_1be6 dispatch when CONTROL sends
-; [B0/B1/B2, 0x21, 0x00].  Emits four BF/2N reply frames containing the
-; seven diagnostic counters packed two-per-byte (high nibble = first
-; counter, low nibble = second counter):
+; [B0/B1/B2, 0x21, 0x00].  Emits SEVEN BF/2N reply frames, one counter
+; per frame in the data byte's LOW nibble (high nibble forced to 0):
 ;
-;   BF/21  high=diag_i  low=diag_d   (I2C transport, DSP fault)
-;   BF/22  high=diag_s  low=diag_b   (standby, bring-up)
-;   BF/23  high=diag_r  low=diag_a   (recovery, AN0)
-;   BF/24  high=0       low=diag_p   (RA1)
+;   BF/21 = diag_i  (I2C transport faults)
+;   BF/22 = diag_d  (DSP-fault episodes)
+;   BF/23 = diag_s  (standby/shutdown dispatches)
+;   BF/24 = diag_b  (bring-up / wake dispatches)
+;   BF/25 = diag_r  (recovery branch entries)
+;   BF/26 = diag_a  (AN0-triggered standby)
+;   BF/27 = diag_p  (RA1 edge events; LAST FRAME — CONTROL clears
+;                    its PENDING flag and toggles next-target here)
 ;
-; Each counter byte saturates at 0x0F so it fits in one nibble.  See
-; docs/V163B_DIAGNOSTICS_MENU_SPEC.md for the protocol contract and
-; CONTROL-side rendering details.
+; Each counter byte saturates at 0x0F so it fits in one nibble.  The
+; original 4-frame packed-nibble scheme (pack(I,D), pack(S,B),
+; pack(R,A), pack(0,P)) was retired 2026-04-19 because data bytes
+; >= 0x80 were re-interpreted as routes by the chain forwarder.  See
+; docs/V163B_DIAGNOSTICS_MENU_SPEC.md for the full contract and the
+; CONTROL-side rendering rules.
 ;
 ; Caller convention:
 ;   in : nothing — reads diag_i..diag_p (0x123..0x129) directly.
 ;   out: returns via flow_main_uart_service_1be6_1e6c (the parser tail
 ;        used by every cmd handler), so dispatch+forwarding to PB2 stays
 ;        consistent with stock cmd handlers.
-;   side: clobbers ram_0x00D (pack scratch) and ram_0x004 (low-nibble
-;         tmp).  uart_tx_byte_blocking is bounded so a wedged TX path
-;         cannot hang here.
+;   side: BSR is left at 1 on exit (the body re-asserts movlb 0x01
+;         before each diag_X read, so this is a side-effect of the
+;         final read, not a guarantee).  Callers that depend on bank 0
+;         must reset BSR themselves.  uart_tx_byte_blocking is bounded
+;         so a wedged TX path cannot hang here.
 ; ---------------------------------------------------------------------------
 cmd21_diag_query_handler:
     ; ---------------------------------------------------------------

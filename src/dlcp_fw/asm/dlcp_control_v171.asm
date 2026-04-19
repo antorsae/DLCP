@@ -3200,10 +3200,10 @@ v171_preset_exit_check:
 v171_diag_screen:
         ; First-entry setup: if no PB has ever replied, initialize
         ; target=0 so the very first cadence-driven query goes to PB1
-        ; per spec.  Target now toggles only on BF/24 reception (not in
-        ; the cadence loop), so we don't pre-flip it any more.
-        ; Subsequent entries pick up the existing alternating target
-        ; without a reset.
+        ; per spec.  Target now toggles only on BF/27 reception (the
+        ; LAST frame of the 7-frame burst), not in the cadence loop,
+        ; so we don't pre-flip it any more.  Subsequent entries pick
+        ; up the existing alternating target without a reset.
         movlb   0x01
         movf    v171_diag_present, F, BANKED
         bnz     v171_diag_screen_skip_init
@@ -3547,21 +3547,36 @@ v171_diag_emit_nib_sat:
 ; raw via tx_byte_enqueue keeps the diagnostics traffic page-local.
 ; ---------------------------------------------------------------------------
 v171_diag_send_query:
-        ; Best-effort frame atomicity: tx_byte_enqueue (Layer 1) drops
-        ; a single byte on TX-ring saturation and signals via
-        ; STATUS.C=1.  Without checking C between bytes, all three
-        ; bytes get attempted independently.  We bail on the first
-        ; dropped byte so we don't keep pumping the rest of an already-
-        ; broken frame.  MAIN's route handler treats every Bx byte as
-        ; a frame start (resets frame_pos), so a partial fragment that
-        ; landed on the wire ahead of the abort gets cleaned up by the
-        ; next genuine route byte from CONTROL or another source — no
-        ; permanent mis-framing.  The next cadence expiry retries the
-        ; whole frame after the ring has drained.
+        ; Frame atomicity: tx_byte_enqueue (Layer 1) drops a single
+        ; byte on TX-ring saturation and signals via STATUS.C=1.  We
+        ; check C after every byte (including the final data byte)
+        ; and bail on the first dropped byte so we don't keep pumping
+        ; the rest of an already-broken frame.
         ;
-        ; tx_byte_enqueue lives at ~0x05EC; this routine sits past
-        ; 0x18xx so rcall overflows the 11-bit relative range and we
-        ; must use the absolute call, FAST-zero variant.
+        ; PENDING reset on abort: the caller (cadence loop) sets the
+        ; PENDING flag *before* calling this routine.  On the next
+        ; cadence expiry, PENDING-still-set means "previous query
+        ; never received its BF/27 reply" and the loop advances target
+        ; to skip a silent/unsupported PB.  But local TX-ring
+        ; saturation is NOT the same as a silent PB — the query never
+        ; left CONTROL.  If we leave PENDING set on TX abort, the
+        ; cadence falsely advances target to the OTHER PB, and the
+        ; original target gets re-queried only after a full round-
+        ; robin.  Clearing PENDING on the abort path makes the next
+        ; cadence retry the SAME target, which is what the
+        ; "whole-frame retry" comment originally claimed.
+        ;
+        ; Frame-state recovery on the wire: MAIN's route handler
+        ; treats every Bx byte as a frame start (resets frame_pos),
+        ; so a partial 1- or 2-byte fragment that landed on the wire
+        ; ahead of the abort gets cleaned up by the NEXT genuine route
+        ; byte (from this or any other CONTROL frame) — no permanent
+        ; mis-framing.  The cadence retry issues a clean follow-up
+        ; after the ring has drained.
+        ;
+        ; Call form: tx_byte_enqueue lives at ~0x05EC; this routine
+        ; sits past 0x18xx so rcall overflows the 11-bit relative
+        ; range and we must use the absolute call, FAST-zero variant.
         ; --- byte 0: route ---
         movlw   0xB1                                       ; default = PB1 query
         movlb   0x01
@@ -3576,14 +3591,20 @@ v171_diag_send_query:
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
         bc      v171_diag_send_query_aborted
-        ; --- byte 2: data 0x00 ---
+        ; --- byte 2: data 0x00 (final byte) ---
         clrf    tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        ; (final byte — no need to check; failure here just drops
-        ; the data byte but the remainder of the frame is already on
-        ; the wire and MAIN will treat it as a malformed B1/0x21/?? —
-        ; the cadence retry will issue a clean follow-up).
+        bc      v171_diag_send_query_aborted               ; final byte also checked
+        return  0x0
 v171_diag_send_query_aborted:
+        ; TX ring saturated mid-frame.  Clear PENDING so the next
+        ; cadence retries the SAME target instead of mis-classifying
+        ; local saturation as remote PB silence.  tx_byte_enqueue may
+        ; have left BSR anywhere — re-assert BANK 1 before touching
+        ; the flag byte.
+        movlb   0x01
+        bcf     v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
+        movlb   0x00
         return  0x0
 
 

@@ -81,8 +81,16 @@ Minimum CONTROL behavior:
 
 - Line 1 shows PB1 counters
 - Line 2 shows PB2 counters
-- If a PB does not support the new query, show `n/a`
-- If the chain has fewer than 2 PBs, show `--` for the missing slot
+- If a PB has not (yet) replied to a `cmd 0x21` query, show `n/a` for
+  that row.  This collapses the original draft's two cases (PB exists
+  but does not support the query, vs. chain has fewer than 2 PBs) into
+  a single sentinel because the chain protocol does not give CONTROL
+  an independent way to distinguish "topology absence" from "PB silent
+  / unsupported" — every probe goes through the same query path.  The
+  draft's `--` rendering is retired (revised 2026-04-19); both cases
+  now share the `n/a` rendering.  Operationally, both states drive the
+  same action ("troubleshoot the chain"), so the lost distinction is
+  not load-bearing.
 
 LCD v1 format is a single compact screen with all 7 counters on each line.
 
@@ -334,19 +342,27 @@ sequence in the style of the existing status-poll sender:
 ### CONTROL receive path
 
 Extend the existing parser tail that already handles `BF/08` so it also
-recognizes:
+recognizes the full 7-frame burst:
 
-- `BF/21`
-- `BF/22`
-- `BF/23`
-- `BF/24`
+- `BF/21` (diag_i)
+- `BF/22` (diag_d)
+- `BF/23` (diag_s)
+- `BF/24` (diag_b)
+- `BF/25` (diag_r)
+- `BF/26` (diag_a)
+- `BF/27` (diag_p — LAST FRAME; clears PENDING flag and toggles
+                   the next-target slot in the parser case)
 
-Recommended cache model:
+Cache model (as implemented in V1.71):
 
-- 4 packed bytes for PB1
-- 4 packed bytes for PB2
-- 1 byte `diag_target_slot`
-- 1 byte `diag_rx_mask`
+- 7 bytes for PB1 (`v171_diag_pb1_i..pb1_p` at 0x080..0x086)
+- 7 bytes for PB2 (`v171_diag_pb2_i..pb2_p` at 0x087..0x08D)
+- 1 byte `v171_diag_target` (0x08E) — current poll target (0=PB1, 1=PB2)
+- 1 byte `v171_diag_present` (0x08F) — bitmask of PBs that have replied
+- 2 bytes `v171_diag_poll_lo`/`_hi` (0x090..0x091) — 16-bit cadence countdown
+- 1 byte `v171_diag_present_snap` (0x092) — last-rendered present mask
+- 1 byte `v171_diag_lcd_pad_count` (0x093) — pad-loop scratch
+- 1 byte `v171_diag_flags` (0x094) — DIRTY (bit 0) + PENDING (bit 1)
 
 Do not reuse the reconnect handshake sentinels (`0x0B8`, `0x0B9`,
 `0x0A7`, `0x0A1`) for this cache.
@@ -480,7 +496,8 @@ At minimum, implement the following high-impact wire-chain cases:
 - Assert the Diagnostics LCD rendering directly, not just internal cache bytes.
 - When possible, also assert the underlying UART request/reply traffic:
   - CONTROL sends `B1 21 00` and `B2 21 00`
-  - MAIN replies with `BF/21`, `BF/22`, `BF/23`, `BF/24`
+  - MAIN replies with the 7-frame burst `BF/21`..`BF/27` (one
+    counter per frame, low-nibble data; `BF/27` is the last frame)
 - For reset-retention coverage, verify both behaviors:
   - ordinary firmware reset preserves counters
   - POR/BOR clears counters

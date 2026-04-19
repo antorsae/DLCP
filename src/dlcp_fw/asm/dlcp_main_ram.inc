@@ -278,16 +278,22 @@ ram_0x122                   EQU  0x122
 ;
 ; Each counter increments on the named V3.x code path (see asm hooks),
 ; saturates at 0x0F (LCD displays 1..9 / A..E / + at saturation), and is
-; reported in packed-nibble form via the cmd 0x21 reply burst:
+; reported one-per-frame via the cmd 0x21 reply burst (7 frames total,
+; data byte holds the counter in the low nibble; high nibble = 0):
 ;
-;   BF/21 <ID>   high nibble = diag_i (I2C transport faults)
-;                low  nibble = diag_d (DSP-fault episodes)
-;   BF/22 <SB>   high = diag_s (standby/shutdown dispatches)
-;                low  = diag_b (bring-up / wake dispatches)
-;   BF/23 <RA>   high = diag_r (recovery branch entries)
-;                low  = diag_a (AN0 standby triggers)
-;   BF/24 <0P>   high = 0 (reserved / padding)
-;                low  = diag_p (RA1 edge events)
+;   BF/21 <I>   diag_i (I2C transport faults)
+;   BF/22 <D>   diag_d (DSP-fault episodes)
+;   BF/23 <S>   diag_s (standby/shutdown dispatches)
+;   BF/24 <B>   diag_b (bring-up / wake dispatches)
+;   BF/25 <R>   diag_r (recovery branch entries)
+;   BF/26 <A>   diag_a (AN0 standby triggers)
+;   BF/27 <P>   diag_p (RA1 edge events; LAST FRAME — CONTROL marks PB
+;                       present + clears PENDING + toggles next-target)
+;
+; The original 4-frame packed scheme (pack(I,D), pack(S,B), pack(R,A),
+; pack(0,P)) was retired 2026-04-19 because data bytes >= 0x80 were
+; re-interpreted as routes by the chain forwarder.  See
+; docs/V163B_DIAGNOSTICS_MENU_SPEC.md.
 diag_i                      EQU  0x123    ; I — i2c_byte_tx ACKSTAT + coeff_write_pen_timeout
 diag_d                      EQU  0x124    ; D — dsp_fault_flags.6 0→1 transition
 diag_s                      EQU  0x125    ; S — standby_event_dispatch → hw_standby_shutdown

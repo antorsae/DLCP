@@ -923,3 +923,68 @@ def test_v32_wire_two_main_preset_soak_under_reconnect_and_full_sync_keeps_both_
             )
     finally:
         chain.close()
+
+
+# ===========================================================================
+# F4 + xfail Group B (2026-04-19 round 2): basic-convergence canary.
+# The 3 quarantined Layer 2 tests are stress-shapes (rapid toggle,
+# interleaved mute, soak with reconnect); the always-on canary below
+# proves the BASIC preset-propagation path (single F2 IR press → both
+# MAINs converge) works.  If THIS canary ever fails, the bug is in
+# basic propagation, not in the stress shape.  This narrows the
+# attribution surface for the 3 quarantined tests.
+# ===========================================================================
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_wire_two_main_basic_preset_convergence_canary() -> None:
+    """Always-on convergence canary: ONE F2 IR press → both MAINs reach
+    preset 1 on a clean (non-stressed) two-MAIN chain.
+
+    This is the cheapest possible end-to-end preset-convergence proof.
+    The 3 quarantined Layer 2 tests
+    (``_V171_LAYER2_RAPID_TOGGLE_XFAIL``) all add stress on top of this
+    same code path:
+      * rapid F1/F2 toggle (5+ presses in quick succession)
+      * mute interleaved during in-flight delayed switch
+      * soak: A↔B alternation + standby/wake cycles
+
+    If THIS canary passes, the basic CONTROL → MAIN0 → MAIN1 preset
+    propagation works under V1.71 Layer 2 cadence (one frame per
+    full-sync trigger), which means the 3 stress tests' failures are
+    rooted in stress-shape-specific behavior — not in basic Layer 2
+    cadence.  That re-aims the Task #20 probe at the stress-specific
+    convergence regression.
+
+    If THIS canary fails, the basic Layer 2 cadence itself is broken
+    and Task #20's scope expands to include basic propagation too.
+    """
+    _require_gpsim()
+    _skip_missing(PATCHED_CONTROL_HEX_V164B, V32_MAIN_HEX)
+
+    chain = _new_v32_two_main_wire_chain(fast_boot=True)
+    try:
+        last = chain.run_until_connected(limit=100)
+        assert last is not None, "two-main wire chain never reached DISPLAY"
+        _set_profile_hypex(chain)
+        assert _main_preset(chain, 0) == 0 and _main_preset(chain, 1) == 0, (
+            f"chain must boot at preset 0 (A); got "
+            f"main0={_main_preset(chain, 0)}, main1={_main_preset(chain, 1)}; "
+            f"debug={[_main_debug_state(chain, idx) for idx in range(len(chain.mains))]}"
+        )
+
+        chain.control.inject_decoded_ir_event(cmd=0x39, addr=0x10, steps=1)
+        _step_without_waiting(chain, steps=2, context="basic preset switch")
+
+        # Long-enough drain for V1.71 Layer 2 cadence (one frame per
+        # full-sync trigger) plus async preset-apply on the MAINs.  The
+        # multiplier is the same one the quarantined stress tests use.
+        _wait_preset_target_converged_allow_reconnect(
+            chain,
+            expected=1,
+            limit=120 * V171_LAYER2_CADENCE_MULTIPLIER,
+            context="basic preset convergence canary",
+        )
+    finally:
+        chain.close()
