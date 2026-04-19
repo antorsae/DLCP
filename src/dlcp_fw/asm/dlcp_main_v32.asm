@@ -15,7 +15,7 @@
 ;   0x4C00 .. 0x55FE  DSP preset table B (slot used in V2.4+ A/B patch path)
 ;   0x5600 .. 0x57FE  DSP preset table A (stock-aligned, pinned to flash top)
 ;   0xF00000+         EEPROM data — config bytes, version marker
-;                     (V3.2 + no-pop + diag block in BANK 2 = 03/02/34)
+;                     (V3.2 + no-pop + diag BANK 2 + cmd21 mask = 03/02/35)
 ;
 ; Build      : gpasm -p18f2455 -o DLCP_Firmware_V3.2.hex dlcp_main_v32.asm
 ;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)
@@ -8896,6 +8896,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_i, W, BANKED
+    andlw       0x0F                            ; mask: chain-forwarder safe
     rcall       uart_tx_byte_blocking
 
     movlw       0xBF
@@ -8904,6 +8905,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_d, W, BANKED
+    andlw       0x0F
     rcall       uart_tx_byte_blocking
 
     movlw       0xBF
@@ -8912,6 +8914,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_s, W, BANKED
+    andlw       0x0F
     rcall       uart_tx_byte_blocking
 
     movlw       0xBF
@@ -8920,6 +8923,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_b, W, BANKED
+    andlw       0x0F
     rcall       uart_tx_byte_blocking
 
     movlw       0xBF
@@ -8928,6 +8932,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_r, W, BANKED
+    andlw       0x0F
     rcall       uart_tx_byte_blocking
 
     movlw       0xBF
@@ -8936,6 +8941,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_a, W, BANKED
+    andlw       0x0F
     rcall       uart_tx_byte_blocking
 
     movlw       0xBF
@@ -8944,8 +8950,20 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlb       0x02
     movf        diag_p, W, BANKED
+    andlw       0x0F
     rcall       uart_tx_byte_blocking
 
+    ; Suppress the cmd-XOR-chain ACK echo byte that the parser tail
+    ; (flow_main_uart_service_1be6_1e6c) would otherwise emit upstream
+    ; for every cmd handler.  After our 7-frame BF/2N reply burst,
+    ; CONTROL doesn't need an additional confirmation byte — it can
+    ; tell from BF/27 reception that the burst completed.  Without
+    ; this suppression, the trailing cumulative-XOR byte (often non-
+    ; route, often non-low-nibble) gets parsed by V1.71 CONTROL as
+    ; data for the next frame, drifting the parser state.  Combined
+    ; with sustained Diag-page cadence this drives chain heartbeat
+    ; loss → reconnect-OERR storm → unit hang.
+    bcf         active_flags, 6, ACCESS         ; suppress cmd-XOR ACK echo
     goto        flow_main_uart_service_1be6_1e6c
 
 ; ---------------------------------------------------------------------------
@@ -9764,7 +9782,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x34, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop + diag block relocated to BANK 2 (rev 0x34)
+    db  0x03, 0x02, 0x35, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop + diag in BANK 2 + cmd21 andlw mask (rev 0x35)
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

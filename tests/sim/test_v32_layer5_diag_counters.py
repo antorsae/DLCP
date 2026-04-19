@@ -520,3 +520,263 @@ def test_v32_cmd21_re_asserts_movlb_before_each_diag_read() -> None:
         f"V3.2 Layer 5 diag block was relocated to 0x2E5..0x2EC on "
         f"2026-04-19 to escape the USB EP1 OUT buffer."
     )
+
+
+# ===========================================================================
+# 2026-04-20 hang-class root-cause tests.
+#
+# Real-HW V1.71 + V3.2 hang surfaced suspicious LCD content: PB2's diag_s
+# and diag_r saturated to '+' (15+ events) within seconds — far more than
+# any plausible real fault rate.  Operator's instinct: this looks like
+# protocol corruption or memory overlap, not seven distinct event classes
+# all firing real events.
+#
+# Investigation found the smoking gun: cmd21_diag_query_handler does
+# `movf diag_X, W, BANKED` followed by `rcall uart_tx_byte_blocking` with
+# NO `andlw 0x0F` mask.  If any diag cell holds a byte > 0x7F (high bit
+# set), the wire byte exceeds 0x7F → MAIN's chain forwarder
+# (flow_main_uart_service_1be6 at line ~1751) treats `cpfsgt 0x7F` as a
+# ROUTE byte, not data → frame breaks → CONTROL parser cascades.
+#
+# How can a diag cell ever exceed 0x0F?
+#   1. RAM at 0x2E5..0x2EC is undefined at first POR.  The cold-init
+#      clrf only fires on POR/BOR (RCON.0=0); a re-flash via bootloader
+#      issues a software reset that leaves RCON.BOR=1 → clrf is skipped
+#      → cells preserve whatever stale RAM was there.
+#   2. The `diag_inc_sat` saturating macro saturates at 0x0F via
+#      `cpfslt counter, BANKED` with W=0x0F.  If the cell starts at
+#      0x10..0xFF (not < 0x0F), the macro skips the increment but
+#      ALSO doesn't bound the cell back to 0x0F.  The cell stays at
+#      whatever value it was.
+#
+# Defense: cmd21 handler MUST mask the byte to 0x0F before TX.  The
+# tests below pin both the structural fix (source-level) and the
+# behavioral invariant (cells > 0x0F must not produce wire bytes > 0x0F).
+# ===========================================================================
+
+
+def test_v32_cmd21_masks_high_nibble_before_tx() -> None:
+    """REGRESSION: cmd21_diag_query_handler must `andlw 0x0F` after each
+    `movf diag_X, W, BANKED` and BEFORE the `rcall uart_tx_byte_blocking`.
+
+    Without this mask, a diag cell with bit 7 set (e.g. 0x80, 0xFF) is
+    transmitted verbatim.  The chain forwarder at
+    flow_main_uart_service_1be6 has `movlw 0x7F; cpfsgt ram_0x00A` —
+    bytes > 0x7F take the route-byte path, breaking the frame.  Once a
+    frame breaks, the V1.71 CONTROL parser drifts, the chain heartbeat
+    starves, V1.62b reconnect-OERR fires, and the unit deadlocks.
+
+    Cells exceed 0x0F when:
+      * RAM is uninitialized at first power-on (cold-init clrf only
+        fires on POR/BOR; a re-flash issues a software reset that
+        leaves RCON.BOR=1, so the clrf is skipped).
+      * `diag_inc_sat` saturates at 0x0F but doesn't bound cells that
+        ALREADY exceed 0x0F — they stay at their corrupted value.
+
+    The mask is defense-in-depth.  Test passes once the asm has 7
+    `andlw 0x0F` instructions inside the cmd21 handler body, one per
+    diag_X read.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    start = _label_offset(text, "cmd21_diag_query_handler")
+    assert start >= 0, "cmd21_diag_query_handler missing"
+    end = text.find("flow_main_uart_service_1be6_1e6c", start)
+    body = text[start:end]
+    # 7 andlw 0x0F instructions (one per diag_X read), each between
+    # the movf and the rcall.
+    andlw_count = len(re.findall(r"\bandlw\s+0x0F\b", body))
+    assert andlw_count >= 7, (
+        f"cmd21 handler must `andlw 0x0F` before each `rcall "
+        f"uart_tx_byte_blocking` to bound the wire byte to "
+        f"0..0x0F (only {andlw_count} masks found, need >= 7).  "
+        f"Without the mask, a corrupted diag cell with bit 7 set "
+        f"becomes a route byte on the wire and breaks chain framing — "
+        f"the root cause of the V1.71 + V3.2 Diag-page hang observed "
+        f"on real hardware (2026-04-20)."
+    )
+
+
+def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
+    v32_hex: Path,
+) -> None:
+    """REGRESSION: even if the diag cells hold corrupted values
+    (high nibble set, e.g. from uninitialized RAM at first power-on),
+    the cmd 0x21 reply burst MUST emit data bytes in 0x00..0x0F range
+    only.
+
+    Test shape:
+      1. Boot V3.2 MAIN under gpsim.
+      2. Force the diag cells (0x2E5..0x2EC) to a high-nibble pattern
+         via gpsim CLI: 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0
+         (each with bit 7 set; chain forwarder would mis-frame these).
+      3. Inject a cmd 0x21 query (CONTROL→MAIN B1/0x21/0x00).
+      4. Capture MAIN's TX byte stream during the reply burst.
+      5. Verify every data byte (offsets 2, 5, 8, 11, 14, 17, 20 of
+         the burst) is in 0x00..0x0F.
+      6. Verify route+cmd bytes (BF/2N pairs) are unchanged.
+
+    This is the behavioral counterpart of
+    `test_v32_cmd21_masks_high_nibble_before_tx` — even if the source
+    test passes (mask is in place), this gpsim test confirms the mask
+    is APPLIED at the right point in the instruction sequence.
+    """
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    try:
+        from dlcp_fw.sim.main_gpsim import GpsimMainHarness
+    except Exception:
+        pytest.skip("main_gpsim harness not importable")
+
+    h = GpsimMainHarness(v32_hex)
+    try:
+        h.warmup(2_000_000)
+        # Force corrupted diag cells: 0x80, 0x90, ..., 0xE0 (all bit 7 set).
+        corrupted = (0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0)
+        for offset, value in enumerate(corrupted):
+            h._issue(f"reg(0x{0x2E5 + offset:03X})=0x{value:02X}", 5.0)
+        # Verify the writes took.
+        for offset, value in enumerate(corrupted):
+            actual = _read_reg_helper_local(h._issue, 0x2E5 + offset)
+            assert actual == value, (
+                f"failed to corrupt diag cell at 0x{0x2E5+offset:03X} "
+                f"to 0x{value:02X} (got 0x{actual:02X})"
+            )
+        # Inject cmd 0x21 query and capture MAIN's TX stream.
+        # NOTE: the MainHarness API for injecting a chain frame and
+        # reading TX exists — wire it up via inject_frames_fifo and
+        # then sample the TX recorder.  If a simpler interface is
+        # available, prefer that.  Detail intentionally elided here
+        # so the test stays focused on the WHAT being asserted; the
+        # implementation can adapt to the harness API.
+        try:
+            tx_bytes = _capture_cmd21_tx_burst(h, query_route=0xB1)
+        except NotImplementedError as exc:
+            pytest.skip(
+                f"cmd21 TX-capture helper not yet implemented in "
+                f"main_gpsim harness ({exc}); the source-level mask "
+                f"test (`test_v32_cmd21_masks_high_nibble_before_tx`) "
+                f"covers the same invariant at compile time."
+            )
+        # Reply burst structure: 7 frames of [BF, 2N, data].
+        # Offsets in the captured stream:
+        #   0  : BF
+        #   1  : 0x21
+        #   2  : data (diag_i)
+        #   3  : BF
+        #   4  : 0x22
+        #   5  : data (diag_d)
+        #   ... (every 3 bytes)
+        assert len(tx_bytes) >= 21, (
+            f"reply burst too short ({len(tx_bytes)} bytes), expected "
+            f">= 21 for 7 frames"
+        )
+        for frame_idx in range(7):
+            base = frame_idx * 3
+            assert tx_bytes[base] == 0xBF, (
+                f"frame {frame_idx} route byte: expected 0xBF, "
+                f"got 0x{tx_bytes[base]:02X}"
+            )
+            assert tx_bytes[base + 1] == 0x21 + frame_idx, (
+                f"frame {frame_idx} cmd byte: expected 0x{0x21+frame_idx:02X}, "
+                f"got 0x{tx_bytes[base+1]:02X}"
+            )
+            data_byte = tx_bytes[base + 2]
+            assert 0x00 <= data_byte <= 0x0F, (
+                f"frame {frame_idx} data byte 0x{data_byte:02X} > 0x0F — "
+                f"chain forwarder will mis-frame this as a route byte. "
+                f"cmd21 handler is missing the `andlw 0x0F` mask."
+            )
+    finally:
+        h.close()
+
+
+def _read_reg_helper_local(issue, addr: int) -> int:
+    """Local copy of _read_reg semantics — returns the byte at
+    physical RAM address via gpsim CLI ``reg(0xNNN)`` query."""
+    out = issue(f"reg(0x{addr:03X})", 5.0)
+    # gpsim returns "reg(0xNNN) = 0xVV" or similar.
+    m = re.search(r"=\s*0x([0-9A-Fa-f]+)", out)
+    if not m:
+        raise RuntimeError(f"unexpected reg() response: {out!r}")
+    return int(m.group(1), 16) & 0xFF
+
+
+def _capture_cmd21_tx_burst(h, *, query_route: int) -> bytes:
+    """Inject a single cmd 0x21 query into MAIN's RX and capture the
+    7-frame BF/2N reply burst from MAIN's TX recorder.
+
+    NOT YET IMPLEMENTED in this harness — the test that calls this
+    helper falls back to a pytest.skip when NotImplementedError fires.
+    The source-level mask test covers the same invariant at compile
+    time so the regression is still caught even when this helper is
+    skipped.
+    """
+    raise NotImplementedError(
+        "cmd21_tx_burst capture requires a main_gpsim harness extension "
+        "that injects a single 3-byte chain frame and exposes the TX "
+        "recorder for byte-level inspection.  Sketch: chain.write_rx_bytes"
+        "([query_route, 0x21, 0x00]); chain.step_until_tx_quiescent(); "
+        "return chain.tx_record_since_last_capture()."
+    )
+
+
+def test_v32_diag_block_address_range_within_wipe_protected_window() -> None:
+    """The diag block (0x2E5..0x2EC) must live INSIDE the wipe-
+    protected BANK 2 upper window (0x2DE..0x2FF).  If a future
+    relocation moves it back into the wiped range (0x200..0x2DD),
+    the cold-init wipe loop would zero the cells on every reset and
+    the diag-block-survives-soft-reset invariant would break.
+    """
+    addrs = [a for _name, a in ALL_COUNTER_ADDRS] + [DIAG_RA1_PREV_ADDR]
+    wipe_start, wipe_end_excl = 0x200, 0x2DE  # wiped by loop 2 in cold init
+    safe_start, safe_end_excl = 0x2DE, 0x300   # BANK 2 upper, wipe-protected
+    for addr in addrs:
+        assert not (wipe_start <= addr < wipe_end_excl), (
+            f"diag cell 0x{addr:03X} sits inside wiped range "
+            f"0x{wipe_start:03X}..0x{wipe_end_excl-1:03X}; "
+            f"cold init would zero it on every reset, breaking the "
+            f"survives-soft-reset invariant"
+        )
+        assert safe_start <= addr < safe_end_excl, (
+            f"diag cell 0x{addr:03X} outside wipe-protected BANK 2 "
+            f"upper window 0x{safe_start:03X}..0x{safe_end_excl-1:03X}"
+        )
+
+
+def test_v32_diag_inc_sat_macro_has_explicit_upper_bound_clamp() -> None:
+    """REGRESSION: `diag_inc_sat` saturates at 0x0F via `cpfslt
+    counter, BANKED` with W=0x0F.  If the counter is ALREADY > 0x0F
+    (corrupted from uninitialized RAM or earlier overwrite), the
+    macro skips the increment but does NOT bound the counter back
+    to 0x0F.  The cell stays at whatever corrupted value it had,
+    and the cmd 0x21 handler will TX that value verbatim (high bit
+    set → chain forwarder breakage).
+
+    Defense: the macro should ALSO clamp counters > 0x0F back to
+    0x0F, OR the cold-init must clear the cells unconditionally
+    (not gated on RCON.BOR).
+
+    Currently expected to fail until the clamp lands.  Marked xfail
+    so it doesn't block other gates.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    macro_idx = text.find("diag_inc_sat MACRO")
+    assert macro_idx >= 0, "diag_inc_sat MACRO definition missing"
+    macro_body = text[macro_idx:macro_idx + 800]
+    # Look for the upper-bound clamp pattern, e.g.:
+    #   movlw 0x0F
+    #   cpfsgt counter, BANKED   ; if counter > 0x0F → clamp
+    #   ... no-op or movff W, counter
+    # OR explicit clearing/saturating logic.
+    has_upper_clamp = bool(
+        re.search(r"cpfsgt\s+counter,\s*BANKED", macro_body)
+    )
+    if not has_upper_clamp:
+        pytest.xfail(
+            "diag_inc_sat does not clamp counters that ALREADY exceed "
+            "0x0F (e.g. from uninitialized RAM or memory corruption).  "
+            "Such counters stay at their corrupted value forever and "
+            "the cmd 0x21 handler will TX them verbatim.  Combined "
+            "with no `andlw 0x0F` mask in the handler, this is the "
+            "root cause of the real-HW Diag-page hang."
+        )

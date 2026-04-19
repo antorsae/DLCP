@@ -745,3 +745,351 @@ def test_v171_v32_layer5_chain_pb2_bridge_canary(
         )
     finally:
         chain.close()
+
+
+# ===========================================================================
+# 2026-04-20 hang-class regression tests.
+#
+# Real-hardware bring-up of V1.71 + V3.2 surfaced a class of bugs the
+# original Phase A/B/C tests did NOT catch:
+#
+#   * On the operator's two-MAIN rig, navigating to the Diagnostics
+#     page rendered counter values for both PBs, but within seconds
+#     PB2's diag_s and diag_r counters saturated to '+' (15+ events)
+#     and CONTROL hung completely (no LCD updates, no IR response).
+#     Only a power-cycle recovered, and reaching the Diag page again
+#     hung in the same way.
+#
+# Why the original tests missed it:
+#
+#   * Phase A (test_v32_layer5_diag_counters.py) verifies MAIN-side
+#     counters at boot are zero and stay zero through warmup — but
+#     never under sustained cmd 0x21 traffic.
+#
+#   * Phase B (test_v171_layer5_diag_page.py) is a CONTROL-only
+#     gpsim run (no MAIN attached); the cmd 0x21 query path is
+#     issued but nothing replies, so no parser-state stress.
+#
+#   * Phase C (this file, all tests above) verifies SHORT-DURATION
+#     behaviors: idle-at-boot, force-counter-and-render-once,
+#     LCD-renders-zero-idle.  None of them sustain the cadence for
+#     the 30+ chain-step window that was needed to surface the
+#     cascade.  The closest test (no_query_off_diag_page) only runs
+#     50 chain steps and stays OFF the page — which is the opposite
+#     stress shape.
+#
+# The tests below close that gap.  Each test asserts an invariant
+# that the operator-observed hang violated:
+#
+#   * sustained_diag_page_keeps_control_responsive — page can be
+#     entered AND exited via LEFT after extended cadence; CONTROL's
+#     LCD doesn't freeze.
+#
+#   * diag_page_does_not_cascade_main_counters — sustained cmd 0x21
+#     traffic must not cause MAIN's diag_s / diag_r / diag_b to
+#     saturate (which on the rig was evidence of a standby/wake
+#     cascade triggered by the cmd 0x21 reply burst itself).
+#
+#   * cmd21_handler_emits_clean_burst — the 7-frame BF/2N reply must
+#     not be followed by a stray cmd-XOR ACK (0x21 echo) byte that
+#     V1.71's parser is not designed to handle.
+# ===========================================================================
+
+
+def _navigate_back_to_volume(chain: WireMultiMainChainHarness) -> None:
+    """Press LEFT twice to walk Diagnostics(2) → Preset(1) → Volume(0).
+
+    Mirror of _navigate_to_diagnostics: 8 settle steps per press so the
+    intermediate Preset(1) screen body has time to repaint before the
+    second press.  Operators on real HW press LEFT/LEFT to leave the
+    Diag page; this helper reproduces that exit path under sim.
+    """
+    for _ in range(2):
+        chain.press("LEFT")
+        for _ in range(8):
+            chain.step()
+
+
+@pytest.mark.gpsim
+@pytest.mark.wire
+@pytest.mark.slow
+def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """REGRESSION: real-HW operator report 2026-04-20 — V1.71 CONTROL
+    hung completely after a few seconds on the Diagnostics page.  LCD
+    stopped updating, IR remote stopped responding, only a power-cycle
+    recovered.
+
+    The page MUST stay responsive: CONTROL must continue ticking the
+    cadence, the operator must be able to navigate AWAY by pressing
+    LEFT, and the chain must reach the Volume screen again.
+
+    Sustained-cadence shape:
+      1. Reach DISPLAY (Volume).
+      2. Navigate to Diagnostics.
+      3. Step the chain for 200 chain steps (multiple cadence cycles
+         + many cmd 0x21 query/reply round-trips on PB1 — PB2 path is
+         currently quarantined under Task #22 but the cadence still
+         issues PB2 queries which fail silently).
+      4. Press LEFT twice → exit page → land back on Volume.
+      5. Verify LCD shows "Volume:" and CONTROL accepted the navigation.
+
+    Hang mode this catches:
+      * v171_diag_loop deadlocks on display_loop_iteration or
+        v171_diag_send_query (Layer 1 bounded TX).
+      * UART RX overrun cascade triggers reconnect-OERR helper which
+        loops indefinitely under continued chain traffic.
+      * CONTROL's button-poll path (v171_diag_check_buttons) loses
+        the LEFT press because it's starved by the parser ISR.
+    """
+    _require_gpsim()
+    _require_v32_hex(v32_hex)
+
+    chain = _new_chain(v171_hex, v32_hex)
+    try:
+        last = chain.run_until_connected(limit=200)
+        assert last is not None, "chain never reached DISPLAY"
+        assert chain.is_connected() and not chain.is_waiting(), (
+            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+        )
+        _navigate_to_diagnostics(chain)
+        # Sustained cadence — at default chunk_cycles=1_000_000 each
+        # chain step is ~83 ms wallclock, so 200 steps ≈ 16.6 s sim
+        # time.  V171_DIAG_POLL_RELOAD = 0x80 ticks ≈ 1 s, so this
+        # window covers ~16 cadence cycles = ~16 PB1 queries + ~16
+        # PB2 queries.  More than enough to hit the cascade if it's
+        # going to happen.
+        for _ in range(200):
+            chain.step()
+            assert not chain.is_waiting(), (
+                "CONTROL fell into WAITING during sustained Diag-page "
+                "cadence — chain heartbeat lost.  This is the cascade-"
+                "induced reconnect storm the real-HW hang surfaced."
+            )
+        # Page should still be responsive.  Press LEFT twice to exit.
+        _navigate_back_to_volume(chain)
+        # Verify we landed back on Volume.
+        line0, line1 = chain.lcd_lines()
+        assert line0.startswith("Volume:"), (
+            f"LEFT/LEFT did not exit Diag page; LCD={(line0, line1)!r}.  "
+            f"CONTROL is wedged on the Diag page — button-poll path "
+            f"isn't picking up the LEFT press, or v171_diag_loop "
+            f"is deadlocked inside display_loop_iteration."
+        )
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.wire
+@pytest.mark.slow
+def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """REGRESSION: on real HW, sustained Diag-page cadence caused PB2's
+    ``diag_s`` and ``diag_r`` to saturate to '+' (15+ events) within
+    seconds — strong evidence that the cmd 0x21 reply burst itself was
+    triggering MAIN-side standby/wake or recovery events, which in turn
+    cascaded into chain instability.
+
+    Invariant: serving cmd 0x21 queries is purely observational.  The
+    handler reads diag_X cells and emits 7 BF/2N frames over UART; it
+    must not provoke standby_event_dispatch (diag_s, diag_b) or
+    volume_dsp_write retry escalation (diag_r).  If it does, the
+    cmd-21-reply path is racing with the standby/recovery state
+    machines and needs a guard (an "armed" check or a higher cadence-
+    interval threshold).
+
+    What this test asserts:
+      1. Boot, capture initial counter snapshot for PB1 (all zero).
+      2. Navigate to Diag page.
+      3. Run sustained cadence for 200 chain steps (~16 cadence cycles).
+      4. Capture post-cadence counter snapshot for PB1.
+      5. diag_s, diag_r, diag_b deltas must be small (< 4 events each).
+         A delta of 15+ means cascade.
+
+    Counter-cascade mode this catches:
+      * MAIN's main loop pause (during cmd 0x21 reply burst) trips
+        watchdog -> standby_event_dispatch -> diag_s++.
+      * I2C transaction interrupted by cmd 0x21 -> volume_dsp_write
+        retry-escalation -> diag_r++.
+      * Wake-after-spurious-standby -> adc_boot_gate -> diag_b++.
+
+    PB1 only — PB2 is currently behind the Group A xfail (Task #22)
+    so its replies don't surface.  But the MAIN1 (PB2) hardware still
+    serves the cmd 0x21 queries, so we ALSO check MAIN1's counter
+    deltas to surface cascade on the PB2 MAIN.
+    """
+    _require_gpsim()
+    _require_v32_hex(v32_hex)
+
+    chain = _new_chain(v171_hex, v32_hex)
+    try:
+        last = chain.run_until_connected(limit=200)
+        assert last is not None, "chain never reached DISPLAY"
+        assert chain.is_connected() and not chain.is_waiting(), (
+            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+        )
+
+        baseline_pb1 = _main_diag_block(chain, 0)
+        baseline_pb2 = _main_diag_block(chain, 1)
+
+        _navigate_to_diagnostics(chain)
+        for _ in range(200):
+            chain.step()
+
+        post_pb1 = _main_diag_block(chain, 0)
+        post_pb2 = _main_diag_block(chain, 1)
+
+        # Index map: 0=I, 1=D, 2=S, 3=B, 4=R, 5=A, 6=P
+        names = ("I", "D", "S", "B", "R", "A", "P")
+        # Cascade-sensitive counters: S (standby), B (bring-up), R (recovery)
+        # I (i2c) and D (DSP fault) can also bump from cmd 0x21 race
+        # with the i2c bus.  P (RA1) and A (AN0) are independent of
+        # the cmd 0x21 path, so we don't gate on them.
+        cascade_idx = (("S", 2), ("B", 3), ("R", 4), ("I", 0), ("D", 1))
+        # Threshold: 4 events across 200 chain steps (~16 cadence
+        # cycles) is generous.  Real hangs saturated at 15+ in roughly
+        # the same window.
+        threshold = 4
+        for label, idx in cascade_idx:
+            for pb_idx, baseline, post, tag in (
+                (0, baseline_pb1, post_pb1, "PB1"),
+                (1, baseline_pb2, post_pb2, "PB2"),
+            ):
+                delta = post[idx] - baseline[idx]
+                # Saturation arithmetic: if post hit 0x0F (saturated)
+                # and baseline was below, delta is at least the
+                # difference; if both saturated, delta is 0 but the
+                # post value is still high.
+                assert delta < threshold and post[idx] < threshold, (
+                    f"cascade detected: {tag}.diag_{label} went from "
+                    f"{baseline[idx]} to {post[idx]} (delta={delta}) "
+                    f"during sustained Diag-page cadence.  Serving "
+                    f"cmd 0x21 queries should be observational — if "
+                    f"the handler triggers standby/wake/recovery "
+                    f"events, the chain enters a cascade and CONTROL "
+                    f"hangs.  Full snapshot: baseline={baseline}, "
+                    f"post={post}."
+                )
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.wire
+@pytest.mark.slow
+def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """REGRESSION: on real HW the operator could not navigate away
+    from a hung Diag page — LEFT presses were ignored.  Even WITHOUT
+    a full hang, a slow button-poll on the Diag page would make the
+    UI feel unresponsive.
+
+    Invariant: pressing LEFT on the Diag page must take CONTROL back
+    to the Preset screen within a small number of chain steps (the
+    same responsiveness budget the other menu screens give).
+
+    Test shape:
+      1. Reach DISPLAY, navigate to Diag.
+      2. Run a few cadence cycles so the page is "warm".
+      3. Press LEFT once.
+      4. Step the chain for at most 12 steps.
+      5. Verify LCD shows the Preset screen (not Diag).
+    """
+    _require_gpsim()
+    _require_v32_hex(v32_hex)
+
+    chain = _new_chain(v171_hex, v32_hex)
+    try:
+        last = chain.run_until_connected(limit=200)
+        assert last is not None, "chain never reached DISPLAY"
+        _navigate_to_diagnostics(chain)
+        # Warm-up window — let cadence fire a couple of times.
+        for _ in range(40):
+            chain.step()
+        # Confirm we ARE on the Diag page (sanity check before testing exit).
+        line0_diag, _ = chain.lcd_lines()
+        assert line0_diag.startswith("1:"), (
+            f"chain did not reach Diag page after navigation; LCD={line0_diag!r}"
+        )
+        # Single LEFT press, bounded settle window.
+        chain.press("LEFT")
+        exit_seen = False
+        for step in range(12):
+            chain.step()
+            line0, _ = chain.lcd_lines()
+            if not line0.startswith("1:"):
+                exit_seen = True
+                break
+        assert exit_seen, (
+            "LEFT press did not exit Diag page within 12 chain steps; "
+            "v171_diag_check_buttons isn't acting on the press promptly. "
+            f"Final LCD: {chain.lcd_lines()!r}"
+        )
+    finally:
+        chain.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
+    v32_hex: Path,
+) -> None:
+    """REGRESSION: V3.2's cmd 0x21 handler returns to the parser tail at
+    ``flow_main_uart_service_1be6_1e6c`` which (under the cmd-XOR-chain
+    dispatch path) emits an EXTRA byte — the cmd-XOR ACK echo (0x21
+    for cmd 0x21).  Stock V1.x parsers tolerate this trailing byte, but
+    V1.71's diagnostics parser only handles BF/21..27 frames; an
+    unsolicited 0x21 byte at parser frame_position=0 may bleed into the
+    next frame's state and progressively misalign the parser.
+
+    This test pins WHAT the V3.2 cmd 0x21 handler emits at the source
+    level.  Specifically:
+      1. The handler MUST goto ``flow_main_uart_service_1be6_1e6c``
+         (so it integrates with the standard parser tail).
+      2. The handler MUST clear ``active_flags.bit6`` BEFORE returning
+         to suppress the cmd-XOR ACK echo (defense in depth — if the
+         ACK byte is the parser-corruption root cause, this prevents
+         it; if it's not, this is a no-op cleanup).
+
+    Right now this test FAILS because the handler doesn't clear bit 6.
+    Once we land that suppression (proposed fix B), this test passes
+    and pins the new behavior so a future revert is caught.
+
+    Marked xfail until the suppression lands so the gate doesn't block
+    other work; flip to passing assertion once the fix is in.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8") if 'V32_MAIN_ASM' in globals() else None
+    if text is None:
+        from dlcp_fw.paths import V32_MAIN_ASM as _V32
+        text = _V32.read_text(encoding="utf-8")
+    handler_idx = text.find("cmd21_diag_query_handler:")
+    assert handler_idx >= 0, "cmd21_diag_query_handler missing"
+    body_end = text.find("\n; ---", handler_idx + 1)
+    assert body_end > handler_idx, "could not delimit cmd21 handler body"
+    body = text[handler_idx:body_end]
+    # Required: the goto target.
+    assert "goto" in body and "flow_main_uart_service_1be6_1e6c" in body, (
+        "cmd21 handler must exit via flow_main_uart_service_1be6_1e6c "
+        "so dispatch/forwarding is consistent with stock cmd handlers"
+    )
+    # Defense in depth: bit 6 (cmd-XOR-chain ACK marker) should be
+    # cleared before goto so the parser tail does NOT emit the
+    # trailing 0x21 ACK byte.  If this assertion fails, fix is in
+    # progress.  If it passes, the suppression has been applied.
+    has_bit6_clear = bool(
+        re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body)
+    )
+    if not has_bit6_clear:
+        pytest.xfail(
+            "cmd21 handler does not yet clear active_flags.bit6 — the "
+            "parser tail still emits the trailing 0x21 ACK echo.  "
+            "Suspected contributor to the V1.71 + V3.2 Diag-page hang "
+            "observed on real HW (2026-04-20).  Fix is option B in "
+            "the analysis: insert `bcf active_flags, 6, ACCESS` "
+            "before the final `goto flow_main_uart_service_1be6_1e6c`."
+        )
+    # When the fix is in, fall through and the test passes.
