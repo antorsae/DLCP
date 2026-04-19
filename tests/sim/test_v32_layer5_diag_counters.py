@@ -40,14 +40,20 @@ from dlcp_fw.sim.v30_symbols import assemble_v30, load_gpasm_symbols_for_hex
 # Constants pinned to the Layer 5 design (see ram.inc rationale)
 # ---------------------------------------------------------------------------
 
-DIAG_I_ADDR = 0x123
-DIAG_D_ADDR = 0x124
-DIAG_S_ADDR = 0x125
-DIAG_B_ADDR = 0x126
-DIAG_R_ADDR = 0x127
-DIAG_A_ADDR = 0x128
-DIAG_P_ADDR = 0x129
-DIAG_RA1_PREV_ADDR = 0x12A
+# Relocated 2026-04-19 from 0x123..0x12A to escape the USB EP1 OUT buffer
+# (0x11A..0x159) which the SIE writes via hardware DMA — the original
+# placement caused HID payload byte 14 corruption on every filename /
+# route HID write.  The new BANK 2 upper region (0x2DE..0x2FF) is wipe-
+# protected, so the cold-init save/restore wrapper was removed and
+# replaced with an explicit POR/BOR-only clrf sequence.
+DIAG_I_ADDR = 0x2E5
+DIAG_D_ADDR = 0x2E6
+DIAG_S_ADDR = 0x2E7
+DIAG_B_ADDR = 0x2E8
+DIAG_R_ADDR = 0x2E9
+DIAG_A_ADDR = 0x2EA
+DIAG_P_ADDR = 0x2EB
+DIAG_RA1_PREV_ADDR = 0x2EC
 
 ALL_COUNTER_ADDRS = (
     ("diag_i", DIAG_I_ADDR),
@@ -106,11 +112,14 @@ def _label_offset(text: str, name: str) -> int:
 
 @pytest.mark.parametrize("name,addr", ALL_COUNTER_ADDRS)
 def test_ram_inc_defines_diag_counter(name: str, addr: int) -> None:
-    """Each diag counter EQU is at the spec-mandated address.
+    """Each diag counter EQU is at the relocated address (BANK 2 upper).
 
-    The spec (V163B_DIAGNOSTICS_MENU_SPEC.md §MAIN RAM layout) pins
-    these to 0x123..0x129 to fit in the unused gap between
-    ram_0x122 and ram_0x12C.
+    The original 0x123..0x129 placement collided with the USB EP1 OUT
+    buffer at 0x11A..0x159 — the SIE wrote HID payload bytes into the
+    diag block, and ra1_edge_monitor then corrupted HID payload byte 14
+    on every filename / route HID write.  Relocated 2026-04-19 to
+    0x2E5..0x2EC (BANK 2 upper, wipe-protected, well clear of every
+    USB endpoint buffer).  See dlcp_main_ram.inc "RAM safety" section.
     """
     ram_inc = (V32_MAIN_ASM.parent / "dlcp_main_ram.inc").read_text(encoding="utf-8")
     actual = _equ_address(ram_inc, name)
@@ -121,10 +130,45 @@ def test_ram_inc_defines_diag_counter(name: str, addr: int) -> None:
 
 
 def test_ram_inc_defines_diag_ra1_prev() -> None:
-    """diag_ra1_prev is the edge-detect shadow at 0x12A."""
+    """diag_ra1_prev is the edge-detect shadow at 0x2EC."""
     ram_inc = (V32_MAIN_ASM.parent / "dlcp_main_ram.inc").read_text(encoding="utf-8")
     addr = _equ_address(ram_inc, "diag_ra1_prev")
     assert addr == DIAG_RA1_PREV_ADDR
+
+
+def test_diag_block_outside_usb_endpoint_buffers() -> None:
+    """Pin the diag block OUTSIDE every USB endpoint buffer range.
+
+    The original 0x123..0x12A placement sat INSIDE the USB EP1 OUT
+    buffer (0x11A..0x159) which the SIE writes via hardware DMA.  No
+    asm-instruction grep can detect that overlap, so this test
+    explicitly enumerates the empirically-verified buffer ranges and
+    asserts every diag cell falls outside ALL of them.
+
+    Buffer ranges (from dlcp_main_ram.inc "RAM safety" section):
+      * 0x11A..0x159 — EP1 OUT (HID interrupt OUT)  [SIE writes]
+      * 0x15A..0x199 — EP1 IN  (HID interrupt IN)
+      * 0x1ED..0x1F4 — EP0 SETUP (control transfer SETUP)
+      * 0x400..0x4FF — USB BDT (PIC18F2455 hardware-fixed)
+
+    Wipe-protected regions safe to use:
+      * 0x00..0x5F, 0xED..0xFF, 0x1E5..0x1FF, 0x2DE..0x2FF, 0x3C0..0x3FF
+    """
+    forbidden_ranges = (
+        (0x11A, 0x159, "EP1 OUT (HID OUT)"),
+        (0x15A, 0x199, "EP1 IN (HID IN)"),
+        (0x1ED, 0x1F4, "EP0 SETUP"),
+        (0x400, 0x4FF, "USB BDT"),
+    )
+    for name, addr in (*ALL_COUNTER_ADDRS, ("diag_ra1_prev", DIAG_RA1_PREV_ADDR)):
+        for lo, hi, label in forbidden_ranges:
+            assert not (lo <= addr <= hi), (
+                f"{name}=0x{addr:03X} sits inside {label} ({lo:#05x}..{hi:#05x}) — "
+                f"the SIE/firmware will overwrite this byte during normal operation, "
+                f"corrupting the diag counter and (worse) corrupting the USB payload "
+                f"the buffer was supposed to carry.  See dlcp_main_ram.inc "
+                f"\"RAM safety\" section for verified-safe regions."
+            )
 
 
 def test_v32_source_defines_diag_inc_sat_macro() -> None:
@@ -270,31 +314,44 @@ def test_v32_source_cmd21_handler_emits_seven_bf_frames() -> None:
         assert m, f"cmd21 reply handler missing frame for cmd 0x{cmd_byte:02X}"
 
 
-def test_v32_source_cold_init_saves_diag_block_before_wipe() -> None:
-    """RCON gate: cold init must save diag_X to access scratch BEFORE the
-    bank-1 wipe (otherwise the wipe destroys them before save)."""
+def test_v32_source_cold_init_does_not_save_diag_block_before_wipe() -> None:
+    """Negative regression: after the 2026-04-19 relocation, the diag block
+    lives in the wipe-protected BANK 2 upper region, so the cold init
+    must NOT have a pre-wipe save block.  Re-introducing the save would
+    suggest someone moved the diag block back into a wiped region.
+    """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
-    # Save block lives between the entry label and the first lfsr (0x0300 wipe).
     first_lfsr = text.find("lfsr        FSR0, 0x0300", start)
-    save_block = text[start:first_lfsr]
+    pre_wipe = text[start:first_lfsr]
+    # Pre-wipe block should be empty (no diag-touching movff at all).
     for name in ("diag_i", "diag_d", "diag_s", "diag_b", "diag_r", "diag_a", "diag_p", "diag_ra1_prev"):
-        assert re.search(rf"movff\s+{name},\s*ram_0x[0-9A-Fa-f]{{3}}", save_block), (
-            f"cold-init save block missing pre-wipe save of {name}"
+        assert not re.search(rf"movff\s+{name}\b", pre_wipe), (
+            f"pre-wipe save of {name} reappeared — suggests someone moved "
+            f"the diag block back into a wiped region (0x100..0x1E4 etc).  "
+            f"The 2026-04-19 relocation moved it to 0x2E5..0x2EC (wipe-"
+            f"protected) so no save/restore wrapper should be needed."
         )
 
 
-def test_v32_source_cold_init_conditionally_restores_diag_block_on_non_por_reset() -> None:
-    """RCON gate: after wipes, RCON.BOR=0 (POR/BOR) leaves zeros; RCON.BOR=1
-    (MCLR/WDT/RESET-instr) restores the saved block.  And RCON.BOR is set
-    afterward so the next reset can be classified."""
+def test_v32_source_cold_init_clears_diag_block_on_por_only() -> None:
+    """RCON gate (post-2026-04-19 relocation): after wipes, RCON.BOR=1
+    (non-POR/BOR reset) preserves the diag block in place; RCON.BOR=0
+    (POR/BOR cold start) explicitly clrf's the 8 diag cells.  RCON.BOR
+    + RCON.POR are re-armed afterwards so the next reset is classifiable.
+
+    Branch direction is INVERTED from the pre-relocation save/restore
+    pattern: the wipe used to clear the cells unconditionally and the
+    gate restored on non-POR/BOR; now the gate clears on POR/BOR.
+    """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     start = _label_offset(text, "flow_main_flash_service_3ce8_3d78")
     end_marker = text.find("clrf        ram_0x05F", start)
     block = text[start:end_marker]
-    assert re.search(r"btfss\s+RCON,\s*0,\s*ACCESS", block), (
-        "RCON gate must check RCON bit 0 (BOR) to distinguish POR/BOR from "
-        "MCLR/WDT/RESET-instr"
+    # btfsc RCON,0 (BOR=1 → preserve, skip clrf)
+    assert re.search(r"btfsc\s+RCON,\s*0,\s*ACCESS", block), (
+        "RCON gate must use btfsc RCON,0 (BOR set → non-POR/BOR reset → "
+        "skip the clrf so the diag block survives)"
     )
     assert re.search(r"bsf\s+RCON,\s*0,\s*ACCESS", block), (
         "RCON.BOR must be re-armed after the gate so the next reset is "
@@ -303,11 +360,15 @@ def test_v32_source_cold_init_conditionally_restores_diag_block_on_non_por_reset
     assert re.search(r"bsf\s+RCON,\s*1,\s*ACCESS", block), (
         "RCON.POR must also be re-armed for the same reason"
     )
-    # And the conditional restore branch must reference each counter.
+    # The clrf branch (POR/BOR path) must clear all 8 diag cells via BANKED.
     for name in ("diag_i", "diag_d", "diag_s", "diag_b", "diag_r", "diag_a", "diag_p", "diag_ra1_prev"):
-        assert re.search(rf"movff\s+ram_0x[0-9A-Fa-f]{{3}},\s*{name}\b", block), (
-            f"RCON gate restore branch missing restore of {name}"
+        assert re.search(rf"clrf\s+{name},\s*BANKED", block), (
+            f"POR/BOR clear branch missing clrf of {name}"
         )
+    # And the bank should be set to 2 (where the relocated diag block lives).
+    assert re.search(r"movlb\s+0x02", block), (
+        "POR/BOR clear must set BSR=2 before clrf'ing the diag cells"
+    )
 
 
 # ===========================================================================
@@ -450,10 +511,12 @@ def test_v32_cmd21_re_asserts_movlb_before_each_diag_read() -> None:
     body = text[start:end]
     # 7 movlb 0x01 statements (one before each diag_X read).  Use a
     # word-boundary anchor on the right so 0x010 etc. don't match.
-    movlb_count = len(re.findall(r"\bmovlb\s+0x01\b(?!\d)", body))
+    movlb_count = len(re.findall(r"\bmovlb\s+0x02\b(?!\d)", body))
     assert movlb_count >= 7, (
-        f"cmd21 handler must re-assert movlb 0x01 before each of the "
+        f"cmd21 handler must re-assert movlb 0x02 before each of the "
         f"7 diag reads (found {movlb_count}); ensures BSR safety even "
         f"if a previous uart_tx_byte_blocking call took the timeout "
-        f"fallback that clobbers BSR"
+        f"fallback that clobbers BSR.  Bank is 2 (not 1) because the "
+        f"V3.2 Layer 5 diag block was relocated to 0x2E5..0x2EC on "
+        f"2026-04-19 to escape the USB EP1 OUT buffer."
     )

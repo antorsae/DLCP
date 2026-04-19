@@ -270,11 +270,52 @@ ram_0x122                   EQU  0x122
 
 ; --- V3.2 Layer 5 (V163B_DIAGNOSTICS_MENU_SPEC.md) MAIN counter block ---
 ; 7 saturating-byte counters (one per diagnostic event class) plus a 1-byte
-; RA1 edge-detect shadow.  Lives in the unused gap between ram_0x122 and
-; ram_0x12C (verified empty in V3.2 source — no movf / movff / lfsr touches
-; this range).  Reset only on POR/BOR (gated by RCON inspection at cold
-; start); preserved across firmware reset, watchdog recovery, and standby/
-; wake cycles so fault evidence survives.
+; RA1 edge-detect shadow.  Lives at physical 0x2E5..0x2EC (BANK 2 upper,
+; immediately past preset_job_tbl_hi=0x2E4 and well clear of every USB
+; endpoint buffer).
+;
+; ============================================================
+; CRITICAL: do NOT relocate into 0x100..0x1E4 or 0x300..0x3BF.
+; Those ranges are wiped at flash_service init AND, more importantly,
+; 0x11A..0x199 is the USB EP1 OUT/IN buffer pair (HID OUT at 0x11A,
+; HID IN at 0x15A) which the USB SIE writes via hardware DMA — no asm
+; instruction grep can detect that.  The original draft placed this
+; block at 0x123..0x12A which sat INSIDE the HID OUT buffer; the
+; ra1_edge_monitor periodic tick then corrupted HID payload byte 14
+; on every filename / route HID write between SIE write and handler
+; read.  See "RAM safety" section below for the verified-safe regions.
+; ============================================================
+;
+; RAM safety (verified empty in V3.2 source AND verified outside every
+; USB endpoint buffer + UART / MSSP DMA target):
+;
+;   * Wiped on flash_service init:
+;       0x60..0xEC, 0x100..0x1E4, 0x200..0x2DD, 0x300..0x3BF
+;     These regions are touched by hardware (USB SIE, USB EP buffers)
+;     and/or transient application state — the wipe is safe because
+;     anything important is reinitialized.  DO NOT place persistent
+;     state here.
+;
+;   * Wipe-protected (survives flash_service init):
+;       0x00..0x5F   (access bank — used as scratch by helpers)
+;       0xED..0xFF   (BANK 0 upper — bootloader handshake state)
+;       0x1E5..0x1FF (BANK 1 upper — FW status string + EP0 SETUP)
+;       0x2DE..0x2FF (BANK 2 upper — preset_job state at 0x2DE..0x2E4,
+;                      then 0x2E5..0x2FF FREE)
+;       0x3C0..0x3FF (BANK 3 upper)
+;
+;   * USB EP buffers (verified empirically by handler reads):
+;       0x11A..0x159 = EP1 OUT (HID interrupt OUT)  [SIE writes here]
+;       0x15A..0x199 = EP1 IN  (HID interrupt IN)   [firmware writes here]
+;       0x1ED..0x1F4 = EP0 SETUP (control transfer SETUP token)
+;
+;   * USB BDT: at 0x400..0x4FF (PIC18F2455 hardware-fixed).
+;
+; The block at 0x2E5..0x2EC is in the wipe-protected BANK 2 upper
+; region, immediately past preset_job_tbl_hi=0x2E4.  Wipe-protected
+; means the cold-init wipes do NOT clear it (no save/restore wrapper
+; needed) — but POR/BOR leaves RAM uninitialized, so the cold-init
+; path explicitly clears the block when RCON.BOR=0.
 ;
 ; Each counter increments on the named V3.x code path (see asm hooks),
 ; saturates at 0x0F (LCD displays 1..9 / A..E / + at saturation), and is
@@ -294,15 +335,15 @@ ram_0x122                   EQU  0x122
 ; pack(0,P)) was retired 2026-04-19 because data bytes >= 0x80 were
 ; re-interpreted as routes by the chain forwarder.  See
 ; docs/V163B_DIAGNOSTICS_MENU_SPEC.md.
-diag_i                      EQU  0x123    ; I — i2c_byte_tx ACKSTAT + coeff_write_pen_timeout
-diag_d                      EQU  0x124    ; D — dsp_fault_flags.6 0→1 transition
-diag_s                      EQU  0x125    ; S — standby_event_dispatch → hw_standby_shutdown
-diag_b                      EQU  0x126    ; B — standby_event_dispatch → adc_boot_gate
-diag_r                      EQU  0x127    ; R — volume_dsp_write retry-exhausted recovery
-diag_a                      EQU  0x128    ; A — an0_hysteresis_monitor low-threshold trip
-diag_p                      EQU  0x129    ; P — RA1 edge event hook
-diag_ra1_prev               EQU  0x12A    ; previous RA1 sample (edge-detect shadow)
-; 0x12B reserved (alignment + future RCON-cause persistence)
+diag_i                      EQU  0x2E5    ; I — i2c_byte_tx ACKSTAT + coeff_write_pen_timeout
+diag_d                      EQU  0x2E6    ; D — dsp_fault_flags.6 0→1 transition
+diag_s                      EQU  0x2E7    ; S — standby_event_dispatch → hw_standby_shutdown
+diag_b                      EQU  0x2E8    ; B — standby_event_dispatch → adc_boot_gate
+diag_r                      EQU  0x2E9    ; R — volume_dsp_write retry-exhausted recovery
+diag_a                      EQU  0x2EA    ; A — an0_hysteresis_monitor low-threshold trip
+diag_p                      EQU  0x2EB    ; P — RA1 edge event hook
+diag_ra1_prev               EQU  0x2EC    ; previous RA1 sample (edge-detect shadow)
+; 0x2ED..0x2FF reserved (alignment + future Layer 5 expansion)
 
 ram_0x12C                   EQU  0x12C
 ram_0x12D                   EQU  0x12D

@@ -15,7 +15,7 @@
 ;   0x4C00 .. 0x55FE  DSP preset table B (slot used in V2.4+ A/B patch path)
 ;   0x5600 .. 0x57FE  DSP preset table A (stock-aligned, pinned to flash top)
 ;   0xF00000+         EEPROM data — config bytes, version marker
-;                     (V3.2 + no-pop flash entry = 03/02/33)
+;                     (V3.2 + no-pop + diag block in BANK 2 = 03/02/34)
 ;
 ; Build      : gpasm -p18f2455 -o DLCP_Firmware_V3.2.hex dlcp_main_v32.asm
 ;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)
@@ -184,9 +184,9 @@ preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read 
 ;
 ; Usage:    diag_inc_sat   diag_i
 diag_inc_sat MACRO counter
-    movlb   0x01
+    movlb   0x02                        ; V3.2 Layer 5 diag block now in BANK 2
     movlw   0x0F
-    cpfslt  counter, BANKED            ; skip if counter < 0x0F
+    cpfslt  counter, BANKED             ; skip if counter < 0x0F
     bra     $+4                         ; (executed when counter >= 0x0F → no inc)
     incf    counter, F, BANKED          ; (executed when counter < 0x0F → inc)
     ENDM
@@ -6290,23 +6290,6 @@ flow_main_flash_service_3ce8_3d04:
 flow_main_flash_service_3ce8_3d4c:
     return      0
 flow_main_flash_service_3ce8_3d4e:
-    ; --- V3.2 Layer 5: preserve diag block across non-POR/BOR resets ---
-    ; Save the 8-byte diag block (diag_i..diag_ra1_prev at 0x123..0x12A)
-    ; to access-bank scratch BEFORE the bank-1 wipe loop wipes it.  After
-    ; all wipes, RCON inspection decides whether to restore (non-POR/BOR
-    ; reset) or leave the just-wiped zeros (POR/BOR cold start) — see
-    ; docs/V163B_DIAGNOSTICS_MENU_SPEC.md "MAIN init / clear behavior".
-    ; Saved into ram_0x00B..ram_0x012 (access-bank lower 0x00..0x5F is
-    ; OUTSIDE every wipe range, so the saved bytes survive the loops).
-    movff       diag_i,        ram_0x00B
-    movff       diag_d,        ram_0x00C
-    movff       diag_s,        ram_0x00D
-    movff       diag_b,        ram_0x00E
-    movff       diag_r,        ram_0x00F
-    movff       diag_a,        ram_0x010
-    movff       diag_p,        ram_0x011
-    movff       diag_ra1_prev, ram_0x012
-
     lfsr        FSR0, 0x0300
     movlw       0xC0
 flow_main_flash_service_3ce8_3d54:
@@ -6332,23 +6315,32 @@ flow_main_flash_service_3ce8_3d78:
     decf        WREG, F, ACCESS
     bnz         flow_main_flash_service_3ce8_3d78
 
-    ; --- V3.2 Layer 5: RCON-gated diag block restore ---
-    ; If RCON.BOR == 0: this was a POR or BOR (silicon clears both bits
-    ; on either event); leave the just-wiped zeros in the diag block.
-    ; If RCON.BOR == 1: this was MCLR / RESET-instr / WDT (firmware set
-    ; BOR=1 after the last POR/BOR handling); restore the saved counters
-    ; so fault evidence survives recovery.  Then unconditionally set
-    ; RCON.BOR=1 + RCON.POR=1 so the next reset's cause can be classified.
-    btfss       RCON, 0, ACCESS                    ; skip restore if BOR=0 (POR/BOR cold start)
+    ; --- V3.2 Layer 5: RCON-gated diag block clear (relocated 2026-04-19) ---
+    ; The diag block (0x2E5..0x2EC) lives in the wipe-protected BANK 2
+    ; upper region — the wipe loops above stop at 0x2DD so they do NOT
+    ; touch the diag bytes.  This means non-POR/BOR resets preserve the
+    ; counters automatically (RAM holds its previous value across soft
+    ; reset on PIC18), with no save/restore wrapper needed around the
+    ; wipes.  But on POR/BOR, RAM is undefined — so we explicitly clear
+    ; the 8-byte diag block when RCON.BOR=0 (silicon clears both POR and
+    ; BOR bits on either event; firmware re-arms them below so the next
+    ; reset's cause can be classified).
+    ;
+    ; The original 0x123..0x12A placement sat INSIDE the USB EP1 OUT
+    ; buffer (0x11A..0x159) and required a save-around-wipe wrapper;
+    ; the relocation removed both the wrapper AND the silent HID
+    ; payload corruption that ra1_edge_monitor caused on the old layout.
+    btfsc       RCON, 0, ACCESS                    ; BOR=1 → non-POR/BOR reset → preserve
     bra         diag_post_rcon_check
-    movff       ram_0x00B, diag_i
-    movff       ram_0x00C, diag_d
-    movff       ram_0x00D, diag_s
-    movff       ram_0x00E, diag_b
-    movff       ram_0x00F, diag_r
-    movff       ram_0x010, diag_a
-    movff       ram_0x011, diag_p
-    movff       ram_0x012, diag_ra1_prev
+    movlb       0x02
+    clrf        diag_i, BANKED
+    clrf        diag_d, BANKED
+    clrf        diag_s, BANKED
+    clrf        diag_b, BANKED
+    clrf        diag_r, BANKED
+    clrf        diag_a, BANKED
+    clrf        diag_p, BANKED
+    clrf        diag_ra1_prev, BANKED
 diag_post_rcon_check:
     bsf         RCON, 0, ACCESS                    ; arm BOR detection for next reset
     bsf         RCON, 1, ACCESS                    ; arm POR detection for next reset
@@ -8214,7 +8206,7 @@ periodic_service_loop:
 ; ---------------------------------------------------------------------------
 ra1_edge_monitor:
     movff       BSR, ram_0x00E                  ; save caller BSR
-    movlb       0x01                            ; switch to bank 1 for diag_*
+    movlb       0x02                            ; V3.2 Layer 5 diag block in BANK 2
     movf        PORTA, W, ACCESS                ; W = PORTA snapshot
     andlw       0x02                            ; isolate RA1
     xorwf       diag_ra1_prev, W, BANKED        ; W = current ^ prev (bit 1 only)
@@ -8224,7 +8216,7 @@ ra1_edge_monitor:
     movf        PORTA, W, ACCESS
     andlw       0x02
     movwf       diag_ra1_prev, BANKED
-    diag_inc_sat diag_p                          ; macro re-asserts movlb 0x01
+    diag_inc_sat diag_p                          ; macro re-asserts movlb 0x02
 ra1_no_edge:
     movff       ram_0x00E, BSR                  ; restore caller BSR
     return      0
@@ -8887,17 +8879,22 @@ cmd21_diag_query_handler:
     ;   BF/27 = diag_p  (last frame; CONTROL uses this to mark PB
     ;                    present and toggle next-target)
     ; BSR safety: each `movf diag_X, W, BANKED` re-asserts
-    ; `movlb 0x01` because the uart_tx_byte_blocking timeout fallback
+    ; `movlb 0x02` because the uart_tx_byte_blocking timeout fallback
     ; (uart_tx_timeout → uart_config) does an unconditional
     ; `movlb 0x0` and never restores BSR.  Without re-asserting,
     ; a TRMT timeout mid-burst would drop subsequent reads to bank 0,
     ; producing garbage data bytes that could violate the < 0x80
     ; chain-forwarder invariant the seven-frame protocol relies on.
+    ; Bank is 2 (not 1) because the V3.2 Layer 5 diag block was
+    ; relocated from 0x123..0x12A to 0x2E5..0x2EC on 2026-04-19 to
+    ; escape the USB EP1 OUT buffer (HID OUT) at 0x11A..0x159 — the
+    ; original placement caused HID payload byte 14 corruption on
+    ; every filename / route HID write.  See dlcp_main_ram.inc.
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x21
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_i, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8905,7 +8902,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x22
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_d, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8913,7 +8910,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x23
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_s, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8921,7 +8918,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x24
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_b, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8929,7 +8926,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x25
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_r, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8937,7 +8934,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x26
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_a, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -8945,7 +8942,7 @@ cmd21_diag_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x27
     rcall       uart_tx_byte_blocking
-    movlb       0x01
+    movlb       0x02
     movf        diag_p, W, BANKED
     rcall       uart_tx_byte_blocking
 
@@ -9767,7 +9764,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x33, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop flash entry (rev 0x33)
+    db  0x03, 0x02, 0x34, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop + diag block relocated to BANK 2 (rev 0x34)
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

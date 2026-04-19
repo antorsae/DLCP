@@ -32,8 +32,11 @@ from dlcp_fw.sim.v30_symbols import assemble_v30
 # Constants pinned to the no-pop design
 # ---------------------------------------------------------------------------
 
-# EEPROM version-marker tuple (V3.2 + no-pop = 0x03, 0x02, 0x33).
-EEPROM_VERSION_TUPLE = (0x03, 0x02, 0x33)
+# EEPROM version-marker tuple
+# (V3.2 + no-pop + diag block in BANK 2 = 0x03, 0x02, 0x34).
+# Bumped 2026-04-19 round 2 from 0x33 → 0x34 to mark images that
+# include the diag-block relocation away from the USB EP1 OUT buffer.
+EEPROM_VERSION_TUPLE = (0x03, 0x02, 0x34)
 
 # Expected helper sequence (instruction phase markers, in order).
 # Each tuple is (regex, description).
@@ -339,13 +342,13 @@ def test_eeprom_version_marker_is_no_pop_revision() -> None:
         f"Field units would no longer be distinguishable from the "
         f"pre-V3.2 image."
     )
-    # And the pop-prone marker must NOT be present (the new tuple
-    # replaces it; both present would be a build error).
-    pop_prone = "0x03, 0x02, 0x32"
-    assert pop_prone not in eeprom_block, (
-        f"both pop-prone ({pop_prone}) and no-pop ({expected}) version "
-        f"markers present in eeprom_data — only one should exist"
-    )
+    # And no earlier-revision marker should be present (the new tuple
+    # replaces it; multiple presents would be a build error).
+    for old in ("0x03, 0x02, 0x32", "0x03, 0x02, 0x33"):
+        assert old not in eeprom_block, (
+            f"earlier-revision marker {old!r} present in eeprom_data alongside "
+            f"the current {expected} — only one version tuple should exist"
+        )
 
 
 def test_helper_uses_bounded_i2c_via_secondary_write() -> None:

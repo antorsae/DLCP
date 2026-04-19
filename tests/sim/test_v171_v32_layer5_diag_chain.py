@@ -72,14 +72,16 @@ V171_DIAG_PB2_BASE_PHYS = 0x187        # I, D, S, B, R, A, P (7 bytes)
 V171_DIAG_TARGET_PHYS = 0x18E
 V171_DIAG_PRESENT_PHYS = 0x18F
 
-# MAIN diag block (BANK 1, physical addresses for gpsim CLI reads)
-DIAG_I_PHYS = 0x123
-DIAG_D_PHYS = 0x124
-DIAG_S_PHYS = 0x125
-DIAG_B_PHYS = 0x126
-DIAG_R_PHYS = 0x127
-DIAG_A_PHYS = 0x128
-DIAG_P_PHYS = 0x129
+# MAIN diag block (BANK 2 upper, physical addresses for gpsim CLI reads).
+# Relocated 2026-04-19 from 0x123..0x12A to escape the USB EP1 OUT buffer
+# (0x11A..0x159).  See dlcp_main_ram.inc "RAM safety" section.
+DIAG_I_PHYS = 0x2E5
+DIAG_D_PHYS = 0x2E6
+DIAG_S_PHYS = 0x2E7
+DIAG_B_PHYS = 0x2E8
+DIAG_R_PHYS = 0x2E9
+DIAG_A_PHYS = 0x2EA
+DIAG_P_PHYS = 0x2EB
 
 # Menu state indices
 STATE_VOLUME = 0
