@@ -411,6 +411,7 @@ Top-level docs:
 - `docs/V31_RELEASE.md` (`V3.1` MAIN deployment workflow with baked preset A/B captures)
 - `docs/V32_RELEASE.md` (recommended `V3.2` MAIN deployment workflow + V1.71 CONTROL pairing)
 - `docs/V171_RELEASE.md` (recommended `V1.71` CONTROL deployment workflow + V3.2 MAIN pairing)
+- `docs/NO_POP_FIRMWARE_FLASH.md` (V3.2+ pop-free flash-entry path; implemented as `flash_entry_quiet_shutdown`; operator validation runbook in `docs/HARDWARE_TEST.md` §"Re-flash pop monitoring")
 - `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
 - `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)
 - `docs/V30_SOURCE_REWRITE_SPEC.md` (V3.0 MAIN source-level rewrite specification)

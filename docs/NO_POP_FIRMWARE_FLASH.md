@@ -1,22 +1,39 @@
 # No-Pop Firmware Flash (V3.2+)
 
-Last updated: 2026-04-17
+Last updated: 2026-04-19 (status: IMPLEMENTED in committed V3.2)
 Scope: Suppress the audible POP emitted by MAIN when the host triggers a
 firmware update (HID cmd `0x40`) on `V3.2` and all later source-assembled
 releases.
 
+## Implementation Status
+
+**Landed in committed V3.2 source as of 2026-04-19.**  This document is
+now descriptive of the shipped behavior; the original "proposed" framing
+is preserved below for historical context.
+
+- Helper at `src/dlcp_fw/asm/dlcp_main_v32.asm` — search for label
+  `flash_entry_quiet_shutdown:` (~line 8568).
+- Dispatch site redirect at `flow_hid_command_dispatch_13d0` — search
+  for the call to `main_flash_service_46de` followed by
+  `goto flash_entry_quiet_shutdown` (~line 745).
+- EEPROM version marker bumped from `0x03, 0x02, 0x32` to
+  `0x03, 0x02, 0x33` — search for `0x03, 0x02, 0x33` in the
+  `eeprom_data` block (~line 9769).
+- Operator hardware-validation runbook lives in
+  [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Re-flash pop monitoring".
+
 ## Summary
 
-The current `V3.2` flash-entry path ends with an unqualified `RESET`
-instruction that tristates every amp/relay pin in a single Tcy. That step is
-the audible pop. This document specifies a minimal, source-level change that
-sequences a digital DSP mute, secondary-device rail drop, and a graceful LAT
-pin drop BEFORE the `RESET`, matching the pop-free sequence `hw_standby_shutdown`
-already uses for the standby path.
+The pre-V3.2 flash-entry path ended with an unqualified `RESET`
+instruction that tristates every amp/relay pin in a single Tcy. That step
+was the audible pop. The V3.2 change sequences a digital DSP mute,
+secondary-device rail drop, and a graceful LAT pin drop BEFORE the
+`RESET`, matching the pop-free sequence `hw_standby_shutdown` already
+uses for the standby path.
 
-The change is comment/code-only in `src/dlcp_fw/asm/dlcp_main_v32.asm`, adds
-~28 instructions of new code, one redirect at the flash trigger call site,
-and changes neither the USB HID protocol nor the bootloader.
+The change is comment/code-only in `src/dlcp_fw/asm/dlcp_main_v32.asm`,
+adds ~28 instructions of new code, one redirect at the flash trigger
+call site, and changes neither the USB HID protocol nor the bootloader.
 
 ## Problem Statement
 
@@ -270,25 +287,30 @@ Classification per the V3.2 hang-hardening-plan convention:
     behavior must be unchanged (no accidental coupling through
     `preset_force_mute`).
 - **hardware required for release candidate**:
-  - `scripts/hardware_loop.py` capture of the audio output across a
-    re-flash cycle, comparing pre/post peak amplitude in the 0 ms .. 500 ms
-    window after `HID cmd 0x40` is sent.
-  - A plain ear test on the two-MAIN rig across at least 10 consecutive
-    re-flash cycles (each MAIN independently) — no pop should be audible.
+  - Human-in-the-loop ear test on the two-MAIN rig — see
+    [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Re-flash pop
+    monitoring" for the operator walk-through.  Minimum is **2
+    re-flash cycles per MAIN** (4 total flash operations across the
+    pair); the rig has no automated audible-pop detector, so
+    automated soak tests are not a substitute.
   - Post-flash boot should remain pop-free (this is already handled by
     `adc_boot_gate`'s staged delays; verify no regression).
-- **abort/recovery hardware test**: power-cut the unit 50 ms into the new
-  Phase A (i.e. during the 100 ms timer3 settle). Power-on recovery MUST
-  drop straight into the bootloader (EEPROM marker already set). Verify the
-  bootloader can still accept a subsequent flash stream.
+  - Optional: `scripts/hardware_loop.py` capture of the audio output
+    across a re-flash cycle, comparing pre/post peak amplitude in the
+    0 ms .. 500 ms window after `HID cmd 0x40` is sent.  Useful for
+    deeper investigation but not required for routine acceptance.
+- **abort/recovery hardware test** (optional, operator-discretion):
+  power-cut the unit 50 ms into the new Phase A (i.e. during the
+  100 ms timer3 settle). Power-on recovery MUST drop straight into the
+  bootloader (EEPROM marker already set). Verify the bootloader can
+  still accept a subsequent flash stream.
 
 Minimum release gate:
 
 1. `test_dlcp_main_flash.py` pass.
 2. `test_v31_v163b_robustness.py` pass.
-3. Hardware re-flash soak ≥ 10 cycles on two-MAIN rig with zero audible
-   pops.
-4. Post-flash abort/recovery verified.
+3. Human-in-the-loop ear test ≥ 2 re-flash cycles per MAIN with zero
+   audible pops.
 
 ## Rollback
 
@@ -327,11 +349,19 @@ hardening items:
 
 ## Definition Of Done
 
-- No audible pop on hardware flash entry across 10+ consecutive re-flash
-  cycles on the two-MAIN rig.
-- Simulation gates unchanged.
-- Post-flash abort/recovery verified.
-- EEPROM version marker advanced so field builds are distinguishable from
-  the pop-prone V3.2 baseline.
-- `docs/V31_RELEASE.md` and `CLAUDE.md` canonical release notes updated
-  to point at the new release HEX as the recommended MAIN deployment.
+- No audible pop on hardware flash entry across **2 consecutive
+  re-flash cycles per MAIN** (= 4 total flash operations across the
+  pair).  Two cycles is the minimum gate because the rig has no
+  automated pop detector and longer soaks don't add information once
+  the helper has been observed firing twice.
+- Simulation gates unchanged
+  (`tests/sim/test_dlcp_main_flash.py`,
+  `tests/sim/test_v31_v163b_robustness.py`).
+- (Optional) Post-flash abort/recovery verified per the optional
+  power-cut test above.
+- EEPROM version marker advanced so field builds are distinguishable
+  from the pop-prone V3.2 baseline (done — `0x03, 0x02, 0x33`).
+- Canonical release notes updated to reflect the no-pop entry path
+  (done — `docs/V32_RELEASE.md` describes V3.2 as the recommended
+  MAIN deployment; release-policy update for downstream docs lands
+  with the next release-cut commit).

@@ -14,7 +14,8 @@
 ;   0x10AC .. 0x4C00  Application code  (HID dispatch, parser, ISR, services)
 ;   0x4C00 .. 0x55FE  DSP preset table B (slot used in V2.4+ A/B patch path)
 ;   0x5600 .. 0x57FE  DSP preset table A (stock-aligned, pinned to flash top)
-;   0xF00000+         EEPROM data — config bytes, version marker (V3.2 = 03/02/32)
+;   0xF00000+         EEPROM data — config bytes, version marker
+;                     (V3.2 + no-pop flash entry = 03/02/33)
 ;
 ; Build      : gpasm -p18f2455 -o DLCP_Firmware_V3.2.hex dlcp_main_v32.asm
 ;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)

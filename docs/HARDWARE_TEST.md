@@ -877,6 +877,77 @@ It is also good enough to answer:
 That makes this setup the right next validation layer before adding more
 simulator complexity.
 
+## Re-flash pop monitoring (V3.2+ no-pop flash entry)
+
+Validates the V3.2 `flash_entry_quiet_shutdown` path against the pre-V3.2
+single-Tcy `RESET` POP described in
+[`docs/NO_POP_FIRMWARE_FLASH.md`](NO_POP_FIRMWARE_FLASH.md).
+
+This rig has **no automated audible-pop detector** — the
+`hardware_loop.py` audio-loopback tooling is for sweep/regression work,
+not transient transient-impulse classification.  The check is
+human-in-the-loop: an operator listens to the speaker while a re-flash
+cycle is triggered and reports pop / no-pop.
+
+### Prerequisites
+
+- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
+  (per [`docs/V32_RELEASE.md`](V32_RELEASE.md))
+- speakers connected at normal listening volume (not muted, no
+  external pad)
+- a quiet listening environment so a low-amplitude click is audible
+
+### Operator walk-through (~3 minutes per MAIN)
+
+For each MAIN (run twice — left, then right):
+
+1. Confirm the unit is playing audio (or at least driving a quiet
+   non-zero coefficient through the DSP).  A unit at preset zero with
+   no input is still a valid baseline because the pop comes from the
+   amp pin tristate transition, not the audio content.
+2. Trigger a re-flash:
+   ```bash
+   .venv_ep0/bin/python scripts/dlcp_v32_release_flash.py --left
+   ```
+   (or `--right`)
+3. Listen at the speaker as `HID cmd 0x40` lands.  Expected behavior
+   on V3.2 with `EEPROM 03/02/33`: no audible pop — at most a single
+   very-quiet click at the moment of `RESET`, similar in level to the
+   normal standby transition.
+4. Wait for the unit to re-enumerate and the flasher to print the
+   post-flash device info.
+
+Repeat the cycle once more on the same MAIN to confirm the result is
+reproducible.  Two cycles per MAIN (= 4 total flash operations across
+the pair) is the minimum acceptance gate for this work.
+
+### Pass criteria
+
+| Cycle | Expected | Failure interpretation |
+|---|---|---|
+| Cycle 1, MAIN0 | no pop | If pop: `flash_entry_quiet_shutdown` did not run, or version marker not bumped — verify EEPROM `03/02/33` via `dlcp_main_flash.py --info-only` after flash |
+| Cycle 2, MAIN0 | no pop | If first was clean but second is loud: `flash_entry_quiet_shutdown` may be aborting via the bounded I2C-timeout path on a wedged secondary device |
+| Cycle 1+2, MAIN1 | no pop | Same interpretations apply per-PB — the helper runs identically on both MAINs |
+
+If any of the four cycles produces an audible pop comparable to the
+pre-V3.2 baseline, the no-pop work has regressed; capture the EEPROM
+version byte and the most recent `dlcp_main_flash.py` log and review
+against the spec's "What NOT To Do" section.
+
+### Power-cut abort recovery (optional)
+
+To verify the EEPROM-marker-first ordering, power-cut the unit ~50 ms
+into the new Phase A (i.e. during the 100 ms `timer3_blocking_delay`
+between rail drop and the final amp gate).  Power back on — the unit
+must drop straight into the bootloader because
+`main_flash_service_46de` already committed `EEPROM[0xFF] = 0` before
+the helper started.  Verify the bootloader can still accept a
+subsequent flash stream by running `scripts/dlcp_v32_release_flash.py`
+again; the unit should re-enumerate and re-flash cleanly.
+
+This abort/recovery test is operator-discretion — it requires power
+control on the unit and isn't part of the routine 2-cycle gate.
+
 ## Diagnostics page (V1.71 + V3.2 Layer 5)
 
 Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.

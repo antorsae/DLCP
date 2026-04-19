@@ -30,6 +30,16 @@ release workflow.
 - `cmd 0x21` reply burst — 7 frames `BF/21..27`, one counter per frame
   in the data byte's low nibble; consumed by the V1.71 CONTROL
   Diagnostics screen
+- pop-free flash entry — the HID `cmd 0x40` re-flash trigger now
+  routes through `flash_entry_quiet_shutdown` (DSP digital mute,
+  secondary-device rail drop, graceful LAT pin drop, 100 ms timer3
+  settle) before the bootloader-entry `RESET`.  Suppresses the
+  audible POP that pre-V3.2 builds emit at re-flash time.  See
+  [`docs/NO_POP_FIRMWARE_FLASH.md`](NO_POP_FIRMWARE_FLASH.md) for
+  the spec and [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md)
+  §"Re-flash pop monitoring" for the operator validation
+  walk-through.  The EEPROM version marker is `0x03, 0x02, 0x33`
+  to distinguish field units from the pop-prone V3.2 baseline.
 
 Counter survival: ordinary firmware reset, watchdog recovery, and
 standby/wake all preserve the counters.  POR/BOR clears them via
