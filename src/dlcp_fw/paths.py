@@ -59,7 +59,12 @@ V31_MAIN_HEX = _path_override("DLCP_FW_V31_MAIN_HEX", V31_MAIN_HEX_CANONICAL)
 V32_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v32.asm"
 V32_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.2.hex"
 V171_CONTROL_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v171.asm"
-V171_CONTROL_HEX = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v171.hex"
+# Canonical V1.71 release hex.  Lives under firmware/patched/releases/ to
+# match the V3.x convention (V3.0/V3.1/V3.2 source-assembled releases also
+# live there).  An earlier draft kept this beside the asm source under
+# src/dlcp_fw/asm/, which violated the AGENTS.md path policy and hid the
+# release artifact from operators using the standard releases-dir lookup.
+V171_CONTROL_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Control_V1.71.hex"
 V17_CONTROL_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17.asm"
 V17_CONTROL_ASM_COMMENTS = (
     PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v17_comments.asm"

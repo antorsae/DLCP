@@ -876,3 +876,98 @@ It is also good enough to answer:
 
 That makes this setup the right next validation layer before adding more
 simulator complexity.
+
+## Diagnostics page (V1.71 + V3.2 Layer 5)
+
+Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
+This is the live-rig confirmation that distinguishes a true firmware
+issue from the gpsim harness's two-MAIN echo-loop modeling limit
+(currently quarantined under Task #22).
+
+### Prerequisites
+
+- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
+  (use `scripts/dlcp_v32_release_flash.py --left` / `--right` per
+  [`docs/V32_RELEASE.md`](V32_RELEASE.md))
+- CONTROL flashed with `firmware/patched/releases/DLCP_Control_V1.71.hex`
+  (use `scripts/flash_control_safe.sh --hex ...` per
+  [`docs/V171_RELEASE.md`](V171_RELEASE.md))
+- both MAINs cold-booted at least once after flash so the V3.2 RCON-gated
+  cold-init has cleared the diag block
+
+### Operator walk-through (5 minutes)
+
+1. Power-cycle both MAINs and CONTROL.  Wait for CONTROL to reach
+   the Volume screen.
+2. From Volume, press the IR `RIGHT` key twice to navigate
+   `Volume(0) → Preset(1) → Diagnostics(2)`.
+3. Observe the LCD.  Expected initial render with no fault history:
+   ```
+   1:I D S B R A P
+   2:I D S B R A P
+   ```
+   (counter chars are spaces when the counter is zero)
+4. Wait ~2 seconds.  Both rows should refresh — `1:` and `2:` rows
+   show the live counter values polled from each PB.
+5. Press the IR `LEFT` key twice to return to Volume.  CONTROL's
+   diag query path is page-local, so leaving the page stops all
+   diag traffic.
+
+### Pass criteria
+
+| What | Expected | Failure attribution |
+|---|---|---|
+| Both rows render `1:` and `2:` prefix | yes | If only `1:` appears: V1.71 CONTROL not flashed correctly |
+| `1:` shows counter chars or `n/a` | yes | If `1:n/a` permanently: PB1 MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) |
+| `2:` shows counter chars or `n/a` | yes | If `2:n/a` permanently: PB2 MAIN doesn't recognize cmd 0x21, OR Task #22 reproduces on hardware |
+| LEFT exits the page cleanly | yes | If CONTROL hangs: violates Layer 1 bounded-TX guarantee |
+| No effect on Volume/Preset/Input/Setup operation | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
+
+### Counter semantics
+
+| LCD char | Meaning |
+|---|---|
+| `I` | I2C transport faults (`i2c_byte_tx` ACKSTAT + `coeff_write_pen_timeout`) |
+| `D` | DSP-fault episodes (`dsp_fault_flags.6` 0→1 transition) |
+| `S` | Standby/shutdown dispatches |
+| `B` | Bring-up / wake dispatches |
+| `R` | Recovery branch entries |
+| `A` | AN0-triggered standby events |
+| `P` | RA1 edge events |
+
+Counter values render as:
+
+| Char | Meaning |
+|---|---|
+| ` ` (space) | counter is zero (no events) |
+| `1`..`9` | counter values 1..9 |
+| `A`..`E` | counter values 10..14 |
+| `+` | counter is saturated at 0x0F (15+ events) |
+
+### Triggering counter increments
+
+Some counters are easy to bump on the rig:
+
+- **`B`** (bring-up): power-cycle the unit; `B` should bump by 1 on
+  the affected PB
+- **`S`** (standby): IR `STANDBY` then IR `WAKE`; `S` and `B` both
+  bump by 1
+- **`A`** (AN0): pull the AN0 line low to simulate the standby
+  trigger (rig-specific)
+
+The remaining counters (`I`, `D`, `R`, `P`) need a fault-injection
+harness to bump and aren't part of the basic operator walk-through.
+
+### Resolves which Task #22 question
+
+If the operator walk-through shows `2:I D S B R A P` (or the same
+counter values as PB1 with PB2-specific values) within ~2 seconds
+of entering the page, the Task #22 quarantined sim failures are
+**gpsim-only** — no firmware bug.  Lifting the 4 xfail markers in
+`tests/sim/test_v171_v32_layer5_diag_chain.py` should be paired with
+a harness-level investigation rather than a firmware change.
+
+If the operator walk-through shows `2:n/a` permanently while `1:` shows
+live counters, the Task #22 sim failures **reproduce on hardware** —
+the V1.71 parser or the V3.2 reply path has a real bug that needs a
+firmware fix.

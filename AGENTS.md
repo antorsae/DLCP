@@ -116,13 +116,16 @@ Use these locations only:
 - Control AB + BF/08 fault indicator/resync: `firmware/patched/releases/DLCP_Control_V1.63b.hex`
 - Control AB + BF/08 + IR endpoint standby/wake: `firmware/patched/releases/DLCP_Control_V1.64b.hex`
 
-### Source-assembled releases (V3.x)
+### Source-assembled releases (V3.x / V1.7x)
 
 - Main V3.0 (stock-equivalent rewrite): `firmware/patched/releases/DLCP_Firmware_V3.0.hex`
 - Main V3.1 (all features inline): `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
-  - Recommended deployed MAIN release when flashed with baked preset A/B captures.
   - Canonical `V3.1` includes HID `cmd 0x43` diagnostic flash/EEPROM memread.
-- Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`
+- Main V3.2 (async delayed-switch + Layer 5 diag counters): `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
+  - **Recommended deployed MAIN release** when flashed with baked preset A/B captures (operator runbook: `docs/V32_RELEASE.md`).
+- Control V1.71 (feature-bearing source rewrite + Layer 1/2/5): `firmware/patched/releases/DLCP_Control_V1.71.hex`
+  - **Recommended deployed CONTROL release** when paired with V3.2 MAIN (operator runbook: `docs/V171_RELEASE.md`).
+- Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`, `src/dlcp_fw/asm/dlcp_main_v32.asm`, `src/dlcp_fw/asm/dlcp_control_v17.asm`, `src/dlcp_fw/asm/dlcp_control_v171.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
 - Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm`, `src/dlcp_fw/asm/dlcp_main_v31_with_nops.asm`, `src/dlcp_fw/asm/dlcp_main_v31_without_nops.asm`, and matching `DLCP_Firmware_V3.1_diag*` / `DLCP_Firmware_V3.1_WITH*_NOPS.hex` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
 - Dedicated USB-safe memread artifact: `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex`
@@ -167,9 +170,12 @@ Canonical constants used across scripts/tests:
 - Stock main: `STOCK_MAIN_HEX`, `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`, `STOCK_MAIN_DUMP_TABLE`, `STOCK_MAIN_DUMP_CONVERTED_HEX`, `STOCK_MAIN_COMBINED_HEX`, `STOCK_MAIN_CONFIG_BITS_EXPORT`, `STOCK_MAIN_EE_DATA_EXPORT`, `STOCK_MAIN_USER_ID_EXPORT`
 - Stock control: `STOCK_CONTROL_HEX_V14`, `STOCK_CONTROL_HEX_V15B`, `STOCK_CONTROL_HEX_V16B`
 - Patched main: `PATCHED_MAIN_HEX_V24`, `PATCHED_MAIN_HEX_V25`, `PATCHED_MAIN_HEX_V26`, `PATCHED_MAIN_HEX_V27`, `PATCHED_MAIN_HEX_V28`, `PATCHED_MAIN_HEX` (alias for V2.7)
-- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX_CANONICAL`, `V31_MAIN_ASM_CANONICAL`, `V31_MAIN_HEX`, `V31_MAIN_ASM`
+- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX_CANONICAL`, `V31_MAIN_ASM_CANONICAL`, `V31_MAIN_HEX`, `V31_MAIN_ASM`, `V32_MAIN_HEX`, `V32_MAIN_ASM`
   - `V31_MAIN_HEX_CANONICAL` / `V31_MAIN_ASM_CANONICAL` are the repo-stable inputs for canonical V3.1 builders
   - `V31_MAIN_HEX` / `V31_MAIN_ASM` may be overridden for diagnostics with `DLCP_FW_V31_MAIN_HEX` / `DLCP_FW_V31_MAIN_ASM`
+  - `V32_MAIN_HEX` is the canonical V3.2 release artifact at `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
+- Source-assembled control: `V17_CONTROL_ASM`, `V17_CONTROL_ASM_COMMENTS`, `V17_CONTROL_ASM_SHIFTED`, `V171_CONTROL_ASM`, `V171_CONTROL_HEX`
+  - `V171_CONTROL_HEX` is the canonical V1.71 release artifact at `firmware/patched/releases/DLCP_Control_V1.71.hex`
 - Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`, `PATCHED_CONTROL_HEX_V164B`
 - Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
 - Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`, `GPSIM_XTC_SOURCE_DIR`, `GPSIM_XTC_ARTIFACTS_DIR`, `GPSIM_XTC_BUILD_DIR`, `GPSIM_XTC_BIN_DIR`, `GPSIM_XTC_BINARY`, `GPSIM_XTC_COMPAT_BINARY`, `GPSIM_XTC_BUILD_BINARY`, `GPSIM_XTC_MODULE_DIR`
@@ -323,7 +329,7 @@ Hardware-loop tooling:
 - `test_hardware_flipper_ir.py`, `test_hardware_loop.py`, `test_hardware_state_test.py`
 
 Live hardware (optional):
-- `tests/hardware/test_live_state_transitions.py` (preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, and reconnect responsiveness soak on the real DLCP rig)
+- `tests/hardware/test_live_state_transitions.py` (preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, reconnect responsiveness soak, and the V1.71+V3.2 Layer 5 Diagnostics-page rendering test on the real DLCP rig — the diag-page test gates on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to Diagnostics via physical RIGHT/RIGHT button presses; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
 
 V2.7 + V1.63b:
 - `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
@@ -374,8 +380,8 @@ Recent verification (latest 2026-04-14):
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_bake_preset_capture.py tests/sim/test_v31_diag_memread_usb_safe.py` -> `4 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v28_wire_delayed_switch_repros.py` -> `5 xfailed`
-- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `5 tests collected`
-- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `5 skipped` (expected when camera or HID open-path access is unavailable in the current shell session)
+- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `6 tests collected` (5 existing + 1 V1.71/V3.2 Layer 5 Diagnostics-page test)
+- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `6 skipped` (expected when camera or HID open-path access is unavailable; the Layer 5 test additionally requires `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to Diagnostics)
 
 V3.1-only gate (80 tests, ~8 min):
 
@@ -402,7 +408,9 @@ Top-level docs:
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
 - `docs/V28_DELAYED_SWITCH_REMEDIATION_PLAN.md` (wire-chain delayed preset desynchronization analysis and source-level remediation plan)
-- `docs/V31_RELEASE.md` (recommended `V3.1` deployment workflow with baked preset A/B captures)
+- `docs/V31_RELEASE.md` (`V3.1` MAIN deployment workflow with baked preset A/B captures)
+- `docs/V32_RELEASE.md` (recommended `V3.2` MAIN deployment workflow + V1.71 CONTROL pairing)
+- `docs/V171_RELEASE.md` (recommended `V1.71` CONTROL deployment workflow + V3.2 MAIN pairing)
 - `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
 - `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)
 - `docs/V30_SOURCE_REWRITE_SPEC.md` (V3.0 MAIN source-level rewrite specification)
@@ -410,7 +418,7 @@ Top-level docs:
 - `docs/IMPL_V30_SOURCE_REWRITE_SPECv2.md` (V3.0 source rewrite polished implementation — supersedes above)
 - `docs/V31_SOURCE_REWRITE_SPEC.md` (V3.1 MAIN source rewrite specification)
 - `docs/IMPL_V31_SOURCE_REWRITE_SPEC.md` (V3.1 source rewrite implementation prompt)
-- `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (draft future diagnostics page / counter protocol; not implemented in the committed V1.63b/V3.1 pair)
+- `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (Layer 5 Diagnostics page / counter protocol; implemented in the committed V1.71 CONTROL + V3.2 MAIN pair)
 - `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.1 MAIN size-reduction campaign requirements and process)
 - `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (size campaign experiment ledger and gate status)
 - `docs/V32_MAIN_HANG_HARDENING_PLAN.md` (V3.2 MAIN hang-prevention and fail-safe hardening roadmap for two-MAIN chains)

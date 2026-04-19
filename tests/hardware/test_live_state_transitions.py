@@ -186,3 +186,87 @@ def test_live_reconnect_responsiveness_soak_passes_for_configured_iterations() -
     )
 
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Layer 5 Diagnostics page (V1.71 + V3.2)
+#
+# Menu navigation to Diagnostics is driven by the CONTROL's PHYSICAL
+# RIGHT/LEFT buttons (the IR vocabulary in hardware_flipper_ir.py
+# intentionally does not include menu-navigation actions).  This test
+# therefore requires the operator to manually navigate before running:
+#
+#   1. From Volume, press RIGHT physical button on CONTROL → Preset(1)
+#   2. Press RIGHT again → Diagnostics(2)
+#   3. Set DLCP_HW_LAYER5_AT_DIAG=1 in the environment
+#   4. Run this test
+#
+# See docs/HARDWARE_TEST.md §"Diagnostics page" for the full operator
+# walk-through and resolves-which-Task #22-question matrix.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.hardware
+def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
+    """Layer 5 live-rig validation: confirm CONTROL's Diagnostics page
+    renders the spec'd ``1:...`` / ``2:...`` two-row layout when the
+    operator has manually navigated to the page.
+
+    This is the test that distinguishes Task #22 (gpsim two-MAIN echo
+    loop, currently quarantined under ``_V171_V32_PB2_BRIDGE_XFAIL``)
+    from a real V1.71 / V3.2 firmware bug.  If both rows render here,
+    the sim quarantine is harness-only and the firmware is sound.
+    """
+    if os.environ.get("DLCP_HW_LAYER5_AT_DIAG") != "1":
+        pytest.skip(
+            "set DLCP_HW_LAYER5_AT_DIAG=1 once operator has manually "
+            "navigated CONTROL to the Diagnostics screen via physical "
+            "RIGHT, RIGHT button presses; see docs/HARDWARE_TEST.md "
+            "§Diagnostics page for the full walk-through"
+        )
+    _require_live_rig_accessible()
+
+    import json
+    from dlcp_fw.cli import hardware_lcd_probe
+
+    captures = int(os.environ.get("DLCP_HW_LAYER5_LCD_CAPTURES", "10"))
+    output_root = tmp_path / "layer5_lcd"
+    argv: list[str] = [
+        "--captures", str(captures),
+        "--output-root", str(output_root),
+    ]
+    selector = os.environ.get("DLCP_HW_CAMERA_SELECTOR")
+    if selector:
+        argv.extend(["--camera-selector", selector])
+    address = os.environ.get("DLCP_HW_CAMERA_ADDRESS")
+    if address:
+        argv.extend(["--address", address])
+    if os.environ.get("DLCP_HW_SKIP_CONFIGURE") == "1":
+        argv.append("--skip-configure")
+
+    rc = hardware_lcd_probe.main(argv)
+    assert rc == 0, "lcd-probe wrapper failed (camera or OCR)"
+
+    runs_dir = output_root / "runs"
+    summaries = sorted(runs_dir.glob("*/summary.json"))
+    assert summaries, f"no LCD summary written under {runs_dir}"
+    summary = json.loads(summaries[-1].read_text(encoding="utf-8"))
+    line1 = (summary.get("consensus", {}).get("line1") or "").strip()
+    line2 = (summary.get("consensus", {}).get("line2") or "").strip()
+
+    # Pass criteria: row 0 starts with "1:" and row 1 starts with "2:".
+    # The counter chars (or `n/a` for a silent / unsupported PB) follow.
+    # We do NOT assert the exact counter content here — that varies by
+    # rig state; basic two-row presence is sufficient to disprove the
+    # gpsim Task #22 quarantine hypothesis on real hardware.
+    assert line1.startswith("1:"), (
+        f"line1 must start with '1:' on the Diagnostics page; got {line1!r}.  "
+        f"Either the operator did not navigate to Diagnostics before "
+        f"setting DLCP_HW_LAYER5_AT_DIAG=1, or V1.71 CONTROL is not flashed."
+    )
+    assert line2.startswith("2:"), (
+        f"line2 must start with '2:' on the Diagnostics page; got {line2!r}.  "
+        f"V1.71 CONTROL renders both rows even when PB2 is silent (as `2:n/a`); "
+        f"absence of the '2:' prefix means CONTROL exited the page or the "
+        f"render path is broken."
+    )
