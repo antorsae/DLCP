@@ -1106,25 +1106,54 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
     body_end = text.find("\n; ---", handler_idx + 1)
     assert body_end > handler_idx, "could not delimit cmd21 handler body"
     body = text[handler_idx:body_end]
-    # Required: the goto target.
-    assert "goto" in body and "flow_main_uart_service_1be6_1e6c" in body, (
-        "cmd21 handler must exit via flow_main_uart_service_1be6_1e6c "
-        "so dispatch/forwarding is consistent with stock cmd handlers"
-    )
-    # Defense in depth: bit 6 (cmd-XOR-chain ACK marker) should be
-    # cleared before goto so the parser tail does NOT emit the
-    # trailing 0x21 ACK byte.  If this assertion fails, fix is in
-    # progress.  If it passes, the suppression has been applied.
-    has_bit6_clear = bool(
-        re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body)
-    )
-    if not has_bit6_clear:
-        pytest.xfail(
-            "cmd21 handler does not yet clear active_flags.bit6 — the "
+    # V3.2 rev 0x37 (Tier-1) refactored cmd 0x21 + cmd 0x22 into a shared
+    # diag_send_burst_xx helper.  cmd21 setup-block now bra's into the
+    # helper; the helper does the bcf active_flags,6 + goto parser tail.
+    # We pin the contract by checking either the standalone or the
+    # shared form, so the test still passes after the refactor and a
+    # future rewrite that re-inlines doesn't silently lose the
+    # suppression / parser-tail integration.
+    helper_idx = text.find("\ndiag_send_burst_xx:")
+    has_helper = helper_idx >= 0
+    if has_helper:
+        helper_end = text.find("\n; ---", helper_idx + 1)
+        if helper_end < 0:
+            helper_end = helper_idx + 4000
+        helper_body = text[helper_idx:helper_end]
+        # cmd 0x21 setup must bra into the shared helper.
+        assert re.search(r"bra\s+diag_send_burst_xx", body), (
+            "cmd21 handler must bra into diag_send_burst_xx (shared "
+            "with cmd 0x22) -- the refactor moved the parser-tail "
+            "exit into the helper; the cmd21 entry just seeds it."
+        )
+        # The helper itself must goto flow_main_uart_service_1be6_1e6c
+        # to keep dispatch/forwarding consistent with stock cmd handlers.
+        assert "goto" in helper_body and "flow_main_uart_service_1be6_1e6c" in helper_body, (
+            "diag_send_burst_xx helper must exit via "
+            "flow_main_uart_service_1be6_1e6c so dispatch/forwarding "
+            "is consistent with stock cmd handlers"
+        )
+        # And the helper must clear active_flags.bit6 to suppress the
+        # cmd-XOR ACK echo.  Suspected contributor to the V1.71 + V3.2
+        # Diag-page hang observed on real HW (2026-04-20).
+        assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", helper_body), (
+            "diag_send_burst_xx must clear active_flags.bit6 BEFORE "
+            "the parser-tail goto so the trailing 0x21/0x22 ACK echo "
+            "doesn't bleed into V1.71 CONTROL's parser state."
+        )
+    else:
+        # Pre-refactor fallback: the cmd21 handler does the goto + bcf
+        # itself.  This branch keeps the test compatible with any
+        # legacy / pre-Tier-1 source tree.
+        assert "goto" in body and "flow_main_uart_service_1be6_1e6c" in body, (
+            "cmd21 handler must exit via flow_main_uart_service_1be6_1e6c "
+            "so dispatch/forwarding is consistent with stock cmd handlers"
+        )
+        assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body), (
+            "cmd21 handler does not clear active_flags.bit6 -- the "
             "parser tail still emits the trailing 0x21 ACK echo.  "
             "Suspected contributor to the V1.71 + V3.2 Diag-page hang "
-            "observed on real HW (2026-04-20).  Fix is option B in "
-            "the analysis: insert `bcf active_flags, 6, ACCESS` "
-            "before the final `goto flow_main_uart_service_1be6_1e6c`."
+            "observed on real HW (2026-04-20).  Fix: insert `bcf "
+            "active_flags, 6, ACCESS` before the final "
+            "`goto flow_main_uart_service_1be6_1e6c`."
         )
-    # When the fix is in, fall through and the test passes.

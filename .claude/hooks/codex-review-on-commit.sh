@@ -136,10 +136,20 @@ fi
 # Display list: bound to 50 entries to keep the reminder JSON
 # manageable even on huge batches.  The full count is reported above
 # so the operator/model knows when truncation happened.
+#
+# Pre-escape repo_root and range_used via `printf %q` (bash's own
+# shell-escape formatter) so the rendered git command is paste-safe
+# for any path -- including repos cloned into directories containing
+# $, backticks, backslashes, quotes, or whitespace.  Codex LOW fix
+# vs cc73aa2: the prior `"$repo_root"` form was safe for normal paths
+# but allowed $VAR / backtick expansion when copy-pasted.
 DISPLAY_LIMIT=50
 if [ "$new_commit_count" -gt "$DISPLAY_LIMIT" ]; then
   shown="$(printf '%s\n' "$new_commits_full" | head -$DISPLAY_LIMIT)"
-  trunc_note="... (showing first $DISPLAY_LIMIT of $new_commit_count; reach the rest via \`git -C \"$repo_root\" log --reverse --format='%h %s' $range_used\`)"
+  repo_root_q="$(printf '%q' "$repo_root")"
+  range_used_q=""
+  [ -n "$range_used" ] && range_used_q=" $(printf '%q' "$range_used")"
+  trunc_note="... (showing first $DISPLAY_LIMIT of $new_commit_count; reach the rest via \`git -C $repo_root_q log --reverse --format='%h %s'$range_used_q\`)"
   new_commits="$shown
 $trunc_note"
 else
