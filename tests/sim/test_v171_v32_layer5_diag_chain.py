@@ -65,12 +65,16 @@ except Exception:  # pragma: no cover
 # cross-file lookups).
 # ---------------------------------------------------------------------------
 
-# CONTROL diag cache (BANK 1, 7 cells per PB — physical addresses).
-# 7-frame protocol: each cell holds one counter as low nibble.
-V171_DIAG_PB1_BASE_PHYS = 0x180        # I, D, S, B, R, A, P (7 bytes)
-V171_DIAG_PB2_BASE_PHYS = 0x187        # I, D, S, B, R, A, P (7 bytes)
-V171_DIAG_TARGET_PHYS = 0x18E
-V171_DIAG_PRESENT_PHYS = 0x18F
+# CONTROL diag cache (BANK 1, 11 cells per PB — physical addresses).
+# Layer 5 baseline: 7 runtime counter cells (BF/21..BF/27, cmd 0x21).
+# V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20): + 4 reset-cause
+# flag cells (BF/28..BF/2B, cmd 0x22) per PB, plus extra state cells.
+# Cache base unchanged (PB1 = 0x180); PB2 base shifted +4 (was +7,
+# now +11) and trailing state cells shifted +8.
+V171_DIAG_PB1_BASE_PHYS = 0x180        # I D S B R A P O V W X (11 bytes)
+V171_DIAG_PB2_BASE_PHYS = 0x18B        # I D S B R A P O V W X (11 bytes)
+V171_DIAG_TARGET_PHYS = 0x196
+V171_DIAG_PRESENT_PHYS = 0x197
 
 # MAIN diag block (BANK 2 upper, physical addresses for gpsim CLI reads).
 # Relocated 2026-04-19 from 0x123..0x12A to escape the USB EP1 OUT buffer

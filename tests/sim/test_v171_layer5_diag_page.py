@@ -51,8 +51,10 @@ from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 # Constants pinned by the Phase B design (see ram.inc + asm)
 # ---------------------------------------------------------------------------
 
-# 7-byte cache layout (one cell per counter — replaces the earlier
-# 4-byte packed layout that had data >= 0x80 on chain).
+# 11-byte cache layout per PB (V1.71 Tier-1, V32_DIAG_TIER1_SPEC.md).
+# Layer 5 baseline = 7 runtime counters (I D S B R A P, BF/21..BF/27).
+# Tier-1 (rev 0x37) extension = 4 reset-cause flags (O V W X, BF/28..BF/2B).
+# PB2 base shifted from +7 to +11; trailing state cells shifted +8.
 V171_DIAG_PB1_I_EQU = 0x080
 V171_DIAG_PB1_D_EQU = 0x081
 V171_DIAG_PB1_S_EQU = 0x082
@@ -60,23 +62,31 @@ V171_DIAG_PB1_B_EQU = 0x083
 V171_DIAG_PB1_R_EQU = 0x084
 V171_DIAG_PB1_A_EQU = 0x085
 V171_DIAG_PB1_P_EQU = 0x086
-V171_DIAG_PB2_I_EQU = 0x087
-V171_DIAG_PB2_D_EQU = 0x088
-V171_DIAG_PB2_S_EQU = 0x089
-V171_DIAG_PB2_B_EQU = 0x08A
-V171_DIAG_PB2_R_EQU = 0x08B
-V171_DIAG_PB2_A_EQU = 0x08C
-V171_DIAG_PB2_P_EQU = 0x08D
-V171_DIAG_TARGET_EQU = 0x08E
-V171_DIAG_PRESENT_EQU = 0x08F
-V171_DIAG_POLL_LO_EQU = 0x090
-V171_DIAG_POLL_HI_EQU = 0x091
+V171_DIAG_PB1_RESET_POR_EQU = 0x087   # Tier-1
+V171_DIAG_PB1_RESET_BOR_EQU = 0x088   # Tier-1
+V171_DIAG_PB1_RESET_WDT_EQU = 0x089   # Tier-1
+V171_DIAG_PB1_RESET_SW_EQU  = 0x08A   # Tier-1
+V171_DIAG_PB2_I_EQU = 0x08B
+V171_DIAG_PB2_D_EQU = 0x08C
+V171_DIAG_PB2_S_EQU = 0x08D
+V171_DIAG_PB2_B_EQU = 0x08E
+V171_DIAG_PB2_R_EQU = 0x08F
+V171_DIAG_PB2_A_EQU = 0x090
+V171_DIAG_PB2_P_EQU = 0x091
+V171_DIAG_PB2_RESET_POR_EQU = 0x092   # Tier-1
+V171_DIAG_PB2_RESET_BOR_EQU = 0x093   # Tier-1
+V171_DIAG_PB2_RESET_WDT_EQU = 0x094   # Tier-1
+V171_DIAG_PB2_RESET_SW_EQU  = 0x095   # Tier-1
+V171_DIAG_TARGET_EQU = 0x096
+V171_DIAG_PRESENT_EQU = 0x097
+V171_DIAG_POLL_LO_EQU = 0x098
+V171_DIAG_POLL_HI_EQU = 0x099
 
 # Physical addresses for gpsim CLI reads (BSR=1 << 8 | offset).
 V171_DIAG_PB1_I_PHYS = 0x180
-V171_DIAG_PB2_I_PHYS = 0x187
-V171_DIAG_TARGET_PHYS = 0x18E
-V171_DIAG_PRESENT_PHYS = 0x18F
+V171_DIAG_PB2_I_PHYS = 0x18B
+V171_DIAG_TARGET_PHYS = 0x196
+V171_DIAG_PRESENT_PHYS = 0x197
 
 ALL_DIAG_CACHE_EQUS = (
     ("v171_diag_pb1_i", V171_DIAG_PB1_I_EQU),
@@ -86,6 +96,10 @@ ALL_DIAG_CACHE_EQUS = (
     ("v171_diag_pb1_r", V171_DIAG_PB1_R_EQU),
     ("v171_diag_pb1_a", V171_DIAG_PB1_A_EQU),
     ("v171_diag_pb1_p", V171_DIAG_PB1_P_EQU),
+    ("v171_diag_pb1_reset_por", V171_DIAG_PB1_RESET_POR_EQU),
+    ("v171_diag_pb1_reset_bor", V171_DIAG_PB1_RESET_BOR_EQU),
+    ("v171_diag_pb1_reset_wdt", V171_DIAG_PB1_RESET_WDT_EQU),
+    ("v171_diag_pb1_reset_sw",  V171_DIAG_PB1_RESET_SW_EQU),
     ("v171_diag_pb2_i", V171_DIAG_PB2_I_EQU),
     ("v171_diag_pb2_d", V171_DIAG_PB2_D_EQU),
     ("v171_diag_pb2_s", V171_DIAG_PB2_S_EQU),
@@ -93,6 +107,10 @@ ALL_DIAG_CACHE_EQUS = (
     ("v171_diag_pb2_r", V171_DIAG_PB2_R_EQU),
     ("v171_diag_pb2_a", V171_DIAG_PB2_A_EQU),
     ("v171_diag_pb2_p", V171_DIAG_PB2_P_EQU),
+    ("v171_diag_pb2_reset_por", V171_DIAG_PB2_RESET_POR_EQU),
+    ("v171_diag_pb2_reset_bor", V171_DIAG_PB2_RESET_BOR_EQU),
+    ("v171_diag_pb2_reset_wdt", V171_DIAG_PB2_RESET_WDT_EQU),
+    ("v171_diag_pb2_reset_sw",  V171_DIAG_PB2_RESET_SW_EQU),
     ("v171_diag_target", V171_DIAG_TARGET_EQU),
     ("v171_diag_present", V171_DIAG_PRESENT_EQU),
     ("v171_diag_poll_lo", V171_DIAG_POLL_LO_EQU),
@@ -123,12 +141,27 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, 
 
 
 def _equ_address(text: str, name: str) -> int | None:
+    """Return the integer value an EQU resolves to.
+
+    Handles both numeric literals (`equ 0x1F`) and symbolic-alias EQUs
+    (`equ V171_DIAG_FLAG_RUNTIME_PENDING`) by recursing on the alias
+    target.  Returns None if the name has no EQU or if the alias chain
+    can't be resolved to a literal.
+    """
     m = re.search(
-        rf"^\s*{re.escape(name)}\s+(?:EQU|equ)\s+(0x[0-9A-Fa-f]+)\s*",
+        rf"^\s*{re.escape(name)}\s+(?:EQU|equ)\s+(\S+)",
         text,
         re.MULTILINE,
     )
-    return int(m.group(1), 16) if m else None
+    if not m:
+        return None
+    value = m.group(1)
+    if value.startswith(("0x", "0X")):
+        return int(value, 16)
+    if value.isdigit():
+        return int(value, 10)
+    # Symbolic alias -- recurse.
+    return _equ_address(text, value)
 
 
 def _label_offset(text: str, label: str) -> int:
@@ -346,24 +379,33 @@ def test_diag_send_query_uses_b1_or_b2_route_and_cmd_21() -> None:
     )
 
 
-def test_bf2x_parser_case_handles_cmds_21_through_27() -> None:
-    """Parser must recognize cmd 0x21..0x27 from BF replies and write
+def test_bf2x_parser_case_handles_cmds_21_through_2b() -> None:
+    """Parser must recognize cmd 0x21..0x2B from BF replies and write
     the payload into the diag cache slot indexed by the in-flight target.
 
-    Cmd codes outside 0x21..0x27 (0x20, 0x28+) must NOT trigger a write.
-    The 7-frame protocol replaces the original 4-frame packed scheme
-    so each data byte stays < 0x80 (chain-forwarder safe).
+    V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) extends the
+    accepted range from 0x21..0x27 (Layer 5 baseline, cmd 0x21 only)
+    to 0x21..0x2B (Layer 5 + Tier-1, cmd 0x21 + cmd 0x22).
+
+    Cmd codes outside 0x21..0x2B (0x20, 0x2C+) must NOT trigger a write.
+    Each data byte stays < 0x80 because every cell carries either a
+    saturating-byte counter (0..0x0F) or a binary flag (0 or 1).
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0, "v171_bf2x_case_check label missing"
-    body = text[off:off + 4000]
-    # Range gate: must reject < 0x21 and >= 0x28.
+    # Window must extend through the v171_bf2x_check_reset_last block
+    # added for Tier-1 (RESET LAST frame on BF/2B).  6 KB covers the
+    # full handler body including comments.
+    body = text[off:off + 6000]
+    # Range gate: must reject < 0x21 and >= 0x2C.
     assert re.search(r"movlw\s+0x21\s*\n\s*cpfslt\s+rx_parsed_cmd", body), (
-        "lower-bound check (cmd < 0x21 → exit) missing"
+        "lower-bound check (cmd < 0x21 -> exit) missing"
     )
-    assert re.search(r"movlw\s+0x28\s*\n\s*cpfslt\s+rx_parsed_cmd", body), (
-        "upper-bound check (cmd < 0x28 → ok) missing"
+    assert re.search(r"movlw\s+0x2C\s*\n\s*cpfslt\s+rx_parsed_cmd", body), (
+        "upper-bound check (cmd < 0x2C -> ok) missing -- Tier-1 expanded "
+        "the range from 0x28 to 0x2C to cover the new BF/28..BF/2B "
+        "reset-cause reply burst (cmd 0x22)."
     )
     # Slot offset = cmd - 0x21 and base depends on diag_target bit 0.
     assert re.search(r"subwf\s+rx_parsed_cmd,\s*W", body), (
@@ -375,13 +417,23 @@ def test_bf2x_parser_case_handles_cmds_21_through_27() -> None:
     assert re.search(r"iorwf\s+v171_diag_present", body), (
         "present-mask OR-in missing"
     )
-    # Target-toggle on BF/27 (last frame, col_offset == 6) — fixes the
-    # cadence-vs-reply race in the wire-chain.
+    # Target-toggle on BF/27 (runtime last frame, col_offset == 6).
     assert re.search(r"btg\s+v171_diag_target", body), (
         "target toggle on BF/27 missing"
     )
     assert re.search(r"movlw\s+0x06\s*\n\s*cpfseq\s+\(Common_RAM \+ 4\)", body), (
-        "deferred-update gate (col_offset == 6) missing"
+        "deferred-update gate (col_offset == 6 = BF/27 runtime last) missing"
+    )
+    # Tier-1: BF/2B (col_offset == 0x0A) is the RESET LAST FRAME.  When
+    # it arrives, parser sets v171_diag_reset_seen bit for the in-flight
+    # PB and clears RESET_PENDING -- mirrors the BF/27 RUNTIME LAST path.
+    assert re.search(r"movlw\s+0x0A\s*\n\s*cpfseq\s+\(Common_RAM \+ 4\)", body), (
+        "Tier-1 RESET LAST frame gate (col_offset == 0x0A = BF/2B) missing "
+        "-- without this, the page-entry hook would re-fire cmd 0x22 on "
+        "every loop iteration because v171_diag_reset_seen never gets set."
+    )
+    assert re.search(r"iorwf\s+v171_diag_reset_seen", body), (
+        "Tier-1 reset_seen OR-in missing -- cmd 0x22 would re-fire forever"
     )
 
 
@@ -550,21 +602,34 @@ def test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup(
 
 
 def test_v171_diag_flags_byte_pinned_and_bit_aliases() -> None:
-    """``v171_diag_flags`` byte must EQU at 0x094 with the spec'd bit
-    aliases.  The flag byte holds:
+    """``v171_diag_flags`` byte EQU + bit aliases.  V1.71 Tier-1
+    (V32_DIAG_TIER1_SPEC.md, 2026-04-20) shifted the flag byte from
+    0x094 to 0x09C and added a third bit alias for RESET_PENDING:
 
-      bit 0  V171_DIAG_FLAG_DIRTY    cache changed since last redraw
-                                     (set on every BF/2N parser write)
-      bit 1  V171_DIAG_FLAG_PENDING  query in flight, awaiting BF/27
-                                     (set on cadence query-send,
-                                     cleared on BF/27 reception)
+      bit 0  V171_DIAG_FLAG_DIRTY            cache changed since last
+                                             redraw (set on every cache
+                                             write)
+      bit 1  V171_DIAG_FLAG_RUNTIME_PENDING  cmd 0x21 query in flight,
+                                             awaiting BF/27 (set on
+                                             cadence query-send, cleared
+                                             on BF/27 reception)
+      bit 2  V171_DIAG_FLAG_RESET_PENDING    cmd 0x22 query in flight,
+                                             awaiting BF/2B (set by the
+                                             page-entry hook, cleared
+                                             on BF/2B reception)
+
+    Backward-compat alias V171_DIAG_FLAG_PENDING points at bit 1
+    (RUNTIME_PENDING) so older callers continue to work.
 
     Pinning here documents the bit assignment so a future change has to
     update both ram.inc and this test together.
     """
     text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
-    assert _equ_address(text, "v171_diag_flags") == 0x094
+    assert _equ_address(text, "v171_diag_flags") == 0x09C
     assert _equ_address(text, "V171_DIAG_FLAG_DIRTY") == 0x00
+    assert _equ_address(text, "V171_DIAG_FLAG_RUNTIME_PENDING") == 0x01
+    assert _equ_address(text, "V171_DIAG_FLAG_RESET_PENDING") == 0x02
+    # Backward-compat alias must still resolve to bit 1.
     assert _equ_address(text, "V171_DIAG_FLAG_PENDING") == 0x01
 
 
@@ -655,20 +720,24 @@ def test_diag_loop_advances_target_on_silent_pb() -> None:
 
 
 def test_diag_parser_clears_pending_on_bf27() -> None:
-    """Coverage for HIGH #2: BF/27 reception must clear PENDING so the
-    NEXT cadence sees a "reply landed" state and doesn't skip target."""
+    """Coverage for HIGH #2: BF/27 reception must clear RUNTIME_PENDING
+    so the NEXT cadence sees a "reply landed" state and doesn't skip
+    target.  V1.71 Tier-1 renamed PENDING -> RUNTIME_PENDING (bit 1)
+    and added a separate RESET_PENDING (bit 2) for the new cmd 0x22
+    page-entry-only query.  This test pins the BF/27 path clearing
+    RUNTIME_PENDING."""
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0
     body = text[off:off + 4000]
-    # PENDING clear must be inside the col_offset == 6 (BF/27) path.
+    # RUNTIME_PENDING clear must be inside the col_offset == 6 (BF/27) path.
     gate_pos = body.find("cpfseq  (Common_RAM + 4), A")
     assert gate_pos >= 0
     after_gate = body[gate_pos:gate_pos + 1000]
     assert re.search(
-        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         after_gate,
-    ), "BF/27 path must clear PENDING"
+    ), "BF/27 path must clear RUNTIME_PENDING (Tier-1 rename of PENDING)"
 
 
 def test_diag_send_query_aborts_on_tx_saturation() -> None:

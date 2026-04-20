@@ -1180,43 +1180,52 @@ v171_bf08_set_fault:
 
 v171_bf2x_case_check:
         ; ---------------------------------------------------------------
-        ; V1.71 inline (Layer 5 Phase B): BF/21..27 diagnostics replies
+        ; V1.71 (Layer 5 Phase B + Tier-1): BF/21..2B diagnostics replies
         ; ---------------------------------------------------------------
-        ; V3.2+ MAIN emits a 7-frame BF/2N burst in response to a
-        ; cmd 0x21 query (see docs/V163B_DIAGNOSTICS_MENU_SPEC.md).
-        ; Each frame carries ONE counter value in the low nibble of
-        ; the data byte (high nibble = 0).  An earlier draft packed
-        ; two counters per byte but produced data >= 0x80 for any
-        ; high counter > 7, which the K20 parser and MAIN's chain
-        ; forwarder re-interpret as a route byte — causing PB2's
-        ; reply frames to corrupt the parser state.
+        ; V3.2 rev 0x37 MAIN emits two reply burst types into BF/2N space:
+        ;   * cmd 0x21 -> 7-frame burst BF/21..BF/27  (runtime counters)
+        ;   * cmd 0x22 -> 4-frame burst BF/28..BF/2B  (reset-cause flags)
         ;
-        ; PB1 slot = v171_diag_pb1_i..p (0x080..0x086)
-        ; PB2 slot = v171_diag_pb2_i..p (0x087..0x08D)
-        ; The +7 offset for PB2 is encoded by adding 7 to the base
-        ; when target.0 is set.
+        ; Cache slot layout (per PB, 11 cells, V32_DIAG_TIER1_SPEC.md):
+        ;   PB1 base = v171_diag_pb1_i  (0x080); PB2 base offset = 11
+        ;   slot 0 = I  (BF/21)
+        ;   slot 1 = D  (BF/22)
+        ;   slot 2 = S  (BF/23)
+        ;   slot 3 = B  (BF/24)
+        ;   slot 4 = R  (BF/25)
+        ;   slot 5 = A  (BF/26)
+        ;   slot 6 = P  (BF/27)  RUNTIME LAST FRAME -- clears RUNTIME_PENDING,
+        ;                        marks PB present, toggles target
+        ;   slot 7 = O  (BF/28)  Tier-1: POR flag
+        ;   slot 8 = V  (BF/29)  Tier-1: BOR flag
+        ;   slot 9 = W  (BF/2A)  Tier-1: WDT flag
+        ;   slot 10 = X (BF/2B)  RESET LAST FRAME (Tier-1) -- clears
+        ;                        RESET_PENDING, sets reset_seen bit for
+        ;                        this PB so the page-entry hook does NOT
+        ;                        re-fire cmd 0x22 within the same session
         ;
-        ; Range gate: accept cmd 0x21..0x27 only.
+        ; Range gate: accept cmd 0x21..0x2B only.
         movlw   0x21
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x21? → exit
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x21? -> exit
         bra     v171_bf2x_check_upper
         bra     flow_rx_parser_entry_05EA
 v171_bf2x_check_upper:
-        movlw   0x28
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x28? → ok
-        bra     flow_rx_parser_entry_05EA                 ; cmd >= 0x28 → exit
-        ; Compute byte offset: (cmd - 0x21) gives 0..6 (I, D, S, B, R, A, P).
+        movlw   0x2C
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x2C? -> ok
+        bra     flow_rx_parser_entry_05EA                 ; cmd >= 0x2C -> exit
+        ; Compute byte offset: (cmd - 0x21) gives 0..10.
         movlw   0x21
         subwf   rx_parsed_cmd, W, A
         movwf   (Common_RAM + 4), A                       ; col_offset
         ; Compute slot base: PB1 base = v171_diag_pb1_i (0x80),
-        ; PB2 base = v171_diag_pb2_i (0x87).  Add 7 if target bit0 set.
+        ; PB2 base = v171_diag_pb2_i (0x8B = 0x80 + 11).  Add 11 (0x0B)
+        ; if target bit0 set.
         movlb   0x01
         movlw   v171_diag_pb1_i
         btfsc   v171_diag_target, 0, BANKED
         movlw   v171_diag_pb2_i
         addwf   (Common_RAM + 4), W, A                    ; W = base + col_offset
-        ; Write payload via FSR0 in BANK 1 (0x180..0x18D physical).
+        ; Write payload via FSR0 in BANK 1 (0x180..0x195 physical).
         movwf   FSR0L, A
         movlw   0x01
         movwf   FSR0H, A
@@ -1227,24 +1236,41 @@ v171_bf2x_check_upper:
         ; updates once both PBs have been seen present at least once.
         movlb   0x01
         bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
-        ; Defer present-mask update + target toggle + pending-clear to
-        ; the LAST frame (BF/27, col_offset == 6).  Toggling target
-        ; mid-burst would corrupt the cache index for remaining
-        ; frames in the same reply.
+        ; Last-frame dispatch: col_offset 6 = BF/27 (RUNTIME LAST),
+        ; col_offset 10 = BF/2B (Tier-1 RESET LAST).
         movlw   0x06
-        cpfseq  (Common_RAM + 4), A                        ; col_offset == 6 (BF/27)?
-        bra     flow_rx_parser_entry_05EA                 ; not last frame — exit
-        ; Last frame received.  Mark this PB present so the renderer
-        ; drops "n/a", clear PENDING (cadence skip-on-silent gate),
-        ; and toggle target so the next cadence query goes to the
-        ; OTHER PB.  Target toggle is HERE (not in the cadence loop)
-        ; so target stays stable for the full query/reply round-trip.
+        cpfseq  (Common_RAM + 4), A                       ; col_offset == 6 (BF/27)?
+        bra     v171_bf2x_check_reset_last
+        ; --- RUNTIME LAST FRAME (BF/27) ---
+        ; Mark this PB present so the renderer drops "n/a", clear
+        ; RUNTIME_PENDING (cadence skip-on-silent gate), and toggle target
+        ; so the next cadence query goes to the OTHER PB.  Target toggle
+        ; is HERE (not in the cadence loop) so target stays stable for
+        ; the full query/reply round-trip.
         movlw   0x01                                      ; PB1 mask
         btfsc   v171_diag_target, 0, BANKED
         movlw   0x02                                      ; PB2 mask
         iorwf   v171_diag_present, F, BANKED
-        bcf     v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         btg     v171_diag_target, 0, BANKED               ; flip for next query
+        movlb   0x00
+        bra     flow_rx_parser_entry_05EA
+v171_bf2x_check_reset_last:
+        ; --- RESET LAST FRAME (BF/2B, Tier-1) ---
+        ; Tier-1: when the 4-frame BF/28..BF/2B reset-cause burst
+        ; completes, mark the reset cells as fresh for this PB so the
+        ; page-entry hook does NOT re-fire cmd 0x22 within the same
+        ; session, and clear RESET_PENDING.  Do NOT touch the runtime
+        ; present mask / runtime target / RUNTIME_PENDING -- those are
+        ; managed independently by the cmd 0x21 path above.
+        movlw   0x0A
+        cpfseq  (Common_RAM + 4), A                       ; col_offset == 10 (BF/2B)?
+        bra     flow_rx_parser_entry_05EA                 ; not last frame -- exit
+        movlw   0x01                                      ; PB1 reset_seen bit
+        btfsc   v171_diag_target, 0, BANKED
+        movlw   0x02                                      ; PB2 reset_seen bit
+        iorwf   v171_diag_reset_seen, F, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
 

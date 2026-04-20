@@ -158,92 +158,129 @@ v171_tx_enq_retry          equ  0x02D
 ;   cmd 0x21 reply table.
 v171_tx_saturate_count     equ  0x0AD
 
-; --- V1.71 Layer 5 Phase B: CONTROL diagnostics page ---
-; Per-PB cache of the seven BF/2N reply payloads from V3.2+ MAIN's
-; cmd 0x21 diagnostics burst.  Each payload byte carries one counter
-; in the LOW nibble (high nibble = 0).  An earlier draft packed two
-; counters per byte but produced data >= 0x80 for any high counter
-; > 7, which the chain forwarder treats as a route byte (corrupting
-; PB2's reply specifically — PB1's reply path is direct).  See
-; docs/V163B_DIAGNOSTICS_MENU_SPEC.md.
+; --- V1.71 Layer 5 Phase B + V1.71 Tier-1 Phase 3: CONTROL diagnostics ---
+; Per-PB cache of the diagnostic reply payloads from V3.2 rev 0x37 MAIN.
+; Layer 5 baseline = 7 runtime counters per PB (BF/21..BF/27 from cmd 0x21).
+; V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) extends each PB cache
+; from 7 cells to 11 cells by adding 4 reset-cause flag cells (O V W X)
+; populated by the new chain `cmd 0x22` 4-frame reply burst (BF/28..BF/2B).
+; Each payload byte carries one cell in the LOW nibble (high nibble = 0).
+; An earlier draft packed two counters per byte but produced data >= 0x80
+; for any high counter > 7, which the chain forwarder treats as a route
+; byte (corrupting PB2's reply specifically -- PB1's reply path is direct).
 ;
 ; Cache ordering matches the BF/2N replies:
-;   *_i  = diag_i  (BF/21) — I2C transport faults
-;   *_d  = diag_d  (BF/22) — DSP fault episodes
-;   *_s  = diag_s  (BF/23) — standby dispatches
-;   *_b  = diag_b  (BF/24) — bring-up dispatches
-;   *_r  = diag_r  (BF/25) — recovery branch entries
-;   *_a  = diag_a  (BF/26) — AN0-triggered standby
-;   *_p  = diag_p  (BF/27) — RA1 edge events (LAST FRAME)
+;   *_i           = diag_i           (BF/21) -- I2C transport faults
+;   *_d           = diag_d           (BF/22) -- DSP fault episodes
+;   *_s           = diag_s           (BF/23) -- standby dispatches
+;   *_b           = diag_b           (BF/24) -- bring-up dispatches
+;   *_r           = diag_r           (BF/25) -- recovery branch entries
+;   *_a           = diag_a           (BF/26) -- AN0-triggered standby
+;   *_p           = diag_p           (BF/27) -- RA1 edge events (RUNTIME LAST FRAME)
+;   *_reset_por   = diag_reset_por   (BF/28) -- POR (V3.2 rev 0x37 Tier-1)
+;   *_reset_bor   = diag_reset_bor   (BF/29) -- BOR (Brown-Out)
+;   *_reset_wdt   = diag_reset_wdt   (BF/2A) -- WDT timeout
+;   *_reset_sw    = diag_reset_sw    (BF/2B) -- software reset (RESET LAST FRAME)
 ;
-; All cache slots live in BANK 1 (physical 0x180..0x18D).  The EQU
-; values are BANKED-form 8-bit operands; callers must `movlb 0x01`
-; before access.  gpsim CLI reads via the PHYSICAL address — e.g.
-; `reg(0x180)` not `reg(0x080)` (which would be the bank-0 GPR slot).
+; All cache slots live in BANK 1.  The EQU values are BANKED-form 8-bit
+; operands; callers must `movlb 0x01` before access.  gpsim CLI reads via
+; the PHYSICAL address -- e.g. `reg(0x180)` not `reg(0x080)` (which would
+; be the bank-0 GPR slot).
 ;
-; Cache survives ordinary firmware reset / reconnect (uninitialized
-; RAM keeps its value through soft reset on PIC18); cleared only on
-; POR/BOR, the same gate as the MAIN-side diag block.
-v171_diag_pb1_i            equ  0x080
+; Cache survives ordinary firmware reset / reconnect (uninitialized RAM
+; keeps its value through soft reset on PIC18); cleared only on POR/BOR,
+; the same gate as the MAIN-side diag block.
+;
+; CRITICAL: the V1.71 Tier-1 layout SHIFTED all cells up by 4 bytes per
+; PB (and reorganized the trailing state cells).  Old code that hardcoded
+; the legacy cell offsets (0x080..0x094) MUST be updated to use these
+; equates.  The spec at V32_DIAG_TIER1_SPEC.md §"CONTROL diag cache
+; layout (V1.71)" is the authoritative source for this layout.
+v171_diag_pb1_i            equ  0x080  ; physical 0x180
 v171_diag_pb1_d            equ  0x081
 v171_diag_pb1_s            equ  0x082
 v171_diag_pb1_b            equ  0x083
 v171_diag_pb1_r            equ  0x084
 v171_diag_pb1_a            equ  0x085
 v171_diag_pb1_p            equ  0x086
-v171_diag_pb2_i            equ  0x087
-v171_diag_pb2_d            equ  0x088
-v171_diag_pb2_s            equ  0x089
-v171_diag_pb2_b            equ  0x08A
-v171_diag_pb2_r            equ  0x08B
-v171_diag_pb2_a            equ  0x08C
-v171_diag_pb2_p            equ  0x08D
+v171_diag_pb1_reset_por    equ  0x087  ; Tier-1: POR flag
+v171_diag_pb1_reset_bor    equ  0x088  ; Tier-1: BOR flag
+v171_diag_pb1_reset_wdt    equ  0x089  ; Tier-1: WDT flag
+v171_diag_pb1_reset_sw     equ  0x08A  ; Tier-1: SW-reset flag
+v171_diag_pb2_i            equ  0x08B
+v171_diag_pb2_d            equ  0x08C
+v171_diag_pb2_s            equ  0x08D
+v171_diag_pb2_b            equ  0x08E
+v171_diag_pb2_r            equ  0x08F
+v171_diag_pb2_a            equ  0x090
+v171_diag_pb2_p            equ  0x091
+v171_diag_pb2_reset_por    equ  0x092  ; Tier-1
+v171_diag_pb2_reset_bor    equ  0x093  ; Tier-1
+v171_diag_pb2_reset_wdt    equ  0x094  ; Tier-1
+v171_diag_pb2_reset_sw     equ  0x095  ; Tier-1
 
 ; Poll-state cells (also BANK 1):
-;   v171_diag_target   = 0 → query PB1 next, 1 → query PB2 next
-;   v171_diag_present  = bit0 set when PB1 has ever replied,
-;                         bit1 set when PB2 has ever replied
-;                         (used to render "n/a" for never-seen PBs)
-;   v171_diag_poll_lo/hi = 16-bit countdown until the next query
-;                          enqueue.  Decremented once per
-;                          v171_diag_screen tick.  Reset to
-;                          V171_DIAG_POLL_RELOAD on each query.
-v171_diag_target           equ  0x08E
-v171_diag_present          equ  0x08F
-v171_diag_poll_lo          equ  0x090
-v171_diag_poll_hi          equ  0x091
-; Snapshot of v171_diag_present at the last screen draw — used by
+;   v171_diag_target       = 0 -> query PB1 next, 1 -> query PB2 next
+;   v171_diag_present      = bit0 set when PB1 has ever replied,
+;                            bit1 set when PB2 has ever replied
+;                            (used to render "n/a" for never-seen PBs)
+;   v171_diag_poll_lo/hi   = 16-bit countdown until the next query.
+;                            Decremented once per v171_diag_screen tick.
+;                            Reset to V171_DIAG_POLL_RELOAD on each query.
+v171_diag_target           equ  0x096  ; physical 0x196
+v171_diag_present          equ  0x097
+v171_diag_poll_lo          equ  0x098
+v171_diag_poll_hi          equ  0x099
+; Snapshot of v171_diag_present at the last screen draw -- used by
 ; v171_diag_check_redraw to fire a screen redraw only when the
 ; present mask actually changed.  Lives in BANK 1 (not in the
 ; access-bank ram_0x005 scratch cell that other routines clobber).
-v171_diag_present_snap     equ  0x092
+v171_diag_present_snap     equ  0x09A
 ; LCD pad-loop counter for the n/a render path.  Must NOT live in
 ; access-bank ram_0x004 because lcd_char_write's internal helper
 ; routines clobber it (movff FSR0H, ram_0x004 in
 ; control_core_service_*).  Callers that use this cell must
 ; movlb 0x01 around access AND reload BSR after every
 ; lcd_char_write call (which can change BSR internally).
-v171_diag_lcd_pad_count    equ  0x093
+v171_diag_lcd_pad_count    equ  0x09B
 ; Bit-flag byte for the diagnostics page state machine:
-;   bit 0  V171_DIAG_FLAG_DIRTY       cache changed since last redraw
-;                                     (set by BF/2N parser case on every
-;                                     cache write; cleared by check_redraw
-;                                     after the screen redraws).  Without
-;                                     this, the redraw only fires on
-;                                     present-mask changes, so once both
-;                                     PBs have replied at least once the
-;                                     LCD freezes against later updates.
-;   bit 1  V171_DIAG_FLAG_PENDING     query in flight, awaiting BF/27
-;                                     (set by the cadence path when
-;                                     issuing a query; cleared by the
-;                                     parser case on BF/27 reception).
-;                                     If still set on the next cadence
-;                                     expiry, target advances anyway so
-;                                     a silent or unsupported PB can't
-;                                     pin the poll target forever.
-v171_diag_flags            equ  0x094
-V171_DIAG_FLAG_DIRTY       equ  0x00
-V171_DIAG_FLAG_PENDING     equ  0x01
+;   bit 0  V171_DIAG_FLAG_DIRTY            cache changed since last redraw
+;                                          (set by any cache write;
+;                                          cleared by check_redraw)
+;   bit 1  V171_DIAG_FLAG_RUNTIME_PENDING  cmd 0x21 in flight, awaiting BF/27
+;                                          (set when cadence fires cmd 0x21;
+;                                          cleared by the parser case on
+;                                          BF/27 reception).  If still set
+;                                          on the next cadence expiry,
+;                                          target advances anyway so a
+;                                          silent or unsupported PB can't
+;                                          pin the poll target forever.
+;   bit 2  V171_DIAG_FLAG_RESET_PENDING    Tier-1: cmd 0x22 in flight,
+;                                          awaiting BF/2B (set when the
+;                                          page-entry hook fires cmd 0x22;
+;                                          cleared by the parser case on
+;                                          BF/2B reception).  Distinct
+;                                          from RUNTIME_PENDING so the
+;                                          two queries can be in flight
+;                                          to different PBs concurrently.
+v171_diag_flags            equ  0x09C
+V171_DIAG_FLAG_DIRTY            equ  0x00
+V171_DIAG_FLAG_RUNTIME_PENDING  equ  0x01
+V171_DIAG_FLAG_RESET_PENDING    equ  0x02
+; Backward-compatibility alias.  Pre-Tier-1 code referenced
+; V171_DIAG_FLAG_PENDING; the new name is V171_DIAG_FLAG_RUNTIME_PENDING.
+; Keep the old name pointing at the same bit so a refactor that misses
+; one call site doesn't silently shift bit assignments.
+V171_DIAG_FLAG_PENDING          equ  V171_DIAG_FLAG_RUNTIME_PENDING
+
+; Per-PB bitmask of "reset-cause cache is fresh".
+;   bit 0 set: PB1 reset cells were populated since the last Diag-page
+;              entry (cmd 0x22 to PB1 has completed via BF/2B).
+;   bit 1 set: PB2 reset cells were populated.
+; Cleared on Diag-page entry so the page-entry hook re-fires cmd 0x22
+; once per entry per PB.  The reset-cause flags don't change within a
+; session, so re-querying every cadence cycle would waste chain bandwidth.
+v171_diag_reset_seen       equ  0x09D
 
 ; Poll cadence reload value.  Each v171_diag_screen tick decrements
 ; the 16-bit countdown by 1; with display_loop_iteration on the K20
@@ -251,8 +288,5 @@ V171_DIAG_FLAG_PENDING     equ  0x01
 ; ms.  Spec calls for "500 ms to 1 s cadence is sufficient".
 ; 0x0080 ticks (~1 s cadence) gives the firmware enough time for one
 ; full query/reply round-trip before the next cadence expires.
-; A faster cadence (e.g. 0x10) was tried and races against the
-; reply arrival: the second cadence toggles target before the
-; in-flight reply lands, corrupting the cache index.
 V171_DIAG_POLL_RELOAD_LO   equ  0x80
 V171_DIAG_POLL_RELOAD_HI   equ  0x00
