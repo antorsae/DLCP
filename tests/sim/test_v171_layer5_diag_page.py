@@ -300,20 +300,31 @@ def test_nav_wrap_literals_tier1_bumped_to_0x05() -> None:
     )
 
 
-def test_diag_pb_screen_label_present_with_placeholder() -> None:
+def test_diag_pb_screen_label_present_and_stashes_pb_index() -> None:
     """Tier-1 introduces v171_diag_pb_screen as the menu dispatch target
     for both state 4 (PB1 Diag, W=0) and state 5 (PB2 Diag, W=1).
-    Phase 3.4 will replace the placeholder body with the per-PB Option-D
-    renderer; until then the label exists and forwards to the existing
-    dual-PB v171_diag_screen so menu navigation works without a hang."""
+
+    The Phase 3.4 sparse Option-D renderer is deferred per
+    V32_DIAG_TIER1_SPEC.md tracking; until it lands, the routine
+    stashes the PB-index parameter into a known scratch cell (so a
+    future rewrite can pick it up without changing the menu dispatch)
+    and forwards to the existing dual-PB v171_diag_screen renderer
+    so menu navigation works end-to-end on hardware today."""
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_pb_screen")
     assert off >= 0, (
-        "v171_diag_pb_screen label missing — menu dispatch will fail "
+        "v171_diag_pb_screen label missing -- menu dispatch will fail "
         "at link time because state 4 / state 5 reference it."
     )
-    body = text[off:off + 500]
-    # Placeholder MUST forward to v171_diag_screen until Phase 3.4 lands.
+    body = text[off:off + 800]
+    # PB-index must be stashed somewhere readable by a future Phase 3.4
+    # rewrite -- pin the scratch cell so the rewrite knows where to read.
+    assert re.search(r"movwf\s+\(Common_RAM\s*\+\s*29\),\s*A", body), (
+        "v171_diag_pb_screen must stash PB-index into Common_RAM+29 "
+        "scratch -- the Phase 3.4 sparse renderer rewrite will read it "
+        "from there to pick PB1 vs PB2 cache base."
+    )
+    # Forward to the existing dual-PB renderer until Phase 3.4 lands.
     assert re.search(r"bra\s+v171_diag_screen", body), (
         "placeholder must forward to v171_diag_screen"
     )

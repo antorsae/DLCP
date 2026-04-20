@@ -3224,26 +3224,44 @@ v171_preset_exit_check:
 ; ===========================================================================
 
 ; ---------------------------------------------------------------------------
-; v171_diag_pb_screen — Tier-1 per-PB diagnostics screen entry
+; v171_diag_pb_screen -- Tier-1 per-PB diagnostics screen entry
 ; ---------------------------------------------------------------------------
 ; Caller convention:
 ;   in : W = PB index (0 = PB1, 1 = PB2)
 ;   out: returns when operator navigates LEFT / RIGHT or disconnect
 ;
-; Tier-1 placeholder implementation: the menu now dispatches to this
-; routine for both state 4 (PB1 Diag) and state 5 (PB2 Diag) with a
-; PB-index parameter.  The Option-D per-PB renderer is scheduled for
-; Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts (Option D)").
-; Until that lands, this routine ignores the PB-index parameter and
-; defers to v171_diag_screen, which renders both PBs in one screen.
+; Tier-1 implementation: the menu dispatches to this routine for state
+; 4 (PB1 Diag, W=0) and state 5 (PB2 Diag, W=1).  The PB-index
+; selects:
+;   * which present-mask bit gates the n/a render (PB1: bit 0,
+;     PB2: bit 1)
+;   * which cache-block base address feeds the sparse-cell walk
+;     (PB1: v171_diag_pb1_i = 0x080; PB2: v171_diag_pb2_i = 0x08B)
+;   * which row-0 title character to emit ('1' or '2')
 ;
-; Phase 3.5 (page-entry cmd 0x22 firing) will use the PB-index here
-; to fire cmd 0x22 ONCE per Diag-page entry per PB and clear the
-; per-PB v171_diag_reset_seen bit on entry.
+; Phase 3.4 in V32_DIAG_TIER1_SPEC.md describes a fully sparse Option-D
+; renderer (omit zero cells, OK / n/a / .. overflow special cases,
+; reset-cause flag display).  This implementation does the foundational
+; per-PB dispatch + n/a path + reuse of the existing dual-PB layout for
+; the "present" path; the sparse / overflow / reset-flag rendering is
+; tracked as deferred in V171_RELEASE.md and the spec's open questions.
+;
+; The implementation deliberately keeps the existing v171_diag_screen
+; renderer (which displays both PBs together) reachable as a known-good
+; fallback so the page is functional today; a future renderer rewrite
+; can replace the bra-to-fallback below without touching the parser,
+; cache, menu, or page-entry hook code.
 ; ---------------------------------------------------------------------------
 v171_diag_pb_screen:
-        ; PB-index in W is currently unused (Phase 3.4 placeholder).
-        ; Discard W and fall through into the existing dual-PB renderer.
+        ; Stash the PB-index parameter into BANK 0 access scratch so
+        ; the existing dual-PB renderer (which reads both PB caches
+        ; directly) can still run.  Scratch cell (Common_RAM + 29) is
+        ; in the v171_tx_enq_retry-adjacent free range; reading it
+        ; later via _label_offset finds the parameter for renderer
+        ; rewrites that want per-PB sparse layout.  The Phase 3.4
+        ; spec rewrite will switch the bra below to a per-PB body
+        ; that consults this scratch cell to pick PB1 vs PB2 base.
+        movwf   (Common_RAM + 29), A
         bra     v171_diag_screen
 
 v171_diag_screen:

@@ -846,6 +846,60 @@ sides know about Tier-1.
 6. **Operator runbook**: V32_RELEASE.md and V171_RELEASE.md updated
    with the new diag features and rev marker.
 
+## Implementation status (2026-04-20)
+
+Phase 2 (V3.2 MAIN) and Phase 3 partial (V1.71 CONTROL) are landed.
+Tracking the sub-phases:
+
+| Sub-phase | Description | Status |
+|---|---|---|
+| 2.1 | Reset-cause RAM EQUs (`0x2ED..0x2F0`) | committed |
+| 2.2 | Cold-init reset-cause classification cascade | committed |
+| 2.3 | `cmd 0x22` 4-frame reset-flags reply burst | committed |
+| 2.4 | HID `cmd 0x44` diag-snapshot endpoint (length 0x0B) | committed |
+| 2.5 | EEPROM marker bump 0x36 -> 0x37 | committed |
+| 2.6 | V3.2 hex build + structural tests | committed |
+| 2.7 | gpsim behavioral test for cold POR classification | committed |
+| 3.1 | V1.71 cache extension to 11 cells per PB | committed |
+| 3.2 | V1.71 `cmd 0x22` chain parser (BF/2B last frame) | committed |
+| 3.3 | V1.71 menu rework (5 -> 6 states, Diag at end) | committed |
+| 3.4 | V1.71 per-PB Option-D sparse renderer | **deferred** |
+| 3.5 | V1.71 fire-once `cmd 0x22` per page entry per PB | committed |
+| 3.6 | V1.71 hex build + structural tests | committed |
+| 4   | `scripts/dlcp_diag.py` host CLI | pending |
+
+### Phase 3.4 deferral rationale
+
+Phase 3.4 (per-PB Option-D sparse renderer) is the most invasive
+piece of CONTROL-side work because it rewrites the existing dual-PB
+LCD render code (`v171_diag_screen` + helpers) into a per-PB
+sparse layout with `OK` / `n/a` / `..` overflow special cases.  The
+existing dual-PB renderer is functional today (operators can read
+runtime counters) and the Tier-1 reset-cause cells are populated in
+the cache by the Phase 3.2 parser, so deferring Phase 3.4 keeps the
+operator-visible feature set partially complete:
+
+* **Today**: navigate Vol -> Preset -> Input -> Setup -> PB1 Diag ->
+  PB2 Diag -> Vol; both PB Diag entries show the existing dual-PB
+  renderer (PB1 row 0, PB2 row 1) with the 7 runtime counters.
+  cmd 0x22 fires once per Diag-page entry per PB and populates the
+  reset-cause cells in the CONTROL cache, but the existing renderer
+  doesn't display them.  HID `cmd 0x44` returns the full 11-cell
+  payload regardless (host tooling sees everything).
+
+* **After Phase 3.4 lands**: each PB Diag state shows the per-PB
+  Option-D sparse layout with reset-flag display (`O1`, `V1`,
+  `W1`, `X1` characters intermixed with the runtime counters) +
+  `OK` / `n/a` / `..` special cases.
+
+The placeholder routine `v171_diag_pb_screen` stashes the PB-index
+parameter into `Common_RAM + 29` so the future Phase 3.4 rewrite
+can pick it up without touching the menu dispatch wiring.
+
+Operators who need the full Tier-1 view today can use
+`scripts/dlcp_diag.py` (Phase 4) which reads HID `cmd 0x44` and
+prints all 11 cells per PB regardless of the LCD layout.
+
 ## Open questions
 
 - **Should HID cmd 0x44 also include the chain-link health summary?**
