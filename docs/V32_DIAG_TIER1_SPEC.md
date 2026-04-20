@@ -1,7 +1,25 @@
 # V3.2 Tier-1 Diagnostics Expansion + V1.71 Menu Rework — Spec
 
-Last updated: 2026-04-20 (round 2 — addressed review findings 1-5)
+Last updated: 2026-04-20 (round 3 — addressed two review passes;
+                          5 round-1 + 4 round-2 follow-on findings)
 Status: design locked, implementation pending
+
+## Round-3 follow-on revisions (2026-04-20)
+
+Round-2 spec had four follow-on review findings; all addressed:
+
+* **F1 MED** — cross-version compat matrix split into LCD-path
+  (CONTROL-mediated) and HID-path (MAIN-local) columns.  Rev 0x37
+  MAIN supports HID `cmd 0x44` regardless of CONTROL version.
+* **F2 MED** — old-MAIN behavior on `cmd 0x22` corrected: emits
+  ONE stray `0x00` byte upstream (cmd-XOR ACK echo of the data
+  byte), no `BF/2N` reply.  CONTROL drops the stray byte
+  harmlessly.  New rev 0x37 `cmd 0x22` handler must suppress the
+  ACK echo (mirroring rev 0x35 `cmd 0x21` fix).
+* **F3 LOW** — stale `MCLR` references trimmed from goals + status
+  classification.
+* **F4 LOW** — `cmd 0x44` payload-size description fixed: 14 bytes
+  total (11 cells + 3 trailer), not "14 + 3".
 
 ## Round-2 revisions (2026-04-20)
 
@@ -696,7 +714,8 @@ Field units showing 0x37 have all of:
 - NEW cmd 0x22 4-frame reset-flags reply burst (BF/28..BF/2B)
 - cold init always-clear (no RCON gate) + reset-cause classification
   with full RCON re-arm (BOR + POR + TO + RI)
-- HID cmd 0x44 supported (returns 14-byte payload + 3-byte trailer)
+- HID cmd 0x44 supported (returns 14-byte payload total: 11 cell
+  bytes + 3-byte trailer; length byte at response[2] = 0x0E)
 
 Cross-version compatibility — separate the LCD path (CONTROL-mediated)
 from the HID path (MAIN-local).  HID cmd 0x44 lives entirely in MAIN
@@ -792,5 +811,15 @@ sides know about Tier-1.
   BF/2C would hang).  Round-2 design splits the problem cleanly:
   cmd 0x21 stays at 7 frames, BF/27 stays the runtime-burst end;
   reset flags get their own cmd 0x22 with BF/2B as its end marker.
-  Forward AND backward compat preserved (older MAINs simply don't
-  reply to cmd 0x22; older CONTROLs simply don't fire cmd 0x22).
+  Forward AND backward compat preserved with one caveat:
+  - Older MAINs (≤ rev 0x36) DO emit one stray `0x00` byte upstream
+    when `cmd 0x22` arrives — the cmd-XOR-chain dispatch path's
+    cmd-XOR ACK echo runs even for cmds that have no handler.  No
+    `BF/2N` reply burst follows.  CONTROL drops the stray byte
+    harmlessly (parser at `frame_position == 0` silently drops
+    non-route bytes).  See "Old MAIN behavior on cmd 0x22" for
+    the full byte-level trace.
+  - Older CONTROLs simply don't fire cmd 0x22 at all.
+  Tooling and tests built against this spec must include the
+  one-byte stray-traffic budget on the old-MAIN side; it's not
+  zero traffic.
