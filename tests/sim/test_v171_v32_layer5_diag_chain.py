@@ -1128,10 +1128,17 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
         )
         # The helper itself must goto flow_main_uart_service_1be6_1e6c
         # to keep dispatch/forwarding consistent with stock cmd handlers.
-        assert "goto" in helper_body and "flow_main_uart_service_1be6_1e6c" in helper_body, (
+        # Match the actual `goto <label>` instruction (not just substrings),
+        # so a refactor that points goto at a different label and merely
+        # mentions the parser-tail label in a comment doesn't slip past
+        # this gate (codex LOW review against 1d4f3dc).
+        assert re.search(
+            r"goto\s+flow_main_uart_service_1be6_1e6c\b",
+            helper_body,
+        ), (
             "diag_send_burst_xx helper must exit via "
-            "flow_main_uart_service_1be6_1e6c so dispatch/forwarding "
-            "is consistent with stock cmd handlers"
+            "`goto flow_main_uart_service_1be6_1e6c` so dispatch/"
+            "forwarding is consistent with stock cmd handlers"
         )
         # And the helper must clear active_flags.bit6 to suppress the
         # cmd-XOR ACK echo.  Suspected contributor to the V1.71 + V3.2
@@ -1144,10 +1151,15 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
     else:
         # Pre-refactor fallback: the cmd21 handler does the goto + bcf
         # itself.  This branch keeps the test compatible with any
-        # legacy / pre-Tier-1 source tree.
-        assert "goto" in body and "flow_main_uart_service_1be6_1e6c" in body, (
-            "cmd21 handler must exit via flow_main_uart_service_1be6_1e6c "
-            "so dispatch/forwarding is consistent with stock cmd handlers"
+        # legacy / pre-Tier-1 source tree.  Same instruction-exact
+        # match as the helper-path above.
+        assert re.search(
+            r"goto\s+flow_main_uart_service_1be6_1e6c\b",
+            body,
+        ), (
+            "cmd21 handler must exit via "
+            "`goto flow_main_uart_service_1be6_1e6c` so dispatch/"
+            "forwarding is consistent with stock cmd handlers"
         )
         assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body), (
             "cmd21 handler does not clear active_flags.bit6 -- the "
