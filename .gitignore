@@ -51,3 +51,8 @@ firmware/patched/releases/*_presetA.manifest.json
 
 # Local converted reference text dumps
 firmware/reference/*.txt
+
+# Per-checkout state file written by .claude/hooks/codex-review-on-commit.sh
+# (records the last HEAD hash that triggered a codex review reminder so the
+# hook doesn't re-fire on amends or unrelated git invocations).
+.claude/.codex-last-reviewed-head

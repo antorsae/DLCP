@@ -2,106 +2,131 @@
 # .claude/hooks/codex-review-on-commit.sh
 #
 # PostToolUse hook for the Bash tool.  When Claude Code runs a Bash
-# command that contains `git commit`, AND the working tree HEAD has
-# advanced (commit actually landed, not just staged), emit a stdout
-# message that Claude Code surfaces back to the model as a system
-# reminder.  The reminder instructs the model to invoke the codex-cli
-# MCP tool on the new HEAD before continuing with any other work.
+# command containing `git commit` AND that invocation actually
+# advanced HEAD (i.e. a fresh commit landed, distinct from the last
+# commit this hook reviewed), emit a JSON envelope on stdout that
+# Claude Code surfaces back to the model as additionalContext via
+# hookSpecificOutput.  The reminder instructs Claude to invoke the
+# codex-cli MCP tool on the new HEAD before continuing.
 #
-# Hook input contract: Claude Code pipes a JSON envelope on stdin
-# describing the tool call.  The envelope's tool_input.command field
-# holds the Bash command string for Bash invocations.
+# Hook protocol (Claude Code PostToolUse):
+#   * stdin: JSON envelope with .cwd, .tool_name, .tool_input.command,
+#            .tool_response.output, etc.
+#   * stdout: plain text is debug-only for PostToolUse -- to inject
+#             context, emit JSON of the form
+#                 {"hookSpecificOutput": {
+#                    "hookEventName": "PostToolUse",
+#                    "additionalContext": "..."
+#                 }}
+#   * exit code: non-zero would be treated as a hook failure; we
+#                always exit 0 so a hook bug never blocks a commit.
 #
-# Exit codes:
-#   0  -- no action needed (or message emitted; non-blocking)
-#   non-zero would be treated as a hook failure and may abort the
-#          tool call, which we explicitly DO NOT want here -- the
-#          commit already landed; we just want to nudge the model.
+# State tracking:
+#   .claude/.codex-last-reviewed-head -- last HEAD hash this hook
+#                                        emitted a reminder for.  A
+#                                        reminder only fires when the
+#                                        repo's current HEAD differs.
+#                                        Handles amends (HEAD changes)
+#                                        and prevents re-firing on
+#                                        no-op git invocations.
+#
+# Codex review of HEAD = 46b19d0 (the hook's first commit) flagged
+# the original time-based heuristic as both false-positive prone and
+# repo-mis-targeting prone; this rewrite addresses both via the
+# state-file approach + reading .cwd from the envelope.
 
 set -uo pipefail
 
-# Read the JSON envelope; bail quietly if jq isn't available or input
-# isn't JSON-shaped.  We never want a hook failure to block tool use.
 input="$(cat 2>/dev/null || true)"
-if [ -z "$input" ]; then
-  exit 0
-fi
+[ -z "$input" ] && exit 0
 
+# Use jq if available; without it the hook becomes a no-op rather
+# than risk a false-positive parse via grep.  jq is a hard dependency
+# for reliable behavior.
 if ! command -v jq >/dev/null 2>&1; then
-  # No jq -- fall back to grep against the raw input.  The Bash command
-  # string sits inside a JSON value so this is approximate but works.
-  if echo "$input" | grep -qE '"command"[^"]*:[^"]*"[^"]*git[[:space:]]+commit'; then
-    cmd_matched=1
-  else
-    cmd_matched=0
-  fi
-else
-  cmd="$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)"
-  if echo "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
-    cmd_matched=1
-  else
-    cmd_matched=0
-  fi
-fi
-
-if [ "$cmd_matched" -ne 1 ]; then
   exit 0
 fi
 
-# Confirm a commit actually landed -- if the bash invocation included
-# `git commit` but the commit itself failed (e.g. pre-commit hook
-# rejected it, no staged files, --dry-run), we don't want to ask for
-# a codex review of a non-existent change.
-#
-# Compare HEAD against the value Claude Code's tool envelope was
-# operating on.  We don't have that pre-state directly, so use a
-# heuristic: HEAD must exist AND be reachable AND the most recent
-# commit's timestamp must be within the last 5 minutes (covers the
-# normal case of the commit having JUST happened in this tool call).
-HASH="$(git -C "$(pwd)" log -1 --format=%h 2>/dev/null || true)"
-if [ -z "$HASH" ]; then
+cmd="$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+hook_cwd="$(echo "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
+
+# Quick exit if Bash command didn't include `git commit`.  Word-boundary
+# match on grep -E so "git committed" or "git commit-tree" don't trigger.
+if ! echo "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
   exit 0
 fi
 
-NOW=$(date +%s)
-COMMIT_TS=$(git -C "$(pwd)" log -1 --format=%ct 2>/dev/null || echo 0)
-AGE=$((NOW - COMMIT_TS))
-# 300s = 5 min; if the most recent commit is older than that, this
-# Bash invocation didn't actually create a new commit.
-if [ "$AGE" -gt 300 ]; then
+# Resolve the repo to inspect.  Prefer the hook envelope's cwd (the
+# directory the Bash tool ran in), fall back to CLAUDE_PROJECT_DIR,
+# fall back to PWD.  All three may point at the same directory.
+target_cwd="${hook_cwd:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+[ -d "$target_cwd" ] || exit 0
+
+# Confirm the directory is a git working tree with a reachable HEAD.
+HASH="$(git -C "$target_cwd" log -1 --format=%H 2>/dev/null || true)"
+[ -z "$HASH" ] && exit 0
+
+short_hash="$(git -C "$target_cwd" log -1 --format=%h 2>/dev/null || echo "$HASH")"
+subj="$(git -C "$target_cwd" log -1 --format=%s 2>/dev/null | head -c 200)"
+
+# State file: per-repo, per-HEAD dedup.  Lives under .claude/ in the
+# target repo (NOT the hook's source repo) so each checkout tracks
+# its own review history.
+state_dir="$target_cwd/.claude"
+state_file="$state_dir/.codex-last-reviewed-head"
+
+last_reviewed=""
+if [ -f "$state_file" ]; then
+  last_reviewed="$(head -c 64 "$state_file" 2>/dev/null | tr -d '[:space:]' || true)"
+fi
+
+# If HEAD hasn't moved since the last review, the bash invocation
+# was either a failed commit, an unrelated git command that mentioned
+# `git commit` in passing, or a no-op like `git commit --dry-run`.
+if [ "$HASH" = "$last_reviewed" ]; then
   exit 0
 fi
 
-SUBJ="$(git -C "$(pwd)" log -1 --format=%s 2>/dev/null | head -c 200)"
-REPO_ROOT="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Update the state file (best-effort; never fail the hook).
+mkdir -p "$state_dir" 2>/dev/null || true
+echo "$HASH" > "$state_file" 2>/dev/null || true
 
-# Emit the reminder.  Claude Code will surface stdout from PostToolUse
-# hooks back to the model on the next turn.
-cat <<EOF
-[CODEX REVIEW REQUIRED] HEAD = $HASH ("$SUBJ")
+# Compose the reminder body.  Emit as JSON via jq so newlines, quotes,
+# and special chars in the subject line are escaped correctly.
+remind=$(cat <<EOF
+[CODEX REVIEW REQUIRED] HEAD = $short_hash ("$subj")
 
-Per CLAUDE.md §"Per-Commit Codex Review" in this repo, you MUST now
-invoke the codex-cli MCP tool to dry-run review the just-landed
-commit BEFORE starting any new task.  Use this exact tool call:
+Per CLAUDE.md (-> AGENTS.md) section "Per-Commit Codex Review", you
+MUST now invoke the codex-cli MCP tool to dry-run review the just-
+landed commit BEFORE starting any new task.  Tool call template:
 
   mcp__codex-cli__codex(
-      cwd="$REPO_ROOT",
+      cwd="$target_cwd",
       sandbox="read-only",
       approval-policy="never",
-      prompt=<<<see CLAUDE.md template; include the HEAD hash, the
-              subject line, and a one-line context describing what
-              area this commit touches>>>
+      prompt=<<<see AGENTS.md template; include HEAD hash $short_hash,
+              the subject line, and a one-line context describing
+              what area this commit touches>>>
   )
 
 After codex reports findings:
   * HIGH or MEDIUM -> fix in a follow-up commit before moving on,
-                      OR explicitly defer with the user's confirmation.
-  * LOW             -> may be deferred but must be tracked (TaskCreate
-                      or noted in the next commit message).
-  * No findings     -> acknowledge "codex: clean" in your response and
-                      proceed.
+                      OR explicitly defer with user confirmation.
+  * LOW             -> may be deferred but must be tracked
+                      (TaskCreate or noted in the next commit message).
+  * No findings     -> acknowledge "codex: clean" and proceed.
 
-Do not silently skip this step.  If the user explicitly asks you to
-defer the codex review for a particular commit, say so and continue.
+Do not silently skip this step.
 EOF
+)
+
+# Emit the JSON envelope Claude Code recognizes for PostToolUse
+# additionalContext injection.
+jq -n --arg msg "$remind" '{
+  hookSpecificOutput: {
+    hookEventName: "PostToolUse",
+    additionalContext: $msg
+  }
+}'
+
 exit 0
