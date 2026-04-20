@@ -26,9 +26,12 @@ Doc-only review of round-1 spec found five issues; all addressed below:
    Round-2 design adds a NEW `cmd 0x22` chain query that returns
    the 4 reset flags via 4 frames `BF/28..BF/2B`.  V1.71 fires
    cmd 0x22 ONCE per Diag-page entry (or on a long cadence) since
-   reset cause never changes within a session.  Older MAINs ignore
-   cmd 0x22 (unknown cmd → no reply); CONTROL renders the reset
-   cells as 0 in that case.
+   reset cause never changes within a session.  Older MAINs (≤ rev
+   0x36) emit ONE stray `0x00` byte upstream when `cmd 0x22` arrives
+   (the cmd-XOR-chain dispatch's ACK echo path runs even for cmds
+   without handlers — see "Old MAIN behavior on cmd 0x22") but no
+   `BF/2N` reply.  CONTROL drops the stray byte harmlessly and
+   times out the reset cells at 0.
 4. **RCON re-arm now covers TO and RI.**  Round-1 only re-armed BOR
    and POR.  Without re-arming TO (WDT timeout flag) and RI (reset-
    instruction flag), a single WDT or SW-reset event would persist
@@ -63,7 +66,10 @@ and CI logs alike.
 
 1. **Reset-cause visibility** — operators flashing new firmware or
    debugging field issues can tell whether a unit POR'd, BOR'd, hit
-   WDT, took a software reset, or got MCLR'd.
+   WDT, or took a software reset (panic path or bootloader hand-off).
+   MCLR is not a reset cause on this hardware (`_CONFIG3H = 0x00`
+   disables the MCLR pin); see "RAM layout" §"MCLR is NOT a reset
+   cause".
 2. **Programmatic retrieval** — a HID-only path to pull diag state
    without touching the chain (cmd 0x21 traffic was implicated in
    the 2026-04-20 hang cascade; HID retrieval bypasses the chain
@@ -278,17 +284,34 @@ Two LAST-FRAME markers, one per query type:
 
 This decoupling preserves backward compatibility:
 
-* **V3.2 ≤ rev 0x36 MAINs** never receive cmd 0x22 (their parser
-  rejects unknown cmd codes silently).  CONTROL fires cmd 0x22
-  once per Diag-page entry, sees no reply, eventually times out
-  and gives up — leaving the reset-cause cells at 0 in the cache.
-  The Diag-page render shows the runtime counters but NO reset-
-  cause flags (which is correct: the older firmware doesn't track
-  them).
+* **V3.2 ≤ rev 0x36 MAINs** receive `cmd 0x22` but have no handler
+  for it.  The cmd-XOR-chain dispatch path still fires (it runs
+  for every parsed cmd, regardless of whether a handler exists),
+  setting `active_flags.bit6` and storing the data byte in
+  `ram_0x0BC`.  At the parser tail, this emits ONE stray `0x00`
+  byte upstream (the cmd-XOR ACK echo of the data byte; cmd was
+  `B1/0x22/0x00`, so the echoed byte is `0x00`).  No 4-frame
+  `BF/28..BF/2B` reply burst is emitted (the reset-cause handler
+  doesn't exist on rev ≤ 0x36).
 
-* **V3.2 ≥ rev 0x37 MAINs** receive cmd 0x22 and reply with the 4
-  flag frames.  The reset-cause cache fills, and the Diag-page
-  render shows whichever flag is set.
+  CONTROL handles the stray `0x00` harmlessly: when its parser
+  is at `frame_position == 0` (waiting for a route byte), non-
+  route bytes (< 0x80) are silently dropped.  CONTROL's
+  `RESET_PENDING` flag eventually times out (~4 cadence cycles)
+  and the reset-cause cells stay at 0 in the cache — the LCD
+  shows runtime counters but no reset-cause flags (which is
+  correct: the older firmware doesn't track them).
+
+  See "Cross-version compatibility" §"Old MAIN behavior on
+  cmd 0x22" for the full byte-level trace.
+
+* **V3.2 ≥ rev 0x37 MAINs** receive `cmd 0x22` and reply with
+  the 4-frame `BF/28..BF/2B` burst.  The new handler MUST also
+  suppress the cmd-XOR ACK echo (`bcf active_flags, 6, ACCESS`
+  before the parser-tail goto, mirroring the rev 0x35 fix on
+  `cmd 0x21`) so no trailing stray byte appears after the
+  4-frame burst.  CONTROL's reset-cause cache fills, and the
+  Diag-page render shows whichever flag is set.
 
 CONTROL's reset-cause query is fired ONCE per Diag-page entry (the
 flag value never changes within a session, so polling more often
@@ -581,7 +604,8 @@ JSON-format notes:
 - `HEALTHY` — only `O` (POR=1) and at most one `S+B` pair (one
   standby/bring-up cycle is the expected boot sequence) non-zero.
 - `DEGRADED` — any runtime counter (I, D, S>1, B>1, R, A, P) at
-  non-zero, or any unexpected reset (V, W, X, M) > 0.
+  non-zero, or any unexpected reset flag (V = BOR, W = WDT,
+  X = SW-reset) set.
 - `CRITICAL` — any counter saturated to `+` (15+), or W (WDT) > 0.
 
 The status line is advisory — operators shouldn't rely on it for
@@ -618,8 +642,12 @@ Behavioral (Tier C):
   (Unchanged from rev 0x36 behavior.)
 - cmd 0x22 reply burst: 4 frames in order (BF/28..BF/2B), each
   data byte 0 or 1, exactly one byte = 1.
-- HID cmd 0x44 returns 14-byte counter payload + 3-byte trailer
-  (flag = 0x03, rev = 0x37, role).
+- HID cmd 0x44 returns a 14-byte payload (length byte = 0x0E):
+  11 cell bytes (7 counters + 4 reset flags) followed by a 3-byte
+  trailer (flag = 0x03, rev = 0x37, role).  Total cells + trailer
+  = 14 bytes; offsets 17..63 of the 64-byte HID IN report are
+  0xFF padding.  See "HID protocol extension" §"Response" for the
+  exact byte layout.
 - Sustained-Diag-page test (existing failing test from
   `test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`):
   must now pass with cmd 0x22 fired only once per page entry
@@ -670,24 +698,55 @@ Field units showing 0x37 have all of:
   with full RCON re-arm (BOR + POR + TO + RI)
 - HID cmd 0x44 supported (returns 14-byte payload + 3-byte trailer)
 
-Cross-version compatibility:
+Cross-version compatibility — separate the LCD path (CONTROL-mediated)
+from the HID path (MAIN-local).  HID cmd 0x44 lives entirely in MAIN
+firmware and is reachable from the host regardless of which CONTROL
+firmware is attached:
 
-* **V1.71 CONTROL ≤ rev TBD (pre-Tier1) ↔ V3.2 MAIN rev 0x37**:
-  CONTROL doesn't fire cmd 0x22, so reset cells stay at 0 in the
-  cache.  Runtime counters work normally.  No reset-cause display
-  on LCD or HID.
-* **V1.71 CONTROL ≥ rev TBD (Tier1) ↔ V3.2 MAIN ≤ rev 0x36**:
-  CONTROL fires cmd 0x22, the older MAIN doesn't recognize the
-  cmd, so no reply.  CONTROL's RESET_PENDING flag eventually
-  times out (after ~4 cadence cycles); the reset cells stay at 0;
-  no reset-cause display.  Runtime counters work normally.
-* **V1.71 Tier1 ↔ V3.2 rev 0x37**: full Tier-1 feature set on both
-  sides — runtime + reset cells populated, full LCD render, full
-  HID cmd 0x44 payload.
+| MAIN | CONTROL | LCD reset display (CONTROL-mediated) | HID `cmd 0x44` (MAIN-local) |
+|---|---|---|---|
+| ≤ rev 0x36 | pre-Tier1 | runtime counters only | not supported (cmd 0x44 absent on ≤ 0x36) |
+| ≤ rev 0x36 | Tier1 | runtime counters only; CONTROL fires `cmd 0x22` once per page entry, MAIN echoes a stray 0x00 byte (see "Old MAIN behavior on cmd 0x22" below), CONTROL drops it; reset cells stay at 0 in cache; LCD shows runtime counters only | not supported |
+| rev 0x37 | pre-Tier1 | runtime counters only on LCD (CONTROL doesn't fire `cmd 0x22`) | **fully supported** — host can pull the 11-cell snapshot via `cmd 0x44` even though CONTROL doesn't render reset flags on the LCD |
+| rev 0x37 | Tier1 | full Tier-1 feature set: runtime + reset cells populated, full LCD render | **fully supported** |
 
-The chain protocol's "unknown cmd" path drops silently (no error
-reply) per the chain-protocol contract, so older MAINs paired with
-newer CONTROLs degrade gracefully.
+The HID retrieval path bypasses the chain entirely — operators with a
+0x37 MAIN can use `scripts/dlcp_diag.py` regardless of which CONTROL
+firmware is on the unit.  This is the recommended path for monitoring
+and CI workflows because it doesn't require navigating the LCD menu
+and doesn't touch the chain (cmd 0x21 cadence is implicated in the
+2026-04-20 Diag-page hang cascade).
+
+### Old MAIN behavior on `cmd 0x22`
+
+The chain-protocol contract says "unknown cmd → no reply" — but in
+the actual V3.2 ≤ rev 0x36 MAIN implementation the cmd-XOR-chain
+dispatch path stores the data byte in `ram_0x0BC` and sets
+`active_flags.bit6` regardless of whether any handler claimed the
+cmd.  At the parser tail, `bit6` set causes the staged byte to be
+emitted upstream as the cmd-XOR ACK echo.
+
+So a `cmd 0x22 / data 0x00` query on a ≤ rev 0x36 MAIN produces:
+
+* No 4-frame `BF/28..BF/2B` reply burst (the reset-cause handler
+  doesn't exist).
+* ONE stray `0x00` byte upstream (the cmd-XOR ACK echo of the
+  data byte).
+
+CONTROL handles the stray `0x00` harmlessly: when the parser
+`frame_position == 0` (no route byte received yet), non-route bytes
+(< 0x80) are silently dropped.  The stray byte does not advance any
+parser state.
+
+This is why the spec characterizes the degradation as "graceful":
+the failure mode is one harmless dropped byte per Diag-page entry,
+not a frame-misalignment cascade.
+
+For the Tier-1 implementation, the new V3.2 rev 0x37 `cmd 0x22`
+handler MUST suppress the cmd-XOR ACK echo (`bcf active_flags, 6,
+ACCESS` before the parser-tail goto, mirroring the rev 0x35 fix
+applied to `cmd 0x21`) so that the chain stays clean even when both
+sides know about Tier-1.
 
 ## Implementation phases (concrete order)
 
