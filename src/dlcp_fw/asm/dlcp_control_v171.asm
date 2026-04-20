@@ -3756,9 +3756,20 @@ v171_diag_send_query_w:
         ;
         ; PENDING reset on abort: caller (cadence loop) sets RUNTIME_PENDING
         ; before calling for cmd 0x21; the page-entry hook sets RESET_PENDING
-        ; before calling for cmd 0x22.  On TX abort we clear BOTH so neither
-        ; is mis-classified as remote PB silence (the query never left
-        ; CONTROL).  Clearing both is safe: only one was set by the caller.
+        ; before calling for cmd 0x22.  On TX abort we clear ONLY the bit
+        ; matching the just-aborted query type (dispatched on the cmd byte
+        ; saved in (Common_RAM + 28)) so we don't drop tracking of an
+        ; already-in-flight OTHER query.
+        ;
+        ; Concrete bug "clearing both on abort" would cause: the cadence
+        ; body fires cmd 0x22 first (sets RESET_PENDING), then cmd 0x21.
+        ; If cmd 0x22 sent successfully but cmd 0x21 aborts mid-frame,
+        ; the shared abort path would clear RESET_PENDING too even though
+        ; cmd 0x22 is still in flight.  The next cadence then sees
+        ; RESET_PENDING clear and reset_seen.target still clear, so it
+        ; re-fires cmd 0x22 -- a duplicate (mostly harmless on the wire,
+        ; but the bookkeeping doesn't match intent).  Codex review LOW
+        ; finding against commit 86b1d1a.
         ;
         ; Frame-state recovery on the wire: MAIN's route handler treats
         ; every Bx byte as a frame start (resets frame_pos), so a partial
@@ -3798,13 +3809,27 @@ v171_diag_send_query_w:
         bc      v171_diag_send_query_aborted               ; final byte also checked
         return  0x0
 v171_diag_send_query_aborted:
-        ; TX ring saturated mid-frame.  Clear BOTH pending bits so the
-        ; next cadence / page-entry hook retries the SAME target instead
-        ; of mis-classifying local saturation as remote PB silence.
-        ; tx_byte_enqueue may have left BSR anywhere -- re-assert BANK 1.
+        ; TX ring saturated mid-frame.  Clear ONLY the pending bit
+        ; matching the just-aborted query type so a sibling query
+        ; that already left CONTROL keeps its tracking intact.
+        ;
+        ; Cmd byte (0x21 or 0x22) lives in (Common_RAM + 28); it was
+        ; stashed at the top of v171_diag_send_query_w before any TX,
+        ; so it is always valid here.  tx_byte_enqueue may have left
+        ; BSR anywhere -- re-assert BANK 1 before touching the flag byte.
         movlb   0x01
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        movf    (Common_RAM + 28), W, A
+        xorlw   0x21
+        bz      v171_diag_send_query_aborted_runtime
+        ; cmd != 0x21 -> assume cmd 0x22 (the only other type the
+        ; helper accepts) and clear RESET_PENDING.  This branch also
+        ; covers any future cmd type as "non-runtime" until the helper
+        ; gains a real dispatch table.
         bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        bra     v171_diag_send_query_aborted_done
+v171_diag_send_query_aborted_runtime:
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+v171_diag_send_query_aborted_done:
         movlb   0x00
         return  0x0
 

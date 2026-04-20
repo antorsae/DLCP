@@ -873,13 +873,28 @@ def test_diag_send_query_aborts_on_tx_saturation() -> None:
 
 
 def test_diag_send_query_clears_pending_on_abort() -> None:
-    """Coverage for F2 round 2 (2026-04-19): on TX-ring saturation,
-    v171_diag_send_query must CLEAR the PENDING flag before returning.
-    Otherwise the next cadence expiry sees PENDING-still-set and
-    advances target — falsely classifying local TX-ring saturation as
-    remote PB silence and round-robin'ing past the original target.
-    Clearing PENDING on abort makes the next cadence retry the SAME
-    target, which is what the "whole-frame retry" comment claims.
+    """Coverage for F2 round 2 (2026-04-19) + codex LOW (2026-04-20):
+    on TX-ring saturation, v171_diag_send_query must clear the
+    pending flag matching the just-aborted query type, and ONLY that
+    flag, so a sibling query already in flight keeps its tracking.
+
+    History:
+      * Round 1: clear single PENDING flag (only one query type
+        existed in pre-Tier-1 V1.71).
+      * Round 2: with Tier-1 RESET_PENDING added, round-1 was
+        broadcast-replaced with "clear both bits" (see commit d3d15cd).
+      * Codex LOW review against 86b1d1a: "clear both" is wrong when
+        the cadence has cmd 0x22 already in flight (RESET_PENDING set,
+        cmd 0x22 sent OK) and the immediately-following cmd 0x21 send
+        aborts mid-frame.  Clearing RESET_PENDING then loses tracking
+        of the in-flight cmd 0x22 and lets the next cadence re-fire
+        a duplicate cmd 0x22.
+
+    Current contract (post-codex-LOW fix):
+      * Read cmd byte from (Common_RAM + 28) -- it was stashed at the
+        top of v171_diag_send_query_w before any TX, so always valid.
+      * cmd 0x21 -> bcf RUNTIME_PENDING only.
+      * cmd 0x22 (or anything else) -> bcf RESET_PENDING only.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     abort_body = _label_body(
@@ -889,25 +904,34 @@ def test_diag_send_query_clears_pending_on_abort() -> None:
     end_ret = abort_body.find("return")
     assert end_ret > 0, "abort path missing return"
     abort_body = abort_body[:end_ret + 20]
-    # The abort path must clear BOTH RUNTIME_PENDING and RESET_PENDING
-    # (V1.71 Tier-1 added the second pending bit; either could have been
-    # set by the caller depending on which query type aborted).
+    # Both bcfs must still be present -- one for each branch.
     assert re.search(
         r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         abort_body,
-    ), (
-        "abort path must clear RUNTIME_PENDING -- otherwise local TX-ring "
-        "saturation during a cmd 0x21 query gets misclassified as remote "
-        "PB silence by the cadence loop's RUNTIME_PENDING-still-set gate"
-    )
+    ), "abort path missing bcf RUNTIME_PENDING"
     assert re.search(
         r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RESET_PENDING,\s*BANKED",
         abort_body,
+    ), "abort path missing bcf RESET_PENDING"
+    # NEW (codex LOW fix): the abort path must dispatch on the saved
+    # cmd byte at (Common_RAM + 28) so it clears ONLY the matching bit.
+    # Pin the cmd-byte load + xorlw 0x21 + bz to the runtime branch.
+    assert re.search(
+        r"movf\s+\(Common_RAM \+ 28\),\s*W,\s*A",
+        abort_body,
     ), (
-        "abort path must clear RESET_PENDING -- otherwise local TX-ring "
-        "saturation during a cmd 0x22 query leaves RESET_PENDING set "
-        "permanently (the page-entry hook only fires once per visit, so "
-        "the gate would lock cmd 0x22 out for the rest of the session)"
+        "abort path must read the saved cmd byte from (Common_RAM + 28) "
+        "to dispatch on the just-aborted query type -- pre-codex-LOW "
+        "version cleared both bits unconditionally and could lose "
+        "tracking of an in-flight sibling query"
+    )
+    assert re.search(
+        r"xorlw\s+0x21\s*\n\s*bz\s+v171_diag_send_query_aborted_runtime",
+        abort_body,
+    ), (
+        "abort path must dispatch via `xorlw 0x21; bz <runtime-label>` "
+        "so cmd 0x21 takes the RUNTIME_PENDING branch and cmd 0x22 "
+        "(or any non-0x21) falls through to the RESET_PENDING branch"
     )
     # And it must re-assert BANK 1 first (tx_byte_enqueue may have
     # left BSR anywhere).
