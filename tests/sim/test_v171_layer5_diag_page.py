@@ -1753,34 +1753,37 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
                                     didn't include it in the list
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    helper_labels = (
-        "v171_diag_letter_for_idx",
-        "v171_diag_pad_spaces",
-        "v171_diag_emit_letter",
-        "v171_diag_emit_nib_w",
-        "lcd_char_write",
+
+    # Per-helper (start_label, end_label) pairs.  end_label is the
+    # IMMEDIATELY-NEXT top-level routine entry in the source -- chosen
+    # explicitly per helper so the scan body is exactly the helper's
+    # routine, not the helper PLUS unrelated downstream code that
+    # happens to share a separator block.
+    #
+    # Codex flagged a previous version that scanned to the next
+    # `; ----...----` separator: lcd_char_write ends at line ~356 but
+    # next separator is at ~367 (so scan included
+    # lcd_command_or_eeprom_read), and v171_diag_pad_spaces ends at
+    # ~3725 but next separator is at ~3897 (so scan included
+    # v171_diag_screen_armed through v171_diag_check_buttons).  Those
+    # downstream routines aren't called from inside the row walks, so
+    # an FSR1 touch there is irrelevant to row-walk correctness, but
+    # it would still fail this test.  Per-helper end markers eliminate
+    # the false-positive risk.
+    helpers = (
+        ("v171_diag_letter_for_idx", "v171_diag_pad_spaces"),
+        ("v171_diag_pad_spaces",     "v171_diag_screen_armed"),
+        ("v171_diag_emit_letter",    "v171_diag_emit_nib_w"),
+        ("v171_diag_emit_nib_w",     "v171_diag_send_runtime_query"),
+        ("lcd_char_write",           "lcd_command_or_eeprom_read"),
     )
-    # Routine-separator comment (`; ----...----`) marks the END of one
-    # routine and the START of the next.  Walking forward from the
-    # helper's label until the NEXT separator gives the full routine
-    # body regardless of length.  Codex flagged a previous version
-    # that used a fixed 1500-char window which truncated lcd_char_write
-    # (~2800 chars) and v171_diag_letter_for_idx (~1860 chars), missing
-    # any FSR1 writes in their tails.
-    separator_pattern = re.compile(r"^\s*;\s*-{20,}\s*$", re.MULTILINE)
 
-    def helper_body(label: str) -> str:
-        off = _label_offset(text, label)
-        assert off >= 0, f"helper label {label} not found in source"
-        # First skip past the helper's own header docstring separator
-        # (which immediately precedes the label).  Then find the NEXT
-        # separator after the label.
-        m = separator_pattern.search(text, off + 1)
-        end = m.start() if m else len(text)
-        return text[off:end]
-
-    for helper in helper_labels:
-        body = helper_body(helper)
+    for helper, end_marker in helpers:
+        body = _label_body(text, helper, end_marker)
+        assert body, (
+            f"helper body span not located: "
+            f"{helper} -> (next routine '{end_marker}' missing?)"
+        )
         # No lfsr to FSR1.
         assert "lfsr    0x1," not in body, (
             f"{helper} clobbers FSR1 via lfsr -- breaks the row walk's "
