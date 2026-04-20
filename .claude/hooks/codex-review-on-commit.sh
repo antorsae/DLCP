@@ -109,16 +109,42 @@ fi
 # just HEAD.  This handles the codex MEDIUM finding that "if a Bash
 # tool call lands MULTIPLE commits before the hook fires once, only
 # the last hash gets reviewed" -- we now list ALL of them.
-new_commits=""
+#
+# `--reverse` so the listed order matches the wording ("oldest-first")
+# in the reminder body.  The TOTAL count is computed against the full
+# range so a head-truncated display in the reminder doesn't hide the
+# tail count from the operator (codex MEDIUM 2026-04-20: pre-truncation
+# made the count match the truncated list, recreating the original
+# "intermediate commits silently bypass review" bug at a higher
+# threshold).
+new_commit_count=0
+new_commits_full=""
+range_used=""
 if [ -n "$last_reviewed" ] && \
    git -C "$repo_root" merge-base --is-ancestor "$last_reviewed" "$HASH" 2>/dev/null; then
-  # last_reviewed is reachable; list everything since it.
-  new_commits="$(git -C "$repo_root" log --format='%h %s' "${last_reviewed}..${HASH}" 2>/dev/null | head -50)"
+  range_used="${last_reviewed}..${HASH}"
+  new_commit_count="$(git -C "$repo_root" rev-list --count "$range_used" 2>/dev/null || echo 0)"
+  new_commits_full="$(git -C "$repo_root" log --reverse --format='%h %s' "$range_used" 2>/dev/null)"
 fi
-if [ -z "$new_commits" ]; then
-  new_commits="$(git -C "$repo_root" log -1 --format='%h %s' "$HASH" 2>/dev/null)"
+if [ "$new_commit_count" -le 0 ] || [ -z "$new_commits_full" ]; then
+  # Fallback: just HEAD.  Counts as 1 commit.
+  range_used=""
+  new_commit_count=1
+  new_commits_full="$(git -C "$repo_root" log -1 --format='%h %s' "$HASH" 2>/dev/null)"
 fi
-new_commit_count="$(printf '%s\n' "$new_commits" | grep -c . 2>/dev/null || echo 0)"
+
+# Display list: bound to 50 entries to keep the reminder JSON
+# manageable even on huge batches.  The full count is reported above
+# so the operator/model knows when truncation happened.
+DISPLAY_LIMIT=50
+if [ "$new_commit_count" -gt "$DISPLAY_LIMIT" ]; then
+  shown="$(printf '%s\n' "$new_commits_full" | head -$DISPLAY_LIMIT)"
+  trunc_note="... (showing first $DISPLAY_LIMIT of $new_commit_count; reach the rest via \`git -C $repo_root log --reverse --format='%h %s' $range_used\`)"
+  new_commits="$shown
+$trunc_note"
+else
+  new_commits="$new_commits_full"
+fi
 
 # Update the state file (best-effort; never fail the hook).
 mkdir -p "$state_dir" 2>/dev/null || true
@@ -135,7 +161,7 @@ if [ "$new_commit_count" -gt 1 ]; then
   multi_note="
 This Bash invocation landed $new_commit_count new commits since the
 last codex review.  Review each commit individually -- the list
-below shows oldest-first when applicable:
+below is in oldest-first chronological order (\`git log --reverse\`):
 
 $new_commits
 "
