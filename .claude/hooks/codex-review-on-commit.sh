@@ -139,7 +139,7 @@ fi
 DISPLAY_LIMIT=50
 if [ "$new_commit_count" -gt "$DISPLAY_LIMIT" ]; then
   shown="$(printf '%s\n' "$new_commits_full" | head -$DISPLAY_LIMIT)"
-  trunc_note="... (showing first $DISPLAY_LIMIT of $new_commit_count; reach the rest via \`git -C $repo_root log --reverse --format='%h %s' $range_used\`)"
+  trunc_note="... (showing first $DISPLAY_LIMIT of $new_commit_count; reach the rest via \`git -C \"$repo_root\" log --reverse --format='%h %s' $range_used\`)"
   new_commits="$shown
 $trunc_note"
 else
