@@ -125,9 +125,15 @@ class DiagSnapshot:
 def parse_cmd44_diag_response(resp: bytes) -> DiagSnapshot:
     """Parse a 64-byte HID IN response from cmd 0x44 into a snapshot.
 
-    Validates the cmd echo, status, and length byte.  Trailing bytes
-    (response[14..63]) are NOT zero/0xFF-validated -- the firmware
-    explicitly leaves those bytes unspecified in round-5 to save
+    Validates the cmd echo, status, length byte, AND the payload byte
+    ranges.  Counters MUST be 0..0x0F (saturated by the diag_inc_sat
+    macro); reset flags MUST be 0 or 1 (cold-init writes exactly one
+    flag per session).  Out-of-range bytes raise so a misframed response
+    or a misbehaving device produces a fail-fast error rather than a
+    plausible-looking but wrong report (codex LOW review against dc9647a).
+
+    Trailing bytes (response[14..63]) are NOT zero/0xFF-validated -- the
+    firmware explicitly leaves those bytes unspecified in round-5 to save
     flash; the host MUST stop reading at byte 13 per the length byte.
     """
     if len(resp) < CMD44_PAYLOAD_OFFSET + CMD44_TOTAL_CELLS:
@@ -156,6 +162,22 @@ def parse_cmd44_diag_response(resp: bytes) -> DiagSnapshot:
     cells = resp[payload_start : payload_start + CMD44_TOTAL_CELLS]
     if len(cells) < CMD44_TOTAL_CELLS:
         raise RuntimeError(f"cmd 0x44 payload truncated: {len(cells)} cells")
+    # Range checks per spec contract (codex LOW fix vs dc9647a).
+    for letter, value in zip(RUNTIME_LETTERS, cells[:CMD44_RUNTIME_COUNT]):
+        if not 0 <= value <= SATURATED_VALUE:
+            raise RuntimeError(
+                f"cmd 0x44 runtime counter '{letter}' out of range: "
+                f"got 0x{value:02X}, expected 0..0x{SATURATED_VALUE:02X} "
+                f"(diag_inc_sat saturates at 0x0F; values above suggest a "
+                f"misframed response or a corrupted MAIN diag block)"
+            )
+    for letter, value in zip(RESET_LETTERS, cells[CMD44_RUNTIME_COUNT:]):
+        if value not in (0, 1):
+            raise RuntimeError(
+                f"cmd 0x44 reset-cause flag '{letter}' out of range: "
+                f"got 0x{value:02X}, expected 0 or 1 (cold-init writes "
+                f"exactly one flag per session per V32_DIAG_TIER1_SPEC)"
+            )
     return DiagSnapshot(
         diag_i=cells[0],
         diag_d=cells[1],
@@ -282,6 +304,13 @@ def classify_status(snapshot: DiagSnapshot) -> Tuple[str, Tuple[str, ...]]:
 
     # DEGRADED: any runtime > 0 (other than the expected one S + one B
     # boot pair) OR any unexpected reset flag (BOR or SW-reset).
+    #
+    # Spec contract (codex MEDIUM fix vs dc9647a): "at most one S+B
+    # PAIR" means S and B fire together as part of one boot cycle.
+    # A lone S (S=1, B=0) or lone B (S=0, B=1) is a half-completed
+    # boot, not a healthy boot, and should fall to DEGRADED.  Pin the
+    # equality `S == B` so the only HEALTHY runtime patterns are
+    # all-zero or both-one.
     expected_only = (
         snapshot.diag_reset_por == 1
         and snapshot.diag_reset_bor == 0
@@ -289,8 +318,8 @@ def classify_status(snapshot: DiagSnapshot) -> Tuple[str, Tuple[str, ...]]:
         and snapshot.diag_reset_sw == 0
         and snapshot.diag_i == 0
         and snapshot.diag_d == 0
-        and snapshot.diag_s in (0, 1)
-        and snapshot.diag_b in (0, 1)
+        and snapshot.diag_s == snapshot.diag_b
+        and snapshot.diag_s <= 1
         and snapshot.diag_r == 0
         and snapshot.diag_a == 0
         and snapshot.diag_p == 0
@@ -345,13 +374,21 @@ def _dedup_preserving_order(items: List[str]) -> List[str]:
 
 
 def _format_version(version: Optional[VersionInfo]) -> str:
+    """Render a VersionInfo per the spec sample format: "V3.2 rev 0x37".
+
+    The flag-byte family prefix is "V" for the only family we ship
+    (V3.x); a flag != 3 prints as "flag=0x.." for diagnostic clarity.
+    Earlier draft used "V3.x.2 rev 0x37" which doubled up the major
+    digit and didn't match the spec sample (codex MEDIUM fix vs dc9647a).
+    """
     if version is None:
         return "<unknown>"
     flag = version.flag
     major = version.major
     rev = version.minor
-    family = "V3.x" if flag == 3 else f"flag=0x{flag:02X}"
-    return f"{family}.{major} rev 0x{rev:02X}"
+    if flag == 3:
+        return f"V{flag}.{major} rev 0x{rev:02X}"
+    return f"flag=0x{flag:02X}.{major} rev 0x{rev:02X}"
 
 
 def _format_runtime_line(snapshot: DiagSnapshot) -> str:

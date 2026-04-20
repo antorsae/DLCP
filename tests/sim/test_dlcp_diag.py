@@ -151,6 +151,24 @@ def test_parse_cmd44_rejects_short_response() -> None:
         parse_cmd44_diag_response(b"\x44\x00\x0B")
 
 
+def test_parse_cmd44_rejects_runtime_counter_above_0x0F() -> None:
+    """Spec contract: runtime counters are 0..0x0F (diag_inc_sat
+    saturates at 0x0F).  Out-of-range values indicate a misframed
+    response or corrupted MAIN diag block; fail fast rather than
+    feed garbage into classification.  Codex LOW fix vs dc9647a."""
+    resp = bytearray(_build_cmd44_response(counters=(0x10, 0, 0, 0, 0, 0, 0), reset_flags=(1, 0, 0, 0)))
+    with pytest.raises(RuntimeError, match=r"runtime counter 'I' out of range"):
+        parse_cmd44_diag_response(bytes(resp))
+
+
+def test_parse_cmd44_rejects_reset_flag_other_than_0_or_1() -> None:
+    """Spec contract: reset-cause flags are 0 or 1 (cold-init writes
+    exactly one flag per session).  Anything else means corruption."""
+    resp = bytearray(_build_cmd44_response(counters=(0,) * 7, reset_flags=(2, 0, 0, 0)))
+    with pytest.raises(RuntimeError, match=r"reset-cause flag 'O' out of range"):
+        parse_cmd44_diag_response(bytes(resp))
+
+
 # ---------------------------------------------------------------------------
 # Tier B: status classification
 # ---------------------------------------------------------------------------
@@ -230,6 +248,22 @@ def test_classify_critical_saturated_counter() -> None:
     assert "I_saturated" in alerts
 
 
+def test_classify_lone_s_or_lone_b_is_degraded() -> None:
+    """Spec calls for "at most one S+B PAIR" as the HEALTHY runtime
+    pattern.  S=1 with B=0 (or vice versa) is a half-completed boot
+    cycle, not a healthy boot, and must fall to DEGRADED.  Codex
+    MEDIUM fix vs dc9647a -- the earlier `S in (0,1) and B in (0,1)`
+    check accepted lone-S and lone-B as HEALTHY."""
+    # Lone S (standby dispatch fired, bring-up didn't follow).
+    status, alerts = classify_status(_snap(counters=(0, 0, 1, 0, 0, 0, 0)))
+    assert status == "DEGRADED"
+    assert "standby_dispatches=1" in alerts
+    # Lone B (bring-up dispatch fired without preceding standby).
+    status, alerts = classify_status(_snap(counters=(0, 0, 0, 1, 0, 0, 0)))
+    assert status == "DEGRADED"
+    assert "bring_up_dispatches=1" in alerts
+
+
 def test_classify_unknown_no_reset_flag() -> None:
     """All four reset-cause flags clear -- shouldn't happen in
     practice but the classifier surfaces it as DEGRADED with an
@@ -273,7 +307,9 @@ def test_human_report_shape_clean_boot() -> None:
     text = _format_human_report([report], ts="2026-04-20T15:23:00Z")
     assert "DLCP Diagnostics  (2026-04-20T15:23:00Z)" in text
     assert "DevSrvsID:test" in text
-    assert "V3.x.2 rev 0x37" in text
+    # Spec sample format: "V3.2 rev 0x37" (NOT "V3.x.2 rev 0x37" -- the
+    # earlier draft doubled the major digit; codex MEDIUM fix vs dc9647a).
+    assert "V3.2 rev 0x37" in text
     # All 7 runtime letters present in Runtime line.
     for letter in RUNTIME_LETTERS:
         assert f"{letter}" in text, f"missing runtime letter {letter}"
