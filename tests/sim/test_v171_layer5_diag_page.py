@@ -1512,24 +1512,33 @@ def test_phase3_4_no_other_bank1_equ_collides_with_scratch_range() -> None:
         "v171_diag_render_letter_tmp",
     }
     phase3_4_operands = {0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3}
-    # Walk every EQU in the file; flag any that collides.
-    collisions = []
+    # Walk every EQU in the file; flag any that resolves (literal OR
+    # symbolic alias chain) to a Phase 3.4 operand.  Symbolic aliases
+    # like `V171_DIAG_FLAG_PENDING equ V171_DIAG_FLAG_RUNTIME_PENDING`
+    # exist in this file (line ~274), so a literal-only regex would
+    # miss alias-style collisions -- _equ_address resolves them
+    # recursively.
+    collisions: list[tuple[str, int]] = []
     for m in re.finditer(
-        r"^\s*(\w+)\s+(?:EQU|equ)\s+(0x[0-9a-fA-F]+|\d+)",
+        r"^\s*(\w+)\s+(?:EQU|equ)\s+\S+",
         ram, re.MULTILINE,
     ):
         name = m.group(1)
         if name in phase3_4_names:
             continue
-        value_str = m.group(2)
-        value = int(value_str, 16) if value_str.startswith(("0x", "0X")) else int(value_str)
+        value = _equ_address(ram, name)
+        if value is None:
+            # Unresolvable alias -- skip (e.g., refers to a name not
+            # defined in this file).  Real cells must resolve.
+            continue
         if value in phase3_4_operands:
-            collisions.append((name, hex(value)))
+            collisions.append((name, value))
     assert not collisions, (
         f"BANK 1 operand collision with Phase 3.4 scratch range: "
-        f"{collisions}.  Either move the colliding cell or move the "
-        f"Phase 3.4 scratch range -- two names at the same operand "
-        f"means silent corruption on every renderer call."
+        + ", ".join(f"{n}=0x{v:02X}" for n, v in collisions)
+        + ".  Either move the colliding cell or move the Phase 3.4 "
+        "scratch range -- two names at the same operand means silent "
+        "corruption on every renderer call."
     )
 
 
@@ -1547,14 +1556,32 @@ def test_phase3_4_renderer_movlb_discipline_before_banked_writes() -> None:
 
     This test walks every BANKED access to a v171_diag_render_*
     cell.  For each access, it walks BACKWARD through INSTRUCTION
-    lines (skipping comments/blanks) until it finds either:
-      * `movlb 0x01` (or `movlb 0x1`) -- BSR=1 already set, OK
-      * `rcall v171_diag_load_fsr1_base` -- helper leaves BSR=1 on
-        return (documented contract; see asm comments)
-      * A `return` instruction WITHOUT a preceding movlb 0x01 in
-        the same callee -- means we walked into a different routine,
-        BSR state is the caller's responsibility (caller should
-        have set BSR=1 before its call); flag as a potential leak.
+    lines (skipping comments/blanks except for routine separators)
+    and applies these rules:
+
+      * `movlb 0x01` (or `movlb 0x1`) -> BSR=1 confirmed, OK.
+      * `rcall v171_diag_load_fsr1_base` -> helper leaves BSR=1 on
+        return (documented contract; see asm comments).
+      * `movlb 0x00` (or `movlb 0x0`) -> BSR=0 BARRIER: walking
+        past a BSR=0 setter without finding a subsequent movlb 0x01
+        in between means BSR is 0 at the access -> leak.
+      * Routine-separator comment line (`;  -----...---`) ->
+        ROUTINE BARRIER: that line marks the start of the routine
+        the access lives in.  If we walked past it without finding
+        movlb 0x01, the routine doesn't establish BSR=1 at entry.
+
+    `return` is intentionally NOT treated as a barrier: cascading
+    routines like v171_diag_letter_for_idx have multiple internal
+    `return` blocks separating bra-target labels that share the
+    routine-entry's movlb 0x01.  Walking past `return` to reach
+    the routine entry is correct.  The routine-separator comment
+    is the trustworthy boundary.
+
+    Also covers `decfsz` / `decf` / `incfsz` (loop counters) and
+    every PIC18 instruction mnemonic that can take a file operand.
+    Codex flagged the original pattern missing `decfsz` (real
+    use at v171_asm:3406); broadened here to all f-operand
+    mnemonics so future additions don't slip past.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     lines = text.split("\n")
@@ -1570,43 +1597,77 @@ def test_phase3_4_renderer_movlb_discipline_before_banked_writes() -> None:
             return False
         return True
 
-    # Match BANKED accesses to any v171_diag_render_* cell.
+    # Match BANKED accesses to any v171_diag_render_* cell.  Pattern
+    # covers every PIC18 mnemonic that takes an f-operand: read/write
+    # (mov*, clrf, setf), arithmetic (add*, sub*, neg*), bit-test/set
+    # (btf*, bs*/bcf, btg), compare (cpfs*), increment/decrement
+    # including the -sz / -snz skip variants (incf, incfsz, decf,
+    # decfsz, dcfsnz, infsnz), bitwise (and*, ior*, xor*), rotate
+    # (rlcf, rlncf, rrcf, rrncf, swapf), test (tstfsz), file-to-file
+    # (movff -- treated as one of the operands).
     access_pattern = re.compile(
-        r"\b(?:movwf|movf|clrf|incf|decf|tstfsz|btfsc|btfss|cpfslt|cpfseq|"
-        r"cpfsgt|setf|negf|bsf|bcf|btg|iorwf|andwf|xorwf|addwf)\s+"
-        r"v171_diag_render_\w+(?:,\s*[FW])?,\s*BANKED"
+        r"\b(?:movwf|movf|movff|clrf|setf|"
+        r"addwf|addwfc|subfwb|subwf|subwfb|negf|"
+        r"btfsc|btfss|bsf|bcf|btg|"
+        r"cpfslt|cpfseq|cpfsgt|"
+        r"incf|incfsz|infsnz|decf|decfsz|dcfsnz|"
+        r"iorwf|andwf|xorwf|comf|"
+        r"rlcf|rlncf|rrcf|rrncf|swapf|"
+        r"tstfsz)"
+        r"\s+v171_diag_render_\w+(?:,\s*[FW])?(?:,\s*\w+)?,\s*BANKED"
     )
     movlb_b1_pattern = re.compile(r"\bmovlb\s+0x0?1\b")
+    movlb_b0_pattern = re.compile(r"\bmovlb\s+0x0?0\b")
     bsr1_helper_pattern = re.compile(r"\brcall\s+v171_diag_load_fsr1_base\b")
+    # Routine separator: comment line composed mostly of dashes.  Two
+    # such lines bracket each routine's docstring header in this file.
+    separator_pattern = re.compile(r"^\s*;\s*-{20,}\s*$")
 
-    leak_sites: list[tuple[int, str]] = []
+    leak_sites: list[tuple[int, str, str]] = []
     for idx, line in enumerate(lines):
         if not access_pattern.search(line):
             continue
-        # Walk backward through instruction lines only (count up to 100
-        # instruction lines, which is well past any reasonable BSR-set
-        # reach in the renderer).
-        found = False
+        # Walk backward.  Skip blank lines and label-only lines, but
+        # DO inspect comment lines (we need to detect the routine
+        # separator).
+        verdict: str | None = None
         steps = 0
         for back in range(1, len(lines)):
             if idx - back < 0:
+                verdict = "walked off start of file with no movlb 0x01"
                 break
             prev = lines[idx - back]
+            # Routine boundary: separator comment.
+            if separator_pattern.match(prev):
+                verdict = (
+                    f"walked past routine-separator comment at line "
+                    f"{idx - back + 1} without finding movlb 0x01 "
+                    f"(routine entry doesn't establish BSR=1)"
+                )
+                break
             if not is_instruction(prev):
                 continue
             if movlb_b1_pattern.search(prev) or bsr1_helper_pattern.search(prev):
-                found = True
+                # Confirmed BSR=1 upstream -- safe.
+                break
+            if movlb_b0_pattern.search(prev):
+                verdict = (
+                    f"upstream `movlb 0x00` at line {idx - back + 1} "
+                    f"with no intervening movlb 0x01"
+                )
                 break
             steps += 1
-            if steps > 100:
+            if steps > 200:
+                verdict = "no movlb 0x01 found within 200 instruction lines"
                 break
-        if not found:
-            leak_sites.append((idx + 1, line.strip()))
+        if verdict:
+            leak_sites.append((idx + 1, line.strip(), verdict))
     assert not leak_sites, (
         f"BANKED v171_diag_render_* access without an upstream movlb "
         f"0x01 (or rcall to v171_diag_load_fsr1_base, which leaves "
         f"BSR=1 on return):\n"
-        + "\n".join(f"  line {n}: {ln}" for n, ln in leak_sites)
+        + "\n".join(f"  line {n}: {ln}\n      reason: {v}"
+                    for n, ln, v in leak_sites)
         + "\n\nA BSR=0 leak here would land at PHYSICAL 0x0CD..0x0D3 "
         "(EEPROM saved-settings cache region) -- silent corruption."
     )
@@ -1674,11 +1735,22 @@ def test_phase3_4_pad_count_math_yields_16_chars_per_row() -> None:
 
 
 def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
-    """The two row walks rely on FSR1 surviving across the helper
-    calls inside the loop body (letter_for_idx, lcd_char_write,
-    emit_nib_w, pad_spaces).  Verify that none of the Phase 3.4
-    helpers touch FSR1L/FSR1H/lfsr 0x1 -- i.e., the renderer can
+    """The two row walks rely on FSR1 surviving across every routine
+    they call from inside the loop body.  Verify that none of those
+    routines touch FSR1L / FSR1H / lfsr 0x1 -- i.e., the renderer can
     safely walk the cache via POSTINC1 across helper calls.
+
+    Coverage list (callees reached from inside the row walks):
+      * v171_diag_letter_for_idx -- letter cascade (Phase 3.4 new)
+      * v171_diag_pad_spaces     -- trailing-space writer (Phase 3.4 new)
+      * v171_diag_emit_letter    -- thin lcd_char_write wrapper
+      * v171_diag_emit_nib_w     -- nibble-to-LCD encoder (incl.
+                                    secondary entries _zero/_alpha/_sat
+                                    which fall within the same body)
+      * lcd_char_write           -- pre-existing LCD primitive; codex
+                                    flagged that the previous version
+                                    of this test claimed coverage but
+                                    didn't include it in the list
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     helper_labels = (
@@ -1686,28 +1758,31 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
         "v171_diag_pad_spaces",
         "v171_diag_emit_letter",
         "v171_diag_emit_nib_w",
+        "lcd_char_write",
     )
-    end_marker = "v171_diag_send_runtime_query"  # next routine after helpers
     for helper in helper_labels:
-        body = _label_body(text, helper, end_marker)
-        # Some helpers don't reach the end_marker via direct adjacency;
-        # if not located, fall back to a fixed window.
-        if not body:
-            off = _label_offset(text, helper)
-            if off < 0:
-                continue
-            body = text[off:off + 1500]
+        off = _label_offset(text, helper)
+        assert off >= 0, f"helper label {helper} not found in source"
+        # Conservatively scan a 1500-char window after the label entry.
+        # That covers any reasonable LCD/encoding helper body without
+        # depending on a specific end_marker that might shift between
+        # versions.
+        body = text[off:off + 1500]
         # No lfsr to FSR1.
         assert "lfsr    0x1," not in body, (
             f"{helper} clobbers FSR1 via lfsr -- breaks the row walk's "
             f"POSTINC1 cursor across helper calls"
         )
-        # No direct write to FSR1L / FSR1H.
+        # No direct write to FSR1L / FSR1H or the FSR1 indirect-write
+        # forms.  POSTINC1 / POSTDEC1 / PREINC1 are allowed as READ
+        # operands; flag if used as a WRITE target (which would advance
+        # the cursor unintentionally).
         for fsr_reg in ("FSR1L", "FSR1H", "POSTINC1", "POSTDEC1", "PREINC1"):
-            # POSTINC1 is allowed only as a READ form; flag if WRITTEN.
             written = re.search(
-                rf"\b(?:movwf|clrf|setf|incf|decf|negf|bsf|bcf|"
-                rf"iorwf|andwf|xorwf|addwf)\s+{fsr_reg}\b",
+                rf"\b(?:movwf|clrf|setf|incf|incfsz|decf|decfsz|dcfsnz|"
+                rf"infsnz|negf|comf|bsf|bcf|btg|"
+                rf"iorwf|andwf|xorwf|addwf|addwfc|subwf|subwfb|subfwb|"
+                rf"rlcf|rlncf|rrcf|rrncf|swapf)\s+{fsr_reg}\b",
                 body,
             )
             assert not written, (
