@@ -1779,10 +1779,23 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
     )
 
     for helper, end_marker in helpers:
+        # Defensive: verify BOTH labels exist before slicing.
+        # _label_body returns text[start:] when end_label is missing
+        # (silently widening the scan to EOF), so a rename of either
+        # end_marker would otherwise weaken the test without failing
+        # it.  Assert both endpoints explicitly.
+        assert _label_offset(text, helper) >= 0, (
+            f"helper start label '{helper}' missing from source"
+        )
+        assert _label_offset(text, end_marker) >= 0, (
+            f"helper end-marker label '{end_marker}' missing from source "
+            f"-- if it was renamed, update the helpers tuple to the new "
+            f"name (a missing end_marker would silently widen this scan "
+            f"to EOF and weaken FSR1-clobber coverage)"
+        )
         body = _label_body(text, helper, end_marker)
         assert body, (
-            f"helper body span not located: "
-            f"{helper} -> (next routine '{end_marker}' missing?)"
+            f"helper body span empty: {helper} -> {end_marker}"
         )
         # No lfsr to FSR1.
         assert "lfsr    0x1," not in body, (
