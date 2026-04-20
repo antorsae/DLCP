@@ -321,6 +321,92 @@ def test_v171_rx_ring_isr_path_has_no_unread_data_guard() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_v171_bf2x_case_check_resets_bsr_before_parser_tail_exit() -> None:
+    """REGRESSION GATE (real-HW disaster 2026-04-20): every exit from
+    v171_bf2x_case_check that bras to flow_rx_parser_entry_05EA MUST
+    have `movlb 0x00` immediately preceding it (within the prior 30
+    instructions), so the parser tail's BANKED reads of rx_ring_rd /
+    rx_ring_wr (operands 0x098/099) hit BANK 0 instead of BANK 1.
+
+    Background: the Tier-1 cache shifted into operand range
+    0x096..0x09F which aliases:
+      * v171_diag_target  (0x096) ↔ tx_ring_rd
+      * v171_diag_present (0x097) ↔ tx_ring_wr
+      * v171_diag_poll_lo (0x098) ↔ rx_ring_rd
+      * v171_diag_poll_hi (0x099) ↔ rx_ring_wr
+      * v171_diag_reset_seen   (0x09D) ↔ idle_timeout_lo
+      * v171_diag_reset_target (0x09E) ↔ idle_timeout_hi
+      * v171_diag_reset_timeout(0x09F) ↔ full_sync_lo
+    A BSR=1 leak from the parser case-check into the parser tail
+    causes the tail to read MY cells as ring positions, mis-parse
+    every byte, and cascade to the symptoms observed on real HW
+    (garbled LCD, button presses lost, backlight off as
+    idle_timeout aliases v171_diag_reset_seen and counts down).
+
+    The pre-Tier-1 source had the same BSR-leak class but its
+    consequence was benign because the aliased cells were rx_ring
+    body (a circular buffer where corruption gets overwritten).
+    Phase 3.1's cache extension changed that.
+
+    This gate fires every commit so a future regression that re-
+    introduces a bra-without-movlb-0x00 exit fails fast.
+    """
+    text = _read_v171_source()
+    case_check_idx = text.find("v171_bf2x_case_check:")
+    assert case_check_idx >= 0, "v171_bf2x_case_check label missing"
+    # Window: from the case_check label to the end of v171_bf2x_*
+    # routines (signaled by flow_rx_parser_entry_05EA: label).
+    end_idx = text.find("\nflow_rx_parser_entry_05EA:", case_check_idx)
+    assert end_idx > case_check_idx, "could not delimit case_check region"
+    region = text[case_check_idx:end_idx]
+    region_lines = region.splitlines()
+
+    # Find every `bra flow_rx_parser_entry_05EA` in the region.
+    leaky_exits: List[Tuple[int, str]] = []
+    base_lineno = text[:case_check_idx].count("\n") + 1
+    for i, line in enumerate(region_lines):
+        # Strip comments before checking.
+        stripped = re.sub(r";.*$", "", line).strip()
+        if not re.match(r"bra\s+flow_rx_parser_entry_05EA\b", stripped):
+            continue
+        src_lineno = base_lineno + i
+        # Look back up to 30 instruction lines for either:
+        #   * `movlb 0x00` (resets BSR) -- exit is safe
+        #   * `movlb 0x01` with no intervening `movlb 0x00` (BSR=1) -- LEAK
+        # The lookback also needs to handle the early-exit case where the
+        # bra lands BEFORE any movlb has fired -- in that case BSR is the
+        # caller's state (not our concern).
+        bsr_state: str = "caller"  # no movlb seen yet
+        for j in range(i - 1, max(-1, i - 30), -1):
+            back = re.sub(r";.*$", "", region_lines[j]).strip()
+            m = re.match(r"movlb\s+(0x0?\d+)", back)
+            if m:
+                val = int(m.group(1), 0)
+                if val == 0:
+                    bsr_state = "0"
+                else:
+                    bsr_state = "1"
+                break
+            # If we hit a label, stop looking back -- the bra reached
+            # us via a control-flow merge, BSR could be anything.
+            if back.endswith(":") and not back.startswith("v171_") and " " not in back[:-1]:
+                bsr_state = "merge"
+                break
+        if bsr_state == "1":
+            leaky_exits.append((src_lineno, line.strip()))
+
+    assert not leaky_exits, (
+        f"v171_bf2x_case_check has {len(leaky_exits)} bra-to-parser-tail "
+        f"exit(s) with BSR left at 1 -- the parser tail's BANKED reads of "
+        f"rx_ring_rd / rx_ring_wr (operands 0x098/099) will hit BANK 1 "
+        f"(my v171_diag_poll_lo / v171_diag_poll_hi) instead of BANK 0 "
+        f"and mis-parse every subsequent RX byte.  Real-HW disaster "
+        f"2026-04-20 confirmed this exact failure mode.  Each leaky "
+        f"exit needs `movlb 0x00` immediately before the bra.  Sites:\n"
+        + "\n".join(f"    line {n}: {l}" for n, l in leaky_exits)
+    )
+
+
 def test_v171_rx_parser_has_frame_gap_timeout() -> None:
     """SHIPPING-CONFIDENCE GATE: rx_parser_entry advances
     rx_frame_position on each route/cmd/data byte but has no timeout

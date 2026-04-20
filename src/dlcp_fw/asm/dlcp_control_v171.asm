@@ -1306,12 +1306,35 @@ v171_bf2x_check_reset_last:
         ; wrong reset_seen bit (codex MEDIUM review fix).
         movlw   0x0A
         cpfseq  (Common_RAM + 4), A                       ; col_offset == 10 (BF/2B)?
-        bra     flow_rx_parser_entry_05EA                 ; not last frame -- exit
+        bra     v171_bf2x_check_reset_last_exit_bsr0      ; not last frame -- reset BSR + exit
         movlw   0x01                                      ; PB1 reset_seen bit
         btfsc   (Common_RAM + 5), 0, A
         movlw   0x02                                      ; PB2 reset_seen bit
         iorwf   v171_diag_reset_seen, F, BANKED
         bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+v171_bf2x_check_reset_last_exit_bsr0:
+        ; HOT FIX (real-HW disaster 2026-04-20): the prior `bra flow_
+        ; rx_parser_entry_05EA` here did NOT reset BSR before returning
+        ; to the parser tail.  The parser tail's rx_ring drain path uses
+        ; `movf 0x99, W, B` / `cpfseq 0x98, B` (BANKED operand 0x098/099)
+        ; expecting BSR=0 to address rx_ring_rd / rx_ring_wr in BANK 0.
+        ; With BSR left at 1, those instructions read physical 0x198/199
+        ; instead -- which is v171_diag_poll_lo / v171_diag_poll_hi (the
+        ; cmd 0x21 cadence countdown).  The parser then mis-parses every
+        ; subsequent RX byte: thinks the ring has a different fill level
+        ; than reality, drops bytes, frame state corrupts.  Symptoms on
+        ; real HW: garbled LCD, button presses lost, backlight off as
+        ; idle_timeout aliases v171_diag_reset_seen and counts down
+        ; spuriously.
+        ;
+        ; The pre-Tier-1 V1.71 source had the SAME bra-without-movlb
+        ; bug here but its consequence was benign because the aliased
+        ; cells were rx_ring body (operand 0x80..0x94 in BANK 0 = upper
+        ; half of the 48-byte rx_ring at 0x66..0x95) -- a circular
+        ; buffer where corruption gets overwritten on the next wrap.
+        ; Phase 3.1's cache extension shifted cells up into the
+        ; ring-INDEX / idle-timer / full-sync zone, making the leak
+        ; catastrophic.
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
 
