@@ -586,3 +586,81 @@ scripts/flash_control_safe.sh
 - Do not add new runtime output under repository root; use `artifacts/sim/current/`.
 - Keep execution entrypoints under `scripts/` and implementation in `src/dlcp_fw/`.
 - Keep docs and this file synchronized whenever paths or filenames change.
+
+## Per-Commit Codex Review (Claude Code only -- codex agents: skip this section)
+
+> **Audience: Claude Code ONLY.**  This file (`AGENTS.md`) is read by
+> both Claude Code (via the `CLAUDE.md` -> `AGENTS.md` symlink) and by
+> codex-cli (via its standard project-instructions discovery).  This
+> section instructs **Claude** to invoke the codex-cli MCP tool as a
+> code-review pass after each commit.
+>
+> **If you are codex reading this file**: ignore this entire section.
+> It does not apply to you.  Do NOT attempt to invoke yourself
+> recursively, do NOT auto-trigger reviews, and do NOT treat the
+> "tool call template" below as a directive for your own behavior.
+> Your job, when invoked by Claude on a specific commit, is fully
+> defined by the prompt Claude passes you in that invocation --
+> nothing in this section overrides or supplements that prompt.
+
+After every `git commit` that lands on this branch, the post-commit
+hook at `.claude/hooks/codex-review-on-commit.sh` fires and surfaces
+a `[CODEX REVIEW REQUIRED]` reminder.  When **Claude** sees that
+reminder, Claude (NOT codex) calls the codex-cli MCP tool BEFORE
+starting any new task.
+
+Tool call template (executed by Claude):
+
+```
+mcp__codex-cli__codex(
+    cwd="<repo root from the reminder>",
+    sandbox="read-only",
+    approval-policy="never",
+    prompt="""
+You are doing a code review of the most recent commit on this branch
+(HEAD = <hash>, "<subject line>").
+
+Context: <one-line description of what area this commit touches>.
+
+What I need from you:
+1. Run `git show HEAD` to see the full diff.
+2. Read any locked spec files relevant to the change (e.g.
+   V32_DIAG_TIER1_SPEC.md for diag work, ROBUSTNESS.md for chain work,
+   SIMULATION.md for harness changes).
+3. Read the modified source / test / doc files end-to-end -- enough
+   to understand the relevant state machines, control flow, and
+   contracts.
+4. Flag any HIGH/MEDIUM/LOW issues: bugs, regressions, missed spec
+   requirements, incorrect assumptions, dead code, RAM aliasing,
+   off-by-one, race conditions, test coverage gaps, anything else.
+5. For each finding, give: severity tag, one-paragraph description,
+   file:line refs (use the actual paths under this repo).
+6. If you find nothing, say so explicitly with what you checked.
+
+Keep the report under 600 words.  Don't propose fixes -- just
+findings.  Don't modify any files (you're in read-only sandbox).
+"""
+)
+```
+
+After codex reports findings (Claude acts on them):
+
+- **HIGH or MEDIUM** -> fix in a follow-up commit BEFORE moving on,
+  OR explicitly defer with the user's confirmation.
+- **LOW** -> may be deferred but must be tracked (`TaskCreate` or
+  noted in the next commit message).
+- **No findings** -> acknowledge "codex: clean" in your reply and
+  proceed.
+
+Claude must not silently skip the codex review.  If the user
+explicitly asks Claude to defer the review for a particular commit,
+Claude says so and continues.
+
+The hook is configured in `.claude/settings.json` and runs after any
+Bash invocation containing `git commit` whose HEAD timestamp is
+within the last 5 minutes (so amends / no-op rebases don't re-trigger
+the review).  The hook is non-blocking -- it only emits a stdout
+notice; it never aborts the tool call.
+
+To disable repo-wide, remove or comment out the PostToolUse entry in
+`.claude/settings.json`.
