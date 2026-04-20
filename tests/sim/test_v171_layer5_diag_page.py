@@ -325,16 +325,26 @@ def test_diag_screen_label_exists_and_initializes_target() -> None:
     (target=0 on first entry so the very first cadence-driven query goes
     to PB1 per spec; toggle now happens on BF/27 reception (the LAST
     frame of the 7-frame burst), not in the cadence loop, so we don't
-    pre-flip it any more)."""
+    pre-flip it any more).
+
+    Tier-1 (2026-04-20) added a clrf v171_diag_reset_seen at the same
+    init point so the page-entry hook fires cmd 0x22 ONCE per PB on
+    each Diag-page visit.  Window extended to cover the new init line.
+    """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_screen")
     assert off >= 0, "v171_diag_screen label missing"
-    # Window: from label through first ~700 chars covers the init block.
-    head = text[off:off + 700]
+    # Window: from label through first ~1500 chars covers the (now larger
+    # with Tier-1) init block including the reset_seen clear.
+    head = text[off:off + 1500]
     assert "v171_diag_present" in head, "first block must touch present mask"
     assert "bcf     v171_diag_target, 0, BANKED" in head, (
         "first-entry init must clear diag_target.0 so the first cadence "
         "query goes to PB1"
+    )
+    assert "clrf    v171_diag_reset_seen" in head, (
+        "Tier-1 page-entry hook must clear v171_diag_reset_seen so the "
+        "cadence loop fires cmd 0x22 ONCE per PB per Diag-page visit"
     )
 
 
@@ -386,18 +396,50 @@ def test_diag_screen_handles_na_for_never_seen_pb() -> None:
             assert ch in seg, f"{tag} n/a render missing {ch}"
 
 
-def test_diag_send_query_uses_b1_or_b2_route_and_cmd_21() -> None:
-    """``v171_diag_send_query`` enqueues 3 bytes: route (0xB1 or 0xB2),
-    cmd 0x21, data 0x00.  Route alternates based on diag_target bit 0."""
+def test_diag_send_query_uses_b1_or_b2_route_and_cmd_byte_param() -> None:
+    """V1.71 Tier-1 (2026-04-20) refactored ``v171_diag_send_query`` from
+    a hard-coded cmd 0x21 emitter into a parameterized helper that takes
+    the cmd byte in W.  Two thin wrappers expose the original two query
+    types:
+
+      v171_diag_send_runtime_query  -> movlw 0x21; bra ..._w  (cmd 0x21)
+      v171_diag_send_reset_query    -> movlw 0x22; bra ..._w  (cmd 0x22)
+
+    The shared helper v171_diag_send_query_w enqueues 3 bytes: route
+    (0xB1 or 0xB2 depending on v171_diag_target bit 0), the cmd byte from
+    W, and a data byte 0x00.  Backward-compat alias v171_diag_send_query
+    forwards to v171_diag_send_runtime_query so older call sites still
+    work.
+
+    Pin both wrappers + the shared helper structure (3 tx_byte_enqueue
+    calls) so a refactor that drops one of the wrappers fails loudly.
+    """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    off = _label_offset(text, "v171_diag_send_query")
-    assert off >= 0, "v171_diag_send_query label missing"
-    # Anchor body to next top-level label so growing the routine's
-    # in-line documentation doesn't truncate the body window.
-    body = _label_body(text, "v171_diag_send_query", "control_core_service_0F54")
+    # Both wrappers + alias must be present.
+    for label in (
+        "v171_diag_send_runtime_query",
+        "v171_diag_send_reset_query",
+        "v171_diag_send_query",         # alias
+        "v171_diag_send_query_w",       # shared helper
+    ):
+        assert _label_offset(text, label) >= 0, f"label {label}: missing"
+    # Wrappers seed W with their respective cmd byte.
+    runtime = _label_body(
+        text, "v171_diag_send_runtime_query", "v171_diag_send_reset_query"
+    )
+    assert re.search(r"movlw\s+0x21\b", runtime), (
+        "runtime wrapper must seed W = 0x21"
+    )
+    reset = _label_body(
+        text, "v171_diag_send_reset_query", "v171_diag_send_query:"
+    )
+    assert re.search(r"movlw\s+0x22\b", reset), (
+        "reset wrapper must seed W = 0x22"
+    )
+    # Shared helper structure.
+    body = _label_body(text, "v171_diag_send_query_w", "control_core_service_0F54")
     assert re.search(r"movlw\s+0xB1", body), "PB1 route literal missing"
     assert re.search(r"movlw\s+0xB2", body), "PB2 route literal missing"
-    assert re.search(r"movlw\s+0x21", body), "cmd 0x21 literal missing"
     # Three tx_byte_enqueue invocations (route, cmd, data).
     enqueue_calls = re.findall(r"call\s+tx_byte_enqueue", body)
     assert len(enqueue_calls) == 3, (
@@ -720,30 +762,37 @@ def test_diag_loop_advances_target_on_silent_pb() -> None:
     Without this gate, a silent or unsupported PB would never advance
     the target (which only flips on BF/27 reception), pinning the poll
     loop on the missing slot forever.  The fix: cadence checks
-    PENDING; if still set when the next cadence fires, advance target
-    BEFORE sending so the responding PB gets re-queried.
+    RUNTIME_PENDING; if still set when the next cadence fires, advance
+    target BEFORE sending so the responding PB gets re-queried.
+
+    V1.71 Tier-1 (2026-04-20) renamed PENDING -> RUNTIME_PENDING (bit 1)
+    and added RESET_PENDING (bit 2) for the new cmd 0x22 page-entry
+    query.  Only RUNTIME_PENDING gates the silent-target skip; the
+    cmd 0x22 page-entry hook has its own RESET_PENDING handling and
+    doesn't participate in target-advance logic.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_loop")
     assert off >= 0
-    # Window through the cadence-expired path (~600 chars covers it).
-    body = text[off:off + 1600]
-    # btfss on PENDING + bra to skip the toggle: when PENDING is SET
-    # (silent), don't skip → btg target.
+    # Window through the cadence-expired path.  Tier-1 expanded the loop
+    # body with the cmd 0x22 fire-once-per-PB block; bump window to 4000.
+    body = text[off:off + 4000]
+    # btfss on RUNTIME_PENDING + bra to skip the toggle: when set
+    # (silent), don't skip -> btg target.
     assert re.search(
-        r"btfss\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        r"btfss\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         body,
-    ), "silent-PB gate must check PENDING before sending"
+    ), "silent-PB gate must check RUNTIME_PENDING before sending"
     assert re.search(
         r"btg\s+v171_diag_target,\s*0,\s*BANKED",
         body,
-    ), "silent-PB gate must toggle target when PENDING is still set"
-    # The cadence path must SET PENDING after sending so the next
-    # cadence can detect a no-reply.
+    ), "silent-PB gate must toggle target when RUNTIME_PENDING is still set"
+    # The cadence path must SET RUNTIME_PENDING after sending so the
+    # next cadence can detect a no-reply.
     assert re.search(
-        r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         body,
-    ), "cadence path must set PENDING when issuing a query"
+    ), "cadence path must set RUNTIME_PENDING when issuing a query"
 
 
 def test_diag_parser_clears_pending_on_bf27() -> None:
@@ -809,14 +858,25 @@ def test_diag_send_query_clears_pending_on_abort() -> None:
     end_ret = abort_body.find("return")
     assert end_ret > 0, "abort path missing return"
     abort_body = abort_body[:end_ret + 20]
-    # The abort path must clear PENDING.
+    # The abort path must clear BOTH RUNTIME_PENDING and RESET_PENDING
+    # (V1.71 Tier-1 added the second pending bit; either could have been
+    # set by the caller depending on which query type aborted).
     assert re.search(
-        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_PENDING,\s*BANKED",
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         abort_body,
     ), (
-        "abort path must clear PENDING — otherwise local TX-ring "
-        "saturation gets misclassified as remote PB silence by the "
-        "cadence loop's PENDING-still-set gate"
+        "abort path must clear RUNTIME_PENDING -- otherwise local TX-ring "
+        "saturation during a cmd 0x21 query gets misclassified as remote "
+        "PB silence by the cadence loop's RUNTIME_PENDING-still-set gate"
+    )
+    assert re.search(
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RESET_PENDING,\s*BANKED",
+        abort_body,
+    ), (
+        "abort path must clear RESET_PENDING -- otherwise local TX-ring "
+        "saturation during a cmd 0x22 query leaves RESET_PENDING set "
+        "permanently (the page-entry hook only fires once per visit, so "
+        "the gate would lock cmd 0x22 out for the rest of the session)"
     )
     # And it must re-assert BANK 1 first (tx_byte_enqueue may have
     # left BSR anywhere).
@@ -914,4 +974,50 @@ def test_diag_renderer_collapse_documented_in_spec() -> None:
     )
     assert "topology absence" in spec.lower() or "topology" in spec.lower(), (
         "spec must explain the topology-vs-silence collapse rationale"
+    )
+
+
+# ===========================================================================
+# V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) -- cmd 0x22 fire-once-
+# per-PB hook tests.
+# ===========================================================================
+
+
+def test_diag_loop_fires_cmd_22_once_per_pb_per_page_entry() -> None:
+    """The cadence loop must check v171_diag_reset_seen for the in-flight
+    target and, if the bit is clear AND RESET_PENDING is clear, fire
+    cmd 0x22 (via v171_diag_send_reset_query) and set RESET_PENDING.
+
+    Without this, the reset-cause cells stay at 0 forever -- the cmd 0x22
+    chain handler exists in MAIN but is never invoked from CONTROL.
+
+    Pin the gate structure so a refactor that drops the fire-once
+    guarantee (e.g. firing on every cadence cycle, which would burn
+    chain bandwidth) fails this test.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_loop")
+    # 4 KB window covers the loop body through the cmd 0x22 hook +
+    # cmd 0x21 cadence + check_redraw block.
+    body = text[off:off + 4000]
+    # The hook must check RESET_PENDING (skip if set -- already in flight).
+    assert re.search(
+        r"btfsc\s+v171_diag_flags,\s*V171_DIAG_FLAG_RESET_PENDING,\s*BANKED",
+        body,
+    ), "cmd 0x22 hook must check RESET_PENDING before firing"
+    # Must reference v171_diag_reset_seen.
+    assert "v171_diag_reset_seen" in body, (
+        "cmd 0x22 hook must check v171_diag_reset_seen for the in-flight PB"
+    )
+    # Must call the reset-query helper.
+    assert re.search(r"rcall\s+v171_diag_send_reset_query", body), (
+        "cmd 0x22 hook must call v171_diag_send_reset_query"
+    )
+    # Must set RESET_PENDING before firing (not after) so the parser's
+    # BF/2B handler can clear it without racing the cmd 0x21 path.
+    set_pos = body.find("bsf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED")
+    rcall_pos = body.find("rcall   v171_diag_send_reset_query")
+    assert 0 <= set_pos < rcall_pos, (
+        "RESET_PENDING must be set BEFORE the rcall to send_reset_query "
+        "so a fast BF/2B reply can't clear PENDING before it's set"
     )

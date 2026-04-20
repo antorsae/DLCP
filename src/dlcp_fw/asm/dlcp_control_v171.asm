@@ -3253,7 +3253,18 @@ v171_diag_screen:
         ; LAST frame of the 7-frame burst), not in the cadence loop,
         ; so we don't pre-flip it any more.  Subsequent entries pick
         ; up the existing alternating target without a reset.
+        ;
+        ; Tier-1 page-entry hook: clear v171_diag_reset_seen so the
+        ; cadence loop fires cmd 0x22 ONCE per PB on this Diag-page
+        ; visit.  The reset-cause flags don't change within a session
+        ; (they're set at MAIN cold-init), so re-querying every
+        ; cadence cycle would waste chain bandwidth.  Once both PBs
+        ; have responded with BF/2B, v171_diag_reset_seen has bits
+        ; 0+1 set and the page-entry gate stays closed for the rest
+        ; of the session.  Operator must navigate AWAY and back to
+        ; re-enter, which clears reset_seen here and re-fires cmd 0x22.
         movlb   0x01
+        clrf    v171_diag_reset_seen, BANKED
         movf    v171_diag_present, F, BANKED
         bnz     v171_diag_screen_skip_init
         bcf     v171_diag_target, 0, BANKED
@@ -3457,21 +3468,49 @@ v171_diag_loop:
         ; Countdown expired.  Normally target only toggles on BF/27
         ; reception (in v171_bf2x_case_check) so it stays stable for
         ; the full query/reply round-trip.  But that means a SILENT
-        ; or unsupported PB would never advance the target — polling
+        ; or unsupported PB would never advance the target -- polling
         ; would lock onto the silent slot forever and the responding
         ; PB would never get re-queried.  Skip-on-silent gate: if
-        ; PENDING is still set when the cadence expires, the previous
-        ; query never completed, so advance target now (and clear
-        ; PENDING) before sending the next query.
+        ; RUNTIME_PENDING is still set when the cadence expires, the
+        ; previous query never completed, so advance target now (and
+        ; clear PENDING) before sending the next query.
         movlb   0x01
-        btfss   v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
+        btfss   v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v171_diag_send_now                         ; previous reply landed
-        ; Previous query timed out — skip the silent target.
+        ; Previous query timed out -- skip the silent target.
         btg     v171_diag_target, 0, BANKED
 v171_diag_send_now:
-        bsf     v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
+        ; --- Tier-1: fire cmd 0x22 ONCE per PB per Diag-page entry ---
+        ; If the in-flight target's reset_seen bit is clear AND
+        ; RESET_PENDING is clear, fire cmd 0x22 NOW (in addition to
+        ; the cmd 0x21 below).  Both bursts can be in flight to the
+        ; same PB simultaneously: cmd 0x21 path uses RUNTIME_PENDING
+        ; + BF/27 last-frame, cmd 0x22 path uses RESET_PENDING +
+        ; BF/2B last-frame.  The two pendings + two last-frames are
+        ; independent so neither query's completion bit accidentally
+        ; clears the other's PENDING flag.
+        ;
+        ; Skip if RESET_PENDING already set (cmd 0x22 in flight to
+        ; either PB -- avoid pumping a second cmd 0x22 onto the same
+        ; PB or onto the OTHER PB while the first is still resolving).
+        btfsc   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        bra     v171_diag_send_runtime_only
+        ; Compute reset_seen mask for the current target: bit0 for PB1,
+        ; bit1 for PB2.
+        movlw   0x01                                       ; PB1 mask
+        btfsc   v171_diag_target, 0, BANKED
+        movlw   0x02                                       ; PB2 mask
+        andwf   v171_diag_reset_seen, W, BANKED
+        bnz     v171_diag_send_runtime_only                ; already seen for this PB
+        ; reset_seen.target is clear -- fire cmd 0x22 now.
+        bsf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
         movlb   0x00
-        rcall   v171_diag_send_query
+        rcall   v171_diag_send_reset_query
+        movlb   0x01
+v171_diag_send_runtime_only:
+        bsf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        movlb   0x00
+        rcall   v171_diag_send_runtime_query
         movlb   0x01
         movlw   V171_DIAG_POLL_RELOAD_LO
         movwf   v171_diag_poll_lo, BANKED
@@ -3595,48 +3634,67 @@ v171_diag_emit_nib_sat:
 ; to re-burst the entire status set on every diagnostics query.  Going
 ; raw via tx_byte_enqueue keeps the diagnostics traffic page-local.
 ; ---------------------------------------------------------------------------
+v171_diag_send_runtime_query:
+        ; Wrapper: cmd 0x21 (runtime counters, 7-frame BF/21..BF/27).
+        ; Tail-calls into v171_diag_send_query_w with cmd byte in W.
+        movlw   0x21
+        bra     v171_diag_send_query_w
+
+v171_diag_send_reset_query:
+        ; Tier-1 wrapper: cmd 0x22 (reset-cause flags, 4-frame
+        ; BF/28..BF/2B).  Fired ONCE per Diag-page entry per PB.
+        movlw   0x22
+        bra     v171_diag_send_query_w
+
 v171_diag_send_query:
+        ; Backward-compat alias for callers that historically called
+        ; v171_diag_send_query (cmd 0x21 only).  Forwards to the
+        ; runtime-query wrapper above.  No new code should call this
+        ; -- prefer v171_diag_send_runtime_query / v171_diag_send_reset_query.
+        bra     v171_diag_send_runtime_query
+
+v171_diag_send_query_w:
         ; Frame atomicity: tx_byte_enqueue (Layer 1) drops a single
         ; byte on TX-ring saturation and signals via STATUS.C=1.  We
         ; check C after every byte (including the final data byte)
         ; and bail on the first dropped byte so we don't keep pumping
         ; the rest of an already-broken frame.
         ;
-        ; PENDING reset on abort: the caller (cadence loop) sets the
-        ; PENDING flag *before* calling this routine.  On the next
-        ; cadence expiry, PENDING-still-set means "previous query
-        ; never received its BF/27 reply" and the loop advances target
-        ; to skip a silent/unsupported PB.  But local TX-ring
-        ; saturation is NOT the same as a silent PB — the query never
-        ; left CONTROL.  If we leave PENDING set on TX abort, the
-        ; cadence falsely advances target to the OTHER PB, and the
-        ; original target gets re-queried only after a full round-
-        ; robin.  Clearing PENDING on the abort path makes the next
-        ; cadence retry the SAME target, which is what the
-        ; "whole-frame retry" comment originally claimed.
+        ; PENDING reset on abort: caller (cadence loop) sets RUNTIME_PENDING
+        ; before calling for cmd 0x21; the page-entry hook sets RESET_PENDING
+        ; before calling for cmd 0x22.  On TX abort we clear BOTH so neither
+        ; is mis-classified as remote PB silence (the query never left
+        ; CONTROL).  Clearing both is safe: only one was set by the caller.
         ;
-        ; Frame-state recovery on the wire: MAIN's route handler
-        ; treats every Bx byte as a frame start (resets frame_pos),
-        ; so a partial 1- or 2-byte fragment that landed on the wire
-        ; ahead of the abort gets cleaned up by the NEXT genuine route
-        ; byte (from this or any other CONTROL frame) — no permanent
-        ; mis-framing.  The cadence retry issues a clean follow-up
-        ; after the ring has drained.
+        ; Frame-state recovery on the wire: MAIN's route handler treats
+        ; every Bx byte as a frame start (resets frame_pos), so a partial
+        ; 1- or 2-byte fragment that landed on the wire ahead of the abort
+        ; gets cleaned up by the NEXT genuine route byte -- no permanent
+        ; mis-framing.
         ;
-        ; Call form: tx_byte_enqueue lives at ~0x05EC; this routine
-        ; sits past 0x18xx so rcall overflows the 11-bit relative
-        ; range and we must use the absolute call, FAST-zero variant.
+        ; Caller convention:
+        ;   in : W = cmd byte (0x21 or 0x22)
+        ;   out: returns; STATUS.C clear on success, set on TX abort
+        ;
+        ; Call form: tx_byte_enqueue lives at ~0x05EC; this routine sits
+        ; past 0x18xx so rcall overflows the 11-bit relative range and we
+        ; must use the absolute call, FAST-zero variant.
+
+        ; Stash cmd byte in BANK 0 access scratch so we can use W for
+        ; the route byte first.  ram_0x028 is the V1.71 scratch range
+        ; documented in the dlcp_control_ram.inc free-slot audit.
+        movwf   (Common_RAM + 28), A                       ; saved cmd byte
         ; --- byte 0: route ---
         movlw   0xB1                                       ; default = PB1 query
         movlb   0x01
-        btfsc   v171_diag_target, 0, BANKED                ; bit0 set → PB2 instead
+        btfsc   v171_diag_target, 0, BANKED                ; bit0 set -> PB2 instead
         movlw   0xB2
         movlb   0x00
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
         bc      v171_diag_send_query_aborted               ; ring saturated
-        ; --- byte 1: cmd 0x21 ---
-        movlw   0x21
+        ; --- byte 1: cmd byte (0x21 or 0x22) ---
+        movf    (Common_RAM + 28), W, A
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
         bc      v171_diag_send_query_aborted
@@ -3646,13 +3704,13 @@ v171_diag_send_query:
         bc      v171_diag_send_query_aborted               ; final byte also checked
         return  0x0
 v171_diag_send_query_aborted:
-        ; TX ring saturated mid-frame.  Clear PENDING so the next
-        ; cadence retries the SAME target instead of mis-classifying
-        ; local saturation as remote PB silence.  tx_byte_enqueue may
-        ; have left BSR anywhere — re-assert BANK 1 before touching
-        ; the flag byte.
+        ; TX ring saturated mid-frame.  Clear BOTH pending bits so the
+        ; next cadence / page-entry hook retries the SAME target instead
+        ; of mis-classifying local saturation as remote PB silence.
+        ; tx_byte_enqueue may have left BSR anywhere -- re-assert BANK 1.
         movlb   0x01
-        bcf     v171_diag_flags, V171_DIAG_FLAG_PENDING, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
         movlb   0x00
         return  0x0
 
