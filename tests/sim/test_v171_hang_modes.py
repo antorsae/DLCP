@@ -97,12 +97,16 @@ def _next_line_is_bc(
     `bc` is the PIC18 "branch if carry" mnemonic; our Layer 1 contract
     is that tx_byte_enqueue returns C=1 on saturation, so a bc check
     immediately after the call is the documented "frame-atomic abort"
-    pattern (see v171_diag_send_query_w in dlcp_control_v171.asm)."""
+    pattern (see v171_diag_send_query_w in dlcp_control_v171.asm).
+
+    Match is case-insensitive because gpasm itself is case-insensitive
+    on mnemonics; if a future contributor writes `BC` it still
+    qualifies as a check (codex LOW review against 47a2db3)."""
     nxt = _next_instruction_lines(text_lines, call_line_idx, max_lookahead=1)
     if not nxt:
         return False
     _, raw = nxt[0]
-    return bool(re.search(r"^\s*bc\s+\w", raw))
+    return bool(re.search(r"^\s*bc\s+\w", raw, re.IGNORECASE))
 
 
 def _categorize_call_sites(text: str) -> Tuple[List[Tuple[int, str]], List[Tuple[int, str]]]:
@@ -198,16 +202,48 @@ def test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern()
     if helper_end < 0:
         helper_end = helper_idx + 4000
     body = text[helper_idx:helper_end]
-    enqueue_calls = re.findall(r"call\s+tx_byte_enqueue", body)
-    bc_checks = re.findall(r"bc\s+v171_diag_send_query_aborted", body)
-    assert len(enqueue_calls) == 3, (
+    # ADJACENCY check (codex LOW fix vs 47a2db3): counting `bc`
+    # occurrences in the body would pass even if a future regression
+    # MOVED a bc away from its call (e.g. delayed it past an
+    # intervening movlb).  The contract is that EACH `call
+    # tx_byte_enqueue` is IMMEDIATELY followed by `bc
+    # v171_diag_send_query_aborted` (no instructions between).
+    helper_lines = body.splitlines()
+    base_lineno = text[:helper_idx].count("\n") + 1
+    enqueue_call_indices: List[int] = [
+        i for i, line in enumerate(helper_lines)
+        if re.search(r"\bcall\s+tx_byte_enqueue\b", line)
+    ]
+    assert len(enqueue_call_indices) == 3, (
         f"diag-query helper should issue exactly 3 byte enqueues "
-        f"(route + cmd + data); found {len(enqueue_calls)}"
+        f"(route + cmd + data); found {len(enqueue_call_indices)}"
     )
-    assert len(bc_checks) == 3, (
-        f"diag-query helper should bc-check after EVERY byte enqueue "
-        f"(3 checks for 3 enqueues); found {len(bc_checks)}"
-    )
+    # ALL_LINES variant: also gives us access for the adjacency check
+    # against the in-source line numbers when failing.
+    full_lines = text.splitlines()
+    for body_idx in enqueue_call_indices:
+        # The full-source line index for this call.
+        src_idx = base_lineno - 1 + body_idx
+        # The next instruction (skipping blank / comment / label) MUST
+        # be `bc v171_diag_send_query_aborted`.
+        nxt = _next_instruction_lines(full_lines, src_idx, max_lookahead=1)
+        assert nxt, (
+            f"diag-query helper call at line {src_idx + 1} has no "
+            f"following instruction at all -- can't be checked"
+        )
+        nxt_line_no, nxt_raw = nxt[0]
+        assert re.search(
+            r"^\s*bc\s+v171_diag_send_query_aborted\b",
+            nxt_raw,
+            re.IGNORECASE,
+        ), (
+            f"diag-query helper call at line {src_idx + 1} is NOT "
+            f"immediately followed by `bc v171_diag_send_query_aborted` "
+            f"-- next instruction at line {nxt_line_no} was: {nxt_raw!r}.  "
+            f"The codex LOW fix vs 47a2db3 requires per-call adjacency, "
+            f"not just three bc tokens anywhere in the body, so a "
+            f"refactor that moves a bc away from its call fails fast."
+        )
     # Abort label must exist as a real return target.
     assert "v171_diag_send_query_aborted:" in text, (
         "abort label missing -- the bc checks would land on a non-existent label"
@@ -227,46 +263,56 @@ def test_v171_rx_ring_isr_path_has_no_unread_data_guard() -> None:
     BF/2N replies) the producer can outpace the consumer, overwriting
     in-flight route / cmd / data bytes.
 
-    This structural test searches the RX ISR body for any sign of an
-    unread-data guard (typically a comparison of rx_ring_wr against
-    rx_ring_rd before commit).  If present, the test passes.  If
-    absent, xfail with the rationale so the operator / fix-campaign-
-    author knows the contract is incomplete.
+    Anchor: the RX ISR writes via the canonical instruction sequence
+    `movff RCREG, PLUSW0` (immediately preceded by `lfsr 0x0, 0x066`,
+    the rx_ring_base load).  This is unique to the RX ISR producer
+    path -- nothing else in the source touches RCREG via PLUSW0.
+    Codex MEDIUM fix vs 47a2db3: the prior anchor on a comment string
+    that doesn't exist in the source landed the search window on the
+    OERR recovery reset, not the actual ISR write path.
 
-    The corresponding behavioral test (Tier C, deferred) would inject
-    >48 byte storm and verify the parser eventually re-syncs without
-    permanent state loss.
+    Look in a window of ~30 lines around the producer site for any
+    cpfsgt / cpfslt / xorwf / subwf comparison against rx_ring_rd
+    (the canonical "would-this-write-stomp-an-unread-byte" guard
+    shape).  Direction is symmetric (before OR after) because a fix
+    could insert the guard either pre-write (drop on conflict) or
+    post-write (rollback on conflict).
     """
     text = _read_v171_source()
-    # The RX ISR landmark is the rx_ring_base += rx_ring_wr write
-    # path.  Look for the section header / label that owns this code.
-    # Using the canonical comment marker from dlcp_control_v171.asm.
-    isr_idx = text.find("ISR producer side")
-    if isr_idx < 0:
-        # Fallback: search for the rx_ring_wr increment+wrap pattern.
-        isr_idx = text.find("rx_ring_wr")
-    assert isr_idx >= 0, "rx_ring producer site not found"
+    lines = text.splitlines()
+    # Find the unique RX ISR producer signature.
+    rx_isr_line = None
+    for i, line in enumerate(lines):
+        if re.search(r"\bmovff\s+RCREG,\s*PLUSW0\b", line):
+            rx_isr_line = i
+            break
+    assert rx_isr_line is not None, (
+        "RX ISR producer signature `movff RCREG, PLUSW0` not found -- "
+        "either the ISR write path was renamed/refactored or the test "
+        "anchor needs updating"
+    )
 
-    # Look at the next 2000 chars for any cpfsgt / cpfslt / xorwf
-    # pattern testing rx_ring_wr against rx_ring_rd (the canonical
-    # "would-this-write-stomp-an-unread-byte" guard shape).
-    isr_window = text[isr_idx:isr_idx + 2000]
+    # Window: 15 lines before + 15 lines after the producer write.
+    window_start = max(0, rx_isr_line - 15)
+    window_end = min(len(lines), rx_isr_line + 16)
+    isr_window = "\n".join(lines[window_start:window_end])
+    # The guard can also reference rx_ring_rd by raw address (0x098).
     has_guard = bool(
-        re.search(r"cpf(seq|sgt|slt)\s+rx_ring_rd", isr_window)
-        or re.search(r"xorwf\s+rx_ring_rd", isr_window)
-        or re.search(r"subwf\s+rx_ring_rd", isr_window)
+        re.search(r"cpf(seq|sgt|slt)\s+(rx_ring_rd|0x98)", isr_window)
+        or re.search(r"xorwf\s+(rx_ring_rd|0x98)", isr_window)
+        or re.search(r"subwf\s+(rx_ring_rd|0x98)", isr_window)
     )
     if not has_guard:
         pytest.xfail(
-            "V1.71 RX ISR has NO unread-data guard before writing "
-            "rx_ring_base[rx_ring_wr].  Producer can wrap the 48-byte "
-            "ring before the consumer drains, overwriting in-flight "
-            "frame bytes.  Codex shipping-confidence finding -- fix "
-            "shape: in the RX ISR, before committing the byte, "
-            "compute (rx_ring_wr + 1) mod 48 and compare against "
-            "rx_ring_rd; if equal, drop the new byte (or set an "
-            "OERR-style fault flag) instead of overwriting.  When "
-            "the fix lands, this xfail flips to passing."
+            f"V1.71 RX ISR (producer at line {rx_isr_line + 1}) has NO "
+            f"unread-data guard before writing rx_ring_base[rx_ring_wr]. "
+            f"Producer can wrap the 48-byte ring before the consumer "
+            f"drains, overwriting in-flight frame bytes.  Codex shipping-"
+            f"confidence finding -- fix shape: in the RX ISR, before "
+            f"committing the byte, compute (rx_ring_wr + 1) mod 48 and "
+            f"compare against rx_ring_rd; if equal, drop the new byte "
+            f"(or set an OERR-style fault flag) instead of overwriting. "
+            f"When the fix lands, this xfail flips to passing."
         )
 
 
@@ -282,31 +328,48 @@ def test_v171_rx_parser_has_frame_gap_timeout() -> None:
     single dropped or corrupted byte leaves the parser stuck mid-frame
     until pure luck re-syncs.
 
-    This structural test searches rx_parser_entry for any timeout-
-    style code -- decrement-on-each-tick + reset-position-on-zero
-    pattern.  If absent, xfail with rationale.
+    Detection is naming-agnostic (codex MEDIUM fix vs 47a2db3): the
+    prior heuristic only matched `decfsz` on cells named
+    `gap|timeout|stall`, so a correct fix using `decf`, `dcfsnz`, or
+    a neutral name like `rx_idle_ctr` would slip past the gate.
+
+    Robust shape: count the number of `clrf rx_frame_position` call
+    sites in the source.  The pre-fix source has exactly TWO -- the
+    parser's in-band end-of-frame reset (in rx_parser_entry) and a
+    cold-init reset (during reconnect / sentinel handling).  A
+    correct timeout fix MUST add a THIRD reset path in the
+    timeout-handler branch (regardless of what the timeout cell or
+    the decrement mnemonic is called).  So `clrf rx_frame_position`
+    count >= 3 == timeout fix has landed.
     """
     text = _read_v171_source()
     parser_idx = text.find("rx_parser_entry:")
     assert parser_idx >= 0, "rx_parser_entry label missing"
-    # Consume ~3000 chars after the label to cover the parser body.
-    parser_window = text[parser_idx:parser_idx + 3000]
-    # Look for any decrement of an idle-counter cell + bcf rx_frame_position.
-    # The canonical frame-gap timeout shape is:
-    #   decfsz <gap_counter>
-    #   <reset rx_frame_position to 0>
-    has_timeout = bool(
-        re.search(r"decfsz\s+\w*(gap|timeout|stall)\w*", parser_window, re.IGNORECASE)
+
+    # Count all clrf rx_frame_position sites in the FULL source.
+    # Allow optional ", BANKED" / ", A" addressing-mode suffix.
+    reset_sites = re.findall(
+        r"\bclrf\s+rx_frame_position\b",
+        text,
     )
-    if not has_timeout:
+    n_resets = len(reset_sites)
+    # Pre-fix: 2 resets (parser in-band + cold-init/reconnect).
+    # Fix: adds a 3rd reset on the timeout-expiry branch.
+    if n_resets < 3:
         pytest.xfail(
-            "V1.71 RX parser has NO frame-gap timeout.  A single "
-            "dropped byte mid-frame leaves rx_frame_position stuck "
-            "non-zero until a future Bx route byte arrives AND the "
-            "parser's modulo state happens to align.  Codex shipping-"
-            "confidence finding -- fix shape: add a small per-byte "
-            "decrementing counter; on each parser tick that does NOT "
-            "advance position, decrement; on zero, reset position to "
-            "0 so the next genuine Bx is treated as a fresh frame "
-            "start.  When the fix lands, this xfail flips to passing."
+            f"V1.71 RX parser has only {n_resets} `clrf rx_frame_position` "
+            f"reset sites (need >= 3 for a frame-gap timeout fix to be "
+            f"present).  Pre-fix shape: 2 resets cover the parser's "
+            f"in-band end-of-frame path and the cold-init/reconnect "
+            f"path -- neither of which fires when a frame STALLS mid-"
+            f"way.  A single dropped byte therefore leaves "
+            f"rx_frame_position stuck non-zero until a future Bx route "
+            f"byte AND the parser's modulo state align by luck.  Codex "
+            f"shipping-confidence finding -- fix shape: add a small "
+            f"per-byte decrementing counter (any name -- `rx_idle_ctr`, "
+            f"`rx_gap`, etc.); on each parser tick that does NOT advance "
+            f"position, decrement; on zero, `clrf rx_frame_position` so "
+            f"the next genuine Bx is treated as a fresh frame start.  "
+            f"When the fix adds the 3rd reset site, this xfail flips "
+            f"to passing."
         )
