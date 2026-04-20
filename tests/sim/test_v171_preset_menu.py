@@ -128,21 +128,30 @@ def test_v171_source_defines_preset_screen_symbol() -> None:
 
 
 def test_v171_source_bumps_nav_wrap_literals() -> None:
-    """Nav wrap literals extended from stock 0x02 to V1.71 0x03.
+    """Nav wrap literals progression across V1.71 evolution:
 
-    Stock V1.6b wraps the menu ring at 2 (Vol/Input/Setup).  V1.71
-    extends to 3 (Vol/Preset/Input/Setup).  Both wrap sites
-    (DOWN bound at stock 0x1216, UP wrap target at stock 0x123A)
-    must have been bumped.  We look for the V1.71 comment markers
-    that document each bump site.
+      stock V1.6b   -> 0x02 (3-state ring: Vol/Input/Setup)
+      V1.71 base    -> 0x03 (4-state ring: Vol/Preset/Input/Setup)
+      Layer 5       -> 0x04 (5-state ring: + Diagnostics at state 2)
+      Tier-1 (current) -> 0x05 (6-state ring: + Diag split into PB1/PB2
+                                at states 4/5)
+
+    Both wrap sites (DOWN bound + UP wrap target) must have been bumped
+    each time.  This test pins the most recent bump (0x04 -> 0x05) by
+    looking for the Tier-1 comment markers; older comment markers
+    (V1.61b, Layer 5) should also still be present in the same comment
+    block as a documentation trail.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    assert "nav DOWN upper-bound bumped from 2 \u2192 3" in text, (
-        "DOWN-bound nav wrap not bumped for V1.71 4-way menu"
+    # Tier-1: 4 -> 5 documented at both wrap sites.
+    assert "Tier-1 bumps it\n        ; 4 -> 5" in text or "Tier-1 bumps it 4 -> 5" in text, (
+        "Tier-1 nav-wrap bump comment (4 -> 5) missing -- the source "
+        "comment trail documents each menu evolution step, so future "
+        "readers can trace why the literal is 0x05 today."
     )
-    assert "nav UP wrap target bumped from 2 \u2192 3" in text, (
-        "UP-wrap target nav literal not bumped for V1.71 4-way menu"
-    )
+    # The literal pair must each be 0x05 (covered more strictly by
+    # test_nav_wrap_literals_tier1_bumped_to_0x05 in
+    # test_v171_layer5_diag_page.py).
 
 
 def test_v171_menu_dispatch_routes_state_1_to_preset_screen() -> None:

@@ -239,56 +239,83 @@ def test_ram_inc_does_not_collide_with_existing_v171_cells() -> None:
     assert tx_sat not in diag_range
 
 
-def test_menu_dispatch_inserts_diag_at_state_2() -> None:
-    """The ``flow_post_connect_init_11F0`` dispatch must call
-    ``v171_diag_screen`` for state == 2 and shift Input/Setup to 3/4.
+def test_menu_dispatch_tier1_layout() -> None:
+    """The ``flow_post_connect_init_11F0`` dispatch must implement the
+    Tier-1 menu layout (V32_DIAG_TIER1_SPEC.md §"V1.71 CONTROL menu
+    rework"):
 
-    Spec menu order: Vol(0) ↔ Preset(1) ↔ Diagnostics(2) ↔ Input(3) ↔ Setup(4).
+      Vol(0) <-> Preset(1) <-> Input(2) <-> Setup(3) <-> PB1 Diag(4) <-> PB2 Diag(5)
+
+    Diagnostics moves from state 2 (between Preset and Input) to states
+    4-5 (after Setup) so it's the deepest menu — operators reach it
+    intentionally during troubleshooting.  Input shifts back to state 2;
+    Setup shifts to state 3.  Both PB diag entries call into a single
+    v171_diag_pb_screen routine with PB-index 0 / 1 in W.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     body_start = _label_offset(text, "flow_post_connect_init_11F0")
     assert body_start >= 0, "dispatch entry label missing"
     # Capture a generous body window through to the boot_handshake_wait
-    # block (which holds the state == 4 / Setup branch).
+    # block (which holds the state == 5 / PB2-Diag branch).
     body_end = text.find("flow_boot_handshake_wait_120A:", body_start)
     body = text[body_start:body_end]
-    assert re.search(r"rcall\s+v171_preset_screen", body), "state 1 → preset wiring"
-    assert re.search(r"rcall\s+v171_diag_screen", body), "state 2 → diagnostics wiring"
+    assert re.search(r"rcall\s+v171_preset_screen", body), "state 1 -> preset wiring"
+    # State 2 is now Input (was Diagnostics in pre-Tier-1 Layer 5).
     assert re.search(
-        r"movlw\s+0x03[^\n]*\n\s*cpfseq\s+0xbf",
+        r"movlw\s+0x02[^\n]*\n\s*cpfseq\s+0xbf[\s\S]{0,200}call\s+control_core_service_1912",
         body,
-    ), "state 3 (Input) cpfseq literal"
+    ), "state 2 -> Input wiring (Tier-1 reordering)"
+    # State 3 is now Setup.
     assert re.search(
-        r"movlw\s+0x04[^\n]*\n\s*cpfseq\s+0xbf",
+        r"movlw\s+0x03[^\n]*\n\s*cpfseq\s+0xbf[\s\S]{0,200}call\s+control_core_service_13FE",
         body,
-    ), "state 4 (Setup) cpfseq literal"
+    ), "state 3 -> Setup wiring (Tier-1 reordering)"
+    # State 4 is PB1 Diag with W = 0 in PB-index parameter.
+    assert re.search(
+        r"movlw\s+0x04[^\n]*\n\s*cpfseq\s+0xbf[\s\S]{0,200}movlw\s+0x00\s*\n\s*rcall\s+v171_diag_pb_screen",
+        body,
+    ), "state 4 -> PB1 Diag wiring (W = PB-index 0)"
 
 
-def test_nav_wrap_literals_bump_to_0x04() -> None:
-    """DOWN upper bound, UP wrap target, AND Setup-state cpfseq literals
-    must all be 0x04 after Layer 5.
+def test_nav_wrap_literals_tier1_bumped_to_0x05() -> None:
+    """V1.71 Tier-1 expands the menu ring from 5 states to 6 states by
+    splitting Diagnostics into PB1 Diag + PB2 Diag at the END of the
+    cycle.  Three literals downstream must all be 0x05 after this:
 
-    V1.61b had ring={Vol,Preset,Input,Setup} and both nav-wrap literals
-    were 0x03; the Setup-state cpfseq was 0x02 (Input shifted to 1, Setup
-    to 2 — wait, Setup was 3 in the V1.71 V1.61b layout per the
-    pre-Layer-5 dispatch).  Layer 5 expands the ring with Diagnostics
-    inserted at state 2, so the three literals all bump:
+      - DOWN nav upper bound:        movlw 0x05 / cpfseq 0xbf
+      - UP   nav wrap target:        movlw 0x05 / movwf  0xbf
+      - PB2-Diag-state dispatch:     movlw 0x05 / cpfseq 0xbf
 
-      - DOWN nav upper bound:        movlw 0x04 / cpfseq 0xbf
-      - UP   nav wrap target:        movlw 0x04 / movwf  0xbf
-      - Setup-state dispatch check:  movlw 0x04 / cpfseq 0xbf
-
-    Three matches total = correct for Layer 5; two would indicate a
-    nav-only edit that forgot to bump Setup.
+    Three matches total = correct for Tier-1; two would indicate a
+    nav-only edit that forgot to bump the PB2-Diag-state cpfseq.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     matches = re.findall(
-        r"movlw\s+0x04[^\n]*\n\s*(?:movwf|cpfseq)\s+0xbf",
+        r"movlw\s+0x05[^\n]*\n\s*(?:movwf|cpfseq)\s+0xbf",
         text,
     )
     assert len(matches) == 3, (
-        f"expected exactly three 0x04 nav/dispatch literals (UP wrap, "
-        f"DOWN bound, Setup-state cpfseq); found {len(matches)}: {matches}"
+        f"expected exactly three 0x05 nav/dispatch literals (UP wrap, "
+        f"DOWN bound, PB2-Diag-state cpfseq); found {len(matches)}: {matches}"
+    )
+
+
+def test_diag_pb_screen_label_present_with_placeholder() -> None:
+    """Tier-1 introduces v171_diag_pb_screen as the menu dispatch target
+    for both state 4 (PB1 Diag, W=0) and state 5 (PB2 Diag, W=1).
+    Phase 3.4 will replace the placeholder body with the per-PB Option-D
+    renderer; until then the label exists and forwards to the existing
+    dual-PB v171_diag_screen so menu navigation works without a hang."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_pb_screen")
+    assert off >= 0, (
+        "v171_diag_pb_screen label missing — menu dispatch will fail "
+        "at link time because state 4 / state 5 reference it."
+    )
+    body = text[off:off + 500]
+    # Placeholder MUST forward to v171_diag_screen until Phase 3.4 lands.
+    assert re.search(r"bra\s+v171_diag_screen", body), (
+        "placeholder must forward to v171_diag_screen"
     )
 
 

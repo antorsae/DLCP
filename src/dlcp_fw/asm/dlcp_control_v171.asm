@@ -3223,6 +3223,29 @@ v171_preset_exit_check:
 ; matching the V1.61b preset-screen exit semantics.
 ; ===========================================================================
 
+; ---------------------------------------------------------------------------
+; v171_diag_pb_screen — Tier-1 per-PB diagnostics screen entry
+; ---------------------------------------------------------------------------
+; Caller convention:
+;   in : W = PB index (0 = PB1, 1 = PB2)
+;   out: returns when operator navigates LEFT / RIGHT or disconnect
+;
+; Tier-1 placeholder implementation: the menu now dispatches to this
+; routine for both state 4 (PB1 Diag) and state 5 (PB2 Diag) with a
+; PB-index parameter.  The Option-D per-PB renderer is scheduled for
+; Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts (Option D)").
+; Until that lands, this routine ignores the PB-index parameter and
+; defers to v171_diag_screen, which renders both PBs in one screen.
+;
+; Phase 3.5 (page-entry cmd 0x22 firing) will use the PB-index here
+; to fire cmd 0x22 ONCE per Diag-page entry per PB and clear the
+; per-PB v171_diag_reset_seen bit on entry.
+; ---------------------------------------------------------------------------
+v171_diag_pb_screen:
+        ; PB-index in W is currently unused (Phase 3.4 placeholder).
+        ; Discard W and fall through into the existing dual-PB renderer.
+        bra     v171_diag_screen
+
 v171_diag_screen:
         ; First-entry setup: if no PB has ever replied, initialize
         ; target=0 so the very first cadence-driven query goes to PB1
@@ -4004,46 +4027,71 @@ flow_post_connect_init_11DE:                                                  ; 
 flow_post_connect_init_11F0:                                                  ; address: 0x0011f0
 
         ; ---------------------------------------------------------------
-        ; V1.71 inline (V1.61b + Layer 5): 5-way menu dispatch
+        ; V1.71 inline (V1.61b + Layer 5 + Tier-1): 6-way menu dispatch
         ; ---------------------------------------------------------------
-        ; Stock V1.6b had 3 menu states (0 = Volume, 1 = Input, 2 = Setup)
-        ; and dispatched them via decfsz / cpfseq against 0xBF.  V1.71
-        ; first inserted Preset as state 1 (Vol / Preset / Input / Setup),
-        ; then Layer 5 inserts Diagnostics as state 2:
-        ;   0 = Volume (default fall-through)
-        ;   1 = Preset       → v171_preset_screen
-        ;   2 = Diagnostics  → v171_diag_screen          (Layer 5 Phase B)
-        ;   3 = Input        → control_core_service_1912 (was state 2)
-        ;   4 = Setup        → control_core_service_13FE (was state 3)
-        ; Nav wrap literals downstream are bumped from 0x03 to 0x04 so
-        ; navigation cycles through the full 5-screen ring per
-        ; docs/V163B_DIAGNOSTICS_MENU_SPEC.md "Menu Placement".
+        ; Stock V1.6b had 3 menu states (0 = Volume, 1 = Input, 2 = Setup).
+        ; V1.71 inlined V1.61b (Preset as state 1) and then Layer 5
+        ; (Diagnostics as state 2 between Preset and Input).  V1.71
+        ; Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) reworks the menu:
+        ;
+        ; - Diagnostics moves from state 2 to states 4-5 (deepest menu),
+        ;   with one PB per state.  Operators reach the diag pages
+        ;   intentionally during troubleshooting, not by accident
+        ;   during routine browsing.
+        ; - Input shifts back to state 2; Setup shifts to state 3.
+        ; - PB2 Diag is ALWAYS in the menu cycle.  If only PB1 is wired
+        ;   (or PB2 is silent), the renderer shows "n/a" for PB2 — see
+        ;   v171_diag_pb_screen.
+        ;
+        ; New ring:
+        ;   0 = Volume       (default fall-through)
+        ;   1 = Preset       -> v171_preset_screen
+        ;   2 = Input        -> control_core_service_1912
+        ;   3 = Setup        -> control_core_service_13FE
+        ;   4 = PB1 Diag     -> v171_diag_pb_screen with PB-index 0
+        ;   5 = PB2 Diag     -> v171_diag_pb_screen with PB-index 1
+        ;
+        ; Nav wrap literals downstream are bumped from 0x04 (5-state ring)
+        ; to 0x05 (6-state ring).
         movlb   0x00
         decfsz  0xbf, W, B                                  ; state - 1 == 0?
         goto    v171_menu_ck_state_2
-        rcall   v171_preset_screen                          ; state == 1 → Preset
+        rcall   v171_preset_screen                          ; state == 1 -> Preset
         goto    flow_boot_handshake_wait_120A
 
 v171_menu_ck_state_2:
         movlw   0x02
         cpfseq  0xbf, B
-        goto    v171_menu_ck_state_3                        ; not 2 — try Input
-        rcall   v171_diag_screen                            ; state == 2 → Diagnostics
+        goto    v171_menu_ck_state_3                        ; not 2 -- try Setup
+        ; Tier-1: state 2 is now Input (was Diagnostics).
+        call    control_core_service_1912, 0x0              ; state == 2 -> Input
         goto    flow_boot_handshake_wait_120A
 
 v171_menu_ck_state_3:
-        movlw   0x03                                        ; Layer 5: Input shifted 2 → 3
+        movlw   0x03
         cpfseq  0xbf, B
-        goto    boot_handshake_wait                         ; fall through to state=4 check
-        call    control_core_service_1912, 0x0              ; state == 3 → Input
+        goto    v171_menu_ck_state_4                        ; not 3 -- try PB1 Diag
+        ; Tier-1: state 3 is now Setup (was Input).
+        call    control_core_service_13FE, 0x0              ; state == 3 -> Setup
+        goto    flow_boot_handshake_wait_120A
+
+v171_menu_ck_state_4:
+        movlw   0x04
+        cpfseq  0xbf, B
+        goto    boot_handshake_wait                         ; not 4 -- try PB2 Diag
+        ; Tier-1: state 4 = PB1 Diag (W = PB index 0).
+        movlw   0x00
+        rcall   v171_diag_pb_screen
         goto    flow_boot_handshake_wait_120A
 
 boot_handshake_wait:                                                  ; address: 0x0011fe
 
-        movlw   0x04                                        ; Layer 5: Setup shifted 3 → 4
+        movlw   0x05
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
-        call    control_core_service_13FE, 0x0                           ; dest: 0x0013fe
+        ; Tier-1: state 5 = PB2 Diag (W = PB index 1).
+        movlw   0x01
+        rcall   v171_diag_pb_screen
 
 flow_boot_handshake_wait_120A:                                                  ; address: 0x00120a
 
@@ -4052,10 +4100,11 @@ flow_boot_handshake_wait_120A:                                                  
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_display_state_entry_1226                                   ; dest: 0x001226
-        ; V1.71: nav DOWN upper-bound bumped from 2 → 3 for the V1.61b
-        ; Vol/Preset/Input/Setup ring; Layer 5 bumps it from 3 → 4 so
-        ; the new Vol/Preset/Diagnostics/Input/Setup ring wraps cleanly.
-        movlw   0x04
+        ; V1.71: nav DOWN upper-bound bumped from 2 -> 3 (V1.61b ring),
+        ; then Layer 5 bumped 3 -> 4 (5-state ring).  Tier-1 bumps it
+        ; 4 -> 5 so the 6-state Vol/Preset/Input/Setup/PB1Diag/PB2Diag
+        ; ring wraps cleanly (DOWN at state 5 -> state 0).
+        movlw   0x05
         cpfseq  0xbf, B                                     ; reg: 0x0bf
         goto    display_state_entry                                   ; dest: 0x001224
         clrf    0xbf, B                                     ; reg: 0x0bf
@@ -4075,10 +4124,11 @@ flow_display_state_entry_1226:                                                  
         movf    0xbf, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_state_entry_1242                                   ; dest: 0x001242
-        ; V1.71: nav UP wrap target bumped from 2 → 3 (V1.61b ring),
-        ; then Layer 5 bumps it 3 → 4 so the 5-screen ring wraps
-        ; cleanly (UP at state 0 → state 4 = Setup).
-        movlw   0x04
+        ; V1.71: nav UP wrap target bumped from 2 -> 3 (V1.61b ring),
+        ; then Layer 5 bumped 3 -> 4 (5-state ring).  Tier-1 bumps it
+        ; 4 -> 5 so the 6-state ring wraps cleanly (UP at state 0 ->
+        ; state 5 = PB2 Diag).
+        movlw   0x05
         movwf   0xbf, B                                     ; reg: 0x0bf
         goto    flow_display_state_entry_1244                                   ; dest: 0x001244
 
