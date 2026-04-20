@@ -780,3 +780,323 @@ def test_v32_diag_inc_sat_macro_has_explicit_upper_bound_clamp() -> None:
             "with no `andlw 0x0F` mask in the handler, this is the "
             "root cause of the real-HW Diag-page hang."
         )
+
+
+# ===========================================================================
+# 2026-04-20 instrumentation/delivery/display targeted tests.
+#
+# Operator's instinct after seeing PB1 D=13, S=14, R=11, P=7 + PB2 S=+,
+# R=+ all WITHIN SECONDS of cold boot: this is implausibly many distinct
+# event classes for real faults.  More likely a memory or protocol bug
+# where the cells are reading garbage values (uninitialized RAM, FSR
+# overrun from a neighboring routine, etc.).
+#
+# Tests below split the question into three layers:
+#
+# (A) INSTRUMENTATION — does each named hook ONLY increment its own
+#     counter?  Does normal idle leave all counters at 0?  Does the
+#     cold-init clrf actually run on the operator's reset path?
+#
+# (B) DELIVERY — does cmd 0x21 emit exactly the cells' values, with
+#     no transformation?  Does the chain forwarder leave them alone?
+#
+# (C) MEMORY-OVERLAP — is anything OTHER than the diag hooks writing
+#     into 0x2E5..0x2EC during normal operation?
+# ===========================================================================
+
+
+# (A) Instrumentation
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_diag_counters_stay_zero_during_extended_idle(v32_hex: Path) -> None:
+    """REGRESSION: real-HW operator saw counter values 7..15+ within
+    seconds of a power-cycle.  If MAIN's cold-init properly clears
+    the diag block AND no internal code path bumps counters during
+    normal idle, the cells must remain ALL ZERO across an extended
+    idle window.
+
+    Test shape: boot MAIN under gpsim, run for an extended idle window
+    (no chain stress, no commands injected), assert all counters are
+    still 0.
+
+    What this catches:
+      * adc_boot_gate firing repeatedly (bringing diag_b > 1)
+      * an0_hysteresis_monitor false-tripping at boot (diag_a > 0)
+      * any internal code path that increments a counter without
+        being driven by a real external event
+
+    The existing test_v32_layer5_healthy_boot_keeps_counters_zero
+    covers a SHORT (~8M cycle) window; this test extends to ~40M
+    cycles to catch slower / periodic-only counter drift.
+    """
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    try:
+        from dlcp_fw.sim.chain_gpsim import MainChainHarness
+        from dlcp_fw.sim.control_gpsim import _read_reg
+    except Exception:
+        pytest.skip("gpsim harness not importable")
+
+    h = MainChainHarness(
+        v32_hex,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        # 200 chain steps × 200_000 cycles = 40M cycles ≈ 3.3 seconds
+        # of real-time at 12 MIPS.  Long enough for any periodic counter
+        # bump to surface.
+        for _ in range(200):
+            h.step()
+        anomalies = []
+        for name, addr in ALL_COUNTER_ADDRS:
+            value = _read_reg(h._issue, addr)
+            if value != 0:
+                anomalies.append((name, value))
+        assert not anomalies, (
+            f"counter(s) bumped during extended idle (no external events): "
+            f"{anomalies}.  Either an internal periodic path is firing the "
+            f"diag_inc_sat macro spuriously, or the cold-init clrf isn't "
+            f"running, or RAM[0x2E5..0x2EC] is being written by another "
+            f"code path that overlaps the diag block.  This is the bug "
+            f"class the real-HW operator saw on the rig (counters 7..15+ "
+            f"within seconds of cold boot)."
+        )
+    finally:
+        h.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_diag_counters_isolated_per_hook(v32_hex: Path) -> None:
+    """REGRESSION: each diag counter must increment ONLY when its
+    specific event class fires.  If, say, cmd 0x21 traffic causes
+    `diag_s` (standby) or `diag_r` (recovery) to bump, the counter
+    is no longer measuring what its name implies — and the LCD
+    display becomes misleading (or worse, a feedback loop forms when
+    cmd 0x21 traffic is interpreted as standby triggers).
+
+    Test shape: boot MAIN, force diag block to a known seed pattern
+    (1, 2, 3, 4, 5, 6, 7), inject a cmd 0x21 query, wait for the
+    reply burst to complete, then re-read the diag block.  Counters
+    MUST be unchanged from the seed pattern (cmd 0x21 is observational
+    only — it must not increment any counter).
+
+    Marked xfail-on-skip because the chain_gpsim harness needs an
+    "inject cmd 0x21 from CONTROL side" helper; the simpler probe
+    `test_v32_diag_counters_stay_zero_during_extended_idle` covers
+    the no-spurious-bump case without needing chain injection.
+    """
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    try:
+        from dlcp_fw.sim.chain_gpsim import MainChainHarness
+        from dlcp_fw.sim.control_gpsim import _read_reg
+    except Exception:
+        pytest.skip("gpsim harness not importable")
+
+    seed = (1, 2, 3, 4, 5, 6, 7)
+
+    h = MainChainHarness(
+        v32_hex,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        # Warmup so cold init finishes.
+        for _ in range(20):
+            h.step()
+        # Force seed pattern.
+        for offset, value in enumerate(seed):
+            h._issue(f"reg(0x{0x2E5 + offset:03X})=0x{value:02X}", 5.0)
+        # Inject a single cmd 0x21 query frame from CONTROL.
+        try:
+            h.inject_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
+        except (AttributeError, NotImplementedError) as exc:
+            pytest.skip(
+                f"chain harness does not expose inject_frames_fifo "
+                f"in this configuration ({exc}); the no-bump invariant "
+                f"is partially covered by stay_zero_during_extended_idle"
+            )
+        # Wait for the 7-frame reply burst to complete.
+        for _ in range(60):
+            h.step()
+        # Re-read counters.
+        post = tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(7))
+        assert post == seed, (
+            f"cmd 0x21 query bumped one or more counters!  Seed was {seed}, "
+            f"post-query {post}.  cmd 0x21 must be observational — if it "
+            f"causes ANY counter to increment, the diag-page cadence will "
+            f"feed back into MAIN-side state changes, which is the cascade "
+            f"the operator saw on the rig."
+        )
+    finally:
+        h.close()
+
+
+def test_v32_cold_init_branch_is_taken_on_software_reset() -> None:
+    """REGRESSION: the operator's recovery path (re-flash + bootloader
+    `reset` instruction launches the new app) is a SOFTWARE reset, not
+    POR/BOR.  RCON.BOR stays SET across software reset, so the cold-init
+    branches AROUND the clrf block (preserve diag block).
+
+    For the Diag-page values to start at 0 across a re-flash, the
+    operator would have to PHYSICALLY DISCONNECT POWER long enough for
+    the BOR voltage detector to reset (typically several seconds to
+    minutes).  A brief power-button press or a USB reset is not enough.
+
+    This test pins the source-level branch direction so the implication
+    is documented and locked: btfsc RCON,0 → bra (skip clrf) → preserve
+    on RCON.BOR=1.  It does NOT assert that this is the right behavior —
+    arguably the cells should ALWAYS clear on cold init to avoid the
+    "stale RAM is interpreted as elevated counters" surprise the
+    operator hit.
+
+    Decision pending: change the gate to ALWAYS clear (drop the RCON
+    check) → operator never sees stale-RAM counters, but loses the
+    "fault evidence survives soft reset" guarantee.  Worth the trade
+    if the survives-soft-reset feature is more theoretical than used.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
+    end = _label_offset(text, "flash_erase")
+    body = text[start:end]
+    # Pin the existing branch direction (btfsc → bra over clrf).
+    assert re.search(
+        r"btfsc\s+RCON,\s*0,\s*ACCESS", body
+    ), "RCON gate must use btfsc RCON,0 (skip clrf when BOR=1)"
+    assert "diag_post_rcon_check" in body, "diag_post_rcon_check label missing"
+    # And document the consequence in a comment so future readers
+    # don't trip on the survives-soft-reset implication.
+    assert "preserve" in body.lower() or "survive" in body.lower(), (
+        "cold-init must comment that diag block is PRESERVED on "
+        "non-POR/BOR reset (e.g., re-flash via bootloader); operator "
+        "saw stale-RAM-looking counters because of this."
+    )
+
+
+# (C) Memory-overlap regression
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
+    """REGRESSION: the V3.2 preset_job state machine lives at
+    0x2DE..0x2E4, immediately below the diag block at 0x2E5..0x2EC.
+    If preset_job_apply uses an FSR-base + offset write that overruns
+    past 0x2E4 (e.g., FSR2 starting at preset_job_index = 0x2E0 and
+    iterating > 4 bytes), it would clobber diag cells.
+
+    Test shape: boot MAIN, snapshot diag block (should be all zero
+    after cold init), trigger a preset switch (via cmd 0x20 or
+    by writing active_flags.bit2 directly), wait for preset job to
+    complete, snapshot diag block again.  Diag block must be
+    unchanged — preset switching has nothing to do with diagnostic
+    counters and must not write into the diag region.
+
+    Marked skip when the chain injection helper is unavailable; in
+    that case the invariant is partially covered by the extended-
+    idle test (which doesn't trigger preset switches but does run
+    long enough for any periodic preset-related write to surface).
+    """
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    try:
+        from dlcp_fw.sim.chain_gpsim import MainChainHarness
+        from dlcp_fw.sim.control_gpsim import _read_reg
+    except Exception:
+        pytest.skip("gpsim harness not importable")
+
+    h = MainChainHarness(
+        v32_hex,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        for _ in range(20):
+            h.step()
+        baseline = tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(8))
+        try:
+            # Trigger preset switch via cmd 0x20 (preset select B)
+            h.inject_frames_fifo([[0xB1, 0x20, 0x01]], fifo_limit=47)
+        except (AttributeError, NotImplementedError) as exc:
+            pytest.skip(f"preset injection unavailable ({exc})")
+        for _ in range(120):  # let preset job complete (PENDING → HOLDING → APPLY → COMMIT)
+            h.step()
+        post = tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(8))
+        assert post == baseline, (
+            f"diag block changed during preset switch!  "
+            f"baseline={baseline}, post={post}.  preset_job_service "
+            f"or one of its helpers (preset_job_apply, preset_force_mute, "
+            f"etc.) wrote into 0x2E5..0x2EC.  This is the memory-overlap "
+            f"hypothesis the operator's instinct flagged — diag cells "
+            f"are being clobbered by an unrelated routine, then read "
+            f"as 'elevated counters' on the Diag page."
+        )
+    finally:
+        h.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_preset_job_state_unchanged_by_diag_traffic(v32_hex: Path) -> None:
+    """REGRESSION (mirror of above): cmd 0x21 reply traffic must NOT
+    write into preset_job state (0x2DE..0x2E4) either.  If the cmd 0x21
+    handler accidentally clobbers preset_job_state (e.g., from a
+    stack-overflow or FSR-mishap), the next preset switch could find
+    preset_job in an unexpected state and hang.
+
+    Test shape: boot MAIN, snapshot preset_job state (should be IDLE
+    = all zeros), inject many cmd 0x21 queries, snapshot again.
+    State must be unchanged.
+    """
+    if not gpsim_available():
+        pytest.skip("gpsim not installed")
+    try:
+        from dlcp_fw.sim.chain_gpsim import MainChainHarness
+        from dlcp_fw.sim.control_gpsim import _read_reg
+    except Exception:
+        pytest.skip("gpsim harness not importable")
+
+    h = MainChainHarness(
+        v32_hex,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        for _ in range(20):
+            h.step()
+        # preset_job_state at 0x2DE, preset_job_target 0x2DF, etc., 7 bytes
+        baseline = tuple(_read_reg(h._issue, 0x2DE + i) for i in range(7))
+        # Many cmd 0x21 queries.
+        try:
+            for _ in range(20):
+                h.inject_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
+                for _ in range(8):
+                    h.step()
+        except (AttributeError, NotImplementedError) as exc:
+            pytest.skip(f"injection unavailable ({exc})")
+        post = tuple(_read_reg(h._issue, 0x2DE + i) for i in range(7))
+        assert post == baseline, (
+            f"preset_job state changed during sustained cmd 0x21 traffic!  "
+            f"baseline={baseline}, post={post}.  cmd21 handler is writing "
+            f"into preset_job state — this would cause the next genuine "
+            f"preset switch to find preset_job in an unexpected state "
+            f"and hang.  Stack-overflow in cmd21 handler?  FSR mishap?"
+        )
+    finally:
+        h.close()
