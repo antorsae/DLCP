@@ -211,6 +211,8 @@ Always prefer these constants over hardcoded paths.
 - Safe main flasher: `dlcp_main_flash.py`
 - Canonical V3.1 operator wrapper: `dlcp_v31_release_flash.py`
 - Preset query/switch helper: `dlcp_preset.py`
+- V3.2 Tier-1 cmd 0x44 diag-snapshot reader: `dlcp_diag.py`
+  (operator runbook: `scripts/dlcp_diag.py`; spec: `docs/V32_DIAG_TIER1_SPEC.md`)
 - EP0 flash window reader: `dlcp_ep0_flash_probe.py`
 - EEPROM shadow dump: `dlcp_ep0_eeprom_shadow_dump.py`
 - DSP filename A/B probe: `dsp_filename_ab_probe.py`
@@ -240,6 +242,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/hardware_state_test.py`
 - `scripts/hardware_loop.py`
 - `scripts/dlcp_preset.py`
+- `scripts/dlcp_diag.py`
 - `scripts/dlcp_main_flash.py`
 - `scripts/dlcp_v31_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
