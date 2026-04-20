@@ -1760,14 +1760,27 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
         "v171_diag_emit_nib_w",
         "lcd_char_write",
     )
+    # Routine-separator comment (`; ----...----`) marks the END of one
+    # routine and the START of the next.  Walking forward from the
+    # helper's label until the NEXT separator gives the full routine
+    # body regardless of length.  Codex flagged a previous version
+    # that used a fixed 1500-char window which truncated lcd_char_write
+    # (~2800 chars) and v171_diag_letter_for_idx (~1860 chars), missing
+    # any FSR1 writes in their tails.
+    separator_pattern = re.compile(r"^\s*;\s*-{20,}\s*$", re.MULTILINE)
+
+    def helper_body(label: str) -> str:
+        off = _label_offset(text, label)
+        assert off >= 0, f"helper label {label} not found in source"
+        # First skip past the helper's own header docstring separator
+        # (which immediately precedes the label).  Then find the NEXT
+        # separator after the label.
+        m = separator_pattern.search(text, off + 1)
+        end = m.start() if m else len(text)
+        return text[off:end]
+
     for helper in helper_labels:
-        off = _label_offset(text, helper)
-        assert off >= 0, f"helper label {helper} not found in source"
-        # Conservatively scan a 1500-char window after the label entry.
-        # That covers any reasonable LCD/encoding helper body without
-        # depending on a specific end_marker that might shift between
-        # versions.
-        body = text[off:off + 1500]
+        body = helper_body(helper)
         # No lfsr to FSR1.
         assert "lfsr    0x1," not in body, (
             f"{helper} clobbers FSR1 via lfsr -- breaks the row walk's "
