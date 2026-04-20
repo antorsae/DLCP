@@ -363,17 +363,25 @@ def test_v171_rx_parser_has_frame_gap_timeout() -> None:
     parser_idx = text.find("rx_parser_entry:")
     assert parser_idx >= 0, "rx_parser_entry label missing"
 
+    # Strip asm comments so a future doc line containing the literal
+    # text `clrf rx_frame_position` or `clrf 0xa6` doesn't false-pass
+    # the count gate (codex LOW fix vs 8a5e0ff: gpasm comment syntax
+    # is a single `;` to end-of-line; remove that span from each line).
+    code_only = "\n".join(
+        re.sub(r";.*$", "", line) for line in text.splitlines()
+    )
+
     # Count BOTH symbolic and raw-address clrf forms targeting 0x0A6.
     # The symbolic form: `clrf rx_frame_position` with optional
     # `, BANKED` / `, A` suffix.  The raw form: `clrf 0xa6` (or 0xA6,
     # case-insensitive) with optional `, B` / `, A` suffix.
     symbolic_sites = re.findall(
         r"\bclrf\s+rx_frame_position\b",
-        text,
+        code_only,
     )
     raw_sites = re.findall(
         r"\bclrf\s+0x[aA]6\b",
-        text,
+        code_only,
     )
     n_resets = len(symbolic_sites) + len(raw_sites)
     # Pre-fix: 4 resets (parser in-band + parser route + reconnect-exit
