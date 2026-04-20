@@ -333,43 +333,68 @@ def test_v171_rx_parser_has_frame_gap_timeout() -> None:
     `gap|timeout|stall`, so a correct fix using `decf`, `dcfsnz`, or
     a neutral name like `rx_idle_ctr` would slip past the gate.
 
-    Robust shape: count the number of `clrf rx_frame_position` call
-    sites in the source.  The pre-fix source has exactly TWO -- the
-    parser's in-band end-of-frame reset (in rx_parser_entry) and a
-    cold-init reset (during reconnect / sentinel handling).  A
-    correct timeout fix MUST add a THIRD reset path in the
-    timeout-handler branch (regardless of what the timeout cell or
-    the decrement mnemonic is called).  So `clrf rx_frame_position`
-    count >= 3 == timeout fix has landed.
+    Robust shape: count EVERY clrf-to-zero of rx_frame_position (RAM
+    address 0x0A6) in BOTH the symbolic form (`clrf rx_frame_position`)
+    AND the raw-address form (`clrf 0xa6` -- gpasm output style for
+    pre-equate code paths).  Codex MEDIUM fix vs 2ee4abe pointed out
+    that counting only the symbolic form missed the 2 raw-address
+    resets at lines 983 and 3984, so the prior premise of "pre-fix == 2
+    resets" was wrong.
+
+    Pre-fix actual count: 4 sites (2 symbolic + 2 raw):
+      * line 910: clrf rx_frame_position, BANKED -- parser end-of-frame
+      * line 983: clrf 0xa6, B -- parser route-byte fresh-start
+      * line 3984: clrf 0xa6, B -- reconnect-exit cold-reset
+      * line 4460: clrf rx_frame_position, BANKED -- cold-init / reconnect
+
+    A correct timeout fix MUST add a 5th reset path in the timeout-
+    handler branch (regardless of what the timeout cell or decrement
+    mnemonic is called, or whether the new code uses the symbolic or
+    raw addressing form).  So `count >= 5` == timeout fix has landed.
+
+    Note on `movlw 0; movwf` form: a hypothetical fix using that
+    pattern instead of `clrf` would slip past this gate.  In practice
+    PIC18 idiom is `clrf` (1 instruction vs 2), and the existing 4
+    resets all use clrf, so a fix using movwf would be deeply unusual
+    and would warrant a comment explaining why -- at which point the
+    test can be updated.
     """
     text = _read_v171_source()
     parser_idx = text.find("rx_parser_entry:")
     assert parser_idx >= 0, "rx_parser_entry label missing"
 
-    # Count all clrf rx_frame_position sites in the FULL source.
-    # Allow optional ", BANKED" / ", A" addressing-mode suffix.
-    reset_sites = re.findall(
+    # Count BOTH symbolic and raw-address clrf forms targeting 0x0A6.
+    # The symbolic form: `clrf rx_frame_position` with optional
+    # `, BANKED` / `, A` suffix.  The raw form: `clrf 0xa6` (or 0xA6,
+    # case-insensitive) with optional `, B` / `, A` suffix.
+    symbolic_sites = re.findall(
         r"\bclrf\s+rx_frame_position\b",
         text,
     )
-    n_resets = len(reset_sites)
-    # Pre-fix: 2 resets (parser in-band + cold-init/reconnect).
-    # Fix: adds a 3rd reset on the timeout-expiry branch.
-    if n_resets < 3:
+    raw_sites = re.findall(
+        r"\bclrf\s+0x[aA]6\b",
+        text,
+    )
+    n_resets = len(symbolic_sites) + len(raw_sites)
+    # Pre-fix: 4 resets (parser in-band + parser route + reconnect-exit
+    # + cold-init).  Fix: adds a 5th reset on the timeout-expiry branch.
+    if n_resets < 5:
         pytest.xfail(
             f"V1.71 RX parser has only {n_resets} `clrf rx_frame_position` "
-            f"reset sites (need >= 3 for a frame-gap timeout fix to be "
-            f"present).  Pre-fix shape: 2 resets cover the parser's "
-            f"in-band end-of-frame path and the cold-init/reconnect "
-            f"path -- neither of which fires when a frame STALLS mid-"
-            f"way.  A single dropped byte therefore leaves "
+            f"reset sites (symbolic={len(symbolic_sites)}, "
+            f"raw=0xa6={len(raw_sites)}; need >= 5 for a frame-gap "
+            f"timeout fix to be present).  Pre-fix shape: 4 resets cover "
+            f"the parser's in-band end-of-frame path, the parser's route-"
+            f"byte fresh-start, the reconnect-exit cold-reset, and the "
+            f"cold-init / reconnect -- none of which fire when a frame "
+            f"STALLS mid-way.  A single dropped byte therefore leaves "
             f"rx_frame_position stuck non-zero until a future Bx route "
             f"byte AND the parser's modulo state align by luck.  Codex "
             f"shipping-confidence finding -- fix shape: add a small "
             f"per-byte decrementing counter (any name -- `rx_idle_ctr`, "
             f"`rx_gap`, etc.); on each parser tick that does NOT advance "
-            f"position, decrement; on zero, `clrf rx_frame_position` so "
-            f"the next genuine Bx is treated as a fresh frame start.  "
-            f"When the fix adds the 3rd reset site, this xfail flips "
-            f"to passing."
+            f"position, decrement; on zero, `clrf rx_frame_position` "
+            f"(symbolic OR raw 0xa6 form) so the next genuine Bx is "
+            f"treated as a fresh frame start.  When the fix adds the 5th "
+            f"reset site, this xfail flips to passing."
         )
