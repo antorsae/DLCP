@@ -484,9 +484,10 @@ def test_bf2x_parser_case_handles_cmds_21_through_2b() -> None:
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0, "v171_bf2x_case_check label missing"
     # Window must extend through the v171_bf2x_check_reset_last block
-    # added for Tier-1 (RESET LAST frame on BF/2B).  6 KB covers the
-    # full handler body including comments.
-    body = text[off:off + 6000]
+    # added for Tier-1 (RESET LAST frame on BF/2B) AND the codex MEDIUM
+    # fix (effective-target picker for cmd 0x22 frames).  8 KB covers
+    # the full handler body including all comments.
+    body = text[off:off + 8000]
     # Range gate: must reject < 0x21 and >= 0x2C.
     assert re.search(r"movlw\s+0x21\s*\n\s*cpfslt\s+rx_parsed_cmd", body), (
         "lower-bound check (cmd < 0x21 -> exit) missing"
@@ -737,11 +738,16 @@ def test_diag_parser_sets_dirty_on_every_bf2x_write() -> None:
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0
-    body = text[off:off + 4000]
+    body = text[off:off + 8000]
     # Locate the cache write (movff rx_parsed_data, INDF0) and the
-    # BF/27 gate (cpfseq with W=0x06).  bsf DIRTY must sit between them.
+    # BF/27 last-frame gate (cpfseq with W=0x06).  bsf DIRTY must sit
+    # between them.  NOTE: there are TWO cpfseq instructions on
+    # (Common_RAM + 4) in the parser body now -- the codex MEDIUM fix
+    # added a cpfslt gate for the col-7 effective-target picker, but
+    # we explicitly find the BF/27 gate by anchoring on the movlw 0x06
+    # immediately preceding it.
     write_pos = body.find("movff   rx_parsed_data, INDF0")
-    gate_pos = body.find("cpfseq  (Common_RAM + 4), A")
+    gate_pos = body.find("movlw   0x06\n        cpfseq  (Common_RAM + 4), A")
     assert write_pos >= 0 and gate_pos > write_pos
     between = body[write_pos:gate_pos]
     assert re.search(
@@ -826,11 +832,15 @@ def test_diag_parser_clears_pending_on_bf27() -> None:
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0
-    body = text[off:off + 4000]
+    body = text[off:off + 8000]
     # RUNTIME_PENDING clear must be inside the col_offset == 6 (BF/27) path.
-    gate_pos = body.find("cpfseq  (Common_RAM + 4), A")
+    # Anchor on `movlw 0x06\ncpfseq (Common_RAM + 4)` to skip over the
+    # codex-MEDIUM-fix col-7 effective-target picker (which uses
+    # `movlw 0x07\ncpfslt (Common_RAM + 4)` -- different mnemonic but
+    # same scratch cell).
+    gate_pos = body.find("movlw   0x06\n        cpfseq  (Common_RAM + 4), A")
     assert gate_pos >= 0
-    after_gate = body[gate_pos:gate_pos + 1000]
+    after_gate = body[gate_pos:gate_pos + 2000]
     assert re.search(
         r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         after_gate,
@@ -1046,6 +1056,89 @@ def test_diag_loop_fires_cmd_22_once_per_pb_per_page_entry() -> None:
     assert 0 <= set_pos < rcall_pos, (
         "RESET_PENDING must be set BEFORE the rcall to send_reset_query "
         "so a fast BF/2B reply can't clear PENDING before it's set"
+    )
+
+
+def test_bf2x_parser_uses_effective_target_for_cmd22_frames() -> None:
+    """Codex MEDIUM review (against commit d3d15cd, 2026-04-20):
+    v171_bf2x_case_check must pick the cache base from the EFFECTIVE
+    target -- v171_diag_target for col 0..6 (cmd 0x21 reply frames),
+    v171_diag_reset_target for col 7..10 (cmd 0x22 reply frames).
+
+    Bug pre-fix: the parser always read v171_diag_target.0 to pick the
+    cache base.  v171_diag_target can toggle independently between
+    cmd 0x22 send and BF/2B reception (via an interleaved cmd 0x21
+    BF/27 from the OTHER PB), so reading the live target for cmd 0x22
+    frames would mis-route the 4 reset bytes to the wrong PB's cache
+    cells AND set the wrong v171_diag_reset_seen bit on BF/2B.
+
+    Fix: stash the effective target into (Common_RAM + 5) before the
+    cache-base compute, with a cpfslt(0x07) gate that overrides with
+    v171_diag_reset_target when col >= 7.  Then both the cache-base
+    btfsc AND the BF/2B reset_seen-OR-in btfsc read from
+    (Common_RAM + 5) instead of v171_diag_target directly.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_bf2x_case_check")
+    body = text[off:off + 8000]
+    # The col-7 gate must be present (cpfslt against W=0x07 on col_offset).
+    assert re.search(
+        r"movlw\s+0x07\s*\n\s*cpfslt\s+\(Common_RAM \+ 4\),\s*A",
+        body,
+    ), (
+        "col-7 effective-target gate missing -- without it, cmd 0x22 "
+        "frames (col 7..10) get routed by the live target which can "
+        "drift mid-burst via BF/27 toggle from the other PB"
+    )
+    # The override must read v171_diag_reset_target (the snapshot).
+    assert re.search(
+        r"movf\s+v171_diag_reset_target,\s*W,\s*BANKED",
+        body,
+    ), (
+        "col-7 override must load v171_diag_reset_target "
+        "(snapshot at cmd 0x22 send time)"
+    )
+    # And the override must store into (Common_RAM + 5) so downstream
+    # cache-base + reset_seen logic picks it up.
+    override_pos = body.find("v171_bf2x_use_reset_target:")
+    assert override_pos >= 0, "override label missing"
+    override_body = body[override_pos:override_pos + 200]
+    assert re.search(
+        r"movwf\s+\(Common_RAM \+ 5\),\s*A",
+        override_body,
+    ), "override must write effective_target into (Common_RAM + 5)"
+    # Cache-base picker must read (Common_RAM + 5), NOT v171_diag_target.
+    # Search for the btfsc on (Common_RAM + 5), 0 between the override-
+    # done label and the FSR0L write.
+    have_label = "v171_bf2x_have_effective_target:"
+    have_pos = body.find(have_label)
+    assert have_pos >= 0, "effective-target-done label missing"
+    fsr0l_pos = body.find("movwf   FSR0L", have_pos)
+    assert fsr0l_pos > have_pos, "FSR0L write missing after effective-target picker"
+    base_block = body[have_pos:fsr0l_pos]
+    assert re.search(
+        r"btfsc\s+\(Common_RAM \+ 5\),\s*0,\s*A",
+        base_block,
+    ), (
+        "cache-base picker must btfsc on (Common_RAM + 5), 0 -- NOT "
+        "v171_diag_target.  Reading v171_diag_target here re-introduces "
+        "the cmd 0x22 frame-mis-routing bug."
+    )
+    # BF/2B reset_seen path must also btfsc (Common_RAM + 5), 0 (NOT
+    # v171_diag_target) -- pin this explicitly.
+    reset_last_pos = body.find("v171_bf2x_check_reset_last:")
+    assert reset_last_pos > 0, "reset-last-frame label missing"
+    reset_block = body[reset_last_pos:reset_last_pos + 1500]
+    iorwf_pos = reset_block.find("iorwf   v171_diag_reset_seen")
+    assert iorwf_pos > 0, "reset_seen OR-in missing"
+    pre_iorwf = reset_block[:iorwf_pos]
+    assert re.search(
+        r"btfsc\s+\(Common_RAM \+ 5\),\s*0,\s*A",
+        pre_iorwf,
+    ), (
+        "BF/2B reset_seen OR-in must btfsc on (Common_RAM + 5), 0 -- "
+        "reading v171_diag_target here would set the wrong reset_seen "
+        "bit if target toggled mid-burst"
     )
 
 

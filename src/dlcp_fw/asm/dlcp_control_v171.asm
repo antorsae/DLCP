@@ -1217,12 +1217,41 @@ v171_bf2x_check_upper:
         movlw   0x21
         subwf   rx_parsed_cmd, W, A
         movwf   (Common_RAM + 4), A                       ; col_offset
+        ; --- Pick "effective target" for this frame's cache routing ---
+        ; Two reply burst types share the BF/2N space:
+        ;   col 0..6   -- cmd 0x21 reply (runtime cells); use LIVE
+        ;                 v171_diag_target.  This burst's last frame
+        ;                 BF/27 toggles target as a side effect, so
+        ;                 the "live target at frame arrival" is the
+        ;                 right thing.
+        ;   col 7..10  -- cmd 0x22 reply (reset cells, Tier-1); use
+        ;                 SNAPSHOT v171_diag_reset_target captured at
+        ;                 cmd 0x22 send time.  v171_diag_target can
+        ;                 toggle independently between cmd 0x22 send
+        ;                 and BF/2B reception (via an interleaved cmd
+        ;                 0x21 BF/27 from the OTHER PB), so reading
+        ;                 the live target for cmd 0x22 frames would
+        ;                 mis-route the 4 reset bytes to the wrong
+        ;                 PB's cache cells AND set the wrong
+        ;                 v171_diag_reset_seen bit on BF/2B.  See the
+        ;                 codex review note attached to commit d3d15cd.
+        ; Default = live target; cmd 0x22 path overrides with snapshot.
+        movlb   0x01
+        movf    v171_diag_target, W, BANKED
+        movwf   (Common_RAM + 5), A                       ; effective_target
+        movlw   0x07
+        cpfslt  (Common_RAM + 4), A                       ; col < 7? skip if so
+        bra     v171_bf2x_use_reset_target                ; col >= 7: override
+        bra     v171_bf2x_have_effective_target           ; col < 7: keep live
+v171_bf2x_use_reset_target:
+        movf    v171_diag_reset_target, W, BANKED
+        movwf   (Common_RAM + 5), A
+v171_bf2x_have_effective_target:
         ; Compute slot base: PB1 base = v171_diag_pb1_i (0x80),
         ; PB2 base = v171_diag_pb2_i (0x8B = 0x80 + 11).  Add 11 (0x0B)
-        ; if target bit0 set.
-        movlb   0x01
+        ; if effective_target bit0 set.
         movlw   v171_diag_pb1_i
-        btfsc   v171_diag_target, 0, BANKED
+        btfsc   (Common_RAM + 5), 0, A
         movlw   v171_diag_pb2_i
         addwf   (Common_RAM + 4), W, A                    ; W = base + col_offset
         ; Write payload via FSR0 in BANK 1 (0x180..0x195 physical).
@@ -1247,8 +1276,13 @@ v171_bf2x_check_upper:
         ; so the next cadence query goes to the OTHER PB.  Target toggle
         ; is HERE (not in the cadence loop) so target stays stable for
         ; the full query/reply round-trip.
+        ;
+        ; Use (Common_RAM + 5) effective_target -- which equals
+        ; v171_diag_target on this path (col 6 < 7) -- for the
+        ; present-mask OR-in.  The btg below operates on the LIVE
+        ; v171_diag_target directly because that's what we're toggling.
         movlw   0x01                                      ; PB1 mask
-        btfsc   v171_diag_target, 0, BANKED
+        btfsc   (Common_RAM + 5), 0, A
         movlw   0x02                                      ; PB2 mask
         iorwf   v171_diag_present, F, BANKED
         bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
@@ -1263,11 +1297,18 @@ v171_bf2x_check_reset_last:
         ; session, and clear RESET_PENDING.  Do NOT touch the runtime
         ; present mask / runtime target / RUNTIME_PENDING -- those are
         ; managed independently by the cmd 0x21 path above.
+        ;
+        ; Use (Common_RAM + 5) effective_target -- which equals
+        ; v171_diag_reset_target on this path (col 10 >= 7) -- for the
+        ; reset_seen OR-in.  v171_diag_target may have toggled via an
+        ; interleaved BF/27 from the OTHER PB during the cmd 0x22
+        ; reply burst; reading the live target here would set the
+        ; wrong reset_seen bit (codex MEDIUM review fix).
         movlw   0x0A
         cpfseq  (Common_RAM + 4), A                       ; col_offset == 10 (BF/2B)?
         bra     flow_rx_parser_entry_05EA                 ; not last frame -- exit
         movlw   0x01                                      ; PB1 reset_seen bit
-        btfsc   v171_diag_target, 0, BANKED
+        btfsc   (Common_RAM + 5), 0, A
         movlw   0x02                                      ; PB2 reset_seen bit
         iorwf   v171_diag_reset_seen, F, BANKED
         bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
