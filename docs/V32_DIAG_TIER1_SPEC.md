@@ -1,12 +1,34 @@
 # V3.2 Tier-1 Diagnostics Expansion + V1.71 Menu Rework — Spec
 
-Last updated: 2026-04-20 (round 3 — addressed two review passes;
-                          5 round-1 + 4 round-2 follow-on findings)
+Last updated: 2026-04-20 (round 4 — addressed three review passes;
+                          5 round-1 + 4 round-2 + 3 round-3
+                          follow-on findings = 12 total)
 Status: design locked, implementation pending
+
+## Round-4 follow-on revisions (2026-04-20)
+
+Round-3 spec at d919365 had three trailing low-severity issues;
+all addressed:
+
+* **F1 LOW** — open-questions section's compat narrative still said
+  "older MAINs simply don't reply to cmd 0x22" (the OLD pre-round-3
+  story).  Reworded to spell out both halves: older MAINs emit ONE
+  stray `0x00` byte (cmd-XOR ACK echo of the data byte); older
+  CONTROLs simply don't fire `cmd 0x22`.  Adds explicit note that
+  tooling/tests must include the one-byte stray-traffic budget on
+  the old-MAIN path — it's not zero traffic.
+* **F2 LOW** — migration summary still said cmd 0x44 "returns
+  14-byte payload + 3-byte trailer" (sums to 17, the same ambiguity
+  round-3 fixed elsewhere).  Reworded to "14-byte payload total:
+  11 cell bytes + 3-byte trailer; length byte at response[2] = 0x0E".
+* **F3 LOW** — title metadata still said "round 2".  Bumped to
+  "round 3" + Round-3 revisions block added.  This Round-4 block
+  is the corresponding self-documentation update for f2f1b4d.
 
 ## Round-3 follow-on revisions (2026-04-20)
 
-Round-2 spec had four follow-on review findings; all addressed:
+Round-2 spec at 673a984 had four follow-on review findings; all
+addressed:
 
 * **F1 MED** — cross-version compat matrix split into LCD-path
   (CONTROL-mediated) and HID-path (MAIN-local) columns.  Rev 0x37
