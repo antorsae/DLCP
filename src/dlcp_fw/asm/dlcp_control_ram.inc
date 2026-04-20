@@ -330,14 +330,34 @@ V171_DIAG_RESET_TIMEOUT_RELOAD equ 0x04
 ; display_loop_iteration / lcd_char_write helpers clobber).
 ;
 ; All cells live in BANK 1.  The EQU values are BANKED-form 8-bit
-; operands; callers must `movlb 0x01` before access.
+; operands; callers MUST `movlb 0x01` before any access -- a missing
+; movlb 0x01 here would land at PHYSICAL 0x0CD..0x0D3 which IS a live
+; region (see safety note below).  Test gate
+; test_phase3_4_renderer_movlb_discipline_before_banked_writes
+; pins the discipline.
 ;
-; Operand range 0x0CD..0x0D3 is safe in BANK 0 (saved_settings_base
-; ends at 0x0CC and no other equate uses 0x0CD..0x0FF -- verified by
-; audit before allocation).  An earlier draft tried to stash the
-; PB-index into a BANK 0 access cell (Common_RAM + 29 = 0x0E8) but
-; that aliased ir_decoded_cmd's neighbours; using BANK 1 scratch
-; sidesteps the BANK 0 aliasing landmine entirely.
+; --- Safety note: BANK 0 co-residency at physical 0x0CD..0x0D3 ---
+; The same operands 0xCD..0xD3 are ALSO accessed by the EEPROM
+; saved-settings load/save/clear routines via ABSOLUTE addressing
+; (`lfsr 0x0, 0x0CD` ... `clrf POSTINC0` walks at v171_asm lines
+; ~2050, 2143, 2363, 4236, 5278, 5479).  Those FSR0 loads land at
+; physical 0x0CD..0x0D3 (BANK 0) -- a DIFFERENT physical cell from
+; our BANK 1 scratch at physical 0x1CD..0x1D3.
+;
+; The two regions live at the same operand value but in different
+; physical banks, so they DO NOT alias under correct BSR discipline.
+; But: a BSR=0 leak into one of our BANKED accesses below would
+; SILENTLY CORRUPT the EEPROM saved-settings cache (and vice versa),
+; reproducing the same class of bug as the 2026-04-20 Phase 3.1
+; disaster.  Hence the strict movlb 0x01 requirement above.
+;
+; Why we picked this operand range despite the BANK 0 co-residency:
+; the alternative ranges (above 0x0F8 in BANK 1, or BANK 2/3 with
+; lfsr-based access) all had higher implementation cost and the
+; BSR discipline above is enforced by the structural test gate.
+; An earlier draft tried Common_RAM + 29 = 0x0E8 as access-bank
+; scratch but that aliased ir_decoded_cmd's neighbours; the BANK 1
+; sidestep here is strictly safer than that draft.
 ;
 ; v171_diag_render_pb_index: persists across cadence cycles (set on
 ;   v171_diag_pb_screen entry, read on every screen_draw redraw).

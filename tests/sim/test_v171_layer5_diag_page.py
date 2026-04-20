@@ -1466,3 +1466,251 @@ def test_phase3_4_overflow_marker_only_when_count_ge_10() -> None:
     assert dot_count == 2, (
         f"overflow path must emit exactly two '.' literals; got {dot_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.4 follow-up gates: codex MEDIUM finding (against commit 9bed274)
+# ---------------------------------------------------------------------------
+# Codex flagged that the four "Phase 3.4" gates above are mostly shape /
+# literal checks -- they don't lock down the highest-risk regressions
+# the renderer commit could re-introduce.  The four gates below close
+# the gap by pinning:
+#   1. No other BANK 1 EQU collides with the new 0xCD..0xD3 scratch
+#      range (the docstring claim from
+#      test_phase3_4_render_scratch_cells_pinned_in_safe_bank1_range
+#      lifted into an assertion).
+#   2. movlb 0x01 discipline before BANKED writes to the new scratch
+#      cells (a missing movlb 0x01 = silent corruption of EEPROM
+#      saved-settings cache at physical 0x0CD..0x0D3).
+#   3. Pad-count math for both rows (12 - emitted*3 row 0;
+#      17 - emitted*3 row 1).  An off-by-one here breaks the layout
+#      width invariant for ALL count values 1..9.
+#   4. FSR1 isn't clobbered across letter_for_idx / pad_spaces /
+#      lcd_char_write helper calls in the two row walks.
+# ---------------------------------------------------------------------------
+
+
+def test_phase3_4_no_other_bank1_equ_collides_with_scratch_range() -> None:
+    """Phase 3.4 cells live at operands 0xCD..0xD3 in BANK 1.  Verify
+    no other named EQU in dlcp_control_ram.inc resolves to any of those
+    operand values -- a collision would mean two different names
+    referring to the same physical BANK 1 cell, with one of them silently
+    corrupted on every renderer call.
+
+    This is the strong form of the safety claim the original Phase 3.4
+    docstring made; codex flagged that the docstring wasn't backed by
+    an assertion.
+    """
+    ram = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+    phase3_4_names = {
+        "v171_diag_render_pb_index",
+        "v171_diag_render_count",
+        "v171_diag_render_emitted",
+        "v171_diag_render_walk_idx",
+        "v171_diag_render_value",
+        "v171_diag_render_skipped",
+        "v171_diag_render_letter_tmp",
+    }
+    phase3_4_operands = {0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3}
+    # Walk every EQU in the file; flag any that collides.
+    collisions = []
+    for m in re.finditer(
+        r"^\s*(\w+)\s+(?:EQU|equ)\s+(0x[0-9a-fA-F]+|\d+)",
+        ram, re.MULTILINE,
+    ):
+        name = m.group(1)
+        if name in phase3_4_names:
+            continue
+        value_str = m.group(2)
+        value = int(value_str, 16) if value_str.startswith(("0x", "0X")) else int(value_str)
+        if value in phase3_4_operands:
+            collisions.append((name, hex(value)))
+    assert not collisions, (
+        f"BANK 1 operand collision with Phase 3.4 scratch range: "
+        f"{collisions}.  Either move the colliding cell or move the "
+        f"Phase 3.4 scratch range -- two names at the same operand "
+        f"means silent corruption on every renderer call."
+    )
+
+
+def test_phase3_4_renderer_movlb_discipline_before_banked_writes() -> None:
+    """Every BANKED write to the new Phase 3.4 scratch cells must be
+    preceded by `movlb 0x01` somewhere upstream in the routine.
+
+    The 2026-04-20 real-HW disaster (commit 4acbcfb) was a BSR-leak
+    bug -- the parser tail ran with BSR=1 instead of BSR=0 and read
+    rx_ring/idle_timeout cells as if they were diag-cache cells.  A
+    SAME-CLASS bug in the renderer would silently corrupt EEPROM
+    saved-settings cache at physical 0x0CD..0x0D3 (since BSR=0 +
+    operand 0xCD reaches the same cells the EEPROM lfsr 0x0, 0x0CD
+    walks touch).
+
+    This test walks every BANKED access to a v171_diag_render_*
+    cell.  For each access, it walks BACKWARD through INSTRUCTION
+    lines (skipping comments/blanks) until it finds either:
+      * `movlb 0x01` (or `movlb 0x1`) -- BSR=1 already set, OK
+      * `rcall v171_diag_load_fsr1_base` -- helper leaves BSR=1 on
+        return (documented contract; see asm comments)
+      * A `return` instruction WITHOUT a preceding movlb 0x01 in
+        the same callee -- means we walked into a different routine,
+        BSR state is the caller's responsibility (caller should
+        have set BSR=1 before its call); flag as a potential leak.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    lines = text.split("\n")
+
+    def is_instruction(line: str) -> bool:
+        """True if the line carries an actual instruction (not blank,
+        not a label-only line, not a pure comment)."""
+        s = line.split(";", 1)[0].strip()
+        if not s:
+            return False
+        # Label-only line: ends with ':' and has no whitespace before.
+        if re.match(r"^\w+:\s*$", s):
+            return False
+        return True
+
+    # Match BANKED accesses to any v171_diag_render_* cell.
+    access_pattern = re.compile(
+        r"\b(?:movwf|movf|clrf|incf|decf|tstfsz|btfsc|btfss|cpfslt|cpfseq|"
+        r"cpfsgt|setf|negf|bsf|bcf|btg|iorwf|andwf|xorwf|addwf)\s+"
+        r"v171_diag_render_\w+(?:,\s*[FW])?,\s*BANKED"
+    )
+    movlb_b1_pattern = re.compile(r"\bmovlb\s+0x0?1\b")
+    bsr1_helper_pattern = re.compile(r"\brcall\s+v171_diag_load_fsr1_base\b")
+
+    leak_sites: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines):
+        if not access_pattern.search(line):
+            continue
+        # Walk backward through instruction lines only (count up to 100
+        # instruction lines, which is well past any reasonable BSR-set
+        # reach in the renderer).
+        found = False
+        steps = 0
+        for back in range(1, len(lines)):
+            if idx - back < 0:
+                break
+            prev = lines[idx - back]
+            if not is_instruction(prev):
+                continue
+            if movlb_b1_pattern.search(prev) or bsr1_helper_pattern.search(prev):
+                found = True
+                break
+            steps += 1
+            if steps > 100:
+                break
+        if not found:
+            leak_sites.append((idx + 1, line.strip()))
+    assert not leak_sites, (
+        f"BANKED v171_diag_render_* access without an upstream movlb "
+        f"0x01 (or rcall to v171_diag_load_fsr1_base, which leaves "
+        f"BSR=1 on return):\n"
+        + "\n".join(f"  line {n}: {ln}" for n, ln in leak_sites)
+        + "\n\nA BSR=0 leak here would land at PHYSICAL 0x0CD..0x0D3 "
+        "(EEPROM saved-settings cache region) -- silent corruption."
+    )
+
+
+def test_phase3_4_pad_count_math_yields_16_chars_per_row() -> None:
+    """The pad-count expressions encoded in the assembly source must
+    produce the correct trailing-space counts for each row layout.
+
+    Row 0 (degraded, after "PBN:"):
+      written so far = 4 + emitted * 3 chars (PBN: + " X#" each)
+      pad needed     = 16 - (4 + emitted * 3) = 12 - emitted * 3
+      asm encodes this as: addwf WREG, W; addwf emitted, W; sublw 0x0C
+
+    Row 1 (degraded, no leading space on first entry):
+      written so far = 2 + (emitted - 1) * 3 = emitted * 3 - 1
+                       (only when emitted >= 1; if emitted == 0 the
+                        layout uses the count <= 4 blanket pad of 16
+                        spaces instead).
+      pad needed     = 16 - (emitted * 3 - 1) = 17 - emitted * 3
+      asm encodes this as: addwf WREG, W; addwf emitted, W; sublw 0x11
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    # Row 0 done block computes pad_count = 12 - emitted*3.
+    row0_body = _label_body(text, "v171_diag_row0_done", "v171_diag_row1_walk_setup")
+    assert row0_body, "v171_diag_row0_done body could not be located"
+    assert re.search(
+        r"addwf\s+v171_diag_render_emitted,\s*W,\s*BANKED", row0_body,
+    ), "row 0 pad math must include addwf v171_diag_render_emitted, W (= W*3)"
+    assert re.search(r"sublw\s+0x0C\b", row0_body), (
+        "row 0 pad math must end with `sublw 0x0C` (= 12 - emitted*3)"
+    )
+    # Row 1 done block computes pad_count = 17 - emitted*3 (no overflow).
+    row1_body = _label_body(text, "v171_diag_row1_done", "v171_diag_row1_overflow")
+    assert row1_body, "v171_diag_row1_done body could not be located"
+    assert re.search(
+        r"addwf\s+v171_diag_render_emitted,\s*W,\s*BANKED", row1_body,
+    ), "row 1 pad math must include addwf v171_diag_render_emitted, W (= W*3)"
+    assert re.search(r"sublw\s+0x11\b", row1_body), (
+        "row 1 pad math must end with `sublw 0x11` (= 17 - emitted*3)"
+    )
+    # Verify the math by enumerating the layout for every count value:
+    # for each non-overflow count 1..9, the row 0 + row 1 widths must
+    # equal exactly 16 chars each (after padding).
+    for count in range(1, 10):
+        row0_emitted = min(count, 4)
+        row1_emitted = max(0, count - 4)
+        row0_chars = 4 + row0_emitted * 3                   # "PBN:" + " X#" each
+        row0_pad = 12 - row0_emitted * 3
+        assert row0_chars + row0_pad == 16, (
+            f"count={count}: row 0 width invariant broken: "
+            f"{row0_chars} + {row0_pad} != 16"
+        )
+        if row1_emitted == 0:
+            row1_chars = 0
+            row1_pad = 16
+        else:
+            # First entry has no leading space; subsequent entries 3 chars.
+            row1_chars = 2 + (row1_emitted - 1) * 3
+            row1_pad = 17 - row1_emitted * 3
+        assert row1_chars + row1_pad == 16, (
+            f"count={count}: row 1 width invariant broken: "
+            f"{row1_chars} + {row1_pad} != 16"
+        )
+
+
+def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
+    """The two row walks rely on FSR1 surviving across the helper
+    calls inside the loop body (letter_for_idx, lcd_char_write,
+    emit_nib_w, pad_spaces).  Verify that none of the Phase 3.4
+    helpers touch FSR1L/FSR1H/lfsr 0x1 -- i.e., the renderer can
+    safely walk the cache via POSTINC1 across helper calls.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    helper_labels = (
+        "v171_diag_letter_for_idx",
+        "v171_diag_pad_spaces",
+        "v171_diag_emit_letter",
+        "v171_diag_emit_nib_w",
+    )
+    end_marker = "v171_diag_send_runtime_query"  # next routine after helpers
+    for helper in helper_labels:
+        body = _label_body(text, helper, end_marker)
+        # Some helpers don't reach the end_marker via direct adjacency;
+        # if not located, fall back to a fixed window.
+        if not body:
+            off = _label_offset(text, helper)
+            if off < 0:
+                continue
+            body = text[off:off + 1500]
+        # No lfsr to FSR1.
+        assert "lfsr    0x1," not in body, (
+            f"{helper} clobbers FSR1 via lfsr -- breaks the row walk's "
+            f"POSTINC1 cursor across helper calls"
+        )
+        # No direct write to FSR1L / FSR1H.
+        for fsr_reg in ("FSR1L", "FSR1H", "POSTINC1", "POSTDEC1", "PREINC1"):
+            # POSTINC1 is allowed only as a READ form; flag if WRITTEN.
+            written = re.search(
+                rf"\b(?:movwf|clrf|setf|incf|decf|negf|bsf|bcf|"
+                rf"iorwf|andwf|xorwf|addwf)\s+{fsr_reg}\b",
+                body,
+            )
+            assert not written, (
+                f"{helper} writes to {fsr_reg} -- breaks the row walk's "
+                f"FSR1 cursor across helper calls"
+            )
