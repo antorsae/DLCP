@@ -1,9 +1,49 @@
 # V3.2 Tier-1 Diagnostics Expansion + V1.71 Menu Rework — Spec
 
-Last updated: 2026-04-20 (round 4 — addressed three review passes;
-                          5 round-1 + 4 round-2 + 3 round-3
-                          follow-on findings = 12 total)
-Status: design locked, implementation pending
+Last updated: 2026-04-20 (round 5 — implementation tightened to fit
+                          PIC18F2455 flash budget; cmd 0x44 trailer
+                          dropped, length byte changed 0x0E → 0x0B;
+                          12 spec-review findings + 1 implementation
+                          adjustment = 13 total)
+Status: design locked + implemented in V3.2 rev 0x37 (firmware/patched/releases/DLCP_Firmware_V3.2.hex)
+
+## Round-5 implementation tightening (2026-04-20)
+
+Phase-2 V3.2 MAIN implementation hit the PIC18F2455 flash budget at
+0x4C00 (the DSP preset table B boundary).  After applying every
+plausible loop-compression and code-sharing opportunity (see commit
+log), the cmd 0x44 trailer (3 bytes: firmware flag + revision + role)
+was dropped to free the final ~10 bytes.  Net change:
+
+* **HID cmd 0x44 response length byte:** `0x0E` (14 bytes total) →
+  `0x0B` (11 bytes total).  Bytes [3..9] = 7 runtime counters,
+  bytes [10..13] = 4 reset-cause flags.  Bytes [14..63] = padding,
+  observational only (the firmware does NOT zero-init or pad-fill
+  these bytes; whatever the SIE leaves in the EP1 IN buffer between
+  reports is what the host sees there).
+* **Firmware revision retrieval:** the previously-trailer-included
+  `0x03 / 0x37 / role` triple is dropped from cmd 0x44.  Hosts that
+  need firmware revision metadata MUST query it via the existing
+  HID `cmd 0x06` version probe (no implementation change to that
+  path; it has been on every V2.x / V3.x release).  This change
+  simplifies cmd 0x44 to be diag-block-only and keeps the canonical
+  version-probe contract on cmd 0x06 instead of having two HID
+  commands report it.
+* **Role byte:** removed from cmd 0x44.  Already documented as
+  `0xFF` (unknown) because MAIN has no hardware-discoverable side
+  identity; host tooling derives the LEFT/RIGHT role from the HID
+  device path.  Removing it from the on-wire response has no
+  observable effect on tooling.
+
+Net flash impact: V3.2 rev 0x37 hex = 57120 bytes (grew 108 bytes
+from rev 0x36's 57012 bytes).  The cold-init reset-cause cascade,
+new cmd 0x22 chain handler, and HID cmd 0x44 handler all fit; cmd
+0x21 was refactored to share the burst-emit loop with cmd 0x22 to
+make room (semantically identical 7-frame wire output, byte-for-byte
+unchanged from rev 0x36).
+
+`scripts/dlcp_diag.py` reads firmware revision via cmd 0x06 and
+splices it into the diag report alongside the cmd 0x44 cell values.
 
 ## Round-4 follow-on revisions (2026-04-20)
 
@@ -388,13 +428,15 @@ directly.
 |---|---|---|
 | 0 | 0x44 | cmd echo |
 | 1 | status | 0x00 = OK, 0x01 = busy/error |
-| 2 | 0x0E | payload length (14 bytes) |
+| 2 | 0x0B | payload length (11 bytes — diag block only) |
 | 3..9 | 7 bytes | runtime counters: I, D, S, B, R, A, P (0..0x0F) |
 | 10..13 | 4 bytes | reset-cause flags: O, V, W, X (each 0 or 1) |
-| 14 | 0x03 | firmware flag (V3.x) |
-| 15 | 0x37 | firmware revision (this spec defines rev 0x37; bumps each release) |
-| 16 | role | 0 = LEFT, 1 = RIGHT, 0xFF = unknown |
-| 17..63 | 0xFF | padding |
+| 14..63 | undefined | observational only — firmware does NOT pad-fill, host MUST stop at byte 13 (length byte at [2] = 0x0B is authoritative) |
+
+Firmware revision metadata is NOT included in cmd 0x44 (round-5
+flash-budget tightening).  Hosts that need the rev number MUST
+query the existing HID `cmd 0x06` version probe.  See "Round-5
+implementation tightening" above.
 
 Cell byte order in the payload exactly matches the cache layout:
 slots 0..6 are the runtime counters, slots 7..10 are the reset-cause
@@ -682,12 +724,12 @@ Behavioral (Tier C):
   (Unchanged from rev 0x36 behavior.)
 - cmd 0x22 reply burst: 4 frames in order (BF/28..BF/2B), each
   data byte 0 or 1, exactly one byte = 1.
-- HID cmd 0x44 returns a 14-byte payload (length byte = 0x0E):
-  11 cell bytes (7 counters + 4 reset flags) followed by a 3-byte
-  trailer (flag = 0x03, rev = 0x37, role).  Total cells + trailer
-  = 14 bytes; offsets 17..63 of the 64-byte HID IN report are
-  0xFF padding.  See "HID protocol extension" §"Response" for the
-  exact byte layout.
+- HID cmd 0x44 returns an 11-byte payload (length byte = 0x0B):
+  7 runtime counters + 4 reset-cause flags.  Bytes [14..63] of the
+  64-byte HID IN report are NOT pad-filled and the host MUST stop
+  parsing at byte 13 per the length byte at [2].  Firmware revision
+  metadata is fetched via the existing cmd 0x06 probe (round-5
+  spec/implementation tightening — see top-of-doc revisions block).
 - Sustained-Diag-page test (existing failing test from
   `test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`):
   must now pass with cmd 0x22 fired only once per page entry
@@ -736,8 +778,9 @@ Field units showing 0x37 have all of:
 - NEW cmd 0x22 4-frame reset-flags reply burst (BF/28..BF/2B)
 - cold init always-clear (no RCON gate) + reset-cause classification
   with full RCON re-arm (BOR + POR + TO + RI)
-- HID cmd 0x44 supported (returns 14-byte payload total: 11 cell
-  bytes + 3-byte trailer; length byte at response[2] = 0x0E)
+- HID cmd 0x44 supported (returns 11-byte payload: 7 runtime counters +
+  4 reset-cause flags; length byte at response[2] = 0x0B; firmware
+  revision still available via cmd 0x06)
 
 Cross-version compatibility — separate the LCD path (CONTROL-mediated)
 from the HID path (MAIN-local).  HID cmd 0x44 lives entirely in MAIN

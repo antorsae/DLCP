@@ -38,13 +38,33 @@ release workflow.
   [`docs/NO_POP_FIRMWARE_FLASH.md`](NO_POP_FIRMWARE_FLASH.md) for
   the spec and [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md)
   §"Re-flash pop monitoring" for the operator validation
-  walk-through.  The EEPROM version marker is `0x03, 0x02, 0x33`
-  to distinguish field units from the pop-prone V3.2 baseline.
+  walk-through.  The EEPROM version marker is `0x03, 0x02, 0x37`
+  (Tier-1 rev) to distinguish field units from the pop-prone V3.2
+  baseline.
+- **Tier-1 reset-cause classification (rev 0x37, 2026-04-20)** — 4
+  RAM flag cells at `0x2ED..0x2F0` are populated at cold-init from
+  the RCON snapshot: POR, BOR (Brown-Out), WDT, SW-reset (panic /
+  bootloader hand-off).  Exactly one flag is set to 1 per session.
+  See [`docs/V32_DIAG_TIER1_SPEC.md`](V32_DIAG_TIER1_SPEC.md).
+- **Tier-1 chain `cmd 0x22` reset-flags reply burst (rev 0x37)** —
+  4 frames `BF/28..BF/2B`, low-nibble flag value.  V1.71 CONTROL
+  fires this ONCE per Diagnostics-page entry (the flags don't
+  change within a session).  Older MAINs (≤ rev 0x36) emit one
+  stray `0x00` ACK byte and CONTROL drops it harmlessly.
+- **Tier-1 HID `cmd 0x44` diag snapshot (rev 0x37)** — host
+  retrieval path that bypasses the chain entirely.  Returns an
+  11-byte payload (length byte = `0x0B`): 7 runtime counters + 4
+  reset-cause flags.  Use `scripts/dlcp_diag.py` (Phase 2.4) for
+  operator-friendly enumeration of all attached MAINs; raw cmd
+  0x44 is also reachable via any HID tool that can issue 64-byte
+  reports to the DLCP HID interface.
 
-Counter survival: ordinary firmware reset, watchdog recovery, and
-standby/wake all preserve the counters.  POR/BOR clears them via
-RCON-gated cold-init logic so fault evidence survives soft resets but
-not power cycles.
+Counter survival: ALL diag cells (runtime counters + reset-cause
+flags) are unconditionally cleared at every cold-init — re-flash via
+bootloader gives a clean counter slate (operator request 2026-04-20,
+locked into rev 0x36 and preserved in rev 0x37).  Cross-session count
+preservation requires EEPROM-backed counters (Tier-2 deferred work,
+see V32_DIAG_TIER1_SPEC.md §"Open questions").
 
 ## Required Local Inputs
 

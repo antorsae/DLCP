@@ -343,7 +343,19 @@ diag_r                      EQU  0x2E9    ; R — volume_dsp_write retry-exhaust
 diag_a                      EQU  0x2EA    ; A — an0_hysteresis_monitor low-threshold trip
 diag_p                      EQU  0x2EB    ; P — RA1 edge event hook
 diag_ra1_prev               EQU  0x2EC    ; previous RA1 sample (edge-detect shadow)
-; 0x2ED..0x2FF reserved (alignment + future Layer 5 expansion)
+;
+; --- V3.2 rev 0x37 Tier-1 expansion (V32_DIAG_TIER1_SPEC.md) ---
+; 4 reset-cause FLAGS (binary 0/1, NOT counters).  Cold-init zeroes
+; the entire diag block, then writes exactly ONE of these to 1
+; according to the RCON snapshot (POR / BOR / WDT / SW-reset).
+; MCLR is NOT a reset cause on this hardware: V3.2 sets _CONFIG3H = 0x00
+; (MCLRE = 0), which disables the MCLR pin and repurposes RE3 as input.
+; See V32_DIAG_TIER1_SPEC.md §"RAM layout" / §"Reset-cause classification".
+diag_reset_por              EQU  0x2ED    ; O — POR (Power-On Reset) fired this session
+diag_reset_bor              EQU  0x2EE    ; V — BOR (Brown-Out Reset / Voltage sag) fired
+diag_reset_wdt              EQU  0x2EF    ; W — WDT timeout fired
+diag_reset_sw               EQU  0x2F0    ; X — software-reset fired (panic / bootloader)
+; 0x2F1..0x2FF reserved (Tier-2 chain-link health counters + future)
 
 ram_0x12C                   EQU  0x12C
 ram_0x12D                   EQU  0x12D

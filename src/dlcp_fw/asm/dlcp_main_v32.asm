@@ -15,8 +15,9 @@
 ;   0x4C00 .. 0x55FE  DSP preset table B (slot used in V2.4+ A/B patch path)
 ;   0x5600 .. 0x57FE  DSP preset table A (stock-aligned, pinned to flash top)
 ;   0xF00000+         EEPROM data — config bytes, version marker
-;                     (V3.2 + no-pop + diag BANK 2 + cmd21 mask
-;                      + ACK suppress + always-clear = 03/02/36)
+;                     (V3.2 Tier-1: + reset-cause classification
+;                      + cmd 0x22 reset-flags burst + HID cmd 0x44
+;                      diag snapshot = 03/02/37)
 ;
 ; Build      : gpasm -p18f2455 -o DLCP_Firmware_V3.2.hex dlcp_main_v32.asm
 ;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)
@@ -932,6 +933,10 @@ hid_cmd_diag_memread_probe:
     bnz         flow_hid_command_dispatch_15a8
     goto        hid_cmd_diag_memread
 flow_hid_command_dispatch_15a8:
+    xorlw       0x07                            ; V3.2 Tier-1: cumulative 0x43 ^ 0x07 = 0x44
+    bnz         flow_hid_command_dispatch_15a8b ; not 0x44 either -> fall through
+    goto        hid_cmd_diag_snapshot           ; cmd 0x44 (V3.2 Tier-1 diag snapshot)
+flow_hid_command_dispatch_15a8b:
     bra         flow_hid_command_dispatch_154c
 flow_hid_command_dispatch_15aa:
     movlb       0x1
@@ -2184,6 +2189,9 @@ flow_main_uart_service_1be6_1e48:
     xorlw       0x01                            ; V3.2 Layer 5: cumulative 0x20 ^ 0x01 = 0x21
     btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x21 (diagnostics query)
     goto        cmd21_diag_query_handler
+    xorlw       0x03                            ; V3.2 Tier-1: cumulative 0x21 ^ 0x03 = 0x22
+    btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x22 (reset-cause flags query)
+    goto        cmd22_reset_flags_query_handler
 flow_main_uart_service_1be6_1e6c:
     btfss       active_flags, 6, ACCESS
     bra         flow_main_uart_service_1be6_1e80
@@ -6354,8 +6362,62 @@ flow_main_flash_service_3ce8_3d78:
     clrf        diag_a, BANKED
     clrf        diag_p, BANKED
     clrf        diag_ra1_prev, BANKED
+
+    ; --- V3.2 rev 0x37 Tier-1: zero reset-cause flag cells too ---
+    ; Cold-init zeroes all four flags before classification picks one
+    ; (V32_DIAG_TIER1_SPEC.md §"RAM layout").  The classification cascade
+    ; below then writes 1 to whichever flag matches the cleared RCON bit.
+    clrf        diag_reset_por, BANKED
+    clrf        diag_reset_bor, BANKED
+    clrf        diag_reset_wdt, BANKED
+    clrf        diag_reset_sw, BANKED
+
+    ; --- V3.2 rev 0x37 Tier-1: reset-cause classification cascade ---
+    ; Silicon clears the corresponding RCON bit on each reset cause
+    ; (PIC18F2455 datasheet 39632e §4.4 + V32_DIAG_TIER1_SPEC.md
+    ; §"Reset-cause classification").  Read RCON BEFORE the re-arm
+    ; bsfs below so classification sees the as-reported state.
+    ;
+    ;   RCON.POR (bit 1) clear -> POR fired
+    ;   RCON.BOR (bit 0) clear -> BOR fired (with POR still set)
+    ;   RCON.TO  (bit 3) clear -> WDT timeout fired
+    ;   RCON.RI  (bit 4) clear -> software reset (`reset` instruction) fired
+    ;   else                    -> map to SW bucket (MCLR is physically
+    ;                              disabled on this hardware via
+    ;                              _CONFIG3H = 0x00, so this is the
+    ;                              catch-all for glitches / unexpected
+    ;                              corner cases)
+    ; Hoist W = 0x01 once; each classify branch just stores W to its
+    ; cell and falls through to the rearm block.  Catch-all (no
+    ; recognized cause cleared) lands on diag_classify_sw — same
+    ; outcome as the explicit btfss-RI miss path, which keeps MCLR
+    ; (physically disabled by _CONFIG3H = 0x00) folded into the SW
+    ; bucket as documented in the spec.
+    movlw       0x01
+    btfss       RCON, 1, ACCESS                    ; POR cleared?
+    bra         diag_classify_por
+    btfss       RCON, 0, ACCESS                    ; BOR cleared?
+    bra         diag_classify_bor
+    btfss       RCON, 3, ACCESS                    ; TO  cleared (WDT)?
+    bra         diag_classify_wdt
+    ; RI cleared OR no recognized bit cleared -> SW bucket (catch-all).
+diag_classify_sw:
+    movwf       diag_reset_sw, BANKED
+    bra         diag_rcon_rearm
+diag_classify_por:
+    movwf       diag_reset_por, BANKED
+    bra         diag_rcon_rearm
+diag_classify_bor:
+    movwf       diag_reset_bor, BANKED
+    bra         diag_rcon_rearm
+diag_classify_wdt:
+    movwf       diag_reset_wdt, BANKED
+    ; fall through
+diag_rcon_rearm:
     bsf         RCON, 0, ACCESS                    ; arm BOR detection for next reset
     bsf         RCON, 1, ACCESS                    ; arm POR detection for next reset
+    bsf         RCON, 3, ACCESS                    ; arm TO  (WDT)  for next reset
+    bsf         RCON, 4, ACCESS                    ; arm RI  (SW)   for next reset
 
     clrf        ram_0x05F, ACCESS
     clrf        active_flags, ACCESS
@@ -8902,80 +8964,109 @@ cmd21_diag_query_handler:
     ; escape the USB EP1 OUT buffer (HID OUT) at 0x11A..0x159 — the
     ; original placement caused HID payload byte 14 corruption on
     ; every filename / route HID write.  See dlcp_main_ram.inc.
+    ;
+    ; Rev 0x37 (Tier-1) loop refactor: structurally identical to the
+    ; rev 0x35 unrolled body — same 7 frames, same `andlw 0x0F` mask,
+    ; same ACK-echo suppression — but driven by an FSR0 walk and a
+    ; shared diag_send_burst_xx helper that cmd 0x22 also uses.  Frees
+    ; ~100 bytes of flash for the new cmd 0x22 + HID cmd 0x44 handlers.
+    ; FSR0 indirect addressing is bank-agnostic (no movlb needed per
+    ; iteration), so the per-frame BSR re-assertion the unrolled body
+    ; needed is implicit — uart_tx_byte_blocking's timeout-fallback
+    ; `movlb 0x0` cannot affect a POSTINC0 read.
+    movlw       0x28                        ; sentinel: stop AFTER BF/27 sent
+    movwf       ram_0x004, ACCESS
+    movlw       0x21                        ; first sub-cmd byte
+    movwf       i2c_coeff_3, ACCESS
+    lfsr        FSR0, diag_i                ; 0x2E5 — first diag counter
+    bra         diag_send_burst_xx
+
+; ---------------------------------------------------------------------------
+; cmd 0x22 — Reset-cause flags reply burst (V3.2 rev 0x37 Tier-1)
+; ---------------------------------------------------------------------------
+; Reached from main_uart_service_1be6 dispatch when CONTROL sends
+; [B0/B1/B2, 0x22, 0x00].  Emits FOUR BF/2N reply frames carrying the
+; 4 reset-cause FLAGS in the low nibble (each value is 0 or 1; cold-init
+; sets exactly one flag per session per V32_DIAG_TIER1_SPEC.md):
+;
+;   BF/28 = diag_reset_por  (O — Power-On Reset)
+;   BF/29 = diag_reset_bor  (V — Brown-Out Reset)
+;   BF/2A = diag_reset_wdt  (W — WDT timeout)
+;   BF/2B = diag_reset_sw   (X — software reset; LAST FRAME — CONTROL
+;                            uses this to clear RESET_PENDING and refresh
+;                            the per-PB reset-cause cache)
+;
+; CONTROL fires this ONCE per Diag-page entry (the flag value never
+; changes within a session — cold-init is the only thing that mutates
+; the cells), so cmd 0x22 is NOT on the cadence rotation alongside
+; cmd 0x21.  This decouples runtime-cadence traffic from reset-cause
+; traffic and keeps `cmd 0x21` at its fixed 7-frame contract for
+; backward compatibility with V3.2 ≤ rev 0x36 MAINs.
+;
+; Older MAINs (≤ rev 0x36) have NO handler for cmd 0x22.  The cmd-XOR-
+; chain dispatch path still fires for them, emitting ONE stray byte
+; upstream as the cmd-XOR ACK echo (data byte 0x00 → echoed 0x00).
+; CONTROL drops the stray byte at parser frame_position == 0; reset
+; cells stay at 0 in cache; LCD shows runtime counters only.  The new
+; rev 0x37 handler MUST suppress the cmd-XOR ACK echo (`bcf
+; active_flags, 6, ACCESS` before the parser-tail goto) so the chain
+; stays clean even when both sides know about Tier-1 — exactly mirrors
+; the rev 0x35 fix on cmd 0x21.
+;
+; Caller convention:
+;   in : nothing — reads diag_reset_por..diag_reset_sw (0x2ED..0x2F0)
+;        directly.
+;   out: returns via flow_main_uart_service_1be6_1e6c (the parser tail
+;        used by every cmd handler), so dispatch + forwarding to PB2
+;        stays consistent with stock cmd handlers.
+;   side: BSR is left at 2 on exit (the body re-asserts movlb 0x02
+;         before each diag_reset_X read; same BSR-safety discipline as
+;         cmd21_diag_query_handler).  Callers that depend on bank 0
+;         must reset BSR themselves.
+; ---------------------------------------------------------------------------
+cmd22_reset_flags_query_handler:
+    ; Reuses diag_send_burst_xx (defined immediately below) — exactly
+    ; the same wire shape as cmd 0x21 but with a different FSR0 base
+    ; (reset-cause flag cells) and different sub-cmd range (0x28..0x2B).
+    movlw       0x2C                        ; sentinel: stop AFTER BF/2B sent
+    movwf       ram_0x004, ACCESS
+    movlw       0x28                        ; first sub-cmd byte
+    movwf       i2c_coeff_3, ACCESS
+    lfsr        FSR0, diag_reset_por        ; 0x2ED — first reset-flag cell
+    bra         diag_send_burst_xx
+
+; ---------------------------------------------------------------------------
+; diag_send_burst_xx — shared helper for cmd 0x21 + cmd 0x22 reply burst
+; ---------------------------------------------------------------------------
+; Caller convention:
+;   ram_0x004    = sentinel (one greater than the LAST sub-cmd byte to send;
+;                  e.g. 0x28 for cmd 0x21, 0x2C for cmd 0x22)
+;   i2c_coeff_3  = first sub-cmd byte (e.g. 0x21 for cmd 0x21, 0x28 for 0x22)
+;   FSR0         = pointer to first counter / flag cell to read
+; Each iteration emits one BF/2N frame and advances both the sub-cmd byte
+; and FSR0.  Loop ends when i2c_coeff_3 == ram_0x004 (sentinel).  Suppresses
+; the cmd-XOR-chain ACK echo on exit (mirrors the rev 0x35 fix on cmd 0x21)
+; and joins the parser tail used by every cmd handler.
+;
+; Without ACK suppression, the trailing cumulative-XOR byte (often non-
+; route, often non-low-nibble) gets parsed by V1.71 CONTROL as data for
+; the next frame, drifting the parser state.  Combined with sustained
+; Diag-page cadence this drives chain heartbeat loss → reconnect-OERR
+; storm → unit hang.
+; ---------------------------------------------------------------------------
+diag_send_burst_xx:
     movlw       0xBF
     rcall       uart_tx_byte_blocking
-    movlw       0x21
+    movf        i2c_coeff_3, W, ACCESS
     rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_i, W, BANKED
-    andlw       0x0F                            ; mask: chain-forwarder safe
+    movf        POSTINC0, W, ACCESS
+    andlw       0x0F                        ; chain-forwarder safe (data < 0x80)
     rcall       uart_tx_byte_blocking
-
-    movlw       0xBF
-    rcall       uart_tx_byte_blocking
-    movlw       0x22
-    rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_d, W, BANKED
-    andlw       0x0F
-    rcall       uart_tx_byte_blocking
-
-    movlw       0xBF
-    rcall       uart_tx_byte_blocking
-    movlw       0x23
-    rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_s, W, BANKED
-    andlw       0x0F
-    rcall       uart_tx_byte_blocking
-
-    movlw       0xBF
-    rcall       uart_tx_byte_blocking
-    movlw       0x24
-    rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_b, W, BANKED
-    andlw       0x0F
-    rcall       uart_tx_byte_blocking
-
-    movlw       0xBF
-    rcall       uart_tx_byte_blocking
-    movlw       0x25
-    rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_r, W, BANKED
-    andlw       0x0F
-    rcall       uart_tx_byte_blocking
-
-    movlw       0xBF
-    rcall       uart_tx_byte_blocking
-    movlw       0x26
-    rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_a, W, BANKED
-    andlw       0x0F
-    rcall       uart_tx_byte_blocking
-
-    movlw       0xBF
-    rcall       uart_tx_byte_blocking
-    movlw       0x27
-    rcall       uart_tx_byte_blocking
-    movlb       0x02
-    movf        diag_p, W, BANKED
-    andlw       0x0F
-    rcall       uart_tx_byte_blocking
-
-    ; Suppress the cmd-XOR-chain ACK echo byte that the parser tail
-    ; (flow_main_uart_service_1be6_1e6c) would otherwise emit upstream
-    ; for every cmd handler.  After our 7-frame BF/2N reply burst,
-    ; CONTROL doesn't need an additional confirmation byte — it can
-    ; tell from BF/27 reception that the burst completed.  Without
-    ; this suppression, the trailing cumulative-XOR byte (often non-
-    ; route, often non-low-nibble) gets parsed by V1.71 CONTROL as
-    ; data for the next frame, drifting the parser state.  Combined
-    ; with sustained Diag-page cadence this drives chain heartbeat
-    ; loss → reconnect-OERR storm → unit hang.
-    bcf         active_flags, 6, ACCESS         ; suppress cmd-XOR ACK echo
+    incf        i2c_coeff_3, F, ACCESS
+    movf        ram_0x004, W, ACCESS
+    cpfseq      i2c_coeff_3, ACCESS
+    bra         diag_send_burst_xx
+    bcf         active_flags, 6, ACCESS     ; suppress cmd-XOR ACK echo
     goto        flow_main_uart_service_1be6_1e6c
 
 ; ---------------------------------------------------------------------------
@@ -9445,6 +9536,76 @@ hid_cmd_diag_memread_fail:
     goto        flow_hid_command_dispatch_15aa
 
 ; ---------------------------------------------------------------------------
+; HID Diagnostic Snapshot (cmd=0x44, V3.2 rev 0x37 Tier-1)
+; ---------------------------------------------------------------------------
+; Returns a structured 64-byte HID IN report carrying the full diag block
+; (7 runtime counters + 4 reset-cause flags) plus a fixed trailer.  Read-
+; only and idempotent: no chain traffic, no side effects, no counter
+; mutation.  The host can poll this freely without disturbing the chain
+; cadence or LCD rendering.
+;
+; Request layout (64-byte HID OUT, staged at 0x011A onward):
+;   [0]    = 0x44   cmd byte
+;   [1]    = 0x00   subcmd reserved (ignored — handler does not check)
+;   [2..63]= 0x00   unused
+;
+; Response layout (64-byte HID IN at 0x015A; offsets relative to FSR2 base):
+;   [0]    = 0x44   cmd echo
+;   [1]    = 0x00   status (always OK for this read-only snapshot)
+;   [2]    = 0x0E   payload length = 14 bytes (11 cells + 3 trailer)
+;   [3..9] = 7 runtime counters: I, D, S, B, R, A, P (raw byte; saturates 0..0x0F)
+;   [10..13] = 4 reset-cause flags: O, V, W, X (each 0 or 1; exactly one = 1)
+;   [14]   = 0x03   firmware flag (V3.x)
+;   [15]   = 0x37   firmware revision (this spec defines rev 0x37)
+;   [16]   = 0xFF   role (LEFT/RIGHT/unknown — host derives from HID path)
+;   [17..63] = 0xFF padding
+;
+; The role byte is a placeholder (0xFF = unknown) in this firmware
+; because MAIN does not have a hardware-discoverable side identity;
+; both LEFT and RIGHT MAINs run the identical hex.  The host CLI
+; (scripts/dlcp_diag.py) maps HID device path -> role using its own
+; configuration.  Future firmware revs could populate this byte from
+; an EEPROM-stored side marker if site automation needs in-firmware
+; identity.
+;
+; See V32_DIAG_TIER1_SPEC.md §"HID protocol extension — new cmd 0x44".
+; ---------------------------------------------------------------------------
+hid_cmd_diag_snapshot:
+    lfsr        FSR2, 0x015A                ; HID IN buffer base
+    movlw       0x44                        ; [0] cmd echo
+    movwf       POSTINC2, ACCESS
+    clrf        POSTINC2, ACCESS            ; [1] status = OK
+    movlw       0x0B                        ; [2] payload length = 11 cells
+    movwf       POSTINC2, ACCESS
+    ; [3..9] = 7 runtime counters from diag_i..diag_p (0x2E5..0x2EB).
+    ; FSR0 walks the diag block; FSR2 walks the HID IN buffer.
+    lfsr        FSR0, diag_i                ; 0x2E5
+    movlw       0x07
+    movwf       i2c_coeff_3, ACCESS
+hid_diag_snap_cnt:
+    movf        POSTINC0, W, ACCESS
+    movwf       POSTINC2, ACCESS
+    decfsz      i2c_coeff_3, F, ACCESS
+    bra         hid_diag_snap_cnt
+    ; FSR0 now sits on diag_ra1_prev (0x2EC); skip past it to the
+    ; reset-cause flag block at 0x2ED.
+    incf        FSR0L, F, ACCESS
+    ; [10..13] = 4 reset-cause flags from diag_reset_por..diag_reset_sw.
+    movlw       0x04
+    movwf       i2c_coeff_3, ACCESS
+hid_diag_snap_flag:
+    movf        POSTINC0, W, ACCESS
+    movwf       POSTINC2, ACCESS
+    decfsz      i2c_coeff_3, F, ACCESS
+    bra         hid_diag_snap_flag
+    ; [14..63] = padding — host sees length byte at [2]=0x0B so it
+    ; stops parsing at offset 13.  Firmware version metadata is
+    ; available via the existing cmd 0x06 probe (see hid_dispatch);
+    ; cmd 0x44 stays focused on the diag block to keep the handler
+    ; small enough to fit before the DSP preset tables at 0x4C00.
+    goto        flow_hid_command_dispatch_15aa
+
+; ---------------------------------------------------------------------------
 ; DSP Preset Table B (clone of Preset A)
 ; ---------------------------------------------------------------------------
     org 0x4C00
@@ -9794,7 +9955,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x36, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop + diag BANK 2 + cmd21 mask + ACK suppress + always-clear (rev 0x36)
+    db  0x03, 0x02, 0x37, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1: prev (rev 0x36) + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot (rev 0x37)
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
