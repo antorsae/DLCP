@@ -33,11 +33,13 @@ from dlcp_fw.sim.v30_symbols import assemble_v30
 # ---------------------------------------------------------------------------
 
 # EEPROM version-marker tuple
-# (V3.2 + no-pop + diag in BANK 2 + cmd21 andlw mask = 0x03, 0x02, 0x35).
-# Bumped 2026-04-20 from 0x34 → 0x35 to mark images with the cmd21
-# `andlw 0x0F` mask that bounds wire bytes to the chain-forwarder-safe
-# 0..0x0F range (root-cause fix for the V1.71 + V3.2 Diag-page hang).
-EEPROM_VERSION_TUPLE = (0x03, 0x02, 0x35)
+# (V3.2 + no-pop + diag in BANK 2 + cmd21 mask + ACK suppress
+#  + always-clear cold init = 0x03, 0x02, 0x36).
+# Bumped 2026-04-20 round-2 from 0x35 → 0x36 to mark images that
+# always clear the diag block at cold init regardless of reset cause
+# (operator request: re-flash should give a CLEAN counter slate, not
+# stale-RAM values from the previous firmware session).
+EEPROM_VERSION_TUPLE = (0x03, 0x02, 0x36)
 
 # Expected helper sequence (instruction phase markers, in order).
 # Each tuple is (regex, description).
@@ -345,7 +347,8 @@ def test_eeprom_version_marker_is_no_pop_revision() -> None:
     )
     # And no earlier-revision marker should be present (the new tuple
     # replaces it; multiple presents would be a build error).
-    for old in ("0x03, 0x02, 0x32", "0x03, 0x02, 0x33", "0x03, 0x02, 0x34"):
+    for old in ("0x03, 0x02, 0x32", "0x03, 0x02, 0x33",
+                "0x03, 0x02, 0x34", "0x03, 0x02, 0x35"):
         assert old not in eeprom_block, (
             f"earlier-revision marker {old!r} present in eeprom_data alongside "
             f"the current {expected} — only one version tuple should exist"

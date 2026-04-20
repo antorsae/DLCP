@@ -15,7 +15,8 @@
 ;   0x4C00 .. 0x55FE  DSP preset table B (slot used in V2.4+ A/B patch path)
 ;   0x5600 .. 0x57FE  DSP preset table A (stock-aligned, pinned to flash top)
 ;   0xF00000+         EEPROM data — config bytes, version marker
-;                     (V3.2 + no-pop + diag BANK 2 + cmd21 mask = 03/02/35)
+;                     (V3.2 + no-pop + diag BANK 2 + cmd21 mask
+;                      + ACK suppress + always-clear = 03/02/36)
 ;
 ; Build      : gpasm -p18f2455 -o DLCP_Firmware_V3.2.hex dlcp_main_v32.asm
 ;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)
@@ -6315,23 +6316,35 @@ flow_main_flash_service_3ce8_3d78:
     decf        WREG, F, ACCESS
     bnz         flow_main_flash_service_3ce8_3d78
 
-    ; --- V3.2 Layer 5: RCON-gated diag block clear (relocated 2026-04-19) ---
-    ; The diag block (0x2E5..0x2EC) lives in the wipe-protected BANK 2
-    ; upper region — the wipe loops above stop at 0x2DD so they do NOT
-    ; touch the diag bytes.  This means non-POR/BOR resets preserve the
-    ; counters automatically (RAM holds its previous value across soft
-    ; reset on PIC18), with no save/restore wrapper needed around the
-    ; wipes.  But on POR/BOR, RAM is undefined — so we explicitly clear
-    ; the 8-byte diag block when RCON.BOR=0 (silicon clears both POR and
-    ; BOR bits on either event; firmware re-arms them below so the next
-    ; reset's cause can be classified).
+    ; --- V3.2 Layer 5: unconditional diag block clear at cold init ---
+    ; The diag block (0x2E5..0x2EC) is unconditionally zeroed on EVERY
+    ; cold-init pass, regardless of reset cause.  This is a deliberate
+    ; design change from the original "RCON-gated preserve on software
+    ; reset" approach (revised 2026-04-20 per operator request).
     ;
-    ; The original 0x123..0x12A placement sat INSIDE the USB EP1 OUT
-    ; buffer (0x11A..0x159) and required a save-around-wipe wrapper;
-    ; the relocation removed both the wrapper AND the silent HID
-    ; payload corruption that ra1_edge_monitor caused on the old layout.
-    btfsc       RCON, 0, ACCESS                    ; BOR=1 → non-POR/BOR reset → preserve
-    bra         diag_post_rcon_check
+    ; Rationale:
+    ;   * The PIC18 `reset` instruction (used by the bootloader to launch
+    ;     the new app after FW update) is a SOFTWARE reset.  Software
+    ;     reset does NOT clear RCON.POR or RCON.BOR — it preserves them.
+    ;     So after FW update, RCON.BOR=1 and the original gate would
+    ;     SKIP the clrf, leaving the diag cells holding whatever bytes
+    ;     the previous firmware (or factory-fresh undefined RAM) had.
+    ;   * Operators flashing a new image expect a CLEAN counter slate,
+    ;     not stale-RAM values from a previous session.
+    ;   * The "fault evidence survives recovery" feature was theoretical
+    ;     — if you really want long-lived fault counters, they belong
+    ;     in EEPROM, not RAM.  RAM counters that reset on every reset
+    ;     match standard / least-surprising behavior.
+    ;   * On real HW, brief power-button presses might not hold long
+    ;     enough for BOR to fire (PIC18F2455 BOR has a minimum off-time
+    ;     before re-arming).  Without unconditional clear, the operator
+    ;     sees stale-RAM-looking counters on every brief power blip.
+    ;
+    ; The diag block lives in the wipe-protected BANK 2 upper region
+    ; (the wipe loops above stop at 0x2DD), so the explicit clrf below
+    ; is the ONLY thing that ever zeroes the cells.  The RCON.BOR/POR
+    ; arming below is still done so future code that wants reset-cause
+    ; classification can read RCON before re-arming.
     movlb       0x02
     clrf        diag_i, BANKED
     clrf        diag_d, BANKED
@@ -6341,7 +6354,6 @@ flow_main_flash_service_3ce8_3d78:
     clrf        diag_a, BANKED
     clrf        diag_p, BANKED
     clrf        diag_ra1_prev, BANKED
-diag_post_rcon_check:
     bsf         RCON, 0, ACCESS                    ; arm BOR detection for next reset
     bsf         RCON, 1, ACCESS                    ; arm POR detection for next reset
 
@@ -9782,7 +9794,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x35, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop + diag in BANK 2 + cmd21 andlw mask (rev 0x35)
+    db  0x03, 0x02, 0x36, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 + no-pop + diag BANK 2 + cmd21 mask + ACK suppress + always-clear (rev 0x36)
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

@@ -334,40 +334,57 @@ def test_v32_source_cold_init_does_not_save_diag_block_before_wipe() -> None:
         )
 
 
-def test_v32_source_cold_init_clears_diag_block_on_por_only() -> None:
-    """RCON gate (post-2026-04-19 relocation): after wipes, RCON.BOR=1
-    (non-POR/BOR reset) preserves the diag block in place; RCON.BOR=0
-    (POR/BOR cold start) explicitly clrf's the 8 diag cells.  RCON.BOR
-    + RCON.POR are re-armed afterwards so the next reset is classifiable.
+def test_v32_source_cold_init_unconditionally_clears_diag_block() -> None:
+    """Cold init (post-2026-04-20 redesign per operator request):
+    UNCONDITIONALLY zero the 8 diag cells on every cold-init pass,
+    regardless of reset cause.  RCON.BOR / RCON.POR are still re-armed
+    so future code can classify the next reset, but they no longer
+    GATE the clrf.
 
-    Branch direction is INVERTED from the pre-relocation save/restore
-    pattern: the wipe used to clear the cells unconditionally and the
-    gate restored on non-POR/BOR; now the gate clears on POR/BOR.
+    Why the redesign: the PIC18 `reset` instruction (used by the
+    bootloader to launch the new app after FW update) is a SOFTWARE
+    reset that does NOT clear RCON.POR or RCON.BOR.  The original
+    RCON-gated approach SKIPPED the clrf on software reset, leaving
+    the diag cells holding stale-RAM values from the previous app
+    session.  Operators flashing a new image then saw "elevated
+    counters" at first Diag-page entry — those values were memory
+    artifacts, not real fault evidence.
+
+    Always-clear matches operator expectations: re-flash → clean
+    counter slate.  The "fault evidence survives recovery" feature
+    in the original spec was theoretical (long-lived counters belong
+    in EEPROM, not RAM) and was actively misleading on the rig.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     start = _label_offset(text, "flow_main_flash_service_3ce8_3d78")
     end_marker = text.find("clrf        ram_0x05F", start)
     block = text[start:end_marker]
-    # btfsc RCON,0 (BOR=1 → preserve, skip clrf)
-    assert re.search(r"btfsc\s+RCON,\s*0,\s*ACCESS", block), (
-        "RCON gate must use btfsc RCON,0 (BOR set → non-POR/BOR reset → "
-        "skip the clrf so the diag block survives)"
+    # The clrf path must NOT be gated by btfsc/btfss on RCON anymore.
+    # Pin the absence of RCON-gated branch around the clrf block.
+    # (RCON arming via bsf is still required and DOES exist below.)
+    assert not re.search(r"btf[sc]{2}\s+RCON,\s*0,\s*ACCESS", block), (
+        "cold-init must NOT gate the clrf on RCON.BOR — re-flash via "
+        "bootloader is a software reset that leaves RCON.BOR=1, which "
+        "would skip the clrf and leave stale-RAM counters visible to "
+        "the operator on the Diag page.  Always clear instead."
     )
+    # All 8 cells must still be clrf'd.
+    for name in ("diag_i", "diag_d", "diag_s", "diag_b", "diag_r", "diag_a", "diag_p", "diag_ra1_prev"):
+        assert re.search(rf"clrf\s+{name},\s*BANKED", block), (
+            f"cold-init clear branch missing clrf of {name}"
+        )
+    # Bank must still be 2.
+    assert re.search(r"movlb\s+0x02", block), (
+        "cold-init clear must set BSR=2 before clrf'ing the diag cells"
+    )
+    # RCON arming below the clrf block stays for reset-cause
+    # classification by future code.
     assert re.search(r"bsf\s+RCON,\s*0,\s*ACCESS", block), (
-        "RCON.BOR must be re-armed after the gate so the next reset is "
-        "classifiable"
+        "RCON.BOR must be re-armed after cold init so the next reset "
+        "can be classified by future reset-cause code"
     )
     assert re.search(r"bsf\s+RCON,\s*1,\s*ACCESS", block), (
         "RCON.POR must also be re-armed for the same reason"
-    )
-    # The clrf branch (POR/BOR path) must clear all 8 diag cells via BANKED.
-    for name in ("diag_i", "diag_d", "diag_s", "diag_b", "diag_r", "diag_a", "diag_p", "diag_ra1_prev"):
-        assert re.search(rf"clrf\s+{name},\s*BANKED", block), (
-            f"POR/BOR clear branch missing clrf of {name}"
-        )
-    # And the bank should be set to 2 (where the relocated diag block lives).
-    assert re.search(r"movlb\s+0x02", block), (
-        "POR/BOR clear must set BSR=2 before clrf'ing the diag cells"
     )
 
 
@@ -382,10 +399,15 @@ def test_v32_assembles_with_layer5(v32_hex: Path) -> None:
 
 def test_v32_layer5_symbols_resolve(v32_hex: Path) -> None:
     syms = load_gpasm_symbols_for_hex(v32_hex)
+    # Note: ``diag_post_rcon_check`` was a label for the RCON-gated
+    # cold-init branch.  The 2026-04-20 redesign dropped the gate
+    # (cold init now ALWAYS clears the diag block), so the label
+    # is no longer emitted.  Don't add it back without restoring
+    # the survives-soft-reset behavior — see
+    # test_v32_cold_init_does_not_skip_clear_on_software_reset.
     for name in (
         "cmd21_diag_query_handler",
         "ra1_edge_monitor",
-        "diag_post_rcon_check",
         "i2c_byte_tx",
         "standby_event_dispatch",
         "an0_hysteresis_monitor",
@@ -942,44 +964,44 @@ def test_v32_diag_counters_isolated_per_hook(v32_hex: Path) -> None:
         h.close()
 
 
-def test_v32_cold_init_branch_is_taken_on_software_reset() -> None:
-    """REGRESSION: the operator's recovery path (re-flash + bootloader
-    `reset` instruction launches the new app) is a SOFTWARE reset, not
-    POR/BOR.  RCON.BOR stays SET across software reset, so the cold-init
-    branches AROUND the clrf block (preserve diag block).
+def test_v32_cold_init_does_not_skip_clear_on_software_reset() -> None:
+    """REGRESSION (post-2026-04-20 redesign): the operator's recovery
+    path (re-flash + bootloader `reset` instruction) is a SOFTWARE
+    reset that leaves RCON.BOR=1.  The original RCON-gated cold-init
+    SKIPPED the clrf in that case, leaving the diag cells holding
+    whatever bytes the previous firmware session had left in RAM.
+    Operators flashing a new image then saw "elevated counters" at
+    first Diag-page entry — those were RAM artifacts, not real
+    fault evidence.
 
-    For the Diag-page values to start at 0 across a re-flash, the
-    operator would have to PHYSICALLY DISCONNECT POWER long enough for
-    the BOR voltage detector to reset (typically several seconds to
-    minutes).  A brief power-button press or a USB reset is not enough.
+    The redesign drops the RCON gate.  The clrf path now runs on
+    EVERY cold-init pass.  This test pins the absence of any
+    RCON-gated branch around the clrf block so a future "let's add
+    survives-soft-reset back" change has to update both the source
+    AND this test, with a justification in the commit.
 
-    This test pins the source-level branch direction so the implication
-    is documented and locked: btfsc RCON,0 → bra (skip clrf) → preserve
-    on RCON.BOR=1.  It does NOT assert that this is the right behavior —
-    arguably the cells should ALWAYS clear on cold init to avoid the
-    "stale RAM is interpreted as elevated counters" surprise the
-    operator hit.
-
-    Decision pending: change the gate to ALWAYS clear (drop the RCON
-    check) → operator never sees stale-RAM counters, but loses the
-    "fault evidence survives soft reset" guarantee.  Worth the trade
-    if the survives-soft-reset feature is more theoretical than used.
+    Note: RCON.BOR / RCON.POR are still re-armed by the cold-init
+    code (so future reset-cause classification works), but they no
+    longer GATE the clrf.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
     end = _label_offset(text, "flash_erase")
     body = text[start:end]
-    # Pin the existing branch direction (btfsc → bra over clrf).
-    assert re.search(
-        r"btfsc\s+RCON,\s*0,\s*ACCESS", body
-    ), "RCON gate must use btfsc RCON,0 (skip clrf when BOR=1)"
-    assert "diag_post_rcon_check" in body, "diag_post_rcon_check label missing"
-    # And document the consequence in a comment so future readers
-    # don't trip on the survives-soft-reset implication.
-    assert "preserve" in body.lower() or "survive" in body.lower(), (
-        "cold-init must comment that diag block is PRESERVED on "
-        "non-POR/BOR reset (e.g., re-flash via bootloader); operator "
-        "saw stale-RAM-looking counters because of this."
+    # Must NOT have any btfsc/btfss on RCON,0 in the cold-init body
+    # (which would re-introduce the survives-soft-reset behavior).
+    assert not re.search(r"btf[sc]{2}\s+RCON,\s*0,\s*ACCESS", body), (
+        "cold-init must NOT gate the diag clrf on RCON.BOR — the "
+        "survives-soft-reset behavior was retired 2026-04-20 because "
+        "operators flashing new firmware saw stale-RAM values "
+        "interpreted as elevated counters at first Diag-page entry"
+    )
+    # The always-clear comment must explain WHY (so future readers
+    # don't 'fix' it back).
+    assert "always" in body.lower() or "unconditional" in body.lower(), (
+        "cold-init must comment WHY the clear is unconditional — "
+        "future readers reviewing the code might reasonably ask for "
+        "the survives-soft-reset feature back"
     )
 
 
