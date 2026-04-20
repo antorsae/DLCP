@@ -40,39 +40,55 @@ set -uo pipefail
 input="$(cat 2>/dev/null || true)"
 [ -z "$input" ] && exit 0
 
-# Use jq if available; without it the hook becomes a no-op rather
-# than risk a false-positive parse via grep.  jq is a hard dependency
-# for reliable behavior.
+# jq is a hard dependency.  Without it, emit a visible warning JSON
+# envelope so the operator notices the hook is degraded -- silent
+# no-op was the LOW finding in codex review of 46dae4f.  printf-built
+# JSON (no jq needed) is acceptable here because the message text
+# contains no special chars that need escaping.
 if ! command -v jq >/dev/null 2>&1; then
+  printf '{"systemMessage":"WARNING: codex review hook requires jq on PATH; install jq to enable per-commit codex review automation."}\n'
   exit 0
 fi
 
 cmd="$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
 hook_cwd="$(echo "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
 
-# Quick exit if Bash command didn't include `git commit`.  Word-boundary
-# match on grep -E so "git committed" or "git commit-tree" don't trigger.
-if ! echo "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
+# Match any bash command that contains `git` AND `commit` as separate
+# words (in either order, with anything in between).  This covers all
+# of: `git commit`, `git -C /path commit`, `git -c key=val commit`,
+# `cd dir && git commit`, plus shell pipelines.  False positives like
+# `git status; mkdir commit` are caught downstream by the state-file
+# dedup -- the hook only fires when HEAD actually advanced past the
+# last reviewed hash, so a non-commit invocation is silent.
+if ! echo "$cmd" | grep -qE '\bgit\b'; then
+  exit 0
+fi
+if ! echo "$cmd" | grep -qE '\bcommit\b'; then
   exit 0
 fi
 
 # Resolve the repo to inspect.  Prefer the hook envelope's cwd (the
 # directory the Bash tool ran in), fall back to CLAUDE_PROJECT_DIR,
-# fall back to PWD.  All three may point at the same directory.
+# fall back to PWD.  Then resolve to the repo TOP-LEVEL so the state
+# file always lands in the repo root regardless of which subdirectory
+# bash was invoked from -- per-subdir state would fragment dedup
+# (codex MEDIUM finding against 46dae4f).
 target_cwd="${hook_cwd:-${CLAUDE_PROJECT_DIR:-$PWD}}"
 [ -d "$target_cwd" ] || exit 0
 
-# Confirm the directory is a git working tree with a reachable HEAD.
-HASH="$(git -C "$target_cwd" log -1 --format=%H 2>/dev/null || true)"
+repo_root="$(git -C "$target_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -z "$repo_root" ] && exit 0
+
+# Confirm a reachable HEAD.
+HASH="$(git -C "$repo_root" log -1 --format=%H 2>/dev/null || true)"
 [ -z "$HASH" ] && exit 0
 
-short_hash="$(git -C "$target_cwd" log -1 --format=%h 2>/dev/null || echo "$HASH")"
-subj="$(git -C "$target_cwd" log -1 --format=%s 2>/dev/null | head -c 200)"
+short_hash="$(git -C "$repo_root" log -1 --format=%h 2>/dev/null || echo "$HASH")"
+subj="$(git -C "$repo_root" log -1 --format=%s 2>/dev/null | head -c 200)"
 
-# State file: per-repo, per-HEAD dedup.  Lives under .claude/ in the
-# target repo (NOT the hook's source repo) so each checkout tracks
-# its own review history.
-state_dir="$target_cwd/.claude"
+# State file: per-repo (at repo root), per-HEAD dedup.  Always under
+# .claude/ at the repo top-level so subdir invocations don't fragment.
+state_dir="$repo_root/.claude"
 state_file="$state_dir/.codex-last-reviewed-head"
 
 last_reviewed=""
@@ -82,10 +98,27 @@ fi
 
 # If HEAD hasn't moved since the last review, the bash invocation
 # was either a failed commit, an unrelated git command that mentioned
-# `git commit` in passing, or a no-op like `git commit --dry-run`.
+# `commit` in passing, or a no-op like `git commit --dry-run`.
 if [ "$HASH" = "$last_reviewed" ]; then
   exit 0
 fi
+
+# Build a list of unreviewed commits between last_reviewed (exclusive)
+# and HEAD (inclusive).  If last_reviewed isn't reachable from HEAD
+# (e.g. force-push / branch-switch / first-ever review), fall back to
+# just HEAD.  This handles the codex MEDIUM finding that "if a Bash
+# tool call lands MULTIPLE commits before the hook fires once, only
+# the last hash gets reviewed" -- we now list ALL of them.
+new_commits=""
+if [ -n "$last_reviewed" ] && \
+   git -C "$repo_root" merge-base --is-ancestor "$last_reviewed" "$HASH" 2>/dev/null; then
+  # last_reviewed is reachable; list everything since it.
+  new_commits="$(git -C "$repo_root" log --format='%h %s' "${last_reviewed}..${HASH}" 2>/dev/null | head -50)"
+fi
+if [ -z "$new_commits" ]; then
+  new_commits="$(git -C "$repo_root" log -1 --format='%h %s' "$HASH" 2>/dev/null)"
+fi
+new_commit_count="$(printf '%s\n' "$new_commits" | grep -c . 2>/dev/null || echo 0)"
 
 # Update the state file (best-effort; never fail the hook).
 mkdir -p "$state_dir" 2>/dev/null || true
@@ -93,15 +126,31 @@ echo "$HASH" > "$state_file" 2>/dev/null || true
 
 # Compose the reminder body.  Emit as JSON via jq so newlines, quotes,
 # and special chars in the subject line are escaped correctly.
+#
+# When multiple commits landed since the last review (the bash
+# invocation included multiple `git commit` calls), list ALL of them
+# so codex can review each in turn instead of silently skipping
+# intermediates (codex MEDIUM finding against 46dae4f).
+if [ "$new_commit_count" -gt 1 ]; then
+  multi_note="
+This Bash invocation landed $new_commit_count new commits since the
+last codex review.  Review each commit individually -- the list
+below shows oldest-first when applicable:
+
+$new_commits
+"
+else
+  multi_note=""
+fi
 remind=$(cat <<EOF
 [CODEX REVIEW REQUIRED] HEAD = $short_hash ("$subj")
-
+$multi_note
 Per CLAUDE.md (-> AGENTS.md) section "Per-Commit Codex Review", you
 MUST now invoke the codex-cli MCP tool to dry-run review the just-
-landed commit BEFORE starting any new task.  Tool call template:
+landed commit(s) BEFORE starting any new task.  Tool call template:
 
   mcp__codex-cli__codex(
-      cwd="$target_cwd",
+      cwd="$repo_root",
       sandbox="read-only",
       approval-policy="never",
       prompt=<<<see AGENTS.md template; include HEAD hash $short_hash,
