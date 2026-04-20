@@ -300,16 +300,24 @@ def test_nav_wrap_literals_tier1_bumped_to_0x05() -> None:
     )
 
 
-def test_diag_pb_screen_label_present_and_stashes_pb_index() -> None:
+def test_diag_pb_screen_label_present_and_forwards_to_dual_pb_renderer() -> None:
     """Tier-1 introduces v171_diag_pb_screen as the menu dispatch target
     for both state 4 (PB1 Diag, W=0) and state 5 (PB2 Diag, W=1).
 
     The Phase 3.4 sparse Option-D renderer is deferred per
     V32_DIAG_TIER1_SPEC.md tracking; until it lands, the routine
-    stashes the PB-index parameter into a known scratch cell (so a
-    future rewrite can pick it up without changing the menu dispatch)
-    and forwards to the existing dual-PB v171_diag_screen renderer
-    so menu navigation works end-to-end on hardware today."""
+    DISCARDS the PB-index parameter and forwards to the existing
+    dual-PB v171_diag_screen renderer so menu navigation works
+    end-to-end on hardware today.  Both PB Diag states show the
+    same dual-PB layout in this transitional state.
+
+    An earlier draft tried to stash the PB-index into a BANK 0 access
+    cell here at the entry, but the cell I picked aliased
+    ir_decoded_cmd (live RC5 decode sink at 0x01D), which would have
+    overwritten an in-flight RC5 command byte during diag-page entry.
+    The stash was dropped; Phase 3.4 must pick a free cell for its
+    own state tracking and document it in dlcp_control_ram.inc.
+    """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_pb_screen")
     assert off >= 0, (
@@ -317,12 +325,13 @@ def test_diag_pb_screen_label_present_and_stashes_pb_index() -> None:
         "at link time because state 4 / state 5 reference it."
     )
     body = text[off:off + 800]
-    # PB-index must be stashed somewhere readable by a future Phase 3.4
-    # rewrite -- pin the scratch cell so the rewrite knows where to read.
-    assert re.search(r"movwf\s+\(Common_RAM\s*\+\s*29\),\s*A", body), (
-        "v171_diag_pb_screen must stash PB-index into Common_RAM+29 "
-        "scratch -- the Phase 3.4 sparse renderer rewrite will read it "
-        "from there to pick PB1 vs PB2 cache base."
+    # Placeholder body must NOT touch ir_decoded_cmd / Common_RAM+29
+    # (the failed-stash cell from an earlier draft).  Pin its absence
+    # so a future re-introduction has to also touch this assertion.
+    assert not re.search(r"movwf\s+\(Common_RAM\s*\+\s*29\)", body), (
+        "v171_diag_pb_screen must NOT stash anything into Common_RAM+29 "
+        "(= 0x01D = ir_decoded_cmd, a live RC5 decode sink).  Phase 3.4 "
+        "should add proper per-PB state tracking via a new BANK 1 cell."
     )
     # Forward to the existing dual-PB renderer until Phase 3.4 lands.
     assert re.search(r"bra\s+v171_diag_screen", body), (
@@ -786,8 +795,9 @@ def test_diag_loop_advances_target_on_silent_pb() -> None:
     off = _label_offset(text, "v171_diag_loop")
     assert off >= 0
     # Window through the cadence-expired path.  Tier-1 expanded the loop
-    # body with the cmd 0x22 fire-once-per-PB block; bump window to 4000.
-    body = text[off:off + 4000]
+    # body twice: first with the cmd 0x22 fire-once-per-PB block, then
+    # with the RESET_PENDING timeout-give-up path.  Bump window to 6000.
+    body = text[off:off + 6000]
     # btfss on RUNTIME_PENDING + bra to skip the toggle: when set
     # (silent), don't skip -> btg target.
     assert re.search(
@@ -1008,12 +1018,17 @@ def test_diag_loop_fires_cmd_22_once_per_pb_per_page_entry() -> None:
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_loop")
-    # 4 KB window covers the loop body through the cmd 0x22 hook +
-    # cmd 0x21 cadence + check_redraw block.
-    body = text[off:off + 4000]
-    # The hook must check RESET_PENDING (skip if set -- already in flight).
+    # 6 KB window covers the loop body through the cmd 0x22 hook +
+    # the RESET_PENDING timeout-give-up path + cmd 0x21 cadence +
+    # check_redraw block.
+    body = text[off:off + 6000]
+    # The hook must check RESET_PENDING.  Tier-1 timeout (F1 fix) made
+    # this a btfss + bra-to-check-reset-seen pattern: when PENDING is
+    # SET, fall into the timeout-decrement branch; when CLEAR, branch to
+    # the "should we fire?" check.  Either btfsc or btfss against
+    # RESET_PENDING is acceptable -- pin presence of either.
     assert re.search(
-        r"btfsc\s+v171_diag_flags,\s*V171_DIAG_FLAG_RESET_PENDING,\s*BANKED",
+        r"btf[sc]{2}\s+v171_diag_flags,\s*V171_DIAG_FLAG_RESET_PENDING,\s*BANKED",
         body,
     ), "cmd 0x22 hook must check RESET_PENDING before firing"
     # Must reference v171_diag_reset_seen.
@@ -1031,4 +1046,68 @@ def test_diag_loop_fires_cmd_22_once_per_pb_per_page_entry() -> None:
     assert 0 <= set_pos < rcall_pos, (
         "RESET_PENDING must be set BEFORE the rcall to send_reset_query "
         "so a fast BF/2B reply can't clear PENDING before it's set"
+    )
+
+
+def test_diag_loop_times_out_reset_pending_after_n_cadences() -> None:
+    """V1.71 Tier-1 F1 fix (2026-04-20 review): RESET_PENDING must time
+    out after a fixed number of cadence cycles so a silent or pre-0x37
+    PB doesn't lock cmd 0x22 path forever.
+
+    Without this gate, RESET_PENDING stays set forever after the first
+    cmd 0x22 send to a non-responding target, blocking BOTH PBs from
+    receiving cmd 0x22 for the rest of the Diag-page visit.
+
+    The fix:
+      * Snapshot v171_diag_target into v171_diag_reset_target at send
+        time so the timeout-give-up path knows which PB to mark as
+        reset_seen (target may toggle independently via the cmd 0x21
+        BF/27 path between send and timeout).
+      * Reload v171_diag_reset_timeout to V171_DIAG_RESET_TIMEOUT_RELOAD
+        on send.
+      * Each cadence with RESET_PENDING set decrements the timeout.
+      * On reaching zero: set v171_diag_reset_seen.reset_target bit
+        (treat as "unknown" per spec) and clear RESET_PENDING.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_loop")
+    body = text[off:off + 6000]
+    # Snapshot of v171_diag_target into v171_diag_reset_target on send.
+    assert re.search(
+        r"movwf\s+v171_diag_reset_target,\s*BANKED",
+        body,
+    ), (
+        "send path must snapshot v171_diag_target into "
+        "v171_diag_reset_target so the timeout path can identify the "
+        "in-flight reset PB independent of v171_diag_target drift"
+    )
+    # Timeout reload on send.
+    assert re.search(
+        r"movlw\s+V171_DIAG_RESET_TIMEOUT_RELOAD\s*\n\s*"
+        r"movwf\s+v171_diag_reset_timeout,\s*BANKED",
+        body,
+    ), "send path must reload v171_diag_reset_timeout to spec value"
+    # Decrement on cadence with PENDING set.
+    assert re.search(
+        r"decf\s+v171_diag_reset_timeout,\s*F,\s*BANKED",
+        body,
+    ), "cadence loop must decrement v171_diag_reset_timeout when PENDING is set"
+    # On timeout-expiry: iorwf into v171_diag_reset_seen using
+    # v171_diag_reset_target as the bit selector + bcf RESET_PENDING.
+    assert re.search(
+        r"btfsc\s+v171_diag_reset_target,\s*0,\s*BANKED",
+        body,
+    ), (
+        "timeout-give-up path must select PB1/PB2 mask based on "
+        "v171_diag_reset_target snapshot (NOT v171_diag_target which "
+        "may have toggled)"
+    )
+    # Must clear RESET_PENDING on timeout (otherwise we'd loop forever).
+    bcf_pending = re.findall(
+        r"bcf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RESET_PENDING,\s*BANKED",
+        body,
+    )
+    assert len(bcf_pending) >= 1, (
+        "timeout-give-up path must clear RESET_PENDING -- otherwise the "
+        "timeout decrement would underflow and lock the path forever"
     )

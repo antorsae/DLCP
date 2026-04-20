@@ -273,14 +273,54 @@ V171_DIAG_FLAG_RESET_PENDING    equ  0x02
 ; one call site doesn't silently shift bit assignments.
 V171_DIAG_FLAG_PENDING          equ  V171_DIAG_FLAG_RUNTIME_PENDING
 
-; Per-PB bitmask of "reset-cause cache is fresh".
+; Per-PB bitmask of "reset-cause cache is fresh OR query gave up".
 ;   bit 0 set: PB1 reset cells were populated since the last Diag-page
-;              entry (cmd 0x22 to PB1 has completed via BF/2B).
-;   bit 1 set: PB2 reset cells were populated.
+;              entry (cmd 0x22 to PB1 has completed via BF/2B) OR the
+;              query timed out and CONTROL gave up on PB1's reset cells
+;              for this Diag-page visit.
+;   bit 1 set: same for PB2.
 ; Cleared on Diag-page entry so the page-entry hook re-fires cmd 0x22
 ; once per entry per PB.  The reset-cause flags don't change within a
 ; session, so re-querying every cadence cycle would waste chain bandwidth.
+;
+; Setting the bit on TIMEOUT (not just successful BF/2B) is the spec's
+; "treat the reset-cause cache as unknown" gate (V32_DIAG_TIER1_SPEC.md
+; §"Chain protocol" §"CONTROL parser side"): without it, a silent or
+; pre-0x37 PB would lock RESET_PENDING set for the rest of the visit.
+; Using the same bitmask for "saw it" and "gave up" is fine because
+; the renderer only cares whether to re-issue cmd 0x22 (no), not why
+; the cells are at 0.
 v171_diag_reset_seen       equ  0x09D
+
+; --- V1.71 Tier-1: cmd 0x22 timeout state (spec §"Chain protocol") ---
+; The cmd 0x22 fire-once-per-PB hook in v171_diag_loop sets
+; v171_diag_flags.RESET_PENDING when issuing the query, and the BF/2B
+; parser case clears it on successful reception.  But pre-0x37 MAINs
+; have no cmd 0x22 handler (they emit one stray 0x00 ACK byte and
+; CONTROL drops it), and a silent / disconnected PB never replies at
+; all -- without a timeout, RESET_PENDING would stay set forever and
+; lock cmd 0x22 out for the OTHER PB and for subsequent Diag-page
+; visits during the same session.  Spec calls for ~4 cadence cycles.
+;
+; v171_diag_reset_target captures v171_diag_target's bit 0 at the time
+; cmd 0x22 was sent.  v171_diag_target itself can toggle independently
+; via the cmd 0x21 BF/27 last-frame path between cmd 0x22 send and
+; BF/2B reception, so we cannot trust v171_diag_target to identify the
+; in-flight reset PB at timeout time.
+v171_diag_reset_target     equ  0x09E
+
+; v171_diag_reset_timeout is a small countdown decremented once per
+; cadence cycle while RESET_PENDING is set.  Reloaded to
+; V171_DIAG_RESET_TIMEOUT_RELOAD when cmd 0x22 is sent; on reaching
+; zero, the cadence loop sets v171_diag_reset_seen.reset_target and
+; clears RESET_PENDING (give-up path).
+v171_diag_reset_timeout    equ  0x09F
+
+; Cadence-cycle reload for the cmd 0x22 timeout.  Each cadence cycle
+; is ~1 s (set by V171_DIAG_POLL_RELOAD_LO/HI).  A reload of 4 gives
+; the spec's "4 cadence cycles" timeout window: cmd 0x22 fired ->
+; 4 cadences pass without BF/2B -> give up.
+V171_DIAG_RESET_TIMEOUT_RELOAD equ 0x04
 
 ; Poll cadence reload value.  Each v171_diag_screen tick decrements
 ; the 16-bit countdown by 1; with display_loop_iteration on the K20

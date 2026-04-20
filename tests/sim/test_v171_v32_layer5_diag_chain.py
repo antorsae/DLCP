@@ -87,12 +87,18 @@ DIAG_R_PHYS = 0x2E9
 DIAG_A_PHYS = 0x2EA
 DIAG_P_PHYS = 0x2EB
 
-# Menu state indices
-STATE_VOLUME = 0
-STATE_PRESET = 1
-STATE_DIAG = 2
-STATE_INPUT = 3
-STATE_SETUP = 4
+# Menu state indices.  V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20)
+# moved Diagnostics from state 2 (between Preset and Input) to states 4-5
+# (after Setup), with one PB per state.  STATE_DIAG is preserved as an
+# alias pointing at PB1 Diag for older tests that read a single state
+# index; new tests should use STATE_PB1_DIAG / STATE_PB2_DIAG explicitly.
+STATE_VOLUME   = 0
+STATE_PRESET   = 1
+STATE_INPUT    = 2     # Tier-1: was 3
+STATE_SETUP    = 3     # Tier-1: was 4
+STATE_PB1_DIAG = 4     # Tier-1: NEW (split of single Diag state)
+STATE_PB2_DIAG = 5     # Tier-1: NEW
+STATE_DIAG     = STATE_PB1_DIAG  # back-compat alias for legacy tests
 
 DISPLAY_STATE_INDEX_PHYS = 0x0BF
 
@@ -204,19 +210,28 @@ def _new_chain(v171_hex_path: Path, v32_hex_path: Path) -> WireMultiMainChainHar
 
 
 def _navigate_to_diagnostics(chain: WireMultiMainChainHarness) -> None:
-    """Drive CONTROL to the Diagnostics screen by pressing RIGHT twice.
+    """Drive CONTROL to the PB1 Diagnostics screen by pressing RIGHT four times.
 
-    Navigation goes Volume(0) → Preset(1) → Diagnostics(2).  We can't
-    just poke ``display_state_index = 2`` via gpsim CLI because the
-    current screen body loops internally on ``display_loop_iteration``;
-    the menu dispatch only re-reads the index after the current screen
-    returns (RIGHT/LEFT/SELECT/disconnected).  Two RIGHT presses with
-    8 intermediate steps to settle each press is the realistic path —
-    fewer steps (e.g. 4) leave the second press not fully debounced
-    before the wait_for_pb_present loop starts, causing intermittent
-    "PB1 never replied" failures even though the chain protocol works.
+    V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diagnostics
+    from state 2 to states 4-5.  New ring:
+
+        Volume(0) -> Preset(1) -> Input(2) -> Setup(3) -> PB1 Diag(4) -> PB2 Diag(5)
+
+    Reaching PB1 Diag(4) takes FOUR RIGHT presses from Volume(0).  We
+    can't just poke ``display_state_index = 4`` via gpsim CLI because
+    the current screen body loops internally on
+    ``display_loop_iteration``; the menu dispatch only re-reads the
+    index after the current screen returns (RIGHT/LEFT/SELECT/
+    disconnected).  Four RIGHT presses with 8 intermediate steps to
+    settle each press is the realistic path -- fewer steps leave a
+    press not fully debounced before the next press fires, causing
+    intermittent "PB1 never replied" failures even though the chain
+    protocol works.
+
+    To navigate further to PB2 Diag(5), press RIGHT once more after
+    calling this helper.
     """
-    for _ in range(2):
+    for _ in range(4):
         chain.press("RIGHT")
         for _ in range(8):
             chain.step()
@@ -801,14 +816,19 @@ def test_v171_v32_layer5_chain_pb2_bridge_canary(
 
 
 def _navigate_back_to_volume(chain: WireMultiMainChainHarness) -> None:
-    """Press LEFT twice to walk Diagnostics(2) → Preset(1) → Volume(0).
+    """Press LEFT four times to walk PB1 Diag(4) -> Setup(3) -> Input(2)
+    -> Preset(1) -> Volume(0).
 
-    Mirror of _navigate_to_diagnostics: 8 settle steps per press so the
-    intermediate Preset(1) screen body has time to repaint before the
-    second press.  Operators on real HW press LEFT/LEFT to leave the
-    Diag page; this helper reproduces that exit path under sim.
+    Mirror of _navigate_to_diagnostics: 8 settle steps per press so each
+    intermediate screen has time to repaint before the next press.
+
+    V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diagnostics
+    from state 2 to states 4-5, so reaching Volume(0) from PB1 Diag(4)
+    now takes FOUR LEFT presses instead of the pre-Tier-1 two.
+    Operators on real HW press LEFT four times to leave the Diag page;
+    this helper reproduces that exit path under sim.
     """
-    for _ in range(2):
+    for _ in range(4):
         chain.press("LEFT")
         for _ in range(8):
             chain.step()
@@ -836,7 +856,9 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
          + many cmd 0x21 query/reply round-trips on PB1 — PB2 path is
          currently quarantined under Task #22 but the cadence still
          issues PB2 queries which fail silently).
-      4. Press LEFT twice → exit page → land back on Volume.
+      4. Press LEFT four times -> exit page -> land back on Volume.
+         (Tier-1 menu rework moved Diag from state 2 to states 4-5;
+         exit now requires four LEFT presses to walk back to Volume(0).)
       5. Verify LCD shows "Volume:" and CONTROL accepted the navigation.
 
     Hang mode this catches:
@@ -871,7 +893,7 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
                 "cadence — chain heartbeat lost.  This is the cascade-"
                 "induced reconnect storm the real-HW hang surfaced."
             )
-        # Page should still be responsive.  Press LEFT twice to exit.
+        # Page should still be responsive.  Walk LEFT back to Volume.
         _navigate_back_to_volume(chain)
         # Verify we landed back on Volume.
         line0, line1 = chain.lcd_lines()
@@ -988,20 +1010,29 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     v171_hex: Path, v32_hex: Path
 ) -> None:
     """REGRESSION: on real HW the operator could not navigate away
-    from a hung Diag page — LEFT presses were ignored.  Even WITHOUT
+    from a hung Diag page -- LEFT presses were ignored.  Even WITHOUT
     a full hang, a slow button-poll on the Diag page would make the
     UI feel unresponsive.
 
-    Invariant: pressing LEFT on the Diag page must take CONTROL back
-    to the Preset screen within a small number of chain steps (the
-    same responsiveness budget the other menu screens give).
+    Invariant: pressing LEFT on the Diag page must take CONTROL OFF
+    the Diag page within a small number of chain steps (the same
+    responsiveness budget the other menu screens give).
+
+    V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diag from
+    state 2 (between Preset and Input) to states 4-5 (after Setup),
+    so a single LEFT press from PB1 Diag(4) now lands on Setup(3),
+    not Preset(1).  The exit assertion just checks that the LCD no
+    longer starts with the diag prefix "1:" -- it doesn't matter
+    which screen we landed on, only that the LEFT press took effect.
 
     Test shape:
       1. Reach DISPLAY, navigate to Diag.
       2. Run a few cadence cycles so the page is "warm".
       3. Press LEFT once.
       4. Step the chain for at most 12 steps.
-      5. Verify LCD shows the Preset screen (not Diag).
+      5. Verify LCD no longer shows the Diag layout (any non-Diag
+         screen is acceptable; Setup(3) is the expected post-LEFT
+         landing under the Tier-1 menu order).
     """
     _require_gpsim()
     _require_v32_hex(v32_hex)

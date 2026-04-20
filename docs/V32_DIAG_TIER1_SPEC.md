@@ -892,9 +892,13 @@ operator-visible feature set partially complete:
   `W1`, `X1` characters intermixed with the runtime counters) +
   `OK` / `n/a` / `..` special cases.
 
-The placeholder routine `v171_diag_pb_screen` stashes the PB-index
-parameter into `Common_RAM + 29` so the future Phase 3.4 rewrite
-can pick it up without touching the menu dispatch wiring.
+The placeholder routine `v171_diag_pb_screen` discards the PB-index
+parameter and forwards to `v171_diag_screen`.  An earlier draft tried
+to stash the PB-index into `Common_RAM + 29`, but that cell aliases
+`ir_decoded_cmd` (live RC5 decode sink) so the stash was dropped.
+The Phase 3.4 rewrite needs to pick a free BANK 1 cell for its own
+per-PB state tracking and document it in `dlcp_control_ram.inc`
+alongside the rest of the diag cache.
 
 Operators who need the full Tier-1 view today can use
 `scripts/dlcp_diag.py` (Phase 4) which reads HID `cmd 0x44` and

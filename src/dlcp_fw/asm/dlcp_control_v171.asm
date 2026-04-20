@@ -3230,38 +3230,31 @@ v171_preset_exit_check:
 ;   in : W = PB index (0 = PB1, 1 = PB2)
 ;   out: returns when operator navigates LEFT / RIGHT or disconnect
 ;
-; Tier-1 implementation: the menu dispatches to this routine for state
-; 4 (PB1 Diag, W=0) and state 5 (PB2 Diag, W=1).  The PB-index
-; selects:
+; Tier-1 dispatch: the menu calls this routine for state 4 (PB1 Diag,
+; W=0) and state 5 (PB2 Diag, W=1).  When the Phase 3.4 sparse Option-D
+; renderer lands, the PB-index will select:
 ;   * which present-mask bit gates the n/a render (PB1: bit 0,
 ;     PB2: bit 1)
 ;   * which cache-block base address feeds the sparse-cell walk
 ;     (PB1: v171_diag_pb1_i = 0x080; PB2: v171_diag_pb2_i = 0x08B)
 ;   * which row-0 title character to emit ('1' or '2')
 ;
-; Phase 3.4 in V32_DIAG_TIER1_SPEC.md describes a fully sparse Option-D
-; renderer (omit zero cells, OK / n/a / .. overflow special cases,
-; reset-cause flag display).  This implementation does the foundational
-; per-PB dispatch + n/a path + reuse of the existing dual-PB layout for
-; the "present" path; the sparse / overflow / reset-flag rendering is
-; tracked as deferred in V171_RELEASE.md and the spec's open questions.
+; Until Phase 3.4 lands, this placeholder DISCARDS the PB-index
+; parameter and forwards to v171_diag_screen (the existing dual-PB
+; renderer that displays both PBs together).  This keeps the diag
+; pages functional on hardware -- both PB1 Diag and PB2 Diag show
+; the same dual-PB layout.
 ;
-; The implementation deliberately keeps the existing v171_diag_screen
-; renderer (which displays both PBs together) reachable as a known-good
-; fallback so the page is functional today; a future renderer rewrite
-; can replace the bra-to-fallback below without touching the parser,
-; cache, menu, or page-entry hook code.
+; Phase 3.4 will replace the bra below with a per-PB body.  That body
+; needs to track the PB-index across the screen-loop iterations on its
+; own (e.g. by latching it into a fresh BANK 1 cell next to the diag
+; cache); an earlier draft tried to stash it into a BANK 0 access cell
+; here at the entry, but the cell I picked aliased ir_decoded_cmd
+; (live RC5 decode sink) so the stash was dropped.  Phase 3.4 must
+; pick a free cell for its own state and document it in the
+; dlcp_control_ram.inc cache layout.
 ; ---------------------------------------------------------------------------
 v171_diag_pb_screen:
-        ; Stash the PB-index parameter into BANK 0 access scratch so
-        ; the existing dual-PB renderer (which reads both PB caches
-        ; directly) can still run.  Scratch cell (Common_RAM + 29) is
-        ; in the v171_tx_enq_retry-adjacent free range; reading it
-        ; later via _label_offset finds the parameter for renderer
-        ; rewrites that want per-PB sparse layout.  The Phase 3.4
-        ; spec rewrite will switch the bra below to a per-PB body
-        ; that consults this scratch cell to pick PB1 vs PB2 base.
-        movwf   (Common_RAM + 29), A
         bra     v171_diag_screen
 
 v171_diag_screen:
@@ -3498,29 +3491,71 @@ v171_diag_loop:
         ; Previous query timed out -- skip the silent target.
         btg     v171_diag_target, 0, BANKED
 v171_diag_send_now:
-        ; --- Tier-1: fire cmd 0x22 ONCE per PB per Diag-page entry ---
-        ; If the in-flight target's reset_seen bit is clear AND
-        ; RESET_PENDING is clear, fire cmd 0x22 NOW (in addition to
-        ; the cmd 0x21 below).  Both bursts can be in flight to the
-        ; same PB simultaneously: cmd 0x21 path uses RUNTIME_PENDING
-        ; + BF/27 last-frame, cmd 0x22 path uses RESET_PENDING +
-        ; BF/2B last-frame.  The two pendings + two last-frames are
-        ; independent so neither query's completion bit accidentally
-        ; clears the other's PENDING flag.
+        ; --- Tier-1: cmd 0x22 fire-once-per-PB-per-page-entry hook ---
+        ; State machine for the new cmd 0x22 (reset-cause flags) query:
         ;
-        ; Skip if RESET_PENDING already set (cmd 0x22 in flight to
-        ; either PB -- avoid pumping a second cmd 0x22 onto the same
-        ; PB or onto the OTHER PB while the first is still resolving).
-        btfsc   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        ;   * RESET_PENDING set + timeout > 0   -> cmd 0x22 in flight,
+        ;                                          decrement timeout, wait.
+        ;   * RESET_PENDING set + timeout == 0  -> spec "give up" path:
+        ;                                          mark in-flight PB as
+        ;                                          reset_seen (so we don't
+        ;                                          re-fire), clear PENDING.
+        ;   * RESET_PENDING clear + reset_seen.target set -> already
+        ;                                          handled (either BF/2B
+        ;                                          landed or we gave up).
+        ;   * RESET_PENDING clear + reset_seen.target clear -> fire cmd
+        ;                                          0x22 now.  Snapshot
+        ;                                          v171_diag_target into
+        ;                                          v171_diag_reset_target,
+        ;                                          reload timeout, set
+        ;                                          PENDING, send.
+        ;
+        ; Both bursts can be in flight to the same PB simultaneously:
+        ; cmd 0x21 path uses RUNTIME_PENDING + BF/27 last-frame; cmd 0x22
+        ; path uses RESET_PENDING + BF/2B last-frame.  The two pendings
+        ; + two last-frames are independent so neither query's completion
+        ; bit accidentally clears the other's PENDING flag.
+        ;
+        ; v171_diag_reset_target captures the in-flight cmd 0x22 target
+        ; separately from v171_diag_target because v171_diag_target can
+        ; toggle independently (via the cmd 0x21 BF/27 last-frame path)
+        ; between cmd 0x22 send and BF/2B reception or timeout.
+        btfss   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        bra     v171_diag_check_reset_seen                 ; not pending -- proceed
+        ; --- RESET_PENDING set: timeout countdown ---
+        decf    v171_diag_reset_timeout, F, BANKED
+        bnz     v171_diag_send_runtime_only                ; not yet expired
+        ; --- Timeout: spec "give up" path ---
+        ; Mark the in-flight reset target as reset_seen so the gate
+        ; below stays closed for the rest of this Diag-page visit.
+        ; Using v171_diag_reset_target (snapshot at send time), NOT
+        ; v171_diag_target (which may have toggled).
+        movlw   0x01                                       ; PB1 mask
+        btfsc   v171_diag_reset_target, 0, BANKED
+        movlw   0x02                                       ; PB2 mask
+        iorwf   v171_diag_reset_seen, F, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v171_diag_send_runtime_only
+v171_diag_check_reset_seen:
         ; Compute reset_seen mask for the current target: bit0 for PB1,
-        ; bit1 for PB2.
+        ; bit1 for PB2.  If already seen (BF/2B received OR timed out),
+        ; skip the cmd 0x22 fire and fall through to cmd 0x21.
         movlw   0x01                                       ; PB1 mask
         btfsc   v171_diag_target, 0, BANKED
         movlw   0x02                                       ; PB2 mask
         andwf   v171_diag_reset_seen, W, BANKED
         bnz     v171_diag_send_runtime_only                ; already seen for this PB
-        ; reset_seen.target is clear -- fire cmd 0x22 now.
+        ; --- reset_seen.target clear AND RESET_PENDING clear: fire ---
+        ; Snapshot v171_diag_target.0 into v171_diag_reset_target so
+        ; the timeout path knows which PB to give up on (target may
+        ; toggle independently before BF/2B arrives or times out).
+        movf    v171_diag_target, W, BANKED
+        andlw   0x01
+        movwf   v171_diag_reset_target, BANKED
+        ; Reload timeout counter.  Each cadence cycle is ~1 s so
+        ; V171_DIAG_RESET_TIMEOUT_RELOAD = 4 gives ~4 s timeout per spec.
+        movlw   V171_DIAG_RESET_TIMEOUT_RELOAD
+        movwf   v171_diag_reset_timeout, BANKED
         bsf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
         movlb   0x00
         rcall   v171_diag_send_reset_query
