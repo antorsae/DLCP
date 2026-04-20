@@ -322,6 +322,34 @@ v171_diag_reset_timeout    equ  0x09F
 ; 4 cadences pass without BF/2B -> give up.
 V171_DIAG_RESET_TIMEOUT_RELOAD equ 0x04
 
+; --- V1.71 Tier-1 Phase 3.4: per-PB Option-D sparse renderer scratch ---
+; The Phase 3.4 sparse renderer (v171_diag_pb_screen / v171_diag_screen_draw)
+; needs scratch cells that survive across the cadence loop's redraw path
+; (`goto v171_diag_screen_draw` from check_redraw fires from inside the
+; loop body, so the renderer cannot rely on access-bank scratch that
+; display_loop_iteration / lcd_char_write helpers clobber).
+;
+; All cells live in BANK 1.  The EQU values are BANKED-form 8-bit
+; operands; callers must `movlb 0x01` before access.
+;
+; Operand range 0x0CD..0x0D3 is safe in BANK 0 (saved_settings_base
+; ends at 0x0CC and no other equate uses 0x0CD..0x0FF -- verified by
+; audit before allocation).  An earlier draft tried to stash the
+; PB-index into a BANK 0 access cell (Common_RAM + 29 = 0x0E8) but
+; that aliased ir_decoded_cmd's neighbours; using BANK 1 scratch
+; sidesteps the BANK 0 aliasing landmine entirely.
+;
+; v171_diag_render_pb_index: persists across cadence cycles (set on
+;   v171_diag_pb_screen entry, read on every screen_draw redraw).
+;   Other cells are scratch within a single screen_draw call only.
+v171_diag_render_pb_index   equ  0x0CD   ; physical 0x1CD; 0=PB1, 1=PB2
+v171_diag_render_count      equ  0x0CE   ; non-zero cells from pass 1 (0..11)
+v171_diag_render_emitted    equ  0x0CF   ; entries emitted on current row
+v171_diag_render_walk_idx   equ  0x0D0   ; cell index 0..10 during walk
+v171_diag_render_value      equ  0x0D1   ; current cell value (saved across LCD calls)
+v171_diag_render_skipped    equ  0x0D2   ; row-1 walk: non-zeros skipped from row 0
+v171_diag_render_letter_tmp equ  0x0D3   ; v171_diag_letter_for_idx cascade scratch
+
 ; Poll cadence reload value.  Each v171_diag_screen tick decrements
 ; the 16-bit countdown by 1; with display_loop_iteration on the K20
 ; control loop the per-tick wall time is on the order of single-digit

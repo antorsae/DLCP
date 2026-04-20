@@ -863,46 +863,63 @@ Tracking the sub-phases:
 | 3.1 | V1.71 cache extension to 11 cells per PB | committed |
 | 3.2 | V1.71 `cmd 0x22` chain parser (BF/2B last frame) | committed |
 | 3.3 | V1.71 menu rework (5 -> 6 states, Diag at end) | committed |
-| 3.4 | V1.71 per-PB Option-D sparse renderer | **deferred** |
+| 3.4 | V1.71 per-PB Option-D sparse renderer | committed |
 | 3.5 | V1.71 fire-once `cmd 0x22` per page entry per PB | committed |
 | 3.6 | V1.71 hex build + structural tests | committed |
 | 4   | `scripts/dlcp_diag.py` host CLI | pending |
 
-### Phase 3.4 deferral rationale
+### Phase 3.4 implementation notes
 
-Phase 3.4 (per-PB Option-D sparse renderer) is the most invasive
-piece of CONTROL-side work because it rewrites the existing dual-PB
-LCD render code (`v171_diag_screen` + helpers) into a per-PB
-sparse layout with `OK` / `n/a` / `..` overflow special cases.  The
-existing dual-PB renderer is functional today (operators can read
-runtime counters) and the Tier-1 reset-cause cells are populated in
-the cache by the Phase 3.2 parser, so deferring Phase 3.4 keeps the
-operator-visible feature set partially complete:
+Phase 3.4 (per-PB Option-D sparse renderer) replaced the legacy
+dual-PB renderer (which displayed PB1 on row 0 and PB2 on row 1
+together) with a per-PB layout: state 4 = PB1 only, state 5 =
+PB2 only, dispatched via the BANK 1 cell `v171_diag_render_pb_index`
+stashed by `v171_diag_pb_screen` on entry.  Each PB Diag state now
+gets the full 32 chars to display its 11 cells sparsely.
 
-* **Today**: navigate Vol -> Preset -> Input -> Setup -> PB1 Diag ->
-  PB2 Diag -> Vol; both PB Diag entries show the existing dual-PB
-  renderer (PB1 row 0, PB2 row 1) with the 7 runtime counters.
-  cmd 0x22 fires once per Diag-page entry per PB and populates the
-  reset-cause cells in the CONTROL cache, but the existing renderer
-  doesn't display them.  HID `cmd 0x44` returns the full 11-cell
-  payload regardless (host tooling sees everything).
+Layout dispatch (per-PB):
 
-* **After Phase 3.4 lands**: each PB Diag state shows the per-PB
-  Option-D sparse layout with reset-flag display (`O1`, `V1`,
-  `W1`, `X1` characters intermixed with the runtime counters) +
-  `OK` / `n/a` / `..` special cases.
+* **Absent** (`v171_diag_present.<pb_bit>` clear): row 0 = `PBn`,
+  row 1 = `n/a`.  PB has never replied to cmd 0x21 / cmd 0x22 yet.
+* **Healthy** (all 11 cache cells == 0): row 0 = `PBn`, row 1 = `OK`.
+* **Degraded** (1 to 9 non-zero cells): row 0 = `PBn:` + ` X#` * up
+  to 4 entries; row 1 = `X#` + ` X#` * up to 4 more entries (no
+  leading space on first entry); pad both rows to 16 chars.
+* **Overflow** (10 or 11 non-zero cells): row 0 = full 4 entries;
+  row 1 = 5 entries + `..` overflow indicator (replaces the
+  trailing space + col 15).
 
-The placeholder routine `v171_diag_pb_screen` discards the PB-index
-parameter and forwards to `v171_diag_screen`.  An earlier draft tried
-to stash the PB-index into `Common_RAM + 29`, but that cell aliases
-`ir_decoded_cmd` (live RC5 decode sink) so the stash was dropped.
-The Phase 3.4 rewrite needs to pick a free BANK 1 cell for its own
-per-PB state tracking and document it in `dlcp_control_ram.inc`
-alongside the rest of the diag cache.
+Cell display order is fixed: I D S B R A P O V W X (7 runtime
+counters from Layer 5 baseline, then 4 Tier-1 reset-cause flags).
 
-Operators who need the full Tier-1 view today can use
+Implementation cells (BANK 1, operands 0xCD..0xD3, physical
+0x1CD..0x1D3 -- safe range with no aliasing into the BANK 0
+saved-settings region or any other live BANK 1 cell):
+
+| Operand | Name | Lifetime |
+|---|---|---|
+| 0xCD | `v171_diag_render_pb_index`   | persistent (across cycles) |
+| 0xCE | `v171_diag_render_count`      | scratch (within draw) |
+| 0xCF | `v171_diag_render_emitted`    | scratch (within row) |
+| 0xD0 | `v171_diag_render_walk_idx`   | scratch (within walk) |
+| 0xD1 | `v171_diag_render_value`      | scratch (within cell) |
+| 0xD2 | `v171_diag_render_skipped`    | scratch (row 1 walk) |
+| 0xD3 | `v171_diag_render_letter_tmp` | scratch (cascade only) |
+
+Helpers introduced by Phase 3.4:
+
+* `v171_diag_load_fsr1_base` — sets FSR1 to 0x180 (PB1) or 0x18B
+  (PB2) based on `v171_diag_render_pb_index`.
+* `v171_diag_letter_for_idx` — decodes cell index 0..10 to its
+  letter via a cascade (computed-PC table avoided -- fragile
+  across 256-byte flash page boundaries).
+* `v171_diag_pad_spaces` — writes `v171_diag_lcd_pad_count`
+  spaces to the LCD; consolidates the legacy two pad-loops.
+
+Operators who need the full Tier-1 view via host can use
 `scripts/dlcp_diag.py` (Phase 4) which reads HID `cmd 0x44` and
-prints all 11 cells per PB regardless of the LCD layout.
+prints all 11 cells per PB; the LCD-side per-PB layout is now
+also fully Tier-1-aware.
 
 ## Open questions
 

@@ -3260,29 +3260,60 @@ v171_preset_exit_check:
 
 
 ; ===========================================================================
-; V1.71 Layer 5 Phase B — Diagnostics page
+; V1.71 Layer 5 Phase B + Tier-1 Phase 3.4 — Diagnostics page
 ; ---------------------------------------------------------------------------
-; Renders the per-PB diagnostics counters fetched from V3.2+ MAIN's
-; cmd 0x21 reply burst.  Layout per docs/V163B_DIAGNOSTICS_MENU_SPEC.md:
+; Per-PB Option-D sparse renderer for the Tier-1 Diagnostics page.
+; Rewritten in Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts (Option D
+; -- locked)") to replace the dual-PB legacy renderer that displayed
+; both PBs simultaneously on a single screen.  The new design renders
+; ONE PB per page (state 4 = PB1, state 5 = PB2) so that:
+;   * Per-PB layout has 32 chars to spend on at most 11 cells per PB
+;     -- enough room for sparse rendering of all 7 runtime + 4 reset-
+;     cause cells WITHOUT prefix overhead eating the available width.
+;   * Operator-glanceable: silent PB shows "PBn" + "n/a"; healthy PB
+;     shows "PBn" + "OK"; degraded PB shows the non-zero cells in the
+;     fixed display order I D S B R A P O V W X.
 ;
-;   Row 0: "1:IxDxSxBxRxAxPx"
-;   Row 1: "2:IxDxSxBxRxAxPx"
+; Cache-source dispatch (PB index 0 -> PB1, 1 -> PB2):
+;   * PB1: cache base v171_diag_pb1_i = operand 0x080 (phys 0x180)
+;   * PB2: cache base v171_diag_pb2_i = operand 0x08B (phys 0x18B... wait
+;     the cache equates use BANKED-form operands so PB2 base operand is
+;     0x08B with movlb 0x01 active; physical 0x18B).
+;   * Present mask bit: PB1 bit 0, PB2 bit 1.
+;   * Title char: '1' for PB1, '2' for PB2.
 ;
-; where x is the per-counter character in {' ', '1'..'9', 'A'..'E', '+'}:
-;   0     → ' '
-;   1..9  → '1'..'9'
-;   A..E  → 'A'..'E'
-;   F     → '+'  (saturated display state)
+; Layout (16x2 LCD):
+;   Healthy (count == 0):
+;     Row 0: "PBn" + 13 spaces       (count == 0 over all 11 cells)
+;     Row 1: "OK" + 14 spaces
+;   Absent (present mask bit clear):
+;     Row 0: "PBn" + 13 spaces
+;     Row 1: "n/a" + 13 spaces
+;   Degraded (1 <= count <= 9):
+;     Row 0: "PBn:" + " X#" * min(count,4) + spaces to col 16
+;            (each " X#" = 3 chars: leading space + letter + value)
+;     Row 1: if count <= 4 -> 16 spaces (entire row blank);
+;            else "X#" + " X#" * (count-5) + spaces to col 16
+;            (first row-1 entry has no leading space; subsequent
+;            entries get a leading space).
+;   Overflow (count >= 10):
+;     Row 0: "PBn:" + " X# X# X# X#" (4 entries, full width)
+;     Row 1: "X# X# X# X# X#" (5 entries, 14 chars) + ".."
 ;
-; If a PB has never replied (v171_diag_present bit clear), the entire
-; row is overwritten with "n:n/a            " so the user can tell a
-; never-supported PB apart from a present-but-quiet one.  Single-PB
-; chains render the missing slot as "--" per spec.
+; Counter encoding (unchanged from Phase B baseline):
+;   0 -> (cell omitted entirely from sparse render)
+;   1..9 -> '1'..'9'
+;   A..E -> 'A'..'E'
+;   F+   -> '+' (saturated)
+;
+; Display order (static, matches cache slot order):
+;   0=I 1=D 2=S 3=B 4=R 5=A 6=P 7=O 8=V 9=W 10=X
+; -- runtime counters first (I..P), reset-cause flags last (O..X).
 ;
 ; The screen body loops calling display_loop_iteration each tick.  A
 ; 16-bit countdown (v171_diag_poll_lo/hi) gates the next cmd 0x21
 ; query; on each expiry we alternate between PB1 and PB2 so each PB
-; refreshes at half the cadence (≈ once per 2 s at the 0x80 reload).
+; refreshes at half the cadence (~ once per 2 s at the 0x80 reload).
 ; Exits on RIGHT / LEFT (menu nav) or disconnect (CONNECTED clear),
 ; matching the V1.61b preset-screen exit semantics.
 ; ===========================================================================
@@ -3294,32 +3325,19 @@ v171_preset_exit_check:
 ;   in : W = PB index (0 = PB1, 1 = PB2)
 ;   out: returns when operator navigates LEFT / RIGHT or disconnect
 ;
-; Tier-1 dispatch: the menu calls this routine for state 4 (PB1 Diag,
-; W=0) and state 5 (PB2 Diag, W=1).  When the Phase 3.4 sparse Option-D
-; renderer lands, the PB-index will select:
-;   * which present-mask bit gates the n/a render (PB1: bit 0,
-;     PB2: bit 1)
-;   * which cache-block base address feeds the sparse-cell walk
-;     (PB1: v171_diag_pb1_i = 0x080; PB2: v171_diag_pb2_i = 0x08B)
-;   * which row-0 title character to emit ('1' or '2')
-;
-; Until Phase 3.4 lands, this placeholder DISCARDS the PB-index
-; parameter and forwards to v171_diag_screen (the existing dual-PB
-; renderer that displays both PBs together).  This keeps the diag
-; pages functional on hardware -- both PB1 Diag and PB2 Diag show
-; the same dual-PB layout.
-;
-; Phase 3.4 will replace the bra below with a per-PB body.  That body
-; needs to track the PB-index across the screen-loop iterations on its
-; own (e.g. by latching it into a fresh BANK 1 cell next to the diag
-; cache); an earlier draft tried to stash it into a BANK 0 access cell
-; here at the entry, but the cell I picked aliased ir_decoded_cmd
-; (live RC5 decode sink) so the stash was dropped.  Phase 3.4 must
-; pick a free cell for its own state and document it in the
-; dlcp_control_ram.inc cache layout.
+; Stash the PB index into v171_diag_render_pb_index so the cadence
+; loop's redraw path (`goto v171_diag_screen_draw` from check_redraw)
+; picks the right cache base / present-mask bit / title char on every
+; redraw.  Then fall through to v171_diag_screen for the page-entry
+; hooks (clear reset_seen + first-entry target init) and the initial
+; render + cadence loop.
 ; ---------------------------------------------------------------------------
 v171_diag_pb_screen:
-        bra     v171_diag_screen
+        movlb   0x01
+        andlw   0x01                                       ; mask to 0 or 1
+        movwf   v171_diag_render_pb_index, BANKED
+        movlb   0x00
+        ; fall through to v171_diag_screen
 
 v171_diag_screen:
         ; First-entry setup: if no PB has ever replied, initialize
@@ -3347,175 +3365,364 @@ v171_diag_screen_skip_init:
         movlb   0x00
 
 v171_diag_screen_draw:
-        ; ----- Row 0 (PB1 line) -----
+        ; --- Row 0 cursor + write "PB<n>" prefix (3 chars at cols 0-2) ---
+        ; Common to all three layouts (absent/healthy/degraded); the
+        ; layout decision picks what comes after column 2 (':' for
+        ; degraded, ' ' fill for absent/healthy).
         movlw   0x80                                       ; LCD cursor row 0 col 0
         call    lcd_command, 0x0
-        movlw   '1'
-        call    lcd_char_write, 0x0
-        movlw   ':'
-        call    lcd_char_write, 0x0
-        ; PB1 present? If not, render "n/a" and pad the rest.
-        movlb   0x01
-        btfss   v171_diag_present, 0, BANKED              ; PB1 ever replied?
-        bra     v171_diag_pb1_render_na
-        movlb   0x00
-        ; Render counter values (each cache cell holds one counter as
-        ; low nibble; high nibble already 0 by the BF/2N reply format).
-        movlw   'I'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb1_i, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'D'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb1_d, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'S'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb1_s, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'B'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb1_b, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'R'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb1_r, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'A'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb1_a, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
         movlw   'P'
-        rcall   v171_diag_emit_letter
+        call    lcd_char_write, 0x0
+        movlw   'B'
+        call    lcd_char_write, 0x0
         movlb   0x01
-        movf    v171_diag_pb1_p, W, BANKED
+        movf    v171_diag_render_pb_index, W, BANKED
+        addlw   0x31                                       ; pb_index 0->'1', 1->'2'
         movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        bra     v171_diag_screen_row1
+        call    lcd_char_write, 0x0
 
-v171_diag_pb1_render_na:
+        ; --- Decide layout: absent / healthy / degraded ---
+        ; Compute per-PB present-mask bit (PB1 -> 0x01, PB2 -> 0x02).
+        movlb   0x01
+        movlw   0x01
+        btfsc   v171_diag_render_pb_index, 0, BANKED
+        movlw   0x02
+        andwf   v171_diag_present, W, BANKED
+        bnz     v171_diag_screen_present
+        ; --- ABSENT path ---
+        bra     v171_diag_render_absent
+v171_diag_screen_present:
+        ; --- Pass 1: count non-zero cells across 11 cache slots ---
+        rcall   v171_diag_load_fsr1_base
+        movlb   0x01
+        clrf    v171_diag_render_count, BANKED
+        movlw   0x0B
+        movwf   v171_diag_render_walk_idx, BANKED          ; reuse as countdown
+v171_diag_count_loop:
+        movf    POSTINC1, W, A
+        bz      v171_diag_count_skip
+        incf    v171_diag_render_count, F, BANKED
+v171_diag_count_skip:
+        decfsz  v171_diag_render_walk_idx, F, BANKED
+        bra     v171_diag_count_loop
+        ; --- Branch on count ---
+        movf    v171_diag_render_count, F, BANKED
+        bz      v171_diag_render_healthy
+        bra     v171_diag_render_degraded
+
+; --- ABSENT layout: row 0 = "PBn" + 13 spaces, row 1 = "n/a" + 13 spaces.
+v171_diag_render_absent:
+        movlb   0x01
+        movlw   0x0D
+        movwf   v171_diag_lcd_pad_count, BANKED
         movlb   0x00
+        rcall   v171_diag_pad_spaces
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
         movlw   'n'
         call    lcd_char_write, 0x0
         movlw   '/'
         call    lcd_char_write, 0x0
         movlw   'a'
         call    lcd_char_write, 0x0
-        ; Pad remaining 11 columns with spaces.  Counter lives in
-        ; BANK 1 because lcd_char_write's internal helper saves FSR0H
-        ; into ram_0x004 — using ram_0x004 as our loop counter would
-        ; get silently clobbered every iteration.
         movlb   0x01
-        movlw   0x0B
+        movlw   0x0D
         movwf   v171_diag_lcd_pad_count, BANKED
         movlb   0x00
-v171_diag_pb1_pad_loop:
+        rcall   v171_diag_pad_spaces
+        bra     v171_diag_screen_armed
+
+; --- HEALTHY layout: row 0 = "PBn" + 13 spaces, row 1 = "OK" + 14 spaces.
+v171_diag_render_healthy:
+        movlb   0x01
+        movlw   0x0D
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
+        movlw   'O'
+        call    lcd_char_write, 0x0
+        movlw   'K'
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movlw   0x0E
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+        bra     v171_diag_screen_armed
+
+; --- DEGRADED layout: row 0 = "PBn:" + sparse row-0 + pad,
+;                     row 1 = sparse row-1 + (pad or "..").
+v171_diag_render_degraded:
+        ; Finish row-0 prefix: emit ':' (col 3).
+        movlw   ':'
+        call    lcd_char_write, 0x0
+
+        ; --- Row 0 walk: emit up to 4 non-zero cells as " X#" each. ---
+        rcall   v171_diag_load_fsr1_base
+        movlb   0x01
+        clrf    v171_diag_render_emitted, BANKED
+        clrf    v171_diag_render_walk_idx, BANKED
+v171_diag_row0_loop:
+        movlw   0x0B
+        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        bra     v171_diag_row0_done
+        movlw   0x04
+        cpfslt  v171_diag_render_emitted, BANKED          ; emitted >= 4 -> done
+        bra     v171_diag_row0_done
+        movf    POSTINC1, W, A
+        movwf   v171_diag_render_value, BANKED
+        bz      v171_diag_row0_advance
+        ; Non-zero cell -- emit " <letter><val>" (3 chars).
+        movlb   0x00
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movf    v171_diag_render_walk_idx, W, BANKED
+        rcall   v171_diag_letter_for_idx
+        movlb   0x00
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movf    v171_diag_render_value, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlb   0x01
+        incf    v171_diag_render_emitted, F, BANKED
+v171_diag_row0_advance:
+        incf    v171_diag_render_walk_idx, F, BANKED
+        bra     v171_diag_row0_loop
+v171_diag_row0_done:
+        ; Pad row 0: each emitted entry consumes 3 chars; row-0 tail
+        ; has 12 chars (cols 4..15).  pad_count = 12 - emitted*3.
+        movf    v171_diag_render_emitted, W, BANKED
+        addwf   WREG, W, A                                 ; W = emitted*2
+        addwf   v171_diag_render_emitted, W, BANKED        ; W = emitted*3
+        sublw   0x0C                                       ; W = 12 - emitted*3
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+
+        ; --- Row 1 cursor ---
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
+
+        ; If count <= 4, no entries on row 1 -- write 16 spaces.
+        movlb   0x01
+        movlw   0x05
+        cpfslt  v171_diag_render_count, BANKED             ; count >= 5 ?
+        bra     v171_diag_row1_walk_setup
+        movlw   0x10
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+        bra     v171_diag_screen_armed
+
+v171_diag_row1_walk_setup:
+        ; Walk again, skipping the first 4 non-zeros (already on row 0),
+        ; emitting up to 5 more on row 1.
+        rcall   v171_diag_load_fsr1_base
+        movlb   0x01
+        clrf    v171_diag_render_emitted, BANKED
+        clrf    v171_diag_render_skipped, BANKED
+        clrf    v171_diag_render_walk_idx, BANKED
+v171_diag_row1_loop:
+        movlw   0x0B
+        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        bra     v171_diag_row1_done
+        movlw   0x05
+        cpfslt  v171_diag_render_emitted, BANKED           ; emitted >= 5 -> done
+        bra     v171_diag_row1_done
+        movf    POSTINC1, W, A
+        movwf   v171_diag_render_value, BANKED
+        bz      v171_diag_row1_advance
+        ; Non-zero cell -- skip the first 4 (they were emitted on row 0).
+        movlw   0x04
+        cpfslt  v171_diag_render_skipped, BANKED           ; skipped >= 4 -> emit
+        bra     v171_diag_row1_emit
+        incf    v171_diag_render_skipped, F, BANKED
+        bra     v171_diag_row1_advance
+v171_diag_row1_emit:
+        ; First entry on row 1 has no leading space; subsequent entries
+        ; get a " " separator first.
+        movf    v171_diag_render_emitted, F, BANKED
+        bz      v171_diag_row1_emit_no_sep
+        movlb   0x00
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        bra     v171_diag_row1_emit_letter
+v171_diag_row1_emit_no_sep:
+        movlb   0x00
+v171_diag_row1_emit_letter:
+        movlb   0x01
+        movf    v171_diag_render_walk_idx, W, BANKED
+        rcall   v171_diag_letter_for_idx
+        movlb   0x00
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movf    v171_diag_render_value, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlb   0x01
+        incf    v171_diag_render_emitted, F, BANKED
+v171_diag_row1_advance:
+        incf    v171_diag_render_walk_idx, F, BANKED
+        bra     v171_diag_row1_loop
+v171_diag_row1_done:
+        ; Decide tail: count >= 10 -> overflow ".."; else pad with spaces.
+        ; chars_used on row 1 = 1 (first letter has no leading space)
+        ;                       + (emitted - 1) * 3 + 1 (first digit)
+        ;                       + (emitted - 1) * 0 ... simpler:
+        ; chars_used = emitted * 3 - 1 (since first entry has no leading
+        ;              space, save 1 char).
+        ; pad_count_no_overflow = 16 - chars_used = 17 - emitted*3.
+        movlw   0x0A
+        cpfslt  v171_diag_render_count, BANKED             ; count >= 10 ?
+        bra     v171_diag_row1_overflow
+        ; Non-overflow: pad to 16.
+        movf    v171_diag_render_emitted, W, BANKED
+        addwf   WREG, W, A                                 ; W = emitted*2
+        addwf   v171_diag_render_emitted, W, BANKED        ; W = emitted*3
+        sublw   0x11                                       ; W = 17 - emitted*3
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+        bra     v171_diag_screen_armed
+v171_diag_row1_overflow:
+        ; Overflow: emitted == 5, chars_used = 14, write ".." in last 2 cols.
+        movlb   0x00
+        movlw   '.'
+        call    lcd_char_write, 0x0
+        movlw   '.'
+        call    lcd_char_write, 0x0
+        bra     v171_diag_screen_armed
+
+; ---------------------------------------------------------------------------
+; v171_diag_load_fsr1_base -- set FSR1 to the per-PB cache base.
+; ---------------------------------------------------------------------------
+; PB index 0 -> FSR1 = 0x180 (v171_diag_pb1_i physical address)
+; PB index 1 -> FSR1 = 0x18B (v171_diag_pb2_i physical address)
+;
+; Reads v171_diag_render_pb_index from BANK 1.  Leaves BSR=1 on return.
+; ---------------------------------------------------------------------------
+v171_diag_load_fsr1_base:
+        movlb   0x01
+        btfsc   v171_diag_render_pb_index, 0, BANKED
+        bra     v171_diag_load_fsr1_pb2
+        lfsr    0x1, 0x180
+        return  0x0
+v171_diag_load_fsr1_pb2:
+        lfsr    0x1, 0x18B
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_diag_letter_for_idx -- decode a cell index (0..10) to its letter.
+; ---------------------------------------------------------------------------
+; Display order: I D S B R A P O V W X (matches cache slot order).
+;   0 -> 'I'  3 -> 'B'  6 -> 'P'  9 -> 'W'
+;   1 -> 'D'  4 -> 'R'  7 -> 'O' 10 -> 'X'
+;   2 -> 'S'  5 -> 'A'  8 -> 'V'
+;
+; Caller convention:
+;   in : W = cell index 0..10
+;   out: W = letter, BSR = 1
+;
+; Implementation: cascade of decrement+test instead of a computed-PC
+; jump table.  Computed PC (`addwf PCL, F`) is fragile across 256-byte
+; flash page boundaries (PCH doesn't auto-increment from a PCL low-byte
+; overflow); the cascade is larger but always correct.  Uses a
+; dedicated BANK 1 scratch cell (v171_diag_render_letter_tmp) that is
+; not touched by the row-walk loops, so callers can hold their own
+; state in v171_diag_render_value across calls here.
+; ---------------------------------------------------------------------------
+v171_diag_letter_for_idx:
+        movlb   0x01
+        movwf   v171_diag_render_letter_tmp, BANKED
+        movlw   'I'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_d
+        return  0x0
+v171_diag_letter_dec_to_d:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'D'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_s
+        return  0x0
+v171_diag_letter_dec_to_s:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'S'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_b
+        return  0x0
+v171_diag_letter_dec_to_b:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'B'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_r
+        return  0x0
+v171_diag_letter_dec_to_r:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'R'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_a
+        return  0x0
+v171_diag_letter_dec_to_a:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'A'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_p
+        return  0x0
+v171_diag_letter_dec_to_p:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'P'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_o
+        return  0x0
+v171_diag_letter_dec_to_o:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'O'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_v
+        return  0x0
+v171_diag_letter_dec_to_v:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'V'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_w
+        return  0x0
+v171_diag_letter_dec_to_w:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   'W'
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_letter_dec_to_x
+        return  0x0
+v171_diag_letter_dec_to_x:
+        movlw   'X'
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_diag_pad_spaces -- write v171_diag_lcd_pad_count spaces to the LCD.
+; ---------------------------------------------------------------------------
+; Counter cell lives in BANK 1 because lcd_char_write's helpers clobber
+; access-bank scratch (ram_0x004).  Caller must populate
+; v171_diag_lcd_pad_count BEFORE calling.  No-op if count == 0.
+;
+; BSR is restored to 0 on return.
+; ---------------------------------------------------------------------------
+v171_diag_pad_spaces:
+        movlb   0x01
+        movf    v171_diag_lcd_pad_count, F, BANKED
+        bz      v171_diag_pad_spaces_done                  ; count == 0 -> no-op
+v171_diag_pad_spaces_loop:
+        movlb   0x00
         movlw   ' '
         call    lcd_char_write, 0x0
         movlb   0x01                                       ; lcd_char_write may have touched BSR
         decfsz  v171_diag_lcd_pad_count, F, BANKED
-        bra     v171_diag_pb1_pad_loop_continue
+        bra     v171_diag_pad_spaces_loop
+v171_diag_pad_spaces_done:
         movlb   0x00
-        bra     v171_diag_pb1_pad_done
-v171_diag_pb1_pad_loop_continue:
-        movlb   0x00
-        bra     v171_diag_pb1_pad_loop
-v171_diag_pb1_pad_done:
-
-v171_diag_screen_row1:
-        ; ----- Row 1 (PB2 line) -----
-        movlw   0xC0                                       ; LCD cursor row 1 col 0
-        call    lcd_command, 0x0
-        movlw   '2'
-        call    lcd_char_write, 0x0
-        movlw   ':'
-        call    lcd_char_write, 0x0
-        movlb   0x01
-        btfss   v171_diag_present, 1, BANKED              ; PB2 ever replied?
-        bra     v171_diag_pb2_render_na
-        movlb   0x00
-        movlw   'I'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_i, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'D'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_d, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'S'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_s, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'B'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_b, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'R'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_r, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'A'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_a, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlw   'P'
-        rcall   v171_diag_emit_letter
-        movlb   0x01
-        movf    v171_diag_pb2_p, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        bra     v171_diag_screen_armed
-
-v171_diag_pb2_render_na:
-        movlb   0x00
-        movlw   'n'
-        call    lcd_char_write, 0x0
-        movlw   '/'
-        call    lcd_char_write, 0x0
-        movlw   'a'
-        call    lcd_char_write, 0x0
-        ; Same scratch-cell story as v171_diag_pb1_render_na — counter
-        ; in BANK 1, reload BSR after every lcd_char_write call.
-        movlb   0x01
-        movlw   0x0B
-        movwf   v171_diag_lcd_pad_count, BANKED
-        movlb   0x00
-v171_diag_pb2_pad_loop:
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlb   0x01
-        decfsz  v171_diag_lcd_pad_count, F, BANKED
-        bra     v171_diag_pb2_pad_loop_continue
-        movlb   0x00
-        bra     v171_diag_pb2_pad_done
-v171_diag_pb2_pad_loop_continue:
-        movlb   0x00
-        bra     v171_diag_pb2_pad_loop
-v171_diag_pb2_pad_done:
+        return  0x0
 
 v171_diag_screen_armed:
         ; First entry primes an immediate query so the LCD doesn't sit
@@ -3914,7 +4121,12 @@ control_core_service_0FA0:                                               ; addre
 
 flow_ccs_0FA0_0FBA:                                                  ; address: 0x000fba
 
-        rcall   display_loop_iteration                                ; dest: 0x000cb2
+        ; Phase 3.4: rcall → call promotion.  v171_diag_pb_screen +
+        ; sparse renderer added ~300 bytes ahead of this site, pushing
+        ; the relative offset to display_loop_iteration past the bra/
+        ; rcall ±1024-instruction limit.  call uses absolute 21-bit
+        ; addressing so it's range-immune; semantics are identical.
+        call    display_loop_iteration, 0x0                ; dest: 0x000cb2
         movlw   0x00
         movf    0x9a, F, B                                  ; reg: 0x09a
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2

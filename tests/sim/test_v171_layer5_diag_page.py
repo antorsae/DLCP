@@ -300,23 +300,24 @@ def test_nav_wrap_literals_tier1_bumped_to_0x05() -> None:
     )
 
 
-def test_diag_pb_screen_label_present_and_forwards_to_dual_pb_renderer() -> None:
-    """Tier-1 introduces v171_diag_pb_screen as the menu dispatch target
-    for both state 4 (PB1 Diag, W=0) and state 5 (PB2 Diag, W=1).
+def test_diag_pb_screen_stashes_index_and_falls_through_to_screen() -> None:
+    """Tier-1 (Phase 3.4) introduces v171_diag_pb_screen as the menu
+    dispatch target for both state 4 (PB1 Diag, W=0) and state 5
+    (PB2 Diag, W=1).
 
-    The Phase 3.4 sparse Option-D renderer is deferred per
-    V32_DIAG_TIER1_SPEC.md tracking; until it lands, the routine
-    DISCARDS the PB-index parameter and forwards to the existing
-    dual-PB v171_diag_screen renderer so menu navigation works
-    end-to-end on hardware today.  Both PB Diag states show the
-    same dual-PB layout in this transitional state.
+    Phase 3.4 implementation: stash the PB index into the BANK 1 cell
+    v171_diag_render_pb_index (so the cadence loop's redraw path can
+    pick the right cache base / present-mask bit / title char on every
+    redraw without re-passing W) then fall through to v171_diag_screen
+    for the page-entry hooks (clear reset_seen + first-entry target
+    init) and the initial render + cadence loop.
 
     An earlier draft tried to stash the PB-index into a BANK 0 access
-    cell here at the entry, but the cell I picked aliased
-    ir_decoded_cmd (live RC5 decode sink at 0x01D), which would have
-    overwritten an in-flight RC5 command byte during diag-page entry.
-    The stash was dropped; Phase 3.4 must pick a free cell for its
-    own state tracking and document it in dlcp_control_ram.inc.
+    cell here at the entry, but the cell picked aliased ir_decoded_cmd
+    (live RC5 decode sink at 0x01D), which would have overwritten an
+    in-flight RC5 command byte during diag-page entry.  Phase 3.4 picks
+    v171_diag_render_pb_index in BANK 1 (operand 0x0CD, physical
+    0x1CD) -- documented in dlcp_control_ram.inc.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_pb_screen")
@@ -325,17 +326,29 @@ def test_diag_pb_screen_label_present_and_forwards_to_dual_pb_renderer() -> None
         "at link time because state 4 / state 5 reference it."
     )
     body = text[off:off + 800]
-    # Placeholder body must NOT touch ir_decoded_cmd / Common_RAM+29
-    # (the failed-stash cell from an earlier draft).  Pin its absence
-    # so a future re-introduction has to also touch this assertion.
+    # Body must NOT touch ir_decoded_cmd / Common_RAM+29 (the failed-
+    # stash cell from an earlier draft).  Pin its absence so a future
+    # re-introduction has to also touch this assertion.
     assert not re.search(r"movwf\s+\(Common_RAM\s*\+\s*29\)", body), (
         "v171_diag_pb_screen must NOT stash anything into Common_RAM+29 "
         "(= 0x01D = ir_decoded_cmd, a live RC5 decode sink).  Phase 3.4 "
-        "should add proper per-PB state tracking via a new BANK 1 cell."
+        "uses v171_diag_render_pb_index in BANK 1 instead."
     )
-    # Forward to the existing dual-PB renderer until Phase 3.4 lands.
-    assert re.search(r"bra\s+v171_diag_screen", body), (
-        "placeholder must forward to v171_diag_screen"
+    # Phase 3.4: must stash W into v171_diag_render_pb_index (BANK 1).
+    assert re.search(
+        r"movwf\s+v171_diag_render_pb_index", body,
+    ), (
+        "Phase 3.4: v171_diag_pb_screen must stash the PB index (W) into "
+        "v171_diag_render_pb_index so the redraw path knows which PB to "
+        "render on every cadence iteration."
+    )
+    # Body must NOT have a bra/goto to skip past v171_diag_screen --
+    # Phase 3.4 falls through to share the page-entry hooks (reset_seen
+    # clear + first-entry target init).  An earlier placeholder used
+    # `bra v171_diag_screen` but that's redundant once we fall through.
+    assert not re.search(r"bra\s+v171_diag_screen\b", body), (
+        "Phase 3.4 falls through to v171_diag_screen instead of bra-ing "
+        "to it -- the bra was a placeholder before the renderer landed."
     )
 
 
@@ -368,52 +381,122 @@ def test_diag_screen_label_exists_and_initializes_target() -> None:
     )
 
 
-def test_diag_screen_body_renders_compact_layout() -> None:
-    """Both row drawers must emit the I/D/S/B/R/A/P banner letters in order.
+def test_diag_screen_body_renders_per_pb_sparse_layout() -> None:
+    """Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts (Option D)"):
+    the renderer is per-PB sparse, not the legacy dual-PB compact
+    layout.
 
-    The encoding is 16 chars per row: '1'/'2', ':', then 7 letter+nib
-    pairs.  The render uses lcd_char_write with literal letters, so the
-    sequence is observable from the source.
+    Pin shapes that must be present in the source:
+
+    1. Each cell letter (I D S B R A P O V W X) appears exactly ONCE
+       in the renderer span -- in the v171_diag_letter_for_idx cascade
+       that maps cell-index 0..10 to the corresponding letter.  The
+       legacy dual-PB layout duplicated each letter (PB1 row + PB2
+       row); the per-PB layout consults the cascade once per non-zero
+       cell.
+
+    2. Special tokens for the three layout cases:
+       - "PB" prefix (common to all three layouts)
+       - ':'  (degraded-only -- column 3 separator)
+       - "OK" (healthy)
+       - "n/a" via 'n','/','a' literals (absent)
+       - ".." via two '.' literals (overflow when count >= 10)
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    off = _label_offset(text, "v171_diag_screen")
-    body_end = _label_offset(text, "v171_diag_emit_letter")
-    body = text[off:body_end]
-    expected_letters_each_row = ["I", "D", "S", "B", "R", "A", "P"]
-    # Each row should contain `movlw   'L'` followed by an emit_letter
-    # call.  Scan once and count occurrences of each letter token.
-    for letter in expected_letters_each_row:
-        # Each banner letter appears twice: once in row 0 (PB1), once
-        # in row 1 (PB2).
-        count = len(re.findall(rf"movlw\s+'{letter}'", body))
-        assert count >= 2, (
-            f"banner letter '{letter}' must appear in both PB1 and PB2 "
-            f"rows ({count} occurrences found)"
+
+    # 1. v171_diag_letter_for_idx must emit every Tier-1 cell letter
+    #    exactly once (one cascade entry per cell index 0..10).
+    cascade_body = _label_body(
+        text, "v171_diag_letter_for_idx", "v171_diag_pad_spaces",
+    )
+    assert cascade_body, (
+        "v171_diag_letter_for_idx body could not be located"
+    )
+    expected_letters = ("I", "D", "S", "B", "R", "A", "P", "O", "V", "W", "X")
+    for letter in expected_letters:
+        count = len(re.findall(rf"movlw\s+'{letter}'", cascade_body))
+        assert count == 1, (
+            f"Phase 3.4 cascade entry for letter '{letter}' must appear "
+            f"exactly once; got {count} occurrences"
         )
+    # And the cascade must NOT have any other letters that would imply a
+    # different display order than the spec.
+    cascade_movlws = set(re.findall(r"movlw\s+'(\w)'", cascade_body))
+    extras = cascade_movlws - set(expected_letters)
+    assert not extras, (
+        f"unexpected letter(s) in v171_diag_letter_for_idx cascade: "
+        f"{sorted(extras)} (expected only {expected_letters})"
+    )
+
+    # 2. The renderer body (between v171_diag_screen and the cascade)
+    #    must include the special-case layout literals.
+    render_body = _label_body(
+        text, "v171_diag_screen", "v171_diag_letter_for_idx",
+    )
+    assert render_body, (
+        "renderer span (v171_diag_screen .. v171_diag_letter_for_idx) "
+        "not located in source"
+    )
+    assert re.search(r"movlw\s+'P'", render_body), (
+        "PB-prefix 'P' literal missing"
+    )
+    assert re.search(r"movlw\s+'B'", render_body), (
+        "PB-prefix 'B' literal missing"
+    )
+    assert re.search(r"movlw\s+':'", render_body), (
+        "degraded ':' separator missing"
+    )
+    assert re.search(r"movlw\s+'O'", render_body), (
+        "healthy 'O' (of 'OK') missing"
+    )
+    assert re.search(r"movlw\s+'K'", render_body), (
+        "healthy 'K' (of 'OK') missing"
+    )
+    assert re.search(r"movlw\s+'n'", render_body), (
+        "absent 'n' (of 'n/a') missing"
+    )
+    assert re.search(r"movlw\s+'/'", render_body), (
+        "absent '/' (of 'n/a') missing"
+    )
+    assert re.search(r"movlw\s+'a'", render_body), (
+        "absent 'a' (of 'n/a') missing"
+    )
+    # Two '.' literals for the ".." overflow indicator (count >= 10).
+    dot_count = len(re.findall(r"movlw\s+'\.'", render_body))
+    assert dot_count >= 2, (
+        f"overflow '..' indicator must emit two '.' literals; got "
+        f"{dot_count}"
+    )
 
 
-def test_diag_screen_handles_na_for_never_seen_pb() -> None:
-    """If a PB has never replied (present-mask bit clear), the row must
-    render "n/a" + padding instead of the counter pairs.
+def test_diag_render_absent_path_renders_na_for_silent_pb() -> None:
+    """Phase 3.4: when the present-mask bit for the rendered PB is
+    clear, the renderer routes to v171_diag_render_absent which writes
+    "PBn" + 13 spaces on row 0 and "n/a" + 13 spaces on row 1.
 
-    Spec: "If a PB does not support the new query, show n/a".
+    Single per-PB sentinel path (one v171_diag_render_absent label
+    handles BOTH PB1 and PB2 because the PB-index dispatch happens
+    earlier via v171_diag_render_pb_index).  This collapses the
+    legacy dual-PB layout's two separate render_na blocks into one.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    off = _label_offset(text, "v171_diag_screen")
-    body_end = _label_offset(text, "v171_diag_emit_letter")
-    body = text[off:body_end]
-    # Both PB1 and PB2 must have an n/a render path.
-    assert re.search(r"v171_diag_pb1_render_na:", body), "PB1 n/a path missing"
-    assert re.search(r"v171_diag_pb2_render_na:", body), "PB2 n/a path missing"
-    # Each n/a path must emit 'n', '/', 'a'.
-    for tag in ("pb1", "pb2"):
-        seg_start = body.find(f"v171_diag_{tag}_render_na:")
-        seg_end = body.find(f"v171_diag_{tag}_pad_loop:", seg_start)
-        # Walk up to the loop label and into the loop body
-        seg_loop_end = body.find("v171_diag_", seg_end + 25)
-        seg = body[seg_start:seg_loop_end if seg_loop_end > 0 else len(body)]
-        for ch in ("'n'", "'/'", "'a'"):
-            assert ch in seg, f"{tag} n/a render missing {ch}"
+    # Single sentinel path -- not per-PB.
+    absent_labels = re.findall(
+        r"^v171_diag_render_absent\w*:", text, re.MULTILINE,
+    )
+    assert absent_labels == ["v171_diag_render_absent:"], (
+        f"Phase 3.4 must have exactly one absent-render path; got "
+        f"{absent_labels}.  Legacy dual-PB layout had two "
+        f"(v171_diag_pb1_render_na + v171_diag_pb2_render_na); the "
+        f"per-PB layout collapses them via v171_diag_render_pb_index."
+    )
+    # The absent path emits 'n', '/', 'a' literals.
+    body = _label_body(
+        text, "v171_diag_render_absent", "v171_diag_render_healthy",
+    )
+    assert body, "v171_diag_render_absent body could not be located"
+    for ch in ("'n'", "'/'", "'a'"):
+        assert ch in body, f"absent path missing {ch} literal"
 
 
 def test_diag_send_query_uses_b1_or_b2_route_and_cmd_byte_param() -> None:
@@ -582,9 +665,16 @@ def test_v171_assembles_with_diag_layer(v171_hex: tuple[Path, dict[str, int]]) -
 
 
 def test_v171_layer5_symbols_resolve(v171_hex: tuple[Path, dict[str, int]]) -> None:
-    """All new code labels must resolve from the gpasm listing."""
+    """All Phase 3.4 + Layer 5 baseline code labels must resolve from
+    the gpasm listing.  Phase 3.4 (V32_DIAG_TIER1_SPEC.md) replaced
+    the legacy dual-PB labels (v171_diag_pb1_render_na / pb2_render_na)
+    with single per-PB-dispatched labels (v171_diag_render_absent /
+    v171_diag_render_healthy / v171_diag_render_degraded).
+    """
     _, syms = v171_hex
     expected_labels = (
+        # Layer 5 baseline (still present after Phase 3.4)
+        "v171_diag_pb_screen",
         "v171_diag_screen",
         "v171_diag_screen_draw",
         "v171_diag_loop",
@@ -595,11 +685,16 @@ def test_v171_layer5_symbols_resolve(v171_hex: tuple[Path, dict[str, int]]) -> N
         "v171_diag_emit_nib_alpha",
         "v171_diag_send_query",
         "v171_bf2x_case_check",
-        "v171_diag_pb1_render_na",
-        "v171_diag_pb2_render_na",
+        # Phase 3.4 per-PB sparse renderer additions
+        "v171_diag_render_absent",
+        "v171_diag_render_healthy",
+        "v171_diag_render_degraded",
+        "v171_diag_load_fsr1_base",
+        "v171_diag_letter_for_idx",
+        "v171_diag_pad_spaces",
     )
     missing = [name for name in expected_labels if name not in syms]
-    assert not missing, f"unresolved Layer 5 labels: {missing}"
+    assert not missing, f"unresolved Layer 5 / Phase 3.4 labels: {missing}"
 
 
 # ===========================================================================
@@ -960,12 +1055,16 @@ def test_diag_renderer_uses_single_sentinel_no_topology_byte() -> None:
     diag query path.  Spec was revised 2026-04-19 to retire the
     draft's `--` rendering and use `n/a` for both cases.
 
-    This test pins the design decision: the renderer must gate solely
-    on ``v171_diag_present`` (one bit per PB, set on first BF/27
-    reception) — no separate ``v171_diag_topology`` symbol, no `--`
-    literal in the render path, and no second sentinel render block.
-    A future change that re-introduces topology detection would also
-    have to update this test, which forces the spec-section update.
+    Phase 3.4 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) preserved this
+    design under the per-PB sparse layout: v171_diag_render_absent
+    is the single sentinel path, dispatched via the BANK 1 cell
+    v171_diag_render_pb_index rather than per-PB labels.
+
+    This test pins:
+    * No separate ``v171_diag_topology`` symbol.
+    * No `--` literal in the render path.
+    * The present-mask gate uses v171_diag_present (read into W via
+      andwf with a per-PB mask computed from v171_diag_render_pb_index).
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     # No separate topology state.
@@ -979,38 +1078,58 @@ def test_diag_renderer_uses_single_sentinel_no_topology_byte() -> None:
         "no v171_diag_topology equ allowed in ram.inc — spec collapse"
     )
     # No `--` literal in the render path (must use 'n/a' for both).
-    render_body = _label_body(text, "v171_diag_screen", "v171_diag_emit_letter")
+    render_body = _label_body(
+        text, "v171_diag_screen", "v171_diag_pad_spaces",
+    )
+    assert render_body, (
+        "renderer span (v171_diag_screen .. v171_diag_pad_spaces) not "
+        "located in source"
+    )
     assert "'-'" not in render_body, (
         "no '-' character literal in render path — spec collapse "
         "uses 'n/a' for both topology-absent and silent-PB cases"
     )
-    # Both PB rows must gate on the same v171_diag_present bit pattern.
-    # PB1 row gates on bit 0; PB2 row gates on bit 1.
+    # Per-PB layout gates on v171_diag_present using a computed per-PB
+    # mask.  Phase 3.4 form: `andwf v171_diag_present, W, BANKED` after
+    # loading W with 0x01 (PB1) or 0x02 (PB2).
     assert re.search(
-        r"btfss\s+v171_diag_present,\s*0,\s*BANKED",
+        r"andwf\s+v171_diag_present,\s*W,\s*BANKED",
         render_body,
-    ), "PB1 row must gate on v171_diag_present bit 0"
-    assert re.search(
-        r"btfss\s+v171_diag_present,\s*1,\s*BANKED",
-        render_body,
-    ), "PB2 row must gate on v171_diag_present bit 1"
+    ), (
+        "Phase 3.4 must gate the absent path via "
+        "`andwf v171_diag_present, W, BANKED` with W = per-PB mask "
+        "(0x01 for PB1, 0x02 for PB2)"
+    )
 
 
-def test_diag_renderer_na_path_count_matches_pb_count() -> None:
-    """Each PB row has exactly ONE sentinel-render path
-    (``v171_diag_pbN_render_na``), not two (per the original spec's
-    `--` vs `n/a` distinction).  Adding a second per-PB sentinel
-    block would re-introduce the topology-vs-silence distinction the
-    2026-04-19 revision retired.
+def test_diag_renderer_single_per_pb_dispatched_sentinel_path() -> None:
+    """Phase 3.4 collapses the legacy two-label layout
+    (``v171_diag_pb1_render_na`` + ``v171_diag_pb2_render_na``) into
+    ONE label (``v171_diag_render_absent``) that handles both PB1 and
+    PB2 via PB-index dispatch from v171_diag_render_pb_index.
+
+    Adding a second sentinel block would re-introduce the per-PB
+    branching the per-PB layout was designed to eliminate.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    # Legacy per-PB labels must NOT exist in Phase 3.4.
     pb1_na = re.findall(r"^v171_diag_pb1_render_\w+:", text, re.MULTILINE)
     pb2_na = re.findall(r"^v171_diag_pb2_render_\w+:", text, re.MULTILINE)
-    assert pb1_na == ["v171_diag_pb1_render_na:"], (
-        f"PB1 must have exactly one sentinel render path; got {pb1_na}"
+    assert not pb1_na, (
+        f"legacy v171_diag_pb1_render_* labels must be removed in "
+        f"Phase 3.4; got {pb1_na}"
     )
-    assert pb2_na == ["v171_diag_pb2_render_na:"], (
-        f"PB2 must have exactly one sentinel render path; got {pb2_na}"
+    assert not pb2_na, (
+        f"legacy v171_diag_pb2_render_* labels must be removed in "
+        f"Phase 3.4; got {pb2_na}"
+    )
+    # New single sentinel path.
+    absent = re.findall(
+        r"^v171_diag_render_absent\w*:", text, re.MULTILINE,
+    )
+    assert absent == ["v171_diag_render_absent:"], (
+        f"Phase 3.4 must have exactly one absent-render path; got "
+        f"{absent}"
     )
 
 
@@ -1227,4 +1346,123 @@ def test_diag_loop_times_out_reset_pending_after_n_cadences() -> None:
     assert len(bcf_pending) >= 1, (
         "timeout-give-up path must clear RESET_PENDING -- otherwise the "
         "timeout decrement would underflow and lock the path forever"
+    )
+
+
+# ===========================================================================
+# Phase 3.4 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) -- per-PB Option-D sparse
+# renderer structural gates.  These pin shape decisions that the renderer
+# must preserve (layout dispatch on count, FSR1 cache base loading via
+# pb_index, scratch cells in BANK 1 to avoid the Phase 3.1 aliasing
+# landmine that caused the 2026-04-20 real-HW disaster).
+# ===========================================================================
+
+
+def test_phase3_4_render_scratch_cells_pinned_in_safe_bank1_range() -> None:
+    """The Phase 3.4 sparse renderer needs scratch cells that survive
+    across the cadence loop's redraw path.  All cells live in BANK 1
+    (operand range 0x0CD..0x0D3) -- a range chosen to be SAFE in the
+    aliasing sense:
+
+    * BANK 0 operand 0xCD..0xD3 is used by the EEPROM saved-settings
+      load/save/clear routines (lfsr 0x0, 0x0CD walks).  That's ABSOLUTE
+      addressing via FSR0; doesn't touch BSR=1 banked accesses to the
+      same operand value, which land at PHYSICAL 0x1CD..0x1D3 (BANK 1).
+    * No other BANK 1 EQU touches operand 0xCD..0xD3 in V1.71.
+
+    A future change that picked operands < 0x0CD would risk re-creating
+    the Phase 3.1 aliasing landmine that caused the 2026-04-20 real-HW
+    disaster (cache cells at 0x080..0x09F aliased rx_ring_rd/wr,
+    tx_ring_rd/wr, idle_timeout, full_sync_lo when BSR=1 leaked into
+    parser tail code).
+    """
+    ram = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+    expected = (
+        ("v171_diag_render_pb_index", 0xCD),
+        ("v171_diag_render_count",    0xCE),
+        ("v171_diag_render_emitted",  0xCF),
+        ("v171_diag_render_walk_idx", 0xD0),
+        ("v171_diag_render_value",    0xD1),
+        ("v171_diag_render_skipped",  0xD2),
+        ("v171_diag_render_letter_tmp", 0xD3),
+    )
+    for name, expected_op in expected:
+        actual = _equ_address(ram, name)
+        assert actual == expected_op, (
+            f"{name} must equ 0x{expected_op:02X}; got "
+            f"{actual:#x}" if actual is not None else f"{name} not defined"
+        )
+
+
+def test_phase3_4_load_fsr1_base_branches_on_pb_index() -> None:
+    """v171_diag_load_fsr1_base must dispatch on v171_diag_render_pb_index
+    bit 0 to load FSR1 with PB1 base (0x180) or PB2 base (0x18B).
+    Without this, the row walks would always read PB1 (or always PB2),
+    breaking the per-PB layout.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    body = _label_body(text, "v171_diag_load_fsr1_base", "v171_diag_letter_for_idx")
+    assert body, "v171_diag_load_fsr1_base body could not be located"
+    # PB-index dispatch via btfsc on bit 0.
+    assert re.search(
+        r"btfsc\s+v171_diag_render_pb_index,\s*0,\s*BANKED",
+        body,
+    ), "must dispatch on v171_diag_render_pb_index.0 (PB index)"
+    # Load FSR1 with both PB1 and PB2 cache bases.
+    assert re.search(r"lfsr\s+0x1,\s*0x180", body), (
+        "PB1 path must load FSR1 with 0x180 (v171_diag_pb1_i physical)"
+    )
+    assert re.search(r"lfsr\s+0x1,\s*0x18B", body), (
+        "PB2 path must load FSR1 with 0x18B (v171_diag_pb2_i physical)"
+    )
+
+
+def test_phase3_4_renderer_dispatches_three_layouts() -> None:
+    """The renderer must branch on the non-zero count to dispatch into
+    one of three layout paths:
+    * v171_diag_render_absent  (present-mask bit clear)
+    * v171_diag_render_healthy (count == 0)
+    * v171_diag_render_degraded (count >= 1)
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    for label in ("v171_diag_render_absent",
+                  "v171_diag_render_healthy",
+                  "v171_diag_render_degraded"):
+        assert _label_offset(text, label) >= 0, (
+            f"Phase 3.4 layout label '{label}' must exist"
+        )
+    # Render dispatch: count == 0 -> healthy, else -> degraded.
+    body = _label_body(text, "v171_diag_screen_present", "v171_diag_render_absent")
+    assert body, "v171_diag_screen_present body could not be located"
+    assert re.search(
+        r"bz\s+v171_diag_render_healthy", body,
+    ), "count == 0 must branch to v171_diag_render_healthy"
+    assert re.search(
+        r"bra\s+v171_diag_render_degraded", body,
+    ), "count != 0 must fall through to v171_diag_render_degraded"
+
+
+def test_phase3_4_overflow_marker_only_when_count_ge_10() -> None:
+    """The ".." overflow marker is emitted only when count >= 10
+    (4 entries on row 0 + 5 entries on row 1 + ".." indicating MORE).
+    The decision uses cpfslt with literal 0x0A.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    body = _label_body(text, "v171_diag_row1_done", "v171_diag_load_fsr1_base")
+    assert body, "v171_diag_row1_done body could not be located"
+    # cpfslt against 0x0A or 10 (10 == 0x0A).
+    assert re.search(
+        r"movlw\s+0x0[Aa]\b", body,
+    ), "overflow gate must use literal 0x0A (= 10)"
+    assert re.search(
+        r"cpfslt\s+v171_diag_render_count,\s*BANKED", body,
+    ), "overflow gate must compare v171_diag_render_count against 0x0A"
+    # Overflow path emits two '.' literals.
+    overflow_body = _label_body(
+        text, "v171_diag_row1_overflow", "v171_diag_load_fsr1_base",
+    )
+    assert overflow_body, "v171_diag_row1_overflow body could not be located"
+    dot_count = len(re.findall(r"movlw\s+'\.'", overflow_body))
+    assert dot_count == 2, (
+        f"overflow path must emit exactly two '.' literals; got {dot_count}"
     )
