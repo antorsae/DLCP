@@ -86,6 +86,32 @@ DSP_FAULT_BIT              equ  0x07
 ; ``cmd1d_setting_cache`` (0xA7) and ``rx_ring_staging`` (0xB7).
 bf08_fault_byte            equ  0x0AB   ; unreferenced in stock V1.6b
 
+; --- V1.71 WAITING-loop operator-recovery grace counter (2026-04-21) ---
+; Saturating counter used by the WAITING-FOR-DLCP loops (cold-boot at
+; asm:4448 and reconnect at asm:4716) to impose a grace period before
+; enabling the RIGHT/LEFT button -> soft reset escape hatch.  Without
+; the grace period, a spurious debounced button press during normal
+; MAIN warmup (which can take a few seconds before MAIN's
+; send_status_burst arrives) would cause an accidental CONTROL reset.
+;
+; Counter is cleared to 0 on each entry to a WAITING loop, incremented
+; once per iteration, and saturated at V171_WAITING_GRACE_THRESHOLD.
+; Reset-on-button fires only once the counter reaches the threshold.
+; Slot chosen from the 0x0A8..0x0AA gap (no absolute references in the
+; V1.71 source; no lfsr lands in this range).
+v171_waiting_grace_count   equ  0x0A8
+
+; Each WAITING-loop iteration is roughly display_loop_iteration +
+; poll_frame_send + delay_short(0xC8) + rx_parser_entry, dominated by
+; the 0xC8 delay_short (~200 ms wall clock on the K20 control loop).
+; Threshold 0x32 (=50) gives ~10 s grace before the reset escape is
+; armed.  Saturating comparator uses cpfseq, so threshold must fit in
+; 1 byte and not equal 0 (otherwise cold entry would allow reset
+; immediately).  Count is an 8-bit cell: pick a threshold that
+; comfortably clears the POR->first-BF/05 window (~3-5 s observed on
+; V3.2 MAIN) with margin.
+V171_WAITING_GRACE_THRESHOLD equ 0x32
+
 ; RC5 codes that V1.71 dispatches (documented here for cross-reference
 ; with the annotator and ir_dispatch edits).
 RC5_POWER_TOGGLE           equ  0x32
