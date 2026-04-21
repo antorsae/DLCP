@@ -612,12 +612,12 @@ cmd 0x44 on each, and prints a structured report.
 DLCP Diagnostics  (2026-04-20T15:23:00Z)
 ========================================
 
-LEFT  HID DevSrvsID:4296392456  V3.2 rev 0x37
+LEFT  HID DevSrvsID:4296392456  V3.2
   Runtime:   I0 D0 S1 B1 R0 A0 P0
   Reset:     O1 V0 W0 X0     (POR — power-on)
   Status:    HEALTHY (1 nonzero counter — standby/bring-up cycle, expected)
 
-RIGHT HID DevSrvsID:4296392549  V3.2 rev 0x37
+RIGHT HID DevSrvsID:4296392549  V3.2
   Runtime:   I3 D2 S1 B1 R0 A0 P0
   Reset:     O0 V1 W0 X0     (BOR — brown-out)
   Status:    DEGRADED (5 nonzero — I2C transport faults: 3, DSP fault: 2,
@@ -634,7 +634,7 @@ RIGHT HID DevSrvsID:4296392549  V3.2 rev 0x37
     {
       "role": "LEFT",
       "hid_path": "DevSrvsID:4296392456",
-      "version": {"flag": 3, "major": 2, "rev": 55, "rev_hex": "0x37"},
+      "version": {"flag": 3, "major": 3, "rev": 2, "rev_hex": "0x02"},
       "counters": {
         "i": 0, "d": 0, "s": 1, "b": 1, "r": 0, "a": 0, "p": 0
       },
@@ -648,7 +648,7 @@ RIGHT HID DevSrvsID:4296392549  V3.2 rev 0x37
     {
       "role": "RIGHT",
       "hid_path": "DevSrvsID:4296392549",
-      "version": {"flag": 3, "major": 2, "rev": 55, "rev_hex": "0x37"},
+      "version": {"flag": 3, "major": 3, "rev": 2, "rev_hex": "0x02"},
       "counters": {
         "i": 3, "d": 2, "s": 1, "b": 1, "r": 0, "a": 0, "p": 0
       },
@@ -670,10 +670,17 @@ RIGHT HID DevSrvsID:4296392549  V3.2 rev 0x37
 
 JSON-format notes:
 
-* `version.rev` is an integer (`55` = `0x37` decimal); `version.rev_hex`
-  is a parallel string for human readability.  Tools choosing one
-  or the other depending on whether they want numeric comparison
-  or hex display.
+* `version.rev` is an integer (the cmd 0x06 minor byte, e.g. `2` for
+  V3.2 firmware); `version.rev_hex` is a parallel string for human
+  readability (e.g. `"0x02"`).  Tools choose one or the other
+  depending on whether they want numeric comparison or hex display.
+  Earlier drafts of this spec showed `"rev": 55` ("0x37"), conflating
+  the cmd 0x06 minor byte with the EEPROM marker byte (0x37 for
+  V3.2).  Real cmd 0x06 returns `(flag=3, major=3, minor=2)` for
+  V3.2 firmware -- see `src/dlcp_fw/asm/dlcp_main_v32.asm` line ~2870
+  for the load.  Accessing the EEPROM marker requires a separate
+  read; if added later it will get its own JSON field rather than
+  reusing `version.rev`.
 * `reset_cause.active` is the spelled-out label for whichever flag is
   set, or `null` if all four are 0 (which would indicate a corrupted
   cold-init — should not happen in practice).
