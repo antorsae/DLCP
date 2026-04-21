@@ -4447,6 +4447,50 @@ v171_preset_boot_init_done:
 
 flow_ccs_0FA0_118C:                                                  ; address: 0x00118c
 
+        ; ---------------------------------------------------------------
+        ; V1.71 WAITING-loop operator-recovery (2026-04-21)
+        ; ---------------------------------------------------------------
+        ; Stock V1.6b/V1.7x WAITING FOR DLCP loop has NO button-poll and
+        ; NO timeout: if MAIN stops emitting the boot-handshake sentinel
+        ; burst (BF/05/06/07/1D) -- e.g., after STDBY+WAKE, where MAIN
+        ; resumes normal heartbeats but doesn't re-emit the initial
+        ; burst that clears CONTROL's 4 sentinel caches -- CONTROL is
+        ; locked here forever, LCD frozen on "WAITING FOR DLCP", buttons
+        ; dead.  Only power-cycle recovers.
+        ;
+        ; Added 2026-04-21 per real-HW debugging session (see probe
+        ; output in scripts/dlcp_probe_chain_link.py baseline-vs-wedged
+        ; capture): when operator presses RIGHT or LEFT, force-clear the
+        ; 4 sentinel caches.  The loop's natural exit condition then
+        ; fires, post_connect_init runs, and (since CONTROL hasn't
+        ; actually handshaken with MAIN) control falls through to
+        ; flow_display_state_entry_1250 which shows the STANDBY ZZZ
+        ; screen -- operator can navigate from there.
+        ;
+        ; This does NOT fix the underlying reconnect bug (MAIN's wake
+        ; path fails to re-emit the sentinel burst) -- that's a V3.2
+        ; MAIN-side fix that needs a separate flash round.  What it
+        ; DOES fix is the UX deadlock: operator now has a way out
+        ; without power-cycling both MAINs + CONTROL.
+        call    display_loop_iteration, 0x0                ; debounce tick
+        movlb   0x00                                       ; BSR may have drifted
+        btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
+        bra     v171_waiting_force_exit_recover
+        btfsc   0x9a, 0x4, B                               ; LEFT pressed?
+        bra     v171_waiting_force_exit_recover
+        bra     v171_waiting_continue_poll                 ; no button, poll MAIN
+v171_waiting_force_exit_recover:
+        ; Force-clear the 4 sentinel caches so the loop's existing
+        ; exit condition fires.  Values of 0x00 are not the "real"
+        ; boot-handshake values but are also not the 0x80 sentinel --
+        ; post-loop code reads these as "unset / default" which is
+        ; the same behavior as a device with blank preset.
+        clrf    0xb8, B                                    ; input_select_cache
+        clrf    0xb9, B                                    ; volume_cache
+        clrf    0xa7, B                                    ; cmd1d_setting_cache
+        clrf    0xa1, B                                    ; raw_status_cache
+v171_waiting_continue_poll:
+
         call    poll_frame_send, 0x0                           ; dest: 0x000b64
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
