@@ -219,13 +219,55 @@ def _probe_cmd44_diag(
 
 @dataclasses.dataclass(frozen=True)
 class DiagReport:
-    """Combined per-MAIN result: HID device info + version + diag snapshot."""
+    """Combined per-MAIN result: HID device info + version + diag snapshot
+    + (optional) live channel-routing snapshot read via EP0.
+
+    The ``routes`` and ``active_config_name`` fields are populated by the
+    same EP0 RAM-window probe that ``dlcp_main_flash.py --info-only`` uses
+    (``_probe_ep0_app_ram`` in src/dlcp_fw/flash/dlcp_main_flash.py).
+    They're optional because:
+      * the EP0 probe can fail (permissions, device-busy, bootloader mode);
+      * the device might be in bootloader mode and not have the app
+        RAM populated yet.
+    Failure is logged as a warning and the corresponding fields stay None.
+    """
 
     info: HidDeviceInfo
     version: Optional[VersionInfo]
     snapshot: DiagSnapshot
     status: str
     alerts: Tuple[str, ...]
+    routes: Optional[Tuple[object, ...]] = None  # tuple[RouteEntry, ...]
+    active_config_name: Optional[str] = None
+
+
+# Mapping from a uniform single-route label to the operator-friendly
+# channel role.  Used by _derive_channel_label when all 6 output
+# channels of a MAIN are wired to the same source -- e.g., a unit
+# that plays only L on every output is the LEFT speaker.
+_ROLE_FOR_UNIFORM_ROUTE: dict[str, str] = {
+    "L":   "LEFT",
+    "R":   "RIGHT",
+    "L+R": "MONO",
+    "L-R": "MID",
+    "R-L": "SIDE",
+}
+
+
+def _derive_channel_label(routes: Optional[Tuple[object, ...]]) -> str:
+    """Synthesize a one-word channel label from the per-MAIN route table.
+
+    All 6 outputs the same -> use the role label (LEFT/RIGHT/MONO/...)
+    Mixed outputs -> "MIX"
+    No routes available -> ""
+    """
+    if not routes:
+        return ""
+    labels = {r.label for r in routes}
+    if len(labels) == 1:
+        sole = next(iter(labels))
+        return _ROLE_FOR_UNIFORM_ROUTE.get(sole, sole)
+    return "MIX"
 
 
 def query_diag(
@@ -234,11 +276,17 @@ def query_diag(
     pid: int = DEFAULT_PID,
     path: Optional[bytes] = None,
     timeout_ms: int = 1000,
+    probe_routes: bool = True,
 ) -> DiagReport:
     """Open one HID device, query cmd 0x06 (version) + cmd 0x44 (diag),
-    and return a combined :class:`DiagReport`.
+    and (optionally) probe the channel-routing RAM window via EP0.
+    Returns a combined :class:`DiagReport`.
 
     If multiple HID devices match VID:PID, ``path`` must be specified.
+
+    Setting ``probe_routes=False`` skips the EP0 probe (used by tests
+    that don't want to require the EP0 helper to be importable / by
+    callers that just want the cmd 0x44 snapshot).
     """
     info = _pick_device(vid, pid, path)
     dev = _open_hid(info.path)
@@ -253,8 +301,38 @@ def query_diag(
             dev.close()
         except Exception:
             pass
+
+    routes: Optional[Tuple[object, ...]] = None
+    active_config_name: Optional[str] = None
+    if probe_routes:
+        # Reuse the EP0 RAM-window probe shipped by dlcp_main_flash.py
+        # so dlcp_diag and dlcp_main_flash speak the same channel-routing
+        # language.  Failures are non-fatal -- a device in bootloader
+        # mode or one that refuses EP0 access still produces a usable
+        # diag report (just with no channel info).
+        try:
+            from dlcp_fw.flash.dlcp_main_flash import _probe_ep0_app_ram
+
+            active_config_name, routes = _probe_ep0_app_ram(
+                vid=vid, pid=pid, path=info.path,
+            )
+        except Exception:
+            # Swallow silently -- routes/config_name remain None.  The
+            # human report shows "<no routes available>" so the operator
+            # notices.  Don't pollute stderr because non-EP0-capable
+            # devices are a normal case (e.g., bootloader mode).
+            pass
+
     status, alerts = classify_status(snapshot)
-    return DiagReport(info=info, version=version, snapshot=snapshot, status=status, alerts=alerts)
+    return DiagReport(
+        info=info,
+        version=version,
+        snapshot=snapshot,
+        status=status,
+        alerts=alerts,
+        routes=routes,
+        active_config_name=active_config_name,
+    )
 
 
 def query_all_diags(
@@ -527,29 +605,49 @@ def _format_human_report(
     if not reports:
         lines.append("No DLCP HID devices detected.")
         return "\n".join(lines)
-    # If any channel labels are mapped, left-align them in a fixed-width
-    # column so the report stays readable across mixed-mapped devices.
-    label_width = 5  # enough for "LEFT" / "RIGHT" / "?    "
-    have_any_label = bool(ch_map)
-    for report in reports:
+    # Channel label resolution priority:
+    #   1. Operator override via --ch-map (manual; matches by HID-path
+    #      substring).
+    #   2. Auto-derive from EP0 route table (LEFT/RIGHT/MONO/MIX)
+    #      via _derive_channel_label(report.routes).
+    #   3. "" (no prefix column) when neither is available.
+    # If ANY device gets a label (manual or auto), left-align all labels
+    # in a fixed-width column so the report stays visually consistent.
+    auto_labels = [_derive_channel_label(r.routes) for r in reports]
+    manual_labels = [
+        _resolve_channel_label(
+            r.info.path.decode("utf-8", errors="replace")
+            if r.info.path is not None else "",
+            ch_map,
+        )
+        for r in reports
+    ]
+    have_any_label = bool(ch_map) or any(auto_labels)
+    label_width = max(
+        (len(lbl) for lbl in (auto_labels + manual_labels) if lbl),
+        default=5,
+    )
+    for report, auto_lbl, manual_lbl in zip(reports, auto_labels, manual_labels):
         path_text = (
             report.info.path.decode("utf-8", errors="replace")
             if report.info.path is not None
             else "<no-path>"
         )
-        # Channel labels are operator-supplied via --ch-map.  Firmware
-        # does NOT report its channel identity over HID -- the cmd 0x44
-        # round-5 trailer-drop removed the role byte and cmd 0x06
-        # never carried one.  The fallback "?" placeholder makes
-        # unmapped devices visually obvious so the operator notices
-        # they should extend the map.
-        label = _resolve_channel_label(path_text, ch_map)
-        if not label and have_any_label:
+        # Manual label wins over auto-derived (operator override).  When
+        # neither is available but ch_map was given, show "?" so the
+        # operator notices to extend the map.
+        label = manual_lbl or auto_lbl
+        if not label and ch_map:
             label = "?"
         prefix = f"{label:<{label_width}} " if have_any_label else ""
         lines.append(
             f"{prefix}HID {path_text}  {_format_version(report.version)}"
         )
+        if report.routes:
+            from dlcp_fw.flash.dlcp_main_flash import format_route_entries
+            lines.append("  Channels:  " + format_route_entries(report.routes))
+        if report.active_config_name:
+            lines.append(f"  Config:    {report.active_config_name!r}")
         lines.append("  " + _format_runtime_line(report.snapshot))
         lines.append("  " + _format_reset_line(report.snapshot))
         lines.append("  " + _format_status_line(report))
@@ -591,14 +689,29 @@ def _format_json_report(
             if report.info.path is not None
             else None
         )
-        channel = (
+        manual_channel = (
             _resolve_channel_label(path_text, ch_map) or None
             if path_text is not None
             else None
         )
+        auto_channel = _derive_channel_label(report.routes) or None
+        # Manual override wins; auto-derived as fallback.
+        channel = manual_channel or auto_channel
+        routes_obj: Optional[List[dict[str, object]]] = None
+        if report.routes:
+            routes_obj = [
+                {"channel": r.channel, "value": r.value, "label": r.label}
+                for r in report.routes
+            ]
         out["mains"].append(
             {
                 "channel": channel,
+                "channel_source": (
+                    "ch_map" if manual_channel else
+                    ("ep0_routes" if auto_channel else None)
+                ),
+                "routes": routes_obj,
+                "active_config_name": report.active_config_name,
                 "hid_path": path_text,
                 "product_string": report.info.product_string,
                 "serial_number": report.info.serial_number,

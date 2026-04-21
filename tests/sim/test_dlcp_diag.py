@@ -11,6 +11,7 @@ Three tiers:
 
 from __future__ import annotations
 
+import dataclasses
 from typing import List
 
 import pytest
@@ -428,6 +429,151 @@ def test_human_report_v23_omits_rev_marker() -> None:
     assert text == "V2.3", (
         f"V2.3/V3.0 expected 'V2.3' with NO rev suffix; got {text!r}"
     )
+
+
+def test_human_report_auto_derives_channel_from_routes() -> None:
+    """When --ch-map is not given, the channel label is auto-derived
+    from the EP0 route table:
+      * all 6 outputs L  -> "LEFT"
+      * all 6 outputs R  -> "RIGHT"
+      * mixed             -> "MIX"
+    Reuses the existing route helpers from dlcp_main_flash.py so the
+    two CLIs (dlcp_diag and dlcp_main_flash --info-only) agree on the
+    channel-routing language.
+    """
+    from dlcp_fw.flash.dlcp_main_flash import RouteEntry
+
+    snap = _snap()
+    # Construct a report with routes manually (the live EP0 probe is
+    # not exercised in this unit test -- that happens at integration
+    # time on hardware).
+    base = _make_report(snap)
+    routes_left = tuple(
+        RouteEntry(channel=i + 1, value=0, label="L") for i in range(6)
+    )
+    routes_right = tuple(
+        RouteEntry(channel=i + 1, value=1, label="R") for i in range(6)
+    )
+    routes_mixed = (
+        RouteEntry(channel=1, value=0, label="L"),
+        RouteEntry(channel=2, value=1, label="R"),
+        RouteEntry(channel=3, value=0, label="L"),
+        RouteEntry(channel=4, value=1, label="R"),
+        RouteEntry(channel=5, value=2, label="L+R"),
+        RouteEntry(channel=6, value=2, label="L+R"),
+    )
+    for routes, expected_label in (
+        (routes_left, "LEFT"),
+        (routes_right, "RIGHT"),
+        (routes_mixed, "MIX"),
+    ):
+        report = dataclasses.replace(base, routes=routes)
+        text = _format_human_report([report])
+        assert expected_label in text, (
+            f"expected auto-derived label {expected_label!r} for routes "
+            f"{routes!r}; output: {text!r}"
+        )
+
+
+def test_human_report_ch_map_overrides_auto_derived_label() -> None:
+    """Operator --ch-map takes precedence over the auto-derived label.
+
+    Use case: a unit physically wired LEFT but with all-R routes (e.g.,
+    operator hasn't loaded a preset yet, or the EP0 probe returned stale
+    data); --ch-map LEFT=... still labels it LEFT.
+    """
+    from dlcp_fw.flash.dlcp_main_flash import RouteEntry
+
+    snap = _snap()
+    routes_right = tuple(
+        RouteEntry(channel=i + 1, value=1, label="R") for i in range(6)
+    )
+    base = _make_report(snap)
+    report = dataclasses.replace(base, routes=routes_right)
+    # No ch_map: auto-derived label = "RIGHT".
+    text_auto = _format_human_report([report])
+    assert "RIGHT" in text_auto
+    # ch_map override: label = "LEFT".
+    text_manual = _format_human_report(
+        [report], ch_map={"DevSrvsID:test": "LEFT"},
+    )
+    assert "LEFT " in text_manual or "LEFT\n" in text_manual or text_manual.startswith("LEFT")
+    # Spot-check that the auto-derived "RIGHT" is NOT in the manual case.
+    # Given that "LEFT" replaces the prefix entirely, "RIGHT" should not
+    # appear unless it's part of some other content (it's not).
+    # However the route line still shows R values; relax to verifying
+    # the prefix LINE doesn't contain "RIGHT".
+    first_line_with_path = next(
+        ln for ln in text_manual.split("\n") if "DevSrvsID:test" in ln
+    )
+    assert "RIGHT" not in first_line_with_path
+
+
+def test_human_report_shows_channel_mapping_line() -> None:
+    """The new "Channels:" line lists the per-output route mappings
+    using format_route_entries from dlcp_main_flash (CH1=L CH2=L ...).
+    """
+    from dlcp_fw.flash.dlcp_main_flash import RouteEntry
+
+    snap = _snap()
+    routes = tuple(
+        RouteEntry(channel=i + 1, value=0, label="L") for i in range(6)
+    )
+    base = _make_report(snap)
+    report = dataclasses.replace(base, routes=routes)
+    text = _format_human_report([report])
+    assert "Channels:" in text
+    # All 6 channel slots present.
+    for n in range(1, 7):
+        assert f"CH{n}=L" in text
+
+
+def test_json_report_includes_routes_and_channel_source() -> None:
+    """JSON gains `routes`, `channel_source`, and `active_config_name`
+    when EP0 probe succeeded."""
+    import json
+    from dlcp_fw.flash.dlcp_main_flash import RouteEntry
+
+    snap = _snap()
+    routes = tuple(
+        RouteEntry(channel=i + 1, value=0, label="L") for i in range(6)
+    )
+    base = _make_report(snap)
+    report = dataclasses.replace(
+        base, routes=routes, active_config_name="ConfigName",
+    )
+    text = _format_json_report([report])
+    obj = json.loads(text)
+    main_obj = obj["mains"][0]
+    # Auto-derived channel.
+    assert main_obj["channel"] == "LEFT"
+    assert main_obj["channel_source"] == "ep0_routes"
+    # routes shape.
+    assert main_obj["routes"] is not None
+    assert len(main_obj["routes"]) == 6
+    assert main_obj["routes"][0] == {"channel": 1, "value": 0, "label": "L"}
+    assert main_obj["active_config_name"] == "ConfigName"
+
+
+def test_json_report_channel_source_indicates_ch_map_override() -> None:
+    """When --ch-map overrides the auto-derived label, JSON
+    channel_source = "ch_map" so downstream tooling can distinguish
+    operator-supplied labels from auto-derived ones."""
+    import json
+    from dlcp_fw.flash.dlcp_main_flash import RouteEntry
+
+    snap = _snap()
+    routes = tuple(
+        RouteEntry(channel=i + 1, value=1, label="R") for i in range(6)
+    )
+    base = _make_report(snap)
+    report = dataclasses.replace(base, routes=routes)
+    text = _format_json_report(
+        [report], ch_map={"DevSrvsID:test": "LEFT"},
+    )
+    obj = json.loads(text)
+    assert obj["mains"][0]["channel"] == "LEFT"
+    assert obj["mains"][0]["channel_source"] == "ch_map"
 
 
 def test_json_report_eeprom_marker_null_for_unknown_version() -> None:
