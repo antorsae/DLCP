@@ -294,7 +294,12 @@ def _make_report(
         product_string="DLCP",
         serial_number="",
     )
-    version = VersionInfo(flag=3, major=2, minor=0x37)
+    # Real V3.2 firmware loads (3, 3, 2) at ram_0x05B/C/D -- see
+    # src/dlcp_fw/asm/dlcp_main_v32.asm line ~2870.  The previous mock
+    # used (3, 2, 0x37) based on a misreading of the spec sample;
+    # codex review 2026-04-21 against the real cmd 0x06 response on
+    # hardware showed (3, 3, 2).
+    version = VersionInfo(flag=3, major=3, minor=2)
     status, alerts = classify_status(snapshot)
     return DiagReport(info=info, version=version, snapshot=snapshot, status=status, alerts=alerts)
 
@@ -307,9 +312,15 @@ def test_human_report_shape_clean_boot() -> None:
     text = _format_human_report([report], ts="2026-04-20T15:23:00Z")
     assert "DLCP Diagnostics  (2026-04-20T15:23:00Z)" in text
     assert "DevSrvsID:test" in text
-    # Spec sample format: "V3.2 rev 0x37" (NOT "V3.x.2 rev 0x37" -- the
-    # earlier draft doubled the major digit; codex MEDIUM fix vs dc9647a).
-    assert "V3.2 rev 0x37" in text
+    # Format: "V{major}.{minor}".  Real V3.2 firmware reports
+    # (flag=3, major=3, minor=2) via cmd 0x06.  The earlier mock used
+    # (3, 2, 0x37) -- codex review 2026-04-21 against real hardware
+    # showed the correct tuple is (3, 3, 2), so the displayed string
+    # is "V3.2".  The "rev 0x37" trailer in the original spec sample
+    # is the EEPROM marker, NOT part of the cmd 0x06 response;
+    # dropped from the format until/unless we add a separate
+    # EEPROM-marker read.
+    assert "V3.2" in text
     # All 7 runtime letters present in Runtime line.
     for letter in RUNTIME_LETTERS:
         assert f"{letter}" in text, f"missing runtime letter {letter}"
@@ -343,7 +354,11 @@ def test_json_report_shape() -> None:
     main_obj = obj["mains"][0]
     # Spec'd field names.
     assert main_obj["hid_path"] == "DevSrvsID:test"
-    assert main_obj["version"] == {"flag": 3, "major": 2, "rev": 0x37, "rev_hex": "0x37"}
+    # Real V3.2 firmware reports (flag=3, major=3, minor=2); the
+    # JSON keeps the existing field shape (flag/major/rev/rev_hex)
+    # for backward compatibility with downstream tooling, but the
+    # values now reflect what the firmware actually sends.
+    assert main_obj["version"] == {"flag": 3, "major": 3, "rev": 2, "rev_hex": "0x02"}
     assert main_obj["counters"] == {
         "i": 3, "d": 2, "s": 1, "b": 1, "r": 0, "a": 0, "p": 0,
     }

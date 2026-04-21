@@ -3362,6 +3362,27 @@ v171_diag_screen:
         bnz     v171_diag_screen_skip_init
         bcf     v171_diag_target, 0, BANKED
 v171_diag_screen_skip_init:
+        ; --- Tier-1 Phase 3.4 follow-up: cadence prime moved to
+        ;     page-entry-only.  Originally the countdown clear lived
+        ;     in v171_diag_screen_armed below, which the render
+        ;     branches bra to AFTER every redraw.  That meant every
+        ;     incoming BF/2N reply reset the countdown to 0 and
+        ;     immediately re-fired cmd 0x21 / cmd 0x22 on the next
+        ;     loop iteration -- collapsing the intended ~1 s cadence
+        ;     to event-driven burst traffic.  On real 2-PB hardware
+        ;     that saturates the chain bus and starves the menu's
+        ;     button-check loop (codex-cli sim 2026-04-21).
+        ;
+        ;     New behavior: clear the countdown ONCE on page entry
+        ;     so the very first cadence tick fires immediately, then
+        ;     every subsequent send respects the ~1 s reload value.
+        ;     Snapshot the present mask here too so the first
+        ;     check_redraw doesn't fire a spurious redraw against an
+        ;     uninitialized snapshot byte.
+        clrf    v171_diag_poll_lo, BANKED
+        clrf    v171_diag_poll_hi, BANKED
+        movf    v171_diag_present, W, BANKED
+        movwf   v171_diag_present_snap, BANKED
         movlb   0x00
 
 v171_diag_screen_draw:
@@ -3725,18 +3746,17 @@ v171_diag_pad_spaces_done:
         return  0x0
 
 v171_diag_screen_armed:
-        ; First entry primes an immediate query so the LCD doesn't sit
-        ; on a stale cache during the first poll cadence.  Force the
-        ; countdown to 0 so the very next loop iteration enqueues a
-        ; query for the current target slot.  Also snapshot the present
-        ; mask here so the first v171_diag_check_redraw doesn't fire a
-        ; spurious redraw against an uninitialized snapshot byte.
-        movlb   0x01
-        clrf    v171_diag_poll_lo, BANKED
-        clrf    v171_diag_poll_hi, BANKED
-        movf    v171_diag_present, W, BANKED
-        movwf   v171_diag_present_snap, BANKED
-        movlb   0x00
+        ; Cadence prime + present_snap init MOVED to v171_diag_screen
+        ; (page-entry-only) to fix the redraw-vs-cadence collapse
+        ; identified by codex-cli sim 2026-04-21.  This label is now
+        ; just a fall-through marker preserved for backward
+        ; compatibility -- all render branches still bra here, but
+        ; the work it used to do is now in the page-entry init block.
+        ;
+        ; Do NOT add per-redraw setup here without auditing whether
+        ; collapsing the cadence is acceptable.  See the v171_diag_loop
+        ; comment block + V32_DIAG_TIER1_SPEC.md for the cadence
+        ; design intent.
 
 v171_diag_loop:
         call    display_loop_iteration, 0x0
@@ -4910,7 +4930,15 @@ control_core_service_13FE:                                               ; addre
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movff   0x0bf, tx_data_staging                    ; reg2: 0x027
+        ; V1.71 Tier-1 menu rework remap: see control_core_service_1912.
+        ; Setup is now state 3 in the new ring but the legacy table has
+        ; Setup at index 2.  Without this remap, state 3 reads
+        ; table[3] = past-end (raw code bytes) and the LCD shows
+        ; gibberish for the Setup title row -- the user-reported
+        ; "garbled chars over BL Timeout" symptom.  Force the Setup
+        ; title to read from table[2] (the legacy Setup slot).
+        movlw   0x02                                      ; legacy Setup table index
+        movwf   tx_data_staging, A                        ; reg: 0x027
         movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_title_table)                           ; shifted via label
@@ -5607,7 +5635,15 @@ control_core_service_1912:                                               ; addre
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movff   0x0bf, tx_data_staging                    ; reg2: 0x027
+        ; V1.71 Tier-1 menu rework remap: menu_title_table is the
+        ; stock V1.6b 3-entry table (Vol=0, Input=1, Setup=2).  After
+        ; Phase 3.3 reshuffled the ring (Vol=0, Preset=1, Input=2,
+        ; Setup=3, PB1Diag=4, PB2Diag=5), state index 2 (Input) used
+        ; to read table[state]=table[2]="Setup" -- garbled title.
+        ; Force the Input title to read from table[1] (the legacy
+        ; Input slot) regardless of where Input lives in the new ring.
+        movlw   0x01                                      ; legacy Input table index
+        movwf   tx_data_staging, A                        ; reg: 0x027
         movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_title_table)                           ; shifted via label

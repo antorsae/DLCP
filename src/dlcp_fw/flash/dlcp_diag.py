@@ -374,21 +374,43 @@ def _dedup_preserving_order(items: List[str]) -> List[str]:
 
 
 def _format_version(version: Optional[VersionInfo]) -> str:
-    """Render a VersionInfo per the spec sample format: "V3.2 rev 0x37".
+    """Render a VersionInfo as "V{major}.{minor}".
 
-    The flag-byte family prefix is "V" for the only family we ship
-    (V3.x); a flag != 3 prints as "flag=0x.." for diagnostic clarity.
-    Earlier draft used "V3.x.2 rev 0x37" which doubled up the major
-    digit and didn't match the spec sample (codex MEDIUM fix vs dc9647a).
+    cmd 0x06 returns 3 bytes that the firmware encodes as:
+      * byte[1] = flag   (0x03 = "valid version block" marker)
+      * byte[2] = major  (0x02 for V2.x family, 0x03 for V3.x family)
+      * byte[3] = minor
+
+    Examples (verified against firmware source):
+      * stock V2.3:                      (3, 2, 3) -> "V2.3"
+      * V3.0 (byte-equivalent rewrite):  (3, 2, 3) -> "V2.3"  -- intentional;
+                                                                V3.0 keeps the
+                                                                stock identifier
+                                                                so existing tools
+                                                                see no change.
+      * V3.1 source rewrite:             (3, 3, 1) -> "V3.1"
+      * V3.2 source rewrite:             (3, 3, 2) -> "V3.2"
+
+    A previous version of this function rendered as
+    `f"V{flag}.{major} rev 0x{rev:02X}"` which produced "V3.3 rev 0x02"
+    for V3.2 firmware -- the format treated the major-byte as a minor
+    and the minor-byte as a "rev" when those bytes are actually
+    (major, minor) of the same version.
+
+    Note: the EEPROM marker (e.g. 0x37 for V3.2) is a SEPARATE byte
+    that lives in EEPROM, not in the cmd 0x06 response.  The
+    "rev 0x37" string in V32_DIAG_TIER1_SPEC.md sample output was
+    misleading and isn't reproducible from cmd 0x06 alone.  Drop it
+    from the format until/unless we add a separate EEPROM-marker read.
     """
     if version is None:
         return "<unknown>"
     flag = version.flag
     major = version.major
-    rev = version.minor
-    if flag == 3:
-        return f"V{flag}.{major} rev 0x{rev:02X}"
-    return f"flag=0x{flag:02X}.{major} rev 0x{rev:02X}"
+    minor = version.minor
+    if flag == 3 and major in (2, 3):
+        return f"V{major}.{minor}"
+    return f"flag=0x{flag:02X} major=0x{major:02X} minor=0x{minor:02X}"
 
 
 def _format_runtime_line(snapshot: DiagSnapshot) -> str:
