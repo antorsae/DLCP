@@ -68,9 +68,15 @@ ADDR_OSCCON  = 0xFB3
 ADDR_OSCTUNE = 0xF7B
 ADDR_RCON    = 0xFD0
 ADDR_TMR0L   = 0xFB6
-ADDR_PORTA   = 0xF80
-ADDR_PORTC   = 0xF82
-ADDR_LATB    = 0xF8A
+# PIC18F2455 PORTA/PORTB/PORTC live at 0xF60/0xF61/0xF62 -- NOT
+# 0xF80/0xF82 (those are PIE2/IPR2 = interrupt regs).  Codex review
+# of b02c370 caught the address typo.  See 39632e.md:2730-2732.
+ADDR_PORTA   = 0xF60
+ADDR_PORTB   = 0xF61
+ADDR_PORTC   = 0xF62
+ADDR_LATA    = 0xF69
+ADDR_LATB    = 0xF6A
+ADDR_LATC    = 0xF6B
 
 ADDR_ACTIVE_FLAGS = 0x01F  # MAIN's active_flags equiv (low GPR)
 
@@ -103,7 +109,16 @@ def read_block(ep0: DlcpEp0, start: int, size: int) -> bytes:
 
 
 def read_byte(ep0: DlcpEp0, addr: int) -> int:
-    return read_block(ep0, addr, 1)[0]
+    """Read one byte; on transient EP0 failure return 0xFF and don't
+    abort the whole probe.  Codex review of b02c370 noted that bare
+    reads would propagate USBError mid-script; this matches the
+    graceful-degradation pattern used by dlcp_diag's EP0 path."""
+    try:
+        return read_block(ep0, addr, 1)[0]
+    except (RuntimeError, OSError, ValueError, NotImplementedError) as exc:
+        import sys
+        print(f"    WARN: read 0x{addr:04X} failed: {exc}", file=sys.stderr)
+        return 0xFF
 
 
 def probe_one(path: bytes) -> None:
@@ -161,9 +176,9 @@ def probe_one(path: bytes) -> None:
     # GPIO.
     porta = read_byte(ep0, ADDR_PORTA)
     portc = read_byte(ep0, ADDR_PORTC)
-    print(f"  PORTA   (0xF80) = 0x{porta:02X}    "
+    print(f"  PORTA   (0xF60) = 0x{porta:02X}    "
           f"AN0(bit0)={porta & 1}  RA1(bit1)={(porta >> 1) & 1}")
-    print(f"  PORTC   (0xF82) = 0x{portc:02X}    "
+    print(f"  PORTC   (0xF62) = 0x{portc:02X}    "
           f"RC2={(portc >> 2) & 1} ({'CHAIN' if (portc >> 2) & 1 else 'MASTER'})  "
           f"RC6_TX={(portc >> 6) & 1}  "
           f"RC7_RX={(portc >> 7) & 1}")
