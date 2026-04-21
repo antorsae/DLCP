@@ -3,7 +3,7 @@
 ## Scope
 
 This is the operator runbook for the recommended MAIN deployment as of
-2026-04-19.
+2026-04-21.
 
 - recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
 - recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
@@ -185,3 +185,21 @@ the live-rig walk-through.
 - Real-hardware acoustic comparison of release and suspect local
   images is covered separately in
   [`docs/HARDWARE_LOOP.md`](HARDWARE_LOOP.md).
+
+## Known Open Items
+
+- **MAIN wake path doesn't re-emit the sentinel burst (2026-04-21).**
+  V3.2's `wake_request_handler` (asm:1842) and `adc_boot_gate`
+  (asm:4047) resume normal operation after STDBY+WAKE, but they do
+  NOT re-invoke `send_status_burst` (asm:6044).  That burst is what
+  clears CONTROL's 4 boot sentinel caches; it is only emitted from
+  cold boot and from `cmd04_status_response` (asm:1997).  If CONTROL
+  enters its V1.62b reconnect-wait loop between MAIN's standby and
+  wake, it can stay stuck on `WAITING FOR DLCP` indefinitely
+  because none of the BF/05/06/07/1D frames that clear the
+  sentinels are re-emitted.  V1.71 CONTROL ships with an operator
+  escape (~10 s grace then `RIGHT` / `LEFT` triggers a soft reset)
+  as an interim mitigation; the MAIN-side root-cause fix is an
+  outstanding workstream documented in
+  [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
+  §"MAIN wake-path sentinel re-emit".

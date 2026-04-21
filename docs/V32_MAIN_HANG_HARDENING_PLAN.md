@@ -1,6 +1,6 @@
 # V3.2 MAIN Hang Hardening Plan
 
-Last updated: 2026-04-15
+Last updated: 2026-04-21
 Scope: MAIN `V3.2` robustness against control-path hangs on two-MAIN chain (`CONTROL <> PB1 <> PB2`)
 
 ## Problem Statement
@@ -79,6 +79,67 @@ Tests:
 
 - Continue using `tests/sim/test_v28_wire_delayed_switch_repros.py` as acceptance for interleaved `0x20` + `0x03`.
 - Add assertions for "last command wins" under burst interleave.
+
+## 3b) MAIN Wake-Path Sentinel Re-Emit (CONTROL reconnect unblock)
+
+Added 2026-04-21 after a field-reproducible wedge: after the operator
+pressed `STDBY` on CONTROL and then `WAKE`, CONTROL was locked on
+`WAITING FOR DLCP` indefinitely with both MAINs still alive on USB.
+Real-HW probe (scripts/dlcp_probe_chain_link.py) confirmed the MAINs
+were healthy (gate open, no faults, audio would resume if queried) --
+the wedge was on the CONTROL-side sentinel-clear protocol.
+
+Root cause: V3.2 MAIN's `wake_request_handler` (asm:1842) +
+`adc_boot_gate` (asm:4047) resume the normal runtime loop but do NOT
+re-invoke `send_status_burst` (asm:6044).  That burst -- BF/05 + 07 +
+03 + 06 + 1D -- is what CONTROL's V1.62b reconnect loop consumes to
+clear its four sentinel caches (`input_select_cache` 0xB8,
+`volume_cache` 0xB9, `cmd1d_setting_cache` 0xA7, `raw_status_cache`
+0xA1).  In stock V1.6b/V1.7x these caches were re-primed to 0x80 at
+boot and only cleared when MAIN answered the corresponding poll
+frame.  V3.2's wake path emits heartbeats (`cmd04` reply pieces)
+but not the full burst, so only a subset of sentinels clear and
+CONTROL hangs.
+
+Interim mitigation landed 2026-04-21 on V1.71 CONTROL side:
+operator can press `RIGHT` or `LEFT` after a ~10 s grace to trigger
+a PIC18 soft `RESET` and re-run the full CONTROL cold-init +
+full-sync-burst.  See `docs/V171_RELEASE.md` §"WAITING FOR DLCP
+operator recovery".  This is a UX escape hatch, not a root-cause fix.
+
+Implementation (MAIN-side, this workstream):
+
+- Call `send_status_burst` (or an equivalent sentinel-priming
+  frame sequence) from `wake_request_handler` after the UART is
+  re-initialized, before returning to the runtime loop.
+- Alternately: unify wake + cmd04 into a single "MAIN advertises
+  state" path so CONTROL can always trigger the burst on-demand.
+- Audit other state-transition entry points (PEN timeout recovery,
+  hard-reset escalation) to ensure CONTROL's reconnect sentinels
+  always clear on wake without requiring a CONTROL soft-reset.
+
+Primary code areas:
+
+- `wake_request_handler` (asm:1842)
+- `adc_boot_gate` (asm:4047)
+- `send_status_burst` (asm:6044)
+- `cmd04_status_response` (asm:1997)
+
+Tests:
+
+- Add wire-chain test that simulates CONTROL in
+  `v171_reconnect_wait_body` after MAIN has been through STDBY +
+  WAKE; assert that all four sentinel caches clear within a
+  bounded number of poll iterations without requiring the CONTROL
+  soft-reset escape.
+- Live-hardware soak: 100× STDBY+WAKE cycles.  Acceptance: zero
+  lockups into the WAITING-loop grace-reset window (i.e., zero
+  operator-visible `WAITING FOR DLCP` > 5 s after wake).
+
+Release-gate note: with the V1.71 grace-reset in place this hang is
+operator-recoverable without a power cycle, so it's no longer a
+blocker for V3.2 shipping.  Remaining work is to eliminate the
+recovery requirement entirely on the next MAIN revision.
 
 ## 4) PB2 Upstream-Loss Fail-Safe
 

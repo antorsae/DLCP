@@ -1042,3 +1042,82 @@ If the operator walk-through shows `2:n/a` permanently while `1:` shows
 live counters, the Task #22 sim failures **reproduce on hardware** —
 the V1.71 parser or the V3.2 reply path has a real bug that needs a
 firmware fix.
+
+## WAITING FOR DLCP recovery (V1.71 operator reset, 2026-04-21)
+
+Validates the V1.71 operator-escape hatch for the
+`WAITING FOR DLCP` wedge that can occur after STDBY+WAKE when
+V3.2 MAIN fails to re-emit its sentinel-clearing burst.  See
+[`docs/V171_RELEASE.md`](V171_RELEASE.md) §"What's New vs V1.64b"
+for the feature definition and
+[`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
+§"MAIN Wake-Path Sentinel Re-Emit" for the MAIN-side root cause.
+
+### Prerequisites
+
+- CONTROL flashed with V1.71 (per
+  [`docs/V171_RELEASE.md`](V171_RELEASE.md))
+- both MAINs flashed with V3.2 (per
+  [`docs/V32_RELEASE.md`](V32_RELEASE.md))
+- PICkit 5 attached to CONTROL as a safety net (a bricked bootloader
+  would be recoverable; the escape path uses PIC18 soft `RESET`
+  which leaves the bootloader region intact, but keep the recovery
+  path available during first testing)
+
+### Operator walk-through — inducing the wedge
+
+1. Power-cycle the full chain.  Wait for CONTROL to reach the
+   Volume screen.
+2. Press `STDBY` on the CONTROL panel.  LCD shows `Zzz...`.
+3. Press `STDBY` again (= WAKE).  LCD may briefly show
+   `WAITING FOR DLCP` and then recover to Volume — this is the
+   healthy path.  If CONTROL reaches Volume within ~2 s, the wedge
+   did not reproduce on this cycle.  Retry steps 2-3 several times.
+4. When CONTROL stays on `WAITING FOR DLCP` for > 5 s with no
+   recovery, the wedge has reproduced.  Confirm both MAINs are
+   still alive on USB by running
+   `scripts/dlcp_main_flash.py --info-only` in a host terminal —
+   both PBs should report version `V3.2` and route.
+
+### Operator walk-through — recovery
+
+5. Once CONTROL has been stuck on `WAITING FOR DLCP` for at least
+   ~10 s (the grace window), press the `RIGHT` IR key (or the
+   physical right button if present on the CONTROL panel).
+6. CONTROL should immediately reset — LCD blanks briefly, then the
+   boot sequence re-runs showing the firmware version string and
+   then either the Volume screen (if MAIN now answers the fresh
+   full-sync burst) or `WAITING FOR DLCP` again (if MAIN is still
+   silent).  In the second case, repeat step 5 — each reset
+   restarts the full boot handshake.
+7. If repeated resets do not clear `WAITING FOR DLCP`, the wedge is
+   not on CONTROL's side and the MAIN-side fail-safe work in
+   `docs/V32_MAIN_HANG_HARDENING_PLAN.md` §"MAIN Wake-Path Sentinel
+   Re-Emit" is required.  Escalate rather than keep resetting.
+
+### Pass criteria
+
+| What | Expected | Failure attribution |
+|---|---|---|
+| Wedge reproduces on some cycle | yes (within ~20 cycles) | If wedge never reproduces, V3.2 wake path may already be fixed — revisit the open item in `V32_MAIN_HANG_HARDENING_PLAN.md` §3b |
+| First RIGHT press < 10 s ignored | yes (grace gate) | If RIGHT press during early boot resets CONTROL, grace counter may be misconfigured — inspect `v171_waiting_grace_count` threshold |
+| First RIGHT press > 10 s triggers reset | yes (visible LCD blank + re-boot) | If the button does nothing: button_scan_debounce path is broken, or the MAIN is responding and CONTROL already exited WAITING in the iteration between button presses |
+| LEFT press works symmetrically with RIGHT | yes | If only RIGHT works, button-bit mapping regressed (should be 0x9A.5 and 0x9A.4) |
+| Bootloader intact after multiple resets | yes (PICkit enumerates) | If bootloader no longer enumerates, the soft-RESET path is doing more than expected — halt testing and read back flash via PICkit |
+
+### Notes
+
+- The button bitmap at `0x9A` is an edge latch: holding RIGHT or
+  LEFT through the grace boundary may not fire the reset at the
+  exact threshold.  Release and re-press if the first press after
+  ~10 s seems ignored (tracked as codex LOW on `HEAD=2a07c02`,
+  Task #76).
+- A soft-reset CONTROL rejoins the chain as if just powered on:
+  MAIN state is unaffected.  Audio on MAIN should continue
+  uninterrupted during the CONTROL reset window.  If audio cuts,
+  something other than the CONTROL WAITING path wedged.
+- There is no sim test for this path; the validation loop is
+  exclusively hand-traced source review + codex review + this
+  operator walk-through.  Tracked gap; adding a gpsim behavioral
+  test that drives button pins in the WAITING state is an open
+  workstream.

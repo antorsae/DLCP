@@ -3,7 +3,7 @@
 ## Scope
 
 This is the operator runbook for the recommended CONTROL deployment as
-of 2026-04-19.
+of 2026-04-21.
 
 - recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
 - recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
@@ -40,6 +40,29 @@ adds three new layers on top:
   the seven returned counter values per PB on a compact 16x2 LCD
   layout.  See
   [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](V163B_DIAGNOSTICS_MENU_SPEC.md).
+- **WAITING FOR DLCP operator recovery (2026-04-21)** — the stock
+  V1.6b/V1.7x WAITING loops had no button poll and no timeout; if
+  MAIN failed to emit the sentinel-clearing boot handshake
+  (`BF/05/06/07/1D`) CONTROL was locked on `WAITING FOR DLCP`
+  forever and only a power-cycle recovered.  V1.71 adds a bounded
+  operator escape: after ~10 s of being stuck in either the
+  cold-boot WAITING loop or the V1.62b reconnect loop, pressing
+  `RIGHT` or `LEFT` triggers a PIC18 soft `RESET`.  The reset
+  preserves the bootloader region, re-primes all four sentinel
+  caches, and re-emits the CONTROL→MAIN full-sync burst — MAIN
+  normally answers each full-sync frame with a status frame that
+  clears the corresponding sentinel, so the second boot pass
+  usually completes even when the first one stalled.  Implementation
+  notes: grace counter `v171_waiting_grace_count` at RAM 0x0A8,
+  threshold 0x32 iterations, saturating.  The button bitmap is
+  refreshed via the one-shot `button_scan_debounce` so the WAITING
+  loops keep polling MAIN in parallel with the grace counter.  The
+  ~10 s gate prevents accidental resets from stray button presses
+  during normal cold-boot MAIN warmup.  This is an operator-facing
+  mitigation only; the underlying MAIN-side reconnect-burst gap is
+  tracked in
+  [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
+  as an open hardening workstream.
 
 EEPROM layout: V1.71 preserves the V1.6x preset slot at EEPROM
 `0x74` and version-tuple format.  Existing CONTROL EEPROM contents
@@ -140,6 +163,13 @@ Sim coverage for V1.71 in isolation and in chain combinations is in:
 - `tests/sim/test_v171_v31_chain.py` (V1.71 × V3.1 MAIN chain)
 - `tests/sim/test_v171_layer5_diag_page.py` (Layer 5 Phase B)
 - `tests/sim/test_v171_v32_layer5_diag_chain.py` (Layer 5 Phase C)
+
+The WAITING-loop operator-recovery path is validated structurally
+(assembler build + zero-regression diff against the pre-fix baseline
+of 453 failures) and hand-traced against the codex review chain at
+HEAD=`2a07c02`.  There is no behavioral sim test that drives the
+button pins in a wedged WAITING state; operator validation is
+covered in `docs/HARDWARE_TEST.md` §"WAITING FOR DLCP recovery".
 
 See [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page"
 for the live-rig walk-through of the Layer 5 path.
