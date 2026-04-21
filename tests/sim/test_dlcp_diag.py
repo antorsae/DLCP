@@ -354,11 +354,18 @@ def test_json_report_shape() -> None:
     main_obj = obj["mains"][0]
     # Spec'd field names.
     assert main_obj["hid_path"] == "DevSrvsID:test"
-    # Real V3.2 firmware reports (flag=3, major=3, minor=2); the
-    # JSON keeps the existing field shape (flag/major/rev/rev_hex)
-    # for backward compatibility with downstream tooling, but the
-    # values now reflect what the firmware actually sends.
-    assert main_obj["version"] == {"flag": 3, "major": 3, "rev": 2, "rev_hex": "0x02"}
+    # Real V3.2 firmware reports (flag=3, major=3, minor=2); JSON shape
+    # was extended (2026-04-21) to include the EEPROM marker (looked up
+    # from the (major, minor) tuple via _rev_marker_for_version) so
+    # downstream tooling can distinguish V3.x firmware revisions
+    # (V3.1 = 0x36, V3.2 = 0x37, etc.) without a separate EEPROM read.
+    assert main_obj["version"] == {
+        "flag": 3, "major": 3, "rev": 2, "rev_hex": "0x02",
+        "eeprom_marker": "0x37",
+    }
+    # Channel mapping is operator-supplied via --ch-map; with no map,
+    # the channel field is null.
+    assert main_obj["channel"] is None
     assert main_obj["counters"] == {
         "i": 3, "d": 2, "s": 1, "b": 1, "r": 0, "a": 0, "p": 0,
     }
@@ -368,6 +375,56 @@ def test_json_report_shape() -> None:
     assert main_obj["status"] == "DEGRADED"
     assert main_obj["nonzero_count"] == 4
     assert "brown_out_reset_this_session" in main_obj["alerts"]
+
+
+def test_human_report_includes_rev_marker_for_known_versions() -> None:
+    """V3.2 firmware (cmd 0x06 minor = 2) maps to EEPROM rev 0x37 via
+    the static lookup; V3.1 (minor = 1) maps to 0x36; unknown versions
+    omit the rev string."""
+    snap = _snap()
+    report = _make_report(snap)  # uses VersionInfo(3, 3, 2) -> V3.2
+    text = _format_human_report([report])
+    assert "V3.2 rev 0x37" in text, (
+        "V3.2 must show 'rev 0x37' from the static lookup"
+    )
+
+
+def test_human_report_with_ch_map_labels_devices() -> None:
+    """`--ch-map LEFT=DevSrvsID:test` should label that device LEFT
+    in the report; unmatched devices show '?' as the placeholder."""
+    snap = _snap()
+    report = _make_report(snap, path=b"DevSrvsID:test")
+    text = _format_human_report([report], ch_map={"DevSrvsID:test": "LEFT"})
+    assert "LEFT" in text
+    # Substring matching: the operator can pass just the suffix.
+    text2 = _format_human_report([report], ch_map={"test": "RIGHT"})
+    assert "RIGHT" in text2
+
+
+def test_human_report_unmapped_channel_shows_placeholder() -> None:
+    """When --ch-map is given but a device doesn't match any key,
+    the report shows '?' as the placeholder instead of leaving the
+    column blank -- so the operator notices to extend the map."""
+    snap = _snap()
+    report = _make_report(snap, path=b"DevSrvsID:unmapped")
+    text = _format_human_report(
+        [report], ch_map={"DevSrvsID:other": "LEFT"},
+    )
+    assert "?" in text
+
+
+def test_json_report_includes_channel_when_mapped() -> None:
+    """JSON report carries the channel label so downstream consumers
+    can attribute counters to specific units."""
+    import json
+
+    snap = _snap()
+    report = _make_report(snap, path=b"DevSrvsID:test")
+    text = _format_json_report(
+        [report], ch_map={"DevSrvsID:test": "LEFT"},
+    )
+    obj = json.loads(text)
+    assert obj["mains"][0]["channel"] == "LEFT"
 
 
 def test_json_report_empty_when_no_devices() -> None:

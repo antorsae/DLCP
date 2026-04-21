@@ -373,8 +373,42 @@ def _dedup_preserving_order(items: List[str]) -> List[str]:
 # ===========================================================================
 
 
+# Mapping from cmd 0x06 (major, minor) tuple to the EEPROM rev marker
+# (0xF00080..0xF00082 third byte).  Keep this in sync with the
+# `org 0xF00000 / eeprom_data` block of each MAIN source file:
+#   * src/dlcp_fw/asm/dlcp_main_v30.asm: V3.0 stock-equivalent
+#     (eeprom marker not bumped from stock V2.3 baseline; reads as
+#     no-tier-1 capability).
+#   * src/dlcp_fw/asm/dlcp_main_v31.asm: V3.1 -> EEPROM marker 0x36.
+#   * src/dlcp_fw/asm/dlcp_main_v32.asm: V3.2 -> EEPROM marker 0x37
+#     (Phase 2.5 bump; Tier-1 capable; cmd 0x22 + cmd 0x44 supported).
+# Older / unknown versions return None and the rev string is omitted.
+_REV_MARKER_BY_VERSION: dict[tuple[int, int, int], int] = {
+    (3, 3, 1): 0x36,   # V3.1 source rewrite (cmd 0x43 memread; no Tier-1)
+    (3, 3, 2): 0x37,   # V3.2 Tier-1 (cmd 0x22 + cmd 0x44)
+}
+
+
+def _rev_marker_for_version(version: Optional[VersionInfo]) -> Optional[int]:
+    """Look up the EEPROM rev marker for a given cmd 0x06 version tuple.
+
+    The EEPROM marker (e.g. 0x37 for V3.2) is NOT in the cmd 0x06 response;
+    it lives at EEPROM offset 0x82 in the MAIN's EEPROM block.  Reading it
+    requires either a separate EEPROM-shadow query (cmd 0x43 memread or
+    similar) or static lookup from the cmd 0x06 (major, minor) tuple.
+    For brevity and to avoid a second HID round-trip, this function uses
+    the static lookup -- adequate as long as the lookup table stays in
+    sync with the MAIN source EEPROM blocks.
+    """
+    if version is None:
+        return None
+    key = (version.flag, version.major, version.minor)
+    return _REV_MARKER_BY_VERSION.get(key)
+
+
 def _format_version(version: Optional[VersionInfo]) -> str:
-    """Render a VersionInfo as "V{major}.{minor}".
+    """Render a VersionInfo as "V{major}.{minor}" or with rev marker
+    appended when available: "V{major}.{minor} rev 0xNN".
 
     cmd 0x06 returns 3 bytes that the firmware encodes as:
       * byte[1] = flag   (0x03 = "valid version block" marker)
@@ -409,6 +443,9 @@ def _format_version(version: Optional[VersionInfo]) -> str:
     major = version.major
     minor = version.minor
     if flag == 3 and major in (2, 3):
+        rev = _rev_marker_for_version(version)
+        if rev is not None:
+            return f"V{major}.{minor} rev 0x{rev:02X}"
         return f"V{major}.{minor}"
     return f"flag=0x{flag:02X} major=0x{major:02X} minor=0x{minor:02X}"
 
@@ -435,7 +472,38 @@ def _format_status_line(report: "DiagReport") -> str:
     return f"Status:    {report.status} (" + ", ".join(report.alerts) + ")"
 
 
-def _format_human_report(reports: List["DiagReport"], *, ts: Optional[str] = None) -> str:
+def _resolve_channel_label(
+    path_text: str,
+    ch_map: Optional[dict[str, str]],
+) -> str:
+    """Resolve the channel label (LEFT / RIGHT / etc.) for a HID path
+    from the operator-supplied ``ch_map`` dict.
+
+    Match strategy: a map key matches if it is contained as a SUBSTRING
+    of the HID path.  This lets the operator pass just the DevSrvsID
+    suffix (e.g. ``LEFT=4296563925``) instead of the full path
+    (``DevSrvsID:4296563925``) -- ergonomic on macOS where the path
+    prefix is always identical across devices.
+
+    Returns the label if matched, or the empty string if no match.
+    Multiple matches resolve to the FIRST hit in the map (operator
+    insertion order = argparse list order).  A path that doesn't match
+    any key returns "" (printed as a placeholder by the caller).
+    """
+    if not ch_map:
+        return ""
+    for key, label in ch_map.items():
+        if key in path_text:
+            return label
+    return ""
+
+
+def _format_human_report(
+    reports: List["DiagReport"],
+    *,
+    ts: Optional[str] = None,
+    ch_map: Optional[dict[str, str]] = None,
+) -> str:
     if ts is None:
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     lines: List[str] = []
@@ -445,17 +513,29 @@ def _format_human_report(reports: List["DiagReport"], *, ts: Optional[str] = Non
     if not reports:
         lines.append("No DLCP HID devices detected.")
         return "\n".join(lines)
+    # If any channel labels are mapped, left-align them in a fixed-width
+    # column so the report stays readable across mixed-mapped devices.
+    label_width = 5  # enough for "LEFT" / "RIGHT" / "?    "
+    have_any_label = bool(ch_map)
     for report in reports:
         path_text = (
             report.info.path.decode("utf-8", errors="replace")
             if report.info.path is not None
             else "<no-path>"
         )
-        # Role is operator-derived from HID path mapping; we don't infer
-        # a side identity from the firmware (rev 0x37 cmd 0x44 omits
-        # the role byte in the round-5 trailer-drop; cmd 0x06 doesn't
-        # carry it either).
-        lines.append(f"HID {path_text}  {_format_version(report.version)}")
+        # Channel labels are operator-supplied via --ch-map.  Firmware
+        # does NOT report its channel identity over HID -- the cmd 0x44
+        # round-5 trailer-drop removed the role byte and cmd 0x06
+        # never carried one.  The fallback "?" placeholder makes
+        # unmapped devices visually obvious so the operator notices
+        # they should extend the map.
+        label = _resolve_channel_label(path_text, ch_map)
+        if not label and have_any_label:
+            label = "?"
+        prefix = f"{label:<{label_width}} " if have_any_label else ""
+        lines.append(
+            f"{prefix}HID {path_text}  {_format_version(report.version)}"
+        )
         lines.append("  " + _format_runtime_line(report.snapshot))
         lines.append("  " + _format_reset_line(report.snapshot))
         lines.append("  " + _format_status_line(report))
@@ -463,7 +543,12 @@ def _format_human_report(reports: List["DiagReport"], *, ts: Optional[str] = Non
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _format_json_report(reports: List["DiagReport"], *, ts: Optional[str] = None) -> str:
+def _format_json_report(
+    reports: List["DiagReport"],
+    *,
+    ts: Optional[str] = None,
+    ch_map: Optional[dict[str, str]] = None,
+) -> str:
     import json
 
     if ts is None:
@@ -477,19 +562,29 @@ def _format_json_report(reports: List["DiagReport"], *, ts: Optional[str] = None
         snap = report.snapshot
         version_obj: dict[str, object] | None = None
         if report.version is not None:
+            rev_marker = _rev_marker_for_version(report.version)
             version_obj = {
                 "flag": report.version.flag,
                 "major": report.version.major,
                 "rev": report.version.minor,
                 "rev_hex": f"0x{report.version.minor:02X}",
+                "eeprom_marker": (
+                    f"0x{rev_marker:02X}" if rev_marker is not None else None
+                ),
             }
         path_text = (
             report.info.path.decode("utf-8", errors="replace")
             if report.info.path is not None
             else None
         )
+        channel = (
+            _resolve_channel_label(path_text, ch_map) or None
+            if path_text is not None
+            else None
+        )
         out["mains"].append(
             {
+                "channel": channel,
                 "hid_path": path_text,
                 "product_string": report.info.product_string,
                 "serial_number": report.info.serial_number,
@@ -560,7 +655,44 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=1000,
         help="HID exchange timeout per cmd 0x06 / cmd 0x44 query (default: 1000)",
     )
+    ap.add_argument(
+        "--ch-map",
+        action="append",
+        default=[],
+        metavar="LABEL=PATH_SUBSTRING",
+        help=(
+            "Operator-supplied channel mapping (repeatable).  Each value "
+            "is `LABEL=PATH_SUBSTRING` -- if PATH_SUBSTRING is contained "
+            "in a HID device path, the device is labeled LABEL in the "
+            "report.  Example: `--ch-map LEFT=4296563925 --ch-map "
+            "RIGHT=4296563940`.  Firmware doesn't carry the channel "
+            "identity over HID (the round-5 cmd 0x44 trailer drop "
+            "removed it), so the operator provides it externally; "
+            "mapping is by HID path substring rather than full path "
+            "to keep the CLI usable with macOS DevSrvsID-style paths."
+        ),
+    )
     args = ap.parse_args(argv)
+
+    # Parse --ch-map values into an ordered dict.  Reject malformed entries
+    # loudly rather than silently dropping them -- a typo in the mapping
+    # would be hard to diagnose otherwise.
+    ch_map: dict[str, str] = {}
+    for spec in args.ch_map:
+        if "=" not in spec:
+            ap.error(
+                f"--ch-map value must be in the form LABEL=PATH_SUBSTRING "
+                f"(got: {spec!r})"
+            )
+        label, path_sub = spec.split("=", 1)
+        label = label.strip()
+        path_sub = path_sub.strip()
+        if not label or not path_sub:
+            ap.error(
+                f"--ch-map value must have non-empty LABEL and "
+                f"PATH_SUBSTRING (got: {spec!r})"
+            )
+        ch_map[path_sub] = label
 
     path_bytes = args.path.encode("utf-8") if args.path is not None else None
 
@@ -604,9 +736,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     def _emit(reports: List[DiagReport]) -> None:
         if args.json:
-            print(_format_json_report(reports), end="")
+            print(_format_json_report(reports, ch_map=ch_map), end="")
         else:
-            print(_format_human_report(reports), end="")
+            print(_format_human_report(reports, ch_map=ch_map), end="")
 
     if not args.watch:
         _emit(_collect_one_pass())
