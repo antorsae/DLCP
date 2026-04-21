@@ -511,7 +511,12 @@ def test_human_report_ch_map_overrides_auto_derived_label() -> None:
 
 def test_human_report_shows_channel_mapping_line() -> None:
     """The new "Channels:" line lists the per-output route mappings
-    using format_route_entries from dlcp_main_flash (CH1=L CH2=L ...).
+    using format_route_entries from dlcp_main_flash.
+
+    The exact separator format is comma + space (the upstream helper's
+    convention; see dlcp_main_flash.format_route_entries).  Pin it
+    here so a future change to that helper that breaks consistency
+    surfaces in this test rather than only in operator-visible output.
     """
     from dlcp_fw.flash.dlcp_main_flash import RouteEntry
 
@@ -526,6 +531,99 @@ def test_human_report_shows_channel_mapping_line() -> None:
     # All 6 channel slots present.
     for n in range(1, 7):
         assert f"CH{n}=L" in text
+    # Pin the comma-separator format from format_route_entries.
+    assert "CH1=L, CH2=L, CH3=L, CH4=L, CH5=L, CH6=L" in text
+
+
+def test_derive_channel_label_echoes_raw_for_non_LR_routes() -> None:
+    """Non-L/R uniform routes echo the raw route label as-is to
+    match dlcp_main_flash's terminology (and the HFD UI's
+    "L+R/Mid"/"L-R/Side" naming convention).  This commit deliberately
+    avoids inventing alternative names like MONO/MID/SIDE which
+    would conflict with HFD's existing labels.
+    """
+    from dlcp_fw.flash.dlcp_main_flash import RouteEntry
+    from dlcp_fw.flash.dlcp_diag import _derive_channel_label
+
+    for route_label, expected in [
+        ("L+R", "L+R"),
+        ("L-R", "L-R"),
+        ("R-L", "R-L"),
+    ]:
+        routes = tuple(
+            RouteEntry(channel=i + 1, value=2, label=route_label)
+            for i in range(6)
+        )
+        assert _derive_channel_label(routes) == expected, (
+            f"non-L/R uniform route {route_label!r} should echo as-is, "
+            f"not get aliased; got {_derive_channel_label(routes)!r}"
+        )
+
+
+def test_query_diag_handles_ep0_failure_gracefully(monkeypatch, capsys) -> None:
+    """When the EP0 probe raises RuntimeError / OSError, query_diag
+    must:
+      * print a stderr warning so the operator notices,
+      * leave routes / active_config_name as None,
+      * still return a valid DiagReport with the cmd 0x44 snapshot
+        (the diag pipeline is independent of the EP0 channel probe).
+
+    Codex review of 90af763 caught that the original `except Exception:
+    pass` was too broad and silent; this test exercises the now-narrowed
+    exception handling path.
+    """
+    from dlcp_fw.flash import dlcp_diag
+
+    # Stub the HID lookup + cmd 0x06 + cmd 0x44 path so the test runs
+    # without real hardware.
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+    from dlcp_fw.flash.dlcp_main_flash import VersionInfo
+
+    info = HidDeviceInfo(
+        vendor_id=0x04D8, product_id=0xFF89, path=b"DevSrvsID:test",
+        manufacturer_string="Hypex BV", product_string="DLCP",
+        serial_number="",
+    )
+
+    class _StubDev:
+        def write(self, *a, **kw): return 65
+        def read(self, *a, **kw): return [0] * 65
+        def close(self): pass
+
+    monkeypatch.setattr(dlcp_diag, "_pick_device", lambda *a, **kw: info)
+    monkeypatch.setattr(dlcp_diag, "_open_hid", lambda *a, **kw: _StubDev())
+    monkeypatch.setattr(
+        dlcp_diag, "_probe_cmd06_version",
+        lambda dev, **kw: VersionInfo(flag=3, major=3, minor=2),
+    )
+    monkeypatch.setattr(
+        dlcp_diag, "_probe_cmd44_diag",
+        lambda dev, **kw: DiagSnapshot(
+            diag_i=0, diag_d=0, diag_s=0, diag_b=0, diag_r=0, diag_a=0, diag_p=0,
+            diag_reset_por=1, diag_reset_bor=0, diag_reset_wdt=0, diag_reset_sw=0,
+        ),
+    )
+
+    # Make the EP0 probe raise a RuntimeError (one of the expected
+    # failure types).
+    def _failing_probe(**kw):
+        raise RuntimeError("simulated EP0 failure (libusb refused)")
+
+    from dlcp_fw.flash import dlcp_main_flash
+    monkeypatch.setattr(dlcp_main_flash, "_probe_ep0_app_ram", _failing_probe)
+
+    report = dlcp_diag.query_diag(probe_routes=True)
+
+    # Report still valid -- snapshot present, status classified.
+    assert report.snapshot is not None
+    assert report.status in {"HEALTHY", "DEGRADED", "CRITICAL"}
+    # Routes / config null because EP0 failed.
+    assert report.routes is None
+    assert report.active_config_name is None
+    # Stderr carries the warning (operator can correlate).
+    captured = capsys.readouterr()
+    assert "EP0 routes probe failed" in captured.err
+    assert "simulated EP0 failure" in captured.err
 
 
 def test_json_report_includes_routes_and_channel_source() -> None:

@@ -229,7 +229,11 @@ class DiagReport:
       * the EP0 probe can fail (permissions, device-busy, bootloader mode);
       * the device might be in bootloader mode and not have the app
         RAM populated yet.
-    Failure is logged as a warning and the corresponding fields stay None.
+    On expected failure (RuntimeError / OSError / ImportError),
+    ``query_diag`` prints a stderr warning and leaves the fields as None.
+    Unexpected exception types (typos, signature drift, programming errors)
+    are NOT caught and propagate normally so they're visible during
+    development.
     """
 
     info: HidDeviceInfo
@@ -242,22 +246,28 @@ class DiagReport:
 
 
 # Mapping from a uniform single-route label to the operator-friendly
-# channel role.  Used by _derive_channel_label when all 6 output
-# channels of a MAIN are wired to the same source -- e.g., a unit
-# that plays only L on every output is the LEFT speaker.
+# channel role.  ONLY pure L and R get aliased to LEFT / RIGHT (the
+# common stereo case).  Other route labels (L+R, L-R, R-L) are
+# displayed AS-IS to avoid inventing alternative names that conflict
+# with existing repo terminology.  HFD v2.12 UI uses "L+R/Mid" and
+# "L-R/Side" (see docs/analysis/HFD_v2.12-codex.md:177); rather than
+# pick one of those forms, we just echo the raw route label so the
+# operator sees the same label dlcp_main_flash --info-only would show.
 _ROLE_FOR_UNIFORM_ROUTE: dict[str, str] = {
-    "L":   "LEFT",
-    "R":   "RIGHT",
-    "L+R": "MONO",
-    "L-R": "MID",
-    "R-L": "SIDE",
+    "L": "LEFT",
+    "R": "RIGHT",
 }
 
 
 def _derive_channel_label(routes: Optional[Tuple[object, ...]]) -> str:
-    """Synthesize a one-word channel label from the per-MAIN route table.
+    """Synthesize a short channel label from the per-MAIN route table.
 
-    All 6 outputs the same -> use the role label (LEFT/RIGHT/MONO/...)
+    All 6 outputs the same -> use the role label:
+      L  -> "LEFT"  (operator-friendly alias)
+      R  -> "RIGHT" (operator-friendly alias)
+      others -> echo the raw route label as-is (e.g. "L+R", "L-R",
+                "R-L"); avoids conflict with the HFD UI's
+                "L+R/Mid"/"L-R/Side" naming.
     Mixed outputs -> "MIX"
     No routes available -> ""
     """
@@ -307,21 +317,32 @@ def query_diag(
     if probe_routes:
         # Reuse the EP0 RAM-window probe shipped by dlcp_main_flash.py
         # so dlcp_diag and dlcp_main_flash speak the same channel-routing
-        # language.  Failures are non-fatal -- a device in bootloader
-        # mode or one that refuses EP0 access still produces a usable
-        # diag report (just with no channel info).
-        try:
-            from dlcp_fw.flash.dlcp_main_flash import _probe_ep0_app_ram
+        # language.  Failures are non-fatal in the operator-facing flow
+        # (a device in bootloader mode or one that refuses EP0 access
+        # still produces a usable diag report -- just without the
+        # channel info), but we narrow the exception types caught so
+        # that real bugs (typos, signature drift, programming errors)
+        # surface as crashes rather than silent no-ops.  Non-fatal
+        # categories: RuntimeError (the helper's own error class),
+        # OSError (USB I/O / device-busy), ImportError (missing
+        # libusb in stripped envs).
+        from dlcp_fw.flash.dlcp_main_flash import _probe_ep0_app_ram
 
+        try:
             active_config_name, routes = _probe_ep0_app_ram(
                 vid=vid, pid=pid, path=info.path,
             )
-        except Exception:
-            # Swallow silently -- routes/config_name remain None.  The
-            # human report shows "<no routes available>" so the operator
-            # notices.  Don't pollute stderr because non-EP0-capable
-            # devices are a normal case (e.g., bootloader mode).
-            pass
+        except (RuntimeError, OSError, ImportError) as exc:
+            # Surface to stderr so the operator can correlate a missing
+            # channel column with a real failure (e.g., libusb perms).
+            # Don't kill the diag report -- the cmd 0x44 path is
+            # independent and the rest of the snapshot is still useful.
+            import sys
+            print(
+                f"WARNING: EP0 routes probe failed for "
+                f"{info.path!r}: {exc}",
+                file=sys.stderr,
+            )
 
     status, alerts = classify_status(snapshot)
     return DiagReport(
