@@ -4496,10 +4496,19 @@ flow_ccs_0FA0_118C:                                                  ; address: 
         ; that's a V3.2 MAIN change to re-emit the sentinel burst on
         ; wake.  It does fix the user-facing deadlock: operator now
         ; has a guaranteed recovery without cold-booting both MAINs.
-        ; 0x9A is the debounced button bitmap maintained by
-        ; display_loop_iteration; call it first so the bitmap is
-        ; current before we test it.
-        call    display_loop_iteration, 0x0                ; debounce tick
+        ;
+        ; Use button_scan_debounce rather than display_loop_iteration:
+        ; display_loop_iteration is a MODAL loop that parks internally
+        ; until 0x9A != 0 or control_flags.3 is set (see the tail at
+        ; asm:2703-2715 where it branches back to 0CB4).  In the
+        ; WAITING state, control_flags.3 is clear and no button is
+        ; pressed, so display_loop_iteration would never return --
+        ; which would freeze poll_frame_send / rx_parser_entry below
+        ; and defeat the whole loop.  button_scan_debounce is the
+        ; underlying one-shot that updates the 0x9A event latch;
+        ; calling it here lets the loop keep polling MAIN while the
+        ; button bitmap stays fresh.
+        call    button_scan_debounce, 0x0                  ; one-shot: updates 0x9A
         movlb   0x00                                       ; BSR may have drifted
         ; Saturating grace counter: bump only while below threshold;
         ; once counter reaches threshold it stays there and the button
@@ -4773,16 +4782,16 @@ reconnect_wait_loop:                                                  ; address:
         clrf    v171_waiting_grace_count, B
 
 v171_reconnect_wait_body:
-        ; Refresh the debounced button bitmap, then bump the
-        ; saturating grace counter.  display_loop_iteration is the
-        ; sole writer of 0x9A in the V1.71 button scan path; without
-        ; this call, 0x9A would carry the stale value from whichever
-        ; loop last called display_loop_iteration (typically the
-        ; standby loop that ran just before this reconnect attempt).
-        ; Once the counter reaches threshold, operator RIGHT/LEFT
-        ; press soft-resets CONTROL.  Inline rather than sharing a
-        ; routine with the cold-boot loop to avoid a call frame.
-        call    display_loop_iteration, 0x0                ; refresh 0x9A
+        ; Refresh the debounced button event latch at 0x9A via the
+        ; one-shot button_scan_debounce (NOT display_loop_iteration,
+        ; which parks internally until 0x9A != 0 or control_flags.3
+        ; -- neither is true during reconnect-wait, so it would
+        ; never return, freezing the whole reconnect loop).  After
+        ; this call the grace counter advances and the button gate
+        ; below can arm the soft-reset escape.  Inline rather than
+        ; sharing a routine with the cold-boot loop to avoid a call
+        ; frame.
+        call    button_scan_debounce, 0x0                  ; one-shot: updates 0x9A
         movlb   0x00                                       ; BSR may have drifted
         movlw   V171_WAITING_GRACE_THRESHOLD
         cpfseq  v171_waiting_grace_count, B                ; skip if count == threshold
