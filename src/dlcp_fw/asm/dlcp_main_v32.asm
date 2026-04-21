@@ -416,10 +416,7 @@ flow_hid_command_dispatch_118a:
 flow_hid_command_dispatch_11a4:
     movlw       0xFB
     addwf       i2c_coeff_3, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x00
-    addwfc      FSR2H, F, ACCESS
+    call        setup_fsr2_page_1, 0x0
     setf        INDF2, ACCESS
 flow_hid_command_dispatch_11b2:
     incf        i2c_coeff_3, F, ACCESS
@@ -712,9 +709,8 @@ flow_hid_command_dispatch_1402:
     movlw       0xC0
     addwf       i2c_coeff_3, W, ACCESS
     movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x02
-    addwfc      FSR2H, F, ACCESS
+    movlw       0x02                ; W03-E05: overflow impossible (W=0xC0..0xDD)
+    movwf       FSR2H, ACCESS
     setf        INDF2, ACCESS
     incf        i2c_coeff_3, F, ACCESS
     movlw       0x1D
@@ -959,9 +955,8 @@ main_core_service_15be:
     movlw       0xBE
     addwf       i2c_coeff_3, W, ACCESS
     movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x02
-    addwfc      FSR2H, F, ACCESS
+    movlw       0x02                ; W03-E05: overflow impossible (W=0xBE..0xDD)
+    movwf       FSR2H, ACCESS
     setf        INDF2, ACCESS
     return      0
 
@@ -1083,10 +1078,7 @@ flow_fw_update_relay_1662:
     movwf       ram_0x081, BANKED
     movf        ram_0x080, W, BANKED
     call        main_uart_service_43a2, 0x0
-    movlw       0x0D
-    call        uart_tx_byte_blocking, 0x0
-    movlw       0x0A
-    call        uart_tx_byte_blocking, 0x0
+    rcall       emit_crlf
     movff       ram_0x080, ram_0x01B
     swapf       ram_0x01B, F, ACCESS
     movlw       0x0F
@@ -1160,10 +1152,7 @@ flow_fw_update_relay_172a:
     movlw       0x21
     call        uart_tx_byte_blocking, 0x0
     call        main_uart_service_4860, 0x0
-    movlw       0x0D
-    call        uart_tx_byte_blocking, 0x0
-    movlw       0x0A
-    call        uart_tx_byte_blocking, 0x0
+    rcall       emit_crlf
     movlw       0x19
     movlb       0x0
     subwf       ram_0x09F, W, BANKED
@@ -1175,10 +1164,7 @@ flow_fw_update_relay_172a:
     movlw       0x9A
     movwf       ram_0x018, ACCESS
     call        uart_tx_block_from_buffer, 0x0
-    movlw       0x0D
-    call        uart_tx_byte_blocking, 0x0
-    movlw       0x0A
-    call        uart_tx_byte_blocking, 0x0
+    rcall       emit_crlf
     bra         flow_fw_update_relay_1796
 flow_fw_update_relay_1792:
     incf        ram_0x09F, F, BANKED
@@ -1215,20 +1201,14 @@ flow_fw_update_relay_17bc:
     movlw       0x30
     movwf       ram_0x09C, BANKED
     movff       ram_0x087, ram_0x01B
-    swapf       ram_0x01B, F, ACCESS
-    movlw       0x0F
-    andwf       ram_0x01B, F, ACCESS
-    rcall       nibble_to_hex_ascii
+    rcall       nibble_to_hex_ascii_from_01B
     movff       TABLAT, ram_0x19D
     movff       ram_0x087, ram_0x01B
     movlw       0x0F
     rcall       nibble_to_hex_ascii
     movff       TABLAT, ram_0x19E
     movff       ram_0x086, ram_0x01B
-    swapf       ram_0x01B, F, ACCESS
-    movlw       0x0F
-    andwf       ram_0x01B, F, ACCESS
-    rcall       nibble_to_hex_ascii
+    rcall       nibble_to_hex_ascii_from_01B
     movff       TABLAT, ram_0x19F
     movff       ram_0x086, ram_0x01B
     movlw       0x0F
@@ -1259,20 +1239,14 @@ flow_fw_update_relay_182e:
     btfss       ram_0x084, 0, BANKED
     bra         flow_fw_update_relay_18bc
     movff       ram_0x046, ram_0x01B
-    swapf       ram_0x01B, F, ACCESS
-    movlw       0x0F
-    andwf       ram_0x01B, F, ACCESS
-    rcall       nibble_to_hex_ascii
+    rcall       nibble_to_hex_ascii_from_01B
     movff       TABLAT, ram_0x02F
     movff       ram_0x046, ram_0x01B
     movlw       0x0F
     rcall       nibble_to_hex_ascii
     movff       TABLAT, ram_0x030
     movff       ram_0x04A, ram_0x01B
-    swapf       ram_0x01B, F, ACCESS
-    movlw       0x0F
-    andwf       ram_0x01B, F, ACCESS
-    rcall       nibble_to_hex_ascii
+    rcall       nibble_to_hex_ascii_from_01B
     movff       TABLAT, ram_0x031
     movff       ram_0x04A, ram_0x01B
     movlw       0x0F
@@ -1333,6 +1307,46 @@ flow_fw_update_relay_18d0:
 flow_fw_update_relay_18dc:
     return      0
 
+; ---------------------------------------------------------------------------
+; Helper: emit_crlf                       (W03-E06 size-opt wrapper)
+; ---------------------------------------------------------------------------
+; Factored CR+LF emitter for the 3 sites in fw_update_relay that bracket
+; Intel-HEX echo lines. Per site this collapses 12 B (two inline CR/LF
+; emit pairs of movlw+call) down to 2 B (rcall emit_crlf). uart_tx_byte_blocking
+; lives at 0x45F2, which is outside the ±1024-word rcall window from this
+; placement, so the final LF uses `goto` as a tail-call — the outer
+; uart_tx_byte_blocking `return` unwinds straight to the emit_crlf caller.
+;
+; Register/flag contract:
+;   • W returns = 0x0A (clobbered by design — all 3 callers overwrite W
+;     before reading it; audited at lines ~1086-1089, 1163-1166, 1178-1181).
+;   • STATUS / BSR are not inspected after the CRLF pair at any call site.
+;   • Stack depth grows by 1 (rcall emit_crlf) + 1 (call uart_tx_byte_blocking)
+;     transiently; the second emit uses goto so no extra stack frame.
+; ---------------------------------------------------------------------------
+emit_crlf:
+    movlw       0x0D                                ; CR
+    call        uart_tx_byte_blocking, 0x0
+    movlw       0x0A                                ; LF (tail-call, goto preserves caller's return)
+    goto        uart_tx_byte_blocking
+
+
+; ---------------------------------------------------------------------------
+; Helper: nibble_to_hex_ascii_from_01B      (high-nibble preamble + fall-through)
+; ---------------------------------------------------------------------------
+; Factors the 4-instruction "swapf + movlw 0x0F + andwf" preamble emitted by
+; the fw_update_relay hex-format emitter before each high-nibble
+; rcall nibble_to_hex_ascii. Fall-through into nibble_to_hex_ascii reuses the
+; shared `andwf ram_0x01B, F` first instruction (W=0x0F is already loaded
+; here), so this helper is only 2 instructions (4 B). Net savings per site:
+; 8 B preamble -> 2 B rcall, minus 4 B helper = 20 B across the 4 sites at
+; lines ~1218, 1228, 1262, 1272. STATUS flags on return are identical to the
+; inlined version (same `andwf` sequence). W holds 0x0F on entry to
+; nibble_to_hex_ascii in both layouts.
+; ---------------------------------------------------------------------------
+nibble_to_hex_ascii_from_01B:
+    swapf       ram_0x01B, F, ACCESS                ; high nibble -> low
+    movlw       0x0F                                ; mask, consumed by shared andwf below
 
 ; ---------------------------------------------------------------------------
 ; Function: nibble_to_hex_ascii            (low nibble -> ASCII '0'..'F')
@@ -1548,11 +1562,7 @@ flow_cmd_dispatch_gated_1a76:
     bcf         T3CON, 0, ACCESS
     bcf         PIE2, 1, ACCESS
     bcf         PIR2, 1, ACCESS
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
-    clrf        i2c_coeff_2, ACCESS
-    clrf        i2c_coeff_3, ACCESS
-    call        i2c_tas3108_coeff_write, 0x0
+    call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
     call        main_core_service_4574, 0x0
     bsf         RCSTA, 4, ACCESS
     bcf         active_flags, 7, ACCESS
@@ -1567,11 +1577,7 @@ flow_cmd_dispatch_gated_1a9c:
     bra         flow_cmd_dispatch_gated_1aca
     btfss       active_flags, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1ab6
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
-    clrf        i2c_coeff_2, ACCESS
-    clrf        i2c_coeff_3, ACCESS
-    call        i2c_tas3108_coeff_write, 0x0
+    call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
     bra         flow_cmd_dispatch_gated_1ab8
 flow_cmd_dispatch_gated_1ab6:
     bsf         event_flags, 3, BANKED
@@ -1722,6 +1728,34 @@ setup_fsr2_page_1_or_2:
     clrf        FSR2H, ACCESS
     movlw       0x01
     addwfc      FSR2H, F, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: setup_fsr2_page_1                           (W03-E04 size-opt helper)
+; ---------------------------------------------------------------------------
+; Shared factor for the 4-instruction FSR2 "page 1" setup sequence where the
+; caller has just executed "addwf <reg>, W, ACCESS" with a constant bias such
+; that the carry-out is provably always 1 for the reachable input range (see
+; W03-E04 audit at lines ~419, ~2420, ~3284). In each original pattern the
+; inline sequence was:
+;     movwf       FSR2L, ACCESS
+;     clrf        FSR2H, ACCESS
+;     movlw       0x00
+;     addwfc      FSR2H, F, ACCESS
+; which, with C=1 guaranteed, always lands at FSR2H = 1. This helper collapses
+; the sequence to an unconditional page-1 selection.
+;   FSR2L = W
+;   FSR2H = 0x01
+; Side effects: W ends at 0x01 (vs 0x00 in the original post-pattern); no
+; caller relies on W after the pattern (next insn at each site either calls
+; into a helper that returns W, or reloads W via movlw/movf). C/DC/N/OV/Z are
+; not preserved; no caller inspected them.
+; ---------------------------------------------------------------------------
+setup_fsr2_page_1:
+    movwf       FSR2L, ACCESS
+    movlw       0x01
+    movwf       FSR2H, ACCESS
     return      0
 
 
@@ -2417,10 +2451,7 @@ flow_main_core_service_1e88_209c:
     movlb       0x1
     movlw       0xB0
     addwf       ram_0x00A, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x00
-    addwfc      FSR2H, F, ACCESS
+    call        setup_fsr2_page_1, 0x0
     movff       ram_0x00A, ram_0x003
     clrf        ram_0x004, ACCESS
     call        eeprom_read_byte, 0x0
@@ -2436,9 +2467,8 @@ flow_main_core_service_1e88_20c2:
     movlw       0x60
     addwf       ram_0x00A, W, ACCESS
     movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x02
-    addwfc      FSR2H, F, ACCESS
+    movlw       0x02                ; W03-E05: overflow impossible (W=0xC0..0xDD)
+    movwf       FSR2H, ACCESS
     movff       ram_0x00A, ram_0x003
     clrf        ram_0x004, ACCESS
     call        eeprom_read_byte, 0x0
@@ -3281,10 +3311,7 @@ flow_main_core_service_265c_2794:
     movlb       0x1
     movlw       0xB0
     addwf       ram_0x00A, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x00
-    addwfc      FSR2H, F, ACCESS
+    call        setup_fsr2_page_1, 0x0
     movf        INDF2, W, ACCESS
     movwf       ram_0x009, ACCESS
     call        main_flash_service_46de, 0x0
@@ -4075,11 +4102,7 @@ adc_boot_gate_exit:
     movlw       0x08
     call        mssp_hard_reset, 0x0
     bsf         LATA, 6, ACCESS
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
-    clrf        i2c_coeff_2, ACCESS
-    clrf        i2c_coeff_3, ACCESS
-    call        i2c_tas3108_coeff_write, 0x0
+    call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
     call        main_core_service_4574, 0x0
     bsf         LATB, 3, ACCESS
     call        main_core_service_4942, 0x0
@@ -6538,6 +6561,23 @@ flow_main_core_service_3e0a_3e3a:
 ; Function: i2c_byte_tx                    (single I2C byte transmit, V3.1+)
 ; Address : 0x3EB8
 ; ---------------------------------------------------------------------------
+; Helper: sspcon1_masked_w
+; Reads SSPCON1, masks to the low 4 bits (SSPM mode nibble) via ram_0x004
+; scratch, returns result in W. Factored from four in-line copies of the
+; stock mode-check preamble inside i2c_byte_tx. ram_0x004 is scratched
+; unconditionally at each original call site, so factoring preserves
+; semantics. No other registers are touched; BSR/STATUS flags reflect the
+; final movf into W (Z set iff masked value == 0, same as the in-line form).
+; ---------------------------------------------------------------------------
+sspcon1_masked_w:
+    movff       SSPCON1, ram_0x004
+    movlw       0x0F
+    andwf       ram_0x004, F, ACCESS
+    movf        ram_0x004, W, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
 ; Stock contract: caller stages the byte in W, calls; the routine writes
 ; SSPBUF, checks WCOL, and waits for SSPIF or BF. The stock did NOT check
 ; ACKSTAT — bug DSP1 — making the entire DSP communication path silently
@@ -6561,16 +6601,10 @@ i2c_byte_tx:
     movff       ram_0x005, SSPBUF
     btfsc       SSPCON1, 7, ACCESS
     bra         flow_i2c_byte_tx_exit
-    movff       SSPCON1, ram_0x004
-    movlw       0x0F
-    andwf       ram_0x004, F, ACCESS
-    movf        ram_0x004, W, ACCESS
+    rcall       sspcon1_masked_w
     xorlw       0x08
     bz          flow_i2c_byte_tx_master
-    movff       SSPCON1, ram_0x004
-    movlw       0x0F
-    andwf       ram_0x004, F, ACCESS
-    movf        ram_0x004, W, ACCESS
+    rcall       sspcon1_masked_w
     xorlw       0x0B
     bz          flow_i2c_byte_tx_master
     bsf         SSPCON1, 4, ACCESS
@@ -6582,16 +6616,10 @@ flow_i2c_byte_tx_sspif:
     bra         flow_i2c_byte_tx_exit
 flow_i2c_byte_tx_master:
     ; Re-check mode (stock pattern preserved)
-    movff       SSPCON1, ram_0x004
-    movlw       0x0F
-    andwf       ram_0x004, F, ACCESS
-    movf        ram_0x004, W, ACCESS
+    rcall       sspcon1_masked_w
     xorlw       0x08
     bz          flow_i2c_byte_tx_bf
-    movff       SSPCON1, ram_0x004
-    movlw       0x0F
-    andwf       ram_0x004, F, ACCESS
-    movf        ram_0x004, W, ACCESS
+    rcall       sspcon1_masked_w
     xorlw       0x0B
     bnz         flow_i2c_byte_tx_exit
 flow_i2c_byte_tx_bf:
@@ -7600,6 +7628,37 @@ main_uart_service_44b2:
     rcall       uart_tx_byte_blocking
     movlw       0x0A
     goto        uart_tx_byte_blocking
+
+; ---------------------------------------------------------------------------
+; Helper: clrf_i2c_coeff_0123_and_write        (W03-E02 size-opt helper)
+; ---------------------------------------------------------------------------
+; Shared factor for the "clear i2c_coeff_0..3 then write a zero coefficient
+; block to the DSP" pattern. Clears the 4-byte i2c_coeff_0..i2c_coeff_3 RAM
+; block (0x055..0x058, ACCESS) and then FALLS THROUGH into
+; i2c_tas3108_coeff_write — the helper is positioned immediately before
+; that function so no branch is required on exit.
+;
+; Callers:
+;   - flow_cmd_dispatch entry clear + write  (was 5 inline lines)
+;   - flow_cmd_dispatch_gated post-gate write (was 5 inline lines)
+;   - mssp_hard_reset post-reset clear + write (was 5 inline lines)
+;   - preset_force_mute  (tail-call via `bra`; helper fall-through chains
+;                         i2c_tas3108_coeff_write's `return` back to the
+;                         caller of preset_force_mute)
+;
+; BSR/Z/W: helper only executes `clrf` on ACCESS registers and falls
+; through; BSR unchanged, STATUS.Z = 1 (last clrf), W unchanged. All four
+; callers immediately return/branch without relying on post-pattern flags.
+;
+; Savings : (sites 1-3) 3 × (12 B -> 4 B) + (site 4) 1 × (12 B -> 2 B)
+;           − 8 B helper = 24 + 10 − 8 = 26 B.
+; ---------------------------------------------------------------------------
+clrf_i2c_coeff_0123_and_write:
+    clrf        i2c_coeff_0, ACCESS
+    clrf        i2c_coeff_1, ACCESS
+    clrf        i2c_coeff_2, ACCESS
+    clrf        i2c_coeff_3, ACCESS
+    ; fall through into i2c_tas3108_coeff_write
 
 ; ---------------------------------------------------------------------------
 ; Function: i2c_tas3108_coeff_write        (DSP volume coefficient write)
@@ -9226,12 +9285,7 @@ preset_force_mute:
     bsf         active_flags, 4, ACCESS
     bsf         active_flags, 5, ACCESS
     bcf         event_flags, 5, BANKED
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
-    clrf        i2c_coeff_2, ACCESS
-    clrf        i2c_coeff_3, ACCESS
-    rcall       i2c_tas3108_coeff_write
-    return      0
+    bra         clrf_i2c_coeff_0123_and_write   ; W03-E02: tail-call (helper falls through to i2c_tas3108_coeff_write whose return chains back to caller of preset_force_mute)
 
 ; ---------------------------------------------------------------------------
 ; Preset Job State Machine (V3.2: async delayed preset switching)
