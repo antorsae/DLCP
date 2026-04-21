@@ -1,9 +1,45 @@
 # V3.1 MAIN Size Optimization Spec and Implementation Plan
 
 Date: 2026-04-12
-Status: draft
+Status: frozen (2026-04-21)
 Target source: `src/dlcp_fw/asm/dlcp_main_v31.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
+
+## Freeze Notice (2026-04-21)
+
+This V3.1 campaign is frozen by explicit external stop, which is a valid
+pause condition under the `## Continuation Rule`. V3.1 is no longer the
+recommended deployed MAIN release — V3.2 is (per `AGENTS.md`) — and V3.1
+currently carries 782 bytes of unused slack that will not be consumed.
+
+Successor campaign: `docs/V32_SIZE_OPTIMIZATION_SPEC_and_IMPL.md`
+(targeting `src/dlcp_fw/asm/dlcp_main_v32.asm` /
+`firmware/patched/releases/DLCP_Firmware_V3.2.hex`). All W02–W08
+accepted wins from this V3.1 campaign were inherited into V3.2 at the
+time V3.2 forked from the V3.1 W08-R01 source.
+
+Closing state of this V3.1 campaign:
+
+- Accepted baseline: `W08-R01` (2026-04-12)
+  - `used_bytes_pre_preset_b=14477`
+  - `last_used_pre_preset_b=0x48F1`
+  - `free_bytes_before_0x4C00=782`
+- Queued-but-not-executed experiments:
+  - `W03-E01..E08` launched 2026-03-30 but never closed out; worktree
+    directory `artifacts/reanalysis/size_opt_w03/` is empty. Treat these
+    rows as abandoned / superseded by `W05` onwards.
+  - `W04-E01..E08` queued post-`W03`; never executed against V3.1.
+    Carried forward to V3.2 as the mechanical-port candidate list. See
+    the successor campaign's `W01` queue.
+- Known blocker carried forward:
+  - `W08-E02` (shared preset-B remap helper) still requires a new gpsim
+    regression test that drives HID `cmd 0x07` + 8 chunks with
+    `active_flags.2 = 1` and reads back `flash[0x4C00..0x4CBF]`. This is
+    a V3.1 **and** V3.2 coverage gap.
+
+No further V3.1 waves are planned. Do not amend the progress ledger
+except to fix factual errors; redirect new optimization work to the V3.2
+spec.
 
 ## Goal
 

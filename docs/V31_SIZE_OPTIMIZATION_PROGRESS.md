@@ -1,9 +1,29 @@
 # V3.1 MAIN Size Optimization Progress
 
 Date: 2026-04-12
-Status: active
+Status: frozen (2026-04-21)
 Target source: `src/dlcp_fw/asm/dlcp_main_v31.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
+
+## Freeze Notice (2026-04-21)
+
+V3.1 campaign is frozen by explicit external stop. See
+`docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` §Freeze Notice for
+rationale. Do not extend this ledger. All new size-optimization work on
+MAIN now happens under `docs/V32_SIZE_OPTIMIZATION_PROGRESS.md`.
+
+Carry-forward state:
+
+- Final accepted baseline: `W08-R01` (2026-04-12) —
+  `used=14477`, `last_used=0x48F1`, `free=782`.
+- `W03-E01..E08`: abandoned (no parent results recorded, no merge
+  decision). Worktree directory empty. Treat ledger rows as advisory.
+- `W04-E01..E08`: never executed against V3.1. Site sets are largely
+  exhausted in V3.2 by the inherited W05–W08 wins. The viable remnants
+  (mostly fresh V3.2-local audits) are queued in the V3.2 W01 wave.
+- `W08-E02` (shared preset-B remap helper): still blocked on a gpsim
+  test that drives HID `cmd 0x07` through the V3.x assembly-side remap
+  prologue. Carried forward to V3.2.
 
 ## Baseline Size Snapshot
 

@@ -3796,8 +3796,7 @@ main_flash_service_2bb8:
     movlb       0x3
     movlw       0x03
     movwf       ram_0x00A, ACCESS
-    movlw       0x00
-    movwf       ram_0x009, ACCESS
+    clrf        ram_0x009, ACCESS
     call        flash_read, 0x0
 flow_main_flash_service_2bb8_2bdc:
     movlb       0x1
@@ -3830,8 +3829,7 @@ flow_main_flash_service_2bb8_2bf6:
     btfss       STATUS, 0, ACCESS
     decf        ram_0x019, W, ACCESS
     movwf       FSR2H, ACCESS
-    movlw       0x00
-    movwf       ram_0x01A, ACCESS
+    clrf        ram_0x01A, ACCESS
     movlw       0x03
     movwf       ram_0x01B, ACCESS
     movlb       0x0
@@ -3886,8 +3884,7 @@ flow_main_flash_service_2bb8_2bf6:
     movlb       0x3
     movlw       0x03
     movwf       ram_0x00A, ACCESS
-    movlw       0x00
-    movwf       ram_0x009, ACCESS
+    clrf        ram_0x009, ACCESS
     rcall       flash_write
     movlw       0xC0
     movlb       0x0
@@ -5438,8 +5435,7 @@ flow_main_flash_service_3796_37ae:
     movwf       ram_0x076, BANKED
     movlw       0x2C
     movwf       ram_0x075, BANKED
-    movlw       0x00
-    movwf       ram_0x0E8, BANKED
+    clrf        ram_0x0E8, BANKED
     movlw       0x29
 flow_main_flash_service_3796_37c4:
     movwf       ram_0x0E7, BANKED
@@ -8319,7 +8315,7 @@ report_cmd29_status:
     movlw       0x01
     btfss       active_flags, 1, ACCESS
     movlw       0x00
-    goto        uart_tx_byte_blocking
+    bra         uart_tx_byte_blocking
 
 
 ; ---------------------------------------------------------------------------
@@ -8393,7 +8389,7 @@ factory_reset_status_emit:
     movlw       0x18
     rcall       uart_tx_byte_blocking
     movlw       0x01
-    goto        uart_tx_byte_blocking
+    bra         uart_tx_byte_blocking
 
 
 ; ---------------------------------------------------------------------------
@@ -8636,13 +8632,13 @@ flash_entry_quiet_shutdown:
     rcall       preset_force_mute               ; (1) DSP coefficients = 0
     clrf        ram_0x006, ACCESS               ; (2) drop audio rails via 0x71
     movlw       0x1B
-    call        i2c_secondary_dev_write, 0x0
+    rcall       i2c_secondary_dev_write
     clrf        ram_0x006, ACCESS
     movlw       0x1C
-    call        i2c_secondary_dev_write, 0x0
+    rcall       i2c_secondary_dev_write
     clrf        ram_0x006, ACCESS
     movlw       0x1D
-    call        i2c_secondary_dev_write, 0x0
+    rcall       i2c_secondary_dev_write
     bcf         LATB, 4, ACCESS                 ; (3) amp enable - graceful
     bcf         LATA, 6, ACCESS                 ;     drop to LOW while pins
     bcf         LATA, 3, ACCESS                 ;     are still being driven
@@ -8651,7 +8647,7 @@ flash_entry_quiet_shutdown:
     clrf        ram_0x004, ACCESS               ; (4) 100 ms timer3 settle
     movlw       0x64
     movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    rcall       timer3_blocking_delay
     bcf         LATB, 3, ACCESS                 ; (5) final amp gate down
     goto        hard_reset                      ; (6) now do the RESET
 
@@ -9128,7 +9124,7 @@ preset_job_apply_i2c_recover:
     movlw       0x80                        ; restore stock SSPSTAT SMP state
     movwf       ram_0x003, ACCESS
     movlw       0x08                        ; SSPM master bits (SSPEN re-set in helper)
-    call        mssp_hard_reset, 0x0
+    rcall       mssp_hard_reset
     rcall       i2c_bus_clear
     movlb       0x0                         ; dsp_ping touches BANKED fault flags
     rcall       dsp_ping
@@ -9334,7 +9330,7 @@ preset_job_pending_timer:
     clrf        ram_0x004, ACCESS
     movlw       0x96                        ; 150 decimal
     movwf       ram_0x003, ACCESS
-    call        main_timer_service_477a, 0x0
+    rcall       main_timer_service_477a
 
     ; Advance to HOLDING
     movlb       0x2
@@ -9394,7 +9390,7 @@ preset_job_apply:
     ; Apply regular entry from tracked address
     movff       preset_job_tbl_lo, ram_0x013
     movff       preset_job_tbl_hi, ram_0x014
-    call        preset_job_apply_i2c_entry, 0x0
+    rcall       preset_job_apply_i2c_entry
     bc          preset_job_apply_retry      ; timeout: retry same entry next pass
 
     ; Advance address by 0x18 and increment index
@@ -9415,7 +9411,7 @@ preset_job_apply_final:
     clrf        ram_0x013, ACCESS
     movlw       0x5F
     movwf       ram_0x014, ACCESS
-    call        preset_job_apply_i2c_entry, 0x0
+    rcall       preset_job_apply_i2c_entry
     bc          preset_job_apply_retry      ; timeout: stay in APPLY, keep final entry pending
 
     ; Advance to COMMIT
@@ -9438,9 +9434,7 @@ preset_job_commit:
     bsf         event_flags, 3, BANKED      ; restore volume on next pass
 
 preset_job_commit_idle:
-    movlb       0x2
-    clrf        preset_job_state, BANKED    ; → IDLE
-    return      0
+    bra         preset_job_cancel_done      ; shared tail: state=IDLE+return
 
 ; --- Cancel with unmute (coalesced back to same preset) ---
 preset_job_cancel_unmute:
