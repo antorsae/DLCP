@@ -88,7 +88,8 @@ ADDR_DIAG_I       = 0x2E5   # I2C transport fault counter
 ADDR_DIAG_D       = 0x2E6   # DSP fault counter
 ADDR_DIAG_S       = 0x2E7   # standby dispatches (S in cmd 0x44)
 ADDR_DIAG_B       = 0x2E8   # bring-up dispatches (B in cmd 0x44)
-ADDR_DSP_FAULT_FLAGS = 0x0B5  # bit 6 = DSP_FAULT sticky
+ADDR_DSP_FAULT_FLAGS = 0x07F  # bit 6 = DSP_FAULT sticky (per
+                              # src/dlcp_fw/asm/dlcp_main_v32.asm:108)
 
 TXSTA_BITS = [
     (7, "CSRC"),  (6, "TX9"),   (5, "TXEN"),  (4, "SYNC"),
@@ -164,7 +165,7 @@ def probe_one(path: bytes) -> None:
           f"chain_gate_open(bit3)={(af >> 3) & 1}")
     print(f"  event_flags   (0x07E) = 0x{ef:02X}    "
           f"stdby_wake_pending(bit2)={(ef >> 2) & 1}")
-    print(f"  dsp_fault_flg (0x0B5) = 0x{dsp_fault:02X}    "
+    print(f"  dsp_fault_flg (0x07F) = 0x{dsp_fault:02X}    "
           f"DSP_FAULT(bit6)={(dsp_fault >> 6) & 1}")
     print(f"  diag cells    I={di} D={dd} S={ds} B={db}  (live RAM vs "
           f"cmd 0x44 snapshot)")
