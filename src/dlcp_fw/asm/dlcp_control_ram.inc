@@ -87,30 +87,38 @@ DSP_FAULT_BIT              equ  0x07
 bf08_fault_byte            equ  0x0AB   ; unreferenced in stock V1.6b
 
 ; --- V1.71 WAITING-loop operator-recovery grace counter (2026-04-21) ---
-; Saturating counter used by the WAITING-FOR-DLCP loops (cold-boot at
-; asm:4448 and reconnect at asm:4716) to impose a grace period before
-; enabling the RIGHT/LEFT button -> soft reset escape hatch.  Without
-; the grace period, a spurious debounced button press during normal
-; MAIN warmup (which can take a few seconds before MAIN's
-; send_status_burst arrives) would cause an accidental CONTROL reset.
+; 16-bit saturating counter used by the WAITING-FOR-DLCP loops
+; (cold-boot at asm:4448 and reconnect at asm:4716) to impose a grace
+; period before enabling the RIGHT/LEFT button -> soft reset escape
+; hatch.  Without the grace period, a spurious debounced button press
+; during normal MAIN warmup (which can take a few seconds before
+; MAIN's send_status_burst arrives) would cause an accidental CONTROL
+; reset.
 ;
-; Counter is cleared to 0 on each entry to a WAITING loop, incremented
-; once per iteration, and saturated at V171_WAITING_GRACE_THRESHOLD.
-; Reset-on-button fires only once the counter reaches the threshold.
-; Slot chosen from the 0x0A8..0x0AA gap (no absolute references in the
-; V1.71 source; no lfsr lands in this range).
-v171_waiting_grace_count   equ  0x0A8
+; Each WAITING-loop iteration is dominated by `delay_short(0xC8)`,
+; which the routine's own header comment at asm:431-432 documents as
+; "~200 cycles per unit (50 µs at 16 MHz)" with W=0xC8 -> "~10 ms".
+; The remaining per-iteration work (button_scan_debounce,
+; poll_frame_send, rx_parser_entry, sentinel check) totals well under
+; 1 ms, so per-iteration wall time is ~10 ms.  Reaching ~10 s of
+; grace therefore needs ~1000 iterations -- which does NOT fit in an
+; 8-bit counter, so the implementation uses a 16-bit pair (lo at
+; 0x0A8, hi at 0x0A9) and gates the reset on `grace_hi >=
+; V171_WAITING_GRACE_THRESHOLD_HI` (= 4 -> 4*256 = 1024 iterations
+; ~= 10.24 s).
+;
+; Slots chosen from the 0x0A8..0x0AA gap (no absolute references in
+; the V1.71 source; no lfsr lands in this range).  Both bytes
+; cleared to 0 on entry to each WAITING loop.
+v171_waiting_grace_count_lo equ  0x0A8
+v171_waiting_grace_count_hi equ  0x0A9
 
-; Each WAITING-loop iteration is roughly display_loop_iteration +
-; poll_frame_send + delay_short(0xC8) + rx_parser_entry, dominated by
-; the 0xC8 delay_short (~200 ms wall clock on the K20 control loop).
-; Threshold 0x32 (=50) gives ~10 s grace before the reset escape is
-; armed.  Saturating comparator uses cpfseq, so threshold must fit in
-; 1 byte and not equal 0 (otherwise cold entry would allow reset
-; immediately).  Count is an 8-bit cell: pick a threshold that
-; comfortably clears the POR->first-BF/05 window (~3-5 s observed on
-; V3.2 MAIN) with margin.
-V171_WAITING_GRACE_THRESHOLD equ 0x32
+; Threshold = 4 in the high byte.  Once `grace_hi` reaches 4 (i.e.
+; the lo byte has wrapped past 0xFF four times), the button gate
+; arms.  The implementation skips the increment once armed so the
+; counter saturates at hi=4, lo=arbitrary -- the gate stays
+; permanently armed for the rest of the WAITING session.
+V171_WAITING_GRACE_THRESHOLD_HI equ 0x04
 
 ; RC5 codes that V1.71 dispatches (documented here for cross-reference
 ; with the annotator and ir_dispatch edits).

@@ -1059,10 +1059,12 @@ for the feature definition and
   [`docs/V171_RELEASE.md`](V171_RELEASE.md))
 - both MAINs flashed with V3.2 (per
   [`docs/V32_RELEASE.md`](V32_RELEASE.md))
-- PICkit 5 attached to CONTROL as a safety net (a bricked bootloader
-  would be recoverable; the escape path uses PIC18 soft `RESET`
-  which leaves the bootloader region intact, but keep the recovery
-  path available during first testing)
+- PICkit 5 attached to CONTROL as the ICSP recovery path during
+  first testing.  The escape uses the PIC18 `RESET` instruction,
+  which is a software-MCLR equivalent: PC→0, BSR→0, SP cleared, no
+  flash or EEPROM writes.  PICkit is independent of the firmware
+  state — it can always reflash the CONTROL via the ICSP header
+  even if a runtime path becomes pathological.
 
 ### Operator walk-through — inducing the wedge
 
@@ -1082,8 +1084,11 @@ for the feature definition and
 ### Operator walk-through — recovery
 
 5. Once CONTROL has been stuck on `WAITING FOR DLCP` for at least
-   ~10 s (the grace window), press the `RIGHT` IR key (or the
-   physical right button if present on the CONTROL panel).
+   ~10 s (the grace window), press the front-panel `RIGHT` button.
+   The IR remote does NOT trigger this escape — the WAITING loops
+   sample only the front-panel button GPIOs (PORTA/PORTC) via
+   `button_scan_debounce`, not the IR dispatch path that fills
+   `ir_decoded_cmd`.
 6. CONTROL should immediately reset — LCD blanks briefly, then the
    boot sequence re-runs showing the firmware version string and
    then either the Volume screen (if MAIN now answers the fresh
@@ -1100,10 +1105,10 @@ for the feature definition and
 | What | Expected | Failure attribution |
 |---|---|---|
 | Wedge reproduces on some cycle | yes (within ~20 cycles) | If wedge never reproduces, V3.2 wake path may already be fixed — revisit the open item in `V32_MAIN_HANG_HARDENING_PLAN.md` §3b |
-| First RIGHT press < 10 s ignored | yes (grace gate) | If RIGHT press during early boot resets CONTROL, grace counter may be misconfigured — inspect `v171_waiting_grace_count` threshold |
+| First RIGHT press < 10 s ignored | yes (grace gate) | If RIGHT press during early boot resets CONTROL, grace counter may be misconfigured — inspect `v171_waiting_grace_count_lo`/`_hi` and `V171_WAITING_GRACE_THRESHOLD_HI` |
 | First RIGHT press > 10 s triggers reset | yes (visible LCD blank + re-boot) | If the button does nothing: button_scan_debounce path is broken, or the MAIN is responding and CONTROL already exited WAITING in the iteration between button presses |
 | LEFT press works symmetrically with RIGHT | yes | If only RIGHT works, button-bit mapping regressed (should be 0x9A.5 and 0x9A.4) |
-| Bootloader intact after multiple resets | yes (PICkit enumerates) | If bootloader no longer enumerates, the soft-RESET path is doing more than expected — halt testing and read back flash via PICkit |
+| ICSP recovery still available via PICkit 5 | yes | If PICkit can no longer talk to the unit at all, the cause is independent of this firmware path (cabling / ICSP header). The soft `RESET` instruction does not write flash or EEPROM and cannot itself disable ICSP. |
 
 ### Notes
 

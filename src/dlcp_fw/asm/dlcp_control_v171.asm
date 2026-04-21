@@ -4431,7 +4431,8 @@ v171_preset_boot_init_done:
         movwf   0xb9, B                                     ; reg: 0x0b9
         movwf   0xa7, B                                     ; reg: 0x0a7
         movwf   0xa1, B                                     ; reg: 0x0a1
-        clrf    v171_waiting_grace_count, B                 ; reset grace counter for cold-boot WAITING loop
+        clrf    v171_waiting_grace_count_lo, B              ; reset 16-bit grace counter (lo)
+        clrf    v171_waiting_grace_count_hi, B              ; reset 16-bit grace counter (hi)
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         movlw   HIGH(lcd_str_waiting_for_dlcp)                          ; shifted via label
@@ -4460,7 +4461,7 @@ flow_ccs_0FA0_118C:                                                  ; address: 
         ; dead.  Only power-cycle recovers.
         ;
         ; Recovery mechanism: after a ~10 s grace period (counted in
-        ; loop iterations, see V171_WAITING_GRACE_THRESHOLD), RIGHT
+        ; loop iterations, see V171_WAITING_GRACE_THRESHOLD_HI), RIGHT
         ; (0x9A.5) or LEFT (0x9A.4) press triggers a soft CPU `reset`.
         ; The resulting cold-boot path re-primes all four sentinel
         ; caches to 0x80, re-emits the CONTROL->MAIN full_sync_burst,
@@ -4475,10 +4476,12 @@ flow_ccs_0FA0_118C:                                                  ; address: 
         ; burst, and the operator may already be touching buttons
         ; (e.g., power-cycling the system).  Without the grace gate,
         ; a spurious button press during that window would
-        ; accidentally soft-reset CONTROL.  The saturating counter
-        ; v171_waiting_grace_count (cleared to 0 on loop entry,
-        ; incremented once per iteration, clamped at threshold) arms
-        ; the reset only once the loop has been stuck long enough
+        ; accidentally soft-reset CONTROL.  The 16-bit saturating
+        ; counter v171_waiting_grace_count_lo/hi (cleared to 0 on loop
+        ; entry, bumped once per iteration, gate arms once the high
+        ; byte reaches V171_WAITING_GRACE_THRESHOLD_HI = 4 i.e. 1024
+        ; iterations ~= 10.24 s at the ~10 ms/iter delay_short(0xC8))
+        ; arms the reset only once the loop has been stuck long enough
         ; that the operator's button press is clearly intentional.
         ;
         ; Why `reset` instead of clearing the caches in place: the
@@ -4510,14 +4513,18 @@ flow_ccs_0FA0_118C:                                                  ; address: 
         ; button bitmap stays fresh.
         call    button_scan_debounce, 0x0                  ; one-shot: updates 0x9A
         movlb   0x00                                       ; BSR may have drifted
-        ; Saturating grace counter: bump only while below threshold;
-        ; once counter reaches threshold it stays there and the button
-        ; test below fires.
-        movlw   V171_WAITING_GRACE_THRESHOLD
-        cpfseq  v171_waiting_grace_count, B                ; skip if count == threshold
-        incf    v171_waiting_grace_count, F, B             ; else bump toward threshold
-        cpfseq  v171_waiting_grace_count, B                ; skip if count == threshold
+        ; 16-bit saturating grace counter:
+        ;  - if grace_hi >= V171_WAITING_GRACE_THRESHOLD_HI (4), the
+        ;    gate is armed: skip the bump, fall through to button test
+        ;  - else bump the 16-bit counter (lo first; on lo wrap, hi++)
+        ;    and skip the button test (still in grace)
+        movlw   V171_WAITING_GRACE_THRESHOLD_HI
+        cpfslt  v171_waiting_grace_count_hi, B             ; skip if hi <  threshold_hi
+        bra     v171_waiting_cold_armed                    ; hi >= threshold_hi -> armed
+        infsnz  v171_waiting_grace_count_lo, F, B          ; bump lo; skip if lo != 0
+        incf    v171_waiting_grace_count_hi, F, B          ; lo wrapped -> bump hi
         bra     v171_waiting_cold_past_grace_done          ; still in grace, no buttons
+v171_waiting_cold_armed:
         btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
         reset                                              ; soft CPU reset
         btfsc   0x9a, 0x4, B                               ; LEFT pressed?
@@ -4771,15 +4778,16 @@ reconnect_wait_loop:                                                  ; address:
         ; ---------------------------------------------------------------
         ; Same mechanism as the cold-boot WAITING loop at asm:4448:
         ; after ~10 s stuck here, operator RIGHT/LEFT -> soft reset.
-        ; Clear the grace counter on entry so each fresh reconnect
-        ; attempt starts with a full grace window (prevents counter
-        ; carry-over from a prior reconnect attempt being mistaken
-        ; for a "still stuck" condition).  This IS the loop that
-        ; wedges after STDBY+WAKE when MAIN fails to re-emit its
-        ; sentinel burst -- see the matching block's comment for
-        ; the V3.2 MAIN-side root cause tracking.
+        ; Clear both bytes of the 16-bit grace counter on entry so
+        ; each fresh reconnect attempt starts with a full grace
+        ; window (prevents counter carry-over from a prior reconnect
+        ; attempt being mistaken for a "still stuck" condition).
+        ; This IS the loop that wedges after STDBY+WAKE when MAIN
+        ; fails to re-emit its sentinel burst -- see the matching
+        ; block's comment for the V3.2 MAIN-side root cause tracking.
         movlb   0x00
-        clrf    v171_waiting_grace_count, B
+        clrf    v171_waiting_grace_count_lo, B
+        clrf    v171_waiting_grace_count_hi, B
 
 v171_reconnect_wait_body:
         ; Refresh the debounced button event latch at 0x9A via the
@@ -4793,11 +4801,15 @@ v171_reconnect_wait_body:
         ; frame.
         call    button_scan_debounce, 0x0                  ; one-shot: updates 0x9A
         movlb   0x00                                       ; BSR may have drifted
-        movlw   V171_WAITING_GRACE_THRESHOLD
-        cpfseq  v171_waiting_grace_count, B                ; skip if count == threshold
-        incf    v171_waiting_grace_count, F, B             ; else bump toward threshold
-        cpfseq  v171_waiting_grace_count, B                ; skip if count == threshold
+        ; 16-bit saturating grace counter (same shape as the
+        ; cold-boot WAITING loop at asm:4448).
+        movlw   V171_WAITING_GRACE_THRESHOLD_HI
+        cpfslt  v171_waiting_grace_count_hi, B             ; skip if hi <  threshold_hi
+        bra     v171_reconnect_armed                       ; hi >= threshold_hi -> armed
+        infsnz  v171_waiting_grace_count_lo, F, B          ; bump lo; skip if lo != 0
+        incf    v171_waiting_grace_count_hi, F, B          ; lo wrapped -> bump hi
         bra     v171_reconnect_past_grace_done             ; still in grace
+v171_reconnect_armed:
         btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
         reset                                              ; soft CPU reset
         btfsc   0x9a, 0x4, B                               ; LEFT pressed?

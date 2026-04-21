@@ -47,20 +47,24 @@ adds three new layers on top:
   forever and only a power-cycle recovered.  V1.71 adds a bounded
   operator escape: after ~10 s of being stuck in either the
   cold-boot WAITING loop or the V1.62b reconnect loop, pressing
-  `RIGHT` or `LEFT` triggers a PIC18 soft `RESET`.  The reset
-  preserves the bootloader region, re-primes all four sentinel
-  caches, and re-emits the CONTROL→MAIN full-sync burst — MAIN
-  normally answers each full-sync frame with a status frame that
-  clears the corresponding sentinel, so the second boot pass
-  usually completes even when the first one stalled.  Implementation
-  notes: grace counter `v171_waiting_grace_count` at RAM 0x0A8,
-  threshold 0x32 iterations, saturating.  The button bitmap is
-  refreshed via the one-shot `button_scan_debounce` so the WAITING
-  loops keep polling MAIN in parallel with the grace counter.  The
-  ~10 s gate prevents accidental resets from stray button presses
-  during normal cold-boot MAIN warmup.  This is an operator-facing
-  mitigation only; the underlying MAIN-side reconnect-burst gap is
-  tracked in
+  the front-panel `RIGHT` or `LEFT` button triggers a PIC18 soft
+  `RESET`.  The reset preserves the bootloader region, re-primes
+  all four sentinel caches, and re-emits the CONTROL→MAIN
+  full-sync burst — MAIN normally answers each full-sync frame
+  with a status frame that clears the corresponding sentinel, so
+  the second boot pass usually completes even when the first one
+  stalled.  Implementation notes: 16-bit grace counter
+  `v171_waiting_grace_count_lo`/`_hi` at RAM 0x0A8/0x0A9, gate
+  arms when the high byte reaches `V171_WAITING_GRACE_THRESHOLD_HI`
+  (= 4, i.e. 1024 iterations × ~10 ms/iter dominated by
+  `delay_short(0xC8)` ≈ 10.24 s).  The button bitmap is refreshed
+  via the one-shot `button_scan_debounce` (which reads the
+  front-panel button GPIOs on PORTA/PORTC, not the IR dispatch
+  path), so the WAITING loops keep polling MAIN in parallel with
+  the grace counter.  The ~10 s gate prevents accidental resets
+  from stray button presses during normal cold-boot MAIN warmup.
+  This is an operator-facing mitigation only; the underlying
+  MAIN-side reconnect-burst gap is tracked in
   [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
   as an open hardening workstream.
 
