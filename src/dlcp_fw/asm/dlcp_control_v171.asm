@@ -4458,38 +4458,40 @@ flow_ccs_0FA0_118C:                                                  ; address: 
         ; locked here forever, LCD frozen on "WAITING FOR DLCP", buttons
         ; dead.  Only power-cycle recovers.
         ;
-        ; Added 2026-04-21 per real-HW debugging session (see probe
-        ; output in scripts/dlcp_probe_chain_link.py baseline-vs-wedged
-        ; capture): when operator presses RIGHT or LEFT, force-clear the
-        ; 4 sentinel caches.  The loop's natural exit condition then
-        ; fires, post_connect_init runs, and (since CONTROL hasn't
-        ; actually handshaken with MAIN) control falls through to
-        ; flow_display_state_entry_1250 which shows the STANDBY ZZZ
-        ; screen -- operator can navigate from there.
+        ; Recovery mechanism: if the operator presses RIGHT (0x9A.5)
+        ; or LEFT (0x9A.4) while stuck, issue a soft CPU `reset`.  The
+        ; resulting cold-boot path re-primes all four sentinel caches
+        ; to 0x80, re-emits the CONTROL->MAIN full_sync_burst, and
+        ; re-enters this loop with a clean slate.  MAIN normally
+        ; answers each full-sync frame with a status frame that
+        ; clears the corresponding sentinel -- so the second pass
+        ; usually succeeds even if MAIN never emitted the original
+        ; post-wake burst.
         ;
-        ; This does NOT fix the underlying reconnect bug (MAIN's wake
-        ; path fails to re-emit the sentinel burst) -- that's a V3.2
-        ; MAIN-side fix that needs a separate flash round.  What it
-        ; DOES fix is the UX deadlock: operator now has a way out
-        ; without power-cycling both MAINs + CONTROL.
+        ; Why `reset` instead of clearing the caches in place: the
+        ; 4 cells (0xB8/0xB9/0xA7/0xA1) are NOT "unset/default"
+        ; markers; they are live payloads re-transmitted to MAIN and
+        ; rendered on the LCD (e.g., 0xB9=0 displays as "-96.0 dB"
+        ; in standby_display).  Clearing them in place would both
+        ; emit bogus frames to MAIN and pollute future reconnect
+        ; checks (reconnect loop at 0x4679 also exits on "!=0x80"
+        ; and the cells only re-prime to 0x80 at cold boot).  A
+        ; full soft-reset is the only clean way to restore the
+        ; sentinel semantics.
+        ;
+        ; This does NOT fix the underlying MAIN-side reconnect bug;
+        ; that's a V3.2 MAIN change to re-emit the sentinel burst on
+        ; wake.  It does fix the user-facing deadlock: operator now
+        ; has a guaranteed recovery without cold-booting both MAINs.
+        ; 0x9A is the debounced button bitmap maintained by
+        ; display_loop_iteration; call it first so the bitmap is
+        ; current before we test it.
         call    display_loop_iteration, 0x0                ; debounce tick
         movlb   0x00                                       ; BSR may have drifted
         btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
-        bra     v171_waiting_force_exit_recover
+        reset                                              ; soft CPU reset
         btfsc   0x9a, 0x4, B                               ; LEFT pressed?
-        bra     v171_waiting_force_exit_recover
-        bra     v171_waiting_continue_poll                 ; no button, poll MAIN
-v171_waiting_force_exit_recover:
-        ; Force-clear the 4 sentinel caches so the loop's existing
-        ; exit condition fires.  Values of 0x00 are not the "real"
-        ; boot-handshake values but are also not the 0x80 sentinel --
-        ; post-loop code reads these as "unset / default" which is
-        ; the same behavior as a device with blank preset.
-        clrf    0xb8, B                                    ; input_select_cache
-        clrf    0xb9, B                                    ; volume_cache
-        clrf    0xa7, B                                    ; cmd1d_setting_cache
-        clrf    0xa1, B                                    ; raw_status_cache
-v171_waiting_continue_poll:
+        reset                                              ; soft CPU reset
 
         call    poll_frame_send, 0x0                           ; dest: 0x000b64
         movlw   0xc8
