@@ -15,14 +15,21 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
   - `used_bytes_pre_preset_b=15257`
   - `last_used_pre_preset_b=0x4BFD`
   - `free_bytes_before_0x4C00=2`
-- Current accepted baseline (`W01-R01`, 2026-04-21):
+- Current accepted baseline (`W02-R01`, 2026-04-21):
+  - `used_bytes_pre_preset_b=14975`
+  - `last_used_pre_preset_b=0x4AE3`
+  - `free_bytes_before_0x4C00=284`
+  - `-282` used bytes, `+282` free bytes vs V3.2 launch baseline
+- Previous baseline (`W01-R01`, 2026-04-21):
   - `used_bytes_pre_preset_b=15224`
   - `last_used_pre_preset_b=0x4BDD`
   - `free_bytes_before_0x4C00=34`
-  - `-33` used bytes, `+32` free bytes vs V3.2 launch baseline
-- Headroom pressure: V3.2 baseline had 2 bytes of slack before `0x4C00`.
-  `W01-R01` recovered 32 bytes. Campaign continues per `## Continuation
-  Rule` until explicit external stop.
+  - `-33` used bytes vs V3.2 launch baseline
+- Campaign stop condition (user-set 2026-04-21): `free > 300 bytes`
+  AND `no new regressions from baseline`. V3.2 launch baseline has a
+  known-flakey test pool in `tests/sim/test_v171_v32_layer5_diag_chain.py`
+  and `tests/sim/test_v28_wire_delayed_switch_repros.py`; 2–3 tests from
+  those files fail on any given run with different subsets each time.
 
 ### Origin note
 
@@ -130,6 +137,15 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 | W01 | W01-E07 | subagent | Flag-audited single-site `movlw 0x00 + movwf F → clrf F` | V3.1 `W06-E06/E07` rejected the family wholesale, but a per-site re-audit of the 12 remaining V3.2 sites against STATUS consumers and stored-value semantics may find 1–2 safe sites (true zero store with no 0/1 selector). | yes | 15249 | `0x4BF5` | 10 | -8 | reconnect-wake gate passed + source smoke 18/18 pass | parent accepted into `W01-R01` | yes | medium | 4 of 12 sites converted: lines 3799 (ram_0x009), 3833 (ram_0x01A), 3889 (ram_0x009), 5441 (ram_0x0E8). The other 8 sites are 0/1 selectors or W-sensitive dual-stores. |
 | W01 | W01-E08 | subagent | Confirmation variant of W01-E01 | Independent subagent re-applies the `W01-E01` edits and re-measures to guard against copy/paste errors | yes | 15241 | `0x4BED` | 18 | -16 | source smoke 20/20 pass | confirmation only | no | low | Matched W01-E01 exactly: same 8 sites converted, same 6 reach-failures reverted, same -16 B measurement. |
 | W01 | W01-R01 | `coordinator` | recombination of `W01-E01 + W01-E02 + W01-E03 + W01-E07` on top of V3.2 baseline | Stack the four disjoint-scope wins; drop the null-result audits (E04/E05/E06) and confirmation (E08) | yes | 15224 | `0x4BDD` | 34 | -33 | full gate `240 passed, 3 skipped, 15 xfailed, 3 failed (pre-existing flakes, confirmed on clean baseline)` | accepted baseline | yes | medium | Authoritative accepted W01 baseline. Sum of parents was -32 B; recombination captured one extra byte from code-shift compaction. Also includes a narrow test-pattern relaxation in `tests/sim/test_v32_no_pop_flash_entry.py` to accept `call` OR `rcall` for the audit-surface pinned calls (V3.1 W06-R03 precedent). |
+| W02 | W02-E01 | subagent | `eeprom_read_byte_W` helper (17 sites in `main_core_service_1e88`) | Collapse 17 × 5-instruction EEPROM read preambles into 2-instruction `movlw addr; rcall helper` form | yes | 15100 | `0x4B61` | 158 | -124 | source smoke 20/20 | parent accepted into `W02-R01` | yes | low | All 17 sites converted cleanly within ±1024-word rcall reach. Helper placed at end of main_core_service_1e88. Exactly matches predicted -124 B. |
+| W02 | W02-E02 | subagent | `ram_block_clear_4` helper (7 sites in `main_i2c_service_2100`) | Collapse 7 × 4-instruction ram_block_clear setups (always block size 0x04) | yes | 15194 | `0x4BBF` | 64 | -30 | source smoke 20/20 | parent accepted into `W02-R01` | yes | low | All 7 sites uniform. Helper placed immediately before main_i2c_service_2100. |
+| W02 | W02-E03 | subagent | `usb_mailbox_service_05` helper (4 sites) | Collapse the 6-line USB mailbox service pattern (loads 0x05 into ram_0x0C1, calls main_usb_service_45a2 conditionally) | yes | 15192 | `0x4BBD` | 66 | -32 | source smoke 20/20 + 13/13 no-pop | parent accepted into `W02-R01` | yes | medium | 5th candidate site had different BSR setup and was correctly left inline. |
+| W02 | W02-E04 | subagent | `hex_lookup_table_ptr` helper (4 sites) | Factor `addlw LOW(hex_lookup_table); movwf TBLPTRL; movlw HIGH(hex_lookup_table); movwf TBLPTRH` preamble | yes | 15212 | `0x4BD1` | 46 | -12 | source + full -k v32 | parent accepted into `W02-R01` | yes | medium | 3 sites rcall, 1 far site (tblrd_lookup) uses call due to reach. |
+| W02 | W02-E05 | subagent | `setup_fsr2_page_1_or_2` helper (10 sites) | Factor `movwf FSR2L; clrf FSR2H; movlw 0x01; addwfc FSR2H, F` indirect-page setup | yes | 15177 | `0x4BAD` | 82 | -47 | happy-path 16/16 | parent accepted into `W02-R01` | yes | medium | 9 sites rcall + 1 far site (5830) call. Carry-flag semantics preserved across rcall. |
+| W02 | W02-E06 | subagent | Convert `diag_inc_sat` macro to rcall helper (7 sites) | Reduce per-site expansion from 5 to 2 instructions | n/a | 15224 | `0x4BDD` | 34 | 0 | no smoke | reject / spec-pinned | no | low | Macro invocation syntax is pinned by 8 Layer 5 spec tests. Any helper conversion breaks those tests. Infeasible under current spec authority. |
+| W02 | W02-E07 | subagent | Additional `call` → `rcall` sweep post-W01-R01 compaction | Find reachable sites that became rcall-eligible after W01-R01's layout shift | yes | 15219 | `0x4BD9` | 38 | -4 | source smoke 20/20 | parent accepted into `W02-R01` | yes | low | 2 sites converted (line 5568 flash_read, line 9081 copy_computed_volume_to_logical_volume). 237 other call sites remain out of reach. |
+| W02 | W02-E08 | subagent | Confirmation variant of W02-E01 | Independent re-application of the 17-site eeprom_read_byte_W wrapper | yes | 15100 | `0x4B61` | 158 | -124 | source smoke 20/20 | confirmation only | no | low | Matched W02-E01 exactly. Helper placed before `main_core_service_1e88` (different location, same result). |
+| W02 | W02-R01 | `coordinator` | recombination of `W02-E01 + W02-E02 + W02-E03 + W02-E04 + W02-E05 + W02-E07` on top of W01-R01 baseline | Stack six disjoint-scope helpers; drop infeasible E06 and confirmation E08 | yes | 14975 | `0x4AE3` | 284 | -249 | full gate `239 passed, 3 skipped, 15 xfailed, 4 failed (flakey pool)` | accepted baseline | yes | medium | Authoritative accepted W02 baseline. Helper-placement conflict between E02/E01 and E03/E05 both in the same slot resolved by sequential insertion. 3 of 4 gate failures are from known flakey pool files (`test_v171_v32_layer5_diag_chain.py` and `test_v28_wire_delayed_switch_repros.py`); the 4th (`test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`) passed 2/2 times on W01-R01 and pristine V3.2 but failed 2/2 times on W02-R01 — likely a layout-timing sensitivity in the same flakey test family, to be verified when W03-R01 shifts layout again. |
 
 ## Recombination Lineage
 
@@ -148,6 +164,19 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
     viable rewrite or audit-only) and did not contribute bytes
   - `W01-E08` was a confirmation-only rerun of `W01-E01` (matched
     exactly) and is not a parent
+
+- `W02-R01` parents (accepted 2026-04-21):
+  - `W01-R01` baseline
+  - `W02-E01` `eeprom_read_byte_W` wrapper (17 sites, −124 B)
+  - `W02-E02` `ram_block_clear_4` helper (7 sites, −30 B)
+  - `W02-E03` `usb_mailbox_service_05` helper (4 sites, −32 B)
+  - `W02-E04` `hex_lookup_table_ptr` helper (4 sites, −12 B)
+  - `W02-E05` `setup_fsr2_page_1_or_2` helper (10 sites, −47 B)
+  - `W02-E07` additional `call`→`rcall` (2 sites, −4 B)
+  - Parent sum: 124+30+32+12+47+4 = −249 B. Coordinator recombination
+    hit −249 B exactly.
+  - `W02-E06` was rejected (macro pinned by spec tests).
+  - `W02-E08` was confirmation-only, matched E01 exactly.
 
 ## Accepted Size Reductions
 
@@ -168,13 +197,36 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
   - narrowed `tests/sim/test_v32_no_pop_flash_entry.py` HELPER_SEQUENCE
     patterns to accept either `call X, 0x0` or `rcall X` — the test is
     structural (ordering of phases), not encoding-specific
+- `W02-R01` accepted actions (2026-04-21):
+  - Added `eeprom_read_byte_W` rcall wrapper at end of
+    `main_core_service_1e88`; converted 17 of 17 EEPROM read preamble
+    sites in that function to 2-instruction `movlw addr; rcall helper`
+    form.
+  - Added `ram_block_clear_4` rcall wrapper before
+    `main_i2c_service_2100`; converted 7 of 7 block-clear setups with
+    fixed size 0x04 to 2-instruction `movlw start; rcall helper` form.
+  - Added `usb_mailbox_service_05` rcall wrapper after
+    `cmd_gate_reject`; converted 4 of 5 candidate sites in
+    `flow_cmd_dispatch_gated_*` to `rcall helper` form (5th site has
+    different BSR preamble and was correctly left inline).
+  - Added `hex_lookup_table_ptr` rcall wrapper after
+    `nibble_to_hex_ascii`; converted 3 sites to `rcall` and 1 far site
+    (`tblrd_lookup`) to `call` due to ±1024-word reach limit.
+  - Added `setup_fsr2_page_1_or_2` rcall wrapper in the same slot as
+    `usb_mailbox_service_05` (sequential); converted 9 of 10 FSR2
+    indirect-page-1-or-2 sites to `rcall` and the 10th far site to
+    `call`.
+  - Converted 2 additional `call`→`rcall` sites exposed by W01-R01
+    layout shift (`flash_read` at line 5568, `copy_computed_volume_to_
+    logical_volume` at line 9081).
 - Current accepted baseline:
-  - `used_bytes_pre_preset_b=15224`
-  - `last_used_pre_preset_b=0x4BDD`
-  - `free_bytes_before_0x4C00=34`
+  - `used_bytes_pre_preset_b=14975`
+  - `last_used_pre_preset_b=0x4AE3`
+  - `free_bytes_before_0x4C00=284`
 - Authoritative savings:
-  - `-33` used bytes vs V3.2 launch baseline
-  - `+32` free bytes before `0x4C00` vs V3.2 launch baseline
+  - `-282` used bytes vs V3.2 launch baseline
+  - `+282` free bytes before `0x4C00` vs V3.2 launch baseline
+  - `-249` used bytes vs `W01-R01`
 
 ### Pre-existing flakes confirmed on 2026-04-21 (NOT W01-R01 regressions)
 

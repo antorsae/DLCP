@@ -724,10 +724,7 @@ flow_hid_command_dispatch_1402:
 flow_hid_command_dispatch_141a:
     movlw       0x00
     addwf       i2c_coeff_3, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     setf        INDF2, ACCESS
     incf        i2c_coeff_3, F, ACCESS
     movlw       0x0E
@@ -813,10 +810,7 @@ flow_hid_command_dispatch_14ce:
     movwf       ram_0x04C, ACCESS
     movlw       0xD1
     addwf       i2c_coeff_3, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     movf        INDF2, W, ACCESS
     xorwf       ram_0x04C, W, ACCESS
     bz          flow_hid_command_dispatch_14f0
@@ -952,10 +946,7 @@ flow_hid_command_dispatch_15aa:
 main_core_service_15b0:
     movlw       0x1A
     addwf       i2c_coeff_3, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     return      0
 
 
@@ -1006,10 +997,7 @@ flow_fw_update_relay_15d8:
 flow_fw_update_relay_15e4:
     movlw       0x1A
     addwf       ram_0x049, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     movf        INDF2, W, ACCESS
     movwf       ram_0x04A, ACCESS
     movlw       0xC0
@@ -1105,40 +1093,25 @@ flow_fw_update_relay_1662:
     andwf       ram_0x01B, F, ACCESS
     andwf       ram_0x01B, F, ACCESS
     movf        ram_0x01B, W, ACCESS
-    addlw       LOW(hex_lookup_table)               ; indexed TBLPTR -> hex_lookup_table
-    movwf       TBLPTRL, ACCESS
-    movlw       HIGH(hex_lookup_table)
-    movwf       TBLPTRH, ACCESS
+    rcall       hex_lookup_table_ptr                ; indexed TBLPTR -> hex_lookup_table
     movlw       0x9A
     addwf       ram_0x04B, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     tblrd*
     movff       TABLAT, INDF2
     movff       ram_0x080, ram_0x01B
     movlw       0x0F
     andwf       ram_0x01B, F, ACCESS
     movf        ram_0x01B, W, ACCESS
-    addlw       LOW(hex_lookup_table)               ; indexed TBLPTR -> hex_lookup_table
-    movwf       TBLPTRL, ACCESS
-    movlw       HIGH(hex_lookup_table)
-    movwf       TBLPTRH, ACCESS
+    rcall       hex_lookup_table_ptr                ; indexed TBLPTR -> hex_lookup_table
     movlw       0x9B
     addwf       ram_0x04B, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     tblrd*
     movff       TABLAT, INDF2
     movlw       0x9C
     addwf       ram_0x04B, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     clrf        INDF2, ACCESS
     movlw       0x02
     addwf       ram_0x04B, F, ACCESS
@@ -1335,10 +1308,7 @@ flow_fw_update_relay_18a0:
     bnz         flow_fw_update_relay_1884
     movlw       0x9A
     addwf       ram_0x04B, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     clrf        INDF2, ACCESS
     bra         flow_fw_update_relay_18c0
 flow_fw_update_relay_18bc:
@@ -1376,11 +1346,25 @@ flow_fw_update_relay_18dc:
 nibble_to_hex_ascii:
     andwf       ram_0x01B, F, ACCESS
     movf        ram_0x01B, W, ACCESS
-    addlw       LOW(hex_lookup_table)               ; indexed TBLPTR -> hex_lookup_table
+    rcall       hex_lookup_table_ptr                ; W=nibble -> TBLPTR -> hex_lookup_table[nibble]
+    tblrd*
+    return      0
+
+; ---------------------------------------------------------------------------
+; Helper: hex_lookup_table_ptr
+; ---------------------------------------------------------------------------
+; W holds the low nibble (caller has already ANDed with 0x0F). Adds the LOW
+; byte of hex_lookup_table to W, loads TBLPTRL/TBLPTRH. W is clobbered by the
+; final movlw of HIGH(hex_lookup_table). Callers typically follow with tblrd*.
+; Shared by nibble_to_hex_ascii, tblrd_lookup, and the two inline nibble
+; emitters in main_uart_service_43a2's feeder. Near callers use rcall (2 B);
+; distant callers (tblrd_lookup at ~0x424C) use call (4 B).
+; ---------------------------------------------------------------------------
+hex_lookup_table_ptr:
+    addlw       LOW(hex_lookup_table)
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(hex_lookup_table)
     movwf       TBLPTRH, ACCESS
-    tblrd*
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -1469,12 +1453,7 @@ flow_cmd_dispatch_gated_1970:
     xorlw       0x01
     bz          flow_cmd_dispatch_gated_1966
 flow_cmd_dispatch_gated_1990:
-    movlw       0x05
-    movlb       0x0
-    movwf       ram_0x0C1, BANKED
-    movf        ram_0x0FD, W, BANKED
-    btfss       STATUS, 2, ACCESS
-    call        main_usb_service_45a2, 0x0
+    rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
     bcf         event_flags, 1, BANKED
     bsf         ram_0x0BD, 0, BANKED
@@ -1556,12 +1535,7 @@ flow_cmd_dispatch_gated_19e6:
     movff       ram_0x031, i2c_coeff_2
     movff       ram_0x032, i2c_coeff_3
     call        volume_dsp_write, 0x0       ; V3.1 Fix B: verified volume write
-    movlw       0x05
-    movlb       0x0
-    movwf       ram_0x0C1, BANKED
-    movf        ram_0x0FD, W, BANKED
-    btfss       STATUS, 2, ACCESS
-    call        main_usb_service_45a2, 0x0
+    rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
     bsf         ram_0x0BD, 0, BANKED
     call        main_timer_service_48a6, 0x0
@@ -1602,12 +1576,7 @@ flow_cmd_dispatch_gated_1a9c:
 flow_cmd_dispatch_gated_1ab6:
     bsf         event_flags, 3, BANKED
 flow_cmd_dispatch_gated_1ab8:
-    movlw       0x05
-    movlb       0x0
-    movwf       ram_0x0C1, BANKED
-    movf        ram_0x0FD, W, BANKED
-    btfss       STATUS, 2, ACCESS
-    call        main_usb_service_45a2, 0x0
+    rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
     bcf         event_flags, 5, BANKED
 flow_cmd_dispatch_gated_1aca:
@@ -1677,12 +1646,7 @@ flow_cmd_dispatch_gated_1b48:
     call        main_i2c_service_381c, 0x0
     bra         flow_cmd_dispatch_gated_1b8c
 flow_cmd_dispatch_gated_1b8c:
-    movlw       0x05
-    movlb       0x0
-    movwf       ram_0x0C1, BANKED
-    movf        ram_0x0FD, W, BANKED
-    btfss       STATUS, 2, ACCESS
-    call        main_usb_service_45a2, 0x0
+    rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
     bcf         event_flags, 6, BANKED
 flow_cmd_dispatch_gated_1baa:
@@ -1713,6 +1677,51 @@ flow_cmd_dispatch_gated_1bd6:
     bsf         ram_0x0BD, 2, BANKED
     call        main_timer_service_48a6, 0x0
 cmd_gate_reject:
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper : usb_mailbox_service_05          (W02-E03: factored 4-site pattern)
+; ---------------------------------------------------------------------------
+; Loads 0x05 into ram_0x0C1 (USB mailbox counter) with BSR=0x0, then runs the
+; USB service routine at 0x45A2 if ram_0x0FD != 0 (btfss skips call when Z=1).
+;
+; BSR: enters any, exits at 0x0 (from movlb inside) or whatever main_usb_
+;      service_45a2 leaves — all 4 callers immediately re-issue movlb 0x0,
+;      so helper does not need to post-restore BSR.
+; STATUS.Z: btfss consumes Z from the movf; post-return Z is
+;           indeterminate. All 4 callers only execute bcf/bsf/call after,
+;           none branch on Z.
+; Savings : 4 sites × (14 B → 2 B) − 16 B helper = 32 B.
+; ---------------------------------------------------------------------------
+usb_mailbox_service_05:
+    movlw       0x05
+    movlb       0x0
+    movwf       ram_0x0C1, BANKED
+    movf        ram_0x0FD, W, BANKED
+    btfss       STATUS, 2, ACCESS
+    call        main_usb_service_45a2, 0x0
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: setup_fsr2_page_1_or_2                     (W02-E05 size-opt helper)
+; ---------------------------------------------------------------------------
+; Shared factor for the 4-instruction FSR2 "page 1 or 2" setup sequence. The
+; caller must have just executed "addwf <reg>, W, ACCESS" (or equivalent that
+; sets C on carry-out) with the low byte in W. On entry: W = FSR2L target,
+; C = carry-out from the prior addwf. Helper sets:
+;   FSR2L = W
+;   FSR2H = 0x01 + C   (i.e. page 1 if no carry, page 2 if carry)
+; Side effects: W is left at 0x01 (as in the inlined original pattern),
+; C/DC/N/OV/Z reflect addwfc FSR2H + 0x01 + C. Callers of the original
+; inline sequence did not rely on post-pattern flags; see W02-E05 audit.
+; ---------------------------------------------------------------------------
+setup_fsr2_page_1_or_2:
+    movwf       FSR2L, ACCESS
+    clrf        FSR2H, ACCESS
+    movlw       0x01
+    addwfc      FSR2H, F, ACCESS
     return      0
 
 
@@ -2222,76 +2231,43 @@ main_core_service_1e88:
     call        eeprom_read_byte, 0x0
     movlb       0x0
     movwf       computed_volume_3, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x01
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       computed_volume_2, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x02
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       computed_volume_1, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x03
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       computed_volume, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x04
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       input_select, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x07
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x060, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x08
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x061, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x09
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x062, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x0A
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x063, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x0B
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x064, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x0C
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x065, BANKED
     clrf        ram_0x004, ACCESS
     movlw       0x0D
     movwf       ram_0x003, ACCESS
     call        eeprom_read_byte, 0x0
     movwf       ram_0x05F, ACCESS
-    clrf        ram_0x004, ACCESS
     movlw       0x14
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x0C3, BANKED
     movf        computed_volume_3, W, BANKED
     xorlw       0x80
@@ -2377,21 +2353,15 @@ flow_main_core_service_1e88_1fc6:
     movff       ram_0x064, ram_0x0A9
     movff       ram_0x065, ram_0x0AA
     movff       ram_0x0C3, ram_0x0B2
-    clrf        ram_0x004, ACCESS
     movlw       0x0F
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x0B4, BANKED
     incf        ram_0x0B4, W, BANKED
     btfsc       STATUS, 2, ACCESS
     bcf         ram_0x0B4, 0, BANKED
     movff       ram_0x0B4, ram_0x0B1
-    clrf        ram_0x004, ACCESS
     movlw       0x0E
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x0B8, BANKED
     movlw       0x03
     subwf       ram_0x0B8, W, BANKED
@@ -2405,29 +2375,17 @@ flow_main_core_service_1e88_2026:
     movlw       0x03
     movwf       ram_0x0B8, BANKED
 flow_main_core_service_1e88_2030:
-    clrf        ram_0x004, ACCESS
     movlw       0x10
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x09B, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x11
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x09C, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x12
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x09D, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x13
-    movwf       ram_0x003, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
+    rcall       eeprom_read_byte_W
     movwf       ram_0x09E, BANKED
     movlw       0x12
     cpfsgt      ram_0x09B, BANKED
@@ -2504,6 +2462,38 @@ flow_main_core_service_1e88_20c2:
 
 
 ; ---------------------------------------------------------------------------
+; eeprom_read_byte_W  — rcall-reachable wrapper that reads one EEPROM byte.
+; Arguments: W = EEPROM address (low byte); ram_0x004 cleared by helper.
+; Returns  : W = byte read; BSR = 0 on return.
+; W02-E01 size optimization: collapses 17 × 5-instruction preambles in
+; main_core_service_1e88 into 17 × 2-instruction sequences.
+; ---------------------------------------------------------------------------
+eeprom_read_byte_W:
+    movwf       ram_0x003, ACCESS   ; ram_0x003 = address low byte
+    clrf        ram_0x004, ACCESS   ; high byte always 0 in this call site set
+    call        eeprom_read_byte, 0x0
+    movlb       0x0
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: ram_block_clear_4 (W02-E02 size-opt helper)
+; ---------------------------------------------------------------------------
+; Wraps the uniform 4-instruction setup used at 7 sites inside
+; main_i2c_service_2100. Caller loads W with the starting ram_0x003 address
+; (low byte); ram_0x004 (high byte) must already be set by the caller.
+; The helper fixes the block length at 0x04 and dispatches to
+; ram_block_clear. Saves 30 B vs inlined setup at 7 sites.
+; ---------------------------------------------------------------------------
+ram_block_clear_4:
+    movwf       ram_0x003, ACCESS
+    movlw       0x04
+    movwf       ram_0x005, ACCESS
+    call        ram_block_clear, 0x0
+    return      0
+
+
+; ---------------------------------------------------------------------------
 ; Function: main_i2c_service_2100          (DSP/secondary device sync burst)
 ; Address : 0x2100
 ; ---------------------------------------------------------------------------
@@ -2517,55 +2507,34 @@ flow_main_core_service_1e88_20c2:
 main_i2c_service_2100:
     clrf        ram_0x004, ACCESS
     movlw       0xD7
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xDB
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xDF
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     movlb       0x1
     movlw       0x01
     movwf       ram_0x004, ACCESS
     movlw       0xD9
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xE3
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     movlb       0x1
     movlw       0x01
     movwf       ram_0x004, ACCESS
     movlw       0xDD
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     movlb       0x1
     movlw       0x01
     movwf       ram_0x004, ACCESS
     movlw       0xE1
-    movwf       ram_0x003, ACCESS
-    movlw       0x04
-    movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
+    call        ram_block_clear_4, 0x0
     call        i2c_wait_bus_idle, 0x0
     clrf        ram_0x059, ACCESS
 flow_main_i2c_service_2100_217a:
@@ -2688,10 +2657,7 @@ flow_main_i2c_service_2100_2288:
     movlb       0x1
     movlw       0x0F
     addwf       ram_0x05A, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    rcall       setup_fsr2_page_1_or_2
     movf        INDF2, W, ACCESS
     call        i2c_byte_tx, 0x0
     clrf        ram_0x05B, ACCESS
@@ -5565,7 +5531,7 @@ main_i2c_service_381c:
     clrf        ram_0x00A, ACCESS
     movlw       0x17                                ; FSR2 dest = 0x0017 (overlay)
     movwf       ram_0x009, ACCESS
-    call        flash_read, 0x0                     ; was rcall — Layer 5 push flash_read out of range
+    rcall       flash_read                          ; W02-E07: back in range after W01-R01 compaction
     bsf         SSPCON2, 0, ACCESS                  ; SEN — START
 flow_main_i2c_service_381c_3870:
     btfsc       SSPCON2, 0, ACCESS                  ; <-- M1 unbounded SEN poll (W1 deferred)
@@ -5827,10 +5793,7 @@ flow_main_usb_service_3a26_3a64:
     movlb       0x1
     movlw       0x5A
     addwf       ram_0x059, W, ACCESS
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movlw       0x01
-    addwfc      FSR2H, F, ACCESS
+    call        setup_fsr2_page_1_or_2, 0x0
     clrf        INDF2, ACCESS
     incf        ram_0x059, F, ACCESS
     movlw       0x3F
@@ -7427,10 +7390,7 @@ main_uart_service_43a2:
 tblrd_lookup:
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
-    addlw       LOW(hex_lookup_table)               ; indexed TBLPTR -> hex_lookup_table
-    movwf       TBLPTRL, ACCESS
-    movlw       HIGH(hex_lookup_table)
-    movwf       TBLPTRH, ACCESS
+    call        hex_lookup_table_ptr, 0x0           ; far call: helper lives near nibble_to_hex_ascii
     tblrd*
     movf        TABLAT, W, ACCESS
     return      0
@@ -9078,7 +9038,7 @@ volume_dsp_write:
     movlb       0x0
     bcf         event_flags, 3, BANKED      ; clear volume dirty
     bsf         event_flags, 7, BANKED      ; boot-complete gate
-    call        copy_computed_volume_to_logical_volume, 0x0
+    rcall       copy_computed_volume_to_logical_volume  ; W02-E07: in range after W01-R01
     bcf         dsp_fault_flags, 6, BANKED  ; clear DSP fault (write worked)
     movlw       0xC7
     andwf       dsp_fault_flags, F, BANKED  ; clear retry counter, preserve bits 7,6
