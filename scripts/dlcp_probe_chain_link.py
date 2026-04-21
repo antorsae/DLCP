@@ -78,7 +78,17 @@ ADDR_LATA    = 0xF69
 ADDR_LATB    = 0xF6A
 ADDR_LATC    = 0xF6B
 
-ADDR_ACTIVE_FLAGS = 0x01F  # MAIN's active_flags equiv (low GPR)
+# V3.2 MAIN RAM addresses (NOT V1.71 CONTROL!).
+# Earlier draft used 0x01F (= V1.71 CONTROL's control_flags); that's
+# unrelated RAM on V3.2 MAIN.  Correct V3.2 MAIN addresses per
+# src/dlcp_fw/asm/dlcp_main_ram.inc:
+ADDR_ACTIVE_FLAGS = 0x05E   # bit 3 = chain gate (open=active, clear=standby)
+ADDR_EVENT_FLAGS  = 0x07E   # bit 2 = stdby/wake event pending
+ADDR_DIAG_I       = 0x2E5   # I2C transport fault counter
+ADDR_DIAG_D       = 0x2E6   # DSP fault counter
+ADDR_DIAG_S       = 0x2E7   # standby dispatches (S in cmd 0x44)
+ADDR_DIAG_B       = 0x2E8   # bring-up dispatches (B in cmd 0x44)
+ADDR_DSP_FAULT_FLAGS = 0x0B5  # bit 6 = DSP_FAULT sticky
 
 TXSTA_BITS = [
     (7, "CSRC"),  (6, "TX9"),   (5, "TXEN"),  (4, "SYNC"),
@@ -141,11 +151,23 @@ def probe_one(path: bytes) -> None:
         print(f"  TMR0L liveness:  0x{t0a:02X} (same)             "
               f"(Timer 0 not running OR SFR address miss)")
 
-    # active_flags (low BANK 0 GPR).
+    # V3.2 MAIN state flags + diag-cell live snapshot.
     af = read_byte(ep0, ADDR_ACTIVE_FLAGS)
-    print(f"  active_flags  (0x01F) = 0x{af:02X}    "
-          f"gate_open(bit3)={(af >> 3) & 1}  "
-          f"rx_route_is_b1(bit0)={af & 1}")
+    ef = read_byte(ep0, ADDR_EVENT_FLAGS)
+    di = read_byte(ep0, ADDR_DIAG_I)
+    dd = read_byte(ep0, ADDR_DIAG_D)
+    ds = read_byte(ep0, ADDR_DIAG_S)
+    db = read_byte(ep0, ADDR_DIAG_B)
+    dsp_fault = read_byte(ep0, ADDR_DSP_FAULT_FLAGS)
+    print(f"  active_flags  (0x05E) = 0x{af:02X}    "
+          f"rx_route_is_b1(bit0)={af & 1}  "
+          f"chain_gate_open(bit3)={(af >> 3) & 1}")
+    print(f"  event_flags   (0x07E) = 0x{ef:02X}    "
+          f"stdby_wake_pending(bit2)={(ef >> 2) & 1}")
+    print(f"  dsp_fault_flg (0x0B5) = 0x{dsp_fault:02X}    "
+          f"DSP_FAULT(bit6)={(dsp_fault >> 6) & 1}")
+    print(f"  diag cells    I={di} D={dd} S={ds} B={db}  (live RAM vs "
+          f"cmd 0x44 snapshot)")
 
     # UART block.
     txsta   = read_byte(ep0, ADDR_TXSTA)
