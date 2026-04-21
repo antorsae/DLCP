@@ -379,13 +379,73 @@ def test_json_report_shape() -> None:
 
 def test_human_report_includes_rev_marker_for_known_versions() -> None:
     """V3.2 firmware (cmd 0x06 minor = 2) maps to EEPROM rev 0x37 via
-    the static lookup; V3.1 (minor = 1) maps to 0x36; unknown versions
-    omit the rev string."""
+    the static lookup."""
     snap = _snap()
     report = _make_report(snap)  # uses VersionInfo(3, 3, 2) -> V3.2
     text = _format_human_report([report])
     assert "V3.2 rev 0x37" in text, (
         "V3.2 must show 'rev 0x37' from the static lookup"
+    )
+
+
+def test_human_report_v31_rev_marker() -> None:
+    """V3.1 firmware (cmd 0x06 (3, 3, 1)) maps to EEPROM rev 0x31.
+
+    Codex review of 6963cfc 2026-04-21 caught the table-vs-firmware
+    drift: an earlier version of _REV_MARKER_BY_VERSION had V3.1 ->
+    0x36 based on the Phase 2.5 commit message ("EEPROM marker bump
+    0x36 -> 0x37"), but 0x36 was a never-shipped intermediate build.
+    Committed V3.1 source (src/dlcp_fw/asm/dlcp_main_v31.asm:8384)
+    has EEPROM tuple `db 0x03, 0x01, 0x31` -> marker 0x31.  Pin that
+    here so a future regression that re-introduces the wrong marker
+    fails immediately.
+    """
+    from dlcp_fw.flash.dlcp_main_flash import VersionInfo
+    from dlcp_fw.flash.dlcp_diag import _format_version
+
+    v31 = VersionInfo(flag=3, major=3, minor=1)
+    text = _format_version(v31)
+    assert text == "V3.1 rev 0x31", (
+        f"V3.1 expected 'V3.1 rev 0x31' (per dlcp_main_v31.asm:8384 "
+        f"EEPROM tuple); got {text!r}"
+    )
+
+
+def test_human_report_v23_omits_rev_marker() -> None:
+    """Stock V2.3 / V3.0 cmd 0x06 reports (3, 2, 3) -- ambiguous tuple
+    (we can't distinguish the two firmware variants from cmd 0x06
+    alone because V3.0 keeps the stock identifier by design).
+    Both display as 'V2.3' with NO rev suffix.  Omitting the suffix
+    is a deliberate design choice (see docstring on
+    _REV_MARKER_BY_VERSION); pin it so a future change that adds
+    a guess for stock V2.3 is forced to update this test.
+    """
+    from dlcp_fw.flash.dlcp_main_flash import VersionInfo
+    from dlcp_fw.flash.dlcp_diag import _format_version
+
+    v23 = VersionInfo(flag=3, major=2, minor=3)
+    text = _format_version(v23)
+    assert text == "V2.3", (
+        f"V2.3/V3.0 expected 'V2.3' with NO rev suffix; got {text!r}"
+    )
+
+
+def test_json_report_eeprom_marker_null_for_unknown_version() -> None:
+    """Unknown firmware tuples (not in _REV_MARKER_BY_VERSION) get
+    `eeprom_marker: null` in the JSON.  Verifies the lookup returns
+    None gracefully rather than raising or producing a garbage hex
+    string."""
+    import json
+    from dlcp_fw.flash.dlcp_main_flash import VersionInfo
+
+    snap = _snap()
+    report = _make_report(snap)
+    # Substitute a tuple that's NOT in the lookup table.
+    object.__setattr__(report, "version", VersionInfo(flag=3, major=2, minor=3))
+    text = _format_json_report([report])
+    obj = json.loads(text)
+    assert obj["mains"][0]["version"]["eeprom_marker"] is None, (
+        "unknown firmware tuple must produce eeprom_marker=null"
     )
 
 

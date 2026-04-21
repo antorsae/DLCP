@@ -373,18 +373,32 @@ def _dedup_preserving_order(items: List[str]) -> List[str]:
 # ===========================================================================
 
 
-# Mapping from cmd 0x06 (major, minor) tuple to the EEPROM rev marker
-# (0xF00080..0xF00082 third byte).  Keep this in sync with the
-# `org 0xF00000 / eeprom_data` block of each MAIN source file:
-#   * src/dlcp_fw/asm/dlcp_main_v30.asm: V3.0 stock-equivalent
-#     (eeprom marker not bumped from stock V2.3 baseline; reads as
-#     no-tier-1 capability).
-#   * src/dlcp_fw/asm/dlcp_main_v31.asm: V3.1 -> EEPROM marker 0x36.
-#   * src/dlcp_fw/asm/dlcp_main_v32.asm: V3.2 -> EEPROM marker 0x37
-#     (Phase 2.5 bump; Tier-1 capable; cmd 0x22 + cmd 0x44 supported).
+# Mapping from cmd 0x06 (flag, major, minor) tuple to the EEPROM rev
+# marker (third byte of the EEPROM tuple at offset 0x80..0x82).  Keep
+# this in sync with the `org 0xF00000 / eeprom_data` block of each MAIN
+# source file -- VERIFIED against the committed sources 2026-04-21:
+#   * src/dlcp_fw/asm/dlcp_main_v30.asm:7246  -> EEPROM (0x02, 0x03, 0x30)
+#     V3.0 stock-equivalent rewrite.  cmd 0x06 reports (3, 2, 3) -- the
+#     SAME tuple stock V2.3 reports, by design (V3.0 keeps the stock
+#     identifier so existing tools see no change).  Omitted from this
+#     lookup because the cmd 0x06 tuple is ambiguous: we can't tell
+#     stock V2.3 (no Tier-1, no Tier-1 spec rev) from V3.0 (no Tier-1
+#     either, but a different EEPROM marker).  Both display as "V2.3"
+#     without a rev suffix.
+#   * src/dlcp_fw/asm/dlcp_main_v31.asm:8384  -> EEPROM (0x03, 0x01, 0x31)
+#     V3.1 source rewrite.  cmd 0x43 memread; no Tier-1.
+#   * src/dlcp_fw/asm/dlcp_main_v32.asm:9958  -> EEPROM (0x03, 0x02, 0x37)
+#     V3.2 Phase 2.5 Tier-1 (cmd 0x22 + cmd 0x44).
+#
+# An earlier draft of this table mapped V3.1 -> 0x36 based on the
+# Phase 2.5 commit message ("EEPROM marker bump 0x36 -> 0x37"), but
+# 0x36 was an intermediate V3.x build that never shipped the V3.1
+# source rewrite -- the committed V3.1 EEPROM uses 0x31.  Codex
+# review of 6963cfc 2026-04-21 caught the drift; fixed in this commit.
+#
 # Older / unknown versions return None and the rev string is omitted.
 _REV_MARKER_BY_VERSION: dict[tuple[int, int, int], int] = {
-    (3, 3, 1): 0x36,   # V3.1 source rewrite (cmd 0x43 memread; no Tier-1)
+    (3, 3, 1): 0x31,   # V3.1 source rewrite
     (3, 3, 2): 0x37,   # V3.2 Tier-1 (cmd 0x22 + cmd 0x44)
 }
 
