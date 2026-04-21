@@ -322,23 +322,43 @@ def query_diag(
         # still produces a usable diag report -- just without the
         # channel info), but we narrow the exception types caught so
         # that real bugs (typos, signature drift, programming errors)
-        # surface as crashes rather than silent no-ops.  Non-fatal
-        # categories:
-        #   * RuntimeError -- the helper's own error class for unexpected
-        #                     EP0 transfer states.
-        #   * OSError      -- USB I/O / device-busy.  PyUSB's USBError
-        #                     subclasses IOError/OSError so it lands here.
-        #   * ImportError  -- missing libusb / pyusb in stripped envs.
-        #   * ValueError   -- pyusb raises NoBackendError(ValueError)
-        #                     when no libusb backend is loadable; codex
-        #                     review of 25d6780 caught this gap.
+        # surface as crashes rather than silent no-ops.
+        #
+        # Non-fatal categories (each verified against an actual upstream
+        # raise site -- codex review surfaced gaps in earlier rounds
+        # 25d6780, b4f94a6):
+        #   * RuntimeError       -- the helper's own error class for
+        #                           unexpected EP0 transfer states.
+        #   * OSError            -- USB I/O / device-busy.  PyUSB's
+        #                           USBError + USBTimeoutError both
+        #                           subclass IOError/OSError so they
+        #                           land here.
+        #   * ImportError        -- missing libusb / pyusb in stripped
+        #                           envs.
+        #   * ValueError         -- pyusb raises NoBackendError(ValueError)
+        #                           when no libusb backend is loadable.
+        #   * NotImplementedError -- pyusb's libusb backend translates
+        #                           LIBUSB_ERROR_NOT_SUPPORTED to a
+        #                           plain NotImplementedError -- happens
+        #                           when the platform/backend doesn't
+        #                           support a particular control transfer
+        #                           shape.  Codex review of b4f94a6
+        #                           caught this gap.
+        #
+        # Bug-class exceptions (KeyError / AttributeError / TypeError /
+        # NameError) are deliberately NOT caught -- a typo or signature
+        # drift should crash loudly, not silently lose the channel
+        # column.
         from dlcp_fw.flash.dlcp_main_flash import _probe_ep0_app_ram
 
         try:
             active_config_name, routes = _probe_ep0_app_ram(
                 vid=vid, pid=pid, path=info.path,
             )
-        except (RuntimeError, OSError, ImportError, ValueError) as exc:
+        except (
+            RuntimeError, OSError, ImportError,
+            ValueError, NotImplementedError,
+        ) as exc:
             # Surface to stderr so the operator can correlate a missing
             # channel column with a real failure (e.g., libusb perms).
             # Don't kill the diag report -- the cmd 0x44 path is

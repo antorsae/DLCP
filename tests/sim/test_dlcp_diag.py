@@ -560,22 +560,48 @@ def test_derive_channel_label_echoes_raw_for_non_LR_routes() -> None:
         )
 
 
-def test_query_diag_handles_ep0_failure_gracefully(monkeypatch, capsys) -> None:
-    """When the EP0 probe raises RuntimeError / OSError, query_diag
-    must:
+@pytest.mark.parametrize(
+    "exc_type, exc_msg, gap_origin",
+    [
+        # The runtime EP0 helper's own error class.  Original gap from
+        # codex review of 90af763 (silent `except Exception:` was too
+        # broad; narrowed to a typed list).
+        (RuntimeError, "simulated EP0 failure (libusb refused)",
+         "codex 90af763"),
+        # PyUSB NoBackendError -- subclass of ValueError, NOT OSError.
+        # Common on stripped hosts without a usable libusb backend.
+        # Codex 25d6780 caught the ValueError gap.
+        (ValueError, "No backend available",
+         "codex 25d6780"),
+        # PyUSB's libusb backend translates LIBUSB_ERROR_NOT_SUPPORTED
+        # to a plain NotImplementedError (NOT a subclass of OSError or
+        # RuntimeError).  Codex b4f94a6 caught this gap.
+        (NotImplementedError, "Operation not supported",
+         "codex b4f94a6"),
+    ],
+    ids=["runtime_error", "value_error_no_backend", "not_implemented_error"],
+)
+def test_query_diag_degrades_gracefully_on_ep0_failure(
+    monkeypatch, capsys, exc_type, exc_msg, gap_origin,
+) -> None:
+    """When the EP0 probe raises one of the documented non-fatal
+    exception types, query_diag must:
       * print a stderr warning so the operator notices,
       * leave routes / active_config_name as None,
       * still return a valid DiagReport with the cmd 0x44 snapshot
         (the diag pipeline is independent of the EP0 channel probe).
 
-    Codex review of 90af763 caught that the original `except Exception:
-    pass` was too broad and silent; this test exercises the now-narrowed
-    exception handling path.
+    This is parameterized over each known PyUSB / libusb-backend
+    failure class.  Each parameter row cites the codex review round
+    that caught the gap so a future re-narrowing is forced to update
+    the parametrize list.
+
+    Bug-class exceptions (KeyError / AttributeError / TypeError /
+    NameError) deliberately propagate -- a typo or signature drift
+    should crash loudly, not silently lose the channel column.  Those
+    are NOT in this parametrize list by design.
     """
     from dlcp_fw.flash import dlcp_diag
-
-    # Stub the HID lookup + cmd 0x06 + cmd 0x44 path so the test runs
-    # without real hardware.
     from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
     from dlcp_fw.flash.dlcp_main_flash import VersionInfo
 
@@ -604,10 +630,8 @@ def test_query_diag_handles_ep0_failure_gracefully(monkeypatch, capsys) -> None:
         ),
     )
 
-    # Make the EP0 probe raise a RuntimeError (one of the expected
-    # failure types).
     def _failing_probe(**kw):
-        raise RuntimeError("simulated EP0 failure (libusb refused)")
+        raise exc_type(exc_msg)
 
     from dlcp_fw.flash import dlcp_main_flash
     monkeypatch.setattr(dlcp_main_flash, "_probe_ep0_app_ram", _failing_probe)
@@ -616,70 +640,16 @@ def test_query_diag_handles_ep0_failure_gracefully(monkeypatch, capsys) -> None:
 
     # Report still valid -- snapshot present, status classified.
     assert report.snapshot is not None
-    assert report.status in {"HEALTHY", "DEGRADED", "CRITICAL"}
+    assert report.status in {"HEALTHY", "DEGRADED", "CRITICAL"}, (
+        f"({gap_origin}) snapshot status missing or invalid: {report.status}"
+    )
     # Routes / config null because EP0 failed.
     assert report.routes is None
     assert report.active_config_name is None
-    # Stderr carries the warning (operator can correlate).
+    # Stderr carries the warning + the original exception message.
     captured = capsys.readouterr()
     assert "EP0 routes probe failed" in captured.err
-    assert "simulated EP0 failure" in captured.err
-
-
-def test_query_diag_handles_pyusb_no_backend_gracefully(monkeypatch, capsys) -> None:
-    """PyUSB raises NoBackendError(ValueError) when no libusb backend
-    is loadable -- a common failure on stripped/minimal hosts.  Codex
-    review of 25d6780 caught that ValueError was NOT in the original
-    narrowed catch list (RuntimeError, OSError, ImportError), so a
-    libusb-less host would crash query_diag instead of degrading.
-
-    This test injects a ValueError from `_probe_ep0_app_ram` and
-    verifies the same graceful degradation as the RuntimeError test.
-    """
-    from dlcp_fw.flash import dlcp_diag
-    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
-    from dlcp_fw.flash.dlcp_main_flash import VersionInfo
-
-    info = HidDeviceInfo(
-        vendor_id=0x04D8, product_id=0xFF89, path=b"DevSrvsID:test",
-        manufacturer_string="Hypex BV", product_string="DLCP",
-        serial_number="",
-    )
-
-    class _StubDev:
-        def write(self, *a, **kw): return 65
-        def read(self, *a, **kw): return [0] * 65
-        def close(self): pass
-
-    monkeypatch.setattr(dlcp_diag, "_pick_device", lambda *a, **kw: info)
-    monkeypatch.setattr(dlcp_diag, "_open_hid", lambda *a, **kw: _StubDev())
-    monkeypatch.setattr(
-        dlcp_diag, "_probe_cmd06_version",
-        lambda dev, **kw: VersionInfo(flag=3, major=3, minor=2),
-    )
-    monkeypatch.setattr(
-        dlcp_diag, "_probe_cmd44_diag",
-        lambda dev, **kw: DiagSnapshot(
-            diag_i=0, diag_d=0, diag_s=0, diag_b=0, diag_r=0, diag_a=0, diag_p=0,
-            diag_reset_por=1, diag_reset_bor=0, diag_reset_wdt=0, diag_reset_sw=0,
-        ),
-    )
-
-    # Simulate PyUSB's NoBackendError (subclass of ValueError).
-    def _no_backend(**kw):
-        raise ValueError("No backend available")
-
-    from dlcp_fw.flash import dlcp_main_flash
-    monkeypatch.setattr(dlcp_main_flash, "_probe_ep0_app_ram", _no_backend)
-
-    report = dlcp_diag.query_diag(probe_routes=True)
-
-    # Graceful degradation: report still valid, no routes.
-    assert report.snapshot is not None
-    assert report.routes is None
-    captured = capsys.readouterr()
-    assert "EP0 routes probe failed" in captured.err
-    assert "No backend available" in captured.err
+    assert exc_msg in captured.err
 
 
 def test_json_report_includes_routes_and_channel_source() -> None:
