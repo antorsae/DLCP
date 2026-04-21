@@ -323,16 +323,22 @@ def query_diag(
         # channel info), but we narrow the exception types caught so
         # that real bugs (typos, signature drift, programming errors)
         # surface as crashes rather than silent no-ops.  Non-fatal
-        # categories: RuntimeError (the helper's own error class),
-        # OSError (USB I/O / device-busy), ImportError (missing
-        # libusb in stripped envs).
+        # categories:
+        #   * RuntimeError -- the helper's own error class for unexpected
+        #                     EP0 transfer states.
+        #   * OSError      -- USB I/O / device-busy.  PyUSB's USBError
+        #                     subclasses IOError/OSError so it lands here.
+        #   * ImportError  -- missing libusb / pyusb in stripped envs.
+        #   * ValueError   -- pyusb raises NoBackendError(ValueError)
+        #                     when no libusb backend is loadable; codex
+        #                     review of 25d6780 caught this gap.
         from dlcp_fw.flash.dlcp_main_flash import _probe_ep0_app_ram
 
         try:
             active_config_name, routes = _probe_ep0_app_ram(
                 vid=vid, pid=pid, path=info.path,
             )
-        except (RuntimeError, OSError, ImportError) as exc:
+        except (RuntimeError, OSError, ImportError, ValueError) as exc:
             # Surface to stderr so the operator can correlate a missing
             # channel column with a real failure (e.g., libusb perms).
             # Don't kill the diag report -- the cmd 0x44 path is
@@ -629,8 +635,10 @@ def _format_human_report(
     # Channel label resolution priority:
     #   1. Operator override via --ch-map (manual; matches by HID-path
     #      substring).
-    #   2. Auto-derive from EP0 route table (LEFT/RIGHT/MONO/MIX)
-    #      via _derive_channel_label(report.routes).
+    #   2. Auto-derive from EP0 route table via
+    #      _derive_channel_label(report.routes): LEFT (all-L), RIGHT
+    #      (all-R), the raw route label echoed (all uniform L+R / L-R /
+    #      R-L), or MIX (non-uniform).
     #   3. "" (no prefix column) when neither is available.
     # If ANY device gets a label (manual or auto), left-align all labels
     # in a fixed-width column so the report stays visually consistent.

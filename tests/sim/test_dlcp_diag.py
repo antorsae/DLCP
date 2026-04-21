@@ -626,6 +626,62 @@ def test_query_diag_handles_ep0_failure_gracefully(monkeypatch, capsys) -> None:
     assert "simulated EP0 failure" in captured.err
 
 
+def test_query_diag_handles_pyusb_no_backend_gracefully(monkeypatch, capsys) -> None:
+    """PyUSB raises NoBackendError(ValueError) when no libusb backend
+    is loadable -- a common failure on stripped/minimal hosts.  Codex
+    review of 25d6780 caught that ValueError was NOT in the original
+    narrowed catch list (RuntimeError, OSError, ImportError), so a
+    libusb-less host would crash query_diag instead of degrading.
+
+    This test injects a ValueError from `_probe_ep0_app_ram` and
+    verifies the same graceful degradation as the RuntimeError test.
+    """
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+    from dlcp_fw.flash.dlcp_main_flash import VersionInfo
+
+    info = HidDeviceInfo(
+        vendor_id=0x04D8, product_id=0xFF89, path=b"DevSrvsID:test",
+        manufacturer_string="Hypex BV", product_string="DLCP",
+        serial_number="",
+    )
+
+    class _StubDev:
+        def write(self, *a, **kw): return 65
+        def read(self, *a, **kw): return [0] * 65
+        def close(self): pass
+
+    monkeypatch.setattr(dlcp_diag, "_pick_device", lambda *a, **kw: info)
+    monkeypatch.setattr(dlcp_diag, "_open_hid", lambda *a, **kw: _StubDev())
+    monkeypatch.setattr(
+        dlcp_diag, "_probe_cmd06_version",
+        lambda dev, **kw: VersionInfo(flag=3, major=3, minor=2),
+    )
+    monkeypatch.setattr(
+        dlcp_diag, "_probe_cmd44_diag",
+        lambda dev, **kw: DiagSnapshot(
+            diag_i=0, diag_d=0, diag_s=0, diag_b=0, diag_r=0, diag_a=0, diag_p=0,
+            diag_reset_por=1, diag_reset_bor=0, diag_reset_wdt=0, diag_reset_sw=0,
+        ),
+    )
+
+    # Simulate PyUSB's NoBackendError (subclass of ValueError).
+    def _no_backend(**kw):
+        raise ValueError("No backend available")
+
+    from dlcp_fw.flash import dlcp_main_flash
+    monkeypatch.setattr(dlcp_main_flash, "_probe_ep0_app_ram", _no_backend)
+
+    report = dlcp_diag.query_diag(probe_routes=True)
+
+    # Graceful degradation: report still valid, no routes.
+    assert report.snapshot is not None
+    assert report.routes is None
+    captured = capsys.readouterr()
+    assert "EP0 routes probe failed" in captured.err
+    assert "No backend available" in captured.err
+
+
 def test_json_report_includes_routes_and_channel_source() -> None:
     """JSON gains `routes`, `channel_source`, and `active_config_name`
     when EP0 probe succeeded."""
