@@ -515,7 +515,24 @@ with K20 EUSART buffers (BANK 0).
 
 16x2 display, 16 chars per line.
 
-### Healthy (all 7 runtime counters at 0; reset flags ignored from rendering when their own values are 0)
+### Healthy (POR-only or empty)
+
+The "OK" display fires when:
+* All 7 runtime counters (I D S B R A P) are zero, AND
+* All 3 abnormal reset flags (V W X = BOR / WDT / SW) are zero.
+
+POR (the O cell) MAY be 0 or 1; it is not part of the gate.  Phase 2.2
+cold-init classification always sets exactly one of the 4 reset flags
+to 1 on every power-on, so a normal cold boot leaves POR=1 and the
+others 0 -- which still displays as "OK" because POR is "expected"
+(see §"Status classification" below where POR is explicitly treated
+as the normal case).
+
+When "OK" displays, ALL cells (including a possibly-set POR) are
+omitted from the screen; the operator just sees `PBn / OK`.
+
+Operators who want the full Tier-1 view (including which reset
+flag is set) use `scripts/dlcp_diag.py` over USB.
 
 ```
 PB1

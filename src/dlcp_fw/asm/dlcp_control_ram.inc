@@ -369,6 +369,19 @@ v171_diag_render_walk_idx   equ  0x0D0   ; cell index 0..10 during walk
 v171_diag_render_value      equ  0x0D1   ; current cell value (saved across LCD calls)
 v171_diag_render_skipped    equ  0x0D2   ; row-1 walk: non-zeros skipped from row 0
 v171_diag_render_letter_tmp equ  0x0D3   ; v171_diag_letter_for_idx cascade scratch
+; v171_diag_render_abnormal: count of non-zero "abnormal" cells (runtime
+; counters + abnormal reset flags BOR/WDT/SW), excluding POR.  POR is
+; set on every cold-init (Phase 2.2 reset-cause classification cascade)
+; so counting it would make the "OK" healthy display path unreachable.
+; Used by v171_diag_screen_present to gate healthy vs degraded:
+;   abnormal == 0 -> healthy "PBn / OK" (POR may or may not be set;
+;                    when set, omitted from the display per spec
+;                    Option-D §"Healthy" + §"Status classification").
+;   abnormal >  0 -> degraded sparse layout (renders ALL non-zero
+;                    cells, including POR when set).
+; See V32_DIAG_TIER1_SPEC.md §"LCD layouts (Option D)" + the
+; ".../OK gate" follow-up section.
+v171_diag_render_abnormal   equ  0x0D4   ; non-zero non-POR cells (0..10)
 
 ; Poll cadence reload value.  Each v171_diag_screen tick decrements
 ; the 16-bit countdown by 1; with display_loop_iteration on the K20

@@ -1385,6 +1385,7 @@ def test_phase3_4_render_scratch_cells_pinned_in_safe_bank1_range() -> None:
         ("v171_diag_render_value",    0xD1),
         ("v171_diag_render_skipped",  0xD2),
         ("v171_diag_render_letter_tmp", 0xD3),
+        ("v171_diag_render_abnormal", 0xD4),
     )
     for name, expected_op in expected:
         actual = _equ_address(ram, name)
@@ -1418,11 +1419,19 @@ def test_phase3_4_load_fsr1_base_branches_on_pb_index() -> None:
 
 
 def test_phase3_4_renderer_dispatches_three_layouts() -> None:
-    """The renderer must branch on the non-zero count to dispatch into
+    """The renderer must branch on the abnormal-count to dispatch into
     one of three layout paths:
     * v171_diag_render_absent  (present-mask bit clear)
-    * v171_diag_render_healthy (count == 0)
-    * v171_diag_render_degraded (count >= 1)
+    * v171_diag_render_healthy (abnormal == 0; POR-only or all-zero)
+    * v171_diag_render_degraded (any runtime/BOR/WDT/SW non-zero)
+
+    The healthy gate uses v171_diag_render_abnormal, NOT
+    v171_diag_render_count.  Counting POR (cell index 7) toward the
+    gate would make "OK" unreachable because Phase 2.2 cold-init
+    classification always sets exactly one of POR/BOR/WDT/SW to 1
+    on every power-on, and POR is the most common.  See
+    V32_DIAG_TIER1_SPEC.md §"LCD layouts" + §"Status classification"
+    -- POR is "expected" / "normal" and not operator-actionable.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     for label in ("v171_diag_render_absent",
@@ -1431,15 +1440,78 @@ def test_phase3_4_renderer_dispatches_three_layouts() -> None:
         assert _label_offset(text, label) >= 0, (
             f"Phase 3.4 layout label '{label}' must exist"
         )
-    # Render dispatch: count == 0 -> healthy, else -> degraded.
+    # Render dispatch: abnormal == 0 -> healthy, else -> degraded.
     body = _label_body(text, "v171_diag_screen_present", "v171_diag_render_absent")
     assert body, "v171_diag_screen_present body could not be located"
+    # The gate MUST test v171_diag_render_abnormal (NOT
+    # v171_diag_render_count which counts POR too).
+    assert re.search(
+        r"movf\s+v171_diag_render_abnormal,\s*F,\s*BANKED",
+        body,
+    ), (
+        "healthy/degraded gate must test v171_diag_render_abnormal "
+        "(not v171_diag_render_count -- that would include POR which "
+        "is set on every cold-init, making 'OK' unreachable)"
+    )
     assert re.search(
         r"bz\s+v171_diag_render_healthy", body,
-    ), "count == 0 must branch to v171_diag_render_healthy"
+    ), "abnormal == 0 must branch to v171_diag_render_healthy"
     assert re.search(
         r"bra\s+v171_diag_render_degraded", body,
-    ), "count != 0 must fall through to v171_diag_render_degraded"
+    ), "abnormal != 0 must fall through to v171_diag_render_degraded"
+
+
+def test_phase3_4_count_walk_excludes_por_from_abnormal() -> None:
+    """v171_diag_screen_present uses 3 sub-passes to walk the cache:
+      * sub-pass A: cells [0..6] = runtime counters (I D S B R A P)
+                    -> increment BOTH count AND abnormal.
+      * sub-pass B: cell  [7]    = POR flag (O)
+                    -> increment ONLY count, NOT abnormal.
+      * sub-pass C: cells [8..10] = BOR / WDT / SW flags (V W X)
+                    -> increment BOTH count AND abnormal.
+
+    This split implements the spec's POR-is-expected rule.  A
+    regression that re-merged the walk into a single 11-cell pass
+    would either break the OK gate (if abnormal is incremented for
+    POR too) or break the row-1 gating (if count loses POR).
+
+    Pin the 3-sub-pass shape via the loop labels.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    body = _label_body(text, "v171_diag_screen_present", "v171_diag_render_absent")
+    assert body, "v171_diag_screen_present body could not be located"
+    # Each sub-pass has a distinct label.
+    for label in (
+        "v171_diag_count_runtime_loop",
+        "v171_diag_count_por_skip",
+        "v171_diag_count_abnormal_loop",
+    ):
+        assert label + ":" in body, (
+            f"sub-pass label '{label}' missing from count walk -- "
+            f"the 3-pass split is what implements POR-as-expected"
+        )
+    # POR sub-pass MUST NOT touch v171_diag_render_abnormal.  Locate the
+    # POR span (between v171_diag_count_runtime_skip end and
+    # v171_diag_count_abnormal_loop start) and assert no abnormal incf
+    # appears there.
+    por_start = body.find("v171_diag_count_runtime_skip:")
+    por_loop_idx = body.find("v171_diag_count_abnormal_loop:", por_start)
+    assert por_start >= 0 and por_loop_idx > por_start
+    # Find the POR sub-pass body: from after the runtime decfsz through
+    # the v171_diag_count_por_skip label.
+    por_section_start = body.find("v171_diag_count_runtime_loop\n", por_start)
+    if por_section_start < 0:
+        por_section_start = por_start
+    por_section = body[por_section_start:por_loop_idx]
+    abnormal_incs_in_por = re.findall(
+        r"incf\s+v171_diag_render_abnormal,\s*F,\s*BANKED",
+        por_section,
+    )
+    assert not abnormal_incs_in_por, (
+        "POR sub-pass must NOT increment v171_diag_render_abnormal -- "
+        "that would make 'OK' unreachable when POR=1 (which is every "
+        "cold-init).  Found increments at: " + str(abnormal_incs_in_por)
+    )
 
 
 def test_phase3_4_overflow_marker_only_when_count_ge_10() -> None:
@@ -1510,8 +1582,9 @@ def test_phase3_4_no_other_bank1_equ_collides_with_scratch_range() -> None:
         "v171_diag_render_value",
         "v171_diag_render_skipped",
         "v171_diag_render_letter_tmp",
+        "v171_diag_render_abnormal",
     }
-    phase3_4_operands = {0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3}
+    phase3_4_operands = {0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4}
     # Walk every EQU in the file; flag any that resolves (literal OR
     # symbolic alias chain) to a Phase 3.4 operand.  Symbolic aliases
     # like `V171_DIAG_FLAG_PENDING equ V171_DIAG_FLAG_RUNTIME_PENDING`

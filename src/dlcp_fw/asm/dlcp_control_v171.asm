@@ -3413,21 +3413,62 @@ v171_diag_screen_draw:
         ; --- ABSENT path ---
         bra     v171_diag_render_absent
 v171_diag_screen_present:
-        ; --- Pass 1: count non-zero cells across 11 cache slots ---
+        ; --- Pass 1: count cells across 11 cache slots in 3 sub-passes:
+        ;     [0..6]  = runtime counters (I D S B R A P): always abnormal.
+        ;     [7]     = POR flag (O):                     "expected" -- set on
+        ;                                                 every cold-init via
+        ;                                                 the Phase 2.2 cascade,
+        ;                                                 so it does NOT count
+        ;                                                 as abnormal (else the
+        ;                                                 healthy "OK" gate
+        ;                                                 below would be
+        ;                                                 unreachable).
+        ;     [8..10] = abnormal reset flags (V W X = BOR / WDT / SW).
+        ;
+        ; v171_diag_render_count tracks all-11 non-zero count (used for
+        ; degraded layout's row-1 entry-count gating).
+        ; v171_diag_render_abnormal tracks the runtime + abnormal-reset
+        ; subset (used for the healthy-vs-degraded gate below).
+        ;
+        ; Healthy "OK" displays when abnormal == 0 (regardless of POR).
+        ; The Option-D layout's "OK" omits POR from the screen -- POR
+        ; is "expected" and not operator-actionable.  Operators see
+        ; "OK" for a clean cold-boot regardless of which reset cell is
+        ; set, as long as no runtime counters have fired and no
+        ; abnormal reset (BOR/WDT/SW) is pending.
         rcall   v171_diag_load_fsr1_base
         movlb   0x01
         clrf    v171_diag_render_count, BANKED
-        movlw   0x0B
-        movwf   v171_diag_render_walk_idx, BANKED          ; reuse as countdown
-v171_diag_count_loop:
+        clrf    v171_diag_render_abnormal, BANKED
+        ; Sub-pass A: walk runtime cells [0..6], increment BOTH counters.
+        movlw   0x07
+        movwf   v171_diag_render_walk_idx, BANKED
+v171_diag_count_runtime_loop:
         movf    POSTINC1, W, A
-        bz      v171_diag_count_skip
+        bz      v171_diag_count_runtime_skip
         incf    v171_diag_render_count, F, BANKED
-v171_diag_count_skip:
+        incf    v171_diag_render_abnormal, F, BANKED
+v171_diag_count_runtime_skip:
         decfsz  v171_diag_render_walk_idx, F, BANKED
-        bra     v171_diag_count_loop
-        ; --- Branch on count ---
-        movf    v171_diag_render_count, F, BANKED
+        bra     v171_diag_count_runtime_loop
+        ; Sub-pass B: cell [7] = POR.  Increment only the all-11 count.
+        movf    POSTINC1, W, A
+        bz      v171_diag_count_por_skip
+        incf    v171_diag_render_count, F, BANKED
+v171_diag_count_por_skip:
+        ; Sub-pass C: walk abnormal-reset cells [8..10], increment BOTH.
+        movlw   0x03
+        movwf   v171_diag_render_walk_idx, BANKED
+v171_diag_count_abnormal_loop:
+        movf    POSTINC1, W, A
+        bz      v171_diag_count_abnormal_skip
+        incf    v171_diag_render_count, F, BANKED
+        incf    v171_diag_render_abnormal, F, BANKED
+v171_diag_count_abnormal_skip:
+        decfsz  v171_diag_render_walk_idx, F, BANKED
+        bra     v171_diag_count_abnormal_loop
+        ; --- Branch on abnormal (NOT all-11 count) ---
+        movf    v171_diag_render_abnormal, F, BANKED
         bz      v171_diag_render_healthy
         bra     v171_diag_render_degraded
 
