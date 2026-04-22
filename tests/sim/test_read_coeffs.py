@@ -141,6 +141,7 @@ def test_main_capture_prints_banner_and_selected_path(monkeypatch, tmp_path, cap
         manufacturer_string="Hypex BV",
         serial_number="abc123",
         version=VersionInfo(flag=0x03, major=0x03, minor=0x01),
+        eeprom_version=None,
         active_config_name="ConfigA",
         active_config_raw=b"ConfigA",
         active_routes=(RouteEntry(channel=1, value=0, label="L"),),

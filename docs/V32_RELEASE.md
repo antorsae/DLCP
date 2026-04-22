@@ -8,6 +8,7 @@ This is the operator runbook for the recommended MAIN deployment as of
 - recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
 - recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
   (see [`docs/V171_RELEASE.md`](V171_RELEASE.md) for the matching CONTROL flow)
+- canonical MAIN build path: `scripts/build_v32_release.py` (bumps the EEPROM revision byte, then rebuilds the same canonical hex)
 - recommended flashing path: use `scripts/dlcp_v32_release_flash.py`, which
   bakes preset A/B captures into canonical `V3.2.hex` at flash time
 
@@ -20,6 +21,22 @@ plus the MAIN-side counters that drive the V1.71 CONTROL Diagnostics page
 Non-canonical local experiment images (e.g. `DLCP_Firmware_V3.2.lst`,
 `DLCP_Firmware_V3.2.cod`) are gpasm byproducts and not part of this
 release workflow.
+
+## Current Known Issue (2026-04-22)
+
+The current canonical pair still shows a real-hardware
+`STDBY -> WAKE -> WAITING FOR DLCP` regression:
+
+- canonical MAIN revision: `V3.2 / rev 0x38`
+- canonical CONTROL revision: `V1.71 / rev 0x04`
+- reproduced on the live two-MAIN rig with paired LCD + USB capture
+
+The important discriminator from the 2026-04-22 hardware run is that
+both MAINs had already woken cleanly while CONTROL still showed
+`WAITING FOR DLCP`.  So for the current source, this is no longer best
+described as "MAIN failed to wake"; the remaining issue is CONTROL-side
+reconnect fragility.  See
+[`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`](analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md).
 
 ## What's New vs V3.1
 
@@ -38,20 +55,20 @@ release workflow.
   [`docs/NO_POP_FIRMWARE_FLASH.md`](NO_POP_FIRMWARE_FLASH.md) for
   the spec and [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md)
   §"Re-flash pop monitoring" for the operator validation
-  walk-through.  The EEPROM version marker is `0x03, 0x02, 0x37`
-  (Tier-1 rev) to distinguish field units from the pop-prone V3.2
-  baseline.
-- **Tier-1 reset-cause classification (rev 0x37, 2026-04-20)** — 4
+  walk-through.  The EEPROM version marker stays in the
+  `0x03, 0x02, 0xNN` V3.2 lineage and now increments on each canonical
+  release build.
+- **Tier-1 reset-cause classification (landed 2026-04-20)** — 4
   RAM flag cells at `0x2ED..0x2F0` are populated at cold-init from
   the RCON snapshot: POR, BOR (Brown-Out), WDT, SW-reset (panic /
   bootloader hand-off).  Exactly one flag is set to 1 per session.
   See [`docs/V32_DIAG_TIER1_SPEC.md`](V32_DIAG_TIER1_SPEC.md).
-- **Tier-1 chain `cmd 0x22` reset-flags reply burst (rev 0x37)** —
+- **Tier-1 chain `cmd 0x22` reset-flags reply burst** —
   4 frames `BF/28..BF/2B`, low-nibble flag value.  V1.71 CONTROL
   fires this ONCE per Diagnostics-page entry (the flags don't
   change within a session).  Older MAINs (≤ rev 0x36) emit one
   stray `0x00` ACK byte and CONTROL drops it harmlessly.
-- **Tier-1 HID `cmd 0x44` diag snapshot (rev 0x37)** — host
+- **Tier-1 HID `cmd 0x44` diag snapshot** — host
   retrieval path that bypasses the chain entirely.  Returns an
   11-byte payload (length byte = `0x0B`): 7 runtime counters + 4
   reset-cause flags.  Use `scripts/dlcp_diag.py` (Phase 2.4) for
@@ -62,9 +79,9 @@ release workflow.
 Counter survival: ALL diag cells (runtime counters + reset-cause
 flags) are unconditionally cleared at every cold-init — re-flash via
 bootloader gives a clean counter slate (operator request 2026-04-20,
-locked into rev 0x36 and preserved in rev 0x37).  Cross-session count
-preservation requires EEPROM-backed counters (Tier-2 deferred work,
-see V32_DIAG_TIER1_SPEC.md §"Open questions").
+locked into the V3.2 Tier-1 lineage).  Cross-session count preservation
+requires EEPROM-backed counters (Tier-2 deferred work, see
+V32_DIAG_TIER1_SPEC.md §"Open questions").
 
 ## Required Local Inputs
 
@@ -97,11 +114,21 @@ What this does:
 
 1. overlays preset A and preset B into the target MAIN image using the
    version-aware flash bases for `V3.2`
-2. flashes the resulting app image over USB HID
-3. finalizes the active config filename over the stock filename path
-4. applies the requested all-channel route policy
-5. prints before/after device information so the flashed version,
+2. reads version + EEPROM revision from both the target hex and the
+   selected device, warning if the connected device is already at the
+   same or newer firmware identity
+3. if `--path` is omitted, auto-selects the target only when exactly
+   one connected MAIN already reports the requested uniform route
+   (`all L` for `--left`, `all R` for `--right`)
+4. flashes the resulting app image over USB HID
+5. finalizes the active config filename over the stock filename path
+6. applies the requested all-channel route policy
+7. prints before/after device information so the flashed version,
    config name, and channel mapping are visible in one command
+
+The canonical builder is transactional: if `gpasm` fails, the source
+EEPROM revision byte is rolled back and the existing canonical hex is
+left untouched.
 
 Equivalent advanced form:
 
@@ -168,6 +195,7 @@ Sim coverage for the V3.2 + V1.71 combination is in:
 - `tests/sim/test_v32_layer5_diag_counters.py` (Phase A — MAIN counters)
 - `tests/sim/test_v171_layer5_diag_page.py` (Phase B — CONTROL page)
 - `tests/sim/test_v171_v32_layer5_diag_chain.py` (Phase C — wire-chain)
+- `tests/sim/test_v171_v32_standby_reconnect.py` (standby/wake reconnect gate)
 - `tests/sim/test_v28_wire_delayed_switch_repros.py` (delayed-switch
   remediation regressions)
 
@@ -186,20 +214,8 @@ the live-rig walk-through.
   images is covered separately in
   [`docs/HARDWARE_LOOP.md`](HARDWARE_LOOP.md).
 
-## Known Open Items
+## Current Note
 
-- **MAIN wake path doesn't re-emit the sentinel burst (2026-04-21).**
-  V3.2's `wake_request_handler` (asm:1842) and `adc_boot_gate`
-  (asm:4047) resume normal operation after STDBY+WAKE, but they do
-  NOT re-invoke `send_status_burst` (asm:6044).  That burst is what
-  clears CONTROL's 4 boot sentinel caches; it is only emitted from
-  cold boot and from `cmd04_status_response` (asm:1997).  If CONTROL
-  enters its V1.62b reconnect-wait loop between MAIN's standby and
-  wake, it can stay stuck on `WAITING FOR DLCP` indefinitely
-  because none of the BF/05/06/07/1D frames that clear the
-  sentinels are re-emitted.  V1.71 CONTROL ships with an operator
-  escape (~10 s grace then `RIGHT` / `LEFT` triggers a soft reset)
-  as an interim mitigation; the MAIN-side root-cause fix is an
-  outstanding workstream documented in
-  [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
-  §"MAIN wake-path sentinel re-emit".
+- Canonical V3.2 release builds now carry a monotonic EEPROM revision
+  marker. Treat the HID `V3.2` label and the EEPROM revision byte as a
+  pair when deciding whether a device is newer or older than a target hex.

@@ -144,6 +144,18 @@ def test_v171_eeprom_version_tuple_bumped(v171_hex: Path) -> None:
     assert v171_tuple[2] == 0x31, f"V1.71 sub byte (ASCII '1') != 0x31: {v171_tuple!r}"
 
 
+def test_v171_boot_runtime_identity_does_not_downgrade_minor_byte() -> None:
+    """Boot-time EEPROM normalization must preserve the V1.71 family byte."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    start = text.find("flow_ccs_0FA0_10DA:")
+    end = text.find("flow_ccs_0FA0_10F6:", start)
+    assert start >= 0 and end > start, "boot-time EEPROM[0x71] normalization block missing"
+    block = text[start:end]
+    assert "movlw   0x71" in block
+    assert "movlw   0x07                                        ; V1.71 minor byte" in block
+    assert "movlw   0x06                                        ; CMD input_select" not in block
+
+
 def test_v171_app_code_has_grown_past_stock(v171_hex: Path) -> None:
     """Once Phase B features inline, the V1.71 app code tail exceeds stock V1.6b.
 

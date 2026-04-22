@@ -8,12 +8,31 @@ of 2026-04-21.
 - recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
 - recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
   (see [`docs/V32_RELEASE.md`](V32_RELEASE.md) for the matching MAIN flow)
+- canonical CONTROL builder: `scripts/build_v171_release.py`
 - recommended flashing path: use `scripts/flash_control_safe.sh`
   with `--hex firmware/patched/releases/DLCP_Control_V1.71.hex`
 
 V1.71 supersedes V1.64b for chains paired with V3.2 MAIN.  V1.64b
 remains the canonical fallback for chains running V3.1 / V2.x MAIN
 that do not need the V1.71-specific features.
+
+## Current Known Issue (2026-04-22)
+
+The current canonical pair still has a real-hardware standby/wake
+regression:
+
+- canonical CONTROL revision: `V1.71 / rev 0x04`
+- canonical MAIN revision: `V3.2 / rev 0x38`
+- reproduced symptom: after `STDBY -> WAKE`, CONTROL can remain on
+  `WAITING FOR DLCP` while both MAINs are already awake, healthy, and
+  visible on USB
+
+This is no longer best explained as a MAIN wake failure.  The current
+analysis points at CONTROL-side reconnect fragility: the critical
+wake/poll frames still ride best-effort TX paths that ignore
+`tx_byte_enqueue` saturation, and that combines badly with the still-
+unfixed IR-in-ISR UART stall window.  See
+[`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`](analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md).
 
 ## What's New vs V1.64b
 
@@ -63,15 +82,40 @@ adds three new layers on top:
   path), so the WAITING loops keep polling MAIN in parallel with
   the grace counter.  The ~10 s gate prevents accidental resets
   from stray button presses during normal cold-boot MAIN warmup.
-  This is an operator-facing mitigation only; the underlying
-  MAIN-side reconnect-burst gap is tracked in
-  [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
-  as an open hardening workstream.
+  This remains an operator-facing mitigation even with the paired
+  V3.2 wake-path hardening: if the chain still wedges for any other
+  reason, the front-panel `RIGHT`/`LEFT` escape guarantees a local
+  recovery path without power-cycling the MAINs. Ongoing broader
+  MAIN hardening is tracked in
+  [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md).
 
 EEPROM layout: V1.71 preserves the V1.6x preset slot at EEPROM
-`0x74` and version-tuple format.  Existing CONTROL EEPROM contents
-are read transparently — no re-baking required when upgrading from
+`0x74` and the legacy V1.71 identity bytes at `0x70..0x72`.
+Canonical release revision is not stored in EEPROM because
+EEPROM `0x73` is runtime-owned. The canonical builder bumps a
+monotonic release revision in a flashed metadata block at app-flash
+`0x77B0..0x77BB`. Existing CONTROL EEPROM contents are read
+transparently — no re-baking required when upgrading from
 V1.62b / V1.63b / V1.64b.
+
+## Canonical Build
+
+Each canonical `V1.71` CONTROL build must reuse the canonical release
+filename and bump the monotonic release revision:
+
+```bash
+scripts/build_v171_release.py
+```
+
+That command:
+
+1. increments the release revision byte in `control_release_metadata`
+2. assembles `src/dlcp_fw/asm/dlcp_control_v171.asm`
+3. rewrites the canonical release artifact at
+   `firmware/patched/releases/DLCP_Control_V1.71.hex`
+
+The build is transactional: if `gpasm` fails, the source revision byte
+is rolled back and the existing canonical hex is left untouched.
 
 ## Required Local Inputs
 
@@ -108,13 +152,18 @@ What the wrapper does:
 After flashing, power-cycle the CONTROL once so the new code path is
 active from cold boot rather than hot-reload.
 
+During preflight/live flash the flasher reports the target
+`V1.71 / rev 0xNN` from the hex. Unlike MAIN, the current CONTROL
+update relay does not expose a live CONTROL version/revision probe
+back to the host, so device-versus-hex compare is not available yet.
+
 ## Quick Checks
 
-Read the CONTROL's reported version label after flashing.  V1.71
-reports the same EEPROM version-byte tuple as V1.64b (so the bytes
-the operator sees are the byte-stable layout); the visible difference
-is the new top-level Diagnostics menu entry.  Walk Volume → RIGHT →
-RIGHT and confirm the LCD shows `1:Ix...P` / `2:Ix...P` (or
+Read the CONTROL's reported version label after flashing. The visible
+label remains `V1.71`; the monotonic release revision is a build-time
+metadata field reported by the flash preflight, not a front-panel
+string. Walk Volume → RIGHT → RIGHT and confirm the LCD shows
+`1:Ix...P` / `2:Ix...P` (or
 `1:n/a` / `2:n/a` if no MAIN supports cmd 0x21).
 
 For the full Diagnostics page operator walk-through see
@@ -165,6 +214,7 @@ Sim coverage for V1.71 in isolation and in chain combinations is in:
 - `tests/sim/test_v171_full_sync_retry.py` (V1.61b Phase B.5)
 - `tests/sim/test_v171_sentinel_reconnect.py` (V1.62b Phase C.3)
 - `tests/sim/test_v171_v31_chain.py` (V1.71 × V3.1 MAIN chain)
+- `tests/sim/test_v171_v32_standby_reconnect.py` (V1.71 × V3.2 standby/wake reconnect gate)
 - `tests/sim/test_v171_layer5_diag_page.py` (Layer 5 Phase B)
 - `tests/sim/test_v171_v32_layer5_diag_chain.py` (Layer 5 Phase C)
 

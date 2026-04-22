@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read V3.2 rev 0x37 Tier-1 diagnostic snapshot via HID cmd 0x44.
+"""Read the V3.2 Tier-1 diagnostic snapshot via HID cmd 0x44.
 
 Implements the host side of V32_DIAG_TIER1_SPEC.md §"HID protocol
 extension -- new cmd 0x44".  Returns a structured :class:`DiagSnapshot`
@@ -65,7 +65,7 @@ SATURATED_VALUE = 0x0F
 
 @dataclasses.dataclass(frozen=True)
 class DiagSnapshot:
-    """One V3.2 rev 0x37 cmd 0x44 response, parsed.
+    """One V3.2 Tier-1 cmd 0x44 response, parsed.
 
     Order of fields exactly mirrors the on-wire layout so a future
     extension that grows the payload can simply add fields here.
@@ -241,6 +241,7 @@ class DiagReport:
     snapshot: DiagSnapshot
     status: str
     alerts: Tuple[str, ...]
+    eeprom_marker: Optional[int] = None
     routes: Optional[Tuple[object, ...]] = None  # tuple[RouteEntry, ...]
     active_config_name: Optional[str] = None
 
@@ -311,6 +312,17 @@ def query_diag(
             dev.close()
         except Exception:
             pass
+    eeprom_marker: Optional[int] = None
+    try:
+        from dlcp_fw.flash.dlcp_main_flash import _probe_device_eeprom_version
+
+        eeprom_version = _probe_device_eeprom_version(
+            info=info,
+            timeout_ms=timeout_ms,
+        )
+        eeprom_marker = eeprom_version.revision
+    except Exception:
+        eeprom_marker = None
 
     routes: Optional[Tuple[object, ...]] = None
     active_config_name: Optional[str] = None
@@ -377,6 +389,7 @@ def query_diag(
         snapshot=snapshot,
         status=status,
         alerts=alerts,
+        eeprom_marker=eeprom_marker,
         routes=routes,
         active_config_name=active_config_name,
     )
@@ -498,46 +511,21 @@ def _dedup_preserving_order(items: List[str]) -> List[str]:
 # ===========================================================================
 
 
-# Mapping from cmd 0x06 (flag, major, minor) tuple to the EEPROM rev
-# marker (third byte of the EEPROM tuple at offset 0x80..0x82).  Keep
-# this in sync with the `org 0xF00000 / eeprom_data` block of each MAIN
-# source file -- VERIFIED against the committed sources 2026-04-21:
-#   * src/dlcp_fw/asm/dlcp_main_v30.asm:7246  -> EEPROM (0x02, 0x03, 0x30)
-#     V3.0 stock-equivalent rewrite.  cmd 0x06 reports (3, 2, 3) -- the
-#     SAME tuple stock V2.3 reports, by design (V3.0 keeps the stock
-#     identifier so existing tools see no change).  Omitted from this
-#     lookup because the cmd 0x06 tuple is ambiguous: we can't tell
-#     stock V2.3 (no Tier-1, no Tier-1 spec rev) from V3.0 (no Tier-1
-#     either, but a different EEPROM marker).  Both display as "V2.3"
-#     without a rev suffix.
-#   * src/dlcp_fw/asm/dlcp_main_v31.asm:8384  -> EEPROM (0x03, 0x01, 0x31)
-#     V3.1 source rewrite.  cmd 0x43 memread; no Tier-1.
-#   * src/dlcp_fw/asm/dlcp_main_v32.asm:9958  -> EEPROM (0x03, 0x02, 0x37)
-#     V3.2 Phase 2.5 Tier-1 (cmd 0x22 + cmd 0x44).
-#
-# An earlier draft of this table mapped V3.1 -> 0x36 based on the
-# Phase 2.5 commit message ("EEPROM marker bump 0x36 -> 0x37"), but
-# 0x36 was an intermediate V3.x build that never shipped the V3.1
-# source rewrite -- the committed V3.1 EEPROM uses 0x31.  Codex
-# review of 6963cfc 2026-04-21 caught the drift; fixed in this commit.
-#
-# Older / unknown versions return None and the rev string is omitted.
 _REV_MARKER_BY_VERSION: dict[tuple[int, int, int], int] = {
     (3, 3, 1): 0x31,   # V3.1 source rewrite
-    (3, 3, 2): 0x37,   # V3.2 Tier-1 (cmd 0x22 + cmd 0x44)
 }
 
 
 def _rev_marker_for_version(version: Optional[VersionInfo]) -> Optional[int]:
-    """Look up the EEPROM rev marker for a given cmd 0x06 version tuple.
+    """Look up a fixed EEPROM rev marker for a given cmd 0x06 version tuple.
 
     The EEPROM marker (e.g. 0x37 for V3.2) is NOT in the cmd 0x06 response;
     it lives at EEPROM offset 0x82 in the MAIN's EEPROM block.  Reading it
     requires either a separate EEPROM-shadow query (cmd 0x43 memread or
-    similar) or static lookup from the cmd 0x06 (major, minor) tuple.
-    For brevity and to avoid a second HID round-trip, this function uses
-    the static lookup -- adequate as long as the lookup table stays in
-    sync with the MAIN source EEPROM blocks.
+    similar) or static lookup from the cmd 0x06 (major, minor) tuple.  Only
+    revisions that are stable by construction belong here. V3.2 no longer
+    does because the canonical release build bumps the EEPROM marker on every
+    build; callers must pass the actual runtime marker when available.
     """
     if version is None:
         return None
@@ -545,7 +533,11 @@ def _rev_marker_for_version(version: Optional[VersionInfo]) -> Optional[int]:
     return _REV_MARKER_BY_VERSION.get(key)
 
 
-def _format_version(version: Optional[VersionInfo]) -> str:
+def _format_version(
+    version: Optional[VersionInfo],
+    *,
+    eeprom_marker: Optional[int] = None,
+) -> str:
     """Render a VersionInfo as "V{major}.{minor}" or with rev marker
     appended when available: "V{major}.{minor} rev 0xNN".
 
@@ -570,11 +562,10 @@ def _format_version(version: Optional[VersionInfo]) -> str:
     and the minor-byte as a "rev" when those bytes are actually
     (major, minor) of the same version.
 
-    Note: the EEPROM marker (e.g. 0x37 for V3.2) is a SEPARATE byte
-    that lives in EEPROM, not in the cmd 0x06 response.  The
-    "rev 0x37" string in V32_DIAG_TIER1_SPEC.md sample output was
-    misleading and isn't reproducible from cmd 0x06 alone.  Drop it
-    from the format until/unless we add a separate EEPROM-marker read.
+    Note: the EEPROM marker is a SEPARATE byte that lives in EEPROM,
+    not in the cmd 0x06 response.  Use the explicitly provided runtime
+    marker when present; otherwise only fixed-version lookups such as
+    V3.1 are eligible for a rev suffix.
     """
     if version is None:
         return "<unknown>"
@@ -582,7 +573,7 @@ def _format_version(version: Optional[VersionInfo]) -> str:
     major = version.major
     minor = version.minor
     if flag == 3 and major in (2, 3):
-        rev = _rev_marker_for_version(version)
+        rev = eeprom_marker if eeprom_marker is not None else _rev_marker_for_version(version)
         if rev is not None:
             return f"V{major}.{minor} rev 0x{rev:02X}"
         return f"V{major}.{minor}"
@@ -690,7 +681,8 @@ def _format_human_report(
             label = "?"
         prefix = f"{label:<{label_width}} " if have_any_label else ""
         lines.append(
-            f"{prefix}HID {path_text}  {_format_version(report.version)}"
+            f"{prefix}HID {path_text}  "
+            f"{_format_version(report.version, eeprom_marker=report.eeprom_marker)}"
         )
         if report.routes:
             from dlcp_fw.flash.dlcp_main_flash import format_route_entries
@@ -723,14 +715,19 @@ def _format_json_report(
         snap = report.snapshot
         version_obj: dict[str, object] | None = None
         if report.version is not None:
-            rev_marker = _rev_marker_for_version(report.version)
             version_obj = {
                 "flag": report.version.flag,
                 "major": report.version.major,
                 "rev": report.version.minor,
                 "rev_hex": f"0x{report.version.minor:02X}",
                 "eeprom_marker": (
-                    f"0x{rev_marker:02X}" if rev_marker is not None else None
+                    f"0x{report.eeprom_marker:02X}"
+                    if report.eeprom_marker is not None
+                    else (
+                        f"0x{_rev_marker_for_version(report.version):02X}"
+                        if _rev_marker_for_version(report.version) is not None
+                        else None
+                    )
                 ),
             }
         path_text = (

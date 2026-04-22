@@ -21,7 +21,6 @@ import dataclasses
 import hashlib
 import json
 from pathlib import Path
-import sys
 import time
 from typing import Dict, List, Optional
 
@@ -36,6 +35,10 @@ CONTROL_PROG_END_EXCL = 0x77C0  # last writable byte is 0x77BF
 CONTROL_BOOT_START = 0x7800
 CONTROL_BOOT_END_EXCL = 0x8000  # inclusive last byte: 0x7FFF
 DEFAULT_BOOTLOADER_REF = STOCK_CONTROL_HEX_V14
+CONTROL_EEPROM_BASE = 0xF00000
+CONTROL_VERSION_ADDR = CONTROL_EEPROM_BASE + 0x70
+CONTROL_RELEASE_METADATA_ADDR = 0x77B0
+CONTROL_RELEASE_MAGIC = b"DLCPCTRL"
 
 
 class HexParseError(RuntimeError):
@@ -44,6 +47,14 @@ class HexParseError(RuntimeError):
 
 class PreflightError(RuntimeError):
     pass
+
+
+@dataclasses.dataclass(frozen=True)
+class ControlReleaseInfo:
+    major: int
+    minor: int
+    sub: int
+    revision: int | None
 
 
 def _parse_int_auto(s: str) -> int:
@@ -115,6 +126,53 @@ def parse_intel_hex(path: str) -> Dict[int, int]:
                 continue
 
     return mem
+
+
+def detect_static_hex_control_release_info(hex_mem: Dict[int, int]) -> ControlReleaseInfo | None:
+    major = hex_mem.get(CONTROL_VERSION_ADDR, 0xFF) & 0xFF
+    minor = hex_mem.get(CONTROL_VERSION_ADDR + 1, 0xFF) & 0xFF
+    sub = hex_mem.get(CONTROL_VERSION_ADDR + 2, 0xFF) & 0xFF
+    if 0xFF in (major, minor, sub):
+        return None
+
+    magic = bytes(
+        hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + offset, 0xFF) & 0xFF
+        for offset in range(len(CONTROL_RELEASE_MAGIC))
+    )
+    revision: int | None = None
+    if magic == CONTROL_RELEASE_MAGIC:
+        meta_major = hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + 8, 0xFF) & 0xFF
+        meta_minor = hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + 9, 0xFF) & 0xFF
+        meta_sub = hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + 10, 0xFF) & 0xFF
+        meta_revision = hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + 11, 0xFF) & 0xFF
+        if (meta_major, meta_minor, meta_sub) != (major, minor, sub):
+            raise HexParseError(
+                "CONTROL release metadata version tuple does not match EEPROM identity bytes"
+            )
+        if meta_revision != 0xFF:
+            revision = meta_revision
+
+    return ControlReleaseInfo(
+        major=major,
+        minor=minor,
+        sub=sub,
+        revision=revision,
+    )
+
+
+def _format_control_version_label(info: ControlReleaseInfo | None) -> str:
+    if info is None:
+        return "<unknown>"
+    suffix = chr(info.sub) if 0x20 <= info.sub <= 0x7E else f"[0x{info.sub:02X}]"
+    return f"V{info.major}.{info.minor}{suffix}"
+
+
+def _format_control_release_short(info: ControlReleaseInfo | None) -> str:
+    if info is None:
+        return "<unknown>"
+    if info.revision is None:
+        return f"{_format_control_version_label(info)} / rev <unknown>"
+    return f"{_format_control_version_label(info)} / rev 0x{info.revision:02X}"
 
 
 def build_control_stream(hex_mem: Dict[int, int], length: int = CONTROL_PROG_END_EXCL) -> bytes:
@@ -466,6 +524,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             ap.error(f"bootloader reference HEX not found: {ref_path}")
         ref_mem = parse_intel_hex(str(ref_path))
 
+    target_release = detect_static_hex_control_release_info(hex_mem)
     preflight = run_preflight(
         hex_mem=hex_mem,
         bootloader_ref_mem=ref_mem,
@@ -473,6 +532,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     if args.verbose or args.preflight_only or args.dry_run:
         print("preflight: OK")
+        print(f"  target release: {_format_control_release_short(target_release)}")
         print(
             "  payload window: 0x0000..0x"
             f"{CONTROL_PROG_END_EXCL - 1:04X} ({preflight['payload_len']} bytes)"
@@ -486,6 +546,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "  bootloader match:"
                 f" 0x{CONTROL_BOOT_START:04X}..0x{CONTROL_BOOT_END_EXCL - 1:04X} == {args.bootloader_ref}"
             )
+        print(
+            "  WARNING: live CONTROL version/revision probe is unavailable over the "
+            "MAIN USB relay; skipping device>=hex comparison"
+        )
 
     stream = build_control_stream(hex_mem)
 

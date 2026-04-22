@@ -1,4 +1,4 @@
-"""Tests for the V3.2 rev 0x37 Tier-1 cmd 0x44 host CLI.
+"""Tests for the V3.2 Tier-1 cmd 0x44 host CLI.
 
 Three tiers:
   * unit -- parse_cmd44_diag_response on synthetic byte buffers
@@ -283,6 +283,7 @@ def _make_report(
     snapshot: DiagSnapshot,
     *,
     path: bytes = b"DevSrvsID:test",
+    eeprom_marker: int | None = None,
 ) -> DiagReport:
     from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
     from dlcp_fw.flash.dlcp_main_flash import VersionInfo
@@ -302,14 +303,21 @@ def _make_report(
     # hardware showed (3, 3, 2).
     version = VersionInfo(flag=3, major=3, minor=2)
     status, alerts = classify_status(snapshot)
-    return DiagReport(info=info, version=version, snapshot=snapshot, status=status, alerts=alerts)
+    return DiagReport(
+        info=info,
+        version=version,
+        snapshot=snapshot,
+        status=status,
+        alerts=alerts,
+        eeprom_marker=eeprom_marker,
+    )
 
 
 def test_human_report_shape_clean_boot() -> None:
     """Spec sample shape: title + per-MAIN block with Runtime / Reset /
     Status lines.  All 7 letters present in Runtime; all 4 in Reset."""
     snap = _snap(counters=(0, 0, 1, 1, 0, 0, 0))
-    report = _make_report(snap)
+    report = _make_report(snap, eeprom_marker=0x38)
     text = _format_human_report([report], ts="2026-04-20T15:23:00Z")
     assert "DLCP Diagnostics  (2026-04-20T15:23:00Z)" in text
     assert "DevSrvsID:test" in text
@@ -321,7 +329,7 @@ def test_human_report_shape_clean_boot() -> None:
     # is the EEPROM marker, NOT part of the cmd 0x06 response;
     # dropped from the format until/unless we add a separate
     # EEPROM-marker read.
-    assert "V3.2" in text
+    assert "V3.2 rev 0x38" in text
     # All 7 runtime letters present in Runtime line.
     for letter in RUNTIME_LETTERS:
         assert f"{letter}" in text, f"missing runtime letter {letter}"
@@ -333,7 +341,7 @@ def test_human_report_shape_clean_boot() -> None:
 
 def test_human_report_with_alerts() -> None:
     snap = _snap(counters=(3, 2, 1, 1, 0, 0, 0), reset_flags=(0, 1, 0, 0))
-    report = _make_report(snap)
+    report = _make_report(snap, eeprom_marker=0x38)
     text = _format_human_report([report])
     assert "DEGRADED" in text
     assert "brown_out_reset_this_session" in text
@@ -346,7 +354,7 @@ def test_json_report_shape() -> None:
     import json
 
     snap = _snap(counters=(3, 2, 1, 1, 0, 0, 0), reset_flags=(0, 1, 0, 0))
-    report = _make_report(snap)
+    report = _make_report(snap, eeprom_marker=0x38)
     text = _format_json_report([report], ts="2026-04-20T15:23:00Z")
     obj = json.loads(text)
     assert obj["ts"] == "2026-04-20T15:23:00Z"
@@ -356,13 +364,10 @@ def test_json_report_shape() -> None:
     # Spec'd field names.
     assert main_obj["hid_path"] == "DevSrvsID:test"
     # Real V3.2 firmware reports (flag=3, major=3, minor=2); JSON shape
-    # was extended (2026-04-21) to include the EEPROM marker (looked up
-    # from the (major, minor) tuple via _rev_marker_for_version) so
-    # downstream tooling can distinguish V3.x firmware revisions
-    # (V3.1 = 0x36, V3.2 = 0x37, etc.) without a separate EEPROM read.
+    # includes the runtime EEPROM marker when the device exposes it.
     assert main_obj["version"] == {
         "flag": 3, "major": 3, "rev": 2, "rev_hex": "0x02",
-        "eeprom_marker": "0x37",
+        "eeprom_marker": "0x38",
     }
     # Channel mapping is operator-supplied via --ch-map; with no map,
     # the channel field is null.
@@ -378,14 +383,12 @@ def test_json_report_shape() -> None:
     assert "brown_out_reset_this_session" in main_obj["alerts"]
 
 
-def test_human_report_includes_rev_marker_for_known_versions() -> None:
-    """V3.2 firmware (cmd 0x06 minor = 2) maps to EEPROM rev 0x37 via
-    the static lookup."""
+def test_human_report_includes_runtime_rev_marker_when_present() -> None:
     snap = _snap()
-    report = _make_report(snap)  # uses VersionInfo(3, 3, 2) -> V3.2
+    report = _make_report(snap, eeprom_marker=0x38)
     text = _format_human_report([report])
-    assert "V3.2 rev 0x37" in text, (
-        "V3.2 must show 'rev 0x37' from the static lookup"
+    assert "V3.2 rev 0x38" in text, (
+        "V3.2 must show the live EEPROM revision when it is available"
     )
 
 
@@ -823,7 +826,7 @@ def test_query_diag_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
         counters=(0, 0, 1, 1, 0, 0, 0),
         reset_flags=(1, 0, 0, 0),
     )
-    fake = _MockHidDevice(version=(3, 2, 0x37), cmd44_payload=cmd44_payload)
+    fake = _MockHidDevice(version=(3, 3, 2), cmd44_payload=cmd44_payload)
 
     fake_info = HidDeviceInfo(
         vendor_id=0x04D8,
@@ -835,6 +838,10 @@ def test_query_diag_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(dlcp_diag, "_pick_device", lambda vid, pid, path: fake_info)
     monkeypatch.setattr(dlcp_diag, "_open_hid", lambda path: fake)
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_device_eeprom_version",
+        lambda **kwargs: type("EepromVersion", (), {"revision": 0x38})(),
+    )
 
     report = dlcp_diag.query_diag()
     # Both queries hit the wire.
@@ -846,7 +853,8 @@ def test_query_diag_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     assert report.snapshot.diag_b == 1
     assert report.snapshot.active_reset_cause == "por"
     assert report.version is not None
-    assert (report.version.flag, report.version.major, report.version.minor) == (3, 2, 0x37)
+    assert (report.version.flag, report.version.major, report.version.minor) == (3, 3, 2)
+    assert report.eeprom_marker == 0x38
     assert report.status == "HEALTHY"
     # HID device closed cleanly.
     assert fake.closed

@@ -4,17 +4,23 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import STOCK_CONTROL_HEX_V14
+from dlcp_fw.paths import STOCK_CONTROL_HEX_V14, V171_CONTROL_HEX
 from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_BOOT_START,
+    CONTROL_PROG_END_EXCL,
+    CONTROL_RELEASE_MAGIC,
+    CONTROL_RELEASE_METADATA_ADDR,
     HidDeviceInfo,
     PreflightError,
     _pick_device,
+    build_control_stream,
     bootloader_mismatch_addresses,
+    detect_static_hex_control_release_info,
     main,
     parse_intel_hex,
     run_preflight,
 )
+from dlcp_fw.patch.build_v171_release import build_v171_release
 
 
 def _stock_control_v14() -> Path:
@@ -76,6 +82,59 @@ def test_cli_blocks_unsafe_flags_without_force(patched_control_hex: Path) -> Non
 def test_cli_allows_unsafe_when_explicitly_forced(patched_control_hex: Path) -> None:
     rc = main(["--hex", str(patched_control_hex), "--preflight-only", "--no-verify", "--force-unsafe"])
     assert rc == 0
+
+
+def test_detect_static_hex_control_release_info_v171() -> None:
+    release = detect_static_hex_control_release_info(parse_intel_hex(str(V171_CONTROL_HEX)))
+    assert release is not None
+    assert (release.major, release.minor, release.sub) == (0x01, 0x07, 0x31)
+    assert release.revision is not None
+    assert release.revision >= 0x01
+
+
+def test_v171_release_metadata_is_within_flashable_app_window() -> None:
+    assert CONTROL_RELEASE_METADATA_ADDR >= 0x0040
+    assert CONTROL_RELEASE_METADATA_ADDR + 12 <= CONTROL_PROG_END_EXCL
+
+
+def test_build_control_stream_preserves_release_metadata_bytes() -> None:
+    candidate = parse_intel_hex(str(V171_CONTROL_HEX))
+    stream = build_control_stream(candidate)
+    offset = CONTROL_RELEASE_METADATA_ADDR
+    assert stream[offset : offset + len(CONTROL_RELEASE_MAGIC)] == CONTROL_RELEASE_MAGIC
+    assert stream[offset + 8 : offset + 11] == bytes([0x01, 0x07, 0x31])
+
+
+def test_preflight_reports_target_release_and_compare_limitation(capsys) -> None:
+    rc = main(["--hex", str(V171_CONTROL_HEX), "--preflight-only"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "target release: V1.71 / rev 0x" in out
+    assert "live CONTROL version/revision probe is unavailable" in out
+
+
+def test_build_v171_release_rolls_back_source_and_hex_on_assemble_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asm_path = tmp_path / "dlcp_control_v171.asm"
+    original_text = (
+        "control_release_metadata:\n"
+        "        db      0x01, 0x07, 0x31, 0x02\n"
+    )
+    asm_path.write_text(original_text, encoding="utf-8")
+    output_hex = tmp_path / "DLCP_Control_V1.71.hex"
+    output_hex.write_text(":00000001FF\n", encoding="ascii")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("gpasm boom")
+
+    monkeypatch.setattr("dlcp_fw.patch.build_v171_release.assemble_v17", _boom)
+
+    with pytest.raises(RuntimeError, match="gpasm boom"):
+        build_v171_release(asm_path=asm_path, output_hex=output_hex)
+
+    assert asm_path.read_text(encoding="utf-8") == original_text
+    assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
 
 
 def test_pick_device_rejects_ambiguous_auto_select(monkeypatch) -> None:

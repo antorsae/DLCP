@@ -81,7 +81,7 @@
 ;   M1  i2c_busywait_no_timeout       — i2c_wait_bus_idle (still stock/raw)
 ;   M2  uart_tx_trmt_busywait         — addressed by wait_trmt_bounded (V3.1+)
 ;   M3  eeprom_write_disables_gie     — eeprom_write_blocking, ~4 ms GIE-off
-;   M4  oerr_no_fifo_drain            — UART OERR recovery (label_483)
+;   M4  oerr_no_fifo_drain            — addressed by full FIFO drain + parser resync
 ;   M5  timer3_blocking_delay         — replaced by ISR-tick HOLDING in V3.2
 ;   M6  rx_ring_no_overflow_detect    — silent overwrite at 0x0200 ring
 ;   M7  flash_write_gie_leak          — flash_write_with_gie_off
@@ -4018,6 +4018,8 @@ main_core_service_2d80:
 ;   would gate this with a watchdog.
 ;
 ; Phase B — DSP COLD BRING-UP. Once the rail is good:
+;   • Quiesce the EUSART first so reconnect polls cannot accumulate into OERR
+;     while GIE stays masked across the long wake delays.
 ;   • 70 ms timer3 settle
 ;   • OSCCON.SCS1 = 0 (HS oscillator selected), SPBRG = 0x7F (31,250 baud)
 ;   • Drop LATB.bit4, LATA.bit6 (amp enable lines), drop LATB.bit3
@@ -4027,15 +4029,21 @@ main_core_service_2d80:
 ;   • mssp_hard_reset with W=0x08 (SSPM master) and ram_0x003=0x80 (SMP=1)
 ;   • Re-arm I2C and write zero coefficient to TAS3108 (mute the DSP),
 ;     then run main_core_service_4574 (preset table apply)
-;   • Bring LATB.bit3 back up (amp enable), set the housekeeping event
-;     flags so cmd_dispatch_gated does the volume/mute/preset reconciliation,
-;     then re-arm Timer0 (TMR0=0xA471, ~50 ms) and INTCON.T0IE.
+;   • Bring LATB.bit3 back up (amp enable), re-arm the UART in TX-only mode
+;     so wake-time BF/08 fault-clear traffic cannot trip the bounded TRMT
+;     panic path, then set the housekeeping event flags so cmd_dispatch_gated
+;     does the volume/mute/preset reconciliation.
+;   • Finally re-run the cold-boot UART bring-up with RX enabled, re-arm Timer0
+;     (TMR0=0xA471, ~50 ms) and INTCON.T0IE.  Wake exits through the same UART
+;     state as cold boot; CONTROL reconnect then relies on its normal poll
+;     loop instead of whatever stale bytes survived the blind wake window.
 ;
 ; This is the routine called from standby_event_dispatch when the gate is
 ; reopened — i.e. when CONTROL sends a wake B0/03/01 frame after standby.
 ; ---------------------------------------------------------------------------
 adc_boot_gate:
     bcf         INTCON, 7, ACCESS
+    call        uart_quiesce_for_wake, 0x0
     bcf         LATB, 2, ACCESS
     movlb       0x0
     clrf        ram_0x088, BANKED
@@ -4108,6 +4116,7 @@ adc_boot_gate_exit:
     call        main_core_service_4942, 0x0
     rcall       main_i2c_service_32f8
     call        main_core_service_4942, 0x0
+    call        main_uart_tx_only_service, 0x0
     movlb       0x0
     bsf         event_flags, 1, BANKED
     bsf         event_flags, 3, BANKED
@@ -4116,6 +4125,7 @@ adc_boot_gate_exit:
     bsf         ram_0x07F, 1, BANKED
     movlw       0x00
     call        cmd_dispatch_gated, 0x0
+    call        send_status_burst, 0x0
     movlw       0x01
     movwf       ram_0x006, ACCESS
     movlw       0x1B
@@ -4129,6 +4139,8 @@ adc_boot_gate_exit:
     movlb       0x0
     clrf        ram_0x0A1, BANKED
     bcf         ram_0x094, 2, BANKED
+    call        main_uart_service_4938, 0x0
+    bsf         PIE1, 5, ACCESS
     bsf         INTCON, 7, ACCESS
     goto        flow_main_usb_service_490c_4918
 
@@ -5935,11 +5947,9 @@ flow_uart_rx_with_framing_3b16:
 ;              if rx_ring_wr catches up to rx_ring_rd; oldest byte is silently
 ;              overwritten. The V3.2 hardening plan workstream 2 calls for a
 ;              full/overflow flag here.
-;   4. OERR  : RCSTA.OERR set → toggle CREN to clear, force parser resync via
-;              rx_frame_position=0 and active_flags.bit0=1 so the next byte is
-;              treated as a route byte. BUG M4: does NOT drain the 2-deep
-;              RCREG FIFO before re-enabling CREN, leaving stale bytes in the
-;              hardware FIFO that the next pass will re-read.
+;   4. OERR  : RCSTA.OERR set → full soft-recover: CREN=0, drain RCREG twice,
+;              CREN=1, then reset the ring / staged parser bytes so the next
+;              byte is consumed as a fresh route byte.
 ; ---------------------------------------------------------------------------
 main_isr_dispatch:
     pop                                              ; discard call-frame return (FAST=1)
@@ -5993,12 +6003,7 @@ uart_rx_irq_enqueue:
 uart_oerr_recover:
     btfss       RCSTA, 1, ACCESS                     ; OERR? (RX overrun)
     bra         flow_main_isr_dispatch_3b8c
-    bcf         RCSTA, 4, ACCESS                     ; CREN=0 -> clear OERR latch
-    dw          0xF000                               ; (NOP word — pad / decode quiesce)
-    bsf         RCSTA, 4, ACCESS                     ; CREN=1 (re-arm RX). BUG M4: no FIFO drain
-    bsf         active_flags, 0, ACCESS              ; force route_is_b1 so next byte = route
-    movlb       0x0
-    clrf        rx_frame_position, BANKED            ; resync parser to expect a route byte
+    call        uart_soft_recover_full, 0x0
 flow_main_isr_dispatch_3b8c:
     movff       isr_save_fsr2h, FSR2H                ; restore FSR2 spilled at vector entry
     movff       isr_save_fsr2l, FSR2L
@@ -7750,8 +7755,83 @@ flow_main_core_service_4516_4544:
     return      0
 
 ; ---------------------------------------------------------------------------
-; Function: uart_config                    (EUSART bring-up — 31,250 baud)
+; Function: uart_fifo_drain_2              (drain both hardware RX FIFO slots)
 ; Address : 0x4546
+; ---------------------------------------------------------------------------
+; PIC18F2455 EUSART RX is 2 deep. CONTROL's reconnect poll is 3 bytes, so a
+; wake-time blind window can leave two stale bytes in RCREG plus an OERR latch
+; on the third. This helper deliberately performs two reads with no RCIF test
+; so OERR/FERR recovery consumes the whole FIFO depth exactly like the hardened
+; CONTROL v1.71 path.
+; ---------------------------------------------------------------------------
+uart_fifo_drain_2:
+    movf        RCREG, W, ACCESS
+    movf        RCREG, W, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Function: uart_parser_resync             (drop staged frame + ring state)
+; Address : 0x454C
+; ---------------------------------------------------------------------------
+; Shared by wake-time UART quiesce, OERR soft-recover, and the cold-boot
+; bring-up helper. Clears both software ring indices and the parser staging
+; bytes so the next received byte is always interpreted as a fresh route byte,
+; and suppresses any pending cmd-XOR ACK echo.
+; ---------------------------------------------------------------------------
+uart_parser_resync:
+    movlb       0x0
+    clrf        rx_ring_rd, BANKED
+    clrf        rx_ring_wr, BANKED
+    clrf        rx_frame_position, BANKED
+    clrf        ram_0x0A2, BANKED
+    clrf        current_cmd_data, BANKED
+    clrf        ram_0x0BC, BANKED
+    bcf         active_flags, 0, ACCESS
+    bcf         active_flags, 6, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Function: uart_quiesce_for_wake          (disable EUSART before wake delays)
+; Address : 0x455E
+; ---------------------------------------------------------------------------
+; Wake holds INTCON.GIE low across ~1.7 s of rail / DSP settle time. If RX
+; stays enabled during that window, CONTROL's reconnect polls can overflow the
+; 2-byte hardware FIFO before the ISR runs. This helper masks UART IRQs,
+; drains any partial frame, disables TX/RX/SPEN, and drops the software parser
+; to a known-empty state so wake exits through a full re-init instead of a
+; partially wedged link.
+; ---------------------------------------------------------------------------
+uart_quiesce_for_wake:
+    bcf         PIE1, 5, ACCESS
+    bcf         PIR1, 5, ACCESS
+    bcf         PIE1, 4, ACCESS
+    bcf         PIR1, 4, ACCESS
+    bcf         RCSTA, 4, ACCESS
+    rcall       uart_fifo_drain_2
+    bcf         TXSTA, 5, ACCESS
+    bcf         RCSTA, 7, ACCESS
+    bra         uart_parser_resync
+
+
+; ---------------------------------------------------------------------------
+; Function: uart_soft_recover_full         (OERR FIFO drain + parser reset)
+; Address : 0x4570
+; ---------------------------------------------------------------------------
+; MAIN now matches CONTROL v1.71's OERR recovery contract: clear CREN, drain
+; both FIFO slots, re-enable CREN, then reset the staged frame / ring state.
+; ---------------------------------------------------------------------------
+uart_soft_recover_full:
+    bcf         RCSTA, 4, ACCESS
+    rcall       uart_fifo_drain_2
+    bsf         RCSTA, 4, ACCESS
+    bra         uart_parser_resync
+
+
+; ---------------------------------------------------------------------------
+; Function: uart_config                    (EUSART bring-up — 31,250 baud)
+; Address : 0x4576
 ; ---------------------------------------------------------------------------
 ; Brings up the EUSART for the 31,250-baud current-loop chain protocol:
 ;   • SPEN=0 then back on, BRG16=0 (8-bit baud)
@@ -8730,15 +8810,28 @@ main_core_service_492e:
 
 
 ; ---------------------------------------------------------------------------
+; Function: main_uart_tx_only_service      (wake-time TX re-arm, RX still off)
+; Address : 0x4938
+; ---------------------------------------------------------------------------
+; Wake-time cmd_dispatch_gated can emit BF/08 over the serial link before the
+; reconnect window fully re-opens.  Reuse uart_config to restore baud/SPEN/TXEN,
+; then immediately clear CREN so CONTROL polls cannot accumulate into RCREG
+; while GIE is still masked across the remaining wake-time housekeeping.
+; ---------------------------------------------------------------------------
+main_uart_tx_only_service:
+    rcall       uart_config
+    bcf         RCSTA, 4, ACCESS
+    goto        uart_parser_resync
+
+
+; ---------------------------------------------------------------------------
 ; Function: main_uart_service_4938
 ; Address : 0x4938
-; Notes   : Inferred uart helper routine. Calls: uart_config.
+; Notes   : Inferred uart helper routine. Calls: uart_config, uart_parser_resync.
 ; ---------------------------------------------------------------------------
 main_uart_service_4938:
     rcall       uart_config
-    bcf         active_flags, 0, ACCESS
-    clrf        rx_frame_position, BANKED
-    return      0
+    goto        uart_parser_resync
 
 
 ; ---------------------------------------------------------------------------
@@ -9963,7 +10056,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x37, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1: prev (rev 0x36) + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot (rev 0x37)
+    db  0x03, 0x02, 0x38, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

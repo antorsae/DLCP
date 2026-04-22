@@ -24,8 +24,11 @@
 ;
 ; Verification: gpasm assembles without errors; vector block (0x0000–0x004B),
 ;              bootloader (0x7800–0x7FFF), and config bits are byte-identical
-;              to stock V1.6b.  EEPROM matches stock except the V1.71 version
-;              tuple at 0x71–0x73 and preset byte at 0x74.
+;              to stock V1.6b. EEPROM matches stock except the V1.71 identity
+;              bytes at 0x70–0x72 and preset byte at 0x74. Canonical release
+;              revisions do not live in EEPROM: EEPROM[0x73] is runtime-owned,
+;              so the monotonic release revision lives in the flashed metadata
+;              block at 0x77B0 instead.
 ; ===========================================================================
 
         processor p18f25k20
@@ -4354,13 +4357,13 @@ flow_ccs_0FA0_10DA:                                                  ; address: 
         movlw   0x71
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   tx_data_staging, A                        ; reg: 0x027
-        movlw   0x06                                        ; CMD input_select
+        movlw   0x07                                        ; V1.71 minor byte
         subwf   tx_data_staging, W, A                     ; reg: 0x027
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0FA0_10F6                                   ; dest: 0x0010f6
         movlw   0x71
         movwf   EEADR, A                                    ; reg: 0xfa9
-        movlw   0x06
+        movlw   0x07
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
 
 flow_ccs_0FA0_10F6:                                                  ; address: 0x0010f6
@@ -4535,6 +4538,7 @@ v171_waiting_cold_past_grace_done:
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
+        movlb   0x00                                       ; rx_parser_entry may drift BSR
         movlw   0x80
         subwf   0xb8, W, B                                  ; reg: 0x0b8
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -4820,33 +4824,34 @@ v171_reconnect_past_grace_done:
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
+        movlb   0x00                                       ; rx_parser_entry may drift BSR
 
         ; Accumulate sentinel-cleared bits into ram_0x018.
         ; Each block: if sentinel != 0x80 → set ram_0x018 to 1, else
         ; AND 1 (first test initializes, subsequent tests AND-reduce).
         movlw   0x80
-        subwf   input_select_cache, W, A                     ; 0xB8
+        subwf   input_select_cache, W, B                     ; 0xB8
         clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; ram_0x018
 
         movlw   0x80
-        subwf   volume_cache, W, A                           ; 0xB9
+        subwf   volume_cache, W, B                           ; 0xB9
         clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
 
         movlw   0x80
-        subwf   cmd1d_setting_cache, W, A                    ; 0xA7
+        subwf   cmd1d_setting_cache, W, B                    ; 0xA7
         clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
 
         movlw   0x80
-        subwf   raw_status_cache, W, A                       ; 0xA1
+        subwf   raw_status_cache, W, B                       ; 0xA1
         clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
@@ -5934,6 +5939,15 @@ flow_ccs_1912_19EE:                                                  ; address: 
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_ccs_1912_192A                                   ; dest: 0x00192a
         return  0x0
+
+; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
+        org     0x77b0
+
+control_release_metadata:
+        db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
+        db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
+        db      0x01, 0x07, 0x31, 0x04                    ; V1.71 + monotonic release revision
+        db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800
@@ -7335,12 +7349,14 @@ flow_bootloader_manual_entry_7F56:                                              
         db      0xff
         db      0xff
         db      0xff
-        ; V1.71 (V1.61b): version tuple at EEPROM 0x70..0x73 bumped to 1.71
-        ; encoding: 0x01 0x07 '1' 0x01 (major, minor, ASCII sub, reserved)
+        ; V1.71 identity bytes at EEPROM 0x70..0x73.
+        ; NOTE: EEPROM[0x73] is runtime-owned and must not be repurposed as a
+        ; release counter. Canonical release revision lives in
+        ; control_release_metadata at 0x77B0.
         db      0x01                                        ; EEPROM 0x70: major
         db      0x07                                        ; EEPROM 0x71: minor (V1.7 family)
         db      0x31                                        ; EEPROM 0x72: '1' (V1.71)
-        db      0x01                                        ; EEPROM 0x73: reserved
+        db      0x01                                        ; EEPROM 0x73: stock-compatible runtime byte
         db      0xff                                        ; EEPROM 0x74: preset byte (erased = A default)
         db      0xff
         db      0xff

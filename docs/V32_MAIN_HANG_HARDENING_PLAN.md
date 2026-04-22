@@ -80,7 +80,7 @@ Tests:
 - Continue using `tests/sim/test_v28_wire_delayed_switch_repros.py` as acceptance for interleaved `0x20` + `0x03`.
 - Add assertions for "last command wins" under burst interleave.
 
-## 3b) MAIN Wake-Path Sentinel Re-Emit (CONTROL reconnect unblock)
+## 3b) Standby/Wake Reconnect Hardening (current canonical pair)
 
 Added 2026-04-21 after a field-reproducible wedge: after the operator
 pressed `STDBY` on CONTROL and then `WAKE`, CONTROL was locked on
@@ -89,17 +89,32 @@ Real-HW probe (scripts/dlcp_probe_chain_link.py) confirmed the MAINs
 were healthy (gate open, no faults, audio would resume if queried) --
 the wedge was on the CONTROL-side sentinel-clear protocol.
 
-Root cause: V3.2 MAIN's `wake_request_handler` (asm:1842) +
-`adc_boot_gate` (asm:4047) resume the normal runtime loop but do NOT
-re-invoke `send_status_burst` (asm:6044).  That burst -- BF/05 + 07 +
-03 + 06 + 1D -- is what CONTROL's V1.62b reconnect loop consumes to
-clear its four sentinel caches (`input_select_cache` 0xB8,
-`volume_cache` 0xB9, `cmd1d_setting_cache` 0xA7, `raw_status_cache`
-0xA1).  In stock V1.6b/V1.7x these caches were re-primed to 0x80 at
-boot and only cleared when MAIN answered the corresponding poll
-frame.  V3.2's wake path emits heartbeats (`cmd04` reply pieces)
-but not the full burst, so only a subset of sentinels clear and
-CONTROL hangs.
+The original MAIN-only diagnosis is now stale for the current source.
+As of the 2026-04-22 real-hardware run on the canonical pair
+(`V3.2 / rev 0x38` + `V1.71 / rev 0x04`), both MAINs were already awake,
+healthy, gate-open, and visible on USB while CONTROL still showed
+`WAITING FOR DLCP`.  That disproves the older "MAIN never finished wake"
+explanation for the current revision.  See
+`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`.
+
+Current root cause is CONTROL-side reconnect fragility:
+
+- MAIN wake now does re-advertise state during `adc_boot_gate`
+  (`cmd_dispatch_gated` + `send_status_burst`), so the downstream side
+  is no longer the primary blocker.
+- CONTROL still performs RC5 IR decode in the ISR hot path.  That
+  blocks UART TX/RX servicing for ~7-10 ms exactly when the wake
+  command, reconnect poll, and MAIN status burst collide.
+- The critical CONTROL 3-byte frame senders
+  (`poll_frame_send`, `serial_tx_routed_frame` / `standby_wake_broadcast`,
+  and the V1.71 explicit wake/standby IR helpers) still ignore
+  `STATUS.C` from `tx_byte_enqueue`.  Under Layer-1 bounded-TX
+  semantics, that means silent byte-drop on saturation rather than an
+  atomic retry or abort.
+
+Net effect: MAIN can already be awake and passing audio while CONTROL
+remains stranded on its reconnect screen because CONTROL lost or
+phase-shifted the reconnect traffic itself.
 
 Interim mitigation landed 2026-04-21 on V1.71 CONTROL side:
 operator can press `RIGHT` or `LEFT` after a ~10 s grace to trigger
@@ -107,31 +122,43 @@ a PIC18 soft `RESET` and re-run the full CONTROL cold-init +
 full-sync-burst.  See `docs/V171_RELEASE.md` §"WAITING FOR DLCP
 operator recovery".  This is a UX escape hatch, not a root-cause fix.
 
-Implementation (MAIN-side, this workstream):
+Implementation (CONTROL-side priority, MAIN-side audit secondary):
 
-- Call `send_status_burst` (or an equivalent sentinel-priming
-  frame sequence) from `wake_request_handler` after the UART is
-  re-initialized, before returning to the runtime loop.
-- Alternately: unify wake + cmd04 into a single "MAIN advertises
-  state" path so CONTROL can always trigger the burst on-demand.
-- Audit other state-transition entry points (PEN timeout recovery,
-  hard-reset escalation) to ensure CONTROL's reconnect sentinels
-  always clear on wake without requiring a CONTROL soft-reset.
+- Move or defer the RC5 decode out of the ISR-critical wake/reconnect
+  window so UART TX/RX service is not starved during the first wake
+  exchange.
+- Make wake/poll frame emission atomic: check `STATUS.C` after every
+  `tx_byte_enqueue` in the standby/wake and reconnect senders, then
+  retry or abort cleanly instead of silently dropping bytes.
+- Keep the MAIN-side wake-time `send_status_burst` path, but treat it as
+  necessary-not-sufficient; the remaining field wedge is no longer
+  solved by MAIN-only changes.
+- Audit other CONTROL best-effort frame senders that still ignore
+  bounded-TX saturation.
 
 Primary code areas:
 
-- `wake_request_handler` (asm:1842)
-- `adc_boot_gate` (asm:4047)
-- `send_status_burst` (asm:6044)
-- `cmd04_status_response` (asm:1997)
+- CONTROL:
+  - `ir_rc5_decode`
+  - `tx_byte_enqueue`
+  - `poll_frame_send`
+  - `serial_tx_routed_frame`
+  - `standby_wake_broadcast`
+  - `v171_send_wake_cmd_frame`
+- MAIN:
+  - `adc_boot_gate`
+  - `send_status_burst`
+  - `cmd04_status_response`
 
 Tests:
 
-- Add wire-chain test that simulates CONTROL in
-  `v171_reconnect_wait_body` after MAIN has been through STDBY +
-  WAKE; assert that all four sentinel caches clear within a
-  bounded number of poll iterations without requiring the CONTROL
-  soft-reset escape.
+- Add an end-to-end wake test that drives the real CONTROL wake path
+  (`STDBY` / `WAKE`, not only source-level contracts) and asserts that
+  CONTROL leaves `WAITING FOR DLCP` without requiring the operator
+  soft-reset escape while both MAINs are already healthy.
+- Add a focused CONTROL test for the current Layer-1 mismatch: prove
+  that the wake/poll senders either emit all 3 bytes or explicitly
+  surface saturation instead of silently dropping partial frames.
 - Live-hardware soak: 100× STDBY+WAKE cycles.  Acceptance: zero
   lockups into the WAITING-loop grace-reset window (i.e., zero
   operator-visible `WAITING FOR DLCP` > 5 s after wake).
@@ -139,7 +166,8 @@ Tests:
 Release-gate note: with the V1.71 grace-reset in place this hang is
 operator-recoverable without a power cycle, so it's no longer a
 blocker for V3.2 shipping.  Remaining work is to eliminate the
-recovery requirement entirely on the next MAIN revision.
+recovery requirement entirely on the next canonical pair revision,
+with CONTROL reconnect hardening as the lead item.
 
 ## 4) PB2 Upstream-Loss Fail-Safe
 

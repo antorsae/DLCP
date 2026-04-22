@@ -97,6 +97,17 @@ def test_v171_source_replaces_reconnect_loop_with_sentinel_body() -> None:
     ]
     missing = [m for m in required if m not in loop_body]
     assert not missing, f"sentinel loop markers missing: {missing}"
+    for marker in (
+        "subwf   input_select_cache, W, B",
+        "subwf   volume_cache, W, B",
+        "subwf   cmd1d_setting_cache, W, B",
+        "subwf   raw_status_cache, W, B",
+        "call    rx_parser_entry, 0x0",
+        "movlb   0x00                                       ; rx_parser_entry may drift BSR",
+    ):
+        assert marker in loop_body, (
+            f"sentinel loop must compare cached reconnect sentinels in BANKED mode: {marker!r}"
+        )
 
 
 def test_v171_source_embeds_uart_soft_recover_in_sentinel_loop() -> None:
@@ -119,6 +130,17 @@ def test_v171_source_embeds_uart_soft_recover_in_sentinel_loop() -> None:
         assert marker in loop_body, (
             f"sentinel loop missing UART soft-recover step: {marker!r}"
         )
+
+
+def test_v171_cold_wait_restores_bsr_before_sentinel_compares() -> None:
+    """The cold WAITING loop must read the real sentinel cache bank after parser."""
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    start = text.find("flow_ccs_0FA0_118C:")
+    end = text.find("post_connect_init", start)
+    assert start >= 0 and end > start
+    wait_body = text[start:end]
+    assert "call    rx_parser_entry, 0x0" in wait_body
+    assert "movlb   0x00                                       ; rx_parser_entry may drift BSR" in wait_body
 
 
 def test_v171_source_emits_wake_and_reseeds_idle_timer_on_loop_exit() -> None:

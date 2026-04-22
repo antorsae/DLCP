@@ -32,17 +32,11 @@ from dlcp_fw.sim.v30_symbols import assemble_v30
 # Constants pinned to the no-pop design
 # ---------------------------------------------------------------------------
 
-# EEPROM version-marker tuple
-# (V3.2 Tier-1: prev no-pop + diag in BANK 2 + cmd21 mask + ACK
-#  suppress + always-clear cold init + reset-cause classification
-#  + cmd 0x22 reset-flags chain handler + HID cmd 0x44 diag
-#  snapshot = 0x03, 0x02, 0x37).
-# Bumped 2026-04-20 round-5 from 0x36 → 0x37 to mark images that
-# carry the V32_DIAG_TIER1_SPEC.md feature set: 4 reset-cause RAM
-# flags classified at cold-init from the RCON snapshot (POR/BOR/
-# WDT/SW), a new chain `cmd 0x22` reply burst (BF/28..BF/2B), and
-# a new HID `cmd 0x44` diag-snapshot endpoint.
-EEPROM_VERSION_TUPLE = (0x03, 0x02, 0x37)
+# EEPROM version-marker floor.
+# The no-pop helper first shipped as 0x03, 0x02, 0x33. Canonical V3.2
+# release builds now bump the third EEPROM byte on every build, so the
+# exact revision is intentionally NOT pinned here anymore.
+EEPROM_VERSION_BASELINE = (0x03, 0x02, 0x33)
 
 # Expected helper sequence (instruction phase markers, in order).
 # Each tuple is (regex, description).
@@ -330,33 +324,24 @@ def test_helper_does_not_change_oscillator() -> None:
     )
 
 
-def test_eeprom_version_marker_is_no_pop_revision() -> None:
-    """EEPROM version tuple must be (0x03, 0x02, 0x33) — the no-pop
-    revision.  The pre-V3.2 baseline is (0x03, 0x02, 0x32).  Field
-    units must be distinguishable so operators can tell whether the
-    no-pop helper is in the running image.
-    """
+def test_eeprom_version_marker_stays_on_or_above_no_pop_baseline() -> None:
+    """EEPROM version tuple must stay in the V3.2 lineage and keep a
+    revision at or above the original no-pop floor (0x33)."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     # Look for the eeprom_data block at org 0xF00000.
     org_pos = text.find("org 0xF00000")
     assert org_pos >= 0, "EEPROM data block missing"
     eeprom_block = text[org_pos:org_pos + 3000]
-    expected = "0x{:02X}, 0x{:02X}, 0x{:02X}".format(*EEPROM_VERSION_TUPLE)
-    assert expected in eeprom_block, (
-        f"EEPROM version marker {EEPROM_VERSION_TUPLE} missing — the "
-        f"version byte was downgraded back to the pop-prone baseline. "
-        f"Field units would no longer be distinguishable from the "
-        f"pre-V3.2 image."
+    m = re.search(r"0x03,\s*0x02,\s*0x([0-9A-Fa-f]{2})", eeprom_block)
+    assert m is not None, "V3.2 EEPROM version tuple missing from eeprom_data"
+    revision = int(m.group(1), 16)
+    assert revision >= EEPROM_VERSION_BASELINE[2], (
+        f"V3.2 EEPROM revision regressed below the no-pop baseline: "
+        f"got 0x{revision:02X}, need >= 0x{EEPROM_VERSION_BASELINE[2]:02X}"
     )
-    # And no earlier-revision marker should be present (the new tuple
-    # replaces it; multiple presents would be a build error).
-    for old in ("0x03, 0x02, 0x32", "0x03, 0x02, 0x33",
-                "0x03, 0x02, 0x34", "0x03, 0x02, 0x35",
-                "0x03, 0x02, 0x36"):
-        assert old not in eeprom_block, (
-            f"earlier-revision marker {old!r} present in eeprom_data alongside "
-            f"the current {expected} — only one version tuple should exist"
-        )
+    assert len(re.findall(r"0x03,\s*0x02,\s*0x[0-9A-Fa-f]{2}", eeprom_block)) == 1, (
+        "exactly one V3.2 EEPROM version tuple should exist in eeprom_data"
+    )
 
 
 def test_helper_uses_bounded_i2c_via_secondary_write() -> None:

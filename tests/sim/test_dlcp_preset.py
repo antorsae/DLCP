@@ -25,6 +25,7 @@ def _fake_snapshot() -> DeviceSnapshot:
         manufacturer_string="Hypex BV",
         serial_number="SER",
         version=VersionInfo(flag=0x03, major=3, minor=1),
+        eeprom_version=None,
         active_config_name="TestConfig",
         active_config_raw=b"TestConfig",
         active_routes=(

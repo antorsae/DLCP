@@ -16,9 +16,10 @@ is preserved below for historical context.
 - Dispatch site redirect at `flow_hid_command_dispatch_13d0` — search
   for the call to `main_flash_service_46de` followed by
   `goto flash_entry_quiet_shutdown` (~line 745).
-- EEPROM version marker bumped from `0x03, 0x02, 0x32` to
-  `0x03, 0x02, 0x33` — search for `0x03, 0x02, 0x33` in the
-  `eeprom_data` block (~line 9769).
+- EEPROM version marker floor bumped from `0x03, 0x02, 0x32` to
+  `0x03, 0x02, 0x33`. Canonical `V3.2` release builds now keep
+  incrementing that third byte monotonically; the current build may
+  be above `0x33`.
 - Operator hardware-validation runbook lives in
   [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Re-flash pop monitoring".
 

@@ -116,6 +116,13 @@ class VersionInfo:
 
 
 @dataclasses.dataclass(frozen=True)
+class EepromVersionInfo:
+    major: int
+    minor: int
+    revision: int
+
+
+@dataclasses.dataclass(frozen=True)
 class RouteEntry:
     channel: int
     value: int
@@ -129,6 +136,7 @@ class DeviceSnapshot:
     manufacturer_string: str
     serial_number: str
     version: Optional[VersionInfo]
+    eeprom_version: Optional[EepromVersionInfo]
     active_config_name: Optional[str]
     active_config_raw: Optional[bytes]
     active_routes: Optional[tuple[RouteEntry, ...]]
@@ -171,10 +179,62 @@ def detect_static_hex_version(hex_mem: Dict[int, int]) -> Optional[VersionInfo]:
     return detect_static_hex_hid_version(hex_mem)
 
 
+def detect_static_hex_eeprom_version(hex_mem: Dict[int, int]) -> Optional[EepromVersionInfo]:
+    base = 0xF00000 + 0x80
+    values = [hex_mem.get(base + offset) for offset in range(3)]
+    if any(value is None for value in values):
+        return None
+    return EepromVersionInfo(
+        major=values[0] & 0xFF,
+        minor=values[1] & 0xFF,
+        revision=values[2] & 0xFF,
+    )
+
+
 def _format_version_short(version: Optional[VersionInfo]) -> str:
     if version is None:
         return "<unknown>"
     return f"{version.major}.{version.minor}"
+
+
+def _format_eeprom_version_short(version: Optional[EepromVersionInfo]) -> str:
+    if version is None:
+        return "<unknown>"
+    return f"{version.major}.{version.minor} rev 0x{version.revision:02X}"
+
+
+def _compare_firmware_identities(
+    *,
+    device_version: Optional[VersionInfo],
+    device_eeprom_version: Optional[EepromVersionInfo],
+    target_version: Optional[VersionInfo],
+    target_eeprom_version: Optional[EepromVersionInfo],
+) -> Optional[int]:
+    if device_eeprom_version is not None and target_eeprom_version is not None:
+        device_key = (
+            device_eeprom_version.major,
+            device_eeprom_version.minor,
+            device_eeprom_version.revision,
+        )
+        target_key = (
+            target_eeprom_version.major,
+            target_eeprom_version.minor,
+            target_eeprom_version.revision,
+        )
+        if device_key < target_key:
+            return -1
+        if device_key > target_key:
+            return 1
+        return 0
+    if device_version is not None and target_version is not None:
+        device_key = (device_version.major, device_version.minor)
+        target_key = (target_version.major, target_version.minor)
+        if device_key < target_key:
+            return -1
+        if device_key > target_key:
+            return 1
+        return 0
+    return None
 
 
 def resolve_capture_flash_base(
@@ -341,7 +401,28 @@ def _list_devices_with_mode(vid: int, pid: int) -> List[Dict[str, object]]:
     return out
 
 
-def _pick_device(vid: int, pid: int, path: Optional[bytes]) -> HidDeviceInfo:
+def _resolve_uniform_route_label(
+    *,
+    info: HidDeviceInfo,
+    vid: int,
+    pid: int,
+) -> Optional[str]:
+    if _device_mode(info) != "app":
+        return None
+    _, routes = _probe_ep0_app_ram(vid=vid, pid=pid, path=info.path)
+    labels = {entry.label for entry in routes}
+    if len(labels) != 1:
+        return None
+    return next(iter(labels))
+
+
+def _pick_device(
+    vid: int,
+    pid: int,
+    path: Optional[bytes],
+    *,
+    route_label: Optional[str] = None,
+) -> HidDeviceInfo:
     devs = enumerate_devices(vid, pid)
     if path is not None:
         for dev in devs:
@@ -351,6 +432,32 @@ def _pick_device(vid: int, pid: int, path: Optional[bytes]) -> HidDeviceInfo:
     if not devs:
         raise RuntimeError(f"no HID device found for VID:PID {vid:04X}:{pid:04X}")
     if len(devs) > 1:
+        if route_label is not None:
+            candidates: List[HidDeviceInfo] = []
+            for dev in devs:
+                try:
+                    detected = _resolve_uniform_route_label(
+                        info=dev,
+                        vid=vid,
+                        pid=pid,
+                    )
+                except Exception:
+                    continue
+                if detected == route_label:
+                    candidates.append(dev)
+            if len(candidates) == 1:
+                return candidates[0]
+            if not candidates:
+                raise RuntimeError(
+                    f"multiple HID devices match {vid:04X}:{pid:04X}; "
+                    f"no unambiguous device reports all channels {route_label}. "
+                    "Use --list and pass --path"
+                )
+            raise RuntimeError(
+                f"multiple HID devices match {vid:04X}:{pid:04X}; "
+                f"{len(candidates)} devices report all channels {route_label}. "
+                "Use --list and pass --path"
+            )
         raise RuntimeError(
             f"multiple HID devices match {vid:04X}:{pid:04X}; use --list and pass --path"
         )
@@ -841,10 +948,39 @@ def _probe_ep0_app_ram(
     return decode_filename_slot(filename_raw), decode_route_entries(route_raw)
 
 
+def _probe_device_eeprom_version(
+    *,
+    info: HidDeviceInfo,
+    timeout_ms: int = 1000,
+    verify_reads: int = 2,
+    retries: int = 3,
+    delay_s: float = 0.01,
+) -> EepromVersionInfo:
+    from dlcp_fw.flash.read_coeffs import HidMemoryReader, REGION_EEPROM
+
+    with HidMemoryReader(info=info, timeout_ms=timeout_ms) as reader:
+        raw = reader.read_window_verified(
+            region=REGION_EEPROM,
+            addr=0x80,
+            size=3,
+            verify_reads=max(1, verify_reads),
+            retries=max(1, retries),
+            delay_s=max(0.0, delay_s),
+        )
+    if len(raw) != 3:
+        raise RuntimeError(f"short EEPROM version tuple read: got {len(raw)} bytes")
+    return EepromVersionInfo(
+        major=raw[0] & 0xFF,
+        minor=raw[1] & 0xFF,
+        revision=raw[2] & 0xFF,
+    )
+
+
 def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> DeviceSnapshot:
     warnings: List[str] = []
     mode = _device_mode(info)
     version: Optional[VersionInfo] = None
+    eeprom_version: Optional[EepromVersionInfo] = None
     active_config_name: Optional[str] = None
     active_config_raw: Optional[bytes] = None
     active_routes: Optional[tuple[RouteEntry, ...]] = None
@@ -860,6 +996,11 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
                 dev.close()
             except Exception:
                 pass
+        if mode != "bootloader":
+            try:
+                eeprom_version = _probe_device_eeprom_version(info=info)
+            except Exception as exc:
+                warnings.append(f"EEPROM version probe failed: {exc}")
 
     if mode != "bootloader":
         try:
@@ -878,6 +1019,7 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
         manufacturer_string=info.manufacturer_string,
         serial_number=info.serial_number,
         version=version,
+        eeprom_version=eeprom_version,
         active_config_name=active_config_name,
         active_config_raw=active_config_raw,
         active_routes=active_routes,
@@ -898,6 +1040,14 @@ def _print_device_snapshot(title: str, snapshot: DeviceSnapshot) -> None:
             "  version:"
             f" {snapshot.version.major}.{snapshot.version.minor}"
             f" (flag=0x{snapshot.version.flag:02X})"
+        )
+    if snapshot.eeprom_version is None:
+        print("  revision: unavailable")
+    else:
+        print(
+            "  revision:"
+            f" 0x{snapshot.eeprom_version.revision:02X}"
+            f" (EEPROM {snapshot.eeprom_version.major}.{snapshot.eeprom_version.minor})"
         )
     if snapshot.active_config_name is None:
         print("  active config: unavailable")
@@ -1003,6 +1153,7 @@ def flash_main(
     vid: int,
     pid: int,
     path: Optional[bytes],
+    route_label: Optional[str],
     stream: bytes,
     pace_ms: int,
     reconnect_timeout_s: float,
@@ -1013,6 +1164,8 @@ def flash_main(
     report_info: bool,
     need_post_app: bool,
     post_info_timeout_s: float,
+    target_hex_version: Optional[VersionInfo],
+    target_hex_eeprom_version: Optional[EepromVersionInfo],
     verbose: bool,
 ) -> Optional[HidDeviceInfo]:
     expected_len = MAIN_PROG_END_EXCL - MAIN_APP_START
@@ -1036,7 +1189,7 @@ def flash_main(
     if dry_run:
         return None
 
-    initial = _pick_device(vid, pid, path)
+    initial = _pick_device(vid, pid, path, route_label=route_label)
     initial_mode = _device_mode(initial)
     if verbose:
         print(
@@ -1046,11 +1199,34 @@ def flash_main(
             f" serial={initial.serial_number or '<no-serial>'}"
             f" mode={initial_mode}"
         )
+    initial_snapshot: Optional[DeviceSnapshot] = None
     if report_info:
-        _print_device_snapshot(
-            "before flash:",
-            _probe_device_snapshot(info=initial, vid=vid, pid=pid),
+        initial_snapshot = _probe_device_snapshot(info=initial, vid=vid, pid=pid)
+        _print_device_snapshot("before flash:", initial_snapshot)
+    elif target_hex_version is not None or target_hex_eeprom_version is not None:
+        try:
+            initial_snapshot = _probe_device_snapshot(info=initial, vid=vid, pid=pid)
+        except Exception:
+            initial_snapshot = None
+
+    if initial_snapshot is not None:
+        compare_result = _compare_firmware_identities(
+            device_version=initial_snapshot.version,
+            device_eeprom_version=initial_snapshot.eeprom_version,
+            target_version=target_hex_version,
+            target_eeprom_version=target_hex_eeprom_version,
         )
+        if compare_result is not None and compare_result >= 0:
+            device_text = _format_eeprom_version_short(initial_snapshot.eeprom_version)
+            if initial_snapshot.eeprom_version is None:
+                device_text = _format_version_short(initial_snapshot.version)
+            target_text = _format_eeprom_version_short(target_hex_eeprom_version)
+            if target_hex_eeprom_version is None:
+                target_text = _format_version_short(target_hex_version)
+            print(
+                "WARNING: device firmware is the same or newer than the target hex "
+                f"(device {device_text}, hex {target_text})"
+            )
 
     if skip_switch:
         if initial_mode == "app":
@@ -1278,6 +1454,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     overlays: list[CaptureOverlay] = []
     overlay_a: Optional[CaptureOverlay] = None
     target_hex_version = detect_static_hex_version(hex_mem)
+    target_hex_eeprom_version = detect_static_hex_eeprom_version(hex_mem)
     if args.capture_a is not None:
         overlay_a = _load_capture_overlay(
             capture_path=args.capture_a,
@@ -1331,6 +1508,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  explicit app bytes: {preflight['app_bytes_present']}")
         print(f"  explicit bootloader bytes: {preflight['bootloader_bytes_present']}")
         print(f"  explicit non-app bytes ignored by device: {preflight['non_app_explicit_count']}")
+        if target_hex_version is not None:
+            print(
+                "  target firmware version: "
+                f"{target_hex_version.major}.{target_hex_version.minor}"
+                f" (flag=0x{target_hex_version.flag:02X})"
+            )
+        if target_hex_eeprom_version is not None:
+            print(
+                "  target firmware revision: "
+                f"0x{target_hex_eeprom_version.revision:02X} "
+                f"(EEPROM {target_hex_eeprom_version.major}.{target_hex_eeprom_version.minor})"
+            )
         if not args.skip_bootloader_check:
             print(f"  explicit bootloader bytes match: {args.bootloader_ref}")
         for overlay in overlays:
@@ -1350,6 +1539,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         vid=args.vid,
         pid=args.pid,
         path=path,
+        route_label=args.all_ch,
         stream=stream,
         pace_ms=max(0, args.pace_ms),
         reconnect_timeout_s=max(0.1, float(args.reconnect_timeout_s)),
@@ -1363,6 +1553,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             and not (args.dry_run or args.preflight_only)
         ),
         post_info_timeout_s=max(0.1, float(args.post_info_timeout_s)),
+        target_hex_version=target_hex_version,
+        target_hex_eeprom_version=target_hex_eeprom_version,
         verbose=args.verbose,
     )
 

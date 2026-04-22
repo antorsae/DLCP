@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-15
+Last updated: 2026-04-22
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -123,8 +123,10 @@ Use these locations only:
   - Canonical `V3.1` includes HID `cmd 0x43` diagnostic flash/EEPROM memread.
 - Main V3.2 (async delayed-switch + Layer 5 diag counters): `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
   - **Recommended deployed MAIN release** when flashed with baked preset A/B captures (operator runbook: `docs/V32_RELEASE.md`).
+  - Canonical build path: `scripts/build_v32_release.py` bumps the EEPROM revision byte at `eeprom_data[0x82]` on every build, then assembles the release back into the same canonical filename. Do not mint ad-hoc suffixed release names for V3.2.
 - Control V1.71 (feature-bearing source rewrite + Layer 1/2/5): `firmware/patched/releases/DLCP_Control_V1.71.hex`
   - **Recommended deployed CONTROL release** when paired with V3.2 MAIN (operator runbook: `docs/V171_RELEASE.md`).
+  - Canonical build path: `scripts/build_v171_release.py` bumps the flashed release-metadata revision byte at `control_release_metadata[11]` on every build, then assembles the release back into the same canonical filename.
 - Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`, `src/dlcp_fw/asm/dlcp_main_v32.asm`, `src/dlcp_fw/asm/dlcp_control_v17.asm`, `src/dlcp_fw/asm/dlcp_control_v171.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
 - Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm`, `src/dlcp_fw/asm/dlcp_main_v31_with_nops.asm`, `src/dlcp_fw/asm/dlcp_main_v31_without_nops.asm`, and matching `DLCP_Firmware_V3.1_diag*` / `DLCP_Firmware_V3.1_WITH*_NOPS.hex` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
@@ -243,6 +245,8 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/hardware_loop.py`
 - `scripts/dlcp_preset.py`
 - `scripts/dlcp_diag.py`
+- `scripts/build_v171_release.py`
+- `scripts/build_v32_release.py`
 - `scripts/dlcp_main_flash.py`
 - `scripts/dlcp_v31_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
@@ -262,7 +266,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (86 test files, 696 tests collected):
+Current suite (86 test files, 1049 tests collected):
 
 Pytest markers:
 
@@ -372,15 +376,14 @@ V3.1 source rewrite:
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (latest 2026-04-14):
+Recent verification (latest 2026-04-22):
 
-- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `696 tests collected`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_control_flash_safety.py` -> `13 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_ep0_flash_probe.py tests/sim/test_dsp_filename_ab_probe.py tests/sim/test_dlcp_ep0_eeprom_shadow_dump.py` -> `22 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_loop.py` -> `12 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_flipper_ir.py tests/sim/test_hardware_state_test.py` -> `28 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_main_gpsim_portability.py tests/sim/test_v31_patch_builders.py` -> `13 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_bake_preset_capture.py tests/sim/test_v31_diag_memread_usb_safe.py` -> `4 passed`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1049 tests collected`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
+- `.venv_ep0/bin/python scripts/build_v171_release.py` -> canonical `DLCP_Control_V1.71.hex` rebuilt with release rev bump `0x01 -> 0x02`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x37 -> 0x38`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v28_wire_delayed_switch_repros.py` -> `5 xfailed`
 - `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `6 tests collected` (5 existing + 1 V1.71/V3.2 Layer 5 Diagnostics-page test)
@@ -407,6 +410,7 @@ Top-level docs:
 - `docs/HARDWARE_LOOP.md` (real-hardware audio playback/capture workflow and firmware comparison matrix)
 - `docs/RECOVERY.md` (PICkit 5 readback recombination and full MAIN recovery image workflow)
 - `docs/ROBUSTNESS.md` (robustness findings, release policy, and implementation plan)
+- `docs/DLCP_LINK_V2_SPEC.md` (lean robust replacement for the legacy 3-byte CONTROL<->MAIN current-loop protocol)
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
@@ -492,6 +496,18 @@ Assemble V3.1 source:
 
 ```bash
 .venv_ep0/bin/python -c "from dlcp_fw.sim.v30_symbols import assemble_v30; from dlcp_fw.paths import V31_MAIN_ASM, V31_MAIN_HEX; assemble_v30(V31_MAIN_ASM, V31_MAIN_HEX)"
+```
+
+Build the canonical V3.2 release:
+
+```bash
+.venv_ep0/bin/python scripts/build_v32_release.py
+```
+
+Build the canonical V1.71 CONTROL release:
+
+```bash
+.venv_ep0/bin/python scripts/build_v171_release.py
 ```
 
 Combine stock V2.3 main export fragments:
@@ -585,11 +601,26 @@ scripts/flash_control_safe.sh --preflight-only
 scripts/flash_control_safe.sh
 ```
 
+## V3.2 Release Ceremony
+
+- Canonical MAIN release output is always `firmware/patched/releases/DLCP_Firmware_V3.2.hex`.
+- Each canonical `V3.2` build must increment the EEPROM revision byte in `src/dlcp_fw/asm/dlcp_main_v32.asm` at `eeprom_data[0x82]`; `scripts/build_v32_release.py` is the required path because it bumps the byte before assembling.
+- `scripts/dlcp_main_flash.py` and `scripts/dlcp_v32_release_flash.py` must read version + revision from both the selected device and the target hex before flashing. If the device is already at the same or newer firmware identity, emit a `WARNING` rather than silently downgrading.
+- When `--path` is omitted but the operator supplies `--left`, `--right`, or `--all-ch L|R`, the MAIN flasher should auto-pick the target only when exactly one connected app-mode MAIN reports a uniform matching route table (`all L` or `all R`). Any ambiguity must stay a hard error.
+
+## V1.71 Release Ceremony
+
+- Canonical CONTROL release output is always `firmware/patched/releases/DLCP_Control_V1.71.hex`.
+- Each canonical `V1.71` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v171.asm` at `control_release_metadata[11]`; `scripts/build_v171_release.py` is the required path because it bumps the byte before assembling.
+- `scripts/flash_control_safe.sh` now defaults to the canonical `V1.71` hex.
+- `src/dlcp_fw/flash/dlcp_control_flash.py` must read version + revision from the target hex and report them during preflight/live flash. The current CONTROL update relay does not expose a live version/revision probe, so device-versus-hex compare is not currently available there.
+
 ## Maintenance Rules
 
 - Do not add new hardcoded firmware paths; use `src/dlcp_fw/paths.py`.
 - Do not add new runtime output under repository root; use `artifacts/sim/current/`.
 - Keep execution entrypoints under `scripts/` and implementation in `src/dlcp_fw/`.
+- Keep canonical release names stable. For V3.2, rebuild `DLCP_Firmware_V3.2.hex`; do not create new release filenames for incremental revisions.
 - Keep docs and this file synchronized whenever paths or filenames change.
 
 ## Per-Commit Codex Review (Claude Code only -- codex agents: skip this section)
