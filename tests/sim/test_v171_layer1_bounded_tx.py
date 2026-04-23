@@ -60,6 +60,19 @@ V171_TX_SAT_COUNT_PHYS = 0x1AD       # physical address (BSR=1 << 8 | 0xAD); use
 
 TX_RING_RD = 0x096
 TX_RING_WR = 0x097
+FULL_SYNC_LO = 0x09F
+FULL_SYNC_HI = 0x0A0
+INTCON_ADDR = 0xFF2
+
+PROFILE1_HYPEX = {
+    0x020: 0x10,
+    0x021: 0x32,  # power
+    0x022: 0x33,  # vol+
+    0x023: 0x34,  # vol-
+    0x024: 0x36,  # input+
+    0x025: 0x37,  # input-
+    0x026: 0x35,  # mute
+}
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +330,26 @@ def _boot(hex_path: Path) -> "GpsimControlHarness":
     )
 
 
+def _force_tx_ring_two_slots_from_collision(h: "GpsimControlHarness") -> None:
+    # rd=0, wr=45 (0x2D) leaves exactly two free software-ring slots:
+    # byte1 commits -> wr=46, byte2 commits -> wr=47, byte3 saturates.
+    h._issue(f"reg(0x{TX_RING_RD:03X})=0x00", 5.0)
+    h._issue(f"reg(0x{TX_RING_WR:03X})=0x2D", 5.0)
+
+
+def _disable_interrupts(h: "GpsimControlHarness") -> None:
+    intcon = h.read_reg(INTCON_ADDR)
+    h._issue(f"reg(0x{INTCON_ADDR:03X})=0x{intcon & 0x3F:02X}", 5.0)
+
+
+def _stage_saturated_direct_send(h: "GpsimControlHarness") -> None:
+    h._issue(f"reg(0x{V171_TX_SAT_COUNT_PHYS:03x})=0x00", 5.0)
+    h._issue(f"reg(0x{FULL_SYNC_LO:03X})=0x55", 5.0)
+    h._issue(f"reg(0x{FULL_SYNC_HI:03X})=0x44", 5.0)
+    _force_tx_ring_two_slots_from_collision(h)
+    _disable_interrupts(h)
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer1_healthy_boot_keeps_saturation_count_zero(v171_hex: Path) -> None:
@@ -381,6 +414,109 @@ def test_v171_layer1_saturation_counter_clamps_at_ff(v171_hex: Path) -> None:
         assert readback_ff == 0xFF, (
             f"saturation counter at 0xFF must persist across sim ticks: "
             f"now 0x{readback_ff:02X}"
+        )
+    finally:
+        h.close()
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("helper_label", "abort_label", "payload_reg", "payload_value", "label"),
+    [
+        pytest.param(
+            "volume_frame_send",
+            "volume_frame_send_aborted",
+            0x0B9,
+            0x61,
+            "volume",
+            id="volume_helper",
+        ),
+        pytest.param(
+            "input_frame_send",
+            "input_frame_send_aborted",
+            0x0B8,
+            0x04,
+            "input",
+            id="input_helper",
+        ),
+        pytest.param(
+            "cmd1d_setting_frame_send",
+            "cmd1d_setting_frame_send_aborted",
+            0x0A7,
+            0x12,
+            "cmd1d",
+            id="cmd1d_helper",
+        ),
+    ],
+)
+def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
+    v171_hex: Path,
+    helper_label: str,
+    abort_label: str,
+    payload_reg: int,
+    payload_value: int,
+    label: str,
+) -> None:
+    """A saturated direct helper must branch to its abort label before
+    clearing the full-sync timer.
+
+    Rather than waiting for a foreground action to eventually call the
+    helper, this probes the helper directly under gpsim:
+    1. boot CONTROL to a stable DISPLAY-mode state,
+    2. park TX ring two slots from collision and disable interrupts,
+    3. jump PC to the helper entry and break on its `*_aborted` label.
+
+    That gives an exact behavioral check for the residual-risk sites:
+    the helper must commit exactly two bytes, bump the Layer-1
+    saturation counter once, and leave full_sync_lo/full_sync_hi at
+    the staged sentinels because the success-only `clrf` path was not
+    taken.
+    """
+    _require_gpsim()
+    h = _boot(v171_hex)
+    try:
+        h.warmup(25_000_000)
+        h.pause_heartbeat()
+        for _ in range(40):
+            h.step()
+        _stage_saturated_direct_send(h)
+        h._issue(f"reg(0x{payload_reg:03X})=0x{payload_value:02X}", 5.0)
+
+        from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
+
+        syms = load_gpasm_symbols_for_hex(v171_hex)
+        assert syms is not None, "expected gpasm symbols for direct helper probe"
+        helper_pc = syms[helper_label]
+        abort_pc = syms[abort_label]
+
+        h._issue(f"break e 0x{abort_pc:04X}", 5.0)
+        h._issue(f"pc=0x{helper_pc:04X}", 5.0)
+        run_out = h._issue("run", 10.0)
+
+        sat = _read_reg(h._issue, V171_TX_SAT_COUNT_PHYS)
+        fs_lo = h.read_reg(FULL_SYNC_LO)
+        fs_hi = h.read_reg(FULL_SYNC_HI)
+        tx_rd = h.read_reg(TX_RING_RD)
+        tx_wr = h.read_reg(TX_RING_WR)
+
+        assert "Hit a Breakpoint!" in run_out, (
+            f"{label} helper did not hit the abort breakpoint; output was:\n{run_out}"
+        )
+        assert f"(0x{abort_pc:x})" in run_out.lower(), (
+            f"{label} helper broke at the wrong PC; expected 0x{abort_pc:04X}, got:\n{run_out}"
+        )
+        assert sat == 0x01, (
+            f"{label} helper should bump Layer-1 exactly once on the third enqueue; "
+            f"got 0x{sat:02X}"
+        )
+        assert fs_lo == 0x55 and fs_hi == 0x44, (
+            f"{label} helper still cleared full-sync debounce after saturation; "
+            f"expected 0x55/0x44, got 0x{fs_lo:02X}/0x{fs_hi:02X}"
+        )
+        assert tx_rd == 0x00 and tx_wr == 0x2F, (
+            f"{label} helper should commit exactly two bytes before aborting; "
+            f"expected rd/wr 0x00/0x2F, got 0x{tx_rd:02X}/0x{tx_wr:02X}"
         )
     finally:
         h.close()

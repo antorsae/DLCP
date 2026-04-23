@@ -85,6 +85,8 @@ DSP_FAULT_BIT              equ  0x07
 ; scan write cycle.  0x0AB is the cleanest choice in the gap between
 ; ``cmd1d_setting_cache`` (0xA7) and ``rx_ring_staging`` (0xB7).
 bf08_fault_byte            equ  0x0AB   ; unreferenced in stock V1.6b
+; Countdown for the legacy-link parser frame-gap timeout.
+v171_rx_frame_gap_timeout  equ  0x0AC
 
 ; --- V1.71 WAITING-loop operator-recovery grace counter (2026-04-21) ---
 ; 16-bit saturating counter used by the WAITING-FOR-DLCP loops
@@ -112,6 +114,8 @@ bf08_fault_byte            equ  0x0AB   ; unreferenced in stock V1.6b
 ; cleared to 0 on entry to each WAITING loop.
 v171_waiting_grace_count_lo equ  0x0A8
 v171_waiting_grace_count_hi equ  0x0A9
+; Deferred RC5 decode latch (ISR -> foreground).
+v171_ir_decode_pending     equ  0x0AA
 
 ; Threshold = 4 in the high byte.  Once `grace_hi` reaches 4 (i.e.
 ; the lo byte has wrapped past 0xFF four times), the button gate
@@ -119,6 +123,8 @@ v171_waiting_grace_count_hi equ  0x0A9
 ; counter saturates at hi=4, lo=arbitrary -- the gate stays
 ; permanently armed for the rest of the WAITING session.
 V171_WAITING_GRACE_THRESHOLD_HI equ 0x04
+; Count-up timeout seed: with `infsnz`, 0xF8 expires after 8 empty-loop ticks.
+V171_RX_FRAME_GAP_RELOAD   equ  0xF8
 
 ; RC5 codes that V1.71 dispatches (documented here for cross-reference
 ; with the annotator and ir_dispatch edits).

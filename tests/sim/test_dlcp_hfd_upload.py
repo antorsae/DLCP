@@ -114,6 +114,7 @@ def test_cli_info_only_does_not_require_table(monkeypatch, capsys) -> None:
             active_config_name="ConfigA",
             active_config_raw=b"ConfigA",
             active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+            volume_state=None,
             warnings=(),
         ),
     )
@@ -158,6 +159,7 @@ def test_cli_expect_active_mismatch_raises(monkeypatch, tmp_path) -> None:
             active_config_name="",
             active_config_raw=b"",
             active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+            volume_state=None,
             warnings=(),
         ),
     )
@@ -216,6 +218,7 @@ def test_cli_upload_uses_sidecar_name_and_runs_verify(monkeypatch, tmp_path, cap
             active_config_name="",
             active_config_raw=b"",
             active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+            volume_state=None,
             warnings=(),
         ),
     )
@@ -285,6 +288,7 @@ def test_cli_forwards_explicit_path_to_ep0_helpers(monkeypatch, tmp_path) -> Non
             active_config_name="",
             active_config_raw=b"",
             active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+            volume_state=None,
             warnings=(),
         ),
     )

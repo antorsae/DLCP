@@ -26,6 +26,7 @@ def _snapshot(*labels: str) -> DeviceSnapshot:
             RouteEntry(channel=index + 1, value=0 if label == "L" else 1, label=label)
             for index, label in enumerate(labels)
         ),
+        volume_state=None,
         warnings=(),
     )
 
@@ -921,7 +922,7 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(hw, "_wait_for_standby_lcd_entry", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_wait_for_wake_two_phase", lambda **kwargs: {"ok": True})
-    monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_wait_for_post_wake_lcd_outcome", lambda **kwargs: {"status": "usable"})
     monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
     monkeypatch.setattr(hw.time, "sleep", lambda _: None)
 
@@ -1001,7 +1002,7 @@ def test_run_standby_wake_cycle_retries_wake_on_main_timeout(monkeypatch, tmp_pa
         return {"ok": True}
 
     monkeypatch.setattr(hw, "_wait_for_wake_two_phase", fake_wait_for_wake_two_phase)
-    monkeypatch.setattr(hw, "_wait_for_lcd_usable_expected_preset", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(hw, "_wait_for_post_wake_lcd_outcome", lambda **kwargs: {"status": "usable"})
     monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
     monkeypatch.setattr(hw.time, "sleep", lambda _: None)
 
@@ -1033,6 +1034,123 @@ def test_run_standby_wake_cycle_retries_wake_on_main_timeout(monkeypatch, tmp_pa
     assert payload["wake_wait_errors"][0]["code"] == hw.WAKE_FAILURE_FUNCTIONAL_TIMEOUT
     assert payload["after"]["left"]["active_preset"] == "A"
     assert payload["after"]["right"]["active_preset"] == "A"
+
+
+def test_wait_for_post_wake_lcd_outcome_accepts_usable_screen(monkeypatch, tmp_path) -> None:
+    summaries = iter(
+        [
+            {
+                "consensus": {"line1": "Volume", "line2": "Active: B"},
+                "summary_path": str(tmp_path / "usable.json"),
+                "captures": [],
+            }
+        ]
+    )
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw, "_probe_lcd", lambda **kwargs: next(summaries))
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    args = SimpleNamespace(
+        vid=0x04D8,
+        pid=0xFF89,
+        camera_selector="cam",
+        vendor=1133,
+        product=2194,
+        address=5,
+        zoom=500,
+        focus=140,
+        exposure=156,
+        gain=80,
+        sharpness=200,
+        captures=1,
+        warmup_s=0.0,
+        skip_configure=True,
+        lcd_timeout_s=2.0,
+        lcd_poll_s=0.0,
+        lcd_probe_captures=1,
+        main_poll_s=0.0,
+    )
+
+    payload = hw._wait_for_post_wake_lcd_outcome(
+        expected_preset="B",
+        args=args,
+        output_root=tmp_path,
+        wake_main={"samples": [{"phase": "B", "functional_ready": True}]},
+    )
+
+    assert payload["status"] == "usable"
+    assert payload["matched_at_s"] == pytest.approx(0.1)
+
+
+def test_wait_for_post_wake_lcd_outcome_raises_waiting_while_mains_healthy(monkeypatch, tmp_path) -> None:
+    summary = {
+        "consensus": {"line1": "WAITING FOR", "line2": "DLCP"},
+        "summary_path": str(tmp_path / "waiting.json"),
+        "captures": [
+            {
+                "observations": [
+                    {"text": "WAITING FOR DLCP"},
+                ]
+            }
+        ],
+    }
+    ticks = {"value": -0.1}
+
+    def fake_monotonic() -> float:
+        ticks["value"] += 0.1
+        return ticks["value"]
+
+    monkeypatch.setattr(hw, "_probe_lcd", lambda **kwargs: summary)
+    monkeypatch.setattr(
+        hw,
+        "_wait_for_main_pair_state",
+        lambda **kwargs: {
+            "final": {
+                "left": {"role": "LEFT", "active_preset": "A"},
+                "right": {"role": "RIGHT", "active_preset": "A"},
+            }
+        },
+    )
+    monkeypatch.setattr(hw.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    args = SimpleNamespace(
+        vid=0x04D8,
+        pid=0xFF89,
+        camera_selector="cam",
+        vendor=1133,
+        product=2194,
+        address=5,
+        zoom=500,
+        focus=140,
+        exposure=156,
+        gain=80,
+        sharpness=200,
+        captures=1,
+        warmup_s=0.0,
+        skip_configure=True,
+        lcd_timeout_s=2.0,
+        lcd_poll_s=0.0,
+        lcd_probe_captures=1,
+        main_poll_s=0.0,
+    )
+
+    with pytest.raises(hw.WakeValidationError) as exc:
+        hw._wait_for_post_wake_lcd_outcome(
+            expected_preset="A",
+            args=args,
+            output_root=tmp_path,
+            wake_main={"samples": [{"phase": "B", "functional_ready": True}]},
+        )
+
+    assert exc.value.code == hw.WAKE_FAILURE_CONTROL_WAITING_WHILE_MAINS_HEALTHY
+    assert "WAITING FOR DLCP" in str(exc.value)
 
 
 def test_wait_for_standby_lcd_entry_allows_guarded_blank_fallback(monkeypatch, tmp_path) -> None:

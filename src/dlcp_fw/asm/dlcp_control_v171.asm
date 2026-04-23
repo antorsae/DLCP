@@ -692,6 +692,7 @@ flow_ccs_02EE_0300:                                                  ; address: 
 
         bsf     (Common_RAM + 9), 0x2, A                    ; reg: 0x009
         return  0x0
+
 lcd_str_firmware_v:                                                  ; address: 0x000304  (tblptr anchor)
         setf    (Common_RAM + 70), B                        ; reg: 0x046
         negf    0x72, B                                     ; reg: 0x072
@@ -830,8 +831,22 @@ flow_app_cold_init_03F6:                                                  ; addr
         movlw   0x30
         subwf   0x99, W, B                                  ; reg: 0x099
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
-        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
+        goto    flow_app_cold_init_040C                                   ; dest: 0x00040c
         clrf    0x99, B                                     ; reg: 0x099
+
+flow_app_cold_init_040C:                                                  ; address: 0x00040c
+
+        ; V1.71 hardening: consume RCREG immediately, but roll back the
+        ; software write pointer if this byte would overwrite unread data.
+        movf    0x99, W, B                                  ; reg: 0x099
+        cpfseq  0x98, B                                     ; reg: 0x098
+        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
+        decf    0x99, F, B                                  ; reg: 0x099
+        movlw   0xff
+        cpfseq  0x99, B                                     ; reg: 0x099
+        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
+        movlw   0x2f
+        movwf   0x99, B                                     ; reg: 0x099
 
 flow_app_cold_init_0414:                                                  ; address: 0x000414
 
@@ -843,10 +858,7 @@ flow_app_cold_init_0414:                                                  ; addr
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         btfss   control_flags, 0x0, A                   ; reg: 0x01f
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
-        rcall   ir_rc5_decode                                ; dest: 0x00021e
-        movwf   ir_decoded_cmd, A                        ; reg: 0x01d
-        movff   (Common_RAM + 13), ir_decoded_addr        ; reg1: 0x00d, reg2: 0x01e
-        bcf     control_flags, 0x0, A                   ; reg: 0x01f
+        setf    v171_ir_decode_pending, BANKED            ; deferred foreground service
 
 flow_app_cold_init_0434:                                                  ; address: 0x000434
 
@@ -2215,12 +2227,18 @@ serial_tx_routed_frame:                                               ; address:
         addwf   (Common_RAM + 51), W, A                     ; reg: 0x033
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      serial_tx_routed_frame_aborted
         movff   (Common_RAM + 52), tx_data_staging        ; reg1: 0x034, reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      serial_tx_routed_frame_aborted
         movff   (Common_RAM + 53), tx_data_staging        ; reg1: 0x035, reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      serial_tx_routed_frame_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
+        return  0x0
+
+serial_tx_routed_frame_aborted:
         return  0x0
 
 
@@ -2333,12 +2351,19 @@ poll_frame_send:                                               ; address: 0x000b
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      poll_frame_send_aborted
         movlw   0x04                                        ; CMD status_poll
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      poll_frame_send_aborted
         clrf    tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      poll_frame_send_aborted
         return  0x0
+
+poll_frame_send_aborted:
+        return  0x0
+
         incf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x17
@@ -2434,13 +2459,19 @@ input_frame_send:                                               ; address: 0x000
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      input_frame_send_aborted
         movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      input_frame_send_aborted
         movff   0x0b8, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      input_frame_send_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
+        return  0x0
+
+input_frame_send_aborted:
         return  0x0
 
 
@@ -2457,13 +2488,19 @@ volume_frame_send:                                               ; address: 0x00
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      volume_frame_send_aborted
         movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      volume_frame_send_aborted
         movff   0x0b9, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      volume_frame_send_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
+        return  0x0
+
+volume_frame_send_aborted:
         return  0x0
 
 
@@ -2483,15 +2520,74 @@ cmd1d_setting_frame_send:                                               ; addres
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      cmd1d_setting_frame_send_aborted
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      cmd1d_setting_frame_send_aborted
         movff   0x0a7, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
+        bc      cmd1d_setting_frame_send_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
         return  0x0
 
+cmd1d_setting_frame_send_aborted:
+        return  0x0
+
+v171_service_pending_ir_decode:
+        ; Foreground completion of the deferred RC5 decode.  The ISR only
+        ; latches `v171_ir_decode_pending`; the expensive decoder runs here.
+        movf    v171_ir_decode_pending, F, BANKED
+        btfsc   STATUS, Z, A
+        return  0x0
+        btfss   control_flags, IR_ARMED, A
+        goto    v171_service_pending_ir_decode_drop
+        clrf    v171_ir_decode_pending, BANKED
+        call    ir_rc5_decode, 0x0                         ; rcall ir_rc5_decode
+        movwf   ir_decoded_cmd, A
+        movff   (Common_RAM + 13), ir_decoded_addr
+        bcf     control_flags, IR_ARMED, A
+        return  0x0
+
+v171_service_pending_ir_decode_drop:
+        clrf    v171_ir_decode_pending, BANKED
+        return  0x0
+
+v171_service_rx_frame_gap:
+        ; Foreground parser-stall guard.  Keep the parser front-end untouched
+        ; and watch for a non-empty frame state that stops receiving bytes.
+        movlb   0x00
+        movf    rx_frame_position, F, B
+        btfsc   STATUS, Z, A
+        bra     v171_service_rx_frame_gap_clear
+        movf    rx_ring_wr, W, B
+        cpfseq  rx_ring_rd, B
+        bra     v171_service_rx_frame_gap_reload
+        movf    v171_rx_frame_gap_timeout, F, BANKED
+        bnz     v171_service_rx_frame_gap_count
+        movlw   V171_RX_FRAME_GAP_RELOAD
+        movwf   v171_rx_frame_gap_timeout, BANKED
+        return  0x0
+
+v171_service_rx_frame_gap_count:
+        infsnz  v171_rx_frame_gap_timeout, F, BANKED
+        bra     v171_service_rx_frame_gap_expired
+        return  0x0
+
+v171_service_rx_frame_gap_reload:
+        movlw   V171_RX_FRAME_GAP_RELOAD
+        movwf   v171_rx_frame_gap_timeout, BANKED
+        return  0x0
+
+v171_service_rx_frame_gap_clear:
+        clrf    v171_rx_frame_gap_timeout, BANKED
+        return  0x0
+
+v171_service_rx_frame_gap_expired:
+        clrf    rx_frame_position, BANKED
+        clrf    v171_rx_frame_gap_timeout, BANKED
+        return  0x0
 
 ; ===========================================================================
 ; mute_frame_send @ 0x000C7C — mute_frame_send
@@ -2559,6 +2655,10 @@ flow_standby_wake_broadcast_0CAA:                                               
 flow_standby_wake_broadcast_0CAE:                                                  ; address: 0x000cae
 
         rcall   serial_tx_routed_frame                                ; dest: 0x000b16
+        bc      standby_wake_broadcast_aborted
+        return  0x0
+
+standby_wake_broadcast_aborted:
         return  0x0
 
 
@@ -2587,7 +2687,10 @@ display_loop_iteration:                                               ; address:
 flow_display_loop_iteration_0CB4:                                                  ; address: 0x000cb4
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
+        call    v171_service_pending_ir_decode, 0x0                 ; deferred RC5 decode
+        movlb   0x00
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
+        call    v171_service_rx_frame_gap, 0x0                     ; legacy-link parser stall guard
         movf    0x9e, W, B                                  ; reg: 0x09e
         xorlw   0xea
         movlw   0x60
@@ -3033,6 +3136,7 @@ v171_ir_standby_case:
         ; and set event_exit.  Unlike the RC5 power-toggle (stock 0x32)
         ; this endpoint forces standby regardless of current state.
         rcall   v171_send_standby_cmd_frame
+        bc      v171_ir_endpoint_done
         bsf     control_flags, 0x3, A                    ; event_exit
         bra     v171_ir_endpoint_done
 
@@ -3040,6 +3144,7 @@ v171_ir_wake_case:
         ; V1.64b explicit wake (RC5 0x3B): emit [B0, 0x03, 0x01] and
         ; set event_exit.  Forces wake regardless of current state.
         rcall   v171_send_wake_cmd_frame
+        bc      v171_ir_endpoint_done
         bsf     control_flags, 0x3, A                    ; event_exit
 
 v171_ir_endpoint_done:
@@ -3053,11 +3158,17 @@ v171_send_standby_cmd_frame:
         movlw   0xB0
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_standby_cmd_frame_aborted
         movlw   0x03
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_standby_cmd_frame_aborted
         clrf    tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_standby_cmd_frame_aborted
+        return  0x0
+
+v171_send_standby_cmd_frame_aborted:
         return  0x0
 
 v171_send_wake_cmd_frame:
@@ -3066,12 +3177,18 @@ v171_send_wake_cmd_frame:
         movlw   0xB0
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_wake_cmd_frame_aborted
         movlw   0x03
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_wake_cmd_frame_aborted
         movlw   0x01
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_wake_cmd_frame_aborted
+        return  0x0
+
+v171_send_wake_cmd_frame_aborted:
         return  0x0
 
 v171_send_preset_frame_txonly:
@@ -3085,14 +3202,20 @@ v171_send_preset_frame_txonly:
         movlw   0xB0                                     ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_preset_frame_txonly_aborted
         movlw   0x20                                     ; CMD preset_select
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_preset_frame_txonly_aborted
         clrf    WREG, A
         btfsc   control_flags, PRESET_BIT, A
         movlw   0x01
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
+        bc      v171_send_preset_frame_txonly_aborted
+        return  0x0
+
+v171_send_preset_frame_txonly_aborted:
         return  0x0
 
 v171_send_preset_frame_and_persist:
@@ -3104,12 +3227,16 @@ v171_send_preset_frame_and_persist:
         ; broadcasts must use v171_send_preset_frame_txonly instead.
         ; ---------------------------------------------------------------
         rcall   v171_send_preset_frame_txonly
+        bc      v171_send_preset_frame_and_persist_aborted
         movlw   EEPROM_PRESET_STATE_ADDR                 ; 0x74
         movwf   EEADR, A
         clrf    WREG, A
         btfsc   control_flags, PRESET_BIT, A
         movlw   0x01
         call    eeprom_write_byte, 0x0
+        return  0x0
+
+v171_send_preset_frame_and_persist_aborted:
         return  0x0
 
 v171_preset_screen:
@@ -4883,6 +5010,7 @@ v171_reconnect_past_grace_done:
         clrf    rx_ring_rd, BANKED
         clrf    rx_ring_wr, BANKED
         clrf    rx_frame_position, BANKED
+        clrf    v171_rx_frame_gap_timeout, BANKED
         clrf    rx_parsed_cmd, A
         clrf    rx_parsed_data, A
         bra     v171_reconnect_wait_body

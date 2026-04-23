@@ -65,9 +65,12 @@ ACTIVE_FLAGS_ADDR = 0x05E
 ACTIVE_PRESET_MASK = 0x04
 ACTIVE_REAPPLY_MASK = 0x80
 EVENT_DIRTY_SERVICE_MASK = 0x01
+EVENT_VOLUME_DIRTY_MASK = 0x08
 EVENT_ROUTE_APPLY_MASK = 0x10
 EEPROM_ROUTE_DIRTY_MASK = 0x02
 FILENAME_DIRTY_MASK = 0x20
+LOGICAL_VOLUME_RAM_BASE = 0x066
+COMPUTED_VOLUME_RAM_BASE = 0x06E
 PRESET_FLASH_BASES = {
     "A": PRESET_A_FLASH_BASE,
 }
@@ -130,6 +133,20 @@ class RouteEntry:
 
 
 @dataclasses.dataclass(frozen=True)
+class VolumeRuntimeInfo:
+    logical_raw: int
+    computed_raw: int
+    logical_low: int
+    computed_low: int
+    status_byte: int
+    event_flags: int
+
+    @property
+    def volume_dirty(self) -> bool:
+        return bool(self.event_flags & EVENT_VOLUME_DIRTY_MASK)
+
+
+@dataclasses.dataclass(frozen=True)
 class DeviceSnapshot:
     mode: str
     product_string: str
@@ -140,6 +157,7 @@ class DeviceSnapshot:
     active_config_name: Optional[str]
     active_config_raw: Optional[bytes]
     active_routes: Optional[tuple[RouteEntry, ...]]
+    volume_state: Optional[VolumeRuntimeInfo]
     warnings: tuple[str, ...]
 
 
@@ -201,6 +219,15 @@ def _format_eeprom_version_short(version: Optional[EepromVersionInfo]) -> str:
     if version is None:
         return "<unknown>"
     return f"{version.major}.{version.minor} rev 0x{version.revision:02X}"
+
+
+def _signed_int8(value: int) -> int:
+    value &= 0xFF
+    return value - 0x100 if value & 0x80 else value
+
+
+def _format_volume_db_from_low_byte(low_byte: int) -> str:
+    return f"{float(_signed_int8(low_byte)):.1f} dB"
 
 
 def _compare_firmware_identities(
@@ -948,6 +975,28 @@ def _probe_ep0_app_ram(
     return decode_filename_slot(filename_raw), decode_route_entries(route_raw)
 
 
+def _probe_ep0_volume_state(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None = None,
+) -> VolumeRuntimeInfo:
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    logical_raw = _read_ep0_window(ep0, start=LOGICAL_VOLUME_RAM_BASE, size=4)
+    computed_raw = _read_ep0_window(ep0, start=COMPUTED_VOLUME_RAM_BASE, size=4)
+    event_flags = _ep0_read_byte(ep0, addr=EVENT_FLAGS_ADDR)
+    logical_low = logical_raw[0] & 0xFF
+    computed_low = computed_raw[0] & 0xFF
+    return VolumeRuntimeInfo(
+        logical_raw=int.from_bytes(logical_raw, byteorder="little", signed=True),
+        computed_raw=int.from_bytes(computed_raw, byteorder="little", signed=True),
+        logical_low=logical_low,
+        computed_low=computed_low,
+        status_byte=(computed_low + 0x60) & 0xFF,
+        event_flags=event_flags,
+    )
+
+
 def _probe_device_eeprom_version(
     *,
     info: HidDeviceInfo,
@@ -984,6 +1033,7 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
     active_config_name: Optional[str] = None
     active_config_raw: Optional[bytes] = None
     active_routes: Optional[tuple[RouteEntry, ...]] = None
+    volume_state: Optional[VolumeRuntimeInfo] = None
 
     if info.path is not None:
         dev = _open_hid(info.path)
@@ -1012,6 +1062,14 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
             active_config_raw = active_config_name.encode("ascii", errors="ignore")
         except Exception as exc:
             warnings.append(f"EP0 RAM probe failed: {exc}")
+        try:
+            volume_state = _probe_ep0_volume_state(
+                vid=vid,
+                pid=pid,
+                path=info.path,
+            )
+        except Exception as exc:
+            warnings.append(f"EP0 volume probe failed: {exc}")
 
     return DeviceSnapshot(
         mode=mode,
@@ -1023,6 +1081,7 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
         active_config_name=active_config_name,
         active_config_raw=active_config_raw,
         active_routes=active_routes,
+        volume_state=volume_state,
         warnings=tuple(warnings),
     )
 
@@ -1059,6 +1118,24 @@ def _print_device_snapshot(title: str, snapshot: DeviceSnapshot) -> None:
         print("  channel mappings: unavailable")
     else:
         print(f"  channel mappings: {format_route_entries(snapshot.active_routes)}")
+    if snapshot.volume_state is None:
+        print("  computed volume: unavailable")
+        print("  logical volume: unavailable")
+    else:
+        print(
+            "  computed volume:"
+            f" {_format_volume_db_from_low_byte(snapshot.volume_state.computed_low)}"
+            f" (low=0x{snapshot.volume_state.computed_low:02X},"
+            f" raw=0x{snapshot.volume_state.computed_raw & 0xFFFFFFFF:08X},"
+            f" BF/07=0x{snapshot.volume_state.status_byte:02X},"
+            f" dirty={'yes' if snapshot.volume_state.volume_dirty else 'no'})"
+        )
+        print(
+            "  logical volume:"
+            f" {_format_volume_db_from_low_byte(snapshot.volume_state.logical_low)}"
+            f" (low=0x{snapshot.volume_state.logical_low:02X},"
+            f" raw=0x{snapshot.volume_state.logical_raw & 0xFFFFFFFF:08X})"
+        )
     for warning in snapshot.warnings:
         print(f"  warning: {warning}")
 

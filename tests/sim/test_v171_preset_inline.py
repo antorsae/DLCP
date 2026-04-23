@@ -59,12 +59,17 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _new_harness(hex_path: Path) -> GpsimControlHarness:
+def _new_harness(
+    hex_path: Path,
+    *,
+    chunk_cycles: int = 600_000,
+    hold_cycles: int = 300_000,
+) -> GpsimControlHarness:
     return GpsimControlHarness(
         hex_path,
         fast_boot=False,
-        chunk_cycles=600_000,
-        hold_cycles=300_000,
+        chunk_cycles=chunk_cycles,
+        hold_cycles=hold_cycles,
         heartbeat_rx_mode="full",
     )
 
@@ -160,23 +165,32 @@ def test_v171_ir_0x38_sets_preset_a_and_emits_frame(v171_hex: Path) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x39_twice_emits_once(v171_hex: Path) -> None:
-    """Second RC5 0x39 when already in B is a no-op — no duplicate frame."""
+    """Second RC5 0x39 when already in B is a no-op.
+
+    Use a tighter chunk size here so the assertion isolates an immediate
+    duplicate IR emit instead of catching the independent Layer-2 periodic
+    preset broadcast that can legitimately arrive later in a coarse 600k-
+    cycle step window.
+    """
     _require_gpsim()
-    h = _new_harness(v171_hex)
+    h = _new_harness(v171_hex, chunk_cycles=10_000, hold_cycles=5_000)
     try:
         h.warmup(25_000_000)
         _set_preset_bit(h, False)
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x39)
-        for _ in range(24):
+        for _ in range(200):
             h.step()
         before_second = len(h.tx_frames())
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x39)
-        for _ in range(24):
+        for _ in range(50):
             h.step()
 
         tx_after = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before_second:]]
         assert _preset_frame(0x01) not in tx_after, (
             f"spurious [B0, 20, 01] on repeat IR 0x39: {tx_after}"
+        )
+        assert h.read_reg(CONTROL_FLAGS_ADDR) & (1 << PRESET_BIT), (
+            "PRESET_BIT should remain set after repeat IR 0x39"
         )
     finally:
         h.close()
@@ -185,23 +199,29 @@ def test_v171_ir_0x39_twice_emits_once(v171_hex: Path) -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x38_twice_emits_once(v171_hex: Path) -> None:
-    """Second RC5 0x38 when already in A is a no-op — no duplicate frame."""
+    """Second RC5 0x38 when already in A is a no-op.
+
+    Same tightened window rationale as the repeat-0x39 test above.
+    """
     _require_gpsim()
-    h = _new_harness(v171_hex)
+    h = _new_harness(v171_hex, chunk_cycles=10_000, hold_cycles=5_000)
     try:
         h.warmup(25_000_000)
         _set_preset_bit(h, True)
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x38)
-        for _ in range(24):
+        for _ in range(200):
             h.step()
         before_second = len(h.tx_frames())
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x38)
-        for _ in range(24):
+        for _ in range(50):
             h.step()
 
         tx_after = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before_second:]]
         assert _preset_frame(0x00) not in tx_after, (
             f"spurious [B0, 20, 00] on repeat IR 0x38: {tx_after}"
+        )
+        assert not (h.read_reg(CONTROL_FLAGS_ADDR) & (1 << PRESET_BIT)), (
+            "PRESET_BIT should remain clear after repeat IR 0x38"
         )
     finally:
         h.close()

@@ -32,6 +32,7 @@ def _fake_snapshot() -> DeviceSnapshot:
             RouteEntry(channel=1, value=0, label="L"),
             RouteEntry(channel=2, value=0, label="L"),
         ),
+        volume_state=None,
         warnings=(),
     )
 

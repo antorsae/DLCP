@@ -145,6 +145,7 @@ def test_main_capture_prints_banner_and_selected_path(monkeypatch, tmp_path, cap
         active_config_name="ConfigA",
         active_config_raw=b"ConfigA",
         active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+        volume_state=None,
         warnings=(),
     )
     result = CaptureResult(

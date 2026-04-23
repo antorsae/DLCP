@@ -39,7 +39,7 @@ from typing import List, Tuple
 
 import pytest
 
-from dlcp_fw.paths import V171_CONTROL_ASM
+from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +49,15 @@ from dlcp_fw.paths import V171_CONTROL_ASM
 
 def _read_v171_source() -> str:
     return V171_CONTROL_ASM.read_text(encoding="utf-8")
+
+
+def _read_v171_ram_inc() -> str:
+    return V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+
+
+def _equ_address(text: str, name: str) -> int | None:
+    m = re.search(rf"^\s*{re.escape(name)}\s+equ\s+(0x[0-9A-Fa-f]+)\s*$", text, re.MULTILINE)
+    return int(m.group(1), 16) if m else None
 
 
 def _enumerate_tx_enqueue_call_sites(text: str) -> List[Tuple[int, str]]:
@@ -125,6 +134,69 @@ def _categorize_call_sites(text: str) -> Tuple[List[Tuple[int, str]], List[Tuple
     return checked, unchecked
 
 
+def _label_lineno_span(text: str, start_label: str, end_label: str) -> tuple[int, int]:
+    start_idx = text.find(f"{start_label}:")
+    assert start_idx >= 0, f"{start_label} label missing"
+    end_idx = text.find(f"{end_label}:", start_idx + 1)
+    assert end_idx > start_idx, f"could not delimit {start_label}..{end_label}"
+    start_line = text[:start_idx].count("\n") + 1
+    end_line = text[:end_idx].count("\n") + 1
+    return start_line, end_line
+
+
+def _label_block(text: str, start_label: str, end_label: str) -> str:
+    start = text.find(f"{start_label}:")
+    assert start >= 0, f"{start_label} label missing"
+    end = text.find(f"{end_label}:", start + 1)
+    assert end > start, f"could not delimit {start_label}..{end_label}"
+    return text[start:end]
+
+
+def _label_base_lineno(text: str, label: str) -> int:
+    start = text.find(f"{label}:")
+    assert start >= 0, f"{label} label missing"
+    return text[:start].count("\n") + 1
+
+
+def _assert_immediate_branch_after_calls(
+    *,
+    text: str,
+    start_label: str,
+    end_label: str,
+    abort_label: str,
+    expected_count: int,
+    call_pattern: str = r"\b(call|rcall)\s+tx_byte_enqueue\b",
+) -> None:
+    body = _label_block(text, start_label, end_label)
+    helper_lines = body.splitlines()
+    base_lineno = _label_base_lineno(text, start_label)
+    full_lines = text.splitlines()
+    call_indices = [
+        i for i, line in enumerate(helper_lines)
+        if re.search(call_pattern, line)
+    ]
+    assert len(call_indices) == expected_count, (
+        f"{start_label} should issue exactly {expected_count} checked enqueue call(s); "
+        f"found {len(call_indices)}"
+    )
+    for body_idx in call_indices:
+        src_idx = base_lineno - 1 + body_idx
+        nxt = _next_instruction_lines(full_lines, src_idx, max_lookahead=1)
+        assert nxt, f"{start_label} call at line {src_idx + 1} has no following instruction"
+        nxt_line_no, nxt_raw = nxt[0]
+        assert re.search(
+            rf"^\s*bc\s+{re.escape(abort_label)}\b",
+            nxt_raw,
+            re.IGNORECASE,
+        ), (
+            f"{start_label} call at line {src_idx + 1} is not immediately followed by "
+            f"`bc {abort_label}`; next instruction at line {nxt_line_no} was {nxt_raw!r}"
+        )
+    assert f"{abort_label}:" in body, (
+        f"{start_label} missing abort label {abort_label}:"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hang class 1: TX enqueue failure propagation (codex top ROI)
 # ---------------------------------------------------------------------------
@@ -157,6 +229,21 @@ def test_v171_serial_tx_routed_frame_propagates_enqueue_failure() -> None:
     text = _read_v171_source()
     checked, unchecked = _categorize_call_sites(text)
     assert checked, "no checked tx_byte_enqueue callers found at all -- did the diag-query helper get removed?"
+
+    # The parser's single-byte 0xFE echo path is intentionally best-effort:
+    # it is not a multi-byte frame helper and carries no success-side state
+    # mutation beyond the attempted echo itself.  The audit here is about the
+    # residual multi-byte routed-frame risk.
+    parser_echo_lo, parser_echo_hi = _label_lineno_span(
+        text,
+        "flow_rx_parser_entry_0478",
+        "flow_rx_parser_entry_048A",
+    )
+    unchecked = [
+        (n, line)
+        for n, line in unchecked
+        if not (parser_echo_lo <= n < parser_echo_hi)
+    ]
 
     if unchecked:
         # Format the unchecked list for the xfail message so the
@@ -247,6 +334,191 @@ def test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern()
     # Abort label must exist as a real return target.
     assert "v171_diag_send_query_aborted:" in text, (
         "abort label missing -- the bc checks would land on a non-existent label"
+    )
+
+
+def test_v171_ram_inc_defines_ir_defer_and_parser_gap_slots() -> None:
+    """The first-pass hardening plan uses the remaining 0x0AA / 0x0AC gap
+    for the new IR-defer latch and parser frame-gap timeout byte.
+
+    Pin the slots here so the asm and tests move in lockstep and we do
+    not silently collide with the V1.71 scratch/cache layout.
+    """
+    text = _read_v171_ram_inc()
+    assert _equ_address(text, "v171_ir_decode_pending") == 0x0AA, (
+        "v171_ir_decode_pending should live at 0x0AA"
+    )
+    assert _equ_address(text, "v171_rx_frame_gap_timeout") == 0x0AC, (
+        "v171_rx_frame_gap_timeout should live at 0x0AC"
+    )
+
+
+def test_v171_new_bank0_state_cells_are_not_accessed_via_access_bank() -> None:
+    """0x0AA / 0x0AC live in bank-0 GPR space, not the PIC18 access bank.
+
+    Using `, A` on these symbols silently hits the wrong physical window
+    (high access-bank / SFR space) and can destabilize unrelated runtime
+    state while the structural tests still pass.  Pin the fix here:
+    every operational access to the new cells must be BANKED.
+    """
+    text = _read_v171_source()
+    offenders: list[tuple[int, str]] = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        code = re.sub(r";.*$", "", raw)
+        if "v171_ir_decode_pending" not in code and "v171_rx_frame_gap_timeout" not in code:
+            continue
+        if re.search(r"\b(v171_ir_decode_pending|v171_rx_frame_gap_timeout)\b.*,\s*A\b", code):
+            offenders.append((lineno, raw.rstrip()))
+
+    assert not offenders, (
+        "new bank-0 hardening cells must not use access-bank addressing; "
+        "offending site(s):\n"
+        + "\n".join(f"  line {lineno}: {raw}" for lineno, raw in offenders)
+    )
+    for name in ("v171_ir_decode_pending", "v171_rx_frame_gap_timeout"):
+        assert re.search(rf"\b{name}\b.*\bBANKED\b", text), (
+            f"{name} should be accessed via explicit BANKED operands"
+        )
+
+
+def test_v171_serial_tx_routed_frame_checks_each_enqueue_and_skips_sync_reset_on_abort() -> None:
+    """Wake/reconnect-critical routed traffic must abort on the first
+    dropped byte and only debounce full-sync on success.
+
+    This is the narrow pass-required version of the broader unchecked-
+    caller audit above.  The initial hardening pass only requires the
+    routed-frame choke-point to be fixed; the repo-wide audit can stay
+    xfail until the rest of the callers are cleaned up.
+    """
+    text = _read_v171_source()
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="serial_tx_routed_frame",
+        end_label="full_sync_burst",
+        abort_label="serial_tx_routed_frame_aborted",
+        expected_count=3,
+    )
+    body = _label_block(text, "serial_tx_routed_frame", "full_sync_burst")
+    assert "clrf    0x9f" in body and "clrf    0xa0" in body, (
+        "serial_tx_routed_frame must still debounce full_sync_lo/full_sync_hi on success"
+    )
+    assert re.search(
+        r"clrf\s+0x9f.*\n.*clrf\s+0xa0.*\n.*return\s+0x0.*\nserial_tx_routed_frame_aborted:\n.*return\s+0x0",
+        body,
+        re.DOTALL,
+    ), (
+        "serial_tx_routed_frame should return on the success path before the "
+        "abort label so a `bc serial_tx_routed_frame_aborted` branch skips the "
+        "full_sync reset entirely"
+    )
+
+
+def test_v171_poll_frame_send_checks_each_enqueue_and_aborts_early() -> None:
+    text = _read_v171_source()
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="poll_frame_send",
+        end_label="input_frame_send",
+        abort_label="poll_frame_send_aborted",
+        expected_count=3,
+    )
+
+
+def test_v171_input_volume_and_cmd1d_helpers_check_each_enqueue() -> None:
+    text = _read_v171_source()
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="input_frame_send",
+        end_label="volume_frame_send",
+        abort_label="input_frame_send_aborted",
+        expected_count=3,
+    )
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="volume_frame_send",
+        end_label="cmd1d_setting_frame_send",
+        abort_label="volume_frame_send_aborted",
+        expected_count=3,
+    )
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="cmd1d_setting_frame_send",
+        end_label="v171_service_pending_ir_decode",
+        abort_label="cmd1d_setting_frame_send_aborted",
+        expected_count=3,
+    )
+
+
+def test_v171_explicit_ir_standby_and_wake_helpers_check_each_enqueue() -> None:
+    text = _read_v171_source()
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="v171_send_standby_cmd_frame",
+        end_label="v171_send_wake_cmd_frame",
+        abort_label="v171_send_standby_cmd_frame_aborted",
+        expected_count=3,
+    )
+    _assert_immediate_branch_after_calls(
+        text=text,
+        start_label="v171_send_wake_cmd_frame",
+        end_label="v171_send_preset_frame_txonly",
+        abort_label="v171_send_wake_cmd_frame_aborted",
+        expected_count=3,
+    )
+
+
+def test_v171_preset_persist_skips_eeprom_write_after_tx_abort() -> None:
+    text = _read_v171_source()
+    body = _label_block(text, "v171_send_preset_frame_and_persist", "v171_preset_screen")
+    assert re.search(r"rcall\s+v171_send_preset_frame_txonly", body), (
+        "v171_send_preset_frame_and_persist must still send the tx-only frame first"
+    )
+    assert re.search(
+        r"rcall\s+v171_send_preset_frame_txonly[^\n]*\n\s+bc\s+v171_send_preset_frame_and_persist_aborted\b",
+        body,
+        re.IGNORECASE,
+    ), (
+        "v171_send_preset_frame_and_persist must branch to an abort label when "
+        "the tx-only helper returns C=1"
+    )
+    assert "call    eeprom_write_byte" in body, (
+        "EEPROM persistence call missing from v171_send_preset_frame_and_persist"
+    )
+    assert "v171_send_preset_frame_and_persist_aborted:" in body, (
+        "missing abort label in v171_send_preset_frame_and_persist"
+    )
+
+
+def test_v171_ir_decode_is_deferred_out_of_isr() -> None:
+    """The expensive RC5 bit-bang decoder must no longer run inside the
+    ISR critical section.
+
+    First-pass shape: the ISR sets a pending byte, returns quickly, and
+    a foreground helper owns the actual `ir_rc5_decode` call.
+    """
+    text = _read_v171_source()
+    isr_block = _label_block(text, "isr_entry", "rx_parser_entry")
+    assert "rcall   ir_rc5_decode" not in isr_block, (
+        "ISR should not call ir_rc5_decode directly once RC5 is deferred"
+    )
+    assert re.search(r"setf\s+v171_ir_decode_pending\b", isr_block), (
+        "ISR should latch v171_ir_decode_pending instead of running ir_rc5_decode inline"
+    )
+
+
+def test_v171_foreground_ir_decode_helper_exists_and_is_serviced_from_display_loop() -> None:
+    text = _read_v171_source()
+    helper_body = _label_block(text, "v171_service_pending_ir_decode", "mute_frame_send")
+    assert re.search(r"rcall\s+ir_rc5_decode\b", helper_body), (
+        "foreground IR service helper must own the ir_rc5_decode call"
+    )
+    assert "clrf    v171_ir_decode_pending" in helper_body, (
+        "foreground IR service helper must clear the pending latch once serviced"
+    )
+
+    display_loop = _label_block(text, "display_loop_iteration", "control_core_service_0DCE")
+    assert re.search(r"call\s+v171_service_pending_ir_decode\b", display_loop), (
+        "display_loop_iteration must service deferred IR decode"
     )
 
 

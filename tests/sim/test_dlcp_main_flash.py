@@ -11,6 +11,7 @@ from dlcp_fw.flash.dlcp_main_flash import (
     PreflightError,
     RouteEntry,
     VersionInfo,
+    VolumeRuntimeInfo,
     _looks_like_main_boot_ack,
     bootloader_mismatch_addresses,
     build_main_stream,
@@ -142,6 +143,14 @@ def test_cli_info_only_does_not_require_hex(monkeypatch, capsys) -> None:
             active_config_name="ConfigA",
             active_config_raw=b"ConfigA",
             active_routes=(RouteEntry(channel=1, value=0, label="L"),),
+            volume_state=VolumeRuntimeInfo(
+                logical_raw=-96,
+                computed_raw=-96,
+                logical_low=0xA0,
+                computed_low=0xA0,
+                status_byte=0x00,
+                event_flags=0x00,
+            ),
             warnings=(),
         ),
     )
@@ -153,6 +162,8 @@ def test_cli_info_only_does_not_require_hex(monkeypatch, capsys) -> None:
     assert "device info:" in out
     assert "version: 3.1" in out
     assert "active config: 'ConfigA'" in out
+    assert "computed volume: -96.0 dB" in out
+    assert "BF/07=0x00" in out
 
 
 def test_probe_device_snapshot_forwards_selected_path_to_ep0(monkeypatch) -> None:
@@ -191,6 +202,17 @@ def test_probe_device_snapshot_forwards_selected_path_to_ep0(monkeypatch) -> Non
         "dlcp_fw.flash.dlcp_main_flash._probe_ep0_app_ram",
         _fake_probe_ep0_app_ram,
     )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_ep0_volume_state",
+        lambda **kwargs: VolumeRuntimeInfo(
+            logical_raw=-12,
+            computed_raw=-12,
+            logical_low=0xF4,
+            computed_low=0xF4,
+            status_byte=0x54,
+            event_flags=0x00,
+        ),
+    )
 
     snapshot = _probe_device_snapshot(info=info, vid=0x04D8, pid=0xFF89)
 
@@ -198,6 +220,14 @@ def test_probe_device_snapshot_forwards_selected_path_to_ep0(monkeypatch) -> Non
     assert snapshot.eeprom_version == EepromVersionInfo(major=0x03, minor=0x01, revision=0x31)
     assert snapshot.active_config_name == "ConfigB"
     assert snapshot.active_routes == (RouteEntry(channel=1, value=1, label="R"),)
+    assert snapshot.volume_state == VolumeRuntimeInfo(
+        logical_raw=-12,
+        computed_raw=-12,
+        logical_low=0xF4,
+        computed_low=0xF4,
+        status_byte=0x54,
+        event_flags=0x00,
+    )
 
 
 def test_probe_device_snapshot_includes_eeprom_revision(monkeypatch) -> None:
@@ -230,10 +260,29 @@ def test_probe_device_snapshot_includes_eeprom_revision(monkeypatch) -> None:
         "dlcp_fw.flash.dlcp_main_flash._probe_ep0_app_ram",
         lambda **kwargs: ("ConfigA", (RouteEntry(channel=1, value=0, label="L"),)),
     )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_ep0_volume_state",
+        lambda **kwargs: VolumeRuntimeInfo(
+            logical_raw=0,
+            computed_raw=0,
+            logical_low=0x00,
+            computed_low=0x00,
+            status_byte=0x60,
+            event_flags=0x08,
+        ),
+    )
 
     snapshot = _probe_device_snapshot(info=info, vid=0x04D8, pid=0xFF89)
 
     assert snapshot.eeprom_version == EepromVersionInfo(major=0x03, minor=0x02, revision=0x38)
+    assert snapshot.volume_state == VolumeRuntimeInfo(
+        logical_raw=0,
+        computed_raw=0,
+        logical_low=0x00,
+        computed_low=0x00,
+        status_byte=0x60,
+        event_flags=0x08,
+    )
 
 
 def test_cli_warns_when_device_revision_is_same_or_newer(monkeypatch, stock_main_hex, capsys) -> None:
@@ -262,6 +311,7 @@ def test_cli_warns_when_device_revision_is_same_or_newer(monkeypatch, stock_main
             active_config_name=None,
             active_config_raw=None,
             active_routes=None,
+            volume_state=None,
             warnings=(),
         ),
     )

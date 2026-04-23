@@ -50,6 +50,7 @@ DEFAULT_SOAK_ITERATIONS = 5
 
 WAKE_FAILURE_FUNCTIONAL_TIMEOUT = "FUNCTIONAL_WAKE_TIMEOUT"
 WAKE_FAILURE_ROLE_DECODE_UNSTABLE = "ROLE_DECODE_UNSTABLE"
+WAKE_FAILURE_CONTROL_WAITING_WHILE_MAINS_HEALTHY = "CONTROL_WAITING_WHILE_MAINS_HEALTHY"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1153,6 +1154,98 @@ def _wait_for_lcd_usable_expected_preset(
     )
 
 
+def _wait_for_post_wake_lcd_outcome(
+    *,
+    expected_preset: str,
+    args: argparse.Namespace,
+    output_root: Path,
+    wake_main: dict[str, object],
+) -> dict[str, object]:
+    expected_line1 = "Volume"
+    expected_line2 = f"Active: {expected_preset}"
+    started = time.monotonic()
+    deadline = started + max(0.0, args.lcd_timeout_s)
+    probes: list[dict[str, object]] = []
+    waiting_target = "WAITING FOR DLCP"
+    last_summary: dict[str, object] | None = None
+
+    while True:
+        elapsed = time.monotonic() - started
+        summary = _probe_lcd(
+            **_camera_probe_kwargs_from_args(
+                args,
+                output_root=output_root,
+                skip_configure=True,
+                captures=args.lcd_probe_captures,
+            )
+        )
+        last_summary = summary
+        line1 = summary["consensus"]["line1"]
+        line2 = summary["consensus"]["line2"]
+        found_waiting = _lcd_summary_contains_text(summary, waiting_target)
+        probe = {
+            "t_s": elapsed,
+            "line1": line1,
+            "line2": line2,
+            "summary_path": summary["summary_path"],
+            "waiting_detected": found_waiting,
+        }
+        probes.append(probe)
+
+        if line1 == expected_line1 and line2 == expected_line2:
+            return {
+                "status": "usable",
+                "expected_line1": expected_line1,
+                "expected_line2": expected_line2,
+                "matched_at_s": elapsed,
+                "probes": probes,
+                "last_summary_path": summary["summary_path"],
+            }
+
+        if found_waiting:
+            try:
+                healthy_snapshot = _wait_for_main_pair_state(
+                    vid=args.vid,
+                    pid=args.pid,
+                    expected_preset=expected_preset,
+                    muted=False,
+                    active=True,
+                    timeout_s=max(0.0, args.main_poll_s),
+                    poll_interval_s=max(0.0, args.main_poll_s),
+                )
+            except Exception as exc:
+                probe["healthy_snapshot_error"] = str(exc)
+            else:
+                raise WakeValidationError(
+                    WAKE_FAILURE_CONTROL_WAITING_WHILE_MAINS_HEALTHY,
+                    "post-wake LCD still shows WAITING FOR DLCP while both MAINs are functionally ready",
+                    samples=probes,
+                    diagnostics_tail=getattr(args, "wake_diagnostics_tail", DEFAULT_WAKE_DIAGNOSTICS_TAIL),
+                    details={
+                        "expected_preset": expected_preset,
+                        "wake_lcd_status": "waiting_while_mains_healthy",
+                        "waiting_lcd_probe": probe,
+                        "healthy_pair_snapshot_at_waiting": healthy_snapshot.get("final"),
+                        "wake_main_final_sample": (
+                            wake_main.get("samples", [])[-1]
+                            if wake_main.get("samples")
+                            else None
+                        ),
+                    },
+                )
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.0, args.lcd_poll_s))
+
+    actual_line1 = None if last_summary is None else last_summary["consensus"]["line1"]
+    actual_line2 = None if last_summary is None else last_summary["consensus"]["line2"]
+    raise RuntimeError(
+        f"timed out waiting for LCD {expected_line1!r} / {expected_line2!r}; "
+        f"last consensus was {actual_line1!r} / {actual_line2!r}"
+    )
+
+
 def _lcd_summary_contains_text(summary: dict[str, object], target: str) -> bool:
     captures = summary.get("captures", [])
     for capture in captures:
@@ -1392,10 +1485,11 @@ def _run_standby_wake_cycle(
     if wake_main is None:
         raise RuntimeError("wake convergence did not complete after WAKE attempts")
 
-    wake_lcd = _wait_for_lcd_usable_expected_preset(
+    wake_lcd = _wait_for_post_wake_lcd_outcome(
         expected_preset=expected_preset,
         args=args,
         output_root=output_root / "lcd_wake",
+        wake_main=wake_main,
     )
     left_after, right_after = _read_pair_state(vid=args.vid, pid=args.pid)
     return {
