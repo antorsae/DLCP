@@ -1,7 +1,12 @@
 # V3.2 MAIN Size Optimization Spec and Implementation Plan
 
-Date: 2026-04-21
-Status: active
+Date: 2026-04-21 (original) / 2026-04-23 (reopened with `free >= 500 B`
+target)
+Status: active — reopened 2026-04-23 after wake-path hardening
+checkpoint drifted the W03-R01 accepted baseline from `free=378` back
+down to `free=310`. New stop condition: `free >= 500 B`. Target means
+recovering at least 190 additional bytes from the current
+post-checkpoint baseline.
 Target source: `src/dlcp_fw/asm/dlcp_main_v32.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
 
@@ -25,17 +30,21 @@ diagnostics (rev 0x37), no-pop flash entry helper.
 
 ## Pressure Statement
 
-V3.2 is at the limit. Current baseline measured from source:
+V3.2 was at the limit at campaign launch. Original baseline
+(2026-04-21):
 
 - `used_bytes_pre_preset_b=15257`
 - `last_used_pre_preset_b=0x4BFD`
 - `free_bytes_before_0x4C00=2`
 
-Two bytes of slack remain before Preset B. Any new V3.2 feature or fix
-that grows code upstream of `0x4C00` **will overflow**. The explicit
-goal of this campaign is to recover enough headroom that V3.2 can
-continue to accept bug fixes and new features without reshaping the
-Preset B anchor.
+Waves `W01` / `W02` / `W03` recovered `-377 B` (14880/0x4A85/378) before
+the `W03-R01` accept on 2026-04-21. The wake-path hardening checkpoint
+landed the next day and ate 62 B of that recovery, leaving the current
+active baseline at `14942 / 0x4AC9 / 310`. The new stop condition
+(`free >= 500 B`) requires recovering at least another **190 B** so
+that the V3.2 line can absorb both the already-merged hardening and
+the next round of Layer 5 / hang-hardening extensions without
+reshaping the Preset B anchor.
 
 ## Non-Negotiable Requirements
 

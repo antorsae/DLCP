@@ -753,25 +753,19 @@ fw_update_init_sequence:
     clrf        ram_0x087, BANKED
     clrf        ram_0x084, BANKED
     clrf        ram_0x085, BANKED
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    call        prep_bank1_ram004, 0x0
     movlw       0xC7
     movwf       ram_0x003, ACCESS
     movlw       0x0A
     movwf       ram_0x005, ACCESS
     call        ram_block_clear, 0x0
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    call        prep_bank1_ram004, 0x0
     movlw       0x9A
     movwf       ram_0x003, ACCESS
     movlw       0x2D
     movwf       ram_0x005, ACCESS
     call        ram_block_clear, 0x0
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    call        prep_bank1_ram004, 0x0
     movlw       0xD1
     movwf       ram_0x003, ACCESS
     movlw       0x08
@@ -800,9 +794,7 @@ fw_update_init_sequence:
 flow_hid_command_dispatch_14ce:
     movf        i2c_coeff_3, W, ACCESS
     addlw       0x4D
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movf        INDF2, W, ACCESS
+    call        fsr2_page0_read_w, 0x0               ; W04-E03
     movwf       ram_0x04C, ACCESS
     movlw       0xD1
     addwf       i2c_coeff_3, W, ACCESS
@@ -1186,10 +1178,8 @@ flow_fw_update_relay_179e:
     subwf       ram_0x08E, W, BANKED
     bc          flow_fw_update_relay_17bc
     incf        ram_0x08E, F, BANKED
-    clrf        ram_0x004, ACCESS
     movlw       0x0A
-    movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (10 ms)
 flow_fw_update_relay_17bc:
     movff       ram_0x084, ram_0x086
     movff       ram_0x085, ram_0x087
@@ -1276,9 +1266,7 @@ flow_fw_update_relay_1884:
 flow_fw_update_relay_18a0:
     movf        ram_0x047, W, ACCESS
     addlw       0x2F
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movf        INDF2, W, ACCESS
+    call        fsr2_page0_read_w, 0x0               ; W04-E03
     bnz         flow_fw_update_relay_1884
     movlw       0x9A
     addwf       ram_0x04B, W, ACCESS
@@ -2451,7 +2439,7 @@ flow_main_core_service_1e88_209c:
     movlb       0x1
     movlw       0xB0
     addwf       ram_0x00A, W, ACCESS
-    call        setup_fsr2_page_1, 0x0
+    rcall       setup_fsr2_page_1
     movff       ram_0x00A, ram_0x003
     clrf        ram_0x004, ACCESS
     call        eeprom_read_byte, 0x0
@@ -2506,6 +2494,21 @@ eeprom_read_byte_W:
     return      0
 
 
+
+; ---------------------------------------------------------------------------
+; Helper: prep_bank1_ram004 (W04-E02 size-opt helper)
+; Sets BSR=1 and ram_0x004 (addr_high scratch) = 0x01.  W is clobbered to
+; 0x01.  Shared by 9 `ram_block_clear` / `ram_block_clear_4` callers that
+; set up a bank-1 page-1 address window before calling into the clear
+; helpers.
+; ---------------------------------------------------------------------------
+prep_bank1_ram004:
+    movlb       0x1
+    movlw       0x01
+    movwf       ram_0x004, ACCESS
+    return      0
+
+
 ; ---------------------------------------------------------------------------
 ; Helper: ram_block_clear_4 (W02-E02 size-opt helper)
 ; ---------------------------------------------------------------------------
@@ -2537,43 +2540,35 @@ ram_block_clear_4:
 main_i2c_service_2100:
     clrf        ram_0x004, ACCESS
     movlw       0xD7
-    call        ram_block_clear_4, 0x0
+    rcall       ram_block_clear_4
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xDB
-    call        ram_block_clear_4, 0x0
+    rcall       ram_block_clear_4
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xDF
-    call        ram_block_clear_4, 0x0
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    rcall       ram_block_clear_4
+    call        prep_bank1_ram004, 0x0
     movlw       0xD9
-    call        ram_block_clear_4, 0x0
+    rcall       ram_block_clear_4
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xE3
-    call        ram_block_clear_4, 0x0
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    rcall       ram_block_clear_4
+    call        prep_bank1_ram004, 0x0
     movlw       0xDD
-    call        ram_block_clear_4, 0x0
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    rcall       ram_block_clear_4
+    call        prep_bank1_ram004, 0x0
     movlw       0xE1
-    call        ram_block_clear_4, 0x0
+    rcall       ram_block_clear_4
     call        i2c_wait_bus_idle, 0x0
     clrf        ram_0x059, ACCESS
 flow_main_i2c_service_2100_217a:
     movf        ram_0x059, W, ACCESS
     movlb       0x0
     addlw       0x60
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movf        INDF2, W, ACCESS
+    call        fsr2_page0_read_w, 0x0               ; W04-E03
     call        main_core_service_4448, 0x0
     bra         flow_main_i2c_service_2100_21c8
 flow_main_i2c_service_2100_218c:
@@ -2724,9 +2719,7 @@ flow_main_i2c_service_2100_22da:
 flow_main_i2c_service_2100_22de:
     movf        ram_0x05B, W, ACCESS
     addlw       0x6A
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movf        INDF2, W, ACCESS
+    call        fsr2_page0_read_w, 0x0               ; W04-E03
     call        main_core_service_45ce, 0x0
     movff       ram_0x00D, i2c_coeff_0
     movff       ram_0x00E, i2c_coeff_1
@@ -3772,6 +3765,22 @@ main_core_service_2bac:
 
 
 ; ---------------------------------------------------------------------------
+; Helper: flash_addr_setup_from_82_83 (W04-E04)
+; Copies the caller-selected flash address held at ram_0x082:ram_0x083
+; (little-endian) into ram_0x003:ram_0x004, and zeros ram_0x005:ram_0x006.
+; Used as the common address preamble for flash_read / flash_erase /
+; flash_write paths inside main_flash_service_2bb8.
+; Uses only ACCESS-bank + movff, so BSR is preserved across the call.
+; ---------------------------------------------------------------------------
+flash_addr_setup_from_82_83:
+    movff       ram_0x082, ram_0x003
+    movff       ram_0x083, ram_0x004
+    clrf        ram_0x005, ACCESS
+    clrf        ram_0x006, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
 ; Function: main_flash_service_2bb8
 ; Address : 0x2BB8
 ; Notes   : Inferred flash helper routine. Calls: flash_read, flash_erase, flash_write.
@@ -3779,10 +3788,7 @@ main_core_service_2bac:
 main_flash_service_2bb8:
     tstfsz      ram_0x0C5, BANKED
     bra         flow_main_flash_service_2bb8_2bdc
-    movff       ram_0x082, ram_0x003
-    movff       ram_0x083, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
+    rcall       flash_addr_setup_from_82_83
     clrf        ram_0x008, ACCESS
     movlw       0xC0
     movwf       ram_0x007, ACCESS
@@ -3852,10 +3858,7 @@ flow_main_flash_service_2bb8_2bf6:
     movlw       0x5F
     subwfb      ram_0x083, W, BANKED
     bc          flow_main_flash_service_2bb8_2ca6
-    movff       ram_0x082, ram_0x003
-    movff       ram_0x083, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
+    rcall       flash_addr_setup_from_82_83
     movlw       0xBF
     addwf       ram_0x082, W, BANKED
     movwf       ram_0x018, ACCESS
@@ -3867,10 +3870,7 @@ flow_main_flash_service_2bb8_2bf6:
     clrf        ram_0x009, ACCESS
     clrf        ram_0x00A, ACCESS
     call        flash_erase, 0x0
-    movff       ram_0x082, ram_0x003
-    movff       ram_0x083, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
+    rcall       flash_addr_setup_from_82_83
     clrf        ram_0x008, ACCESS
     movlw       0xC0
     movwf       ram_0x007, ACCESS
@@ -3985,11 +3985,8 @@ flow_main_core_service_2ca8_2d44:
     movff       ram_0x01C, ram_0x006
     movff       ram_0x01E, ram_0x007
     movff       ram_0x01F, ram_0x008
-    rcall       main_core_service_30d8
-    movff       ram_0x003, ram_0x00D
-    movff       ram_0x004, ram_0x00E
-    movff       ram_0x005, ram_0x00F
-    movff       ram_0x006, ram_0x010
+    ; W04-E01: factor rcall+4 movff tail into main_core_service_30d8_with_save
+    bra         main_core_service_30d8_with_save
 flow_main_core_service_2ca8_2d7e:
     return      0
 
@@ -4050,10 +4047,8 @@ adc_boot_gate:
     clrf        ram_0x089, BANKED
     bsf         ADCON0, 1, ACCESS
 adc_boot_gate_loop:
-    clrf        ram_0x004, ACCESS
     movlw       0x0A
-    movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (10 ms poll)
     btfsc       ADCON0, 1, ACCESS
     bra         flow_adc_boot_gate_2dbc
     movf        ADRESH, W, ACCESS
@@ -4075,24 +4070,17 @@ flow_adc_boot_gate_2dbc:
     subwfb      ram_0x089, W, BANKED
     bnc         adc_boot_gate_loop
 adc_boot_gate_exit:
-    clrf        ram_0x004, ACCESS
     movlw       0x46
-    movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
-    clrf        SPBRGH, ACCESS
-    movlw       0x7F
-    movwf       SPBRG, ACCESS
-    bcf         OSCCON, 1, ACCESS
+    call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (~70 ms)
+    call        uart_baud_31250_prefix, 0x0
     bcf         LATB, 4, ACCESS
     bcf         LATA, 6, ACCESS
     bcf         LATB, 3, ACCESS
     bcf         SSPCON1, 5, ACCESS
     bsf         TRISB, 1, ACCESS
     bsf         TRISB, 0, ACCESS
-    clrf        ram_0x004, ACCESS
     movlw       0x64
-    movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (100 ms)
     bsf         LATB, 4, ACCESS
     movlw       0x05
     movwf       ram_0x004, ACCESS
@@ -4101,10 +4089,8 @@ adc_boot_gate_exit:
     call        timer3_blocking_delay, 0x0
     bsf         TRISB, 1, ACCESS
     bsf         TRISB, 0, ACCESS
-    clrf        ram_0x004, ACCESS
     movlw       0x01
-    movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (1 ms)
     movlw       0x80
     movwf       ram_0x003, ACCESS
     movlw       0x08
@@ -4590,6 +4576,22 @@ flow_main_core_service_30d8_3148:
     btfss       STATUS, 2, ACCESS
     bsf         ram_0x006, 7, ACCESS
 flow_main_core_service_30d8_3186:
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: main_core_service_30d8_with_save          (W04-E01)
+;
+; Factor of the rcall/call main_core_service_30d8 + 4-movff save tail that
+; appeared inline at three sites. Callers bra/goto here to avoid duplicating
+; the 18-byte cleanup sequence.
+; ---------------------------------------------------------------------------
+main_core_service_30d8_with_save:
+    rcall       main_core_service_30d8
+    movff       ram_0x003, ram_0x00D
+    movff       ram_0x004, ram_0x00E
+    movff       ram_0x005, ram_0x00F
+    movff       ram_0x006, ram_0x010
     return      0
 
 
@@ -5580,9 +5582,7 @@ flow_main_i2c_service_381c_3870:
 flow_main_i2c_service_381c_3884:
     movf        ram_0x030, W, ACCESS
     addlw       0x17                                ; data buffer at 0x0017+i
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movf        INDF2, W, ACCESS
+    call        fsr2_page0_read_w, 0x0               ; W04-E03
     rcall       i2c_byte_tx
     incf        ram_0x030, F, ACCESS
 flow_main_i2c_service_381c_3894:
@@ -5668,10 +5668,7 @@ adaptive_baud_select:
     bra         flow_adaptive_baud_select_3940
 flow_adaptive_baud_select_3936:
     bcf         LATB, 2, ACCESS
-    clrf        SPBRGH, ACCESS
-    movlw       0x7F
-    movwf       SPBRG, ACCESS
-    bcf         OSCCON, 1, ACCESS
+    call        uart_baud_31250_prefix, 0x0
 flow_adaptive_baud_select_3940:
     bcf         LATB, 4, ACCESS
     bcf         LATB, 5, ACCESS
@@ -5812,9 +5809,7 @@ flow_main_usb_service_3a26_3a40:
     movlb       0x4
     btfsc       ram_0x00C, 7, BANKED
     bra         flow_main_usb_service_3a26_3aa2
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    call        prep_bank1_ram004, 0x0
     movlw       0x1A
     movwf       ram_0x003, ACCESS
     movlw       0x40
@@ -5842,9 +5837,7 @@ flow_main_usb_service_3a26_3a7e:
     movlb       0x4
     btfsc       ram_0x010, 7, BANKED
     bra         flow_main_usb_service_3a26_3aa2
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    call        prep_bank1_ram004, 0x0
     movlw       0x5A
     movwf       ram_0x003, ACCESS
     movlw       0x40
@@ -6067,6 +6060,22 @@ send_status_burst_postamble:
     call        uart_tx_byte_blocking, 0x0
     goto        main_core_service_492e
 
+
+; ---------------------------------------------------------------------------
+; Helper: uart_baud_31250_prefix (W04-E05 size-opt helper)
+; SPBRG/SPBRGH program for 31,250 baud on the 8 MHz INTOSC post-prescaler,
+; then drop OSCCON bit 1 (select low-power oscillator group for the UART
+; pre-timer gate).  Shared prefix of the wake / adaptive-baud / standby-
+; shutdown paths.
+; ---------------------------------------------------------------------------
+uart_baud_31250_prefix:
+    clrf        SPBRGH, ACCESS
+    movlw       0x7F
+    movwf       SPBRG, ACCESS
+    bcf         OSCCON, 1, ACCESS
+    return      0
+
+
 ; ---------------------------------------------------------------------------
 ; Function: hw_standby_shutdown            (full hardware standby sequence)
 ; Address : 0x3C0C
@@ -6111,10 +6120,7 @@ hw_standby_shutdown:
     bra         flow_hw_standby_shutdown_3c3e
 flow_hw_standby_shutdown_3c34:
     bcf         LATB, 2, ACCESS
-    clrf        SPBRGH, ACCESS
-    movlw       0x7F
-    movwf       SPBRG, ACCESS
-    bcf         OSCCON, 1, ACCESS
+    call        uart_baud_31250_prefix, 0x0
 flow_hw_standby_shutdown_3c3e:
     bcf         LATB, 4, ACCESS
     bcf         LATA, 6, ACCESS
@@ -6135,10 +6141,8 @@ flow_hw_standby_shutdown_3c58:
     call        i2c_secondary_dev_write, 0x0
     movlw       0x01
     xorwf       ram_0x008, F, ACCESS
-    clrf        ram_0x004, ACCESS
     movlw       0xFA
-    movwf       ram_0x003, ACCESS
-    call        timer3_blocking_delay, 0x0
+    call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (250 ms pulse)
     incf        ram_0x009, F, ACCESS
     movlw       0x04
     cpfsgt      ram_0x009, ACCESS
@@ -6555,12 +6559,8 @@ flow_main_core_service_3e0a_3e3a:
     movlw       0x96
     movwf       ram_0x007, ACCESS
     movff       ram_0x011, ram_0x008
-    call        main_core_service_30d8, 0x0
-    movff       ram_0x003, ram_0x00D
-    movff       ram_0x004, ram_0x00E
-    movff       ram_0x005, ram_0x00F
-    movff       ram_0x006, ram_0x010
-    return      0
+    ; W04-E01: factor call+4 movff tail into main_core_service_30d8_with_save
+    goto        main_core_service_30d8_with_save
 
 ; ---------------------------------------------------------------------------
 ; Function: i2c_byte_tx                    (single I2C byte transmit, V3.1+)
@@ -7577,6 +7577,18 @@ flow_main_core_service_4448_447c:
 ; Used by hw_standby_shutdown (250 ms pulse loop), adc_boot_gate (settle
 ; delays), and various fw-update path delays.
 ; ---------------------------------------------------------------------------
+; Helper: timer3_blocking_delay_ms_W (W04-E08)
+; Loads the 16-bit timer counter as (ram_0x004=0, ram_0x003=W) and falls
+; through into timer3_blocking_delay. Used by wake / cold-boot paths that
+; always zero the high byte. Saves 4 B per call site (7 sites factored).
+; Reorder is safe: timer3_blocking_delay does not read ram_0x003/ram_0x004
+; until after its own setup; the two stores to W-relative scratch bytes do
+; not depend on order.
+; ---------------------------------------------------------------------------
+timer3_blocking_delay_ms_W:
+    movwf       ram_0x003, ACCESS
+    clrf        ram_0x004, ACCESS
+    ; fall through into timer3_blocking_delay
 timer3_blocking_delay:
     bcf         PIE2, 1, ACCESS
     movlw       0x98
@@ -7771,28 +7783,6 @@ uart_fifo_drain_2:
 
 
 ; ---------------------------------------------------------------------------
-; Function: uart_parser_resync             (drop staged frame + ring state)
-; Address : 0x454C
-; ---------------------------------------------------------------------------
-; Shared by wake-time UART quiesce, OERR soft-recover, and the cold-boot
-; bring-up helper. Clears both software ring indices and the parser staging
-; bytes so the next received byte is always interpreted as a fresh route byte,
-; and suppresses any pending cmd-XOR ACK echo.
-; ---------------------------------------------------------------------------
-uart_parser_resync:
-    movlb       0x0
-    clrf        rx_ring_rd, BANKED
-    clrf        rx_ring_wr, BANKED
-    clrf        rx_frame_position, BANKED
-    clrf        ram_0x0A2, BANKED
-    clrf        current_cmd_data, BANKED
-    clrf        ram_0x0BC, BANKED
-    bcf         active_flags, 0, ACCESS
-    bcf         active_flags, 6, ACCESS
-    return      0
-
-
-; ---------------------------------------------------------------------------
 ; Function: uart_quiesce_for_wake          (disable EUSART before wake delays)
 ; Address : 0x455E
 ; ---------------------------------------------------------------------------
@@ -7821,12 +7811,36 @@ uart_quiesce_for_wake:
 ; ---------------------------------------------------------------------------
 ; MAIN now matches CONTROL v1.71's OERR recovery contract: clear CREN, drain
 ; both FIFO slots, re-enable CREN, then reset the staged frame / ring state.
+; Falls through into uart_parser_resync (W04-E07 reorder: saves 2 B by
+; eliminating the terminal bra).
 ; ---------------------------------------------------------------------------
 uart_soft_recover_full:
     bcf         RCSTA, 4, ACCESS
     rcall       uart_fifo_drain_2
     bsf         RCSTA, 4, ACCESS
-    bra         uart_parser_resync
+    ; fall through to uart_parser_resync
+
+
+; ---------------------------------------------------------------------------
+; Function: uart_parser_resync             (drop staged frame + ring state)
+; Address : 0x454C
+; ---------------------------------------------------------------------------
+; Shared by wake-time UART quiesce, OERR soft-recover, and the cold-boot
+; bring-up helper. Clears both software ring indices and the parser staging
+; bytes so the next received byte is always interpreted as a fresh route byte,
+; and suppresses any pending cmd-XOR ACK echo.
+; ---------------------------------------------------------------------------
+uart_parser_resync:
+    movlb       0x0
+    clrf        rx_ring_rd, BANKED
+    clrf        rx_ring_wr, BANKED
+    clrf        rx_frame_position, BANKED
+    clrf        ram_0x0A2, BANKED
+    clrf        current_cmd_data, BANKED
+    clrf        ram_0x0BC, BANKED
+    bcf         active_flags, 0, ACCESS
+    bcf         active_flags, 6, ACCESS
+    return      0
 
 
 ; ---------------------------------------------------------------------------
@@ -7920,9 +7934,7 @@ main_usb_service_45a2:
     movlb       0x4
     btfsc       ram_0x010, 7, BANKED
     bra         flow_main_usb_service_45a2_45cc
-    movlb       0x1
-    movlw       0x01
-    movwf       ram_0x004, ACCESS
+    call        prep_bank1_ram004, 0x0
     movlw       0x5A
     movwf       ram_0x003, ACCESS
     movlw       0x40
@@ -7947,12 +7959,8 @@ main_core_service_45ce:
     movlw       0x96
     movwf       ram_0x007, ACCESS
     clrf        ram_0x008, ACCESS
-    call        main_core_service_30d8, 0x0
-    movff       ram_0x003, ram_0x00D
-    movff       ram_0x004, ram_0x00E
-    movff       ram_0x005, ram_0x00F
-    movff       ram_0x006, ram_0x010
-    return      0
+    ; W04-E01: factor call+4 movff tail into main_core_service_30d8_with_save
+    goto        main_core_service_30d8_with_save
 
 ; ---------------------------------------------------------------------------
 ; Function: rx_ring_read                   (UART RX ring dequeue, returns W)
@@ -8193,6 +8201,26 @@ main_usb_service_4720:
     movlb       0x0
     movf        ram_0x092, W, BANKED
     iorwf       UIE, F, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: fsr2_page0_read_w                           (W04-E03 size-opt helper)
+; ---------------------------------------------------------------------------
+; Shared factor for the 3-instruction "read mem[page0 + W] via FSR2" pattern:
+;     movwf FSR2L, ACCESS
+;     clrf  FSR2H, ACCESS
+;     movf  INDF2, W, ACCESS
+; On entry: W = page-0 byte address (0x00..0xFF).
+; On exit:  W = mem[0x0000 + addr]; FSR2L/FSR2H point at that address;
+;           Z/N set by the final movf so callers using bz/bnz on the loaded
+;           value remain correct (return 0 does not restore STATUS).
+; Side effects: ACCESS-bank only; BSR unchanged.
+; ---------------------------------------------------------------------------
+fsr2_page0_read_w:
+    movwf       FSR2L, ACCESS
+    clrf        FSR2H, ACCESS
+    movf        INDF2, W, ACCESS
     return      0
 
 
@@ -8743,10 +8771,8 @@ flash_entry_quiet_shutdown:
     bcf         LATA, 3, ACCESS                 ;     are still being driven
     bcf         LATA, 4, ACCESS                 ;     (RESET would tristate
     bcf         LATA, 5, ACCESS                 ;     them in one Tcy)
-    clrf        ram_0x004, ACCESS               ; (4) 100 ms timer3 settle
-    movlw       0x64
-    movwf       ram_0x003, ACCESS
-    rcall       timer3_blocking_delay
+    movlw       0x64                            ; (4) 100 ms timer3 settle
+    rcall       timer3_blocking_delay_ms_W      ;     (W04-E08 factored)
     bcf         LATB, 3, ACCESS                 ; (5) final amp gate down
     goto        hard_reset                      ; (6) now do the RESET
 
@@ -8821,7 +8847,7 @@ main_core_service_492e:
 main_uart_tx_only_service:
     rcall       uart_config
     bcf         RCSTA, 4, ACCESS
-    goto        uart_parser_resync
+    bra         uart_parser_resync
 
 
 ; ---------------------------------------------------------------------------
@@ -8831,7 +8857,7 @@ main_uart_tx_only_service:
 ; ---------------------------------------------------------------------------
 main_uart_service_4938:
     rcall       uart_config
-    goto        uart_parser_resync
+    bra         uart_parser_resync
 
 
 ; ---------------------------------------------------------------------------
@@ -9288,9 +9314,7 @@ preset_job_apply_i2c_entry:
 preset_job_apply_i2c_loop:
     movf        ram_0x030, W, ACCESS
     addlw       0x17
-    movwf       FSR2L, ACCESS
-    clrf        FSR2H, ACCESS
-    movf        INDF2, W, ACCESS
+    rcall       fsr2_page0_read_w                    ; W04-E03
     call        i2c_byte_tx, 0x0
     incf        ram_0x030, F, ACCESS
 preset_job_apply_i2c_loop_check:
@@ -10056,7 +10080,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x38, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x39, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

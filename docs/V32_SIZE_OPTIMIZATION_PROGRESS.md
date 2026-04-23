@@ -1,27 +1,37 @@
 # V3.2 MAIN Size Optimization Progress
 
-Date: 2026-04-21
-Status: **stopped** (2026-04-21) — stop condition met
+Date: 2026-04-21 (campaign started) / 2026-04-23 (reopened)
+Status: **reopened** (2026-04-23) — user-set target raised to `free >= 500 B`
 Target source: `src/dlcp_fw/asm/dlcp_main_v32.asm`
 Target build: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
 
 ## Baseline Size Snapshot
 
-- Current baseline source: current `main` tip, 2026-04-21
+- Current baseline source: current `main` tip, HEAD `bc61c70`
 - Baseline assembly: clean via `assemble_v30(V32_MAIN_ASM, V32_MAIN_HEX)`
 - Baseline collected validation gate: `256` selected tests (V3.1's
   89-node gate plus V3.2-specific 167 tests across 7 additional files)
+- Current drifted baseline (post-checkpoint, 2026-04-23 pre-`W04`):
+  - `used_bytes_pre_preset_b=14942`
+  - `last_used_pre_preset_b=0x4AC9`
+  - `free_bytes_before_0x4C00=310`
+  - `+62` used bytes and `-68` free bytes vs `W03-R01`; drift is load-
+    bearing wake-path UART hardening (`9ab78d4 chore: checkpoint current
+    DLCP firmware changes`, 2026-04-22) that added 5 new helpers
+    (`uart_fifo_drain_2`, `uart_parser_resync`, `uart_quiesce_for_wake`,
+    `uart_soft_recover_full`, `main_uart_tx_only_service`) and rewired
+    `adc_boot_gate` to quiesce+re-arm the EUSART around wake delays,
+    plus bumped `eeprom_data[0x82]` from `0x37 → 0x38`. Not a W01/W02/W03
+    revert.
 - Baseline measured size (coordinator, 2026-04-21, pre-`W01`):
   - `used_bytes_pre_preset_b=15257`
   - `last_used_pre_preset_b=0x4BFD`
   - `free_bytes_before_0x4C00=2`
-- Final accepted baseline (`W03-R01`, 2026-04-21): **campaign stopped**
+- Prior W03 accepted baseline (`W03-R01`, 2026-04-21, pre-drift):
   - `used_bytes_pre_preset_b=14880`
   - `last_used_pre_preset_b=0x4A85`
   - `free_bytes_before_0x4C00=378`
   - `-377` used bytes, `+376` free bytes vs V3.2 launch baseline
-  - **Stop condition met**: free > 300 B; all 3 gate failures are in the
-    known-flakey file `test_v171_v32_layer5_diag_chain.py`.
 - Previous baseline (`W02-R01`, 2026-04-21):
   - `used_bytes_pre_preset_b=14975`
   - `last_used_pre_preset_b=0x4AE3`
@@ -30,11 +40,16 @@ Target build: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
   - `used_bytes_pre_preset_b=15224`
   - `last_used_pre_preset_b=0x4BDD`
   - `free_bytes_before_0x4C00=34`
-- Campaign stop condition (user-set 2026-04-21): `free > 300 bytes`
-  AND `no new regressions from baseline`. V3.2 launch baseline has a
+- Campaign stop condition (user-revised 2026-04-23): `free >= 500 bytes`
+  AND `no new regressions from baseline`. Previous stop condition
+  (`free > 300 bytes`, set 2026-04-21) held only briefly — accepted at
+  `W03-R01` with `free=378`, then eroded to `free=310` by the
+  2026-04-22 wake-path hardening checkpoint, leaving almost no slack
+  for the hardening + planned Layer 5 extensions.  V3.2 still has a
   known-flakey test pool in `tests/sim/test_v171_v32_layer5_diag_chain.py`
-  and `tests/sim/test_v28_wire_delayed_switch_repros.py`; 2–3 tests from
-  those files fail on any given run with different subsets each time.
+  and `tests/sim/test_v28_wire_delayed_switch_repros.py`; 2–3 tests
+  from those files fail on any given run with different subsets each
+  time — only new failures outside that pool count as regressions.
 
 ### Origin note
 
@@ -159,7 +174,17 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 | W03 | W03-E06 | subagent | `emit_crlf` tail-call helper (3 sites) | Factor `movlw 0x0D / call uart_tx / movlw 0x0A / call uart_tx` CRLF pattern with tail-goto | yes | 14957 | `0x4AD1` | 302 | -18 | smoke 73 pass | parent accepted into `W03-R01` | yes | low | Helper ends with `goto uart_tx_byte_blocking` for the LF. |
 | W03 | W03-E07 | subagent | Long clrf runs (7 runs of 6–13 wide) | Look for safe ≥20 B consolidation via lfsr/POSTINC0 loops or cross-site dedup | n/a | 14975 | `0x4AE3` | 284 | 0 | no smoke | reject / infeasible | no | low | Best candidate (dedup of 2 identical 8-clrf blocks at lines 755+863) saves only 10 B. Other runs: scattered SFRs (not contiguous), mixed ACCESS/BANKED, or single-site. No viable ≥20 B rewrite. |
 | W03 | W03-E08 | subagent | Confirmation variant of W03-E01 | Independent re-application of the 4-site nibble_to_hex_ascii fall-through helper | yes | 14955 | `0x4ACF` | 304 | -20 | source smoke 20/20 | confirmation only | no | low | Matched W03-E01 exactly. |
-| W03 | W03-R01 | `coordinator` | recombination of `W03-E01..E06` (all 6 successful parents) on top of W02-R01 | Stack all 6 disjoint wins; drop infeasible E07 and confirmation E08 | yes | 14880 | `0x4A85` | 378 | -95 | full gate `240 passed, 3 skipped, 15 xfailed, 3 failed (flakey file pool)` | accepted baseline / campaign stopped | yes | medium | **Final accepted W03 baseline.** Parent sum was -94; recombination picked up one extra byte of compaction. Gate failures: all 3 in `test_v171_v32_layer5_diag_chain.py` — `lcd_renders_saturation_plus` and `diag_page_left_button_exits_promptly` are known baseline flakes; `sustained_diag_page_keeps_control_responsive` failed on W02-R01 and W03-R01 but passed on W01-R01 and pristine V3.2. All 3 in the same known-flakey test file, and the W02-R01 wire-chain failure (`test_v28_wire_two_main_interleaved_standby_during_delayed_switch_reconnects_cleanly`) now **passes** on W03-R01, consistent with a layout-timing-sensitive flakey pool rather than real regression. Stop condition met: free > 300 B AND failure set contained within known flakey files. |
+| W03 | W03-R01 | `coordinator` | recombination of `W03-E01..E06` (all 6 successful parents) on top of W02-R01 | Stack all 6 disjoint wins; drop infeasible E07 and confirmation E08 | yes | 14880 | `0x4A85` | 378 | -95 | full gate `240 passed, 3 skipped, 15 xfailed, 3 failed (flakey file pool)` | accepted baseline / campaign stopped | yes | medium | **Accepted W03 baseline.** Parent sum was -94; recombination picked up one extra byte of compaction. Gate failures: all 3 in `test_v171_v32_layer5_diag_chain.py` — `lcd_renders_saturation_plus` and `diag_page_left_button_exits_promptly` are known baseline flakes; `sustained_diag_page_keeps_control_responsive` failed on W02-R01 and W03-R01 but passed on W01-R01 and pristine V3.2. All 3 in the same known-flakey test file, and the W02-R01 wire-chain failure (`test_v28_wire_two_main_interleaved_standby_during_delayed_switch_reconnects_cleanly`) now **passes** on W03-R01, consistent with a layout-timing-sensitive flakey pool rather than real regression. W03 stop condition (free > 300 B) met then; campaign was reopened 2026-04-23 after checkpoint drift — see `W04` rows below. |
+| drift | `9ab78d4` | n/a (feature) | Wake-path UART hardening checkpoint | Load-bearing fix (not a size experiment): 5 new helpers (`uart_fifo_drain_2`, `uart_parser_resync`, `uart_quiesce_for_wake`, `uart_soft_recover_full`, `main_uart_tx_only_service`) + `adc_boot_gate` wire-up + OERR recovery refactor + EEPROM revision byte bump `0x37→0x38`. | yes | 14942 | `0x4AC9` | 310 | +62 | not re-gated post-checkpoint | merged feature, not a size win | yes | n/a | Recorded here so W04 baseline lineage is traceable. Campaign reopened 2026-04-23 with `free >= 500 B` target; W04..Wn now needed to recover ≥190 B. |
+| W04 | W04-E01 | subagent | `main_core_service_30d8_with_save` wrapper (3 sites) | Factor the `(r)call main_core_service_30d8 + 4 movff + return 0` tail at L3988-3994, L6558-6563, L7950-7955 into a single wrapper; replace each site with `bra main_core_service_30d8_with_save`. Est ~30-34 B. | yes | 14916 | `0x4AA9` | 342 | -32 | smoke 41/41 pass | parent accepted into `W04-R01` | yes | low | Site 1 (L3988) bra-reachable (+516 instr); sites 2/3 use goto (far). Helper `main_core_service_30d8_with_save` at 0x2EC8. Largest single-experiment win of W04. |
+| W04 | W04-E02 | subagent | `prep_bank1_ram004` helper (9 sites) | Factor `movlb 0x1; movlw 0x01; movwf ram_0x004, ACCESS` 3-instruction prefix at 9 `ram_block_clear`/`ram_block_clear_4` callers (L756, L764, L772, L2549, L2558, L2563, L5815, L5845, L7923). Est ~20-28 B. | yes | 14930 | `0x4AB9` | 326 | -16 | smoke 23/23 pass (coordinator re-ran test_firmware_version_label + test_v31_happy_path) | parent candidate for `W04-R01` | tbd | low | All 9 sites converted: 3 rcall (L2556, L2563, L2566) + 6 call (L756, L762, L768, L5816, L5844, L7920). Helper at L2509. |
+| W04 | W04-E03 | subagent | `fsr2_page0_read_w` helper (6 sites) | Factor `movwf FSR2L; clrf FSR2H; movf INDF2, W` page-0 indirect-read pattern at L803, L1279, L2574, L2727, L5583, L9291. Est ~4-16 B depending on rcall reach. | yes | 14940 | `0x4AC3` | 316 | -6 | smoke 32/32 pass | parent candidate for `W04-R01` | tbd | low | All 6 sites converted: 5 call + 1 rcall (L9291 in range); helper at 0x4464. Arithmetic: 5×(6-4) + 1×(6-2) − 8 helper = +6 B. Z-flag propagation across `return 0` verified for the bnz consumer at L1279. |
+| W04 | W04-E04 | subagent | `flash_addr_setup_from_82_83` helper (3 sites) | Factor `movff ram_0x082→003; movff ram_0x083→004; clrf 005; clrf 006` flash-address preamble at L3782, L3855, L3870 inside `main_flash_service_2bb8`. Est ~10-16 B. | yes | 14926 | `0x4AB9` | 326 | -16 | smoke 40/40 pass + 2 pre-existing skips | parent candidate for `W04-R01` | tbd | low | All 3 sites converted via `rcall`. Helper placed at 0x2914 (just before `main_flash_service_2bb8`). Matches prediction exactly (3 × (12-2) − 14 helper = 16 B). BSR preserved across all sites. |
+| W04 | W04-E05 | subagent | `uart_baud_31250_prefix` helper audit (3 sites, label-crossing) | Factor `clrf SPBRGH; movlw 0x7F; movwf SPBRG; bcf OSCCON, 1` 4-instruction shared prefix at L4082, L5671, L6114. Mid-sequence labels at sites 2/3 cap savings to the 4-instruction prefix only. Est ~0-10 B. | yes | 14943 | `0x4AC3` | 316 | -6 | smoke 24/24 pass | parent candidate for `W04-R01` | tbd | low | Option A (4-instr helper). Site 1 uses call, sites 2/3 use rcall. Helper at 0x38D2. Label-crossing respected: only the 4-instr prefix is factored; site-local `bcf LATB, 4` + branch-convergence label remain inline. Used_bytes +1 is code-byte-shift artifact; `free` metric is authoritative. |
+| W04 | W04-E06 | subagent | Post-W03+checkpoint `call` → `rcall` sweep | Layout-shift-exposed reachable sites after W03-R01 (`-95 B`) + checkpoint (`+62 B`). Precedent: `W02-E07` picked up 2 additional conversions after `W01-R01`. Est ~4-12 B. | yes | 14926 | `0x4AB9` | 326 | -16 | smoke 44/44 pass | parent candidate for `W04-R01` | tbd | low | 8 sites converted (1 `setup_fsr2_page_1` at L2454 + 7 `ram_block_clear_4` at L2540-2567). Best single-experiment post-W03 win; previous W02-E07 found 2, W04 finds 8 due to layout shift from W03-R01 (-95 B) + checkpoint (+62 B). Only 1 borderline site remains (disp +2062, just 16 B over the ±2046 B reach ceiling). |
+| W04 | W04-E07 | subagent | UART hardening helper fall-through cluster | Reorder the 5 new UART helpers so one callsite (`uart_soft_recover_full` or `uart_quiesce_for_wake`) falls through into `uart_parser_resync`; also opportunistically swap `goto uart_parser_resync` → `bra uart_parser_resync` at `main_uart_tx_only_service` / `main_uart_service_4938` where in reach. Est ~2-6 B. | yes | 14942 | `0x4AC3` | 316 | -6 | smoke 37/37 pass | parent candidate for `W04-R01` | tbd | low | Reorder: `uart_fifo_drain_2` → `uart_quiesce_for_wake` → `uart_soft_recover_full` → `uart_parser_resync`; `uart_soft_recover_full` falls through into `uart_parser_resync` (2 B). `main_uart_tx_only_service` + `main_uart_service_4938` swap `goto`→`bra uart_parser_resync` (2 B × 2 = 4 B). Total 6 B. |
+| W04 | W04-E08 | subagent | `timer3_blocking_delay_ms_W` helper audit | Factor `clrf ram_0x004; movlw <ms>; movwf ram_0x003; call timer3_blocking_delay` preamble (4 instructions) if ≥4 uniform sites exist in `adc_boot_gate` + related wake paths. Est ~8-12 B if viable; REJECT if < 4 sites. | yes | 14925 | `0x4AB1` | 334 | -24 | smoke 24/24 pass | parent accepted into `W04-R01` | yes | low | Found 5 matching sites (L1186, L4050, L4075, L4089, L4101) — all converted. Helper `timer3_blocking_delay_ms_W` placed at ~0x4540. Pattern was uniform across fw_update_relay + 4 adc_boot_gate timer3 preambles. Best ratio of lines edited to bytes saved in W04. |
+| W04 | W04-R01 | `coordinator` | recombination of W04-E01 + E02 + E03 + E04 + E05 + E06 + E07 + E08 (all 8 ACCEPT) on top of checkpoint-drifted baseline | Stack all 8 wins (no null-results or rejections in W04). E02+E06 overlap on ram_block_clear_4 bank-1 sites and E05+E08 overlap on adc_boot_gate_exit hunk, but both pairs stack compatibly (E02 factors preamble, E06 converts tail; E05 factors SPBRG prefix, E08 factors timer3 preamble). | yes | 14838 | `0x4A59` | 422 | -112 | full gate: in progress | accepted baseline (pending gate) | pending | medium | Authoritative accepted W04 baseline (pending full-gate confirmation). Individual parent sum was -122 B; recombination yielded -112 B (10 B overlap penalty at E02/E06 + E05/E08 intersection hunks). All 8 parents applied cleanly with 3-way merge; E02 and E05 were manually replayed because their hunks straddle E06 and E08 respectively. Helpers: `prep_bank1_ram004`, `uart_baud_31250_prefix`, `main_core_service_30d8_with_save`, `fsr2_page0_read_w`, `flash_addr_setup_from_82_83`, `timer3_blocking_delay_ms_W`. |
 
 ## Recombination Lineage
 
@@ -296,6 +321,39 @@ Baseline probe: `3 failed in 356.39s (0:05:56)` on unmodified V3.2
 source at HEAD `e746973`. These are pre-existing environment/flake
 issues, independent of the size-optimization campaign. They are tracked
 as open questions for a separate investigation.
+
+### Post-checkpoint regressions recorded 2026-04-23 (NOT W04 regressions)
+
+Full 256-node gate on HEAD `bc61c70` (checkpoint-drifted baseline,
+`14942 / 0x4AC9 / 310`):
+`7 failed, 236 passed, 3 skipped, 15 xfailed in 1011.44s (16:51)`.
+
+Failure breakdown:
+
+- **3 known-flakey-file failures** (same family as W03-R01 acceptance set):
+  - `tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_chain_lcd_renders_saturation_plus`
+  - `tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly`
+  - `tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`
+- **1 known-flakey-file failure** (wire-chain):
+  - `tests/sim/test_v28_wire_delayed_switch_repros.py::test_v32_wire_two_main_stop_fault_during_delayed_switch_recovers`
+- **3 NEW regressions introduced by wake-path hardening checkpoint
+  `9ab78d4` — NOT caused by any size-opt wave**:
+  - `tests/sim/test_v31_v163b_robustness.py::test_v32_async_apply_stop_timeout_recovers_and_completes`
+  - `tests/sim/test_v31_v163b_robustness.py::test_v32_async_apply_stop_timeout_keeps_main_loop_responsive`
+  - `tests/sim/test_v31_v163b_robustness.py::test_v32_async_apply_stop_timeout_does_not_advance_index`
+
+These async-apply-stop-timeout tests existed and passed at `W03-R01`
+accept (`commit 8d3a2d7`, 2026-04-21) and were added by commit
+`69db8c5 Harden v3.2 async preset apply STOP recovery`. They fail on
+HEAD. The checkpoint commit `9ab78d4` reshaped `adc_boot_gate` and OERR
+recovery via the new UART hardening helpers; the new quiesce + reconnect
+flow likely interacts badly with the async preset-apply STOP timeout
+path. Tracked as a separate investigation (see task list), NOT a
+size-opt campaign finding.
+
+For the reopened W04+ campaign, these 7 failures constitute the new
+expected-failure baseline. Only NEW failures outside this set count as
+W04+ regressions.
 
 ## Cumulative Action Log
 
