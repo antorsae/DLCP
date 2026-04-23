@@ -708,9 +708,7 @@ flow_hid_command_dispatch_13d0:
 flow_hid_command_dispatch_1402:
     movlw       0xC0
     addwf       i2c_coeff_3, W, ACCESS
-    movwf       FSR2L, ACCESS
-    movlw       0x02                ; W03-E05: overflow impossible (W=0xC0..0xDD)
-    movwf       FSR2H, ACCESS
+    call        fsr2_page2_from_W, 0x0       ; W05-E02: FSR2=0x0200|W (helper clobbers W with 0x02; setf uses no W)
     setf        INDF2, ACCESS
     incf        i2c_coeff_3, F, ACCESS
     movlw       0x1D
@@ -946,9 +944,7 @@ main_core_service_15b0:
 main_core_service_15be:
     movlw       0xBE
     addwf       i2c_coeff_3, W, ACCESS
-    movwf       FSR2L, ACCESS
-    movlw       0x02                ; W03-E05: overflow impossible (W=0xBE..0xDD)
-    movwf       FSR2H, ACCESS
+    call        fsr2_page2_from_W, 0x0       ; W05-E02: FSR2=0x0200|W (helper clobbers W with 0x02; setf uses no W)
     setf        INDF2, ACCESS
     return      0
 
@@ -1398,30 +1394,32 @@ cmd_dispatch_gated:
     bra         flow_cmd_dispatch_gated_19a8
     bsf         event_flags, 3, BANKED
     bra         flow_cmd_dispatch_gated_1970
+; W05-E07: tail-call merge — 4 callers previously did
+;   rcall cmd_dispatch_gated_i2c_pair / bra flow_cmd_dispatch_gated_1990.
+; Converted to `bra cmd_dispatch_gated_i2c_pair`; helper tail is
+; `bra flow_cmd_dispatch_gated_1990` instead of `return 0`. Saves
+; 4 * 2 B by removing the trailing `bra` at each caller; helper tail
+; size unchanged (return -> bra, both 1 word).
 flow_cmd_dispatch_gated_18fe:
     movlw       0x09
     movwf       ram_0x006, ACCESS
     movlw       0x70
-    rcall       cmd_dispatch_gated_i2c_pair
-    bra         flow_cmd_dispatch_gated_1990
+    bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_1918:
     movlw       0x0A
     movwf       ram_0x006, ACCESS
     movlw       0xB0
-    rcall       cmd_dispatch_gated_i2c_pair
-    bra         flow_cmd_dispatch_gated_1990
+    bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_1932:
     movlw       0x08
     movwf       ram_0x006, ACCESS
     movlw       0x30
-    rcall       cmd_dispatch_gated_i2c_pair
-    bra         flow_cmd_dispatch_gated_1990
+    bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_194c:
     movlw       0x0B
     movwf       ram_0x006, ACCESS
     movlw       0xF0
-    rcall       cmd_dispatch_gated_i2c_pair
-    bra         flow_cmd_dispatch_gated_1990
+    bra         cmd_dispatch_gated_i2c_pair
 cmd_dispatch_gated_i2c_pair:
     movwf       ram_0x00D, ACCESS
     movlw       0x0D
@@ -1431,7 +1429,7 @@ cmd_dispatch_gated_i2c_pair:
     movlw       0x08
     call        i2c_secondary_dev_write, 0x0
     call        main_i2c_service_48e2, 0x0
-    return      0
+    bra         flow_cmd_dispatch_gated_1990
 flow_cmd_dispatch_gated_1966:
     call        main_core_service_4516, 0x0
     movlw       0x01
@@ -1586,9 +1584,7 @@ flow_cmd_dispatch_gated_1aca:
 flow_cmd_dispatch_gated_1ad8:
     movlw       0x08
 flow_cmd_dispatch_gated_1ada:
-    movwf       ram_0x013, ACCESS
-    call        main_i2c_service_381c, 0x0
-    movlb       0x0
+    rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
     btfsc       ram_0x0A4, 1, BANKED
     bra         flow_cmd_dispatch_gated_1aee
     movlw       0x44
@@ -1596,9 +1592,7 @@ flow_cmd_dispatch_gated_1ada:
 flow_cmd_dispatch_gated_1aee:
     movlw       0x30
 flow_cmd_dispatch_gated_1af0:
-    movwf       ram_0x013, ACCESS
-    call        main_i2c_service_381c, 0x0
-    movlb       0x0
+    rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
     btfsc       ram_0x0A4, 2, BANKED
     bra         flow_cmd_dispatch_gated_1b04
     movlw       0x6C
@@ -1606,9 +1600,7 @@ flow_cmd_dispatch_gated_1af0:
 flow_cmd_dispatch_gated_1b04:
     movlw       0x58
 flow_cmd_dispatch_gated_1b06:
-    movwf       ram_0x013, ACCESS
-    call        main_i2c_service_381c, 0x0
-    movlb       0x0
+    rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
     btfsc       ram_0x0A4, 3, BANKED
     bra         flow_cmd_dispatch_gated_1b1a
     movlw       0x94
@@ -1616,9 +1608,7 @@ flow_cmd_dispatch_gated_1b06:
 flow_cmd_dispatch_gated_1b1a:
     movlw       0x80
 flow_cmd_dispatch_gated_1b1c:
-    movwf       ram_0x013, ACCESS
-    call        main_i2c_service_381c, 0x0
-    movlb       0x0
+    rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
     btfsc       ram_0x0A4, 4, BANKED
     bra         flow_cmd_dispatch_gated_1b30
     movlw       0xBC
@@ -1626,9 +1616,7 @@ flow_cmd_dispatch_gated_1b1c:
 flow_cmd_dispatch_gated_1b30:
     movlw       0xA8
 flow_cmd_dispatch_gated_1b32:
-    movwf       ram_0x013, ACCESS
-    call        main_i2c_service_381c, 0x0
-    movlb       0x0
+    rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
     btfsc       ram_0x0A4, 5, BANKED
     bra         flow_cmd_dispatch_gated_1b46
     movlw       0xE4
@@ -1695,6 +1683,27 @@ usb_mailbox_service_05:
     movf        ram_0x0FD, W, BANKED
     btfss       STATUS, 2, ACCESS
     call        main_usb_service_45a2, 0x0
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: i2c_381c_with_w_bank0                      (W05-E01 size-opt helper)
+; ---------------------------------------------------------------------------
+; Shared factor for the 3-instruction "stage W into ram_0x013, call
+; main_i2c_service_381c, restore BSR=0" pattern used 5 times in the
+; flow_cmd_dispatch_gated_1ada..1b32 chain.  Each caller has just loaded
+; W via `movlw <imm>`, so W carries the I2C register-byte argument.
+;
+; Semantics preserved: the helper stores W into ram_0x013 (access),
+; invokes main_i2c_service_381c, and forces BSR to 0 on return.  All 5
+; callers follow with `btfsc ram_0x0A4, N, BANKED`, which requires BSR=0.
+;
+; Savings : 5 sites × (8 B → 2 B rcall) − 10 B helper = 20 B.
+; ---------------------------------------------------------------------------
+i2c_381c_with_w_bank0:
+    movwf       ram_0x013, ACCESS
+    call        main_i2c_service_381c, 0x0
+    movlb       0x0
     return      0
 
 
@@ -2454,9 +2463,7 @@ flow_main_core_service_1e88_20c2:
     movlb       0x2
     movlw       0x60
     addwf       ram_0x00A, W, ACCESS
-    movwf       FSR2L, ACCESS
-    movlw       0x02                ; W03-E05: overflow impossible (W=0xC0..0xDD)
-    movwf       FSR2H, ACCESS
+    call        fsr2_page2_from_W, 0x0       ; W05-E02: FSR2=0x0200|W (helper clobbers W; eeprom_read_byte takes input via ram_0x003)
     movff       ram_0x00A, ram_0x003
     clrf        ram_0x004, ACCESS
     call        eeprom_read_byte, 0x0
@@ -2549,17 +2556,17 @@ main_i2c_service_2100:
     movlb       0x0
     movlw       0xDF
     rcall       ram_block_clear_4
-    call        prep_bank1_ram004, 0x0
+    rcall       prep_bank1_ram004
     movlw       0xD9
     rcall       ram_block_clear_4
     clrf        ram_0x004, ACCESS
     movlb       0x0
     movlw       0xE3
     rcall       ram_block_clear_4
-    call        prep_bank1_ram004, 0x0
+    rcall       prep_bank1_ram004
     movlw       0xDD
     rcall       ram_block_clear_4
-    call        prep_bank1_ram004, 0x0
+    rcall       prep_bank1_ram004
     movlw       0xE1
     rcall       ram_block_clear_4
     call        i2c_wait_bus_idle, 0x0
@@ -4959,26 +4966,7 @@ flow_main_core_service_3432_344c:
     bz          flow_main_core_service_3432_34c6
     movlw       0x01
     movwf       ram_0x0C8, BANKED
-    movf        ram_0x0D3, W, BANKED
-    andlw       0x0F
-    mullw       0x08
-    movlw       0x04
-    movwf       ram_0x003, ACCESS
-    movwf       ram_0x004, ACCESS
-    movf        PRODL, W, ACCESS
-    addwf       ram_0x003, F, ACCESS
-    movf        PRODH, W, ACCESS
-    addwfc      ram_0x004, F, ACCESS
-    movlw       0x01
-    btfss       ram_0x0D3, 7, BANKED
-    movlw       0x00
-    mullw       0x04
-    movf        PRODL, W, ACCESS
-    addwf       ram_0x003, W, ACCESS
-    movwf       ram_0x072, BANKED
-    movf        PRODH, W, ACCESS
-    addwfc      ram_0x004, W, ACCESS
-    movwf       ram_0x073, BANKED
+    rcall       core_filter_addr_from_0x0D3        ; W05-E06 factored
     movf        ram_0x0D0, W, BANKED
     xorlw       0x03
     bnz         flow_main_core_service_3432_349c
@@ -5356,6 +5344,32 @@ flow_main_core_service_3710_3726:
 flow_main_core_service_3710_372c:
     movlw       0x01
     movwf       ram_0x0C8, BANKED
+    rcall       core_filter_addr_from_0x0D3        ; W05-E06 factored
+    movff       ram_0x072, FSR2L
+    movff       ram_0x073, FSR2H
+    movf        INDF2, W, ACCESS
+    movwf       ram_0x003, ACCESS
+    btfss       ram_0x003, 2, ACCESS
+    bra         flow_main_core_service_3710_3780
+    movlw       0x01
+    movlb       0x4
+    movwf       ram_0x024, BANKED
+    bra         flow_main_core_service_3710_3780
+; ---------------------------------------------------------------------------
+; core_filter_addr_from_0x0D3 (W05-E06 factored helper, 2 sites)
+;   Input : ram_0x0D3 (BANKED) — selected filter/slot index (4-bit lo) + bit7
+;   Output:
+;     ram_0x003:ram_0x004 = base + mul_lo  (main_core_service_3432 site uses
+;                                           this as the working filter addr)
+;     ram_0x072:ram_0x073 = ram_0x003:004 +/- mul_hi adjustment per bit7
+;   Factors an identical 20-instruction block shared by
+;     main_core_service_3432 (L4961 in v32) and
+;     main_core_service_3710 (L5339 in v32).
+;   Uses rcall (within range from both callers).  BSR left unchanged; callers
+;   continue to expect BANKED access to bank 0 (ram_0x0D0..ram_0x0D3 live
+;   in bank 0).
+; ---------------------------------------------------------------------------
+core_filter_addr_from_0x0D3:
     movf        ram_0x0D3, W, BANKED
     andlw       0x0F
     mullw       0x08
@@ -5376,16 +5390,7 @@ flow_main_core_service_3710_372c:
     movf        PRODH, W, ACCESS
     addwfc      ram_0x004, W, ACCESS
     movwf       ram_0x073, BANKED
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
-    movf        INDF2, W, ACCESS
-    movwf       ram_0x003, ACCESS
-    btfss       ram_0x003, 2, ACCESS
-    bra         flow_main_core_service_3710_3780
-    movlw       0x01
-    movlb       0x4
-    movwf       ram_0x024, BANKED
-    bra         flow_main_core_service_3710_3780
+    return      0
 flow_main_core_service_3710_3770:
     movlb       0x0
     movf        ram_0x0CF, W, BANKED
@@ -5544,10 +5549,7 @@ main_i2c_service_381c:
     clrf        ram_0x008, ACCESS
     movlw       0x04                                ; first read: 4-byte header (TAS reg + len)
     movwf       ram_0x007, ACCESS
-    clrf        ram_0x00A, ACCESS
-    movlw       0x17                                ; FSR2 dest = 0x0017 (RAM scratch)
-    movwf       ram_0x009, ACCESS
-    call        flash_read, 0x0
+    rcall       flash_read_fsr2_0017                ; W05-E04: FSR2 dest=0x0017 helper (in rcall reach)
     movff       ram_0x018, ram_0x02F                ; ram_0x02F = TAS reg byte
     movff       ram_0x019, ram_0x031                ; ram_0x031 = byte count
     movlw       0x19                                ; >= 25 -> end-of-table sentinel
@@ -5668,7 +5670,7 @@ adaptive_baud_select:
     bra         flow_adaptive_baud_select_3940
 flow_adaptive_baud_select_3936:
     bcf         LATB, 2, ACCESS
-    call        uart_baud_31250_prefix, 0x0
+    rcall       uart_baud_31250_prefix
 flow_adaptive_baud_select_3940:
     bcf         LATB, 4, ACCESS
     bcf         LATB, 5, ACCESS
@@ -5984,9 +5986,7 @@ uart_rx_irq_enqueue:
     bra         flow_main_isr_dispatch_3b8c
     movlb       0x0
     movf        rx_ring_wr, W, BANKED                ; FSR2 = 0x0200 + rx_ring_wr
-    movwf       FSR2L, ACCESS
-    movlw       0x02
-    movwf       FSR2H, ACCESS
+    call        fsr2_page2_from_W, 0x0               ; W05-E02: FSR2=0x0200|W (movff uses no W)
     movff       RCREG, INDF2                         ; copy RX byte into ring
     incf        rx_ring_wr, F, BANKED
     movlw       0xBF                                 ; ring size = 0xC0 (192 bytes)
@@ -6120,7 +6120,7 @@ hw_standby_shutdown:
     bra         flow_hw_standby_shutdown_3c3e
 flow_hw_standby_shutdown_3c34:
     bcf         LATB, 2, ACCESS
-    call        uart_baud_31250_prefix, 0x0
+    rcall       uart_baud_31250_prefix
 flow_hw_standby_shutdown_3c3e:
     bcf         LATB, 4, ACCESS
     bcf         LATA, 6, ACCESS
@@ -6852,6 +6852,21 @@ flow_main_core_service_3fd0_3ffa:
 ; Used by: preset apply (main_i2c_service_381c, preset_job_apply_i2c_entry),
 ; HID memread, EEPROM-writeback signature paths, flash_erase auto-arm.
 ; ---------------------------------------------------------------------------
+
+; ---------------------------------------------------------------------------
+; Helper: flash_read_fsr2_0017 (W05-E04 size-opt helper)
+; Shared preamble used by 3 callers that want FSR2 dest = 0x0017 (RAM
+; scratch) for the next flash_read.  Clears the dest-high byte
+; (ram_0x00A) and loads 0x17 into dest-low (ram_0x009), then falls
+; through to flash_read so the stacked return goes directly back to the
+; original caller.  No explicit branch needed -- the helper body is
+; immediately above flash_read's entry point.
+; ---------------------------------------------------------------------------
+flash_read_fsr2_0017:
+    clrf        ram_0x00A, ACCESS
+    movlw       0x17
+    movwf       ram_0x009, ACCESS
+    ; fall through into flash_read
 flash_read:
     btfss       active_flags, 2, ACCESS     ; preset B active?
     bra         flash_read_stock
@@ -7989,9 +8004,7 @@ rx_ring_read:
     bz          flow_rx_ring_read_4620
     movlb       0x0
     movf        rx_ring_rd, W, BANKED
-    movwf       FSR2L, ACCESS
-    movlw       0x02
-    movwf       FSR2H, ACCESS
+    rcall       fsr2_page2_from_W                    ; W05-E02: FSR2=0x0200|W (movf INDF2 overwrites W)
     movf        INDF2, W, ACCESS
     movwf       ram_0x004, ACCESS
     incf        rx_ring_rd, F, BANKED
@@ -8221,6 +8234,26 @@ fsr2_page0_read_w:
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movf        INDF2, W, ACCESS
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: fsr2_page2_from_W                            (W05-E02 size-opt helper)
+; ---------------------------------------------------------------------------
+; Shared factor for the 3-instruction "set FSR2 = 0x0200 | W" pattern:
+;     movwf FSR2L, ACCESS
+;     movlw 0x02
+;     movwf FSR2H, ACCESS
+; On entry: W = page-2 byte address (0x00..0xFF).
+; On exit:  FSR2L/FSR2H point at 0x0200 + W; W = 0x02 (side effect).
+; Side effects: ACCESS-bank only; BSR unchanged.  Caller does its own
+; indirect access via INDF2 after the call.  Callers that are known to
+; not consume W before the next write-to-W are eligible.
+; ---------------------------------------------------------------------------
+fsr2_page2_from_W:
+    movwf       FSR2L, ACCESS
+    movlw       0x02
+    movwf       FSR2H, ACCESS
     return      0
 
 
@@ -9277,10 +9310,7 @@ preset_job_apply_i2c_entry:
     clrf        ram_0x008, ACCESS
     movlw       0x04
     movwf       ram_0x007, ACCESS
-    clrf        ram_0x00A, ACCESS
-    movlw       0x17
-    movwf       ram_0x009, ACCESS
-    call        flash_read, 0x0
+    call        flash_read_fsr2_0017, 0x0   ; W05-E04: shared preamble helper
     movff       ram_0x018, ram_0x02F
     movff       ram_0x019, ram_0x031
     movlw       0x19
@@ -9298,10 +9328,7 @@ preset_job_apply_i2c_entry:
     clrf        ram_0x006, ACCESS
     movff       ram_0x031, ram_0x007
     clrf        ram_0x008, ACCESS
-    clrf        ram_0x00A, ACCESS
-    movlw       0x17
-    movwf       ram_0x009, ACCESS
-    call        flash_read, 0x0
+    call        flash_read_fsr2_0017, 0x0   ; W05-E04: shared preamble helper
     bsf         SSPCON2, 0, ACCESS
     rcall       wait_sen_bounded
     bc          preset_job_apply_i2c_timeout

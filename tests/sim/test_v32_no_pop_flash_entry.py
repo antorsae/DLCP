@@ -56,10 +56,8 @@ HELPER_SEQUENCE = (
     (r"bcf\s+LATA,\s*3,\s*ACCESS",                   "phase 3c: LATA.3 -> 0 (source select)"),
     (r"bcf\s+LATA,\s*4,\s*ACCESS",                   "phase 3d: LATA.4 -> 0"),
     (r"bcf\s+LATA,\s*5,\s*ACCESS",                   "phase 3e: LATA.5 -> 0"),
-    (r"clrf\s+ram_0x004,\s*ACCESS",                  "phase 4a: timer3 high byte = 0"),
-    (r"movlw\s+0x64",                                "phase 4b: timer3 low byte = 0x64 (100 ms)"),
-    (r"movwf\s+ram_0x003,\s*ACCESS",                 "phase 4c: timer3 reload"),
-    (r"r?call\s+timer3_blocking_delay(?:,|\b)",      "phase 4d: 100 ms settle"),
+    (r"movlw\s+0x64",                                "phase 4: timer3 low byte = 0x64 (100 ms)"),
+    (r"r?call\s+timer3_blocking_delay(?:_ms_W)?(?:,|\b)", "phase 4: 100 ms settle (inline or via W04-E08 timer3_blocking_delay_ms_W factoring)"),
     (r"bcf\s+LATB,\s*3,\s*ACCESS",                   "phase 5: final amp gate LATB.3 -> 0"),
     (r"goto\s+hard_reset",                           "phase 6: now do the RESET"),
 )
