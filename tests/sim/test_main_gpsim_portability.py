@@ -31,6 +31,32 @@ def test_load_gpasm_symbols_for_hex_returns_none_for_unusable_listing(tmp_path: 
     assert load_gpasm_symbols_for_hex(hex_path) is None
 
 
+def _write_gpasm_symbol_table(lst_path: Path, *, symbols: dict[str, int]) -> None:
+    lines = ["SYMBOL TABLE", ""]
+    for name, addr in symbols.items():
+        lines.append(f"{name} ADDRESS {addr:08X} 1")
+    lst_path.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
+def test_load_gpasm_symbols_for_hex_uses_canonical_source_listing_for_v32_release(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    release_hex = tmp_path / "DLCP_Firmware_V3.2.hex"
+    release_hex.write_text(":00000001FF\n", encoding="ascii")
+    source_asm = tmp_path / "dlcp_main_v32.asm"
+    source_asm.write_text("; mock v32 source\n", encoding="ascii")
+    _write_gpasm_symbol_table(
+        source_asm.with_suffix(".lst"),
+        symbols={"adc_boot_gate_exit": 0x2B1E},
+    )
+
+    monkeypatch.setattr(vs, "V32_MAIN_HEX", release_hex)
+    monkeypatch.setattr(vs, "V32_MAIN_ASM", source_asm)
+
+    assert load_gpasm_symbols_for_hex(release_hex) == {"adc_boot_gate_exit": 0x2B1E}
+
+
 def test_assemble_v30_prefers_fresh_output_listing_over_stale_source_listing(
     monkeypatch,
     tmp_path: Path,
@@ -69,6 +95,32 @@ def test_resolve_main_an0_boot_exit_addr_falls_back_when_symbol_missing(monkeypa
     )
 
     assert mg.resolve_main_an0_boot_exit_addr(Path("copied.hex")) == 0x3456
+
+
+def test_resolve_main_an0_boot_exit_addr_uses_canonical_release_source_listing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    release_hex = tmp_path / "DLCP_Firmware_V3.2.hex"
+    release_hex.write_text(":00000001FF\n", encoding="ascii")
+    source_asm = tmp_path / "dlcp_main_v32.asm"
+    source_asm.write_text("; mock v32 source\n", encoding="ascii")
+    _write_gpasm_symbol_table(
+        source_asm.with_suffix(".lst"),
+        symbols={"adc_boot_gate_exit": 0x2B1E},
+    )
+
+    monkeypatch.setattr(vs, "V32_MAIN_HEX", release_hex)
+    monkeypatch.setattr(vs, "V32_MAIN_ASM", source_asm)
+    monkeypatch.setattr(
+        mg,
+        "_require_code_signature_addr_any",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("signature fallback should not run")
+        ),
+    )
+
+    assert mg.resolve_main_an0_boot_exit_addr(release_hex) == 0x2B1E
 
 
 def test_resolve_main_cmd03_dispatch_addrs_falls_back_with_partial_symbols(monkeypatch) -> None:

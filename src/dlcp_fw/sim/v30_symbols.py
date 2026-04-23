@@ -9,6 +9,15 @@ import tempfile
 from pathlib import Path
 from typing import Dict
 
+from dlcp_fw.paths import (
+    V30_MAIN_ASM,
+    V30_MAIN_HEX,
+    V31_MAIN_ASM_CANONICAL,
+    V31_MAIN_HEX_CANONICAL,
+    V32_MAIN_ASM,
+    V32_MAIN_HEX,
+)
+
 from .hexio import parse_intel_hex
 
 
@@ -40,20 +49,39 @@ def parse_gpasm_symbols(lst_path: Path) -> Dict[str, int]:
 
 @lru_cache(maxsize=None)
 def load_gpasm_symbols_for_hex(main_hex: Path) -> Dict[str, int] | None:
-    """Load gpasm symbols from the listing that sits beside *main_hex*.
+    """Load gpasm symbols for *main_hex*.
 
-    Returns ``None`` when no ``.lst`` exists for the given HEX. This lets
-    stock/binary-patched images keep their existing fixed-address fallbacks,
-    while source-assembled images such as V3.x can resolve labels dynamically.
+    Resolution order:
+    1. sibling ``.lst`` beside *main_hex*
+    2. source-side canonical ``.lst`` for known V3.x release HEXes
+
+    Returns ``None`` when no usable listing is found. This lets stock and
+    binary-patched images keep their fixed-address fallbacks, while canonical
+    source-assembled V3.x releases can still resolve labels even though the
+    release builder does not retain a sibling ``.lst`` in the releases dir.
     """
-    lst_path = Path(main_hex).with_suffix(".lst")
-    if not lst_path.exists():
-        return None
-    try:
-        symbols = parse_gpasm_symbols(lst_path)
-    except ValueError:
-        return None
-    return symbols or None
+    release_hex = Path(main_hex).resolve()
+    lst_candidates = [Path(main_hex).with_suffix(".lst")]
+
+    canonical_source_lsts = {
+        V30_MAIN_HEX.resolve(): V30_MAIN_ASM.with_suffix(".lst"),
+        V31_MAIN_HEX_CANONICAL.resolve(): V31_MAIN_ASM_CANONICAL.with_suffix(".lst"),
+        V32_MAIN_HEX.resolve(): V32_MAIN_ASM.with_suffix(".lst"),
+    }
+    fallback_lst = canonical_source_lsts.get(release_hex)
+    if fallback_lst is not None and fallback_lst not in lst_candidates:
+        lst_candidates.append(fallback_lst)
+
+    for lst_path in lst_candidates:
+        if not lst_path.exists():
+            continue
+        try:
+            symbols = parse_gpasm_symbols(lst_path)
+        except ValueError:
+            continue
+        if symbols:
+            return symbols
+    return None
 
 
 @lru_cache(maxsize=None)
