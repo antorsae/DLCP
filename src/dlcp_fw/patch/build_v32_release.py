@@ -71,6 +71,13 @@ def build_v32_release(
 
     asm_path.write_text(updated_text, encoding="utf-8")
     source_lst = asm_path.with_suffix(".lst")
+    # Capture the pre-build `.lst` state so we can restore it on failure.
+    # The V3.x symbol-resolution path in
+    # `dlcp_fw.sim.v30_symbols.load_gpasm_symbols_for_hex` falls back to
+    # this source-side listing when the release HEX has no sibling `.lst`,
+    # so a partial listing from a failed gpasm run would silently poison
+    # address lookups for `V32_MAIN_HEX` unless we roll it back.
+    original_lst = source_lst.read_bytes() if source_lst.exists() else None
     output_hex.parent.mkdir(parents=True, exist_ok=True)
     tmpdir_obj = tempfile.TemporaryDirectory(prefix="v32_release_", dir=str(output_hex.parent))
     tmpdir = Path(tmpdir_obj.name)
@@ -85,6 +92,11 @@ def build_v32_release(
         shutil.copy2(temp_hex, output_hex)
     except Exception:
         asm_path.write_text(original_text, encoding="utf-8")
+        if original_lst is None:
+            if source_lst.exists():
+                source_lst.unlink()
+        else:
+            source_lst.write_bytes(original_lst)
         raise
     finally:
         tmpdir_obj.cleanup()

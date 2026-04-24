@@ -71,6 +71,11 @@ def build_v171_release(
 
     asm_path.write_text(updated_text, encoding="utf-8")
     source_lst = asm_path.with_suffix(".lst")
+    # Mirror the V3.2 builder's `.lst` rollback so a failed gpasm run
+    # cannot leave a partial listing beside the source.  V1.71 does not
+    # currently have a symbol-resolution consumer for this listing, but
+    # the symmetry keeps the release builders' failure semantics aligned.
+    original_lst = source_lst.read_bytes() if source_lst.exists() else None
     output_hex.parent.mkdir(parents=True, exist_ok=True)
     tmpdir_obj = tempfile.TemporaryDirectory(prefix="v171_release_", dir=str(output_hex.parent))
     tmpdir = Path(tmpdir_obj.name)
@@ -85,6 +90,11 @@ def build_v171_release(
         shutil.copy2(temp_hex, output_hex)
     except Exception:
         asm_path.write_text(original_text, encoding="utf-8")
+        if original_lst is None:
+            if source_lst.exists():
+                source_lst.unlink()
+        else:
+            source_lst.write_bytes(original_lst)
         raise
     finally:
         tmpdir_obj.cleanup()

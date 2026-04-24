@@ -448,3 +448,84 @@ def test_build_v32_release_rolls_back_source_and_hex_on_assemble_failure(
 
     assert asm_path.read_text(encoding="utf-8") == original_text
     assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+
+
+def test_build_v32_release_rolls_back_source_lst_on_assemble_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for post-6069-MEDIUM: a failed gpasm run must not leave
+    a stale `.lst` beside the source, because
+    `dlcp_fw.sim.v30_symbols.load_gpasm_symbols_for_hex` falls back to the
+    source-side `.lst` when resolving V32_MAIN_HEX symbols (e.g.
+    main_an0_boot_exit_addr).  A partial listing from a crashed gpasm
+    would silently poison every downstream address lookup."""
+    asm_path = tmp_path / "dlcp_main_v32.asm"
+    original_text = (
+        "org 0xF00000\n"
+        "        db      0x03, 0x02, 0x38\n"
+    )
+    asm_path.write_text(original_text, encoding="utf-8")
+    output_hex = tmp_path / "DLCP_Firmware_V3.2.hex"
+    output_hex.write_text(":00000001FF\n", encoding="ascii")
+    source_lst = asm_path.with_suffix(".lst")
+    original_lst_content = b"; pre-build good listing\nsome_label ADDRESS 0x1234 1\n"
+    source_lst.write_bytes(original_lst_content)
+
+    def _boom_after_corrupting_lst(asm, out_hex, *, output_lst=None, gpasm="gpasm"):
+        # Simulate gpasm writing a partial listing before crashing.
+        if output_lst is not None:
+            output_lst.write_bytes(b"; STALE partial listing from failed gpasm\n")
+        raise RuntimeError("gpasm boom mid-listing")
+
+    monkeypatch.setattr(
+        "dlcp_fw.patch.build_v32_release.assemble_v30",
+        _boom_after_corrupting_lst,
+    )
+
+    with pytest.raises(RuntimeError, match="gpasm boom mid-listing"):
+        build_v32_release(asm_path=asm_path, output_hex=output_hex)
+
+    assert asm_path.read_text(encoding="utf-8") == original_text
+    assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+    # Key invariant: the source-side `.lst` must either be the pre-build
+    # content or absent — never the stale partial from the failed run.
+    assert source_lst.read_bytes() == original_lst_content, (
+        f"build_v32_release failed to roll back source `.lst`; got "
+        f"{source_lst.read_bytes()!r}"
+    )
+
+
+def test_build_v32_release_deletes_source_lst_if_none_existed_before(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If no `.lst` existed before the build, a failed run must leave
+    none behind.  Otherwise the caller sees a stale partial listing as
+    the canonical symbol source the next time it loads V32_MAIN_HEX."""
+    asm_path = tmp_path / "dlcp_main_v32.asm"
+    asm_path.write_text(
+        "org 0xF00000\n        db      0x03, 0x02, 0x38\n",
+        encoding="utf-8",
+    )
+    output_hex = tmp_path / "DLCP_Firmware_V3.2.hex"
+    output_hex.write_text(":00000001FF\n", encoding="ascii")
+    source_lst = asm_path.with_suffix(".lst")
+    assert not source_lst.exists()
+
+    def _boom_after_creating_lst(asm, out_hex, *, output_lst=None, gpasm="gpasm"):
+        if output_lst is not None:
+            output_lst.write_bytes(b"; fresh but bogus partial listing\n")
+        raise RuntimeError("gpasm boom no-prior-lst")
+
+    monkeypatch.setattr(
+        "dlcp_fw.patch.build_v32_release.assemble_v30",
+        _boom_after_creating_lst,
+    )
+
+    with pytest.raises(RuntimeError, match="gpasm boom no-prior-lst"):
+        build_v32_release(asm_path=asm_path, output_hex=output_hex)
+
+    assert not source_lst.exists(), (
+        "build_v32_release left a stale `.lst` behind after a failed "
+        "build when no `.lst` existed before — next symbol lookup would "
+        "silently consume it as canonical"
+    )
