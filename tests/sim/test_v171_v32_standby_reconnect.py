@@ -77,7 +77,14 @@ def test_v171_v32_standby_wake_pair_contracts_line_up() -> None:
     assert cold_wait_start >= 0 and cold_wait_end > cold_wait_start, "CONTROL cold WAITING loop not found"
     cold_wait_body = control_text[cold_wait_start:cold_wait_end]
     assert "call    rx_parser_entry, 0x0" in cold_wait_body
-    assert "movlb   0x00                                       ; rx_parser_entry may drift BSR" in cold_wait_body
+    # Post-838cebf: BSR reset after `rx_parser_entry` is provided by the
+    # new parser-stall watchdog call `v171_service_rx_frame_gap`
+    # (first instruction is `movlb 0x00`).  Asserting its presence
+    # covers both the liveness hardening and the BSR contract.
+    assert "call    v171_service_rx_frame_gap, 0x0" in cold_wait_body, (
+        "cold WAITING loop must call v171_service_rx_frame_gap after "
+        "rx_parser_entry (parser stall watchdog + BSR reset)"
+    )
 
     standby_start = control_text.find("flow_display_state_entry_126E:")
     standby_end = control_text.find("reconnect_wait_loop:", standby_start)
@@ -103,7 +110,11 @@ def test_v171_v32_standby_wake_pair_contracts_line_up() -> None:
         "subwf   volume_cache, W, B",
         "subwf   cmd1d_setting_cache, W, B",
         "subwf   raw_status_cache, W, B",
-        "movlb   0x00                                       ; rx_parser_entry may drift BSR",
+        # Post-838cebf: the reconnect WAITING loop uses
+        # `v171_service_rx_frame_gap` after `rx_parser_entry` both for
+        # parser-stall watchdog and as the BSR=0 reset the BANKED
+        # sentinel compares depend on (helper entry = `movlb 0x00`).
+        "call    v171_service_rx_frame_gap, 0x0",
         "v171_reconnect_wait_done:",
         "call    standby_wake_broadcast, 0x0",
     ):

@@ -103,19 +103,17 @@ def test_v171_source_replaces_reconnect_loop_with_sentinel_body() -> None:
         "subwf   cmd1d_setting_cache, W, B",
         "subwf   raw_status_cache, W, B",
         "call    rx_parser_entry, 0x0",
+        # `v171_service_rx_frame_gap` sits right after `rx_parser_entry`
+        # and performs the parser-stall watchdog PLUS a `movlb 0x00`
+        # entry (which also doubles as the post-`rx_parser_entry` BSR
+        # reset the sentinel compares rely on).  Its presence here is
+        # required both for liveness (V32_MAIN_HANG_HARDENING_PLAN §2)
+        # and to guarantee BSR=0 for the subsequent BANKED compares.
+        "call    v171_service_rx_frame_gap, 0x0",
     ):
         assert marker in loop_body, (
             f"sentinel loop must compare cached reconnect sentinels in BANKED mode: {marker!r}"
         )
-    # BSR must be restored to 0 after rx_parser_entry (which may drift it)
-    # before the BANKED subwf/clrf sequence that follows.  Either an explicit
-    # `movlb 0x00` immediately after the call, or the `call
-    # v171_service_rx_frame_gap` helper (whose first instruction is
-    # `movlb 0x00`) satisfies the contract.
-    assert (
-        "movlb   0x00" in loop_body
-        or "call    v171_service_rx_frame_gap" in loop_body
-    ), "BSR must be reset after rx_parser_entry before BANKED sentinel compares"
 
 
 def test_v171_source_embeds_uart_soft_recover_in_sentinel_loop() -> None:
@@ -144,9 +142,9 @@ def test_v171_cold_wait_restores_bsr_before_sentinel_compares() -> None:
     """The cold WAITING loop must read the real sentinel cache bank after parser.
 
     BSR must be 0 for the BANKED sentinel compares that follow
-    `rx_parser_entry`.  Either an explicit `movlb 0x00` or the
-    `v171_service_rx_frame_gap` helper (whose first instruction is
-    `movlb 0x00`) satisfies the contract.
+    `rx_parser_entry`.  Require the `v171_service_rx_frame_gap`
+    helper call — it's the post-hardening BSR-reset-cum-watchdog for
+    this loop, and its first instruction is `movlb 0x00`.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     start = text.find("flow_ccs_0FA0_118C:")
@@ -154,10 +152,11 @@ def test_v171_cold_wait_restores_bsr_before_sentinel_compares() -> None:
     assert start >= 0 and end > start
     wait_body = text[start:end]
     assert "call    rx_parser_entry, 0x0" in wait_body
-    assert (
-        "movlb   0x00" in wait_body
-        or "call    v171_service_rx_frame_gap" in wait_body
-    ), "BSR must be reset after rx_parser_entry before BANKED sentinel compares"
+    assert "call    v171_service_rx_frame_gap, 0x0" in wait_body, (
+        "cold WAITING loop must call v171_service_rx_frame_gap after "
+        "rx_parser_entry (parser-stall watchdog + BSR reset for "
+        "BANKED sentinel compares)"
+    )
 
 
 def test_v171_source_emits_wake_and_reseeds_idle_timer_on_loop_exit() -> None:
