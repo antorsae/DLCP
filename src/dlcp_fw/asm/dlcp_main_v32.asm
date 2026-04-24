@@ -2568,115 +2568,61 @@ main_i2c_service_2100:
     movlw       0xE1
     rcall       ram_block_clear_4
     call        i2c_wait_bus_idle, 0x0
+
+    ; --- Part 2: dispatch six (ram_0x0A0, ram_0x0B9) writes via FSR1
+    ; -------------------------------------------------------------------
+    ; Replaces a 6-way xorlw chain + 6 switch targets (~94 B) with a
+    ; table-driven loop that pulls the 12-bit destination out of the
+    ; packed `main_i2c_service_2100_dispatch_table`.  TBLPTR is re-seeded
+    ; every iteration because `main_core_service_4448` uses TBLRD
+    ; internally and therefore does not preserve it.
+    ; -------------------------------------------------------------------
     clrf        ram_0x059, ACCESS
 flow_main_i2c_service_2100_217a:
+    rlncf       ram_0x059, W, ACCESS                ; W = counter * 2
+    addlw       LOW(main_i2c_service_2100_dispatch_table)
+    movwf       TBLPTRL, ACCESS
+    movlw       HIGH(main_i2c_service_2100_dispatch_table)
+    movwf       TBLPTRH, ACCESS
+    clrf        TBLPTRU, ACCESS
+    tblrd*+
+    movff       TABLAT, FSR1L
+    tblrd*+
+    movff       TABLAT, FSR1H
     movf        ram_0x059, W, ACCESS
     movlb       0x0
     addlw       0x60
     call        fsr2_page0_read_w, 0x0               ; W04-E03
     call        main_core_service_4448, 0x0
-    bra         flow_main_i2c_service_2100_21c8
-flow_main_i2c_service_2100_218c:
-    movff       ram_0x0A0, ram_0x0D7
-    movff       ram_0x0B9, ram_0x0D8
-    bra         flow_main_i2c_service_2100_21e0
-flow_main_i2c_service_2100_2196:
-    movff       ram_0x0A0, ram_0x0DB
-    movff       ram_0x0B9, ram_0x0DC
-    bra         flow_main_i2c_service_2100_21e0
-flow_main_i2c_service_2100_21a0:
-    movff       ram_0x0A0, ram_0x0DF
-    movff       ram_0x0B9, ram_0x0E0
-    bra         flow_main_i2c_service_2100_21e0
-flow_main_i2c_service_2100_21aa:
-    movff       ram_0x0A0, ram_0x1D9
-    movff       ram_0x0B9, ram_0x1DA
-    bra         flow_main_i2c_service_2100_21e0
-flow_main_i2c_service_2100_21b4:
-    movff       ram_0x0A0, ram_0x0E4
-    movff       ram_0x0B9, ram_0x0E5
-    bra         flow_main_i2c_service_2100_21e0
-flow_main_i2c_service_2100_21be:
-    movff       ram_0x0A0, ram_0x1E0
-    movff       ram_0x0B9, ram_0x1E1
-    bra         flow_main_i2c_service_2100_21e0
-flow_main_i2c_service_2100_21c8:
-    movf        ram_0x059, W, ACCESS
-    bz          flow_main_i2c_service_2100_218c
-    xorlw       0x01
-    bz          flow_main_i2c_service_2100_2196
-    xorlw       0x03
-    bz          flow_main_i2c_service_2100_21a0
-    xorlw       0x01
-    bz          flow_main_i2c_service_2100_21aa
-    xorlw       0x07
-    bz          flow_main_i2c_service_2100_21b4
-    xorlw       0x01
-    bz          flow_main_i2c_service_2100_21be
-flow_main_i2c_service_2100_21e0:
+    movff       ram_0x0A0, POSTINC1
+    movff       ram_0x0B9, INDF1
     incf        ram_0x059, F, ACCESS
     movlw       0x05
     cpfsgt      ram_0x059, ACCESS
     bra         flow_main_i2c_service_2100_217a
+
+    ; --- Part 3: 7 I2C transactions with source-table indexed copy ------
+    ; Replaces a 7-way xorlw chain + 7 switch targets (~154 B) with a
+    ; table lookup into `main_i2c_service_2100_source_table` plus a
+    ; 4-byte movff copy through FSR1.  The I2C transaction body below is
+    ; unchanged from the pre-rewrite function.
+    ; -------------------------------------------------------------------
     clrf        ram_0x05A, ACCESS
-    bra         flow_main_i2c_service_2100_226a
-flow_main_i2c_service_2100_21ec:
-    movff       ram_0x0D7, ram_0x06A
-    movff       ram_0x0D8, ram_0x06B
-    movff       ram_0x0D9, ram_0x06C
-    movff       ram_0x0DA, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
-flow_main_i2c_service_2100_21fe:
-    movff       ram_0x0DB, ram_0x06A
-    movff       ram_0x0DC, ram_0x06B
-    movff       ram_0x0DD, ram_0x06C
-    movff       ram_0x0DE, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
-flow_main_i2c_service_2100_2210:
-    movff       ram_0x0DF, ram_0x06A
-    movff       ram_0x0E0, ram_0x06B
-    movff       ram_0x0E1, ram_0x06C
-    movff       ram_0x0E2, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
-flow_main_i2c_service_2100_2222:
-    movff       ram_0x1D9, ram_0x06A
-    movff       ram_0x1DA, ram_0x06B
-    movff       ram_0x1DB, ram_0x06C
-    movff       ram_0x1DC, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
-flow_main_i2c_service_2100_2234:
-    movff       ram_0x0E3, ram_0x06A
-    movff       ram_0x0E4, ram_0x06B
-    movff       ram_0x0E5, ram_0x06C
-    movff       ram_0x0E6, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
-flow_main_i2c_service_2100_2246:
-    movff       ram_0x1DD, ram_0x06A
-    movff       ram_0x1DE, ram_0x06B
-    movff       ram_0x1DF, ram_0x06C
-    movff       ram_0x1E0, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
-flow_main_i2c_service_2100_2258:
-    movff       ram_0x1E1, ram_0x06A
-    movff       ram_0x1E2, ram_0x06B
-    movff       ram_0x1E3, ram_0x06C
-    movff       ram_0x1E4, ram_0x06D
-    bra         flow_main_i2c_service_2100_2286
 flow_main_i2c_service_2100_226a:
-    movf        ram_0x05A, W, ACCESS
-    bz          flow_main_i2c_service_2100_21ec
-    xorlw       0x01
-    bz          flow_main_i2c_service_2100_21fe
-    xorlw       0x03
-    bz          flow_main_i2c_service_2100_2210
-    xorlw       0x01
-    bz          flow_main_i2c_service_2100_2222
-    xorlw       0x07
-    bz          flow_main_i2c_service_2100_2234
-    xorlw       0x01
-    bz          flow_main_i2c_service_2100_2246
-    xorlw       0x03
-    bz          flow_main_i2c_service_2100_2258
+    rlncf       ram_0x05A, W, ACCESS                ; W = counter * 2
+    addlw       LOW(main_i2c_service_2100_source_table)
+    movwf       TBLPTRL, ACCESS
+    movlw       HIGH(main_i2c_service_2100_source_table)
+    movwf       TBLPTRH, ACCESS
+    clrf        TBLPTRU, ACCESS
+    tblrd*+
+    movff       TABLAT, FSR1L
+    tblrd*+
+    movff       TABLAT, FSR1H
+    movff       POSTINC1, ram_0x06A
+    movff       POSTINC1, ram_0x06B
+    movff       POSTINC1, ram_0x06C
+    movff       INDF1, ram_0x06D
 flow_main_i2c_service_2100_2286:
     bsf         SSPCON2, 0, ACCESS
 flow_main_i2c_service_2100_2288:
@@ -2749,6 +2695,42 @@ flow_main_i2c_service_2100_231a:
     cpfsgt      ram_0x05A, ACCESS
     bra         flow_main_i2c_service_2100_226a
     retlw       0x06
+
+
+; ---------------------------------------------------------------------------
+; Data: main_i2c_service_2100_dispatch_table  (part 2, 6 entries × 2 B)
+; ---------------------------------------------------------------------------
+; Each entry is (FSR1L, FSR1H) for the destination pair written by part 2
+; of main_i2c_service_2100.  Counter 0..5 selects the entry; writes
+; (ram_0x0A0, ram_0x0B9) at (dest, dest+1).  Matches the old 6-way xorlw
+; switch byte-for-byte:
+;   counter 0 -> ram_0x0D7/0x0D8  (bank 0)
+;   counter 1 -> ram_0x0DB/0x0DC  (bank 0)
+;   counter 2 -> ram_0x0DF/0x0E0  (bank 0)
+;   counter 3 -> ram_0x1D9/0x1DA  (bank 1)
+;   counter 4 -> ram_0x0E4/0x0E5  (bank 0)
+;   counter 5 -> ram_0x1E0/0x1E1  (bank 1)
+; ---------------------------------------------------------------------------
+main_i2c_service_2100_dispatch_table:
+    db  0xD7, 0x00, 0xDB, 0x00, 0xDF, 0x00, 0xD9, 0x01, 0xE4, 0x00, 0xE0, 0x01
+
+
+; ---------------------------------------------------------------------------
+; Data: main_i2c_service_2100_source_table  (part 3, 7 entries × 2 B)
+; ---------------------------------------------------------------------------
+; Each entry is (FSR1L, FSR1H) for the 4-byte source block that part 3
+; copies into ram_0x06A..0x06D before the DSP write transaction.  Matches
+; the old 7-way xorlw switch byte-for-byte:
+;   counter 0 -> ram_0x0D7..0x0DA  (bank 0)
+;   counter 1 -> ram_0x0DB..0x0DE  (bank 0)
+;   counter 2 -> ram_0x0DF..0x0E2  (bank 0)
+;   counter 3 -> ram_0x1D9..0x1DC  (bank 1)
+;   counter 4 -> ram_0x0E3..0x0E6  (bank 0)
+;   counter 5 -> ram_0x1DD..0x1E0  (bank 1)
+;   counter 6 -> ram_0x1E1..0x1E4  (bank 1)
+; ---------------------------------------------------------------------------
+main_i2c_service_2100_source_table:
+    db  0xD7, 0x00, 0xDB, 0x00, 0xDF, 0x00, 0xD9, 0x01, 0xE3, 0x00, 0xDD, 0x01, 0xE1, 0x01
 
 
 ; ---------------------------------------------------------------------------
