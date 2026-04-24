@@ -59,7 +59,7 @@ HELPER_SEQUENCE = (
     (r"movlw\s+0x64",                                "phase 4: timer3 low byte = 0x64 (100 ms)"),
     (r"r?call\s+timer3_blocking_delay(?:_ms_W)?(?:,|\b)", "phase 4: 100 ms settle (inline or via W04-E08 timer3_blocking_delay_ms_W factoring)"),
     (r"bcf\s+LATB,\s*3,\s*ACCESS",                   "phase 5: final amp gate LATB.3 -> 0"),
-    (r"goto\s+hard_reset",                           "phase 6: now do the RESET"),
+    (r"(?:goto|bra)\s+hard_reset",                   "phase 6: now do the RESET (tail-jump, goto or bra)"),
 )
 
 
@@ -142,10 +142,11 @@ def test_helper_sequence_is_in_order() -> None:
 
 
 def test_helper_terminates_with_goto_hard_reset() -> None:
-    """Last instruction in the helper must be ``goto hard_reset`` —
-    NOT ``call hard_reset`` (would consume a stack slot we don't
-    control on entry to the bootloader) and NOT a fall-through (the
-    next label is unrelated and would execute unintended code).
+    """Last instruction in the helper must be a tail-jump to hard_reset —
+    either ``goto hard_reset`` (4 B) or ``bra hard_reset`` (2 B) when in
+    range.  NOT ``call hard_reset`` (would consume a stack slot we don't
+    control on entry to the bootloader) and NOT a fall-through (the next
+    label is unrelated and would execute unintended code).
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
@@ -158,11 +159,11 @@ def test_helper_terminates_with_goto_hard_reset() -> None:
         if ln.strip() and not ln.strip().startswith(";")
     ]
     last = lines[-1].strip()
-    assert last == "goto        hard_reset", (
-        f"last helper instruction must be exactly 'goto hard_reset'; "
-        f"got {last!r}.  call hard_reset would consume a stack slot; "
-        f"any other instruction means the helper falls through into "
-        f"the next label's body."
+    assert re.match(r"(?:goto|bra)\s+hard_reset$", last), (
+        f"last helper instruction must be a tail-jump to hard_reset "
+        f"(goto or bra); got {last!r}.  call hard_reset would consume a "
+        f"stack slot; any other instruction means the helper falls "
+        f"through into the next label's body."
     )
 
 

@@ -932,8 +932,7 @@ flow_hid_command_dispatch_15aa:
 main_core_service_15b0:
     movlw       0x1A
     addwf       i2c_coeff_3, W, ACCESS
-    rcall       setup_fsr2_page_1_or_2
-    return      0
+    bra         setup_fsr2_page_1_or_2
 
 
 ; ---------------------------------------------------------------------------
@@ -2529,8 +2528,7 @@ ram_block_clear_4:
     movwf       ram_0x003, ACCESS
     movlw       0x04
     movwf       ram_0x005, ACCESS
-    call        ram_block_clear, 0x0
-    return      0
+    goto        ram_block_clear
 
 
 ; ---------------------------------------------------------------------------
@@ -5765,7 +5763,7 @@ main_i2c_service_39a6:
     movf        ram_0x052, W, ACCESS
     rcall       i2c_byte_tx
     movf        ram_0x051, W, ACCESS
-    goto        i2c_byte_tx
+    bra         i2c_byte_tx
 
 
 ; ---------------------------------------------------------------------------
@@ -7659,7 +7657,7 @@ main_uart_service_44b2:
     movlw       0x0D
     rcall       uart_tx_byte_blocking
     movlw       0x0A
-    goto        uart_tx_byte_blocking
+    bra         uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
 ; Helper: clrf_i2c_coeff_0123_and_write        (W03-E02 size-opt helper)
@@ -8084,7 +8082,7 @@ flow_main_core_service_4672_467c:
     movlw       0x1C
     rcall       main_uart_service_44b2
     movlw       0x1C
-    goto        main_uart_service_44b2
+    bra         main_uart_service_44b2
 
 
 ; ---------------------------------------------------------------------------
@@ -8422,7 +8420,7 @@ periodic_service_loop:
     rcall       standby_event_dispatch
     call        main_core_service_265c, 0x0
     rcall       ra1_edge_monitor                    ; V3.2 Layer 5: diag_p edge counter
-    goto        an0_hysteresis_monitor
+    bra         an0_hysteresis_monitor
 
 ; ---------------------------------------------------------------------------
 ; ra1_edge_monitor — V3.2 Layer 5 RA1 edge counter (diag_p)
@@ -8641,7 +8639,7 @@ uart_tx_timeout:
     movf        ram_0x003, W, ACCESS
     return      0
 v31_hard_reset_jump2:
-    goto        hard_reset
+    bra         hard_reset
 
 
 ; ---------------------------------------------------------------------------
@@ -8807,7 +8805,7 @@ flash_entry_quiet_shutdown:
     movlw       0x64                            ; (4) 100 ms timer3 settle
     rcall       timer3_blocking_delay_ms_W      ;     (W04-E08 factored)
     bcf         LATB, 3, ACCESS                 ; (5) final amp gate down
-    goto        hard_reset                      ; (6) now do the RESET
+    bra         hard_reset                      ; (6) now do the RESET
 
 
 ; ---------------------------------------------------------------------------
@@ -8841,7 +8839,7 @@ flow_main_usb_service_490c_4918:
     btfsc       UCON, 3, ACCESS
     rcall       main_usb_service_4828
     clrf        usb_reinit_pending, BANKED
-    goto        main_usb_service_475c
+    bra         main_usb_service_475c
 
 
 ; ---------------------------------------------------------------------------
@@ -8853,7 +8851,7 @@ main_core_service_4924:
     movlw       0x03
     movwf       ram_0x004, ACCESS
     clrf        ram_0x003, ACCESS
-    goto        flow_main_usb_service_4812_481e
+    bra         flow_main_usb_service_4812_481e
 
 
 ; ---------------------------------------------------------------------------
@@ -8865,7 +8863,7 @@ main_core_service_492e:
     clrf        ram_0x004, ACCESS
     movlw       0x01
     movwf       ram_0x003, ACCESS
-    goto        timer3_blocking_delay
+    bra         timer3_blocking_delay
 
 
 ; ---------------------------------------------------------------------------
@@ -8902,7 +8900,7 @@ main_core_service_4942:
     clrf        ram_0x004, ACCESS
     movlw       0x02
     movwf       ram_0x003, ACCESS
-    goto        timer3_blocking_delay
+    bra         timer3_blocking_delay
 
 
 ; ---------------------------------------------------------------------------
@@ -9055,8 +9053,7 @@ send_dsp_fault_status:
     movlw       0x08
     rcall       uart_tx_byte_blocking
     movf        ram_0x00D, W, ACCESS
-    rcall       uart_tx_byte_blocking
-    return      0
+    bra         uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
 ; cmd 0x21 — Diagnostics counter reply burst (V3.2 Layer 5)
@@ -9253,8 +9250,7 @@ volume_dsp_write:
     bcf         dsp_fault_flags, 6, BANKED  ; clear DSP fault (write worked)
     movlw       0xC7
     andwf       dsp_fault_flags, F, BANKED  ; clear retry counter, preserve bits 7,6
-    rcall       send_dsp_fault_status
-    return      0
+    bra         send_dsp_fault_status
 vol_write_nacked:
     movlw       0x08
     addwf       dsp_fault_flags, F, BANKED  ; bump retry [5:3]
@@ -9355,8 +9351,7 @@ preset_job_apply_i2c_done:
     bcf         STATUS, 0, ACCESS           ; C=0: success / benign no-op
     return      0
 preset_job_apply_i2c_timeout:
-    rcall       preset_job_apply_i2c_recover
-    return      0
+    bra         preset_job_apply_i2c_recover
 
 ; ---------------------------------------------------------------------------
 ; Preset Select Handler (V3.2 non-blocking — cmd=0x20)
