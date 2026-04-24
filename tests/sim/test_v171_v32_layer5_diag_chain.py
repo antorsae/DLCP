@@ -1027,8 +1027,11 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     ("PBn" / "OK" or "PBn: X# X# ..." across two menu states).
 
     The exit assertion therefore checks that the LCD no longer starts
-    with the Diag-page prefix "PB" -- it doesn't matter which screen
-    we landed on, only that the LEFT press took effect.
+    with any Diagnostics-page prefix ("PB1" or "PB2") — it doesn't
+    matter which non-Diag screen we landed on, only that the LEFT
+    press took effect.  Matching both "PB1" and "PB2" here means a
+    hypothetical LEFT→RIGHT misdecode (landing on PB2 Diag instead of
+    exiting the page) does NOT false-pass the test.
 
     Test shape:
       1. Reach DISPLAY, navigate to Diag.
@@ -1060,12 +1063,15 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
             f"LCD={line0_diag!r}"
         )
         # Single LEFT press, bounded settle window.
+        # Match "PB1" AND "PB2" to treat a LEFT→RIGHT misdecode (which
+        # would land on PB2 Diag instead of exiting the page) as NOT
+        # exit-seen — otherwise the test would false-pass.
         chain.press("LEFT")
         exit_seen = False
         for step in range(12):
             chain.step()
             line0, _ = chain.lcd_lines()
-            if not line0.startswith("PB1"):
+            if not line0.startswith(("PB1", "PB2")):
                 exit_seen = True
                 break
         assert exit_seen, (
