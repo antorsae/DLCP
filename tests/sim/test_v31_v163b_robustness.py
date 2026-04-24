@@ -68,6 +68,33 @@ def _boot_and_activate(harness: MainChainHarness) -> None:
     assert _read_reg(harness._issue, _STATUS_5E) & 0x08, "MAIN not active"
 
 
+def _wait_for_uart_settled(
+    harness: MainChainHarness,
+    *,
+    limit: int = 80,
+) -> None:
+    """Poll until the V3.2 wake path finishes arming the UART and clears
+    the native RX ring.  The trailing main_uart_service_4938 call in
+    adc_boot_gate_exit runs `goto uart_parser_resync` which zeros
+    rx_ring_rd/wr; any frame injected before that clear is wiped.  The
+    V3.2 wake-path hardening checkpoint (9ab78d4) grew that tail enough
+    that _boot_and_activate's fixed 20-step post-wake wait no longer
+    reliably lands after the clear.  Call this helper before injecting
+    any parse-dependent frame (e.g. cmd 0x20 preset-select).  Only the
+    preset-job / command-parser tests need it; other tests like the
+    MSSP / DSP-ping path rely on observing MAIN mid-wake."""
+    for _ in range(limit):
+        rcsta = _read_reg(harness._issue, 0xFAB)  # RCSTA SFR
+        rx_wr = _read_reg(harness._issue, 0x0C7)  # rx_ring_wr
+        if (rcsta & 0x90) == 0x90 and rx_wr == 0:
+            return
+        harness.step()
+    raise AssertionError(
+        f"wake never reached quiescent UART state within {limit} steps: "
+        f"RCSTA=0x{rcsta:02X} rx_wr=0x{rx_wr:02X}"
+    )
+
+
 def _new_main_harness(main_hex: Path) -> MainChainHarness:
     return MainChainHarness(
         main_hex,
@@ -511,20 +538,29 @@ def test_v32_main_pen_timeout_recovers() -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_async_apply_stop_timeout_keeps_main_loop_responsive() -> None:
-    """A stuck STOP during async APPLY must return to the main loop."""
+    """A stuck STOP during async APPLY must return to the main loop.
+
+    Arms the persistent STOP fault BEFORE injecting the preset-select
+    frame so the first APPLY iteration hits the fault — otherwise the
+    harness's chunk_cycles=200_000 lets several APPLY entries complete
+    before we can observe state=3 and set the fault.
+    """
     _require_gpsim()
     _skip_missing(V32_MAIN_HEX)
 
     harness = _new_main_harness(V32_MAIN_HEX)
     try:
         _boot_and_activate(harness)
+        _wait_for_uart_settled(harness)
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         _inject_main_frame(harness, cmd=0x20, data=0x01)
         _wait_for_preset_job_state(harness, 0x03)
         assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
-            "async APPLY advanced past the first table entry before the STOP fault test armed"
+            "async APPLY advanced past the first table entry even though the "
+            "STOP fault was armed before preset-select"
         )
 
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
+        # Re-arm coalescing: second preset command while retry loop is running.
         _inject_main_frame(harness, cmd=0x20, data=0x00)
         for _ in range(8):
             harness.step()
@@ -546,22 +582,32 @@ def test_v32_async_apply_stop_timeout_keeps_main_loop_responsive() -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_async_apply_stop_timeout_does_not_advance_index() -> None:
-    """A timed-out APPLY entry must stay queued until the fault clears."""
+    """A timed-out APPLY entry must stay queued until the fault clears.
+
+    Same arm-first ordering as _keeps_main_loop_responsive: the fault
+    must be active from the very first APPLY iteration, otherwise the
+    chunk_cycles granularity (~200 k cycles per step) lets APPLY complete
+    several table entries before we can observe state=3 and arm.
+    """
     _require_gpsim()
     _skip_missing(V32_MAIN_HEX)
 
     harness = _new_main_harness(V32_MAIN_HEX)
     try:
         _boot_and_activate(harness)
+        _wait_for_uart_settled(harness)
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         _inject_main_frame(harness, cmd=0x20, data=0x01)
         _wait_for_preset_job_state(harness, 0x03)
 
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         index_before = _read_reg(harness._issue, _PRESET_JOB_INDEX)
         for _ in range(12):
             harness.step()
 
-        assert index_before == 0x00, "test setup expected the first APPLY entry to be pending"
+        assert index_before == 0x00, (
+            f"test setup expected the first APPLY entry to be pending; "
+            f"got index_before=0x{index_before:02X}"
+        )
         assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == index_before, (
             "async APPLY index advanced while STOP timeout recovery was still retrying"
         )
@@ -575,16 +621,20 @@ def test_v32_async_apply_stop_timeout_does_not_advance_index() -> None:
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_async_apply_stop_timeout_recovers_and_completes() -> None:
-    """Clearing a STOP fault must let the same async APPLY job finish cleanly."""
+    """Clearing a STOP fault must let the same async APPLY job finish cleanly.
+
+    Arm-first ordering (see _keeps_main_loop_responsive for rationale).
+    """
     _require_gpsim()
     _skip_missing(V32_MAIN_HEX)
 
     harness = _new_main_harness(V32_MAIN_HEX)
     try:
         _boot_and_activate(harness)
+        _wait_for_uart_settled(harness)
+        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         _inject_main_frame(harness, cmd=0x20, data=0x01)
         _wait_for_preset_job_state(harness, 0x03)
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
         for _ in range(8):
             harness.step()
         assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
