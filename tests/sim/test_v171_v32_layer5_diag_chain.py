@@ -1021,9 +1021,14 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diag from
     state 2 (between Preset and Input) to states 4-5 (after Setup),
     so a single LEFT press from PB1 Diag(4) now lands on Setup(3),
-    not Preset(1).  The exit assertion just checks that the LCD no
-    longer starts with the diag prefix "1:" -- it doesn't matter
-    which screen we landed on, only that the LEFT press took effect.
+    not Preset(1).  Phase 3.4 (9bed274, 2026-04-21) then rewrote the
+    Diag renderer from the legacy dual-PB layout ("1:IDSBRAP" /
+    "2:IDSBRAP" on one screen) to an Option-D sparse per-PB layout
+    ("PBn" / "OK" or "PBn: X# X# ..." across two menu states).
+
+    The exit assertion therefore checks that the LCD no longer starts
+    with the Diag-page prefix "PB" -- it doesn't matter which screen
+    we landed on, only that the LEFT press took effect.
 
     Test shape:
       1. Reach DISPLAY, navigate to Diag.
@@ -1046,9 +1051,13 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
         for _ in range(40):
             chain.step()
         # Confirm we ARE on the Diag page (sanity check before testing exit).
+        # Phase 3.4: PB1 Diag state renders row 0 as "PB1" + 13 spaces (idle)
+        # OR "PB1: X# ..." (one-or-more non-zero counters).  Either way the
+        # row starts with "PB1".
         line0_diag, _ = chain.lcd_lines()
-        assert line0_diag.startswith("1:"), (
-            f"chain did not reach Diag page after navigation; LCD={line0_diag!r}"
+        assert line0_diag.startswith("PB1"), (
+            f"chain did not reach PB1 Diag page after navigation; "
+            f"LCD={line0_diag!r}"
         )
         # Single LEFT press, bounded settle window.
         chain.press("LEFT")
@@ -1056,7 +1065,7 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
         for step in range(12):
             chain.step()
             line0, _ = chain.lcd_lines()
-            if not line0.startswith("1:"):
+            if not line0.startswith("PB1"):
                 exit_seen = True
                 break
         assert exit_seen, (
