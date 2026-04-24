@@ -31,8 +31,12 @@
 ;   0x1A2 (EEPROM 0x02) = 0xA1
 ;   0x1A3 (EEPROM 0x03) = 0xA0
 ;   0x1A4 (EEPROM 0x04) = 0xA4   (input_select)
-;   0x1A5 (EEPROM 0x05) = 0xFF   (untouched; init default)
-;   0x1A6 (EEPROM 0x06) = 0xFF   (untouched)
+;   0x1A5 (EEPROM 0x05) — not part of the contract; untouched by the
+;                          function.  gpsim boots EEPROM to 0x00 and the
+;                          harness doesn't snapshot a pre-run baseline,
+;                          so the Python runner deliberately omits this
+;                          offset from its assertions.
+;   0x1A6 (EEPROM 0x06) — same: not asserted.
 ;   0x1A7 (EEPROM 0x07) = 0xA7   (ram_0x060)
 ;   0x1A8 (EEPROM 0x08) = 0xA8
 ;   0x1A9 (EEPROM 0x09) = 0xA9
@@ -55,9 +59,10 @@ UT_EEPROM_BUF_BANK1_LO      EQU  0xA0        ; BANKED, BSR=1 -> 0x01A0
 
 
 ; The V3.2 source ends with `org 0xF00000` for the EEPROM data block.
-; Re-seat the address to code space so gpasm emits our harness as program
-; memory.  0x4A80 sits above the current last_used byte (~0x49E1 at
-; HEAD) but well below the Preset B anchor at 0x4C00.
+; Re-seat the address to code space so gpasm emits our harness as
+; program memory.  0x4A80 sits well above the current last_used byte
+; (verify with the assembled `.lst` if V3.2 grows past it) and below
+; the Preset B anchor at 0x4C00 — anywhere in that band is safe.
         org 0x4A80
 
 unit_test_entry:

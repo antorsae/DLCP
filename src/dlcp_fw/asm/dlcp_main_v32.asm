@@ -3177,127 +3177,41 @@ main_core_service_2650:
 
 
 ; ---------------------------------------------------------------------------
-; Function: main_core_service_265c
-; Address : 0x265C
-; Notes   : Inferred core helper routine. Calls: main_flash_service_46de.
+; Function: main_core_service_265c        (EEPROM persistence service, V3.2)
+; Address : (renumbered by size-opt; see .lst)
+; ---------------------------------------------------------------------------
+; Dirty-flag-driven flush of volume / input / route / filter / filename
+; state bytes to internal EEPROM via main_flash_service_46de (read-then-
+; write-if-differ).  Gated on event_flags.bit0; for each set bit of
+; ram_0x0BD (bits 0..3 for the four static blocks + bits 4/5 for the
+; 0x50..0x5E loop and filename-persist call), emits a known set of
+; (eeprom_offset, ram_source) records.
+;
+; The 19 static records (blocks 0..3) live as a packed TBLRD-readable
+; table at `eeprom_persist_static_records` and are driven by the generic
+; `eeprom_persist_block_walker` helper below.  Block 4 (the 0x50..0x5E
+; filter window) and block 5 (the filename-persist tail) are already
+; structurally minimal and remain inline.
 ; ---------------------------------------------------------------------------
 main_core_service_265c:
     movlb       0x0
     btfss       event_flags, 0, BANKED
-    bra         flow_main_core_service_265c_27ee
-    btfss       ram_0x0BD, 0, BANKED
-    bra         flow_main_core_service_265c_26cc
-    clrf        ram_0x008, ACCESS
-    movlw       0x03
-    movwf       ram_0x007, ACCESS
-    movff       computed_volume, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x02
-    movwf       ram_0x007, ACCESS
-    movff       computed_volume_1, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
+    return      0
+    ; Seed TBLPTR at the packed records table so the block walker can
+    ; consume it sequentially across all four static blocks.
+    movlw       LOW(eeprom_persist_static_records)
+    movwf       TBLPTRL, ACCESS
+    movlw       HIGH(eeprom_persist_static_records)
+    movwf       TBLPTRH, ACCESS
+    clrf        TBLPTRU, ACCESS
     movlw       0x01
-    movwf       ram_0x007, ACCESS
-    movff       computed_volume_2, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    clrf        ram_0x007, ACCESS
-    movff       computed_volume_3, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
+    rcall       eeprom_persist_block_walker      ; block 0 (7 records)
+    movlw       0x02
+    rcall       eeprom_persist_block_walker      ; block 1 (6 records)
     movlw       0x04
-    movwf       ram_0x007, ACCESS
-    movff       input_select, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x0D
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x05F, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x14
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x0C3, ram_0x009
-    call        main_flash_service_46de, 0x0
-    movlb       0x0
-    bcf         ram_0x0BD, 0, BANKED
-flow_main_core_service_265c_26cc:
-    btfss       ram_0x0BD, 1, BANKED
-    bra         flow_main_core_service_265c_2728
-    clrf        ram_0x008, ACCESS
-    movlw       0x07
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x060, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
+    rcall       eeprom_persist_block_walker      ; block 2 (2 records)
     movlw       0x08
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x061, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x09
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x062, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x0A
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x063, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x0B
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x064, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x0C
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x065, ram_0x009
-    call        main_flash_service_46de, 0x0
-    movlb       0x0
-    bcf         ram_0x0BD, 1, BANKED
-flow_main_core_service_265c_2728:
-    btfss       ram_0x0BD, 2, BANKED
-    bra         flow_main_core_service_265c_274c
-    clrf        ram_0x008, ACCESS
-    movlw       0x0F
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x0B4, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x0E
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x0B8, ram_0x009
-    call        main_flash_service_46de, 0x0
-    movlb       0x0
-    bcf         ram_0x0BD, 2, BANKED
-flow_main_core_service_265c_274c:
-    btfss       ram_0x0BD, 3, BANKED
-    bra         flow_main_core_service_265c_278c
-    clrf        ram_0x008, ACCESS
-    movlw       0x10
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x09B, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x11
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x09C, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x12
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x09D, ram_0x009
-    call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
-    movlw       0x13
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x09E, ram_0x009
-    call        main_flash_service_46de, 0x0
-    movlb       0x0
-    bcf         ram_0x0BD, 3, BANKED
+    rcall       eeprom_persist_block_walker      ; block 3 (4 records)
 flow_main_core_service_265c_278c:
     btfss       ram_0x0BD, 4, BANKED
     bra         flow_main_core_service_265c_27bc
@@ -3327,6 +3241,104 @@ flow_main_core_service_265c_27ec:
     bcf         event_flags, 0, BANKED
 flow_main_core_service_265c_27ee:
     return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: eeprom_persist_block_walker      (rewrite of main_core_service_265c)
+; ---------------------------------------------------------------------------
+; Processes one static-block's worth of (eeprom_offset, ram_src) records
+; from the packed table at `eeprom_persist_static_records`.
+;
+; Entry : W       = bit mask for this block (e.g. 0x01 for ram_0x0BD.bit0).
+;         TBLPTR  = points at the count byte for this block in the table.
+;                   Caller seeds TBLPTR once at the start of the table; the
+;                   walker advances it past the count byte and all records
+;                   so a subsequent call consumes the next block.
+; Effect: Reads the count byte.  Consumes `count` (offset, src_lo) pairs
+;         from TBLPTR.  If the mask bit is set in ram_0x0BD, each pair
+;         triggers a call to main_flash_service_46de with
+;             ram_0x008 = 0 (addr_hi),
+;             ram_0x007 = offset,
+;             ram_0x009 = *(bank 0 RAM at src_lo).
+;         The matching bit in ram_0x0BD is cleared iff the walk fired.
+;         BSR = 0 on exit (same contract as the inline version).
+; Scratch: ram_0x00A (mask save), ram_0x00B (gate), ram_0x013 (loop count),
+;          ram_0x003/4/7/8/9 (main_flash_service_46de I/O), FSR0.
+; ---------------------------------------------------------------------------
+eeprom_persist_block_walker:
+    movwf       ram_0x00A, ACCESS                ; save the bit mask
+    tblrd*+                                      ; fetch record count
+    movff       TABLAT, ram_0x013
+    movf        ram_0x0BD, W, BANKED             ; BSR = 0 on entry
+    andwf       ram_0x00A, W, ACCESS
+    movwf       ram_0x00B, ACCESS                ; non-zero => do the work
+eeprom_persist_record_loop:
+    tblrd*+                                      ; fetch EEPROM offset
+    movff       TABLAT, ram_0x007
+    tblrd*+                                      ; fetch bank-0 src_lo
+    movff       TABLAT, FSR0L
+    clrf        FSR0H, ACCESS                    ; all source RAM in bank 0
+    movf        ram_0x00B, F, ACCESS             ; is the gate still set?
+    btfsc       STATUS, 2, ACCESS                ; Z => bit was clear
+    bra         eeprom_persist_record_next
+    clrf        ram_0x008, ACCESS
+    movff       INDF0, ram_0x009
+    call        main_flash_service_46de, 0x0
+eeprom_persist_record_next:
+    decfsz      ram_0x013, F, ACCESS
+    bra         eeprom_persist_record_loop
+    movf        ram_0x00B, F, ACCESS
+    btfsc       STATUS, 2, ACCESS                ; gate was clear: no bit to clear
+    return      0
+    movlb       0x0
+    comf        ram_0x00A, W, ACCESS             ; W = ~mask
+    andwf       ram_0x0BD, F, BANKED             ; drop only this block's bit
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Data: eeprom_persist_static_records
+; ---------------------------------------------------------------------------
+; Packed TBLRD-addressable table consumed by `eeprom_persist_block_walker`,
+; one record per pair of `(eeprom_offset, src_ram_lo)`.  Each block starts
+; with a 1-byte count header.  Block order mirrors the pre-rewrite
+; `btfss ram_0x0BD,N` sequence so the walker is driven by the same 4
+; calls in main_core_service_265c.
+;
+; All 42 bytes are emitted in a single `db` statement so gpasm packs them
+; into consecutive program-memory bytes with no inter-block 0x00 padding
+; (a separate `db <odd-length>` for each block would add one byte of
+; padding per block, which TBLRD*+ would misread as a zero offset/src).
+;
+; Layout (byte offset from table start):
+;   [ 0]  0x07                    ; block 0 count = 7 records
+;   [ 1]  0x03, 0x6E              ; rec 0: EEPROM[0x03] <- computed_volume   (0x06E)
+;   [ 3]  0x02, 0x6F              ; rec 1: EEPROM[0x02] <- computed_volume_1 (0x06F)
+;   [ 5]  0x01, 0x70              ; rec 2: EEPROM[0x01] <- computed_volume_2 (0x070)
+;   [ 7]  0x00, 0x71              ; rec 3: EEPROM[0x00] <- computed_volume_3 (0x071)
+;   [ 9]  0x04, 0x99              ; rec 4: EEPROM[0x04] <- input_select      (0x099)
+;   [11]  0x0D, 0x5F              ; rec 5: EEPROM[0x0D] <- ram_0x05F
+;   [13]  0x14, 0xC3              ; rec 6: EEPROM[0x14] <- ram_0x0C3
+;   [15]  0x06                    ; block 1 count = 6 records
+;   [16]  0x07, 0x60              ; rec 0: EEPROM[0x07] <- ram_0x060
+;   [18]  0x08, 0x61              ; rec 1: EEPROM[0x08] <- ram_0x061
+;   [20]  0x09, 0x62              ; rec 2
+;   [22]  0x0A, 0x63              ; rec 3
+;   [24]  0x0B, 0x64              ; rec 4
+;   [26]  0x0C, 0x65              ; rec 5
+;   [28]  0x02                    ; block 2 count = 2 records
+;   [29]  0x0F, 0xB4              ; rec 0: EEPROM[0x0F] <- ram_0x0B4
+;   [31]  0x0E, 0xB8              ; rec 1: EEPROM[0x0E] <- ram_0x0B8
+;   [33]  0x04                    ; block 3 count = 4 records
+;   [34]  0x10, 0x9B              ; rec 0: EEPROM[0x10] <- ram_0x09B
+;   [36]  0x11, 0x9C              ; rec 1
+;   [38]  0x12, 0x9D              ; rec 2
+;   [40]  0x13, 0x9E              ; rec 3 — table ends at byte 42
+; ---------------------------------------------------------------------------
+eeprom_persist_static_records:
+    ; 42 bytes total, emitted in one `db` statement so gpasm doesn't
+    ; pad any inter-block or end-of-statement byte to word alignment.
+    db  0x07, 0x03, 0x6E, 0x02, 0x6F, 0x01, 0x70, 0x00, 0x71, 0x04, 0x99, 0x0D, 0x5F, 0x14, 0xC3, 0x06, 0x07, 0x60, 0x08, 0x61, 0x09, 0x62, 0x0A, 0x63, 0x0B, 0x64, 0x0C, 0x65, 0x02, 0x0F, 0xB4, 0x0E, 0xB8, 0x04, 0x10, 0x9B, 0x11, 0x9C, 0x12, 0x9D, 0x13, 0x9E
 
 
 ; ---------------------------------------------------------------------------
