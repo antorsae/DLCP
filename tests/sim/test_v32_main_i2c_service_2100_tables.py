@@ -16,8 +16,6 @@ millisecond-scale guard that catches the most likely breakage
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from intelhex import IntelHex
 
@@ -55,9 +53,9 @@ SOURCE_TABLE_EXPECTED = [
 def v32_symbols_and_hex(tmp_path_factory: pytest.TempPathFactory):
     # Per-worker tmp build to avoid xdist races on the canonical release
     # hex (see tests/sim/test_v32_no_pop_flash_entry.py:71 for the same
-    # pattern).  Explicit output_lst so the sibling listing also lives
-    # under tmp and load_gpasm_symbols_for_hex can resolve it without
-    # falling back to the shared source-side `.lst`.
+    # pattern).  Explicit output_lst so the sibling listing lives next
+    # to the tmp hex; `load_gpasm_symbols_for_hex` will then resolve
+    # symbols from that tmp `.lst` directly.
     tmp = tmp_path_factory.mktemp("v32_i2c_2100_tables")
     hex_out = tmp / "DLCP_Firmware_V3.2.hex"
     lst_out = tmp / "DLCP_Firmware_V3.2.lst"
