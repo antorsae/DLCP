@@ -1393,6 +1393,66 @@ flow_rx_parser_entry_05EA:                                                  ; ad
 ;        v171_tx_saturate_count incremented on saturation
 ;        tx_data_staging, v171_tx_enq_retry are clobbered scratch
 ; ===========================================================================
+; tx_ring_reserve_3 — V1.71 atomic 3-byte frame guard
+; ---------------------------------------------------------------------------
+; Probes whether the TX ring has at least 3 free slots BEFORE a 3-byte
+; frame sender starts enqueueing. If so, the subsequent 3 tx_byte_enqueue
+; calls are guaranteed to commit (the main loop is the single producer
+; and the ISR only drains — ring_rd can only advance between our calls,
+; creating MORE room, never less). If not, returns C=1 without touching
+; tx_ring_wr — no partial frame can reach the wire.
+;
+; Motivation
+; ----------
+; Without this guard the 3-byte senders (v171_send_wake_cmd_frame,
+; v171_send_standby_cmd_frame, serial_tx_routed_frame, poll_frame_send)
+; could commit byte 1 (e.g. 0xB0 route), then saturate on byte 2 or 3.
+; MAIN's parser would see a partial frame header and either (a) drop it
+; via main_service_rx_frame_gap, or worse (b) fuse the next unrelated
+; TX byte into the standby/wake data slot — accidental state flip.
+; Making the 3-byte frame atomic eliminates that risk entirely.
+;
+; Saturation accounting
+; ---------------------
+; On saturation this helper bumps v171_tx_saturate_count the same way
+; tx_byte_enqueue does (saturating clamp at 0xFF), so the Layer 5
+; diagnostics counter still reflects dropped frames — now at FRAME
+; granularity rather than per-byte, which is what field investigation
+; actually wants to observe.
+;
+; Calling convention
+; ------------------
+;   in : (none)
+;   out: STATUS.C = 0  → ring has >= 3 free slots; caller safe to enqueue
+;        STATUS.C = 1  → saturated; caller MUST not enqueue (abort)
+;        v171_tx_saturate_count bumped on saturation (clamp at 0xFF)
+;        v171_tx_enq_retry clobbered (reused as scratch)
+; ===========================================================================
+tx_ring_reserve_3:
+        movf    tx_ring_rd, W, B                    ; W = rd
+        subwf   tx_ring_wr, W, B                    ; W = wr - rd (2's comp)
+        btfss   STATUS, C, A                        ; C=1 if wr >= rd (no borrow)
+        addlw   0x30                                 ; borrow: W = wr-rd+48 (mod 256 wraps back to occ)
+        addlw   0x03                                 ; W = occupancy + 3
+        movwf   v171_tx_enq_retry, A                ; scratch
+        movlw   0x30                                 ; 48 = ring capacity (one slot reserved)
+        cpfslt  v171_tx_enq_retry, A                ; skip next if (occ+3) < 48 → room OK
+        bra     tx_ring_reserve_3_saturated
+        bcf     STATUS, C, A
+        return  0x0
+
+tx_ring_reserve_3_saturated:
+        movlb   0x01
+        incfsz  v171_tx_saturate_count, F, BANKED
+        bra     tx_ring_reserve_3_sat_done
+        setf    v171_tx_saturate_count, BANKED       ; clamp at 0xFF
+tx_ring_reserve_3_sat_done:
+        movlb   0x00
+        bsf     STATUS, C, A
+        return  0x0
+
+
+; ===========================================================================
 ; tx_byte_enqueue:
 tx_byte_enqueue:                                               ; address: 0x0005ec
 
@@ -2223,17 +2283,18 @@ flow_settings_load_eeprom_0B10:                                                 
 ; serial_tx_routed_frame:
 serial_tx_routed_frame:                                               ; address: 0x000b16
 
+        ; V1.71 atomic 3-byte frame: reserve ring slots first so partial
+        ; frames cannot leak to the wire (see tx_ring_reserve_3 header).
+        rcall   tx_ring_reserve_3
+        bc      serial_tx_routed_frame_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         addwf   (Common_RAM + 51), W, A                     ; reg: 0x033
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      serial_tx_routed_frame_aborted
         movff   (Common_RAM + 52), tx_data_staging        ; reg1: 0x034, reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      serial_tx_routed_frame_aborted
         movff   (Common_RAM + 53), tx_data_staging        ; reg1: 0x035, reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      serial_tx_routed_frame_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
         return  0x0
@@ -2348,17 +2409,21 @@ v171_fs_try_step_6:
 ; poll_frame_send:
 poll_frame_send:                                               ; address: 0x000b64
 
+        ; V1.71 atomic 3-byte frame: reserve ring slots first (partial-
+        ; frame hazard for this emitter was low pre-fix since the
+        ; callers in WAITING loops are already cyclic, but closing the
+        ; hazard uniformly across all 3-byte senders simplifies the
+        ; saturation-counter semantics).
+        rcall   tx_ring_reserve_3
+        bc      poll_frame_send_aborted
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      poll_frame_send_aborted
         movlw   0x04                                        ; CMD status_poll
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      poll_frame_send_aborted
         clrf    tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      poll_frame_send_aborted
         return  0x0
 
 poll_frame_send_aborted:
@@ -2456,17 +2521,17 @@ flow_poll_frame_send_0C1E:                                                  ; ad
 ; input_frame_send:
 input_frame_send:                                               ; address: 0x000c22
 
+        ; V1.71 atomic 3-byte frame (see tx_ring_reserve_3 header).
+        rcall   tx_ring_reserve_3
+        bc      input_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      input_frame_send_aborted
         movlw   0x06                                        ; CMD input_select
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      input_frame_send_aborted
         movff   0x0b8, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      input_frame_send_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
         return  0x0
@@ -2485,17 +2550,17 @@ input_frame_send_aborted:
 ; volume_frame_send:
 volume_frame_send:                                               ; address: 0x000c40
 
+        ; V1.71 atomic 3-byte frame (see tx_ring_reserve_3 header).
+        rcall   tx_ring_reserve_3
+        bc      volume_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      volume_frame_send_aborted
         movlw   0x07                                        ; CMD volume (offset 0x60)
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      volume_frame_send_aborted
         movff   0x0b9, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      volume_frame_send_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
         return  0x0
@@ -2517,17 +2582,17 @@ volume_frame_send_aborted:
 ; cmd1d_setting_frame_send:
 cmd1d_setting_frame_send:                                               ; address: 0x000c5e
 
+        ; V1.71 atomic 3-byte frame (see tx_ring_reserve_3 header).
+        rcall   tx_ring_reserve_3
+        bc      cmd1d_setting_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      cmd1d_setting_frame_send_aborted
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         movwf   tx_data_staging, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      cmd1d_setting_frame_send_aborted
         movff   0x0a7, tx_data_staging                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        bc      cmd1d_setting_frame_send_aborted
         clrf    0x9f, B                                     ; reg: 0x09f
         clrf    0xa0, B                                     ; reg: 0x0a0
         return  0x0
@@ -3153,19 +3218,22 @@ v171_ir_endpoint_done:
 
 v171_send_standby_cmd_frame:
         ; Emit [0xB0, 0x03, 0x00] — broadcast CMD standby/wake with
-        ; data = 0 (standby).  Rides the normal TX pipeline via
-        ; tx_byte_enqueue.
+        ; data = 0 (standby).  V1.71 atomic: either all 3 bytes commit
+        ; or none do (see tx_ring_reserve_3 header for rationale).  On
+        ; saturation, returns C=1 with zero bytes on the wire — MAIN
+        ; cannot observe a partial frame.
+        ; `call` (not `rcall`) because tx_ring_reserve_3 lives in the
+        ; low-address helper cluster and is outside ±1024-word range.
+        call    tx_ring_reserve_3, 0x0
+        bc      v171_send_standby_cmd_frame_aborted
         movlw   0xB0
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_standby_cmd_frame_aborted
         movlw   0x03
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_standby_cmd_frame_aborted
         clrf    tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_standby_cmd_frame_aborted
         return  0x0
 
 v171_send_standby_cmd_frame_aborted:
@@ -3173,19 +3241,20 @@ v171_send_standby_cmd_frame_aborted:
 
 v171_send_wake_cmd_frame:
         ; Emit [0xB0, 0x03, 0x01] — broadcast CMD standby/wake with
-        ; data = 1 (wake).  Rides the normal TX pipeline.
+        ; data = 1 (wake).  V1.71 atomic; see v171_send_standby_cmd_frame
+        ; comment.  `call` for the same range reason as the standby
+        ; sibling above.
+        call    tx_ring_reserve_3, 0x0
+        bc      v171_send_wake_cmd_frame_aborted
         movlw   0xB0
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_wake_cmd_frame_aborted
         movlw   0x03
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_wake_cmd_frame_aborted
         movlw   0x01
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_wake_cmd_frame_aborted
         return  0x0
 
 v171_send_wake_cmd_frame_aborted:
@@ -3198,21 +3267,26 @@ v171_send_preset_frame_txonly:
         ; 1 when set (B).  Used by full_sync_burst's periodic emit so
         ; broadcasting preset every full-sync cycle does NOT chew
         ; through the EEPROM endurance budget (~100k writes/cell).
+        ;
+        ; V1.71 atomic: either all 3 bytes commit or none (partial
+        ; frames cannot fuse the next unrelated TX byte as "data").
+        ; `call` (not `rcall`) because this helper lives in the far
+        ; V1.71 inline-feature cluster, outside rcall range of
+        ; tx_ring_reserve_3.
         ; ---------------------------------------------------------------
+        call    tx_ring_reserve_3, 0x0
+        bc      v171_send_preset_frame_txonly_aborted
         movlw   0xB0                                     ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_preset_frame_txonly_aborted
         movlw   0x20                                     ; CMD preset_select
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_preset_frame_txonly_aborted
         clrf    WREG, A
         btfsc   control_flags, PRESET_BIT, A
         movlw   0x01
         movwf   tx_data_staging, A
         call    tx_byte_enqueue, 0x0
-        bc      v171_send_preset_frame_txonly_aborted
         return  0x0
 
 v171_send_preset_frame_txonly_aborted:
@@ -5029,7 +5103,22 @@ flow_reconnect_wait_loop_12CE:                                                  
         ; counter for an immediate burst, clear RECONNECT_WAIT_DONE
         ; (bit 5) and seed control_flags bit 0x032 = 1 so the
         ; post-connect path resumes correctly.
+        ;
+        ; V1.71 Layer B (atomic 3-byte fix): if the wake broadcast hit
+        ; a saturated TX ring (post-sentinel-clear traffic storm), the
+        ; atomic sender in serial_tx_routed_frame returns C=1 with
+        ; zero bytes on the wire.  Previously this was silently
+        ; ignored, leaving MAIN gates closed and the next user commands
+        ; dropped until the next full_sync_burst step-5 re-emit
+        ; (~480 ms later).  Robust fix: re-enter reconnect_wait_loop on
+        ; saturation — its mandatory `delay_short 0xC8` (~10 ms per
+        ; iteration) drains the TX ring while it polls MAIN, and the
+        ; 10.24 s grace-window + operator-recovery soft-reset bounds
+        ; the retry if saturation is persistent.
         call    standby_wake_broadcast, 0x0                 ; dest: 0x000c98
+        bnc     flow_reconnect_wait_loop_12CE_delivered
+        bra     reconnect_wait_loop                         ; retry whole reconnect cycle
+flow_reconnect_wait_loop_12CE_delivered:
         movlw   0x61
         movwf   idle_timeout_lo, BANKED                     ; 0x9D
         movlw   0xEA
@@ -6074,7 +6163,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x06                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x08                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
