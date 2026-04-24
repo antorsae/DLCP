@@ -4665,6 +4665,7 @@ v171_waiting_cold_past_grace_done:
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
+        call    v171_service_rx_frame_gap, 0x0             ; cold WAITING parser stall guard
         movlb   0x00                                       ; rx_parser_entry may drift BSR
         movlw   0x80
         subwf   0xb8, W, B                                  ; reg: 0x0b8
@@ -4951,6 +4952,7 @@ v171_reconnect_past_grace_done:
         movlw   0xc8
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
+        call    v171_service_rx_frame_gap, 0x0             ; reconnect WAITING parser stall guard
         movlb   0x00                                       ; rx_parser_entry may drift BSR
 
         ; Accumulate sentinel-cleared bits into ram_0x018.
@@ -6074,7 +6076,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x04                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x05                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
