@@ -16,10 +16,12 @@ millisecond-scale guard that catches the most likely breakage
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from intelhex import IntelHex
 
-from dlcp_fw.paths import V32_MAIN_ASM, V32_MAIN_HEX
+from dlcp_fw.paths import V32_MAIN_ASM
 from dlcp_fw.sim.v30_symbols import (
     assemble_v30,
     load_gpasm_symbols_for_hex,
@@ -50,11 +52,19 @@ SOURCE_TABLE_EXPECTED = [
 
 
 @pytest.fixture(scope="module")
-def v32_symbols_and_hex():
-    assemble_v30(V32_MAIN_ASM, V32_MAIN_HEX)
-    symbols = load_gpasm_symbols_for_hex(V32_MAIN_HEX)
+def v32_symbols_and_hex(tmp_path_factory: pytest.TempPathFactory):
+    # Per-worker tmp build to avoid xdist races on the canonical release
+    # hex (see tests/sim/test_v32_no_pop_flash_entry.py:71 for the same
+    # pattern).  Explicit output_lst so the sibling listing also lives
+    # under tmp and load_gpasm_symbols_for_hex can resolve it without
+    # falling back to the shared source-side `.lst`.
+    tmp = tmp_path_factory.mktemp("v32_i2c_2100_tables")
+    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
+    lst_out = tmp / "DLCP_Firmware_V3.2.lst"
+    assemble_v30(V32_MAIN_ASM, hex_out, output_lst=lst_out)
+    symbols = load_gpasm_symbols_for_hex(hex_out)
     assert symbols is not None, "gpasm listing missing — cannot resolve table addresses"
-    ih = IntelHex(str(V32_MAIN_HEX))
+    ih = IntelHex(str(hex_out))
     return symbols, ih
 
 

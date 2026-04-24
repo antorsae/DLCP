@@ -2574,8 +2574,9 @@ main_i2c_service_2100:
     ; Replaces a 6-way xorlw chain + 6 switch targets (~94 B) with a
     ; table-driven loop that pulls the 12-bit destination out of the
     ; packed `main_i2c_service_2100_dispatch_table`.  TBLPTR is re-seeded
-    ; every iteration because `main_core_service_4448` uses TBLRD
-    ; internally and therefore does not preserve it.
+    ; every iteration from counter*2 so the `tblrd*+` sequence always
+    ; starts at the current entry; callees are not audited to preserve
+    ; TBLPTR.
     ; -------------------------------------------------------------------
     clrf        ram_0x059, ACCESS
 flow_main_i2c_service_2100_217a:
