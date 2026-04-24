@@ -1429,6 +1429,17 @@ flow_rx_parser_entry_05EA:                                                  ; ad
 ;        v171_tx_enq_retry clobbered (reused as scratch)
 ; ===========================================================================
 tx_ring_reserve_3:
+        ; BSR safety: `tx_ring_rd` / `tx_ring_wr` are BANKED operands
+        ; (low-byte 0x96/0x97).  Bank 1 at the SAME low bytes holds
+        ; `v171_diag_target` / `v171_diag_present`, so if a caller
+        ; arrives with BSR=1 (IR dispatch path can enter with arbitrary
+        ; BSR) our probe would read wrong cells and either falsely
+        ; saturate (aborting a valid STDBY/WAKE frame) or falsely pass
+        ; + corrupt the downstream tx_byte_enqueue which has the same
+        ; BSR dependency.  Set BSR=0 at entry so the helper is BSR-
+        ; agnostic from the caller's perspective; the success path
+        ; leaves BSR=0 which is also what tx_byte_enqueue expects.
+        movlb   0x00
         movf    tx_ring_rd, W, B                    ; W = rd
         subwf   tx_ring_wr, W, B                    ; W = wr - rd (2's comp)
         btfss   STATUS, C, A                        ; C=1 if wr >= rd (no borrow)
@@ -6180,7 +6191,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x0A                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x0B                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
