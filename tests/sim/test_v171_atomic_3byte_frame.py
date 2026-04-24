@@ -1,9 +1,12 @@
 """V1.71 atomic 3-byte frame guard (closes silent-drop partial-frame hazard).
 
-Pins the ``tx_ring_reserve_3`` helper + the 4 wrapped 3-byte senders
-(``v171_send_wake_cmd_frame``, ``v171_send_standby_cmd_frame``,
-``serial_tx_routed_frame``, ``poll_frame_send``) + the Layer B retry
-at ``flow_reconnect_wait_loop_12CE``.
+Pins the ``tx_ring_reserve_3`` helper + all 8 wrapped 3-byte senders
+(see ``_SENDERS`` below — ``v171_send_wake_cmd_frame``,
+``v171_send_standby_cmd_frame``, ``serial_tx_routed_frame``,
+``poll_frame_send``, plus the full_sync_burst cohort
+``input_frame_send`` / ``volume_frame_send`` / ``cmd1d_setting_frame_send``
+/ ``v171_send_preset_frame_txonly``) + the Layer B retry at
+``flow_reconnect_wait_loop_12CE``.
 
 Motivation (see docs/V32_MAIN_HANG_HARDENING_PLAN.md §3b for operator-
 visible symptom):
@@ -32,7 +35,6 @@ assembled bytes.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 from intelhex import IntelHex
@@ -147,6 +149,17 @@ def test_sender_starts_with_atomic_reserve(v171_source: str, sender: str) -> Non
     )
 
 
+def _strip_asm_comments(body: str) -> str:
+    """Drop everything from the first `;` on each line.  Keeps the
+    leading whitespace so instruction patterns still match.  Needed so
+    that comments mentioning `bc <sender>_aborted` by name don't count
+    as actual branch instructions."""
+    out = []
+    for line in body.splitlines():
+        out.append(line.split(";", 1)[0])
+    return "\n".join(out)
+
+
 @pytest.mark.parametrize("sender", _SENDERS)
 def test_sender_has_no_inner_bc_abort(v171_source: str, sender: str) -> None:
     """After the atomic reserve, the 3 `tx_byte_enqueue` calls are
@@ -154,10 +167,11 @@ def test_sender_has_no_inner_bc_abort(v171_source: str, sender: str) -> None:
     checks are dead code; they must be removed so a future reader
     doesn't think partial-frame abort is still possible."""
     body = _slice_fn_body(v171_source, sender, f"{sender}_aborted")
+    body_no_comments = _strip_asm_comments(body)
 
     # Exactly one `bc <sender>_aborted` remains - the prologue check.
     # Anything > 1 means an old per-byte check slipped through.
-    aborts = re.findall(rf"\bbc\s+{sender}_aborted\b", body)
+    aborts = re.findall(rf"\bbc\s+{sender}_aborted\b", body_no_comments)
     assert len(aborts) == 1, (
         f"{sender}: expected exactly 1 `bc {sender}_aborted` (the atomic "
         f"prologue), found {len(aborts)}. "

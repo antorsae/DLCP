@@ -5112,9 +5112,21 @@ flow_reconnect_wait_loop_12CE:                                                  
         ; dropped until the next full_sync_burst step-5 re-emit
         ; (~480 ms later).  Robust fix: re-enter reconnect_wait_loop on
         ; saturation — its mandatory `delay_short 0xC8` (~10 ms per
-        ; iteration) drains the TX ring while it polls MAIN, and the
-        ; 10.24 s grace-window + operator-recovery soft-reset bounds
-        ; the retry if saturation is persistent.
+        ; iteration) drains the TX ring while it polls MAIN, giving
+        ; transient saturation a fast in-band recovery path.
+        ;
+        ; Note on grace-window interaction: reconnect_wait_loop clears
+        ; v171_waiting_grace_count_{lo,hi} on every re-entry, so the
+        ; 10.24 s auto-arm of the RIGHT/LEFT soft-reset escape does
+        ; NOT accumulate across saturation retries.  The operator
+        ; escape still works because button_scan_debounce runs every
+        ; iteration — we just don't auto-arm after N seconds of stuck
+        ; retries.  In practice saturation windows are bounded by
+        ; ir_rc5_decode's ISR block (~7-10 ms) + MAIN's response-burst
+        ; processing (<= a few ms), so 1-3 retry iterations typically
+        ; suffice.  Persistent saturation would indicate a wedged
+        ; downstream, in which case the 480 ms full_sync_burst step-5
+        ; fallback + manual operator escape remain the safety net.
         call    standby_wake_broadcast, 0x0                 ; dest: 0x000c98
         bnc     flow_reconnect_wait_loop_12CE_delivered
         bra     reconnect_wait_loop                         ; retry whole reconnect cycle
@@ -6163,7 +6175,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x08                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x09                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
