@@ -69,18 +69,23 @@ def build_v171_release(
     except RuntimeError as exc:
         raise RuntimeError(f"{exc} in {asm_path}") from exc
 
-    asm_path.write_text(updated_text, encoding="utf-8")
     source_lst = asm_path.with_suffix(".lst")
     # Mirror the V3.2 builder's `.lst` rollback so a failed gpasm run
     # cannot leave a partial listing beside the source.  V1.71 does not
     # currently have a symbol-resolution consumer for this listing, but
     # the symmetry keeps the release builders' failure semantics aligned.
-    original_lst = source_lst.read_bytes() if source_lst.exists() else None
+    original_lst: bytes | None = None
+    asm_modified = False
     output_hex.parent.mkdir(parents=True, exist_ok=True)
     tmpdir_obj = tempfile.TemporaryDirectory(prefix="v171_release_", dir=str(output_hex.parent))
     tmpdir = Path(tmpdir_obj.name)
     temp_hex = tmpdir / output_hex.name
+    build_ok = False
     try:
+        if source_lst.exists():
+            original_lst = source_lst.read_bytes()
+        asm_path.write_text(updated_text, encoding="utf-8")
+        asm_modified = True
         assemble_v17(
             asm_path,
             temp_hex,
@@ -88,15 +93,17 @@ def build_v171_release(
             gpasm=gpasm,
         )
         shutil.copy2(temp_hex, output_hex)
-    except Exception:
-        asm_path.write_text(original_text, encoding="utf-8")
-        if original_lst is None:
-            if source_lst.exists():
-                source_lst.unlink()
-        else:
-            source_lst.write_bytes(original_lst)
-        raise
+        build_ok = True
     finally:
+        if not build_ok:
+            # Rollback exceptions chain to the original via `__context__`.
+            if asm_modified:
+                asm_path.write_text(original_text, encoding="utf-8")
+            if original_lst is None:
+                if source_lst.exists():
+                    source_lst.unlink()
+            else:
+                source_lst.write_bytes(original_lst)
         tmpdir_obj.cleanup()
     release_lst = output_hex.with_suffix(".lst")
     if release_lst.exists() and release_lst.resolve() != source_lst.resolve():

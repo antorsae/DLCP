@@ -529,3 +529,5 @@ def test_build_v32_release_deletes_source_lst_if_none_existed_before(
         "build when no `.lst` existed before — next symbol lookup would "
         "silently consume it as canonical"
     )
+
+
