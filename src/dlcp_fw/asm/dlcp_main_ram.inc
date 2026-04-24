@@ -355,7 +355,19 @@ diag_reset_por              EQU  0x2ED    ; O — POR (Power-On Reset) fired thi
 diag_reset_bor              EQU  0x2EE    ; V — BOR (Brown-Out Reset / Voltage sag) fired
 diag_reset_wdt              EQU  0x2EF    ; W — WDT timeout fired
 diag_reset_sw               EQU  0x2F0    ; X — software-reset fired (panic / bootloader)
-; 0x2F1..0x2FF reserved (Tier-2 chain-link health counters + future)
+
+; ---------------------------------------------------------------------------
+; V3.2 UART parser / forwarder liveness hardening (V32_MAIN_HANG_HARDENING_PLAN §2)
+; ---------------------------------------------------------------------------
+; main_service_rx_frame_gap counts `periodic_service_loop` passes during
+; which `rx_frame_position != 0` (parser is mid-frame) AND the native
+; RX ring is empty.  Each stalled pass increments the counter; when it
+; wraps back to zero the parser state is force-reset.  On either "parser
+; idle" or "ring has data" the counter is cleared so the NEXT stall
+; starts its timeout from zero.
+main_rx_frame_gap_timeout   EQU  0x2F1    ; 0x00 = idle/fresh, counts up; wrap -> reset
+
+; 0x2F2..0x2FF reserved (Tier-2 chain-link health counters + future)
 
 ram_0x12C                   EQU  0x12C
 ram_0x12D                   EQU  0x12D

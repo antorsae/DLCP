@@ -7857,6 +7857,51 @@ uart_parser_resync:
 
 
 ; ---------------------------------------------------------------------------
+; Function: main_service_rx_frame_gap      (parser stall watchdog, V3.2)
+; ---------------------------------------------------------------------------
+; Polled once per `periodic_service_loop` pass, right after
+; `main_uart_service_1be6` drains whatever bytes are in the native RX
+; ring.  Closes the V32_MAIN_HANG_HARDENING_PLAN §2 "parser must not
+; wait forever" gap — previously the 3-byte frame assembler could be
+; left staged (route byte received, cmd/data bytes never arrived) and
+; the parser would accept an arbitrarily late continuation as part of
+; that stale frame.
+;
+; Semantics:
+;   * If `rx_frame_position == 0` (parser idle), clear the timeout and
+;     return — nothing to guard against.
+;   * If the RX ring still has bytes pending, the parser is about to
+;     make progress on the next pass; clear the timeout.
+;   * Otherwise the parser is stalled mid-frame.  Increment the
+;     timeout; when it wraps 0xFF → 0x00 (~256 periodic_service_loop
+;     passes), reset `rx_frame_position` and `active_flags.0` so the
+;     next byte is interpreted as a fresh route byte, then clear the
+;     timeout.
+; ---------------------------------------------------------------------------
+main_service_rx_frame_gap:
+    movlb       0x0
+    movf        rx_frame_position, F, BANKED
+    btfsc       STATUS, 2, ACCESS               ; Z = parser idle
+    bra         main_rx_frame_gap_idle
+    movf        rx_ring_wr, W, BANKED
+    cpfseq      rx_ring_rd, BANKED               ; ring has data? parser about to progress
+    bra         main_rx_frame_gap_idle
+    movlb       0x2
+    infsnz      main_rx_frame_gap_timeout, F, BANKED
+    bra         main_rx_frame_gap_expired
+    return      0
+main_rx_frame_gap_expired:
+    movlb       0x0
+    clrf        rx_frame_position, BANKED
+    bcf         active_flags, 0, ACCESS
+    ; fall through to idle — clears the timeout after reset
+main_rx_frame_gap_idle:
+    movlb       0x2
+    clrf        main_rx_frame_gap_timeout, BANKED
+    return      0
+
+
+; ---------------------------------------------------------------------------
 ; Function: uart_config                    (EUSART bring-up — 31,250 baud)
 ; Address : 0x4576
 ; ---------------------------------------------------------------------------
@@ -8415,6 +8460,7 @@ mssp_hard_reset:
 periodic_service_loop:
     call        main_usb_service_3a26, 0x0
     call        main_uart_service_1be6, 0x0
+    rcall       main_service_rx_frame_gap           ; V3.2 §2: parser stall watchdog
     rcall       preset_job_service                  ; V3.2: async preset state machine
     call        main_i2c_service_27f0, 0x0
     rcall       standby_event_dispatch
