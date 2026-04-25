@@ -129,9 +129,17 @@ impl Stack {
         self.depth
     }
 
-    /// True if at least one CALL / RCALL / interrupt was pushed
-    /// onto a full stack since the last clear.  Mirrored into
-    /// STKPTR.STKFUL.
+    /// True if STKFUL has been latched since the last clear.
+    /// STKFUL fires in two cases (DS39632E §5.4.2):
+    ///
+    /// 1. The push that fills the 31st slot (depth: 30 → 31).
+    ///    Sets STKFUL even though the push was accepted.
+    /// 2. A push attempted at depth==31 (overflow).  The push
+    ///    is dropped and STKFUL stays asserted.
+    ///
+    /// Mirrored into STKPTR.STKFUL on every read.  Cleared by
+    /// software writing 0 to that bit (via `write_stkptr` or
+    /// `clear_flags`); never set by software.
     pub const fn overflow(&self) -> bool {
         (self.flags & STKPTR_STKFUL) != 0
     }
