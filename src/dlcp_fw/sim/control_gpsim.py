@@ -720,6 +720,18 @@ class GpsimControlHarness:
         sfr = {addr: _read_reg(self._issue, addr) for addr in range(0xF60, 0x1000)}
         return ram, sfr
 
+    def cycle_count(self) -> int | None:
+        """gpsim instruction-cycle counter at snapshot time (Tcy).
+
+        Tracked by `_run_to()` and the log-tail decoder; reflects
+        the cycle counter at the most recent simulation sync.
+        Returned as Tcy (NOT the universal 48 MHz tick from
+        Phase 3); the Rust ISA-parity test (P1.8d / Task #18)
+        runs its executor for the same Tcy count before
+        bit-comparing.
+        """
+        return self.current_cycle
+
     # OutputCapturable Protocol: drained by `dump_harness_outputs(self)`
     # at close() time, *before* the gpsim subprocess is torn down.
 

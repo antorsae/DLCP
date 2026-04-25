@@ -602,6 +602,15 @@ class MainChainHarness:
         sfr = {addr: _read_reg(self._issue, addr) for addr in range(0xF60, 0x1000)}
         return ram, sfr
 
+    def cycle_count(self) -> int | None:
+        """gpsim instruction-cycle counter at snapshot time (Tcy).
+
+        Same contract as `GpsimControlHarness.cycle_count` -- tracked
+        by `_run_to()`, used by the Rust ISA-parity test (P1.8d /
+        Task #18) to align its executor before bit-comparing.
+        """
+        return self.current_cycle
+
     def _apply_pin_models(self) -> None:
         self.current_loop_model.apply(self._issue)
         if not self._native_an0_boot_pending:

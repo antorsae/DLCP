@@ -3,14 +3,17 @@
 //!
 //! P1.8c lays the file down with the
 //! `isa_covers_all_75_pic18_opcodes` fuzzer-style coverage
-//! gate: every documented PIC18 opcode is dispatched by
-//! `Core::step` at least once across this test program.
-//! P1.8d / P1.8e extend the same file with the gpsim
-//! ground-truth parity tests against V1.71 / V3.2 boots.
+//! gate.  P1.8d adds the V1.71 reset-through-init bit-exact
+//! parity gate against an early-boot gpsim snapshot captured by
+//! `scripts/capture_v171_early_boot_parity.py`.
 
-use dlcp_sim::{Core, Instruction, Stack, TableMode, Variant, decode, step};
+use dlcp_sim::{
+    Core, HexImage, Instruction, ResetSource, Stack, TableMode, Variant, apply_reset, decode,
+    step,
+};
 use std::collections::HashMap;
 use std::mem::Discriminant;
+use std::path::PathBuf;
 
 /// Coverage tag.  Most PIC18 instructions are uniquely
 /// identified by their `Instruction` enum variant; the two
@@ -184,4 +187,198 @@ fn isa_covers_all_75_pic18_opcodes() {
         "expected coverage of 75 documented PIC18 opcodes; got {} -- did the table miss one?",
         covered.len()
     );
+}
+
+// ============================================================
+// V1.71 reset-through-init bit-exact parity (P1.8d / spec §5)
+// ============================================================
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crate dir has 2 ancestors")
+        .to_path_buf()
+}
+
+/// Tiny hand-rolled parser for the SFR snapshot JSON --
+/// `{"0xF60": 0, "0xF61": 0, ...}`.  Avoids pulling serde into
+/// the dev-dependency tree just for one constrained file
+/// shape.  Returns the (addr, value) pairs.
+fn parse_sfr_snapshot(text: &str) -> Vec<(u16, u8)> {
+    let mut pairs = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        // Match `"0xXXX": N,` (with optional trailing comma).
+        let Some(hex_start) = line.find("\"0x") else {
+            continue;
+        };
+        let after_quote = &line[hex_start + 3..];
+        let Some(close_quote) = after_quote.find('"') else {
+            continue;
+        };
+        let addr_hex = &after_quote[..close_quote];
+        let Ok(addr) = u16::from_str_radix(addr_hex, 16) else {
+            continue;
+        };
+        let after_addr = &after_quote[close_quote + 1..];
+        let Some(colon) = after_addr.find(':') else {
+            continue;
+        };
+        let after_colon = after_addr[colon + 1..]
+            .trim_start()
+            .trim_end_matches(|c: char| !c.is_ascii_digit());
+        let Ok(value) = after_colon.trim().parse::<u32>() else {
+            continue;
+        };
+        pairs.push((addr, value as u8));
+    }
+    pairs
+}
+
+/// Apply the K20 / 2455 POR-default SFR initialisations that
+/// the silicon performs on power-on but P1.6's `apply_reset`
+/// does not yet wire (those depend on per-peripheral defaults
+/// landing in P2).  This is just the architectural minimum
+/// the V1.71 boot path expects to see at PC=0.
+fn apply_por_sfr_defaults(core: &mut Core) {
+    // INTCON2 POR = 1111 -1-1 = 0xF5 (RBPU=1, edges=1, TMR0IP=1, RBIP=1).
+    core.memory.write_raw(dlcp_sim_addr(0xFF1), 0xF5);
+    // INTCON3 POR = 11-0 0-00 = 0xC0 (priorities high).
+    core.memory.write_raw(dlcp_sim_addr(0xFF0), 0xC0);
+}
+
+fn dlcp_sim_addr(raw: u16) -> dlcp_sim::memory::Address {
+    dlcp_sim::memory::Address::from_raw(raw)
+}
+
+/// Run the Rust executor from POR for `cycle_target` Tcy and
+/// return its final state.
+fn run_to_cycle(image: &HexImage, cycle_target: u64) -> (Core, Stack) {
+    let mut core = Core::new(Variant::Pic18F25K20);
+    core.flash_mut().copy_from_slice(&*image.flash);
+    let mut stack = Stack::new();
+    apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
+    apply_por_sfr_defaults(&mut core);
+
+    let mut total: u64 = 0;
+    while total < cycle_target {
+        let cycles = step(&mut core, &mut stack)
+            .expect("Phase-1 executor must not error during V1.71 boot");
+        total += cycles as u64;
+    }
+    (core, stack)
+}
+
+/// Mirror PCL / PCLATH / PCLATU / STKPTR / TOSU / TOSH / TOSL
+/// from the dedicated `Core::pc` and `Stack` state into the
+/// SFR bytes before snapshot comparison.  P1.8b's executor
+/// keeps these as separate fields for performance; gpsim
+/// auto-syncs on every register read.  Task #15 will land
+/// this bidirectional mirror inside the executor itself; for
+/// now the test does it by hand on the read side only.
+fn mirror_pc_and_stack_to_sfrs(core: &mut Core, stack: &Stack) {
+    let pc = core.pc();
+    core.memory.write_raw(dlcp_sim_addr(0xFF9), pc as u8);          // PCL
+    core.memory.write_raw(dlcp_sim_addr(0xFFA), (pc >> 8) as u8);    // PCLATH
+    core.memory
+        .write_raw(dlcp_sim_addr(0xFFB), ((pc >> 16) as u8) & 0x1F); // PCLATU
+    core.memory.write_raw(dlcp_sim_addr(0xFFC), stack.stkptr());     // STKPTR
+    let tos = stack.top();
+    core.memory.write_raw(dlcp_sim_addr(0xFFD), tos as u8);          // TOSL
+    core.memory.write_raw(dlcp_sim_addr(0xFFE), (tos >> 8) as u8);    // TOSH
+    core.memory
+        .write_raw(dlcp_sim_addr(0xFFF), ((tos >> 16) as u8) & 0x1F); // TOSU
+}
+
+/// V1.71 reset-through-init bit-exact parity gate.
+///
+/// Loads V1.71 CONTROL hex, applies POR, runs the Rust
+/// executor for the cycle count captured in
+/// `artifacts/ground_truth/v171_early_boot_parity/early_boot_v171_<N>.meta.json`
+/// (default 100 Tcy per spec §5), then bit-compares RAM bank 0
+/// (256 bytes) and the top-of-bank-15 SFR window (0xF60..0xFFF,
+/// 160 bytes) against the captured gpsim snapshot.
+///
+/// The capture is produced by running:
+///
+/// ```bash
+/// PYTHONPATH=src .venv_ep0/bin/python \
+///   scripts/capture_v171_early_boot_parity.py --cycles 100
+/// ```
+///
+/// **Status:** marked `#[ignore]` while the divergence list is
+/// audited.  Bit-exact match requires (a) full POR-default SFR
+/// initialisation (only some bits land via P1.6's reset.rs +
+/// `apply_por_sfr_defaults`) and (b) any peripheral bits the
+/// boot path touches in the first 100 cycles.  Removing the
+/// `#[ignore]` is part of Task #18's scope.
+#[test]
+#[ignore = "P1.8d work-in-progress; awaiting POR-default SFR and peripheral wiring (Task #18)"]
+fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
+    let root = repo_root();
+    let hex_path = root.join("firmware/patched/releases/DLCP_Control_V1.71.hex");
+    let image = HexImage::from_hex_path(&hex_path).expect("V1.71 hex loads");
+
+    let snapshot_dir = root.join("artifacts/ground_truth/v171_early_boot_parity");
+    let cycle_target: u64 = 10;
+    let stem = format!("early_boot_v171_{}", cycle_target);
+
+    let ram_expected = std::fs::read(snapshot_dir.join(format!("{stem}.ram.bin")))
+        .expect("read ram snapshot");
+    assert_eq!(ram_expected.len(), 256);
+
+    let sfr_text = std::fs::read_to_string(snapshot_dir.join(format!("{stem}.sfr.json")))
+        .expect("read sfr snapshot");
+    let sfr_expected = parse_sfr_snapshot(&sfr_text);
+    assert!(
+        sfr_expected.len() >= 100,
+        "expected at least 100 SFR entries, got {}",
+        sfr_expected.len()
+    );
+
+    let (mut core, stack) = run_to_cycle(&image, cycle_target);
+    mirror_pc_and_stack_to_sfrs(&mut core, &stack);
+
+    // --- compare RAM bank 0 ---
+    let ram_actual: Vec<u8> = (0..256u16)
+        .map(|addr| core.memory.read_raw(dlcp_sim_addr(addr)))
+        .collect();
+    let mut ram_diffs: Vec<(u16, u8, u8)> = Vec::new();
+    for addr in 0..256u16 {
+        let exp = ram_expected[addr as usize];
+        let got = ram_actual[addr as usize];
+        if exp != got {
+            ram_diffs.push((addr, exp, got));
+        }
+    }
+
+    // --- compare SFR window ---
+    let mut sfr_diffs: Vec<(u16, u8, u8)> = Vec::new();
+    for (addr, exp) in &sfr_expected {
+        let got = core.memory.read_raw(dlcp_sim_addr(*addr));
+        if got != *exp {
+            sfr_diffs.push((*addr, *exp, got));
+        }
+    }
+
+    if !ram_diffs.is_empty() || !sfr_diffs.is_empty() {
+        eprintln!(
+            "V1.71 boot parity divergence at cycle {} ({} RAM + {} SFR):",
+            cycle_target,
+            ram_diffs.len(),
+            sfr_diffs.len()
+        );
+        for (addr, exp, got) in &ram_diffs {
+            eprintln!("  RAM[0x{addr:03X}]: gpsim=0x{exp:02X} rust=0x{got:02X}");
+        }
+        for (addr, exp, got) in &sfr_diffs {
+            eprintln!("  SFR[0x{addr:03X}]: gpsim=0x{exp:02X} rust=0x{got:02X}");
+        }
+        panic!(
+            "RAM divergences: {}, SFR divergences: {}",
+            ram_diffs.len(),
+            sfr_diffs.len()
+        );
+    }
 }

@@ -142,6 +142,13 @@ class Snapshotable(Protocol):
       * ``sfr_map`` is a dict ``{addr: value}`` over the top-of-
         bank-15 SFR area (typically 0xF60-0xFFF).
 
+    `cycle_count()` returns the gpsim instruction-cycle counter at
+    snapshot time, or ``None`` if the harness can't expose it.
+    Captured into a per-snapshot ``.meta.json`` sidecar so the
+    Rust ISA parity test (P1.8d / Task #18) can run its executor
+    for the same number of cycles before bit-comparing.  Default
+    impl returns ``None`` for harnesses that don't track cycles.
+
     Both reads use the harness's existing register-access path so
     the dump captures the same view tests already see.
     """
@@ -150,6 +157,9 @@ class Snapshotable(Protocol):
     def harness_id(self) -> str: ...
 
     def dump_state(self) -> tuple[bytes, dict[int, int]]: ...
+
+    def cycle_count(self) -> int | None:
+        return None
 
 
 _active_context: contextvars.ContextVar["GroundTruthContext | None"] = (
@@ -297,6 +307,7 @@ class SnapshotTaker:
             stem = f"{seq:010d}.{label}.{target.harness_id}"
             ram_path = self.out_dir / f"{stem}.ram.bin"
             sfr_path = self.out_dir / f"{stem}.sfr.json"
+            meta_path = self.out_dir / f"{stem}.meta.json"
             ram_path.write_bytes(ram)
             sfr_dump = {f"0x{addr:03X}": v & 0xFF for addr, v in sorted(sfr.items())}
             try:
@@ -304,15 +315,32 @@ class SnapshotTaker:
                     json.dumps(sfr_dump, indent=2) + "\n",
                     encoding="utf-8",
                 )
-            except Exception:
-                # Avoid leaving an orphan ram.bin without its sfr.json
-                # sidecar; the validator requires snapshots to come in
-                # pairs.
-                if ram_path.exists():
+                # Optional metadata sidecar: cycle count at
+                # snapshot time, if the harness exposes it.
+                # Consumed by the Rust ISA-parity test (P1.8d /
+                # Task #18) which runs its executor for the
+                # same number of cycles before bit-comparing.
+                cycle = None
+                cycle_fn = getattr(target, "cycle_count", None)
+                if callable(cycle_fn):
                     try:
-                        ram_path.unlink()
-                    except OSError:
-                        pass
+                        cycle = cycle_fn()
+                    except Exception:
+                        cycle = None
+                if cycle is not None:
+                    meta_path.write_text(
+                        json.dumps({"cycle": int(cycle)}, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+            except Exception:
+                # Avoid leaving orphan files; the validator
+                # requires snapshot files to come in pairs.
+                for p in (ram_path, sfr_path, meta_path):
+                    if p.exists():
+                        try:
+                            p.unlink()
+                        except OSError:
+                            pass
                 raise
         self._seq += 1
         return seq
