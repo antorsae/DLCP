@@ -77,7 +77,7 @@ pub enum FsrIndex {
 impl FsrIndex {
     /// Decode the 2-bit `ff` field of an LFSR opcode.  Returns
     /// `None` for the reserved encoding (`ff = 0b11`) — DS39632E
-    /// §24 lists only FSR0..FSR2; gpsim logs `fsr is 3` as an
+    /// §26 lists only FSR0..FSR2; gpsim logs `fsr is 3` as an
     /// invalid encoding rather than aliasing it to FSR2, and the
     /// decoder follows that same strictness so a silently-
     /// misdecoded `LFSR 3, k` doesn't reach the executor.
