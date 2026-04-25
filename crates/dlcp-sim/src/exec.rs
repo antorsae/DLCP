@@ -240,6 +240,41 @@ fn skip_next_instruction(core: &mut Core) -> u8 {
     }
 }
 
+/// Dispatch helper for ops with a `d` operand, RMW semantics,
+/// and NO STATUS flag updates -- INCFSZ / INFSNZ / DECFSZ /
+/// DCFSNZ all fall under this shape.  Same resolve-once /
+/// FSR-once-commit contract as `execute_op_with_dest`, but
+/// writes through unconditionally to STATUS (these ops are
+/// not flag-affecting per DS39632E §26, so the §5.3.6 skip
+/// doesn't apply -- a hypothetical `INCFSZ STATUS, F` lands
+/// the increment in STATUS).  Returns the post-write byte so
+/// the caller can decide whether to skip.
+fn execute_rmw_with_dest_no_status<F>(
+    core: &mut Core,
+    d: Dest,
+    a: Access,
+    f: u8,
+    compute: F,
+) -> u8
+where
+    F: FnOnce(u8) -> u8,
+{
+    let operand_addr = resolve_f(core, f, a);
+    let (target, pending) = resolve_target_no_commit(core, operand_addr);
+    let f_value = core.memory.read_raw(target);
+    let result = compute(f_value);
+    match d {
+        Dest::W => write_w(core, result),
+        Dest::F => core
+            .memory
+            .write_raw(target, result & sfr_write_mask(target.as_u16())),
+    }
+    if let Some((fsr, new_fsr)) = pending {
+        commit_fsr(core, fsr, new_fsr);
+    }
+    result
+}
+
 /// Dispatch helper for ops that are RMW into f only (no `d`
 /// operand) AND don't affect STATUS flags (BCF, BSF, BTG).
 /// Resolves f once, reads it, transforms it via `transform`,
@@ -1066,6 +1101,73 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             core.advance_cycles(2);
             Ok(2)
         }
+        // ---------------- skip-and-test (CPFSx / TSTFSZ) --------
+        // Read-only compare against W (or against 0 for TSTFSZ);
+        // skip the next instruction if the predicate matches.
+        // 1 Tcy when no skip; 2 / 3 Tcy when skipping a 1-/2-
+        // word target (DS39632E Table 26-2).  No flag effects.
+        Instruction::CpfsEq { a, f } => {
+            let value = read_f(core, f, a);
+            let w = read_w(core);
+            let cycles = if value == w { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::CpfsGt { a, f } => {
+            // Skip if f > W (unsigned).
+            let value = read_f(core, f, a);
+            let w = read_w(core);
+            let cycles = if value > w { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::CpfsLt { a, f } => {
+            // Skip if f < W (unsigned).
+            let value = read_f(core, f, a);
+            let w = read_w(core);
+            let cycles = if value < w { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::TstfSz { a, f } => {
+            // Skip if f == 0.  Per DS39632E §26 TSTFSZ.
+            let value = read_f(core, f, a);
+            let cycles = if value == 0 { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        // ---------------- inc/dec-and-skip (INCFSZ / INFSNZ /
+        // DECFSZ / DCFSNZ) ----
+        // RMW + skip: read f, increment or decrement, write
+        // result back (or to W per d), conditionally skip.  No
+        // STATUS effects per DS39632E §26 (the non-skip family
+        // INCF / DECF DOES update flags; the skip variants
+        // explicitly don't).
+        Instruction::IncfSz { d, a, f } => {
+            let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_add(1));
+            let cycles = if result == 0 { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::InfSnz { d, a, f } => {
+            // Skip if result != 0 (NOT zero).
+            let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_add(1));
+            let cycles = if result != 0 { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::DecfSz { d, a, f } => {
+            let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_sub(1));
+            let cycles = if result == 0 { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::DcfSnz { d, a, f } => {
+            let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_sub(1));
+            let cycles = if result != 0 { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
         // ---------------- bit-oriented (1 Tcy each, except skip) -
         Instruction::Bcf { b, a, f } => {
             // BCF f, b, a: clear bit b of f.  No flag effects.
@@ -1336,18 +1438,18 @@ mod tests {
 
     #[test]
     fn step_reports_unimplemented_for_not_yet_wired_instruction() {
-        // CPFSEQ 0x10, ACCESS — encoding 0x6210 (high7=0110001,
-        // a=0, f=0x10).  Skip-and-test ops aren't wired yet;
+        // SLEEP — encoding 0x0003.  Power-management ops
+        // (SLEEP / RESET / CLRWDT / DAW) aren't wired yet;
         // they land in a later P1.8b commit.  This test pins
-        // the Unimplemented arm and will need updating (changed
-        // to assert successful exec) when CPFSEQ lands.
-        let mut core = k20_core_with_flash(&[0x10, 0x62]);
+        // the Unimplemented arm and will need updating
+        // (changed to assert successful exec) when SLEEP lands.
+        let mut core = k20_core_with_flash(&[0x03, 0x00]);
         let mut stack = Stack::new();
 
         let err = step(&mut core, &mut stack).unwrap_err();
         assert!(
-            matches!(err, ExecError::Unimplemented(Instruction::CpfsEq { .. })),
-            "expected Unimplemented(CpfsEq), got {err:?}"
+            matches!(err, ExecError::Unimplemented(Instruction::Sleep)),
+            "expected Unimplemented(Sleep), got {err:?}"
         );
         assert_eq!(core.pc(), 0x0002);
         assert_eq!(core.cycles(), 0);
@@ -2149,6 +2251,136 @@ mod tests {
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x000C);
+    }
+
+    // ---- skip-and-test (CPFSEQ, CPFSGT, CPFSLT, TSTFSZ,
+    //                      INCFSZ, INFSNZ, DECFSZ, DCFSNZ) ----
+
+    #[test]
+    fn cpfseq_skips_when_f_equals_w() {
+        // CPFSEQ 0x10, ACCESS = 0x6210.  W=0x42, RAM[0x10]=0x42 → skip.
+        let mut core = k20_core_with_flash(&[
+            0x10, 0x62, // CPFSEQ
+            0x00, 0x00, // skipped NOP
+            0x00, 0x00, //
+        ]);
+        write_w(&mut core, 0x42);
+        core.memory.write_raw(Address::from_raw(0x010), 0x42);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn cpfseq_does_not_skip_when_f_differs_from_w() {
+        let mut core = k20_core_with_flash(&[0x10, 0x62, 0x00, 0x00]);
+        write_w(&mut core, 0x42);
+        core.memory.write_raw(Address::from_raw(0x010), 0x43);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(core.pc(), 0x0002);
+    }
+
+    #[test]
+    fn cpfsgt_skips_when_f_greater_than_w_unsigned() {
+        // CPFSGT 0x10, ACCESS: high8=0x64, → 0x6410.
+        let mut core = k20_core_with_flash(&[0x10, 0x64, 0x00, 0x00]);
+        write_w(&mut core, 0x10);
+        core.memory.write_raw(Address::from_raw(0x010), 0x80); // unsigned 0x80 > 0x10
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn cpfslt_skips_when_f_less_than_w_unsigned() {
+        // CPFSLT 0x10, ACCESS = 0x6010.
+        let mut core = k20_core_with_flash(&[0x10, 0x60, 0x00, 0x00]);
+        write_w(&mut core, 0x80);
+        core.memory.write_raw(Address::from_raw(0x010), 0x10);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn tstfsz_skips_when_f_is_zero() {
+        // TSTFSZ 0x10, ACCESS: high8=0x66, → 0x6610.
+        let mut core = k20_core_with_flash(&[0x10, 0x66, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x00);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn tstfsz_does_not_skip_when_f_nonzero() {
+        let mut core = k20_core_with_flash(&[0x10, 0x66, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0002);
+    }
+
+    #[test]
+    fn incfsz_writes_back_and_skips_on_zero_result() {
+        // INCFSZ 0x10, F, ACCESS: high8=0x3E (high6=001111, d=1, a=0), → 0x3E10.
+        // f=0xFF → 0x00 → skip.  STATUS NOT updated.
+        let mut core = k20_core_with_flash(&[0x10, 0x3E, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0xFF);
+        // Pre-set STATUS bits to confirm INCFSZ doesn't touch them.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        assert_eq!(core.pc(), 0x0004, "skip taken because result == 0");
+        assert_eq!(read_status(&core), STATUS_VALID_MASK, "STATUS untouched");
+    }
+
+    #[test]
+    fn incfsz_does_not_skip_when_result_nonzero() {
+        let mut core = k20_core_with_flash(&[0x10, 0x3E, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x05);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x06);
+        assert_eq!(core.pc(), 0x0002);
+    }
+
+    #[test]
+    fn infsnz_skips_when_result_nonzero() {
+        // INFSNZ 0x10, F, ACCESS: high8=0x4A, → 0x4A10.
+        // f=0x05 → 0x06 (non-zero) → skip.
+        let mut core = k20_core_with_flash(&[0x10, 0x4A, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x05);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x06);
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn decfsz_writes_back_and_skips_on_zero_result() {
+        // DECFSZ 0x10, F, ACCESS: high8=0x2E, → 0x2E10.
+        let mut core = k20_core_with_flash(&[0x10, 0x2E, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn dcfsnz_skips_when_result_nonzero() {
+        // DCFSNZ 0x10, F, ACCESS: high8=0x4E, → 0x4E10.
+        let mut core = k20_core_with_flash(&[0x10, 0x4E, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x05);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x04);
+        assert_eq!(core.pc(), 0x0004);
     }
 
     // ---- bit-oriented (BCF, BSF, BTG, BTFSC, BTFSS) ----
