@@ -37,6 +37,9 @@ use crate::core::Core;
 use crate::isa::fsr::{FsrAccessMode, classify_fsr_indirect, fsr_high_addr, fsr_low_addr};
 use crate::isa::{Access, Dest, FsrIndex, Instruction, decode};
 use crate::memory::Address;
+use crate::reset::{
+    RCON_ADDR, RCON_PD, RCON_TO, ResetSource, apply_reset,
+};
 use crate::stack::Stack;
 
 // ---- Key SFR addresses consulted by the executor ----------------
@@ -1101,6 +1104,77 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             core.advance_cycles(2);
             Ok(2)
         }
+        // ---------------- power-management / misc ---------------
+        Instruction::Sleep => {
+            // SLEEP: per DS39632E §26 SLEEP, RCON.PD ← 0,
+            // RCON.TO ← 1 (TO indicates the WDT did NOT time
+            // out; PD indicates we entered sleep).  The actual
+            // "halt CPU until interrupt" behaviour is deferred
+            // to the chain scheduler in P3 -- here we just
+            // update RCON so firmware that polls these bits
+            // post-wake sees the right values.
+            let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
+            let new_rcon = (rcon & !RCON_PD) | RCON_TO;
+            core.memory.write_raw(
+                Address::from_raw(RCON_ADDR),
+                new_rcon & sfr_write_mask(RCON_ADDR),
+            );
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Clrwdt => {
+            // CLRWDT: clear the Watchdog Timer.  RCON.PD ← 1,
+            // RCON.TO ← 1.  Actual WDT counter clear is a P2
+            // peripheral concern; here we just update RCON.
+            let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
+            let new_rcon = rcon | RCON_PD | RCON_TO;
+            core.memory.write_raw(
+                Address::from_raw(RCON_ADDR),
+                new_rcon & sfr_write_mask(RCON_ADDR),
+            );
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Daw => {
+            // DAW: Decimal Adjust W.  Two-step BCD correction
+            // per DS39632E §26 DAW.
+            //
+            //   if (W<3:0> > 9) OR (DC = 1):
+            //       W<3:0> ← W<3:0> + 6   (no flag update)
+            //   if (W<7:4> > 9) OR (C = 1):
+            //       W<7:4> ← W<7:4> + 6,   C ← 1
+            //   else:
+            //       C is unchanged
+            //
+            // Status Affected: C only.
+            let w = read_w(core);
+            let status = read_status(core);
+            let dc = status & STATUS_DC != 0;
+            let c_in = status & STATUS_C != 0;
+            let mut result = w;
+            if result & 0x0F > 9 || dc {
+                result = result.wrapping_add(0x06);
+            }
+            let new_c = if (result >> 4) & 0x0F > 9 || c_in {
+                result = result.wrapping_add(0x60);
+                true
+            } else {
+                c_in
+            };
+            write_w(core, result);
+            set_status_bits(core, STATUS_C, new_c);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Reset => {
+            // RESET instruction: trigger the same reset path
+            // an MCLR would (PC ← 0, RCON.RI ← 0, etc.).  The
+            // P1.6 reset module owns the SFR initialisation;
+            // we just route through it.
+            apply_reset(core, stack, ResetSource::ResetInstruction);
+            core.advance_cycles(1);
+            Ok(1)
+        }
         // ---------------- skip-and-test (CPFSx / TSTFSZ) --------
         // Read-only compare against W (or against 0 for TSTFSZ);
         // skip the next instruction if the predicate matches.
@@ -1438,20 +1512,21 @@ mod tests {
 
     #[test]
     fn step_reports_unimplemented_for_not_yet_wired_instruction() {
-        // SLEEP — encoding 0x0003.  Power-management ops
-        // (SLEEP / RESET / CLRWDT / DAW) aren't wired yet;
-        // they land in a later P1.8b commit.  This test pins
-        // the Unimplemented arm and will need updating
-        // (changed to assert successful exec) when SLEEP lands.
-        let mut core = k20_core_with_flash(&[0x03, 0x00]);
+        // GOTO — encoding 0xEF00 / 0xF000 (target word
+        // address 0).  Long-form control flow + table
+        // reads/writes aren't wired yet; they land in a later
+        // P1.8b commit.  This test pins the Unimplemented arm
+        // and will need updating (changed to assert successful
+        // exec) when GOTO lands.
+        let mut core = k20_core_with_flash(&[0x00, 0xEF, 0x00, 0xF0]);
         let mut stack = Stack::new();
 
         let err = step(&mut core, &mut stack).unwrap_err();
         assert!(
-            matches!(err, ExecError::Unimplemented(Instruction::Sleep)),
-            "expected Unimplemented(Sleep), got {err:?}"
+            matches!(err, ExecError::Unimplemented(Instruction::Goto { .. })),
+            "expected Unimplemented(Goto), got {err:?}"
         );
-        assert_eq!(core.pc(), 0x0002);
+        assert_eq!(core.pc(), 0x0004);
         assert_eq!(core.cycles(), 0);
     }
 
@@ -2251,6 +2326,92 @@ mod tests {
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x000C);
+    }
+
+    // ---- power-management / misc (SLEEP, CLRWDT, DAW, RESET) ----
+
+    #[test]
+    fn sleep_clears_pd_sets_to_in_rcon() {
+        // SLEEP: opcode 0x0003.  Pre-set RCON to 0 so we see
+        // the bit transitions clearly: TO=0 → 1 (set), PD=0 →
+        // 0 (cleared), the rest unchanged (other bits don't
+        // matter for this op).
+        let mut core = k20_core_with_flash(&[0x03, 0x00]);
+        // Pre-set PD so we can confirm it gets cleared.
+        core.memory.write_raw(Address::from_raw(RCON_ADDR), RCON_PD);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
+        assert_eq!(rcon & RCON_PD, 0, "SLEEP clears PD");
+        assert_eq!(rcon & RCON_TO, RCON_TO, "SLEEP sets TO");
+    }
+
+    #[test]
+    fn clrwdt_sets_both_pd_and_to() {
+        // CLRWDT: opcode 0x0004.  RCON.PD ← 1, RCON.TO ← 1.
+        let mut core = k20_core_with_flash(&[0x04, 0x00]);
+        core.memory.write_raw(Address::from_raw(RCON_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
+        assert_eq!(rcon & (RCON_PD | RCON_TO), RCON_PD | RCON_TO);
+    }
+
+    #[test]
+    fn daw_corrects_low_nibble_when_above_9() {
+        // DAW: opcode 0x0007.  W = 0x0A → 0x10 (low nibble was
+        // > 9, add 6 to low nibble; high nibble was 0, no
+        // further correction).  C unchanged from 0.
+        let mut core = k20_core_with_flash(&[0x07, 0x00]);
+        write_w(&mut core, 0x0A);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x10);
+        assert_eq!(read_status(&core) & STATUS_C, 0);
+    }
+
+    #[test]
+    fn daw_corrects_high_nibble_and_sets_carry() {
+        // W = 0xA0 → high nibble > 9 → +0x60 → 0x100 mod 256 =
+        // 0x00 with C ← 1.  Low nibble was 0, no correction.
+        let mut core = k20_core_with_flash(&[0x07, 0x00]);
+        write_w(&mut core, 0xA0);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x00);
+        assert!(read_status(&core) & STATUS_C != 0);
+    }
+
+    #[test]
+    fn daw_uses_dc_to_force_low_nibble_correction() {
+        // W = 0x09 (low nibble == 9, so no spontaneous
+        // correction); pre-set DC=1.  Low nibble +6 = 0x0F.
+        let mut core = k20_core_with_flash(&[0x07, 0x00]);
+        write_w(&mut core, 0x09);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_DC);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x0F);
+    }
+
+    #[test]
+    fn reset_instruction_clears_pc_and_routes_through_reset_module() {
+        // RESET: opcode 0x00FF.  After execution PC ← 0; RCON.RI
+        // ← 0 to indicate "reset by RESET instruction".
+        let mut core = k20_core_with_flash(&[0xFF, 0x00]);
+        // Pre-set PC ahead so we can confirm RESET pulled it back.
+        core.set_pc(0x0040);
+        core.flash_mut()[0x40] = 0xFF;
+        core.flash_mut()[0x41] = 0x00;
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0000);
+        // RCON.RI bit (0x10) should be 0 after RESET-instruction.
+        let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
+        assert_eq!(rcon & 0x10, 0, "RI clears on RESET");
     }
 
     // ---- skip-and-test (CPFSEQ, CPFSGT, CPFSLT, TSTFSZ,
