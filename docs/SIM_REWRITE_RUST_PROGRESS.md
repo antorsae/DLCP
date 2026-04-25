@@ -48,7 +48,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `scripts/replay_ground_truth.py`, plus `DLCP_GROUND_TRUTH_OUT` env-var override path through `tests/sim/conftest.py` (`_ground_truth_root()`).
   - notes: approach B from the planning discussion — re-runs each captured test via pytest with the conftest output path overridden into a tempdir, then bit-exact diffs against the blessed corpus. Stimulus diff filters `wall_time` (run-local). Snapshots and outputs (UART/LCD/EEPROM) are bit-exact. summary.json is not diffed (carries run-local timestamps and durations). Verify takes ~7 min (217s capture + 217s replay for the blackout-wake test); a divergence dumps the failing replay capture to `artifacts/sim_rewrite_divergences/P0.5__<test>__replay/` for post-hoc inspection. Approach A (standalone JSONL replay without pytest) is the obvious follow-up if/when the Rust replayer needs harness-construction-from-stream — out of scope for P0.5.
 
-- [pending] P0.gate Run phase-0 gate
+- [done] P0.gate Run phase-0 gate
   - verify: `.venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 0`
   - artifact: stdout summary; the `verify-phase` runner skips gate tasks so this command no longer recurses on itself; reruns every non-gate sub-task's verify and reports pass/fail for each. The full-suite "≥ 95% coverage" blessing is intentionally separate (`scripts/run_phase0_blessing.py`) so the gate stays bounded.
 
