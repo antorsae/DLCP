@@ -978,11 +978,9 @@ class SingleMainChainHarness:
         return _is_waiting_lcd(self.control.lcd_lines())
 
     def press(self, key: str) -> None:
-        record_event(
-            kind="press",
-            harness="single_main_chain",
-            payload={"key": key},
-        )
+        # Recording happens inside `GpsimControlHarness.press` so direct
+        # `chain.control.press(...)` test calls are captured.  Recording
+        # again here would emit two events per `pair.press(...)` call.
         self.control.press(key)
 
     def set_blackout(self, enabled: bool) -> None:

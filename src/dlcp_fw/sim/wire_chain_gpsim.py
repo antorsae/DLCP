@@ -413,7 +413,9 @@ class WireMultiMainChainHarness:
             self._tmp.cleanup()
 
     def press(self, key: str) -> None:
-        record_event(kind="press", harness="wire_chain", payload={"key": key})
+        # Recording happens inside `GpsimControlHarness.press` so direct
+        # `wire.control.press(...)` calls are also captured; recording
+        # again here would double-log every test press.
         self.control.press(key)
 
     def lcd_lines(self) -> tuple[str, str]:
