@@ -301,7 +301,7 @@ cargo test -p dlcp-sim --test 'peripheral_*_parity' --release
 
 - Reproduce `test_v171_v31_chain.py` end-to-end (CONTROL + MAIN0); diff TX byte streams + LCD raster + final EEPROM bit-exact against ground truth.
 - Reproduce `test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2` (the Task #22 XFAIL); under the new architecture this must **PASS**, not XFAIL — and the result is the canonical proof that the echo-loop was a sim artifact, not a firmware bug.
-- Boot-offset tests: with `main1_offset = +1_500_000_000 ns` (MAIN1 boots 1.5 s after CONTROL), CONTROL's `WAITING FOR DLCP` LCD must clear within the V1.71 reconnect-wake budget after MAIN1 comes online. Diff against `test_chain_gpsim_v25_v162b_recovery.py` family.
+- Boot-offset tests: with `main1_offset = +72_000_000` universal ticks (= 1.5 s @ 48 MHz; MAIN1 boots 1.5 s after CONTROL), CONTROL's `WAITING FOR DLCP` LCD must clear within the V1.71 reconnect-wake budget after MAIN1 comes online. Diff against `test_chain_gpsim_v25_v162b_recovery.py` family.
 
 ### Exit gate
 
@@ -423,7 +423,7 @@ Audited 2026-04-25:
 - **MAIN firmware** writes BAUDCON once at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value **0x48**. This sets BRG16=1 (bit 3); bit 6 is the read-only RCIDL bit (write is ignored by hardware). The asm comment at line 7907 says "BRG16=0, idle high" — that comment is **inconsistent with the actual byte written** (0x48 has bit 3 set), and the firmware's downstream baud-rate math at lines 7909–7913 actually depends on BRG16=1 to reach 31,250 baud via the 16-bit BRG path (BRGH=1 + BRG16=1 + SPBRGH:SPBRG = 0x007F → 16 MHz / (4 × 128) = 31,250).
 - **CONTROL firmware** writes BAUDCON at `src/dlcp_fw/asm/dlcp_control_v171.asm:776` (`bcf BAUDCON, BRG16, A`) — clearing BRG16 only, at the K20 datasheet address 0xFB8 which matches gpsim's K20 port. No CONTROL-side divergence.
 
-**Open question** (resolved during P0 ground-truth capture): if gpsim maps BAUDCON at 0xFB8 but the firmware writes 0xF98, then under gpsim BAUDCON's BRG16 stays at the POR value (0). gpsim's `_USART::callback` at `vendor/gpsim-0.32.1-xtc/src/uart.cc:1567` checks `baudcon->brg16()`. If brg16() returns 0, gpsim should compute baud as Fosc/(16×(SPBRG+1)) = 7812.5 — yet MAIN tests pass at 31,250. Either:
+**Open question** (resolved during P0 ground-truth capture): if gpsim maps BAUDCON at 0xFB8 but the firmware writes 0xF98, then under gpsim BAUDCON's BRG16 stays at the POR value (0). gpsim's `_SPBRG::get_cycles_per_tick()` at `vendor/gpsim-0.32.1-xtc/src/uart.cc:1567` checks `baudcon->brg16()` to pick a divisor of 4 (16-bit BRG hi-speed) versus 16 (8-bit BRG hi-speed). If brg16() returns 0, gpsim's USART model should compute Fosc/(16×(SPBRG+1)) = 7812.5 baud — yet MAIN tests pass at 31,250. Either:
 
   (a) gpsim has a *second* BAUDCON mapping at 0xF98 that I haven't traced (e.g. an `add_sfr_register` in the `_16bit_processor` base or in a `P18F2455`-specific override I haven't found),
   (b) gpsim's USART model derives baud from another path that doesn't strictly require BRG16, or
@@ -450,7 +450,7 @@ The Rust port unconditionally maps BAUDCON to 0xF98 per datasheet. If dual-run r
 
 | Term              | Meaning                                                            |
 |-------------------|--------------------------------------------------------------------|
-| Tcy               | Instruction cycle time = Fosc / 4 (250 ns on MAIN, 333 ns on CONTROL). |
+| Tcy               | Instruction cycle time = Fosc / 4. In universal-tick units (48 MHz): MAIN = 12 ticks/Tcy, CONTROL = 16 ticks/Tcy. (Real-world equivalents: MAIN ≈ 250 ns, CONTROL ≈ 333.33 ns.) |
 | Fosc              | Oscillator frequency (16 MHz on MAIN, 12 MHz on CONTROL).          |
 | BSR               | Bank Select Register (PIC18 banked addressing).                    |
 | Access Bank       | First 96 bytes of each bank, accessed without BSR (`a=0` operand). |

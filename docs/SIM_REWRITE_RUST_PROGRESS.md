@@ -141,7 +141,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [pending] P2.9 Oscillator subsystem — OSCCON, OSCCON2, OSCTUNE, PLL ENABLE/READY
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_osc_parity`
   - artifact: `crates/dlcp-sim/src/peripherals/osc.rs`
-  - notes: drives `Tcy_ns` per Variant; CONTROL = 333 ns at 12 MHz Fosc, MAIN = 250 ns at 16 MHz.
+  - notes: drives `ticks_per_tcy` per Variant on the 48 MHz universal clock; CONTROL = 16 ticks/Tcy (12 MHz Fosc / 4 = 3 MIPS), MAIN = 12 ticks/Tcy (16 MHz Fosc / 4 = 4 MIPS).
 
 - [pending] P2.gate Run phase-2 gate
   - verify: `cargo test -p dlcp-sim --release --test 'peripheral_*_parity' && .venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 2`
