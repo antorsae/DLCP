@@ -973,8 +973,8 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         // ---------------- stack-manipulating control flow -------
         // CALL / RCALL / RETURN / RETLW / RETFIE / PUSH / POP.
         //
-        // **Deferred features** (will land in subsequent
-        // P1.8b sub-commits):
+        // **Deferred features** -- known gaps tracked outside
+        // the dispatch:
         //   - Fast register stack (CALL/RCALL `fast=true`,
         //     RETURN/RETFIE `fast=true`): per DS39632E §5.5.3
         //     the silicon saves/restores W / STATUS / BSR via
@@ -982,16 +982,24 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         //     `fast=false` for explicit subroutine calls and
         //     relies on the implicit shadow on interrupts; the
         //     fast-stack model lands when interrupts do.
+        //     (Task #15)
         //   - RETFIE's GIE / GIEH / GIEL update: re-enabling
         //     interrupts at the end of an ISR.  Lands with the
-        //     interrupt-priority machinery in P2.
+        //     interrupt-priority machinery in P2.  (Task #15)
         //   - STKPTR / TOSU / TOSH / TOSL memory mirroring:
-        //     the Stack struct holds the canonical state but
-        //     the SFR bytes at 0xFFC / 0xFFD / 0xFFE / 0xFFF
-        //     aren't updated on each push/pop.  Firmware that
-        //     reads those SFRs sees stale bytes -- documented
-        //     as a known gap, lands when the stack-mirror
-        //     wiring is added.
+        //     Stack struct is canonical, SFR bytes at
+        //     0xFFC..0xFFF don't reflect push/pop.  (Task #15)
+        //   - STVREN-gated stack-overflow / stack-underflow
+        //     reset: when CONFIG4L STVREN=1, push-on-full or
+        //     pop-on-empty must trigger the StackFull /
+        //     StackUnderflow reset sources from
+        //     `crate::reset`.  The DLCP firmware ships with
+        //     STVREN=0 (V3.2 CONFIG4L=0x80) so latch-only is
+        //     the correct silicon behaviour for the firmware
+        //     this rewrite targets, but a silicon-complete
+        //     executor needs to gate on STVREN.  Requires a
+        //     `Config` reference in `step()` -- structural
+        //     change, deferred.  (Task #16)
         Instruction::Call { n, fast: _ } => {
             stack.push(core.pc());
             core.set_pc(n.wrapping_mul(2));
