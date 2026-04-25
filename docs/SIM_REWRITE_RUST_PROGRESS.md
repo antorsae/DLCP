@@ -95,10 +95,30 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - verify: `cd crates/dlcp-sim && cargo test --release config::tests`
   - artifact: `crates/dlcp-sim/src/config.rs`.
 
-- [pending] P1.8 ISA parity test against ground truth
-  - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity`
-  - artifact: `crates/dlcp-sim/tests/isa_parity.rs`
-  - notes: load V1.71 hex, run from POR, RAM/W/STATUS bit-exact match against `artifacts/ground_truth/test_v171_baseline_*/snapshots/`.
+- [pending] P1.8a Intel HEX loader for flash + CONFIG + EEPROM
+  - verify: `cd crates/dlcp-sim && cargo test --release hex::tests`
+  - artifact: `crates/dlcp-sim/src/hex.rs`
+  - notes: parses Intel HEX (record types 00 = data, 01 = EOF, 04 = extended-linear-address); routes bytes to `flash[0..0x8000]` (32 KiB program memory), the 14-byte CONFIG region at 0x300000–0x30000D, and the 256-byte EEPROM window at 0xF00000–0xF000FF. Rejects unknown record types loudly and verifies record checksums. Tested with `firmware/patched/releases/DLCP_Control_V1.71.hex` and `firmware/patched/releases/DLCP_Firmware_V3.2.hex`.
+
+- [pending] P1.8b Cycle-accurate executor for all 75 PIC18 instructions
+  - verify: `cd crates/dlcp-sim && cargo test --release exec::tests`
+  - artifact: `crates/dlcp-sim/src/exec.rs`
+  - notes: `Core::step(&mut self, &mut Stack) -> u8 cycles` fetches the word at PC, decodes via P1.2's `decode`, and dispatches over `Instruction`. STATUS-flag fidelity (Z/C/OV/N/DC) per DS39632E §24 / DS41303 §25 instruction encyclopedia. Branches/calls cost 2 Tcy, everything else 1 Tcy (skip-taken adds +1). Variant-aware via `Memory::variant()`. Per-instruction unit tests cover STATUS transitions plus Access-Bank/BSR/FSR/PRODL/PRODH/TBLPTR/TABLAT side effects.  This is the largest sub-task in P1.8 — expect ~1500–2500 LOC of executor code + per-instruction tests.
+
+- [pending] P1.8c isa_parity::isa_covers_all_75_pic18_opcodes
+  - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity isa_covers_all_75_pic18_opcodes`
+  - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the `isa_covers_all_75_pic18_opcodes` test from spec §5).
+  - notes: synthesizes a flash image that exercises every documented opcode at least once; `Core::step` walks it; asserts every `Instruction` variant has been hit. Pure decoder + executor — no gpsim required. Lands the test file that P1.8d/e will extend.
+
+- [pending] P1.8d isa_parity::isa_matches_gpsim_ground_truth_for_v171_reset_through_init
+  - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity isa_matches_gpsim_ground_truth_for_v171_reset_through_init`
+  - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the matching test function from spec §5).
+  - notes: load V1.71 CONTROL hex via P1.8a, run from POR for ~100k cycles, RAM + W + STATUS + STKPTR bit-exact against a runtime gpsim ground-truth snapshot. **Caveat:** the existing `test_v171_baseline_*` fixtures are static-hex-validation only and have empty `snapshots/` directories — implementation needs to either pick a fixture that actually drives a harness (likely under `test_v17_chain` / `test_v17_shifted_full_parity` / `test_v171_v31_chain`) or capture a fresh K20-only POR fixture under `--capture-ground-truth`. This sub-task therefore includes "identify or capture the right fixture" as part of its scope.
+
+- [pending] P1.8e isa_parity::isa_matches_gpsim_ground_truth_for_v32_reset_through_an0_gate_pass
+  - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity isa_matches_gpsim_ground_truth_for_v32_reset_through_an0_gate_pass`
+  - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the matching test function from spec §5).
+  - notes: load V3.2 MAIN hex via P1.8a, run from POR until the AN0 standby-gate pass milestone, RAM/W/STATUS/STKPTR bit-exact against a runtime gpsim fixture. The AN0 gate requires the ADC (AN0 sample) and the standby-state machine, which are P2 peripheral work — **this sub-task is expected to block on P2.x landing the ADC/comparator model**. Keeping it in the ledger so the dependency is visible; expect to flip its status to `blocked` once P1.8d lands and the prerequisite gap is concrete.
 
 - [pending] P1.gate Run phase-1 gate
   - verify: `cargo test -p dlcp-sim --release --test isa_parity && .venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 1`
