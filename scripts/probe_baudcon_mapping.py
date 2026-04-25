@@ -357,15 +357,24 @@ def _print_verdict(
     print("    (e.g. line 2708: '|TBLPTRU|STATUS|BAUDCON|—|UEP8|') agree")
     print("    with gputils' p18f2455.inc:")
     print("      BAUDCON  EQU  H'0FB8'   STATUS  EQU  H'0FD8'")
-    print("    The PDF column-header text contains a +0x20 mis-alignment")
-    print("    that the markdown converter preserved verbatim, but neither")
-    print("    the gputils header, gpsim's 2455 SFR map, nor the assembled")
-    print("    V3.2 hex agree with the F98 reading.")
+    if static_only:
+        print("    The PDF column-header text contains a +0x20 mis-alignment")
+        print("    that the markdown converter preserved verbatim, but the")
+        print("    gputils header and the assembled V3.2 hex (this run's")
+        print("    static evidence) agree on 0xFB8.  This run did NOT")
+        print("    exercise gpsim's runtime SFR map, so the gpsim portion")
+        print("    of the resolution is on file from prior live runs and")
+        print("    in spec §11b — re-run with gpsim available to re-confirm.")
+    else:
+        print("    The PDF column-header text contains a +0x20 mis-alignment")
+        print("    that the markdown converter preserved verbatim, but neither")
+        print("    the gputils header, gpsim's 2455 SFR map (this run), nor")
+        print("    the assembled V3.2 hex agree with the F98 reading.")
     print()
-    print("  Implication for the Rust port: BAUDCON for the 2455 must be")
-    print("  mapped at 0xFB8 (matching gpsim), NOT at 0xF98 as the original")
-    print("  Risk Register row directs.  Update SIM_REWRITE_RUST_SPEC.md")
-    print("  §11 + §11b + §6 (peripheral table) accordingly.")
+    print("  Implication for the Rust port: BAUDCON for the 2455 is mapped")
+    print("  at 0xFB8 (matching gpsim, gputils, and the assembled firmware).")
+    print("  Spec §6 (peripheral table), §11 (risk register), and §11b have")
+    print("  been updated to record this resolution.")
 
 
 if __name__ == "__main__":

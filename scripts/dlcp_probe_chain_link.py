@@ -82,9 +82,12 @@ ADDR_RCON    = 0xFD0
 ADDR_TMR0L   = 0xFD6
 # PORTs live at 0xF80/0xF81/0xF82.  An earlier draft of this script
 # moved them to 0xF60-0xF62 based on the same +0x20-misaligned column
-# header in 39632e.md that drove the BAUDCON misreading; that range
-# is actually USB endpoint registers (UEP0..UEP15 + UFRM/UCON/etc.)
-# on the 2455, not GPIO.  Restored.
+# header in 39632e.md that drove the BAUDCON misreading.  Per gputils'
+# p18f2455.inc, 0xF60..0xF65 is `__BADRAM` (no SFR or RAM there) and
+# the USB block starts above it: UFRM(L) at 0xF66, UFRMH at 0xF67,
+# UIR/UIE/UEIR/UEIE/USTAT/UCON/UADDR/UCFG at 0xF68..0xF6F, and
+# UEP0..UEP15 at 0xF70..0xF7F.  Reading 0xF60-0xF62 thinking it was
+# GPIO returned `__BADRAM` contents, never PORTA/B/C.  Restored.
 ADDR_PORTA   = 0xF80
 ADDR_PORTB   = 0xF81
 ADDR_PORTC   = 0xF82
