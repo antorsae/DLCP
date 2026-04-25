@@ -1,16 +1,24 @@
 """Ground-truth capture for the dlcp-sim Rust rewrite (Phase 0).
 
-A `StimulusRecorder` writes a JSONL stream of every external event
-the test pushes into the simulated chain — button presses, blackout
-toggles, fault injections, host-command frames — so a future Rust
-engine can replay the same stimulus and be diffed against the
-captured outputs (UART byte streams, LCD raster, EEPROM, RAM).
+A per-test `GroundTruthContext` bundles two artefact streams:
 
-The recorder is bound to the test in scope via a `ContextVar`.  The
-chain-harness mutator methods call `get_active_recorder()` and, if
-non-None, append an event tuple to the recorder's stream.  Tests
-themselves require zero rewrites — the conftest plugin sets the
-recorder at test entry and tears it down at teardown.
+  * `StimulusRecorder` — JSONL of every external event the test
+    pushes into the simulated chain (presses, blackout toggles,
+    fault injections, host-command frames), one event per line.
+  * `SnapshotTaker` — binary RAM dump + JSON SFR map written to
+    `snapshots/<seq>.<phase>.<harness_id>.{ram.bin,sfr.json}`
+    at the start of the test, after each recorded mutator event,
+    and at the end of the test.
+
+A future Rust engine can replay the stimulus from JSONL and be
+diffed against the snapshots at the same boundaries.
+
+The context is bound to the test in scope via a `ContextVar`.  The
+chain-harness mutator methods call `record_event(...)` (and
+optionally `snapshot_after_event(...)`) which look up the active
+context and no-op when capture is off.  Tests themselves require
+zero rewrites — the conftest plugin sets the context at test entry
+and tears it down at teardown.
 
 Event schema (one JSON object per line, schema_version=1):
 
@@ -22,12 +30,24 @@ Event schema (one JSON object per line, schema_version=1):
         "payload": <dict>,           # kind-specific arguments
     }
 
-The `tick` field listed in spec §4 is intentionally omitted in
-P0.2; the existing harnesses don't expose a uniform universal-clock
-counter (CONTROL and MAIN have separate per-core PIC cycle counters
-and the 48 MHz universal tick is a Phase-3 concept).  A
-forward-compatible "tick" field is reserved for P0.5/Phase-3 to fill
-in once the multi-core clock domain is wired.
+Snapshot file naming:
+
+    snapshots/0000000000.init.<harness_id>.ram.bin     # 256 B RAM bank 0
+    snapshots/0000000000.init.<harness_id>.sfr.json    # top-of-bank-15 SFR map
+    snapshots/0000000001.event.<harness_id>.<kind>.ram.bin
+    snapshots/0000000001.event.<harness_id>.<kind>.sfr.json
+    snapshots/<final_seq>.final.<harness_id>.ram.bin
+    snapshots/<final_seq>.final.<harness_id>.sfr.json
+
+Where `harness_id` is "control" / "main" / "main_0" / "main_1"
+depending on the chain topology.
+
+The `tick` field listed in spec §4 is intentionally omitted; the
+existing harnesses don't expose a uniform universal-clock counter
+(CONTROL and MAIN have separate per-core PIC cycle counters and
+the 48 MHz universal tick is a Phase-3 concept).  A forward-
+compatible "tick" field is reserved for P0.5/Phase-3 to fill in
+once the multi-core clock domain is wired.
 """
 
 from __future__ import annotations
@@ -37,13 +57,46 @@ import json
 import time
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Iterable, Protocol
 
-__all__ = ["StimulusRecorder", "get_active_recorder", "record_event"]
+__all__ = [
+    "GroundTruthContext",
+    "Snapshotable",
+    "StimulusRecorder",
+    "SnapshotTaker",
+    "get_active_context",
+    "get_active_recorder",
+    "record_event",
+    "snapshot_after_event",
+    "snapshot_phase",
+]
 
 
-_active_recorder: contextvars.ContextVar["StimulusRecorder | None"] = (
-    contextvars.ContextVar("dlcp_sim_active_recorder", default=None)
+class Snapshotable(Protocol):
+    """Anything the snapshot taker can dump.
+
+    `harness_id` is a short identifier used in snapshot filenames;
+    must be unique within a single capture context (so two MAIN
+    harnesses in a wire chain have distinct ids like ``main_0`` and
+    ``main_1``).
+
+    `dump_state()` returns ``(ram_bank0, sfr_map)`` where:
+      * ``ram_bank0`` is exactly 256 bytes covering 0x000-0x0FF.
+      * ``sfr_map`` is a dict ``{addr: value}`` over the top-of-
+        bank-15 SFR area (typically 0xF60-0xFFF).
+
+    Both reads use the harness's existing register-access path so
+    the dump captures the same view tests already see.
+    """
+
+    @property
+    def harness_id(self) -> str: ...
+
+    def dump_state(self) -> tuple[bytes, dict[int, int]]: ...
+
+
+_active_context: contextvars.ContextVar["GroundTruthContext | None"] = (
+    contextvars.ContextVar("dlcp_sim_active_context", default=None)
 )
 
 
@@ -53,50 +106,21 @@ SCHEMA_VERSION = 1
 class StimulusRecorder:
     """Append-only JSONL writer for ground-truth stimulus events.
 
-    Use as a context manager:
-
-        with StimulusRecorder(out_dir / "stimulus.jsonl") as rec:
-            ... # tests run, harness mutators write through rec
-
-    Re-entrancy / nested recorders are NOT supported: the active
-    recorder is a single `ContextVar` slot and entering a second
-    recorder while the first is live raises.
+    Owned by `GroundTruthContext`; not used standalone in normal
+    operation.  Re-entrancy is enforced at the context level, not
+    here, since the recorder no longer manages the active-context
+    ContextVar itself.
     """
 
     def __init__(self, out_path: Path) -> None:
-        # File creation is deferred to __enter__ so that a re-entrancy
-        # check that fails (another recorder already active) doesn't
-        # leave a truncated file behind on disk for the user to wonder
-        # about.
         self.out_path = Path(out_path)
         self._fp = None
         self._seq = 0
-        self._token: contextvars.Token | None = None
         self._closed = False
 
-    def __enter__(self) -> "StimulusRecorder":
-        if _active_recorder.get() is not None:
-            raise RuntimeError(
-                "another StimulusRecorder is already active; "
-                "nested capture is not supported"
-            )
+    def open(self) -> None:
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         self._fp = self.out_path.open("w", encoding="utf-8")
-        self._token = _active_recorder.set(self)
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        try:
-            if self._token is not None:
-                _active_recorder.reset(self._token)
-                self._token = None
-        finally:
-            self.close()
 
     def close(self) -> None:
         if self._closed:
@@ -109,17 +133,22 @@ class StimulusRecorder:
         finally:
             self._fp.close()
 
-    def record(self, *, kind: str, harness: str, payload: dict[str, Any] | None = None) -> None:
-        """Append one event to the JSONL stream and flush.
+    @property
+    def next_seq(self) -> int:
+        return self._seq
+
+    def record(self, *, kind: str, harness: str, payload: dict[str, Any] | None = None) -> int:
+        """Append one event to the JSONL stream and return its seq.
 
         Flushing on every event is deliberate: a test that crashes
         mid-run leaves a usable partial stream, which is what we
         want for post-mortem replay.
         """
         if self._closed or self._fp is None:
-            return
+            return -1
+        seq = self._seq
         event: dict[str, Any] = {
-            "seq": self._seq,
+            "seq": seq,
             "wall_time": time.time(),
             "schema_version": SCHEMA_VERSION,
             "kind": kind,
@@ -129,19 +158,151 @@ class StimulusRecorder:
         self._fp.write(json.dumps(event, sort_keys=True) + "\n")
         self._fp.flush()
         self._seq += 1
+        return seq
 
 
-def get_active_recorder() -> StimulusRecorder | None:
-    """Return the recorder bound to the current test, or None."""
-    return _active_recorder.get()
+class SnapshotTaker:
+    """Writes binary RAM + JSON SFR snapshots to `snapshots/`.
 
+    Owned by `GroundTruthContext`.  Each snapshot is a pair of files:
 
-def record_event(*, kind: str, harness: str, payload: dict[str, Any] | None = None) -> None:
-    """Record `kind` to the active recorder, if any.  No-op otherwise.
+        <seq:010d>.<phase>.<harness_id>.ram.bin   (256 bytes)
+        <seq:010d>.<phase>.<harness_id>.sfr.json  (hex-keyed dict)
 
-    This is the shim chain-harness mutators call; the cost when
-    capture is off is one ContextVar read + one None comparison.
+    The seq is monotonic across init/event/final; `phase` is one of
+    {"init", "event", "final"}; for "event" the filename also
+    embeds the event kind so a reader can match snapshots back to
+    the stimulus.jsonl entries.
     """
-    rec = _active_recorder.get()
-    if rec is not None:
-        rec.record(kind=kind, harness=harness, payload=payload)
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = Path(out_dir)
+        self._seq = 0
+        self._opened = False
+
+    def open(self) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._opened = True
+
+    def close(self) -> None:
+        # Filesystem-only; nothing to flush.
+        pass
+
+    def take(
+        self,
+        targets: Iterable[Snapshotable],
+        *,
+        phase: str,
+        kind: str | None = None,
+    ) -> int:
+        """Dump RAM + SFR for each target.  Returns the seq used."""
+        if not self._opened:
+            return -1
+        seq = self._seq
+        for target in targets:
+            ram, sfr = target.dump_state()
+            if len(ram) != 256:
+                raise RuntimeError(
+                    f"{target.harness_id}.dump_state() returned RAM of "
+                    f"length {len(ram)} (expected 256)"
+                )
+            label = f"{phase}_{kind}" if (phase == "event" and kind) else phase
+            stem = f"{seq:010d}.{label}.{target.harness_id}"
+            (self.out_dir / f"{stem}.ram.bin").write_bytes(ram)
+            sfr_dump = {f"0x{addr:03X}": v & 0xFF for addr, v in sorted(sfr.items())}
+            (self.out_dir / f"{stem}.sfr.json").write_text(
+                json.dumps(sfr_dump, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        self._seq += 1
+        return seq
+
+
+class GroundTruthContext:
+    """Per-test container that bundles a stimulus recorder and a
+    snapshot taker, and owns the active-context ContextVar slot.
+
+    Use as a context manager — entering binds the context to the
+    current task, exiting unbinds and closes the underlying writers.
+    Re-entrancy is rejected (single active context per call stack).
+    """
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = Path(out_dir)
+        self.stimulus = StimulusRecorder(self.out_dir / "stimulus.jsonl")
+        self.snapshots = SnapshotTaker(self.out_dir / "snapshots")
+        self._token: contextvars.Token | None = None
+
+    def __enter__(self) -> "GroundTruthContext":
+        if _active_context.get() is not None:
+            raise RuntimeError(
+                "another GroundTruthContext is already active; "
+                "nested capture is not supported"
+            )
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.stimulus.open()
+        self.snapshots.open()
+        self._token = _active_context.set(self)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            if self._token is not None:
+                _active_context.reset(self._token)
+                self._token = None
+        finally:
+            try:
+                self.snapshots.close()
+            finally:
+                self.stimulus.close()
+
+
+def get_active_context() -> "GroundTruthContext | None":
+    """Return the active capture context for the current test, or None."""
+    return _active_context.get()
+
+
+def get_active_recorder() -> "StimulusRecorder | None":
+    """Compatibility shim: return the active context's recorder."""
+    ctx = _active_context.get()
+    return ctx.stimulus if ctx is not None else None
+
+
+def record_event(*, kind: str, harness: str, payload: dict[str, Any] | None = None) -> int:
+    """Record `kind` to the active recorder.  No-op when capture is off.
+
+    Returns the assigned seq (or -1 when capture is off).  This is
+    the shim chain-harness mutators call; the cost when capture is
+    off is one ContextVar read and a None comparison.
+    """
+    ctx = _active_context.get()
+    if ctx is None:
+        return -1
+    return ctx.stimulus.record(kind=kind, harness=harness, payload=payload)
+
+
+def snapshot_after_event(kind: str, targets: Iterable[Snapshotable]) -> None:
+    """Take a per-event snapshot of the given harnesses.  No-op when
+    capture is off.  `kind` should match the `kind` passed to the
+    immediately-preceding `record_event(...)` call so the snapshot
+    file's `event_<kind>` label correlates with the stimulus.jsonl
+    entry."""
+    ctx = _active_context.get()
+    if ctx is None:
+        return
+    ctx.snapshots.take(targets, phase="event", kind=kind)
+
+
+def snapshot_phase(phase: str, targets: Iterable[Snapshotable]) -> None:
+    """Take an init or final snapshot.  `phase` is "init" or "final"."""
+    if phase not in ("init", "final"):
+        raise ValueError(f"snapshot_phase phase must be init|final, got {phase!r}")
+    ctx = _active_context.get()
+    if ctx is None:
+        return
+    ctx.snapshots.take(targets, phase=phase)

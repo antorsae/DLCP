@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from .gpsim import require_gpsim_binary
-from .ground_truth import record_event
+from .ground_truth import record_event, snapshot_after_event
 from .lcd import LcdByte, LcdState
 from .manifests import (
     control_disable_boot_wait,
@@ -667,6 +667,7 @@ class GpsimControlHarness:
         self._key_release[action] = max(
             self._key_release[action], self.current_cycle + self.hold_cycles
         )
+        snapshot_after_event("press", [self])
 
     def step(self) -> StepResult:
         """Advance simulation by one chunk with heartbeat injection."""
@@ -695,6 +696,26 @@ class GpsimControlHarness:
         """Read a single RAM/SFR register."""
         return _read_reg(self._issue, addr)
 
+    @property
+    def harness_id(self) -> str:
+        """Stable identifier used by the ground-truth snapshotter."""
+        return "control"
+
+    def dump_state(self) -> tuple[bytes, dict[int, int]]:
+        """Return (RAM bank 0, SFR map for top-of-bank-15) for snapshotting.
+
+        Reads 0x000-0x0FF as RAM bank 0 (256 bytes; firmware-defined
+        variables, RX/TX rings, IR debounce state, control flags, etc.)
+        and 0xF60-0xFFF as the SFR area (160 entries; PORT/LAT/TRIS,
+        ADC, MSSP/I²C, EUSART, timers, oscillator, IRQ, stack pointer
+        and ALU state on the 2455/K20 layout).  Each register is read
+        through the same `reg(0xXXX)` CLI path tests already use so
+        the dump is consistent with what tests observe.
+        """
+        ram = bytes(_read_reg(self._issue, addr) for addr in range(0x000, 0x100))
+        sfr = {addr: _read_reg(self._issue, addr) for addr in range(0xF60, 0x1000)}
+        return ram, sfr
+
     def inject_bytes(self, data: List[int]) -> bool:
         """Inject raw bytes into the CONTROL RX ring buffer."""
         record_event(
@@ -702,7 +723,9 @@ class GpsimControlHarness:
             harness="gpsim_control",
             payload={"data": [b & 0xFF for b in data]},
         )
-        return self._inject_rx_bytes(list(data))
+        ok = self._inject_rx_bytes(list(data))
+        snapshot_after_event("inject_bytes", [self])
+        return ok
 
     def inject_triplet(self, frame: TxTriplet) -> bool:
         """Inject one route/cmd/data triplet into the CONTROL RX ring buffer."""
@@ -711,7 +734,9 @@ class GpsimControlHarness:
             harness="gpsim_control",
             payload={"route": frame.route & 0xFF, "cmd": frame.cmd & 0xFF, "data": frame.data & 0xFF},
         )
-        return self._inject_rx_bytes([frame.route, frame.cmd, frame.data])
+        ok = self._inject_rx_bytes([frame.route, frame.cmd, frame.data])
+        snapshot_after_event("inject_triplet", [self])
+        return ok
 
     def inject_frames_fifo(
         self, frames: List[List[int]], fifo_limit: int
@@ -749,6 +774,7 @@ class GpsimControlHarness:
                 delivered += 1
         if delivered > 0:
             self._issue(f"reg(0x099)=0x{wr:02X}", 5.0)
+        snapshot_after_event("inject_frames_fifo", [self])
         return delivered, overruns
 
     def inject_host_commands(
@@ -784,6 +810,7 @@ class GpsimControlHarness:
                 )
             for _ in range(max(0, steps_per_command)):
                 self.step()
+        snapshot_after_event("inject_host_commands", [self])
         return self.tx_frames()[before:]
 
     def inject_host_command(
@@ -839,6 +866,7 @@ class GpsimControlHarness:
         before = len(self._decoder.tx_frames)
         for _ in range(max(1, steps)):
             self.step()
+        snapshot_after_event("inject_decoded_ir_event", [self])
         return self.tx_frames()[before:]
 
     def dump_eeprom(self, path: Path) -> None:

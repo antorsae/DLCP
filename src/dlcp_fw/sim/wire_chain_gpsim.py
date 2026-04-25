@@ -16,7 +16,7 @@ from typing import Dict, Sequence
 
 from .chain_gpsim import BAUD_RATE, BITS_PER_BYTE, MainChainHarness, _is_waiting_lcd
 from .control_gpsim import CONTROL_FOSC_HZ, GpsimControlHarness, TxTriplet, _read_reg
-from .ground_truth import record_event
+from .ground_truth import record_event, snapshot_after_event
 
 CONTROL_TCY_HZ = CONTROL_FOSC_HZ // 4
 MAIN_TCY_HZ = 16_000_000 // 4
@@ -445,11 +445,22 @@ class WireMultiMainChainHarness:
             names = ", ".join(sorted(self._bridge_map))
             raise KeyError(f"unknown wire link {link_name!r}; known links: {names}") from exc
         bridge.configure(drop=drop, extra_cycles=extra_cycles)
+        # Bridges aren't Snapshotable themselves; capture the chain
+        # endpoints (control + all mains) as the visible state changes
+        # only at the end of next step().  This keeps the manifest
+        # consistent with one snapshot per recorded event.
+        snapshot_after_event("set_link_fault", self._snapshot_targets())
 
     def clear_link_faults(self) -> None:
         record_event(kind="clear_link_faults", harness="wire_chain")
         for bridge in self._bridge_map.values():
             bridge.clear_fault()
+        snapshot_after_event("clear_link_faults", self._snapshot_targets())
+
+    def _snapshot_targets(self) -> list:
+        """Return the list of Snapshotable harnesses for chain-wide
+        events (control + every MAIN in the wire topology)."""
+        return [self.control, *self.mains]
 
     def set_main_i2c_fault(
         self,
@@ -492,6 +503,7 @@ class WireMultiMainChainHarness:
             hold_scl_low=hold_scl_low,
             stretch_scl_cycles=stretch_scl_cycles,
         )
+        snapshot_after_event("set_main_i2c_fault", [self.mains[main_index]])
 
     def set_main_uart_fault(
         self,
@@ -513,6 +525,7 @@ class WireMultiMainChainHarness:
             trmt_busy_cycles=trmt_busy_cycles,
             trmt_busy_count=trmt_busy_count,
         )
+        snapshot_after_event("set_main_uart_fault", [self.mains[main_index]])
 
     def clear_main_uart_faults(self, *, main_index: int = 0) -> None:
         record_event(
@@ -521,6 +534,7 @@ class WireMultiMainChainHarness:
             payload={"main_index": main_index},
         )
         self.mains[main_index].clear_uart_faults()
+        snapshot_after_event("clear_main_uart_faults", [self.mains[main_index]])
 
     def set_main_mssp_stop_fault(
         self,
@@ -542,6 +556,7 @@ class WireMultiMainChainHarness:
             stop_busy_cycles=stop_busy_cycles,
             stop_busy_count=stop_busy_count,
         )
+        snapshot_after_event("set_main_mssp_stop_fault", [self.mains[main_index]])
 
     def clear_main_mssp_stop_faults(self, *, main_index: int = 0) -> None:
         record_event(
@@ -550,6 +565,7 @@ class WireMultiMainChainHarness:
             payload={"main_index": main_index},
         )
         self.mains[main_index].clear_mssp_stop_faults()
+        snapshot_after_event("clear_main_mssp_stop_faults", [self.mains[main_index]])
 
     def clear_main_i2c_faults(self, device_name: str = "cfg71", *, main_index: int = 0) -> None:
         record_event(
@@ -558,6 +574,7 @@ class WireMultiMainChainHarness:
             payload={"device_name": device_name, "main_index": main_index},
         )
         self.mains[main_index].clear_i2c_faults(device_name)
+        snapshot_after_event("clear_main_i2c_faults", [self.mains[main_index]])
 
     def control_rx_activity(self) -> bool:
         return self._control_rx_activity

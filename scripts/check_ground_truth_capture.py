@@ -86,12 +86,79 @@ def _check_stimulus(dirs: Iterable[Path]) -> list[str]:
 
 
 def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
-    """Stub for P0.3.  Until P0.3 lands, exit 0 when no snapshot dirs
-    exist (vacuous PASS) and report only a heads-up if snapshot files
-    are present but malformed.  When P0.3 lands this function should
-    enforce: every captured test dir contains snapshots/ with at least
-    floor(duration_ms) RAM dumps."""
-    return []
+    """Validate the per-test `snapshots/` directory.
+
+    P0.3 implements the **minimum-viable** snapshot policy (option A
+    from the planning discussion): snapshots are taken at well-
+    defined boundaries (after each recorded chain mutator event and
+    at test start/end), not on a 1 ms cadence.  The validator
+    therefore requires:
+
+      * `snapshots/` exists for every captured test directory.
+      * Each `*.ram.bin` is exactly 256 bytes (RAM bank 0).
+      * Each matching `*.sfr.json` parses as a JSON object whose
+        keys are hex strings of the form ``0xNNN`` and values are
+        bytes (0..255).
+      * For tests whose stimulus.jsonl is non-empty (i.e. the test
+        actually drove a chain mutator), at least one snapshot pair
+        was written.  Tests with empty stimulus are exempt — the
+        chain mutators never fired so no snapshots are expected.
+    """
+    errors: list[str] = []
+    for d in dirs:
+        snaps = d / "snapshots"
+        if not snaps.exists():
+            errors.append(f"{d.name}: snapshots/ directory is missing")
+            continue
+        ram_files = sorted(snaps.glob("*.ram.bin"))
+        sfr_files = sorted(snaps.glob("*.sfr.json"))
+
+        # Empty-stimulus tests are exempt.
+        stim = d / "stimulus.jsonl"
+        stim_empty = (not stim.exists()) or stim.stat().st_size == 0
+        if not ram_files and not stim_empty:
+            errors.append(
+                f"{d.name}: stimulus.jsonl is non-empty but snapshots/ "
+                "contains no .ram.bin files"
+            )
+
+        for ram_path in ram_files:
+            size = ram_path.stat().st_size
+            if size != 256:
+                errors.append(
+                    f"{d.name}: {ram_path.name} is {size} bytes "
+                    "(expected 256, RAM bank 0)"
+                )
+
+        for sfr_path in sfr_files:
+            try:
+                sfr = json.loads(sfr_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                errors.append(f"{d.name}: {sfr_path.name}: invalid JSON ({exc})")
+                continue
+            if not isinstance(sfr, dict):
+                errors.append(
+                    f"{d.name}: {sfr_path.name}: top-level must be an object"
+                )
+                continue
+            for key, value in sfr.items():
+                if not (isinstance(key, str) and key.startswith("0x")):
+                    errors.append(
+                        f"{d.name}: {sfr_path.name}: bad SFR key {key!r}"
+                    )
+                    continue
+                try:
+                    int(key, 16)
+                except ValueError:
+                    errors.append(
+                        f"{d.name}: {sfr_path.name}: non-hex key {key!r}"
+                    )
+                if not (isinstance(value, int) and 0 <= value <= 255):
+                    errors.append(
+                        f"{d.name}: {sfr_path.name}: SFR value {value!r} "
+                        f"for key {key!r} is not a byte (0..255)"
+                    )
+    return errors
 
 
 def _check_outputs(dirs: Iterable[Path]) -> list[str]:

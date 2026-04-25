@@ -19,7 +19,7 @@ from .control_gpsim import (
     _read_reg,
 )
 from .gpsim import require_gpsim_binary
-from .ground_truth import record_event
+from .ground_truth import record_event, snapshot_after_event
 from .hexio import parse_intel_hex
 from .main_gpsim import (
     MAIN_FAULT_FLAGS_ADDR,
@@ -276,6 +276,7 @@ class MainChainHarness:
         self._fault_flags_addr = MAIN_FAULT_FLAGS_ADDR
         self._native_timeout_seed_addrs: tuple[int, int] | None = None
         self._fault_flags_value = 0
+        self.tag = tag
         self._tmp = tempfile.TemporaryDirectory(prefix=f"gpsim_chain_main_{tag}_")
         self.tmp_path = Path(self._tmp.name)
         self.seeded_hex = self.tmp_path / "main_seeded.hex"
@@ -531,6 +532,21 @@ class MainChainHarness:
         self._gpsim.close()
         self._tmp.cleanup()
 
+    @property
+    def harness_id(self) -> str:
+        """Stable identifier for the ground-truth snapshotter.  Two
+        MAINs in a wire chain get distinct ids ``main_0`` / ``main_1``
+        from the constructor's `tag` argument."""
+        return f"main_{self.tag}"
+
+    def dump_state(self) -> tuple[bytes, dict[int, int]]:
+        """Return (RAM bank 0, SFR map) for snapshotting.  Same shape
+        as `GpsimControlHarness.dump_state` (256 B RAM at 0x000-0x0FF
+        plus 0xF60-0xFFF SFR area on the 2455 layout)."""
+        ram = bytes(_read_reg(self._issue, addr) for addr in range(0x000, 0x100))
+        sfr = {addr: _read_reg(self._issue, addr) for addr in range(0xF60, 0x1000)}
+        return ram, sfr
+
     def _apply_pin_models(self) -> None:
         self.current_loop_model.apply(self._issue)
         if not self._native_an0_boot_pending:
@@ -598,6 +614,9 @@ class MainChainHarness:
     def inject_frames_fifo(
         self, frames: List[List[int]], fifo_limit: int
     ) -> tuple[int, int]:
+        # Record before injection.  Snapshot is taken after the
+        # delivery completes so the captured state reflects post-write
+        # RX-ring values.
         record_event(
             kind="inject_frames_fifo",
             harness="main_chain",
@@ -607,6 +626,13 @@ class MainChainHarness:
                 "transport_mode": self.transport_mode,
             },
         )
+        result = self._inject_frames_fifo_impl(frames, fifo_limit)
+        snapshot_after_event("inject_frames_fifo", [self])
+        return result
+
+    def _inject_frames_fifo_impl(
+        self, frames: List[List[int]], fifo_limit: int
+    ) -> tuple[int, int]:
         if self.transport_mode == "native_ring":
             rd = _read_reg(self._issue, 0x0C6)
             wr = _read_reg(self._issue, 0x0C7)
@@ -993,6 +1019,7 @@ class SingleMainChainHarness:
         if enabled:
             self.link_ctl_m0.clear()
             self.link_m0_ctl.clear()
+        snapshot_after_event("set_blackout", [self.control, self.main])
 
     def set_main_fault_flags(
         self,
@@ -1008,14 +1035,17 @@ class SingleMainChainHarness:
                 "mssp_wait_stall": mssp_wait_stall,
             },
         )
-        return self.main.set_fault_flags(
+        flags = self.main.set_fault_flags(
             uart_tx_stall=uart_tx_stall,
             mssp_wait_stall=mssp_wait_stall,
         )
+        snapshot_after_event("set_main_fault_flags", [self.main])
+        return flags
 
     def clear_main_fault_flags(self) -> None:
         record_event(kind="clear_main_fault_flags", harness="single_main_chain")
         self.main.clear_fault_flags()
+        snapshot_after_event("clear_main_fault_flags", [self.main])
 
     def set_main_uart_fault(
         self,
@@ -1035,10 +1065,12 @@ class SingleMainChainHarness:
             trmt_busy_cycles=trmt_busy_cycles,
             trmt_busy_count=trmt_busy_count,
         )
+        snapshot_after_event("set_main_uart_fault", [self.main])
 
     def clear_main_uart_faults(self) -> None:
         record_event(kind="clear_main_uart_faults", harness="single_main_chain")
         self.main.clear_uart_faults()
+        snapshot_after_event("clear_main_uart_faults", [self.main])
 
     def set_main_mssp_stop_fault(
         self,
@@ -1058,10 +1090,12 @@ class SingleMainChainHarness:
             stop_busy_cycles=stop_busy_cycles,
             stop_busy_count=stop_busy_count,
         )
+        snapshot_after_event("set_main_mssp_stop_fault", [self.main])
 
     def clear_main_mssp_stop_faults(self) -> None:
         record_event(kind="clear_main_mssp_stop_faults", harness="single_main_chain")
         self.main.clear_mssp_stop_faults()
+        snapshot_after_event("clear_main_mssp_stop_faults", [self.main])
 
     def set_main_i2c_fault(
         self,
@@ -1102,6 +1136,7 @@ class SingleMainChainHarness:
             hold_scl_low=hold_scl_low,
             stretch_scl_cycles=stretch_scl_cycles,
         )
+        snapshot_after_event("set_main_i2c_fault", [self.main])
 
     def clear_main_i2c_faults(self, device_name: str = "cfg71") -> None:
         record_event(
@@ -1110,6 +1145,7 @@ class SingleMainChainHarness:
             payload={"device_name": device_name},
         )
         self.main.clear_i2c_faults(device_name)
+        snapshot_after_event("clear_main_i2c_faults", [self.main])
 
     def step(self) -> ChainStepResult:
         if not self._blackout:
