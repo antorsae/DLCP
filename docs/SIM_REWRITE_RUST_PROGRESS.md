@@ -61,7 +61,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/memory.rs`
   - notes: include `Cargo.toml` workspace at repo root.
 
-- [pending] P1.2 PIC18 ISA decoder for all 75 instructions
+- [done] P1.2 PIC18 ISA decoder for all 75 instructions
   - verify: `cd crates/dlcp-sim && cargo test --release isa::decode::tests -- --include-ignored`
   - artifact: `crates/dlcp-sim/src/isa/decode.rs`
   - notes: opcode table from DS39632E §24 / DS41303 §25.

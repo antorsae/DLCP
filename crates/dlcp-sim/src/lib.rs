@@ -8,7 +8,9 @@
 //! shells later phases hang their behaviour off.
 
 pub mod core;
+pub mod isa;
 pub mod memory;
 
 pub use crate::core::Core;
+pub use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 pub use crate::memory::{Memory, Variant};
