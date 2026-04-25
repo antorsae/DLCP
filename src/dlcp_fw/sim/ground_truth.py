@@ -73,7 +73,7 @@ from types import TracebackType
 from typing import Any, Iterable, Protocol
 
 
-_HARNESS_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_HARNESS_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 __all__ = [
     "GroundTruthContext",
@@ -94,8 +94,9 @@ class Snapshotable(Protocol):
     `harness_id` is a short identifier used in snapshot filenames;
     must be unique within a single capture context (so two MAIN
     harnesses in a wire chain have distinct ids like ``main_0`` and
-    ``main_1``) and must match ``^[A-Za-z0-9_-]+$`` so the 4-
-    component snapshot filename contract
+    ``main_1``) and must match ``[A-Za-z0-9_-]+`` in full
+    (re.fullmatch — no embedded ``.``, no trailing newline) so the
+    4-component snapshot filename contract
     (``seq.<label>.<harness_id>.<ext>``) survives ``Path.split('.')``
     parsing.
 
@@ -231,10 +232,13 @@ class SnapshotTaker:
         seen: set[str] = set()
         for target in materialised:
             hid = target.harness_id
-            if not _HARNESS_ID_RE.match(hid):
+            # `fullmatch` rejects trailing newlines and partial
+            # matches; `match` with `$` would silently accept
+            # "control\n" because Python's `$` is multiline-friendly.
+            if not _HARNESS_ID_RE.fullmatch(hid):
                 raise RuntimeError(
                     f"invalid harness_id {hid!r}: must match "
-                    "^[A-Za-z0-9_-]+$ so the snapshot filename's "
+                    "[A-Za-z0-9_-]+ in full so the snapshot filename's "
                     "4-component layout (seq.label.harness_id.ext) "
                     "remains parseable"
                 )
