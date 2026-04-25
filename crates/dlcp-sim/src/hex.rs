@@ -11,7 +11,7 @@
 //! | flash   | `0x000000..0x008000`        | `0xFF`       | 32 KiB on PIC18F25K20 (full); 24 KiB used on PIC18F2455 (top 8 KiB unimplemented) |
 //! | user_id | `0x200000..0x200008`        | `0xFF`       | 8-byte application-defined ID                                    |
 //! | config  | `0x300000..0x30000E`        | `0xFF`       | 14 CONFIG bytes (parsed by [`crate::config`])                    |
-//! | eeprom  | `0xF00000..0xF000FF`        | `0xFF`       | 256-byte data EEPROM                                             |
+//! | eeprom  | `0xF00000..0xF00100`        | `0xFF`       | 256-byte data EEPROM                                             |
 //!
 //! `DEVID` at `0x3FFFFE..0x400000` is silicon-only and
 //! never appears in a released hex; if a record targets
@@ -101,12 +101,30 @@ impl HexImage {
                     let base = ela | rec.address as u32;
                     let len = rec.data.len();
                     for (i, &b) in rec.data.iter().enumerate() {
-                        image.write_byte(base + i as u32, b, line_no, len)?;
+                        // checked_add catches the (admittedly malformed)
+                        // case where a record near 0xFFFF_FFFF spans past
+                        // the 32-bit address space — without it, a byte
+                        // would wrap to 0 and silently land in flash[0].
+                        let addr = base.checked_add(i as u32).ok_or(
+                            HexLoadError::AddressOutOfRange {
+                                line: line_no,
+                                address: u32::MAX,
+                                length: len as u8,
+                            },
+                        )?;
+                        image.write_byte(addr, b, line_no, len)?;
                     }
                 }
                 0x01 => {
                     if !rec.data.is_empty() {
                         return Err(HexLoadError::EofWithPayload { line: line_no });
+                    }
+                    if rec.address != 0 {
+                        return Err(HexLoadError::BadControlRecordAddress {
+                            line: line_no,
+                            kind: 0x01,
+                            address: rec.address,
+                        });
                     }
                     saw_eof = true;
                 }
@@ -115,6 +133,13 @@ impl HexImage {
                         return Err(HexLoadError::BadElaLength {
                             line: line_no,
                             len: rec.data.len() as u8,
+                        });
+                    }
+                    if rec.address != 0 {
+                        return Err(HexLoadError::BadControlRecordAddress {
+                            line: line_no,
+                            kind: 0x04,
+                            address: rec.address,
                         });
                     }
                     ela = ((rec.data[0] as u32) << 24) | ((rec.data[1] as u32) << 16);
@@ -214,6 +239,15 @@ pub enum HexLoadError {
     BadElaLength { line: usize, len: u8 },
     /// Type-01 (EOF) record with a non-empty payload.
     EofWithPayload { line: usize },
+    /// Type-01 (EOF) or type-04 (ELA) control record with a
+    /// non-zero address field — the Intel HEX spec requires
+    /// `0x0000` for both, so a non-zero value points at a
+    /// corrupted hex.
+    BadControlRecordAddress {
+        line: usize,
+        kind: u8,
+        address: u16,
+    },
     /// Saw another record after the EOF record.
     RecordsAfterEof { line: usize },
     /// Reached end of input without an EOF record.
@@ -283,6 +317,10 @@ impl fmt::Display for HexLoadError {
             Self::EofWithPayload { line } => write!(
                 f,
                 "line {line}: EOF (type 01) record carries a non-empty payload"
+            ),
+            Self::BadControlRecordAddress { line, kind, address } => write!(
+                f,
+                "line {line}: control record (type 0x{kind:02X}) has non-zero address 0x{address:04X} (must be 0x0000)"
             ),
             Self::RecordsAfterEof { line } => {
                 write!(f, "line {line}: record appears after the EOF marker")
@@ -733,6 +771,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rejects_address_overflow_at_top_of_32_bit_space() {
+        // ELA = 0xFFFF + record address 0xFFFF + a 2-byte
+        // payload puts byte[0] at 0xFFFFFFFF and byte[1] at
+        // 0x100000000 — past u32::MAX.  Without checked_add the
+        // second byte would silently wrap to 0 and land in
+        // flash[0]; the loader must reject loudly instead.
+        let err = HexImage::from_hex_str(&build_hex(&[
+            ela_rec(0xFFFF),
+            data_rec(0xFFFF, &[0xAA, 0xBB]),
+            eof_rec(),
+        ]))
+        .unwrap_err();
+        match err {
+            HexLoadError::AddressOutOfRange { line, address, .. } => {
+                assert_eq!(line, 2);
+                assert_eq!(address, u32::MAX);
+            }
+            other => panic!("expected AddressOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_eof_with_nonzero_address() {
+        // EOF (type 01) with addr != 0x0000.
+        let bad_eof = rec(0x01, 0x1234, &[]);
+        let err = HexImage::from_hex_str(&build_hex(&[bad_eof])).unwrap_err();
+        match err {
+            HexLoadError::BadControlRecordAddress { line, kind, address } => {
+                assert_eq!(line, 1);
+                assert_eq!(kind, 0x01);
+                assert_eq!(address, 0x1234);
+            }
+            other => panic!("expected BadControlRecordAddress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_ela_with_nonzero_address() {
+        // ELA (type 04) with addr != 0x0000.
+        let bad_ela = rec(0x04, 0x4242, &[0x00, 0x30]);
+        let err = HexImage::from_hex_str(&build_hex(&[bad_ela, eof_rec()])).unwrap_err();
+        match err {
+            HexLoadError::BadControlRecordAddress { line, kind, address } => {
+                assert_eq!(line, 1);
+                assert_eq!(kind, 0x04);
+                assert_eq!(address, 0x4242);
+            }
+            other => panic!("expected BadControlRecordAddress, got {other:?}"),
+        }
+    }
+
     // ------- real-fixture acceptance tests -------
 
     #[test]
@@ -740,14 +830,29 @@ mod tests {
         let img = HexImage::from_hex_path(release_path("DLCP_Firmware_V3.2.hex"))
             .expect("V3.2 MAIN release hex must load cleanly");
 
-        // CONFIG bytes match the V3.2 asm source exactly
-        // (src/dlcp_fw/asm/dlcp_main_v32.asm:161-172).
-        assert_eq!(img.config[0], 0x3A, "CONFIG1L");
-        assert_eq!(img.config[1], 0x46, "CONFIG1H (FOSC = ECPIO)");
-        assert_eq!(img.config[2], 0x3E, "CONFIG2L");
-        assert_eq!(img.config[3], 0x1E, "CONFIG2H");
-        assert_eq!(img.config[5], 0x00, "CONFIG3H");
-        assert_eq!(img.config[6], 0x80, "CONFIG4L (DEBUG=1, STVREN=0)");
+        // All 14 CONFIG bytes match the V3.2 asm source exactly
+        // (src/dlcp_fw/asm/dlcp_main_v32.asm:161-172).  Bytes 4
+        // (CONFIG3L) and 7 (CONFIG4H) are unused on the 2455 and
+        // come through as 0xFF.
+        assert_eq!(
+            img.config,
+            [
+                0x3A, // CONFIG1L
+                0x46, // CONFIG1H (FOSC = ECPIO)
+                0x3E, // CONFIG2L
+                0x1E, // CONFIG2H
+                0xFF, // CONFIG3L (unused on 2455)
+                0x00, // CONFIG3H
+                0x80, // CONFIG4L (DEBUG=1, STVREN=0)
+                0xFF, // CONFIG4H (unused)
+                0x0F, // CONFIG5L
+                0xC0, // CONFIG5H
+                0x0F, // CONFIG6L
+                0xA0, // CONFIG6H
+                0x0F, // CONFIG7L
+                0x40, // CONFIG7H
+            ]
+        );
 
         // V3.2 places application code starting at flash 0x1000;
         // 0x000..0x1000 is the bootloader region and is not written
