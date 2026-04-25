@@ -897,12 +897,31 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         }
         Instruction::Swapf { d, a, f } => {
             // SWAPF f, d, a: swap the high and low nibbles of f.
-            // STATUS NOT affected (DS39632E §26 SWAPF).  Use
-            // execute_op_with_dest directly so we skip the
-            // implicit Z/N update of execute_logical_with_dest.
-            execute_op_with_dest(core, d, a, f, |_core, fv| {
-                (fv << 4) | (fv >> 4)
-            });
+            // STATUS NOT affected (DS39632E §26 SWAPF).
+            //
+            // SWAPF is the only data-movement-shaped op in this
+            // category that is *not* flag-affecting, so it must
+            // NOT take the §5.3.6 STATUS-skip path that the
+            // shared `execute_op_with_dest` applies to every
+            // d=F operand resolving to STATUS.  Per §5.3.6 the
+            // skip applies only when the op affects flags --
+            // SWAPF doesn't, so a `SWAPF STATUS, F` should land
+            // the swapped byte at STATUS_ADDR (masked to the
+            // implemented bits).  Inline the handling here so
+            // the d=F + target=STATUS path writes through.
+            let operand_addr = resolve_f(core, f, a);
+            let (target, pending) = resolve_target_no_commit(core, operand_addr);
+            let f_value = core.memory.read_raw(target);
+            let result = (f_value << 4) | (f_value >> 4);
+            match d {
+                Dest::W => write_w(core, result),
+                Dest::F => core
+                    .memory
+                    .write_raw(target, result & sfr_write_mask(target.as_u16())),
+            }
+            if let Some((fsr, new_fsr)) = pending {
+                commit_fsr(core, fsr, new_fsr);
+            }
             core.advance_cycles(1);
             Ok(1)
         }
@@ -1799,6 +1818,29 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0xBA);
         assert_eq!(read_status(&core), STATUS_VALID_MASK);
+    }
+
+    #[test]
+    fn swapf_to_status_writes_through_because_flags_not_affected() {
+        // Per DS39632E §5.3.6, the "drop result write to
+        // STATUS" rule applies only to flag-affecting
+        // instructions.  SWAPF doesn't affect flags, so
+        // `SWAPF STATUS, F` MUST write the nibble-swapped byte
+        // to STATUS (masked to the implemented bits).
+        //
+        // SWAPF 0xD8, F, ACCESS = 0x3AD8.
+        // STATUS = 0x12 (=0b00010010 = N+DC) → swap nibbles =
+        // 0x21 → masked by STATUS_VALID_MASK (0x1F) → 0x01.
+        let mut core = k20_core_with_flash(&[0xD8, 0x3A]);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_DC | STATUS_N);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // Without the fix, STATUS would still be DC|N (0x12) --
+        // the data write would have been dropped.  With the
+        // fix, it's the swapped value masked to bits 4..0.
+        // 0x12 swap = 0x21; 0x21 & 0x1F = 0x01.
+        assert_eq!(read_status(&core), 0x01);
     }
 
     // ---- §5.3.6: arithmetic-to-STATUS preserves flag update ----
