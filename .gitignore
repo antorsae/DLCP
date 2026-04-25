@@ -20,6 +20,8 @@ artifacts/reanalysis/
 artifacts/probes/
 artifacts/tools/gpsim-xtc/
 artifacts/LX521.4/
+artifacts/ground_truth/
+artifacts/sim_rewrite_divergences/
 
 sim_artifacts/
 tmp_gpsim_lcd_capture/

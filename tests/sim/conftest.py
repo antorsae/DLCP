@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -49,27 +51,35 @@ if GPSIM_XTC_BINARY.exists() and "DLCP_GPSIM_BIN" not in os.environ:
 GROUND_TRUTH_ROOT = ARTIFACTS_DIR / "ground_truth"
 
 
-def _ground_truth_dirname(nodeid: str) -> str:
-    """Map a pytest nodeid to the canonical ground-truth directory name.
+_NODEID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-    Format: ``<module-stem>__<function-and-params>`` with characters
-    that aren't safe on POSIX/HFS+ filenames replaced.  Examples:
+
+def _ground_truth_dirname(nodeid: str) -> str:
+    """Map a pytest nodeid to a POSIX-safe, collision-free dirname.
+
+    Format: ``<module-stem>__<sanitized-rest>__<hash8>`` where the
+    hash8 suffix is the first 8 hex chars of sha1(nodeid).  The hash
+    guarantees uniqueness even when the sanitization is lossy
+    (parametrize ids containing `/`, class-based tests, etc.) and
+    when xdist workers run in parallel without coordinating, since
+    each worker derives the same dirname for the same nodeid and
+    distinct nodeids never hash to the same suffix in practice.
+
+    Examples:
 
       tests/sim/test_v17_chain.py::test_v17_stock_v16b_chain_reaches_display
-        -> test_v17_chain__test_v17_stock_v16b_chain_reaches_display
+        -> test_v17_chain__test_v17_stock_v16b_chain_reaches_display__<hash>
 
-      tests/sim/test_v32_release_flash.py::test_warns_on_downgrade[stock_v23]
-        -> test_v32_release_flash__test_warns_on_downgrade_stock_v23
+      tests/sim/test_x.py::test_x[stock/v23]   (hypothetical)
+      tests/sim/test_x.py::test_x[stock_v23]   (hypothetical)
+        -> distinct dirs because the hash suffix differs.
     """
     file_part, _, rest = nodeid.partition("::")
     stem = Path(file_part).stem
-    sanitized = (
-        rest.replace("::", "__")
-            .replace("/", "_")
-            .replace("[", "_")
-            .replace("]", "")
-    )
-    return f"{stem}__{sanitized}" if sanitized else stem
+    sanitized = _NODEID_SAFE_RE.sub("_", rest).strip("_")
+    digest = hashlib.sha1(nodeid.encode("utf-8")).hexdigest()[:8]
+    base = f"{stem}__{sanitized}" if sanitized else stem
+    return f"{base}__{digest}"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -112,27 +122,61 @@ def ground_truth_dir(request: pytest.FixtureRequest) -> Path | None:
     return out_dir
 
 
+def _aggregate_outcome(phases: dict[str, dict]) -> str:
+    """Reduce per-phase outcomes to a single overall outcome.
+
+    Worst-of ordering: failed > error > skipped > passed.  A test
+    whose call passes but whose teardown fails is reported as
+    ``failed``; a test that errors during setup is reported as
+    ``error``; a test that pytest skipped at any phase (and never
+    ran the call body) is ``skipped``.  Otherwise ``passed``.
+    """
+    outcomes = {p["outcome"] for p in phases.values()}
+    if "failed" in outcomes:
+        return "failed"
+    if "error" in outcomes:
+        return "error"
+    if "passed" in outcomes:
+        return "passed"
+    if "skipped" in outcomes:
+        return "skipped"
+    return "unknown"
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     outcome = yield
     if not _capture_enabled(item.config):
         return
     report = outcome.get_result()
-    if report.when != "call" and not (report.when == "setup" and report.outcome == "skipped"):
-        return
-
+    # Capture every phase (setup / call / teardown) so setup-fixture
+    # errors and teardown failures aren't dropped from summary.json.
     out_dir = _ground_truth_dir_for(item)
     out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {
-        "nodeid": item.nodeid,
+    summary_path = out_dir / "summary.json"
+
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            summary = {}
+    else:
+        summary = {}
+
+    summary.setdefault("nodeid", item.nodeid)
+    summary.setdefault("captured_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    summary.setdefault("schema_version", 1)
+    phases = summary.setdefault("phases", {})
+
+    phases[report.when] = {
         "outcome": report.outcome,
-        "when": report.when,
         "duration_sec": getattr(report, "duration", None),
         "longrepr": str(report.longrepr) if report.failed else None,
-        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "schema_version": 1,
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    summary["outcome"] = _aggregate_outcome(phases)
+    summary["last_phase"] = report.when
+
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 
 @pytest.fixture(scope="session")
