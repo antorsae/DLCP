@@ -149,6 +149,9 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // TBLPTRU<7:6> unimplemented (TBLPTR is 22 bits; only
         // <5:0> live in TBLPTRU per DS39632E §6.3).
         0xFF8 => 0x3F,
+        // PCLATU<7:5> unimplemented (PC is 21 bits; only <4:0>
+        // alive in PCLATU per DS39632E §5.5.1).
+        0xFFB => 0x1F,
         // STKPTR<5> unimplemented (Register 5-1).
         0xFFC => 0xDF,
         // TOSU<7:5> unimplemented (TOS is 21 bits, top 5 bits
