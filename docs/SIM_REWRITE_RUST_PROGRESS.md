@@ -105,7 +105,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
       - EEPROM window at `0xF00000..0xF000FF` (256 bytes)
     DEVID at `0x3FFFFE..0x3FFFFF` is read-only on silicon and never appears in shipped releases — surface a loud error if it does. Rejects unknown record types loudly and verifies record checksums. Tested with `firmware/patched/releases/DLCP_Control_V1.71.hex` and `firmware/patched/releases/DLCP_Firmware_V3.2.hex` (both currently use only types 00/01/04).
 
-- [pending] P1.8b Cycle-accurate executor for all 75 PIC18 instructions
+- [done] P1.8b Cycle-accurate executor for all 75 PIC18 instructions
   - verify: `cd crates/dlcp-sim && cargo test --release exec::tests`
   - artifact: `crates/dlcp-sim/src/exec.rs`
   - notes: `Core::step(&mut self, &mut Stack) -> u8 cycles` fetches the word at PC, decodes via P1.2's `decode`, and dispatches over `Instruction`. STATUS-flag fidelity (Z/C/OV/N/DC) per DS39632E §26 / DS41303 §25 instruction encyclopedia. Variant-aware via `Memory::variant()`. Per-instruction unit tests cover STATUS transitions plus Access-Bank/BSR/FSR/PRODL/PRODH/TBLPTR/TABLAT side effects. This is the largest sub-task in P1.8 — expect ~1500–2500 LOC of executor code + per-instruction tests.
