@@ -135,9 +135,9 @@ fn read_f(core: &Core, f: u8, a: Access) -> u8 {
 /// `write_byte_through_peripherals`.
 const fn sfr_write_mask(addr: u16) -> u8 {
     match addr {
-        // STATUS<7:5> unimplemented (Register 4-2).
+        // STATUS<7:5> unimplemented (Register 5-2).
         STATUS_ADDR => STATUS_VALID_MASK,
-        // BSR is a 4-bit register; <7:4> unimplemented (Register 5-2).
+        // BSR is a 4-bit register; <7:4> unimplemented (§5.3.2).
         BSR_ADDR => 0x0F,
         // RCON<5> unimplemented (Register 4-1).
         0xFD0 => 0xDF,
@@ -146,16 +146,20 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // FSR0H / FSR1H / FSR2H high nibbles unimplemented
         // (12-bit FSRs; only <3:0> alive in the H register).
         0xFEA | 0xFE2 | 0xFDA => 0x0F,
+        // INTCON3 bits 5 and 2 unimplemented (Register 9-3).
+        0xFF0 => 0xDB,
+        // INTCON2 bits 3 and 1 unimplemented (Register 9-2).
+        0xFF1 => 0xF5,
         // TBLPTRU<7:6> unimplemented (TBLPTR is 22 bits; only
-        // <5:0> live in TBLPTRU per DS39632E §6.3).
+        // <5:0> live in TBLPTRU per DS39632E §6.1).
         0xFF8 => 0x3F,
         // PCLATU<7:5> unimplemented (PC is 21 bits; only <4:0>
-        // alive in PCLATU per DS39632E §5.5.1).
+        // alive in PCLATU per DS39632E §5.1.1).
         0xFFB => 0x1F,
         // STKPTR<5> unimplemented (Register 5-1).
         0xFFC => 0xDF,
         // TOSU<7:5> unimplemented (TOS is 21 bits, top 5 bits
-        // in TOSU<4:0> per DS39632E §5.4).
+        // in TOSU<4:0> per DS39632E §5.1.2.1).
         0xFFF => 0x1F,
         _ => 0xFF,
     }
@@ -766,6 +770,29 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_bsr(&core), 0x07);
+    }
+
+    #[test]
+    fn movwf_to_intcon2_strips_unimplemented_bits() {
+        // INTCON2<3,1> unimplemented (Register 9-2).  MOVWF
+        // INTCON2 with W=0xFF must store 0xF5.
+        // MOVLW 0xFF = 0x0EFF; MOVWF 0xF1, ACCESS = 0x6EF1.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0xF1, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFF1)), 0xF5);
+    }
+
+    #[test]
+    fn movwf_to_intcon3_strips_unimplemented_bits() {
+        // INTCON3<5,2> unimplemented (Register 9-3).
+        // MOVWF 0xF0, ACCESS = 0x6EF0.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0xF0, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFF0)), 0xDB);
     }
 
     #[test]
