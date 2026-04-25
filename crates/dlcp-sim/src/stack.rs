@@ -158,6 +158,27 @@ impl Stack {
         self.flags = 0;
     }
 
+    /// Reset the pointer to 0 while latching `STKFUL`.  Called
+    /// by [`crate::reset::apply_reset`] when a Stack-Full reset
+    /// fires (DS39632E §5.4.2: "The STKFUL bit will remain set
+    /// and the Stack Pointer will be set to zero").  The slot
+    /// data is preserved — the spec does NOT clear the stored
+    /// return addresses on a Stack-Full reset.
+    pub fn reset_for_stack_full(&mut self) {
+        self.depth = 0;
+        self.flags |= STKPTR_STKFUL;
+    }
+
+    /// Reset the pointer to 0 while latching `STKUNF`.  Called
+    /// when a Stack-Underflow reset fires; pointer was already
+    /// at 0 in that case but we re-assert it for clarity.  Slot
+    /// data preserved (no stored addresses to clear at depth=0
+    /// anyway).
+    pub fn reset_for_stack_underflow(&mut self) {
+        self.depth = 0;
+        self.flags |= STKPTR_STKUNF;
+    }
+
     /// Push a return address.  Per DS39632E §5.4.2:
     ///
     ///   "After the PC is pushed onto the stack 31 times

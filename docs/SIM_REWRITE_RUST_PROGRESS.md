@@ -80,7 +80,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/stack.rs`
   - notes: stack-overflow + STVREN reset is a real V3.2 hardening test (`feat(v3.2): main_service_rx_frame_gap parser stall watchdog` etc.).
 
-- [pending] P1.6 Reset sources (POR, MCLR, BOR, WDT, RESET, stack-over/underflow)
+- [done] P1.6 Reset sources (POR, MCLR, BOR, WDT, RESET, stack-over/underflow)
   - verify: `cd crates/dlcp-sim && cargo test --release reset::tests`
   - artifact: `crates/dlcp-sim/src/reset.rs`.
 
