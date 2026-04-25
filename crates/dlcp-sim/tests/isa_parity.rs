@@ -201,6 +201,61 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Pick the cycle target from the captured meta.json so the
+/// Rust executor runs for the same number of cycles the gpsim
+/// capture stopped at.  Looks for files matching
+/// `early_boot_v171_<N>.meta.json`, picks the smallest <N> (the
+/// most parity-friendly), and reads the cycle field.
+fn pick_cycle_target(snapshot_dir: &std::path::Path) -> u64 {
+    let mut candidates: Vec<u64> = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(snapshot_dir) {
+        for entry in read_dir.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            let stem = match s.strip_suffix(".meta.json") {
+                Some(s) => s,
+                None => continue,
+            };
+            let n_str = match stem.strip_prefix("early_boot_v171_") {
+                Some(s) => s,
+                None => continue,
+            };
+            if let Ok(n) = n_str.parse::<u64>() {
+                candidates.push(n);
+            }
+        }
+    }
+    candidates.sort_unstable();
+    let chosen = candidates.first().copied().unwrap_or(10);
+
+    // Also sanity-check the meta file's recorded cycle matches
+    // the filename's <N>; a drift between filename and contents
+    // would silently mask capture bugs.
+    let stem = format!("early_boot_v171_{}", chosen);
+    let meta_path = snapshot_dir.join(format!("{stem}.meta.json"));
+    if let Ok(text) = std::fs::read_to_string(&meta_path) {
+        let cycle_in_text = text
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                let after_key = trimmed.strip_prefix("\"cycle\"")?;
+                let after_colon = after_key.trim_start().strip_prefix(':')?;
+                after_colon
+                    .trim()
+                    .trim_end_matches(',')
+                    .parse::<u64>()
+                    .ok()
+            });
+        if let Some(c) = cycle_in_text {
+            assert_eq!(
+                c, chosen,
+                "meta.json cycle ({c}) disagrees with filename ({chosen})"
+            );
+        }
+    }
+    chosen
+}
+
 /// Tiny hand-rolled parser for the SFR snapshot JSON --
 /// `{"0xF60": 0, "0xF61": 0, ...}`.  Avoids pulling serde into
 /// the dev-dependency tree just for one constrained file
@@ -236,11 +291,23 @@ fn parse_sfr_snapshot(text: &str) -> Vec<(u16, u8)> {
     pairs
 }
 
-/// Apply the K20 / 2455 POR-default SFR initialisations that
-/// the silicon performs on power-on but P1.6's `apply_reset`
-/// does not yet wire (those depend on per-peripheral defaults
-/// landing in P2).  This is just the architectural minimum
-/// the V1.71 boot path expects to see at PC=0.
+/// **Test-only** POR-default SFR initialisations.
+///
+/// On real silicon, POR sets several SFRs to non-zero defaults
+/// (per DS39632E Table 5-2 / DS41303G Table 5-2).  P1.6's
+/// `apply_reset(PowerOn)` zeroes RAM but doesn't wire those
+/// non-zero defaults yet -- the per-peripheral wrappers in
+/// P2 will own them.  This helper sets a tiny subset that the
+/// V1.71 boot path inspects very early; without it the parity
+/// test diverges before reaching anything else interesting.
+///
+/// **Caveat:** patching these in test code masks the
+/// architectural-reset-coverage gap from the parity gate.  When
+/// the executor's reset path lands these defaults itself
+/// (probably in the P2 INTCON peripheral wrapper), this helper
+/// should be deleted -- otherwise a future regression in
+/// reset.rs would still pass parity because the test patches
+/// over it.  Tracked as a follow-up note inside Task #18.
 fn apply_por_sfr_defaults(core: &mut Core) {
     // INTCON2 POR = 1111 -1-1 = 0xF5 (RBPU=1, edges=1, TMR0IP=1, RBIP=1).
     core.memory.write_raw(dlcp_sim_addr(0xFF1), 0xF5);
@@ -321,7 +388,12 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     let image = HexImage::from_hex_path(&hex_path).expect("V1.71 hex loads");
 
     let snapshot_dir = root.join("artifacts/ground_truth/v171_early_boot_parity");
-    let cycle_target: u64 = 10;
+    // Cycle target is read from the captured meta.json so the
+    // capture script and the parity test stay in lock-step.  The
+    // capture lives at `early_boot_v171_<cycles>.{ram.bin,
+    // sfr.json, meta.json}` -- find whichever fixture is in the
+    // directory and take its cycle.
+    let cycle_target: u64 = pick_cycle_target(&snapshot_dir);
     let stem = format!("early_boot_v171_{}", cycle_target);
 
     let ram_expected = std::fs::read(snapshot_dir.join(format!("{stem}.ram.bin")))
@@ -331,9 +403,12 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     let sfr_text = std::fs::read_to_string(snapshot_dir.join(format!("{stem}.sfr.json")))
         .expect("read sfr snapshot");
     let sfr_expected = parse_sfr_snapshot(&sfr_text);
-    assert!(
-        sfr_expected.len() >= 100,
-        "expected at least 100 SFR entries, got {}",
+    // The capture covers exactly 0xF60..0x1000 = 160 SFR bytes;
+    // any other count means the capture script + parser drifted.
+    assert_eq!(
+        sfr_expected.len(),
+        160,
+        "expected exactly 160 SFR entries (0xF60..0x1000), got {}",
         sfr_expected.len()
     );
 

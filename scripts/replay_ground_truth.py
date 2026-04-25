@@ -144,6 +144,14 @@ def _diff_snapshot_dir(blessed: Path, replayed: Path) -> list[str]:
     errors: list[str] = []
     only_a = sorted(a_files - b_files)
     only_b = sorted(b_files - a_files)
+    # `.meta.json` files were introduced in a forward-compatible
+    # extension (P1.8d / Task #18: per-snapshot gpsim cycle
+    # counter).  Treat them as additive: a blessed fixture that
+    # predates the schema extension may not have them, and a
+    # newly-replayed run that adds them is not a determinism
+    # regression.  Diff their contents only when both sides have
+    # the file.
+    only_b = [name for name in only_b if not name.endswith(".meta.json")]
     if only_a:
         errors.append(f"snapshots only in blessed: {only_a[:5]}{'...' if len(only_a) > 5 else ''}")
     if only_b:
@@ -152,7 +160,7 @@ def _diff_snapshot_dir(blessed: Path, replayed: Path) -> list[str]:
     for name in common:
         if name.endswith(".ram.bin"):
             errors.extend(_diff_binary(f"snapshots/{name}", a / name, b / name))
-        elif name.endswith(".sfr.json"):
+        elif name.endswith(".sfr.json") or name.endswith(".meta.json"):
             errors.extend(_diff_json(f"snapshots/{name}", a / name, b / name))
     return errors
 

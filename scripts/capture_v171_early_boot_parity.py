@@ -133,12 +133,23 @@ def main() -> int:
         elif 0xF60 <= addr <= 0xFFF:
             sfr[addr] = value
 
-    if len(sfr) < len(range(0xF60, 0x1000)):
+    expected_sfr = len(range(0xF60, 0x1000))
+    if len(sfr) != expected_sfr:
         print(
-            f"warning: SFR dump incomplete ({len(sfr)} of "
-            f"{len(range(0xF60, 0x1000))} entries); see {cli_path}",
+            f"error: SFR dump incomplete ({len(sfr)} of "
+            f"{expected_sfr} entries); see {cli_path}",
             file=sys.stderr,
         )
+        return 1
+    expected_ram_lines = 0x100
+    ram_observed = sum(1 for line in cli_text.splitlines() if "REG0" in line[:8])
+    if ram_observed < expected_ram_lines:
+        print(
+            f"error: RAM dump incomplete (observed {ram_observed} of "
+            f"{expected_ram_lines} REG0XX lines); see {cli_path}",
+            file=sys.stderr,
+        )
+        return 1
 
     stem = f"early_boot_v171_{args.cycles}"
     ram_path = out_dir / f"{stem}.ram.bin"

@@ -308,9 +308,14 @@ class SnapshotTaker:
             ram_path = self.out_dir / f"{stem}.ram.bin"
             sfr_path = self.out_dir / f"{stem}.sfr.json"
             meta_path = self.out_dir / f"{stem}.meta.json"
-            ram_path.write_bytes(ram)
             sfr_dump = {f"0x{addr:03X}": v & 0xFF for addr, v in sorted(sfr.items())}
             try:
+                # Both writes (ram + sfr + optional meta) live inside
+                # the try block so any failure -- including a partial
+                # ram_path write -- routes through the cleanup loop
+                # below and unlinks the orphans.  Order matters less
+                # than wrapping every write call.
+                ram_path.write_bytes(ram)
                 sfr_path.write_text(
                     json.dumps(sfr_dump, indent=2) + "\n",
                     encoding="utf-8",
