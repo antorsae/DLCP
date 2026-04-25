@@ -84,7 +84,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - verify: `cd crates/dlcp-sim && cargo test --release reset::tests`
   - artifact: `crates/dlcp-sim/src/reset.rs`.
 
-- [pending] P1.7 Configuration words: parse from hex, drive osc + WDT + IPEN
+- [done] P1.7 Configuration words: parse from hex, drive osc + WDT + IPEN
   - verify: `cd crates/dlcp-sim && cargo test --release config::tests`
   - artifact: `crates/dlcp-sim/src/config.rs`.
 

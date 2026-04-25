@@ -7,12 +7,14 @@
 //! beyond the [`Variant`] enum and the empty [`Core`] / [`Memory`]
 //! shells later phases hang their behaviour off.
 
+pub mod config;
 pub mod core;
 pub mod isa;
 pub mod memory;
 pub mod reset;
 pub mod stack;
 
+pub use crate::config::{BorenMode, Config, FoscMode};
 pub use crate::core::Core;
 pub use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 pub use crate::memory::{Memory, Variant};
