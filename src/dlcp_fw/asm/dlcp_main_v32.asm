@@ -7901,17 +7901,16 @@ main_rx_frame_gap_idle:
 ; Address : 0x4576
 ; ---------------------------------------------------------------------------
 ; Brings up the EUSART for the 31,250-baud current-loop chain protocol:
-;   • SPEN=0 then back on, BRG16=0 (8-bit baud)
 ;   • TXSTA = 0x06  (BRGH=1, asynchronous, 8-bit, TX disabled until later)
 ;   • RCSTA = 0x80  (SPEN, asynchronous, 8-bit, CREN off until SPBRG set)
-;   • BAUDCON = 0x48 (BRG16=0, idle high)
+;   • BAUDCON = 0x48 (BRG16=1 in bit 3; bit 6 RCIDL is read-only and the
+;     write to it is ignored by hardware — the byte's effective payload
+;     is just BRG16=1, all other writable bits 0)
 ;   • TRISC.6/7 inputs (peripheral takes them over)
-;   • SPBRGH=0, SPBRG=0x7F → 16 MHz/(64*(127+1)) = 31,250 baud (BRGH=1 path
-;     gives 16 MHz/(16*(127+1)) ... no, with BRGH=1 SYNC=0 it's
-;     Fosc/(16*(SPBRG+1)) ⇒ 16 MHz/(16*128) = 7,812 baud, so the
-;     equivalent stock value is paired with the 16x clocks). The numeric
-;     constant matches stock V2.3 and is the wire baud documented in
-;     PIN_SEMANTICS.md.
+;   • SPBRGH=0, SPBRG=0x7F. With BRGH=1 + BRG16=1 (16-bit BRG, hi-speed)
+;     the formula is Fosc/(4*(SPBRGH:SPBRG + 1)) =
+;     16 MHz / (4 * 128) = 31,250 baud — matches stock V2.3 and the
+;     wire baud documented in PIN_SEMANTICS.md.
 ;   • TXEN=1, CREN=1 — TX/RX enabled.
 ; Also clears rx_ring_rd/wr so the RX ring at 0x0200 starts fresh.
 ; Returns 0x7F in W (the SPBRG byte) — used by callers that want to

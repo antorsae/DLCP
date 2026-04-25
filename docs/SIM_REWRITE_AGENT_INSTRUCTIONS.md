@@ -224,9 +224,17 @@ P5b (stretch) `cargo fuzz` is optional but recommended.
 - **Don't skip dual-run during Phase 4.**  Even if a test "obviously"
   works on the new sim, the differential check is the safety net for
   catching peripheral-fidelity drift.
-- **Don't try to preserve gpsim quirks.**  If the datasheet disagrees
-  with gpsim, datasheet wins.  The 2455 BAUDCON address is the
-  poster child; there will be others.
+- **Don't try to preserve gpsim quirks** — but also don't trust the
+  PDF→markdown rendering of `firmware/reference/39632e.md` blindly,
+  because some tables there have alignment artifacts that disagree
+  with the underlying datasheet.  When the datasheet text and gpsim
+  disagree, cross-check against gputils' `p18f2455.inc` (the
+  assembler that built the V3.2 hex) and the resulting opcode in
+  `firmware/disasm/main/gpdasm_output.asm` before deciding which
+  side to follow.  The deliberate fidelity exceptions (e.g. EEPROM
+  write-completion latency) are enumerated in spec §11; BAUDCON is
+  not one of them — that earlier-flagged "divergence" was resolved
+  to *no divergence* by `scripts/probe_baudcon_mapping.py` (P0.0).
 - **Don't model peripherals you don't need.**  Scope is the V1.71 +
   V3.2 firmware path.  USB enumeration, audio DSP, comparators, CCP
   modules not used by firmware — out of scope.

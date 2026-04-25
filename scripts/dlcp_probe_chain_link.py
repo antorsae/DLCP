@@ -13,20 +13,31 @@ side via FSR-indirect reads.  Empirically verified 2026-04-21 by
 walking known-distinct addresses and observing distinct return
 values.
 
-CRITICAL ADDRESS NOTE: V3.2 MAIN is PIC18F2455 (datasheet 39632e),
-which has a DIFFERENT SFR map from PIC18F25K20 (CONTROL chip).  An
-earlier draft of this script used K20 addresses by mistake.  See
-firmware/reference/39632e.md table near line 2699 for the F2455 map.
+CRITICAL ADDRESS NOTE: V3.2 MAIN is PIC18F2455 (datasheet 39632e).
+Earlier drafts of this script (and an earlier draft of the dlcp-sim
+rewrite spec) read the F2455 SFR map from the PDF→markdown rendering
+of DS39632E Table 5-1 in `firmware/reference/39632e.md` and ended up
+using addresses that were uniformly **0x20 too low**.  Those were
+the column-header addresses; the table's data rows agree with
+`/opt/homebrew/Cellar/gputils/.../p18f2455.inc` and with the V2.3
+disassembly opcodes (e.g. stock V2.3's `movwf BAUDCON` at PC 0x455A
+disassembles to 6EB8 → 0xFB8, not 0xF98).  See
+`scripts/probe_baudcon_mapping.py` (P0.0) and spec §11b for the
+empirical resolution.  The 2455 and K20 happen to share the same
+top-of-bank-15 layout for the SFRs this probe touches.
 
   Register   PIC18F2455 (MAIN)   PIC18F25K20 (CONTROL)
   --------   -----------------   ---------------------
-  TXSTA      0xF8C               0xFAC
-  RCSTA      0xF8B               0xFAB
-  SPBRG      0xF8F               0xFAF
-  SPBRGH     0xF90               0xFB0
-  BAUDCON    0xF98               0xFB1
-  OSCCON     0xFB3               0xFD3
-  TMR0L      0xFB6               0xFD6
+  TXSTA      0xFAC               0xFAC
+  RCSTA      0xFAB               0xFAB
+  SPBRG      0xFAF               0xFAF
+  SPBRGH     0xFB0               0xFB0
+  BAUDCON    0xFB8               0xFB8
+  OSCCON     0xFD3               0xFD3
+  TMR0L      0xFD6               0xFD6
+  PORTA      0xF80               0xF80
+  PORTB      0xF81               0xF81
+  PORTC      0xF82               0xF82
 
 This script does NOT diagnose wedges by itself.  V3.x in CHAIN role
 runs on INTOSC with adaptive baud detect; the "naive" interpretation
@@ -56,27 +67,30 @@ from dlcp_fw.flash.dlcp_control_flash import enumerate_devices
 from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import DlcpEp0
 from dlcp_fw.flash.dlcp_main_flash import DEFAULT_VID, DEFAULT_PID
 
-# PIC18F2455 SFR addresses.
-ADDR_TXSTA   = 0xF8C
-ADDR_RCSTA   = 0xF8B
-ADDR_TXREG   = 0xF8D
-ADDR_RCREG   = 0xF8E
-ADDR_SPBRG   = 0xF8F
-ADDR_SPBRGH  = 0xF90
-ADDR_BAUDCON = 0xF98
-ADDR_OSCCON  = 0xFB3
-ADDR_OSCTUNE = 0xF7B
+# PIC18F2455 SFR addresses (gputils-canonical / data-row reading of
+# DS39632E Table 5-1; see header note above and spec §11b).
+ADDR_TXSTA   = 0xFAC
+ADDR_RCSTA   = 0xFAB
+ADDR_TXREG   = 0xFAD
+ADDR_RCREG   = 0xFAE
+ADDR_SPBRG   = 0xFAF
+ADDR_SPBRGH  = 0xFB0
+ADDR_BAUDCON = 0xFB8
+ADDR_OSCCON  = 0xFD3
+ADDR_OSCTUNE = 0xF9B
 ADDR_RCON    = 0xFD0
-ADDR_TMR0L   = 0xFB6
-# PIC18F2455 PORTA/PORTB/PORTC live at 0xF60/0xF61/0xF62 -- NOT
-# 0xF80/0xF82 (those are PIE2/IPR2 = interrupt regs).  Codex review
-# of b02c370 caught the address typo.  See 39632e.md:2730-2732.
-ADDR_PORTA   = 0xF60
-ADDR_PORTB   = 0xF61
-ADDR_PORTC   = 0xF62
-ADDR_LATA    = 0xF69
-ADDR_LATB    = 0xF6A
-ADDR_LATC    = 0xF6B
+ADDR_TMR0L   = 0xFD6
+# PORTs live at 0xF80/0xF81/0xF82.  An earlier draft of this script
+# moved them to 0xF60-0xF62 based on the same +0x20-misaligned column
+# header in 39632e.md that drove the BAUDCON misreading; that range
+# is actually USB endpoint registers (UEP0..UEP15 + UFRM/UCON/etc.)
+# on the 2455, not GPIO.  Restored.
+ADDR_PORTA   = 0xF80
+ADDR_PORTB   = 0xF81
+ADDR_PORTC   = 0xF82
+ADDR_LATA    = 0xF89
+ADDR_LATB    = 0xF8A
+ADDR_LATC    = 0xF8B
 
 # V3.2 MAIN RAM addresses (NOT V1.71 CONTROL!).
 # Earlier draft used 0x01F (= V1.71 CONTROL's control_flags); that's
@@ -176,11 +190,11 @@ def probe_one(path: bytes) -> None:
     spbrg   = read_byte(ep0, ADDR_SPBRG)
     spbrgh  = read_byte(ep0, ADDR_SPBRGH)
     baudcon = read_byte(ep0, ADDR_BAUDCON)
-    print(f"  TXSTA   (0xF8C) = 0x{txsta:02X}    {fmt_bits(txsta, TXSTA_BITS)}")
-    print(f"  RCSTA   (0xF8B) = 0x{rcsta:02X}    {fmt_bits(rcsta, RCSTA_BITS)}")
-    print(f"  SPBRG   (0xF8F) = 0x{spbrg:02X} ({spbrg})")
-    print(f"  SPBRGH  (0xF90) = 0x{spbrgh:02X}")
-    print(f"  BAUDCON (0xF98) = 0x{baudcon:02X}    {fmt_bits(baudcon, BAUDCON_BITS)}")
+    print(f"  TXSTA   (0xFAC) = 0x{txsta:02X}    {fmt_bits(txsta, TXSTA_BITS)}")
+    print(f"  RCSTA   (0xFAB) = 0x{rcsta:02X}    {fmt_bits(rcsta, RCSTA_BITS)}")
+    print(f"  SPBRG   (0xFAF) = 0x{spbrg:02X} ({spbrg})")
+    print(f"  SPBRGH  (0xFB0) = 0x{spbrgh:02X}")
+    print(f"  BAUDCON (0xFB8) = 0x{baudcon:02X}    {fmt_bits(baudcon, BAUDCON_BITS)}")
 
     # OSC.
     osccon = read_byte(ep0, ADDR_OSCCON)
@@ -190,8 +204,8 @@ def probe_one(path: bytes) -> None:
     ircf_bits = (osccon >> 4) & 0x07
     ircf_freq = {0: "31kHz", 1: "125kHz", 2: "250kHz", 3: "500kHz",
                  4: "1MHz",  5: "2MHz",   6: "4MHz",   7: "8MHz"}[ircf_bits]
-    print(f"  OSCTUNE (0xF7B) = 0x{osctune:02X}    PLLEN={(osctune >> 6) & 1}")
-    print(f"  OSCCON  (0xFB3) = 0x{osccon:02X}    {fmt_bits(osccon, OSCCON_BITS)}")
+    print(f"  OSCTUNE (0xF9B) = 0x{osctune:02X}    PLLEN={(osctune >> 6) & 1}")
+    print(f"  OSCCON  (0xFD3) = 0x{osccon:02X}    {fmt_bits(osccon, OSCCON_BITS)}")
     print(f"    -> SCS={scs_bits} ({scs_name})  "
           f"IRCF={ircf_bits} ({ircf_freq})  "
           f"OSTS={(osccon >> 3) & 1}")
@@ -199,9 +213,9 @@ def probe_one(path: bytes) -> None:
     # GPIO.
     porta = read_byte(ep0, ADDR_PORTA)
     portc = read_byte(ep0, ADDR_PORTC)
-    print(f"  PORTA   (0xF60) = 0x{porta:02X}    "
+    print(f"  PORTA   (0xF80) = 0x{porta:02X}    "
           f"AN0(bit0)={porta & 1}  RA1(bit1)={(porta >> 1) & 1}")
-    print(f"  PORTC   (0xF62) = 0x{portc:02X}    "
+    print(f"  PORTC   (0xF82) = 0x{portc:02X}    "
           f"RC2={(portc >> 2) & 1} ({'CHAIN' if (portc >> 2) & 1 else 'MASTER'})  "
           f"RC6_TX={(portc >> 6) & 1}  "
           f"RC7_RX={(portc >> 7) & 1}")

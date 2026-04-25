@@ -93,24 +93,30 @@ def _build_probe_stc(
     return stc
 
 
-def _parse_baudcon_writes(log_text: str) -> list[tuple[int, int]]:
-    """Return deduplicated [(cycle, value)] entries.
+def _parse_baudcon_writes(log_text: str) -> list[tuple[int, int, int]]:
+    """Return deduplicated [(cycle, value, addr)] entries.
 
     gpsim emits each register-write event over two log lines:
       0x000000000000XXXX p18f2455 0xPCPC 0xOPOP movwf\tbaudcon
         Wrote: 0x0048 to baudcon(0x0FB8) was 0x0000
 
+    The address inside `baudcon(...)` is captured so the verdict can
+    insist that gpsim actually mapped BAUDCON at 0xFB8 — without that
+    check, a future gpsim refactor that renamed a different register
+    "baudcon" or aliased BAUDCON to 0xF98 would silently slip past.
+
     A breakpoint that fires on the same instruction can cause gpsim to
-    duplicate the pair; we collapse identical (cycle, value) pairs.
+    duplicate the pair; we collapse identical (cycle, value, addr)
+    tuples.
     """
     cycle_re = re.compile(
         r"^0x([0-9A-Fa-f]+)\s+\S+\s+0x[0-9A-Fa-f]+\s+0x[0-9A-Fa-f]+\s+movwf"
     )
     write_re = re.compile(
-        r"Wrote:?\s+0x([0-9A-Fa-f]+)\s+to\s+baudcon",
+        r"Wrote:?\s+0x([0-9A-Fa-f]+)\s+to\s+baudcon\(0x([0-9A-Fa-f]+)\)",
         re.IGNORECASE,
     )
-    out: list[tuple[int, int]] = []
+    out: list[tuple[int, int, int]] = []
     cycle: int | None = None
     for line in log_text.splitlines():
         cm = cycle_re.match(line)
@@ -119,9 +125,13 @@ def _parse_baudcon_writes(log_text: str) -> list[tuple[int, int]]:
             continue
         wm = write_re.search(line)
         if wm:
-            out.append((cycle if cycle is not None else 0, int(wm.group(1), 16) & 0xFF))
+            out.append((
+                cycle if cycle is not None else 0,
+                int(wm.group(1), 16) & 0xFF,
+                int(wm.group(2), 16) & 0xFFFF,
+            ))
             cycle = None
-    deduped: list[tuple[int, int]] = []
+    deduped: list[tuple[int, int, int]] = []
     for entry in out:
         if not deduped or deduped[-1] != entry:
             deduped.append(entry)
@@ -230,10 +240,11 @@ def main(argv: Iterable[str]) -> int:
         print(
             "WARN: gpsim binary not found on PATH; skipping live probe.\n"
             "  set DLCP_GPSIM_BIN or run scripts/gpsim-xtc once to compile.\n"
-            "  static check alone is sufficient: the V3.2 hex writes BAUDCON\n"
-            "  at 0xFB8, never at 0xF98."
+            "  static check alone proves the firmware writes BAUDCON at\n"
+            "  0xFB8 (the FB8-form 'movwf' opcode is present) and never\n"
+            "  at 0xF98 (the F98-form opcode is absent), but does not\n"
+            "  observe gpsim's runtime mapping."
         )
-        # Static result alone resolves the §11b open question; treat as PASS.
         _print_verdict(static_only=True, reg_fb8=None, reg_f98=None, writes=[])
         return 0
 
@@ -255,30 +266,50 @@ def main(argv: Iterable[str]) -> int:
         print(f"  gpsim: reg(0xF98) post-run: "
               f"{f'0x{reg_f98:02X}' if reg_f98 is not None else 'unknown'}")
 
-        ok = bool(writes) and any(v == 0x48 for _, v in writes)
-        if not ok:
-            print(
-                "FAIL: gpsim ran but did not log a 0x48 write to baudcon.\n"
-                f"  log: {result['log_path']}\n"
-                f"  cli: {out_dir}/probe_baudcon.cli",
-                file=sys.stderr,
+        # Strict pass conditions: a 0x48 write to baudcon(0xFB8), residue
+        # 0x48 at 0xFB8, and 0x00 at 0xF98.  Each is necessary; together
+        # they leave no false-positive path for the verdict.
+        failures: list[str] = []
+        if not writes:
+            failures.append("no BAUDCON writes captured by gpsim")
+        elif not any(v == 0x48 and addr == 0xFB8 for _, v, addr in writes):
+            failures.append(
+                "gpsim did not log a 0x48 write to baudcon at address "
+                f"0x0FB8 (got {writes!r})"
             )
+        if reg_fb8 is None:
+            failures.append("could not parse reg(0xFB8) from gpsim CLI")
+        elif reg_fb8 != 0x48:
+            failures.append(
+                f"reg(0xFB8) post-run = 0x{reg_fb8:02X} (expected 0x48)"
+            )
+        if reg_f98 is None:
+            failures.append("could not parse reg(0xF98) from gpsim CLI")
+        elif reg_f98 != 0x00:
+            failures.append(
+                f"reg(0xF98) post-run = 0x{reg_f98:02X} "
+                "(expected 0x00 since gpsim's 2455 model leaves F98 unmapped)"
+            )
+
+        if failures:
             (REPO_ROOT / "artifacts" / "sim_rewrite_divergences").mkdir(
                 parents=True, exist_ok=True
             )
+            div_dir = REPO_ROOT / "artifacts" / "sim_rewrite_divergences"
             shutil.copy(out_dir / "probe_baudcon.cli",
-                        REPO_ROOT / "artifacts" / "sim_rewrite_divergences" /
-                        "P0.0__probe_baudcon.cli")
-            shutil.copy(result["log_path"],
-                        REPO_ROOT / "artifacts" / "sim_rewrite_divergences" /
-                        "P0.0__probe_baudcon.log")
+                        div_dir / "P0.0__probe_baudcon.cli")
+            if result["log_path"].exists():
+                shutil.copy(result["log_path"],
+                            div_dir / "P0.0__probe_baudcon.log")
+            print("FAIL: live probe assertions did not all hold:",
+                  file=sys.stderr)
+            for msg in failures:
+                print(f"  - {msg}", file=sys.stderr)
+            print(f"  log:  {div_dir / 'P0.0__probe_baudcon.log'}",
+                  file=sys.stderr)
+            print(f"  cli:  {div_dir / 'P0.0__probe_baudcon.cli'}",
+                  file=sys.stderr)
             return 4
-
-        if reg_f98 is not None and reg_f98 != 0:
-            print(
-                f"WARN: gpsim residue at 0xF98 = 0x{reg_f98:02X} (expected 0x00 "
-                "since gpsim's 2455 model leaves F98 unmapped)."
-            )
 
         _print_verdict(
             static_only=False,
@@ -294,21 +325,28 @@ def _print_verdict(
     static_only: bool,
     reg_fb8: int | None,
     reg_f98: int | None,
-    writes: list[tuple[int, int]],
+    writes: list[tuple[int, int, int]],
 ) -> None:
     print()
     print("=== verdict ===")
-    print("  V3.2 MAIN firmware writes BAUDCON to 0xFB8 (gputils-mapped).")
-    print("  gpsim 2455 model maps BAUDCON at 0xFB8 (matches gputils).")
-    print("  Address 0xF98 is unmapped on the gpsim 2455 model and the")
-    print("  firmware never targets it.")
-    if not static_only:
-        kinds = sorted({v for _, v in writes})
+    print("  Static (always checked): the V3.2 MAIN hex contains the")
+    print("  FB8-form 'movwf BAUDCON' opcode 6EB8 and not the F98-form")
+    print("  6E98 — the assembled firmware writes BAUDCON to 0xFB8.")
+    if static_only:
+        print("  Live (skipped): gpsim binary not available; the static")
+        print("  evidence alone is conclusive on the firmware side but")
+        print("  does not exercise gpsim's runtime SFR map.")
+    else:
+        addrs = sorted({addr for _, _, addr in writes})
+        kinds = sorted({v for _, v, _ in writes})
         print(f"  Live: gpsim observed {len(writes)} write(s) to baudcon "
+              f"at address(es) {[f'0x{a:04X}' for a in addrs]!r} "
               f"with values {kinds!r}; reg(0xFB8)="
               f"{f'0x{reg_fb8:02X}' if reg_fb8 is not None else '?'}, "
               f"reg(0xF98)="
               f"{f'0x{reg_f98:02X}' if reg_f98 is not None else '?'}.")
+        print("  All assertions held: 0x48 written to baudcon at 0xFB8;")
+        print("  reg(0xFB8) reads 0x48; reg(0xF98) reads 0x00 (unmapped).")
     print()
     print("  Resolution of §11b open question:")
     print("    None of the three hypothesised explanations (a/b/c) apply as")

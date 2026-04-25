@@ -339,7 +339,7 @@ cargo test -p dlcp-sim --test multicore_parity --release
   1. Run `DLCP_SIM_BACKEND=dual pytest tests/sim/test_<name>.py`.
   2. If it passes, mark the test as migrated in `docs/SIM_REWRITE_RUST_PROGRESS.md`.
   3. If it fails, the divergence is captured in `artifacts/sim_rewrite_divergences/<test_id>.json`; an agent investigates, fixes the Rust side, re-runs.
-  4. gpsim is treated as the source of truth except for the deliberate fidelity exceptions enumerated in §11 (e.g. EEPROM write-completion latency, BAUDCON address).
+  4. gpsim is treated as the source of truth except for the deliberate fidelity exceptions enumerated in §11 (e.g. EEPROM write-completion latency).  BAUDCON is *not* an exception: gpsim, gputils, and the assembled firmware all agree on 0xFB8, per the P0.0 resolution recorded in §11b.
 
 - **Drop gpsim**:
   - Once all `tests/sim/` tests pass under `DLCP_SIM_BACKEND=rust`, set `dlcp-sim` as default.
@@ -470,15 +470,15 @@ at 0xF98.
 
 - MAIN writes value **0x48** to BAUDCON.  Bits set: bit 6 (RCIDL,
   read-only — write ignored by hardware) and bit 3 (BRG16).
-  The firmware's downstream baud-rate math at
-  `dlcp_main_v32.asm:7909-7913` actually depends on BRG16=1 to reach
-  31,250 baud via the 16-bit BRG path
+  The firmware's downstream baud-rate math actually depends on
+  BRG16=1 to reach 31,250 baud via the 16-bit BRG path
   (BRGH=1 + BRG16=1 + SPBRGH:SPBRG = 0x007F →
-  16 MHz / (4 × 128) = 31,250).  The asm comment at line 7907 reads
-  "BRG16=0, idle high"; that comment is **inconsistent with the
-  byte actually written** but does not affect runtime behaviour.
-  A future cleanup may correct the comment; out of scope for the
-  rewrite.
+  16 MHz / (4 × 128) = 31,250).  An earlier `dlcp_main_v32.asm`
+  comment block above `uart_config` claimed "BRG16=0, idle high",
+  which contradicted the byte actually written; that comment was
+  corrected in the same commit that landed this resolution.  No
+  hex change — gpasm strips comments and the assembled output is
+  unaffected.
 - CONTROL firmware writes BAUDCON at `dlcp_control_v171.asm:776`
   (`bcf BAUDCON, BRG16, A`) at the K20 datasheet address 0xFB8 which
   matches gpsim's K20 port.  No CONTROL-side question existed.
