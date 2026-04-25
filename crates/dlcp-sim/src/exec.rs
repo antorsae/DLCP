@@ -970,6 +970,71 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             core.advance_cycles(1);
             Ok(1)
         }
+        // ---------------- stack-manipulating control flow -------
+        // CALL / RCALL / RETURN / RETLW / RETFIE / PUSH / POP.
+        //
+        // **Deferred features** (will land in subsequent
+        // P1.8b sub-commits):
+        //   - Fast register stack (CALL/RCALL `fast=true`,
+        //     RETURN/RETFIE `fast=true`): per DS39632E §5.5.3
+        //     the silicon saves/restores W / STATUS / BSR via
+        //     a 1-deep shadow stack.  The DLCP firmware uses
+        //     `fast=false` for explicit subroutine calls and
+        //     relies on the implicit shadow on interrupts; the
+        //     fast-stack model lands when interrupts do.
+        //   - RETFIE's GIE / GIEH / GIEL update: re-enabling
+        //     interrupts at the end of an ISR.  Lands with the
+        //     interrupt-priority machinery in P2.
+        //   - STKPTR / TOSU / TOSH / TOSL memory mirroring:
+        //     the Stack struct holds the canonical state but
+        //     the SFR bytes at 0xFFC / 0xFFD / 0xFFE / 0xFFF
+        //     aren't updated on each push/pop.  Firmware that
+        //     reads those SFRs sees stale bytes -- documented
+        //     as a known gap, lands when the stack-mirror
+        //     wiring is added.
+        Instruction::Call { n, fast: _ } => {
+            stack.push(core.pc());
+            core.set_pc(n.wrapping_mul(2));
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::Rcall { n } => {
+            stack.push(core.pc());
+            let offset = (n as i32).wrapping_mul(2);
+            let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
+            core.set_pc(new_pc);
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::Return { fast: _ } => {
+            let ret = stack.pop().unwrap_or(0);
+            core.set_pc(ret);
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::RetLw { k } => {
+            write_w(core, k);
+            let ret = stack.pop().unwrap_or(0);
+            core.set_pc(ret);
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::Retfie { fast: _ } => {
+            let ret = stack.pop().unwrap_or(0);
+            core.set_pc(ret);
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::Push => {
+            stack.push(core.pc());
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Pop => {
+            stack.pop();
+            core.advance_cycles(1);
+            Ok(1)
+        }
         // ---------------- conditional + unconditional branches --
         // PC has already been advanced past the branch by the
         // fetch step (PC = old_PC + 2).  Per DS39632E §26 BRA /
@@ -1829,6 +1894,128 @@ mod tests {
             "FSR advanced too far -- write hit the wrong slot"
         );
         assert_eq!(read_fsr0(&core), 0x101);
+    }
+
+    // ---- stack-manipulating control flow (CALL / RCALL /
+    // RETURN / RETLW / RETFIE / PUSH / POP) ----
+
+    #[test]
+    fn call_pushes_return_addr_and_jumps_to_target() {
+        // CALL 0x0040 (word address 0x40 → byte address 0x80),
+        // fast=0.  Encoding:
+        //   word1 = 1110 1100 0100 0000 = 0xEC40 (high8=0xEC,
+        //           low8=0x40)
+        //   word2 = 1111 0000 0000 0000 = 0xF000 (k[19:8] = 0)
+        let mut core = k20_core_with_flash(&[0x40, 0xEC, 0x00, 0xF0]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        // PC = 2 * 0x40 = 0x80.
+        assert_eq!(core.pc(), 0x0080);
+        // Return address pushed = post-fetch PC = 0x0004.
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(stack.top(), 0x0004);
+    }
+
+    #[test]
+    fn rcall_pushes_return_addr_and_branches_with_offset() {
+        // RCALL +5: high4=1101, bit 11=1 (RCALL), n=5 → word
+        //   = 0b1101_1_000_0000_0101 = 0xD805.
+        let mut core = k20_core_with_flash(&[0x05, 0xD8]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // PC = post-fetch (0x0002) + 2*5 = 0x000C.
+        assert_eq!(core.pc(), 0x000C);
+        assert_eq!(stack.top(), 0x0002);
+    }
+
+    #[test]
+    fn return_restores_pc_from_stack() {
+        // PUSH then return path: pre-load stack with a return
+        // address, then execute RETURN at PC=0.  RETURN
+        // encoding (s=0): 0x0012.
+        let mut core = k20_core_with_flash(&[0x12, 0x00]);
+        let mut stack = Stack::new();
+        stack.push(0x0050);
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0050);
+        assert_eq!(stack.depth(), 0);
+    }
+
+    #[test]
+    fn return_on_empty_stack_lands_pc_at_zero_and_sets_underflow() {
+        // RETURN with empty stack: PC ← 0, STKUNF set.
+        let mut core = k20_core_with_flash(&[0x12, 0x00]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0000);
+        assert!(stack.underflow());
+    }
+
+    #[test]
+    fn retlw_loads_literal_into_w_then_returns() {
+        // RETLW 0x42: encoding 0x0C42.
+        let mut core = k20_core_with_flash(&[0x42, 0x0C]);
+        let mut stack = Stack::new();
+        stack.push(0x0030);
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x42);
+        assert_eq!(core.pc(), 0x0030);
+    }
+
+    #[test]
+    fn retfie_pops_pc_off_stack() {
+        // RETFIE (s=0): opcode 0x0010.
+        let mut core = k20_core_with_flash(&[0x10, 0x00]);
+        let mut stack = Stack::new();
+        stack.push(0x00A0);
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x00A0);
+        // GIE-update is a P2 deferred feature; not asserted here.
+    }
+
+    #[test]
+    fn push_stores_pc_on_stack() {
+        // PUSH: opcode 0x0005.  Post-fetch PC = 0x0002 → stored.
+        let mut core = k20_core_with_flash(&[0x05, 0x00]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(stack.top(), 0x0002);
+    }
+
+    #[test]
+    fn pop_discards_top_of_stack() {
+        // POP: opcode 0x0006.
+        let mut core = k20_core_with_flash(&[0x06, 0x00]);
+        let mut stack = Stack::new();
+        stack.push(0x0040);
+        stack.push(0x0080);
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(stack.top(), 0x0040);
+    }
+
+    #[test]
+    fn rcall_then_return_round_trips_pc() {
+        // Compose two instructions: RCALL +1 at PC=0x0000
+        // (jumps to PC=0x0004), then a RETURN at 0x0004 that
+        // pops back to 0x0002.
+        let mut core = k20_core_with_flash(&[
+            0x01, 0xD8, // RCALL +1 (PC: 0 → 0x0004; push 0x0002)
+            0x00, 0x00, // <padding>
+            0x12, 0x00, // RETURN
+        ]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap(); // RCALL
+        assert_eq!(core.pc(), 0x0004);
+        assert_eq!(stack.top(), 0x0002);
+        step(&mut core, &mut stack).unwrap(); // RETURN
+        assert_eq!(core.pc(), 0x0002);
+        assert_eq!(stack.depth(), 0);
     }
 
     // ---- conditional branches + BRA ----
