@@ -16,6 +16,7 @@ from typing import Dict, Sequence
 
 from .chain_gpsim import BAUD_RATE, BITS_PER_BYTE, MainChainHarness, _is_waiting_lcd
 from .control_gpsim import CONTROL_FOSC_HZ, GpsimControlHarness, TxTriplet, _read_reg
+from .ground_truth import record_event
 
 CONTROL_TCY_HZ = CONTROL_FOSC_HZ // 4
 MAIN_TCY_HZ = 16_000_000 // 4
@@ -412,6 +413,7 @@ class WireMultiMainChainHarness:
             self._tmp.cleanup()
 
     def press(self, key: str) -> None:
+        record_event(kind="press", harness="wire_chain", payload={"key": key})
         self.control.press(key)
 
     def lcd_lines(self) -> tuple[str, str]:
@@ -430,6 +432,11 @@ class WireMultiMainChainHarness:
         drop: bool | None = None,
         extra_cycles: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_link_fault",
+            harness="wire_chain",
+            payload={"link_name": link_name, "drop": drop, "extra_cycles": extra_cycles},
+        )
         try:
             bridge = self._bridge_map[link_name]
         except KeyError as exc:
@@ -438,6 +445,7 @@ class WireMultiMainChainHarness:
         bridge.configure(drop=drop, extra_cycles=extra_cycles)
 
     def clear_link_faults(self) -> None:
+        record_event(kind="clear_link_faults", harness="wire_chain")
         for bridge in self._bridge_map.values():
             bridge.clear_fault()
 
@@ -455,6 +463,22 @@ class WireMultiMainChainHarness:
         hold_scl_low: bool | None = None,
         stretch_scl_cycles: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_main_i2c_fault",
+            harness="wire_chain",
+            payload={
+                "device_name": device_name,
+                "main_index": main_index,
+                "address_nack_count": address_nack_count,
+                "address_stretch_scl_cycles": address_stretch_scl_cycles,
+                "address_stretch_count": address_stretch_count,
+                "data_nack_count": data_nack_count,
+                "data_stuck_sda_cycles": data_stuck_sda_cycles,
+                "data_stuck_sda_count": data_stuck_sda_count,
+                "hold_scl_low": hold_scl_low,
+                "stretch_scl_cycles": stretch_scl_cycles,
+            },
+        )
         self.mains[main_index].set_i2c_fault(
             device_name,
             address_nack_count=address_nack_count,
@@ -474,12 +498,26 @@ class WireMultiMainChainHarness:
         trmt_busy_cycles: int | None = None,
         trmt_busy_count: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_main_uart_fault",
+            harness="wire_chain",
+            payload={
+                "main_index": main_index,
+                "trmt_busy_cycles": trmt_busy_cycles,
+                "trmt_busy_count": trmt_busy_count,
+            },
+        )
         self.mains[main_index].set_uart_fault(
             trmt_busy_cycles=trmt_busy_cycles,
             trmt_busy_count=trmt_busy_count,
         )
 
     def clear_main_uart_faults(self, *, main_index: int = 0) -> None:
+        record_event(
+            kind="clear_main_uart_faults",
+            harness="wire_chain",
+            payload={"main_index": main_index},
+        )
         self.mains[main_index].clear_uart_faults()
 
     def set_main_mssp_stop_fault(
@@ -489,15 +527,34 @@ class WireMultiMainChainHarness:
         stop_busy_cycles: int | None = None,
         stop_busy_count: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_main_mssp_stop_fault",
+            harness="wire_chain",
+            payload={
+                "main_index": main_index,
+                "stop_busy_cycles": stop_busy_cycles,
+                "stop_busy_count": stop_busy_count,
+            },
+        )
         self.mains[main_index].set_mssp_stop_fault(
             stop_busy_cycles=stop_busy_cycles,
             stop_busy_count=stop_busy_count,
         )
 
     def clear_main_mssp_stop_faults(self, *, main_index: int = 0) -> None:
+        record_event(
+            kind="clear_main_mssp_stop_faults",
+            harness="wire_chain",
+            payload={"main_index": main_index},
+        )
         self.mains[main_index].clear_mssp_stop_faults()
 
     def clear_main_i2c_faults(self, device_name: str = "cfg71", *, main_index: int = 0) -> None:
+        record_event(
+            kind="clear_main_i2c_faults",
+            harness="wire_chain",
+            payload={"device_name": device_name, "main_index": main_index},
+        )
         self.mains[main_index].clear_i2c_faults(device_name)
 
     def control_rx_activity(self) -> bool:

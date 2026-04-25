@@ -121,6 +121,28 @@ def ground_truth_dir(request: pytest.FixtureRequest) -> Path | None:
     return out_dir
 
 
+@pytest.fixture(autouse=True)
+def _ground_truth_stimulus_recorder(request: pytest.FixtureRequest):
+    """Open a `StimulusRecorder` for the duration of every test when
+    `--capture-ground-truth` is set.  Tests don't see this fixture
+    directly; the chain harnesses in `dlcp_fw.sim.chain_gpsim` and
+    `dlcp_fw.sim.wire_chain_gpsim` pick the active recorder up via
+    a module-level `ContextVar` and write through it on every
+    mutator call (`press`, `set_blackout`, `set_main_*_fault`, etc.).
+    The result is a per-test `stimulus.jsonl` parallel to the
+    `summary.json` written by `pytest_runtest_makereport`.
+    """
+    if not _capture_enabled(request.config):
+        yield
+        return
+    # Local import keeps the conftest lightweight when capture is off.
+    from dlcp_fw.sim.ground_truth import StimulusRecorder
+    out_dir = _ground_truth_dir_for(request.node)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with StimulusRecorder(out_dir / "stimulus.jsonl"):
+        yield
+
+
 def _aggregate_outcome(phases: dict[str, dict]) -> str:
     """Reduce per-phase outcomes to a single overall outcome.
 

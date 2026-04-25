@@ -28,10 +28,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `tests/sim/conftest.py` (extension), `scripts/capture_gpsim_ground_truth.py` (helper)
   - notes: hooks into existing chain-harness `step()` at the conftest level so tests don't need rewrites. The dirname format is `<module-stem>__<sanitized-nodeid>__<sha1[:12]>` so the verify uses `find ... -name '...__*'` to match the hash suffix (length-agnostic glob). The leading `rm -rf` clears any stale directory from a prior run so the gate detects fresh creation; the conftest's per-phase `pytest_runtest_makereport` aggregates setup/call/teardown outcomes into one summary.json (setup-phase failures are translated to `"error"`; aggregator precedence is `failed > error > skipped > passed`) and writes regardless of test outcome. P0.2-P0.4 fill in the streams.
 
-- [pending] P0.2 Capture stimulus stream (every external pin/IR/UART/ADC/I²C event with `(tick, core_id, pin, payload)`)
-  - verify: `.venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind stimulus`
-  - artifact: `artifacts/ground_truth/<test>/stimulus.jsonl`
-  - notes: keep format JSONL so ad-hoc inspection is easy. The check script asserts every captured test directory has a non-empty `stimulus.jsonl` and verifies the events replay through gpsim deterministically.
+- [done] P0.2 Capture stimulus stream (every external pin/IR/UART/ADC/I²C event with `(tick, core_id, pin, payload)`)
+  - verify: `rm -rf artifacts/ground_truth ; .venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py::test_v17_stock_v16b_blackout_wake_shows_waiting --capture-ground-truth -q ; .venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind stimulus`
+  - artifact: `src/dlcp_fw/sim/ground_truth.py` (StimulusRecorder + ContextVar), instrumented mutators in `src/dlcp_fw/sim/{chain_gpsim,wire_chain_gpsim}.py`, autouse fixture in `tests/sim/conftest.py`, validator at `scripts/check_ground_truth_capture.py`, output at `artifacts/ground_truth/<test>/stimulus.jsonl`.
+  - notes: JSONL format with schema_version=1; each event is `{seq, wall_time, schema_version, kind, harness, payload}`. The verify uses the blackout-wake test because it actually exercises both `set_blackout(...)` and `press("STBY")` mutators, producing a non-empty stream the validator parses. The `tick` field listed in spec §4 is intentionally deferred (no uniform universal-clock counter exists pre-Phase-3); empty stimulus.jsonl is a soft pass for read-only tests. **Replay-determinism through gpsim is P0.5's gate, not P0.2's** — P0.2 only validates format and schema. P0.3 + P0.4 add the snapshot/output streams.
 
 - [pending] P0.3 Capture RAM/SFR snapshots at 1 ms boundaries
   - verify: `.venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind snapshots`

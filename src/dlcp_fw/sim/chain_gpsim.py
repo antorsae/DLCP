@@ -19,6 +19,7 @@ from .control_gpsim import (
     _read_reg,
 )
 from .gpsim import require_gpsim_binary
+from .ground_truth import record_event
 from .hexio import parse_intel_hex
 from .main_gpsim import (
     MAIN_FAULT_FLAGS_ADDR,
@@ -968,9 +969,19 @@ class SingleMainChainHarness:
         return _is_waiting_lcd(self.control.lcd_lines())
 
     def press(self, key: str) -> None:
+        record_event(
+            kind="press",
+            harness="single_main_chain",
+            payload={"key": key},
+        )
         self.control.press(key)
 
     def set_blackout(self, enabled: bool) -> None:
+        record_event(
+            kind="set_blackout",
+            harness="single_main_chain",
+            payload={"enabled": bool(enabled)},
+        )
         self._blackout = enabled
         if enabled:
             self.link_ctl_m0.clear()
@@ -982,12 +993,21 @@ class SingleMainChainHarness:
         uart_tx_stall: bool | None = None,
         mssp_wait_stall: bool | None = None,
     ) -> int:
+        record_event(
+            kind="set_main_fault_flags",
+            harness="single_main_chain",
+            payload={
+                "uart_tx_stall": uart_tx_stall,
+                "mssp_wait_stall": mssp_wait_stall,
+            },
+        )
         return self.main.set_fault_flags(
             uart_tx_stall=uart_tx_stall,
             mssp_wait_stall=mssp_wait_stall,
         )
 
     def clear_main_fault_flags(self) -> None:
+        record_event(kind="clear_main_fault_flags", harness="single_main_chain")
         self.main.clear_fault_flags()
 
     def set_main_uart_fault(
@@ -996,12 +1016,21 @@ class SingleMainChainHarness:
         trmt_busy_cycles: int | None = None,
         trmt_busy_count: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_main_uart_fault",
+            harness="single_main_chain",
+            payload={
+                "trmt_busy_cycles": trmt_busy_cycles,
+                "trmt_busy_count": trmt_busy_count,
+            },
+        )
         self.main.set_uart_fault(
             trmt_busy_cycles=trmt_busy_cycles,
             trmt_busy_count=trmt_busy_count,
         )
 
     def clear_main_uart_faults(self) -> None:
+        record_event(kind="clear_main_uart_faults", harness="single_main_chain")
         self.main.clear_uart_faults()
 
     def set_main_mssp_stop_fault(
@@ -1010,12 +1039,21 @@ class SingleMainChainHarness:
         stop_busy_cycles: int | None = None,
         stop_busy_count: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_main_mssp_stop_fault",
+            harness="single_main_chain",
+            payload={
+                "stop_busy_cycles": stop_busy_cycles,
+                "stop_busy_count": stop_busy_count,
+            },
+        )
         self.main.set_mssp_stop_fault(
             stop_busy_cycles=stop_busy_cycles,
             stop_busy_count=stop_busy_count,
         )
 
     def clear_main_mssp_stop_faults(self) -> None:
+        record_event(kind="clear_main_mssp_stop_faults", harness="single_main_chain")
         self.main.clear_mssp_stop_faults()
 
     def set_main_i2c_fault(
@@ -1031,6 +1069,21 @@ class SingleMainChainHarness:
         hold_scl_low: bool | None = None,
         stretch_scl_cycles: int | None = None,
     ) -> None:
+        record_event(
+            kind="set_main_i2c_fault",
+            harness="single_main_chain",
+            payload={
+                "device_name": device_name,
+                "address_nack_count": address_nack_count,
+                "address_stretch_scl_cycles": address_stretch_scl_cycles,
+                "address_stretch_count": address_stretch_count,
+                "data_nack_count": data_nack_count,
+                "data_stuck_sda_cycles": data_stuck_sda_cycles,
+                "data_stuck_sda_count": data_stuck_sda_count,
+                "hold_scl_low": hold_scl_low,
+                "stretch_scl_cycles": stretch_scl_cycles,
+            },
+        )
         self.main.set_i2c_fault(
             device_name,
             address_nack_count=address_nack_count,
@@ -1044,6 +1097,11 @@ class SingleMainChainHarness:
         )
 
     def clear_main_i2c_faults(self, device_name: str = "cfg71") -> None:
+        record_event(
+            kind="clear_main_i2c_faults",
+            harness="single_main_chain",
+            payload={"device_name": device_name},
+        )
         self.main.clear_i2c_faults(device_name)
 
     def step(self) -> ChainStepResult:
