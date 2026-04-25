@@ -1140,28 +1140,38 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // per DS39632E §26 DAW.
             //
             //   if (W<3:0> > 9) OR (DC = 1):
-            //       W<3:0> ← W<3:0> + 6   (no flag update)
+            //       W<3:0> ← W<3:0> + 6
             //   if (W<7:4> > 9) OR (C = 1):
-            //       W<7:4> ← W<7:4> + 6,   C ← 1
+            //       W<7:4> ← W<7:4> + 6,  C ← 1
             //   else:
-            //       C is unchanged
+            //       C unchanged.
             //
             // Status Affected: C only.
+            //
+            // The intermediate result is tracked at full
+            // 16-bit width: the low-nibble +6 can carry the
+            // value past 0xFF (e.g. W=0xFA → result=0x100)
+            // without the high-nibble branch firing, so the
+            // final C must reflect "running result > 0xFF" in
+            // addition to the documented high-nibble path.
+            // gpsim's DAW model uses the same trick.
             let w = read_w(core);
             let status = read_status(core);
             let dc = status & STATUS_DC != 0;
             let c_in = status & STATUS_C != 0;
-            let mut result = w;
+            let mut result: u16 = w as u16;
             if result & 0x0F > 9 || dc {
-                result = result.wrapping_add(0x06);
+                result += 0x06;
             }
-            let new_c = if (result >> 4) & 0x0F > 9 || c_in {
-                result = result.wrapping_add(0x60);
-                true
-            } else {
-                c_in
-            };
-            write_w(core, result);
+            let mut new_c = c_in;
+            if (result >> 4) & 0x0F > 9 || c_in {
+                result += 0x60;
+                new_c = true;
+            }
+            if result > 0xFF {
+                new_c = true;
+            }
+            write_w(core, result as u8);
             set_status_bits(core, STATUS_C, new_c);
             core.advance_cycles(1);
             Ok(1)
@@ -2383,6 +2393,27 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_w(&core), 0x00);
         assert!(read_status(&core) & STATUS_C != 0);
+    }
+
+    #[test]
+    fn daw_low_nibble_overflow_sets_carry_even_when_high_nibble_branch_skipped() {
+        // Codex regression: W=0xFA, C=0, DC=0.
+        //   - low nibble = 0xA > 9 → +6 → running result = 0x100.
+        //   - high nibble of 0x100 (mod 256) = 0; not > 9; c_in=0
+        //     → high-nibble branch SKIPPED.
+        //   - But the running result exceeded 0xFF → C must be set.
+        // Without the u16 tracking, the prior code set C=0
+        // here -- silicon-incorrect.
+        let mut core = k20_core_with_flash(&[0x07, 0x00]);
+        write_w(&mut core, 0xFA);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x00, "low byte of 0x100");
+        assert!(
+            read_status(&core) & STATUS_C != 0,
+            "C must be set when running result exceeds 0xFF"
+        );
     }
 
     #[test]
