@@ -144,7 +144,14 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // WDTCON<7:1> unimplemented; only SWDTEN at bit 0 is alive.
         0xFD1 => 0x01,
         // EECON1 bit 5 unimplemented (Register 6-1).
-        0xF86 => 0xDF,
+        0xFA6 => 0xDF,
+        // EECON2 is not a physical register -- per DS39632E
+        // §6.2.1, reads return 0 and writes are consumed by
+        // the EE-unlock state machine.  Masking writes to 0x00
+        // emulates the read-as-zero contract; the unlock-
+        // sequence side effect is the P2 EEPROM peripheral's
+        // responsibility.
+        0xFA7 => 0x00,
         // FSR0H / FSR1H / FSR2H high nibbles unimplemented
         // (12-bit FSRs; only <3:0> alive in the H register).
         0xFEA | 0xFE2 | 0xFDA => 0x0F,
@@ -788,17 +795,30 @@ mod tests {
 
     #[test]
     fn movwf_to_eecon1_strips_unimplemented_bit_5() {
-        // EECON1<5> unimplemented (Register 6-1).
-        // f=0xF86 doesn't fit in the Access-Bank low half
-        // (which only reaches f<0x60); needs BSR-selected.
-        // Set BSR=15 so (15<<8)|0x86 = 0xF86.
-        // MOVLW 0xFF = 0x0EFF; MOVWF 0x86, BANKED = 0x6F86.
-        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0x86, 0x6F]);
-        write_bsr(&mut core, 15);
+        // EECON1<5> unimplemented (Register 6-1).  EECON1 is
+        // at 0xFA6 (gputils p18f2455.inc); 0xA6 is in the
+        // Access-Bank high half so a=ACCESS routes there.
+        // MOVLW 0xFF = 0x0EFF; MOVWF 0xA6, ACCESS = 0x6EA6.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0xA6, 0x6E]);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         step(&mut core, &mut stack).unwrap();
-        assert_eq!(core.memory.read_raw(Address::from_raw(0xF86)), 0xDF);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFA6)), 0xDF);
+    }
+
+    #[test]
+    fn movwf_to_eecon2_zeroes_storage() {
+        // EECON2 is not a physical register; reads return 0
+        // (DS39632E §6.2.1).  Mask writes to 0x00 so a later
+        // raw read (or MOVF) returns the silicon-correct 0,
+        // not whatever the firmware wrote.
+        // EECON2 at 0xFA7; f=0xA7 routes via Access-Bank high.
+        // MOVLW 0xFF = 0x0EFF; MOVWF 0xA7, ACCESS = 0x6EA7.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0xA7, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFA7)), 0x00);
     }
 
     #[test]
