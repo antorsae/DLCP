@@ -23,6 +23,11 @@ artifacts/LX521.4/
 artifacts/ground_truth/
 artifacts/sim_rewrite_divergences/
 
+# Rust workspace build artefacts.  We commit Cargo.lock so the
+# CI / replay paths use a pinned dependency graph.
+/target/
+crates/*/target/
+
 sim_artifacts/
 tmp_gpsim_lcd_capture/
 *.stage*.hex

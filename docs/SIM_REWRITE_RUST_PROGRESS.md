@@ -56,7 +56,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## Phase 1 — Rust ISA Core
 
-- [pending] P1.1 `crates/dlcp-sim/` workspace member skeleton + `Variant`, `Core`, `Memory` types
+- [done] P1.1 `crates/dlcp-sim/` workspace member skeleton + `Variant`, `Core`, `Memory` types
   - verify: `cd crates/dlcp-sim && cargo build --release`
   - artifact: `crates/dlcp-sim/Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/memory.rs`
   - notes: include `Cargo.toml` workspace at repo root.
