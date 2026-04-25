@@ -143,6 +143,8 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         0xFD0 => 0xDF,
         // WDTCON<7:1> unimplemented; only SWDTEN at bit 0 is alive.
         0xFD1 => 0x01,
+        // EECON1 bit 5 unimplemented (Register 6-1).
+        0xF86 => 0xDF,
         // FSR0H / FSR1H / FSR2H high nibbles unimplemented
         // (12-bit FSRs; only <3:0> alive in the H register).
         0xFEA | 0xFE2 | 0xFDA => 0x0F,
@@ -151,7 +153,7 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // INTCON2 bits 3 and 1 unimplemented (Register 9-2).
         0xFF1 => 0xF5,
         // TBLPTRU<7:6> unimplemented (TBLPTR is 22 bits; only
-        // <5:0> live in TBLPTRU per DS39632E §6.1).
+        // <5:0> live in TBLPTRU per DS39632E §6.2.3).
         0xFF8 => 0x3F,
         // PCLATU<7:5> unimplemented (PC is 21 bits; only <4:0>
         // alive in PCLATU per DS39632E §5.1.1).
@@ -782,6 +784,21 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFF1)), 0xF5);
+    }
+
+    #[test]
+    fn movwf_to_eecon1_strips_unimplemented_bit_5() {
+        // EECON1<5> unimplemented (Register 6-1).
+        // f=0xF86 doesn't fit in the Access-Bank low half
+        // (which only reaches f<0x60); needs BSR-selected.
+        // Set BSR=15 so (15<<8)|0x86 = 0xF86.
+        // MOVLW 0xFF = 0x0EFF; MOVWF 0x86, BANKED = 0x6F86.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0x86, 0x6F]);
+        write_bsr(&mut core, 15);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF86)), 0xDF);
     }
 
     #[test]
