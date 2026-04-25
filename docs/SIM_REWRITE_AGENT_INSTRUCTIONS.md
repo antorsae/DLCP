@@ -138,11 +138,13 @@ risk first):
 
 Important: 2455 BAUDCON is at **0xF98** per datasheet (DS39632E
 Table 5-1), NOT gpsim's 0xFB8 (inherited from `P18F2x21`).  Follow
-the datasheet.  See spec §11b for the full reconciliation — current
-firmware writes BAUDCON once with 0x48, which happens to match the
-reset state, so no test is expected to diverge.  If a future test
-starts depending on BAUDCON-controlled behaviour (TXCKP/RXDTP polarity
-inversion etc.), Rust will be correct and gpsim will diverge.
+the datasheet.  Spec §11b has an open investigation about *how* MAIN
+UART tests pass on gpsim today despite this address mismatch — that
+question needs to be resolved during P0 (ground-truth capture)
+before Phase 4 dual-run begins.  Possibilities: a second BAUDCON
+mapping at 0xF98 we haven't traced, a gpsim USART quirk that doesn't
+require BRG16, or coarse-enough byte-stream tests that mask the
+timing error.  Track findings in §11b.
 
 ### Phase 3 — Multi-Core Wiring
 
@@ -151,8 +153,8 @@ unified scheduler, the cross-process bridge that produced the echo
 loop simply doesn't exist.
 
 - `src/chain.rs` — `Chain` struct with `Vec<Core>` + global event queue.
-- `src/scheduler.rs` — min-heap event queue with `(deadline_ns, core_id, event_kind)`.
-- `src/clock.rs` — per-Core `Tcy_ns` derivation from config bits.
+- `src/scheduler.rs` — min-heap event queue with `(deadline_tick, core_id, event_kind)` at the 48 MHz universal clock.
+- `src/clock.rs` — per-Core `ticks_per_tcy` derivation from config bits (CONTROL = 16, MAIN = 12).
 - `src/pinnet.rs` — pin nodes (RC6 → RC7 wiring, etc.).
 - `src/boot_offset.rs` — `BootOffsetSpec::Fixed | RangedRandom { seed }`.
 

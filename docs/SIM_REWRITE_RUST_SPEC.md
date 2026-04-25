@@ -36,7 +36,7 @@ Status: **Phase 0 — pending**
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐        │
 │  │ Core: K20     │  │ Core: 2455    │  │ Core: 2455    │        │
 │  │ (CONTROL)     │  │ (MAIN0)       │  │ (MAIN1)       │        │
-│  │ Tcy=333 ns    │  │ Tcy=250 ns    │  │ Tcy=250 ns    │        │
+│  │ Tcy=16 ticks  │  │ Tcy=12 ticks  │  │ Tcy=12 ticks  │        │
 │  │ ┌───────────┐ │  │ ┌───────────┐ │  │ ┌───────────┐ │        │
 │  │ │ ISA, RAM, │ │  │ │ ISA, RAM, │ │  │ │ ISA, RAM, │ │        │
 │  │ │ Flash,    │ │  │ │ Flash,    │ │  │ │ Flash,    │ │        │
@@ -55,7 +55,7 @@ Status: **Phase 0 — pending**
 │      (UART current loop, I²C slaves, LCD strobes, etc.)         │
 │                              │                                  │
 │  ┌───────────────────────────▼──────────────────────────────┐   │
-│  │       Global Event Queue (single ns-resolved clock)      │   │
+│  │  Global Event Queue (single 48 MHz tick-resolved clock)  │   │
 │  │      All cores tick on this; causality is intrinsic      │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
@@ -111,9 +111,9 @@ Status: **Phase 0 — pending**
 ### Deliverables
 
 - `scripts/capture_gpsim_ground_truth.py` — pytest entry that, for every `tests/sim/` test currently passing on gpsim, records:
-  - **Stimulus stream**: every external pin/IR/button/UART/ADC/I²C event with `(ns, core_id, pin/peripheral, payload)` tuples.
+  - **Stimulus stream**: every external pin/IR/button/UART/ADC/I²C event with `(tick, core_id, pin/peripheral, payload)` tuples (universal-clock ticks).
   - **RAM/SFR snapshots** at fixed cycle boundaries (every 1 ms simulated time + at every breakpoint hit).
-  - **TX byte stream per UART** (per-core, with `ns` timestamp).
+  - **TX byte stream per UART** (per-core, with universal-tick timestamp).
   - **LCD raster** (final + at every redraw).
   - **EEPROM image** (final + before/after every write).
   - **Cycle counters** per core at exit.
@@ -127,7 +127,7 @@ Status: **Phase 0 — pending**
       0000000000.sfr.json
       0001000000.ram.bin # RAM at +1 ms
       ...
-    uart_tx_main0.jsonl  # (ns, byte) tuples
+    uart_tx_main0.jsonl  # (tick, byte) tuples
     uart_tx_main1.jsonl
     uart_tx_control.jsonl
     lcd_final.txt
@@ -232,10 +232,10 @@ cargo test -p dlcp-sim --test isa_parity --release
 
 Each peripheral has its own `crates/dlcp-sim/tests/peripheral_<name>_parity.rs` that diffs against ground truth.  Examples:
 
-- **EUSART**: ground-truth fixture is `test_v17_chain.py` UART byte stream; new sim must produce same bytes at same `ns` ± 8 cycles (bit-edge quantization tolerance).
+- **EUSART**: ground-truth fixture is `test_v17_chain.py` UART byte stream; new sim must produce same bytes at the same universal tick ± 8 ticks (bit-edge quantization tolerance for the gpsim oracle's polled FileRecorder).
 - **MSSP**: ground-truth is `test_main_gpsim_i2c_regfile.py` STOP/START + ACK/NACK sequences; bit-exact.
 - **ADC**: `test_main_gpsim_an0_boot.py` — same threshold-pass cycle count.
-- **EEPROM**: `test_v171_baseline.py` EEPROM-after-write image bit-exact; `ns` stamp of write-complete IRQ matches **datasheet** (not gpsim — this is one of the few places we *deliberately* exceed gpsim fidelity).
+- **EEPROM**: `test_v171_baseline.py` EEPROM-after-write image bit-exact; tick stamp of write-complete IRQ matches the **datasheet** post-write timer (not gpsim — this is one of the few places we *deliberately* exceed gpsim fidelity).
 
 ### Exit gate
 
@@ -270,28 +270,30 @@ cargo test -p dlcp-sim --test 'peripheral_*_parity' --release
   ```
 
 - **Clock domain handling**:
-  - Each `Core` has `Tcy_ns: u32` derived from its `ClockSpec`. CONTROL = 333 ns; MAIN = 250 ns (round-down; precise FP not needed since baud rates are integer multiples).
-  - Single global `now_ns: u64`. To advance one instruction on a core, the scheduler dequeues the next event (any peripheral or instruction-complete deadline) and calls back into the appropriate core.
-  - Crystal skew (optional): per-core `Tcy_drift_ppm: i32` field (default 0). When non-zero, each instruction's deadline is `Tcy_ns × (1 + drift_ppm × 1e-6)`; default seeded PRNG produces reproducible drift sequences.
+  - Each `Core` has `ticks_per_tcy: u32` derived from its `ClockSpec`. CONTROL = 16 universal ticks per Tcy; MAIN = 12 universal ticks per Tcy. Both are exact integers — no rounding loss.
+  - Single global `now_tick: u64` (48 MHz universal clock). To advance one instruction on a core, the scheduler dequeues the next event (any peripheral or instruction-complete deadline) and calls back into the appropriate core.
+  - Crystal skew (optional): per-core `tick_drift_ppm: i32` field (default 0). When non-zero, each instruction's deadline is `ticks_per_tcy × (1 + drift_ppm × 1e-6)` rounded to the nearest tick; default seeded PRNG produces reproducible drift sequences. (At ±2000 ppm the drift is ±0.032 ticks per Tcy — small enough that integer rounding doesn't deplete fidelity.)
 
 - **Boot-offset model** — three configurable scenarios per `Chain`:
   ```rust
   pub struct BootOffsetConfig {
       // CONTROL boots first; MAIN0 follows within ±50 µs (same PSU).
-      // Default: PRNG ±50 µs, seed=42.
-      pub control_to_main0_offset_ns: BootOffsetSpec,
-      
+      // Default: PRNG ±50 µs (= ±2400 universal ticks @ 48 MHz), seed=42.
+      pub control_to_main0_offset_ticks: BootOffsetSpec,
+
       // MAIN1 is in a separate enclosure with its own PSU.
-      // Default: configurable; tests pick from {-2_000_000_000, 0, +500_000_000, +2_000_000_000} ns.
-      pub main1_offset_ns: BootOffsetSpec,
+      // Default: configurable; tests pick from {-2 s, 0, +500 ms, +2 s}
+      // expressed in 48 MHz universal ticks: {-96_000_000, 0,
+      // +24_000_000, +96_000_000}.
+      pub main1_offset_ticks: BootOffsetSpec,
   }
-  
+
   pub enum BootOffsetSpec {
-      Fixed(i64),
-      RangedRandom { min_ns: i64, max_ns: i64, seed: u64 },
+      Fixed(i64),  // signed universal-tick offset relative to now_tick=0
+      RangedRandom { min_ticks: i64, max_ticks: i64, seed: u64 },
   }
   ```
-  Cores with negative offsets boot *before* `now_ns=0`; their first `Tcy_ns` events fire at `now_ns = -offset` from their POR. Cores with positive offsets stay in pre-POR (RAM = config-determined, no instruction execution) until their offset elapses.
+  Cores with negative offsets boot *before* `now_tick=0`; their first Tcy events fire at `now_tick = -offset` from their POR. Cores with positive offsets stay in pre-POR (RAM = config-determined, no instruction execution) until their offset elapses.
 
 ### Verification gate
 
@@ -404,7 +406,7 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 | Risk / decision                                              | Mitigation / rationale                                       |
 |--------------------------------------------------------------|--------------------------------------------------------------|
 | Subtle PIC18 ISA edge cases not covered by spec text         | Differential test against gpsim (oracle) for entire ISA exercised by V1.71 + V3.2 firmware. Any divergence: gpsim wins, Rust fixes. |
-| 2455 BAUDCON address divergence (gpsim @ 0xFB8 inherited from `P18F2x21`; datasheet @ 0xF98) | Rust port follows datasheet (DS39632E Table 5-1, p. 67). MAIN firmware writes BAUDCON at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value 0x48 (BRG16=0, idle high). On gpsim that write lands on the wrong physical register but is silently absorbed because 0x48 happens to match BRG16=0's reset state (the only thing the firmware needs). On Rust port, the write reaches the correct register; behaviour is identical because the bit pattern matches the default. No tests are expected to depend on the gpsim quirk. See §11b. |
+| 2455 BAUDCON address divergence (gpsim @ 0xFB8 inherited from `P18F2x21`; datasheet @ 0xF98) | Rust port follows datasheet (DS39632E Table 5-1, p. 67). MAIN firmware writes BAUDCON once at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value **0x48** — which sets BRG16=1 (bit 3) plus a write to the read-only RCIDL bit (ignored). The firmware's BRGH=1 + SPBRG=0x7F + SPBRGH=0 path actually requires BRG16=1 for 31,250 baud at 16 MHz Fosc. The reason gpsim tests still produce correct UART byte streams despite the wrong-address mapping needs investigation in P0 (see §11b). Rust port writes to the datasheet address; if dual-run reveals a divergence, gpsim is the side that's wrong. |
 | K20 vs. 2455 SFR drift                                       | Encoded as static data tables per `Variant`; no code branching in hot path. |
 | Peripheral fidelity escapes harming firmware regressions    | Phase 4 dual-run is mandatory before gpsim retires per-test. Hardware-only tests (`tests/hardware/`) remain the final tiebreaker per `docs/SIMULATION_FIDELITY.md`. |
 | Multi-core scheduler bugs (race, deadlock)                   | Phase 3 has a reproducer for the Task #22 echo-loop; that's a stress test in itself. Plus property tests on event-queue invariants. |
@@ -416,15 +418,22 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 
 Audited 2026-04-25:
 
-- 2455 datasheet (DS39632E Table 5-1, `firmware/reference/39632e.md:2699`): BAUDCON @ **0xF98**.
-- gpsim 2455 model: 2455 inherits from `P18F2x21` (`vendor/gpsim-0.32.1-xtc/src/p18x.h:442`); base class registers BAUDCON @ **0xFB8** (`vendor/gpsim-0.32.1-xtc/src/p18x.cc:2002`).
-- MAIN firmware writes BAUDCON once: `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` writes 0x48 (BRG16=0, idle high). Comment at line 7907 confirms the value is intentional.
-- 0x48 happens to match BRG16=0's reset state, so the wrong-address gpsim write changes nothing observable. The Rust port's correct write also changes nothing observable. **No expected dual-run divergence from BAUDCON.**
-- CONTROL firmware also writes BAUDCON (`src/dlcp_fw/asm/dlcp_control_v171.asm:776`, `bcf BAUDCON, BRG16, A`) at the K20 datasheet address 0xFB8 — gpsim's K20 port matches that, no divergence on the CONTROL side.
+- **2455 datasheet** (DS39632E Table 5-1, `firmware/reference/39632e.md:2699`): BAUDCON @ **0xF98**. POR value = **0x40** (RCIDL=R-1, BRG16=R/W-0, all other bits 0); see DS39632E §20.4 Register 20-3 at `firmware/reference/39632e.md:9686`.
+- **gpsim 2455 model**: 2455 inherits from `P18F2x21` (`vendor/gpsim-0.32.1-xtc/src/p18x.h:442`); base class registers BAUDCON @ **0xFB8** (`vendor/gpsim-0.32.1-xtc/src/p18x.cc:2002`).
+- **MAIN firmware** writes BAUDCON once at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value **0x48**. This sets BRG16=1 (bit 3); bit 6 is the read-only RCIDL bit (write is ignored by hardware). The asm comment at line 7907 says "BRG16=0, idle high" — that comment is **inconsistent with the actual byte written** (0x48 has bit 3 set), and the firmware's downstream baud-rate math at lines 7909–7913 actually depends on BRG16=1 to reach 31,250 baud via the 16-bit BRG path (BRGH=1 + BRG16=1 + SPBRGH:SPBRG = 0x007F → 16 MHz / (4 × 128) = 31,250).
+- **CONTROL firmware** writes BAUDCON at `src/dlcp_fw/asm/dlcp_control_v171.asm:776` (`bcf BAUDCON, BRG16, A`) — clearing BRG16 only, at the K20 datasheet address 0xFB8 which matches gpsim's K20 port. No CONTROL-side divergence.
 
-If a future test starts depending on BAUDCON-driven behaviour (e.g. inverted polarity via TXCKP/RXDTP), the Rust port will be correct and gpsim will diverge. Track such tests through Phase 4 dual-run as gpsim oracle exceptions.
+**Open question** (resolved during P0 ground-truth capture): if gpsim maps BAUDCON at 0xFB8 but the firmware writes 0xF98, then under gpsim BAUDCON's BRG16 stays at the POR value (0). gpsim's `_USART::callback` at `vendor/gpsim-0.32.1-xtc/src/uart.cc:1567` checks `baudcon->brg16()`. If brg16() returns 0, gpsim should compute baud as Fosc/(16×(SPBRG+1)) = 7812.5 — yet MAIN tests pass at 31,250. Either:
 
-There is no separate "audit script" — this analysis lives here.
+  (a) gpsim has a *second* BAUDCON mapping at 0xF98 that I haven't traced (e.g. an `add_sfr_register` in the `_16bit_processor` base or in a `P18F2455`-specific override I haven't found),
+  (b) gpsim's USART model derives baud from another path that doesn't strictly require BRG16, or
+  (c) the existing tests don't actually depend on cycle-accurate baud (they only check the byte stream content, and gpsim's bit-bang timing is masked by the chunk-stepping harness).
+
+This needs to be resolved before Phase 4 dual-run begins. Add it to P0.0 as a prerequisite:
+
+- [ ] Run a single test (e.g. `test_v17_chain.py`) under gpsim with `breakpoint on register-write 0xF98` and `breakpoint on register-write 0xFB8`. Record which (if any) trigger when MAIN executes `uart_config`.
+
+The Rust port unconditionally maps BAUDCON to 0xF98 per datasheet. If dual-run reveals a divergence, gpsim is the side that's wrong; track such tests as gpsim oracle exceptions during Phase 4.
 
 ---
 

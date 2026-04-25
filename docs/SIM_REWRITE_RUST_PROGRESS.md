@@ -18,6 +18,11 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## Phase 0 — Ground-Truth Capture
 
+- [pending] P0.0 Resolve BAUDCON open-question (spec §11b)
+  - verify: `.venv_ep0/bin/python scripts/probe_baudcon_mapping.py`
+  - artifact: `scripts/probe_baudcon_mapping.py` + an appended note in spec §11b documenting which of the three explanations holds (second mapping; gpsim USART quirk; or test coarseness).
+  - notes: must run before Phase 4 dual-run, but blocks no earlier work — placed at P0.0 so it gets resolved early. The probe loads V3.2 MAIN under gpsim, breaks on writes to 0xF98 and 0xFB8, executes `uart_config`, and reports which (if any) trigger.
+
 - [pending] P0.1 Add `--capture-ground-truth` pytest flag
   - verify: `.venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py --capture-ground-truth -q && test -d artifacts/ground_truth/test_v17_chain__test_v17_chain_reaches_volume`
   - artifact: `tests/sim/conftest.py` (extension), `scripts/capture_gpsim_ground_truth.py` (helper)
@@ -39,9 +44,9 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - notes: piggyback on existing `_LogDecoder`. The check script asserts every test that calls `chain.lcd_lines()` produces an `lcd_final.txt`.
 
 - [pending] P0.5 Verify replay of every captured fixture matches gpsim output
-  - verify: `.venv_ep0/bin/python scripts/replay_ground_truth.py --all` exits 0
+  - verify: `.venv_ep0/bin/python scripts/replay_ground_truth.py --all`
   - artifact: `scripts/replay_ground_truth.py`
-  - notes: regression safety — ensures fixtures are reproducible.
+  - notes: regression safety — ensures fixtures are reproducible. Script must exit 0 on success, non-zero on any divergence.
 
 - [pending] P0.gate Run phase-0 gate
   - verify: `.venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 0`
@@ -154,7 +159,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - verify: `cd crates/dlcp-sim && cargo test --release chain::coupling::tests`
   - artifact: covered in `chain.rs` + `pinnet.rs`.
 
-- [pending] P3.3 Clock-domain handling — per-Core `Tcy_ns`, optional `Tcy_drift_ppm`
+- [pending] P3.3 Clock-domain handling — per-Core `ticks_per_tcy` (CONTROL=16, MAIN=12), optional `tick_drift_ppm`
   - verify: `cd crates/dlcp-sim && cargo test --release chain::clock::tests`
   - artifact: `crates/dlcp-sim/src/clock.rs`.
 
@@ -193,8 +198,9 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `src/dlcp_fw/sim/dlcp_sim_native.py`.
 
 - [pending] P4.3 `tests/sim/conftest.py` plugin: `DLCP_SIM_BACKEND={gpsim,dual,rust}` env var
-  - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py -q` runs both engines and asserts identical
+  - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py -q`
   - artifact: `tests/sim/conftest.py` extension.
+  - notes: under DLCP_SIM_BACKEND=dual the conftest plugin runs every test under both gpsim and dlcp-sim and asserts identical externally-visible behaviour (UART byte streams, LCD, EEPROM). Diverging tests fail; pass means both engines agreed.
 
 - [pending] P4.4 Migrate `test_v17_*` tests (single-MAIN baseline)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py tests/sim/test_v17_shifted_full_parity.py -n 16 -q`
@@ -213,16 +219,18 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: ledger update; full sim gate green under dual-run.
 
 - [pending] P4.8 Switch default backend to Rust; gpsim now opt-in only
-  - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` (no env var) runs `dlcp-sim` and is green
+  - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
   - artifact: `tests/sim/conftest.py` default flip + `pytest.ini` update.
+  - notes: with no env var, the default backend should be `rust` and the full sim gate must be green.
 
 - [pending] P4.9 Delete `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py`, `.stc` script generators
-  - verify: `git diff --stat HEAD~1 | grep -E 'chain_gpsim|wire_chain|_CliSession|gpsim\.py' | wc -l` shows deletions only
-  - artifact: large code excision commit.
+  - verify: `.venv_ep0/bin/python scripts/check_gpsim_excision.py`
+  - artifact: large code excision commit + `scripts/check_gpsim_excision.py` (asserts the named files are absent and that no remaining import references them).
+  - notes: created during this sub-task as part of the excision commit; script returns non-zero if any of the listed paths still exist.
 
 - [pending] P4.gate Run phase-4 gate
-  - verify: `DLCP_SIM_BACKEND=rust .venv_ep0/bin/python -m pytest tests/sim -n 16 -q` green AND wall-clock < 60 s
-  - artifact: timing comparison report committed to `docs/SIM_REWRITE_RUST_PROGRESS.md`.
+  - verify: `.venv_ep0/bin/python scripts/check_phase4_gate.py`
+  - artifact: timing comparison report committed to `docs/SIM_REWRITE_RUST_PROGRESS.md`; helper script asserts `DLCP_SIM_BACKEND=rust pytest tests/sim` is green AND wall-clock < 60 s.
 
 ---
 

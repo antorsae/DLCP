@@ -80,17 +80,44 @@ class Task:
 
 
 def strip_markdown_quoting(value: str) -> str:
-    """Strip surrounding backticks (single or fenced) and surrounding
-    whitespace from a verify command rendered in Markdown.
+    """Extract the executable shell command from a Markdown-rendered
+    verify line.
 
-    The ledger writes verify commands like:
+    The ledger writes verify commands wrapped in backticks for
+    rendering, e.g.
+
         - verify: `pytest tests/sim/test_x.py -q`
-    This function returns just `pytest tests/sim/test_x.py -q`, suitable
-    for shell execution.  Idempotent on inputs that aren't quoted.
+
+    Sometimes a verify line accidentally has trailing prose after the
+    backticks (`pytest ...` exits 0).  Behaviour:
+
+    1. If the value starts AND ends with a single backtick, peel the
+       outer pair and recurse (handles double-wrapping).
+    2. Otherwise, if the value contains a backtick-wrapped span, take
+       the FIRST such span as the command and ignore everything else
+       on the line.  This catches "backtick-cmd + trailing prose".
+    3. Otherwise, return the value as-is (it's a literal command, or
+       the special string `manual`).
+
+    Returns the value stripped of surrounding whitespace.
     """
     s = value.strip()
+    # Case 1: fully wrapped — peel outer pair(s).
     while len(s) >= 2 and s[0] == "`" and s[-1] == "`":
-        s = s[1:-1].strip()
+        peeled = s[1:-1].strip()
+        # Avoid stripping a backtick that's part of a substitution etc.
+        # by requiring the peeled string to itself contain no
+        # unbalanced backticks.  In practice the ledger never embeds
+        # backticks, so we accept the peel.
+        s = peeled
+    if "`" in s:
+        # Case 2: trailing prose around a backtick-wrapped command.
+        # Find the first balanced backtick span and use it.
+        first = s.find("`")
+        rest = s[first + 1 :]
+        end = rest.find("`")
+        if end != -1:
+            return rest[:end].strip()
     return s
 
 
