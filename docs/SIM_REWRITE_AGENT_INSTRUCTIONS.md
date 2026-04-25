@@ -136,15 +136,14 @@ risk first):
 7. Oscillator subsystem
 8. USB-SIE (last; it's the most complex and only on 2455)
 
-Important: 2455 BAUDCON is at **0xF98** per datasheet (DS39632E
-Table 5-1), NOT gpsim's 0xFB8 (inherited from `P18F2x21`).  Follow
-the datasheet.  Spec §11b has an open investigation about *how* MAIN
-UART tests pass on gpsim today despite this address mismatch — that
-question needs to be resolved during P0 (ground-truth capture)
-before Phase 4 dual-run begins.  Possibilities: a second BAUDCON
-mapping at 0xF98 we haven't traced, a gpsim USART quirk that doesn't
-require BRG16, or coarse-enough byte-stream tests that mask the
-timing error.  Track findings in §11b.
+Important: 2455 BAUDCON is at **0xFB8** — same address as gpsim, same
+as gputils' `p18f2455.inc`, same as the assembled stock V2.3 BAUDCON
+write disassembling to opcode `6EB8` at PC 0x455A.  An earlier draft
+of this spec asserted the datasheet places it at 0xF98; that came
+from misreading a +0x20-misaligned column header in the PDF→markdown
+rendering of DS39632E Table 5-1.  The empirical resolution is in
+`scripts/probe_baudcon_mapping.py` (P0.0); spec §11b documents the
+closed dual-run question.
 
 ### Phase 3 — Multi-Core Wiring
 

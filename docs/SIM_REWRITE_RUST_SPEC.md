@@ -216,7 +216,7 @@ cargo test -p dlcp-sim --test isa_parity --release
 
 | Peripheral | K20 | 2455 | Notes                                                  |
 |------------|-----|------|--------------------------------------------------------|
-| EUSART     | ✓   | ✓    | Bit-level TX/RX shifter; baud generator; OERR/FERR latch; RCREG FIFO; TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON. K20 BAUDCON @ 0xFB8; **2455 BAUDCON @ 0xF98** per DS39632E Table 5-1 (NOT gpsim's wrong 0xFB8 placement inherited from `P18F2x21` — see §11 risk). |
+| EUSART     | ✓   | ✓    | Bit-level TX/RX shifter; baud generator; OERR/FERR latch; RCREG FIFO; TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON. K20 BAUDCON @ 0xFB8 (DS41303); **2455 BAUDCON @ 0xFB8** per DS39632E Table 5-1 data rows + gputils `p18f2455.inc` + assembled stock V2.3 disassembly. (The earlier "datasheet says 0xF98" reading was a PDF→markdown rendering artifact in `firmware/reference/39632e.md`; resolved by `scripts/probe_baudcon_mapping.py` — see §11b.) |
 | MSSP I²C   | —   | ✓    | Master mode for TAS3108 writes; SCL stretching; ACK/NACK bus injection (port `i2c-regfile.cc` semantics). SSPADD=0x77 → 33.3 kHz on 16 MHz Fosc. |
 | Timer3     | ✓   | ✓    | 16-bit timer; T3CON; gate; capture/compare integration with CCP. |
 | Timer0     | ✓   | ✓    | 8/16-bit; prescaler; interrupt source for CONTROL idle timer. |
@@ -406,7 +406,7 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 | Risk / decision                                              | Mitigation / rationale                                       |
 |--------------------------------------------------------------|--------------------------------------------------------------|
 | Subtle PIC18 ISA edge cases not covered by spec text         | Differential test against gpsim (oracle) for entire ISA exercised by V1.71 + V3.2 firmware. Any divergence: gpsim wins, Rust fixes. |
-| 2455 BAUDCON address divergence (gpsim @ 0xFB8 inherited from `P18F2x21`; datasheet @ 0xF98) | Rust port follows datasheet (DS39632E Table 5-1, p. 67). MAIN firmware writes BAUDCON once at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value **0x48** — which sets BRG16=1 (bit 3) plus a write to the read-only RCIDL bit (ignored). The firmware's BRGH=1 + SPBRG=0x7F + SPBRGH=0 path actually requires BRG16=1 for 31,250 baud at 16 MHz Fosc. The reason gpsim tests still produce correct UART byte streams despite the wrong-address mapping needs investigation in P0 (see §11b). Rust port writes to the datasheet address; if dual-run reveals a divergence, gpsim is the side that's wrong. |
+| 2455 BAUDCON address — initially flagged as a gpsim/datasheet divergence; resolved to NO divergence | Rust port maps BAUDCON at **0xFB8** (matching gpsim, gputils' `p18f2455.inc`, and the assembled stock V2.3 disassembly opcode `6EB8`). The original "datasheet says 0xF98" reading was a PDF→markdown rendering artifact in `firmware/reference/39632e.md`'s Table 5-1; the table's data rows agree with gputils (BAUDCON at 0xFB8). Empirically validated by `scripts/probe_baudcon_mapping.py` (P0.0): V3.2 MAIN's `movwf BAUDCON, ACCESS` at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` assembles to opcode `6EB8` and gpsim observes the 0x48 write at register 0xFB8 (with 0xF98 unmapped on the 2455 model and unchanged after run). The asm comment at line 7907 ("BRG16=0") is independently inconsistent with the actual byte value 0x48 (bit 3 = BRG16 = 1) but does not affect register placement — see §11b. |
 | K20 vs. 2455 SFR drift                                       | Encoded as static data tables per `Variant`; no code branching in hot path. |
 | Peripheral fidelity escapes harming firmware regressions    | Phase 4 dual-run is mandatory before gpsim retires per-test. Hardware-only tests (`tests/hardware/`) remain the final tiebreaker per `docs/SIMULATION_FIDELITY.md`. |
 | Multi-core scheduler bugs (race, deadlock)                   | Phase 3 has a reproducer for the Task #22 echo-loop; that's a stress test in itself. Plus property tests on event-queue invariants. |
@@ -414,26 +414,85 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 | Crystal skew test instability                                | All skew injections are seeded-PRNG; CI uses fixed seed; soak uses sweep across seed corpus. |
 | EEPROM write-completion timing change ≠ gpsim                | This is an *intentional* exceedance of gpsim fidelity. Document in `docs/SIMULATION_FIDELITY.md` and update test assertions that depend on the gpsim "instantaneous EEPROM" assumption. |
 
-### §11b — BAUDCON gpsim divergence: dual-run reconciliation
+### §11b — BAUDCON gpsim divergence: RESOLVED — no divergence
 
-Audited 2026-04-25:
+**Status:** Resolved 2026-04-25 by `scripts/probe_baudcon_mapping.py` (P0.0).
 
-- **2455 datasheet** (DS39632E Table 5-1, `firmware/reference/39632e.md:2699`): BAUDCON @ **0xF98**. POR value = **0x40** (RCIDL=R-1, BRG16=R/W-0, all other bits 0); see DS39632E §20.4 Register 20-3 at `firmware/reference/39632e.md:9686`.
-- **gpsim 2455 model**: 2455 inherits from `P18F2x21` (`vendor/gpsim-0.32.1-xtc/src/p18x.h:442`); base class registers BAUDCON @ **0xFB8** (`vendor/gpsim-0.32.1-xtc/src/p18x.cc:2002`).
-- **MAIN firmware** writes BAUDCON once at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value **0x48**. This sets BRG16=1 (bit 3); bit 6 is the read-only RCIDL bit (write is ignored by hardware). The asm comment at line 7907 says "BRG16=0, idle high" — that comment is **inconsistent with the actual byte written** (0x48 has bit 3 set), and the firmware's downstream baud-rate math at lines 7909–7913 actually depends on BRG16=1 to reach 31,250 baud via the 16-bit BRG path (BRGH=1 + BRG16=1 + SPBRGH:SPBRG = 0x007F → 16 MHz / (4 × 128) = 31,250).
-- **CONTROL firmware** writes BAUDCON at `src/dlcp_fw/asm/dlcp_control_v171.asm:776` (`bcf BAUDCON, BRG16, A`) — clearing BRG16 only, at the K20 datasheet address 0xFB8 which matches gpsim's K20 port. No CONTROL-side divergence.
+**Outcome:** there is no BAUDCON divergence between gpsim, gputils, the
+assembled firmware, and the actual silicon — all four place BAUDCON at
+**0xFB8** on the 2455.  The Rust port follows suit; do NOT map BAUDCON
+at 0xF98.
 
-**Open question** (resolved during P0 ground-truth capture): if gpsim maps BAUDCON at 0xFB8 but the firmware writes 0xF98, then under gpsim BAUDCON's BRG16 stays at the POR value (0). gpsim's `_SPBRG::get_cycles_per_tick()` at `vendor/gpsim-0.32.1-xtc/src/uart.cc:1567` checks `baudcon->brg16()` to pick a divisor of 4 (16-bit BRG hi-speed) versus 16 (8-bit BRG hi-speed). If brg16() returns 0, gpsim's USART model should compute Fosc/(16×(SPBRG+1)) = 7812.5 baud — yet MAIN tests pass at 31,250. Either:
+**How the original divergence claim arose:**
 
-  (a) gpsim has a *second* BAUDCON mapping at 0xF98 that I haven't traced (e.g. an `add_sfr_register` in the `_16bit_processor` base or in a `P18F2455`-specific override I haven't found),
-  (b) gpsim's USART model derives baud from another path that doesn't strictly require BRG16, or
-  (c) the existing tests don't actually depend on cycle-accurate baud (they only check the byte stream content, and gpsim's bit-bang timing is masked by the chunk-stepping harness).
+- DS39632E Table 5-1 (`firmware/reference/39632e.md:2699`) renders the
+  PIC18F2455 SFR map as a multi-column table.  In the markdown
+  conversion, the column-header text contains a +0x20 mis-alignment so
+  that the literal string `BAUDCON<br>F98h` appears in the column-4
+  header listing.  Reading just the column header would suggest BAUDCON
+  is at 0xF98.
+- The data rows of the same table do NOT agree with that reading.
+  Line 2708 reads `||TBLPTRU|STATUS|BAUDCON|—**(2)**|UEP8|`, which —
+  with col1 as the address ladder FFFh-FE0h, col2 as FDFh-FC0h, col3 as
+  FBFh-FA0h, col4 as F9Fh-F80h, col5 as F7Fh-F60h, in 0x20 strides —
+  places `STATUS` at 0xFD8, `BAUDCON` at 0xFB8, and `UEP8` at 0xF78,
+  matching gputils' `p18f2455.inc`:
 
-This needs to be resolved before Phase 4 dual-run begins. Add it to P0.0 as a prerequisite:
+  ```
+  BAUDCON  EQU  H'0FB8'
+  STATUS   EQU  H'0FD8'
+  UEP8     EQU  H'0F78'
+  ```
 
-- [ ] Run a single test (e.g. `test_v17_chain.py`) under gpsim with `breakpoint on register-write 0xF98` and `breakpoint on register-write 0xFB8`. Record which (if any) trigger when MAIN executes `uart_config`.
+- `vendor/gpsim-0.32.1-xtc/src/p18x.cc:2002` registers `usart.baudcon`
+  at 0xFB8.  `firmware/disasm/main/gpdasm_output.asm:8833` shows the
+  stock V2.3 BAUDCON write disassembling to opcode `6EB8`
+  (`movwf 0xFB8, ACCESS=0`).
+- The V3.2 MAIN source at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931`
+  emits the same `movwf BAUDCON, ACCESS` instruction; gputils resolves
+  `BAUDCON` to 0xFB8, so the assembled hex has byte signature
+  `48 0E B8 6E` (`movlw 0x48; movwf 0xFB8 a=0`) and never the
+  alternative `48 0E 98 6E`.
 
-The Rust port unconditionally maps BAUDCON to 0xF98 per datasheet. If dual-run reveals a divergence, gpsim is the side that's wrong; track such tests as gpsim oracle exceptions during Phase 4.
+**Empirical confirmation (P0.0 probe):**
+
+`scripts/probe_baudcon_mapping.py` performs:
+
+1. Static scan of `DLCP_Firmware_V3.2.hex` for the FB8-form vs F98-form
+   opcodes.  FB8 form is found at PC 0x40F4; F98 form is absent.
+2. Live gpsim run of V3.2 MAIN (with AN0 bootstrap, breaking just
+   past the BAUDCON write).  gpsim observes one write of `0x48` to
+   `baudcon(0x0FB8)` at cycle 0x15AE; `reg(0xFB8)` reads back `0x48`
+   and `reg(0xF98)` reads back `0x00` (gpsim labels the address
+   `INVREG_F98`, i.e. unmapped on the 2455 model).
+
+**Independent observations preserved from the original audit:**
+
+- MAIN writes value **0x48** to BAUDCON.  Bits set: bit 6 (RCIDL,
+  read-only — write ignored by hardware) and bit 3 (BRG16).
+  The firmware's downstream baud-rate math at
+  `dlcp_main_v32.asm:7909-7913` actually depends on BRG16=1 to reach
+  31,250 baud via the 16-bit BRG path
+  (BRGH=1 + BRG16=1 + SPBRGH:SPBRG = 0x007F →
+  16 MHz / (4 × 128) = 31,250).  The asm comment at line 7907 reads
+  "BRG16=0, idle high"; that comment is **inconsistent with the
+  byte actually written** but does not affect runtime behaviour.
+  A future cleanup may correct the comment; out of scope for the
+  rewrite.
+- CONTROL firmware writes BAUDCON at `dlcp_control_v171.asm:776`
+  (`bcf BAUDCON, BRG16, A`) at the K20 datasheet address 0xFB8 which
+  matches gpsim's K20 port.  No CONTROL-side question existed.
+
+**Implication for the rewrite:**
+
+- §6 peripheral inventory: 2455 BAUDCON at 0xFB8 (corrected).
+- §11 Risk Register: the BAUDCON row no longer represents a divergence;
+  it remains in the table as a documented closed risk so future readers
+  understand the markdown rendering caveat.
+- Phase 2 P2.1 EUSART implementation: place BAUDCON at 0xFB8 on the
+  2455 SFR table.  Same as gpsim.
+- Phase 4 dual-run: no BAUDCON-specific gpsim oracle exceptions
+  needed.
 
 ---
 

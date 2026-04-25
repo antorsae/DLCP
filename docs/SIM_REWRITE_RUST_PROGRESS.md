@@ -18,7 +18,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## Phase 0 — Ground-Truth Capture
 
-- [pending] P0.0 Resolve BAUDCON open-question (spec §11b)
+- [done] P0.0 Resolve BAUDCON open-question (spec §11b)
   - verify: `.venv_ep0/bin/python scripts/probe_baudcon_mapping.py`
   - artifact: `scripts/probe_baudcon_mapping.py` + an appended note in spec §11b documenting which of the three explanations holds (second mapping; gpsim USART quirk; or test coarseness).
   - notes: must run before Phase 4 dual-run, but blocks no earlier work — placed at P0.0 so it gets resolved early. The probe loads V3.2 MAIN under gpsim, breaks on writes to 0xF98 and 0xFB8, executes `uart_config`, and reports which (if any) trigger.
@@ -104,7 +104,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [pending] P2.1 EUSART — TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON, bit-level shifter, baud generator, OERR/FERR latch, RCREG FIFO
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_eusart_parity`
   - artifact: `crates/dlcp-sim/src/peripherals/eusart.rs`
-  - notes: 2455 BAUDCON @ 0xF98 (DS39632E Table 5-1; gpsim places it at 0xFB8 via `P18F2x21` base class — datasheet wins); K20 BAUDCON @ 0xFB8 (DS41303). See spec §11b for dual-run reconciliation.
+  - notes: 2455 BAUDCON @ 0xFB8 (resolved P0.0 — matches gpsim, gputils, and disassembly opcode `6EB8`; the earlier "datasheet @ 0xF98" reading was a markdown rendering artifact). K20 BAUDCON @ 0xFB8 (DS41303). See spec §11b for the closed dual-run reconciliation.
 
 - [pending] P2.2 MSSP I²C — master mode, SCL stretching, ACK/NACK injection
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_mssp_parity`
