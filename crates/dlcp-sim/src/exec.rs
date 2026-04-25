@@ -68,22 +68,31 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     let pc_idx = pc as usize;
     let flash = core.flash();
 
-    // PC must have at least one full word ahead.  The decoder
-    // also wants `word2`; if it can't be read because we're at
-    // the very last word of flash, hand the decoder the all-ones
-    // sentinel per its docstring (decodes as NopContinuation
-    // which the executor maps to NOP).
+    // PC must have at least one full word ahead.
     if pc_idx + 1 >= flash.len() {
         return Err(ExecError::PcOutOfBounds(pc));
     }
     let word1 = u16::from_le_bytes([flash[pc_idx], flash[pc_idx + 1]]);
-    let word2 = if pc_idx + 3 < flash.len() {
+
+    // The decoder also wants `word2`; if it can't be read
+    // because we're at the very last word of flash, hand it the
+    // all-ones sentinel per its docstring -- the decoder ignores
+    // word2 for single-word instructions.  We then verify post-
+    // decode that the instruction was actually single-word; a
+    // synthetic word2 carried into a 2-word op (CALL, GOTO,
+    // MOVFF, LFSR) would silently fabricate the continuation
+    // bits, so refuse to execute and surface PcOutOfBounds.
+    let word2_available = pc_idx + 3 < flash.len();
+    let word2 = if word2_available {
         u16::from_le_bytes([flash[pc_idx + 2], flash[pc_idx + 3]])
     } else {
         0xFFFF
     };
 
     let (instr, byte_count) = decode(word1, word2);
+    if byte_count == 4 && !word2_available {
+        return Err(ExecError::PcOutOfBounds(pc));
+    }
     core.set_pc(pc.wrapping_add(byte_count));
 
     match instr {
@@ -156,16 +165,11 @@ mod tests {
     }
 
     #[test]
-    fn step_returns_pc_out_of_bounds_at_end_of_flash() {
+    fn step_returns_pc_out_of_bounds_when_word1_unfetchable() {
+        // Flash is 0x8000 bytes (0x0000..0x8000).  PC=0x8000 is
+        // past the last fetchable byte; word1 cannot be assembled.
         let mut core = Core::new(Variant::Pic18F25K20);
-        // Flash is 0x8000 bytes (0x0000..0x8000).  Setting PC to
-        // 0x7FFF leaves only one byte ahead — decoder needs two.
-        core.set_pc(0x7FFE);
-        // 0x7FFE is even and in-range; we want the *next* PC after
-        // a successful step to land at 0x7FFE + 2 = 0x8000, which
-        // would then be out of bounds.  Push PC to the last
-        // 2-byte slot first.
-        core.set_pc(0x8000); // odd-bit clear, but past flash[0x8000-1].
+        core.set_pc(0x8000);
         let mut stack = Stack::new();
 
         let err = step(&mut core, &mut stack).unwrap_err();
@@ -173,6 +177,53 @@ mod tests {
             ExecError::PcOutOfBounds(pc) => assert_eq!(pc, 0x8000),
             other => panic!("expected PcOutOfBounds, got {other:?}"),
         }
+        // PC must NOT have advanced (the executor errors before
+        // calling set_pc on the partial-fetch path).
+        assert_eq!(core.pc(), 0x8000);
+    }
+
+    #[test]
+    fn step_succeeds_at_last_word_when_instruction_is_single_word() {
+        // PC=0x7FFE with a NOP at the last word: word1 fetchable,
+        // word2 not fetchable, but decode returns byte_count=2 so
+        // the missing word2 is irrelevant.  Step must succeed.
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let last_word = 0x8000 - 2;
+        core.flash_mut()[last_word] = 0x00; // NOP low byte
+        core.flash_mut()[last_word + 1] = 0x00; // NOP high byte
+        core.set_pc(last_word as u32);
+        let mut stack = Stack::new();
+
+        let cycles = step(&mut core, &mut stack).expect("single-word op at last word OK");
+        assert_eq!(cycles, 1);
+        // PC wraps via set_pc's mask: 0x7FFE + 2 = 0x8000, masked
+        // to 0x001F_FFFE leaves 0x8000 — outside flash on this
+        // variant, but `step` did its job.
+        assert_eq!(core.pc(), 0x8000);
+    }
+
+    #[test]
+    fn step_returns_pc_out_of_bounds_on_partial_two_word_fetch() {
+        // PC=0x7FFE with the first word of a GOTO at the last
+        // word: word1=0xEF00 fetchable, word2 unfetchable.  The
+        // decoder needs both words for GOTO; without the executor
+        // bailing, it would silently fabricate the continuation
+        // from the 0xFFFF sentinel.
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let last_word = 0x8000 - 2;
+        // GOTO 0x0000: word1 = 0xEF00, word2 would be 0xF000.
+        core.flash_mut()[last_word] = 0x00; // word1 low (k[7:0])
+        core.flash_mut()[last_word + 1] = 0xEF; // word1 high (GOTO opcode)
+        core.set_pc(last_word as u32);
+        let mut stack = Stack::new();
+
+        let err = step(&mut core, &mut stack).unwrap_err();
+        match err {
+            ExecError::PcOutOfBounds(pc) => assert_eq!(pc, last_word as u32),
+            other => panic!("expected PcOutOfBounds, got {other:?}"),
+        }
+        // PC must NOT have advanced past the partial fetch.
+        assert_eq!(core.pc(), last_word as u32);
     }
 
     #[test]
