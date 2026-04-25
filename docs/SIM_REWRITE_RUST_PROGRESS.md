@@ -84,7 +84,14 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - verify: `cd crates/dlcp-sim && cargo test --release reset::tests`
   - artifact: `crates/dlcp-sim/src/reset.rs`.
 
-- [done] P1.7 Configuration words: parse from hex, drive osc + WDT + IPEN
+- [done] P1.7 Configuration words: parser surface for osc + WDT + IPEN consumers
+  - scope: lays the typed parser (`Config::from_bytes` + accessors for
+    PLLDIV/CPUDIV/USBDIV/FOSC/FCMEN/IESO/PWRTEN/BOREN/BORV/VREGEN/WDTEN/
+    WDTPS/MCLRE/LPT1OSC/PBADEN/CCP2MX/STVREN/LVP/XINST/DEBUG).  The
+    actual reset/peripheral wiring (e.g. STVREN gating in `apply_reset`,
+    oscillator selection in P2's clock model, BOREN/IPEN in P2 BOR /
+    interrupt-priority models) is the consumer's job and lands in P2
+    when peripheral instantiation arrives.
   - verify: `cd crates/dlcp-sim && cargo test --release config::tests`
   - artifact: `crates/dlcp-sim/src/config.rs`.
 

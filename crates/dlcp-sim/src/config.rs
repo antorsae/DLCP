@@ -82,52 +82,61 @@ impl BorenMode {
     }
 }
 
-/// Oscillator selection (CONFIG1H FOSC[3:0]).  Lists every
-/// encoding documented in DS39632E Table 22-3.  Reserved
-/// encodings collapse to `Reserved(bits)` so the executor
-/// can fail loudly rather than silently picking a default.
+/// Oscillator selection (CONFIG1H FOSC[3:0]) per DS39632E §22 /
+/// Register 25-2.  All 16 four-bit encodings are documented for
+/// the PIC18F2455/2550/4455/4550 family — there is no reserved
+/// pattern.  Note that for four of the modes (XT, XTPLL, HS,
+/// HSPLL) the low bit is "don't care" so two consecutive
+/// encodings collapse onto the same mode.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum FoscMode {
-    /// `0000` — XT.
+    /// `000x` — XT crystal/resonator.
     XT,
-    /// `0001` — XT, USB clock from primary OSC ÷ 1.  Used by
-    /// CONTROL.
+    /// `001x` — XT crystal/resonator, PLL enabled (XTPLL).
     XTPLL,
-    /// `0010` — EC.
+    /// `0100` — EC oscillator, port function on RA6 (ECIO).
+    ECIO,
+    /// `0101` — EC oscillator, CLKO function on RA6 (EC).
     EC,
-    /// `0011` — EC, USB clock from primary OSC ÷ 1.  Used by
-    /// MAIN (16 MHz crystal × ECPIO setting + 96 MHz USB PLL).
+    /// `0110` — EC oscillator, PLL enabled, port function on
+    /// RA6 (ECPIO).  This is the V3.2 MAIN configuration:
+    /// CONFIG1H = 0x46 → FOSC = 0b0110.
     ECPIO,
-    /// `0100` — HS.
+    /// `0111` — EC oscillator, PLL enabled, CLKO function on
+    /// RA6 (ECPLL).
+    ECPLL,
+    /// `1000` — Internal oscillator, port function on RA6,
+    /// EC used by USB (INTIO).
+    INTIO,
+    /// `1001` — Internal oscillator, CLKO function on RA6,
+    /// EC used by USB (INTCKO).
+    INTCKO,
+    /// `1010` — Internal oscillator, XT used by USB (INTXT).
+    INTXT,
+    /// `1011` — Internal oscillator, HS used by USB (INTHS).
+    INTHS,
+    /// `110x` — HS oscillator (HS).
     HS,
-    /// `0101` — HS, USB clock from primary OSC.
+    /// `111x` — HS oscillator, PLL enabled (HSPLL).
     HSPLL,
-    /// `0110` — RC.
-    RC,
-    /// `0111` — RC IO.
-    RCIO,
-    /// `1000` — INTRC.
-    Intrc,
-    /// `1001` — INTRC IO with SOSC oscillator on T1OSC.
-    IntrcIo,
-    /// Anything not in the documented table.
-    Reserved(u8),
 }
 
 impl FoscMode {
     pub const fn from_bits(bits: u8) -> Self {
         match bits & 0xF {
-            0b0000 => FoscMode::XT,
-            0b0001 => FoscMode::XTPLL,
-            0b0010 => FoscMode::EC,
-            0b0011 => FoscMode::ECPIO,
-            0b0100 => FoscMode::HS,
-            0b0101 => FoscMode::HSPLL,
-            0b0110 => FoscMode::RC,
-            0b0111 => FoscMode::RCIO,
-            0b1000 => FoscMode::Intrc,
-            0b1001 => FoscMode::IntrcIo,
-            other => FoscMode::Reserved(other as u8),
+            0b0000 | 0b0001 => FoscMode::XT,
+            0b0010 | 0b0011 => FoscMode::XTPLL,
+            0b0100 => FoscMode::ECIO,
+            0b0101 => FoscMode::EC,
+            0b0110 => FoscMode::ECPIO,
+            0b0111 => FoscMode::ECPLL,
+            0b1000 => FoscMode::INTIO,
+            0b1001 => FoscMode::INTCKO,
+            0b1010 => FoscMode::INTXT,
+            0b1011 => FoscMode::INTHS,
+            0b1100 | 0b1101 => FoscMode::HS,
+            0b1110 | 0b1111 => FoscMode::HSPLL,
+            _ => unreachable!(),
         }
     }
 }
@@ -194,10 +203,17 @@ impl Config {
 
     /// PWRTEN (CONFIG2L bit 0) — Power-up Timer enable.
     /// Note: CONFIG2L's PWRTEN is *active-low* in the Microchip
-    /// datasheet (PWRTEN# = 0 enables PWRT).  Returning the
-    /// raw bit lets the caller apply the polarity it expects.
+    /// datasheet (`1` = PWRT disabled, `0` = PWRT enabled).
+    /// Returning the raw bit lets the caller apply the polarity
+    /// it expects; see [`Self::pwrt_enabled`] for the inverted
+    /// view.
     pub const fn pwrten_bit(&self) -> bool {
         (self.raw[2] >> 0) & 1 == 1
+    }
+
+    /// `true` when PWRT is enabled (CONFIG2L bit 0 = 0).
+    pub const fn pwrt_enabled(&self) -> bool {
+        !self.pwrten_bit()
     }
 
     /// BOREN[1:0] (CONFIG2L bits 2..1) — Brown-Out Reset
@@ -210,6 +226,13 @@ impl Config {
     /// voltage selector.
     pub const fn borv(&self) -> u8 {
         (self.raw[2] >> 3) & 0b11
+    }
+
+    /// VREGEN (CONFIG2L bit 5) — USB Internal Voltage Regulator
+    /// Enable.  `true` = USB voltage regulator on; `false` =
+    /// off.  Only meaningful on the 2455 (the K20 has no USB).
+    pub const fn vregen(&self) -> bool {
+        (self.raw[2] >> 5) & 1 == 1
     }
 
     // ------- CONFIG2H (byte 3) -------
@@ -273,9 +296,22 @@ impl Config {
         (self.raw[6] >> 6) & 1 == 1
     }
 
-    /// DEBUG (CONFIG4L bit 7) — Background-Debug enable.
-    pub const fn debug(&self) -> bool {
+    /// DEBUG (CONFIG4L bit 7) — *active-low* Background
+    /// Debugger control.  Per DS39632E §22 / Register 25-7,
+    /// `1` = background debugger DISABLED (RB6/RB7 free as
+    /// general-purpose I/O); `0` = debugger ENABLED (RB6/RB7
+    /// dedicated to ICD).  Production firmware ships with
+    /// DEBUG=1 (debugger off).  Returns the raw bit; use
+    /// [`Self::debugger_enabled`] for the polarity-corrected
+    /// view.
+    pub const fn debug_bit(&self) -> bool {
         (self.raw[6] >> 7) & 1 == 1
+    }
+
+    /// `true` when the on-chip background debugger is enabled
+    /// (CONFIG4L bit 7 = 0).
+    pub const fn debugger_enabled(&self) -> bool {
+        !self.debug_bit()
     }
 
     // ------- CONFIG5L/H, CONFIG6L/H, CONFIG7L/H (bytes 8-13) -------
@@ -289,50 +325,39 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// CONFIG bytes that match the V3.2 MAIN release as
-    /// observed in the assembled hex (not a perfect match
-    /// — just plausible representative values for the parser
-    /// tests).
-    const V32_MAIN_LIKE: [u8; CONFIG_BYTES] = [
-        // CONFIG1L: PLLDIV=001, CPUDIV=00, USBDIV=0
-        0x01,
-        // CONFIG1H: FOSC=ECPIO (0011), FCMEN=0, IESO=0
-        0x03,
-        // CONFIG2L: BOREN=11 (always on), BORV=00, PWRTEN=0
-        0b0000_0110,
-        // CONFIG2H: WDTEN=0, WDTPS=1111
-        0b0001_1110,
-        // CONFIG3L (unused on 2455)
-        0x00,
-        // CONFIG3H: MCLRE=1, LPT1OSC=0, PBADEN=0, CCP2MX=1
-        0b1000_0001,
-        // CONFIG4L: STVREN=1, LVP=0, XINST=0, DEBUG=1
-        0b1000_0001,
-        // CONFIG4H (unused)
-        0x00,
-        // CONFIG5L (no code protect)
-        0x0F,
-        // CONFIG5H
-        0xC0,
-        // CONFIG6L
-        0x0F,
-        // CONFIG6H
-        0xE0,
-        // CONFIG7L
-        0x0F,
-        // CONFIG7H
-        0x40,
+    /// Exact CONFIG bytes the V3.2 MAIN release assembles
+    /// (`src/dlcp_fw/asm/dlcp_main_v32.asm`, `__CONFIG`
+    /// directives at lines 161-172).  This is the canonical
+    /// reference — keeping the test vector in lock-step with
+    /// the deployed firmware catches FOSC / STVREN / DEBUG /
+    /// MCLRE polarity bugs immediately.
+    const V32_MAIN: [u8; CONFIG_BYTES] = [
+        0x3A, // CONFIG1L: PLLDIV=010, CPUDIV=11, USBDIV=1
+        0x46, // CONFIG1H: FOSC=ECPIO (0110), FCMEN=1, IESO=0
+        0x3E, // CONFIG2L: PWRTEN=0, BOREN=11, BORV=11, VREGEN=1
+        0x1E, // CONFIG2H: WDTEN=0, WDTPS=1111
+        0x00, // CONFIG3L (unused on 2455)
+        0x00, // CONFIG3H: MCLRE=0, LPT1OSC=0, PBADEN=0, CCP2MX=0
+        0x80, // CONFIG4L: DEBUG=1 (off), XINST=0, LVP=0, STVREN=0
+        0x00, // CONFIG4H (unused)
+        0x0F, // CONFIG5L (no code protect)
+        0xC0, // CONFIG5H
+        0x0F, // CONFIG6L
+        0xA0, // CONFIG6H
+        0x0F, // CONFIG7L
+        0x40, // CONFIG7H
     ];
 
     fn cfg() -> Config {
-        Config::from_bytes(V32_MAIN_LIKE)
+        Config::from_bytes(V32_MAIN)
     }
 
     // ------- CONFIG1L -------
 
     #[test]
     fn plldiv_lifted_from_low_3_bits() {
-        assert_eq!(cfg().plldiv(), 0b001);
+        // V3.2 MAIN: CONFIG1L bits 2..0 = 010.
+        assert_eq!(cfg().plldiv(), 0b010);
     }
 
     #[test]
@@ -353,29 +378,31 @@ mod tests {
 
     #[test]
     fn fosc_decodes_each_documented_encoding() {
-        let mut c = V32_MAIN_LIKE;
+        let mut c = V32_MAIN;
+        // Per DS39632E §22 / Register 25-2.  All 16 four-bit
+        // encodings are documented; XT / XTPLL / HS / HSPLL
+        // collapse pairs of consecutive encodings.
         for (bits, expected) in [
             (0b0000, FoscMode::XT),
-            (0b0001, FoscMode::XTPLL),
-            (0b0010, FoscMode::EC),
-            (0b0011, FoscMode::ECPIO),
-            (0b0100, FoscMode::HS),
-            (0b0101, FoscMode::HSPLL),
-            (0b0110, FoscMode::RC),
-            (0b0111, FoscMode::RCIO),
-            (0b1000, FoscMode::Intrc),
-            (0b1001, FoscMode::IntrcIo),
+            (0b0001, FoscMode::XT),
+            (0b0010, FoscMode::XTPLL),
+            (0b0011, FoscMode::XTPLL),
+            (0b0100, FoscMode::ECIO),
+            (0b0101, FoscMode::EC),
+            (0b0110, FoscMode::ECPIO),
+            (0b0111, FoscMode::ECPLL),
+            (0b1000, FoscMode::INTIO),
+            (0b1001, FoscMode::INTCKO),
+            (0b1010, FoscMode::INTXT),
+            (0b1011, FoscMode::INTHS),
+            (0b1100, FoscMode::HS),
+            (0b1101, FoscMode::HS),
+            (0b1110, FoscMode::HSPLL),
+            (0b1111, FoscMode::HSPLL),
         ] {
             c[1] = bits;
             assert_eq!(Config::from_bytes(c).fosc(), expected);
         }
-    }
-
-    #[test]
-    fn fosc_reserved_encoding_surfaces_as_reserved() {
-        let mut c = V32_MAIN_LIKE;
-        c[1] = 0b1111;
-        assert_eq!(Config::from_bytes(c).fosc(), FoscMode::Reserved(0b1111));
     }
 
     #[test]
@@ -406,10 +433,20 @@ mod tests {
     #[test]
     fn borv_and_pwrten() {
         let c = Config::from_bytes([0, 0, 0b0001_1001, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        // PWRTEN bit 0 = 1; BOREN bits 2..1 = 0b00; BORV bits 4..3 = 0b11.
+        // PWRTEN bit 0 = 1 (active-low ⇒ PWRT disabled);
+        // BOREN bits 2..1 = 0b00; BORV bits 4..3 = 0b11.
         assert!(c.pwrten_bit());
+        assert!(!c.pwrt_enabled());
         assert_eq!(c.boren(), BorenMode::Disabled);
         assert_eq!(c.borv(), 0b11);
+    }
+
+    #[test]
+    fn vregen_lifted_from_config2l_bit_5() {
+        let on = Config::from_bytes([0, 0, 0b0010_0000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let off = Config::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(on.vregen());
+        assert!(!off.vregen());
     }
 
     // ------- CONFIG2H WDT -------
@@ -440,7 +477,7 @@ mod tests {
     #[test]
     fn stvren_drives_stack_reset_policy() {
         // STVREN=1 (bit 0 set): stack overflow/underflow triggers reset.
-        let mut c = V32_MAIN_LIKE;
+        let mut c = V32_MAIN;
         c[6] = 0b0000_0001;
         assert!(Config::from_bytes(c).stvren());
         // STVREN=0: latch only.
@@ -449,19 +486,27 @@ mod tests {
     }
 
     #[test]
-    fn xinst_disabled_for_v32_like_config() {
+    fn xinst_disabled_for_v32_main() {
         // V3.2 MAIN firmware uses the legacy 75-instruction set,
-        // so XINST must be 0.  The reference CONFIG4L value
-        // 0b1000_0001 has bit 6 (XINST) clear.
-        let c = cfg();
-        assert!(!c.xinst());
+        // so XINST must be 0.  CONFIG4L = 0x80 has bit 6 clear.
+        assert!(!cfg().xinst());
     }
 
     #[test]
-    fn debug_bit_lifted_from_config4l_bit_7() {
+    fn debug_bit_polarity_per_datasheet() {
+        // V3.2 MAIN: CONFIG4L = 0x80 → bit 7 (DEBUG) = 1, which
+        // per DS39632E means the on-chip debugger is *disabled*.
         let c = cfg();
-        // Reference CONFIG4L = 0b1000_0001 → DEBUG=1.
-        assert!(c.debug());
+        assert!(c.debug_bit(), "raw DEBUG bit is set in V3.2 MAIN");
+        assert!(!c.debugger_enabled(), "DEBUG=1 ⇒ debugger off");
+
+        // Flip CONFIG4L bit 7 to 0 and confirm the polarity-corrected
+        // accessor flips with it.
+        let mut bytes = V32_MAIN;
+        bytes[6] &= 0x7F;
+        let c = Config::from_bytes(bytes);
+        assert!(!c.debug_bit());
+        assert!(c.debugger_enabled());
     }
 
     // ------- raw / round-trip -------
@@ -469,24 +514,38 @@ mod tests {
     #[test]
     fn raw_bytes_round_trip() {
         let c = cfg();
-        assert_eq!(c.raw(), &V32_MAIN_LIKE);
+        assert_eq!(c.raw(), &V32_MAIN);
     }
 
-    // ------- aggregate sanity test mirroring V3.2-like config -------
+    // ------- aggregate sanity test mirroring V3.2 config -------
 
     #[test]
-    fn v32_like_config_parses_consistently() {
+    fn v32_main_config_parses_consistently() {
+        // Cross-check every accessor against the canonical V3.2
+        // MAIN bytes.  This is the parser's "real-firmware" gate
+        // — if the bit-shift math drifts from DS39632E, this test
+        // breaks first.
         let c = cfg();
-        assert_eq!(c.plldiv(), 0b001);
-        assert_eq!(c.cpudiv(), 0b00);
-        assert!(!c.usbdiv());
+        assert_eq!(c.plldiv(), 0b010);
+        assert_eq!(c.cpudiv(), 0b11);
+        assert!(c.usbdiv());
         assert_eq!(c.fosc(), FoscMode::ECPIO);
-        assert!(!c.fcmen());
+        assert!(c.fcmen());
         assert!(!c.ieso());
+        assert!(c.pwrt_enabled());
         assert_eq!(c.boren(), BorenMode::HardwareAlways);
+        assert_eq!(c.borv(), 0b11);
+        assert!(c.vregen());
         assert!(!c.wdten());
-        assert!(c.mclre());
-        assert!(c.stvren());
+        assert_eq!(c.wdtps(), 0b1111);
+        assert!(!c.mclre());
+        assert!(!c.lpt1osc());
+        assert!(!c.pbaden());
+        assert!(!c.ccp2mx());
+        assert!(!c.stvren(), "V3.2 MAIN ships with stack-reset disabled");
+        assert!(!c.lvp());
         assert!(!c.xinst());
+        assert!(c.debug_bit(), "raw bit is set");
+        assert!(!c.debugger_enabled(), "polarity-corrected: debugger off");
     }
 }
