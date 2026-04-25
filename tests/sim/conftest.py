@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.paths import (
+    ARTIFACTS_DIR,
     GPSIM_XTC_BIN_DIR,
     GPSIM_XTC_BINARY,
     PATCHED_CONTROL_HEX,
@@ -34,6 +37,102 @@ if GPSIM_XTC_BIN_DIR.exists():
     os.environ["PATH"] = f"{GPSIM_XTC_BIN_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
 if GPSIM_XTC_BINARY.exists() and "DLCP_GPSIM_BIN" not in os.environ:
     os.environ["DLCP_GPSIM_BIN"] = str(GPSIM_XTC_BINARY)
+
+
+# ---------------------------------------------------------------------------
+# `--capture-ground-truth` plugin (sim-rewrite Phase 0).  Spec: §4 +
+# docs/SIM_REWRITE_RUST_SPEC.md.  P0.1 lays down the directory plumbing
+# and a per-test summary.json; P0.2-P0.4 fill in stimulus, RAM/SFR
+# snapshots, UART byte streams, LCD raster, and EEPROM dumps.
+# ---------------------------------------------------------------------------
+
+GROUND_TRUTH_ROOT = ARTIFACTS_DIR / "ground_truth"
+
+
+def _ground_truth_dirname(nodeid: str) -> str:
+    """Map a pytest nodeid to the canonical ground-truth directory name.
+
+    Format: ``<module-stem>__<function-and-params>`` with characters
+    that aren't safe on POSIX/HFS+ filenames replaced.  Examples:
+
+      tests/sim/test_v17_chain.py::test_v17_stock_v16b_chain_reaches_display
+        -> test_v17_chain__test_v17_stock_v16b_chain_reaches_display
+
+      tests/sim/test_v32_release_flash.py::test_warns_on_downgrade[stock_v23]
+        -> test_v32_release_flash__test_warns_on_downgrade_stock_v23
+    """
+    file_part, _, rest = nodeid.partition("::")
+    stem = Path(file_part).stem
+    sanitized = (
+        rest.replace("::", "__")
+            .replace("/", "_")
+            .replace("[", "_")
+            .replace("]", "")
+    )
+    return f"{stem}__{sanitized}" if sanitized else stem
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--capture-ground-truth",
+        action="store_true",
+        default=False,
+        help=(
+            "Record per-test ground-truth fixtures under "
+            f"{GROUND_TRUTH_ROOT.relative_to(ARTIFACTS_DIR.parent)}/<test_id>/. "
+            "Used by the sim-rewrite Phase 0 capture pipeline."
+        ),
+    )
+
+
+def _capture_enabled(config: pytest.Config) -> bool:
+    return bool(config.getoption("--capture-ground-truth"))
+
+
+def _ground_truth_dir_for(item: pytest.Item) -> Path:
+    return GROUND_TRUTH_ROOT / _ground_truth_dirname(item.nodeid)
+
+
+@pytest.fixture
+def ground_truth_dir(request: pytest.FixtureRequest) -> Path | None:
+    """Per-test fixture: returns the directory where ground-truth
+    artifacts for the current test should be written, or ``None`` if
+    ``--capture-ground-truth`` is not set.
+
+    Created lazily so tests that don't opt in pay no I/O cost.  The
+    directory persists across pytest invocations so an external runner
+    (``scripts/capture_gpsim_ground_truth.py``) can sweep
+    ``artifacts/ground_truth/`` and treat each subdirectory as one
+    captured fixture.
+    """
+    if not _capture_enabled(request.config):
+        return None
+    out_dir = _ground_truth_dir_for(request.node)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    outcome = yield
+    if not _capture_enabled(item.config):
+        return
+    report = outcome.get_result()
+    if report.when != "call" and not (report.when == "setup" and report.outcome == "skipped"):
+        return
+
+    out_dir = _ground_truth_dir_for(item)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "nodeid": item.nodeid,
+        "outcome": report.outcome,
+        "when": report.when,
+        "duration_sec": getattr(report, "duration", None),
+        "longrepr": str(report.longrepr) if report.failed else None,
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "schema_version": 1,
+    }
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 
 @pytest.fixture(scope="session")

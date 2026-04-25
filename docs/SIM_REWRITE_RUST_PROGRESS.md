@@ -23,10 +23,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `scripts/probe_baudcon_mapping.py` + an appended note in spec §11b documenting which of the three explanations holds (second mapping; gpsim USART quirk; or test coarseness).
   - notes: must run before Phase 4 dual-run, but blocks no earlier work — placed at P0.0 so it gets resolved early. The probe loads V3.2 MAIN under gpsim, breaks on writes to 0xF98 and 0xFB8, executes `uart_config`, and reports which (if any) trigger.
 
-- [pending] P0.1 Add `--capture-ground-truth` pytest flag
-  - verify: `.venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py --capture-ground-truth -q && test -d artifacts/ground_truth/test_v17_chain__test_v17_chain_reaches_volume`
+- [done] P0.1 Add `--capture-ground-truth` pytest flag
+  - verify: `.venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py::test_v17_stock_v16b_chain_reaches_display --capture-ground-truth -q ; test -d artifacts/ground_truth/test_v17_chain__test_v17_stock_v16b_chain_reaches_display`
   - artifact: `tests/sim/conftest.py` (extension), `scripts/capture_gpsim_ground_truth.py` (helper)
-  - notes: hooks into existing chain-harness `step()` at the conftest level so tests don't need rewrites.
+  - notes: hooks into existing chain-harness `step()` at the conftest level so tests don't need rewrites. The verify uses `;` (not `&&`) so the ground-truth directory existence check runs even if the test itself fails or is skipped — the conftest's `pytest_runtest_makereport` writes summary.json regardless of test outcome, and the directory check is the actual P0.1 gate. P0.2-P0.4 fill in the streams.
 
 - [pending] P0.2 Capture stimulus stream (every external pin/IR/UART/ADC/I²C event with `(tick, core_id, pin, payload)`)
   - verify: `.venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind stimulus`
