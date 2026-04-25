@@ -123,27 +123,46 @@ fn read_f(core: &mut Core, f: u8, a: Access) -> u8 {
 /// Read one byte from a 12-bit data-memory address.  If the
 /// address is one of the 15 FSR virtual slots
 /// (INDFn / POSTINCn / POSTDECn / PREINCn / PLUSWn), the access
-/// is redirected to `*FSRn` and the FSR is mutated according to
-/// the mode (per DS39632E §5.5.4).  Otherwise it's a plain
+/// is redirected to `*FSRn` and the FSR side effect commits
+/// after the read per DS39632E §5.5.4.  Otherwise it's a plain
 /// `Memory::read_raw`.
 fn read_addr(core: &mut Core, addr: Address) -> u8 {
-    if let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) {
-        let target = apply_fsr_mode(core, fsr, mode);
-        return core.memory.read_raw(target);
+    let (target, pending) = resolve_target_no_commit(core, addr);
+    let value = core.memory.read_raw(target);
+    if let Some((fsr, new_fsr)) = pending {
+        commit_fsr(core, fsr, new_fsr);
     }
-    core.memory.read_raw(addr)
+    value
 }
 
-/// Resolve an FSR virtual-slot access into its underlying RAM
-/// target and apply the addressing mode's FSR side effect (post-
-/// inc/dec, pre-inc) where applicable.  PLUSW and Indirect leave
-/// FSRn untouched.  All FSRn arithmetic wraps modulo 0x1000
-/// (12-bit pointer), and PLUSW sign-extends W as `i8`.
-fn apply_fsr_mode(core: &mut Core, fsr: FsrIndex, mode: FsrAccessMode) -> Address {
-    let l_addr = Address::from_raw(fsr_low_addr(fsr));
-    let h_addr = Address::from_raw(fsr_high_addr(fsr));
-    let cur_l = core.memory.read_raw(l_addr);
-    let cur_h = core.memory.read_raw(h_addr) & 0x0F;
+/// Pending FSR mutation: `(fsr, new_value)` where `new_value` is
+/// what FSRn should hold after the instruction's operand access
+/// completes.  Returned by [`resolve_target_no_commit`] so RMW
+/// instructions can take the mutation once at end-of-instruction
+/// rather than per memory access (per gpsim's `fsr_state`
+/// behaviour).
+type PendingFsrUpdate = (FsrIndex, u16);
+
+/// Resolve an operand address into its underlying RAM target
+/// without mutating FSRn.  Returns `(target, Some(fsr, new))`
+/// when `addr` is a virtual FSR slot whose mode mutates the
+/// pointer; `Some` is the deferred mutation the caller must
+/// commit (via [`commit_fsr`]) exactly once after all reads /
+/// writes for this instruction's operand have completed.
+///
+/// PLUSW and Indirect return `Some(_, cur)` only when the read
+/// of `read_w` (PLUSW only) or any other side effect happened,
+/// but FSRn itself is unchanged -- the caller can elide the
+/// commit for those cases (a `cur` write is a no-op anyway).
+fn resolve_target_no_commit(
+    core: &mut Core,
+    addr: Address,
+) -> (Address, Option<PendingFsrUpdate>) {
+    let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) else {
+        return (addr, None);
+    };
+    let cur_l = core.memory.read_raw(Address::from_raw(fsr_low_addr(fsr)));
+    let cur_h = core.memory.read_raw(Address::from_raw(fsr_high_addr(fsr))) & 0x0F;
     let cur = ((cur_h as u16) << 8) | cur_l as u16;
 
     let (target, new_fsr) = match mode {
@@ -162,12 +181,19 @@ fn apply_fsr_mode(core: &mut Core, fsr: FsrIndex, mode: FsrAccessMode) -> Addres
         }
     };
 
-    if new_fsr != cur {
-        core.memory.write_raw(l_addr, new_fsr as u8);
-        core.memory.write_raw(h_addr, ((new_fsr >> 8) as u8) & 0x0F);
-    }
+    let pending = if new_fsr != cur { Some((fsr, new_fsr)) } else { None };
+    (Address::from_raw(target), pending)
+}
 
-    Address::from_raw(target)
+/// Commit a deferred FSR mutation produced by
+/// [`resolve_target_no_commit`].
+fn commit_fsr(core: &mut Core, fsr: FsrIndex, new_fsr: u16) {
+    core.memory
+        .write_raw(Address::from_raw(fsr_low_addr(fsr)), new_fsr as u8);
+    core.memory.write_raw(
+        Address::from_raw(fsr_high_addr(fsr)),
+        ((new_fsr >> 8) as u8) & 0x0F,
+    );
 }
 
 /// Mask away unimplemented bits when writing to an SFR that has
@@ -234,12 +260,12 @@ fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
 /// Write `value` to a 12-bit data-memory address, applying
 /// `sfr_write_mask` so unimplemented bits are stripped before
 /// the byte lands in the backing array.  Used by MOVFF / LFSR
-/// whose operands carry the absolute address directly rather
-/// than going through the f-operand resolver.
+/// and the dispatch arms whose operands carry the absolute
+/// address directly.
 ///
 /// FSR virtual slots (INDFn / POSTINCn / POSTDECn / PREINCn /
-/// PLUSWn) are redirected to `*FSRn` and trigger the
-/// appropriate FSRn mutation per DS39632E §5.5.4.  The
+/// PLUSWn) are redirected to `*FSRn` and the FSR side effect
+/// (POSTINC / POSTDEC / PREINC) commits after the write.  The
 /// `sfr_write_mask` is applied to the *underlying* target, not
 /// the virtual slot's address.
 ///
@@ -252,14 +278,12 @@ fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
 /// doesn't combine those, so it's deferred (tracked via
 /// TaskCreate #14's neighbour).
 fn write_addr(core: &mut Core, addr: Address, value: u8) {
-    if let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) {
-        let target = apply_fsr_mode(core, fsr, mode);
-        core.memory
-            .write_raw(target, value & sfr_write_mask(target.as_u16()));
-        return;
-    }
+    let (target, pending) = resolve_target_no_commit(core, addr);
     core.memory
-        .write_raw(addr, value & sfr_write_mask(addr.as_u16()));
+        .write_raw(target, value & sfr_write_mask(target.as_u16()));
+    if let Some((fsr, new_fsr)) = pending {
+        commit_fsr(core, fsr, new_fsr);
+    }
 }
 
 /// Write `value` to the destination implied by a byte-oriented
@@ -420,17 +444,38 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(1)
         }
         Instruction::Movf { d, a, f } => {
-            // MOVF reads f and writes it to the destination (d).
-            // STATUS Z / N reflect the moved byte regardless of d:
-            // even `MOVF f, F` (a no-op move) updates the flags --
-            // the firmware uses this idiom to test a register
-            // without disturbing W.  When d=F and f resolves to
-            // STATUS itself, DS39632E §5.3.6 specifies that the
-            // result write is dropped so the flag update stands;
-            // `write_dest_preserve_status_flags` enforces that.
-            let v = read_f(core, f, a);
+            // MOVF f, d, a -- read f, set Z/N, write to W (d=W)
+            // or back to f (d=F).
+            //
+            // FSR mutation contract (per gpsim's `fsr_state` +
+            // DS39632E §5.5.4): the FSR side effect commits
+            // exactly ONCE per instruction, AFTER all reads and
+            // writes for the operand have finished.  Naively
+            // chaining `read_f` + `write_addr` would commit
+            // twice for d=F, advancing the FSR by 2 instead of
+            // 1.  So we resolve the operand once, do read +
+            // (conditional) write against the same target, and
+            // commit the pending mutation once at the end.
+            //
+            // STATUS-skip per §5.3.6 still applies: when d=F
+            // and the resolved target is STATUS, the result
+            // write is dropped so the flag update stands.
+            let operand_addr = resolve_f(core, f, a);
+            let (target, pending) = resolve_target_no_commit(core, operand_addr);
+            let v = core.memory.read_raw(target);
             set_status_zn(core, v);
-            write_dest_preserve_status_flags(core, d, f, a, v);
+            match d {
+                Dest::W => write_w(core, v),
+                Dest::F => {
+                    if target.as_u16() != STATUS_ADDR {
+                        core.memory
+                            .write_raw(target, v & sfr_write_mask(target.as_u16()));
+                    }
+                }
+            }
+            if let Some((fsr, new_fsr)) = pending {
+                commit_fsr(core, fsr, new_fsr);
+            }
             core.advance_cycles(1);
             Ok(1)
         }
@@ -1102,6 +1147,46 @@ mod tests {
         let fsr1l = core.memory.read_raw(Address::from_raw(0xFE1));
         let fsr1h = core.memory.read_raw(Address::from_raw(0xFE2)) & 0x0F;
         assert_eq!(((fsr1h as u16) << 8) | fsr1l as u16, 0x201);
+    }
+
+    #[test]
+    fn movf_postinc0_to_f_advances_fsr_exactly_once() {
+        // RMW regression: `MOVF POSTINC0, F` is the firmware
+        // idiom "test the byte at *FSR0, then advance FSR0".
+        // Per gpsim's fsr_state model + DS39632E §5.5.4, the
+        // post-increment must happen ONCE per instruction --
+        // not once on read AND once on write.  Naively chaining
+        // read_f + write_addr would advance FSR0 by 2 and write
+        // the byte to the wrong slot.
+        //
+        // MOVF POSTINC0, F, ACCESS:
+        //   bit 9 = d (1 for F), bit 8 = a (0 for ACCESS)
+        //   high6 = 0101 00 = 0x14 → high8 = 0x52
+        //   word1 = 0x52EE.
+        let mut core = k20_core_with_flash(&[0xEE, 0x52]);
+        set_fsr0(&mut core, 0x100);
+        core.memory.write_raw(Address::from_raw(0x100), 0x42);
+        // 0x101 stays default (0); if FSR advances twice, the
+        // byte at 0x100 will be unchanged but 0x101 will get
+        // overwritten with 0x42 -- pin both to catch either.
+        core.memory.write_raw(Address::from_raw(0x101), 0x99);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        // Byte at 0x100 was 0x42 → MOVF f, F writes it back to
+        // 0x100 (the original target).  0x101 must NOT have
+        // been touched.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x100)), 0x42);
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0x101)),
+            0x99,
+            "FSR advanced too far (2 instead of 1) and write hit the wrong slot"
+        );
+        // FSR0 must end at exactly 0x101 (advanced by 1).
+        assert_eq!(read_fsr0(&core), 0x101);
+        // And Z=0 / N=0 since the byte was 0x42 (non-zero, bit 7 clear).
+        assert!(read_status(&core) & STATUS_Z == 0);
+        assert!(read_status(&core) & STATUS_N == 0);
     }
 
     #[test]
