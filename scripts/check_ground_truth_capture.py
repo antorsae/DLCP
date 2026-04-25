@@ -250,17 +250,33 @@ def _check_outputs(dirs: Iterable[Path]) -> list[str]:
 
         # Defense in depth against a partial dump: every harness
         # that produced a uart_tx_<hid>.jsonl must also produce an
-        # eeprom_<hid>.bin (and an lcd_<hid>.txt if it drives an
-        # LCD).  OutputCapture.dump() rolls back partial state on
-        # failure, so this should always hold; if it doesn't,
-        # something is bypassing the rollback path.
-        uart_ids = {_UART_NAME_RE.match(p.name).group(1) for p in uart_files}
-        eeprom_ids = {_EEPROM_NAME_RE.match(p.name).group(1) for p in eeprom_files}
-        for hid in uart_ids - eeprom_ids:
+        # eeprom_<hid>.bin and vice versa.  OutputCapture.dump()
+        # rolls back partial state on failure, so this should
+        # always hold; if it doesn't, something is bypassing the
+        # rollback path.  The set extraction tolerates files whose
+        # names match the glob but not the stricter regex (caught
+        # by the per-stream filename checks below).
+        def _ids(files, regex):
+            out: set[str] = set()
+            for p in files:
+                m = regex.match(p.name)
+                if m:
+                    out.add(m.group(1))
+            return out
+
+        uart_ids = _ids(uart_files, _UART_NAME_RE)
+        eeprom_ids = _ids(eeprom_files, _EEPROM_NAME_RE)
+        for hid in sorted(uart_ids - eeprom_ids):
             errors.append(
                 f"{d.name}: harness {hid!r} has uart_tx_{hid}.jsonl "
                 f"but no eeprom_{hid}.bin (partial OutputCapture "
                 "dump? gpsim died during EEPROM read?)"
+            )
+        for hid in sorted(eeprom_ids - uart_ids):
+            errors.append(
+                f"{d.name}: harness {hid!r} has eeprom_{hid}.bin "
+                f"but no uart_tx_{hid}.jsonl (orphan EEPROM dump? "
+                "stale artifact from a previous run?)"
             )
 
         for path in uart_files:

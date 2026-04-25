@@ -369,10 +369,16 @@ class OutputCapture:
         tx_path = self.out_dir / f"uart_tx_{hid}.jsonl"
         lcd_path = self.out_dir / f"lcd_{hid}.txt"
         eeprom_path = self.out_dir / f"eeprom_{hid}.bin"
+        # Register each path BEFORE the write so a mid-write failure
+        # (disk full, encoding error, etc.) still has the partial
+        # file unlinked by the rollback loop.  Earlier code only
+        # appended on successful completion, which left in-progress
+        # write failures uncleaned.
         written: list[Path] = []
         try:
             tx = harness.tx_frames_snapshot()
             if tx is not None:
+                written.append(tx_path)
                 with tx_path.open("w", encoding="utf-8") as fp:
                     for seq, frame in enumerate(tx):
                         route, cmd, data = frame
@@ -382,15 +388,14 @@ class OutputCapture:
                             "cmd": cmd & 0xFF,
                             "data": data & 0xFF,
                         }, sort_keys=True) + "\n")
-                written.append(tx_path)
 
             lcd = harness.lcd_snapshot()
             if lcd is not None:
                 line0, line1 = lcd
+                written.append(lcd_path)
                 lcd_path.write_text(
                     f"{line0}\n{line1}\n", encoding="utf-8"
                 )
-                written.append(lcd_path)
 
             eeprom = harness.eeprom_snapshot()
             if eeprom is not None:
@@ -399,11 +404,13 @@ class OutputCapture:
                         f"{hid}.eeprom_snapshot() returned {len(eeprom)} "
                         "bytes (expected 256)"
                     )
-                eeprom_path.write_bytes(eeprom)
                 written.append(eeprom_path)
+                eeprom_path.write_bytes(eeprom)
         except Exception:
             # Roll back partial state so a downstream validator can't
-            # be fooled by a half-captured artifact set.
+            # be fooled by a half-captured artifact set.  `written`
+            # may contain paths whose corresponding write was only
+            # partially completed; unlink them too.
             for p in written:
                 try:
                     p.unlink()
