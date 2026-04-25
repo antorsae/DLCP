@@ -51,6 +51,21 @@ if GPSIM_XTC_BINARY.exists() and "DLCP_GPSIM_BIN" not in os.environ:
 GROUND_TRUTH_ROOT = ARTIFACTS_DIR / "ground_truth"
 
 
+def _ground_truth_root() -> Path:
+    """Return the active ground-truth output root.
+
+    Defaults to ``artifacts/ground_truth/`` under the repo, but can
+    be overridden via the ``DLCP_GROUND_TRUTH_OUT`` environment
+    variable.  ``scripts/replay_ground_truth.py`` uses the override
+    to write replayed captures into a tempdir without clobbering
+    the blessed corpus.
+    """
+    override = os.environ.get("DLCP_GROUND_TRUTH_OUT")
+    if override:
+        return Path(override)
+    return GROUND_TRUTH_ROOT
+
+
 _NODEID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -89,7 +104,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help=(
             "Record per-test ground-truth fixtures under "
             f"{GROUND_TRUTH_ROOT.relative_to(ARTIFACTS_DIR.parent)}/<test_id>/. "
-            "Used by the sim-rewrite Phase 0 capture pipeline."
+            "Used by the sim-rewrite Phase 0 capture pipeline.  "
+            "The output root may be overridden via the "
+            "DLCP_GROUND_TRUTH_OUT env var (used by "
+            "scripts/replay_ground_truth.py)."
         ),
     )
 
@@ -99,7 +117,7 @@ def _capture_enabled(config: pytest.Config) -> bool:
 
 
 def _ground_truth_dir_for(item: pytest.Item) -> Path:
-    return GROUND_TRUTH_ROOT / _ground_truth_dirname(item.nodeid)
+    return _ground_truth_root() / _ground_truth_dirname(item.nodeid)
 
 
 @pytest.fixture

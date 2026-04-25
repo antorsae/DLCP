@@ -43,10 +43,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: per-test `uart_tx_<harness_id>.jsonl` (route/cmd/data triplets), `lcd_<harness_id>.txt` (2-line raster, control-only), and `eeprom_<harness_id>.bin` (256 raw bytes), all under `artifacts/ground_truth/<test>/`. Implemented by `OutputCapture` + `OutputCapturable` Protocol in `src/dlcp_fw/sim/ground_truth.py`, `dump_harness_outputs(self)` calls in `GpsimControlHarness.close()` and `MainChainHarness.close()`, and `_check_outputs` in `scripts/check_ground_truth_capture.py`.
   - notes: option-A scope. Drained at harness close() *before* gpsim subprocess teardown so `_read_eeprom_bytes()` can still issue reg() calls. EEPROM read is the dominant cost (~50ms × 256 addr × 3 ops × 2 harnesses ≈ 75s overhead per test); only paid when `--capture-ground-truth` is on. Per-write EEPROM tracking (spec §4 "before/after every write") is **deferred** — a future sub-task could add it via the EECON1.WR write breakpoint, but option A doesn't need it for ISA validation. Empty-stimulus tests are exempt (no harnesses opened, no triplet written).
 
-- [pending] P0.5 Verify replay of every captured fixture matches gpsim output
-  - verify: `.venv_ep0/bin/python scripts/replay_ground_truth.py --all`
-  - artifact: `scripts/replay_ground_truth.py`
-  - notes: regression safety — ensures fixtures are reproducible. Script must exit 0 on success, non-zero on any divergence.
+- [done] P0.5 Verify replay of every captured fixture matches gpsim output
+  - verify: `rm -rf artifacts/ground_truth && .venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py::test_v17_stock_v16b_blackout_wake_shows_waiting --capture-ground-truth -q && .venv_ep0/bin/python scripts/replay_ground_truth.py --all`
+  - artifact: `scripts/replay_ground_truth.py`, plus `DLCP_GROUND_TRUTH_OUT` env-var override path through `tests/sim/conftest.py` (`_ground_truth_root()`).
+  - notes: approach B from the planning discussion — re-runs each captured test via pytest with the conftest output path overridden into a tempdir, then bit-exact diffs against the blessed corpus. Stimulus diff filters `wall_time` (run-local). Snapshots and outputs (UART/LCD/EEPROM) are bit-exact. summary.json is not diffed (carries run-local timestamps and durations). Verify takes ~7 min (217s capture + 217s replay for the blackout-wake test); a divergence dumps the failing replay capture to `artifacts/sim_rewrite_divergences/P0.5__<test>__replay/` for post-hoc inspection. Approach A (standalone JSONL replay without pytest) is the obvious follow-up if/when the Rust replayer needs harness-construction-from-stream — out of scope for P0.5.
 
 - [pending] P0.gate Run phase-0 gate
   - verify: `.venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 0`
