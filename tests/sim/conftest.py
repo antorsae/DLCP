@@ -169,8 +169,17 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     summary.setdefault("schema_version", 1)
     phases = summary.setdefault("phases", {})
 
+    # pytest's TestReport.outcome is one of {"passed", "failed",
+    # "skipped"}; setup-phase failures are what pytest classifies as
+    # an "error" (the `E` in `-v` output) rather than a regular
+    # test failure.  Translate setup-failed -> error here so the
+    # aggregator can distinguish the two.
+    phase_outcome = report.outcome
+    if report.when == "setup" and report.outcome == "failed":
+        phase_outcome = "error"
+
     phases[report.when] = {
-        "outcome": report.outcome,
+        "outcome": phase_outcome,
         "duration_sec": getattr(report, "duration", None),
         "longrepr": str(report.longrepr) if report.failed else None,
     }
