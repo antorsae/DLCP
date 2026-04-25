@@ -65,15 +65,33 @@ pub enum ExecError {
 /// Encodings (DS39632E §26):
 ///   - MOVFF: `1100 ffff ffff ffff`         → word1 high4 = 0xC
 ///   - CALL : `1110 110s kkkk kkkk`         → word1 high8 ∈ {0xEC, 0xED}
-///   - LFSR : `1110 1110 00ff kkkk`         → word1 high8 = 0xEE
+///   - LFSR : `1110 1110 00ff kkkk`, with
+///              bits 7..6 = 00 AND
+///              bits 5..4 ∈ {00, 01, 10}    → only a *subset* of 0xEE prefixes
 ///   - GOTO : `1110 1111 kkkk kkkk`         → word1 high8 = 0xEF
+///
+/// LFSR's stricter shape matters because the decoder rejects
+/// invalid `0xEE` prefixes as `Instruction::Reserved` with
+/// `byte_count=2` (single-word).  A naive `high8 == 0xEE`
+/// predicate would over-match (e.g. `0xEE30`, `0xEE40`,
+/// `0xEEFF`) and falsely surface PcOutOfBounds on partial fetch
+/// where the correct outcome is "decode as Reserved".
 const fn opcode_needs_word2(word1: u16) -> bool {
     let high4 = (word1 >> 12) & 0xF;
     if high4 == 0xC {
         return true;
     }
     let high8 = (word1 >> 8) & 0xFF;
-    matches!(high8, 0xEC | 0xED | 0xEE | 0xEF)
+    match high8 {
+        0xEC | 0xED | 0xEF => true, // CALL / GOTO -- always 2-word.
+        0xEE => {
+            // LFSR validity: word1 reserved bits must be clear,
+            // and the FSR index field (bits 5..4) must encode
+            // FSR0 / FSR1 / FSR2, not the reserved 0b11.
+            (word1 & 0x00C0) == 0 && ((word1 >> 4) & 0b11) != 0b11
+        }
+        _ => false,
+    }
 }
 
 /// Step the core by one instruction.  Returns the Tcy cost of
@@ -273,11 +291,15 @@ mod tests {
 
     #[test]
     fn opcode_needs_word2_predicate_matches_documented_two_word_set() {
-        // Positive: MOVFF / CALL / LFSR / GOTO prefixes.
+        // Positive: MOVFF / CALL / valid-LFSR / GOTO prefixes.
         for w in [
             0xC000, 0xCFFF, // MOVFF range (high4 = C)
             0xEC00, 0xED00, // CALL (high8 = EC / ED)
-            0xEE00, 0xEEFF, // LFSR (high8 = EE)
+            // LFSR: word1 = 1110 1110 00ff kkkk where ff ∈ {00, 01, 10}.
+            0xEE00, // LFSR FSR0, k=0
+            0xEE0F, // LFSR FSR0, k[11:8] = 0xF
+            0xEE1A, // LFSR FSR1, k[11:8] = 0xA
+            0xEE2C, // LFSR FSR2, k[11:8] = 0xC
             0xEF00, 0xEFFF, // GOTO (high8 = EF)
         ] {
             assert!(
@@ -286,17 +308,33 @@ mod tests {
             );
         }
 
-        // Negative: NOP, MOVLW, BRA, RCALL, conditional branches,
-        // bit-oriented ops -- all single-word.
+        // Negative set, three groups:
+        //
+        //   1. Genuinely-single-word opcodes that share none of
+        //      the predicate's high-bit prefixes.
+        //   2. The 0xE8..0xEB unallocated range -- decoder
+        //      produces Reserved with byte_count = 2.
+        //   3. 0xEE-prefixed words that fail LFSR validity --
+        //      the decoder also rejects these as Reserved with
+        //      byte_count = 2, so the predicate must mirror.
         for w in [
+            // Group 1: single-word ops elsewhere in the ISA.
             0x0000, // NOP
             0x0E42, // MOVLW 0x42
             0xD000, // BRA
             0xD800, // RCALL
             0xE000, 0xE700, // BZ..BNN
-            0xE800, 0xEB00, // unallocated 0xE8..0xEB (decode → Reserved, 1-word)
             0x6E00, // MOVWF
             0x9000, // BCF
+            // Group 2: unallocated 0xE8..0xEB.
+            0xE800, 0xEB00,
+            // Group 3: 0xEE prefixes the decoder rejects as
+            // Reserved.
+            0xEE40, // bits 7..6 = 01 (reserved)
+            0xEE80, // bits 7..6 = 10 (reserved)
+            0xEEC0, // bits 7..6 = 11 (reserved)
+            0xEE30, // bits 5..4 = 11 (FSR index = 0b11, invalid)
+            0xEEFF, // bits 7..6 = 11 AND ff = 11 (doubly reserved)
         ] {
             assert!(
                 !opcode_needs_word2(w),
