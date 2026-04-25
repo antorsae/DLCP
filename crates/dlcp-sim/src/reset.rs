@@ -73,15 +73,19 @@ pub enum ResetSource {
     /// §5.4.2 says STKFUL is cleared only by POR).
     BrownOut,
     /// External MCLR.  RCON.TO is forced to 1; other RCON bits
-    /// preserved; stack state preserved.
+    /// preserved.  Stack pointer is reset to 0 per DS39632E
+    /// §5.4 ("On Reset, the Stack Pointer value will be zero")
+    /// while sticky flags STKFUL/STKUNF and slot data are
+    /// preserved (Table 4-1: STKFUL=u, STKUNF=u for MCLR).
     Mclr,
     /// Watchdog Time-out reset (not the wake-from-sleep case;
     /// see DS39632E §25.2).  RCON.TO forced to 0; other bits
-    /// preserved.
+    /// preserved.  Stack pointer reset to 0; flags + slot data
+    /// preserved (same as MCLR).
     Wdt,
     /// `RESET` instruction.  RCON.RI forced to 0; other bits
-    /// preserved; stack state preserved (PIC18 RESET does not
-    /// clear the stack).
+    /// preserved.  Stack pointer reset to 0; flags + slot data
+    /// preserved (same as MCLR).
     ResetInstruction,
     /// Stack Full Reset, fires only when STVREN=1 and a CALL/
     /// RCALL/interrupt push fills the 31st slot.  STKPTR depth
@@ -263,12 +267,6 @@ mod tests {
         let (mut core, mut stack) = fresh_core_and_stack();
         stack.push(0x4576);
         stack.push(0x4FE0);
-        // Force STKUNF to be set so we can verify it survives.
-        let _ = {
-            let mut s = Stack::new();
-            s.pop(); // sets STKUNF
-            s
-        };
         apply_reset(&mut core, &mut stack, ResetSource::Mclr);
         assert_eq!(stack.depth(), 0);
         // Slot data preserved — firmware can pull stored bytes
@@ -276,6 +274,27 @@ mod tests {
         stack.write_stkptr(2);
         assert_eq!(stack.depth(), 2);
         assert_eq!(stack.top(), 0x4FE0);
+    }
+
+    #[test]
+    fn mclr_preserves_underflow_flag() {
+        // STKUNF is sticky and per DS39632E Table 4-1
+        // (STKUNF=u for MCLR) it survives across an MCLR
+        // reset.  Set the flag on the same stack we then
+        // reset, then verify it's still asserted.
+        let (mut core, mut stack) = fresh_core_and_stack();
+        // Pop on empty to latch STKUNF.
+        let _ = stack.pop();
+        assert!(stack.underflow());
+        // Push something on top so depth is non-zero pre-reset
+        // (forces the depth-zeroing transition to actually
+        // happen; without this depth is already 0 and the test
+        // wouldn't exercise the change).
+        stack.push(0x1000);
+        assert_eq!(stack.depth(), 1);
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        assert_eq!(stack.depth(), 0);
+        assert!(stack.underflow());
     }
 
     #[test]

@@ -117,9 +117,22 @@ impl Stack {
     }
 
     /// Reset to POR: all 31 slots zeroed, depth = 0, flags
-    /// cleared.  Invoked on POR / BOR; *not* on
-    /// MCLR / WDT / RESET-instruction (those preserve the stack
-    /// per DS39632E Table 4-1, p. 53).
+    /// cleared.  Invoked only on POR (Power-on Reset).
+    ///
+    /// Other reset sources have different effects on the stack
+    /// per DS39632E §5.4 + Table 4-1 (firmware/reference/
+    /// 39632e.md:1985-1995):
+    ///   - **BOR**: depth → 0 but flags AND slot data are
+    ///     preserved (use [`Stack::reset_pointer_preserve_flags`]).
+    ///   - **MCLR / WDT / RESET-instruction**: same as BOR —
+    ///     depth → 0, flags + slots preserved.
+    ///   - **Stack-Full reset**: depth → 0 + STKFUL latched
+    ///     ([`Stack::reset_for_stack_full`]).
+    ///   - **Stack-Underflow reset**: depth → 0 + STKUNF
+    ///     latched ([`Stack::reset_for_stack_underflow`]).
+    ///
+    /// The reset dispatcher in [`crate::reset::apply_reset`]
+    /// picks the right helper for each [`crate::reset::ResetSource`].
     pub fn por_reset(&mut self) {
         *self = Self::default();
     }
