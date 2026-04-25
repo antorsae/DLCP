@@ -188,6 +188,28 @@ fn execute_logical_with_dest<F>(
     });
 }
 
+/// Apply a PIC18 conditional branch: if `taken`, PC ← PC + 2*n
+/// (n is the signed 8-bit offset; PC at entry is already past
+/// the branch instruction post-fetch).  Returns the Tcy cost
+/// (2 if taken, 1 if not) and bumps the cycle counter so the
+/// dispatch can directly tail-return its `Ok(...)` value.
+fn execute_conditional_branch(
+    core: &mut Core,
+    n: i8,
+    taken: bool,
+) -> Result<u8, ExecError> {
+    let cycles = if taken {
+        let offset = (n as i32).wrapping_mul(2);
+        let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
+        core.set_pc(new_pc);
+        2
+    } else {
+        1
+    };
+    core.advance_cycles(cycles as u32);
+    Ok(cycles)
+}
+
 /// Skip the next instruction by advancing PC past it and
 /// returning the Tcy cost of the parent skip-instruction.
 /// Inspects `flash[pc..pc+2]` to decide whether the next
@@ -947,6 +969,29 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             execute_logical_with_dest(core, d, a, f, |fv| fv.rotate_right(1));
             core.advance_cycles(1);
             Ok(1)
+        }
+        // ---------------- conditional + unconditional branches --
+        // PC has already been advanced past the branch by the
+        // fetch step (PC = old_PC + 2).  Per DS39632E §26 BRA /
+        // BC / etc.: "PC = (PC) + 2 + 2*n", which after the
+        // post-fetch advance becomes "PC += 2*n".  Both
+        // conditional and unconditional branches use the same
+        // arithmetic; only the gating flag differs.
+        Instruction::Bz { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_Z != 0),
+        Instruction::Bnz { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_Z == 0),
+        Instruction::Bc { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_C != 0),
+        Instruction::Bnc { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_C == 0),
+        Instruction::Bov { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_OV != 0),
+        Instruction::Bnov { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_OV == 0),
+        Instruction::Bn { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_N != 0),
+        Instruction::Bnn { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_N == 0),
+        Instruction::Bra { n } => {
+            // BRA: unconditional 11-bit signed offset; 2 Tcy.
+            let offset = (n as i32).wrapping_mul(2);
+            let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
+            core.set_pc(new_pc);
+            core.advance_cycles(2);
+            Ok(2)
         }
         // ---------------- bit-oriented (1 Tcy each, except skip) -
         Instruction::Bcf { b, a, f } => {
@@ -1784,6 +1829,131 @@ mod tests {
             "FSR advanced too far -- write hit the wrong slot"
         );
         assert_eq!(read_fsr0(&core), 0x101);
+    }
+
+    // ---- conditional branches + BRA ----
+
+    #[test]
+    fn bz_taken_advances_pc_by_2n() {
+        // BZ +5: word = 0xE005.  PC at entry = 0x0000; after
+        // fetch PC = 0x0002.  Branch taken (Z=1) → PC =
+        // 0x0002 + 2*5 = 0x000C.  Cost: 2 Tcy.
+        let mut core = k20_core_with_flash(&[0x05, 0xE0]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x000C);
+    }
+
+    #[test]
+    fn bz_not_taken_advances_only_past_instruction() {
+        // BZ +5: same encoding; Z=0 → no branch.  PC = 0x0002,
+        // cost 1 Tcy.
+        let mut core = k20_core_with_flash(&[0x05, 0xE0]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(core.pc(), 0x0002);
+    }
+
+    #[test]
+    fn bnz_taken_when_zero_clear() {
+        // BNZ +3: word = 0xE103.
+        let mut core = k20_core_with_flash(&[0x03, 0xE1]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0008);
+    }
+
+    #[test]
+    fn bc_with_negative_offset_branches_backward() {
+        // BC -2: signed -2 = 0xFE.  word = 0xE2FE.
+        // PC starts at 0x0010 (post-fetch = 0x0012); branch
+        // taken (C=1) → PC = 0x0012 + 2*(-2) = 0x000E.
+        let mut core = k20_core_with_flash(&[0; 0x20]);
+        core.flash_mut()[0x10] = 0xFE;
+        core.flash_mut()[0x11] = 0xE2;
+        core.set_pc(0x0010);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x000E);
+    }
+
+    #[test]
+    fn bnc_taken_when_carry_clear() {
+        let mut core = k20_core_with_flash(&[0x01, 0xE3]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn bov_taken_when_overflow_set() {
+        let mut core = k20_core_with_flash(&[0x02, 0xE4]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_OV);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0006);
+    }
+
+    #[test]
+    fn bnov_taken_when_overflow_clear() {
+        let mut core = k20_core_with_flash(&[0x01, 0xE5]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn bn_taken_when_negative_set() {
+        let mut core = k20_core_with_flash(&[0x01, 0xE6]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_N);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn bnn_taken_when_negative_clear() {
+        let mut core = k20_core_with_flash(&[0x01, 0xE7]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn bra_unconditional_with_signed_offset() {
+        // BRA +4: encoding 1101 0nnn nnnn nnnn with n=4 (11-bit
+        // signed) = 0xD004.  PC = 0x0002 + 2*4 = 0x000A.
+        let mut core = k20_core_with_flash(&[0x04, 0xD0]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2, "BRA is unconditional 2 Tcy");
+        assert_eq!(core.pc(), 0x000A);
+    }
+
+    #[test]
+    fn bra_with_negative_offset_branches_backward() {
+        // BRA -3: 11-bit signed -3 = 0x7FD.  word = 1101_0_111_1111_1101
+        //                                        = 0xD7FD.
+        // PC starts at 0x0010; post-fetch = 0x0012; branch →
+        // PC = 0x0012 + 2*(-3) = 0x000C.
+        let mut core = k20_core_with_flash(&[0; 0x20]);
+        core.flash_mut()[0x10] = 0xFD;
+        core.flash_mut()[0x11] = 0xD7;
+        core.set_pc(0x0010);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x000C);
     }
 
     // ---- bit-oriented (BCF, BSF, BTG, BTFSC, BTFSS) ----
