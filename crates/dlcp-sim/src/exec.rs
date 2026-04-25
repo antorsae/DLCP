@@ -43,11 +43,11 @@ use crate::stack::Stack;
 //
 // Every PIC18 SFR is exposed as a byte in the data-memory map at
 // `0xF60..=0xFFF`; the executor uses [`Memory::read_raw`] /
-// [`Memory::write_raw`] to access them.  Side effects (e.g. INDFn
-// indirection, POSTINCn FSR mutation, PCL writes triggering a PC
-// update) are NOT modelled in this commit -- they land in the
-// FSR-indirect-addressing sub-commit of P1.8b.  The helpers here
-// stick to operands that don't trip those special SFRs.
+// [`Memory::write_raw`] to access them.  FSR indirect addressing
+// (INDFn / POSTINCn / POSTDECn / PREINCn / PLUSWn) IS modelled
+// (see `resolve_target_no_commit` below).  PCL writes triggering
+// a PC update are still deferred to a future P1.8b sub-commit;
+// the helpers here treat PCL as a normal SFR byte for now.
 
 /// `WREG` at 0xFE8.  PIC18's W is exposed as this SFR; reads /
 /// writes via the f-operand route through the same byte.
@@ -143,17 +143,18 @@ fn read_addr(core: &mut Core, addr: Address) -> u8 {
 /// behaviour).
 type PendingFsrUpdate = (FsrIndex, u16);
 
-/// Resolve an operand address into its underlying RAM target
-/// without mutating FSRn.  Returns `(target, Some(fsr, new))`
-/// when `addr` is a virtual FSR slot whose mode mutates the
-/// pointer; `Some` is the deferred mutation the caller must
-/// commit (via [`commit_fsr`]) exactly once after all reads /
-/// writes for this instruction's operand have completed.
-///
-/// PLUSW and Indirect return `Some(_, cur)` only when the read
-/// of `read_w` (PLUSW only) or any other side effect happened,
-/// but FSRn itself is unchanged -- the caller can elide the
-/// commit for those cases (a `cur` write is a no-op anyway).
+/// Resolve an operand address into its underlying RAM target.
+/// Returns `(target, Some(fsr, new))` when `addr` is a virtual
+/// FSR slot whose mode mutates the pointer AFTER the access
+/// (POSTINCn / POSTDECn): `Some` is the deferred mutation the
+/// caller must commit (via [`commit_fsr`]) exactly once at
+/// end-of-instruction.  Returns `None` for modes that don't
+/// need a deferred commit (Indirect / PlusW), and ALSO for
+/// PreIncrement -- which silicon-correct semantics require to
+/// happen BEFORE the access ("FSR is incremented by 1, then
+/// used in the operation" per DS39632E §5.5.4).  PreIncrement's
+/// FSR write is therefore committed inline here, and the
+/// returned target reflects the post-increment FSR value.
 fn resolve_target_no_commit(
     core: &mut Core,
     addr: Address,
@@ -165,24 +166,34 @@ fn resolve_target_no_commit(
     let cur_h = core.memory.read_raw(Address::from_raw(fsr_high_addr(fsr))) & 0x0F;
     let cur = ((cur_h as u16) << 8) | cur_l as u16;
 
-    let (target, new_fsr) = match mode {
-        FsrAccessMode::Indirect => (cur, cur),
-        FsrAccessMode::PostIncrement => (cur, cur.wrapping_add(1) & 0x0FFF),
-        FsrAccessMode::PostDecrement => (cur, cur.wrapping_sub(1) & 0x0FFF),
+    match mode {
+        FsrAccessMode::Indirect => (Address::from_raw(cur), None),
+        FsrAccessMode::PostIncrement => (
+            Address::from_raw(cur),
+            Some((fsr, cur.wrapping_add(1) & 0x0FFF)),
+        ),
+        FsrAccessMode::PostDecrement => (
+            Address::from_raw(cur),
+            Some((fsr, cur.wrapping_sub(1) & 0x0FFF)),
+        ),
         FsrAccessMode::PreIncrement => {
-            let incremented = cur.wrapping_add(1) & 0x0FFF;
-            (incremented, incremented)
+            // PRE-mutate inline so the access reads/writes the
+            // updated pointer's target.  Matters for the
+            // self-referential corner case where FSR points at
+            // its own H/L SFR -- e.g. FSR0=0xFE8 followed by
+            // PREINC0 reads *0xFE9 = FSR0L AFTER its update,
+            // returning 0xE9 (the new low byte), not 0xE8.
+            let new_fsr = cur.wrapping_add(1) & 0x0FFF;
+            commit_fsr(core, fsr, new_fsr);
+            (Address::from_raw(new_fsr), None)
         }
         FsrAccessMode::PlusW => {
             let w = read_w(core);
             let signed = w as i8 as i32;
             let target = ((cur as i32).wrapping_add(signed) as u16) & 0x0FFF;
-            (target, cur)
+            (Address::from_raw(target), None)
         }
-    };
-
-    let pending = if new_fsr != cur { Some((fsr, new_fsr)) } else { None };
-    (Address::from_raw(target), pending)
+    }
 }
 
 /// Commit a deferred FSR mutation produced by
@@ -1147,6 +1158,32 @@ mod tests {
         let fsr1l = core.memory.read_raw(Address::from_raw(0xFE1));
         let fsr1h = core.memory.read_raw(Address::from_raw(0xFE2)) & 0x0F;
         assert_eq!(((fsr1h as u16) << 8) | fsr1l as u16, 0x201);
+    }
+
+    #[test]
+    fn movf_preinc0_to_w_reads_through_post_increment_fsr_self_reference() {
+        // Self-referential PREINC corner case: FSR0 = 0xFE8
+        // (one below FSR0L's address).  PREINC0 must
+        // pre-increment FSR0 to 0xFE9, then read *0xFE9 -- which
+        // IS FSR0L itself.  Per silicon (DS39632E §5.5.4), the
+        // FSR mutation happens BEFORE the access, so the read
+        // observes the new low byte (0xE9), NOT the old (0xE8).
+        //
+        // Without the inline pre-commit, deferred-commit
+        // semantics would read RAM[0xFE9] = FSR0L = 0xE8 (the
+        // pre-update value), then commit -- W ends up wrong.
+        //
+        // MOVF PREINC0, W, ACCESS = 0x50EC.
+        let mut core = k20_core_with_flash(&[0xEC, 0x50]);
+        // FSR0 = 0xFE8.
+        core.memory.write_raw(Address::from_raw(0xFE9), 0xE8);
+        core.memory.write_raw(Address::from_raw(0xFEA), 0x0F);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // FSR0 advanced to 0xFE9.
+        assert_eq!(read_fsr0(&core), 0xFE9);
+        // W must hold the *post-increment* FSR0L byte (0xE9).
+        assert_eq!(read_w(&core), 0xE9);
     }
 
     #[test]
