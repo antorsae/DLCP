@@ -66,10 +66,14 @@ from __future__ import annotations
 
 import contextvars
 import json
+import re
 import time
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Iterable, Protocol
+
+
+_HARNESS_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 __all__ = [
     "GroundTruthContext",
@@ -90,7 +94,10 @@ class Snapshotable(Protocol):
     `harness_id` is a short identifier used in snapshot filenames;
     must be unique within a single capture context (so two MAIN
     harnesses in a wire chain have distinct ids like ``main_0`` and
-    ``main_1``).
+    ``main_1``) and must match ``^[A-Za-z0-9_-]+$`` so the 4-
+    component snapshot filename contract
+    (``seq.<label>.<harness_id>.<ext>``) survives ``Path.split('.')``
+    parsing.
 
     `dump_state()` returns ``(ram_bank0, sfr_map)`` where:
       * ``ram_bank0`` is exactly 256 bytes covering 0x000-0x0FF.
@@ -224,6 +231,13 @@ class SnapshotTaker:
         seen: set[str] = set()
         for target in materialised:
             hid = target.harness_id
+            if not _HARNESS_ID_RE.match(hid):
+                raise RuntimeError(
+                    f"invalid harness_id {hid!r}: must match "
+                    "^[A-Za-z0-9_-]+$ so the snapshot filename's "
+                    "4-component layout (seq.label.harness_id.ext) "
+                    "remains parseable"
+                )
             if hid in seen:
                 raise RuntimeError(
                     f"duplicate harness_id {hid!r} in snapshot target set; "
