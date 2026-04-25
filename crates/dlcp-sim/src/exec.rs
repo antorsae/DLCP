@@ -15,17 +15,25 @@
 //!      P3's chain scheduler converts into the universal-tick
 //!      domain.
 //!
-//! ## Coverage roll-out
+//! ## Coverage
 //!
-//! P1.8b lands the executor incrementally — one or two
-//! instruction categories per commit so the per-commit codex
-//! review can audit each transition (STATUS-flag fidelity,
-//! Access-Bank routing, FSR indirect addressing, etc.) without
-//! drowning.  Until the full 75-instruction set is wired,
-//! unimplemented variants surface as
-//! [`ExecError::Unimplemented`]; the dispatch's wildcard arm
-//! shrinks with each commit and disappears entirely once every
-//! variant is covered.
+//! All 75 documented PIC18 instructions per DS39632E §26 are
+//! wired.  The dispatch is exhaustive (no wildcard arm), so
+//! the Rust compiler enforces coverage at build time --
+//! adding a new `Instruction` variant without an arm becomes
+//! a compile error.  P1.8b landed the dispatch incrementally
+//! (one or two categories per commit) so per-commit codex
+//! review could audit each silicon-correctness transition
+//! (STATUS-flag fidelity, Access-Bank routing, FSR indirect
+//! addressing, RMW once-per-instruction commit, §5.3.6
+//! STATUS-skip, etc.) without drowning.
+//!
+//! Cross-cutting concerns deliberately deferred to later
+//! phases are documented inline at the relevant dispatch
+//! arms and tracked via TaskCreate (#14, #15, #16) -- see
+//! the comments above the stack-manipulation,
+//! power-management, and table-write arms for the current
+//! list.
 //!
 //! Reference: DS39632E §26 (PIC18F2455 Instruction Set Summary,
 //! Table 26-2) and DS41303G §25 (PIC18F25K20 instruction set —
@@ -35,7 +43,7 @@
 
 use crate::core::Core;
 use crate::isa::fsr::{FsrAccessMode, classify_fsr_indirect, fsr_high_addr, fsr_low_addr};
-use crate::isa::{Access, Dest, FsrIndex, Instruction, decode};
+use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 use crate::memory::Address;
 use crate::reset::{
     RCON_ADDR, RCON_PD, RCON_TO, ResetSource, apply_reset,
@@ -211,6 +219,52 @@ fn execute_conditional_branch(
     };
     core.advance_cycles(cycles as u32);
     Ok(cycles)
+}
+
+/// `TABLAT` -- table-read/write data latch (DS39632E §6.1).
+const TABLAT_ADDR: u16 = 0xFF5;
+
+/// `TBLPTRL` / `TBLPTRH` / `TBLPTRU` -- 22-bit table pointer
+/// (DS39632E §6.2.3).  Bits <21:16> live in TBLPTRU<5:0>;
+/// bits <15:8> in TBLPTRH; bits <7:0> in TBLPTRL.
+const TBLPTRL_ADDR: u16 = 0xFF6;
+const TBLPTRH_ADDR: u16 = 0xFF7;
+const TBLPTRU_ADDR: u16 = 0xFF8;
+const TBLPTR_MASK: u32 = 0x003F_FFFF;
+
+fn read_tblptr(core: &Core) -> u32 {
+    let l = core.memory.read_raw(Address::from_raw(TBLPTRL_ADDR)) as u32;
+    let h = core.memory.read_raw(Address::from_raw(TBLPTRH_ADDR)) as u32;
+    let u = (core.memory.read_raw(Address::from_raw(TBLPTRU_ADDR)) & 0x3F) as u32;
+    (u << 16) | (h << 8) | l
+}
+
+fn write_tblptr(core: &mut Core, value: u32) {
+    let value = value & TBLPTR_MASK;
+    core.memory
+        .write_raw(Address::from_raw(TBLPTRL_ADDR), value as u8);
+    core.memory
+        .write_raw(Address::from_raw(TBLPTRH_ADDR), (value >> 8) as u8);
+    core.memory.write_raw(
+        Address::from_raw(TBLPTRU_ADDR),
+        ((value >> 16) as u8) & 0x3F,
+    );
+}
+
+/// Read a flash byte at `addr`.  For now `core.flash()` only
+/// covers program memory at `0x000..0x8000`; addresses outside
+/// that range return `0xFF` (unprogrammed-flash silicon
+/// default).  CONFIG / User ID / EEPROM read-back via TBLRD is
+/// deferred -- the hex loader (P1.8a) loads those into the
+/// HexImage struct, but threading them into Core happens with
+/// the boot path in P2.
+fn read_flash_byte(core: &Core, addr: u32) -> u8 {
+    let flash = core.flash();
+    if (addr as usize) < flash.len() {
+        flash[addr as usize]
+    } else {
+        0xFF
+    }
 }
 
 /// Skip the next instruction by advancing PC past it and
@@ -603,9 +657,14 @@ pub enum ExecError {
     /// Decoder produced [`Instruction::Reserved`] — opcode bits
     /// don't match any documented PIC18 instruction.
     Reserved(u16),
-    /// Instruction variant not yet wired into the dispatch.  Goes
-    /// away as P1.8b lands more instruction categories; once the
-    /// match is exhaustive this variant becomes unreachable.
+    /// Reserved for a future Instruction variant the dispatch
+    /// hasn't grown a match arm for.  All 75 documented PIC18
+    /// instructions are wired today; the dispatch's `match` is
+    /// exhaustive (no wildcard), so the compiler now enforces
+    /// coverage at build time.  This variant remains in the
+    /// enum so callers that compose ExecError values manually
+    /// (or future instruction-set extensions like XINST=1) have
+    /// a slot to fill.
     Unimplemented(Instruction),
 }
 
@@ -923,6 +982,30 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             core.advance_cycles(1);
             Ok(1)
         }
+        Instruction::AndLw { k } => {
+            // ANDLW k: W = W & k.  STATUS Z, N.
+            let result = read_w(core) & k;
+            set_status_zn(core, result);
+            write_w(core, result);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::IorLw { k } => {
+            // IORLW k: W = W | k.  STATUS Z, N.
+            let result = read_w(core) | k;
+            set_status_zn(core, result);
+            write_w(core, result);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::XorLw { k } => {
+            // XORLW k: W = W ^ k.  STATUS Z, N.
+            let result = read_w(core) ^ k;
+            set_status_zn(core, result);
+            write_w(core, result);
+            core.advance_cycles(1);
+            Ok(1)
+        }
         Instruction::MulLw { k } => {
             // MULLW k: PRODH:PRODL = W * k (8x8 unsigned).  No
             // flags affected.
@@ -1101,6 +1184,83 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let offset = (n as i32).wrapping_mul(2);
             let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
             core.set_pc(new_pc);
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        // ---------------- long-form control flow + table IO ----
+        Instruction::Goto { n } => {
+            // GOTO: 2-word, 2 Tcy.  PC = 2*n (n is 20-bit word
+            // address).  No flag effects.  Does NOT touch the
+            // stack (unlike CALL).
+            core.set_pc(n.wrapping_mul(2));
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::TblRd { mode } => {
+            // TBLRD*: read flash[TBLPTR] → TABLAT.  TBLPTR is
+            // a 22-bit byte address.  Mode timing follows the
+            // same FSR convention:
+            //   PreIncrement: TBLPTR += 1, then read.
+            //   NoModify:     read at current TBLPTR.
+            //   PostIncrement / PostDecrement: read first,
+            //                                  then TBLPTR ±= 1.
+            // No flag effects; 2 Tcy.
+            //
+            // CONFIG / User ID / EEPROM read-back via TBLRD is
+            // deferred -- those windows aren't yet wired into
+            // Core (only `core.flash()` for program memory
+            // 0x000..0x8000).  Out-of-range reads return 0xFF.
+            if mode == TableMode::PreIncrement {
+                let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                write_tblptr(core, new_ptr);
+            }
+            let target = read_tblptr(core);
+            let byte = read_flash_byte(core, target);
+            core.memory
+                .write_raw(Address::from_raw(TABLAT_ADDR), byte);
+            match mode {
+                TableMode::PostIncrement => {
+                    let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                    write_tblptr(core, new_ptr);
+                }
+                TableMode::PostDecrement => {
+                    let new_ptr = read_tblptr(core).wrapping_sub(1) & TBLPTR_MASK;
+                    write_tblptr(core, new_ptr);
+                }
+                TableMode::NoModify | TableMode::PreIncrement => {}
+            }
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::TblWt { mode } => {
+            // TBLWT*: model TBLPTR mutation only.  The actual
+            // flash write goes through Microchip's holding-
+            // register + EE-unlock + EECON1.WR sequence; that
+            // peripheral state machine is a P2 deliverable.
+            // Until then, TBLWT is a no-op for the flash
+            // bytes themselves -- TBLPTR still mutates per
+            // mode so a `MOVF TBLPTRL, W` after the write
+            // reflects the post-write pointer state, but the
+            // target flash byte stays whatever it was loaded
+            // with.
+            //
+            // Tracked via the same P2 EEPROM peripheral work
+            // referenced in TaskCreate #14.
+            match mode {
+                TableMode::PreIncrement => {
+                    let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                    write_tblptr(core, new_ptr);
+                }
+                TableMode::PostIncrement => {
+                    let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                    write_tblptr(core, new_ptr);
+                }
+                TableMode::PostDecrement => {
+                    let new_ptr = read_tblptr(core).wrapping_sub(1) & TBLPTR_MASK;
+                    write_tblptr(core, new_ptr);
+                }
+                TableMode::NoModify => {}
+            }
             core.advance_cycles(2);
             Ok(2)
         }
@@ -1325,7 +1485,6 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(1)
         }
         Instruction::Reserved { word } => Err(ExecError::Reserved(word)),
-        other => Err(ExecError::Unimplemented(other)),
     }
 }
 
@@ -1521,23 +1680,35 @@ mod tests {
     }
 
     #[test]
-    fn step_reports_unimplemented_for_not_yet_wired_instruction() {
-        // GOTO — encoding 0xEF00 / 0xF000 (target word
-        // address 0).  Long-form control flow + table
-        // reads/writes aren't wired yet; they land in a later
-        // P1.8b commit.  This test pins the Unimplemented arm
-        // and will need updating (changed to assert successful
-        // exec) when GOTO lands.
-        let mut core = k20_core_with_flash(&[0x00, 0xEF, 0x00, 0xF0]);
+    fn step_dispatches_all_75_pic18_instructions_via_exhaustive_match() {
+        // All 75 PIC18 instructions are now wired into the
+        // dispatch.  The match is exhaustive (no wildcard arm)
+        // so the compiler enforces coverage at build time.
+        // This test is a structural sanity check: a successful
+        // GOTO + TBLRD round-trip exercises both 2-word
+        // long-form control flow and the table-IO path that
+        // were the last categories to land.
+        //
+        // Program:
+        //   0x0000: GOTO 0x0004 (word addr 4 → byte 8)
+        //   0x0008: TBLRD*  (mode = NoModify; reads
+        //                    flash[TBLPTR] → TABLAT)
+        let mut core = k20_core_with_flash(&[
+            0x04, 0xEF, 0x00, 0xF0, // GOTO 0x0004
+            0x00, 0x00, 0x00, 0x00, // skipped fill
+            0x08, 0x00,             // TBLRD* (= 0x0008)
+        ]);
+        // Set TBLPTR = 0x0000; flash[0] = 0x04.
+        write_tblptr(&mut core, 0x0000);
         let mut stack = Stack::new();
-
-        let err = step(&mut core, &mut stack).unwrap_err();
-        assert!(
-            matches!(err, ExecError::Unimplemented(Instruction::Goto { .. })),
-            "expected Unimplemented(Goto), got {err:?}"
-        );
-        assert_eq!(core.pc(), 0x0004);
-        assert_eq!(core.cycles(), 0);
+        // GOTO.
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0008);
+        // TBLRD*.
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.memory.read_raw(Address::from_raw(TABLAT_ADDR)), 0x04);
     }
 
     // ------------------------------------------------------------
@@ -2336,6 +2507,82 @@ mod tests {
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x000C);
+    }
+
+    // ---- long-form control flow (GOTO) + table IO ----
+
+    #[test]
+    fn goto_loads_pc_with_word_address_times_two() {
+        // GOTO 0x0010 (word addr 16 → byte 32):
+        //   word1 = 0xEF10 (high8 = 0xEF, low8 = 0x10)
+        //   word2 = 0xF000 (k[19:8] = 0)
+        let mut core = k20_core_with_flash(&[0x10, 0xEF, 0x00, 0xF0]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0020);
+        assert_eq!(stack.depth(), 0, "GOTO must NOT touch the stack");
+    }
+
+    #[test]
+    fn tblrd_no_modify_reads_flash_byte_into_tablat() {
+        // TBLRD*: opcode 0b0000_0000_0000_1000 = 0x0008.
+        let mut core = k20_core_with_flash(&[0x08, 0x00]);
+        // TBLPTR = 0x0010; flash[0x10] = 0x42.
+        write_tblptr(&mut core, 0x0010);
+        core.flash_mut()[0x0010] = 0x42;
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.memory.read_raw(Address::from_raw(TABLAT_ADDR)), 0x42);
+        // NoModify: TBLPTR unchanged.
+        assert_eq!(read_tblptr(&core), 0x0010);
+    }
+
+    #[test]
+    fn tblrd_post_increment_reads_then_advances_tblptr() {
+        // TBLRD*+: opcode 0x0009.
+        let mut core = k20_core_with_flash(&[0x09, 0x00]);
+        write_tblptr(&mut core, 0x0040);
+        core.flash_mut()[0x40] = 0xAA;
+        // Pre-load 0x41 with sentinel to confirm the read
+        // happens BEFORE TBLPTR increments.
+        core.flash_mut()[0x41] = 0x55;
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(TABLAT_ADDR)), 0xAA);
+        assert_eq!(read_tblptr(&core), 0x0041);
+    }
+
+    #[test]
+    fn tblrd_pre_increment_advances_tblptr_then_reads() {
+        // TBLRD+*: opcode 0x000B.
+        let mut core = k20_core_with_flash(&[0x0B, 0x00]);
+        write_tblptr(&mut core, 0x0040);
+        core.flash_mut()[0x40] = 0xAA;
+        core.flash_mut()[0x41] = 0xBB;
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // Pre-increment: TBLPTR = 0x41 BEFORE the read; TABLAT
+        // should hold 0xBB (from flash[0x41]), not 0xAA.
+        assert_eq!(core.memory.read_raw(Address::from_raw(TABLAT_ADDR)), 0xBB);
+        assert_eq!(read_tblptr(&core), 0x0041);
+    }
+
+    #[test]
+    fn tblwt_modifies_tblptr_but_does_not_modify_flash_yet() {
+        // TBLWT*+: opcode 0x000D.  Flash holding-register +
+        // EE-unlock sequence isn't modelled (deferred to P2);
+        // for now TBLWT only mutates TBLPTR per mode.
+        let mut core = k20_core_with_flash(&[0x0D, 0x00]);
+        write_tblptr(&mut core, 0x0040);
+        let original_flash_byte = core.flash()[0x40];
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // TBLPTR advanced.
+        assert_eq!(read_tblptr(&core), 0x0041);
+        // Flash byte unchanged (no EE-unlock yet).
+        assert_eq!(core.flash()[0x40], original_flash_byte);
     }
 
     // ---- power-management / misc (SLEEP, CLRWDT, DAW, RESET) ----
