@@ -105,11 +105,16 @@ impl Core {
     /// Set the program counter.  Reset and the GOTO/CALL/RETURN
     /// family of instructions go through here; raw assignment
     /// during state restore (P5.1 snapshot/restore) too.
+    ///
+    /// The PIC18 PC is 21 bits AND byte-addressed but always
+    /// instruction-aligned: PCL bit 0 is hard-wired to 0 in
+    /// silicon (DS39632E §5.5.1, DS41303G §5.5.1) so instruction
+    /// fetch never sees an odd PC.  Mask both the upper bits
+    /// (above bit 20) and bit 0 to enforce that invariant here;
+    /// a caller that hands us an odd value (`pc | 1`) loses
+    /// only the always-zero LSB.
     pub fn set_pc(&mut self, pc: u32) {
-        // PIC18 PC is 21 bits; mask to keep the upper bits at 0
-        // even if the caller passed a 32-bit value (e.g. while
-        // computing `pc + 4` near the end of flash).
-        self.pc = pc & 0x001F_FFFF;
+        self.pc = pc & 0x001F_FFFE;
     }
 
     /// Total instruction cycles elapsed since the last reset.
@@ -152,10 +157,24 @@ mod tests {
     }
 
     #[test]
-    fn pc_is_masked_to_21_bits() {
+    fn pc_is_masked_to_21_bits_and_word_aligned() {
         let mut core = Core::new(Variant::Pic18F2455);
+        // 0xFFFF_FFFF asks for "all bits set"; we expect both the
+        // upper-11-bits clear AND bit 0 clear (PCL[0] is hard-
+        // wired to 0 on PIC18).  Result: 0x001F_FFFE, the largest
+        // architecturally legal PC value.
         core.set_pc(0xFFFF_FFFF);
-        assert_eq!(core.pc(), 0x001F_FFFF);
+        assert_eq!(core.pc(), 0x001F_FFFE);
+    }
+
+    #[test]
+    fn pc_set_drops_odd_lsb() {
+        // A caller handing us PC|1 (e.g., from a buggy table
+        // read or a state restore that lost alignment) should
+        // see the LSB silently cleared, not a stored odd value.
+        let mut core = Core::new(Variant::Pic18F2455);
+        core.set_pc(0x4577);
+        assert_eq!(core.pc(), 0x4576);
     }
 
     #[test]
