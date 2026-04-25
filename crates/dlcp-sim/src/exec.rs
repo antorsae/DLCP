@@ -57,6 +57,25 @@ pub enum ExecError {
     Unimplemented(Instruction),
 }
 
+/// `true` if `word1` is the first half of one of the four
+/// 2-word PIC18 opcodes (MOVFF, CALL, LFSR, GOTO) -- i.e. the
+/// instruction needs a real `word2` from flash and the executor
+/// must not fall back on the 0xFFFF sentinel.
+///
+/// Encodings (DS39632E §26):
+///   - MOVFF: `1100 ffff ffff ffff`         → word1 high4 = 0xC
+///   - CALL : `1110 110s kkkk kkkk`         → word1 high8 ∈ {0xEC, 0xED}
+///   - LFSR : `1110 1110 00ff kkkk`         → word1 high8 = 0xEE
+///   - GOTO : `1110 1111 kkkk kkkk`         → word1 high8 = 0xEF
+const fn opcode_needs_word2(word1: u16) -> bool {
+    let high4 = (word1 >> 12) & 0xF;
+    if high4 == 0xC {
+        return true;
+    }
+    let high8 = (word1 >> 8) & 0xFF;
+    matches!(high8, 0xEC | 0xED | 0xEE | 0xEF)
+}
+
 /// Step the core by one instruction.  Returns the Tcy cost of
 /// the instruction on success.
 pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
@@ -74,15 +93,19 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     }
     let word1 = u16::from_le_bytes([flash[pc_idx], flash[pc_idx + 1]]);
 
-    // The decoder also wants `word2`; if it can't be read
-    // because we're at the very last word of flash, hand it the
-    // all-ones sentinel per its docstring -- the decoder ignores
-    // word2 for single-word instructions.  We then verify post-
-    // decode that the instruction was actually single-word; a
-    // synthetic word2 carried into a 2-word op (CALL, GOTO,
-    // MOVFF, LFSR) would silently fabricate the continuation
-    // bits, so refuse to execute and surface PcOutOfBounds.
+    // The decoder also wants `word2`.  If it can't be read --
+    // we're at the very last word of flash -- and word1 is the
+    // first half of a 2-word opcode, refuse to execute: the
+    // synthetic sentinel would silently fabricate continuation
+    // bits, OR (in LFSR's case) make the decoder return
+    // Reserved instead of surfacing the real fetch problem.
+    // We use a word1-only predicate because LFSR with an
+    // invalid word2 sentinel decodes as Reserved + byte_count=2,
+    // so a post-decode `byte_count == 4` check would miss it.
     let word2_available = pc_idx + 3 < flash.len();
+    if !word2_available && opcode_needs_word2(word1) {
+        return Err(ExecError::PcOutOfBounds(pc));
+    }
     let word2 = if word2_available {
         u16::from_le_bytes([flash[pc_idx + 2], flash[pc_idx + 3]])
     } else {
@@ -90,9 +113,6 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     };
 
     let (instr, byte_count) = decode(word1, word2);
-    if byte_count == 4 && !word2_available {
-        return Err(ExecError::PcOutOfBounds(pc));
-    }
     core.set_pc(pc.wrapping_add(byte_count));
 
     match instr {
@@ -203,17 +223,42 @@ mod tests {
     }
 
     #[test]
-    fn step_returns_pc_out_of_bounds_on_partial_two_word_fetch() {
+    fn step_returns_pc_out_of_bounds_on_partial_two_word_fetch_goto() {
         // PC=0x7FFE with the first word of a GOTO at the last
-        // word: word1=0xEF00 fetchable, word2 unfetchable.  The
-        // decoder needs both words for GOTO; without the executor
-        // bailing, it would silently fabricate the continuation
-        // from the 0xFFFF sentinel.
+        // word: word1=0xEF00 fetchable, word2 unfetchable.  Without
+        // the predicate, decode would synthesise word2=0xFFFF and
+        // hand back Goto with byte_count=4.
+        partial_two_word_fetch_case(&[0x00, 0xEF]);
+    }
+
+    #[test]
+    fn step_returns_pc_out_of_bounds_on_partial_two_word_fetch_lfsr() {
+        // LFSR FSR0, 0: word1=0xEE00, word2=0xF000.  At the last
+        // word with word2 unavailable, decode(0xEE00, 0xFFFF)
+        // returns *Reserved* (because the sentinel fails LFSR's
+        // `word2 & 0xFF00 == 0xF000` check), with byte_count=2 --
+        // a post-decode `byte_count == 4` guard would have missed
+        // this entirely.
+        partial_two_word_fetch_case(&[0x00, 0xEE]);
+    }
+
+    #[test]
+    fn step_returns_pc_out_of_bounds_on_partial_two_word_fetch_call() {
+        // CALL 0, fast=0: word1=0xEC00.
+        partial_two_word_fetch_case(&[0x00, 0xEC]);
+    }
+
+    #[test]
+    fn step_returns_pc_out_of_bounds_on_partial_two_word_fetch_movff() {
+        // MOVFF src=0, dst=0: word1=0xC000.
+        partial_two_word_fetch_case(&[0x00, 0xC0]);
+    }
+
+    fn partial_two_word_fetch_case(word1_bytes: &[u8]) {
         let mut core = Core::new(Variant::Pic18F25K20);
         let last_word = 0x8000 - 2;
-        // GOTO 0x0000: word1 = 0xEF00, word2 would be 0xF000.
-        core.flash_mut()[last_word] = 0x00; // word1 low (k[7:0])
-        core.flash_mut()[last_word + 1] = 0xEF; // word1 high (GOTO opcode)
+        core.flash_mut()[last_word] = word1_bytes[0];
+        core.flash_mut()[last_word + 1] = word1_bytes[1];
         core.set_pc(last_word as u32);
         let mut stack = Stack::new();
 
@@ -224,6 +269,40 @@ mod tests {
         }
         // PC must NOT have advanced past the partial fetch.
         assert_eq!(core.pc(), last_word as u32);
+    }
+
+    #[test]
+    fn opcode_needs_word2_predicate_matches_documented_two_word_set() {
+        // Positive: MOVFF / CALL / LFSR / GOTO prefixes.
+        for w in [
+            0xC000, 0xCFFF, // MOVFF range (high4 = C)
+            0xEC00, 0xED00, // CALL (high8 = EC / ED)
+            0xEE00, 0xEEFF, // LFSR (high8 = EE)
+            0xEF00, 0xEFFF, // GOTO (high8 = EF)
+        ] {
+            assert!(
+                opcode_needs_word2(w),
+                "0x{w:04X} should be flagged as 2-word"
+            );
+        }
+
+        // Negative: NOP, MOVLW, BRA, RCALL, conditional branches,
+        // bit-oriented ops -- all single-word.
+        for w in [
+            0x0000, // NOP
+            0x0E42, // MOVLW 0x42
+            0xD000, // BRA
+            0xD800, // RCALL
+            0xE000, 0xE700, // BZ..BNN
+            0xE800, 0xEB00, // unallocated 0xE8..0xEB (decode → Reserved, 1-word)
+            0x6E00, // MOVWF
+            0x9000, // BCF
+        ] {
+            assert!(
+                !opcode_needs_word2(w),
+                "0x{w:04X} should NOT be flagged as 2-word"
+            );
+        }
     }
 
     #[test]
