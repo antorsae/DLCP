@@ -181,15 +181,53 @@ def _diff_capture(blessed: Path, replayed: Path) -> list[str]:
     return errors
 
 
-def _replay_one(blessed: Path, python: Path, *, verbose: bool) -> list[str]:
+def _archive_failure(blessed_name: str, replay_dir: Path) -> None:
+    """Copy a (replay) capture directory into the divergence
+    archive so an operator can inspect it post-hoc.  No-op when
+    the source directory is missing."""
+    if not replay_dir.exists():
+        return
+    div_root = REPO_ROOT / "artifacts" / "sim_rewrite_divergences"
+    div_root.mkdir(parents=True, exist_ok=True)
+    archive = div_root / f"P0.5__{blessed_name}__replay"
+    if archive.exists():
+        shutil.rmtree(archive)
+    try:
+        shutil.copytree(replay_dir, archive)
+    except (OSError, shutil.Error):
+        # Best-effort archive — don't block reporting on copy
+        # failures (e.g. a read-only tempdir).
+        pass
+
+
+def _replay_one(blessed: Path, python: Path, *, verbose: bool) -> tuple[list[str], str]:
+    """Return ``(diff_errors, status)``.
+
+    ``status`` ∈ {"replayed", "skipped_original_skipped",
+    "skipped_no_summary"}.  ``"skipped_*"`` statuses are reported
+    in the summary line but do not contribute to a determinism
+    failure — there is nothing to diff for an originally-skipped
+    test (no harnesses opened) and a missing summary.json means
+    we can't recover the nodeid.
+    """
     summary_path = blessed / "summary.json"
     if not summary_path.exists():
-        return [f"summary.json missing — cannot recover originating nodeid"]
+        return ["summary.json missing — cannot recover originating nodeid"], "skipped_no_summary"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     nodeid = summary.get("nodeid")
     if not nodeid:
-        return ["summary.json has no 'nodeid' — cannot replay"]
+        return ["summary.json has no 'nodeid' — cannot replay"], "skipped_no_summary"
     original_outcome = summary.get("outcome", "passed")
+
+    # Originally-skipped tests don't open harnesses, so they have
+    # no captured artefacts to diff.  Re-running them and
+    # comparing two empty corpora would falsely report
+    # "deterministic" without actually exercising the gpsim path.
+    # Report and skip — counted in the summary but not a failure.
+    if original_outcome == "skipped":
+        if verbose:
+            print(f"  skipping {blessed.name} (original outcome=skipped)")
+        return [], "skipped_original_skipped"
 
     if verbose:
         print(f"  replaying {blessed.name} (nodeid={nodeid})")
@@ -217,29 +255,24 @@ def _replay_one(blessed: Path, python: Path, *, verbose: bool) -> list[str]:
             text=True,
         )
         replay_dir = replay_root / blessed.name
+
         if cp.returncode != 0 and original_outcome == "passed":
+            _archive_failure(blessed.name, replay_dir)
             return [
                 f"replay pytest exited {cp.returncode} but original "
                 f"outcome was 'passed':\n{cp.stdout[-500:]}\n{cp.stderr[-500:]}"
-            ]
+            ], "replayed"
         if not replay_dir.exists():
             return [
                 f"replay produced no capture at {replay_dir} "
                 f"(pytest exit={cp.returncode}); "
                 f"stdout tail: {cp.stdout[-300:]!r}"
-            ]
-        # Optionally archive the failing replay capture under
-        # artifacts/sim_rewrite_divergences/ so the operator can
-        # inspect the diff post-hoc.
+            ], "replayed"
+
         diff_errors = _diff_capture(blessed, replay_dir)
         if diff_errors:
-            div_root = REPO_ROOT / "artifacts" / "sim_rewrite_divergences"
-            div_root.mkdir(parents=True, exist_ok=True)
-            archive = div_root / f"P0.5__{blessed.name}__replay"
-            if archive.exists():
-                shutil.rmtree(archive)
-            shutil.copytree(replay_dir, archive)
-        return diff_errors
+            _archive_failure(blessed.name, replay_dir)
+        return diff_errors, "replayed"
 
 
 def _captured_dirs(only_for: str | None = None) -> list[Path]:
@@ -303,8 +336,19 @@ def main(argv: Iterable[str]) -> int:
 
     print(f"=== replay_ground_truth: {len(dirs)} fixture(s) ===")
     failures: list[tuple[str, list[str]]] = []
+    skipped: list[str] = []
+    replayed = 0
     for blessed in dirs:
-        errors = _replay_one(blessed, python, verbose=args.verbose)
+        errors, status = _replay_one(blessed, python, verbose=args.verbose)
+        if status == "skipped_original_skipped":
+            skipped.append(blessed.name)
+            print(f"  SKIP {blessed.name}  (original outcome=skipped)")
+            continue
+        if status == "skipped_no_summary":
+            failures.append((blessed.name, errors))
+            print(f"  FAIL {blessed.name}  (cannot replay: missing/invalid summary.json)")
+            continue
+        replayed += 1
         if errors:
             failures.append((blessed.name, errors))
             print(f"  FAIL {blessed.name}")
@@ -319,7 +363,11 @@ def main(argv: Iterable[str]) -> int:
             for msg in errs:
                 print(f"  {msg}", file=sys.stderr)
         return 1
-    print(f"\n  replay determinism OK across {len(dirs)} fixture(s)")
+    summary_msg = f"  replay determinism OK across {replayed} fixture(s)"
+    if skipped:
+        summary_msg += f"  ({len(skipped)} skipped)"
+    print()
+    print(summary_msg)
     return 0
 
 
