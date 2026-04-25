@@ -109,28 +109,55 @@ def _captured_dirs_with_stimulus() -> list[str]:
     return out
 
 
-def _pick_replay_set(max_replays: int) -> list[str]:
-    """Build the replay-target list: curated representatives that
-    actually exist post-capture, padded with up to `max_replays`
-    additional non-empty-stimulus captures."""
+def _pick_replay_set(max_replays: int) -> tuple[list[str], list[str]]:
+    """Build the replay-target list and report missing representatives.
+
+    Returns ``(targets, missing_representatives)``.  A representative
+    is "missing" if no captured directory name starts with it; the
+    caller treats a non-empty missing list as a hard failure so a
+    typo or skipped harness class can't pad the count silently with
+    extras.
+    """
     captured = set(_captured_dirs_with_stimulus())
     out: list[str] = []
+    missing: list[str] = []
     for name_prefix in REPLAY_REPRESENTATIVES:
-        for cap in sorted(captured):
-            if cap.startswith(name_prefix):
-                out.append(cap)
-                break
+        match = next(
+            (cap for cap in sorted(captured) if cap.startswith(name_prefix)),
+            None,
+        )
+        if match is None:
+            missing.append(name_prefix)
+        else:
+            out.append(match)
     extras = [c for c in sorted(captured) if c not in out]
     while extras and len(out) < max_replays:
         out.append(extras.pop(0))
-    return out
+    return out, missing
 
 
-def run_replay(python: Path, *, max_replays: int, log_fp) -> tuple[int, list[str]]:
-    targets = _pick_replay_set(max_replays)
+def run_replay(
+    python: Path, *, max_replays: int, log_fp, min_replays: int
+) -> tuple[int, list[str]]:
+    targets, missing = _pick_replay_set(max_replays)
+    if missing:
+        _shell_log(log_fp, "replay",
+                   f"FAIL: {len(missing)} curated representative(s) "
+                   "had no matching capture; the corpus is incomplete:")
+        for name in missing:
+            _shell_log(log_fp, "replay", f"  - {name}")
+        return 1, []
+    if len(targets) < min_replays:
+        _shell_log(log_fp, "replay",
+                   f"FAIL: only {len(targets)} replay target(s) found "
+                   f"but --min-replay required {min_replays}; the "
+                   "capture pass produced too few non-empty fixtures.")
+        return 1, []
     if not targets:
-        _shell_log(log_fp, "replay", "no captured fixtures with non-empty stimulus; skipping replay")
-        return 0, []
+        _shell_log(log_fp, "replay",
+                   "FAIL: no captured fixtures with non-empty stimulus "
+                   "to replay (capture pass apparently produced none)")
+        return 1, []
     _shell_log(log_fp, "replay", f"replaying {len(targets)} fixture(s):")
     for name in targets:
         _shell_log(log_fp, "replay", f"  - {name}")
@@ -161,6 +188,14 @@ def main(argv: list[str]) -> int:
                         help="pytest-xdist worker count for the capture pass (default: 16)")
     parser.add_argument("--max-replay", type=int, default=DEFAULT_MAX_REPLAY,
                         help=f"max number of fixtures to replay (default: {DEFAULT_MAX_REPLAY})")
+    parser.add_argument("--min-replay", type=int, default=len(REPLAY_REPRESENTATIVES),
+                        help=(
+                            "minimum number of replay targets to insist on "
+                            "(default: # of curated representatives = "
+                            f"{len(REPLAY_REPRESENTATIVES)}); the wrapper exits "
+                            "non-zero if the capture pass produces fewer "
+                            "non-empty fixtures."
+                        ))
     parser.add_argument("--python", default=str(DEFAULT_PYTHON),
                         help=f"python interpreter to invoke (default: {DEFAULT_PYTHON})")
     parser.add_argument("--skip-capture", action="store_true",
@@ -199,7 +234,12 @@ def main(argv: list[str]) -> int:
         _shell_log(log_fp, "main",
                    f"captured fixtures with non-empty stimulus: {len(captured)}")
 
-        replay_rc, replayed = run_replay(python, max_replays=args.max_replay, log_fp=log_fp)
+        replay_rc, replayed = run_replay(
+            python,
+            max_replays=args.max_replay,
+            min_replays=args.min_replay,
+            log_fp=log_fp,
+        )
         if replay_rc != 0:
             overall_rc = 1
         _shell_log(log_fp, "main",

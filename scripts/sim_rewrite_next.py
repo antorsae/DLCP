@@ -355,11 +355,27 @@ def cmd_verify_phase(args: argparse.Namespace) -> int:
         if res.returncode != 0:
             failures.append(t)
 
+    runnable = [
+        t for t in phase_tasks
+        if t.verify is not None and not t.is_manual() and not t.is_gate()
+    ]
     print(f"\n=== phase {phase_id} summary ===")
-    print(f"  total verify-able tasks: {sum(1 for t in phase_tasks if t.verify)}")
+    print(f"  total verify-able tasks: {len(runnable)}")
     print(f"  failures: {len(failures)}")
     for t in failures:
         print(f"    - {t.id} {t.title}")
+    # Refuse to pass a phase that has nothing actually runnable —
+    # would otherwise green-light a phase containing only a `.gate`
+    # task (vacuous pass) or one whose siblings are all manual/no-
+    # verify, which is never the user's intent.
+    if not runnable:
+        print(
+            f"FAIL: phase {phase_id} has no runnable verify commands "
+            "(only gate / manual / no-verify tasks); refusing to "
+            "report a vacuous pass.",
+            file=sys.stderr,
+        )
+        return 1
     return 0 if not failures else 1
 
 
