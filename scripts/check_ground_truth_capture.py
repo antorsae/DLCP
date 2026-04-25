@@ -248,6 +248,21 @@ def _check_outputs(dirs: Iterable[Path]) -> list[str]:
                 "should produce one per harness)"
             )
 
+        # Defense in depth against a partial dump: every harness
+        # that produced a uart_tx_<hid>.jsonl must also produce an
+        # eeprom_<hid>.bin (and an lcd_<hid>.txt if it drives an
+        # LCD).  OutputCapture.dump() rolls back partial state on
+        # failure, so this should always hold; if it doesn't,
+        # something is bypassing the rollback path.
+        uart_ids = {_UART_NAME_RE.match(p.name).group(1) for p in uart_files}
+        eeprom_ids = {_EEPROM_NAME_RE.match(p.name).group(1) for p in eeprom_files}
+        for hid in uart_ids - eeprom_ids:
+            errors.append(
+                f"{d.name}: harness {hid!r} has uart_tx_{hid}.jsonl "
+                f"but no eeprom_{hid}.bin (partial OutputCapture "
+                "dump? gpsim died during EEPROM read?)"
+            )
+
         for path in uart_files:
             m = _UART_NAME_RE.match(path.name)
             if not m:

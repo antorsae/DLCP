@@ -350,41 +350,69 @@ class OutputCapture:
         pass
 
     def dump(self, harness: OutputCapturable) -> None:
+        """Drain the harness's UART/LCD/EEPROM into the output dir.
+
+        The harness is marked dumped only AFTER all writes complete.
+        If a write raises (e.g. EEPROM read against a dead gpsim
+        subprocess), the partial files written so far are removed
+        and the dumped flag stays unset so a subsequent close() can
+        retry.  EEPROM is the most fragile read; it runs after the
+        cheap in-memory UART/LCD writes so a transient EEPROM failure
+        doesn't prevent capture of the other streams.
+        """
         if not self._opened:
             return
         hid = harness.harness_id
         if hid in self._dumped:
             return
-        self._dumped.add(hid)
 
-        tx = harness.tx_frames_snapshot()
-        if tx is not None:
-            tx_path = self.out_dir / f"uart_tx_{hid}.jsonl"
-            with tx_path.open("w", encoding="utf-8") as fp:
-                for seq, frame in enumerate(tx):
-                    route, cmd, data = frame
-                    fp.write(json.dumps({
-                        "seq": seq,
-                        "route": route & 0xFF,
-                        "cmd": cmd & 0xFF,
-                        "data": data & 0xFF,
-                    }, sort_keys=True) + "\n")
+        tx_path = self.out_dir / f"uart_tx_{hid}.jsonl"
+        lcd_path = self.out_dir / f"lcd_{hid}.txt"
+        eeprom_path = self.out_dir / f"eeprom_{hid}.bin"
+        written: list[Path] = []
+        try:
+            tx = harness.tx_frames_snapshot()
+            if tx is not None:
+                with tx_path.open("w", encoding="utf-8") as fp:
+                    for seq, frame in enumerate(tx):
+                        route, cmd, data = frame
+                        fp.write(json.dumps({
+                            "seq": seq,
+                            "route": route & 0xFF,
+                            "cmd": cmd & 0xFF,
+                            "data": data & 0xFF,
+                        }, sort_keys=True) + "\n")
+                written.append(tx_path)
 
-        lcd = harness.lcd_snapshot()
-        if lcd is not None:
-            line0, line1 = lcd
-            (self.out_dir / f"lcd_{hid}.txt").write_text(
-                f"{line0}\n{line1}\n", encoding="utf-8"
-            )
-
-        eeprom = harness.eeprom_snapshot()
-        if eeprom is not None:
-            if len(eeprom) != 256:
-                raise RuntimeError(
-                    f"{hid}.eeprom_snapshot() returned {len(eeprom)} "
-                    "bytes (expected 256)"
+            lcd = harness.lcd_snapshot()
+            if lcd is not None:
+                line0, line1 = lcd
+                lcd_path.write_text(
+                    f"{line0}\n{line1}\n", encoding="utf-8"
                 )
-            (self.out_dir / f"eeprom_{hid}.bin").write_bytes(eeprom)
+                written.append(lcd_path)
+
+            eeprom = harness.eeprom_snapshot()
+            if eeprom is not None:
+                if len(eeprom) != 256:
+                    raise RuntimeError(
+                        f"{hid}.eeprom_snapshot() returned {len(eeprom)} "
+                        "bytes (expected 256)"
+                    )
+                eeprom_path.write_bytes(eeprom)
+                written.append(eeprom_path)
+        except Exception:
+            # Roll back partial state so a downstream validator can't
+            # be fooled by a half-captured artifact set.
+            for p in written:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            raise
+        # Successful complete dump — only now mark this harness as
+        # done so a future close() retry is rejected.
+        self._dumped.add(hid)
 
 
 class GroundTruthContext:

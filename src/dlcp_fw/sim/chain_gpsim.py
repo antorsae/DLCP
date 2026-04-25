@@ -289,6 +289,13 @@ class MainChainHarness:
         self.current_cycle = 0
         self.decoder = _LogDecoder()
         self._mailbox_tx_partial: List[int] = []
+        # mailbox-mode TX frames are produced by `_drain_mailbox_tx_frames`
+        # and returned to the caller; they are NOT appended to
+        # `decoder.tx_frames` (which is only populated from the gpsim
+        # log under native_ring transport).  Track them here so
+        # `tx_frames_snapshot` can union both sources for the
+        # ground-truth output capture.
+        self._mailbox_tx_log: List[TxTriplet] = []
         self.standby_model = _MainStandbyPinModel(standby_mode, manual_adc=main_ra0_adc)
         # Native-ring chain tests now use a real AN0 bootstrap only for the
         # default active/high standby model. Forcing AN0 low here makes MAIN's
@@ -544,9 +551,19 @@ class MainChainHarness:
     # OutputCapturable Protocol — see ground_truth.py.
 
     def tx_frames_snapshot(self) -> list[tuple[int, int, int]] | None:
+        # Native-ring transport routes TX through the gpsim log decoder;
+        # mailbox transport drains TX directly from the harness's
+        # mailbox in `_drain_mailbox_tx_frames` and never touches
+        # `decoder.tx_frames`.  Merge both sources here, ordered by the
+        # cycle count each frame was decoded at so the JSONL stream
+        # reflects observed order.
+        merged: list[TxTriplet] = sorted(
+            (*self.decoder.tx_frames, *self._mailbox_tx_log),
+            key=lambda f: getattr(f, "cycle", 0),
+        )
         return [
             (frame.route & 0xFF, frame.cmd & 0xFF, frame.data & 0xFF)
-            for frame in self.decoder.tx_frames
+            for frame in merged
         ]
 
     def lcd_snapshot(self) -> tuple[str, str] | None:
@@ -737,6 +754,9 @@ class MainChainHarness:
                 del self._mailbox_tx_partial[:3]
 
         self._issue(f"reg(0x7C2)=0x{cur:02X}", 5.0)
+        # Mirror new frames into the dedicated mailbox log so the
+        # ground-truth output capture can recover them at close-time.
+        self._mailbox_tx_log.extend(new_frames)
         return new_frames
 
     # --- USB peripheral helpers (requires gpsim USB SIE model) ---
