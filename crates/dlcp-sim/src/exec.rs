@@ -34,8 +34,103 @@
 #![allow(dead_code, reason = "P1.8b executor; consumed by P1.8c/d/e parity tests")]
 
 use crate::core::Core;
-use crate::isa::{Instruction, decode};
+use crate::isa::{Access, Dest, Instruction, decode};
+use crate::memory::Address;
 use crate::stack::Stack;
+
+// ---- Key SFR addresses consulted by the executor ----------------
+//
+// Every PIC18 SFR is exposed as a byte in the data-memory map at
+// `0xF60..=0xFFF`; the executor uses [`Memory::read_raw`] /
+// [`Memory::write_raw`] to access them.  Side effects (e.g. INDFn
+// indirection, POSTINCn FSR mutation, PCL writes triggering a PC
+// update) are NOT modelled in this commit -- they land in the
+// FSR-indirect-addressing sub-commit of P1.8b.  The helpers here
+// stick to operands that don't trip those special SFRs.
+
+/// `WREG` at 0xFE8.  PIC18's W is exposed as this SFR; reads /
+/// writes via the f-operand route through the same byte.
+const WREG_ADDR: u16 = 0xFE8;
+
+/// `BSR` at 0xFE0.  Bits 3..0 select the active bank for `a=1`
+/// operands; bits 7..4 are unimplemented (read as 0).
+const BSR_ADDR: u16 = 0xFE0;
+
+/// `STATUS` at 0xFD8.
+const STATUS_ADDR: u16 = 0xFD8;
+const STATUS_C: u8 = 0x01;
+const STATUS_DC: u8 = 0x02;
+const STATUS_Z: u8 = 0x04;
+const STATUS_OV: u8 = 0x08;
+const STATUS_N: u8 = 0x10;
+/// `STATUS` valid bits (bits 5..7 are unimplemented, read as 0).
+const STATUS_VALID_MASK: u8 = 0x1F;
+
+// ---- Read/write helpers -----------------------------------------
+
+fn read_w(core: &Core) -> u8 {
+    core.memory.read_raw(Address::from_raw(WREG_ADDR))
+}
+
+fn write_w(core: &mut Core, value: u8) {
+    core.memory.write_raw(Address::from_raw(WREG_ADDR), value);
+}
+
+fn read_bsr(core: &Core) -> u8 {
+    core.memory.read_raw(Address::from_raw(BSR_ADDR))
+}
+
+fn write_bsr(core: &mut Core, value: u8) {
+    // Per DS39632E Register 5-2, BSR bits 7..4 are unimplemented.
+    core.memory
+        .write_raw(Address::from_raw(BSR_ADDR), value & 0x0F);
+}
+
+fn read_status(core: &Core) -> u8 {
+    core.memory.read_raw(Address::from_raw(STATUS_ADDR))
+}
+
+/// Set or clear `mask` bits in STATUS based on `predicate`.  Used
+/// by every instruction that touches Z / N / C / DC / OV.
+fn set_status_bits(core: &mut Core, mask: u8, predicate: bool) {
+    let s = core.memory.read_raw(Address::from_raw(STATUS_ADDR));
+    let new = if predicate { s | mask } else { s & !mask };
+    core.memory
+        .write_raw(Address::from_raw(STATUS_ADDR), new & STATUS_VALID_MASK);
+}
+
+/// Set Z and N based on the byte the instruction just produced.
+/// Most byte-oriented ops update these two flags; the C/DC/OV
+/// updates are op-specific.
+fn set_status_zn(core: &mut Core, value: u8) {
+    set_status_bits(core, STATUS_Z, value == 0);
+    set_status_bits(core, STATUS_N, value & 0x80 != 0);
+}
+
+/// Resolve an f-operand into a 12-bit data-memory address using
+/// the operand's `a` bit and (for `a=BankSelected`) BSR.
+fn resolve_f(core: &Core, f: u8, a: Access) -> Address {
+    let bank_selected = matches!(a, Access::BankSelected);
+    core.memory.resolve(f, bank_selected, read_bsr(core))
+}
+
+fn read_f(core: &Core, f: u8, a: Access) -> u8 {
+    core.memory.read_raw(resolve_f(core, f, a))
+}
+
+fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
+    let addr = resolve_f(core, f, a);
+    core.memory.write_raw(addr, value);
+}
+
+/// Write `value` to the destination implied by a byte-oriented
+/// op's `d` bit: W (`Dest::W`) or the f-operand (`Dest::F`).
+fn write_dest(core: &mut Core, d: Dest, f: u8, a: Access, value: u8) {
+    match d {
+        Dest::W => write_w(core, value),
+        Dest::F => write_f(core, f, a, value),
+    }
+}
 
 /// Fatal executor error.  Non-fatal conditions (skip-not-taken,
 /// overflow flags, etc.) are signalled through STATUS / RCON
@@ -144,6 +239,36 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         // jump can land on one and the firmware still expects to
         // recover.
         Instruction::NopContinuation { .. } => {
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        // ---------------- literal / data move (1 Tcy each) -------
+        Instruction::MovLw { k } => {
+            write_w(core, k);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Movwf { a, f } => {
+            let w = read_w(core);
+            write_f(core, f, a, w);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Movf { d, a, f } => {
+            // MOVF reads f and writes it to the destination (d).
+            // STATUS Z / N reflect the moved byte regardless of d:
+            // even `MOVF f, F` (a no-op move) updates the flags --
+            // the firmware uses this idiom to test a register
+            // without disturbing W.
+            let v = read_f(core, f, a);
+            set_status_zn(core, v);
+            write_dest(core, d, f, a, v);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::MovLb { k } => {
+            // MOVLB loads BSR<3:0> with k<3:0>; bits 7..4 stay 0.
+            write_bsr(core, k);
             core.advance_cycles(1);
             Ok(1)
         }
@@ -345,18 +470,18 @@ mod tests {
 
     #[test]
     fn step_reports_unimplemented_for_not_yet_wired_instruction() {
-        // MOVLW 0x42 — encoding 0x0E42.  Not yet wired into the
-        // dispatch in this skeleton commit; future P1.8b commits
-        // will land it.  This test pins the Unimplemented arm and
-        // will need updating (changed to assert successful exec)
-        // when MOVLW lands.
-        let mut core = k20_core_with_flash(&[0x42, 0x0E]);
+        // ADDWF 0x42, W, ACCESS — encoding 0x2442.  Not yet wired
+        // into the dispatch (byte-oriented arithmetic lands in a
+        // later P1.8b commit).  This test pins the Unimplemented
+        // arm and will need updating (changed to assert successful
+        // exec) when ADDWF lands.
+        let mut core = k20_core_with_flash(&[0x42, 0x24]);
         let mut stack = Stack::new();
 
         let err = step(&mut core, &mut stack).unwrap_err();
         assert!(
-            matches!(err, ExecError::Unimplemented(Instruction::MovLw { k: 0x42 })),
-            "expected Unimplemented(MovLw), got {err:?}"
+            matches!(err, ExecError::Unimplemented(Instruction::AddWf { .. })),
+            "expected Unimplemented(AddWf), got {err:?}"
         );
         // PC should still have advanced (the dispatch happens after
         // the fetch+set_pc, so the caller can recover by retrying
@@ -365,5 +490,158 @@ mod tests {
         // Cycle counter stays at 0 — Unimplemented didn't consume
         // a Tcy because no instruction actually ran.
         assert_eq!(core.cycles(), 0);
+    }
+
+    // ------------------------------------------------------------
+    // Literal / data-move instructions: MOVLW, MOVWF, MOVF, MOVLB.
+    // ------------------------------------------------------------
+
+    #[test]
+    fn movlw_loads_literal_into_w() {
+        // MOVLW 0x42 — opcode 0x0E42.
+        let mut core = k20_core_with_flash(&[0x42, 0x0E]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(read_w(&core), 0x42);
+        assert_eq!(core.pc(), 0x0002);
+    }
+
+    #[test]
+    fn movlw_does_not_touch_status() {
+        // MOVLW must not affect Z / N / C / DC / OV.
+        let mut core = k20_core_with_flash(&[0x00, 0x0E]); // MOVLW 0x00
+        let mut stack = Stack::new();
+        // Pre-set every status bit to 1; MOVLW must leave them alone.
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_status(&core), STATUS_VALID_MASK);
+        assert_eq!(read_w(&core), 0x00);
+    }
+
+    #[test]
+    fn movwf_stores_w_into_access_bank_low() {
+        // Pre-load: MOVLW 0x55, MOVWF 0x10, ACCESS  (f=0x10 < 0x60 → bank 0 RAM).
+        // MOVLW 0x55 = 0x0E55; MOVWF f, ACCESS = 0x6E10 (high8 = 0x6E, low = f).
+        let mut core = k20_core_with_flash(&[0x55, 0x0E, 0x10, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap(); // MOVLW
+        step(&mut core, &mut stack).unwrap(); // MOVWF
+        // f=0x10 with a=ACCESS lands at bank 0 offset 0x10 → addr 0x010.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x55);
+        // W is unchanged.
+        assert_eq!(read_w(&core), 0x55);
+    }
+
+    #[test]
+    fn movwf_stores_w_into_sfr_window_via_access_bank() {
+        // f=0x80 with a=ACCESS routes to 0xF80 (Access-Bank high
+        // half).  Use 0xC0 → 0xFC0; that's an unused SFR slot on
+        // both variants but the executor doesn't know that, just
+        // that the byte lands at addr 0xFC0.
+        // MOVLW 0xAA = 0x0EAA; MOVWF 0xC0, ACCESS = 0x6EC0.
+        let mut core = k20_core_with_flash(&[0xAA, 0x0E, 0xC0, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFC0)), 0xAA);
+    }
+
+    #[test]
+    fn movwf_with_bank_selected_uses_bsr() {
+        // Set BSR=3; MOVWF 0x40, BANKED → addr (3<<8)|0x40 = 0x340.
+        // MOVLW 0x77 = 0x0E77; MOVWF 0x40, BANKED = 0x6F40.
+        let mut core = k20_core_with_flash(&[0x77, 0x0E, 0x40, 0x6F]);
+        let mut stack = Stack::new();
+        write_bsr(&mut core, 3);
+        step(&mut core, &mut stack).unwrap(); // MOVLW
+        step(&mut core, &mut stack).unwrap(); // MOVWF
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x340)), 0x77);
+    }
+
+    #[test]
+    fn movf_to_w_loads_byte_and_sets_z_when_zero() {
+        // RAM[0x10] = 0x00 (default); MOVF 0x10, W, ACCESS = 0x5010.
+        let mut core = k20_core_with_flash(&[0x10, 0x50]);
+        let mut stack = Stack::new();
+        // Pre-clear STATUS so we can see the Z bit appear.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x00);
+        assert!(read_status(&core) & STATUS_Z != 0, "Z must be set");
+        assert!(read_status(&core) & STATUS_N == 0, "N must be clear");
+    }
+
+    #[test]
+    fn movf_to_w_sets_n_for_negative_byte() {
+        // RAM[0x20] = 0x80 → bit 7 set → N=1.
+        // MOVF 0x20, W, ACCESS = 0x5020.
+        let mut core = k20_core_with_flash(&[0x20, 0x50]);
+        core.memory.write_raw(Address::from_raw(0x020), 0x80);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x80);
+        assert!(read_status(&core) & STATUS_N != 0, "N must be set");
+        assert!(read_status(&core) & STATUS_Z == 0, "Z must be clear");
+    }
+
+    #[test]
+    fn movf_to_w_with_nonzero_positive_clears_z_and_n() {
+        // RAM[0x30] = 0x42; MOVF 0x30, W, ACCESS = 0x5030.
+        let mut core = k20_core_with_flash(&[0x30, 0x50]);
+        core.memory.write_raw(Address::from_raw(0x030), 0x42);
+        // Pre-set Z + N so we can confirm they get cleared.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z | STATUS_N);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x42);
+        assert!(read_status(&core) & STATUS_Z == 0);
+        assert!(read_status(&core) & STATUS_N == 0);
+    }
+
+    #[test]
+    fn movf_to_f_writes_back_and_still_updates_status() {
+        // The "MOVF f, F" idiom is firmware shorthand for "test
+        // f without disturbing W".  The byte lands back in f and
+        // STATUS Z / N reflect it; W stays whatever it was.
+        // MOVF 0x10, F, ACCESS = 0x5210 (d=F has bit 9 set).
+        let mut core = k20_core_with_flash(&[0x10, 0x52]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x00);
+        write_w(&mut core, 0xFF); // marker: must remain 0xFF.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        assert_eq!(read_w(&core), 0xFF, "W must be untouched by MOVF f, F");
+        assert!(read_status(&core) & STATUS_Z != 0);
+    }
+
+    #[test]
+    fn movlb_writes_low_4_bits_of_bsr() {
+        // MOVLB 0x05 — opcode 0x0105 (per decoder; high8=0x01).
+        let mut core = k20_core_with_flash(&[0x05, 0x01]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_bsr(&core), 0x05);
+    }
+
+    #[test]
+    fn movlb_truncates_literal_to_4_bits() {
+        // PIC18 BSR is 4 bits; MOVLB stores the low nibble only.
+        // The decoder pulls only the low 4 bits of the literal
+        // from word1 (`word1 & 0x0F`), so an attempt to encode
+        // `MOVLB 0xFA` actually decodes as MOVLB 0x0A.  The
+        // executor's BSR write also masks to 4 bits as a
+        // belt-and-suspenders guard.  Pin both layers by
+        // pre-setting BSR to 0xFF (raw) and confirming the high
+        // nibble gets cleared after MOVLB.
+        // Build opcode by hand: word1 = 0x010A → MOVLB 0x0A.
+        let mut core = k20_core_with_flash(&[0x0A, 0x01]);
+        // Stash garbage in the BSR high nibble by writing raw.
+        core.memory.write_raw(Address::from_raw(BSR_ADDR), 0xF7);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_bsr(&core), 0x0A);
     }
 }
