@@ -112,7 +112,8 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
     **Cycle-cost cheat-sheet (DS39632E Table 24-2):**
       - 1 Tcy default for byte/bit/literal/skip-not-taken.
-      - **2 Tcy:** unconditional branches/jumps (`GOTO`, `CALL`, `RCALL`, `BRA`); conditional branches when the predicate is true (`BC`, `BN`, `BNC`, `BNN`, `BNOV`, `BNZ`, `BOV`, `BZ` — 1 Tcy when not taken); returns (`RETURN`, `RETFIE`, `RETLW`); two-word data moves (`MOVFF`, `LFSR`); table ops (`TBLRD*`, `TBLRD*+`, `TBLRD*-`, `TBLRD+*`, `TBLWT*`, `TBLWT*+`, `TBLWT*-`, `TBLWT+*`); and `RESET`/`SLEEP` model-dependent.
+      - **2 Tcy:** unconditional branches/jumps (`GOTO`, `CALL`, `RCALL`, `BRA`); conditional branches when the predicate is true (`BC`, `BN`, `BNC`, `BNN`, `BNOV`, `BNZ`, `BOV`, `BZ` — 1 Tcy when not taken); returns (`RETURN`, `RETFIE`, `RETLW`); two-word data moves (`MOVFF`, `LFSR`); and table ops (`TBLRD*`, `TBLRD*+`, `TBLRD*-`, `TBLRD+*`, `TBLWT*`, `TBLWT*+`, `TBLWT*-`, `TBLWT+*`).
+      - `RESET` and `SLEEP` are 1 Tcy per Table 24-2 (the post-instruction reset / power-down latency is separate from the instruction cycle count).
       - **Skip-taken extra cycle:** `BTFSC`, `BTFSS`, `CPFSEQ`, `CPFSGT`, `CPFSLT`, `TSTFSZ`, `DECFSZ`, `DCFSNZ`, `INCFSZ`, `INFSNZ` cost 1 Tcy when the predicate is false (skip not taken), 2 Tcy when true and the skipped target is a 1-word instruction, **3 Tcy** when the skipped target is a 2-word instruction (`GOTO`, `CALL`, `MOVFF`, `LFSR`).
 
 - [pending] P1.8c isa_parity::isa_covers_all_75_pic18_opcodes
