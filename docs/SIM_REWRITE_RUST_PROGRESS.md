@@ -64,7 +64,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [done] P1.2 PIC18 ISA decoder for all 75 instructions
   - verify: `cd crates/dlcp-sim && cargo test --release isa::decode::tests -- --include-ignored`
   - artifact: `crates/dlcp-sim/src/isa/decode.rs`
-  - notes: opcode table from DS39632E §24 / DS41303 §25.
+  - notes: opcode table from DS39632E §26 (Instruction Set Summary, Table 26-2) / DS41303 §25.
 
 - [done] P1.3 BSR + Access Bank addressing (`a` bit semantics)
   - verify: `cd crates/dlcp-sim && cargo test --release memory::access_bank::tests`
@@ -108,12 +108,12 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [pending] P1.8b Cycle-accurate executor for all 75 PIC18 instructions
   - verify: `cd crates/dlcp-sim && cargo test --release exec::tests`
   - artifact: `crates/dlcp-sim/src/exec.rs`
-  - notes: `Core::step(&mut self, &mut Stack) -> u8 cycles` fetches the word at PC, decodes via P1.2's `decode`, and dispatches over `Instruction`. STATUS-flag fidelity (Z/C/OV/N/DC) per DS39632E §24 / DS41303 §25 instruction encyclopedia. Variant-aware via `Memory::variant()`. Per-instruction unit tests cover STATUS transitions plus Access-Bank/BSR/FSR/PRODL/PRODH/TBLPTR/TABLAT side effects. This is the largest sub-task in P1.8 — expect ~1500–2500 LOC of executor code + per-instruction tests.
+  - notes: `Core::step(&mut self, &mut Stack) -> u8 cycles` fetches the word at PC, decodes via P1.2's `decode`, and dispatches over `Instruction`. STATUS-flag fidelity (Z/C/OV/N/DC) per DS39632E §26 / DS41303 §25 instruction encyclopedia. Variant-aware via `Memory::variant()`. Per-instruction unit tests cover STATUS transitions plus Access-Bank/BSR/FSR/PRODL/PRODH/TBLPTR/TABLAT side effects. This is the largest sub-task in P1.8 — expect ~1500–2500 LOC of executor code + per-instruction tests.
 
-    **Cycle-cost cheat-sheet (DS39632E Table 24-2):**
+    **Cycle-cost cheat-sheet (DS39632E Table 26-2):**
       - 1 Tcy default for byte/bit/literal/skip-not-taken.
       - **2 Tcy:** unconditional branches/jumps (`GOTO`, `CALL`, `RCALL`, `BRA`); conditional branches when the predicate is true (`BC`, `BN`, `BNC`, `BNN`, `BNOV`, `BNZ`, `BOV`, `BZ` — 1 Tcy when not taken); returns (`RETURN`, `RETFIE`, `RETLW`); two-word data moves (`MOVFF`, `LFSR`); and table ops (`TBLRD*`, `TBLRD*+`, `TBLRD*-`, `TBLRD+*`, `TBLWT*`, `TBLWT*+`, `TBLWT*-`, `TBLWT+*`).
-      - `RESET` and `SLEEP` are 1 Tcy per Table 24-2 (the post-instruction reset / power-down latency is separate from the instruction cycle count).
+      - `RESET` and `SLEEP` are 1 Tcy per Table 26-2 (the post-instruction reset / power-down latency is separate from the instruction cycle count).
       - **Skip-taken extra cycle:** `BTFSC`, `BTFSS`, `CPFSEQ`, `CPFSGT`, `CPFSLT`, `TSTFSZ`, `DECFSZ`, `DCFSNZ`, `INCFSZ`, `INFSNZ` cost 1 Tcy when the predicate is false (skip not taken), 2 Tcy when true and the skipped target is a 1-word instruction, **3 Tcy** when the skipped target is a 2-word instruction (`GOTO`, `CALL`, `MOVFF`, `LFSR`).
 
 - [pending] P1.8c isa_parity::isa_covers_all_75_pic18_opcodes

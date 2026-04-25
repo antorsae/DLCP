@@ -7,8 +7,9 @@
 //! behaviour, and a few other static device-level flags.
 //!
 //! References:
-//! * DS39632E §22 + Table 22-1, "Configuration Bits and Device
-//!   IDs" (PIC18F2455).
+//! * DS39632E §25 ("Special Features of the CPU") + §25.1
+//!   "Configuration Bits" (Table 25-1 plus Registers 25-1
+//!   through 25-13) (PIC18F2455).
 //! * DS41303G §23 (PIC18F25K20 — same general layout, bit
 //!   assignments differ in places).
 //!
@@ -79,7 +80,7 @@ impl BorenMode {
     }
 }
 
-/// Oscillator selection (CONFIG1H FOSC[3:0]) per DS39632E §22 /
+/// Oscillator selection (CONFIG1H FOSC[3:0]) per DS39632E §25 /
 /// Register 25-2.  All 16 four-bit encodings are documented for
 /// the PIC18F2455/2550/4455/4550 family — there is no reserved
 /// pattern.  Note that for four of the modes (XT, XTPLL, HS,
@@ -295,7 +296,7 @@ impl Config {
     }
 
     /// DEBUG (CONFIG4L bit 7) — *active-low* Background
-    /// Debugger control.  Per DS39632E §22 / Register 25-7,
+    /// Debugger control.  Per DS39632E §25 / Register 25-7,
     /// `1` = background debugger DISABLED (RB6/RB7 free as
     /// general-purpose I/O); `0` = debugger ENABLED (RB6/RB7
     /// dedicated to ICD).  Production firmware ships with
@@ -377,7 +378,7 @@ mod tests {
     #[test]
     fn fosc_decodes_each_documented_encoding() {
         let mut c = V32_MAIN;
-        // Per DS39632E §22 / Register 25-2.  All 16 four-bit
+        // Per DS39632E §25 / Register 25-2.  All 16 four-bit
         // encodings are documented; XT / XTPLL / HS / HSPLL
         // collapse pairs of consecutive encodings.
         for (bits, expected) in [

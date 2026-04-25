@@ -55,7 +55,7 @@ pub enum FsrAccessMode {
     PreIncrement,
     /// `PLUSWn` — read/write `*(FSRn + (signed)W)`; FSRn and W
     /// are both untouched.  W is interpreted as a signed `i8`
-    /// (range `-128..=+127`) per DS39632E §24.
+    /// (range `-128..=+127`) per DS39632E §26.
     PlusW,
 }
 

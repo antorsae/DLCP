@@ -18,7 +18,7 @@
 //! The stack module reports overflow / underflow events via
 //! [`Stack::overflow`] / [`Stack::underflow`].  Whether those
 //! events trigger a reset is governed by the **STVREN** bit in
-//! `CONFIG4L` (DS39632E §22.1) — that decision is made by the
+//! `CONFIG4L` (DS39632E §25.1) — that decision is made by the
 //! reset-source dispatcher (P1.6) after consulting the parsed
 //! configuration words (P1.7).  P1.5's job is to make the
 //! architectural state visible; resetting on overflow is a

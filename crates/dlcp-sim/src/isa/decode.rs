@@ -2,7 +2,7 @@
 //! the four 2-word instructions) opcode into a structured
 //! [`Instruction`].
 //!
-//! The encoding is taken from DS39632E §24 (PIC18F2455 ISA) and
+//! The encoding is taken from DS39632E §26 (PIC18F2455 ISA) and
 //! DS41303G §25 (PIC18F25K20 ISA), which are byte-for-byte
 //! identical for every opcode this firmware uses; a single
 //! decoder serves both variants.
@@ -238,7 +238,7 @@ pub enum Instruction {
     // Sentinel for the 4 reserved 2-word continuation patterns
     // (`1111 xxxx xxxx xxxx`) and any unknown opcode.  PIC18
     // hardware decodes `1111 ...` as NOP when fetched
-    // standalone (DS39632E §24), so we expose that explicitly
+    // standalone (DS39632E §26), so we expose that explicitly
     // rather than collapsing into Instruction::Nop — the
     // interpreter may want to log a warning.
     /// Second-word continuation of a 2-word op fetched out of
@@ -380,7 +380,7 @@ const fn decode_misc_0000_0000(word1: u16, low8: u8) -> (Instruction, u32) {
 
 const fn decode_literal_0000_1xxx(word1: u16, low8: u8) -> (Instruction, u32) {
     // 0000 1XXX kkkk kkkk — XXX is a 3-bit selector among the
-    // literal-only ops (per DS39632E §24).
+    // literal-only ops (per DS39632E §26).
     match (word1 >> 8) & 0x0F {
         0b1000 => (Instruction::SubLw { k: low8 }, 2),
         0b1001 => (Instruction::IorLw { k: low8 }, 2),
@@ -524,7 +524,7 @@ const fn decode_high6_0110_11(word1: u16, low8: u8, a: Access) -> (Instruction, 
 // Word1: 1100 ffff ffff ffff  (12-bit src)
 // Word2: 1111 ffff ffff ffff  (12-bit dst).  We tolerate any
 // upper nibble on word2 since real silicon only checks the low
-// 12 bits per DS39632E §24.
+// 12 bits per DS39632E §26.
 // ---------------------------------------------------------------
 
 const fn decode_movff(word1: u16, word2: u16) -> (Instruction, u32) {
@@ -578,7 +578,7 @@ const fn decode_1110(word1: u16, word2: u16, low8: u8) -> (Instruction, u32) {
         }
         // LFSR: 1110 1110 00ff kkkk + 1111 0000 kkkk kkkk.
         // 12-bit literal split: top 4 bits in word1[3..0], bottom 8 in word2[7..0].
-        // Per DS39632E §24 + gpsim's strict check at
+        // Per DS39632E §26 + gpsim's strict check at
         // 16bit-instructions.cc:1396, valid LFSR words must
         // satisfy: word1 bits 7..6 == 00, word1 bits 5..4 ∈ {00,
         // 01, 10}, AND word2 upper byte == 0xF0.  Anything else
@@ -985,7 +985,7 @@ mod tests {
 
     #[test]
     fn op_lfsr_rejects_reserved_fsr_index() {
-        // LFSR with ff = 11 (reserved per DS39632E §24).
+        // LFSR with ff = 11 (reserved per DS39632E §26).
         // word1 = 1110 1110 00 11 0000 = 0xEE30
         let (op, _) = decode(0xEE30, 0xF000);
         assert!(matches!(op, Instruction::Reserved { word: 0xEE30 }));

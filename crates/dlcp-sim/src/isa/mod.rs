@@ -4,7 +4,7 @@
 //! P1.6 (reset sources), and P1.7 (config-bit parser) build the
 //! actual interpreter that consumes [`decode::Instruction`]s.
 //!
-//! Reference: DS39632E §24 (PIC18F2455 instruction set) and
+//! Reference: DS39632E §26 (PIC18F2455 instruction set) and
 //! DS41303G §25 (PIC18F25K20 instruction set).  The encoding is
 //! byte-for-byte identical between the two variants — the only
 //! difference is which SFR addresses are alive — so a single
