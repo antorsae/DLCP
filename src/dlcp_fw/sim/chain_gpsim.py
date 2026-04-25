@@ -598,6 +598,15 @@ class MainChainHarness:
     def inject_frames_fifo(
         self, frames: List[List[int]], fifo_limit: int
     ) -> tuple[int, int]:
+        record_event(
+            kind="inject_frames_fifo",
+            harness="main_chain",
+            payload={
+                "frames": [[b & 0xFF for b in f] for f in frames],
+                "fifo_limit": fifo_limit,
+                "transport_mode": self.transport_mode,
+            },
+        )
         if self.transport_mode == "native_ring":
             rd = _read_reg(self._issue, 0x0C6)
             wr = _read_reg(self._issue, 0x0C7)

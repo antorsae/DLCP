@@ -64,9 +64,12 @@ class StimulusRecorder:
     """
 
     def __init__(self, out_path: Path) -> None:
+        # File creation is deferred to __enter__ so that a re-entrancy
+        # check that fails (another recorder already active) doesn't
+        # leave a truncated file behind on disk for the user to wonder
+        # about.
         self.out_path = Path(out_path)
-        self.out_path.parent.mkdir(parents=True, exist_ok=True)
-        self._fp = self.out_path.open("w", encoding="utf-8")
+        self._fp = None
         self._seq = 0
         self._token: contextvars.Token | None = None
         self._closed = False
@@ -77,6 +80,8 @@ class StimulusRecorder:
                 "another StimulusRecorder is already active; "
                 "nested capture is not supported"
             )
+        self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fp = self.out_path.open("w", encoding="utf-8")
         self._token = _active_recorder.set(self)
         return self
 
@@ -97,6 +102,8 @@ class StimulusRecorder:
         if self._closed:
             return
         self._closed = True
+        if self._fp is None:
+            return
         try:
             self._fp.flush()
         finally:
@@ -109,7 +116,7 @@ class StimulusRecorder:
         mid-run leaves a usable partial stream, which is what we
         want for post-mortem replay.
         """
-        if self._closed:
+        if self._closed or self._fp is None:
             return
         event: dict[str, Any] = {
             "seq": self._seq,

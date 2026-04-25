@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from .gpsim import require_gpsim_binary
+from .ground_truth import record_event
 from .lcd import LcdByte, LcdState
 from .manifests import (
     control_disable_boot_wait,
@@ -658,6 +659,11 @@ class GpsimControlHarness:
         action = _KEY_ALIASES.get(key.upper(), key.upper())
         if action not in SCAN_BITS:
             raise ValueError(f"unknown key {key!r}")
+        record_event(
+            kind="press",
+            harness="gpsim_control",
+            payload={"key": key, "action": action},
+        )
         self._key_release[action] = max(
             self._key_release[action], self.current_cycle + self.hold_cycles
         )
@@ -691,10 +697,20 @@ class GpsimControlHarness:
 
     def inject_bytes(self, data: List[int]) -> bool:
         """Inject raw bytes into the CONTROL RX ring buffer."""
+        record_event(
+            kind="inject_bytes",
+            harness="gpsim_control",
+            payload={"data": [b & 0xFF for b in data]},
+        )
         return self._inject_rx_bytes(list(data))
 
     def inject_triplet(self, frame: TxTriplet) -> bool:
         """Inject one route/cmd/data triplet into the CONTROL RX ring buffer."""
+        record_event(
+            kind="inject_triplet",
+            harness="gpsim_control",
+            payload={"route": frame.route & 0xFF, "cmd": frame.cmd & 0xFF, "data": frame.data & 0xFF},
+        )
         return self._inject_rx_bytes([frame.route, frame.cmd, frame.data])
 
     def inject_frames_fifo(
@@ -707,6 +723,14 @@ class GpsimControlHarness:
 
         Returns (delivered_bytes, overrun_bytes).
         """
+        record_event(
+            kind="inject_frames_fifo",
+            harness="gpsim_control",
+            payload={
+                "frames": [[b & 0xFF for b in f] for f in frames],
+                "fifo_limit": fifo_limit,
+            },
+        )
         rd = _read_reg(self._issue, 0x098)
         wr = _read_reg(self._issue, 0x099)
         delivered = 0
@@ -738,6 +762,17 @@ class GpsimControlHarness:
         This is the public host-command injection harness used by gpsim
         tests to drive parser behavior without touching private internals.
         """
+        record_event(
+            kind="inject_host_commands",
+            harness="gpsim_control",
+            payload={
+                "commands": [
+                    {"route": c.route & 0xFF, "cmd": c.cmd & 0xFF, "data": c.data & 0xFF}
+                    for c in commands
+                ],
+                "steps_per_command": steps_per_command,
+            },
+        )
         before = len(self._decoder.tx_frames)
         for raw in commands:
             frame = raw.normalized()
@@ -782,6 +817,16 @@ class GpsimControlHarness:
         Then it clears 0x01F bit0 (IR_ARMED) so the foreground dispatch
         path (label_166) runs on the next step(s).
         """
+        record_event(
+            kind="inject_decoded_ir_event",
+            harness="gpsim_control",
+            payload={
+                "cmd": cmd & 0xFF,
+                "addr": addr & 0xFF,
+                "steps": steps,
+                "clear_debounce": bool(clear_debounce),
+            },
+        )
         if clear_debounce:
             self._issue("reg(0x01B)=0x00", 5.0)
             self._issue("reg(0x01C)=0x00", 5.0)
