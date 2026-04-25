@@ -34,7 +34,7 @@
 #![allow(dead_code, reason = "P1.8b executor; consumed by P1.8c/d/e parity tests")]
 
 use crate::core::Core;
-use crate::isa::{Access, Dest, Instruction, decode};
+use crate::isa::{Access, Dest, FsrIndex, Instruction, decode};
 use crate::memory::Address;
 use crate::stack::Stack;
 
@@ -176,6 +176,15 @@ const fn sfr_write_mask(addr: u16) -> u8 {
 
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
     let addr = resolve_f(core, f, a);
+    write_addr(core, addr, value);
+}
+
+/// Write `value` to a 12-bit data-memory address, applying
+/// `sfr_write_mask` so unimplemented bits are stripped before
+/// the byte lands in the backing array.  Used by MOVFF / LFSR
+/// whose operands carry the absolute address directly rather
+/// than going through the f-operand resolver.
+fn write_addr(core: &mut Core, addr: Address, value: u8) {
     core.memory
         .write_raw(addr, value & sfr_write_mask(addr.as_u16()));
 }
@@ -211,9 +220,7 @@ fn write_dest_preserve_status_flags(
     }
     match d {
         Dest::W => write_w(core, value),
-        Dest::F => core
-            .memory
-            .write_raw(target, value & sfr_write_mask(target.as_u16())),
+        Dest::F => write_addr(core, target, value),
     }
 }
 
@@ -359,6 +366,57 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             write_bsr(core, k);
             core.advance_cycles(1);
             Ok(1)
+        }
+        Instruction::Setf { a, f } => {
+            // SETF f -- write 0xFF to the f-operand byte.  No
+            // STATUS flag updates per DS39632E §26 SETF; if f
+            // happens to be STATUS, the unimplemented-bit mask
+            // in write_f narrows 0xFF to 0x1F (the implemented
+            // bits all get set; bits 7..5 stay 0).
+            write_f(core, f, a, 0xFF);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Clrf { a, f } => {
+            // CLRF f -- clear the f-operand to 0 AND set Z=1.
+            // Z is the only flag affected (DS39632E §26).
+            // Per §5.3.6, when f=STATUS the result-write of 0
+            // would clobber the Z update, so skip the write
+            // and let only the flag update land.
+            let target = resolve_f(core, f, a);
+            if target.as_u16() != STATUS_ADDR {
+                write_addr(core, target, 0);
+            }
+            set_status_bits(core, STATUS_Z, true);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Movff { src, dst } => {
+            // MOVFF src, dst -- copy one byte between two
+            // 12-bit data-memory addresses; 2 Tcy.  No flag
+            // updates (DS39632E §26 MOVFF).  Silicon errata
+            // notes that dst = PCL / TOSU / TOSH / TOSL is
+            // undefined; the simulator just writes through and
+            // lets the mask + raw write handle whatever lands.
+            let v = core.memory.read_raw(Address::from_raw(src));
+            write_addr(core, Address::from_raw(dst), v);
+            core.advance_cycles(2);
+            Ok(2)
+        }
+        Instruction::Lfsr { fsr, k } => {
+            // LFSR fsr, k (12-bit literal) -- load FSRnH:FSRnL
+            // with k.  No flags affected; 2 Tcy.  The high
+            // nibble of k is at most 0xF; the FSRnH mask
+            // (0x0F) makes the bound explicit at write time.
+            let (fsrh, fsrl) = match fsr {
+                FsrIndex::Fsr0 => (0xFEAu16, 0xFE9u16),
+                FsrIndex::Fsr1 => (0xFE2, 0xFE1),
+                FsrIndex::Fsr2 => (0xFDA, 0xFD9),
+            };
+            write_addr(core, Address::from_raw(fsrh), (k >> 8) as u8);
+            write_addr(core, Address::from_raw(fsrl), k as u8);
+            core.advance_cycles(2);
+            Ok(2)
         }
         Instruction::Reserved { word } => Err(ExecError::Reserved(word)),
         other => Err(ExecError::Unimplemented(other)),
@@ -703,6 +761,139 @@ mod tests {
         assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
         assert_eq!(read_w(&core), 0xFF, "W must be untouched by MOVF f, F");
         assert!(read_status(&core) & STATUS_Z != 0);
+    }
+
+    // ------------------------------------------------------------
+    // SETF / CLRF / MOVFF / LFSR -- complete the data-movement
+    // category.
+    // ------------------------------------------------------------
+
+    #[test]
+    fn setf_writes_all_ones_to_access_bank_low_register() {
+        // SETF f, a=ACCESS: encoding 0110 1000 ffff ffff = 0x68ff.
+        // f=0x10 → Access-Bank low → addr 0x010.
+        let mut core = k20_core_with_flash(&[0x10, 0x68]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0xFF);
+    }
+
+    #[test]
+    fn setf_to_status_lands_only_implemented_bits() {
+        // SETF STATUS, ACCESS: f=0xD8 → 0xFD8.  STATUS_VALID_MASK
+        // narrows the 0xFF write to 0x1F.  SETF doesn't touch
+        // flags itself, so the result IS the new STATUS.
+        let mut core = k20_core_with_flash(&[0xD8, 0x68]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_status(&core), STATUS_VALID_MASK);
+    }
+
+    #[test]
+    fn clrf_writes_zero_and_sets_z() {
+        // CLRF f, a=ACCESS: encoding 0110 1010 ffff ffff = 0x6Aff.
+        // f=0x20 → addr 0x020.  Pre-load 0xAA so we see it clear.
+        let mut core = k20_core_with_flash(&[0x20, 0x6A]);
+        core.memory.write_raw(Address::from_raw(0x020), 0xAA);
+        // Pre-clear STATUS so we see Z appear.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x020)), 0x00);
+        assert!(read_status(&core) & STATUS_Z != 0, "Z must be set");
+    }
+
+    #[test]
+    fn clrf_to_status_preserves_other_flags_and_sets_z() {
+        // Per DS39632E §5.3.6: a flag-affecting op targeting
+        // STATUS drops the result write -- only the flag
+        // update lands.  CLRF only affects Z, so C/DC/OV/N
+        // must survive a `CLRF STATUS, ACCESS`.
+        // f=0xD8 → STATUS at 0xFD8.  Encoding 0x6AD8.
+        let mut core = k20_core_with_flash(&[0xD8, 0x6A]);
+        // Pre-set every implemented STATUS bit; CLRF should
+        // leave C/DC/OV/N alone and Z stays set (was already 1).
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // C, DC, OV, N must survive; Z stays set.
+        assert!(read_status(&core) & STATUS_C != 0);
+        assert!(read_status(&core) & STATUS_DC != 0);
+        assert!(read_status(&core) & STATUS_OV != 0);
+        assert!(read_status(&core) & STATUS_N != 0);
+        assert!(read_status(&core) & STATUS_Z != 0);
+    }
+
+    #[test]
+    fn movff_copies_byte_between_arbitrary_data_memory_addresses() {
+        // MOVFF 0x123, 0x456 -- 2-word encoding:
+        //   word1 = 1100 ffff ffff ffff = 0xC123
+        //   word2 = 1111 ffff ffff ffff = 0xF456
+        let mut core = k20_core_with_flash(&[0x23, 0xC1, 0x56, 0xF4]);
+        // Source byte at 0x123 (bank 1 offset 0x23).
+        core.memory.write_raw(Address::from_raw(0x123), 0xA5);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2, "MOVFF costs 2 Tcy (2-word op)");
+        assert_eq!(core.pc(), 0x0004, "PC advances by 4 bytes");
+        // Source unchanged, destination has the copy.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x123)), 0xA5);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x456)), 0xA5);
+    }
+
+    #[test]
+    fn movff_to_sfr_with_unimplemented_bits_applies_mask() {
+        // MOVFF 0x100 → STATUS (0xFD8): if source byte has
+        // bits 7..5 set, the SFR mask must strip them so STATUS
+        // only retains bits 4..0.
+        // word1 = 0xC100 (src=0x100), word2 = 0xFFD8 (dst=0xFD8;
+        // upper nibble of word2 is don't-care, decoder takes only
+        // the low 12 bits).
+        let mut core = k20_core_with_flash(&[0x00, 0xC1, 0xD8, 0xFF]);
+        core.memory.write_raw(Address::from_raw(0x100), 0xFF);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_status(&core), STATUS_VALID_MASK);
+    }
+
+    #[test]
+    fn lfsr_loads_12_bit_literal_into_fsr0() {
+        // LFSR FSR0, 0x123 -- 2-word encoding:
+        //   word1 = 1110 1110 00ff kkkk where ff=0 (FSR0), k[11:8]=0x1
+        //         = 1110 1110 0000 0001 = 0xEE01
+        //   word2 = 1111 0000 kkkk kkkk where k[7:0]=0x23
+        //         = 1111 0000 0010 0011 = 0xF023
+        let mut core = k20_core_with_flash(&[0x01, 0xEE, 0x23, 0xF0]);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2, "LFSR costs 2 Tcy (2-word op)");
+        assert_eq!(core.pc(), 0x0004);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE9)), 0x23);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFEA)), 0x01);
+    }
+
+    #[test]
+    fn lfsr_loads_into_fsr1_and_fsr2() {
+        // LFSR FSR1, 0x4AB and LFSR FSR2, 0x7DE in sequence.
+        let mut core = k20_core_with_flash(&[
+            // LFSR FSR1, 0x4AB:
+            //   word1 = 0xEE14 (ff=01=FSR1, k[11:8]=4)
+            //   word2 = 0xF0AB (k[7:0]=AB)
+            0x14, 0xEE, 0xAB, 0xF0,
+            // LFSR FSR2, 0x7DE:
+            //   word1 = 0xEE27 (ff=10=FSR2, k[11:8]=7)
+            //   word2 = 0xF0DE (k[7:0]=DE)
+            0x27, 0xEE, 0xDE, 0xF0,
+        ]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE1)), 0xAB);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE2)), 0x04);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFD9)), 0xDE);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFDA)), 0x07);
     }
 
     #[test]
