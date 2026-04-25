@@ -95,7 +95,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - verify: `cd crates/dlcp-sim && cargo test --release config::tests`
   - artifact: `crates/dlcp-sim/src/config.rs`.
 
-- [pending] P1.8a Intel HEX loader for flash + USER_ID + CONFIG + EEPROM
+- [done] P1.8a Intel HEX loader for flash + USER_ID + CONFIG + EEPROM
   - verify: `cd crates/dlcp-sim && cargo test --release hex::tests`
   - artifact: `crates/dlcp-sim/src/hex.rs`
   - notes: parses Intel HEX (record types 00 = data, 01 = EOF, 04 = extended-linear-address); routes bytes to the four PIC18 memory windows that may appear in either V1.71 (K20) or V3.2 (2455) releases:

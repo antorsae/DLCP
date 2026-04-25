@@ -9,6 +9,7 @@
 
 pub mod config;
 pub mod core;
+pub mod hex;
 pub mod isa;
 pub mod memory;
 pub mod reset;
@@ -16,6 +17,7 @@ pub mod stack;
 
 pub use crate::config::{BorenMode, Config, FoscMode};
 pub use crate::core::Core;
+pub use crate::hex::{HexImage, HexLoadError};
 pub use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 pub use crate::memory::{Memory, Variant};
 pub use crate::reset::{ResetSource, apply_reset};
