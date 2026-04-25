@@ -89,9 +89,12 @@ pub struct Stack {
     /// Backing array.  Index `i` (0..=30) is the slot loaded
     /// when the pointer reaches `i+1`.
     slots: [StackEntry; STACK_DEPTH],
-    /// Number of slots currently in use (0..=31).  When `depth ==
-    /// STACK_DEPTH` the stack is full and the next CALL/RCALL
-    /// sets STKFUL.
+    /// Number of slots currently in use (0..=31).  STKFUL is set
+    /// BY the push that fills the 31st slot (i.e. the
+    /// transition `depth: 30 -> 31`), not by the next attempted
+    /// push — see `Stack::push` for the matching DS39632E §5.4.2
+    /// citation.  At `depth == STACK_DEPTH` further pushes are
+    /// silently dropped and STKFUL stays asserted.
     depth: u8,
     /// Sticky overflow / underflow latch (STKPTR bits 6..7).
     flags: u8,
@@ -399,6 +402,53 @@ mod tests {
         s.clear_flags();
         assert!(!s.overflow());
         s.push(0xDEAD); // dropped, but flag re-asserted
+        assert!(s.overflow());
+    }
+
+    #[test]
+    fn push_at_full_via_write_stkptr_software_clear_drops_push() {
+        // The same scenario as above but going through the
+        // write_stkptr SFR path that real firmware uses to
+        // clear STKFUL: write the depth field plus zero in
+        // bits 6..7.
+        let mut s = Stack::new();
+        for i in 0..STACK_DEPTH {
+            s.push((i as u32) * 4);
+        }
+        // write_stkptr(0x1F) preserves depth=31 but clears the
+        // sticky flags by AND'ing with `value & 0xC0` = 0.
+        s.write_stkptr(0x1F);
+        assert_eq!(s.depth(), 31);
+        assert!(!s.overflow());
+        // Next push is dropped and re-asserts STKFUL.
+        let top_before = s.top();
+        let accepted = s.push(0xDEAD);
+        assert!(!accepted);
+        assert_eq!(s.depth(), 31);
+        assert_eq!(s.top(), top_before);
+        assert!(s.overflow());
+    }
+
+    #[test]
+    fn pop_then_push_reuses_top_slot_and_returns_true() {
+        // After STKFUL is set by the 31st push, pop one frame.
+        // depth = 30, STKFUL stays set (sticky).  The next push
+        // must succeed (returns true) and refill the 31st
+        // slot, re-asserting STKFUL through the same code path.
+        let mut s = Stack::new();
+        for i in 0..STACK_DEPTH {
+            s.push(0x0010 + i as u32);
+        }
+        assert!(s.overflow());
+        // Pop the top frame.
+        let popped = s.pop();
+        assert_eq!(popped, Some(0x0010 + (STACK_DEPTH as u32) - 1));
+        assert_eq!(s.depth(), 30);
+        // Push a new frame: should be accepted, slot 30 reused,
+        // depth back to 31, STKFUL still asserted.
+        assert!(s.push(0xCAFE));
+        assert_eq!(s.depth(), 31);
+        assert_eq!(s.top(), 0xCAFE);
         assert!(s.overflow());
     }
 
