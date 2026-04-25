@@ -183,32 +183,50 @@ def _diff_capture(blessed: Path, replayed: Path) -> list[str]:
 
 def _archive_failure(blessed_name: str, replay_dir: Path) -> None:
     """Copy a (replay) capture directory into the divergence
-    archive so an operator can inspect it post-hoc.  No-op when
-    the source directory is missing."""
+    archive so an operator can inspect it post-hoc.
+
+    Best-effort: wraps every step (mkdir, rmtree of an existing
+    archive, copytree) in a single try/except so a permission
+    error, device-full, or read-only filesystem at any stage
+    doesn't mask the underlying determinism failure that triggered
+    the archive request.
+    """
     if not replay_dir.exists():
         return
     div_root = REPO_ROOT / "artifacts" / "sim_rewrite_divergences"
-    div_root.mkdir(parents=True, exist_ok=True)
     archive = div_root / f"P0.5__{blessed_name}__replay"
-    if archive.exists():
-        shutil.rmtree(archive)
     try:
+        div_root.mkdir(parents=True, exist_ok=True)
+        if archive.exists():
+            shutil.rmtree(archive)
         shutil.copytree(replay_dir, archive)
     except (OSError, shutil.Error):
-        # Best-effort archive — don't block reporting on copy
-        # failures (e.g. a read-only tempdir).
-        pass
+        # Surface the archive failure on stderr so the operator
+        # knows the divergence tarball is missing, then drop the
+        # exception so the determinism gate's own report keeps
+        # going.
+        print(
+            f"warning: failed to archive replay capture for "
+            f"{blessed_name!r} to {archive}; original divergence "
+            "report follows.",
+            file=sys.stderr,
+        )
 
 
 def _replay_one(blessed: Path, python: Path, *, verbose: bool) -> tuple[list[str], str]:
     """Return ``(diff_errors, status)``.
 
     ``status`` ∈ {"replayed", "skipped_original_skipped",
-    "skipped_no_summary"}.  ``"skipped_*"`` statuses are reported
-    in the summary line but do not contribute to a determinism
-    failure — there is nothing to diff for an originally-skipped
-    test (no harnesses opened) and a missing summary.json means
-    we can't recover the nodeid.
+    "skipped_no_summary"}.  Caller's interpretation:
+
+      * ``"replayed"``                 — replay actually ran;
+        ``diff_errors`` empty ⇒ deterministic, non-empty ⇒ fail.
+      * ``"skipped_original_skipped"`` — original outcome was
+        ``skipped`` so there's nothing to diff; reported in the
+        summary as skipped, NOT a failure.
+      * ``"skipped_no_summary"``       — summary.json is missing
+        or has no nodeid; we can't replay, so the caller treats
+        this as a failure (the captured fixture is malformed).
     """
     summary_path = blessed / "summary.json"
     if not summary_path.exists():
