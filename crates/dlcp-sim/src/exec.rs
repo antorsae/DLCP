@@ -123,13 +123,37 @@ fn read_f(core: &Core, f: u8, a: Access) -> u8 {
 /// regardless of what the firmware wrote (the silicon literally
 /// has no storage for them); we apply the mask at write time so
 /// `read_raw` returns the silicon-correct value without per-SFR
-/// read-side hooks.  Only the SFRs the executor itself touches
-/// are listed; peripheral side effects (P2) wrap their own
-/// writes via `write_byte_through_peripherals`.
+/// read-side hooks.
+///
+/// This table covers the *architecturally* documented
+/// unimplemented bits per DS39632E Table 5-1 / Register 4-1 /
+/// Register 4-2 / §5.4 / §6.3 -- bits whose silicon behaviour is
+/// "always read 0" regardless of peripheral configuration.
+/// Peripheral SFRs whose bits become inactive only because the
+/// peripheral itself is disabled are NOT included; those are
+/// modelled by the peripheral wrappers in P2 via
+/// `write_byte_through_peripherals`.
 const fn sfr_write_mask(addr: u16) -> u8 {
     match addr {
-        STATUS_ADDR => STATUS_VALID_MASK, // bits 7..5 unimplemented
-        BSR_ADDR => 0x0F,                 // bits 7..4 unimplemented
+        // STATUS<7:5> unimplemented (Register 4-2).
+        STATUS_ADDR => STATUS_VALID_MASK,
+        // BSR is a 4-bit register; <7:4> unimplemented (Register 5-2).
+        BSR_ADDR => 0x0F,
+        // RCON<5> unimplemented (Register 4-1).
+        0xFD0 => 0xDF,
+        // WDTCON<7:1> unimplemented; only SWDTEN at bit 0 is alive.
+        0xFD1 => 0x01,
+        // FSR0H / FSR1H / FSR2H high nibbles unimplemented
+        // (12-bit FSRs; only <3:0> alive in the H register).
+        0xFEA | 0xFE2 | 0xFDA => 0x0F,
+        // TBLPTRU<7:6> unimplemented (TBLPTR is 22 bits; only
+        // <5:0> live in TBLPTRU per DS39632E §6.3).
+        0xFF8 => 0x3F,
+        // STKPTR<5> unimplemented (Register 5-1).
+        0xFFC => 0xDF,
+        // TOSU<7:5> unimplemented (TOS is 21 bits, top 5 bits
+        // in TOSU<4:0> per DS39632E §5.4).
+        0xFFF => 0x1F,
         _ => 0xFF,
     }
 }
@@ -739,6 +763,22 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_bsr(&core), 0x07);
+    }
+
+    #[test]
+    fn movwf_to_fsr0h_strips_high_nibble() {
+        // FSR0H<7:4> unimplemented (12-bit FSR; only <3:0>
+        // alive).  MOVWF FSR0H with W=0xCB must store only
+        // 0x0B.  This is the most user-visible case of the
+        // sfr_write_mask extension -- firmware sets up indirect
+        // pointers via MOVWF FSR0H and read-back must match
+        // silicon's 0-read-for-unimplemented contract.
+        // MOVLW 0xCB = 0x0ECB; MOVWF 0xEA, ACCESS = 0x6EEA.
+        let mut core = k20_core_with_flash(&[0xCB, 0x0E, 0xEA, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFEA)), 0x0B);
     }
 
     #[test]
