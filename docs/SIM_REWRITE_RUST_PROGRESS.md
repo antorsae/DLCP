@@ -75,7 +75,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - verify: `cd crates/dlcp-sim && cargo test --release isa::fsr::tests`
   - artifact: covered in `isa/decode.rs` + dedicated test file.
 
-- [pending] P1.5 Hardware stack (31-deep) with PUSH/POP, STKPTR, STVREN
+- [done] P1.5 Hardware stack (31-deep) with PUSH/POP, STKPTR, STVREN
   - verify: `cd crates/dlcp-sim && cargo test --release stack::tests`
   - artifact: `crates/dlcp-sim/src/stack.rs`
   - notes: stack-overflow + STVREN reset is a real V3.2 hardening test (`feat(v3.2): main_service_rx_frame_gap parser stall watchdog` etc.).
