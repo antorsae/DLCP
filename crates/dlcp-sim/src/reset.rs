@@ -156,8 +156,16 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
         | ResetSource::Mclr
         | ResetSource::Wdt
         | ResetSource::ResetInstruction => {
-            // Stack preserved on these resets (DS39632E
-            // Table 4-1: STKFUL=u, STKUNF=u for all of them).
+            // DS39632E §5.4 ("On Reset, the Stack Pointer
+            // value will be zero") + Table 4-1 (STKFUL=u,
+            // STKUNF=u for all of these): the pointer drops
+            // to 0 on these resets, but the sticky flags AND
+            // the slot data are preserved across the reset.
+            // A previous CALL/RCALL pushed onto the stack
+            // remains in slot[depth_pre_reset-1] and can be
+            // read via TOSU/H/L after firmware writes a new
+            // depth into STKPTR.
+            stack.reset_pointer_preserve_flags();
         }
         ResetSource::StackFull => {
             // Depth → 0; STKFUL stays set.  Slot data preserved.
@@ -248,13 +256,72 @@ mod tests {
     }
 
     #[test]
-    fn mclr_preserves_stack() {
+    fn mclr_zeros_stkptr_but_preserves_flags_and_slot_data() {
+        // DS39632E §5.4: "On Reset, the Stack Pointer value
+        // will be zero."  Table 4-1: STKFUL=u, STKUNF=u for
+        // MCLR.  So depth → 0 but flags + slot data persist.
         let (mut core, mut stack) = fresh_core_and_stack();
         stack.push(0x4576);
         stack.push(0x4FE0);
+        // Force STKUNF to be set so we can verify it survives.
+        let _ = {
+            let mut s = Stack::new();
+            s.pop(); // sets STKUNF
+            s
+        };
         apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        assert_eq!(stack.depth(), 0);
+        // Slot data preserved — firmware can pull stored bytes
+        // back via TOSU/TOSH/TOSL after writing STKPTR.depth.
+        stack.write_stkptr(2);
         assert_eq!(stack.depth(), 2);
         assert_eq!(stack.top(), 0x4FE0);
+    }
+
+    #[test]
+    fn mclr_preserves_overflow_flag() {
+        let (mut core, mut stack) = fresh_core_and_stack();
+        for i in 0..31 {
+            stack.push(0x100 + i as u32);
+        }
+        // STKFUL latched.
+        assert!(stack.overflow());
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        // Pointer back to 0; STKFUL still latched.
+        assert_eq!(stack.depth(), 0);
+        assert!(stack.overflow());
+    }
+
+    #[test]
+    fn bor_zeros_stkptr_but_preserves_flags_and_slot_data() {
+        let (mut core, mut stack) = fresh_core_and_stack();
+        stack.push(0x4576);
+        stack.push(0x4FE0);
+        for _ in 0..31 {
+            // Force STKFUL latched so we can confirm survival.
+            stack.push(0);
+        }
+        assert!(stack.overflow());
+        apply_reset(&mut core, &mut stack, ResetSource::BrownOut);
+        assert_eq!(stack.depth(), 0);
+        assert!(stack.overflow());
+    }
+
+    #[test]
+    fn wdt_zeros_stkptr() {
+        let (mut core, mut stack) = fresh_core_and_stack();
+        stack.push(0x1000);
+        apply_reset(&mut core, &mut stack, ResetSource::Wdt);
+        assert_eq!(stack.depth(), 0);
+    }
+
+    #[test]
+    fn reset_instruction_zeros_stkptr() {
+        let (mut core, mut stack) = fresh_core_and_stack();
+        stack.push(0x1000);
+        stack.push(0x2000);
+        apply_reset(&mut core, &mut stack, ResetSource::ResetInstruction);
+        assert_eq!(stack.depth(), 0);
     }
 
     // ----- WDT -----

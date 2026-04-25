@@ -179,6 +179,18 @@ impl Stack {
         self.flags |= STKPTR_STKUNF;
     }
 
+    /// Reset the pointer to 0 while preserving STKFUL/STKUNF
+    /// and slot data.  Called for the BOR/MCLR/WDT/
+    /// RESET-instruction paths in [`crate::reset::apply_reset`]:
+    /// per DS39632E §5.4 ("On Reset, the Stack Pointer value
+    /// will be zero") and Table 4-1 (STKFUL=u, STKUNF=u for
+    /// these reset sources), only the pointer drops to 0;
+    /// sticky flags survive across the reset and the in-place
+    /// slot data is unchanged.
+    pub fn reset_pointer_preserve_flags(&mut self) {
+        self.depth = 0;
+    }
+
     /// Push a return address.  Per DS39632E §5.4.2:
     ///
     ///   "After the PC is pushed onto the stack 31 times
