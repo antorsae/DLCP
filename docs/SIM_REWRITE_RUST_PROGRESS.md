@@ -23,20 +23,20 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `tests/sim/conftest.py` (extension), `scripts/capture_gpsim_ground_truth.py` (helper)
   - notes: hooks into existing chain-harness `step()` at the conftest level so tests don't need rewrites.
 
-- [pending] P0.2 Capture stimulus stream (every external pin/IR/UART/ADC/I²C event with `(ns, core_id, pin, payload)`)
-  - verify: each `artifacts/ground_truth/<test>/stimulus.jsonl` has > 0 lines and replays produce identical UART bytes when re-fed into gpsim
+- [pending] P0.2 Capture stimulus stream (every external pin/IR/UART/ADC/I²C event with `(tick, core_id, pin, payload)`)
+  - verify: `.venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind stimulus`
   - artifact: `artifacts/ground_truth/<test>/stimulus.jsonl`
-  - notes: keep format JSONL so ad-hoc inspection is easy.
+  - notes: keep format JSONL so ad-hoc inspection is easy. The check script asserts every captured test directory has a non-empty `stimulus.jsonl` and verifies the events replay through gpsim deterministically.
 
 - [pending] P0.3 Capture RAM/SFR snapshots at 1 ms boundaries
-  - verify: `ls artifacts/ground_truth/<test>/snapshots/*.ram.bin | wc -l` ≥ floor(test duration ms)
+  - verify: `.venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind snapshots`
   - artifact: `artifacts/ground_truth/<test>/snapshots/`
-  - notes: snapshots are binary RAM dumps + JSON-encoded SFR map.
+  - notes: snapshots are binary RAM dumps + JSON-encoded SFR map. The check script asserts each test has at least floor(duration_ms) snapshot files in its directory.
 
 - [pending] P0.4 Capture per-UART TX byte stream + LCD raster + EEPROM
-  - verify: every test that today reads `chain.lcd_lines()` has a matching `lcd_final.txt` in its ground-truth dir
+  - verify: `.venv_ep0/bin/python scripts/check_ground_truth_capture.py --kind outputs`
   - artifact: `artifacts/ground_truth/<test>/{uart_tx_*.jsonl, lcd_final.txt, eeprom_final.bin}`
-  - notes: piggyback on existing `_LogDecoder`.
+  - notes: piggyback on existing `_LogDecoder`. The check script asserts every test that calls `chain.lcd_lines()` produces an `lcd_final.txt`.
 
 - [pending] P0.5 Verify replay of every captured fixture matches gpsim output
   - verify: `.venv_ep0/bin/python scripts/replay_ground_truth.py --all` exits 0
@@ -99,7 +99,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [pending] P2.1 EUSART — TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON, bit-level shifter, baud generator, OERR/FERR latch, RCREG FIFO
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_eusart_parity`
   - artifact: `crates/dlcp-sim/src/peripherals/eusart.rs`
-  - notes: 2455 BAUDCON @ 0xF98 (DS39632E Table 5-1, NOT gpsim's 0xFAA); K20 BAUDCON @ 0xFB8 (DS41303).
+  - notes: 2455 BAUDCON @ 0xF98 (DS39632E Table 5-1; gpsim places it at 0xFB8 via `P18F2x21` base class — datasheet wins); K20 BAUDCON @ 0xFB8 (DS41303). See spec §11b for dual-run reconciliation.
 
 - [pending] P2.2 MSSP I²C — master mode, SCL stretching, ACK/NACK injection
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_mssp_parity`
@@ -189,7 +189,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim-py/Cargo.toml`, `src/lib.rs`.
 
 - [pending] P4.2 Python facade `src/dlcp_fw/sim/dlcp_sim_native.py` matching `chain_gpsim.py` API surface
-  - verify: `python -c "from dlcp_fw.sim.dlcp_sim_native import Chain; c = Chain.from_v171_v32(); c.step_ns(1_000_000); print(c.lcd_lines())"`
+  - verify: `python -c "from dlcp_fw.sim.dlcp_sim_native import Chain; c = Chain.from_v171_v32(); c.step_ticks(48_000_000); print(c.lcd_lines())"`
   - artifact: `src/dlcp_fw/sim/dlcp_sim_native.py`.
 
 - [pending] P4.3 `tests/sim/conftest.py` plugin: `DLCP_SIM_BACKEND={gpsim,dual,rust}` env var
@@ -237,8 +237,8 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/tests/snapshot_property.rs`.
 
 - [pending] P5.3 Replay tool: `dlcp-sim replay <case.json>`
-  - verify: a failing test in `artifacts/sim_rewrite_divergences/` can be replayed and reproduces the failure bit-exactly
-  - artifact: `crates/dlcp-sim-cli/src/main.rs` + `scripts/sim_replay.py` wrapper.
+  - verify: `.venv_ep0/bin/python scripts/check_replay_round_trip.py`
+  - artifact: `crates/dlcp-sim-cli/src/main.rs` + `scripts/sim_replay.py` wrapper + `scripts/check_replay_round_trip.py` (asserts a synthetic divergence file replays to bit-exact reproduction).
 
 - [pending] P5.4 Soak suite under `tests/sim/soak/` — 10⁴+ scenarios per soak test
   - verify: `.venv_ep0/bin/python -m pytest tests/sim/soak -n 16 -q`
@@ -266,7 +266,9 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## How to update this file
 
-- `scripts/sim_rewrite_next.py advance` flips a `pending` task to `in_progress` and runs its verify command.
-- On verify pass: status → `done`, timestamp committed.
+- **Status changes go through `scripts/sim_rewrite_next.py`**, which writes the ledger atomically (`os.replace`) so a crash never leaves a partial file. Hand-editing the `[pending|in_progress|done|blocked]` markers is *not* a supported workflow.
+- Hand-edits to titles, notes, verify commands, and artifact paths are fine — commit them on the same branch as the related work.
+- `advance` flips a `pending` task to `in_progress` and runs its verify command.
+- On verify pass: status → `done`.
 - On verify fail: status stays `in_progress`, failure dumped to `artifacts/sim_rewrite_divergences/`.
-- Manual edits ok; commit them on the same branch.
+- A verify entry of literally `manual` (case-insensitive, optionally backtick-wrapped) marks the sub-task as human-validated; `advance --force-pass` is required to flip it to `done`.

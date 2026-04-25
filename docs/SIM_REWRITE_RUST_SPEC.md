@@ -64,8 +64,9 @@ Status: **Phase 0 — pending**
                               │
 ┌─────────────────────────────▼───────────────────────────────────┐
 │ Python: dlcp_fw.sim.dlcp_sim_native                             │
-│   - Chain(cores=[...], boot_offsets={"main1": 1_500_000_000ns}) │
-│   - chain.step_ns(N) / chain.step_until(addr=0x...)             │
+│   - Chain(cores=[...], boot_offsets={"main1": 72_000_000ticks}) │
+│     (72e6 universal ticks @ 48 MHz = 1.5 s)                     │
+│   - chain.step_ticks(N) / chain.step_until(addr=0x...)          │
 │   - core.ram[addr], core.regs.W, core.regs.STATUS_C, ...        │
 │   - chain.snapshot(), chain.restore(snap)                       │
 │   - chain.replay(stimulus_log)                                  │
@@ -74,10 +75,14 @@ Status: **Phase 0 — pending**
 
 ### Key invariants
 
-- **Time** is `u64` nanoseconds (range: 584 years; sufficient).
-- Each core has `cycles_per_ns` derived from its config-bit oscillator selection. The scheduler advances *time*, not *cycles*; each core derives "did I tick?" from its own `cycles_per_ns` × elapsed `ns`.
-- The global event queue is a min-heap of `(deadline_ns, core_id, callback)`. Peripheral timers, baud bit-edges, interrupt firings — all post events into this single queue.
-- Pin nodes are first-class: `RC6` on MAIN0 wired to `RC7` on MAIN1 means a write event on the source pin schedules a read-side update at the same `ns` (subject to per-edge propagation delay if modeled).
+- **Time** is `u64` ticks of a universal **48 MHz** clock — chosen as LCM(CONTROL Fosc 12 MHz, MAIN Fosc 16 MHz). This guarantees that every Tcy on every core, every baud bit edge, and every I²C SCL edge falls on an integer tick, eliminating drift from rounding. Range at 48 MHz: ~12.2 years (more than enough).
+  - CONTROL Tcy = 16 universal ticks (3 MHz Tcy × 16 = 48 MHz)
+  - MAIN Tcy = 12 universal ticks (4 MHz Tcy × 12 = 48 MHz)
+  - 1 baud bit @ 31.25 kbaud = 1536 universal ticks
+  - 1 I²C SCL bit (SSPADD=0x77, MAIN-driven) = 1440 universal ticks
+- Each core has `ticks_per_tcy` derived from its config-bit oscillator selection. The scheduler advances *universal ticks*; each core's next instruction-complete event is `now + ticks_per_tcy × Tcy_count`.
+- The global event queue is a min-heap of `(deadline_tick, core_id, callback)`. Peripheral timers, baud bit-edges, interrupt firings — all post events into this single queue.
+- Pin nodes are first-class: `RC6` on MAIN0 wired to `RC7` on MAIN1 means a write event on the source pin schedules a read-side update at the same `tick` (subject to per-edge propagation delay if modeled).
 - **No cross-core post-hoc rescaling.** The "skid" / "causality enforcement" / `max_shift_cycles` machinery in `wire_chain_gpsim.py` is deleted on day one — it cannot exist in this architecture.
 
 ---
@@ -211,7 +216,7 @@ cargo test -p dlcp-sim --test isa_parity --release
 
 | Peripheral | K20 | 2455 | Notes                                                  |
 |------------|-----|------|--------------------------------------------------------|
-| EUSART     | ✓   | ✓    | Bit-level TX/RX shifter; baud generator; OERR/FERR latch; RCREG FIFO; TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON. K20 BAUDCON @ 0xFB8; 2455 BAUDCON @ **0xF98** (NOT gpsim's buggy 0xFAA — see §11 risk). |
+| EUSART     | ✓   | ✓    | Bit-level TX/RX shifter; baud generator; OERR/FERR latch; RCREG FIFO; TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON. K20 BAUDCON @ 0xFB8; **2455 BAUDCON @ 0xF98** per DS39632E Table 5-1 (NOT gpsim's wrong 0xFB8 placement inherited from `P18F2x21` — see §11 risk). |
 | MSSP I²C   | —   | ✓    | Master mode for TAS3108 writes; SCL stretching; ACK/NACK bus injection (port `i2c-regfile.cc` semantics). SSPADD=0x77 → 33.3 kHz on 16 MHz Fosc. |
 | Timer3     | ✓   | ✓    | 16-bit timer; T3CON; gate; capture/compare integration with CCP. |
 | Timer0     | ✓   | ✓    | 8/16-bit; prescaler; interrupt source for CONTROL idle timer. |
@@ -319,7 +324,7 @@ cargo test -p dlcp-sim --test multicore_parity --release
 - `crates/dlcp-sim-py/src/lib.rs` — Python module:
   - `Chain`, `Core`, `Variant`, `ClockSpec`, `BootOffsetConfig`
   - `core.ram`, `core.flash`, `core.regs`, `core.eeprom`, `core.lcd`
-  - `chain.step_ns(N)`, `chain.step_until_addr(core_id, addr)`, `chain.run_until_breakpoint(core_id, addr)`
+  - `chain.step_ticks(N)`, `chain.step_until_addr(core_id, addr)`, `chain.run_until_breakpoint(core_id, addr)`
   - `chain.snapshot() -> bytes`, `chain.restore(bytes)`
   - `chain.replay(stimulus_log_path)`
 - `src/dlcp_fw/sim/dlcp_sim_native.py` — thin Python wrapper presenting the same API surface as `chain_gpsim.py` / `wire_chain_gpsim.py` so tests can swap engines transparently.
@@ -399,7 +404,7 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 | Risk / decision                                              | Mitigation / rationale                                       |
 |--------------------------------------------------------------|--------------------------------------------------------------|
 | Subtle PIC18 ISA edge cases not covered by spec text         | Differential test against gpsim (oracle) for entire ISA exercised by V1.71 + V3.2 firmware. Any divergence: gpsim wins, Rust fixes. |
-| 2455 BAUDCON address divergence (gpsim @ 0xFAA, datasheet @ 0xF98) | Rust port follows datasheet. If any firmware byte writes to BAUDCON, gpsim's behavior is wrong; we'll see this as a dual-run divergence and Rust will be correct. *Verify firmware writes to BAUDCON; if it does and the wrong-address gpsim behavior is what current tests rely on, surface the issue and gate in §11b.* |
+| 2455 BAUDCON address divergence (gpsim @ 0xFB8 inherited from `P18F2x21`; datasheet @ 0xF98) | Rust port follows datasheet (DS39632E Table 5-1, p. 67). MAIN firmware writes BAUDCON at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` with value 0x48 (BRG16=0, idle high). On gpsim that write lands on the wrong physical register but is silently absorbed because 0x48 happens to match BRG16=0's reset state (the only thing the firmware needs). On Rust port, the write reaches the correct register; behaviour is identical because the bit pattern matches the default. No tests are expected to depend on the gpsim quirk. See §11b. |
 | K20 vs. 2455 SFR drift                                       | Encoded as static data tables per `Variant`; no code branching in hot path. |
 | Peripheral fidelity escapes harming firmware regressions    | Phase 4 dual-run is mandatory before gpsim retires per-test. Hardware-only tests (`tests/hardware/`) remain the final tiebreaker per `docs/SIMULATION_FIDELITY.md`. |
 | Multi-core scheduler bugs (race, deadlock)                   | Phase 3 has a reproducer for the Task #22 echo-loop; that's a stress test in itself. Plus property tests on event-queue invariants. |
@@ -407,18 +412,19 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 | Crystal skew test instability                                | All skew injections are seeded-PRNG; CI uses fixed seed; soak uses sweep across seed corpus. |
 | EEPROM write-completion timing change ≠ gpsim                | This is an *intentional* exceedance of gpsim fidelity. Document in `docs/SIMULATION_FIDELITY.md` and update test assertions that depend on the gpsim "instantaneous EEPROM" assumption. |
 
-### §11b — BAUDCON gpsim divergence: investigation gate
+### §11b — BAUDCON gpsim divergence: dual-run reconciliation
 
-Before Phase 4 dual-run begins, run the audit:
+Audited 2026-04-25:
 
-```bash
-.venv_ep0/bin/python scripts/audit_baudcon_writes.py
-```
+- 2455 datasheet (DS39632E Table 5-1, `firmware/reference/39632e.md:2699`): BAUDCON @ **0xF98**.
+- gpsim 2455 model: 2455 inherits from `P18F2x21` (`vendor/gpsim-0.32.1-xtc/src/p18x.h:442`); base class registers BAUDCON @ **0xFB8** (`vendor/gpsim-0.32.1-xtc/src/p18x.cc:2002`).
+- MAIN firmware writes BAUDCON once: `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` writes 0x48 (BRG16=0, idle high). Comment at line 7907 confirms the value is intentional.
+- 0x48 happens to match BRG16=0's reset state, so the wrong-address gpsim write changes nothing observable. The Rust port's correct write also changes nothing observable. **No expected dual-run divergence from BAUDCON.**
+- CONTROL firmware also writes BAUDCON (`src/dlcp_fw/asm/dlcp_control_v171.asm:776`, `bcf BAUDCON, BRG16, A`) at the K20 datasheet address 0xFB8 — gpsim's K20 port matches that, no divergence on the CONTROL side.
 
-…which scans V1.71 + V3.2 source + assembled hex for any write to address 0xF98 or 0xFAA. If firmware does write BAUDCON:
+If a future test starts depending on BAUDCON-driven behaviour (e.g. inverted polarity via TXCKP/RXDTP), the Rust port will be correct and gpsim will diverge. Track such tests through Phase 4 dual-run as gpsim oracle exceptions.
 
-- If only writes to **0xF98** (datasheet): Rust is correct; gpsim is wrong. Likely we'll see test failures during dual-run that flag tests that were silently asserting the wrong gpsim behavior; treat each as a gpsim oracle exception and update the test's expected output.
-- If writes to **0xFAA**: very unlikely (would require buggy firmware) — but if so, that's a real-hardware bug to file separately.
+There is no separate "audit script" — this analysis lives here.
 
 ---
 
@@ -460,6 +466,7 @@ Before Phase 4 dual-run begins, run the audit:
 - Datasheet (MAIN): `firmware/reference/39632e.md` (DS39632E PIC18F2455/2550/4455/4550)
 - Datasheet (CONTROL): Microchip DS41303 (PIC18F25K20) — fetch when needed; not in repo
 - Clock derivation: `docs/analysis/MAIN_CLOCK_TIMING.md`
+- **Note**: The CONTROL source header at `src/dlcp_fw/asm/dlcp_control_v171.asm:4` says "PIC18F25K20 @ ~16 MHz (4 MIPS)" — this comment is stale. Empirical proof CONTROL is **12 MHz** (3 MIPS): SPBRG=0x05 with BRGH=0/BRG16=0 (`v171.asm:773`) yields BAUD = Fosc / (64 × 6) = 31,250 only at Fosc=12 MHz; at 16 MHz it would be 41,667. The harness override at `src/dlcp_fw/sim/control_gpsim.py:51` also tells gpsim CONTROL is 12 MHz. The stale header comment is not in scope for this rewrite to fix.
 - AN0 boot detail: `docs/analysis/MAIN_AN0_STANDBY_TRACE.md`
 - V1.71 source: `src/dlcp_fw/asm/dlcp_control_v171.asm`
 - V3.2 source: `src/dlcp_fw/asm/dlcp_main_v32.asm`

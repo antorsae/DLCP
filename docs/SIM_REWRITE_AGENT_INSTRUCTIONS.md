@@ -136,10 +136,13 @@ risk first):
 7. Oscillator subsystem
 8. USB-SIE (last; it's the most complex and only on 2455)
 
-Important: 2455 BAUDCON is at **0xF98** per datasheet, NOT gpsim's
-buggy 0xFAA.  Follow the datasheet.  If a test fails because it
-expected gpsim's wrong-address behavior, that's a test bug, not a
-sim bug.
+Important: 2455 BAUDCON is at **0xF98** per datasheet (DS39632E
+Table 5-1), NOT gpsim's 0xFB8 (inherited from `P18F2x21`).  Follow
+the datasheet.  See spec §11b for the full reconciliation — current
+firmware writes BAUDCON once with 0x48, which happens to match the
+reset state, so no test is expected to diverge.  If a future test
+starts depending on BAUDCON-controlled behaviour (TXCKP/RXDTP polarity
+inversion etc.), Rust will be correct and gpsim will diverge.
 
 ### Phase 3 — Multi-Core Wiring
 

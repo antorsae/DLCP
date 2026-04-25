@@ -10,8 +10,9 @@ an autonomous agent (or a human) can call
     python3 scripts/sim_rewrite_next.py verify-phase 0   # full phase gate
     python3 scripts/sim_rewrite_next.py report     # overview
 
-…with minimal manual bookkeeping.  All edits go through this script so
-status flips are atomic and the markdown stays valid.
+…with minimal manual bookkeeping.  All status flips go through this
+script so they survive interruption (the underlying file write is
+performed via `os.replace()` which is atomic on POSIX).
 
 Sub-task line shape (must match exactly):
 
@@ -19,6 +20,12 @@ Sub-task line shape (must match exactly):
       - verify: {shell command}
       - artifact: {path}
       - notes: {free text}
+
+The verify command in the ledger is rendered as Markdown, so it is
+typically wrapped in backticks (`...`) for readability.  This script
+strips those wrapping backticks before execution.  A literal value
+"manual" disables shell execution and treats the sub-task as one that
+must be advanced via `--force-pass`.
 
 Where STATUS ∈ { pending, in_progress, done, blocked }.
 """
@@ -31,6 +38,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +72,49 @@ class Task:
     def is_gate(self) -> bool:
         return self.id.endswith(".gate")
 
+    def is_manual(self) -> bool:
+        """A verify entry of literally `manual` (after backtick strip) means
+        the sub-task is human-validated and cannot be advanced by the
+        script without --force-pass."""
+        return self.verify is not None and self.verify.strip().lower() == "manual"
+
+
+def strip_markdown_quoting(value: str) -> str:
+    """Strip surrounding backticks (single or fenced) and surrounding
+    whitespace from a verify command rendered in Markdown.
+
+    The ledger writes verify commands like:
+        - verify: `pytest tests/sim/test_x.py -q`
+    This function returns just `pytest tests/sim/test_x.py -q`, suitable
+    for shell execution.  Idempotent on inputs that aren't quoted.
+    """
+    s = value.strip()
+    while len(s) >= 2 and s[0] == "`" and s[-1] == "`":
+        s = s[1:-1].strip()
+    return s
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write text to `path` atomically — write to a sibling temp file
+    and `os.replace()` it onto the target.  POSIX `rename(2)` is atomic
+    so a crash in the middle leaves either the old file or the new
+    file, never a half-written one.
+    """
+    fd, tmp_str = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+
 
 def parse_ledger(text: str) -> list[Task]:
     tasks: list[Task] = []
@@ -85,7 +136,7 @@ def parse_ledger(text: str) -> list[Task]:
             continue
         m = VERIFY_RE.match(line)
         if m:
-            current.verify = m.group("cmd").strip()
+            current.verify = strip_markdown_quoting(m.group("cmd"))
             continue
         m = ARTIFACT_RE.match(line)
         if m:
@@ -189,19 +240,20 @@ def cmd_advance(args: argparse.Namespace) -> int:
         print(f"advancing task {target.id}: {target.title}")
         text = write_status(text, target, "in_progress")
         text = update_last_updated(text)
-        LEDGER.write_text(text)
+        atomic_write_text(LEDGER, text)
 
-    if target.verify is None:
-        print(f"  task {target.id} has no verify command; treating as manual")
+    if target.verify is None or target.is_manual():
+        reason = "no verify command" if target.verify is None else "verify is `manual`"
+        print(f"  task {target.id} has {reason}; treating as manual")
         if not args.force_pass:
-            print("  rerun with --force-pass to mark done without a verify command")
+            print("  rerun with --force-pass to mark done without running anything")
             return 0
         text = LEDGER.read_text()
         tasks = parse_ledger(text)
         target = next(t for t in tasks if t.id == target.id)
         text = write_status(text, target, "done")
         text = update_last_updated(text)
-        LEDGER.write_text(text)
+        atomic_write_text(LEDGER, text)
         print("  marked done (manual override)")
         return 0
 
@@ -234,7 +286,7 @@ def cmd_advance(args: argparse.Namespace) -> int:
     target = next(t for t in tasks if t.id == target.id)
     text = write_status(text, target, "done")
     text = update_last_updated(text)
-    LEDGER.write_text(text)
+    atomic_write_text(LEDGER, text)
     print(f"  marked {target.id} as done")
     return 0
 
@@ -251,7 +303,9 @@ def cmd_verify_phase(args: argparse.Namespace) -> int:
 
     failures: list[Task] = []
     for t in phase_tasks:
-        if t.verify is None:
+        if t.verify is None or t.is_manual():
+            print(f"--- {t.id} {t.title}")
+            print("    SKIP (manual)")
             continue
         print(f"--- {t.id} {t.title}")
         res = subprocess.run(
@@ -304,7 +358,7 @@ def cmd_block(args: argparse.Namespace) -> int:
         return 1
     text = write_status(text, target, "blocked")
     text = update_last_updated(text)
-    LEDGER.write_text(text)
+    atomic_write_text(LEDGER, text)
     DIVERGENCE_DIR.mkdir(parents=True, exist_ok=True)
     note = DIVERGENCE_DIR / f"{target.id}__blocked.md"
     note.write_text(
