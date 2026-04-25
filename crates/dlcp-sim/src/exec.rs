@@ -1839,7 +1839,8 @@ mod tests {
     fn btfsc_skips_when_bit_clear() {
         // BTFSC 0x10, b=0, ACCESS = 0xB010.  RAM[0x10] = 0x00 →
         // bit 0 is clear → SKIP.  Next instruction is a NOP at
-        // PC=0x0002 (1-word).  PC advances to 0x0006 and we
+        // PC=0x0002 (1-word).  PC advances to 0x0004 (post-
+        // BTFSC at 0x0002, then +2 to skip the NOP) and we
         // consume 2 Tcy.
         let mut core = k20_core_with_flash(&[
             0x10, 0xB0, // BTFSC
