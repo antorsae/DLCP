@@ -69,7 +69,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [done] P1.3 BSR + Access Bank addressing (`a` bit semantics)
   - verify: `cd crates/dlcp-sim && cargo test --release memory::access_bank::tests`
   - artifact: `crates/dlcp-sim/src/memory.rs::access_bank()`
-  - notes: K20 access-bank boundary differs from 2455 (USB SFRs on 2455 push it to 0x60).
+  - notes: K20 and 2455 share the same 0x60 access-bank boundary — DS39632E §5.3 + DS41303G §5.3. The 2455's USB SFRs at 0xF66-0xF7F live entirely within the 0xF60-0xFFF SFR window so they don't move the boundary anywhere; the access-bank test in `memory::access_bank::tests::variant_independent_routing` pins this. (An earlier version of this note claimed the boundaries differ — that was wrong.)
 
 - [pending] P1.4 FSR INDF + POSTINC/POSTDEC/PREINC/PLUSW
   - verify: `cd crates/dlcp-sim && cargo test --release isa::fsr::tests`
