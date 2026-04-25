@@ -118,9 +118,26 @@ fn read_f(core: &Core, f: u8, a: Access) -> u8 {
     core.memory.read_raw(resolve_f(core, f, a))
 }
 
+/// Mask away unimplemented bits when writing to an SFR that has
+/// some.  Real silicon reads back 0 for those positions
+/// regardless of what the firmware wrote (the silicon literally
+/// has no storage for them); we apply the mask at write time so
+/// `read_raw` returns the silicon-correct value without per-SFR
+/// read-side hooks.  Only the SFRs the executor itself touches
+/// are listed; peripheral side effects (P2) wrap their own
+/// writes via `write_byte_through_peripherals`.
+const fn sfr_write_mask(addr: u16) -> u8 {
+    match addr {
+        STATUS_ADDR => STATUS_VALID_MASK, // bits 7..5 unimplemented
+        BSR_ADDR => 0x0F,                 // bits 7..4 unimplemented
+        _ => 0xFF,
+    }
+}
+
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
     let addr = resolve_f(core, f, a);
-    core.memory.write_raw(addr, value);
+    core.memory
+        .write_raw(addr, value & sfr_write_mask(addr.as_u16()));
 }
 
 /// Write `value` to the destination implied by a byte-oriented
@@ -129,6 +146,34 @@ fn write_dest(core: &mut Core, d: Dest, f: u8, a: Access, value: u8) {
     match d {
         Dest::W => write_w(core, value),
         Dest::F => write_f(core, f, a, value),
+    }
+}
+
+/// Variant of [`write_dest`] for instructions that update STATUS
+/// flags as part of their semantics.  Per DS39632E §5.3.6, when
+/// STATUS is the destination of a flag-affecting instruction,
+/// the result is *not* written -- the flag update from the
+/// op's STATUS-bit math is the sole STATUS change that lands.
+/// Otherwise the write would clobber the just-set bits.
+fn write_dest_preserve_status_flags(
+    core: &mut Core,
+    d: Dest,
+    f: u8,
+    a: Access,
+    value: u8,
+) {
+    let target = match d {
+        Dest::W => Address::from_raw(WREG_ADDR),
+        Dest::F => resolve_f(core, f, a),
+    };
+    if target.as_u16() == STATUS_ADDR {
+        return;
+    }
+    match d {
+        Dest::W => write_w(core, value),
+        Dest::F => core
+            .memory
+            .write_raw(target, value & sfr_write_mask(target.as_u16())),
     }
 }
 
@@ -259,10 +304,13 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // STATUS Z / N reflect the moved byte regardless of d:
             // even `MOVF f, F` (a no-op move) updates the flags --
             // the firmware uses this idiom to test a register
-            // without disturbing W.
+            // without disturbing W.  When d=F and f resolves to
+            // STATUS itself, DS39632E §5.3.6 specifies that the
+            // result write is dropped so the flag update stands;
+            // `write_dest_preserve_status_flags` enforces that.
             let v = read_f(core, f, a);
             set_status_zn(core, v);
-            write_dest(core, d, f, a, v);
+            write_dest_preserve_status_flags(core, d, f, a, v);
             core.advance_cycles(1);
             Ok(1)
         }
@@ -624,6 +672,73 @@ mod tests {
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_bsr(&core), 0x05);
+    }
+
+    #[test]
+    fn movf_status_to_status_preserves_flag_update() {
+        // DS39632E §5.3.6: when STATUS is the destination of a
+        // flag-affecting instruction, the result write is
+        // dropped; only the flag update lands.  `MOVF STATUS, F`
+        // with STATUS initially 0 must end with Z set, NOT with
+        // STATUS still equal to its original 0.
+        //
+        // STATUS in access-bank low: f = STATUS_ADDR & 0xFF = 0xD8.
+        // MOVF 0xD8, F, ACCESS = 0x52D8.
+        let mut core = k20_core_with_flash(&[0xD8, 0x52]);
+        // Pre-clear STATUS.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // Without the fix: STATUS would be re-written as 0,
+        // clobbering the Z-set step.  With the fix: Z stays set.
+        assert!(read_status(&core) & STATUS_Z != 0, "Z must survive");
+    }
+
+    #[test]
+    fn movf_status_to_w_loads_status_byte_normally() {
+        // When d=W, the result write goes to W (not STATUS), so
+        // the flag update + the W load both happen.
+        let mut core = k20_core_with_flash(&[0xD8, 0x50]); // MOVF 0xD8, W, ACCESS
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C); // C set
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // W picks up the original STATUS byte (only C set).
+        assert_eq!(read_w(&core), STATUS_C);
+        // STATUS gets Z/N updated based on the loaded byte (0x01):
+        // not zero, bit 7 clear → Z=0, N=0.  C bit was already
+        // set on entry; Z/N updates leave C alone.
+        assert!(read_status(&core) & STATUS_Z == 0);
+        assert!(read_status(&core) & STATUS_N == 0);
+        assert!(read_status(&core) & STATUS_C != 0, "C must remain set");
+    }
+
+    #[test]
+    fn movwf_to_status_strips_unimplemented_bits() {
+        // STATUS<7:5> are unimplemented (read as 0 on real
+        // silicon).  A MOVWF STATUS attempt with W=0xFF must
+        // store only STATUS_VALID_MASK = 0x1F.
+        // MOVLW 0xFF = 0x0EFF; MOVWF 0xD8, ACCESS = 0x6ED8.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0E, 0xD8, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap(); // MOVLW
+        step(&mut core, &mut stack).unwrap(); // MOVWF
+        assert_eq!(
+            read_status(&core),
+            STATUS_VALID_MASK,
+            "STATUS<7:5> must read as 0 even after a 0xFF write"
+        );
+    }
+
+    #[test]
+    fn movwf_to_bsr_strips_unimplemented_bits() {
+        // BSR<7:4> are unimplemented.  MOVWF BSR with W=0xF7
+        // must store only the low nibble.
+        // MOVLW 0xF7 = 0x0EF7; MOVWF 0xE0, ACCESS = 0x6EE0.
+        let mut core = k20_core_with_flash(&[0xF7, 0x0E, 0xE0, 0x6E]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_bsr(&core), 0x07);
     }
 
     #[test]
