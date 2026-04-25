@@ -225,12 +225,32 @@ fn execute_conditional_branch(
 const TABLAT_ADDR: u16 = 0xFF5;
 
 /// `TBLPTRL` / `TBLPTRH` / `TBLPTRU` -- 22-bit table pointer
-/// (DS39632E §6.2.3).  Bits <21:16> live in TBLPTRU<5:0>;
-/// bits <15:8> in TBLPTRH; bits <7:0> in TBLPTRL.
+/// (DS39632E §6.2.3).  Layout:
+///   - TBLPTRL  <7:0>  → TBLPTR<7:0>
+///   - TBLPTRH  <7:0>  → TBLPTR<15:8>
+///   - TBLPTRU  <4:0>  → TBLPTR<20:16>
+///   - TBLPTRU  <5>    → TBLPTR<21> (separate "access" flag
+///                                    selecting program memory
+///                                    vs CONFIG / User ID
+///                                    space; auto-modify
+///                                    instructions leave it
+///                                    untouched per §6.2.3 +
+///                                    Table 5-2 footnote 1).
+///   - TBLPTRU  <7:6>  → unimplemented (read as 0; see
+///                                       sfr_write_mask for
+///                                       0xFF8 = 0x3F).
 const TBLPTRL_ADDR: u16 = 0xFF6;
 const TBLPTRH_ADDR: u16 = 0xFF7;
 const TBLPTRU_ADDR: u16 = 0xFF8;
+/// Storage mask for the full 22-bit TBLPTR (used by
+/// `read_tblptr` / `write_tblptr`).
 const TBLPTR_MASK: u32 = 0x003F_FFFF;
+/// Auto-modify mask: only bits 20..0 are modified by
+/// TBLRD*+/-, TBLWT*+/-.  Bit 21 (the access-select flag) is
+/// preserved across the modify so each table instruction
+/// stays in its declared address space.
+const TBLPTR_AUTO_MODIFY_MASK: u32 = 0x001F_FFFF;
+const TBLPTR_BIT21: u32 = 0x0020_0000;
 
 fn read_tblptr(core: &Core) -> u32 {
     let l = core.memory.read_raw(Address::from_raw(TBLPTRL_ADDR)) as u32;
@@ -249,6 +269,25 @@ fn write_tblptr(core: &mut Core, value: u32) {
         Address::from_raw(TBLPTRU_ADDR),
         ((value >> 16) as u8) & 0x3F,
     );
+}
+
+/// Auto-increment TBLPTR's address bits (20..0) by 1, leaving
+/// the access-select bit 21 untouched.  Per DS39632E §6.2.3,
+/// TBLRD/TBLWT auto-modify operates on the 21-bit address
+/// only -- the bit-21 flag is set deliberately by firmware
+/// before issuing the table instruction and must not flip
+/// during auto-modify, even when crossing the 0x1F_FFFF
+/// boundary.
+fn tblptr_auto_inc(value: u32) -> u32 {
+    let preserved = value & TBLPTR_BIT21;
+    let modifiable = (value & TBLPTR_AUTO_MODIFY_MASK).wrapping_add(1) & TBLPTR_AUTO_MODIFY_MASK;
+    preserved | modifiable
+}
+
+fn tblptr_auto_dec(value: u32) -> u32 {
+    let preserved = value & TBLPTR_BIT21;
+    let modifiable = (value & TBLPTR_AUTO_MODIFY_MASK).wrapping_sub(1) & TBLPTR_AUTO_MODIFY_MASK;
+    preserved | modifiable
 }
 
 /// Read a flash byte at `addr`.  For now `core.flash()` only
@@ -1211,7 +1250,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // Core (only `core.flash()` for program memory
             // 0x000..0x8000).  Out-of-range reads return 0xFF.
             if mode == TableMode::PreIncrement {
-                let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                let new_ptr = tblptr_auto_inc(read_tblptr(core));
                 write_tblptr(core, new_ptr);
             }
             let target = read_tblptr(core);
@@ -1220,11 +1259,11 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                 .write_raw(Address::from_raw(TABLAT_ADDR), byte);
             match mode {
                 TableMode::PostIncrement => {
-                    let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                    let new_ptr = tblptr_auto_inc(read_tblptr(core));
                     write_tblptr(core, new_ptr);
                 }
                 TableMode::PostDecrement => {
-                    let new_ptr = read_tblptr(core).wrapping_sub(1) & TBLPTR_MASK;
+                    let new_ptr = tblptr_auto_dec(read_tblptr(core));
                     write_tblptr(core, new_ptr);
                 }
                 TableMode::NoModify | TableMode::PreIncrement => {}
@@ -1247,16 +1286,12 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // Tracked via the same P2 EEPROM peripheral work
             // referenced in TaskCreate #14.
             match mode {
-                TableMode::PreIncrement => {
-                    let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
-                    write_tblptr(core, new_ptr);
-                }
-                TableMode::PostIncrement => {
-                    let new_ptr = read_tblptr(core).wrapping_add(1) & TBLPTR_MASK;
+                TableMode::PreIncrement | TableMode::PostIncrement => {
+                    let new_ptr = tblptr_auto_inc(read_tblptr(core));
                     write_tblptr(core, new_ptr);
                 }
                 TableMode::PostDecrement => {
-                    let new_ptr = read_tblptr(core).wrapping_sub(1) & TBLPTR_MASK;
+                    let new_ptr = tblptr_auto_dec(read_tblptr(core));
                     write_tblptr(core, new_ptr);
                 }
                 TableMode::NoModify => {}
@@ -2567,6 +2602,43 @@ mod tests {
         // should hold 0xBB (from flash[0x41]), not 0xAA.
         assert_eq!(core.memory.read_raw(Address::from_raw(TABLAT_ADDR)), 0xBB);
         assert_eq!(read_tblptr(&core), 0x0041);
+    }
+
+    #[test]
+    fn tblrd_post_increment_preserves_tblptr_bit_21_across_boundary() {
+        // Codex regression: TBLPTR auto-modify must operate on
+        // bits 20..0 only; bit 21 (the access-select flag) is
+        // preserved per DS39632E §6.2.3.
+        //
+        // TBLPTR = 0x1F_FFFF (bit 21 clear, all other 21 bits
+        // set).  POSTINC must wrap bit 0..20 to 0 WITHOUT
+        // flipping bit 21.  Without the preservation, the
+        // 22-bit increment would land at 0x20_0000 and
+        // accidentally enter CONFIG/User-ID space.
+        let mut core = k20_core_with_flash(&[0x09, 0x00]); // TBLRD*+
+        write_tblptr(&mut core, 0x001F_FFFF);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // Should wrap to 0 within the 21-bit address space; bit
+        // 21 stays 0.
+        assert_eq!(
+            read_tblptr(&core),
+            0x0000_0000,
+            "auto-modify must wrap within bits 20..0, not flip bit 21"
+        );
+    }
+
+    #[test]
+    fn tblrd_post_increment_preserves_tblptr_bit_21_when_set() {
+        // Same wrap test, but with bit 21 pre-set: the post-
+        // increment must leave bit 21 high.
+        let mut core = k20_core_with_flash(&[0x09, 0x00]);
+        // TBLPTR = 0x3F_FFFF: bit 21 set + bits 20..0 all set.
+        write_tblptr(&mut core, 0x003F_FFFF);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // Increment wraps bits 20..0 to 0; bit 21 stays 1.
+        assert_eq!(read_tblptr(&core), 0x0020_0000);
     }
 
     #[test]
