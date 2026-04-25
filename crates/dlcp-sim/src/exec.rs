@@ -188,6 +188,59 @@ fn execute_logical_with_dest<F>(
     });
 }
 
+/// Skip the next instruction by advancing PC past it and
+/// returning the Tcy cost of the parent skip-instruction.
+/// Inspects `flash[pc..pc+2]` to decide whether the next
+/// instruction is single-word (advance PC by 2, total 2 Tcy)
+/// or one of the four 2-word ops MOVFF/CALL/LFSR/GOTO
+/// (advance PC by 4, total 3 Tcy).  PC at entry is already
+/// past the parent skip-instruction (the dispatch advanced it
+/// during fetch).
+///
+/// If the next word is unfetchable (PC at end of flash), don't
+/// advance PC -- a subsequent step() call will surface
+/// PcOutOfBounds itself.  Return the 2-Tcy cost since the skip
+/// "took" even if the target was implicit.
+fn skip_next_instruction(core: &mut Core) -> u8 {
+    let pc = core.pc();
+    let pc_idx = pc as usize;
+    let flash = core.flash();
+    if pc_idx + 1 >= flash.len() {
+        return 2;
+    }
+    let word1 = u16::from_le_bytes([flash[pc_idx], flash[pc_idx + 1]]);
+    if opcode_needs_word2(word1) {
+        core.set_pc(pc.wrapping_add(4));
+        3
+    } else {
+        core.set_pc(pc.wrapping_add(2));
+        2
+    }
+}
+
+/// Dispatch helper for ops that are RMW into f only (no `d`
+/// operand) AND don't affect STATUS flags (BCF, BSF, BTG).
+/// Resolves f once, reads it, transforms it via `transform`,
+/// writes the masked result back, then commits any pending FSR
+/// mutation -- exactly once.  No §5.3.6 STATUS-skip: per
+/// DS39632E §5.3.6 that rule is for flag-affecting ops; these
+/// directly manipulate STATUS bits when f=STATUS, which is the
+/// firmware idiom for `BCF STATUS, C` etc.
+fn execute_rmw_to_f<F>(core: &mut Core, a: Access, f: u8, transform: F)
+where
+    F: FnOnce(u8) -> u8,
+{
+    let operand_addr = resolve_f(core, f, a);
+    let (target, pending) = resolve_target_no_commit(core, operand_addr);
+    let f_value = core.memory.read_raw(target);
+    let result = transform(f_value);
+    core.memory
+        .write_raw(target, result & sfr_write_mask(target.as_u16()));
+    if let Some((fsr, new_fsr)) = pending {
+        commit_fsr(core, fsr, new_fsr);
+    }
+}
+
 /// Lower-level dispatch helper used by every byte-oriented
 /// dispatch arm with a `d` operand.  The `compute_and_status`
 /// closure receives `&mut Core` (so it can update STATUS or
@@ -895,6 +948,48 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             core.advance_cycles(1);
             Ok(1)
         }
+        // ---------------- bit-oriented (1 Tcy each, except skip) -
+        Instruction::Bcf { b, a, f } => {
+            // BCF f, b, a: clear bit b of f.  No flag effects.
+            execute_rmw_to_f(core, a, f, |fv| fv & !(1u8 << b));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Bsf { b, a, f } => {
+            // BSF f, b, a: set bit b of f.  No flag effects.
+            execute_rmw_to_f(core, a, f, |fv| fv | (1u8 << b));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Btg { b, a, f } => {
+            // BTG f, b, a: toggle bit b of f.  No flag effects.
+            execute_rmw_to_f(core, a, f, |fv| fv ^ (1u8 << b));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::BtfSc { b, a, f } => {
+            // BTFSC f, b, a: read f, skip the next instruction
+            // if bit b of f is CLEAR.  No flag effects.
+            //
+            // Cycle cost (DS39632E Table 26-2 + ledger cheat-
+            // sheet at docs/SIM_REWRITE_RUST_PROGRESS.md):
+            //   - bit set (no skip)                  → 1 Tcy
+            //   - bit clear, next is single-word     → 2 Tcy
+            //   - bit clear, next is 2-word          → 3 Tcy
+            let value = read_f(core, f, a);
+            let bit_clear = value & (1u8 << b) == 0;
+            let cycles = if bit_clear { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
+        Instruction::BtfSs { b, a, f } => {
+            // BTFSS f, b, a: skip if bit b of f is SET.
+            let value = read_f(core, f, a);
+            let bit_set = value & (1u8 << b) != 0;
+            let cycles = if bit_set { skip_next_instruction(core) } else { 1 };
+            core.advance_cycles(cycles as u32);
+            Ok(cycles)
+        }
         Instruction::Swapf { d, a, f } => {
             // SWAPF f, d, a: swap the high and low nibbles of f.
             // STATUS NOT affected (DS39632E §26 SWAPF).
@@ -1123,26 +1218,20 @@ mod tests {
 
     #[test]
     fn step_reports_unimplemented_for_not_yet_wired_instruction() {
-        // BTG 0x10, 0, ACCESS — encoding 0x7010 (high4=0111
-        // bit-oriented BTG; b=0; a=ACCESS; f=0x10).  Not yet
-        // wired into the dispatch (bit-oriented ops land in a
-        // later P1.8b commit).  This test pins the Unimplemented
-        // arm and will need updating (changed to assert successful
-        // exec) when BTG lands.
-        let mut core = k20_core_with_flash(&[0x10, 0x70]);
+        // CPFSEQ 0x10, ACCESS — encoding 0x6210 (high7=0110001,
+        // a=0, f=0x10).  Skip-and-test ops aren't wired yet;
+        // they land in a later P1.8b commit.  This test pins
+        // the Unimplemented arm and will need updating (changed
+        // to assert successful exec) when CPFSEQ lands.
+        let mut core = k20_core_with_flash(&[0x10, 0x62]);
         let mut stack = Stack::new();
 
         let err = step(&mut core, &mut stack).unwrap_err();
         assert!(
-            matches!(err, ExecError::Unimplemented(Instruction::Btg { .. })),
-            "expected Unimplemented(Btg), got {err:?}"
+            matches!(err, ExecError::Unimplemented(Instruction::CpfsEq { .. })),
+            "expected Unimplemented(CpfsEq), got {err:?}"
         );
-        // PC should still have advanced (the dispatch happens after
-        // the fetch+set_pc, so the caller can recover by retrying
-        // from a new program counter).
         assert_eq!(core.pc(), 0x0002);
-        // Cycle counter stays at 0 — Unimplemented didn't consume
-        // a Tcy because no instruction actually ran.
         assert_eq!(core.cycles(), 0);
     }
 
@@ -1695,6 +1784,124 @@ mod tests {
             "FSR advanced too far -- write hit the wrong slot"
         );
         assert_eq!(read_fsr0(&core), 0x101);
+    }
+
+    // ---- bit-oriented (BCF, BSF, BTG, BTFSC, BTFSS) ----
+
+    #[test]
+    fn bcf_clears_bit_b_of_f() {
+        // BCF 0x10, b=2, ACCESS: high4=1001, b=010, a=0 →
+        // word = 0b1001_0100_0001_0000 = 0x9410.
+        let mut core = k20_core_with_flash(&[0x10, 0x94]);
+        core.memory.write_raw(Address::from_raw(0x010), 0xFF);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // Bit 2 cleared.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0xFB);
+    }
+
+    #[test]
+    fn bsf_sets_bit_b_of_f() {
+        // BSF 0x10, b=5, ACCESS: high4=1000, b=101, a=0 → 0x8A10.
+        let mut core = k20_core_with_flash(&[0x10, 0x8A]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x00);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x20);
+    }
+
+    #[test]
+    fn btg_toggles_bit_b_of_f() {
+        // BTG 0x10, b=0, ACCESS: high4=0111, b=000, a=0 → 0x7010.
+        let mut core = k20_core_with_flash(&[0x10, 0x70]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x55);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // 0x55 ^ 0x01 = 0x54.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x54);
+    }
+
+    #[test]
+    fn bcf_status_carry_clears_c_directly() {
+        // BCF STATUS, C, ACCESS: f=0xD8, b=0 (C bit), a=0.
+        // high4=1001, b=000, a=0 → 0x90D8.  Per §5.3.6 the
+        // "drop result write to STATUS" rule does NOT apply
+        // because BCF doesn't have flag-update side effects --
+        // it directly manipulates the bit.  So C must clear.
+        let mut core = k20_core_with_flash(&[0xD8, 0x90]);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_status(&core), STATUS_VALID_MASK & !STATUS_C);
+    }
+
+    #[test]
+    fn btfsc_skips_when_bit_clear() {
+        // BTFSC 0x10, b=0, ACCESS = 0xB010.  RAM[0x10] = 0x00 →
+        // bit 0 is clear → SKIP.  Next instruction is a NOP at
+        // PC=0x0002 (1-word).  PC advances to 0x0006 and we
+        // consume 2 Tcy.
+        let mut core = k20_core_with_flash(&[
+            0x10, 0xB0, // BTFSC
+            0x00, 0x00, // NOP (skipped)
+            0x00, 0x00, // NOP (would execute next)
+        ]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x00);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn btfsc_does_not_skip_when_bit_set() {
+        // Same encoding as above; RAM[0x10] = 0x01 → bit 0 is
+        // set → no skip.  PC advances by 2 (just past the
+        // BTFSC), 1 Tcy.
+        let mut core = k20_core_with_flash(&[
+            0x10, 0xB0, //
+            0x00, 0x00, //
+        ]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 1);
+        assert_eq!(core.pc(), 0x0002);
+    }
+
+    #[test]
+    fn btfss_skips_when_bit_set() {
+        // BTFSS 0x10, b=2, ACCESS: high4=1010, b=010, a=0 →
+        // word = 0xA410.  RAM[0x10] = 0x04 → bit 2 set → skip.
+        let mut core = k20_core_with_flash(&[
+            0x10, 0xA4, //
+            0x00, 0x00, // skipped NOP
+            0x00, 0x00, //
+        ]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x04);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0x0004);
+    }
+
+    #[test]
+    fn btfsc_skip_over_two_word_target_costs_three_tcy() {
+        // BTFSC 0x10, b=0, ACCESS: 0xB010.  Bit 0 clear → skip.
+        // Next instruction is a 2-word GOTO (word1=0xEF**).
+        // Per the cheat-sheet, skip-over-2-word costs 3 Tcy and
+        // PC advances by 4 bytes.
+        let mut core = k20_core_with_flash(&[
+            0x10, 0xB0, // BTFSC
+            0x00, 0xEF, // GOTO word1 (target k[7:0]=0)
+            0x00, 0xF0, // GOTO word2 (target k[19:8]=0)
+            0x00, 0x00, // NOP (this is what runs next)
+        ]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x00);
+        let mut stack = Stack::new();
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 3, "skip-over-2-word costs 3 Tcy");
+        assert_eq!(core.pc(), 0x0006, "PC skipped both GOTO words");
     }
 
     // ---- logical / rotate / swap ----
