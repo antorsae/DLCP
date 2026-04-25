@@ -101,10 +101,16 @@ impl HexImage {
                     let base = ela | rec.address as u32;
                     let len = rec.data.len();
                     for (i, &b) in rec.data.iter().enumerate() {
-                        // checked_add catches the (admittedly malformed)
-                        // case where a record near 0xFFFF_FFFF spans past
-                        // the 32-bit address space — without it, a byte
-                        // would wrap to 0 and silently land in flash[0].
+                        // Defense-in-depth against a future window
+                        // change that allows write_byte to accept
+                        // addresses close to u32::MAX: with the
+                        // current windows (highest end is 0xF00100)
+                        // write_byte already rejects every address
+                        // past 0xF000FF, so byte 0 of an out-of-
+                        // range record errors out before the loop
+                        // can reach an `i` that would overflow.  The
+                        // cost of `checked_add` is one branch per
+                        // byte; keep it.
                         let addr = base.checked_add(i as u32).ok_or(
                             HexLoadError::AddressOutOfRange {
                                 line: line_no,
@@ -772,12 +778,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_address_overflow_at_top_of_32_bit_space() {
-        // ELA = 0xFFFF + record address 0xFFFF + a 2-byte
-        // payload puts byte[0] at 0xFFFFFFFF and byte[1] at
-        // 0x100000000 — past u32::MAX.  Without checked_add the
-        // second byte would silently wrap to 0 and land in
-        // flash[0]; the loader must reject loudly instead.
+    fn rejects_record_at_top_of_32_bit_space() {
+        // ELA = 0xFFFF + record address 0xFFFF puts byte[0] at
+        // 0xFFFF_FFFF.  That address is outside every known
+        // window, so write_byte's else-branch rejects with
+        // AddressOutOfRange before the loop reaches byte[1].
+        // (The data-record loop's `checked_add` is defense-in-
+        // depth for future window changes; with today's windows
+        // it never gets a chance to fire because write_byte
+        // catches the high address first.)
         let err = HexImage::from_hex_str(&build_hex(&[
             ela_rec(0xFFFF),
             data_rec(0xFFFF, &[0xAA, 0xBB]),
@@ -785,9 +794,10 @@ mod tests {
         ]))
         .unwrap_err();
         match err {
-            HexLoadError::AddressOutOfRange { line, address, .. } => {
+            HexLoadError::AddressOutOfRange { line, address, length } => {
                 assert_eq!(line, 2);
-                assert_eq!(address, u32::MAX);
+                assert_eq!(address, 0xFFFF_FFFF);
+                assert_eq!(length, 2);
             }
             other => panic!("expected AddressOutOfRange, got {other:?}"),
         }
