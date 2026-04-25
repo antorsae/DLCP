@@ -121,12 +121,12 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the `isa_covers_all_75_pic18_opcodes` test from spec §5).
   - notes: synthesizes a flash image that exercises every documented opcode at least once; `Core::step` walks it; asserts every `Instruction` variant has been hit. Pure decoder + executor — no gpsim required. Lands the test file that P1.8d/e will extend.
 
-- [pending] P1.8d isa_parity::isa_matches_gpsim_ground_truth_for_v171_reset_through_init
+- [blocked] P1.8d isa_parity::isa_matches_gpsim_ground_truth_for_v171_reset_through_init
   - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity isa_matches_gpsim_ground_truth_for_v171_reset_through_init`
   - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the matching test function from spec §5).
   - notes: load V1.71 CONTROL hex via P1.8a, run from POR for ~100k cycles, RAM + W + STATUS + STKPTR bit-exact against a runtime gpsim ground-truth snapshot. **Caveat:** the existing `test_v171_baseline_*` fixtures are static-hex-validation only and have empty `snapshots/` directories — implementation needs to either pick a fixture that actually drives a harness (likely under `test_v17_chain` / `test_v17_shifted_full_parity` / `test_v171_v31_chain`) or capture a fresh K20-only POR fixture under `--capture-ground-truth`. This sub-task therefore includes "identify or capture the right fixture" as part of its scope.
 
-- [pending] P1.8e isa_parity::isa_matches_gpsim_ground_truth_for_v32_reset_through_an0_gate_pass
+- [blocked] P1.8e isa_parity::isa_matches_gpsim_ground_truth_for_v32_reset_through_an0_gate_pass
   - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity isa_matches_gpsim_ground_truth_for_v32_reset_through_an0_gate_pass`
   - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the matching test function from spec §5).
   - notes: load V3.2 MAIN hex via P1.8a, run from POR until the AN0 standby-gate pass milestone, RAM/W/STATUS/STKPTR bit-exact against a runtime gpsim fixture. The AN0 gate requires the ADC (AN0 sample) and the standby-state machine, which are P2 peripheral work — **this sub-task is expected to block on P2.x landing the ADC/comparator model**. Keeping it in the ledger so the dependency is visible; expect to flip its status to `blocked` once P1.8d lands and the prerequisite gap is concrete.
