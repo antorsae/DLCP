@@ -66,7 +66,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/isa/decode.rs`
   - notes: opcode table from DS39632E §24 / DS41303 §25.
 
-- [pending] P1.3 BSR + Access Bank addressing (`a` bit semantics)
+- [done] P1.3 BSR + Access Bank addressing (`a` bit semantics)
   - verify: `cd crates/dlcp-sim && cargo test --release memory::access_bank::tests`
   - artifact: `crates/dlcp-sim/src/memory.rs::access_bank()`
   - notes: K20 access-bank boundary differs from 2455 (USB SFRs on 2455 push it to 0x60).

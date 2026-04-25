@@ -214,6 +214,184 @@ impl Memory {
     }
 }
 
+/// Access-Bank-specific helpers and dedicated boundary tests.
+///
+/// Most call sites just use [`Memory::resolve`] with the `a` bit
+/// taken from the decoded instruction; this submodule exposes a
+/// single-purpose helper for the `a=0` path so peripheral code
+/// reading an SFR by name (`mem.access_bank(0xB8)` for BAUDCON,
+/// say) doesn't have to remember to pass `a=false, bsr=anything`.
+///
+/// The tests live under `memory::access_bank::tests::*` so the
+/// `cargo test --release memory::access_bank::tests` filter
+/// (P1.3 verify gate) picks them up.
+pub mod access_bank {
+    use super::{Address, Memory};
+
+    impl Memory {
+        /// Resolve an Access-Bank (`a=0`) operand `f` directly,
+        /// without consulting BSR.  Equivalent to
+        /// `self.resolve(f, false, _)` but communicates intent
+        /// at the call site.
+        ///
+        /// * `f < 0x60` → Address `0x000 | f` (Access RAM low).
+        /// * `f >= 0x60` → Address `0xF00 | f` (top-of-bank-15
+        ///   SFR window).
+        pub const fn access_bank(&self, f: u8) -> Address {
+            self.resolve(f, false, 0)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::{Address, Memory, Variant};
+
+        // ----- Helpers -----
+
+        fn k20_mem() -> Memory {
+            Memory::new(Variant::Pic18F25K20)
+        }
+
+        fn p2455_mem() -> Memory {
+            Memory::new(Variant::Pic18F2455)
+        }
+
+        // ----- Access Bank low half (`f < 0x60` → bank 0) -----
+
+        #[test]
+        fn access_bank_low_at_zero_routes_to_bank0() {
+            let m = k20_mem();
+            assert_eq!(m.access_bank(0x00), Address::from_raw(0x000));
+        }
+
+        #[test]
+        fn access_bank_low_at_5f_routes_to_bank0() {
+            // f = 0x5F is the *highest* low-half address (the
+            // boundary minus one).  Stays in bank 0.
+            let m = p2455_mem();
+            assert_eq!(m.access_bank(0x5F), Address::from_raw(0x05F));
+        }
+
+        // ----- Access Bank high half (`f >= 0x60` → SFR area) -----
+
+        #[test]
+        fn access_bank_high_at_60_routes_to_sfr() {
+            // f = 0x60 is the *lowest* high-half address.  PIC18
+            // routes it to 0xF60 — first byte of the SFR window.
+            let m = k20_mem();
+            assert_eq!(m.access_bank(0x60), Address::from_raw(0xF60));
+        }
+
+        #[test]
+        fn access_bank_high_at_b8_routes_to_baudcon() {
+            // f = 0xB8 is BAUDCON on both 2455 and K20 (DS39632E
+            // Table 5-1 data row + DS41303G; spec §11b
+            // resolution).  V3.2 MAIN's `movwf BAUDCON, ACCESS`
+            // (opcode 0x6EB8) lands here.
+            let m = p2455_mem();
+            assert_eq!(m.access_bank(0xB8), Address::from_raw(0xFB8));
+            // Same on K20 (CONTROL).
+            let m = k20_mem();
+            assert_eq!(m.access_bank(0xB8), Address::from_raw(0xFB8));
+        }
+
+        #[test]
+        fn access_bank_high_at_ff_routes_to_top_of_bank15() {
+            let m = k20_mem();
+            assert_eq!(m.access_bank(0xFF), Address::from_raw(0xFFF));
+        }
+
+        // ----- Resolved address must classify correctly -----
+
+        #[test]
+        fn access_bank_high_addresses_are_sfr_classed() {
+            let m = p2455_mem();
+            assert!(m.access_bank(0x60).is_sfr());
+            assert!(m.access_bank(0xB8).is_sfr());
+            assert!(m.access_bank(0xFF).is_sfr());
+        }
+
+        #[test]
+        fn access_bank_low_addresses_are_not_sfr_classed() {
+            let m = p2455_mem();
+            assert!(!m.access_bank(0x00).is_sfr());
+            assert!(!m.access_bank(0x05F).is_sfr());
+        }
+
+        // ----- BSR-selected (`a=1`) path through Memory::resolve -----
+
+        #[test]
+        fn banked_uses_full_bsr() {
+            let m = k20_mem();
+            assert_eq!(m.resolve(0x42, true, 0x0F).as_u16(), 0xF42);
+            assert_eq!(m.resolve(0x10, true, 0x07).as_u16(), 0x710);
+            assert_eq!(m.resolve(0x00, true, 0x00).as_u16(), 0x000);
+        }
+
+        #[test]
+        fn banked_masks_bsr_high_nibble() {
+            // PIC18 BSR is 4 bits in real silicon; the upper 4
+            // bits of any value passed in must be ignored so the
+            // simulator doesn't accidentally accept `bsr=0x1F`
+            // and resolve into bank 31 (which doesn't exist).
+            let m = p2455_mem();
+            assert_eq!(m.resolve(0x10, true, 0xF7).as_u16(), 0x710);
+            assert_eq!(m.resolve(0x10, true, 0x47).as_u16(), 0x710);
+        }
+
+        #[test]
+        fn banked_low_f_does_not_alias_to_bank0() {
+            // Under `a=1`, even `f < 0x60` consults BSR and
+            // routes to `(BSR << 8) | f`, NOT bank 0.  This is
+            // the distinguishing case between Access-Bank and
+            // banked addressing.
+            let m = k20_mem();
+            assert_eq!(m.resolve(0x05, true, 0x03).as_u16(), 0x305);
+        }
+
+        #[test]
+        fn banked_high_f_does_not_alias_to_sfr() {
+            // Symmetrically, `a=1, f >= 0x60` resolves through
+            // BSR, so f=0xB8 with BSR=0x07 lands at 0x7B8 — NOT
+            // 0xFB8 (BAUDCON).  This is one of the most common
+            // PIC18 "I forgot the access bank" bugs in firmware.
+            let m = p2455_mem();
+            assert_eq!(m.resolve(0xB8, true, 0x07).as_u16(), 0x7B8);
+        }
+
+        // ----- The two routes can be told apart at the same `f` -----
+
+        #[test]
+        fn same_f_different_a_route_differently() {
+            let m = k20_mem();
+            // f = 0xB8.
+            // a=0 (Access)  → 0xFB8 (BAUDCON / SFR window).
+            // a=1 (Banked)  → (BSR << 8) | 0xB8.
+            assert_eq!(m.access_bank(0xB8).as_u16(), 0xFB8);
+            assert_eq!(m.resolve(0xB8, true, 0x05).as_u16(), 0x5B8);
+            assert_ne!(
+                m.access_bank(0xB8).as_u16(),
+                m.resolve(0xB8, true, 0x05).as_u16(),
+            );
+        }
+
+        #[test]
+        fn variant_independent_routing() {
+            // Both PIC18F25K20 and PIC18F2455 use the same 0x60
+            // Access-Bank split (spec §6 + DS39632E §5.3 +
+            // DS41303G §5.3).  The 2455 has USB SFRs at
+            // 0xF66-0xF7F, but those are a property of the SFR
+            // map, not of the addressing arithmetic.
+            for variant in [Variant::Pic18F25K20, Variant::Pic18F2455] {
+                let m = Memory::new(variant);
+                assert_eq!(m.access_bank(0x5F).as_u16(), 0x05F);
+                assert_eq!(m.access_bank(0x60).as_u16(), 0xF60);
+                assert_eq!(m.access_bank(0xB8).as_u16(), 0xFB8);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
