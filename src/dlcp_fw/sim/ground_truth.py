@@ -30,17 +30,29 @@ Event schema (one JSON object per line, schema_version=1):
         "payload": <dict>,           # kind-specific arguments
     }
 
-Snapshot file naming:
+Snapshot file naming (one snapshot = pair of files; split on
+``.`` always yields exactly four components ``[seq, label,
+harness, ext]``):
 
     snapshots/0000000000.init.<harness_id>.ram.bin     # 256 B RAM bank 0
     snapshots/0000000000.init.<harness_id>.sfr.json    # top-of-bank-15 SFR map
-    snapshots/0000000001.event.<harness_id>.<kind>.ram.bin
-    snapshots/0000000001.event.<harness_id>.<kind>.sfr.json
+    snapshots/0000000001.event_<kind>.<harness_id>.ram.bin
+    snapshots/0000000001.event_<kind>.<harness_id>.sfr.json
     snapshots/<final_seq>.final.<harness_id>.ram.bin
     snapshots/<final_seq>.final.<harness_id>.sfr.json
 
-Where `harness_id` is "control" / "main" / "main_0" / "main_1"
-depending on the chain topology.
+Where `harness_id` is "control" / "main_0" / "main_1" depending
+on the chain topology.  For event snapshots the `kind` is the
+same `kind` argument that was passed to the immediately-preceding
+`record_event(...)` call so a downstream reader can correlate
+snapshots back to stimulus.jsonl entries.
+
+P0.3 lands the *event* phase only; `snapshot_phase("init", ...)`
+and `snapshot_phase("final", ...)` exist in the API but no
+caller currently invokes them — the autouse fixture cannot take
+init/final snapshots itself because chain harness instances
+don't exist at fixture-enter time.  A later sub-task (e.g. P0.5)
+may wire init/final snapshots if needed.
 
 The `tick` field listed in spec §4 is intentionally omitted; the
 existing harnesses don't expose a uniform universal-clock counter
@@ -195,11 +207,31 @@ class SnapshotTaker:
         phase: str,
         kind: str | None = None,
     ) -> int:
-        """Dump RAM + SFR for each target.  Returns the seq used."""
+        """Dump RAM + SFR for each target.  Returns the seq used.
+
+        Per-target writes are best-effort atomic in pairs: if the
+        SFR write fails after the RAM write succeeded the orphan
+        RAM file is cleaned up so a downstream validator does not
+        see an unpaired snapshot.  Duplicate `harness_id`s within
+        a single target set raise immediately, before any disk I/O,
+        so a wire-chain bug that builds two MAINs with the same
+        tag surfaces as a clear error rather than silent
+        overwriting.
+        """
         if not self._opened:
             return -1
+        materialised = list(targets)
+        seen: set[str] = set()
+        for target in materialised:
+            hid = target.harness_id
+            if hid in seen:
+                raise RuntimeError(
+                    f"duplicate harness_id {hid!r} in snapshot target set; "
+                    "harness ids must be unique within one capture"
+                )
+            seen.add(hid)
         seq = self._seq
-        for target in targets:
+        for target in materialised:
             ram, sfr = target.dump_state()
             if len(ram) != 256:
                 raise RuntimeError(
@@ -208,12 +240,25 @@ class SnapshotTaker:
                 )
             label = f"{phase}_{kind}" if (phase == "event" and kind) else phase
             stem = f"{seq:010d}.{label}.{target.harness_id}"
-            (self.out_dir / f"{stem}.ram.bin").write_bytes(ram)
+            ram_path = self.out_dir / f"{stem}.ram.bin"
+            sfr_path = self.out_dir / f"{stem}.sfr.json"
+            ram_path.write_bytes(ram)
             sfr_dump = {f"0x{addr:03X}": v & 0xFF for addr, v in sorted(sfr.items())}
-            (self.out_dir / f"{stem}.sfr.json").write_text(
-                json.dumps(sfr_dump, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            try:
+                sfr_path.write_text(
+                    json.dumps(sfr_dump, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                # Avoid leaving an orphan ram.bin without its sfr.json
+                # sidecar; the validator requires snapshots to come in
+                # pairs.
+                if ram_path.exists():
+                    try:
+                        ram_path.unlink()
+                    except OSError:
+                        pass
+                raise
         self._seq += 1
         return seq
 

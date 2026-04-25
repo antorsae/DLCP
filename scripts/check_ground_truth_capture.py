@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -85,6 +86,10 @@ def _check_stimulus(dirs: Iterable[Path]) -> list[str]:
     return errors
 
 
+_SFR_KEY_RE = re.compile(r"^0x[0-9A-Fa-f]{3}$")
+_SFR_RANGE = range(0xF60, 0x1000)
+
+
 def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
     """Validate the per-test `snapshots/` directory.
 
@@ -92,17 +97,22 @@ def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
     from the planning discussion): snapshots are taken at well-
     defined boundaries (after each recorded chain mutator event and
     at test start/end), not on a 1 ms cadence.  The validator
-    therefore requires:
+    requires:
 
       * `snapshots/` exists for every captured test directory.
+      * Every snapshot is a paired `.ram.bin` + `.sfr.json` with
+        the same prefix; orphan ram.bin or orphan sfr.json files
+        fail the gate.
       * Each `*.ram.bin` is exactly 256 bytes (RAM bank 0).
-      * Each matching `*.sfr.json` parses as a JSON object whose
-        keys are hex strings of the form ``0xNNN`` and values are
-        bytes (0..255).
+      * Each `*.sfr.json` parses as a JSON object whose keys match
+        `^0x[0-9A-Fa-f]{3}$` and decode to addresses in the
+        top-of-bank-15 SFR range 0xF60..0xFFF; values are bytes
+        (0..255).
       * For tests whose stimulus.jsonl is non-empty (i.e. the test
-        actually drove a chain mutator), at least one snapshot pair
-        was written.  Tests with empty stimulus are exempt — the
-        chain mutators never fired so no snapshots are expected.
+        actually drove a chain mutator), at least one snapshot
+        pair was written.  Tests with empty stimulus are exempt —
+        the chain mutators never fired so no snapshots are
+        expected.
     """
     errors: list[str] = []
     for d in dirs:
@@ -110,10 +120,35 @@ def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
         if not snaps.exists():
             errors.append(f"{d.name}: snapshots/ directory is missing")
             continue
-        ram_files = sorted(snaps.glob("*.ram.bin"))
-        sfr_files = sorted(snaps.glob("*.sfr.json"))
 
-        # Empty-stimulus tests are exempt.
+        # Build a {prefix: kinds_present} map so we can detect orphans.
+        # The "prefix" is everything before the trailing `.ram.bin` or
+        # `.sfr.json`.
+        prefixes: dict[str, set[str]] = {}
+        for entry in snaps.iterdir():
+            if entry.suffix == ".bin" and entry.name.endswith(".ram.bin"):
+                prefix = entry.name[: -len(".ram.bin")]
+                prefixes.setdefault(prefix, set()).add("ram")
+            elif entry.suffix == ".json" and entry.name.endswith(".sfr.json"):
+                prefix = entry.name[: -len(".sfr.json")]
+                prefixes.setdefault(prefix, set()).add("sfr")
+
+        for prefix, kinds in sorted(prefixes.items()):
+            if "ram" not in kinds:
+                errors.append(
+                    f"{d.name}: snapshot {prefix!r} has sfr.json without "
+                    f"a matching ram.bin (orphan SFR sidecar)"
+                )
+            if "sfr" not in kinds:
+                errors.append(
+                    f"{d.name}: snapshot {prefix!r} has ram.bin without "
+                    f"a matching sfr.json (orphan RAM dump)"
+                )
+
+        ram_files = sorted(snaps.glob("*.ram.bin"))
+
+        # Empty-stimulus tests are exempt from the "non-empty
+        # stimulus → at least one snapshot" rule.
         stim = d / "stimulus.jsonl"
         stim_empty = (not stim.exists()) or stim.stat().st_size == 0
         if not ram_files and not stim_empty:
@@ -130,7 +165,7 @@ def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
                     "(expected 256, RAM bank 0)"
                 )
 
-        for sfr_path in sfr_files:
+        for sfr_path in sorted(snaps.glob("*.sfr.json")):
             try:
                 sfr = json.loads(sfr_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError as exc:
@@ -142,16 +177,17 @@ def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
                 )
                 continue
             for key, value in sfr.items():
-                if not (isinstance(key, str) and key.startswith("0x")):
+                if not (isinstance(key, str) and _SFR_KEY_RE.match(key)):
                     errors.append(
-                        f"{d.name}: {sfr_path.name}: bad SFR key {key!r}"
+                        f"{d.name}: {sfr_path.name}: bad SFR key {key!r} "
+                        "(expected ^0x[0-9A-Fa-f]{3}$)"
                     )
                     continue
-                try:
-                    int(key, 16)
-                except ValueError:
+                addr = int(key, 16)
+                if addr not in _SFR_RANGE:
                     errors.append(
-                        f"{d.name}: {sfr_path.name}: non-hex key {key!r}"
+                        f"{d.name}: {sfr_path.name}: SFR address {key!r} "
+                        f"outside top-of-bank-15 range 0xF60..0xFFF"
                     )
                 if not (isinstance(value, int) and 0 <= value <= 255):
                     errors.append(
