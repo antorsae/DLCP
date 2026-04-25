@@ -147,18 +147,42 @@ impl Stack {
         self.flags = 0;
     }
 
-    /// Push a return address.  Returns `true` if the push was
-    /// accepted (depth < 31 before the call); returns `false`
-    /// and sets STKFUL otherwise — in that case the caller
-    /// (P1.6 reset dispatcher) consults STVREN to decide
-    /// whether to trigger a stack-overflow reset.
+    /// Push a return address.  Per DS39632E §5.4.2:
+    ///
+    ///   "After the PC is pushed onto the stack 31 times
+    ///    (without popping any values off the stack), the
+    ///    STKFUL bit is set... If STVREN is set, the 31st push
+    ///    will push the (PC + 2) value onto the stack, set the
+    ///    STKFUL bit and reset the device."
+    ///
+    /// In other words, STKFUL is set BY the push that fills
+    /// the last slot — not by the next attempted push.  The
+    /// caller (P1.6 reset dispatcher) sees `overflow() == true`
+    /// after a push returns `true`-but-just-filled and consults
+    /// STVREN to decide whether to reset.  A subsequent push at
+    /// depth=31 is silently dropped (datasheet: "Any additional
+    /// pushes will not overwrite the 31st push and the STKPTR
+    /// will remain at 31") and re-asserts STKFUL so a software-
+    /// cleared latch is re-set on the next overflow attempt.
+    ///
+    /// Return value: `true` if the address was stored,
+    /// `false` if the push was dropped due to a full stack.
     pub fn push(&mut self, pc: u32) -> bool {
         if (self.depth as usize) >= STACK_DEPTH {
+            // Stack was already full before this push.  Drop
+            // the address and re-assert STKFUL — protects
+            // against software clearing the latch and then
+            // attempting another push.
             self.flags |= STKPTR_STKFUL;
             return false;
         }
         self.slots[self.depth as usize] = StackEntry::from_pc(pc);
         self.depth += 1;
+        if (self.depth as usize) >= STACK_DEPTH {
+            // The push that just filled the 31st slot sets
+            // STKFUL on real silicon (DS39632E §5.4.2).
+            self.flags |= STKPTR_STKFUL;
+        }
         true
     }
 
@@ -316,17 +340,66 @@ mod tests {
     // ----- Overflow -----
 
     #[test]
-    fn pushing_31_succeeds_32nd_overflows() {
+    fn pushing_30_does_not_set_stkful() {
+        // Per DS39632E §5.4.2 STKFUL is set BY the 31st push;
+        // pushes 1..=30 leave the latch clear.
         let mut s = Stack::new();
-        for i in 0..STACK_DEPTH {
+        for i in 0..30 {
             assert!(s.push((i as u32) * 4));
         }
-        assert_eq!(s.depth(), 31);
+        assert_eq!(s.depth(), 30);
         assert!(!s.overflow());
-        assert!(!s.push(0xDEAD));
-        assert!(s.overflow());
-        // Depth stays at 31 — overflow doesn't grow the stack
+    }
+
+    #[test]
+    fn the_31st_push_sets_stkful_immediately() {
+        // Datasheet quote: "the 31st push will push the (PC + 2)
+        // value onto the stack, set the STKFUL bit and reset the
+        // device" (with STVREN=1; reset is P1.6's call).  The
+        // stack module just sets the flag on the push that
+        // fills the last slot.
+        let mut s = Stack::new();
+        for i in 0..30 {
+            s.push((i as u32) * 4);
+        }
+        assert!(!s.overflow());
+        // 31st push:
+        assert!(s.push(0xCAFE));
         assert_eq!(s.depth(), 31);
+        assert!(s.overflow());
+    }
+
+    #[test]
+    fn push_at_full_stack_is_dropped_and_keeps_stkful() {
+        // Datasheet (STVREN=0 path): "Any additional pushes
+        // will not overwrite the 31st push and the STKPTR will
+        // remain at 31".
+        let mut s = Stack::new();
+        for i in 0..STACK_DEPTH {
+            s.push((i as u32) * 4);
+        }
+        assert!(s.overflow());
+        let top_before = s.top();
+        // 32nd push: dropped, depth stays at 31, top unchanged.
+        assert!(!s.push(0xDEAD));
+        assert_eq!(s.depth(), 31);
+        assert_eq!(s.top(), top_before);
+        assert!(s.overflow());
+    }
+
+    #[test]
+    fn push_at_full_re_asserts_stkful_after_software_clear() {
+        // Defensive: if firmware clears STKFUL while still at
+        // depth=31 and then tries another push, the latch
+        // should reassert.
+        let mut s = Stack::new();
+        for i in 0..STACK_DEPTH {
+            s.push((i as u32) * 4);
+        }
+        s.clear_flags();
+        assert!(!s.overflow());
+        s.push(0xDEAD); // dropped, but flag re-asserted
+        assert!(s.overflow());
     }
 
     #[test]
@@ -335,11 +408,12 @@ mod tests {
         for _ in 0..STACK_DEPTH {
             s.push(0);
         }
-        s.push(0xDEAD); // sets STKFUL
-        // Pop one frame — STKFUL stays set
+        // STKFUL is already set by the 31st push.
+        assert!(s.overflow());
+        // Pop one frame — STKFUL stays set (it's sticky).
         s.pop();
         assert!(s.overflow());
-        // Until cleared explicitly
+        // Until cleared explicitly.
         s.clear_flags();
         assert!(!s.overflow());
     }
