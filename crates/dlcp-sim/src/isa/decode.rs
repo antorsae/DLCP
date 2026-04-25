@@ -75,15 +75,18 @@ pub enum FsrIndex {
 }
 
 impl FsrIndex {
-    /// Decode the 2-bit `ff` field of an LFSR opcode.  Bit pattern
-    /// `11` is reserved per DS39632E §24 — we map it to `Fsr2`
-    /// (matches gpsim and treats it as harmless redundancy).
-    pub const fn from_bits(bits: u16) -> Self {
+    /// Decode the 2-bit `ff` field of an LFSR opcode.  Returns
+    /// `None` for the reserved encoding (`ff = 0b11`) — DS39632E
+    /// §24 lists only FSR0..FSR2; gpsim logs `fsr is 3` as an
+    /// invalid encoding rather than aliasing it to FSR2, and the
+    /// decoder follows that same strictness so a silently-
+    /// misdecoded `LFSR 3, k` doesn't reach the executor.
+    pub const fn from_bits(bits: u16) -> Option<Self> {
         match bits & 0b11 {
-            0 => FsrIndex::Fsr0,
-            1 => FsrIndex::Fsr1,
-            2 | 3 => FsrIndex::Fsr2,
-            _ => unreachable!(),
+            0 => Some(FsrIndex::Fsr0),
+            1 => Some(FsrIndex::Fsr1),
+            2 => Some(FsrIndex::Fsr2),
+            _ => None,
         }
     }
 }
@@ -575,11 +578,24 @@ const fn decode_1110(word1: u16, word2: u16, low8: u8) -> (Instruction, u32) {
         }
         // LFSR: 1110 1110 00ff kkkk + 1111 0000 kkkk kkkk.
         // 12-bit literal split: top 4 bits in word1[3..0], bottom 8 in word2[7..0].
+        // Per DS39632E §24 + gpsim's strict check at
+        // 16bit-instructions.cc:1396, valid LFSR words must
+        // satisfy: word1 bits 7..6 == 00, word1 bits 5..4 ∈ {00,
+        // 01, 10}, AND word2 upper byte == 0xF0.  Anything else
+        // falls through to Reserved so the executor can log a
+        // decode failure instead of silently picking FSR2 or
+        // accepting an unaligned literal.
         0xEE => {
             if (word1 & 0x00C0) != 0 {
                 return (Instruction::Reserved { word: word1 }, 2);
             }
-            let fsr = FsrIndex::from_bits((word1 >> 4) & 0b11);
+            if (word2 & 0xFF00) != 0xF000 {
+                return (Instruction::Reserved { word: word1 }, 2);
+            }
+            let fsr = match FsrIndex::from_bits((word1 >> 4) & 0b11) {
+                Some(fsr) => fsr,
+                None => return (Instruction::Reserved { word: word1 }, 2),
+            };
             let k = (((word1 & 0x000F) as u16) << 8) | ((word2 & 0x00FF) as u16);
             (Instruction::Lfsr { fsr, k }, 4)
         }
@@ -965,6 +981,30 @@ mod tests {
         let (op, n) = decode(0xEE11, 0xF023);
         assert_eq!(op, Instruction::Lfsr { fsr: FsrIndex::Fsr1, k: 0x123 });
         assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn op_lfsr_rejects_reserved_fsr_index() {
+        // LFSR with ff = 11 (reserved per DS39632E §24).
+        // word1 = 1110 1110 00 11 0000 = 0xEE30
+        let (op, _) = decode(0xEE30, 0xF000);
+        assert!(matches!(op, Instruction::Reserved { word: 0xEE30 }));
+    }
+
+    #[test]
+    fn op_lfsr_rejects_bad_word2_prefix() {
+        // word1 valid LFSR FSR0 k_high=0; word2 upper byte != 0xF0
+        // (here 0xE000) is invalid per gpsim's strict check.
+        let (op, _) = decode(0xEE00, 0xE000);
+        assert!(matches!(op, Instruction::Reserved { word: 0xEE00 }));
+    }
+
+    #[test]
+    fn op_lfsr_rejects_word1_reserved_bits() {
+        // word1 bits 7..6 must be 00 (the encoding has a fixed
+        // 00 zone there); 0xEE40 sets bit 6 which is reserved.
+        let (op, _) = decode(0xEE40, 0xF000);
+        assert!(matches!(op, Instruction::Reserved { word: 0xEE40 }));
     }
 
     #[test]
