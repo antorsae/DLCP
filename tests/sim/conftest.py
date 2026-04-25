@@ -124,13 +124,25 @@ def ground_truth_dir(request: pytest.FixtureRequest) -> Path | None:
 def _aggregate_outcome(phases: dict[str, dict]) -> str:
     """Reduce per-phase outcomes to a single overall outcome.
 
-    Worst-of ordering, matching the user-facing test status pytest
-    itself reports: ``failed`` > ``error`` > ``skipped`` > ``passed``.
-    A test whose call passes but whose teardown fails is reported as
-    ``failed``; a test that errors during setup is reported as
-    ``error``; a setup-skipped test (call never runs, teardown
-    typically passes) is reported as ``skipped`` — the teardown's
-    "passed" must NOT mask the setup skip.  Otherwise ``passed``.
+    Worst-of ordering, matching pytest's user-facing status:
+    ``failed`` > ``error`` > ``skipped`` > ``passed``.
+
+    The makereport hook translates ``failed`` from a fixture
+    phase (``setup``/``teardown``) into ``error`` before storing
+    it here, so:
+
+    * call-phase failure → ``failed`` (pytest's ``F``).
+    * setup or teardown exception → ``error`` (pytest's ``E``).
+      A test whose call passes but whose teardown fails is
+      therefore reported as ``error``, not ``failed``.
+    * any phase reports ``skipped`` and no failure or error
+      occurred → ``skipped`` (the teardown ``passed`` that
+      typically follows a setup skip MUST NOT mask the skip).
+    * everything else → ``passed``.
+
+    A test that has both a call failure and a teardown error is
+    reported as ``failed`` since ``failed`` wins the precedence;
+    the per-phase data in summary.json still records both.
     """
     outcomes = {p["outcome"] for p in phases.values()}
     if "failed" in outcomes:
