@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-22
+Last updated: 2026-04-25
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -614,6 +614,58 @@ scripts/flash_control_safe.sh
 - Each canonical `V1.71` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v171.asm` at `control_release_metadata[11]`; `scripts/build_v171_release.py` is the required path because it bumps the byte before assembling.
 - `scripts/flash_control_safe.sh` now defaults to the canonical `V1.71` hex.
 - `src/dlcp_fw/flash/dlcp_control_flash.py` must read version + revision from the target hex and report them during preflight/live flash. The current CONTROL update relay does not expose a live version/revision probe, so device-versus-hex compare is not currently available there.
+
+## Simulator Rewrite (`feature/sim-rewrite-rust`)
+
+This branch hosts the in-progress rewrite of the simulation harness from
+gpsim-PTY-bridged-three-process to a single-process cycle-perfect Rust
+engine (`crates/dlcp-sim/`).  Goal: kill the cross-process UART bridge
+and PTY overhead, run the full sim gate in < 60 s, and natively model
+multi-clock-domain + boot-offset behaviour so the Task #22 echo-loop
+disappears mechanically.
+
+**Canonical artifacts (this branch only):**
+
+- Spec: `docs/SIM_REWRITE_RUST_SPEC.md` (complete design; 6 phases + final
+  acceptance + risk register + glossary)
+- Progress ledger (machine-readable): `docs/SIM_REWRITE_RUST_PROGRESS.md`
+- Automation entry: `scripts/sim_rewrite_next.py`
+  - `python3 scripts/sim_rewrite_next.py status` — current phase + next pending sub-task
+  - `python3 scripts/sim_rewrite_next.py advance` — claim next pending task, run its verify command, mark done on pass
+  - `python3 scripts/sim_rewrite_next.py verify-phase N` — run all gates for a phase
+  - `python3 scripts/sim_rewrite_next.py report` — counts by status and phase
+  - `python3 scripts/sim_rewrite_next.py block <ID> --reason "..."` — pause a sub-task
+- Rust crate (created during P1.1): `crates/dlcp-sim/`
+- PyO3 wrapper crate (created during P4.1): `crates/dlcp-sim-py/`
+- Ground truth fixtures: `artifacts/ground_truth/<test_id>/`
+- Divergence reports: `artifacts/sim_rewrite_divergences/<task_id>__<ts>.log`
+
+**Workflow (minimal user intervention):**
+
+1. `python3 scripts/sim_rewrite_next.py status` — see what's next.
+2. Either implement the sub-task by hand, or spawn an agent with the
+   instructions in `docs/SIM_REWRITE_AGENT_INSTRUCTIONS.md`.
+3. Run `advance` to claim+verify; on PASS the ledger is updated atomically.
+4. On FAIL the divergence is captured; status remains `in_progress`;
+   fix the issue and rerun `advance`.
+
+**Rules specific to this branch:**
+
+- The progress ledger is the source of truth; do not update phase status
+  by hand-editing the markdown — always go through `sim_rewrite_next.py`.
+- Every sub-task that lands a code change must include the verify command
+  in its commit message, so the per-commit codex review sees the gate.
+- Do not delete `vendor/gpsim-0.32.1-xtc/` or `chain_gpsim.py` /
+  `wire_chain_gpsim.py` until Phase 4.9 fires — gpsim is the ground-truth
+  oracle through Phase 4.
+- All new code lives under `crates/dlcp-sim*/` (Rust) and
+  `src/dlcp_fw/sim/dlcp_sim_native.py` (Python facade).  Existing
+  `src/dlcp_fw/sim/*.py` files stay intact until their migration sub-task
+  fires.
+- Differential testing: `DLCP_SIM_BACKEND=dual pytest tests/sim` runs both
+  engines and asserts identical externally-visible behaviour (UART byte
+  streams, LCD raster, EEPROM image, RAM snapshots).  This is the
+  migration safety net — never bypass it.
 
 ## Maintenance Rules
 
