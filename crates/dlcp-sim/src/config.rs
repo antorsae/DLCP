@@ -21,24 +21,21 @@
 //!
 //! ## Coverage scope (P1.7)
 //!
-//! P1.7 lays the parser surface for the bits the rest of the
-//! simulator needs to consult:
+//! P1.7 exposes typed accessors for every documented bit in
+//! CONFIG1L–CONFIG4L (the bits future peripherals actually
+//! consult): `PLLDIV`, `CPUDIV`, `USBDIV`, `FOSC`, `FCMEN`,
+//! `IESO`, `PWRTEN` (+ polarity-corrected `pwrt_enabled`),
+//! `BOREN`, `BORV`, `VREGEN`, `WDTEN`, `WDTPS`, `MCLRE`,
+//! `LPT1OSC`, `PBADEN`, `CCP2MX`, `STVREN`, `LVP`, `XINST`,
+//! `DEBUG` (raw `debug_bit` + polarity-corrected
+//! `debugger_enabled`).
 //!
-//! * `STVREN` (CONFIG4L bit 0) — drives whether stack
-//!   overflow / underflow triggers a reset (consumed by P1.6).
-//! * `WDTEN` (CONFIG2H bit 0) — hardware watchdog always-on.
-//! * `BOREN[1:0]` (CONFIG2L bits 2..1) — brown-out enable mode.
-//! * `MCLRE` (CONFIG3H bit 7) — MCLR pin function.
-//! * `FOSC[3:0]` (CONFIG1H bits 3..0) — oscillator selector.
-//! * `PLLDIV[2:0]` (CONFIG1L bits 2..0) — USB PLL prescaler
-//!   (2455 only; ignored on K20).
-//! * `CPUDIV[1:0]` (CONFIG1L bits 4..3) — CPU clock divider.
-//!
-//! Other CONFIG bits (code-protect, write-protect, debug,
-//! XINST, etc.) are not consumed by the firmware path that
-//! drives this rewrite, so they're parsed-and-stored but not
-//! exposed via dedicated accessors.  Adding more accessors is
-//! a one-line change when a future peripheral needs them.
+//! CONFIG5..CONFIG7 carry only code-protect / write-protect /
+//! external-table-read bits, none of which are consulted by the
+//! firmware path this rewrite is built against.  Those bytes
+//! are parsed-and-stored (visible through [`Config::raw`]) but
+//! have no dedicated accessor; adding one is a one-line change
+//! when a future need arises.
 
 #![allow(dead_code, reason = "P1.7 parser; consumed by P1.6 reset path + P2 oscillator/peripheral models")]
 
@@ -149,10 +146,9 @@ pub struct Config {
 
 impl Config {
     /// Parse the 14 CONFIG bytes.  No validation beyond size —
-    /// reserved bit patterns surface through the typed
-    /// accessors (e.g. [`Config::fosc`] returns
-    /// `FoscMode::Reserved(...)` for undocumented FOSC
-    /// encodings).
+    /// every documented bit is exposed through a typed
+    /// accessor; bits outside the documented set live in the
+    /// raw buffer until a future accessor needs them.
     pub const fn from_bytes(bytes: [u8; CONFIG_BYTES]) -> Self {
         Config { raw: bytes }
     }
