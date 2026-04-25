@@ -28,7 +28,11 @@ from pathlib import Path
 from typing import Dict, List
 
 from .gpsim import require_gpsim_binary
-from .ground_truth import record_event, snapshot_after_event
+from .ground_truth import (
+    dump_harness_outputs,
+    record_event,
+    snapshot_after_event,
+)
 from .lcd import LcdByte, LcdState
 from .manifests import (
     control_disable_boot_wait,
@@ -716,6 +720,35 @@ class GpsimControlHarness:
         sfr = {addr: _read_reg(self._issue, addr) for addr in range(0xF60, 0x1000)}
         return ram, sfr
 
+    # OutputCapturable Protocol: drained by `dump_harness_outputs(self)`
+    # at close() time, *before* the gpsim subprocess is torn down.
+
+    def tx_frames_snapshot(self) -> list[tuple[int, int, int]] | None:
+        return [
+            (frame.route & 0xFF, frame.cmd & 0xFF, frame.data & 0xFF)
+            for frame in self._decoder.tx_frames
+        ]
+
+    def lcd_snapshot(self) -> tuple[str, str] | None:
+        return self._decoder.lcd_lines
+
+    def eeprom_snapshot(self) -> bytes | None:
+        return self._read_eeprom_bytes()
+
+    def _read_eeprom_bytes(self) -> bytes:
+        """Read all 256 EEPROM bytes via the PIC18 SFR interface.
+
+        Same control sequence as `dump_eeprom`'s body — kept here as
+        a separate private method so the OutputCapture path can reuse
+        it without writing the Intel-HEX intermediate file.
+        """
+        data = bytearray(256)
+        for addr in range(256):
+            self._issue(f"reg(0xFA9)=0x{addr:02X}", 5.0)   # EEADR
+            self._issue("reg(0xFA6)=0x01", 5.0)              # EECON1: RD
+            data[addr] = _read_reg(self._issue, 0xFA8)        # EEDATA
+        return bytes(data)
+
     def inject_bytes(self, data: List[int]) -> bool:
         """Inject raw bytes into the CONTROL RX ring buffer."""
         record_event(
@@ -876,11 +909,7 @@ class GpsimControlHarness:
         EEPROM bytes via the PIC18 SFR interface and write a standard
         Intel HEX file.
         """
-        data = bytearray(256)
-        for addr in range(256):
-            self._issue(f"reg(0xFA9)=0x{addr:02X}", 5.0)   # EEADR
-            self._issue("reg(0xFA6)=0x01", 5.0)              # EECON1: RD
-            data[addr] = _read_reg(self._issue, 0xFA8)        # EEDATA
+        data = self._read_eeprom_bytes()
         lines = [":020000040000FA"]
         for offset in range(0, 256, 16):
             chunk = data[offset : offset + 16]
@@ -894,7 +923,18 @@ class GpsimControlHarness:
         path.write_text("\n".join(lines) + "\n")
 
     def close(self) -> None:
-        """Shut down the gpsim process and clean up temp files."""
+        """Shut down the gpsim process and clean up temp files.
+
+        Drains UART/LCD/EEPROM into the active GroundTruthContext
+        (if any) BEFORE tearing down gpsim, since EEPROM read needs
+        the live subprocess.
+        """
+        try:
+            dump_harness_outputs(self)
+        except Exception:
+            # Output capture is best-effort; never let it block the
+            # underlying close path.
+            pass
         try:
             self._issue("log off", 5.0)
         except Exception:

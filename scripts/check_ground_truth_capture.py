@@ -197,9 +197,119 @@ def _check_snapshots(dirs: Iterable[Path]) -> list[str]:
     return errors
 
 
+_LCD_NAME_RE = re.compile(r"^lcd_([A-Za-z0-9_-]+)\.txt$")
+_EEPROM_NAME_RE = re.compile(r"^eeprom_([A-Za-z0-9_-]+)\.bin$")
+_UART_NAME_RE = re.compile(r"^uart_tx_([A-Za-z0-9_-]+)\.jsonl$")
+
+_REQUIRED_UART_FIELDS = {"seq", "route", "cmd", "data"}
+
+
 def _check_outputs(dirs: Iterable[Path]) -> list[str]:
-    """Stub for P0.4.  Same convention as `_check_snapshots`."""
-    return []
+    """Validate the per-test UART/LCD/EEPROM artefacts.
+
+    P0.4 lays down a per-harness output triplet at close-time:
+
+      * `uart_tx_<harness_id>.jsonl` — one JSONL line per TX frame
+        (`{seq, route, cmd, data}` with byte-clamped values).
+      * `lcd_<harness_id>.txt` — exactly two text lines (the 16x2
+        LCD raster).  Only emitted by harnesses that drive an LCD
+        (currently CONTROL).
+      * `eeprom_<harness_id>.bin` — 256 raw bytes of internal
+        EEPROM.
+
+    Validator rules:
+
+      * Every captured test directory must contain at least one
+        `uart_tx_<id>.jsonl` (since every chain harness produces a
+        UART stream — even if it ends up empty for a fully passive
+        test, the file itself must be present so a downstream
+        consumer can distinguish "no TX" from "capture didn't run").
+      * Every JSONL line in those files parses as an object with
+        exactly the keys ``seq, route, cmd, data`` and byte values.
+      * Every `lcd_<id>.txt` is exactly two newline-terminated lines.
+      * Every `eeprom_<id>.bin` is exactly 256 bytes.
+
+    Read-only / empty-stimulus tests are exempt (the harnesses
+    never opened, so no triplet was written).
+    """
+    errors: list[str] = []
+    for d in dirs:
+        stim = d / "stimulus.jsonl"
+        stim_empty = (not stim.exists()) or stim.stat().st_size == 0
+
+        uart_files = sorted(d.glob("uart_tx_*.jsonl"))
+        lcd_files = sorted(d.glob("lcd_*.txt"))
+        eeprom_files = sorted(d.glob("eeprom_*.bin"))
+
+        if not uart_files and not stim_empty:
+            errors.append(
+                f"{d.name}: stimulus.jsonl is non-empty but no "
+                "uart_tx_*.jsonl files were written (harness close() "
+                "should produce one per harness)"
+            )
+
+        for path in uart_files:
+            m = _UART_NAME_RE.match(path.name)
+            if not m:
+                errors.append(
+                    f"{d.name}: {path.name}: malformed UART filename"
+                )
+                continue
+            with path.open(encoding="utf-8") as fp:
+                for line_no, raw in enumerate(fp, start=1):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        rec = json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        errors.append(
+                            f"{d.name}: {path.name} line {line_no}: "
+                            f"invalid JSON ({exc})"
+                        )
+                        continue
+                    missing = _REQUIRED_UART_FIELDS - set(rec)
+                    if missing:
+                        errors.append(
+                            f"{d.name}: {path.name} line {line_no}: "
+                            f"missing fields {sorted(missing)}"
+                        )
+                        continue
+                    for key in ("route", "cmd", "data"):
+                        v = rec[key]
+                        if not (isinstance(v, int) and 0 <= v <= 255):
+                            errors.append(
+                                f"{d.name}: {path.name} line {line_no}: "
+                                f"{key}={v!r} not a byte (0..255)"
+                            )
+
+        for path in lcd_files:
+            if not _LCD_NAME_RE.match(path.name):
+                errors.append(f"{d.name}: {path.name}: malformed LCD filename")
+                continue
+            text = path.read_text(encoding="utf-8")
+            lines = text.split("\n")
+            # Trailing newline produces an empty final segment, so
+            # exactly 2 LCD lines + 1 trailing empty = 3 entries.
+            if len(lines) != 3 or lines[-1] != "":
+                errors.append(
+                    f"{d.name}: {path.name}: must contain exactly two "
+                    f"newline-terminated lines (got {len(lines) - 1})"
+                )
+
+        for path in eeprom_files:
+            if not _EEPROM_NAME_RE.match(path.name):
+                errors.append(
+                    f"{d.name}: {path.name}: malformed EEPROM filename"
+                )
+                continue
+            size = path.stat().st_size
+            if size != 256:
+                errors.append(
+                    f"{d.name}: {path.name}: {size} bytes "
+                    "(expected 256)"
+                )
+    return errors
 
 
 def _print_errors(label: str, errors: list[str]) -> int:

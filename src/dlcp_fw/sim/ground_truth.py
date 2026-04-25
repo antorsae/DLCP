@@ -77,6 +77,8 @@ _HARNESS_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 __all__ = [
     "GroundTruthContext",
+    "OutputCapturable",
+    "OutputCapture",
     "Snapshotable",
     "StimulusRecorder",
     "SnapshotTaker",
@@ -85,7 +87,42 @@ __all__ = [
     "record_event",
     "snapshot_after_event",
     "snapshot_phase",
+    "dump_harness_outputs",
 ]
+
+
+class OutputCapturable(Protocol):
+    """Anything the OutputCapture can drain at harness close().
+
+    Each method returns ``None`` when the harness has nothing to
+    contribute for that stream — control harnesses populate LCD,
+    main harnesses do not; both populate EUSART tx and EEPROM.
+    `harness_id` shares the same constraint as `Snapshotable`.
+
+    The capture writes files only for non-None return values, so
+    an empty test that produces no LCD/EEPROM still writes
+    `uart_tx_<id>.jsonl` with zero events without spurious sidecars.
+    """
+
+    @property
+    def harness_id(self) -> str: ...
+
+    def tx_frames_snapshot(self) -> list[tuple[int, int, int]] | None:
+        """Return ``[(route, cmd, data), ...]`` for every TX frame
+        decoded so far, or None if this harness has no UART TX
+        to report."""
+        ...
+
+    def lcd_snapshot(self) -> tuple[str, str] | None:
+        """Return current ``(line0, line1)`` LCD content, or None
+        if this harness has no LCD attached."""
+        ...
+
+    def eeprom_snapshot(self) -> bytes | None:
+        """Return all 256 bytes of internal EEPROM, or None if
+        this harness type has no EEPROM (or capture would be too
+        expensive at close-time)."""
+        ...
 
 
 class Snapshotable(Protocol):
@@ -281,9 +318,79 @@ class SnapshotTaker:
         return seq
 
 
+class OutputCapture:
+    """Writes per-harness UART/LCD/EEPROM artefacts at close-time.
+
+    Files are written directly into the test's output directory:
+
+        uart_tx_<harness_id>.jsonl  (one JSONL line per TX frame)
+        lcd_<harness_id>.txt        (two text lines, exact LCD raster)
+        eeprom_<harness_id>.bin     (256 raw bytes of EEPROM)
+
+    `dump(harness)` is called from each harness's `close()` *before*
+    it tears down its gpsim subprocess so any read still works.  A
+    harness whose `*_snapshot()` accessor returns None contributes
+    no file for that stream — e.g. MainChainHarness has no LCD and
+    therefore writes no `lcd_main_0.txt`.
+    """
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = Path(out_dir)
+        self._opened = False
+        # Track which harnesses have been dumped so a redundant
+        # close() doesn't double-write.
+        self._dumped: set[str] = set()
+
+    def open(self) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._opened = True
+
+    def close(self) -> None:
+        # Filesystem-only; nothing to flush.
+        pass
+
+    def dump(self, harness: OutputCapturable) -> None:
+        if not self._opened:
+            return
+        hid = harness.harness_id
+        if hid in self._dumped:
+            return
+        self._dumped.add(hid)
+
+        tx = harness.tx_frames_snapshot()
+        if tx is not None:
+            tx_path = self.out_dir / f"uart_tx_{hid}.jsonl"
+            with tx_path.open("w", encoding="utf-8") as fp:
+                for seq, frame in enumerate(tx):
+                    route, cmd, data = frame
+                    fp.write(json.dumps({
+                        "seq": seq,
+                        "route": route & 0xFF,
+                        "cmd": cmd & 0xFF,
+                        "data": data & 0xFF,
+                    }, sort_keys=True) + "\n")
+
+        lcd = harness.lcd_snapshot()
+        if lcd is not None:
+            line0, line1 = lcd
+            (self.out_dir / f"lcd_{hid}.txt").write_text(
+                f"{line0}\n{line1}\n", encoding="utf-8"
+            )
+
+        eeprom = harness.eeprom_snapshot()
+        if eeprom is not None:
+            if len(eeprom) != 256:
+                raise RuntimeError(
+                    f"{hid}.eeprom_snapshot() returned {len(eeprom)} "
+                    "bytes (expected 256)"
+                )
+            (self.out_dir / f"eeprom_{hid}.bin").write_bytes(eeprom)
+
+
 class GroundTruthContext:
-    """Per-test container that bundles a stimulus recorder and a
-    snapshot taker, and owns the active-context ContextVar slot.
+    """Per-test container that bundles a stimulus recorder, a
+    snapshot taker, and an output capture, and owns the active-
+    context ContextVar slot.
 
     Use as a context manager — entering binds the context to the
     current task, exiting unbinds and closes the underlying writers.
@@ -294,6 +401,7 @@ class GroundTruthContext:
         self.out_dir = Path(out_dir)
         self.stimulus = StimulusRecorder(self.out_dir / "stimulus.jsonl")
         self.snapshots = SnapshotTaker(self.out_dir / "snapshots")
+        self.outputs = OutputCapture(self.out_dir)
         self._token: contextvars.Token | None = None
 
     def __enter__(self) -> "GroundTruthContext":
@@ -305,6 +413,7 @@ class GroundTruthContext:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.stimulus.open()
         self.snapshots.open()
+        self.outputs.open()
         self._token = _active_context.set(self)
         return self
 
@@ -320,9 +429,12 @@ class GroundTruthContext:
                 self._token = None
         finally:
             try:
-                self.snapshots.close()
+                self.outputs.close()
             finally:
-                self.stimulus.close()
+                try:
+                    self.snapshots.close()
+                finally:
+                    self.stimulus.close()
 
 
 def get_active_context() -> "GroundTruthContext | None":
@@ -369,3 +481,18 @@ def snapshot_phase(phase: str, targets: Iterable[Snapshotable]) -> None:
     if ctx is None:
         return
     ctx.snapshots.take(targets, phase=phase)
+
+
+def dump_harness_outputs(harness: OutputCapturable) -> None:
+    """Drain a harness's UART/LCD/EEPROM into the active context.
+
+    No-op when capture is off.  Called from each harness's
+    ``close()`` *before* the gpsim subprocess is torn down so any
+    final reg() reads still work.  Idempotent — a harness whose
+    close() runs twice (e.g. via ``__del__``) only writes the
+    output files once.
+    """
+    ctx = _active_context.get()
+    if ctx is None:
+        return
+    ctx.outputs.dump(harness)

@@ -19,7 +19,11 @@ from .control_gpsim import (
     _read_reg,
 )
 from .gpsim import require_gpsim_binary
-from .ground_truth import record_event, snapshot_after_event
+from .ground_truth import (
+    dump_harness_outputs,
+    record_event,
+    snapshot_after_event,
+)
 from .hexio import parse_intel_hex
 from .main_gpsim import (
     MAIN_FAULT_FLAGS_ADDR,
@@ -526,11 +530,45 @@ class MainChainHarness:
 
     def close(self) -> None:
         try:
+            dump_harness_outputs(self)
+        except Exception:
+            # Best-effort; never let capture failures block close.
+            pass
+        try:
             self._issue("log off", 5.0)
         except Exception:
             pass
         self._gpsim.close()
         self._tmp.cleanup()
+
+    # OutputCapturable Protocol — see ground_truth.py.
+
+    def tx_frames_snapshot(self) -> list[tuple[int, int, int]] | None:
+        return [
+            (frame.route & 0xFF, frame.cmd & 0xFF, frame.data & 0xFF)
+            for frame in self.decoder.tx_frames
+        ]
+
+    def lcd_snapshot(self) -> tuple[str, str] | None:
+        # MAIN harnesses don't drive an LCD.
+        return None
+
+    def eeprom_snapshot(self) -> bytes | None:
+        return self._read_eeprom_bytes()
+
+    def _read_eeprom_bytes(self) -> bytes:
+        """Read all 256 internal-EEPROM bytes via the PIC18 SFR
+        interface.  Same control sequence as
+        `GpsimControlHarness._read_eeprom_bytes` — the 2455 has
+        identical EEADR/EEDATA/EECON1 layout to the K20 used by
+        CONTROL.
+        """
+        data = bytearray(256)
+        for addr in range(256):
+            self._issue(f"reg(0xFA9)=0x{addr:02X}", 5.0)   # EEADR
+            self._issue("reg(0xFA6)=0x01", 5.0)              # EECON1: RD
+            data[addr] = _read_reg(self._issue, 0xFA8)        # EEDATA
+        return bytes(data)
 
     @property
     def harness_id(self) -> str:
