@@ -145,10 +145,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// Parse the 14 CONFIG bytes.  No validation beyond size —
-    /// every documented bit is exposed through a typed
-    /// accessor; bits outside the documented set live in the
-    /// raw buffer until a future accessor needs them.
+    /// Parse the 14 CONFIG bytes.  No validation beyond size.
+    /// Every CONFIG1L–CONFIG4L bit consulted by the firmware
+    /// path this rewrite targets is exposed through a typed
+    /// accessor; CONFIG5..CONFIG7 (code-/write-/external-table-
+    /// protect) is parsed-and-stored but only reachable via
+    /// [`Self::raw`] until a future consumer needs it.
     pub const fn from_bytes(bytes: [u8; CONFIG_BYTES]) -> Self {
         Config { raw: bytes }
     }
