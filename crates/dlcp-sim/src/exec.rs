@@ -34,6 +34,7 @@
 #![allow(dead_code, reason = "P1.8b executor; consumed by P1.8c/d/e parity tests")]
 
 use crate::core::Core;
+use crate::isa::fsr::{FsrAccessMode, classify_fsr_indirect, fsr_high_addr, fsr_low_addr};
 use crate::isa::{Access, Dest, FsrIndex, Instruction, decode};
 use crate::memory::Address;
 use crate::stack::Stack;
@@ -114,8 +115,59 @@ fn resolve_f(core: &Core, f: u8, a: Access) -> Address {
     core.memory.resolve(f, bank_selected, read_bsr(core))
 }
 
-fn read_f(core: &Core, f: u8, a: Access) -> u8 {
-    core.memory.read_raw(resolve_f(core, f, a))
+fn read_f(core: &mut Core, f: u8, a: Access) -> u8 {
+    let addr = resolve_f(core, f, a);
+    read_addr(core, addr)
+}
+
+/// Read one byte from a 12-bit data-memory address.  If the
+/// address is one of the 15 FSR virtual slots
+/// (INDFn / POSTINCn / POSTDECn / PREINCn / PLUSWn), the access
+/// is redirected to `*FSRn` and the FSR is mutated according to
+/// the mode (per DS39632E §5.5.4).  Otherwise it's a plain
+/// `Memory::read_raw`.
+fn read_addr(core: &mut Core, addr: Address) -> u8 {
+    if let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) {
+        let target = apply_fsr_mode(core, fsr, mode);
+        return core.memory.read_raw(target);
+    }
+    core.memory.read_raw(addr)
+}
+
+/// Resolve an FSR virtual-slot access into its underlying RAM
+/// target and apply the addressing mode's FSR side effect (post-
+/// inc/dec, pre-inc) where applicable.  PLUSW and Indirect leave
+/// FSRn untouched.  All FSRn arithmetic wraps modulo 0x1000
+/// (12-bit pointer), and PLUSW sign-extends W as `i8`.
+fn apply_fsr_mode(core: &mut Core, fsr: FsrIndex, mode: FsrAccessMode) -> Address {
+    let l_addr = Address::from_raw(fsr_low_addr(fsr));
+    let h_addr = Address::from_raw(fsr_high_addr(fsr));
+    let cur_l = core.memory.read_raw(l_addr);
+    let cur_h = core.memory.read_raw(h_addr) & 0x0F;
+    let cur = ((cur_h as u16) << 8) | cur_l as u16;
+
+    let (target, new_fsr) = match mode {
+        FsrAccessMode::Indirect => (cur, cur),
+        FsrAccessMode::PostIncrement => (cur, cur.wrapping_add(1) & 0x0FFF),
+        FsrAccessMode::PostDecrement => (cur, cur.wrapping_sub(1) & 0x0FFF),
+        FsrAccessMode::PreIncrement => {
+            let incremented = cur.wrapping_add(1) & 0x0FFF;
+            (incremented, incremented)
+        }
+        FsrAccessMode::PlusW => {
+            let w = read_w(core);
+            let signed = w as i8 as i32;
+            let target = ((cur as i32).wrapping_add(signed) as u16) & 0x0FFF;
+            (target, cur)
+        }
+    };
+
+    if new_fsr != cur {
+        core.memory.write_raw(l_addr, new_fsr as u8);
+        core.memory.write_raw(h_addr, ((new_fsr >> 8) as u8) & 0x0F);
+    }
+
+    Address::from_raw(target)
 }
 
 /// Mask away unimplemented bits when writing to an SFR that has
@@ -184,7 +236,28 @@ fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
 /// the byte lands in the backing array.  Used by MOVFF / LFSR
 /// whose operands carry the absolute address directly rather
 /// than going through the f-operand resolver.
+///
+/// FSR virtual slots (INDFn / POSTINCn / POSTDECn / PREINCn /
+/// PLUSWn) are redirected to `*FSRn` and trigger the
+/// appropriate FSRn mutation per DS39632E §5.5.4.  The
+/// `sfr_write_mask` is applied to the *underlying* target, not
+/// the virtual slot's address.
+///
+/// **Known gap:** when the underlying FSR-indirect target
+/// happens to be STATUS and the calling instruction is flag-
+/// affecting (e.g. `CLRF INDF0` with FSR0 = STATUS), the
+/// dispatch's STATUS-skip check sees the operand address (the
+/// virtual slot, not STATUS) and the data write goes through
+/// here -- clobbering the flag update.  Real DLCP firmware
+/// doesn't combine those, so it's deferred (tracked via
+/// TaskCreate #14's neighbour).
 fn write_addr(core: &mut Core, addr: Address, value: u8) {
+    if let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) {
+        let target = apply_fsr_mode(core, fsr, mode);
+        core.memory
+            .write_raw(target, value & sfr_write_mask(target.as_u16()));
+        return;
+    }
     core.memory
         .write_raw(addr, value & sfr_write_mask(addr.as_u16()));
 }
@@ -394,11 +467,15 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Movff { src, dst } => {
             // MOVFF src, dst -- copy one byte between two
             // 12-bit data-memory addresses; 2 Tcy.  No flag
-            // updates (DS39632E §26 MOVFF).  Silicon errata
+            // updates (DS39632E §26 MOVFF).  Both src and dst
+            // route through `read_addr` / `write_addr`, so
+            // either or both being an FSR virtual slot
+            // (POSTINC0 → POSTDEC1 etc.) triggers indirection
+            // + FSRn mutation per §5.5.4.  Silicon errata
             // notes that dst = PCL / TOSU / TOSH / TOSL is
             // undefined; the simulator just writes through and
-            // lets the mask + raw write handle whatever lands.
-            let v = core.memory.read_raw(Address::from_raw(src));
+            // lets the mask handle whatever lands.
+            let v = read_addr(core, Address::from_raw(src));
             write_addr(core, Address::from_raw(dst), v);
             core.advance_cycles(2);
             Ok(2)
@@ -894,6 +971,152 @@ mod tests {
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFE2)), 0x04);
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFD9)), 0xDE);
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFDA)), 0x07);
+    }
+
+    // ------------------------------------------------------------
+    // FSR indirect addressing -- INDF / POSTINC / POSTDEC /
+    // PREINC / PLUSW.  Exercised through SETF / CLRF / MOVF /
+    // MOVWF / MOVFF since those are the data-movement ops landed
+    // so far.  Each test pins the FSR mutation contract per
+    // DS39632E §5.5.4 + §5.5.5.
+    // ------------------------------------------------------------
+
+    /// Helper: load FSR0 with a 12-bit address by writing FSR0H + FSR0L.
+    fn set_fsr0(core: &mut Core, value: u16) {
+        core.memory.write_raw(Address::from_raw(0xFE9), value as u8);
+        core.memory
+            .write_raw(Address::from_raw(0xFEA), ((value >> 8) as u8) & 0x0F);
+    }
+
+    fn read_fsr0(core: &Core) -> u16 {
+        let lo = core.memory.read_raw(Address::from_raw(0xFE9));
+        let hi = core.memory.read_raw(Address::from_raw(0xFEA)) & 0x0F;
+        ((hi as u16) << 8) | lo as u16
+    }
+
+    #[test]
+    fn setf_indf0_writes_through_fsr0_pointer() {
+        // SETF INDF0 = SETF 0xEF, ACCESS = 0x68EF.
+        // FSR0 = 0x100 → write 0xFF to RAM[0x100]; FSR0
+        // unchanged.
+        let mut core = k20_core_with_flash(&[0xEF, 0x68]);
+        set_fsr0(&mut core, 0x100);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x100)), 0xFF);
+        assert_eq!(read_fsr0(&core), 0x100, "INDF leaves FSR0 untouched");
+    }
+
+    #[test]
+    fn clrf_postinc0_writes_zero_then_increments_fsr0() {
+        // CLRF POSTINC0 = CLRF 0xEE, ACCESS = 0x6AEE.
+        // FSR0 = 0x100 → clear RAM[0x100]; FSR0 ← 0x101.
+        let mut core = k20_core_with_flash(&[0xEE, 0x6A]);
+        set_fsr0(&mut core, 0x100);
+        core.memory.write_raw(Address::from_raw(0x100), 0xAA);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x100)), 0x00);
+        assert_eq!(read_fsr0(&core), 0x101, "POSTINC mutates FSR0 by +1");
+    }
+
+    #[test]
+    fn movf_postdec1_reads_then_decrements_fsr1() {
+        // MOVF POSTDEC1, W, ACCESS = 0x50E5.
+        // FSR1 = 0x200 → load W with RAM[0x200]; FSR1 ← 0x1FF.
+        let mut core = k20_core_with_flash(&[0xE5, 0x50]);
+        // Set FSR1 = 0x200.
+        core.memory.write_raw(Address::from_raw(0xFE1), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFE2), 0x02);
+        core.memory.write_raw(Address::from_raw(0x200), 0x42);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x42);
+        // FSR1 = 0x1FF.
+        let fsr1l = core.memory.read_raw(Address::from_raw(0xFE1));
+        let fsr1h = core.memory.read_raw(Address::from_raw(0xFE2)) & 0x0F;
+        assert_eq!(((fsr1h as u16) << 8) | fsr1l as u16, 0x1FF);
+    }
+
+    #[test]
+    fn setf_preinc2_increments_fsr2_first_then_writes() {
+        // SETF PREINC2 = SETF 0xDC, ACCESS = 0x68DC.
+        // FSR2 = 0x300 → FSR2 ← 0x301, then RAM[0x301] = 0xFF.
+        let mut core = k20_core_with_flash(&[0xDC, 0x68]);
+        // Set FSR2 = 0x300.
+        core.memory.write_raw(Address::from_raw(0xFD9), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFDA), 0x03);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // RAM[0x300] still default (0); RAM[0x301] = 0xFF.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x300)), 0x00);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x301)), 0xFF);
+        let fsr2l = core.memory.read_raw(Address::from_raw(0xFD9));
+        let fsr2h = core.memory.read_raw(Address::from_raw(0xFDA)) & 0x0F;
+        assert_eq!(((fsr2h as u16) << 8) | fsr2l as u16, 0x301);
+    }
+
+    #[test]
+    fn movf_plusw0_uses_signed_w_offset_and_leaves_fsr0_alone() {
+        // MOVF PLUSW0, W, ACCESS = 0x50EB.  FSR0 = 0x100,
+        // W = 0x05 → load from RAM[0x105]; FSR0 untouched.
+        let mut core = k20_core_with_flash(&[0xEB, 0x50]);
+        set_fsr0(&mut core, 0x100);
+        write_w(&mut core, 0x05);
+        core.memory.write_raw(Address::from_raw(0x105), 0xCC);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0xCC, "loaded byte from FSR0+W");
+        assert_eq!(read_fsr0(&core), 0x100, "PLUSW leaves FSR0 untouched");
+    }
+
+    #[test]
+    fn movf_plusw0_with_negative_w_subtracts() {
+        // W = 0xFF (= -1 signed); FSR0 = 0x100 → target 0x0FF.
+        let mut core = k20_core_with_flash(&[0xEB, 0x50]);
+        set_fsr0(&mut core, 0x100);
+        write_w(&mut core, 0xFF);
+        core.memory.write_raw(Address::from_raw(0x0FF), 0x77);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x77);
+    }
+
+    #[test]
+    fn movff_with_postinc_src_and_postinc_dst_mutates_both_fsrs() {
+        // MOVFF POSTINC0, POSTINC1: word1 = 0xC___ src=0xFEE
+        //   = 1100_1111_1110_1110 = 0xCFEE
+        // word2 = 0xF___ dst=0xFE6 = 0xFFE6.
+        let mut core = k20_core_with_flash(&[0xEE, 0xCF, 0xE6, 0xFF]);
+        set_fsr0(&mut core, 0x100);
+        // Set FSR1 = 0x200.
+        core.memory.write_raw(Address::from_raw(0xFE1), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFE2), 0x02);
+        core.memory.write_raw(Address::from_raw(0x100), 0x99);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // src copied to dst.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x200)), 0x99);
+        // Both FSRs incremented.
+        assert_eq!(read_fsr0(&core), 0x101);
+        let fsr1l = core.memory.read_raw(Address::from_raw(0xFE1));
+        let fsr1h = core.memory.read_raw(Address::from_raw(0xFE2)) & 0x0F;
+        assert_eq!(((fsr1h as u16) << 8) | fsr1l as u16, 0x201);
+    }
+
+    #[test]
+    fn fsr_pointer_wraps_modulo_4096_on_increment_past_end() {
+        // FSR2 = 0xFFF, POSTINC2 → use 0xFFF, then FSR2 ← 0x000
+        // (12-bit wrap).
+        // SETF POSTINC2 = SETF 0xDE, ACCESS = 0x68DE.
+        let mut core = k20_core_with_flash(&[0xDE, 0x68]);
+        core.memory.write_raw(Address::from_raw(0xFD9), 0xFF);
+        core.memory.write_raw(Address::from_raw(0xFDA), 0x0F);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        let fsr2l = core.memory.read_raw(Address::from_raw(0xFD9));
+        let fsr2h = core.memory.read_raw(Address::from_raw(0xFDA)) & 0x0F;
+        assert_eq!(((fsr2h as u16) << 8) | fsr2l as u16, 0x000);
     }
 
     #[test]
