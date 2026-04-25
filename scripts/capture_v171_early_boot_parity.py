@@ -123,6 +123,7 @@ def main() -> int:
     # 0xVALUE` lines, where REGNAME varies (REG0FE, BSR, STATUS,
     # ...).  We trust the bracketed hex address.
     ram = bytearray(256)
+    ram_addrs_seen: set[int] = set()
     sfr: dict[int, int] = {}
     rg = re.compile(r"\b\w+\[0x([0-9a-fA-F]+)\]\s*=\s*0x([0-9a-fA-F]+)")
     for match in rg.finditer(cli_text):
@@ -130,6 +131,7 @@ def main() -> int:
         value = int(match.group(2), 16) & 0xFF
         if 0x000 <= addr <= 0x0FF:
             ram[addr] = value
+            ram_addrs_seen.add(addr)
         elif 0xF60 <= addr <= 0xFFF:
             sfr[addr] = value
 
@@ -141,12 +143,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    expected_ram_lines = 0x100
-    ram_observed = sum(1 for line in cli_text.splitlines() if "REG0" in line[:8])
-    if ram_observed < expected_ram_lines:
+    expected_ram = 0x100
+    if len(ram_addrs_seen) != expected_ram:
         print(
-            f"error: RAM dump incomplete (observed {ram_observed} of "
-            f"{expected_ram_lines} REG0XX lines); see {cli_path}",
+            f"error: RAM dump incomplete ({len(ram_addrs_seen)} of "
+            f"{expected_ram} distinct addresses parsed); see {cli_path}",
             file=sys.stderr,
         )
         return 1

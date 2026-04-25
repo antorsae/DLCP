@@ -228,12 +228,16 @@ fn pick_cycle_target(snapshot_dir: &std::path::Path) -> u64 {
     candidates.sort_unstable();
     let chosen = candidates.first().copied().unwrap_or(10);
 
-    // Also sanity-check the meta file's recorded cycle matches
-    // the filename's <N>; a drift between filename and contents
-    // would silently mask capture bugs.
+    // Cross-check the meta file's recorded cycle against the
+    // filename's <N>.  An unparseable meta file or a missing
+    // `cycle` field surfaces as a hard panic so capture-script
+    // metadata bugs don't silently fall through to a
+    // filename-only fallback.
     let stem = format!("early_boot_v171_{}", chosen);
     let meta_path = snapshot_dir.join(format!("{stem}.meta.json"));
-    if let Ok(text) = std::fs::read_to_string(&meta_path) {
+    if meta_path.exists() {
+        let text = std::fs::read_to_string(&meta_path)
+            .expect("meta.json exists but could not be read");
         let cycle_in_text = text
             .lines()
             .find_map(|line| {
@@ -245,13 +249,17 @@ fn pick_cycle_target(snapshot_dir: &std::path::Path) -> u64 {
                     .trim_end_matches(',')
                     .parse::<u64>()
                     .ok()
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "meta.json at {} has no parseable `cycle` field",
+                    meta_path.display()
+                )
             });
-        if let Some(c) = cycle_in_text {
-            assert_eq!(
-                c, chosen,
-                "meta.json cycle ({c}) disagrees with filename ({chosen})"
-            );
-        }
+        assert_eq!(
+            cycle_in_text, chosen,
+            "meta.json cycle ({cycle_in_text}) disagrees with filename ({chosen})"
+        );
     }
     chosen
 }
