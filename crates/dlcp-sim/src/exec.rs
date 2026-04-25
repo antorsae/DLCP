@@ -159,11 +159,58 @@ fn execute_arith_with_dest<F>(
 ) where
     F: FnOnce(u8) -> (u8, bool, bool, bool),
 {
+    execute_op_with_dest(core, d, a, f, |core, fv| {
+        let (result, c, dc, ov) = compute(fv);
+        set_status_arith(core, result, c, dc, ov);
+        result
+    });
+}
+
+/// Dispatch helper for byte-oriented logical ops with a `d`
+/// operand that affect only Z and N (ANDWF, IORWF, XORWF, COMF,
+/// RLNCF, RRNCF).  Same resolve / RMW-once / STATUS-skip / FSR
+/// commit contract as `execute_arith_with_dest`, but uses
+/// `set_status_zn` instead of the full arith-flag set so C, DC,
+/// OV survive untouched.
+fn execute_logical_with_dest<F>(
+    core: &mut Core,
+    d: Dest,
+    a: Access,
+    f: u8,
+    compute: F,
+) where
+    F: FnOnce(u8) -> u8,
+{
+    execute_op_with_dest(core, d, a, f, |core, fv| {
+        let result = compute(fv);
+        set_status_zn(core, result);
+        result
+    });
+}
+
+/// Lower-level dispatch helper used by every byte-oriented
+/// dispatch arm with a `d` operand.  The `compute_and_status`
+/// closure receives `&mut Core` (so it can update STATUS or
+/// read other SFRs as part of the op-specific math) plus the
+/// byte read from f, and returns the byte to write back.
+/// Resolves the f-operand once, reads f, runs the closure,
+/// writes to W or f per `d` (preserving the §5.3.6 STATUS-
+/// skip), then commits any pending FSR mutation exactly once
+/// per instruction (the RMW / once-per-instruction contract
+/// established earlier in P1.8b for MOVF d=F).
+fn execute_op_with_dest<F>(
+    core: &mut Core,
+    d: Dest,
+    a: Access,
+    f: u8,
+    compute_and_status: F,
+) where
+    F: FnOnce(&mut Core, u8) -> u8,
+{
     let operand_addr = resolve_f(core, f, a);
     let (target, pending) = resolve_target_no_commit(core, operand_addr);
     let f_value = core.memory.read_raw(target);
-    let (result, c, dc, ov) = compute(f_value);
-    set_status_arith(core, result, c, dc, ov);
+    let result = compute_and_status(core, f_value);
     match d {
         Dest::W => write_w(core, result),
         Dest::F => {
@@ -772,6 +819,90 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                 .write_raw(Address::from_raw(PRODL_ADDR), prod as u8);
             core.memory
                 .write_raw(Address::from_raw(PRODH_ADDR), (prod >> 8) as u8);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        // ---------------- logical / rotate / swap (1 Tcy each) -
+        Instruction::AndWf { d, a, f } => {
+            // ANDWF f, d, a: result = W & f.  STATUS Z, N.
+            let w = read_w(core);
+            execute_logical_with_dest(core, d, a, f, |fv| w & fv);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::IorWf { d, a, f } => {
+            // IORWF f, d, a: result = W | f.  STATUS Z, N.
+            let w = read_w(core);
+            execute_logical_with_dest(core, d, a, f, |fv| w | fv);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::XorWf { d, a, f } => {
+            // XORWF f, d, a: result = W ^ f.  STATUS Z, N.
+            let w = read_w(core);
+            execute_logical_with_dest(core, d, a, f, |fv| w ^ fv);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Comf { d, a, f } => {
+            // COMF f, d, a: result = ~f (one's complement).
+            // STATUS Z, N.
+            execute_logical_with_dest(core, d, a, f, |fv| !fv);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Rlcf { d, a, f } => {
+            // RLCF f, d, a: rotate f left through C.  New byte:
+            //   result = (f << 1) | C_in
+            //   C_out = bit 7 of f (the bit shifted out).
+            // STATUS C, Z, N.  DC and OV survive untouched.
+            let cin = if read_status(core) & STATUS_C != 0 { 1 } else { 0 };
+            execute_op_with_dest(core, d, a, f, |core, fv| {
+                let result = (fv << 1) | cin;
+                set_status_bits(core, STATUS_C, fv & 0x80 != 0);
+                set_status_zn(core, result);
+                result
+            });
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Rlncf { d, a, f } => {
+            // RLNCF f, d, a: rotate f left, no carry.
+            //   result = f.rotate_left(1)
+            // STATUS Z, N (C left alone).
+            execute_logical_with_dest(core, d, a, f, |fv| fv.rotate_left(1));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Rrcf { d, a, f } => {
+            // RRCF f, d, a: rotate f right through C.
+            //   result = (f >> 1) | (C_in << 7)
+            //   C_out = bit 0 of f.
+            // STATUS C, Z, N.
+            let cin = if read_status(core) & STATUS_C != 0 { 0x80 } else { 0 };
+            execute_op_with_dest(core, d, a, f, |core, fv| {
+                let result = (fv >> 1) | cin;
+                set_status_bits(core, STATUS_C, fv & 0x01 != 0);
+                set_status_zn(core, result);
+                result
+            });
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Rrncf { d, a, f } => {
+            // RRNCF f, d, a: rotate f right, no carry.
+            execute_logical_with_dest(core, d, a, f, |fv| fv.rotate_right(1));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Swapf { d, a, f } => {
+            // SWAPF f, d, a: swap the high and low nibbles of f.
+            // STATUS NOT affected (DS39632E §26 SWAPF).  Use
+            // execute_op_with_dest directly so we skip the
+            // implicit Z/N update of execute_logical_with_dest.
+            execute_op_with_dest(core, d, a, f, |_core, fv| {
+                (fv << 4) | (fv >> 4)
+            });
             core.advance_cycles(1);
             Ok(1)
         }
@@ -1545,6 +1676,129 @@ mod tests {
             "FSR advanced too far -- write hit the wrong slot"
         );
         assert_eq!(read_fsr0(&core), 0x101);
+    }
+
+    // ---- logical / rotate / swap ----
+
+    #[test]
+    fn andwf_w_and_f_to_w_clears_z_when_nonzero() {
+        // ANDWF 0x10, W, ACCESS: high8 = 0x14, low = 0x10 → 0x1410.
+        // W=0xF0, RAM[0x10]=0xCC → result = 0xC0.
+        let mut core = k20_core_with_flash(&[0x10, 0x14]);
+        write_w(&mut core, 0xF0);
+        core.memory.write_raw(Address::from_raw(0x010), 0xCC);
+        // Pre-set Z to confirm it gets cleared.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0xC0);
+        assert!(read_status(&core) & STATUS_Z == 0);
+        assert!(read_status(&core) & STATUS_N != 0, "0xC0 has bit 7 set");
+    }
+
+    #[test]
+    fn iorwf_w_or_f_to_w_sets_n_for_negative_result() {
+        // IORWF 0x10, W, ACCESS: high8 = 0x10, low = 0x10 → 0x1010.
+        let mut core = k20_core_with_flash(&[0x10, 0x10]);
+        write_w(&mut core, 0x80);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x81);
+        assert!(read_status(&core) & STATUS_N != 0);
+    }
+
+    #[test]
+    fn xorwf_clears_to_zero_sets_z() {
+        // XORWF 0x10, W, ACCESS: high8 = 0x18, low = 0x10 → 0x1810.
+        // W ^ f with W = f → 0.
+        let mut core = k20_core_with_flash(&[0x10, 0x18]);
+        write_w(&mut core, 0x55);
+        core.memory.write_raw(Address::from_raw(0x010), 0x55);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x00);
+        assert!(read_status(&core) & STATUS_Z != 0);
+    }
+
+    #[test]
+    fn comf_inverts_byte() {
+        // COMF 0x10, W, ACCESS: high8 = 0x1C, low = 0x10 → 0x1C10.
+        let mut core = k20_core_with_flash(&[0x10, 0x1C]);
+        core.memory.write_raw(Address::from_raw(0x010), 0xAA);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x55);
+    }
+
+    #[test]
+    fn rlcf_rotates_left_through_carry() {
+        // RLCF 0x10, F, ACCESS: high8 = 0x36 (high6=001101, d=1, a=0), low = 0x10 → 0x3610.
+        // f = 0x80, C_in = 1 → result = (0x80 << 1) | 1 = 0x01;
+        // C_out = bit 7 of 0x80 = 1.
+        let mut core = k20_core_with_flash(&[0x10, 0x36]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x80);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x01);
+        assert!(read_status(&core) & STATUS_C != 0);
+        assert!(read_status(&core) & STATUS_Z == 0);
+    }
+
+    #[test]
+    fn rrcf_rotates_right_through_carry() {
+        // RRCF 0x10, F, ACCESS: high8 = 0x32, low = 0x10 → 0x3210.
+        // f = 0x01, C_in = 0 → result = 0x00; C_out = bit 0 = 1.
+        let mut core = k20_core_with_flash(&[0x10, 0x32]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        assert!(read_status(&core) & STATUS_C != 0);
+        assert!(read_status(&core) & STATUS_Z != 0);
+    }
+
+    #[test]
+    fn rlncf_rotates_without_carry() {
+        // RLNCF 0x10, F, ACCESS: high8 = 0x46, low = 0x10 → 0x4610.
+        // f = 0x81 → 0x03 (bit 7 wraps to bit 0).
+        let mut core = k20_core_with_flash(&[0x10, 0x46]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x81);
+        // Pre-clear C; RLNCF must NOT touch C.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x03);
+        assert!(read_status(&core) & STATUS_C == 0, "RLNCF must not touch C");
+    }
+
+    #[test]
+    fn rrncf_rotates_right_without_carry() {
+        // RRNCF 0x10, F, ACCESS: high8 = 0x42, low = 0x10 → 0x4210.
+        // f = 0x01 → 0x80 (bit 0 wraps to bit 7).  N=1 expected.
+        let mut core = k20_core_with_flash(&[0x10, 0x42]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x80);
+        assert!(read_status(&core) & STATUS_N != 0);
+    }
+
+    #[test]
+    fn swapf_swaps_nibbles_without_touching_status() {
+        // SWAPF 0x10, F, ACCESS: high8 = 0x3A, low = 0x10 → 0x3A10.
+        // f = 0xAB → 0xBA.
+        let mut core = k20_core_with_flash(&[0x10, 0x3A]);
+        core.memory.write_raw(Address::from_raw(0x010), 0xAB);
+        // Pre-set every implemented STATUS bit; SWAPF must not
+        // touch any of them.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0xBA);
+        assert_eq!(read_status(&core), STATUS_VALID_MASK);
     }
 
     // ---- §5.3.6: arithmetic-to-STATUS preserves flag update ----
