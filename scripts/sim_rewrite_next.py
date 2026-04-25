@@ -330,6 +330,14 @@ def cmd_verify_phase(args: argparse.Namespace) -> int:
 
     failures: list[Task] = []
     for t in phase_tasks:
+        if t.is_gate():
+            # The phase gate's own verify command is `verify-phase N`,
+            # so iterating it here would recurse infinitely.  The gate
+            # instead validates that every NON-gate sub-task in the
+            # phase passed; we report that summary at the end.
+            print(f"--- {t.id} {t.title}")
+            print("    SKIP (gate; computed from sibling pass count)")
+            continue
         if t.verify is None or t.is_manual():
             print(f"--- {t.id} {t.title}")
             print("    SKIP (manual)")

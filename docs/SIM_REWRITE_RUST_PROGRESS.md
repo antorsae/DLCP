@@ -50,7 +50,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 - [pending] P0.gate Run phase-0 gate
   - verify: `.venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 0`
-  - artifact: stdout summary; coverage ≥ 95%.
+  - artifact: stdout summary; the `verify-phase` runner skips gate tasks so this command no longer recurses on itself; reruns every non-gate sub-task's verify and reports pass/fail for each. The full-suite "≥ 95% coverage" blessing is intentionally separate (`scripts/run_phase0_blessing.py`) so the gate stays bounded.
 
 ---
 
