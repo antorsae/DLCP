@@ -116,7 +116,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
       - `RESET` and `SLEEP` are 1 Tcy per Table 26-2 (the post-instruction reset / power-down latency is separate from the instruction cycle count).
       - **Skip-taken extra cycle:** `BTFSC`, `BTFSS`, `CPFSEQ`, `CPFSGT`, `CPFSLT`, `TSTFSZ`, `DECFSZ`, `DCFSNZ`, `INCFSZ`, `INFSNZ` cost 1 Tcy when the predicate is false (skip not taken), 2 Tcy when true and the skipped target is a 1-word instruction, **3 Tcy** when the skipped target is a 2-word instruction (`GOTO`, `CALL`, `MOVFF`, `LFSR`).
 
-- [pending] P1.8c isa_parity::isa_covers_all_75_pic18_opcodes
+- [done] P1.8c isa_parity::isa_covers_all_75_pic18_opcodes
   - verify: `cd crates/dlcp-sim && cargo test --release --test isa_parity isa_covers_all_75_pic18_opcodes`
   - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the `isa_covers_all_75_pic18_opcodes` test from spec §5).
   - notes: synthesizes a flash image that exercises every documented opcode at least once; `Core::step` walks it; asserts every `Instruction` variant has been hit. Pure decoder + executor — no gpsim required. Lands the test file that P1.8d/e will extend.
