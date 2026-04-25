@@ -124,8 +124,10 @@ fn read_f(core: &mut Core, f: u8, a: Access) -> u8 {
 /// address is one of the 15 FSR virtual slots
 /// (INDFn / POSTINCn / POSTDECn / PREINCn / PLUSWn), the access
 /// is redirected to `*FSRn` and the FSR side effect commits
-/// after the read per DS39632E §5.5.4.  Otherwise it's a plain
-/// `Memory::read_raw`.
+/// at the silicon-correct time per DS39632E §5.5.4 -- POST*
+/// commits after the read; PRE commits inline during target
+/// resolution so the read sees the post-increment pointer.
+/// Otherwise it's a plain `Memory::read_raw`.
 fn read_addr(core: &mut Core, addr: Address) -> u8 {
     let (target, pending) = resolve_target_no_commit(core, addr);
     let value = core.memory.read_raw(target);
@@ -275,10 +277,11 @@ fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
 /// address directly.
 ///
 /// FSR virtual slots (INDFn / POSTINCn / POSTDECn / PREINCn /
-/// PLUSWn) are redirected to `*FSRn` and the FSR side effect
-/// (POSTINC / POSTDEC / PREINC) commits after the write.  The
-/// `sfr_write_mask` is applied to the *underlying* target, not
-/// the virtual slot's address.
+/// PLUSWn) are redirected to `*FSRn`.  POSTINC / POSTDEC commit
+/// the FSR mutation after the write; PRE commits inline during
+/// target resolution (so the write goes to the post-increment
+/// pointer).  The `sfr_write_mask` is applied to the
+/// *underlying* target, not the virtual slot's address.
 ///
 /// **Known gap:** when the underlying FSR-indirect target
 /// happens to be STATUS and the calling instruction is flag-
@@ -460,13 +463,17 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             //
             // FSR mutation contract (per gpsim's `fsr_state` +
             // DS39632E §5.5.4): the FSR side effect commits
-            // exactly ONCE per instruction, AFTER all reads and
-            // writes for the operand have finished.  Naively
+            // exactly ONCE per instruction.  POST* modes
+            // commit AFTER the operand access; PRE commits
+            // BEFORE (handled inline by
+            // `resolve_target_no_commit`, which returns
+            // `pending = None` for that mode).  Naively
             // chaining `read_f` + `write_addr` would commit
-            // twice for d=F, advancing the FSR by 2 instead of
-            // 1.  So we resolve the operand once, do read +
-            // (conditional) write against the same target, and
-            // commit the pending mutation once at the end.
+            // twice for d=F+POST*, advancing the FSR by 2
+            // instead of 1.  So we resolve the operand once,
+            // do read + (conditional) write against the same
+            // target, and commit the pending mutation once at
+            // the end (a no-op for PRE / Indirect / PlusW).
             //
             // STATUS-skip per §5.3.6 still applies: when d=F
             // and the resolved target is STATUS, the result
