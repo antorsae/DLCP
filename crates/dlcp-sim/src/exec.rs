@@ -67,6 +67,12 @@ const STATUS_N: u8 = 0x10;
 /// `STATUS` valid bits (bits 5..7 are unimplemented, read as 0).
 const STATUS_VALID_MASK: u8 = 0x1F;
 
+/// `PRODL` / `PRODH` -- 8x8 hardware multiplier output
+/// (DS39632E §7).  All 8 bits implemented in both bytes; no
+/// mask needed.
+const PRODL_ADDR: u16 = 0xFF3;
+const PRODH_ADDR: u16 = 0xFF4;
+
 // ---- Read/write helpers -----------------------------------------
 
 fn read_w(core: &Core) -> u8 {
@@ -106,6 +112,94 @@ fn set_status_bits(core: &mut Core, mask: u8, predicate: bool) {
 fn set_status_zn(core: &mut Core, value: u8) {
     set_status_bits(core, STATUS_Z, value == 0);
     set_status_bits(core, STATUS_N, value & 0x80 != 0);
+}
+
+/// Set the full arithmetic-flag set (C, DC, Z, OV, N) after a
+/// byte-oriented arithmetic instruction.  The caller computes
+/// the result + the C/DC/OV bits via [`add_byte`] / [`sub_byte`]
+/// or equivalent; this just commits them to STATUS.
+fn set_status_arith(core: &mut Core, result: u8, c: bool, dc: bool, ov: bool) {
+    set_status_bits(core, STATUS_C, c);
+    set_status_bits(core, STATUS_DC, dc);
+    set_status_bits(core, STATUS_OV, ov);
+    set_status_zn(core, result);
+}
+
+/// Add `a + b + carry_in` and return `(result, C, DC, OV)`.
+///
+/// * **C**: unsigned overflow (`result_full > 0xFF`).
+/// * **DC**: nibble carry (carry from bit 3 to bit 4).
+/// * **OV**: signed overflow (both inputs same sign, result
+///   different sign).
+fn add_byte(a: u8, b: u8, carry_in: bool) -> (u8, bool, bool, bool) {
+    let cin = carry_in as u16;
+    let result_full = a as u16 + b as u16 + cin;
+    let result = result_full as u8;
+    let c = result_full > 0xFF;
+    let dc = (a & 0x0F) as u16 + (b & 0x0F) as u16 + cin > 0x0F;
+    let same_sign_inputs = (a ^ b) & 0x80 == 0;
+    let result_diff_sign = (a ^ result) & 0x80 != 0;
+    let ov = same_sign_inputs && result_diff_sign;
+    (result, c, dc, ov)
+}
+
+/// Dispatch helper for byte-oriented arithmetic with a `d`
+/// operand (ADDWF, ADDWFC, SUBWF, SUBWFB, SUBFWB, INCF, DECF).
+/// Resolves the f-operand once, reads f, calls `compute(f)` for
+/// the op-specific arithmetic, sets the full STATUS arithmetic
+/// flag set, writes the result to W or back to f per `d`
+/// (preserving the §5.3.6 STATUS-skip), then commits any pending
+/// FSR mutation -- exactly once per instruction.
+fn execute_arith_with_dest<F>(
+    core: &mut Core,
+    d: Dest,
+    a: Access,
+    f: u8,
+    compute: F,
+) where
+    F: FnOnce(u8) -> (u8, bool, bool, bool),
+{
+    let operand_addr = resolve_f(core, f, a);
+    let (target, pending) = resolve_target_no_commit(core, operand_addr);
+    let f_value = core.memory.read_raw(target);
+    let (result, c, dc, ov) = compute(f_value);
+    set_status_arith(core, result, c, dc, ov);
+    match d {
+        Dest::W => write_w(core, result),
+        Dest::F => {
+            if target.as_u16() != STATUS_ADDR {
+                core.memory
+                    .write_raw(target, result & sfr_write_mask(target.as_u16()));
+            }
+        }
+    }
+    if let Some((fsr, new_fsr)) = pending {
+        commit_fsr(core, fsr, new_fsr);
+    }
+}
+
+/// Compute `minuend - subtrahend - borrow_in` and return
+/// `(result, C, DC, OV)`.
+///
+/// * **C**: PIC18-style "no-borrow" -- set when the operation
+///   completed without requiring a borrow (i.e. when
+///   `minuend >= subtrahend + borrow_in`).
+/// * **DC**: nibble no-borrow.
+/// * **OV**: signed overflow on subtract (different-sign
+///   inputs that produce a result whose sign disagrees with
+///   the minuend).
+fn sub_byte(minuend: u8, subtrahend: u8, borrow_in: bool) -> (u8, bool, bool, bool) {
+    let bin = borrow_in as i16;
+    let result_full = minuend as i16 - subtrahend as i16 - bin;
+    let result = result_full as u8;
+    let c = result_full >= 0;
+    let dc_full = (minuend & 0x0F) as i16 - (subtrahend & 0x0F) as i16 - bin;
+    let dc = dc_full >= 0;
+    let m_sign = minuend & 0x80;
+    let s_sign = subtrahend & 0x80;
+    let r_sign = result & 0x80;
+    let ov = (m_sign != s_sign) && (m_sign != r_sign);
+    (result, c, dc, ov)
 }
 
 /// Resolve an f-operand into a 12-bit data-memory address using
@@ -558,6 +652,129 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             core.advance_cycles(2);
             Ok(2)
         }
+        // ---------------- byte-oriented arithmetic (1 Tcy each) -
+        Instruction::AddWf { d, a, f } => {
+            // ADDWF f, d, a: result = f + W.  STATUS C/DC/Z/OV/N.
+            let w = read_w(core);
+            execute_arith_with_dest(core, d, a, f, |fv| add_byte(fv, w, false));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::AddWfC { d, a, f } => {
+            // ADDWFC f, d, a: result = f + W + C.  STATUS C/DC/Z/OV/N.
+            let w = read_w(core);
+            let cin = read_status(core) & STATUS_C != 0;
+            execute_arith_with_dest(core, d, a, f, |fv| add_byte(fv, w, cin));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Subwf { d, a, f } => {
+            // SUBWF f, d, a: result = f - W.  C set when f >= W
+            // (no borrow).  STATUS C/DC/Z/OV/N.
+            let w = read_w(core);
+            execute_arith_with_dest(core, d, a, f, |fv| sub_byte(fv, w, false));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::SubwfB { d, a, f } => {
+            // SUBWFB f, d, a: result = f - W - !C.  STATUS
+            // C/DC/Z/OV/N.
+            let w = read_w(core);
+            let bin = read_status(core) & STATUS_C == 0;
+            execute_arith_with_dest(core, d, a, f, |fv| sub_byte(fv, w, bin));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::SubFwb { d, a, f } => {
+            // SUBFWB f, d, a: result = W - f - !C.  STATUS
+            // C/DC/Z/OV/N.
+            let w = read_w(core);
+            let bin = read_status(core) & STATUS_C == 0;
+            execute_arith_with_dest(core, d, a, f, |fv| sub_byte(w, fv, bin));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Incf { d, a, f } => {
+            // INCF f, d, a: result = f + 1.  STATUS C/DC/Z/OV/N.
+            execute_arith_with_dest(core, d, a, f, |fv| add_byte(fv, 1, false));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Decf { d, a, f } => {
+            // DECF f, d, a: result = f - 1.  STATUS C/DC/Z/OV/N.
+            execute_arith_with_dest(core, d, a, f, |fv| sub_byte(fv, 1, false));
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Negf { a, f } => {
+            // NEGF f, a: result = -f (= 0 - f, two's complement).
+            // No `d` -- result always lands in f.  STATUS
+            // C/DC/Z/OV/N.  NEGF 0x80 sets OV=1 (the only fixed
+            // point of negation in 8-bit signed).
+            let operand_addr = resolve_f(core, f, a);
+            let (target, pending) = resolve_target_no_commit(core, operand_addr);
+            let f_value = core.memory.read_raw(target);
+            let (result, c, dc, ov) = sub_byte(0, f_value, false);
+            set_status_arith(core, result, c, dc, ov);
+            if target.as_u16() != STATUS_ADDR {
+                core.memory
+                    .write_raw(target, result & sfr_write_mask(target.as_u16()));
+            }
+            if let Some((fsr, new_fsr)) = pending {
+                commit_fsr(core, fsr, new_fsr);
+            }
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::Mulwf { a, f } => {
+            // MULWF f, a: PRODH:PRODL = W * f (8x8 unsigned).
+            // No flags affected.  PRODL/PRODH have all 8 bits
+            // implemented, so a plain raw write is silicon-
+            // correct (no mask needed).  Single read of f via
+            // `read_f` so FSR side effects (if any) commit
+            // exactly once.
+            let w = read_w(core);
+            let f_value = read_f(core, f, a);
+            let prod = w as u16 * f_value as u16;
+            core.memory
+                .write_raw(Address::from_raw(PRODL_ADDR), prod as u8);
+            core.memory
+                .write_raw(Address::from_raw(PRODH_ADDR), (prod >> 8) as u8);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        // ---------------- literal arithmetic (1 Tcy each) -------
+        Instruction::AddLw { k } => {
+            // ADDLW k: W = W + k.  STATUS C/DC/Z/OV/N.
+            let w = read_w(core);
+            let (result, c, dc, ov) = add_byte(w, k, false);
+            set_status_arith(core, result, c, dc, ov);
+            write_w(core, result);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::SubLw { k } => {
+            // SUBLW k: W = k - W (note operand order).  STATUS
+            // C/DC/Z/OV/N.
+            let w = read_w(core);
+            let (result, c, dc, ov) = sub_byte(k, w, false);
+            set_status_arith(core, result, c, dc, ov);
+            write_w(core, result);
+            core.advance_cycles(1);
+            Ok(1)
+        }
+        Instruction::MulLw { k } => {
+            // MULLW k: PRODH:PRODL = W * k (8x8 unsigned).  No
+            // flags affected.
+            let w = read_w(core);
+            let prod = w as u16 * k as u16;
+            core.memory
+                .write_raw(Address::from_raw(PRODL_ADDR), prod as u8);
+            core.memory
+                .write_raw(Address::from_raw(PRODH_ADDR), (prod >> 8) as u8);
+            core.advance_cycles(1);
+            Ok(1)
+        }
         Instruction::Reserved { word } => Err(ExecError::Reserved(word)),
         other => Err(ExecError::Unimplemented(other)),
     }
@@ -756,18 +973,19 @@ mod tests {
 
     #[test]
     fn step_reports_unimplemented_for_not_yet_wired_instruction() {
-        // ADDWF 0x42, W, ACCESS — encoding 0x2442.  Not yet wired
-        // into the dispatch (byte-oriented arithmetic lands in a
+        // BTG 0x10, 0, ACCESS — encoding 0x7010 (high4=0111
+        // bit-oriented BTG; b=0; a=ACCESS; f=0x10).  Not yet
+        // wired into the dispatch (bit-oriented ops land in a
         // later P1.8b commit).  This test pins the Unimplemented
         // arm and will need updating (changed to assert successful
-        // exec) when ADDWF lands.
-        let mut core = k20_core_with_flash(&[0x42, 0x24]);
+        // exec) when BTG lands.
+        let mut core = k20_core_with_flash(&[0x10, 0x70]);
         let mut stack = Stack::new();
 
         let err = step(&mut core, &mut stack).unwrap_err();
         assert!(
-            matches!(err, ExecError::Unimplemented(Instruction::AddWf { .. })),
-            "expected Unimplemented(AddWf), got {err:?}"
+            matches!(err, ExecError::Unimplemented(Instruction::Btg { .. })),
+            "expected Unimplemented(Btg), got {err:?}"
         );
         // PC should still have advanced (the dispatch happens after
         // the fetch+set_pc, so the caller can recover by retrying
@@ -1034,6 +1252,321 @@ mod tests {
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFE2)), 0x04);
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFD9)), 0xDE);
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFDA)), 0x07);
+    }
+
+    // ------------------------------------------------------------
+    // Byte-oriented arithmetic + STATUS C/DC/OV math.
+    // ------------------------------------------------------------
+
+    #[test]
+    fn add_byte_helper_reports_carry_out() {
+        let (r, c, dc, ov) = add_byte(0xFF, 0x01, false);
+        assert_eq!(r, 0x00);
+        assert!(c);
+        assert!(dc);
+        assert!(!ov);
+    }
+
+    #[test]
+    fn add_byte_helper_reports_signed_overflow() {
+        // 0x7F + 0x01 = 0x80 (positive + positive → negative).
+        let (r, c, dc, ov) = add_byte(0x7F, 0x01, false);
+        assert_eq!(r, 0x80);
+        assert!(!c);
+        assert!(dc);
+        assert!(ov);
+    }
+
+    #[test]
+    fn sub_byte_helper_reports_no_borrow_when_minuend_ge_subtrahend() {
+        // 0x10 - 0x05 = 0x0B.  Byte-level: no borrow → C=1.
+        // Nibble-level: low(0x10)=0 - low(0x05)=5 → borrow at
+        // the nibble boundary → DC=0 per DS39632E §3.5.2.1
+        // ("DC = 0 if a borrow occurred").
+        let (r, c, dc, ov) = sub_byte(0x10, 0x05, false);
+        assert_eq!(r, 0x0B);
+        assert!(c, "C=1 means no byte-level borrow");
+        assert!(!dc, "DC=0 because the low nibble required a borrow");
+        assert!(!ov);
+    }
+
+    #[test]
+    fn sub_byte_helper_reports_borrow_when_minuend_lt_subtrahend() {
+        // 0x05 - 0x10 = 0xF5 (signed -11).  Byte-level: borrow → C=0.
+        // Nibble-level: low(0x05)=5 - low(0x10)=0 → no nibble
+        // borrow → DC=1.
+        let (r, c, dc, ov) = sub_byte(0x05, 0x10, false);
+        assert_eq!(r, 0xF5);
+        assert!(!c, "C=0 means byte-level borrow");
+        assert!(dc, "DC=1 because the low nibble didn't borrow");
+        assert!(!ov);
+    }
+
+    #[test]
+    fn addwf_w_plus_f_to_w_with_carry_out() {
+        // ADDWF 0x10, W, ACCESS: high8 = 0x24, low = 0x10 → 0x2410.
+        // W=0xFF, RAM[0x10]=0x01 → result=0x00, C=1, DC=1, Z=1, OV=0.
+        let mut core = k20_core_with_flash(&[0x10, 0x24]);
+        write_w(&mut core, 0xFF);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        // Pre-clear STATUS so we see what gets set.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x00);
+        // Source f untouched.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x01);
+        let s = read_status(&core);
+        assert!(s & STATUS_C != 0);
+        assert!(s & STATUS_DC != 0);
+        assert!(s & STATUS_Z != 0);
+        assert!(s & STATUS_OV == 0);
+        assert!(s & STATUS_N == 0);
+    }
+
+    #[test]
+    fn addwf_d_eq_f_writes_back_to_memory() {
+        // ADDWF 0x10, F, ACCESS = 0x2610.
+        let mut core = k20_core_with_flash(&[0x10, 0x26]);
+        write_w(&mut core, 0x05);
+        core.memory.write_raw(Address::from_raw(0x010), 0x03);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x08);
+        assert_eq!(read_w(&core), 0x05, "W untouched when d=F");
+    }
+
+    #[test]
+    fn addwfc_uses_carry_in() {
+        // ADDWFC 0x10, W, ACCESS: high8 = 0x20, low = 0x10 → 0x2010.
+        // W=0x05, RAM[0x10]=0x03, C=1 → result = 0x09.
+        let mut core = k20_core_with_flash(&[0x10, 0x20]);
+        write_w(&mut core, 0x05);
+        core.memory.write_raw(Address::from_raw(0x010), 0x03);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x09);
+    }
+
+    #[test]
+    fn subwf_sets_carry_when_minuend_ge_subtrahend() {
+        // SUBWF 0x10, W, ACCESS: high8 = 0x5C, low = 0x10 → 0x5C10.
+        // result = f - W = 0x10 - 0x03 = 0x0D, C=1.
+        let mut core = k20_core_with_flash(&[0x10, 0x5C]);
+        write_w(&mut core, 0x03);
+        core.memory.write_raw(Address::from_raw(0x010), 0x10);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x0D);
+        assert!(read_status(&core) & STATUS_C != 0);
+    }
+
+    #[test]
+    fn subwf_clears_carry_when_borrow_required() {
+        // SUBWF 0x10, W, ACCESS: f=0x03 - W=0x10 = -0x0D = 0xF3, C=0.
+        let mut core = k20_core_with_flash(&[0x10, 0x5C]);
+        write_w(&mut core, 0x10);
+        core.memory.write_raw(Address::from_raw(0x010), 0x03);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0xF3);
+        assert!(read_status(&core) & STATUS_C == 0);
+        assert!(read_status(&core) & STATUS_N != 0);
+    }
+
+    #[test]
+    fn subwfb_threads_borrow_through_chain() {
+        // SUBWFB 0x10, W, ACCESS: high6 = 010110, d=0, a=0 →
+        // high8 = 0x58, low = 0x10 → 0x5810.
+        // f=0x10, W=0x05, C_in=0 (borrow=1) → result = 0x10 - 5 - 1 = 0x0A.
+        let mut core = k20_core_with_flash(&[0x10, 0x58]);
+        write_w(&mut core, 0x05);
+        core.memory.write_raw(Address::from_raw(0x010), 0x10);
+        // Clear C so borrow_in=1.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x0A);
+    }
+
+    #[test]
+    fn subfwb_subtracts_f_from_w() {
+        // SUBFWB 0x10, W, ACCESS: high6=010101, d=0, a=0 → high8 = 0x54, low = 0x10 → 0x5410.
+        // result = W - f - !C.  W=0x10, f=0x05, C=1 → 0x10 - 0x05 - 0 = 0x0B.
+        let mut core = k20_core_with_flash(&[0x10, 0x54]);
+        write_w(&mut core, 0x10);
+        core.memory.write_raw(Address::from_raw(0x010), 0x05);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x0B);
+    }
+
+    #[test]
+    fn incf_increments_f_and_updates_status() {
+        // INCF 0x10, F, ACCESS: high8 = 0x2A (high6=001010, d=1, a=0), low = 0x10 → 0x2A10.
+        // f=0xFF → 0x00, C=1, Z=1.
+        let mut core = k20_core_with_flash(&[0x10, 0x2A]);
+        core.memory.write_raw(Address::from_raw(0x010), 0xFF);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        let s = read_status(&core);
+        assert!(s & STATUS_C != 0);
+        assert!(s & STATUS_Z != 0);
+    }
+
+    #[test]
+    fn decf_decrements_f_and_updates_status() {
+        // DECF 0x10, F, ACCESS: high8 = 0x06 (high6=000001, d=1, a=0), low = 0x10 → 0x0610.
+        // f=0x01 → 0x00, C=1 (no borrow), Z=1.
+        let mut core = k20_core_with_flash(&[0x10, 0x06]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x01);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        let s = read_status(&core);
+        assert!(s & STATUS_C != 0);
+        assert!(s & STATUS_Z != 0);
+    }
+
+    #[test]
+    fn negf_zero_yields_zero_with_z_set() {
+        // NEGF 0x10, ACCESS: high8 = 0x6C (high7=0110110, a=0), low = 0x10 → 0x6C10.
+        // f=0x00 → 0x00, C=1, Z=1, OV=0, N=0.
+        let mut core = k20_core_with_flash(&[0x10, 0x6C]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x00);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
+        assert!(read_status(&core) & STATUS_Z != 0);
+        assert!(read_status(&core) & STATUS_OV == 0);
+    }
+
+    #[test]
+    fn negf_0x80_overflows() {
+        // NEGF 0x10, ACCESS = 0x6C10.  f=0x80 → -(-128) = +128, but
+        // 8-bit signed can't represent +128, so result wraps to 0x80
+        // and OV=1 per silicon two's-complement semantics.
+        let mut core = k20_core_with_flash(&[0x10, 0x6C]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x80);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x80);
+        assert!(read_status(&core) & STATUS_OV != 0);
+        assert!(read_status(&core) & STATUS_N != 0);
+    }
+
+    #[test]
+    fn negf_positive_value_yields_negative() {
+        // NEGF 0x10: f=0x05 → -5 → 0xFB.  C=0 (borrow), N=1.
+        let mut core = k20_core_with_flash(&[0x10, 0x6C]);
+        core.memory.write_raw(Address::from_raw(0x010), 0x05);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0xFB);
+        assert!(read_status(&core) & STATUS_C == 0);
+        assert!(read_status(&core) & STATUS_N != 0);
+    }
+
+    #[test]
+    fn mulwf_writes_full_16_bit_product_to_prod_pair() {
+        // MULWF 0x10, ACCESS: high8 = 0x02 (high7=0000001, a=0), low = 0x10 → 0x0210.
+        // W=0xFF, f=0xFF → 0xFE01.
+        let mut core = k20_core_with_flash(&[0x10, 0x02]);
+        write_w(&mut core, 0xFF);
+        core.memory.write_raw(Address::from_raw(0x010), 0xFF);
+        // Pre-set STATUS Z so we can confirm MULWF doesn't touch flags.
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(PRODL_ADDR)), 0x01);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PRODH_ADDR)), 0xFE);
+        // STATUS untouched.
+        assert_eq!(read_status(&core), STATUS_Z);
+    }
+
+    // ---- literal arithmetic ----
+
+    #[test]
+    fn addlw_adds_literal_to_w() {
+        // ADDLW 0x05: high8 = 0x0F, low = 0x05 → 0x0F05.
+        let mut core = k20_core_with_flash(&[0x05, 0x0F]);
+        write_w(&mut core, 0x10);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x15);
+    }
+
+    #[test]
+    fn sublw_subtracts_w_from_literal() {
+        // SUBLW 0x10: high8 = 0x08, low = 0x10 → 0x0810.
+        // W = 0x05 → result = 0x10 - 0x05 = 0x0B (NOT 0x05 - 0x10).
+        let mut core = k20_core_with_flash(&[0x10, 0x08]);
+        write_w(&mut core, 0x05);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(read_w(&core), 0x0B);
+        assert!(read_status(&core) & STATUS_C != 0, "k > W → no borrow");
+    }
+
+    #[test]
+    fn mullw_writes_full_16_bit_product() {
+        // MULLW 0xFF: high8 = 0x0D, low = 0xFF → 0x0DFF.
+        // W = 0xFE → 0xFE * 0xFF = 0xFD02.
+        let mut core = k20_core_with_flash(&[0xFF, 0x0D]);
+        write_w(&mut core, 0xFE);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(PRODL_ADDR)), 0x02);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PRODH_ADDR)), 0xFD);
+    }
+
+    // ---- arithmetic + FSR indirection ----
+
+    #[test]
+    fn addwf_postinc0_to_f_advances_fsr_exactly_once() {
+        // ADDWF POSTINC0, F, ACCESS = 0x26EE.
+        // FSR0=0x100, RAM[0x100]=0x10, W=0x05 → result = 0x15
+        // written to RAM[0x100]; FSR0 advances to 0x101 EXACTLY ONCE.
+        let mut core = k20_core_with_flash(&[0xEE, 0x26]);
+        set_fsr0(&mut core, 0x100);
+        core.memory.write_raw(Address::from_raw(0x100), 0x10);
+        // Pre-load 0x101 with sentinel to detect double-advance.
+        core.memory.write_raw(Address::from_raw(0x101), 0x99);
+        write_w(&mut core, 0x05);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x100)), 0x15);
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0x101)),
+            0x99,
+            "FSR advanced too far -- write hit the wrong slot"
+        );
+        assert_eq!(read_fsr0(&core), 0x101);
+    }
+
+    // ---- §5.3.6: arithmetic-to-STATUS preserves flag update ----
+
+    #[test]
+    fn addwf_to_status_preserves_flag_update() {
+        // ADDWF STATUS, F, ACCESS: high8 = 0x26, low = 0xD8 → 0x26D8.
+        // W=0x01, STATUS=0x00.  result = 0x01.  Flag update sets C=0
+        // DC=0 Z=0 OV=0 N=0.  §5.3.6 says the result-write to
+        // STATUS is dropped, so STATUS retains only the flag bits
+        // -- the byte 0x01 should NOT land at 0xFD8.
+        let mut core = k20_core_with_flash(&[0xD8, 0x26]);
+        write_w(&mut core, 0x01);
+        core.memory.write_raw(Address::from_raw(STATUS_ADDR), 0);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // STATUS should be all-zero (every flag cleared since 0+1=1
+        // is non-zero, no carry, no overflow, positive).
+        // If the write went through, STATUS would equal 0x01, which
+        // happens to be just C set.
+        let s = read_status(&core);
+        assert_eq!(s, 0, "STATUS write must be dropped per §5.3.6");
     }
 
     // ------------------------------------------------------------
