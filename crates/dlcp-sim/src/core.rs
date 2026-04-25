@@ -51,10 +51,13 @@ pub struct Core {
     flash: Box<[u8]>,
     /// Data memory: banked RAM + SFR window.  See [`Memory`].
     pub memory: Memory,
-    /// Program counter.  21 bits on PIC18 (the upper byte
-    /// `PCLATU` is only 5 bits wide), but we widen to `u32` for
-    /// arithmetic convenience.  `pc & 0x1F_FFFF` is the
-    /// hardware-visible value.
+    /// Program counter.  PIC18 PC is 21 bits (the upper byte
+    /// `PCLATU` is only 5 bits wide) AND byte-addressed but
+    /// architecturally word-aligned: PCL bit 0 is hard-wired to
+    /// 0 in silicon (DS39632E §5.5.1, DS41303G §5.5.1).  We
+    /// widen to `u32` for arithmetic convenience and rely on
+    /// [`Core::set_pc`] to keep `pc & !0x001F_FFFE == 0` —
+    /// upper 11 bits clear AND bit 0 clear — at all times.
     pc: u32,
     /// Total Tcy elapsed since the last reset.  Plain `u64` is
     /// enough for >250 years at 4 MIPS, far beyond any test run.
