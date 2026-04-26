@@ -644,15 +644,25 @@ fn apply_sfr_sw_write(old: u8, value: u8, addr: u16) -> u8 {
 /// Single-site SW write to a resolved data-memory address that
 /// applies [`apply_sfr_sw_write`] -- so HW-driven bits like
 /// TXSTA.TRMT survive a `MOVWF TXSTA` from firmware -- and
-/// then forwards the post-mask byte to the peripheral subsystem
-/// so any side-effect state machine (baud generator, EEPROM
-/// unlock sequence, etc.) sees the new SFR value.
+/// then forwards the *firmware-intended* byte to the peripheral
+/// subsystem so any side-effect state machine sees what the
+/// firmware actually wrote (not what landed after the SFR
+/// write-mask).  EECON2 is the canonical example: its SFR
+/// write-mask is 0x00 because it has no physical storage and
+/// reads always return 0, but the EEPROM peripheral's unlock
+/// sequencer needs to observe the firmware's 0x55 / 0xAA
+/// bytes in order.  Passing the post-mask byte (always 0)
+/// would silently bypass the unlock check.
+///
+/// Peripherals that need the post-mask SFR byte (e.g. TXSTA
+/// after TRMT preservation) re-read it via `mem.read_raw`
+/// inside the hook.
 fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     let old = core.memory.read_raw(target);
     let new_value = apply_sfr_sw_write(old, value, target.as_u16());
     core.memory.write_raw(target, new_value);
     core.peripherals
-        .on_sfr_write(target.as_u16(), new_value, &mut core.memory);
+        .on_sfr_write(target.as_u16(), value, &mut core.memory);
 }
 
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
