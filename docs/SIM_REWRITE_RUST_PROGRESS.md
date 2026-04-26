@@ -169,9 +169,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/peripherals/gpio.rs` + `crates/dlcp-sim/tests/peripheral_gpio_parity.rs`
   - notes: Phase-2 GPIO is minimum-viable: TRIS/LAT SFRs round-trip through SFR memory with the existing `apply_sfr_sw_write` masks (TRISA on the K20 honours Note 5 RA6/RA7 disabling via reset.rs's POR table).  PORT-side observability (input-pin reads, LAT->PORT mirroring on outputs, cross-core pin-to-pin propagation) is part of the pin-coupling primitive (`pinnet.rs`) deferred to Phase 3 -- the single-core Phase-2 scope doesn't exercise it.  Parity test asserts (a) TRIS write -> read round-trip, (b) LAT write -> read round-trip, (c) K20 POR TRISA = 0x7F via the reset POR table, (d) LAT initial-zero after POR.
 
-- [pending] P2.7 IRQ controller — INTCON*, RCON, IPEN priority + GIE/GIEH/GIEL, PIE/PIR
+- [done] P2.7 IRQ controller — INTCON*, RCON, IPEN priority + GIE/GIEH/GIEL, PIE/PIR
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_irq_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/irq.rs`.
+  - artifact: `crates/dlcp-sim/src/peripherals/irq.rs` + `crates/dlcp-sim/tests/peripheral_irq_parity.rs`
+  - notes: Phase-2 IRQ controller is SFR-semantic only.  `Irq::is_irq_pending(mem)` exposes the high/low-priority pending logic (GIE/GIEH gate + IPEN priority + per-bit PIE & PIR), but the executor does NOT yet vector to 0x0008/0x0018 on instruction boundaries -- that wiring is Phase-3 work alongside the multi-core scheduler that needs to interleave IRQ delivery with cross-core stimulus.  V1.71 cycle-10 boot doesn't fire any IRQ so the deferral is safe.  Parity test asserts INTCON/INTCON2/INTCON3 + PIE1/PIE2 + PIR1/PIR2 SFRs round-trip through the executor and that `is_irq_pending` returns the expected priority decision for the documented PIE/PIR/GIE/IPEN combinations.
 
 - [pending] P2.8 USB-SIE (2455 only) — HID dispatch path only
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_usbsie_parity`

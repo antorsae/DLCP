@@ -26,6 +26,7 @@
 pub mod adc;
 pub mod eeprom;
 pub mod eusart;
+pub mod irq;
 pub mod mssp;
 pub mod timer;
 
@@ -43,6 +44,7 @@ pub struct Peripherals {
     pub timers: timer::Timers,
     pub adc: adc::Adc,
     pub eeprom: eeprom::Eeprom,
+    pub irq: irq::Irq,
 }
 
 impl Peripherals {
@@ -57,6 +59,7 @@ impl Peripherals {
             timers: timer::Timers::new(variant),
             adc: adc::Adc::new(variant),
             eeprom: eeprom::Eeprom::new(variant),
+            irq: irq::Irq::new(variant),
         }
     }
 
@@ -72,6 +75,7 @@ impl Peripherals {
         self.timers.on_sfr_write(addr, value, mem);
         self.adc.on_sfr_write(addr, value, mem);
         self.eeprom.on_sfr_write(addr, value, mem);
+        self.irq.on_sfr_write(addr, value, mem);
     }
 
     /// Advance every peripheral's internal time by `n` Tcy.
@@ -84,6 +88,7 @@ impl Peripherals {
         self.timers.tick_tcy(n, mem);
         self.adc.tick_tcy(n, mem);
         self.eeprom.tick_tcy(n, mem);
+        self.irq.tick_tcy(n, mem);
     }
 
     /// Throw away each peripheral's in-flight state machine.
@@ -100,6 +105,7 @@ impl Peripherals {
         self.timers.reset_state();
         self.adc.reset_state();
         self.eeprom.reset_state();
+        self.irq.reset_state();
     }
 
     /// Post-SFR-reset sync.  Aligns each peripheral's
