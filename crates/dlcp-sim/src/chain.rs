@@ -1231,31 +1231,39 @@ mod tests {
     }
 
     /// Multi-byte chain transaction shaped after V3.1's
-    /// `volume_dsp_write` (lst:7838): START + 0x68 +
-    /// 0x30 (subaddress) + 4 data bytes + STOP.  Verifies
-    /// the chain dispatch routes Start/Stop correctly,
-    /// sequences multiple TxByte events through the slave's
-    /// state machine, and the data lands at the right
-    /// subaddresses.  Uses SSPCON2.SEN/PEN to fire the
-    /// Start/Stop conditions through the actual MSSP state
-    /// machine (rather than test-only shortcuts).
+    /// `volume_dsp_write` (lst:7838).  V3.1 itself sends
+    /// 4 data bytes after the subaddress; this test exercises
+    /// the dispatch with a smaller 2-data-byte burst (the
+    /// state-machine path is identical -- the slave sequential-
+    /// write auto-increment fires once per data byte regardless
+    /// of count).  Sequence: START + 0x68 + 0x30 + 0xDE +
+    /// 0xAD + STOP.  Verifies the chain dispatch routes
+    /// Start/Stop correctly, sequences multiple TxByte events
+    /// through the slave's state machine, and the data lands
+    /// at the right subaddresses.  Uses SSPCON2.SEN/PEN to
+    /// fire Start/Stop through the actual MSSP state machine.
     #[test]
     fn coupled_tas3108_handles_volume_dsp_write_burst() {
         // Program:
         //   MOVLW 0x28; MOVWF SSPCON1     (enable I2C master)
         //   MOVLW 0x01; MOVWF SSPADD       (fast bit period)
         //   BSF SSPCON2, 0                 (SEN = start)
-        //   <wait>: BTFSC SSPCON2, 0; BRA -1  (poll until Start completes)
+        //   <wait>: BTFSC SSPCON2, 0; BRA -2  (poll until Start completes)
         //   MOVLW 0x68; MOVWF SSPBUF       (write addr)
-        //   <wait>: BTFSC SSPSTAT, 0; BRA -1  (poll BF clear)
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -2  (poll BF clear)
         //   MOVLW 0x30; MOVWF SSPBUF       (subaddr)
-        //   <wait>: BTFSC SSPSTAT, 0; BRA -1
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -2
         //   MOVLW 0xDE; MOVWF SSPBUF
-        //   <wait>: BTFSC SSPSTAT, 0; BRA -1
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -2
         //   MOVLW 0xAD; MOVWF SSPBUF
-        //   <wait>: BTFSC SSPSTAT, 0; BRA -1
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -2
         //   BSF SSPCON2, 2                 (PEN = stop)
-        //   BRA -1                          (done)
+        //   BRA -1                          (done -- self-loop idiom)
+        //
+        // BRA -2 (`0xD7FE`) targets `(PC + 2) + 2*(-2) =
+        // PC - 2`, branching back to the immediately-prior
+        // BTFSC.  BRA -1 (`0xD7FF`) self-loops at the BRA
+        // itself (the standard "stay here forever" idiom).
         //
         // Encoding cheat-sheet:
         //   MOVLW k:        0x0Ekk -> [kk, 0x0E]
