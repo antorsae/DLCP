@@ -1,6 +1,6 @@
 # `dlcp-sim` Rust Rewrite — Progress Ledger
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 Branch: `feature/sim-rewrite-rust`
 
 This file is **machine-readable**.  Sub-tasks have a fixed shape:
@@ -131,7 +131,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/tests/isa_parity.rs` (the matching test function from spec §5).
   - notes: load V3.2 MAIN hex via P1.8a, run from POR until the AN0 standby-gate pass milestone, RAM/W/STATUS/STKPTR bit-exact against a runtime gpsim fixture. The AN0 gate requires the ADC (AN0 sample) and the standby-state machine, which are P2 peripheral work — **this sub-task is expected to block on P2.x landing the ADC/comparator model**. Keeping it in the ledger so the dependency is visible; expect to flip its status to `blocked` once P1.8d lands and the prerequisite gap is concrete.
 
-- [pending] P1.gate Run phase-1 gate
+- [done] P1.gate Run phase-1 gate
   - verify: `cargo test -p dlcp-sim --release --test isa_parity && .venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 1`
   - artifact: stdout summary; coverage report shows all 75 PIC18 opcodes executed at least once.
 
