@@ -365,12 +365,13 @@ fn mirror_pc_and_stack_to_sfrs(core: &mut Core, stack: &Stack) {
 ///   scripts/capture_v171_early_boot_parity.py --cycles 10
 /// ```
 ///
-/// Six SFR cells are exempted because gpsim's K20 model is the
-/// deviant party there (incomplete POR table for IPR1/IPR2/
-/// BAUDCON/PSTRCON/HLVDCON, plus an OSCCON post-callback
-/// transient).  See `GPSIM_K20_DEVIATIONS` inside this test for
-/// the per-cell rationale and references to the gpsim source +
-/// DS40001303H tables that justify each exemption.
+/// Seven SFR cells are exempted because gpsim's K20 model is the
+/// deviant party there (ANSEL Tbl 5-2 footnote 2 missed; missing
+/// POR for IPR1/IPR2/BAUDCON/PSTRCON/HLVDCON; OSCCON shipped at
+/// gpsim's base-class initial value 0x40 instead of the K20
+/// datasheet POR 0x30).  See `GPSIM_K20_DEVIATIONS` inside this
+/// test for the per-cell rationale and references to the gpsim
+/// source + DS40001303H tables that justify each exemption.
 #[test]
 fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     let root = repo_root();

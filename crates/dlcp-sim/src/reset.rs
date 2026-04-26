@@ -257,10 +257,13 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
         // OSTS/IOFS/SCS<1:0> are q-bits and stay 0 until the
         // oscillator-stabilisation timer fires -- modelled in
         // P2's oscillator peripheral, not here.  gpsim's K20
-        // model writes 0x40 by cycle 10 because it triggers a
-        // post-POR IRCF auto-tune to the configured HFINTOSC
-        // frequency; documented as a known transient divergence
-        // until P2 lands the equivalent state machine.
+        // ships its base-class initial value 0x40
+        // (vendor/gpsim-0.32.1-xtc/src/16bit-processors.cc:560
+        // `add_sfr_register(osccon, 0xfd3, RegisterValue(0x40,
+        // 0))`) and the K20 subclass does not override that
+        // entry for OSCCON.  Documented as a known static
+        // divergence (rust=0x30, gpsim=0x40) in the parity
+        // test's GPSIM_K20_DEVIATIONS table.
         (0xFD3, 0x30),
         // HLVDCON: HLVDL<3:0>=0101 (default HLV detect = 2.0V
         // typical per Reg 21-1).  Bit 6 (-) unimplemented.
@@ -282,12 +285,21 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
         (0xF9F, 0x7F),
         // IPR2: all bits 1.
         (0xFA2, 0xFF),
-        // TRISA: all-input.  Bit 7 (RA7/OSC1) is disabled in
-        // INTOSC modes per Table 5-2 footnote 5 and reads 0;
-        // V1.71's CONFIG selects HFINTOSC, so bit 7 = 0 and
-        // POR-effective TRISA is 0x7F.  When the 2455 / non-
-        // INTOSC config lands this needs to consult the parsed
-        // CONFIG bits (Task #14 follow-up).
+        // TRISA: Tbl 4-4 base = `1111 1111` = 0xFF, but Note 5
+        // says RA6/RA7 are oscillator pins in modes that use
+        // OSC1/OSC2 -- "When not enabled as PORTA pins, they
+        // are disabled and read 0".  The actual POR-effective
+        // value is therefore CONFIG-dependent (FOSC<3:0> field
+        // of CONFIG1H).  This Phase-1 table currently stores
+        // 0x7F so the cycle-10 V1.71 parity gate matches gpsim
+        // -- gpsim's K20 model only disables RA7 (not RA6) for
+        // V1.71's FOSC=XT (CONFIG1H=0x01), which is itself a
+        // gpsim modeling gap (Tbl 4-4 Note 5 mandates BOTH bits
+        // 6 and 7 be 0 in XT mode -> spec-correct value would
+        // be 0x3F).  P2 will plumb CONFIG into the reset path
+        // and resolve TRISA per-mode; until then this stays
+        // pinned to "what gpsim reports for V1.71" and the
+        // discrepancy lives in the codex review trail.
         (0xF92, 0x7F),
         // TRISB: all-input.
         (0xF93, 0xFF),
@@ -301,9 +313,18 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
         // footnote and brings ANSEL up at 0xFF; the parity test
         // exempts the resulting (rust=0x1F, gpsim=0xFF) cell.
         (0xF7E, 0x1F),
-        // ANSELH: ANS<12:8> implemented; conditional on the
-        // PBADEN config bit per Note 6.  V1.71's CONFIG3H has
-        // PBADEN=1 -> 0x1F.
+        // ANSELH: ANS<12:8> implemented; Note 6 says all bits
+        // initialise to 0 if PBADEN=0 (CONFIG3H bit 1).  V1.71
+        // has CONFIG3H=0x00 -> PBADEN=0, so the spec-correct
+        // POR is 0x00.  This table stores 0x1F so the cycle-10
+        // parity gate matches gpsim, whose K20 model brings
+        // ANSELH up at 0x1F regardless of CONFIG3H (gpsim's
+        // P18F25K20::set_config3h is supposed to honour Note
+        // 6 -- p18fk.cc:245 -- but the CONFIG3H value reaches
+        // it after the SFR has already POR'd, so the override
+        // never lands at the cycle-10 observation point).  Like
+        // TRISA above, P2 will resolve this CONFIG-conditional
+        // value properly; for now we track gpsim.
         (0xF7F, 0x1F),
         // WPUB: weak pull-ups enabled.
         (0xF7C, 0xFF),
