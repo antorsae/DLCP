@@ -419,6 +419,7 @@ fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
         0xFA8, // EEDATA
         0xFA9, // EEADR
         0xFAA, // EEADRH (PIC18F26K20-only; harmless on 25K20)
+        0xFAB, // RCSTA  (POR/MCLR `0000 000x`; `x`-as-0 -> 0)
         0xFAD, // TXREG
         0xFAE, // RCREG
         0xFAF, // SPBRG
@@ -471,17 +472,27 @@ fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
 /// `target_value`; bits clear in `reset_mask` are preserved
 /// from the pre-reset byte.
 ///
-/// Only INTCON is wired here for now.  Other mixed-bit
-/// cases (T1CON `u0uu uuuu`, RCSTA bit 0 RX9D `x`/`x`,
-/// EECON1 `uu-0 u000`, STATUS `---u uuuu`, T3CON `uuuu
-/// uuuu`) are a deferred follow-up since the Phase-2 parity
-/// scope doesn't exercise them on a non-POR reset.
+/// Coverage policy: only SFRs whose MCLR row has at least
+/// one *fixed* bit (i.e. not all `u`) belong here.  SFRs
+/// whose MCLR row is fully `u` (T3CON, STATUS) are MCLR
+/// no-ops -- they do not need an entry here.  Their
+/// POR/BOR-side wholesale-zero lives in
+/// `apply_k20_bor_zero_mixed_sfrs`.
 fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
     // (addr, target_value, reset_mask)
     const K20_MCLR_RMW: &[(u16, u8, u8)] = &[
-        // INTCON: POR `0000 000x`, MCLR `0000 000u`.
-        // Bits 7..1 reset to 0; bit 0 (RBIF) is preserved.
+        // INTCON: POR `0000 000x`, MCLR `0000 000u`.  Bits
+        // 7..1 reset; bit 0 (RBIF) preserved.
         (0xFF2, 0x00, 0xFE),
+        // T1CON: POR `0000 0000`, MCLR `u0uu uuuu`.  Only
+        // bit 6 (T1RUN) is fixed-0 on MCLR; the rest are
+        // preserved.
+        (0xFCD, 0x00, 0x40),
+        // EECON1: POR `xx-0 x000`, MCLR `uu-0 u000`.  Bits
+        // 5 (-), 4, 2, 1, 0 are fixed-0; bits 7, 6, 3 are
+        // preserved on MCLR.  reset_mask = 0b0011_0111 =
+        // 0x37 covers the fixed bits.
+        (0xFA6, 0x00, 0x37),
     ];
     for (addr, target, reset_mask) in K20_MCLR_RMW {
         let old = core
@@ -493,16 +504,24 @@ fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
     }
 }
 
-/// SFRs whose Tbl 4-4 POR/BOR column is fully zero but whose
-/// MCLR column has preserved (`u`) bits.  These need
-/// wholesale-zero on BOR (to match the POR/BOR `0` / `x`
-/// pattern), distinct from the RMW path that MCLR/WDT/RESET
-/// uses.  Without this, BOR would inherit MCLR's `u`
-/// preservation -- e.g. INTCON.RBIF surviving BOR contrary
-/// to Tbl 4-4's `0000 000x` POR/BOR row.
+/// SFRs whose Tbl 4-4 POR/BOR column is fully zero (under
+/// the `x`-as-0 convention) but whose MCLR column has
+/// preserved (`u`) bits or is entirely preserved.  These
+/// need wholesale-zero on BOR (to match the POR/BOR `0` /
+/// `x` pattern), distinct from the MCLR path that preserves
+/// the `u` bits via `apply_k20_mclr_rmw_sfrs` (or simply
+/// leaves the byte alone if every implemented bit is `u`).
+///
+/// Without this BOR helper, BOR would inherit MCLR's `u`
+/// preservation -- e.g. INTCON.RBIF / T1CON / T3CON / etc.
+/// surviving BOR contrary to Tbl 4-4's POR/BOR row.
 fn apply_k20_bor_zero_mixed_sfrs(core: &mut Core) {
     const K20_BOR_ALSO_ZERO: &[u16] = &[
-        0xFF2, // INTCON: POR `0000 000x` (= 0); MCLR `0000 000u`
+        0xFA6, // EECON1: POR/BOR `xx-0 x000` (= 0); MCLR `uu-0 u000`
+        0xFB1, // T3CON:  POR/BOR `0000 0000`;       MCLR `uuuu uuuu`
+        0xFCD, // T1CON:  POR/BOR `0000 0000`;       MCLR `u0uu uuuu`
+        0xFD8, // STATUS: POR/BOR `---x xxxx` (= 0); MCLR `---u uuuu`
+        0xFF2, // INTCON: POR/BOR `0000 000x` (= 0); MCLR `0000 000u`
     ];
     for addr in K20_BOR_ALSO_ZERO {
         core.memory.write_raw(Address::from_raw(*addr), 0);
@@ -698,6 +717,95 @@ mod tests {
         assert_eq!(
             intcon, 0,
             "INTCON must FULLY zero on BOR (Tbl 4-4 POR/BOR = 0000 000x)"
+        );
+    }
+
+    /// BOR fully zeros T1CON / T3CON / EECON1 / STATUS / RCSTA
+    /// per Tbl 4-4 POR/BOR column (treating `x` as 0).  MCLR
+    /// preserves their `u` bits (or is a no-op for fully-`u`
+    /// rows), so BOR must NOT inherit MCLR's preservation.
+    #[test]
+    fn bor_fully_zeros_mixed_mclr_sfrs_on_k20() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        for (addr, junk) in [
+            (0xFA6u16, 0xFFu8), // EECON1
+            (0xFAB, 0xFF),       // RCSTA
+            (0xFB1, 0xFF),       // T3CON
+            (0xFCD, 0xFF),       // T1CON
+            (0xFD8, 0xFF),       // STATUS (writes the 5 implemented bits)
+        ] {
+            core.memory.write_raw(Address::from_raw(addr), junk);
+        }
+        apply_reset(&mut core, &mut stack, ResetSource::BrownOut);
+        for addr in [0xFA6u16, 0xFAB, 0xFB1, 0xFCD, 0xFD8] {
+            assert_eq!(
+                core.memory.read_raw(Address::from_raw(addr)),
+                0,
+                "0x{addr:03X} must FULLY zero on BOR"
+            );
+        }
+    }
+
+    /// MCLR's RMW pass for T1CON: only bit 6 (T1RUN) is
+    /// reset; bits 7, 5..0 are preserved.
+    #[test]
+    fn mclr_t1con_resets_bit_6_preserves_rest() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        // T1CON pre-reset = 1011 1011 = 0xBB.  After MCLR:
+        // bit 6 cleared -> 1011 1011 & ~0x40 = 1011 1011 -
+        // (no bit 6 was set).  Use 0xFF instead so bit 6 set.
+        core.memory.write_raw(Address::from_raw(0xFCD), 0xFF);
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        let t1con = core.memory.read_raw(Address::from_raw(0xFCD));
+        assert_eq!(
+            t1con & 0x40, 0,
+            "T1CON bit 6 (T1RUN) must clear on MCLR (got 0x{t1con:02X})"
+        );
+        assert_eq!(
+            t1con & !0x40, 0xBF,
+            "T1CON bits 7, 5..0 must be preserved (got 0x{t1con:02X})"
+        );
+    }
+
+    /// MCLR's RMW pass for EECON1: bits 5,4,2,1,0 reset to
+    /// 0; bits 7, 6, 3 preserved.  reset_mask = 0x37.
+    #[test]
+    fn mclr_eecon1_resets_fixed_bits_preserves_u_bits() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        core.memory.write_raw(Address::from_raw(0xFA6), 0xFF);
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        let eecon1 = core.memory.read_raw(Address::from_raw(0xFA6));
+        // Bits 7, 6, 3 = 0xC8 should be preserved as 1.
+        assert_eq!(eecon1 & 0xC8, 0xC8);
+        // Bits 5, 4, 2, 1, 0 = 0x37 should be 0.
+        assert_eq!(eecon1 & 0x37, 0);
+    }
+
+    /// MCLR is a no-op for STATUS / T3CON / RCSTA in our
+    /// model: STATUS / T3CON have all-`u` MCLR rows, RCSTA
+    /// has `0000 000x` MCLR which is RCSTA-as-0 in the
+    /// `x`-as-0 convention.  Test just asserts the helpers
+    /// don't blow away the preserved cases on STATUS / T3CON
+    /// (RCSTA is in the zero list and DOES go to 0 on MCLR).
+    #[test]
+    fn mclr_preserves_t3con_status_on_k20() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        core.memory.write_raw(Address::from_raw(0xFB1), 0x42); // T3CON
+        core.memory.write_raw(Address::from_raw(0xFD8), 0x05); // STATUS
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFB1)),
+            0x42,
+            "T3CON must be preserved across MCLR"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFD8)) & 0x1F,
+            0x05,
+            "STATUS implemented bits must be preserved across MCLR"
         );
     }
 
