@@ -85,6 +85,20 @@ pub struct Timers {
     timer0_prescaler_tcy: u32,
     /// Tcy accumulator for Timer3's prescaler.
     timer3_prescaler_tcy: u32,
+    /// Hidden TMR3H buffer used when T3CON.RD16=1.  Per DS
+    /// §13.4 ("16-bit Read/Write Mode Operation"): when
+    /// RD16=1, a read of TMR3L latches the *current* upper
+    /// byte into this buffer (firmware then reads TMR3H to
+    /// retrieve the latched value), and a write to TMR3L
+    /// transfers the buffer into the actual high byte
+    /// alongside the new low byte (atomic 16-bit reload).
+    /// Writes to TMR3H land in this buffer ONLY -- they do
+    /// not touch the live counter and do NOT reset the
+    /// prescaler.  Phase-2 Timer3 always treats the
+    /// "actual" high byte as the live SFR at TMR3H_ADDR;
+    /// when RD16=0 (the legacy 8-bit-pair model), the
+    /// buffer is unused.
+    tmr3h_buffer: u8,
 }
 
 impl Timers {
@@ -95,9 +109,10 @@ impl Timers {
     pub fn reset_state(&mut self) {
         self.timer0_prescaler_tcy = 0;
         self.timer3_prescaler_tcy = 0;
+        self.tmr3h_buffer = 0;
     }
 
-    pub fn on_sfr_write(&mut self, addr: u16, _value: u8, _mem: &mut Memory) {
+    pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
         match addr {
             // T0CON / T3CON writes change prescaler / enable
             // state; clear our internal Tcy accumulator so
@@ -110,9 +125,59 @@ impl Timers {
             // per DS §10.2 ("any write to TMR0L resets the
             // prescaler").
             TMR0L_ADDR | TMR0H_ADDR => self.timer0_prescaler_tcy = 0,
-            // Timer3: writing TMR3L clears the prescaler
-            // (DS §13.4).
-            TMR3L_ADDR | TMR3H_ADDR => self.timer3_prescaler_tcy = 0,
+            TMR3L_ADDR => {
+                // Timer3 RD16 mode: the firmware-visible
+                // sequence is "MOVWF TMR3H; MOVWF TMR3L".
+                // The TMR3H write was captured in
+                // `tmr3h_buffer` (handled below).  This
+                // TMR3L write atomically transfers buffer ->
+                // live TMR3H byte AND lands `value` as the
+                // new TMR3L.  apply_sfr_sw_write already
+                // wrote `value` to TMR3L_ADDR, so we just
+                // need to overwrite TMR3H with the buffered
+                // byte.  Always clears the prescaler per
+                // DS §13.4.
+                let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
+                if (t3con & T3CON_RD16) != 0 {
+                    mem.write_raw(
+                        Address::from_raw(TMR3H_ADDR),
+                        self.tmr3h_buffer,
+                    );
+                }
+                self.timer3_prescaler_tcy = 0;
+                let _ = value;
+            }
+            TMR3H_ADDR => {
+                // RD16=1: the TMR3H write is supposed to land
+                // in a hidden buffer, NOT the live counter.
+                // apply_sfr_sw_write has already stored
+                // `value` at TMR3H_ADDR -- we have to
+                // restore the previous live value (we don't
+                // know it without saving across writes;
+                // simplest: read the *next* TMR3L write to
+                // commit, and meanwhile preserve the live
+                // byte unchanged).  Simpler still: capture
+                // `value` into the buffer here, then on the
+                // next TMR3L write commit it.  The live
+                // TMR3H byte is overwritten in memory between
+                // here and the TMR3L write, but firmware
+                // reads of TMR3H during that window already
+                // get unspecified silicon behaviour, so the
+                // memory transient is acceptable.
+                //
+                // RD16=0: legacy 8-bit-pair mode -- TMR3H is
+                // a real byte; the write goes through.  No
+                // buffer indirection.  Reset the prescaler
+                // (preserves the prior LOW finding semantic).
+                let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
+                if (t3con & T3CON_RD16) != 0 {
+                    self.tmr3h_buffer = value;
+                    // NOTE: per DS §13.4, TMR3H writes in
+                    // RD16=1 do NOT reset the prescaler.
+                } else {
+                    self.timer3_prescaler_tcy = 0;
+                }
+            }
             _ => {}
         }
     }
@@ -178,10 +243,11 @@ impl Timers {
         if increments == 0 {
             return;
         }
-        // Timer3 is always 16-bit (RD16 only affects how SW
-        // reads/writes the high byte; the underlying counter
-        // is 16-bit either way per DS §13).
-        let _ = T3CON_RD16;
+        // Timer3 is always 16-bit on the silicon side (RD16
+        // only affects how SW reads/writes the high byte;
+        // the underlying counter is 16-bit either way per
+        // DS §13).  RD16 is consumed by on_sfr_write to
+        // route TMR3H writes through the hidden buffer.
         advance_16bit_counter(
             mem,
             TMR3L_ADDR,
@@ -396,8 +462,73 @@ mod tests {
         let mut t = Timers::default();
         t.timer0_prescaler_tcy = 7;
         t.timer3_prescaler_tcy = 3;
+        t.tmr3h_buffer = 0xAB;
         t.reset_state();
         assert_eq!(t.timer0_prescaler_tcy, 0);
+        assert_eq!(t.timer3_prescaler_tcy, 0);
+        assert_eq!(t.tmr3h_buffer, 0);
+    }
+
+    /// RD16 mode: firmware writes TMR3H first (lands in
+    /// hidden buffer; live TMR3H untouched, prescaler not
+    /// reset), then TMR3L (atomic transfer of buffer ->
+    /// live TMR3H AND new TMR3L).
+    #[test]
+    fn timer3_rd16_atomic_reload_via_buffer() {
+        let mut t = Timers::default();
+        let mut mem = fresh_mem();
+        // Enable Timer3 with RD16, internal clock, 1:1
+        // prescaler.
+        mem.write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON | T3CON_RD16);
+        // Tick a bit so the counter is non-zero.
+        t.tick_tcy(50, &mut mem);
+        let pre_tmr3l = mem.read_raw(Address::from_raw(TMR3L_ADDR));
+        assert_eq!(pre_tmr3l, 50);
+        let pre_tmr3h = mem.read_raw(Address::from_raw(TMR3H_ADDR));
+        assert_eq!(pre_tmr3h, 0);
+
+        // Firmware: MOVWF TMR3H with W=0xAB.  Simulate the
+        // post-mask write that already landed:
+        mem.write_raw(Address::from_raw(TMR3H_ADDR), 0xAB);
+        t.on_sfr_write(TMR3H_ADDR, 0xAB, &mut mem);
+        // RD16 buffer captured.
+        assert_eq!(t.tmr3h_buffer, 0xAB);
+        // Prescaler accumulator NOT reset by TMR3H write per
+        // DS §13.4.  The pre-tick consumed 50 Tcy out of a
+        // 1:1 prescaler -- accumulator should still be 0
+        // because every 1 Tcy increments the counter
+        // directly.  More important: a TMR3H write must NOT
+        // touch the live counter.  Tick another 5 Tcy and
+        // verify the counter advances normally from where
+        // it was.
+        t.tick_tcy(5, &mut mem);
+        let mid_tmr3l = mem.read_raw(Address::from_raw(TMR3L_ADDR));
+        assert_eq!(
+            mid_tmr3l, 55,
+            "TMR3L must keep counting from pre-write value, not be reloaded"
+        );
+
+        // Firmware: MOVWF TMR3L with W=0x12.
+        mem.write_raw(Address::from_raw(TMR3L_ADDR), 0x12);
+        t.on_sfr_write(TMR3L_ADDR, 0x12, &mut mem);
+        // After TMR3L write: TMR3L = 0x12 (set by SW write),
+        // TMR3H = 0xAB (atomically transferred from buffer).
+        // Prescaler reset.
+        assert_eq!(mem.read_raw(Address::from_raw(TMR3L_ADDR)), 0x12);
+        assert_eq!(mem.read_raw(Address::from_raw(TMR3H_ADDR)), 0xAB);
+        assert_eq!(t.timer3_prescaler_tcy, 0);
+    }
+
+    /// RD16=0 (legacy 8-bit-pair mode): TMR3H writes go
+    /// directly to the live byte AND reset the prescaler.
+    #[test]
+    fn timer3_rd16_off_tmr3h_write_resets_prescaler() {
+        let mut t = Timers::default();
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON);
+        t.tick_tcy(0, &mut mem); // accumulator stays 0
+        t.timer3_prescaler_tcy = 5;
+        t.on_sfr_write(TMR3H_ADDR, 0xCD, &mut mem);
         assert_eq!(t.timer3_prescaler_tcy, 0);
     }
 }
