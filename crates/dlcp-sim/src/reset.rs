@@ -180,29 +180,33 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // to 0 on these resets, but the sticky flags AND
             // the slot data are preserved across the reset.
             stack.reset_pointer_preserve_flags();
-            // BOR shares the "Power-on Reset, Brown-out
-            // Reset" column in Tbl 4-4 -- so SFRs that
-            // bring up at fixed values reset on BOR too,
-            // and SFRs whose MCLR row has preserved (`u`)
-            // bits are still fully zeroed on BOR (the
-            // POR/BOR row uses `0` or `x`, never `u`).
-            // GPRs (data memory below 0xF60) ARE preserved
-            // across BOR per §4.4 -- only POR wipes RAM --
-            // so we touch the SFR window explicitly:
-            //   (1) zero the "fully zero on POR/BOR/MCLR"
-            //       set,
-            //   (2) wholesale-zero the SFRs whose MCLR row
-            //       has `u` bits but whose POR/BOR row is
-            //       all-zero (currently only INTCON).
-            //   (3) re-apply K20_POR for the non-zero
-            //       fixed defaults.
-            // No MCLR-style RMW pass on BOR -- BOR doesn't
-            // preserve any `u` bits.
-            if core.variant() == Variant::Pic18F25K20 {
-                apply_k20_mclr_zero_sfrs(core);
-                apply_k20_bor_zero_mixed_sfrs(core);
-            }
+            // BOR shares Tbl 4-4's "Power-on Reset, Brown-out
+            // Reset" column.  That column has NO `u`
+            // (preserved) entries -- only `0`, `1`, `x`, and
+            // `q`, all of which our model treats as 0 unless
+            // explicitly listed in K20_POR with a fixed
+            // value.  Accordingly: wipe the entire SFR
+            // window 0xF60..0xFFF first, then re-apply
+            // K20_POR for the non-zero fixed defaults.  GPRs
+            // (data memory below 0xF60) ARE preserved across
+            // BOR per §4.4 -- only POR wipes RAM.
+            //
+            // This blanket SFR wipe replaces the previous
+            // per-SFR list approach: by definition every
+            // SFR's BOR value is "0 or whatever K20_POR
+            // says", so wipe + table is correct by
+            // construction and avoids the per-SFR
+            // enumeration drift hazard codex flagged.
+            wipe_sfr_window(core);
             apply_por_sfr_defaults(core);
+            // RCON's POR-state was already composed at the
+            // top of apply_reset (see the `rcon` match
+            // earlier).  The SFR wipe above blew it away;
+            // re-write the composed RCON value back so
+            // RI/TO/PD/POR/BOR are consistent.  (POR's
+            // memory-wipe path does the same dance.)
+            core.memory
+                .write_raw(Address::from_raw(RCON_ADDR), rcon);
         }
         ResetSource::Mclr
         | ResetSource::Wdt
@@ -213,28 +217,28 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // can be read via TOSU/H/L after firmware writes a
             // new depth into STKPTR.
             stack.reset_pointer_preserve_flags();
-            // Per DS40001303H Table 4-4 "MCLR Resets, WDT
-            // Reset, RESET Instruction, Stack Resets" column:
-            // many SFRs reset to fixed values for these
-            // sources (PIR1/2 -> 0, PIE1/2 -> 0, TXREG -> 0,
-            // SPBRG{,H} -> 0, RCSTA -> 0x00 ignoring RX9D,
-            // OSCTUNE -> 0, ADCON{0,1,2} -> 0, etc.) -- not
-            // uniformly preserved.  Data memory (GPRs) IS
-            // preserved across these resets -- only POR wipes
-            // RAM -- so we must touch the SFR window
-            // explicitly.  Two passes:
-            //   (1) zero the "fully-zero on MCLR" SFR list
-            //       (these were brought to 0 by the POR memory
-            //        wipe but a non-POR reset doesn't wipe).
-            //   (2) re-apply the K20_POR table (non-zero
-            //       defaults like INTCON2 = 0xF5, T0CON =
-            //       0xFF, PR2 = 0xFF, etc. -- every entry has
-            //       the same value in the POR/BOR column and
-            //       the MCLR-style column of Tbl 4-4).
-            // SFRs with mixed preserved/fixed bits on MCLR
-            // (T1CON, RCSTA, EECON1, STATUS) are deferred to
-            // a follow-up; the cycle-10 V1.71 parity test
-            // uses POR exclusively so the gap is theoretical.
+            // Tbl 4-4 column-2 "MCLR Resets, WDT Reset, RESET
+            // Instruction, Stack Resets" has a mix of fixed
+            // values, `u` preserved bits, and `x` unknowns
+            // (treated as 0).  Data memory (GPRs) IS preserved
+            // across these resets -- only POR wipes RAM -- so
+            // we cannot use the BOR-style blanket SFR-window
+            // wipe.  Three passes per K20:
+            //   (1) zero the SFRs whose MCLR row is fully zero
+            //       (`apply_k20_mclr_zero_sfrs`).
+            //   (2) RMW the SFRs whose MCLR row mixes fixed
+            //       and preserved (`u`) bits
+            //       (`apply_k20_mclr_rmw_sfrs` -- INTCON,
+            //       T1CON, EECON1, PORTA/B/E).
+            //   (3) re-apply K20_POR for the non-zero fixed
+            //       defaults (INTCON2 = 0xF5, T0CON = 0xFF,
+            //       PR2 = 0xFF, etc. -- every entry has the
+            //       same value in the POR/BOR column and the
+            //       MCLR-style column).
+            // SFRs whose MCLR row is all-`u` (T3CON, STATUS,
+            // timers, ADRES, CCPR, FSR{0..2}L, WREG, PRODL/H,
+            // SSPBUF, PORTC, LATA-C) are MCLR no-ops and don't
+            // need an entry in either pass.
             if core.variant() == Variant::Pic18F25K20 {
                 apply_k20_mclr_zero_sfrs(core);
                 apply_k20_mclr_rmw_sfrs(core);
@@ -248,6 +252,19 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
         ResetSource::StackUnderflow => {
             stack.reset_for_stack_underflow();
         }
+    }
+}
+
+/// Zero every byte in the SFR window 0xF60..0xFFF without
+/// touching the GPR area below.  Used by the BOR arm to
+/// implement Tbl 4-4's "every SFR resets to a fixed value
+/// or `x`" POR/BOR semantic without enumerating every SFR
+/// individually.  The caller is expected to follow up with
+/// [`apply_por_sfr_defaults`] (and re-write RCON) so SFRs
+/// with non-zero POR-column values land at the right bytes.
+fn wipe_sfr_window(core: &mut Core) {
+    for addr in 0xF60u16..=0xFFF {
+        core.memory.write_raw(Address::from_raw(addr), 0);
     }
 }
 
@@ -400,11 +417,15 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
 /// wipe RAM, so we zero these SFRs explicitly.
 ///
 /// SFRs whose MCLR-column value mixes preserved (`u`) bits
-/// with fixed bits (T1CON `u0uu uuuu`, RCSTA bit 0 RX9D `u`,
-/// EECON1 bits 7/6/3 `u`, STATUS bits 4..0 `u`) are NOT in
-/// this list -- they need RMW-style per-bit handling.
-/// `apply_k20_mclr_rmw_sfrs` covers INTCON (bit 0 preserved);
-/// the remaining cases are a deferred follow-up.
+/// with fixed bits (INTCON, T1CON, EECON1, PORTA/B/E) are
+/// NOT in this list -- they live in
+/// `apply_k20_mclr_rmw_sfrs` and use RMW-style per-bit
+/// handling.  SFRs whose MCLR row is fully `u` (T3CON,
+/// STATUS, the timer / ADRES / CCPR / FSR-low / WREG /
+/// PROD / SSPBUF / PORTC / LATx data registers) are MCLR
+/// no-ops and don't need an entry anywhere -- the BOR
+/// path's SFR-window wipe handles their POR/BOR-side `x`-
+/// as-0 reset.
 fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
     const K20_MCLR_ZERO_SFRS: &[u16] = &[
         0xF79, // CM2CON1
@@ -474,10 +495,12 @@ fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
 ///
 /// Coverage policy: only SFRs whose MCLR row has at least
 /// one *fixed* bit (i.e. not all `u`) belong here.  SFRs
-/// whose MCLR row is fully `u` (T3CON, STATUS) are MCLR
-/// no-ops -- they do not need an entry here.  Their
-/// POR/BOR-side wholesale-zero lives in
-/// `apply_k20_bor_zero_mixed_sfrs`.
+/// whose MCLR row is fully `u` (T3CON, STATUS, the timer
+/// data registers, WREG, PRODL/H, ADRES{H,L}, CCPR{1,2}{H,L},
+/// SSPBUF, FSR{0,1,2}L, PORTC, LATA-C) are MCLR no-ops --
+/// they do not need an entry here.  The BOR path takes care
+/// of those via the SFR-window wipe in `apply_reset`'s BOR
+/// arm.
 fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
     // (addr, target_value, reset_mask)
     const K20_MCLR_RMW: &[(u16, u8, u8)] = &[
@@ -493,6 +516,17 @@ fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
         // preserved on MCLR.  reset_mask = 0b0011_0111 =
         // 0x37 covers the fixed bits.
         (0xFA6, 0x00, 0x37),
+        // PORTA: POR `xx0x 0000`, MCLR `uu0u 0000`.  Bits
+        // 7, 6, 4 preserved on MCLR; bits 5, 3..0 fixed-0.
+        // reset_mask = 0b0010_1111 = 0x2F.
+        (0xF80, 0x00, 0x2F),
+        // PORTB: POR `xxx0 0000`, MCLR `uuu0 0000`.  Bits
+        // 7..5 preserved; bits 4..0 fixed-0.
+        (0xF81, 0x00, 0x1F),
+        // PORTE: POR `---- x000`, MCLR `---- u000`.  Bit 3
+        // (RE3) preserved; bits 2..0 fixed-0; bits 7..4
+        // unimplemented.  reset_mask = 0x07.
+        (0xF84, 0x00, 0x07),
     ];
     for (addr, target, reset_mask) in K20_MCLR_RMW {
         let old = core
@@ -501,30 +535,6 @@ fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
         let new_value = (old & !reset_mask) | (target & reset_mask);
         core.memory
             .write_raw(Address::from_raw(*addr), new_value);
-    }
-}
-
-/// SFRs whose Tbl 4-4 POR/BOR column is fully zero (under
-/// the `x`-as-0 convention) but whose MCLR column has
-/// preserved (`u`) bits or is entirely preserved.  These
-/// need wholesale-zero on BOR (to match the POR/BOR `0` /
-/// `x` pattern), distinct from the MCLR path that preserves
-/// the `u` bits via `apply_k20_mclr_rmw_sfrs` (or simply
-/// leaves the byte alone if every implemented bit is `u`).
-///
-/// Without this BOR helper, BOR would inherit MCLR's `u`
-/// preservation -- e.g. INTCON.RBIF / T1CON / T3CON / etc.
-/// surviving BOR contrary to Tbl 4-4's POR/BOR row.
-fn apply_k20_bor_zero_mixed_sfrs(core: &mut Core) {
-    const K20_BOR_ALSO_ZERO: &[u16] = &[
-        0xFA6, // EECON1: POR/BOR `xx-0 x000` (= 0); MCLR `uu-0 u000`
-        0xFB1, // T3CON:  POR/BOR `0000 0000`;       MCLR `uuuu uuuu`
-        0xFCD, // T1CON:  POR/BOR `0000 0000`;       MCLR `u0uu uuuu`
-        0xFD8, // STATUS: POR/BOR `---x xxxx` (= 0); MCLR `---u uuuu`
-        0xFF2, // INTCON: POR/BOR `0000 000x` (= 0); MCLR `0000 000u`
-    ];
-    for addr in K20_BOR_ALSO_ZERO {
-        core.memory.write_raw(Address::from_raw(*addr), 0);
     }
 }
 
@@ -782,6 +792,76 @@ mod tests {
         assert_eq!(eecon1 & 0xC8, 0xC8);
         // Bits 5, 4, 2, 1, 0 = 0x37 should be 0.
         assert_eq!(eecon1 & 0x37, 0);
+    }
+
+    /// BOR wipes the entire SFR window 0xF60..0xFFF, so any
+    /// SFR firmware previously set survives only via the
+    /// K20_POR re-application.  GPRs survive untouched.
+    #[test]
+    fn bor_wipes_full_sfr_window_preserves_gprs() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        // Pre-poison every byte in the SFR window AND a
+        // selection of GPR bytes.
+        for addr in 0xF60u16..=0xFFF {
+            core.memory.write_raw(Address::from_raw(addr), 0xAB);
+        }
+        for addr in [0x000u16, 0x080, 0x100, 0xF00, 0xF5F] {
+            core.memory.write_raw(Address::from_raw(addr), 0xCD);
+        }
+        apply_reset(&mut core, &mut stack, ResetSource::BrownOut);
+
+        // Pick a few SFRs that aren't in K20_POR -- they
+        // should all be 0 after the wipe.
+        for addr in [0xF80u16, 0xF9E, 0xFAD, 0xFAF, 0xFCC] {
+            assert_eq!(
+                core.memory.read_raw(Address::from_raw(addr)),
+                0,
+                "non-K20_POR SFR 0x{addr:03X} must be 0 after BOR wipe"
+            );
+        }
+        // K20_POR non-zero entries should be re-established.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFCB)), 0xFF, "PR2");
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFD5)), 0xFF, "T0CON");
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFAC)),
+            0x02,
+            "TXSTA TRMT"
+        );
+        // GPRs survive.
+        for addr in [0x000u16, 0x080, 0x100, 0xF00, 0xF5F] {
+            assert_eq!(
+                core.memory.read_raw(Address::from_raw(addr)),
+                0xCD,
+                "GPR 0x{addr:03X} must survive BOR"
+            );
+        }
+    }
+
+    /// MCLR's RMW pass for the PORT SFRs: PORTA preserves
+    /// bits 7/6/4 (RA7/RA6/RA4 `u`); PORTB preserves bits
+    /// 7/6/5 (`uuu0 0000`); PORTE preserves bit 3 (RE3 `u`).
+    /// Other implemented bits clear to 0.
+    #[test]
+    fn mclr_porta_portb_porte_rmw_masks() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        core.memory.write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
+        core.memory.write_raw(Address::from_raw(0xF81), 0xFF); // PORTB
+        core.memory.write_raw(Address::from_raw(0xF84), 0xFF); // PORTE
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        // PORTA: preserve bits 7,6,4 = 0xD0; reset 5,3..0 = 0x2F.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF80)), 0xD0);
+        // PORTB: preserve 7..5 = 0xE0; reset 4..0 = 0x1F.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF81)), 0xE0);
+        // PORTE: preserve bit 3 only = 0x08; reset 2..0 = 0x07.
+        // Bits 7..4 are unimplemented -- they came in as 0xF0
+        // from the 0xFF poison but reads return 0; the SFR
+        // backing byte may still be 0xF8 since memory write
+        // doesn't enforce bit-level masking.  Assert only the
+        // RMW-affected bits to keep the test focused.
+        let porte = core.memory.read_raw(Address::from_raw(0xF84));
+        assert_eq!(porte & 0x0F, 0x08, "RE3 preserved, RE2..0 reset");
     }
 
     /// MCLR is a no-op for STATUS / T3CON / RCSTA in our
