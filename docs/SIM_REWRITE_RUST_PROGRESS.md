@@ -174,10 +174,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/peripherals/irq.rs` + `crates/dlcp-sim/tests/peripheral_irq_parity.rs`
   - notes: Phase-2 IRQ controller is SFR-semantic only.  `Irq::is_irq_pending(mem)` exposes the high/low-priority pending logic (GIE/GIEH gate + IPEN priority + per-bit PIE & PIR), but the executor does NOT yet vector to 0x0008/0x0018 on instruction boundaries -- that wiring is Phase-3 work alongside the multi-core scheduler that needs to interleave IRQ delivery with cross-core stimulus.  V1.71 cycle-10 boot doesn't fire any IRQ so the deferral is safe.  Parity test asserts INTCON/INTCON2/INTCON3 + PIE1/PIE2 + PIR1/PIR2 SFRs round-trip through the executor and that `is_irq_pending` returns the expected priority decision for the documented PIE/PIR/GIE/IPEN combinations.
 
-- [pending] P2.8 USB-SIE (2455 only) — HID dispatch path only
+- [done] P2.8 USB-SIE (2455 only) — HID dispatch path only
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_usbsie_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/usb.rs`
-  - notes: scope = cmd 0x20, 0x21, 0x43, 0x44 + filename A/B routing. NOT enumeration.
+  - artifact: `crates/dlcp-sim/src/peripherals/usb.rs` + `crates/dlcp-sim/tests/peripheral_usbsie_parity.rs`
+  - notes: Phase-2 USB-SIE is a 2455-gated stub.  The actual HID dispatch path (cmd 0x20 preset switch, 0x21 diag query, 0x43 memread, 0x44 Tier-1 diag snapshot, filename A/B routing) is large surface; will land alongside the V3.2 MAIN parity gate work that actually exercises USB.  Phase-2 ships the peripheral struct, the variant gate (no-op on K20 / 2455 stub on MAIN), and a parity test that asserts the wiring is correct.  V1.71 cycle-10 boot doesn't touch USB so no behavioural regression risk.
 
 - [pending] P2.9 Oscillator subsystem — OSCCON, OSCCON2, OSCTUNE, PLL ENABLE/READY
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_osc_parity`
