@@ -361,9 +361,7 @@ where
     let result = compute(f_value);
     match d {
         Dest::W => write_w(core, result),
-        Dest::F => core
-            .memory
-            .write_raw(target, result & sfr_write_mask(target.as_u16())),
+        Dest::F => write_addr_masked(core, target, result),
     }
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
@@ -387,8 +385,7 @@ where
     let (target, pending) = resolve_target_no_commit(core, operand_addr);
     let f_value = core.memory.read_raw(target);
     let result = transform(f_value);
-    core.memory
-        .write_raw(target, result & sfr_write_mask(target.as_u16()));
+    write_addr_masked(core, target, result);
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
     }
@@ -421,8 +418,7 @@ fn execute_op_with_dest<F>(
         Dest::W => write_w(core, result),
         Dest::F => {
             if target.as_u16() != STATUS_ADDR {
-                core.memory
-                    .write_raw(target, result & sfr_write_mask(target.as_u16()));
+                write_addr_masked(core, target, result);
             }
         }
     }
@@ -571,6 +567,16 @@ fn commit_fsr(core: &mut Core, fsr: FsrIndex, new_fsr: u16) {
 /// peripheral itself is disabled are NOT included; those are
 /// modelled by the peripheral wrappers in P2 via
 /// `write_byte_through_peripherals`.
+/// SW-writable bits per SFR.  Bits set in the returned mask
+/// can be changed by an instruction-dispatched write; bits
+/// cleared in the mask are either physically unimplemented
+/// (and stay 0) or hardware-driven status bits the SW write
+/// must NOT clobber.
+///
+/// Used in concert with [`apply_sfr_sw_write`], which composes
+/// the new byte as `(old & !writable) | (input & writable)` --
+/// preserving both kinds of non-writable bits across a SW
+/// write to the SFR.
 const fn sfr_write_mask(addr: u16) -> u8 {
     match addr {
         // STATUS<7:5> unimplemented (Register 5-2).
@@ -590,6 +596,17 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // sequence side effect is the P2 EEPROM peripheral's
         // responsibility.
         0xFA7 => 0x00,
+        // TXSTA bit 1 (TRMT) is a hardware-driven read-only
+        // status bit: =1 when the EUSART transmit-shift
+        // register is empty, =0 while shifting.  Writes to
+        // TXSTA must preserve TRMT (DS39632E §22 / DS40001303H
+        // §17.4.2.1, "TRMT bit").
+        0xFAC => 0xFD,
+        // RCSTA bit 1 (OERR) and bit 2 (FERR) are hardware-set
+        // read-only error flags; bit 0 (RX9D) is the received
+        // 9th bit, also read-only.  SW writes preserve them
+        // (DS40001303H §17.4 + Reg 17-2).
+        0xFAB => 0xF8,
         // FSR0H / FSR1H / FSR2H high nibbles unimplemented
         // (12-bit FSRs; only <3:0> alive in the H register).
         0xFEA | 0xFE2 | 0xFDA => 0x0F,
@@ -610,6 +627,27 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         0xFFF => 0x1F,
         _ => 0xFF,
     }
+}
+
+/// Compose the byte that should land in the SFR backing store
+/// for a SW-driven write of `value` to `addr`, preserving the
+/// non-writable bits of the existing byte.
+///
+/// For most SFRs the writable mask is `0xFF` and this reduces
+/// to `value`; for SFRs with HW-driven status bits or
+/// unimplemented bits, those bits are kept from `old`.
+fn apply_sfr_sw_write(old: u8, value: u8, addr: u16) -> u8 {
+    let writable = sfr_write_mask(addr);
+    (old & !writable) | (value & writable)
+}
+
+/// Single-site SW write to a resolved data-memory address that
+/// applies [`apply_sfr_sw_write`] -- so HW-driven bits like
+/// TXSTA.TRMT survive a `MOVWF TXSTA` from firmware.
+fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
+    let old = core.memory.read_raw(target);
+    let new_value = apply_sfr_sw_write(old, value, target.as_u16());
+    core.memory.write_raw(target, new_value);
 }
 
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
@@ -640,8 +678,7 @@ fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
 /// TaskCreate #14's neighbour).
 fn write_addr(core: &mut Core, addr: Address, value: u8) {
     let (target, pending) = resolve_target_no_commit(core, addr);
-    core.memory
-        .write_raw(target, value & sfr_write_mask(target.as_u16()));
+    write_addr_masked(core, target, value);
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
     }
@@ -838,8 +875,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                 Dest::W => write_w(core, v),
                 Dest::F => {
                     if target.as_u16() != STATUS_ADDR {
-                        core.memory
-                            .write_raw(target, v & sfr_write_mask(target.as_u16()));
+                        write_addr_masked(core, target, v);
                     }
                 }
             }
@@ -975,8 +1011,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let (result, c, dc, ov) = sub_byte(0, f_value, false);
             set_status_arith(core, result, c, dc, ov);
             if target.as_u16() != STATUS_ADDR {
-                core.memory
-                    .write_raw(target, result & sfr_write_mask(target.as_u16()));
+                write_addr_masked(core, target, result);
             }
             if let Some((fsr, new_fsr)) = pending {
                 commit_fsr(core, fsr, new_fsr);
@@ -1509,9 +1544,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let result = (f_value << 4) | (f_value >> 4);
             match d {
                 Dest::W => write_w(core, result),
-                Dest::F => core
-                    .memory
-                    .write_raw(target, result & sfr_write_mask(target.as_u16())),
+                Dest::F => write_addr_masked(core, target, result),
             }
             if let Some((fsr, new_fsr)) = pending {
                 commit_fsr(core, fsr, new_fsr);

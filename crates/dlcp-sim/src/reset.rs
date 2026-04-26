@@ -14,24 +14,32 @@
 //!
 //! ### What this module does NOT do
 //!
-//! * It does NOT initialize every SFR to its POR value (e.g.
-//!   TXSTA=0x02, RCSTA=0x00x).  That belongs to the
-//!   peripheral modules (P2) which know their own reset
-//!   defaults; the reset module only touches the SFRs that the
-//!   reset-source table explicitly mutates (RCON + STKPTR
-//!   sticky flags).  P1.7's hex loader + P2's peripheral
-//!   constructors compose to bring everything else to POR.
 //! * It does NOT apply the configuration words.  CONFIG bits
 //!   like STVREN, BOREN, IPEN, WDTEN are parsed in P1.7; the
 //!   reset path consumes them as preconditions.
 //! * It does NOT model power-down (Sleep) or oscillator
 //!   start-up timers.  Those belong to the oscillator
 //!   peripheral (P2.9).
+//! * It does NOT model SFRs that depend on dynamic device state
+//!   the reset path has no way to know (e.g. OSCCON's IOFS bit
+//!   that flips once HFINTOSC stabilises -- a few hundred Tcy
+//!   after POR per DS40001303H §2.5.2.1).  Those are P2 work.
+//!
+//! ### What this module DOES do (extended in P1.8d)
+//!
+//! POR additionally programs the SFR window with the full
+//! K20 / 2455 power-on initial values per their datasheets'
+//! "Initialization Conditions for All Registers" tables (K20:
+//! DS40001303H Table 4-4 p.56-60; 2455: DS39632E Table 4-2).
+//! Without this the V1.71 / V2.3 boot paths read 0 for SFRs
+//! the silicon brings up non-zero (TRIS = 1s for all-input
+//! POR, ANSEL = 1s for all-analog, T0CON = 1s, IPRx = 1s,
+//! etc.) and immediately diverge.
 
 #![allow(dead_code, reason = "P1.6 dispatcher; consumed by P1.7 boot path + P1.2 RESET instruction")]
 
 use crate::core::Core;
-use crate::memory::Address;
+use crate::memory::{Address, Variant};
 use crate::stack::Stack;
 
 /// `RCON` SFR address on both PIC18 variants.
@@ -155,6 +163,8 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
                 Address::from_raw(RCON_ADDR),
                 RCON_RI | RCON_TO | RCON_PD,
             );
+            // SFR POR initialisation table (variant-specific).
+            apply_por_sfr_defaults(core);
         }
         ResetSource::BrownOut
         | ResetSource::Mclr
@@ -178,6 +188,117 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
         ResetSource::StackUnderflow => {
             stack.reset_for_stack_underflow();
         }
+    }
+}
+
+/// Apply the variant-specific SFR power-on initial values.
+/// Runs after the POR memory wipe, so any non-zero default the
+/// silicon brings up at POR is restored.
+///
+/// K20: DS40001303H Table 4-4 ("Initialization Conditions for All
+/// Registers", p.56-60) + Table 5-2 footnotes for 28-pin masking.
+/// Only entries that are non-zero at POR are listed -- everything
+/// else is already 0 from the memory wipe above.
+///
+/// 2455: not yet wired.  When the 2455 isa-parity gate lands,
+/// add a parallel match arm with DS39632E Table 4-2's defaults.
+fn apply_por_sfr_defaults(core: &mut Core) {
+    match core.variant() {
+        Variant::Pic18F25K20 => apply_k20_por_sfr_defaults(core),
+        Variant::Pic18F2455 => {
+            // P1.8d covers K20 only; the 2455 POR table will land
+            // alongside the V2.3 MAIN parity gate.
+        }
+    }
+}
+
+/// PIC18F25K20 POR/BOR SFR initial values.
+///
+/// Source: DS40001303H Table 4-4 (p.56-60).  Each entry is
+/// `(addr, value)` where `value` is the post-POR byte after
+/// applying any 28-pin / oscillator-mode footnote masks
+/// documented in Table 5-2 footnotes 2 and 5.
+///
+/// Where Table 4-4 lists `xxxx xxxx` (unknown / undefined) the
+/// register is omitted -- the POR memory wipe leaves it 0,
+/// which is what gpsim's K20 model also reports.
+fn apply_k20_por_sfr_defaults(core: &mut Core) {
+    // (addr, por_value, datasheet_note)
+    //
+    // Bit-pattern translation rules:
+    //   * `1` bit  -> 1 in the byte
+    //   * `0` bit  -> 0
+    //   * `-` bit  -> 0  (unimplemented; reads as 0 per legend)
+    //   * `q` bit  -> 0  (condition-dependent; the post-POR
+    //                     value is 0 for the bits relevant here;
+    //                     OSCCON's IOFS/SCS bits stay 0 until
+    //                     HFINTOSC stabilises -- a P2 concern)
+    const K20_POR: &[(u16, u8)] = &[
+        // INTCON2: RBPU=1, INTEDG0/1/2=1, TMR0IP=1, RBIP=1.
+        // Bits 3 (-) and 1 (-) unimplemented -> 0.
+        (0xFF1, 0xF5),
+        // INTCON3: INT2IP=1, INT1IP=1, others 0.  Bits 5 (-) and
+        // 2 (-) unimplemented.
+        (0xFF0, 0xC0),
+        // T0CON: all 1s at POR (timer disabled, prescaler maxed).
+        (0xFD5, 0xFF),
+        // OSCCON: IRCF<2:0>=011 (1 MHz nominal HFINTOSC tap).
+        // OSTS/IOFS/SCS<1:0> are q-bits and stay 0 until the
+        // oscillator-stabilisation timer fires -- modelled in
+        // P2's oscillator peripheral, not here.  gpsim's K20
+        // model writes 0x40 by cycle 10 because it triggers a
+        // post-POR IRCF auto-tune to the configured HFINTOSC
+        // frequency; documented as a known transient divergence
+        // until P2 lands the equivalent state machine.
+        (0xFD3, 0x30),
+        // HLVDCON: HLVDL<3:0>=0101 (default HLV detect = 2.0V
+        // typical per Reg 21-1).  Bit 6 (-) unimplemented.
+        (0xFD2, 0x05),
+        // PR2: Timer2 period match value = 0xFF.
+        (0xFCB, 0xFF),
+        // TXSTA: TRMT=1 (TSR empty).  TRMT is hardware-driven
+        // read-only; the SFR write mask in exec.rs preserves it
+        // across SW writes.
+        (0xFAC, 0x02),
+        // PSTRCON: STRA=1 (single-output PWM steered to P1A).
+        // Bits 7..4 (-) unimplemented; STRSYNC bit 4 = 0.
+        (0xFB9, 0x01),
+        // BAUDCON: RCIDL=1 (receiver idle).  Bit 2 (-) unimpl.
+        (0xFB8, 0x40),
+        // IPR1: all peripheral interrupt priorities high (=1).
+        // PIC18F2XK20 (28-pin) has bit 7 (PSPIP) unimplemented
+        // per Table 5-2 footnote 2 -> 0x7F not 0xFF.
+        (0xF9F, 0x7F),
+        // IPR2: all bits 1.
+        (0xFA2, 0xFF),
+        // TRISA: all-input.  Bit 7 (RA7/OSC1) is disabled in
+        // INTOSC modes per Table 5-2 footnote 5 and reads 0;
+        // V1.71's CONFIG selects HFINTOSC, so bit 7 = 0 and
+        // POR-effective TRISA is 0x7F.  When the 2455 / non-
+        // INTOSC config lands this needs to consult the parsed
+        // CONFIG bits (Task #14 follow-up).
+        (0xF92, 0x7F),
+        // TRISB: all-input.
+        (0xF93, 0xFF),
+        // TRISC: all-input.
+        (0xF94, 0xFF),
+        // ANSEL / ANSELH: all-analog (PORTA/B start as analog).
+        // ANSELH is conditional on PBADEN config bit per Note 6;
+        // V1.71's CONFIG3H has PBADEN=1 -> 0x1F.
+        (0xF7E, 0xFF),
+        (0xF7F, 0x1F),
+        // WPUB: weak pull-ups enabled.
+        (0xF7C, 0xFF),
+        // SLRCON: slew-rate control = normal (1) for SLRA/B/C.
+        // 28-pin omits SLRD/SLRE per Table 5-2 footnote 2 -> 0x07.
+        (0xF78, 0x07),
+        // SSPMSK: I2C address mask = all 1s.
+        (0xF77, 0xFF),
+    ];
+
+    for (addr, value) in K20_POR {
+        core.memory
+            .write_raw(Address::from_raw(*addr), *value);
     }
 }
 
