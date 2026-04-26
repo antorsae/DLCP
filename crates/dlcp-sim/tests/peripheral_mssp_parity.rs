@@ -81,27 +81,27 @@ fn enabling_sspen_via_executor_persists() {
     assert_eq!(con1 & 0x0F, SSPM_I2C_MASTER);
 }
 
-/// SSPADD=0x77 -> SCL period = 4 × (0x77+1) = 480 Tcy.
-/// After SEN write, the start condition asserts in 240 Tcy.
-/// At cycle 12 (post-SEN write but well before 240 Tcy), the
-/// state machine is mid-start-pending; SEN remains set.
+/// SSPADD=0x77 -> SCL period = 0x77+1 = 120 Tcy.  After SEN
+/// write, the start condition completes in one full SCL
+/// period.  At cycle 9 (post-SEN MOVWF, before 120 Tcy
+/// elapse), the state machine is mid-start; SEN remains set.
 #[test]
 fn sen_pending_mid_window() {
-    let core = run_mssp_demo(0x77, 12);
+    let core = run_mssp_demo(0x77, 9);
     let con2 = core.memory.read_raw(Address::from_raw(SSPCON2_ADDR));
     assert_eq!(con2 & SSPCON2_SEN, SSPCON2_SEN, "SEN still pending");
     let pir1 = core.memory.read_raw(Address::from_raw(PIR1_ADDR));
     assert_eq!(pir1 & PIR1_SSPIF, 0, "SSPIF not yet asserted");
 }
 
-/// After 240 Tcy + 8 × 480 = 4080 Tcy total in the address
-/// shift, SSPIF asserts and SEN auto-clears.  Run a
-/// comfortable 5_000 Tcy past setup.
+/// After ~6 setup Tcy + 120 Tcy start sequence, SEN auto-
+/// clears and SSPIF asserts.  Run a comfortable 200 Tcy past
+/// setup.
 #[test]
-fn address_phase_completes_clears_sen_sets_sspif() {
-    let core = run_mssp_demo(0x77, 6 + 5_000);
+fn start_completes_clears_sen_sets_sspif() {
+    let core = run_mssp_demo(0x77, 6 + 200);
     let con2 = core.memory.read_raw(Address::from_raw(SSPCON2_ADDR));
-    assert_eq!(con2 & SSPCON2_SEN, 0, "SEN must auto-clear post-address");
+    assert_eq!(con2 & SSPCON2_SEN, 0, "SEN must auto-clear post-start");
     let pir1 = core.memory.read_raw(Address::from_raw(PIR1_ADDR));
     assert_eq!(pir1 & PIR1_SSPIF, PIR1_SSPIF, "SSPIF must assert");
 }

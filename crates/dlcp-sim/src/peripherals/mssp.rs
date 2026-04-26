@@ -33,6 +33,29 @@
 //!     pin network.
 //!   * The 10-bit-address mode and General Call address path.
 //!
+//! ## Master-mode trigger semantics (DS §17.4)
+//!
+//! Each transfer-control bit in SSPCON2 schedules an
+//! independent fixed-duration sequence on the bus.  Real
+//! silicon enforces "lower SSPCON2 event bits may not be set
+//! while the I²C module is not idle".  Triggers:
+//!
+//!   * `SEN`  -> Start  condition (≈ 1 SCL period; bit clears
+//!     when complete; SSPIF asserts).
+//!   * `RSEN` -> Repeated-start condition (≈ 1 SCL period; same
+//!     auto-clear + SSPIF).
+//!   * `PEN`  -> Stop   condition (≈ 1 SCL period; same).
+//!   * `RCEN` -> Receive enable (8 SCL periods of input shift
+//!     + ACK; SSPBUF loads with the byte; BF asserts; SSPIF
+//!     asserts).
+//!   * SSPBUF write -> Transmit byte (8 SCL periods of output
+//!     shift + ACK; BF clears; SSPIF asserts; SSPCON2.ACKSTAT
+//!     reflects slave-ACK absence as 1 in this Phase-2
+//!     bus-less model).
+//!
+//! All triggers are gated on (SSPEN ∧ SSPM<3:0> = 1000) and
+//! ignored if the state machine is not Idle.
+//!
 //! ## SFR addresses (DS40001303H Tbl 5-1)
 //!
 //! | Addr  | Reg     | Role                                |
@@ -78,6 +101,9 @@ const SSPCON1_SSPM_MASK: u8 = 0x0F;
 const SSPCON2_SEN: u8 = 1 << 0;
 const SSPCON2_RSEN: u8 = 1 << 1;
 const SSPCON2_PEN: u8 = 1 << 2;
+const SSPCON2_RCEN: u8 = 1 << 3;
+const SSPCON2_ACKEN: u8 = 1 << 4;
+const SSPCON2_ACKSTAT: u8 = 1 << 6;
 const PIR1_SSPIF: u8 = 1 << 3;
 
 /// I²C master-mode SSPCON1<3:0> SSPM encoding.  Per DS Tbl
@@ -87,18 +113,25 @@ const PIR1_SSPIF: u8 = 1 << 3;
 /// variants) aren't modelled in Phase 2.
 const SSPM_I2C_MASTER: u8 = 0b1000;
 
+/// Each variant is "Tcy remaining until this transfer ends".
+/// On reaching 0 the state-machine fan-out clears the
+/// triggering bit (SEN/RSEN/PEN/RCEN/ACKEN/SSPBUF) and
+/// asserts SSPIF.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum I2cState {
-    /// Bus idle.  No transfer in flight.
     Idle,
-    /// `SEN` was set; SCL waveform pending (start condition
-    /// will assert in `scl_period_tcy / 2` Tcy).
-    StartPending(u32),
-    /// Start condition asserted; address byte shifting out.
-    /// `bits_remaining` decrements once per scl_period_tcy.
-    AddrShifting { bits_remaining: u8, period: u32, tcy_to_next_edge: u32 },
-    /// Stop condition pending.
-    StopPending(u32),
+    /// SEN-driven start condition in flight.
+    Start(u32),
+    /// RSEN-driven repeated-start condition in flight.
+    RepeatedStart(u32),
+    /// PEN-driven stop condition in flight.
+    Stop(u32),
+    /// SSPBUF-write-driven 8-bit transmit + ACK in flight.
+    TxByte(u32),
+    /// RCEN-driven 8-bit receive + ACK in flight.
+    RxByte(u32),
+    /// ACKEN-driven master-ACK pulse in flight.
+    AckPulse(u32),
 }
 
 impl Default for I2cState {
@@ -131,135 +164,181 @@ impl Mssp {
     }
 
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
-        match self.state {
-            I2cState::Idle => {}
-            I2cState::StartPending(remaining) => {
-                if n >= remaining {
-                    // Start condition asserted; transition to
-                    // addr-shift phase.  AddrShifting consumes
-                    // 8 SCL periods for the 7-bit-addr+R/W byte;
-                    // the test scope doesn't actually shift bits
-                    // onto a bus, so we just count Tcy and clear
-                    // SEN at the end via SSPIF.
-                    let period = scl_period_tcy(mem);
-                    self.state = I2cState::AddrShifting {
-                        bits_remaining: 8,
-                        period,
-                        tcy_to_next_edge: period,
-                    };
-                } else {
-                    self.state = I2cState::StartPending(remaining - n);
-                }
-            }
-            I2cState::AddrShifting {
-                mut bits_remaining,
-                period,
-                mut tcy_to_next_edge,
-            } => {
-                let mut budget = n;
-                while budget >= tcy_to_next_edge && bits_remaining > 0 {
-                    budget -= tcy_to_next_edge;
-                    bits_remaining -= 1;
-                    tcy_to_next_edge = period;
-                }
-                if bits_remaining == 0 {
-                    // 8-bit address shifted out; clear SEN
-                    // (SSPCON2 bit 0) and assert SSPIF.
-                    self.complete_addr_phase(mem);
-                } else {
-                    self.state = I2cState::AddrShifting {
-                        bits_remaining,
-                        period,
-                        tcy_to_next_edge: tcy_to_next_edge - budget,
-                    };
-                }
-            }
-            I2cState::StopPending(remaining) => {
-                if n >= remaining {
-                    self.complete_stop_phase(mem);
-                } else {
-                    self.state = I2cState::StopPending(remaining - n);
-                }
-            }
+        let remaining = match self.state {
+            I2cState::Idle => return,
+            I2cState::Start(r)
+            | I2cState::RepeatedStart(r)
+            | I2cState::Stop(r)
+            | I2cState::TxByte(r)
+            | I2cState::RxByte(r)
+            | I2cState::AckPulse(r) => r,
+        };
+        if n < remaining {
+            // Subtract from the current state's countdown.
+            self.state = match self.state {
+                I2cState::Start(_) => I2cState::Start(remaining - n),
+                I2cState::RepeatedStart(_) => I2cState::RepeatedStart(remaining - n),
+                I2cState::Stop(_) => I2cState::Stop(remaining - n),
+                I2cState::TxByte(_) => I2cState::TxByte(remaining - n),
+                I2cState::RxByte(_) => I2cState::RxByte(remaining - n),
+                I2cState::AckPulse(_) => I2cState::AckPulse(remaining - n),
+                I2cState::Idle => unreachable!(),
+            };
+            return;
         }
+        // Transfer complete this tick.  Surplus Tcy beyond
+        // `remaining` are dropped -- the next trigger has to
+        // come from a new SFR write.
+        match self.state {
+            I2cState::Start(_) => self.complete_start(mem),
+            I2cState::RepeatedStart(_) => self.complete_repeated_start(mem),
+            I2cState::Stop(_) => self.complete_stop(mem),
+            I2cState::TxByte(_) => self.complete_tx_byte(mem),
+            I2cState::RxByte(_) => self.complete_rx_byte(mem),
+            I2cState::AckPulse(_) => self.complete_ack_pulse(mem),
+            I2cState::Idle => unreachable!(),
+        }
+        self.state = I2cState::Idle;
     }
 
+    /// React to a SSPCON2 write.  Each event-trigger bit
+    /// schedules its own state ONLY if the module is enabled
+    /// AND currently idle.  Per DS §17.4.7:  "lower SSPCON2
+    /// event bits may not be set while the I²C module is not
+    /// idle".  Concurrent multi-bit writes (e.g. SEN+PEN at
+    /// once -- a firmware bug) are ignored beyond the first
+    /// bit checked, with priority SEN > RSEN > PEN > RCEN >
+    /// ACKEN reflecting the natural transfer-flow order.
     fn handle_sspcon2_write(&mut self, value: u8, mem: &mut Memory) {
         if !is_i2c_master_enabled(mem) {
             return;
         }
-        // SEN: schedule start condition.
-        if (value & SSPCON2_SEN) != 0 && matches!(self.state, I2cState::Idle) {
-            let period = scl_period_tcy(mem);
-            self.state = I2cState::StartPending(period / 2);
+        if !matches!(self.state, I2cState::Idle) {
+            // Module busy -- write lands in memory but no new
+            // sequence is scheduled.  The previously-scheduled
+            // sequence completes first.
+            return;
         }
-        // PEN: schedule stop condition.
-        if (value & SSPCON2_PEN) != 0 {
-            let period = scl_period_tcy(mem);
-            self.state = I2cState::StopPending(period);
+        let period = scl_period_tcy(mem);
+        // Start: ≈ 1 SCL period for the SDA-fall-while-SCL-
+        // high glitch + post-condition idle.  Use the full
+        // SCL period as the schedule budget for Phase-2
+        // approximation.
+        if (value & SSPCON2_SEN) != 0 {
+            self.state = I2cState::Start(period);
+        } else if (value & SSPCON2_RSEN) != 0 {
+            self.state = I2cState::RepeatedStart(period);
+        } else if (value & SSPCON2_PEN) != 0 {
+            self.state = I2cState::Stop(period);
+        } else if (value & SSPCON2_RCEN) != 0 {
+            // Receive: 8 bit shifts + 1 ACK from master.
+            self.state = I2cState::RxByte(9 * period);
+        } else if (value & SSPCON2_ACKEN) != 0 {
+            self.state = I2cState::AckPulse(period);
         }
-        let _ = (SSPCON2_RSEN,); // restart-en unused in Phase 2
     }
 
+    /// SSPBUF write in master-transmit mode: schedule an
+    /// 8-bit shift + 1-bit slave-ACK, set BF, clear when
+    /// done.  In Phase 2 with no bus-side slave we model
+    /// NACK (ACKSTAT = 1) as the default outcome.
     fn handle_sspbuf_write(&mut self, mem: &mut Memory) {
-        // Setting SSPBUF marks the buffer full -- BF set,
-        // shifter starts on the next SCL edge.  In master
-        // mode after SEN, this is the address byte.  In the
-        // Phase-2 scope we just set BF; the actual bit-shift
-        // is the AddrShifting state's job.
+        // BF asserts (buffer holds the byte to transmit).
         let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
         mem.write_raw(
             crate::memory::Address::from_raw(SSPSTAT_ADDR),
             s | SSPSTAT_BF,
         );
+        if !is_i2c_master_enabled(mem) {
+            return;
+        }
+        if !matches!(self.state, I2cState::Idle) {
+            return;
+        }
+        let period = scl_period_tcy(mem);
+        self.state = I2cState::TxByte(9 * period);
     }
 
-    fn complete_addr_phase(&mut self, mem: &mut Memory) {
-        let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
-        // SEN auto-clears at the end of the start sequence
-        // (DS §17.4.7).  We extend that to "auto-clear after
-        // address shift" for the Phase-2 simplification.
-        mem.write_raw(
-            crate::memory::Address::from_raw(SSPCON2_ADDR),
-            con2 & !SSPCON2_SEN,
-        );
-        // BF clears (TX byte moved out of buffer); SSPIF
-        // asserts.
+    fn complete_start(&self, mem: &mut Memory) {
+        clear_sspcon2_bit(mem, SSPCON2_SEN);
+        assert_sspif(mem);
+    }
+
+    fn complete_repeated_start(&self, mem: &mut Memory) {
+        clear_sspcon2_bit(mem, SSPCON2_RSEN);
+        assert_sspif(mem);
+    }
+
+    fn complete_stop(&self, mem: &mut Memory) {
+        clear_sspcon2_bit(mem, SSPCON2_PEN);
+        assert_sspif(mem);
+    }
+
+    fn complete_tx_byte(&self, mem: &mut Memory) {
+        // BF clears (shifter consumed the byte).  ACKSTAT
+        // reflects slave's ACK -- in the Phase-2 bus-less
+        // model we set ACKSTAT=1 (NACK) so firmware that
+        // polls for a slave can take a documented "no slave
+        // present" branch.  Phase-3 pin network will
+        // override this with the actual peer-driven value.
         let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
         mem.write_raw(
             crate::memory::Address::from_raw(SSPSTAT_ADDR),
             s & !SSPSTAT_BF,
         );
-        let pir1 = mem.read_raw(crate::memory::Address::from_raw(PIR1_ADDR));
-        mem.write_raw(
-            crate::memory::Address::from_raw(PIR1_ADDR),
-            pir1 | PIR1_SSPIF,
-        );
-        self.state = I2cState::Idle;
-    }
-
-    fn complete_stop_phase(&mut self, mem: &mut Memory) {
         let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
         mem.write_raw(
             crate::memory::Address::from_raw(SSPCON2_ADDR),
-            con2 & !SSPCON2_PEN,
+            con2 | SSPCON2_ACKSTAT,
         );
-        let pir1 = mem.read_raw(crate::memory::Address::from_raw(PIR1_ADDR));
+        assert_sspif(mem);
+    }
+
+    fn complete_rx_byte(&self, mem: &mut Memory) {
+        // RCEN auto-clears at end of receive.  BF asserts
+        // (buffer now holds the received byte; we leave the
+        // SSPBUF byte at whatever was previously there since
+        // there's no actual bus driving data).
+        clear_sspcon2_bit(mem, SSPCON2_RCEN);
+        let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
         mem.write_raw(
-            crate::memory::Address::from_raw(PIR1_ADDR),
-            pir1 | PIR1_SSPIF,
+            crate::memory::Address::from_raw(SSPSTAT_ADDR),
+            s | SSPSTAT_BF,
         );
-        self.state = I2cState::Idle;
+        assert_sspif(mem);
+    }
+
+    fn complete_ack_pulse(&self, mem: &mut Memory) {
+        clear_sspcon2_bit(mem, SSPCON2_ACKEN);
+        assert_sspif(mem);
     }
 }
 
+fn clear_sspcon2_bit(mem: &mut Memory, bit: u8) {
+    let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
+    mem.write_raw(
+        crate::memory::Address::from_raw(SSPCON2_ADDR),
+        con2 & !bit,
+    );
+}
+
+fn assert_sspif(mem: &mut Memory) {
+    let pir1 = mem.read_raw(crate::memory::Address::from_raw(PIR1_ADDR));
+    mem.write_raw(
+        crate::memory::Address::from_raw(PIR1_ADDR),
+        pir1 | PIR1_SSPIF,
+    );
+}
+
 /// Compute the SCL bit period in Tcy from SSPADD.  Per
-/// DS40001303H Tbl 17-1: `Fbus = Fcy / (4 × (SSPADD + 1))`,
-/// so `bit_period_tcy = 4 × (SSPADD + 1)`.  Clamp to 1 so
-/// a 0-divisor doesn't deadlock.
+/// DS40001303H §17.4.7: `SSPADD = Fcy / FSCL - 1`, so
+/// `bit_period_tcy = SSPADD + 1`.  (The `4 × (SSPADD+1)` form
+/// floating around earlier in the codebase was a misread of
+/// the FOSC-side formula -- in Tcy units the factor is 1.)
+/// Clamp to 1 so a 0-divisor doesn't deadlock.
 fn scl_period_tcy(mem: &Memory) -> u32 {
     let sspadd = mem.read_raw(crate::memory::Address::from_raw(SSPADD_ADDR)) as u32;
-    (4 * (sspadd + 1)).max(1)
+    (sspadd + 1).max(1)
 }
 
 fn is_i2c_master_enabled(mem: &Memory) -> bool {
@@ -281,79 +360,144 @@ mod tests {
         mem.write_raw(Address::from_raw(SSPADD_ADDR), sspadd);
     }
 
-    /// SSPADD=0x77 (V3.2 setup) -> bit_period = 4 × (0x77+1)
-    /// = 480 Tcy.  At 4 MIPS Fcy that's 120 µs/bit ≈ 33 kHz.
+    /// SSPADD=0x77 (V3.2 setup) -> bit_period = 0x77+1 = 120
+    /// Tcy.  At 4 MIPS Fcy that's 30 µs/bit ≈ 33 kHz.
     #[test]
     fn scl_period_v32_setup() {
         let mut mem = fresh_mem();
         mem.write_raw(Address::from_raw(SSPADD_ADDR), 0x77);
-        assert_eq!(scl_period_tcy(&mem), 480);
+        assert_eq!(scl_period_tcy(&mem), 120);
     }
 
     #[test]
-    fn scl_period_clamps_to_one_on_zero_sspadd() {
+    fn scl_period_minimum_is_one_tcy_per_bit() {
         let mut mem = fresh_mem();
         mem.write_raw(Address::from_raw(SSPADD_ADDR), 0);
-        // 4 × 1 = 4, not clamped to 1 -- the formula already
-        // produces 4 at SSPADD=0.  Clamp is for the 0-divisor
-        // pathological case which can't actually occur given
-        // the formula.  Sanity check.
-        assert_eq!(scl_period_tcy(&mem), 4);
+        assert_eq!(scl_period_tcy(&mem), 1);
     }
 
     #[test]
     fn sen_with_i2c_master_disabled_is_noop() {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
-        // SSPEN=0; SEN write should not start any sequence.
         mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut mem);
         assert_eq!(mssp.state, I2cState::Idle);
     }
 
     #[test]
-    fn sen_starts_state_machine_when_enabled() {
+    fn sen_schedules_start_for_one_scl_period() {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
         enable_i2c_master(&mut mem, 0x77);
         mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut mem);
-        match mssp.state {
-            I2cState::StartPending(remaining) => {
-                // 480 Tcy / 2 = 240 Tcy until start asserted.
-                assert_eq!(remaining, 240);
-            }
-            _ => panic!("expected StartPending, got {:?}", mssp.state),
-        }
+        assert_eq!(mssp.state, I2cState::Start(120));
     }
 
     #[test]
-    fn pen_with_i2c_master_enabled_schedules_stop() {
+    fn rsen_schedules_repeated_start() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_RSEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::RepeatedStart(120));
+    }
+
+    #[test]
+    fn pen_schedules_stop() {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
         enable_i2c_master(&mut mem, 0x77);
         mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
-        match mssp.state {
-            I2cState::StopPending(remaining) => {
-                assert_eq!(remaining, 480);
-            }
-            _ => panic!("expected StopPending, got {:?}", mssp.state),
-        }
+        assert_eq!(mssp.state, I2cState::Stop(120));
     }
 
+    #[test]
+    fn rcen_schedules_rx_byte_9_periods() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_RCEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::RxByte(9 * 120));
+    }
+
+    #[test]
+    fn acken_schedules_master_ack_pulse() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_ACKEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::AckPulse(120));
+    }
+
+    /// SSPBUF write while idle and master-enabled: schedule
+    /// 9 periods (8-bit shift + ACK), set BF.
+    #[test]
+    fn sspbuf_write_schedules_tx_byte_and_sets_bf() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPBUF_ADDR, 0x42, &mut mem);
+        assert_eq!(mssp.state, I2cState::TxByte(9 * 120));
+        assert_eq!(
+            mem.read_raw(Address::from_raw(SSPSTAT_ADDR)) & SSPSTAT_BF,
+            SSPSTAT_BF,
+            "BF must assert on SSPBUF write"
+        );
+    }
+
+    /// Stop completion clears PEN and asserts SSPIF.
     #[test]
     fn stop_completion_clears_pen_and_sets_sspif() {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
         enable_i2c_master(&mut mem, 0x77);
-        // Set SSPCON2 with PEN; recorded by handler.
         mem.write_raw(Address::from_raw(SSPCON2_ADDR), SSPCON2_PEN);
         mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
-        // Tick past the stop pending window.
         mssp.tick_tcy(1000, &mut mem);
         assert_eq!(mssp.state, I2cState::Idle);
         let con2 = mem.read_raw(Address::from_raw(SSPCON2_ADDR));
-        assert_eq!(con2 & SSPCON2_PEN, 0, "PEN must auto-clear post-stop");
+        assert_eq!(con2 & SSPCON2_PEN, 0);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-        assert_eq!(pir1 & PIR1_SSPIF, PIR1_SSPIF, "SSPIF must assert post-stop");
+        assert_eq!(pir1 & PIR1_SSPIF, PIR1_SSPIF);
+    }
+
+    /// TX byte completion clears BF, sets ACKSTAT (NACK in
+    /// Phase-2 bus-less model), asserts SSPIF.
+    #[test]
+    fn tx_byte_completion_sets_ackstat_clears_bf_sets_sspif() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPBUF_ADDR, 0x42, &mut mem);
+        // Tick past 9 SCL periods.
+        mssp.tick_tcy(9 * 120 + 1, &mut mem);
+        assert_eq!(mssp.state, I2cState::Idle);
+        let stat = mem.read_raw(Address::from_raw(SSPSTAT_ADDR));
+        assert_eq!(stat & SSPSTAT_BF, 0, "BF must clear post-TX");
+        let con2 = mem.read_raw(Address::from_raw(SSPCON2_ADDR));
+        assert_eq!(
+            con2 & SSPCON2_ACKSTAT,
+            SSPCON2_ACKSTAT,
+            "ACKSTAT must reflect bus-less NACK"
+        );
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(pir1 & PIR1_SSPIF, PIR1_SSPIF);
+    }
+
+    /// SSPCON2 write while busy is ignored (datasheet says
+    /// lower SSPCON2 event bits may not be set while module
+    /// is non-idle).
+    #[test]
+    fn sspcon2_write_ignored_while_busy() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut mem);
+        let saved = mssp.state.clone();
+        // Try to layer PEN on top while Start is pending.
+        // Real silicon ignores; my model also ignores.
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+        assert_eq!(mssp.state, saved, "second SSPCON2 trigger must be ignored");
     }
 
     #[test]
