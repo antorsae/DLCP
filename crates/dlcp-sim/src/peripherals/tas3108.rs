@@ -100,7 +100,13 @@ pub struct Tas3108 {
     /// Most-recently-latched subaddress (post-`AwaitingSubaddress`).
     /// Persists across STOPs so a write followed by a
     /// repeated-start read can reuse it (§6.2 read protocol).
-    last_latched_subaddr: u8,
+    /// `None` until the master issues a write transaction
+    /// with a subaddress -- a read attempt before any latch
+    /// gets NACKed (real silicon would drive whatever
+    /// random data the internal subaddress register held;
+    /// our model is intentionally stricter so misuse
+    /// surfaces loudly during chain-parity work).
+    last_latched_subaddr: Option<u8>,
     /// Current transaction state.
     phase: Phase,
     /// Diagnostic counters.  Used by chain-level integration
@@ -124,7 +130,7 @@ impl Tas3108 {
         Tas3108 {
             cs0,
             regs: Box::new([0u8; SUBADDR_COUNT]),
-            last_latched_subaddr: 0,
+            last_latched_subaddr: None,
             phase: Phase::Idle,
             bytes_acked: 0,
             bytes_nacked: 0,
@@ -213,14 +219,24 @@ impl Tas3108 {
             self.phase = Phase::AwaitingSubaddress;
             true
         } else if byte == read_addr {
-            // Master is starting a read transaction.  Use
-            // whatever subaddress was last latched (master
-            // typically issued a write-then-repeated-start
-            // sequence beforehand).
-            self.phase = Phase::Reading {
-                next_subaddr: self.last_latched_subaddr,
-            };
-            true
+            // Master is starting a read transaction.  Per
+            // §6.2 read protocol, the master must have
+            // previously issued a write transaction (or a
+            // write-then-repeated-start preamble) to latch
+            // the starting subaddress.  Reject the read with
+            // a NACK if no subaddress has ever been latched
+            // -- real silicon would return whatever random
+            // data the internal subaddress register held;
+            // our model is intentionally stricter so misuse
+            // surfaces loudly during chain-parity work.
+            // Reference: codex review of 5330a68 LOW #1.
+            match self.last_latched_subaddr {
+                Some(start) => {
+                    self.phase = Phase::Reading { next_subaddr: start };
+                    true
+                }
+                None => false,
+            }
         } else if byte == BROADCAST_ADDR {
             // §6.2 line 585: broadcast address ACKed.  Treat
             // as a write transaction since broadcast reads
@@ -235,7 +251,7 @@ impl Tas3108 {
     }
 
     fn handle_subaddress_byte(&mut self, byte: u8) -> bool {
-        self.last_latched_subaddr = byte;
+        self.last_latched_subaddr = Some(byte);
         self.phase = Phase::Writing { next_subaddr: byte };
         true
     }
@@ -414,5 +430,59 @@ mod tests {
         dsp.on_start();
         dsp.on_start();
         assert!(dsp.consume_tx_byte(0x68));
+    }
+
+    /// V3.1's biquad-table write path
+    /// (`firmware/patched/releases/DLCP_Firmware_V3.1.lst:5099`+
+    /// in `main_i2c_service_381c`): write 20 data bytes to a
+    /// biquad subaddress (5×32-bit coefficient words per
+    /// entry, per datasheet §6.2.1).  The slave must ACK
+    /// every byte and the data must land at the correct
+    /// auto-incrementing subaddresses.  Phase-3.5 scope:
+    /// the complete-or-discard rule for truncated bursts is
+    /// deferred (task #24); this test covers the happy path
+    /// V3.1 actually exercises.
+    #[test]
+    fn biquad_subaddress_write_covers_20_bytes_per_entry() {
+        let mut dsp = Tas3108::default();
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x68));
+        assert!(dsp.consume_tx_byte(0x37)); // first biquad subaddr
+        let coeffs: Vec<u8> = (0..20u8).map(|i| 0xA0 ^ i).collect();
+        for &b in &coeffs {
+            assert!(dsp.consume_tx_byte(b), "every biquad data byte must ACK");
+        }
+        dsp.on_stop();
+        for (offset, &b) in coeffs.iter().enumerate() {
+            assert_eq!(
+                dsp.read_subaddr(0x37 + offset as u8),
+                b,
+                "biquad byte #{offset} must land at subaddr 0x{:02X}",
+                0x37 + offset,
+            );
+        }
+        assert_eq!(dsp.bytes_acked, 22); // address + subaddr + 20 data
+    }
+
+    /// LOW from codex review of 5330a68: a master that issues
+    /// a read address (`0x69`) BEFORE any subaddress has ever
+    /// been latched must NACK -- per §6.2 read protocol the
+    /// subaddress is supplied by a prior write transaction
+    /// (or a write-then-repeated-start preamble).  Real
+    /// silicon would drive whatever random data is in its
+    /// internal subaddress register; we intentionally NACK
+    /// to surface chain-parity bugs loudly.
+    #[test]
+    fn read_address_before_any_subaddress_latched_nacks() {
+        let mut dsp = Tas3108::default();
+        dsp.on_start();
+        assert!(!dsp.consume_tx_byte(0x69), "read without prior latch must NACK");
+        // After a write transaction sets the subaddress, a
+        // subsequent read at 0x69 ACKs.
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x68));
+        assert!(dsp.consume_tx_byte(0x40));
+        dsp.on_repeated_start();
+        assert!(dsp.consume_tx_byte(0x69), "read after latch must ACK");
     }
 }
