@@ -191,7 +191,16 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // into MAIN's reset vector to mimic what the bootloader
     // does on real silicon when not in update mode.
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
-    let main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    // V3.x MAIN early-boot reads AN0 to gate "is the unit
+    // plugged in?".  Without an injected sample the ADC
+    // peripheral returns 0x0000 and MAIN parks in a
+    // standby-poll loop forever.  Inject a value comfortably
+    // above the V3.x boot threshold (0x0228 per the AN0
+    // standby trace + `peripheral_adc_parity.rs::v32_boot_threshold`
+    // pin) so MAIN clears the gate and continues into the
+    // current-loop service path where TX bytes start flowing.
+    main.peripherals.adc.set_an0_sample(0x0300);
 
     let mut chain = Chain::new();
     let i_control = chain.push_core(control);
@@ -208,17 +217,33 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // Same-PSU boot: CONTROL and MAIN come up together.
     chain.schedule_initial_steps(&[0, 0]);
 
-    // Step a small bounded budget.  Picking 100 universal
-    // ticks is conservative: K20 advances 100/16 ≈ 6 Tcy
-    // (well within P1.8d's 10-Tcy validated reset-through-init
-    // window), and 2455 advances 100/12 ≈ 8 Tcy (no
-    // pre-validated bound -- this test is the first multi-
-    // core integration run, so a small budget keeps the
-    // failure mode "panic on first divergent instruction"
-    // fast).  Subsequent sub-tasks (P3.5 part-4+) will bump
-    // this budget once peripheral fidelity gaps are closed
-    // and ground-truth comparison lands.
-    chain.step_ticks(100);
+    // Step a bounded universal-tick budget.  100 ticks
+    // (~6 Tcy K20, ~8 Tcy 2455) is the original smoke
+    // budget that proved chain dispatch + dual-trampoline
+    // execution worked.  Phase-3.5 part-5 bumps this to
+    // 1000 ticks (~62 Tcy K20, ~83 Tcy 2455) so MAIN runs
+    // through more of its early-boot init -- close enough
+    // to surface the next peripheral fidelity gap (if
+    // any) but still well short of converging on real
+    // chain protocol traffic.  Bump again incrementally
+    // as gaps are closed.
+    // Step budget: 10 million universal ticks ≈ 209 ms
+    // simulated time on K20 (625k Tcy at 16 ticks/Tcy) and
+    // ≈ 208 ms on 2455 (833k Tcy at 12 ticks/Tcy).  Long
+    // enough to clear early-boot init + AN0 standby gate +
+    // EUSART setup on MAIN, and to push CONTROL well past
+    // the bootloader-window NOP march into V1.71's IRQ
+    // vector / main-loop region.  Wall-clock < 100 ms.
+    //
+    // Whether any TX bytes flow yet depends on (a) MAIN
+    // reaching the current-loop service path that emits
+    // its first frame and (b) CONTROL reaching the point
+    // where it polls / responds.  Phase-3.5 part-5
+    // documents the observed `tx_history.len()` so
+    // subsequent sub-tasks can tighten the assertion to
+    // a non-zero count once stimulus + peripheral fidelity
+    // are sufficient.
+    chain.step_ticks(10_000_000);
 
     // Both cores made forward progress (cycle counter
     // strictly positive).
@@ -233,37 +258,50 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         "MAIN did not advance under chain dispatch"
     );
 
-    // MAIN ran past BOTH trampolines: the baked GOTO 0x1000
-    // at flash[0..4], and the shipped `GOTO 0x1014` at
-    // flash[0x1000..0x1004].  PC must be strictly past
-    // 0x1014 so the test catches regressions where execution
-    // stalls at either trampoline target -- a `>= 0x1000`
-    // bound would let "GOTO fired once but second GOTO
-    // didn't" silently pass.  At 100 universal ticks ≈ 8 Tcy
-    // on the 2455, two 2-Tcy GOTOs consume 4 Tcy and leave
-    // ~4 Tcy for V3.1's real entry code, which advances PC
-    // a few more bytes past 0x1014.
+    // MAIN ran past BOTH trampolines (the baked GOTO 0x1000
+    // and the shipped GOTO 0x1014 at flash[0x1000..0x1004])
+    // and into V3.1 application code.  At 10M universal
+    // ticks ≈ 833 k Tcy on the 2455, MAIN's PC has been
+    // observed to land in the 0x4000..0x4400 region (the
+    // observed PC during scaffolding was 0x428C, parked in
+    // a polling loop waiting for chain stimulus).  Lock the
+    // progression in with a `> 0x4000` lower bound.  If
+    // a future regression strands MAIN somewhere earlier
+    // (back at 0x1014, in early-init bank-clear loops, etc.)
+    // this assertion fires.
     let main_pc = chain.cores[i_main].pc();
     assert!(
-        main_pc > 0x1014,
-        "MAIN PC must be strictly past V3.1 entry trampoline (> 0x1014), got 0x{:04X}",
+        main_pc > 0x4000,
+        "MAIN PC must have progressed deep into V3.1 app code (> 0x4000) by tick 10M, got 0x{:04X}",
         main_pc
     );
 
     // CONTROL's shipped reset vector points at the Microchip
-    // USB bootloader (0x7800), and the V1.71 hex doesn't
-    // include the bootloader itself.  Without the bootloader,
-    // CONTROL runs erased-flash NOPs from 0x7800 onward in
-    // this scaffold -- i.e. the cycle-progress assertion
-    // above proves the chain dispatcher works, but does NOT
-    // prove that V1.71 application code is executing.
-    // P3.5 part-4+ will either load the bootloader hex
+    // USB bootloader (0x7800) and the V1.71 hex doesn't
+    // include the bootloader image.  flash[0x7800..0x7FFF]
+    // is the erased default 0xFF, which decodes as
+    // `NopContinuation` (1-Tcy NOP).  After ~625 k Tcy of
+    // NOP-walking through the bootloader window, CONTROL's
+    // PC wraps and lands back in V1.71 application code
+    // around 0x01E4 (observed during scaffolding).  This is
+    // a quirk of running V1.71 without the bootloader image
+    // -- on real silicon the bootloader does GOTO back to
+    // user code; here we get back via NOP-walk wraparound.
+    // A future P3.5 sub-task will either load the bootloader
     // alongside V1.71 or bake a synthetic GOTO past the
     // V1.71 vector block to reach the app entry directly.
+    // Until then the `> 0x100` bound here just locks in
+    // that CONTROL has left the bootloader window.
+    let control_pc = chain.cores[i_control].pc();
+    assert!(
+        control_pc < 0x7800 || control_pc >= 0x8000,
+        "CONTROL must have left the bootloader window (0x7800..0x7FFF), got 0x{:04X}",
+        control_pc
+    );
 
     // Universal clock advanced to the step target.
     assert_eq!(
-        chain.current_tick, 100,
+        chain.current_tick, 10_000_000,
         "chain current_tick must equal step target"
     );
 }
