@@ -212,10 +212,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/boot_offset.rs`
   - notes: `BootOffsetSpec::Fixed { ticks }` and `BootOffsetSpec::RangedRandom { min_ticks, max_ticks, seed }` per spec §7.  RangedRandom uses a deterministic xorshift64 seeded by `(seed, core_idx)` so a given chain configuration produces identical boot offsets across runs.  The chain-side wiring (which pre-schedules the first `CoreInstructionComplete` event at the boot-offset tick rather than tick 0) is part of P3.5; this sub-task just lands the type + the resolution helper.
 
-- [pending] P3.5 Multicore parity — reproduce `test_v171_v31_chain.py` end-to-end
-  - verify: `cd crates/dlcp-sim && cargo test --release --test multicore_parity::test_v171_v31_chain_parity`
+- [in_progress] P3.5 Multicore parity — reproduce `test_v171_v31_chain.py` end-to-end
+  - verify: `cd crates/dlcp-sim && cargo test --release --test multicore_parity`
   - artifact: `crates/dlcp-sim/tests/multicore_parity.rs`
-  - notes: TX byte streams + LCD raster bit-exact against ground truth.
+  - notes: TX byte streams + LCD raster bit-exact against ground truth.  Multi-commit progression: (a) Chain owns `Vec<Stack>` and `dispatch_event` runs `exec::step` for `CoreInstructionComplete` events + reschedules next; (b) EUSART tick posts `PinPropagation` on frame complete; (c) `PinPropagation` delivers byte to peer RCREG; (d) capture ground truth from `test_v171_v31_chain.py`; (e) Rust test compares TX streams bit-exact.
 
 - [pending] P3.6 Multicore parity — un-XFAIL the Task #22 echo-loop tests
   - verify: `cd crates/dlcp-sim && cargo test --release --test multicore_parity::test_v171_v32_diag_chain_polls_pb1_and_pb2_no_xfail`

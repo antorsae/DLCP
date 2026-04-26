@@ -20,29 +20,45 @@
 //!   universal ticks per instruction-cycle (Tcy):
 //!   K20=16, 2455=12.  See `peripherals/osc.rs`.
 
+use crate::clock::ClockDomain;
 use crate::core::Core;
+use crate::exec::step;
 use crate::peripherals::osc;
 use crate::pinnet::{PinId, PinNet};
+use crate::reset::{ResetSource, apply_reset};
 use crate::scheduler::{Event, EventKind, EventQueue};
+use crate::stack::Stack;
 
 /// Multi-core chain on a single universal-clock timeline.
 pub struct Chain {
     /// Cores in firmware-deterministic order.  Index into
     /// this vec is the `core_idx` carried in event kinds.
     pub cores: Vec<Core>,
-    /// Universal-clock tick at the head of the queue
-    /// (= `cores[i].cycles * ticks_per_tcy(variant_i)` for
-    /// each core when fully sync'd).  Phase-3 sub-tasks
-    /// will use this to bridge per-core Tcy counters to
-    /// the global tick.
+    /// One stack per core, parallel to `cores`.  The
+    /// PIC18 `exec::step` API takes a `&mut Stack`
+    /// alongside the core, so the chain owns one per core
+    /// and pairs them by index.
+    pub stacks: Vec<Stack>,
+    /// Per-core clock domain (ticks/Tcy + drift_ppm).
+    /// Parallel to `cores`.  P3.5 uses these to schedule
+    /// the next instruction-complete event with drift
+    /// applied via `ClockDomain::apply_drift`.
+    pub clocks: Vec<ClockDomain>,
+    /// Universal-clock tick at the head of the queue.
+    /// Phase-3.5 dispatch updates this as events fire so
+    /// each core's instruction completes at its own
+    /// drifted-ticks-per-Tcy boundary.
     pub current_tick: u64,
-    /// Global event queue.  Future P3.x sub-tasks post
-    /// pin-propagation, peripheral deadlines, etc. here.
+    /// Global event queue.  Phase-3.5 dispatch consumes
+    /// `CoreInstructionComplete` events here; future P3.x
+    /// sub-tasks add `PinPropagation` and
+    /// `PeripheralDeadline` handlers.
     pub events: EventQueue,
     /// Cross-core electrical wiring (UART couplings, pin
     /// couplings, I²C slave couplings).  Populated via
     /// `couple_uart` / `couple_pin` / `couple_i2c_slave`.
-    /// P3.5 dispatches across these on event firing.
+    /// Phase-3.5 dispatches byte propagation across these
+    /// on event firing.
     pub pinnet: PinNet,
 }
 
@@ -53,6 +69,8 @@ impl Chain {
     pub fn new() -> Self {
         Chain {
             cores: Vec::new(),
+            stacks: Vec::new(),
+            clocks: Vec::new(),
             current_tick: 0,
             events: EventQueue::new(),
             pinnet: PinNet::new(),
@@ -101,10 +119,28 @@ impl Chain {
             .couple_i2c_slave(master_core, master_sda, master_scl, slave_id);
     }
 
-    /// Add a core to the chain.  Returns the core's index.
+    /// Add a core to the chain with a fresh `Stack` and
+    /// the variant's nominal `ClockDomain` (no drift).
+    /// Returns the core's index.  Use
+    /// `push_core_with_clock` to start a core with a
+    /// non-zero drift_ppm.
     pub fn push_core(&mut self, core: Core) -> usize {
+        let variant = core.variant();
+        self.push_core_with_clock(core, ClockDomain::new(variant))
+    }
+
+    /// Add a core with an explicit `ClockDomain` (e.g. for
+    /// tests that exercise drift).  Returns the core's
+    /// index.
+    pub fn push_core_with_clock(
+        &mut self,
+        core: Core,
+        clock: ClockDomain,
+    ) -> usize {
         let idx = self.cores.len();
         self.cores.push(core);
+        self.stacks.push(Stack::new());
+        self.clocks.push(clock);
         idx
     }
 
@@ -141,26 +177,94 @@ impl Chain {
         self.current_tick = target;
     }
 
-    /// Phase-3 stub: every event fired during this skeleton
-    /// is a no-op.  P3.2-P3.7 will plumb actual handlers
-    /// (instruction step on `CoreInstructionComplete`, pin
-    /// propagation on `PinPropagation`, peripheral deadline
-    /// dispatch).
-    fn dispatch_event(&mut self, _event: Event) {
-        // Intentional no-op for P3.1 skeleton.
+    /// Dispatch one drained event.  Phase-3.5 wires the
+    /// `CoreInstructionComplete` arm to actually execute
+    /// the next instruction on the named core and
+    /// reschedule its next completion event; pin
+    /// propagation and peripheral deadlines remain stubs
+    /// until subsequent P3.x sub-tasks fill them in.
+    fn dispatch_event(&mut self, event: Event) {
+        match event.kind {
+            EventKind::CoreInstructionComplete(core_idx) => {
+                self.execute_core_step(core_idx);
+            }
+            EventKind::PinPropagation(_) => {
+                // P3.5 next-commit: deliver byte to peer
+                // RCREG.
+            }
+            EventKind::PeripheralDeadline { .. } => {
+                // Peripherals currently advance via
+                // `core.advance_cycles -> tick_tcy`; the
+                // queue-driven path is reserved for
+                // peripherals whose deadline outruns the
+                // executor (EEPROM 12 000-Tcy write,
+                // ADC conversion, etc.) -- to be wired
+                // in P3.7 alongside the late-boot
+                // recovery test.
+            }
+        }
+    }
+
+    /// Execute one instruction on `core_idx` and schedule
+    /// the next `CoreInstructionComplete` event at the
+    /// drifted-tick boundary derived from
+    /// [`ClockDomain::apply_drift`].  This is the
+    /// per-core driver Phase-3.5+ exercises via
+    /// `step_ticks` to keep all cores progressing on the
+    /// universal-clock timeline.
+    pub fn execute_core_step(&mut self, core_idx: usize) {
+        let core = &mut self.cores[core_idx];
+        let stack = &mut self.stacks[core_idx];
+        // Best-effort: errors propagate as a panic for
+        // now -- a real chain would distinguish "fatal"
+        // cores (unknown opcode -> halt) from "warm
+        // halt" (firmware-driven SLEEP) and surface them
+        // to the test harness.  Phase-3.5 minimal scope
+        // keeps the panic so test failures are obvious.
+        let _ = step(core, stack)
+            .unwrap_or_else(|e| panic!("exec::step failed on core {core_idx}: {e:?}"));
+        self.schedule_next_core_step(core_idx);
     }
 
     /// Schedule a `CoreInstructionComplete` event for the
     /// given core at its next instruction-complete tick,
-    /// derived from the core's current Tcy count + ticks-
-    /// per-Tcy.  Phase-3 sub-tasks will call this after
-    /// each instruction step.
+    /// derived from the core's current Tcy count + the
+    /// per-core drifted ticks/Tcy.
     pub fn schedule_next_core_step(&mut self, core_idx: usize) {
         let tcy = self.cores[core_idx].cycles();
-        let factor = self.ticks_per_tcy(core_idx) as u64;
-        let tick = tcy.saturating_mul(factor);
+        let factor = self.clocks[core_idx].nominal_ticks_per_tcy as u64;
+        let nominal_tick = tcy.saturating_mul(factor);
+        let drifted_tick = self.clocks[core_idx].apply_drift(nominal_tick);
         self.events
-            .push(tick, EventKind::CoreInstructionComplete(core_idx));
+            .push(drifted_tick, EventKind::CoreInstructionComplete(core_idx));
+    }
+
+    /// Apply POR to every core in the chain.  Helper for
+    /// Phase-3.5 fixture builders that need each core's
+    /// SFRs at K20_POR before any cross-core stimulus runs.
+    pub fn apply_reset_all(&mut self, source: ResetSource) {
+        for idx in 0..self.cores.len() {
+            apply_reset(&mut self.cores[idx], &mut self.stacks[idx], source);
+        }
+    }
+
+    /// Bootstrap each core's first `CoreInstructionComplete`
+    /// event onto the queue at the boot-offset tick.  The
+    /// `boot_offsets[idx]` slot supplies the offset for
+    /// `cores[idx]`; vec must be the same length as
+    /// `cores`.  After this call, draining the queue via
+    /// `step_ticks` causes each core to start running
+    /// instructions at its boot-offset.
+    pub fn schedule_initial_steps(&mut self, boot_offsets: &[u64]) {
+        assert_eq!(
+            boot_offsets.len(),
+            self.cores.len(),
+            "boot_offsets length must match number of cores"
+        );
+        for (idx, &offset) in boot_offsets.iter().enumerate() {
+            self.events
+                .push(offset, EventKind::CoreInstructionComplete(idx));
+        }
     }
 }
 
@@ -295,5 +399,114 @@ mod tests {
             event.kind,
             EventKind::CoreInstructionComplete(idx),
         );
+    }
+
+    /// Drift-aware scheduling: a core with +20 000 ppm
+    /// drift schedules its 100-Tcy boundary 20 000 ppm
+    /// later than the nominal 1600-tick mark.
+    #[test]
+    fn schedule_next_core_step_applies_drift() {
+        let mut chain = Chain::new();
+        let idx = chain.push_core_with_clock(
+            Core::new(Variant::Pic18F25K20),
+            ClockDomain::with_drift_ppm(Variant::Pic18F25K20, 20_000),
+        );
+        chain.cores[idx].advance_cycles(100);
+        chain.schedule_next_core_step(idx);
+        let event = chain.events.peek().unwrap();
+        // 100 Tcy * 16 ticks/Tcy = 1600 nominal.  With +2 %
+        // drift: 1600 * 1.02 = 1632.
+        assert_eq!(event.tick, 1632);
+    }
+
+    /// Build a flash with a single BRA -1 self-loop at
+    /// PC=0; bootstraps an executor to run forever.  Used
+    /// by the multicore tests below to confirm the chain's
+    /// dispatch path actually advances the named core.
+    fn build_self_loop_flash() -> Vec<u8> {
+        let mut flash = vec![0u8; 32 * 1024];
+        flash[0] = 0xFF;
+        flash[1] = 0xD7; // BRA -1
+        flash
+    }
+
+    /// Single-core dispatch: schedule the first
+    /// CoreInstructionComplete at tick 0; step_ticks(N)
+    /// drains it, runs `exec::step`, reschedules.
+    /// After enough ticks the core's cycle counter
+    /// advances.  K20 BRA = 2 Tcy * 16 ticks/Tcy = 32
+    /// universal ticks per BRA iteration.  step_ticks(1000)
+    /// runs ~31 BRA iterations -> ~62 Tcy.
+    #[test]
+    fn single_core_dispatch_advances_cycle_counter() {
+        let mut chain = Chain::new();
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.flash_mut().copy_from_slice(&build_self_loop_flash());
+        let idx = chain.push_core(core);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0]);
+        chain.step_ticks(1000);
+        let cycles = chain.cores[idx].cycles();
+        assert!(
+            (50..75).contains(&cycles),
+            "core cycles should reflect ~62 Tcy after 1000 universal ticks (got {cycles})"
+        );
+    }
+
+    /// Two cores running concurrently: a K20 (16 ticks/Tcy)
+    /// and a 2455 (12 ticks/Tcy) both with self-loop BRA
+    /// firmware.  After 1000 universal ticks, each should
+    /// have advanced its own Tcy counter according to its
+    /// per-core ticks/Tcy factor.  K20: ~31 BRAs; 2455:
+    /// ~41 BRAs.
+    #[test]
+    fn two_cores_advance_at_their_own_clock_rates() {
+        let mut chain = Chain::new();
+        let mut k20 = Core::new(Variant::Pic18F25K20);
+        k20.flash_mut().copy_from_slice(&build_self_loop_flash());
+        let i_k20 = chain.push_core(k20);
+        let mut p2455 = Core::new(Variant::Pic18F2455);
+        p2455.flash_mut().copy_from_slice(&build_self_loop_flash());
+        let i_2455 = chain.push_core(p2455);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0, 0]);
+        chain.step_ticks(1000);
+        let k20_cy = chain.cores[i_k20].cycles();
+        let p2455_cy = chain.cores[i_2455].cycles();
+        // K20: BRA = 2 Tcy * 16 ticks = 32 ticks/iter ->
+        // 1000/32 ≈ 31 iterations -> ~62 cycles.
+        assert!(
+            (50..75).contains(&k20_cy),
+            "K20 should be ~62 cycles, got {k20_cy}"
+        );
+        // 2455: BRA = 2 Tcy * 12 ticks = 24 ticks/iter ->
+        // 1000/24 ≈ 41 iterations -> ~82 cycles.
+        assert!(
+            (75..100).contains(&p2455_cy),
+            "2455 should be ~82 cycles, got {p2455_cy}"
+        );
+        // 2455 must have advanced more cycles than K20
+        // because its clock is faster (12 vs 16 ticks/Tcy).
+        assert!(p2455_cy > k20_cy, "2455 should outpace K20");
+    }
+
+    /// Boot-offset honored: a core with boot_offset=500
+    /// doesn't step before universal tick 500 but does step
+    /// after.
+    #[test]
+    fn boot_offset_delays_first_step() {
+        let mut chain = Chain::new();
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.flash_mut().copy_from_slice(&build_self_loop_flash());
+        let idx = chain.push_core(core);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[500]);
+        // Step to tick 400 -- before boot offset.  Core
+        // shouldn't have advanced.
+        chain.step_ticks(400);
+        assert_eq!(chain.cores[idx].cycles(), 0);
+        // Step past boot offset.  Core should now run.
+        chain.step_ticks(600);
+        assert!(chain.cores[idx].cycles() > 0);
     }
 }
