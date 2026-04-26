@@ -27,7 +27,12 @@ use std::collections::BinaryHeap;
 /// What an event's owner is.  Phase-3 distinguishes by
 /// callback target rather than by core id directly --
 /// pin-network events fire on neither core.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// `Ord` derives a total ordering keyed first on the
+/// variant index then on the payloads (lexicographic for
+/// fields), so `EventKind`-based tie-breaking in
+/// `Event::cmp` is consistent with `Eq`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EventKind {
     /// A core's next instruction completes at the
     /// scheduled tick.  Carries the core's index in the
@@ -59,49 +64,27 @@ pub struct Event {
 }
 
 /// Min-heap ordering: earlier `tick` first; on ties,
-/// earlier `seq` first; final tie-break by `kind` (so the
-/// `Ord` total order is consistent with the derived `Eq`
-/// implementation -- two `Event` values are `Eq` only when
-/// every field matches, so the order must distinguish them
-/// when `tick` + `seq` collide).  In practice `EventQueue`
-/// hands out monotonically-increasing `seq` values so the
-/// kind-tie path is unreachable, but defining the order
-/// totally avoids violating the `Ord`/`Eq` contract for
-/// directly-constructed `Event` values that callers may
-/// (e.g.) clone and compare manually.  `BinaryHeap` is a
-/// max-heap, so invert.
+/// earlier `seq` first; final tie-break by full `kind`
+/// payload (so the `Ord` total order matches the derived
+/// `Eq`).  In practice `EventQueue` hands out
+/// monotonically-increasing `seq` values, so the kind-tie
+/// path is unreachable in normal use; defining the order
+/// totally is for callers that compare directly-constructed
+/// `Event` values.  `BinaryHeap` is a max-heap, so invert
+/// every comparison.
 impl Ord for Event {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Primary: earlier tick first.
         other
             .tick
             .cmp(&self.tick)
             .then_with(|| other.seq.cmp(&self.seq))
-            // Final tie-break: discriminant order on the
-            // EventKind variants.  Stable across runs because
-            // we use the variant index, not the payload.
-            .then_with(|| {
-                kind_discriminant(&other.kind)
-                    .cmp(&kind_discriminant(&self.kind))
-            })
+            .then_with(|| other.kind.cmp(&self.kind))
     }
 }
 
 impl PartialOrd for Event {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-/// Stable variant-discriminant for tie-break.  Used only
-/// when two `Event`s share `tick` and `seq` -- by
-/// construction `EventQueue::push` assigns unique seq, so
-/// this path is dead in normal use.
-fn kind_discriminant(k: &EventKind) -> u8 {
-    match k {
-        EventKind::CoreInstructionComplete(_) => 0,
-        EventKind::PinPropagation(_) => 1,
-        EventKind::PeripheralDeadline { .. } => 2,
     }
 }
 
