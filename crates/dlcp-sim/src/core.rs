@@ -31,16 +31,18 @@
 #![allow(dead_code, reason = "P1.1 skeleton; behaviour wired in P1.2+")]
 
 use crate::memory::{Memory, Variant};
+use crate::peripherals::Peripherals;
 
 /// Default reset vector for both supported PIC18 variants.
 /// Confirmed to be 0x0000 in DS39632E §5.2 and DS41303G §5.2
 /// (PIC18 ISA architectural constant, same for every PIC18 chip).
 pub const RESET_VECTOR: u32 = 0x0000;
 
-/// One PIC18 core: program memory + data memory + cycle counter.
-/// P1.1 only allocates storage.  Reset, instruction fetch, decode,
-/// and execute all come online in subsequent sub-tasks; this
-/// struct carries the state they will mutate.
+/// One PIC18 core: program memory + data memory + cycle counter
+/// + peripheral state machines.  P1.1 only allocates storage.
+/// Reset, instruction fetch, decode, and execute come online in
+/// subsequent sub-tasks; P2 hangs peripheral state off this
+/// struct via the `peripherals` field.
 #[derive(Clone)]
 pub struct Core {
     variant: Variant,
@@ -51,6 +53,13 @@ pub struct Core {
     flash: Box<[u8]>,
     /// Data memory: banked RAM + SFR window.  See [`Memory`].
     pub memory: Memory,
+    /// Peripheral state.  Mutated through two paths:
+    /// `Core::advance_cycles` ticks each peripheral by the
+    /// elapsed Tcy after every instruction, and the executor's
+    /// `write_addr_masked` calls `Peripherals::on_sfr_write`
+    /// after every SW-driven SFR write so peripherals can react
+    /// to mode changes / FIFO pushes.
+    pub peripherals: Peripherals,
     /// Program counter.  PIC18 PC is 21 bits (the upper byte
     /// `PCLATU` is only 5 bits wide) AND byte-addressed but
     /// architecturally word-aligned: PCL bit 0 is hard-wired to
@@ -73,10 +82,12 @@ impl Core {
     pub fn new(variant: Variant) -> Self {
         let flash = vec![0u8; variant.program_memory_bytes()].into_boxed_slice();
         let memory = Memory::new(variant);
+        let peripherals = Peripherals::new(variant);
         Core {
             variant,
             flash,
             memory,
+            peripherals,
             pc: RESET_VECTOR,
             cycles: 0,
         }
@@ -127,8 +138,13 @@ impl Core {
 
     /// Advance the cycle counter by `n` Tcy.  Called by the
     /// instruction interpreter (P1.2) once per instruction.
+    /// Also ticks every peripheral by the same Tcy budget so
+    /// time-driven state machines (baud generator, timers,
+    /// ADC sample/conv, EEPROM post-write completion) stay
+    /// in lock-step with the executor.
     pub fn advance_cycles(&mut self, n: u32) {
         self.cycles = self.cycles.saturating_add(n as u64);
+        self.peripherals.tick_tcy(n, &mut self.memory);
     }
 }
 

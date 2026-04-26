@@ -13,6 +13,7 @@ pub mod exec;
 pub mod hex;
 pub mod isa;
 pub mod memory;
+pub mod peripherals;
 pub mod reset;
 pub mod stack;
 

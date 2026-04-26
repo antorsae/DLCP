@@ -139,10 +139,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## Phase 2 — Peripherals
 
-- [pending] P2.1 EUSART — TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON, bit-level shifter, baud generator, OERR/FERR latch, RCREG FIFO
+- [done] P2.1 EUSART — TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON, bit-level shifter, baud generator, OERR/FERR latch, RCREG FIFO
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_eusart_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/eusart.rs`
-  - notes: 2455 BAUDCON @ 0xFB8 (resolved P0.0 — matches gpsim, gputils, and disassembly opcode `6EB8`; the earlier "datasheet @ 0xF98" reading was a markdown rendering artifact). K20 BAUDCON @ 0xFB8 (DS41303). See spec §11b for the closed dual-run reconciliation.
+  - artifact: `crates/dlcp-sim/src/peripherals/eusart.rs` + `crates/dlcp-sim/tests/peripheral_eusart_parity.rs`
+  - notes: 2455 BAUDCON @ 0xFB8 (resolved P0.0 — matches gpsim, gputils, and disassembly opcode `6EB8`; the earlier "datasheet @ 0xF98" reading was a markdown rendering artifact). K20 BAUDCON @ 0xFB8 (DS41303). See spec §11b for the closed dual-run reconciliation. Phase-2 scope: TX path with baud-period-derived TRMT/TXIF timing; RX silent (Phase-3 chain wiring will deliver bytes via the pin net); OERR/FERR/RX9D preserved across SW writes via `sfr_write_mask` (RCSTA mask = 0xF8). Bit-level UART byte-stream comparison against gpsim is a Phase-4 dual-run gate. Foundation work landed simultaneously: `peripherals` module + `Core::peripherals` field + `Peripherals::tick_tcy` hooked into `Core::advance_cycles` + `Peripherals::on_sfr_write` hooked into `exec::write_addr_masked`.
 
 - [pending] P2.2 MSSP I²C — master mode, SCL stretching, ACK/NACK injection
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_mssp_parity`

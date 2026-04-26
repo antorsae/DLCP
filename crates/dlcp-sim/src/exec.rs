@@ -643,11 +643,16 @@ fn apply_sfr_sw_write(old: u8, value: u8, addr: u16) -> u8 {
 
 /// Single-site SW write to a resolved data-memory address that
 /// applies [`apply_sfr_sw_write`] -- so HW-driven bits like
-/// TXSTA.TRMT survive a `MOVWF TXSTA` from firmware.
+/// TXSTA.TRMT survive a `MOVWF TXSTA` from firmware -- and
+/// then forwards the post-mask byte to the peripheral subsystem
+/// so any side-effect state machine (baud generator, EEPROM
+/// unlock sequence, etc.) sees the new SFR value.
 fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     let old = core.memory.read_raw(target);
     let new_value = apply_sfr_sw_write(old, value, target.as_u16());
     core.memory.write_raw(target, new_value);
+    core.peripherals
+        .on_sfr_write(target.as_u16(), new_value, &mut core.memory);
 }
 
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
