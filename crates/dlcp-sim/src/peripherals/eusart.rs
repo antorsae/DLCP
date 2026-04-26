@@ -153,6 +153,16 @@ impl Eusart {
         self.completed_tx_bytes.pop_front()
     }
 
+    /// Inject a byte directly into the completed-TX FIFO.
+    /// Test-only escape hatch so chain-level regression
+    /// tests can exercise `drain_completed_tx_bytes`
+    /// without running a full 960-Tcy frame through the
+    /// executor.  The naming follows
+    /// `Core::reset_cycles_for_test`.
+    pub fn push_completed_tx_byte_for_test(&mut self, byte: u8) {
+        self.completed_tx_bytes.push_back(byte);
+    }
+
     /// Deliver an inbound RX byte from the pin network.
     /// Loads RCREG with the byte and asserts PIR1.RCIF.
     /// Phase-3.5 minimum: no OERR / FERR modeling for the

@@ -771,62 +771,44 @@ mod tests {
         assert_eq!(pir1 & (1 << 5), 1 << 5, "destination RCIF must assert");
     }
 
-    /// Regression: `drain_completed_tx_bytes` -- the actual
-    /// production path that was changed -- must NOT push a
-    /// `UartByteDelivery` event at `current_tick`, even
-    /// after a real source core completes a TX frame and
-    /// drains.  Prior to this fix, the drain enqueued the
-    /// delivery and lost the seq tie-break to an already-
-    /// queued peer `CoreInstructionComplete` at the same
-    /// tick (which would then poll stale RCREG/RCIF).
+    /// Regression: `drain_completed_tx_bytes` -- the path
+    /// that was actually changed -- must commit completed
+    /// TX bytes to the destination's RCREG synchronously
+    /// AND must NOT enqueue a `UartByteDelivery` event in
+    /// the queue.  Prior to this fix, the drain pushed a
+    /// `UartByteDelivery` at `current_tick` that lost the
+    /// seq tie-break to an already-queued peer
+    /// `CoreInstructionComplete` (which then polled stale
+    /// RCREG/RCIF).
     ///
-    /// This test runs the full source-step → drain →
-    /// deliver path via `step_ticks`, then asserts that
-    /// (a) the destination's RCREG holds the byte and
-    /// (b) no `UartByteDelivery` event remains in the
-    /// queue.  (b) is the contract that locks in
-    /// synchronous delivery: if a future change reverts to
-    /// queue-based delivery, this assertion will fire.
+    /// This test inspects state DURING drain rather than
+    /// after `step_ticks`, because `step_ticks` would also
+    /// dispatch any queued `UartByteDelivery` event before
+    /// returning -- letting the OLD code path pass a
+    /// post-`step_ticks` queue scan.  Instead, we:
+    ///   1. inject a completed-TX byte directly into the
+    ///      source EUSART (via the test escape hatch),
+    ///   2. call `chain.drain_completed_tx_bytes(src_idx)`
+    ///      directly so we own the moment between drain
+    ///      and any subsequent dispatch,
+    ///   3. assert RCREG is set AND zero
+    ///      `UartByteDelivery` events are queued.
+    /// On the d916ffa (queue-based) path, step (3) would
+    /// observe one queued event and fail.
     #[test]
     fn drain_completed_tx_bytes_does_not_enqueue_uart_byte_delivery_event() {
-        // Reuse the same source/destination flash as the
-        // end-to-end propagation test.  Source transmits
-        // 0x55; destination enables SPEN|CREN and BRA-loops.
-        let mut flash_src = vec![0u8; 32 * 1024];
-        let prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x05, 0x0E]),       // MOVLW 0x05
-            (0x0002, [0xAF, 0x6E]),       // MOVWF SPBRG
-            (0x0004, [0x20, 0x0E]),       // MOVLW 0x20
-            (0x0006, [0xAC, 0x6E]),       // MOVWF TXSTA
-            (0x0008, [0x80, 0x0E]),       // MOVLW 0x80
-            (0x000A, [0xAB, 0x6E]),       // MOVWF RCSTA
-            (0x000C, [0x40, 0x0E]),       // MOVLW 0x40
-            (0x000E, [0xB8, 0x6E]),       // MOVWF BAUDCON
-            (0x0010, [0x55, 0x0E]),       // MOVLW 0x55
-            (0x0012, [0xAD, 0x6E]),       // MOVWF TXREG
-            (0x0014, [0xFF, 0xD7]),       // BRA -1
-        ];
-        for (a, bytes) in prog {
-            flash_src[*a as usize] = bytes[0];
-            flash_src[*a as usize + 1] = bytes[1];
-        }
-        let mut flash_dst = vec![0u8; 32 * 1024];
-        let dst_prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x90, 0x0E]),       // MOVLW 0x90 (SPEN|CREN)
-            (0x0002, [0xAB, 0x6E]),       // MOVWF RCSTA
-            (0x0004, [0xFF, 0xD7]),       // BRA -1
-        ];
-        for (a, bytes) in dst_prog {
-            flash_dst[*a as usize] = bytes[0];
-            flash_dst[*a as usize + 1] = bytes[1];
-        }
-
         let mut chain = Chain::new();
-        let mut src = Core::new(Variant::Pic18F25K20);
-        src.flash_mut().copy_from_slice(&flash_src);
-        let i_src = chain.push_core(src);
+        let i_src = chain.push_core(Core::new(Variant::Pic18F25K20));
         let mut dst = Core::new(Variant::Pic18F25K20);
-        dst.flash_mut().copy_from_slice(&flash_dst);
+        // RCSTA = 0xFAB; bits 0x90 = SPEN | CREN -- enable
+        // RX so `deliver_rx_byte` accepts the byte.  No
+        // executor stepping is required for this test --
+        // we exercise the chain-level drain path in
+        // isolation.
+        dst.memory.write_raw(
+            crate::memory::Address::from_raw(0xFAB),
+            0x90,
+        );
         let i_dst = chain.push_core(dst);
         chain.couple_uart(
             i_src,
@@ -834,32 +816,53 @@ mod tests {
             i_dst,
             crate::pinnet::default_rx_pin(),
         );
-        chain.apply_reset_all(ResetSource::PowerOn);
-        chain.schedule_initial_steps(&[0, 0]);
 
-        // Step long enough for the 960-Tcy frame to drain
-        // and `drain_completed_tx_bytes` to fire on the
-        // source's instruction completion.
-        chain.step_ticks(30_000);
+        // Inject a byte into the source EUSART's
+        // completed-TX FIFO via the test escape hatch
+        // (mirrors what `tick_tcy` would do at frame
+        // completion).  No event is queued yet.
+        chain.cores[i_src]
+            .peripherals
+            .eusart
+            .push_completed_tx_byte_for_test(0xDE);
 
-        // (a) byte arrived at destination's RCREG.
+        let queued_before = chain
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::UartByteDelivery { .. }))
+            .count();
+        assert_eq!(queued_before, 0, "precondition: no UartByteDelivery queued");
+
+        // Drive the drain directly.  On the OLD queue-based
+        // path, this call would push a `UartByteDelivery`
+        // event into `chain.events` at `current_tick`.  On
+        // the NEW direct-delivery path, the byte commits
+        // into the destination's memory synchronously and
+        // no event is enqueued.
+        chain.drain_completed_tx_bytes(i_src);
+
+        // (a) byte committed to destination RCREG (0xFAE)
+        // and PIR1.RCIF asserted (0xF9E bit 5).
         let rcreg = chain.cores[i_dst].memory.read_raw(
             crate::memory::Address::from_raw(0xFAE),
         );
-        assert_eq!(rcreg, 0x55, "destination RCREG must hold the propagated byte");
+        assert_eq!(rcreg, 0xDE, "destination RCREG must hold the byte after drain");
+        let pir1 = chain.cores[i_dst].memory.read_raw(
+            crate::memory::Address::from_raw(0xF9E),
+        );
+        assert_eq!(pir1 & (1 << 5), 1 << 5, "destination RCIF must assert after drain");
 
         // (b) NO `UartByteDelivery` event was enqueued by
-        // the drain path.  This is the contract that locks
-        // in the synchronous-delivery fix.  If a future
-        // change re-routes through the event queue without
-        // a kind-priority tie-break, this assertion fires.
-        let queued_uart_deliveries = chain
+        // the drain.  Locks in the synchronous-delivery
+        // contract.  This is the assertion that distinguishes
+        // the new path from the d916ffa queue-based path.
+        let queued_after = chain
             .events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::UartByteDelivery { .. }))
             .count();
         assert_eq!(
-            queued_uart_deliveries, 0,
+            queued_after, 0,
             "drain_completed_tx_bytes must not enqueue UartByteDelivery events; \
              synchronous delivery is required to avoid the same-tick seq race"
         );
