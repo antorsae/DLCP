@@ -82,9 +82,16 @@ pub struct Chain {
 /// `Chain::uart_tx_history`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct UartByteRecord {
-    /// Universal-clock tick at delivery time
-    /// (`Chain::current_tick` when the byte was committed
-    /// to the destination's RCREG).
+    /// Universal-clock tick at the moment the byte was
+    /// emitted from the source core's TX path -- i.e. the
+    /// `Chain::current_tick` snapshot taken right before
+    /// `Chain::deliver_uart_byte` calls
+    /// `Eusart::deliver_rx_byte`.  The record is pushed
+    /// regardless of whether the destination's RCSTA
+    /// SPEN/CREN gate accepts the byte (gpsim's UART trace
+    /// records bits on the wire similarly), so a record
+    /// with this tick does NOT imply the byte ever
+    /// landed in the destination's RCREG.
     pub tick: u64,
     /// Source core index in `Chain::cores`.
     pub src_core: usize,
