@@ -53,10 +53,11 @@ impl ClockDomain {
 
     /// Construct a domain at the variant's nominal clock
     /// with a `drift_ppm` offset.  Panics if
-    /// `|drift_ppm| > MAX_DRIFT_PPM`.
+    /// `|drift_ppm| > MAX_DRIFT_PPM`.  Uses `unsigned_abs`
+    /// to avoid the `i32::MIN.abs()` wrap-overflow case.
     pub fn with_drift_ppm(variant: Variant, drift_ppm: i32) -> Self {
         assert!(
-            drift_ppm.abs() <= MAX_DRIFT_PPM,
+            drift_ppm.unsigned_abs() <= MAX_DRIFT_PPM as u32,
             "drift_ppm {drift_ppm} out of range; max {MAX_DRIFT_PPM}"
         );
         ClockDomain {
@@ -67,28 +68,34 @@ impl ClockDomain {
 
     /// Apply the configured drift to a nominal tick count.
     /// Returns `nominal * (1 + drift_ppm * 1e-6)` rounded
-    /// to nearest integer (saturating at u64 boundaries).
+    /// to nearest integer (ties away from zero), saturating
+    /// at u64 boundaries.
+    ///
+    /// Implementation: compute the full
+    /// `nominal * (1_000_000 + drift_ppm)` product in i128
+    /// (which never overflows since both factors fit in
+    /// 64 bits and the product is at most 2^64 * 1.1e6 <
+    /// 2^85), then bias by ±500_000 in the *result*
+    /// direction (positive scaled -> +500_000, negative
+    /// scaled -> -500_000) before dividing by 1_000_000.
+    /// This gives correct round-to-nearest-away-from-zero
+    /// for both positive and negative drift, including
+    /// half-integer ties.
     pub fn apply_drift(&self, nominal_ticks: u64) -> u64 {
         if self.drift_ppm == 0 {
             return nominal_ticks;
         }
-        // Compute as i128 to avoid overflow on the
-        // intermediate product.  ppm scale is 1e-6 so we
-        // multiply by drift_ppm then divide by 1_000_000;
-        // round-to-nearest by adding +500_000 (or
-        // -500_000 for negative drift) before the divide.
         let nominal_i = nominal_ticks as i128;
-        let scale_i = self.drift_ppm as i128;
-        let bias = if scale_i >= 0 { 500_000 } else { -500_000 };
-        let adjustment_num = nominal_i * scale_i + bias;
-        let adjustment = adjustment_num / 1_000_000;
-        let result = nominal_i + adjustment;
-        if result < 0 {
+        let scale_total = 1_000_000_i128 + self.drift_ppm as i128;
+        let scaled = nominal_i * scale_total;
+        let bias = if scaled >= 0 { 500_000 } else { -500_000 };
+        let result_i = (scaled + bias) / 1_000_000;
+        if result_i < 0 {
             0
-        } else if result > u64::MAX as i128 {
+        } else if result_i > u64::MAX as i128 {
             u64::MAX
         } else {
-            result as u64
+            result_i as u64
         }
     }
 }
@@ -155,10 +162,38 @@ mod tests {
 
     #[test]
     fn drift_round_to_nearest_positive() {
-        // 1234 nominal × 1500 ppm.  raw = 1234*1500 = 1_851_000.
-        // bias +500_000 -> 2_351_000 / 1_000_000 = 2.
-        // Result = 1234 + 2 = 1236.
+        // 1234 nominal × +1500 ppm.  scaled = 1234 *
+        // 1_001_500 = 1_235_851_000.  bias +500_000 ->
+        // 1_236_351_000 / 1_000_000 = 1236.  ✓
         let d = ClockDomain::with_drift_ppm(Variant::Pic18F25K20, 1500);
         assert_eq!(d.apply_drift(1234), 1236);
+    }
+
+    /// Half-integer tie at negative drift rounds AWAY from
+    /// zero (= "up" since result is positive).  500_000
+    /// nominal × -1 ppm = 499_999.5 -> 500_000.
+    #[test]
+    fn drift_round_to_nearest_negative_half_tie() {
+        let d = ClockDomain::with_drift_ppm(Variant::Pic18F25K20, -1);
+        assert_eq!(d.apply_drift(500_000), 500_000);
+    }
+
+    /// Half-integer tie at positive drift also rounds away
+    /// from zero.  500_000 × +1 ppm = 500_000.5 -> 500_001.
+    #[test]
+    fn drift_round_to_nearest_positive_half_tie() {
+        let d = ClockDomain::with_drift_ppm(Variant::Pic18F25K20, 1);
+        assert_eq!(d.apply_drift(500_000), 500_001);
+    }
+
+    /// `i32::MIN.abs()` wraps to `i32::MIN` in release; the
+    /// guard must reject it without panicking on overflow.
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn drift_i32_min_panics_via_unsigned_abs_guard() {
+        let _ = ClockDomain::with_drift_ppm(
+            Variant::Pic18F25K20,
+            i32::MIN,
+        );
     }
 }
