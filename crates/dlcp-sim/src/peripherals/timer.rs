@@ -120,15 +120,36 @@ impl Timers {
         match addr {
             T0CON_ADDR => self.timer0_prescaler_tcy = 0,
             T3CON_ADDR => {
-                // T3CON write may flip RD16; sync the live
-                // shadow from memory to handle the mode
-                // change cleanly.  In RD16=0 the SFR memory
-                // IS the live byte, so the sync is a no-op
-                // when the firmware was already in RD16=0.
-                // In RD16 1->0 transition, this restores the
-                // buffer to the live byte (firmware idiom is
-                // to set RD16 once at boot and not flip it).
-                self.tmr3h_live = mem.read_raw(Address::from_raw(TMR3H_ADDR));
+                // T3CON write -- handle the post-write
+                // RD16 state.  Only the *direction* of
+                // sync between tmr3h_live and SFR memory
+                // matters: live -> memory (NEVER memory ->
+                // live, since SFR memory in RD16=1 mode is
+                // the firmware buffer and would corrupt
+                // the live counter on a re-write of T3CON).
+                //
+                //   * RD16=0 after the write: SFR memory IS
+                //     the live byte going forward.  Mirror
+                //     `tmr3h_live` into memory so firmware
+                //     reads return the live high byte.
+                //     Handles the RD16 1->0 mode transition
+                //     and the steady-state-with-RD16=0 case.
+                //   * RD16=1 after the write: SFR memory is
+                //     the firmware-visible buffer, separate
+                //     from the live counter.  Don't touch
+                //     either side; firmware's own TMR3H/L
+                //     writes drive the buffer / live commit.
+                //     Handles RD16 0->1 (memory was already
+                //     mirroring live, so the "stale" buffer
+                //     == current live, which is correct) and
+                //     the steady-state RD16=1 case.
+                let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
+                if (t3con & T3CON_RD16) == 0 {
+                    mem.write_raw(
+                        Address::from_raw(TMR3H_ADDR),
+                        self.tmr3h_live,
+                    );
+                }
                 self.timer3_prescaler_tcy = 0;
             }
             // TMR0H / TMR0L writes also reset the prescaler
@@ -540,6 +561,67 @@ mod tests {
         assert_eq!(mem.read_raw(Address::from_raw(TMR3H_ADDR)), 0xAB);
         assert_eq!(t.tmr3h_live, 0xAB);
         assert_eq!(t.timer3_prescaler_tcy, 0);
+    }
+
+    /// Regression: a second T3CON write while RD16=1 (e.g.
+    /// firmware changes prescaler mid-flight without
+    /// touching RD16) must NOT pollute tmr3h_live with the
+    /// firmware-buffered byte sitting in memory[TMR3H].
+    #[test]
+    fn timer3_t3con_rewrite_with_rd16_active_does_not_corrupt_live() {
+        let mut t = Timers::default();
+        let mut mem = fresh_mem();
+        // Enable Timer3 with RD16, 1:1 prescaler.
+        mem.write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON | T3CON_RD16);
+        t.on_sfr_write(T3CON_ADDR, T3CON_TMR3ON | T3CON_RD16, &mut mem);
+        // Tick to a known live state (high=0x05, low=0x00).
+        t.tick_tcy(0x500, &mut mem);
+        assert_eq!(t.tmr3h_live, 0x05);
+        // Firmware stages a buffered byte: MOVWF TMR3H = 0x99.
+        mem.write_raw(Address::from_raw(TMR3H_ADDR), 0x99);
+        t.on_sfr_write(TMR3H_ADDR, 0x99, &mut mem);
+        assert_eq!(t.tmr3h_buffer, 0x99);
+        assert_eq!(t.tmr3h_live, 0x05, "live unchanged by RD16=1 TMR3H write");
+        // Now firmware re-writes T3CON to change prescaler
+        // (still RD16=1).  tmr3h_live MUST NOT be clobbered
+        // by memory[TMR3H] = 0x99 (the staged buffer).
+        let t3con_new = T3CON_TMR3ON | T3CON_RD16 | (0b01 << T3CON_T3CKPS_SHIFT);
+        mem.write_raw(Address::from_raw(T3CON_ADDR), t3con_new);
+        t.on_sfr_write(T3CON_ADDR, t3con_new, &mut mem);
+        assert_eq!(
+            t.tmr3h_live, 0x05,
+            "T3CON rewrite with RD16=1 must not pollute live shadow with buffer"
+        );
+        assert_eq!(t.tmr3h_buffer, 0x99, "buffer survives T3CON rewrite");
+    }
+
+    /// RD16 1->0 transition: live shadow must surface into
+    /// SFR memory so firmware reading TMR3H sees the live
+    /// counter (not the stale buffer).
+    #[test]
+    fn timer3_rd16_high_to_low_transition_surfaces_live_to_memory() {
+        let mut t = Timers::default();
+        let mut mem = fresh_mem();
+        // Start RD16=1.
+        mem.write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON | T3CON_RD16);
+        t.on_sfr_write(T3CON_ADDR, T3CON_TMR3ON | T3CON_RD16, &mut mem);
+        t.tick_tcy(0x300, &mut mem);
+        assert_eq!(t.tmr3h_live, 3);
+        // Stage a buffered byte to make the SFR memory
+        // diverge from live.
+        mem.write_raw(Address::from_raw(TMR3H_ADDR), 0xCC);
+        t.on_sfr_write(TMR3H_ADDR, 0xCC, &mut mem);
+        // Firmware switches to RD16=0.
+        let t3con_new = T3CON_TMR3ON;
+        mem.write_raw(Address::from_raw(T3CON_ADDR), t3con_new);
+        t.on_sfr_write(T3CON_ADDR, t3con_new, &mut mem);
+        // SFR memory now reflects live (0x03), not the
+        // stale buffer (0xCC).
+        assert_eq!(
+            mem.read_raw(Address::from_raw(TMR3H_ADDR)),
+            3,
+            "RD16 1->0 must surface live into SFR memory"
+        );
     }
 
     /// RD16=0 (legacy 8-bit-pair mode): TMR3H writes go
