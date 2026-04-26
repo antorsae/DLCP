@@ -23,7 +23,9 @@
 use crate::clock::ClockDomain;
 use crate::core::Core;
 use crate::exec::step;
+use crate::peripherals::mssp::{I2cBusEvent, Mssp};
 use crate::peripherals::osc;
+use crate::peripherals::tas3108::Tas3108;
 use crate::pinnet::{PinId, PinNet};
 use crate::reset::{ResetSource, apply_reset};
 use crate::scheduler::{Event, EventKind, EventQueue};
@@ -76,6 +78,20 @@ pub struct Chain {
     /// Cleared by `apply_reset_all` so a re-bootstrap
     /// doesn't carry pre-reset history forward.
     pub uart_tx_history: Vec<UartByteRecord>,
+    /// TAS3108 audio-DSP I²C slaves connected to one or
+    /// more master cores via `couple_tas3108`.  Phase-3.5
+    /// uses these to ACK V3.1 MAIN's `dsp_ping` and
+    /// `volume_dsp_write` so the firmware advances past
+    /// `wait_bf_clear_loop` instead of spin-retrying.
+    pub tas3108_slaves: Vec<Tas3108>,
+    /// (master_core, slave_idx) coupling list parallel to
+    /// `pinnet.i2c`.  After each `execute_core_step`, the
+    /// chain drains the master core's MSSP `last_bus_event`
+    /// and routes Start/Stop/RepeatedStart/TxByte to every
+    /// slave coupled to that master.  TxByte routes
+    /// override the master's ACKSTAT to 0 if any slave
+    /// ACKed the byte.
+    pub tas3108_couplings: Vec<(usize, usize)>,
 }
 
 /// One UART byte delivered between two cores.  See
@@ -115,7 +131,45 @@ impl Chain {
             events: EventQueue::new(),
             pinnet: PinNet::new(),
             uart_tx_history: Vec::new(),
+            tas3108_slaves: Vec::new(),
+            tas3108_couplings: Vec::new(),
         }
+    }
+
+    /// Push a TAS3108 slave into the chain.  Returns the
+    /// slave's index in `tas3108_slaves` for use by
+    /// `couple_tas3108`.
+    pub fn push_tas3108(&mut self, slave: Tas3108) -> usize {
+        let idx = self.tas3108_slaves.len();
+        self.tas3108_slaves.push(slave);
+        idx
+    }
+
+    /// Wire a TAS3108 slave (by index in `tas3108_slaves`)
+    /// to a master core's MSSP I²C bus.  After each
+    /// `execute_core_step`, every Start/Stop/RepeatedStart/
+    /// TxByte completion on `master_core_idx`'s MSSP is
+    /// routed to this slave.  A single slave may be
+    /// coupled to multiple masters (multi-master bus); a
+    /// single master may have multiple slaves coupled.
+    pub fn couple_tas3108(
+        &mut self,
+        master_core_idx: usize,
+        slave_idx: usize,
+    ) {
+        assert!(
+            master_core_idx < self.cores.len(),
+            "master_core_idx {} out of range ({} cores)",
+            master_core_idx,
+            self.cores.len()
+        );
+        assert!(
+            slave_idx < self.tas3108_slaves.len(),
+            "slave_idx {} out of range ({} slaves)",
+            slave_idx,
+            self.tas3108_slaves.len()
+        );
+        self.tas3108_couplings.push((master_core_idx, slave_idx));
     }
 
     /// Wire source-core EUSART TX to destination-core
@@ -318,7 +372,70 @@ impl Chain {
         let _ = step(core, stack)
             .unwrap_or_else(|e| panic!("exec::step failed on core {core_idx}: {e:?}"));
         self.drain_completed_tx_bytes(core_idx);
+        self.dispatch_i2c_to_coupled_slaves(core_idx);
         self.schedule_next_core_step(core_idx);
+    }
+
+    /// Drain the master core's MSSP `last_bus_event` (set
+    /// by `complete_start` / `complete_stop` /
+    /// `complete_repeated_start` / `complete_tx_byte` /
+    /// `complete_rx_byte` during the most-recent tick) and
+    /// route it to every TAS3108 slave coupled to this
+    /// master.  For TxByte events, if any slave ACKs the
+    /// transmitted byte, override the master's ACKSTAT to
+    /// 0 (cleared) so the firmware sees "slave ACKed".
+    /// Default `complete_tx_byte` already left ACKSTAT=1
+    /// (NACK), so a no-slave-coupling path keeps the
+    /// existing bus-less behavior.
+    fn dispatch_i2c_to_coupled_slaves(&mut self, master_core_idx: usize) {
+        let event = match self.cores[master_core_idx]
+            .peripherals
+            .mssp
+            .take_last_bus_event()
+        {
+            Some(e) => e,
+            None => return,
+        };
+        // Snapshot which slaves are coupled to this master
+        // (avoid borrow conflict with the mut self.cores
+        // memory access below).
+        let coupled_slave_indices: Vec<usize> = self
+            .tas3108_couplings
+            .iter()
+            .filter_map(|&(mc, si)| if mc == master_core_idx { Some(si) } else { None })
+            .collect();
+        // Drive each coupled slave's I²C state machine.
+        // For TxByte, also override ACKSTAT if any slave
+        // ACKs.  Other events (Start/Stop/RepeatedStart)
+        // are pure state transitions on the slave; no
+        // master-side memory effect today.
+        let mut any_slave_acked = false;
+        for slave_idx in coupled_slave_indices {
+            let slave = &mut self.tas3108_slaves[slave_idx];
+            match event {
+                I2cBusEvent::Start => slave.on_start(),
+                I2cBusEvent::RepeatedStart => slave.on_repeated_start(),
+                I2cBusEvent::Stop => slave.on_stop(),
+                I2cBusEvent::TxByte(byte) => {
+                    if slave.consume_tx_byte(byte) {
+                        any_slave_acked = true;
+                    }
+                }
+                I2cBusEvent::RxByte => {
+                    // Phase-3.5+: a coupled slave drives the
+                    // RX byte into SSPBUF.  V3.1's chain
+                    // doesn't read the DSP, so we leave the
+                    // SSPBUF byte at whatever `complete_rx_byte`
+                    // left it (random / zero).  Track as
+                    // future work alongside task #24.
+                }
+            }
+        }
+        if let I2cBusEvent::TxByte(_) = event {
+            if any_slave_acked {
+                Mssp::override_acked(&mut self.cores[master_core_idx].memory);
+            }
+        }
     }
 
     /// Pull any bytes that the source-core EUSART
@@ -1026,6 +1143,131 @@ mod tests {
             chain.current_tick >= 1500,
             "current_tick should be >= boot offset 1500 (got {})",
             chain.current_tick
+        );
+    }
+
+    /// `dsp_ping`-shaped chain test: the master core writes
+    /// 0x68 to SSPBUF (after enabling the I²C peripheral).
+    /// MSSP completes the TxByte after 9 SCL periods; the
+    /// chain dispatcher routes the resulting `I2cBusEvent`
+    /// to a coupled TAS3108 slave; the slave ACKs because
+    /// 0x68 matches its write address; the chain overrides
+    /// the master's SSPCON2.ACKSTAT bit to 0 (cleared).
+    /// Without the slave coupling the master would see
+    /// ACKSTAT=1 (NACK) -- the bus-less default.
+    #[test]
+    fn coupled_tas3108_acks_master_tx_byte_overrides_ackstat() {
+        // Build a tiny flash: enable I²C master mode, set
+        // SSPADD for a fast bit period, write 0x68 to
+        // SSPBUF, then BRA -1 forever.  K20 is fine for
+        // this -- we don't care about variant since SFR
+        // semantics are identical.
+        // SFR addresses: SSPCON1=0xFC6, SSPCON2=0xFC5,
+        // SSPADD=0xFC8, SSPBUF=0xFC9.
+        // Layout in flash[byte_addr]:
+        //   0x00  MOVLW 0x28          (0E 28 at little-endian
+        //                              => bytes [0x28, 0x0E])
+        //   0x02  MOVWF SSPCON1       (0xC6 in low-FSR slot)
+        //                              => MOVWF f,a syntax:
+        //                              opcode=011011aa ffff_ffff
+        //                              with a=0 access, f=0xC6
+        //                              -> word=0x6EC6 -> bytes [0xC6, 0x6E]
+        //   0x04  MOVLW 0x01
+        //   0x06  MOVWF SSPADD (0xC8) -> word=0x6EC8 -> [0xC8, 0x6E]
+        //   0x08  MOVLW 0x68
+        //   0x0A  MOVWF SSPBUF (0xC9) -> word=0x6EC9 -> [0xC9, 0x6E]
+        //   0x0C  BRA -1              -> 0xD7FF -> [0xFF, 0xD7]
+        let mut flash = vec![0u8; 32 * 1024];
+        let prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x28, 0x0E]),       // MOVLW 0x28 (SSPEN | SSPM=I2C master)
+            (0x0002, [0xC6, 0x6E]),       // MOVWF SSPCON1
+            (0x0004, [0x01, 0x0E]),       // MOVLW 0x01 (SSPADD: 2-Tcy bit period)
+            (0x0006, [0xC8, 0x6E]),       // MOVWF SSPADD
+            (0x0008, [0x68, 0x0E]),       // MOVLW 0x68 (TAS3108 write addr)
+            (0x000A, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x000C, [0xFF, 0xD7]),       // BRA -1 (loop forever)
+        ];
+        for (a, bytes) in prog {
+            flash[*a as usize] = bytes[0];
+            flash[*a as usize + 1] = bytes[1];
+        }
+
+        let mut chain = Chain::new();
+        let mut master = Core::new(Variant::Pic18F25K20);
+        master.flash_mut().copy_from_slice(&flash);
+        let i_master = chain.push_core(master);
+        let i_slave = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::default());
+        chain.couple_tas3108(i_master, i_slave);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0]);
+
+        // Step long enough for: 6 setup instructions (~6 Tcy
+        // = 96 ticks K20) + the 9-period TxByte (9 * 2 Tcy
+        // = 18 Tcy = 288 ticks) + a few BRA loops.  500
+        // ticks is plenty.
+        chain.step_ticks(500);
+
+        // The slave must have ACKed the byte 0x68 (its
+        // address).
+        assert!(
+            chain.tas3108_slaves[i_slave].bytes_acked >= 1,
+            "TAS3108 slave should have ACKed at least one byte (got acked={})",
+            chain.tas3108_slaves[i_slave].bytes_acked,
+        );
+
+        // Master's SSPCON2.ACKSTAT (bit 6) must now be 0
+        // (cleared by chain dispatch's `Mssp::override_acked`)
+        // -- without the coupling the default
+        // `complete_tx_byte` would have left it at 1.
+        let con2 = chain.cores[i_master].memory.read_raw(
+            crate::memory::Address::from_raw(0xFC5),
+        );
+        assert_eq!(
+            con2 & (1 << 6),
+            0,
+            "ACKSTAT must be cleared by chain dispatch after slave ACK; SSPCON2=0x{:02X}",
+            con2,
+        );
+    }
+
+    /// Without a coupled TAS3108, the master's ACKSTAT
+    /// stays at 1 (NACK -- bus-less default).  Locks in
+    /// the contract that the override is a chain-dispatch
+    /// effect, not an MSSP-side default.
+    #[test]
+    fn uncoupled_master_tx_byte_keeps_default_nack() {
+        let mut flash = vec![0u8; 32 * 1024];
+        // Same setup-and-TX program as the coupled test;
+        // no slave wired to the chain.
+        let prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x28, 0x0E]),
+            (0x0002, [0xC6, 0x6E]),
+            (0x0004, [0x01, 0x0E]),
+            (0x0006, [0xC8, 0x6E]),
+            (0x0008, [0x68, 0x0E]),
+            (0x000A, [0xC9, 0x6E]),
+            (0x000C, [0xFF, 0xD7]),
+        ];
+        for (a, bytes) in prog {
+            flash[*a as usize] = bytes[0];
+            flash[*a as usize + 1] = bytes[1];
+        }
+        let mut chain = Chain::new();
+        let mut master = Core::new(Variant::Pic18F25K20);
+        master.flash_mut().copy_from_slice(&flash);
+        let i_master = chain.push_core(master);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0]);
+        chain.step_ticks(500);
+
+        let con2 = chain.cores[i_master].memory.read_raw(
+            crate::memory::Address::from_raw(0xFC5),
+        );
+        assert_eq!(
+            con2 & (1 << 6),
+            1 << 6,
+            "uncoupled master must see ACKSTAT=1 (NACK); SSPCON2=0x{:02X}",
+            con2,
         );
     }
 }

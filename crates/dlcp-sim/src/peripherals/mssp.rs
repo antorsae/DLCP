@@ -143,6 +143,28 @@ impl Default for I2cState {
     }
 }
 
+/// One completed bus-level I²C event that the chain
+/// dispatcher can route to coupled slaves.  Drained from
+/// `Mssp::take_last_bus_event` once per tick.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum I2cBusEvent {
+    /// Master-issued Start condition completed.
+    Start,
+    /// Master-issued Repeated-Start completed.
+    RepeatedStart,
+    /// Master-issued Stop condition completed.
+    Stop,
+    /// Master finished transmitting a byte.  Carries the
+    /// byte that was on the wire so a coupled slave can
+    /// decide ACK/NACK.
+    TxByte(u8),
+    /// Master finished a byte-receive cycle.  The byte
+    /// must come from a coupled slave (RxByte data
+    /// injection is Phase-3.5+ work; today this variant
+    /// is reserved).
+    RxByte,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Mssp {
     state: I2cState,
@@ -158,6 +180,14 @@ pub struct Mssp {
     /// restoring it on collision.  Defaults to 0 if no
     /// prior write has been accepted (reset state).
     last_accepted_sspbuf_byte: u8,
+    /// Most-recently-completed bus-level event; consumed
+    /// by `take_last_bus_event` and routed to coupled
+    /// slaves.  At most one event accumulates per
+    /// `tick_tcy` call because each completion drives the
+    /// state machine back to Idle and the surplus-Tcy
+    /// drop rule means the next trigger waits on a fresh
+    /// SFR write.
+    last_bus_event: Option<I2cBusEvent>,
 }
 
 impl Mssp {
@@ -168,6 +198,28 @@ impl Mssp {
     pub fn reset_state(&mut self) {
         self.state = I2cState::Idle;
         self.last_accepted_sspbuf_byte = 0;
+        self.last_bus_event = None;
+    }
+
+    /// Drain the most-recently-completed bus event for the
+    /// chain dispatcher to route to coupled slaves.  Returns
+    /// `None` if no event has fired since the last call.
+    pub fn take_last_bus_event(&mut self) -> Option<I2cBusEvent> {
+        self.last_bus_event.take()
+    }
+
+    /// Override ACKSTAT in the master core's SFR memory
+    /// after `complete_tx_byte` has run.  Called by the
+    /// chain dispatcher when a coupled slave decided to ACK
+    /// the byte that was just transmitted; the default
+    /// `complete_tx_byte` set ACKSTAT=1 (NACK) since there's
+    /// no in-peripheral knowledge of bus topology.
+    pub fn override_acked(mem: &mut Memory) {
+        let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
+        mem.write_raw(
+            crate::memory::Address::from_raw(SSPCON2_ADDR),
+            con2 & !SSPCON2_ACKSTAT,
+        );
     }
 
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
@@ -327,28 +379,29 @@ impl Mssp {
         self.state = I2cState::TxByte(9 * period);
     }
 
-    fn complete_start(&self, mem: &mut Memory) {
+    fn complete_start(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_SEN);
         assert_sspif(mem);
+        self.last_bus_event = Some(I2cBusEvent::Start);
     }
 
-    fn complete_repeated_start(&self, mem: &mut Memory) {
+    fn complete_repeated_start(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_RSEN);
         assert_sspif(mem);
+        self.last_bus_event = Some(I2cBusEvent::RepeatedStart);
     }
 
-    fn complete_stop(&self, mem: &mut Memory) {
+    fn complete_stop(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_PEN);
         assert_sspif(mem);
+        self.last_bus_event = Some(I2cBusEvent::Stop);
     }
 
-    fn complete_tx_byte(&self, mem: &mut Memory) {
+    fn complete_tx_byte(&mut self, mem: &mut Memory) {
         // BF clears (shifter consumed the byte).  ACKSTAT
-        // reflects slave's ACK -- in the Phase-2 bus-less
-        // model we set ACKSTAT=1 (NACK) so firmware that
-        // polls for a slave can take a documented "no slave
-        // present" branch.  Phase-3 pin network will
-        // override this with the actual peer-driven value.
+        // defaults to 1 (NACK) -- the chain dispatcher
+        // will call `Mssp::override_acked` after routing
+        // the event to coupled slaves if any of them ACKed.
         let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
         mem.write_raw(
             crate::memory::Address::from_raw(SSPSTAT_ADDR),
@@ -360,9 +413,10 @@ impl Mssp {
             con2 | SSPCON2_ACKSTAT,
         );
         assert_sspif(mem);
+        self.last_bus_event = Some(I2cBusEvent::TxByte(self.last_accepted_sspbuf_byte));
     }
 
-    fn complete_rx_byte(&self, mem: &mut Memory) {
+    fn complete_rx_byte(&mut self, mem: &mut Memory) {
         // RCEN auto-clears at end of receive.  BF asserts
         // (buffer now holds the received byte; we leave the
         // SSPBUF byte at whatever was previously there since
@@ -374,9 +428,10 @@ impl Mssp {
             s | SSPSTAT_BF,
         );
         assert_sspif(mem);
+        self.last_bus_event = Some(I2cBusEvent::RxByte);
     }
 
-    fn complete_ack_pulse(&self, mem: &mut Memory) {
+    fn complete_ack_pulse(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_ACKEN);
         assert_sspif(mem);
     }
