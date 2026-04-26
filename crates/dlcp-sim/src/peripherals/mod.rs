@@ -23,6 +23,7 @@
 //! Tcy" entry point AND, eventually, "schedule next-edge
 //! deadline" hooks).
 
+pub mod adc;
 pub mod eusart;
 pub mod mssp;
 pub mod timer;
@@ -39,6 +40,7 @@ pub struct Peripherals {
     pub eusart: eusart::Eusart,
     pub mssp: mssp::Mssp,
     pub timers: timer::Timers,
+    pub adc: adc::Adc,
 }
 
 impl Peripherals {
@@ -51,6 +53,7 @@ impl Peripherals {
             eusart: eusart::Eusart::new(variant),
             mssp: mssp::Mssp::new(variant),
             timers: timer::Timers::new(variant),
+            adc: adc::Adc::new(variant),
         }
     }
 
@@ -64,6 +67,7 @@ impl Peripherals {
         self.eusart.on_sfr_write(addr, value, mem);
         self.mssp.on_sfr_write(addr, value, mem);
         self.timers.on_sfr_write(addr, value, mem);
+        self.adc.on_sfr_write(addr, value, mem);
     }
 
     /// Advance every peripheral's internal time by `n` Tcy.
@@ -74,6 +78,7 @@ impl Peripherals {
         self.eusart.tick_tcy(n, mem);
         self.mssp.tick_tcy(n, mem);
         self.timers.tick_tcy(n, mem);
+        self.adc.tick_tcy(n, mem);
     }
 
     /// Throw away each peripheral's in-flight state machine.
@@ -88,6 +93,7 @@ impl Peripherals {
         self.eusart.reset_state();
         self.mssp.reset_state();
         self.timers.reset_state();
+        self.adc.reset_state();
     }
 
     /// Post-SFR-reset sync.  Aligns each peripheral's

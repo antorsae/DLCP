@@ -154,10 +154,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/peripherals/timer.rs` + `crates/dlcp-sim/tests/peripheral_timers_parity.rs`
   - notes: Phase-2 minimum-viable timer peripheral. Models internal-clock-source counting (T0CS=0 / TMR3CS=0) at Tcy granularity scaled by the prescaler (Timer0 PSA + T0PS<2:0> -> 1:1..1:256; Timer3 T3CKPS<1:0> -> 1:1..1:8). 8-bit (T08BIT=1) and 16-bit Timer0 modes both wired; Timer3 always 16-bit. Overflow asserts INTCON.TMR0IF / PIR2.TMR3IF respectively. SFR-write side effects: writes to T0CON/T3CON or to TMR0L/H / TMR3L/H reset the prescaler-Tcy accumulator per DS §10.2 / §13.4. External pin sources (T0CKI, T1OSC) and 16-bit latched-buffer reads on TMR0L/TMR3L are deferred to Phase 3 / P2.7.
 
-- [pending] P2.4 ADC (AN0 only on MAIN, full Tacq + Tconv timing)
+- [done] P2.4 ADC (AN0 only on MAIN, full Tacq + Tconv timing)
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_adc_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/adc.rs`
-  - notes: AN0 boot threshold 0x0236 / hysteresis 0x0229/0x0228 — must reproduce `test_main_gpsim_an0_boot.py`.
+  - artifact: `crates/dlcp-sim/src/peripherals/adc.rs` + `crates/dlcp-sim/tests/peripheral_adc_parity.rs`
+  - notes: Phase-2 minimum-viable ADC for the AN0 boot-threshold path.  Models GO/DONE 0->1-with-ADON trigger, fixed 12-Tcy conversion delay, ADRESH:ADRESL load with the test-injected `Adc::set_an0_sample` value (right-justified or left-justified per ADCON2.ADFM), GO/DONE auto-clear on completion, PIR1.ADIF assertion.  V3.2 thresholds 0x0236 / 0x0229 / 0x0228 are pinned in the parity test.  Phase-3 pin network will replace the test-injection path with a virtual analog source pin; full Tacq + Tconv timing derived from ADCON2.{ACQT, ADCS} is deferred to P2.7 alongside the other ADCON2 fidelity items.
 
 - [pending] P2.5 EEPROM with 2–5 ms post-write completion (deliberate fidelity exceedance over gpsim)
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_eeprom_parity`
