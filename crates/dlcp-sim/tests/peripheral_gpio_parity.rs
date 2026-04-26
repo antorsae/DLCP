@@ -1,10 +1,13 @@
 //! P2.6 GPIO peripheral parity gate.
 //!
-//! Phase-2 GPIO is minimum-viable: TRIS / LAT / PORT SFRs
-//! round-trip through SFR memory with the existing
-//! `apply_sfr_sw_write` masks.  Pin-coupling primitive
-//! (`pinnet.rs`) and cross-core pin-to-pin propagation are
-//! Phase-3 work.
+//! Phase-2 GPIO is minimum-viable: TRIS / LAT SFRs round-
+//! trip through SFR memory with the existing
+//! `apply_sfr_sw_write` masks.  PORT-side observability
+//! (input-pin reads + LAT->PORT mirroring) is part of the
+//! pin-coupling primitive (`pinnet.rs`) deferred to Phase 3
+//! along with cross-core pin-to-pin propagation -- this
+//! Phase-2 test only asserts the TRIS / LAT byte-storage
+//! semantics that single-core firmware can observe.
 
 use dlcp_sim::core::Core;
 use dlcp_sim::exec::step;

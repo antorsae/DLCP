@@ -167,7 +167,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [done] P2.6 Port pins (RA/RB/RC + LATA/B/C + TRISA/B/C) with pin-coupling primitive
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_gpio_parity`
   - artifact: `crates/dlcp-sim/src/peripherals/gpio.rs` + `crates/dlcp-sim/tests/peripheral_gpio_parity.rs`
-  - notes: Phase-2 GPIO is minimum-viable: TRIS/LAT/PORT SFRs round-trip through SFR memory with the existing `apply_sfr_sw_write` masks (TRISA on the K20 honours Note 5 RA6/RA7 disabling via reset.rs's POR table; PORTC/PORTD-LATE preserve their `xxxx`/`uuuu` semantics correctly).  Pin-coupling primitive (`pinnet.rs`) and cross-core pin-to-pin propagation are deferred to Phase 3 -- the Phase-2 single-core scope doesn't need them.  Parity test asserts (a) TRIS write -> read round-trip, (b) LAT write -> PORT read mirroring (output mode), (c) firmware-driven masking of K20 28-pin-only bits via the reset POR table.
+  - notes: Phase-2 GPIO is minimum-viable: TRIS/LAT SFRs round-trip through SFR memory with the existing `apply_sfr_sw_write` masks (TRISA on the K20 honours Note 5 RA6/RA7 disabling via reset.rs's POR table).  PORT-side observability (input-pin reads, LAT->PORT mirroring on outputs, cross-core pin-to-pin propagation) is part of the pin-coupling primitive (`pinnet.rs`) deferred to Phase 3 -- the single-core Phase-2 scope doesn't exercise it.  Parity test asserts (a) TRIS write -> read round-trip, (b) LAT write -> read round-trip, (c) K20 POR TRISA = 0x7F via the reset POR table, (d) LAT initial-zero after POR.
 
 - [pending] P2.7 IRQ controller — INTCON*, RCON, IPEN priority + GIE/GIEH/GIEL, PIE/PIR
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_irq_parity`
