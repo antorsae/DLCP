@@ -192,9 +192,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## Phase 3 — Multi-Core Wiring + Clock Domains + Boot Offsets
 
-- [pending] P3.1 `Chain` struct + global event queue
+- [done] P3.1 `Chain` struct + global event queue
   - verify: `cd crates/dlcp-sim && cargo test --release chain::scheduler::tests`
-  - artifact: `crates/dlcp-sim/src/chain.rs` + `src/scheduler.rs`.
+  - artifact: `crates/dlcp-sim/src/chain.rs` + `crates/dlcp-sim/src/scheduler.rs`.
+  - notes: P3.1 lands the skeleton -- `Chain` struct holds N cores + universal-clock tick + `EventQueue`; `scheduler.rs` provides a min-heap with deterministic tie-breaking via push-order seq number; events typed (CoreInstructionComplete / PinPropagation / PeripheralDeadline).  `step_ticks(n)` advances the universal tick and drains due events with a no-op dispatch placeholder.  `schedule_next_core_step(core_idx)` derives the absolute universal tick from a core's Tcy counter via `peripherals::osc::ticks_per_tcy`.  P3.2-P3.7 fill in cross-core wiring, pin propagation, boot offsets, and the actual instruction-step path that posts events back into the queue.
 
 - [pending] P3.2 Pin-coupling API (`couple_uart`, `couple_pin`, `couple_i2c_slave`)
   - verify: `cd crates/dlcp-sim && cargo test --release chain::coupling::tests`

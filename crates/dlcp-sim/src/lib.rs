@@ -7,6 +7,7 @@
 //! beyond the [`Variant`] enum and the empty [`Core`] / [`Memory`]
 //! shells later phases hang their behaviour off.
 
+pub mod chain;
 pub mod config;
 pub mod core;
 pub mod exec;
@@ -15,6 +16,7 @@ pub mod isa;
 pub mod memory;
 pub mod peripherals;
 pub mod reset;
+pub mod scheduler;
 pub mod stack;
 
 pub use crate::config::{BorenMode, Config, FoscMode};
