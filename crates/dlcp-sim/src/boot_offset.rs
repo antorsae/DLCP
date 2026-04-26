@@ -65,8 +65,14 @@ impl BootOffsetSpec {
                 if min_ticks == max_ticks {
                     return min_ticks;
                 }
-                let span = max_ticks - min_ticks + 1;
-                min_ticks + (state % span)
+                // Compute span in u128 to handle the
+                // max_ticks = u64::MAX edge case without
+                // overflow.  span = max - min + 1 fits in
+                // [1, 2^64], which is exactly representable
+                // in u128.
+                let span = (max_ticks - min_ticks) as u128 + 1;
+                let offset = (state as u128 % span) as u64;
+                min_ticks + offset
             }
         }
     }
@@ -174,6 +180,27 @@ mod tests {
         };
         assert_eq!(spec.resolve(0), 500);
         assert_eq!(spec.resolve(1), 500);
+    }
+
+    /// Span overflow guard: `max_ticks = u64::MAX` would
+    /// overflow `(max - min + 1)` in u64.  The fix
+    /// promotes the span to u128 so the operation is
+    /// total.
+    #[test]
+    fn ranged_random_full_u64_range_does_not_overflow() {
+        let spec = BootOffsetSpec::RangedRandom {
+            min_ticks: 0,
+            max_ticks: u64::MAX,
+            seed: 0xDEAD_BEEF,
+        };
+        // Just need it to not panic and return a value
+        // somewhere in the range.
+        let r = spec.resolve(0);
+        // Tautologically inside [0, u64::MAX], but the
+        // assertion is here to make the regression
+        // payload obvious if someone reverts the u128
+        // span fix.
+        assert!(r <= u64::MAX);
     }
 
     #[test]
