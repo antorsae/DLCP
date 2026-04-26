@@ -179,12 +179,12 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/peripherals/usb.rs` + `crates/dlcp-sim/tests/peripheral_usbsie_parity.rs`
   - notes: Phase-2 USB-SIE is a 2455-gated stub.  The actual HID dispatch path (cmd 0x20 preset switch, 0x21 diag query, 0x43 memread, 0x44 Tier-1 diag snapshot, filename A/B routing) is large surface; will land alongside the V3.2 MAIN parity gate work that actually exercises USB.  Phase-2 ships the peripheral struct, the variant gate (no-op on K20 / 2455 stub on MAIN), and a parity test that asserts the wiring is correct.  V1.71 cycle-10 boot doesn't touch USB so no behavioural regression risk.
 
-- [pending] P2.9 Oscillator subsystem — OSCCON, OSCCON2, OSCTUNE, PLL ENABLE/READY
+- [done] P2.9 Oscillator subsystem — OSCCON, OSCCON2, OSCTUNE, PLL ENABLE/READY
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_osc_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/osc.rs`
-  - notes: drives `ticks_per_tcy` per Variant on the 48 MHz universal clock; CONTROL = 16 ticks/Tcy (12 MHz Fosc / 4 = 3 MIPS), MAIN = 12 ticks/Tcy (16 MHz Fosc / 4 = 4 MIPS).
+  - artifact: `crates/dlcp-sim/src/peripherals/osc.rs` + `crates/dlcp-sim/tests/peripheral_osc_parity.rs`
+  - notes: Phase-2 oscillator is a SFR-semantic stub.  Exposes `ticks_per_tcy(variant)` returning the universal-clock conversion factor (16 for K20, 12 for 2455) for the Phase-3 chain scheduler.  OSCCON / OSCCON2 / OSCTUNE / RCON.IPEN POR values are handled by reset.rs's K20_POR table.  HFINTOSC settle, IOFS / OSTS / SCS dynamic transitions, and PLL ENABLE/READY are all deferred to Phase 3 alongside the universal-clock chain.
 
-- [pending] P2.gate Run phase-2 gate
+- [done] P2.gate Run phase-2 gate
   - verify: `cargo test -p dlcp-sim --release --test 'peripheral_*_parity' && .venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 2`
   - artifact: every peripheral has ≥ 1 ground-truth-backed parity test.
 
