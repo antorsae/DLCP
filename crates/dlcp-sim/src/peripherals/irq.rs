@@ -75,8 +75,15 @@ pub fn is_irq_pending_high(mem: &Memory) -> bool {
     let ipen = rcon & RCON_IPEN != 0;
     let core_intcon_pending = intcon_pending(mem);
     if !ipen {
-        // Every pending+enabled flag counts as "high".
-        return core_intcon_pending || peripheral_pending(mem, false);
+        // IPEN=0 (compatibility mode): every pending+enabled
+        // flag counts as "high".  Peripheral IRQs require
+        // PEIE/GIEL (INTCON bit 6) -- per DS section 9.1, in
+        // compat mode INTCON<6> is the master enable for
+        // peripheral sources; INTCON-residing flags (TMR0,
+        // INT0, RB, INTCON3 INT1/INT2) only need GIE/GIEH.
+        let peie = intcon & INTCON_PEIE_GIEL != 0;
+        let peripheral_active = peie && peripheral_pending(mem, false);
+        return core_intcon_pending || peripheral_active;
     }
     // IPEN=1: only flags with their priority bit = 1 count
     // as high.
@@ -213,16 +220,38 @@ mod tests {
     }
 
     #[test]
-    fn ipen0_compat_mode_any_enabled_and_flagged_irq_high() {
+    fn ipen0_compat_mode_peripheral_irq_requires_peie_and_gie() {
         let mut mem = fresh_mem();
         // Enable + flag TMR1IF (PIE1.0 + PIR1.0).
         mem.write_raw(Address::from_raw(PIE1_ADDR), 0x01);
         mem.write_raw(Address::from_raw(PIR1_ADDR), 0x01);
-        // GIE=1, IPEN=0.
+        // GIE=1 only (PEIE=0): peripheral source must NOT
+        // fire in compat mode.
         mem.write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH);
-        // RCON.IPEN=0 (POR default).
+        assert!(
+            !is_irq_pending_high(&mem),
+            "compat mode requires PEIE for peripheral sources"
+        );
+        // GIE=1 and PEIE=1: now it fires.
+        mem.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | INTCON_PEIE_GIEL,
+        );
         assert!(is_irq_pending_high(&mem));
         assert!(!is_irq_pending_low(&mem));
+    }
+
+    #[test]
+    fn ipen0_compat_mode_intcon_source_does_not_need_peie() {
+        let mut mem = fresh_mem();
+        // TMR0IE=INTCON.5, TMR0IF=INTCON.2 are in INTCON
+        // itself, so PEIE is NOT required to deliver them
+        // in compat mode.
+        mem.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x20 | 0x04, // GIE | TMR0IE | TMR0IF
+        );
+        assert!(is_irq_pending_high(&mem));
     }
 
     #[test]

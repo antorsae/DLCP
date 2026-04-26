@@ -80,12 +80,16 @@ fn no_pending_irq_when_no_flags_set() {
 }
 
 #[test]
-fn ipen0_compat_mode_pending_high() {
+fn ipen0_compat_mode_peripheral_pending_high() {
     let mut core = Core::new(Variant::Pic18F25K20);
     let mut stack = Stack::new();
     apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
-    // IPEN=0 (POR default), GIE=1, TMR1IE=PIE1.0, TMR1IF=PIR1.0.
-    core.memory.write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE);
+    // IPEN=0 (POR default), GIE=1, PEIE=1 (required for
+    // peripheral sources in compat mode per DS section 9.1).
+    core.memory.write_raw(
+        Address::from_raw(INTCON_ADDR),
+        INTCON_GIE | INTCON_PEIE,
+    );
     core.memory.write_raw(Address::from_raw(PIE1_ADDR), 0x01);
     core.memory.write_raw(Address::from_raw(PIR1_ADDR), 0x01);
     assert!(is_irq_pending_high(&core.memory));
