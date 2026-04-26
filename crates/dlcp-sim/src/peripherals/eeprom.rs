@@ -193,14 +193,19 @@ impl Eeprom {
         // byte at EEADR into EEDATA.  Phase-2 simplifies
         // by treating the read as instantaneous (real
         // silicon is also "next instruction cycle"), and
-        // RD self-clears.
+        // RD self-clears.  The clear-back to EECON1 must
+        // operate on the *post-mask* memory byte (read it
+        // back) so we don't leak unimplemented bit 5 from
+        // the firmware-intended `value` parameter.
         if (value & EECON1_RD) != 0 && (value & EECON1_EEPGD) == 0 {
             let eeadr = mem.read_raw(Address::from_raw(EEADR_ADDR));
             let byte = self.storage[eeadr as usize];
             mem.write_raw(Address::from_raw(EEDATA_ADDR), byte);
-            // RD auto-clears on completion.
-            let new_con1 = value & !EECON1_RD;
-            mem.write_raw(Address::from_raw(EECON1_ADDR), new_con1);
+            let cur = mem.read_raw(Address::from_raw(EECON1_ADDR));
+            mem.write_raw(
+                Address::from_raw(EECON1_ADDR),
+                cur & !EECON1_RD,
+            );
         }
         // WR path: EEPGD=0 + WREN=1 + WR=1 + unlock armed.
         // The unlock sequencer resets after consuming.
@@ -216,9 +221,15 @@ impl Eeprom {
             } else {
                 // Not armed -- silicon sets WRERR (write
                 // error flag) and refuses the write.  WR
-                // does NOT auto-clear in this case.
-                let new_con1 = value | EECON1_WRERR;
-                mem.write_raw(Address::from_raw(EECON1_ADDR), new_con1);
+                // does NOT auto-clear in this case.  Use
+                // the post-mask memory byte (cur), not the
+                // firmware-intended `value`, so bit 5 stays
+                // 0.
+                let cur = mem.read_raw(Address::from_raw(EECON1_ADDR));
+                mem.write_raw(
+                    Address::from_raw(EECON1_ADDR),
+                    cur | EECON1_WRERR,
+                );
             }
         }
     }
