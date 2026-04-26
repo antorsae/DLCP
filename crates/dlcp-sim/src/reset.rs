@@ -181,11 +181,16 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // the slot data are preserved across the reset.
             stack.reset_pointer_preserve_flags();
             // BOR shares the "Power-on Reset, Brown-out Reset"
-            // column in DS40001303H Table 4-4 -- so the SFR
-            // initial values that POR brings up also apply to
-            // BOR.  Note we do NOT zero data memory: BOR
-            // preserves general-purpose RAM contents (only POR
-            // wipes); we just re-establish the SFR defaults.
+            // column in Tbl 4-4 -- so SFRs that should bring
+            // up at fixed values also reset on BOR.  GPRs
+            // (data memory below 0xF60) ARE preserved across
+            // BOR per §4.4 -- only POR wipes RAM -- so we
+            // touch the SFR window explicitly via the same
+            // two-pass dance the MCLR arm uses below.
+            if core.variant() == Variant::Pic18F25K20 {
+                apply_k20_mclr_zero_sfrs(core);
+                apply_k20_mclr_rmw_sfrs(core);
+            }
             apply_por_sfr_defaults(core);
         }
         ResetSource::Mclr
@@ -221,6 +226,7 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // uses POR exclusively so the gap is theoretical.
             if core.variant() == Variant::Pic18F25K20 {
                 apply_k20_mclr_zero_sfrs(core);
+                apply_k20_mclr_rmw_sfrs(core);
             }
             apply_por_sfr_defaults(core);
         }
@@ -373,24 +379,21 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
     }
 }
 
-/// SFRs that reset to a fully-zero byte on every reset source
-/// listed in Tbl 4-4's "MCLR Resets, WDT Reset, RESET
-/// Instruction, Stack Resets" column.  POR/BOR cover these
-/// implicitly via the `for byte in core.memory.as_mut_slice()`
-/// wipe in `apply_reset`; for non-POR resets we have to zero
-/// them explicitly because data memory is preserved.
+/// SFRs that reset to a fully-zero byte on every K20 reset
+/// source whose Tbl 4-4 column-2 ("MCLR Resets, WDT Reset,
+/// RESET Instruction, Stack Resets") AND column-1 ("Power-on
+/// Reset, Brown-out Reset") are both fully-zero.
 ///
-/// SFRs whose MCLR-column value mixes preserved bits with
-/// fixed bits (T1CON `u0uu uuuu`, RCSTA bit 0 RX9D `u`,
+/// POR clears these implicitly via the data-memory wipe in
+/// `apply_reset`'s POR arm; non-POR resets and BOR don't
+/// wipe RAM, so we zero these SFRs explicitly.
+///
+/// SFRs whose MCLR-column value mixes preserved (`u`) bits
+/// with fixed bits (T1CON `u0uu uuuu`, RCSTA bit 0 RX9D `u`,
 /// EECON1 bits 7/6/3 `u`, STATUS bits 4..0 `u`) are NOT in
-/// this list -- they need RMW-style per-bit handling that's
-/// a known follow-up.  INTCON bit 0 (RBIF) is similarly `u`
-/// on MCLR but is included anyway because in the absence of
-/// an active port-change interrupt RBIF is 0 throughout
-/// boot, so zeroing it on a synthetic reset is correct in
-/// scope.  At the cycle-10 V1.71 parity scope no firmware
-/// exercises a non-POR reset so the gap is theoretical, but
-/// flagged for completeness.
+/// this list -- they need RMW-style per-bit handling.
+/// `apply_k20_mclr_rmw_sfrs` covers INTCON (bit 0 preserved);
+/// the remaining cases are a deferred follow-up.
 fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
     const K20_MCLR_ZERO_SFRS: &[u16] = &[
         0xF79, // CM2CON1
@@ -430,10 +433,51 @@ fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
         0xFE0, // BSR  (POR `---- 0000` = 0)
         0xFE2, // FSR1H
         0xFEA, // FSR0H
-        0xFF2, // INTCON  (bit 0 is `u` on MCLR; see docstring)
+        // PC / TBLPTR / TABLAT cluster: all zero on both POR
+        // and MCLR.  PC bytes are already zeroed by
+        // apply_reset's set_pc(0), but the SFR-mapped slots
+        // need explicit clearing for non-POR resets that do
+        // not run the data-memory wipe.  TBLPTR* / TABLAT
+        // are pure SFR storage; if a TBLRD/TBLWT was in
+        // flight before the reset, the residual pointer
+        // would survive without this.
+        0xFF5, // TABLAT
+        0xFF6, // TBLPTRL
+        0xFF7, // TBLPTRH
+        0xFF8, // TBLPTRU
+        0xFF9, // PCL
+        0xFFA, // PCLATH
+        0xFFB, // PCLATU
     ];
     for addr in K20_MCLR_ZERO_SFRS {
         core.memory.write_raw(Address::from_raw(*addr), 0);
+    }
+}
+
+/// SFRs whose MCLR-column value mixes preserved (`u`) bits
+/// with fixed bits.  Each entry is `(addr, target_value,
+/// reset_mask)`: bits set in `reset_mask` are forced to
+/// `target_value`; bits clear in `reset_mask` are preserved
+/// from the pre-reset byte.
+///
+/// Only INTCON is wired here for now.  Other mixed-bit
+/// cases (T1CON, RCSTA, EECON1, STATUS) are a deferred
+/// follow-up since the Phase-2 parity scope doesn't exercise
+/// them on a non-POR reset.
+fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
+    // (addr, target_value, reset_mask)
+    const K20_MCLR_RMW: &[(u16, u8, u8)] = &[
+        // INTCON: POR `0000 000x`, MCLR `0000 000u`.
+        // Bits 7..1 reset to 0; bit 0 (RBIF) is preserved.
+        (0xFF2, 0x00, 0xFE),
+    ];
+    for (addr, target, reset_mask) in K20_MCLR_RMW {
+        let old = core
+            .memory
+            .read_raw(Address::from_raw(*addr));
+        let new_value = (old & !reset_mask) | (target & reset_mask);
+        core.memory
+            .write_raw(Address::from_raw(*addr), new_value);
     }
 }
 
@@ -555,6 +599,72 @@ mod tests {
             0x02,
             "TXSTA must be 0x02 (TRMT=1) after MCLR"
         );
+    }
+
+    /// MCLR also zeros TBLPTR / TABLAT / PCL / PCLATH /
+    /// PCLATU per Tbl 4-4 (POR=0, MCLR=0 for all seven).
+    #[test]
+    fn mclr_zeros_tblptr_tablat_and_pc_sfrs_on_k20() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        for (addr, value) in [
+            (0xFF5u16, 0xAA), // TABLAT
+            (0xFF6, 0x12), // TBLPTRL
+            (0xFF7, 0x34), // TBLPTRH
+            (0xFF8, 0x05), // TBLPTRU (only bits 5..0 implemented)
+            (0xFF9, 0x42), // PCL
+            (0xFFA, 0x10), // PCLATH
+            (0xFFB, 0x01), // PCLATU
+        ] {
+            core.memory.write_raw(Address::from_raw(addr), value);
+        }
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        for addr in [0xFF5u16, 0xFF6, 0xFF7, 0xFF8, 0xFF9, 0xFFA, 0xFFB] {
+            assert_eq!(
+                core.memory.read_raw(Address::from_raw(addr)),
+                0,
+                "SFR 0x{addr:03X} must zero on MCLR"
+            );
+        }
+    }
+
+    /// MCLR's INTCON RMW: bits 7..1 reset to 0; bit 0 (RBIF)
+    /// preserved.
+    #[test]
+    fn mclr_intcon_resets_high_bits_preserves_rbif() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        // INTCON has GIE/PEIE/TMR0IE/INT0IE/RBIE set + RBIF.
+        core.memory.write_raw(Address::from_raw(0xFF2), 0xFF);
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
+        assert_eq!(
+            intcon & 0xFE, 0,
+            "INTCON bits 7..1 must reset on MCLR (got 0x{intcon:02X})"
+        );
+        assert_eq!(
+            intcon & 0x01, 0x01,
+            "INTCON bit 0 (RBIF) must be preserved on MCLR"
+        );
+    }
+
+    /// BOR also runs the SFR-zero + RMW passes (BOR shares
+    /// the POR column).
+    #[test]
+    fn bor_zeros_pir1_and_rmws_intcon_on_k20() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        core.memory.write_raw(Address::from_raw(0xF9E), 0xFF); // PIR1
+        core.memory.write_raw(Address::from_raw(0xFF2), 0xFF); // INTCON
+        apply_reset(&mut core, &mut stack, ResetSource::BrownOut);
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xF9E)),
+            0,
+            "PIR1 must zero on BOR"
+        );
+        let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
+        assert_eq!(intcon & 0xFE, 0, "INTCON bits 7..1 reset on BOR");
+        assert_eq!(intcon & 0x01, 0x01, "INTCON RBIF preserved on BOR");
     }
 
     /// GPRs (data memory below 0xF60) MUST survive MCLR per
