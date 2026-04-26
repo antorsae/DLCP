@@ -736,7 +736,7 @@ mod tests {
         // Pin the chain right against the u64 ceiling.
         chain.current_tick = u64::MAX - 100;
         // Ask for far more budget than the remaining
-        // representable ticks (200) -- step_ticks will
+        // representable ticks (100) -- step_ticks will
         // saturate at u64::MAX after one chunk and stop
         // making progress.
         let advanced = chain.run_until(1000, 1_000_000, |_| false);
