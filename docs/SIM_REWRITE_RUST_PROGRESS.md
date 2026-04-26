@@ -207,10 +207,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/clock.rs`.
   - notes: `ClockDomain { ticks_per_tcy, drift_ppm }` per-core wrapper; `apply_drift(ticks)` returns the drifted-tick count using parts-per-million arithmetic.  Default drift is 0 (matches the spec's optional `drift_ppm`).  `ticks_per_tcy` already exists in `peripherals/osc.rs`; this module wraps it with the per-core drift state Phase-3.5 will use to model the documented HFINTOSC tolerance (±2% per DS40001303H §26.2 / DS39632E §27.2).
 
-- [pending] P3.4 Boot-offset model with three scenarios (CONTROL+MAIN0 same PSU; MAIN1 separate)
-  - verify: `cd crates/dlcp-sim && cargo test --release chain::boot_offset::tests`
+- [done] P3.4 Boot-offset model with three scenarios (CONTROL+MAIN0 same PSU; MAIN1 separate)
+  - verify: `cd crates/dlcp-sim && cargo test --release -- boot_offset::tests`
   - artifact: `crates/dlcp-sim/src/boot_offset.rs`
-  - notes: `BootOffsetSpec::Fixed` + `BootOffsetSpec::RangedRandom { seed }` for reproducibility.
+  - notes: `BootOffsetSpec::Fixed { ticks }` and `BootOffsetSpec::RangedRandom { min_ticks, max_ticks, seed }` per spec §7.  RangedRandom uses a deterministic xorshift64 seeded by `(seed, core_idx)` so a given chain configuration produces identical boot offsets across runs.  The chain-side wiring (which pre-schedules the first `CoreInstructionComplete` event at the boot-offset tick rather than tick 0) is part of P3.5; this sub-task just lands the type + the resolution helper.
 
 - [pending] P3.5 Multicore parity — reproduce `test_v171_v31_chain.py` end-to-end
   - verify: `cd crates/dlcp-sim && cargo test --release --test multicore_parity::test_v171_v31_chain_parity`

@@ -7,6 +7,7 @@
 //! beyond the [`Variant`] enum and the empty [`Core`] / [`Memory`]
 //! shells later phases hang their behaviour off.
 
+pub mod boot_offset;
 pub mod chain;
 pub mod clock;
 pub mod config;
