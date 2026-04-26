@@ -272,11 +272,26 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
     // SFR memory.  This handles the divergent reset-source
     // semantics (POR/BOR wiped vs MCLR-style preserved) at
     // the peripheral layer rather than each peripheral
-    // having to dispatch on the source itself.  Stack-only
-    // resets (StackFull / StackUnderflow) leave the SFR
-    // memory untouched, so the sync is a steady-state
-    // mirror -- correct.
-    core.peripherals.sync_from_memory(&core.memory);
+    // having to dispatch on the source itself.
+    //
+    // StackFull / StackUnderflow resets DON'T touch SFR
+    // memory at all; calling sync_from_memory in those cases
+    // would mirror memory -> shadow, but in RD16=1 mode the
+    // memory byte is the firmware buffer (not the live
+    // counter) and the sync would corrupt the live Timer3
+    // state.  So we skip it -- peripheral state is already
+    // consistent before the reset, and the reset doesn't
+    // touch SFRs, so it's still consistent after.
+    match source {
+        ResetSource::PowerOn
+        | ResetSource::BrownOut
+        | ResetSource::Mclr
+        | ResetSource::Wdt
+        | ResetSource::ResetInstruction => {
+            core.peripherals.sync_from_memory(&core.memory);
+        }
+        ResetSource::StackFull | ResetSource::StackUnderflow => {}
+    }
 }
 
 /// Zero every byte in the SFR window 0xF60..0xFFF without
@@ -1074,6 +1089,53 @@ mod tests {
     }
 
     // ----- Stack Full / Underflow -----
+
+    /// Stack-only resets must NOT corrupt peripheral
+    /// internal shadows.  Specifically: in Timer3 RD16=1
+    /// mode, memory[TMR3H] is the firmware buffer and
+    /// differs from `tmr3h_live`.  A stack-overflow reset
+    /// must leave both intact (no sync_from_memory call).
+    #[test]
+    fn stack_full_does_not_corrupt_timer3_rd16_live_shadow() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        // Set up Timer3 in RD16 mode with a divergent
+        // live/buffer state: live=0x05, memory[TMR3H]=0x99.
+        core.memory.write_raw(Address::from_raw(0xFB1), 0x81); // T3CON: TMR3ON|RD16
+        core.peripherals
+            .timers
+            .on_sfr_write(0xFB1, 0x81, &mut core.memory);
+        core.peripherals.timers.tick_tcy(0x500, &mut core.memory);
+        core.memory.write_raw(Address::from_raw(0xFB3), 0x99); // staged buffer
+        core.peripherals
+            .timers
+            .on_sfr_write(0xFB3, 0x99, &mut core.memory);
+        // Force the stack to be at depth 31 so StackFull is
+        // a meaningful reset.
+        for i in 0..31 {
+            stack.push(0x100 + i as u32);
+        }
+        apply_reset(&mut core, &mut stack, ResetSource::StackFull);
+        // Fixture sanity check: memory[TMR3H] holds the
+        // staged buffer (0x99), divergent from the live
+        // shadow (0x05).  Stack reset doesn't touch
+        // memory, so this should still be 0x99 after.
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFB3)),
+            0x99,
+            "memory[TMR3H] should still hold the buffer post-stack-reset"
+        );
+        // Peek tmr3h_live via a tick that would surface a
+        // wrong value if it had been overwritten.  Tick 1
+        // Tcy in RD16=0 mode (legacy mirror): we'd see
+        // tmr3h_live mirrored to memory[TMR3H].  Easier:
+        // just inspect the field.
+        assert_eq!(
+            core.peripherals.timers.tmr3h_live_for_test(),
+            0x05,
+            "stack reset must not corrupt Timer3 live shadow"
+        );
+    }
 
     #[test]
     fn stack_full_reset_zeros_depth_keeps_stkful() {

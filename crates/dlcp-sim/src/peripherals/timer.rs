@@ -133,6 +133,16 @@ impl Timers {
         // post-reset values after the SFR pass runs.
     }
 
+    /// Test-only: read the current Timer3 live high byte
+    /// shadow.  Public for cross-module reset-path tests
+    /// that need to assert the shadow survived a reset
+    /// without going through SFR memory (which can hold the
+    /// firmware buffer in RD16=1 mode).
+    #[doc(hidden)]
+    pub fn tmr3h_live_for_test(&self) -> u8 {
+        self.tmr3h_live
+    }
+
     /// Post-SFR-reset sync: aligns peripheral internal
     /// shadows with the now-canonical SFR memory.  Handles
     /// the divergent reset semantics (POR/BOR wipe SFRs;
