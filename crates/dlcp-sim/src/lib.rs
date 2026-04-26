@@ -8,6 +8,7 @@
 //! shells later phases hang their behaviour off.
 
 pub mod chain;
+pub mod clock;
 pub mod config;
 pub mod core;
 pub mod exec;
