@@ -44,6 +44,14 @@ pub struct Chain {
     /// the next instruction-complete event with drift
     /// applied via `ClockDomain::apply_drift`.
     pub clocks: Vec<ClockDomain>,
+    /// Per-core boot-offset epoch tick.  Recorded by
+    /// `schedule_initial_steps` and added to every
+    /// subsequent `schedule_next_core_step` call so a
+    /// late-booting core's instruction-complete events
+    /// stay delayed by the offset rather than collapsing
+    /// to the start-of-time.  Defaults to 0 for cores
+    /// that never had `schedule_initial_steps` called.
+    pub boot_epochs: Vec<u64>,
     /// Universal-clock tick at the head of the queue.
     /// Phase-3.5 dispatch updates this as events fire so
     /// each core's instruction completes at its own
@@ -71,6 +79,7 @@ impl Chain {
             cores: Vec::new(),
             stacks: Vec::new(),
             clocks: Vec::new(),
+            boot_epochs: Vec::new(),
             current_tick: 0,
             events: EventQueue::new(),
             pinnet: PinNet::new(),
@@ -141,6 +150,7 @@ impl Chain {
         self.cores.push(core);
         self.stacks.push(Stack::new());
         self.clocks.push(clock);
+        self.boot_epochs.push(0);
         idx
     }
 
@@ -229,14 +239,24 @@ impl Chain {
     /// Schedule a `CoreInstructionComplete` event for the
     /// given core at its next instruction-complete tick,
     /// derived from the core's current Tcy count + the
-    /// per-core drifted ticks/Tcy.
+    /// per-core drifted ticks/Tcy + the boot-offset epoch.
+    /// Without the epoch, a late-booted core's first
+    /// instruction would fire at boot_offset, then the
+    /// SECOND would schedule at `cycles * factor` --
+    /// before boot_offset for any non-trivial offset --
+    /// causing the queue to fire it immediately and
+    /// effectively collapsing the boot delay.  Tracking
+    /// the per-core epoch keeps the relative-to-boot
+    /// scheduling semantic intact.
     pub fn schedule_next_core_step(&mut self, core_idx: usize) {
         let tcy = self.cores[core_idx].cycles();
         let factor = self.clocks[core_idx].nominal_ticks_per_tcy as u64;
         let nominal_tick = tcy.saturating_mul(factor);
         let drifted_tick = self.clocks[core_idx].apply_drift(nominal_tick);
+        let epoch = self.boot_epochs[core_idx];
+        let absolute_tick = epoch.saturating_add(drifted_tick);
         self.events
-            .push(drifted_tick, EventKind::CoreInstructionComplete(core_idx));
+            .push(absolute_tick, EventKind::CoreInstructionComplete(core_idx));
     }
 
     /// Apply POR to every core in the chain.  Helper for
@@ -249,12 +269,15 @@ impl Chain {
     }
 
     /// Bootstrap each core's first `CoreInstructionComplete`
-    /// event onto the queue at the boot-offset tick.  The
+    /// event onto the queue at the boot-offset tick.  Also
+    /// records the offset as the per-core epoch so all
+    /// subsequent `schedule_next_core_step` calls add it
+    /// to their absolute tick (preserving the boot delay
+    /// across the whole run instead of collapsing back to
+    /// tick 0 after the first instruction).  The
     /// `boot_offsets[idx]` slot supplies the offset for
     /// `cores[idx]`; vec must be the same length as
-    /// `cores`.  After this call, draining the queue via
-    /// `step_ticks` causes each core to start running
-    /// instructions at its boot-offset.
+    /// `cores`.
     pub fn schedule_initial_steps(&mut self, boot_offsets: &[u64]) {
         assert_eq!(
             boot_offsets.len(),
@@ -262,6 +285,7 @@ impl Chain {
             "boot_offsets length must match number of cores"
         );
         for (idx, &offset) in boot_offsets.iter().enumerate() {
+            self.boot_epochs[idx] = offset;
             self.events
                 .push(offset, EventKind::CoreInstructionComplete(idx));
         }
@@ -508,5 +532,50 @@ mod tests {
         // Step past boot offset.  Core should now run.
         chain.step_ticks(600);
         assert!(chain.cores[idx].cycles() > 0);
+    }
+
+    /// Regression: late-booted core stays delayed across
+    /// MULTIPLE instructions.  Prior to the boot-epoch fix,
+    /// the second instruction would schedule at
+    /// `cycles * factor = 32` (in the past) which the
+    /// queue would fire immediately, collapsing the
+    /// boot-offset delay.  After the fix, all subsequent
+    /// instructions land at `boot_offset + cycles * factor`
+    /// so the core stays at its delayed cadence.
+    #[test]
+    fn boot_offset_persists_across_multiple_instructions() {
+        let mut chain = Chain::new();
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.flash_mut().copy_from_slice(&build_self_loop_flash());
+        let idx = chain.push_core(core);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        // Boot offset = 1500 (well past where a non-
+        // delayed core would have completed many BRAs).
+        chain.schedule_initial_steps(&[1500]);
+        // Step to tick 1000 -- still before boot.  Core
+        // hasn't run.
+        chain.step_ticks(1000);
+        assert_eq!(chain.cores[idx].cycles(), 0);
+        // Step to tick 2500.  Core has been running for
+        // 2500 - 1500 = 1000 ticks.  At 32 ticks/BRA
+        // -> 31 iterations -> 62 cycles.
+        chain.step_ticks(1500);
+        let cycles = chain.cores[idx].cycles();
+        assert!(
+            (50..75).contains(&cycles),
+            "boot-delayed core should advance ~62 cycles in 1000 post-boot ticks (got {cycles})"
+        );
+        // Critically: also verify the chain's
+        // current_tick reflects the boot-offset-respecting
+        // dispatch, not a collapsed catch-up.  current_tick
+        // is the most recent event's firing tick OR the
+        // step_ticks target -- after step_ticks(1500), the
+        // last event we fired must be >= 1500 (when the
+        // first instruction completes), not 0 or 32.
+        assert!(
+            chain.current_tick >= 1500,
+            "current_tick should be >= boot offset 1500 (got {})",
+            chain.current_tick
+        );
     }
 }
