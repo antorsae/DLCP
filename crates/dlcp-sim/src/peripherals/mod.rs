@@ -25,6 +25,7 @@
 
 pub mod eusart;
 pub mod mssp;
+pub mod timer;
 
 use crate::memory::{Memory, Variant};
 
@@ -37,6 +38,7 @@ use crate::memory::{Memory, Variant};
 pub struct Peripherals {
     pub eusart: eusart::Eusart,
     pub mssp: mssp::Mssp,
+    pub timers: timer::Timers,
 }
 
 impl Peripherals {
@@ -48,6 +50,7 @@ impl Peripherals {
         Peripherals {
             eusart: eusart::Eusart::new(variant),
             mssp: mssp::Mssp::new(variant),
+            timers: timer::Timers::new(variant),
         }
     }
 
@@ -60,6 +63,7 @@ impl Peripherals {
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
         self.eusart.on_sfr_write(addr, value, mem);
         self.mssp.on_sfr_write(addr, value, mem);
+        self.timers.on_sfr_write(addr, value, mem);
     }
 
     /// Advance every peripheral's internal time by `n` Tcy.
@@ -69,6 +73,7 @@ impl Peripherals {
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
         self.eusart.tick_tcy(n, mem);
         self.mssp.tick_tcy(n, mem);
+        self.timers.tick_tcy(n, mem);
     }
 
     /// Throw away each peripheral's internal state machine.
@@ -81,5 +86,6 @@ impl Peripherals {
     pub fn reset_state(&mut self) {
         self.eusart.reset_state();
         self.mssp.reset_state();
+        self.timers.reset_state();
     }
 }

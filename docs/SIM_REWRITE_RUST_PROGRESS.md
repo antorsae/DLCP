@@ -149,9 +149,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/peripherals/mssp.rs` + `crates/dlcp-sim/tests/peripheral_mssp_parity.rs`
   - notes: Phase-2 minimum-viable I²C master-mode peripheral. Models SFR-write reactivity (SEN/PEN trigger state-machine progression), SCL period from SSPADD (`Fbus = Fcy / (4 × (SSPADD+1))`; `SSPADD=0x77 → 480 Tcy/bit at 4 MIPS Fcy = 33 kHz`), BF (SSPSTAT bit 0) tracking on SSPBUF write, SSPIF (PIR1 bit 3) assertion on start-or-stop completion, and SEN/PEN auto-clear at sequence end. Bit-level bus comparison against gpsim's `i2c-regfile.cc` slave is Phase-4 dual-run scope. ACK/NACK injection requires the pin network landing in Phase 3. Wired into `Peripherals::{on_sfr_write, tick_tcy, reset_state}` alongside EUSART.
 
-- [pending] P2.3 Timer3 + Timer0 (only timers actually used)
+- [done] P2.3 Timer3 + Timer0 (only timers actually used)
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_timers_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/timer.rs`.
+  - artifact: `crates/dlcp-sim/src/peripherals/timer.rs` + `crates/dlcp-sim/tests/peripheral_timers_parity.rs`
+  - notes: Phase-2 minimum-viable timer peripheral. Models internal-clock-source counting (T0CS=0 / TMR3CS=0) at Tcy granularity scaled by the prescaler (Timer0 PSA + T0PS<2:0> -> 1:1..1:256; Timer3 T3CKPS<1:0> -> 1:1..1:8). 8-bit (T08BIT=1) and 16-bit Timer0 modes both wired; Timer3 always 16-bit. Overflow asserts INTCON.TMR0IF / PIR2.TMR3IF respectively. SFR-write side effects: writes to T0CON/T3CON or to TMR0L/H / TMR3L/H reset the prescaler-Tcy accumulator per DS §10.2 / §13.4. External pin sources (T0CKI, T1OSC) and 16-bit latched-buffer reads on TMR0L/TMR3L are deferred to Phase 3 / P2.7.
 
 - [pending] P2.4 ADC (AN0 only on MAIN, full Tacq + Tconv timing)
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_adc_parity`
