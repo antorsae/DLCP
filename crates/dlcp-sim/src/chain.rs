@@ -278,12 +278,34 @@ impl Chain {
     /// `boot_offsets[idx]` slot supplies the offset for
     /// `cores[idx]`; vec must be the same length as
     /// `cores`.
+    ///
+    /// Re-bootstrap safety: any pending events in the
+    /// queue are dropped first and per-core cycle counters
+    /// are reset to 0.  This makes the call safe to use
+    /// post-MCLR re-bootstrap mid-run (e.g. P3.7's late-
+    /// boot recovery test), not just for the initial
+    /// chain bring-up.
     pub fn schedule_initial_steps(&mut self, boot_offsets: &[u64]) {
         assert_eq!(
             boot_offsets.len(),
             self.cores.len(),
             "boot_offsets length must match number of cores"
         );
+        // Drop any pre-existing events so a re-bootstrap
+        // doesn't fire stale events at outdated ticks.
+        self.events = EventQueue::new();
+        // Reset per-core cycle counters so subsequent
+        // schedule_next_core_step computations are
+        // relative to this fresh epoch.  Memory / stack /
+        // peripheral state is left to the caller (typically
+        // `apply_reset_all` precedes this).
+        for core in self.cores.iter_mut() {
+            core.reset_cycles_for_test();
+        }
+        // Reset the universal-clock head so step_ticks(N)
+        // advances from the new epoch rather than carrying
+        // pre-reset history forward.
+        self.current_tick = 0;
         for (idx, &offset) in boot_offsets.iter().enumerate() {
             self.boot_epochs[idx] = offset;
             self.events
@@ -532,6 +554,39 @@ mod tests {
         // Step past boot offset.  Core should now run.
         chain.step_ticks(600);
         assert!(chain.cores[idx].cycles() > 0);
+    }
+
+    /// Regression: re-bootstrap mid-run drops stale events
+    /// and resets cycle counters so the new boot epoch
+    /// arithmetic is correct.  Without the fix, the queue
+    /// would carry pre-MCLR events and the per-core
+    /// cycles counter would keep its pre-reset value,
+    /// causing schedule_next_core_step to compute ticks
+    /// relative to a stale epoch.
+    #[test]
+    fn schedule_initial_steps_drops_stale_events_and_resets_cycles() {
+        let mut chain = Chain::new();
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.flash_mut().copy_from_slice(&build_self_loop_flash());
+        let idx = chain.push_core(core);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0]);
+        // Run 1000 ticks to accumulate cycles + queue
+        // state.
+        chain.step_ticks(1000);
+        assert!(chain.cores[idx].cycles() > 0);
+        assert!(chain.events.len() > 0);
+
+        // Re-bootstrap (simulating MCLR + new epoch).
+        chain.apply_reset_all(ResetSource::Mclr);
+        chain.schedule_initial_steps(&[2000]);
+
+        // Cycles reset; queue holds exactly one new event
+        // at tick 2000; current_tick reset.
+        assert_eq!(chain.cores[idx].cycles(), 0);
+        assert_eq!(chain.events.len(), 1);
+        assert_eq!(chain.current_tick, 0);
+        assert_eq!(chain.boot_epochs[idx], 2000);
     }
 
     /// Regression: late-booted core stays delayed across

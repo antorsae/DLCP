@@ -136,6 +136,27 @@ impl Core {
         self.cycles
     }
 
+    /// Reset the cycle counter to 0.  Phase-3.5's
+    /// `Chain::schedule_initial_steps` uses this to make
+    /// re-bootstrap (e.g. mid-run MCLR) safe -- the
+    /// schedule arithmetic in
+    /// `Chain::schedule_next_core_step` is relative to
+    /// the boot epoch, so the cycle counter needs to be
+    /// 0 at re-bootstrap or the arithmetic carries
+    /// pre-reset history forward.  Existing single-core
+    /// tests that call `apply_reset` directly are not
+    /// affected because they construct a fresh `Core`
+    /// (cycles=0) before applying reset.
+    ///
+    /// Marked `_for_test` to discourage misuse in
+    /// non-bootstrap paths -- on real silicon the
+    /// "instruction cycle counter" concept is purely a
+    /// simulator artefact, so resetting it is always a
+    /// model-level operation.
+    pub fn reset_cycles_for_test(&mut self) {
+        self.cycles = 0;
+    }
+
     /// Advance the cycle counter by `n` Tcy.  Called by the
     /// instruction interpreter (P1.2) once per instruction.
     /// Also ticks every peripheral by the same Tcy budget so
