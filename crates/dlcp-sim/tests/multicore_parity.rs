@@ -233,15 +233,20 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         "MAIN did not advance under chain dispatch"
     );
 
-    // MAIN ran the baked `GOTO 0x1000` trampoline and is now
-    // executing V3.1 application code -- PC must be at or
-    // past 0x1000.  Without this assertion the test would
-    // pass even if MAIN were stuck at PC=0 running erased-
-    // bootloader-window NOPs (decoded as `NopContinuation`).
+    // MAIN ran past BOTH trampolines: the baked GOTO 0x1000
+    // at flash[0..4], and the shipped `GOTO 0x1014` at
+    // flash[0x1000..0x1004].  PC must be strictly past
+    // 0x1014 so the test catches regressions where execution
+    // stalls at either trampoline target -- a `>= 0x1000`
+    // bound would let "GOTO fired once but second GOTO
+    // didn't" silently pass.  At 100 universal ticks ≈ 8 Tcy
+    // on the 2455, two 2-Tcy GOTOs consume 4 Tcy and leave
+    // ~4 Tcy for V3.1's real entry code, which advances PC
+    // a few more bytes past 0x1014.
     let main_pc = chain.cores[i_main].pc();
     assert!(
-        main_pc >= 0x1000,
-        "MAIN PC must be in V3.1 app region (>= 0x1000), got 0x{:04X}",
+        main_pc > 0x1014,
+        "MAIN PC must be strictly past V3.1 entry trampoline (> 0x1014), got 0x{:04X}",
         main_pc
     );
 
