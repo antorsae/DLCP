@@ -68,6 +68,30 @@ pub struct Chain {
     /// Phase-3.5 dispatches byte propagation across these
     /// on event firing.
     pub pinnet: PinNet,
+    /// Time-stamped UART byte deliveries between cores.
+    /// Appended to every time `deliver_uart_byte` runs --
+    /// captures the (tick, src_core, dst_core, byte) tuple.
+    /// Phase-3.5 part-4+ uses this to compare TX byte
+    /// streams bit-exact against gpsim ground truth.
+    /// Cleared by `apply_reset_all` so a re-bootstrap
+    /// doesn't carry pre-reset history forward.
+    pub uart_tx_history: Vec<UartByteRecord>,
+}
+
+/// One UART byte delivered between two cores.  See
+/// `Chain::uart_tx_history`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct UartByteRecord {
+    /// Universal-clock tick at delivery time
+    /// (`Chain::current_tick` when the byte was committed
+    /// to the destination's RCREG).
+    pub tick: u64,
+    /// Source core index in `Chain::cores`.
+    pub src_core: usize,
+    /// Destination core index in `Chain::cores`.
+    pub dst_core: usize,
+    /// The delivered byte.
+    pub byte: u8,
 }
 
 impl Chain {
@@ -83,6 +107,7 @@ impl Chain {
             current_tick: 0,
             events: EventQueue::new(),
             pinnet: PinNet::new(),
+            uart_tx_history: Vec::new(),
         }
     }
 
@@ -241,6 +266,21 @@ impl Chain {
             Some(c) => c.clone(),
             None => return,
         };
+        // Record the delivery in tx_history BEFORE the
+        // destination-side write so the history reflects
+        // wire-time ordering even if a future change adds
+        // a destination-side `Result` that early-returns.
+        // Recording on attempts (rather than only on
+        // accepted bytes) matches gpsim ground-truth
+        // semantics: gpsim's UART trace records bits on the
+        // wire, regardless of whether the destination's
+        // SPEN/CREN gate accepts them.
+        self.uart_tx_history.push(UartByteRecord {
+            tick: self.current_tick,
+            src_core: coupling.src_core,
+            dst_core: coupling.dst_core,
+            byte,
+        });
         // Borrow-checker: take a single &mut Core for the
         // destination, then split-borrow `peripherals` and
         // `memory` -- they're disjoint pub fields so the
@@ -373,6 +413,15 @@ impl Chain {
         for idx in 0..self.cores.len() {
             apply_reset(&mut self.cores[idx], &mut self.stacks[idx], source);
         }
+        // Clear the UART byte-delivery history so a
+        // re-bootstrap doesn't carry pre-reset traffic
+        // forward into a fresh run.  Cycle counters and
+        // queued events are cleared by
+        // `schedule_initial_steps` (callers typically pair
+        // `apply_reset_all` with that) -- this drop is
+        // independent so a future `apply_reset_all`-only
+        // path stays consistent.
+        self.uart_tx_history.clear();
     }
 
     /// Bootstrap each core's first `CoreInstructionComplete`
@@ -865,6 +914,66 @@ mod tests {
             queued_after, 0,
             "drain_completed_tx_bytes must not enqueue UartByteDelivery events; \
              synchronous delivery is required to avoid the same-tick seq race"
+        );
+    }
+
+    /// `Chain::uart_tx_history` records every successful
+    /// `deliver_uart_byte` call with the (tick, src_core,
+    /// dst_core, byte) tuple, and `apply_reset_all` clears
+    /// the history so a re-bootstrap starts fresh.
+    #[test]
+    fn uart_tx_history_records_deliveries_and_clears_on_reset() {
+        let mut chain = Chain::new();
+        let i_src = chain.push_core(Core::new(Variant::Pic18F25K20));
+        let mut dst = Core::new(Variant::Pic18F25K20);
+        // RCSTA = 0xFAB; SPEN | CREN = 0x90 -- enable RX so
+        // `deliver_rx_byte` accepts the byte.
+        dst.memory.write_raw(
+            crate::memory::Address::from_raw(0xFAB),
+            0x90,
+        );
+        let i_dst = chain.push_core(dst);
+        chain.couple_uart(
+            i_src,
+            crate::pinnet::default_tx_pin(),
+            i_dst,
+            crate::pinnet::default_rx_pin(),
+        );
+
+        chain.current_tick = 4242;
+        assert!(
+            chain.uart_tx_history.is_empty(),
+            "history starts empty"
+        );
+        chain.deliver_uart_byte(0, 0xC3);
+        chain.current_tick = 4243;
+        chain.deliver_uart_byte(0, 0xA5);
+
+        assert_eq!(chain.uart_tx_history.len(), 2);
+        assert_eq!(
+            chain.uart_tx_history[0],
+            UartByteRecord {
+                tick: 4242,
+                src_core: i_src,
+                dst_core: i_dst,
+                byte: 0xC3,
+            }
+        );
+        assert_eq!(
+            chain.uart_tx_history[1],
+            UartByteRecord {
+                tick: 4243,
+                src_core: i_src,
+                dst_core: i_dst,
+                byte: 0xA5,
+            }
+        );
+
+        // Reset clears the history.
+        chain.apply_reset_all(ResetSource::PowerOn);
+        assert!(
+            chain.uart_tx_history.is_empty(),
+            "apply_reset_all must clear uart_tx_history"
         );
     }
 
