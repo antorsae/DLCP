@@ -145,6 +145,15 @@ impl EventQueue {
     pub fn len(&self) -> usize {
         self.heap.len()
     }
+
+    /// Iterate over all currently-scheduled events.  Order
+    /// is the underlying heap's internal order (NOT
+    /// firing-order); use this for invariant checks like
+    /// "no event of kind X is queued" rather than for
+    /// dispatch.
+    pub fn iter(&self) -> impl Iterator<Item = &Event> {
+        self.heap.iter()
+    }
 }
 
 #[cfg(test)]

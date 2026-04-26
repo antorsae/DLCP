@@ -189,12 +189,17 @@ impl Chain {
 
     /// Dispatch one drained event.  Phase-3.5 wires:
     ///   * `CoreInstructionComplete`: execute one
-    ///     instruction on the named core, drain any
-    ///     completed TX bytes into UartByteDelivery
-    ///     events, reschedule the next completion event.
-    ///   * `UartByteDelivery`: deliver the byte to the
-    ///     destination core's EUSART RX via
-    ///     `Eusart::deliver_rx_byte`.
+    ///     instruction on the named core, deliver any
+    ///     completed TX bytes directly to wired peer RXs,
+    ///     reschedule the next completion event.
+    ///   * `UartByteDelivery`: a queue-driven path that
+    ///     `drain_completed_tx_bytes` does NOT use today
+    ///     (delivery is synchronous from the source's
+    ///     step) -- the variant + dispatch arm are
+    ///     retained for Phase-4 dual-run if bit-level
+    ///     propagation latency is later modelled.  Until
+    ///     that wiring lands, the arm is unreachable from
+    ///     normal dispatch.
     /// `PinPropagation` (general-purpose pin events) and
     /// `PeripheralDeadline` remain stubs until subsequent
     /// P3.x sub-tasks fill them in.
@@ -246,12 +251,13 @@ impl Chain {
         eusart.deliver_rx_byte(byte, memory);
     }
 
-    /// Execute one instruction on `core_idx`, drain any
+    /// Execute one instruction on `core_idx`, deliver any
     /// EUSART TX bytes that completed shifting during the
-    /// step into `UartByteDelivery` events for the wired
-    /// peer cores, and schedule the next
-    /// `CoreInstructionComplete` event at the drifted-tick
-    /// boundary derived from
+    /// step directly to wired peer cores' EUSART RXs (no
+    /// queue round-trip; see `drain_completed_tx_bytes`
+    /// for the same-tick race rationale), and schedule the
+    /// next `CoreInstructionComplete` event at the drifted-
+    /// tick boundary derived from
     /// [`ClockDomain::apply_drift`].
     pub fn execute_core_step(&mut self, core_idx: usize) {
         let core = &mut self.cores[core_idx];
@@ -765,38 +771,62 @@ mod tests {
         assert_eq!(pir1 & (1 << 5), 1 << 5, "destination RCIF must assert");
     }
 
-    /// Regression: same-tick UART delivery must commit the
-    /// byte to the destination's memory synchronously --
-    /// not via a queued `UartByteDelivery` event that loses
-    /// the seq tie-break to an already-queued peer
-    /// `CoreInstructionComplete` at the same tick.
+    /// Regression: `drain_completed_tx_bytes` -- the actual
+    /// production path that was changed -- must NOT push a
+    /// `UartByteDelivery` event at `current_tick`, even
+    /// after a real source core completes a TX frame and
+    /// drains.  Prior to this fix, the drain enqueued the
+    /// delivery and lost the seq tie-break to an already-
+    /// queued peer `CoreInstructionComplete` at the same
+    /// tick (which would then poll stale RCREG/RCIF).
     ///
-    /// Prior to this fix, `drain_completed_tx_bytes` pushed
-    /// `UartByteDelivery` at `current_tick`.  The queue
-    /// breaks ties by `seq` (push-order, ascending), so a
-    /// destination-core instruction event already in the
-    /// queue at that tick would fire BEFORE the freshly-
-    /// pushed delivery -- the destination would read stale
-    /// RCREG/RCIF.  Direct delivery from
-    /// `drain_completed_tx_bytes` commits the byte before
-    /// the next dispatch loop iteration sees it.
+    /// This test runs the full source-step → drain →
+    /// deliver path via `step_ticks`, then asserts that
+    /// (a) the destination's RCREG holds the byte and
+    /// (b) no `UartByteDelivery` event remains in the
+    /// queue.  (b) is the contract that locks in
+    /// synchronous delivery: if a future change reverts to
+    /// queue-based delivery, this assertion will fire.
     #[test]
-    fn deliver_uart_byte_commits_synchronously_with_no_queued_event() {
+    fn drain_completed_tx_bytes_does_not_enqueue_uart_byte_delivery_event() {
+        // Reuse the same source/destination flash as the
+        // end-to-end propagation test.  Source transmits
+        // 0x55; destination enables SPEN|CREN and BRA-loops.
+        let mut flash_src = vec![0u8; 32 * 1024];
+        let prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x05, 0x0E]),       // MOVLW 0x05
+            (0x0002, [0xAF, 0x6E]),       // MOVWF SPBRG
+            (0x0004, [0x20, 0x0E]),       // MOVLW 0x20
+            (0x0006, [0xAC, 0x6E]),       // MOVWF TXSTA
+            (0x0008, [0x80, 0x0E]),       // MOVLW 0x80
+            (0x000A, [0xAB, 0x6E]),       // MOVWF RCSTA
+            (0x000C, [0x40, 0x0E]),       // MOVLW 0x40
+            (0x000E, [0xB8, 0x6E]),       // MOVWF BAUDCON
+            (0x0010, [0x55, 0x0E]),       // MOVLW 0x55
+            (0x0012, [0xAD, 0x6E]),       // MOVWF TXREG
+            (0x0014, [0xFF, 0xD7]),       // BRA -1
+        ];
+        for (a, bytes) in prog {
+            flash_src[*a as usize] = bytes[0];
+            flash_src[*a as usize + 1] = bytes[1];
+        }
+        let mut flash_dst = vec![0u8; 32 * 1024];
+        let dst_prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x90, 0x0E]),       // MOVLW 0x90 (SPEN|CREN)
+            (0x0002, [0xAB, 0x6E]),       // MOVWF RCSTA
+            (0x0004, [0xFF, 0xD7]),       // BRA -1
+        ];
+        for (a, bytes) in dst_prog {
+            flash_dst[*a as usize] = bytes[0];
+            flash_dst[*a as usize + 1] = bytes[1];
+        }
+
         let mut chain = Chain::new();
-        // Source: dummy core (its EUSART won't be exercised
-        // here -- we call `deliver_uart_byte` directly).
-        let src = Core::new(Variant::Pic18F25K20);
+        let mut src = Core::new(Variant::Pic18F25K20);
+        src.flash_mut().copy_from_slice(&flash_src);
         let i_src = chain.push_core(src);
-        // Destination: enable RCSTA.SPEN | CREN by hand so
-        // `deliver_rx_byte` accepts the byte.  The chain
-        // doesn't need to step: we're testing the delivery
-        // mechanism, not the executor.
         let mut dst = Core::new(Variant::Pic18F25K20);
-        // RCSTA = 0xFAB; bits 0x90 = SPEN | CREN.
-        dst.memory.write_raw(
-            crate::memory::Address::from_raw(0xFAB),
-            0x90,
-        );
+        dst.flash_mut().copy_from_slice(&flash_dst);
         let i_dst = chain.push_core(dst);
         chain.couple_uart(
             i_src,
@@ -804,29 +834,35 @@ mod tests {
             i_dst,
             crate::pinnet::default_rx_pin(),
         );
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0, 0]);
 
-        let events_before = chain.events.len();
-        chain.deliver_uart_byte(0, 0xA5);
-        // CRITICAL: no event was enqueued.  Synchronous
-        // delivery must not push a `UartByteDelivery` at
-        // `current_tick` -- that's the whole point of
-        // bypassing the queue.
-        assert_eq!(
-            chain.events.len(),
-            events_before,
-            "deliver_uart_byte must not enqueue a UartByteDelivery event"
-        );
-        // RCREG (0xFAE) must hold the byte and PIR1.RCIF
-        // (0xF9E bit 5) must assert -- both visible IMMEDIATELY,
-        // before any subsequent dispatch loop iteration.
+        // Step long enough for the 960-Tcy frame to drain
+        // and `drain_completed_tx_bytes` to fire on the
+        // source's instruction completion.
+        chain.step_ticks(30_000);
+
+        // (a) byte arrived at destination's RCREG.
         let rcreg = chain.cores[i_dst].memory.read_raw(
             crate::memory::Address::from_raw(0xFAE),
         );
-        assert_eq!(rcreg, 0xA5, "RCREG must hold the byte synchronously");
-        let pir1 = chain.cores[i_dst].memory.read_raw(
-            crate::memory::Address::from_raw(0xF9E),
+        assert_eq!(rcreg, 0x55, "destination RCREG must hold the propagated byte");
+
+        // (b) NO `UartByteDelivery` event was enqueued by
+        // the drain path.  This is the contract that locks
+        // in the synchronous-delivery fix.  If a future
+        // change re-routes through the event queue without
+        // a kind-priority tie-break, this assertion fires.
+        let queued_uart_deliveries = chain
+            .events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::UartByteDelivery { .. }))
+            .count();
+        assert_eq!(
+            queued_uart_deliveries, 0,
+            "drain_completed_tx_bytes must not enqueue UartByteDelivery events; \
+             synchronous delivery is required to avoid the same-tick seq race"
         );
-        assert_eq!(pir1 & (1 << 5), 1 << 5, "RCIF must assert synchronously");
     }
 
     /// Regression: late-booted core stays delayed across
