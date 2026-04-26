@@ -317,7 +317,19 @@ impl Chain {
                 return advanced;
             }
             let chunk = chunk_ticks.min(max_ticks - advanced);
+            let pre = self.current_tick;
             self.step_ticks(chunk);
+            // Defensive: `step_ticks` saturates at `u64::MAX`,
+            // so a caller that starts with `current_tick`
+            // already at `u64::MAX` (or near it with a huge
+            // budget) would otherwise see the loop never make
+            // progress AND never reach `max_ticks`.  Bail out
+            // if a chunk advanced 0 ticks -- caller's budget
+            // is effectively exhausted.  Codex review of
+            // 9275e6f surfaced this LOW boundary case.
+            if self.current_tick == pre {
+                return advanced;
+            }
         }
     }
 
@@ -711,6 +723,31 @@ mod tests {
     fn run_until_chunk_ticks_zero_panics() {
         let mut chain = Chain::new();
         let _ = chain.run_until(0, 1000, |_| false);
+    }
+
+    /// Codex review of 9275e6f: at the `u64::MAX` boundary
+    /// `step_ticks` saturates and subsequent chunks make
+    /// no progress.  Without the no-progress break,
+    /// `run_until` would spin forever when the predicate
+    /// stays false.
+    #[test]
+    fn run_until_breaks_when_step_ticks_saturates_at_u64_max() {
+        let mut chain = Chain::new();
+        // Pin the chain right against the u64 ceiling.
+        chain.current_tick = u64::MAX - 100;
+        // Ask for far more budget than the remaining
+        // representable ticks (200) -- step_ticks will
+        // saturate at u64::MAX after one chunk and stop
+        // making progress.
+        let advanced = chain.run_until(1000, 1_000_000, |_| false);
+        // The actual advance is at most 100 ticks (the
+        // remaining headroom); the no-progress break must
+        // fire on the second chunk and return.
+        assert!(
+            advanced <= 100,
+            "must not advance beyond u64::MAX boundary; got {advanced}"
+        );
+        assert_eq!(chain.current_tick, u64::MAX);
     }
 
     #[test]
