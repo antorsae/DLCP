@@ -195,11 +195,24 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // sticky flags + slot data preserved.  A previous
             // CALL/RCALL push remains in slot[depth_pre-1] and
             // can be read via TOSU/H/L after firmware writes a
-            // new depth into STKPTR.  These reset sources leave
-            // SFRs at their pre-reset values (Table 4-4 column
-            // "MCLR Resets, WDT Reset, RESET Instruction, Stack
-            // Resets" lists `u` for almost all entries).
+            // new depth into STKPTR.
             stack.reset_pointer_preserve_flags();
+            // Per DS40001303H Table 4-4 column "MCLR Resets,
+            // WDT Reset, RESET Instruction, Stack Resets":
+            // many SFRs DO reset to fixed values for these
+            // sources (TXSTA -> 0x02, PIR1 -> 0x00, IPRx ->
+            // 0xFF, TRISx -> 0xFF, ...) -- the column is a
+            // mix of fixed and `u` (preserved) entries, NOT
+            // uniformly preserved.  Every SFR currently in
+            // K20_POR re-initialises to the same value on
+            // MCLR/WDT/RESET as on POR/BOR, so re-running the
+            // POR-defaults table here is correct.  Data memory
+            // (GPRs) IS preserved -- only POR wipes RAM.  When
+            // a future K20 SFR with a "u" entry on MCLR (e.g.
+            // T1CON `u0uu uuuu`) gets added to K20_POR, it
+            // will need a per-source guard inside
+            // apply_k20_por_sfr_defaults.
+            apply_por_sfr_defaults(core);
         }
         ResetSource::StackFull => {
             // Depth → 0; STKFUL stays set.  Slot data preserved.

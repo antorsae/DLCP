@@ -133,8 +133,16 @@ impl Eusart {
         match addr {
             TXREG_ADDR => self.handle_txreg_write(value, mem),
             // TXSTA / RCSTA writes can change the async-enable
-            // gate (TXEN, SPEN, SYNC) -- so re-evaluate TXIF.
-            TXSTA_ADDR | RCSTA_ADDR => self.recompute_txif(mem),
+            // gate (TXEN, SPEN, SYNC).  If the enable goes
+            // 0->1 and a TXREG byte was waiting in
+            // `txreg_holding` (firmware idiom: load TXREG
+            // first, then flip TXEN), kick off the TSR
+            // transfer NOW -- otherwise the held byte would
+            // be stuck forever.
+            TXSTA_ADDR | RCSTA_ADDR => {
+                self.maybe_start_held_byte(mem);
+                self.recompute_txif(mem);
+            }
             // SPBRG{,H} / BAUDCON only affect the baud-period
             // formula evaluated on the next TXREG load -- no
             // eager work needed.
@@ -143,33 +151,67 @@ impl Eusart {
         }
     }
 
-    /// Advance the EUSART by `n` Tcy, updating TXSTA.TRMT and
-    /// PIR1.TXIF when the in-flight TSR shift completes (and
-    /// possibly chaining a held TXREG byte into the now-idle
-    /// TSR).
-    pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
-        let Some(remaining) = self.tsr_busy_tcy else {
-            return;
-        };
-        if n < remaining {
-            self.tsr_busy_tcy = Some(remaining - n);
+    /// If the async-TX gate is on, the TSR is idle, and a
+    /// byte is parked in `txreg_holding` (typical firmware
+    /// idiom: write TXREG first, then enable TXEN with a BSF
+    /// or MOVWF), launch the TSR transfer now.  Called from
+    /// the TXSTA / RCSTA write observer.
+    fn maybe_start_held_byte(&mut self, mem: &mut Memory) {
+        if self.tsr_busy_tcy.is_some() {
             return;
         }
-        // TSR has just finished the current frame.
-        if let Some(_byte) = self.txreg_holding.take() {
-            // Held byte transfers from TXREG to TSR; a new
-            // frame begins immediately.  TXREG is empty now,
-            // so TXIF reasserts (subject to TXEN gate).  TSR
-            // remains busy with the new frame; TRMT stays 0.
-            self.tsr_busy_tcy = Some(current_frame_tcy(mem));
-            self.recompute_txif(mem);
-        } else {
-            // TSR fully drained; nothing else to send.  TRMT
-            // asserts; TXIF reflects "TXREG empty" (already
-            // true since txreg_holding is None) -- no change.
-            self.tsr_busy_tcy = None;
-            set_txsta_trmt(mem, true);
-            self.recompute_txif(mem);
+        if self.txreg_holding.is_none() {
+            return;
+        }
+        if !is_async_tx_enabled(mem) {
+            return;
+        }
+        // Held byte transfers from TXREG to TSR.  TXREG empty
+        // -> TXIF asserts via the caller's recompute_txif.
+        // TSR busy -> TRMT clears.
+        self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+        self.txreg_holding = None;
+        set_txsta_trmt(mem, false);
+    }
+
+    /// Advance the EUSART by `n` Tcy, updating TXSTA.TRMT and
+    /// PIR1.TXIF when the in-flight TSR shift completes.
+    /// Drains carry-over Tcy across multiple frame boundaries:
+    /// a single big tick that crosses N frames correctly
+    /// retires N held bytes (within the bound of how many are
+    /// queued in `txreg_holding`, which is at most one).
+    pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
+        let mut remaining_tick = n;
+        while remaining_tick > 0 {
+            let Some(busy) = self.tsr_busy_tcy else {
+                // TSR idle; no further work no matter how
+                // many Tcy are left in the tick.
+                return;
+            };
+            if remaining_tick < busy {
+                self.tsr_busy_tcy = Some(busy - remaining_tick);
+                return;
+            }
+            // TSR drains; consume `busy` from the tick budget.
+            remaining_tick -= busy;
+            if self.txreg_holding.take().is_some() {
+                // Held byte chains into TSR; a new frame
+                // begins.  TXREG empty -> TXIF asserts;
+                // TSR busy -> TRMT stays 0.
+                self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+                self.recompute_txif(mem);
+                // Loop continues -- the remaining_tick budget
+                // may still cross this new frame's deadline,
+                // and the next iteration will drain it.
+            } else {
+                // No held byte: TSR is now idle.  TRMT
+                // asserts; surplus Tcy in the tick budget are
+                // dropped (no work to do).
+                self.tsr_busy_tcy = None;
+                set_txsta_trmt(mem, true);
+                self.recompute_txif(mem);
+                return;
+            }
         }
     }
 
@@ -545,6 +587,86 @@ mod tests {
         assert!(is_async_tx_enabled(&mem));
         mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_SYNC);
         assert!(!is_async_tx_enabled(&mem));
+    }
+
+    /// Firmware idiom: load TXREG first, then enable TXEN.
+    /// The held byte must transfer to TSR when the gate flips
+    /// 0->1 -- without the on_sfr_write hook on TXSTA reaching
+    /// for `maybe_start_held_byte`, the byte would be stuck
+    /// forever (TSR idle, no further tick_tcy ever fires).
+    #[test]
+    fn enabling_txen_after_txreg_write_starts_held_byte() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        // SPEN=1, TXEN=0 -> async path disabled.
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+
+        // Write TXREG while disabled.  Byte holds; TXIF=0.
+        eusart.on_sfr_write(TXREG_ADDR, 0x42, &mut mem);
+        assert!(eusart.txreg_holding.is_some());
+        assert!(eusart.tsr_busy_tcy.is_none());
+
+        // Now firmware enables TXEN.  Held byte should
+        // transfer to TSR; TRMT clears; TXIF asserts.
+        let new_txsta = TXSTA_TXEN | TXSTA_TRMT;
+        mem.write_raw(Address::from_raw(TXSTA_ADDR), new_txsta);
+        eusart.on_sfr_write(TXSTA_ADDR, new_txsta, &mut mem);
+        assert!(
+            eusart.tsr_busy_tcy.is_some(),
+            "held byte must move to TSR when TXEN goes 0->1"
+        );
+        assert!(eusart.txreg_holding.is_none());
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(
+            txsta & TXSTA_TRMT, 0,
+            "TRMT must clear once TSR loads (TXSTA=0x{txsta:02X})"
+        );
+        assert_eq!(
+            pir1 & PIR1_TXIF, PIR1_TXIF,
+            "TXIF must assert -- TXREG empty after transfer"
+        );
+
+        // After 960 Tcy the frame drains -> TRMT reasserts.
+        eusart.tick_tcy(960, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(txsta & TXSTA_TRMT, TXSTA_TRMT);
+    }
+
+    /// Single tick that exceeds the current frame *and* drains
+    /// a held byte's frame must consume the chained Tcy budget,
+    /// not start the held frame from full.  (Phase-2 unit
+    /// tests typically tick 1 Tcy at a time so this rarely
+    /// matters in practice, but the LOW codex finding flagged
+    /// the surplus-drop as a fidelity gap in larger ticks.)
+    #[test]
+    fn tick_carries_surplus_tcy_across_chained_frames() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        enable_async_tx(&mut mem);
+
+        eusart.on_sfr_write(TXREG_ADDR, 0xAA, &mut mem); // -> TSR
+        eusart.on_sfr_write(TXREG_ADDR, 0xBB, &mut mem); // held
+
+        // First frame = 960 Tcy; second frame = 960 Tcy; total
+        // 1920 Tcy.  Tick exactly 1920 -> both should drain.
+        // The buggy version would consume 960 (drain frame 1),
+        // start frame 2 with full 960 budget, then have 0 Tcy
+        // left -> frame 2 stays in flight -> TRMT still 0.
+        eusart.tick_tcy(1920, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(
+            txsta & TXSTA_TRMT, TXSTA_TRMT,
+            "Both frames must drain in a single 1920-Tcy tick"
+        );
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(pir1 & PIR1_TXIF, PIR1_TXIF);
+        assert!(eusart.tsr_busy_tcy.is_none());
+        assert!(eusart.txreg_holding.is_none());
     }
 
     /// `reset_state` clears any in-flight TX so a SLEEP-then-
