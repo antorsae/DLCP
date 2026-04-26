@@ -273,6 +273,54 @@ impl Chain {
         self.current_tick = target;
     }
 
+    /// Step the chain in fixed-size chunks until either
+    /// `predicate(self)` returns true OR the cumulative
+    /// budget reaches `max_ticks`.  Returns the number of
+    /// universal ticks actually advanced.
+    ///
+    /// Mirrors gpsim's
+    /// `src/dlcp_fw/sim/chain_gpsim::SingleMainChainHarness::run_until_*`
+    /// "step in chunks, peek for convergence" pattern.
+    /// Useful for tests that need "wait until something
+    /// happens" semantics: no need to pre-allocate a fixed
+    /// multi-second budget when the convergence event might
+    /// happen 100x sooner.
+    ///
+    /// Behavior contracts:
+    ///   * `predicate` is evaluated BEFORE each chunk, so a
+    ///     condition that's already true at entry returns
+    ///     immediately (advances 0 ticks).
+    ///   * On the final chunk the call may overshoot the
+    ///     pre-`step_ticks` cursor by less than `chunk_ticks`
+    ///     -- the harness clamps the last chunk to the
+    ///     remaining budget so the total advance never
+    ///     exceeds `max_ticks`.
+    ///   * If `predicate` never becomes true within
+    ///     `max_ticks`, the call returns after the budget
+    ///     is exhausted.
+    ///   * Panics if `chunk_ticks` is 0 (would be an
+    ///     infinite loop on a never-true predicate).
+    pub fn run_until(
+        &mut self,
+        chunk_ticks: u64,
+        max_ticks: u64,
+        mut predicate: impl FnMut(&Chain) -> bool,
+    ) -> u64 {
+        assert!(chunk_ticks > 0, "chunk_ticks must be > 0 to make progress");
+        let start_tick = self.current_tick;
+        loop {
+            if predicate(self) {
+                return self.current_tick - start_tick;
+            }
+            let advanced = self.current_tick - start_tick;
+            if advanced >= max_ticks {
+                return advanced;
+            }
+            let chunk = chunk_ticks.min(max_ticks - advanced);
+            self.step_ticks(chunk);
+        }
+    }
+
     /// Dispatch one drained event.  Phase-3.5 wires:
     ///   * `CoreInstructionComplete`: execute one
     ///     instruction on the named core, deliver any
@@ -613,6 +661,56 @@ mod tests {
         assert_eq!(chain.current_tick, 1000);
         chain.step_ticks(500);
         assert_eq!(chain.current_tick, 1500);
+    }
+
+    #[test]
+    fn run_until_returns_immediately_when_predicate_already_true() {
+        let mut chain = Chain::new();
+        let ticks = chain.run_until(100, 10_000, |_| true);
+        assert_eq!(ticks, 0, "predicate-already-true must advance 0 ticks");
+        assert_eq!(chain.current_tick, 0);
+    }
+
+    #[test]
+    fn run_until_runs_to_max_when_predicate_never_true() {
+        let mut chain = Chain::new();
+        let ticks = chain.run_until(100, 10_000, |_| false);
+        assert_eq!(ticks, 10_000);
+        assert_eq!(chain.current_tick, 10_000);
+    }
+
+    #[test]
+    fn run_until_returns_early_when_predicate_becomes_true_mid_run() {
+        let mut chain = Chain::new();
+        // Predicate fires when current_tick reaches 5000.
+        let ticks = chain.run_until(100, 100_000, |c| c.current_tick >= 5000);
+        // The call must have advanced AT LEAST 5000 and AT
+        // MOST 5000 + 99 ticks (predicate is checked before
+        // each chunk, and the check at 5100 fires AFTER the
+        // chunk that brought us to 5100; but the check at
+        // 5000 fires BEFORE the chunk that would have
+        // advanced past it).  Actually: predicate is checked
+        // first; if false, advance one chunk.  So at iter 0
+        // tick=0; iter 1 tick=100; ...; iter 50 tick=5000 ->
+        // predicate true -> return 5000.
+        assert_eq!(ticks, 5000);
+        assert_eq!(chain.current_tick, 5000);
+    }
+
+    #[test]
+    fn run_until_clamps_final_chunk_to_remaining_budget() {
+        let mut chain = Chain::new();
+        // chunk_ticks=300, max_ticks=1000 -> last chunk is
+        // clamped to 100 (1000 - 900).  No overshoot.
+        let ticks = chain.run_until(300, 1000, |_| false);
+        assert_eq!(ticks, 1000, "final chunk must clamp to budget remainder");
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk_ticks must be > 0")]
+    fn run_until_chunk_ticks_zero_panics() {
+        let mut chain = Chain::new();
+        let _ = chain.run_until(0, 1000, |_| false);
     }
 
     #[test]
