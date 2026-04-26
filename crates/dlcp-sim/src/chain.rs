@@ -22,6 +22,7 @@
 
 use crate::core::Core;
 use crate::peripherals::osc;
+use crate::pinnet::{PinId, PinNet};
 use crate::scheduler::{Event, EventKind, EventQueue};
 
 /// Multi-core chain on a single universal-clock timeline.
@@ -38,6 +39,11 @@ pub struct Chain {
     /// Global event queue.  Future P3.x sub-tasks post
     /// pin-propagation, peripheral deadlines, etc. here.
     pub events: EventQueue,
+    /// Cross-core electrical wiring (UART couplings, pin
+    /// couplings, I²C slave couplings).  Populated via
+    /// `couple_uart` / `couple_pin` / `couple_i2c_slave`.
+    /// P3.5 dispatches across these on event firing.
+    pub pinnet: PinNet,
 }
 
 impl Chain {
@@ -49,7 +55,50 @@ impl Chain {
             cores: Vec::new(),
             current_tick: 0,
             events: EventQueue::new(),
+            pinnet: PinNet::new(),
         }
+    }
+
+    /// Wire source-core EUSART TX to destination-core
+    /// EUSART RX.  Phase-3.5 will dispatch byte
+    /// propagation through `pinnet.uart` on each
+    /// CoreInstructionComplete event.
+    pub fn couple_uart(
+        &mut self,
+        src_core: usize,
+        src_tx_pin: PinId,
+        dst_core: usize,
+        dst_rx_pin: PinId,
+    ) {
+        self.pinnet
+            .couple_uart(src_core, src_tx_pin, dst_core, dst_rx_pin);
+    }
+
+    /// Wire a general-purpose source-core pin to a
+    /// destination-core pin.  Used for MCLR/RA0 wakeup,
+    /// LCD strobes, button-matrix rows, etc.
+    pub fn couple_pin(
+        &mut self,
+        src_core: usize,
+        src_pin: PinId,
+        dst_core: usize,
+        dst_pin: PinId,
+    ) {
+        self.pinnet
+            .couple_pin(src_core, src_pin, dst_core, dst_pin);
+    }
+
+    /// Wire a master-mode I²C bus on `master_core` to a
+    /// virtual slave (e.g. the TAS3108 DSP model).
+    pub fn couple_i2c_slave(
+        &mut self,
+        master_core: usize,
+        master_sda: PinId,
+        master_scl: PinId,
+        slave_id: u32,
+    ) {
+        self.pinnet
+            .couple_i2c_slave(master_core, master_sda, master_scl, slave_id);
     }
 
     /// Add a core to the chain.  Returns the core's index.
@@ -178,6 +227,58 @@ mod tests {
         chain.step_ticks(60);
         assert_eq!(chain.current_tick, 110);
         assert_eq!(chain.events.len(), 0);
+    }
+
+    /// Coupling-API smoke: each `couple_*` call records
+    /// one entry in the appropriate `pinnet` vec.
+    #[test]
+    fn couple_uart_records_in_pinnet() {
+        let mut chain = Chain::new();
+        chain.push_core(Core::new(Variant::Pic18F25K20));
+        chain.push_core(Core::new(Variant::Pic18F2455));
+        chain.couple_uart(
+            0,
+            crate::pinnet::default_tx_pin(),
+            1,
+            crate::pinnet::default_rx_pin(),
+        );
+        assert_eq!(chain.pinnet.uart.len(), 1);
+        assert_eq!(chain.pinnet.uart[0].src_core, 0);
+        assert_eq!(chain.pinnet.uart[0].dst_core, 1);
+    }
+
+    #[test]
+    fn couple_pin_records_in_pinnet() {
+        let mut chain = Chain::new();
+        chain.push_core(Core::new(Variant::Pic18F25K20));
+        chain.push_core(Core::new(Variant::Pic18F2455));
+        let src = crate::pinnet::PinId {
+            port: crate::pinnet::PortLetter::C,
+            bit: 0,
+        };
+        let dst = crate::pinnet::PinId {
+            port: crate::pinnet::PortLetter::A,
+            bit: 0,
+        };
+        chain.couple_pin(0, src, 1, dst);
+        assert_eq!(chain.pinnet.pin.len(), 1);
+    }
+
+    #[test]
+    fn couple_i2c_slave_records_in_pinnet() {
+        let mut chain = Chain::new();
+        chain.push_core(Core::new(Variant::Pic18F2455));
+        let sda = crate::pinnet::PinId {
+            port: crate::pinnet::PortLetter::C,
+            bit: 4,
+        };
+        let scl = crate::pinnet::PinId {
+            port: crate::pinnet::PortLetter::C,
+            bit: 3,
+        };
+        chain.couple_i2c_slave(0, sda, scl, 7);
+        assert_eq!(chain.pinnet.i2c.len(), 1);
+        assert_eq!(chain.pinnet.i2c[0].slave_id, 7);
     }
 
     #[test]

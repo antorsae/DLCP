@@ -15,6 +15,7 @@ pub mod hex;
 pub mod isa;
 pub mod memory;
 pub mod peripherals;
+pub mod pinnet;
 pub mod reset;
 pub mod scheduler;
 pub mod stack;

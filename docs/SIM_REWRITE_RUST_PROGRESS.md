@@ -197,9 +197,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/chain.rs` + `crates/dlcp-sim/src/scheduler.rs`.
   - notes: P3.1 lands the skeleton -- `Chain` struct holds N cores + universal-clock tick + `EventQueue`; `scheduler.rs` provides a min-heap with deterministic tie-breaking via push-order seq number; events typed (CoreInstructionComplete / PinPropagation / PeripheralDeadline).  `step_ticks(n)` advances the universal tick and drains due events with a no-op dispatch placeholder.  `schedule_next_core_step(core_idx)` derives the absolute universal tick from a core's Tcy counter via `peripherals::osc::ticks_per_tcy`.  P3.2-P3.7 fill in cross-core wiring, pin propagation, boot offsets, and the actual instruction-step path that posts events back into the queue.
 
-- [pending] P3.2 Pin-coupling API (`couple_uart`, `couple_pin`, `couple_i2c_slave`)
+- [done] P3.2 Pin-coupling API (`couple_uart`, `couple_pin`, `couple_i2c_slave`)
   - verify: `cd crates/dlcp-sim && cargo test --release chain::coupling::tests`
-  - artifact: covered in `chain.rs` + `pinnet.rs`.
+  - artifact: `crates/dlcp-sim/src/chain.rs` + `crates/dlcp-sim/src/pinnet.rs`.
+  - notes: Phase-3.2 lands the API surface only -- the three coupling primitives record their wiring in `Chain::pinnet` (`UartCoupling` / `PinCoupling` / `I2cCoupling`) but the actual event-driven byte/edge propagation is dispatched in P3.5 (multicore parity test).  `PinId { PortLetter, bit }` types are defined here for use across all three primitives.  Default TX/RX pin constants (RC6/RC7) anchor the PIC18 EUSART convention.
 
 - [pending] P3.3 Clock-domain handling — per-Core `ticks_per_tcy` (CONTROL=16, MAIN=12), optional `tick_drift_ppm`
   - verify: `cd crates/dlcp-sim && cargo test --release chain::clock::tests`
