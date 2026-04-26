@@ -144,10 +144,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/peripherals/eusart.rs` + `crates/dlcp-sim/tests/peripheral_eusart_parity.rs`
   - notes: 2455 BAUDCON @ 0xFB8 (resolved P0.0 — matches gpsim, gputils, and disassembly opcode `6EB8`; the earlier "datasheet @ 0xF98" reading was a markdown rendering artifact). K20 BAUDCON @ 0xFB8 (DS41303). See spec §11b for the closed dual-run reconciliation. Phase-2 scope: TX path with baud-period-derived TRMT/TXIF timing; RX silent (Phase-3 chain wiring will deliver bytes via the pin net); OERR/FERR/RX9D preserved across SW writes via `sfr_write_mask` (RCSTA mask = 0xF8). Bit-level UART byte-stream comparison against gpsim is a Phase-4 dual-run gate. Foundation work landed simultaneously: `peripherals` module + `Core::peripherals` field + `Peripherals::tick_tcy` hooked into `Core::advance_cycles` + `Peripherals::on_sfr_write` hooked into `exec::write_addr_masked`.
 
-- [pending] P2.2 MSSP I²C — master mode, SCL stretching, ACK/NACK injection
+- [done] P2.2 MSSP I²C — master mode, SCL stretching, ACK/NACK injection
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_mssp_parity`
-  - artifact: `crates/dlcp-sim/src/peripherals/mssp.rs`
-  - notes: port behaviour of `vendor/gpsim-0.32.1-xtc/modules/i2c-regfile.cc`.
+  - artifact: `crates/dlcp-sim/src/peripherals/mssp.rs` + `crates/dlcp-sim/tests/peripheral_mssp_parity.rs`
+  - notes: Phase-2 minimum-viable I²C master-mode peripheral. Models SFR-write reactivity (SEN/PEN trigger state-machine progression), SCL period from SSPADD (`Fbus = Fcy / (4 × (SSPADD+1))`; `SSPADD=0x77 → 480 Tcy/bit at 4 MIPS Fcy = 33 kHz`), BF (SSPSTAT bit 0) tracking on SSPBUF write, SSPIF (PIR1 bit 3) assertion on start-or-stop completion, and SEN/PEN auto-clear at sequence end. Bit-level bus comparison against gpsim's `i2c-regfile.cc` slave is Phase-4 dual-run scope. ACK/NACK injection requires the pin network landing in Phase 3. Wired into `Peripherals::{on_sfr_write, tick_tcy, reset_state}` alongside EUSART.
 
 - [pending] P2.3 Timer3 + Timer0 (only timers actually used)
   - verify: `cd crates/dlcp-sim && cargo test --release --test peripheral_timers_parity`

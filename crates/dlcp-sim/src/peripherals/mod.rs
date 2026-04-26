@@ -24,6 +24,7 @@
 //! deadline" hooks).
 
 pub mod eusart;
+pub mod mssp;
 
 use crate::memory::{Memory, Variant};
 
@@ -35,6 +36,7 @@ use crate::memory::{Memory, Variant};
 #[derive(Clone, Debug)]
 pub struct Peripherals {
     pub eusart: eusart::Eusart,
+    pub mssp: mssp::Mssp,
 }
 
 impl Peripherals {
@@ -45,6 +47,7 @@ impl Peripherals {
     pub fn new(variant: Variant) -> Self {
         Peripherals {
             eusart: eusart::Eusart::new(variant),
+            mssp: mssp::Mssp::new(variant),
         }
     }
 
@@ -56,6 +59,7 @@ impl Peripherals {
     /// register, FIFO push, baud-generator reload, etc.).
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
         self.eusart.on_sfr_write(addr, value, mem);
+        self.mssp.on_sfr_write(addr, value, mem);
     }
 
     /// Advance every peripheral's internal time by `n` Tcy.
@@ -64,6 +68,7 @@ impl Peripherals {
     /// PIR1.TXIF, etc.) without needing a callback layer.
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
         self.eusart.tick_tcy(n, mem);
+        self.mssp.tick_tcy(n, mem);
     }
 
     /// Throw away each peripheral's internal state machine.
@@ -75,5 +80,6 @@ impl Peripherals {
     /// non-SFR state hidden inside each peripheral struct.
     pub fn reset_state(&mut self) {
         self.eusart.reset_state();
+        self.mssp.reset_state();
     }
 }
