@@ -348,6 +348,34 @@ mod tests {
         );
     }
 
+    /// Regression: the EEPROM hook's RD-self-clear and
+    /// WRERR-set paths must NOT leak unimplemented bit 5
+    /// of EECON1 from the firmware-intended `value`
+    /// parameter into SFR memory.  Set bit 5 in `value`
+    /// alongside RD or WR, and confirm bit 5 stays cleared
+    /// in EECON1 after the hook runs.
+    #[test]
+    fn unimplemented_eecon1_bit5_does_not_leak_via_hook() {
+        // Path 1: RD self-clear must not set bit 5.
+        let mut ee = Eeprom::default();
+        let mut mem = fresh_mem();
+        // Pre-condition: memory[EECON1] starts at 0 (POR).
+        // Firmware-intended `value` includes bit 5 set.
+        let value = EECON1_RD | (1 << 5);
+        ee.handle_eecon1_write(value, &mut mem);
+        let con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
+        assert_eq!(con1 & (1 << 5), 0, "bit 5 must not leak via RD path");
+
+        // Path 2: WRERR-set on bad unlock must not set bit 5.
+        let mut ee = Eeprom::default();
+        let mut mem = fresh_mem();
+        let value = EECON1_WREN | EECON1_WR | (1 << 5);
+        ee.handle_eecon1_write(value, &mut mem);
+        let con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
+        assert_eq!(con1 & EECON1_WRERR, EECON1_WRERR);
+        assert_eq!(con1 & (1 << 5), 0, "bit 5 must not leak via WRERR path");
+    }
+
     #[test]
     fn reset_state_drops_in_flight_but_preserves_storage() {
         let mut ee = Eeprom::default();
