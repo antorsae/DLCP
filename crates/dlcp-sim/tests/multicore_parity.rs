@@ -228,14 +228,24 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // hex records starting at offset 0x7800).  Wall-clock
     // < 100 ms locally.
     //
-    // Whether TX bytes flow yet depends on (a) MAIN reaching
-    // the current-loop service path that emits its first
-    // frame and (b) CONTROL reaching the point where it
-    // polls / responds.  At 10M ticks `tx_history.len()` is
-    // still 0 -- MAIN parks in a chain-stimulus polling loop
-    // around 0x428C (tracked as task #21).  Subsequent
-    // sub-tasks tighten the assertion to a non-zero count
-    // once stimulus + peripheral fidelity are sufficient.
+    // At 10M ticks `tx_history.len()` is still 0.  The
+    // first MAIN poll loop is `flow_timer3_blocking_delay_449e`
+    // at PC=0x428C (PIR2.TMR3IF poll); Timer3 IS counting
+    // correctly in our sim (4015 Tcy/wrap matches the
+    // expected 1:2-prescaler reload-from-0xF830 cycle).
+    // V3.1's boot has multiple `timer3_blocking_delay` calls
+    // totaling many seconds of simulated time -- by 1B ticks
+    // (~21 s simulated, ~7 s wall) MAIN clears those and
+    // advances to a new poll at PC=0x4738
+    // (`wait_bf_clear_loop`, I2C SSPSTAT.BF poll).  That
+    // loop spin-retries because there's no DSP slave on the
+    // I2C bus to ACK transfers -- task #23 (TAS3108 DSP I2C
+    // slave model) covers the next chain-convergence step.
+    // Long-running boots (>= 1B ticks) are too slow for
+    // a unit-test-style scaffold anyway; subsequent
+    // sub-tasks will need a chunked-step harness à la
+    // gpsim's `chain_gpsim` SingleMainChainHarness, plus
+    // the slave model, to reach TX-byte parity.
     chain.step_ticks(10_000_000);
 
     // Both cores made forward progress (cycle counter
