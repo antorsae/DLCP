@@ -268,16 +268,17 @@ fn chain_with_v171_and_v31_steps_without_panic() {
 
     // MAIN ran past BOTH trampolines (the baked GOTO 0x1000
     // and the shipped GOTO 0x1014 at flash[0x1000..0x1004])
-    // and into V3.1 application code.  At 500M universal
-    // ticks ≈ 42M Tcy on the 2455, MAIN's PC has been
-    // observed at 0x428E (mid-`flow_timer3_blocking_delay_449e`
-    // BRA, a normal Timer3 overflow poll between DSP init
-    // bursts -- see the longer comment above the
-    // `step_ticks` call for context).  Lock the progression
-    // in with a `> 0x4000` lower bound.  If a future
-    // regression strands MAIN somewhere earlier (back at
-    // 0x1014, in early-init bank-clear loops, etc.) this
-    // assertion fires.
+    // and into V3.1 application code.  By the time
+    // `run_until` exits with `bytes_acked >= 1000`, MAIN's
+    // PC has typically been observed at 0x428E
+    // (mid-`flow_timer3_blocking_delay_449e` BRA, a normal
+    // Timer3 overflow poll between DSP init bursts -- see
+    // the longer comment above the `run_until` call for
+    // context on why this is the chain-progress milestone).
+    // Lock the progression in with a `> 0x4000` lower
+    // bound.  If a future regression strands MAIN somewhere
+    // earlier (back at 0x1014, in early-init bank-clear
+    // loops, etc.) this assertion fires.
     let main_pc = chain.cores[i_main].pc();
     assert!(
         main_pc > 0x4000,
