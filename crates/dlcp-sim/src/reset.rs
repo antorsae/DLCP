@@ -25,16 +25,28 @@
 //!   that flips once HFINTOSC stabilises -- a few hundred Tcy
 //!   after POR per DS40001303H §2.5.2.1).  Those are P2 work.
 //!
-//! ### What this module DOES do (extended in P1.8d)
+//! ### What this module DOES do (extended in P1.8d / P2.1)
 //!
-//! POR additionally programs the SFR window with the full
-//! K20 / 2455 power-on initial values per their datasheets'
-//! "Initialization Conditions for All Registers" tables (K20:
-//! DS40001303H Table 4-4 p.56-60; 2455: DS39632E Table 4-2).
-//! Without this the V1.71 / V2.3 boot paths read 0 for SFRs
-//! the silicon brings up non-zero (TRIS = 1s for all-input
-//! POR, ANSEL = 1s for all-analog, T0CON = 1s, IPRx = 1s,
-//! etc.) and immediately diverge.
+//! POR programs the SFR window with the full K20 power-on
+//! initial values per DS40001303H Table 4-4 p.56-60.  BOR
+//! and MCLR/WDT/RESET use distinct strategies:
+//!
+//!   * **POR**: data-memory wipe + RCON-rewrite +
+//!     `apply_por_sfr_defaults` (variant-aware K20_POR
+//!     non-zero defaults).
+//!   * **BOR**: SFR-window wipe (0xF60..0xFFF only) +
+//!     `apply_por_sfr_defaults` + RCON-rewrite.  GPRs
+//!     preserved per §4.4.
+//!   * **MCLR/WDT/RESET-instruction**: per-SFR enumeration
+//!     (`apply_k20_mclr_zero_sfrs` for the fully-zero MCLR
+//!     rows, `apply_k20_mclr_rmw_sfrs` for the mixed
+//!     preserved/fixed-bit rows) +
+//!     `apply_por_sfr_defaults` on top.  GPRs preserved.
+//!
+//! 2455 is not yet wired (tracked inside
+//! `apply_por_sfr_defaults`'s docstring); the V2.3 MAIN
+//! parity gate work will add the parallel DS39632E
+//! Table 4-2 tables when it lands.
 
 use crate::core::Core;
 use crate::memory::{Address, Variant};
@@ -281,14 +293,21 @@ fn wipe_sfr_window(core: &mut Core) {
 /// add a parallel match arm with DS39632E Table 4-2's defaults.
 ///
 /// **Known gap (scoped to Phase 2 V1.71 K20 parity):**
-/// because the 2455 arm is a no-op, a BOR or non-POR reset on
-/// a 2455 core wipes the SFR window without re-establishing
-/// the 2455's non-zero POR defaults (TXSTA TRMT, T0CON,
-/// IPRx, etc.).  The current Phase-2 parity test suite does
-/// not exercise a 2455 reset path, so this is a deliberately
-/// deferred limitation.  The V2.3 MAIN parity gate landing
-/// later will add the 2455 K20-equivalent table (and parallel
-/// MCLR zero/RMW lists).
+/// because the 2455 arm is a no-op:
+///   * On POR a 2455 core ends with all-zero SFRs (the
+///     pre-call data-memory wipe leaves them 0, and the
+///     no-op 2455 arm doesn't restore the non-zero
+///     defaults).
+///   * On BOR a 2455 core ends with all-zero SFRs (the
+///     BOR-arm SFR-window wipe leaves them 0, same path).
+///   * On MCLR/WDT/RESET a 2455 core preserves whatever
+///     SFR bytes existed pre-reset because the MCLR
+///     zero/RMW lists are K20-only.
+/// The current Phase-2 parity test suite does not exercise
+/// any 2455 reset path, so this is a deliberately deferred
+/// limitation.  The V2.3 MAIN parity gate landing later will
+/// add the 2455 K20-equivalent table (and parallel MCLR
+/// zero/RMW lists).
 fn apply_por_sfr_defaults(core: &mut Core) {
     match core.variant() {
         Variant::Pic18F25K20 => apply_k20_por_sfr_defaults(core),
