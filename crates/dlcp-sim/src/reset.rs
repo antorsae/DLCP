@@ -279,6 +279,16 @@ fn wipe_sfr_window(core: &mut Core) {
 ///
 /// 2455: not yet wired.  When the 2455 isa-parity gate lands,
 /// add a parallel match arm with DS39632E Table 4-2's defaults.
+///
+/// **Known gap (scoped to Phase 2 V1.71 K20 parity):**
+/// because the 2455 arm is a no-op, a BOR or non-POR reset on
+/// a 2455 core wipes the SFR window without re-establishing
+/// the 2455's non-zero POR defaults (TXSTA TRMT, T0CON,
+/// IPRx, etc.).  The current Phase-2 parity test suite does
+/// not exercise a 2455 reset path, so this is a deliberately
+/// deferred limitation.  The V2.3 MAIN parity gate landing
+/// later will add the 2455 K20-equivalent table (and parallel
+/// MCLR zero/RMW lists).
 fn apply_por_sfr_defaults(core: &mut Core) {
     match core.variant() {
         Variant::Pic18F25K20 => apply_k20_por_sfr_defaults(core),
@@ -797,12 +807,28 @@ mod tests {
     /// BOR wipes the entire SFR window 0xF60..0xFFF, so any
     /// SFR firmware previously set survives only via the
     /// K20_POR re-application.  GPRs survive untouched.
+    /// Iterates the full window so a regression that skipped
+    /// any sub-range still trips.
     #[test]
     fn bor_wipes_full_sfr_window_preserves_gprs() {
+        // The K20_POR table from this module enumerates the
+        // SFRs that come up at non-zero values after a
+        // POR/BOR.  Any address NOT in this list must end at
+        // 0 after the BOR wipe.  Build the lookup once.
+        let k20_por_addrs: std::collections::HashSet<u16> = [
+            0xFF1u16, 0xFF0, 0xFD5, 0xFD3, 0xFD2, 0xFCB, 0xFAC, 0xFB9, 0xFB8,
+            0xF9F, 0xFA2, 0xF92, 0xF93, 0xF94, 0xF7E, 0xF7F, 0xF7C, 0xF78, 0xF77,
+            // RCON is also expected to be the composed BOR
+            // value, not 0 -- exclude it from the "must be 0"
+            // assertion.
+            0xFD0,
+        ]
+        .into_iter()
+        .collect();
+
         let mut core = Core::new(Variant::Pic18F25K20);
         let mut stack = Stack::new();
-        // Pre-poison every byte in the SFR window AND a
-        // selection of GPR bytes.
+
         for addr in 0xF60u16..=0xFFF {
             core.memory.write_raw(Address::from_raw(addr), 0xAB);
         }
@@ -811,16 +837,19 @@ mod tests {
         }
         apply_reset(&mut core, &mut stack, ResetSource::BrownOut);
 
-        // Pick a few SFRs that aren't in K20_POR -- they
-        // should all be 0 after the wipe.
-        for addr in [0xF80u16, 0xF9E, 0xFAD, 0xFAF, 0xFCC] {
+        // Every non-K20_POR SFR must be 0.  Iterate the full
+        // window to catch any sub-range the wipe might miss.
+        for addr in 0xF60u16..=0xFFF {
+            if k20_por_addrs.contains(&addr) {
+                continue;
+            }
             assert_eq!(
                 core.memory.read_raw(Address::from_raw(addr)),
                 0,
                 "non-K20_POR SFR 0x{addr:03X} must be 0 after BOR wipe"
             );
         }
-        // K20_POR non-zero entries should be re-established.
+        // K20_POR non-zero entries are re-established.
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFCB)), 0xFF, "PR2");
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFD5)), 0xFF, "T0CON");
         assert_eq!(
@@ -864,12 +893,12 @@ mod tests {
         assert_eq!(porte & 0x0F, 0x08, "RE3 preserved, RE2..0 reset");
     }
 
-    /// MCLR is a no-op for STATUS / T3CON / RCSTA in our
-    /// model: STATUS / T3CON have all-`u` MCLR rows, RCSTA
-    /// has `0000 000x` MCLR which is RCSTA-as-0 in the
-    /// `x`-as-0 convention.  Test just asserts the helpers
-    /// don't blow away the preserved cases on STATUS / T3CON
-    /// (RCSTA is in the zero list and DOES go to 0 on MCLR).
+    /// MCLR is fully `u` (preserved) for STATUS and T3CON
+    /// per Tbl 4-4 column-2: `---u uuuu` and `uuuu uuuu`
+    /// respectively.  Neither appears in K20_MCLR_ZERO_SFRS
+    /// nor K20_MCLR_RMW; BOR's SFR-window wipe handles their
+    /// POR/BOR reset.  Test asserts MCLR doesn't disturb
+    /// pre-reset values.
     #[test]
     fn mclr_preserves_t3con_status_on_k20() {
         let mut core = Core::new(Variant::Pic18F25K20);
