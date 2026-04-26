@@ -230,31 +230,28 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // Same-PSU boot: CONTROL and MAIN come up together.
     chain.schedule_initial_steps(&[0, 0]);
 
-    // Step budget: 500 million universal ticks ≈ 10 s
-    // simulated time (≈ 31 M Tcy on K20, ≈ 42 M Tcy on
-    // 2455).  Wall-clock ~3.5 s locally.
+    // Use the chunked-step harness landed in P3.5 part-8a
+    // to wait until the TAS3108 slave has ACKed at least
+    // 1000 I2C bytes from MAIN (proving DSP init traffic
+    // is flowing through the chain), with a 1 B-tick safety
+    // ceiling.  Chunk size of 10 M ticks ≈ 70 ms wall
+    // each; convergence on the prior fixed 500 M budget
+    // observed ~6 k ACKs, so the first 1 k ACKs land much
+    // sooner -- run_until's early exit shaves the wall-
+    // clock cost.
     //
-    // At 500M ticks the TAS3108 slave has observed
-    // thousands of ACKed I2C bytes from MAIN -- proof
-    // that MAIN cleared its early-boot blocking delays,
-    // got past the AN0 standby gate, started talking to
-    // the DSP, and that the chain dispatch correctly
-    // routes MSSP completions to the coupled slave with
-    // ACKSTAT overrides firing per task #23's wiring.
-    //
-    // tx_history is still 0 at this budget: V3.1's boot
-    // continues into chain protocol convergence (UART
-    // current-loop traffic to CONTROL) but only after a
-    // long DSP coefficient init phase that totals several
-    // seconds of simulated time.  Reaching the first
-    // UART TX byte would require >= 1 B universal ticks
-    // (>= 7 s wall-clock) per scaffolding probes.  That
-    // step-budget scale is too slow for a unit-test-grade
-    // assertion; subsequent work will introduce a
-    // chunked-step harness à la gpsim's
-    // `chain_gpsim::SingleMainChainHarness` so longer
-    // simulated runs stay tractable (task #25 follow-up).
-    chain.step_ticks(500_000_000);
+    // Why not wait for first UART TX byte instead?  V3.1's
+    // chain protocol convergence (UART traffic to CONTROL)
+    // requires several seconds more simulated time (>= 1 B
+    // universal ticks = >= 7 s wall-clock per scaffolding
+    // probes), still too slow for a unit-test-grade
+    // assertion.  Locking in "DSP init began" is the
+    // strongest predicate that still terminates quickly.
+    chain.run_until(
+        10_000_000,    // chunk_ticks: 10 M = ~70 ms wall
+        1_000_000_000, // max_ticks:  1 B safety ceiling
+        |c| c.tas3108_slaves[i_tas3108].bytes_acked >= 1000,
+    );
 
     // Both cores made forward progress (cycle counter
     // strictly positive).
@@ -310,24 +307,25 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         control_pc
     );
 
-    // TAS3108 slave saw substantial DSP-init traffic from
-    // MAIN's master-mode I2C path (`dsp_ping`,
-    // `volume_dsp_write`, plus DSP coefficient init writes
-    // to biquad subaddresses 0x37..0x90).  At 500M universal
-    // ticks the observed ACK count during scaffolding was
-    // ~6 k bytes; lock in `> 1000` as a generous floor that
-    // still catches "TAS3108 slave never saw any byte"
-    // regressions (peripheral wiring broken, pinnet routing
-    // wrong, etc.).
+    // run_until exited because the predicate
+    // `bytes_acked >= 1000` became true (or the 1 B safety
+    // ceiling was hit -- we'd notice via current_tick and
+    // a low ACK count).  The actual ACK count at exit will
+    // overshoot 1000 by however many bytes the final
+    // 10 M-tick chunk added on top.
     assert!(
-        chain.tas3108_slaves[i_tas3108].bytes_acked > 1000,
-        "TAS3108 slave should have ACKed > 1000 DSP-init bytes by tick 500M; got acked={}",
+        chain.tas3108_slaves[i_tas3108].bytes_acked >= 1000,
+        "TAS3108 slave should have ACKed >= 1000 DSP-init bytes; got acked={}",
         chain.tas3108_slaves[i_tas3108].bytes_acked,
     );
 
-    // Universal clock advanced to the step target.
-    assert_eq!(
-        chain.current_tick, 500_000_000,
-        "chain current_tick must equal step target"
+    // Verify run_until actually exited early (not at the
+    // safety ceiling).  Convergence at the prior fixed
+    // 500 M budget showed ~6 k ACKs; the first 1 k must
+    // land well before 1 B ticks.
+    assert!(
+        chain.current_tick < 1_000_000_000,
+        "run_until hit the 1 B safety ceiling without converging; current_tick={}",
+        chain.current_tick,
     );
 }
