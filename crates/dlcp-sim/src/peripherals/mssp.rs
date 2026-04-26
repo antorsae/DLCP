@@ -146,6 +146,18 @@ impl Default for I2cState {
 #[derive(Clone, Debug, Default)]
 pub struct Mssp {
     state: I2cState,
+    /// Mirror of the byte the last accepted SSPBUF write
+    /// loaded.  Used to roll back the SSPBUF backing memory
+    /// on a write-collision: per DS40001303H §17.4.5, "If
+    /// the user writes to the SSPBUF when a transmit is
+    /// already in progress (i.e., SSPSR is still shifting
+    /// out a data byte), then WCOL is set and the contents
+    /// of the buffer are unchanged (the write doesn't
+    /// occur)."  We approximate "the contents are unchanged"
+    /// by remembering the previously-accepted byte and
+    /// restoring it on collision.  Defaults to 0 if no
+    /// prior write has been accepted (reset state).
+    last_accepted_sspbuf_byte: u8,
 }
 
 impl Mssp {
@@ -155,12 +167,13 @@ impl Mssp {
 
     pub fn reset_state(&mut self) {
         self.state = I2cState::Idle;
+        self.last_accepted_sspbuf_byte = 0;
     }
 
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
         match addr {
             SSPCON2_ADDR => self.handle_sspcon2_write(value, mem),
-            SSPBUF_ADDR => self.handle_sspbuf_write(mem),
+            SSPBUF_ADDR => self.handle_sspbuf_write(value, mem),
             SSPCON1_ADDR | SSPSTAT_ADDR | SSPADD_ADDR | SSPMSK_ADDR => {}
             _ => {}
         }
@@ -272,10 +285,11 @@ impl Mssp {
     ///     but no TxByte runs.  Phase-2 firmware idiom is
     ///     to enable the peripheral first then write
     ///     SSPBUF, so this branch is mostly defensive.
-    fn handle_sspbuf_write(&mut self, mem: &mut Memory) {
+    fn handle_sspbuf_write(&mut self, written_byte: u8, mem: &mut Memory) {
         if !is_i2c_master_enabled(mem) {
-            // Peripheral off; SSPBUF is just memory.  BF
-            // mirrors the latch-occupied state.
+            // Peripheral off; SSPBUF is just memory.  Accept
+            // the write; BF mirrors the latch-occupied state.
+            self.last_accepted_sspbuf_byte = written_byte;
             let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
             mem.write_raw(
                 crate::memory::Address::from_raw(SSPSTAT_ADDR),
@@ -285,16 +299,25 @@ impl Mssp {
         }
         if !matches!(self.state, I2cState::Idle) {
             // Write-collision: set WCOL, leave BF unchanged,
-            // don't schedule.  Firmware must clear WCOL by
-            // SW write before retrying.
+            // don't schedule, AND roll back the SSPBUF
+            // backing memory to the byte that was previously
+            // loaded -- per DS §17.4.5, "the contents of the
+            // buffer are unchanged (the write doesn't
+            // occur)".
             let con1 = mem.read_raw(crate::memory::Address::from_raw(SSPCON1_ADDR));
             mem.write_raw(
                 crate::memory::Address::from_raw(SSPCON1_ADDR),
                 con1 | SSPCON1_WCOL,
             );
+            mem.write_raw(
+                crate::memory::Address::from_raw(SSPBUF_ADDR),
+                self.last_accepted_sspbuf_byte,
+            );
             return;
         }
-        // Idle path: BF asserts, TxByte scheduled.
+        // Idle path: accept the write, BF asserts, TxByte
+        // scheduled.
+        self.last_accepted_sspbuf_byte = written_byte;
         let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
         mem.write_raw(
             crate::memory::Address::from_raw(SSPSTAT_ADDR),
@@ -484,29 +507,34 @@ mod tests {
         assert_eq!(mssp.state, I2cState::RxByte(8 * 120));
     }
 
-    /// SSPBUF write while busy must set WCOL and not change
-    /// BF nor schedule a TX.
+    /// SSPBUF write while busy must set WCOL, not change
+    /// BF, not schedule a TX, AND roll back the SSPBUF
+    /// backing byte to the previously-accepted value (per
+    /// DS §17.4.5: "contents of the buffer are unchanged").
     #[test]
-    fn sspbuf_write_while_busy_sets_wcol_no_schedule() {
+    fn sspbuf_write_while_busy_sets_wcol_rolls_back_buffer() {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
         enable_i2c_master(&mut mem, 0x77);
-        // Kick a Start sequence.
-        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut mem);
-        let saved_state = mssp.state.clone();
-        // Try SSPBUF write while Start is in flight.
+        // First TXBuf write: 0x42, accepted.
+        mssp.on_sfr_write(SSPBUF_ADDR, 0x42, &mut mem);
+        assert_eq!(mssp.last_accepted_sspbuf_byte, 0x42);
+        // Now firmware bug: writes SSPBUF again before TX
+        // completes.  apply_sfr_sw_write would have stored
+        // 0xAA into SSPBUF backing memory before the hook
+        // ran, so simulate that:
+        mem.write_raw(Address::from_raw(SSPBUF_ADDR), 0xAA);
         mssp.on_sfr_write(SSPBUF_ADDR, 0xAA, &mut mem);
-        assert_eq!(
-            mssp.state, saved_state,
-            "SSPBUF write during busy must not change state"
-        );
         let con1 = mem.read_raw(Address::from_raw(SSPCON1_ADDR));
         assert_eq!(
             con1 & SSPCON1_WCOL, SSPCON1_WCOL,
             "WCOL must assert on collision write"
         );
-        let stat = mem.read_raw(Address::from_raw(SSPSTAT_ADDR));
-        assert_eq!(stat & SSPSTAT_BF, 0, "BF must NOT change on collision");
+        let buf = mem.read_raw(Address::from_raw(SSPBUF_ADDR));
+        assert_eq!(
+            buf, 0x42,
+            "SSPBUF must roll back to previously-accepted byte (got 0x{buf:02X})"
+        );
     }
 
     /// SSPCON2 write while busy with a different trigger bit
