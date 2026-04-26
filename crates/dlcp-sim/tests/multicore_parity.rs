@@ -40,6 +40,7 @@ use dlcp_sim::chain::Chain;
 use dlcp_sim::core::Core;
 use dlcp_sim::hex::HexImage;
 use dlcp_sim::memory::Variant;
+use dlcp_sim::peripherals::tas3108::Tas3108;
 use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin};
 use dlcp_sim::reset::ResetSource;
 
@@ -214,42 +215,46 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
     chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
 
+    // TAS3108 audio DSP wired to MAIN's MSSP I²C bus (CS0=0
+    // -> slave addr 0x68/0x69 per `firmware/reference/tas3108.md`
+    // Tbl 6-1).  Without this slave, MAIN's `dsp_ping`
+    // (`firmware/patched/releases/DLCP_Firmware_V3.1.lst:7802`)
+    // and `volume_dsp_write` (lst:7838) get NACK on every
+    // master TX byte and the firmware spin-retries in
+    // `wait_bf_clear_loop` (label at lst:7753, observed park
+    // at lst:7757 = 0x4738).
+    let i_tas3108 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_tas3108);
+
     chain.apply_reset_all(ResetSource::PowerOn);
     // Same-PSU boot: CONTROL and MAIN come up together.
     chain.schedule_initial_steps(&[0, 0]);
 
-    // Step budget: 10 million universal ticks ≈ 209 ms
-    // simulated time on K20 (625 k Tcy at 16 ticks/Tcy) and
-    // ≈ 208 ms on 2455 (833 k Tcy at 12 ticks/Tcy).  Long
-    // enough to clear early-boot init + AN0 standby gate on
-    // MAIN, and to let CONTROL traverse the V1.71-shipped
-    // bootloader at 0x7800 and hand control back to user
-    // code (V1.71 hex DOES include the bootloader image; see
-    // hex records starting at offset 0x7800).  Wall-clock
-    // < 100 ms locally.
+    // Step budget: 500 million universal ticks ≈ 10 s
+    // simulated time (≈ 31 M Tcy on K20, ≈ 42 M Tcy on
+    // 2455).  Wall-clock ~3.5 s locally.
     //
-    // At 10M ticks `tx_history.len()` is still 0.  The
-    // first MAIN poll loop is `flow_timer3_blocking_delay_449e`
-    // at PC=0x428C (PIR2.TMR3IF poll); Timer3 IS counting
-    // correctly in our sim (4015 Tcy/wrap matches the
-    // expected 1:2-prescaler reload-from-0xF830 cycle).
-    // V3.1's boot has multiple `timer3_blocking_delay` calls
-    // totaling many seconds of simulated time -- by 1B ticks
-    // (~21 s simulated, ~7 s wall) MAIN clears those and
-    // advances to a new poll inside `wait_bf_clear_loop`
-    // (label at 0x4732; the observed park point at 0x4738
-    // is the `bnc wait_bf_clear_loop` retry-on-timeout).
-    // The loop polls SSPSTAT.BF -- the I2C "buffer full"
-    // bit.  That
-    // loop spin-retries because there's no DSP slave on the
-    // I2C bus to ACK transfers -- task #23 (TAS3108 DSP I2C
-    // slave model) covers the next chain-convergence step.
-    // Long-running boots (>= 1B ticks) are too slow for
-    // a unit-test-style scaffold anyway; subsequent
-    // sub-tasks will need a chunked-step harness à la
-    // gpsim's `chain_gpsim` SingleMainChainHarness, plus
-    // the slave model, to reach TX-byte parity.
-    chain.step_ticks(10_000_000);
+    // At 500M ticks the TAS3108 slave has observed
+    // thousands of ACKed I2C bytes from MAIN -- proof
+    // that MAIN cleared its early-boot blocking delays,
+    // got past the AN0 standby gate, started talking to
+    // the DSP, and that the chain dispatch correctly
+    // routes MSSP completions to the coupled slave with
+    // ACKSTAT overrides firing per task #23's wiring.
+    //
+    // tx_history is still 0 at this budget: V3.1's boot
+    // continues into chain protocol convergence (UART
+    // current-loop traffic to CONTROL) but only after a
+    // long DSP coefficient init phase that totals several
+    // seconds of simulated time.  Reaching the first
+    // UART TX byte would require >= 1 B universal ticks
+    // (>= 7 s wall-clock) per scaffolding probes.  That
+    // step-budget scale is too slow for a unit-test-grade
+    // assertion; subsequent work will introduce a
+    // chunked-step harness à la gpsim's
+    // `chain_gpsim::SingleMainChainHarness` so longer
+    // simulated runs stay tractable (task #25 follow-up).
+    chain.step_ticks(500_000_000);
 
     // Both cores made forward progress (cycle counter
     // strictly positive).
@@ -305,9 +310,24 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         control_pc
     );
 
+    // TAS3108 slave saw substantial DSP-init traffic from
+    // MAIN's master-mode I2C path (`dsp_ping`,
+    // `volume_dsp_write`, plus DSP coefficient init writes
+    // to biquad subaddresses 0x37..0x90).  At 500M universal
+    // ticks the observed ACK count during scaffolding was
+    // ~6 k bytes; lock in `> 1000` as a generous floor that
+    // still catches "TAS3108 slave never saw any byte"
+    // regressions (peripheral wiring broken, pinnet routing
+    // wrong, etc.).
+    assert!(
+        chain.tas3108_slaves[i_tas3108].bytes_acked > 1000,
+        "TAS3108 slave should have ACKed > 1000 DSP-init bytes by tick 500M; got acked={}",
+        chain.tas3108_slaves[i_tas3108].bytes_acked,
+    );
+
     // Universal clock advanced to the step target.
     assert_eq!(
-        chain.current_tick, 10_000_000,
+        chain.current_tick, 500_000_000,
         "chain current_tick must equal step target"
     );
 }
