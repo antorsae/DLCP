@@ -116,6 +116,15 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
     // 0000h, where execution restarts."
     core.set_pc(0);
 
+    // Drop every peripheral's internal state.  Has to happen
+    // *before* the SFR rewrite below: if a peripheral's
+    // tick_tcy were called between the SFR wipe and a peripheral
+    // reset (e.g. via a stray advance_cycles in a test harness),
+    // the stale TSR shifter could still mutate the freshly-POR'd
+    // PIR1.TXIF / TXSTA.TRMT.  Clearing peripheral state here
+    // makes the reset path order-independent.
+    core.peripherals.reset_state();
+
     let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
     let rcon = match source {
         // POR: RI=1, TO=1, PD=1, POR=0, BOR=0.

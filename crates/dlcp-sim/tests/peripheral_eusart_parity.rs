@@ -61,7 +61,12 @@ fn build_eusart_demo_flash() -> Vec<u8> {
     //   0x000E: MOVWF BAUDCON (0xFB8, low byte = 0xB8)
     //   0x0010: MOVLW 0x55
     //   0x0012: MOVWF TXREG  (0xFAD, low byte = 0xAD)
-    //   0x0014: BRA -2       (loop forever; opcode 0xD7FF)
+    //   0x0014: BRA -1       (loop forever; n = -1 in 11-bit
+    //                         signed -> encoded as 0x7FF;
+    //                         full opcode = 0xD7FF; PC after
+    //                         BRA fetch is 0x16, target =
+    //                         0x16 + 2 × -1 = 0x14, looping
+    //                         on the BRA itself)
     //
     // a=0 puts addresses 0x60..0xFF on the Access-bank-high half
     // mapped to SFRs 0xF60..0xFFF, which is exactly the EUSART
@@ -106,12 +111,11 @@ fn run_demo(cycle_target: u64) -> (Core, Stack) {
 }
 
 /// After ~12 instructions (each 1 Tcy), the firmware has finished
-/// writing TXREG and TRMT must read 0.
+/// writing TXREG and the EUSART has immediately transferred the
+/// byte to TSR (TSR was idle).  TRMT clears (TSR busy) but TXIF
+/// stays 1 because TXREG is empty after the immediate transfer.
 #[test]
-fn txreg_write_clears_trmt_via_executor() {
-    // The TXREG write lands at instruction 11 (after 11 Tcy of
-    // setup ops).  Run for 12 Tcy total to land just past the
-    // TXREG write.
+fn txreg_write_clears_trmt_keeps_txif_via_executor() {
     let (core, _) = run_demo(12);
     let txsta = core.memory.read_raw(Address::from_raw(TXSTA_ADDR));
     let pir1 = core.memory.read_raw(Address::from_raw(PIR1_ADDR));
@@ -120,7 +124,11 @@ fn txreg_write_clears_trmt_via_executor() {
         0,
         "TRMT must be 0 immediately after TXREG write (TXSTA=0x{txsta:02X})"
     );
-    assert_eq!(pir1 & PIR1_TXIF, 0, "TXIF must be 0 mid-frame");
+    assert_eq!(
+        pir1 & PIR1_TXIF,
+        PIR1_TXIF,
+        "TXIF must stay 1 after immediate TXREG -> TSR transfer (PIR1=0x{pir1:02X})"
+    );
     assert_eq!(
         txsta & TXSTA_TXEN,
         TXSTA_TXEN,
@@ -128,13 +136,15 @@ fn txreg_write_clears_trmt_via_executor() {
     );
 }
 
-/// After the full frame drains (10 bits × 384 Tcy/bit at SPBRG=5),
-/// TRMT and TXIF must reassert.
+/// After the full frame drains (10 bits × 96 Tcy/bit at SPBRG=5),
+/// TRMT must reassert.  TXIF was already 1 throughout (TXREG was
+/// empty after the immediate transfer).
 #[test]
-fn frame_completes_after_3840_tcy() {
-    // 12 Tcy of setup + ~3840 Tcy frame + a BRA-loop slack.  Run
-    // a comfortable 4_000 Tcy and check the post-frame state.
-    let (core, _) = run_demo(4_000);
+fn frame_completes_after_960_tcy() {
+    // 11 Tcy of setup writes (instructions 0..10) + 960 Tcy
+    // frame.  The BRA at PC=0x14 takes 2 Tcy per iteration, so
+    // we need ~972+ Tcy to land safely past the frame deadline.
+    let (core, _) = run_demo(1_100);
     let txsta = core.memory.read_raw(Address::from_raw(TXSTA_ADDR));
     let pir1 = core.memory.read_raw(Address::from_raw(PIR1_ADDR));
     assert_eq!(
@@ -145,7 +155,7 @@ fn frame_completes_after_3840_tcy() {
     assert_eq!(
         pir1 & PIR1_TXIF,
         PIR1_TXIF,
-        "TXIF must assert post-frame (PIR1=0x{pir1:02X})"
+        "TXIF stays 1 post-frame (PIR1=0x{pir1:02X})"
     );
 }
 
@@ -153,10 +163,10 @@ fn frame_completes_after_3840_tcy() {
 /// loop ticks 1 Tcy at a time -- regression test for the
 /// peripheral-tick hook firing on every instruction.
 #[test]
-fn trmt_stays_low_through_brz_loop_until_drained() {
-    // 12 setup Tcy + 100 Tcy of mid-frame loop = 112 Tcy total,
-    // well below the 12 + 3840 frame deadline.
-    let (core, _) = run_demo(112);
+fn trmt_stays_low_through_bra_loop_until_drained() {
+    // 11 setup Tcy + 100 Tcy of mid-frame loop = 111 Tcy total,
+    // well below the 11 + 960 frame deadline.
+    let (core, _) = run_demo(111);
     let txsta = core.memory.read_raw(Address::from_raw(TXSTA_ADDR));
     assert_eq!(
         txsta & TXSTA_TRMT,

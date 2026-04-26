@@ -38,20 +38,35 @@
 //!
 //! ## Baud generator
 //!
-//! Datasheet Tbl 17-1 / 17-2 (K20) / 22-1 / 22-2 (2455):
+//! Datasheet Tbl 17-1 / 17-2 (K20) / 22-1 / 22-2 (2455) gives
+//! the formulas in *FOSC* terms:
 //!
 //! ```text
-//!   SYNC=0, BRGH=0, BRG16=0:  Fcy / (64 × (SPBRG + 1))
-//!   SYNC=0, BRGH=1, BRG16=0:  Fcy / (16 × (SPBRG + 1))
-//!   SYNC=0, BRGH=0, BRG16=1:  Fcy / (16 × (SPBRGH:SPBRG + 1))
-//!   SYNC=0, BRGH=1, BRG16=1:  Fcy /  (4 × (SPBRGH:SPBRG + 1))
+//!   SYNC=0, BRGH=0, BRG16=0:  Baud = FOSC / (64 × (SPBRG + 1))
+//!   SYNC=0, BRGH=1, BRG16=0:  Baud = FOSC / (16 × (SPBRG + 1))
+//!   SYNC=0, BRGH=0, BRG16=1:  Baud = FOSC / (16 × (SPBRGH:SPBRG + 1))
+//!   SYNC=0, BRGH=1, BRG16=1:  Baud = FOSC /  (4 × (SPBRGH:SPBRG + 1))
 //! ```
 //!
+//! Converting to *Tcy* (FOSC / 4 -> Tcy = 4 FOSC cycles):
+//!
+//! ```text
+//!   bit_period_seconds = factor_FOSC × (n + 1) / FOSC
+//!   bit_period_tcy     = bit_period_seconds × Fcy
+//!                      = factor_FOSC × (n + 1) / 4
+//! ```
+//!
+//! So in *Tcy units* the divisor factors collapse to
+//! `{16, 4, 4, 1}` for `(BRGH, BRG16) ∈ {(0,0), (1,0), (0,1),
+//! (1,1)}`.  V1.71's SPBRG=5 / BRGH=0 / BRG16=0 -> 16 × 6 = 96
+//! Tcy/bit, matching the 31250 baud at 3 MIPS Fcy
+//! (3e6 / 31250 = 96).
+//!
 //! The peripheral stores the *bit period in Tcy*, recomputed on
-//! every TXSTA / BAUDCON / SPBRG / SPBRGH write.  A 0-divisor
-//! configuration would produce a meaningless period — the model
-//! clamps to 1 Tcy/bit so `tick_tcy` still makes progress and
-//! the firmware bug becomes self-evident.
+//! every TXREG load.  A 0-divisor configuration would produce a
+//! meaningless period — the model clamps to 1 Tcy/bit so
+//! `tick_tcy` still makes progress and the firmware bug becomes
+//! self-evident.
 
 use crate::memory::{Address, Memory, Variant};
 
@@ -74,6 +89,7 @@ pub const PIR1_ADDR: u16 = 0xF9E;
 
 const TXSTA_TXEN: u8 = 1 << 5;
 const TXSTA_SYNC: u8 = 1 << 4;
+const TXSTA_TX9: u8 = 1 << 6;
 const TXSTA_BRGH: u8 = 1 << 2;
 const TXSTA_TRMT: u8 = 1 << 1;
 const RCSTA_SPEN: u8 = 1 << 7;
@@ -82,27 +98,31 @@ const PIR1_TXIF: u8 = 1 << 4;
 
 #[derive(Clone, Debug, Default)]
 pub struct Eusart {
-    /// Tcy remaining until the in-flight TX frame finishes
-    /// shifting out (drops TRMT from 0 back to 1 + sets TXIF
-    /// when this reaches 0).  `None` means the shifter is
-    /// idle and TRMT is already 1.
-    tx_pending_tcy: Option<u32>,
-    /// Pending byte loaded by the most recent TXREG write
-    /// while the shifter was busy.  None means TXREG is
-    /// available for the firmware to write the next byte.
-    /// (PIC18 EUSART has a 1-deep TX FIFO: TXREG itself is
-    /// the FIFO slot, and TSR is the actual shifter; firmware
-    /// can write a new TXREG while TRMT=0 as long as TXIF=1
-    /// signalling the previous load already moved into TSR.
-    /// For the Phase-2 scope we model TXREG as held for one
-    /// frame's worth of Tcy — fidelity here is enough for
-    /// the cycle-stamped boot path.)
-    tx_pending_byte: Option<u8>,
+    /// Tcy remaining until the in-flight TX shift register
+    /// (TSR) finishes shifting out the current byte.  Drops
+    /// TXSTA.TRMT from 0 back to 1 when this reaches 0.
+    /// `None` means TSR is idle and TRMT is already 1.
+    tsr_busy_tcy: Option<u32>,
+    /// Byte queued in TXREG while TSR was busy (PIC18 EUSART
+    /// has a 1-deep TX FIFO: TXREG holds the next byte while
+    /// TSR shifts the current one).  `None` means TXREG is
+    /// empty and TXIF should be asserted (assuming TXEN=1).
+    txreg_holding: Option<u8>,
 }
 
 impl Eusart {
     pub fn new(_variant: Variant) -> Self {
         Eusart::default()
+    }
+
+    /// Throw away any in-flight TX frame and queued TXREG
+    /// byte.  Called from `apply_reset` for POR/BOR/MCLR/WDT/
+    /// RESET so a frame in flight when the reset fires
+    /// doesn't survive into the post-reset world to mutate
+    /// SFRs after the boot vector starts running again.
+    pub fn reset_state(&mut self) {
+        self.tsr_busy_tcy = None;
+        self.txreg_holding = None;
     }
 
     /// React to a SW-driven SFR write at `addr` whose new
@@ -112,67 +132,104 @@ impl Eusart {
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
         match addr {
             TXREG_ADDR => self.handle_txreg_write(value, mem),
-            // TXSTA/RCSTA/SPBRG/SPBRGH/BAUDCON writes don't
-            // immediately move data in async mode -- they only
-            // change the shape of the next TX frame.  We
-            // recompute the baud period the next time TXREG
-            // is loaded, so no eager work needed here.
-            TXSTA_ADDR
-            | RCSTA_ADDR
-            | SPBRG_ADDR
-            | SPBRGH_ADDR
-            | BAUDCON_ADDR => {}
+            // TXSTA / RCSTA writes can change the async-enable
+            // gate (TXEN, SPEN, SYNC) -- so re-evaluate TXIF.
+            TXSTA_ADDR | RCSTA_ADDR => self.recompute_txif(mem),
+            // SPBRG{,H} / BAUDCON only affect the baud-period
+            // formula evaluated on the next TXREG load -- no
+            // eager work needed.
+            SPBRG_ADDR | SPBRGH_ADDR | BAUDCON_ADDR => {}
             _ => {}
         }
     }
 
     /// Advance the EUSART by `n` Tcy, updating TXSTA.TRMT and
-    /// PIR1.TXIF when the in-flight frame finishes.
+    /// PIR1.TXIF when the in-flight TSR shift completes (and
+    /// possibly chaining a held TXREG byte into the now-idle
+    /// TSR).
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
-        let Some(remaining) = self.tx_pending_tcy.as_mut() else {
+        let Some(remaining) = self.tsr_busy_tcy else {
             return;
         };
-        if n >= *remaining {
-            // Frame complete this tick.
-            self.tx_pending_tcy = None;
-            self.tx_pending_byte = None;
-            set_txsta_trmt(mem, true);
-            // Only assert TXIF if the transmitter is enabled --
-            // datasheet §17.4.1.5 ("TXIF flag"): TXIF reflects
-            // the TXREG-empty condition; the firmware enables
-            // the interrupt by setting TXIE separately.  We
-            // assert unconditionally because TXIF reflects the
-            // *empty* state, which is true by definition once
-            // the shifter drains.  Suppression of the IRQ
-            // happens in the IRQ controller (P2.7) via
-            // PIE1/IPEN/GIE -- not here.
-            set_pir1_txif(mem, true);
+        if n < remaining {
+            self.tsr_busy_tcy = Some(remaining - n);
+            return;
+        }
+        // TSR has just finished the current frame.
+        if let Some(_byte) = self.txreg_holding.take() {
+            // Held byte transfers from TXREG to TSR; a new
+            // frame begins immediately.  TXREG is empty now,
+            // so TXIF reasserts (subject to TXEN gate).  TSR
+            // remains busy with the new frame; TRMT stays 0.
+            self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+            self.recompute_txif(mem);
         } else {
-            *remaining -= n;
+            // TSR fully drained; nothing else to send.  TRMT
+            // asserts; TXIF reflects "TXREG empty" (already
+            // true since txreg_holding is None) -- no change.
+            self.tsr_busy_tcy = None;
+            set_txsta_trmt(mem, true);
+            self.recompute_txif(mem);
         }
     }
 
     fn handle_txreg_write(&mut self, byte: u8, mem: &mut Memory) {
-        // Compute baud-bit-period in Tcy from the current
-        // TXSTA / BAUDCON / SPBRG{,H} configuration.
-        let period_tcy = current_baud_bit_period_tcy(mem);
+        // The transmitter must be enabled for the frame to
+        // start shifting.  If disabled, the byte still loads
+        // into TXREG (datasheet behaviour: TXREG is just a
+        // memory-mapped latch), but no TSR transfer happens
+        // and TRMT/TXIF stay where they are.  The firmware
+        // idiom is to enable TXEN *after* loading TXREG to
+        // avoid a partial first-bit on the line.
+        if !is_async_tx_enabled(mem) {
+            // TXREG is full now; TXIF=0 (TXREG holds data,
+            // not yet transferred).  But the gate is also
+            // off, so the recompute keeps TXIF cleared.
+            self.txreg_holding = Some(byte);
+            self.recompute_txif(mem);
+            return;
+        }
 
-        // 10-bit frame for SYNC=0 (1 start + 8 data + 1 stop;
-        // TX9 enables a 9th data bit which we do not
-        // currently model in the period -- a known fidelity
-        // gap, called out in the eusart.rs docstring).  See
-        // DS40001303H Fig 17-3.
-        let frame_bits = 10u32;
-        let frame_tcy = period_tcy.saturating_mul(frame_bits);
-
-        self.tx_pending_byte = Some(byte);
-        self.tx_pending_tcy = Some(frame_tcy);
-
-        // The shifter is now busy: TRMT goes low; TXIF
-        // remains low until the frame drains.
-        set_txsta_trmt(mem, false);
-        set_pir1_txif(mem, false);
+        if self.tsr_busy_tcy.is_none() {
+            // TSR idle: immediate TXREG -> TSR transfer.
+            // TXREG is empty; TXIF asserts (gate is on).
+            // TSR is busy; TRMT clears.
+            self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+            self.txreg_holding = None;
+            set_txsta_trmt(mem, false);
+            self.recompute_txif(mem);
+        } else {
+            // TSR busy: hold byte in TXREG, wait for TSR
+            // drain.  TXIF clears (TXREG holds data).
+            self.txreg_holding = Some(byte);
+            set_txsta_trmt(mem, false);
+            self.recompute_txif(mem);
+        }
     }
+
+    /// Reassert PIR1.TXIF based on (TXEN ∧ SPEN ∧ ¬SYNC) ∧
+    /// (TXREG empty), per DS40001303H §17.4.1.5.  The
+    /// "TXIF becomes valid in the second instruction cycle
+    /// following the load" delay called out in the datasheet
+    /// is *not* modelled here -- a Phase-2 fidelity gap that
+    /// the firmware idiom (poll TXIF in a tight loop) is not
+    /// sensitive to.  Phase 4 dual-run will surface any
+    /// firmware that depends on the 1-Tcy delay.
+    fn recompute_txif(&self, mem: &mut Memory) {
+        let txreg_empty = self.txreg_holding.is_none();
+        let txif_should_be = is_async_tx_enabled(mem) && txreg_empty;
+        set_pir1_txif(mem, txif_should_be);
+    }
+}
+
+/// Current frame width in Tcy, given the live SFR state
+/// (TX9 selects the 9-bit data path, adding one bit to the
+/// 10-bit start+8+stop total).
+fn current_frame_tcy(mem: &Memory) -> u32 {
+    let period = current_baud_bit_period_tcy(mem);
+    let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+    let frame_bits = if (txsta & TXSTA_TX9) != 0 { 11u32 } else { 10u32 };
+    period.saturating_mul(frame_bits)
 }
 
 /// Read the current baud-bit period (in Tcy) from the SFR
@@ -187,20 +244,21 @@ fn current_baud_bit_period_tcy(mem: &Memory) -> u32 {
     let brgh = (txsta & TXSTA_BRGH) != 0;
     let brg16 = (baudcon & BAUDCON_BRG16) != 0;
 
-    let (divisor_factor, n) = match (brg16, brgh) {
-        (false, false) => (64u32, spbrg),
-        (false, true) => (16u32, spbrg),
-        (true, false) => (16u32, (spbrgh << 8) | spbrg),
-        (true, true) => (4u32, (spbrgh << 8) | spbrg),
+    // Datasheet formula is in *FOSC* terms; convert to Tcy
+    // by dividing by 4 (Tcy = 4 FOSC cycles).  Resulting
+    // factors in Tcy: {16, 4, 4, 1} for (BRGH, BRG16) ∈
+    // {(0,0), (1,0), (0,1), (1,1)}.
+    let (divisor_factor_tcy, n) = match (brg16, brgh) {
+        (false, false) => (16u32, spbrg),
+        (false, true) => (4u32, spbrg),
+        (true, false) => (4u32, (spbrgh << 8) | spbrg),
+        (true, true) => (1u32, (spbrgh << 8) | spbrg),
     };
-    // Bit period in Tcy = divisor_factor × (n + 1).  The
-    // datasheet formula is `Fcy / (factor × (n + 1))` baud,
-    // and 1 Tcy at Fcy = 1 / Fcy seconds, so:
-    //   bit_period_seconds = (factor × (n + 1)) / Fcy
-    //   bit_period_tcy     = factor × (n + 1)
-    // Clamp to 1 Tcy/bit so a divide-by-zero firmware bug
-    // doesn't deadlock the model.
-    divisor_factor.saturating_mul(n + 1).max(1)
+    // bit_period_tcy = factor_tcy × (n + 1).  Clamp to 1
+    // Tcy/bit so a 0-divisor firmware bug doesn't deadlock
+    // the model -- the firmware then sees a degenerate but
+    // making-progress baud generator.
+    divisor_factor_tcy.saturating_mul(n + 1).max(1)
 }
 
 fn set_txsta_trmt(mem: &mut Memory, on: bool) {
@@ -245,28 +303,38 @@ mod tests {
         Memory::new(Variant::Pic18F25K20)
     }
 
+    /// Drive the EUSART into the "async TX enabled" config so
+    /// helpers that gate on TXEN/SPEN/SYNC actually start the
+    /// state machine.
+    fn enable_async_tx(mem: &mut Memory) {
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+        // TXEN=1, TRMT=1 (POR-correct before any TXREG load).
+        mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_TRMT);
+    }
+
     /// V1.71 boot config: SPBRG=5, BRGH=0, BRG16=0 -> 1 bit =
-    /// 64 × (5+1) = 384 Tcy at the K20's 3 MIPS Fcy.
+    /// 16 × (5+1) = 96 Tcy at the K20's 3 MIPS Fcy.  31250
+    /// baud: 3e6 / 31250 = 96 Tcy/bit ✓.
     #[test]
     fn baud_period_v171_31250_baud() {
         let mut mem = fresh_mem();
         mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
         mem.write_raw(Address::from_raw(TXSTA_ADDR), 0x20); // TXEN
         mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40); // RCIDL, BRG16=0
-        assert_eq!(current_baud_bit_period_tcy(&mem), 384);
+        assert_eq!(current_baud_bit_period_tcy(&mem), 96);
     }
 
-    /// BRGH=1, BRG16=0 -> 1 bit = 16 × (n+1) Tcy.
+    /// BRGH=1, BRG16=0 -> 1 bit = 4 × (n+1) Tcy.
     #[test]
     fn baud_period_brgh_high() {
         let mut mem = fresh_mem();
         mem.write_raw(Address::from_raw(SPBRG_ADDR), 25);
         mem.write_raw(Address::from_raw(TXSTA_ADDR), 0x24); // TXEN | BRGH
         mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0);
-        assert_eq!(current_baud_bit_period_tcy(&mem), 16 * 26);
+        assert_eq!(current_baud_bit_period_tcy(&mem), 4 * 26);
     }
 
-    /// BRG16=1 selects the 16-bit divisor with SPBRGH:SPBRG.
+    /// BRG16=1, BRGH=0 -> factor=4 in Tcy.  n = SPBRGH:SPBRG.
     #[test]
     fn baud_period_brg16_uses_spbrgh() {
         let mut mem = fresh_mem();
@@ -274,52 +342,185 @@ mod tests {
         mem.write_raw(Address::from_raw(SPBRGH_ADDR), 0x01);
         mem.write_raw(Address::from_raw(TXSTA_ADDR), 0x20);
         mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x08); // BRG16
-        // n = 0x0120 = 288;   divisor_factor = 16 (BRGH=0, BRG16=1)
-        // bit period = 16 * 289 = 4624 Tcy.
-        assert_eq!(current_baud_bit_period_tcy(&mem), 16 * 289);
+        // n = 0x0120 = 288;  factor_tcy = 4 -> 4 × 289 = 1156.
+        assert_eq!(current_baud_bit_period_tcy(&mem), 4 * 289);
     }
 
+    /// SPBRG=0, BRG16=1, BRGH=1 -> factor_tcy=1, n+1=1 -> 1 Tcy/bit.
     #[test]
-    fn baud_period_clamps_to_one_on_zero_divisor() {
-        let mem = fresh_mem();
-        // SPBRG=0, BRG16=1, BRGH=1 -> factor=4, n+1=1 -> 4 Tcy/bit.
-        let mut mem = mem;
+    fn baud_period_minimum_is_one_tcy_per_bit() {
+        let mut mem = fresh_mem();
         mem.write_raw(Address::from_raw(TXSTA_ADDR), 0x24);
         mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x08);
-        assert_eq!(current_baud_bit_period_tcy(&mem), 4);
+        assert_eq!(current_baud_bit_period_tcy(&mem), 1);
     }
 
+    /// V1.71 boot: TXREG=0x55 with TX enabled.  TSR is idle, so
+    /// the byte transfers immediately, TRMT clears, TXIF stays 1
+    /// (TXREG empty).  Frame = 10 × 96 = 960 Tcy.  After 960 Tcy,
+    /// TRMT reasserts.
     #[test]
-    fn txreg_write_clears_trmt_and_txif_then_reasserts_after_frame() {
+    fn txreg_write_starts_frame_idle_tsr_keeps_txif_high() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
-        // V1.71 boot setup: SPBRG=5 (31250 baud @ 3 MIPS), TXEN.
         mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
-        mem.write_raw(Address::from_raw(TXSTA_ADDR), 0x22); // TXEN | TRMT
         mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        enable_async_tx(&mut mem);
 
-        // TXREG write
+        // TXREG write into idle TSR -- TXREG transfers
+        // immediately, so TXREG becomes empty and TXIF=1.
         eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-        assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT must clear on TXREG write");
-        assert_eq!(pir1 & PIR1_TXIF, 0, "TXIF must clear on TXREG write");
+        assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT must clear once TSR loads");
+        assert_eq!(
+            pir1 & PIR1_TXIF, PIR1_TXIF,
+            "TXIF must stay 1 (TXREG empty after immediate transfer)"
+        );
 
-        // Frame is 10 bits × 384 Tcy/bit = 3840 Tcy.  Tick
-        // a few partial frames first to confirm the counter.
-        eusart.tick_tcy(1000, &mut mem);
+        // Mid-frame: TRMT still 0.
+        eusart.tick_tcy(500, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT must stay 0 mid-frame");
 
-        eusart.tick_tcy(2000, &mut mem); // total 3000; need 3840
-        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
-        assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT must stay 0 below 3840");
-
-        eusart.tick_tcy(1000, &mut mem); // total 4000 >= 3840
+        // Past the 960-Tcy boundary: TRMT reasserts.
+        eusart.tick_tcy(500, &mut mem); // total 1000 >= 960
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-        assert_eq!(txsta & TXSTA_TRMT, TXSTA_TRMT, "TRMT must reassert post-frame");
-        assert_eq!(pir1 & PIR1_TXIF, PIR1_TXIF, "TXIF must assert post-frame");
+        assert_eq!(
+            txsta & TXSTA_TRMT, TXSTA_TRMT,
+            "TRMT must reassert post-frame"
+        );
+        assert_eq!(
+            pir1 & PIR1_TXIF, PIR1_TXIF,
+            "TXIF stays 1 once TXREG drained"
+        );
+    }
+
+    /// Back-to-back writes: write byte A (TSR loads, TXREG
+    /// empty); write byte B (TSR busy, TXREG holds, TXIF=0);
+    /// after 960 Tcy TSR drains, B transfers from TXREG to
+    /// TSR (TXIF=1), TRMT stays 0; after 1920 Tcy total TSR
+    /// drains for B, TRMT=1.
+    #[test]
+    fn back_to_back_txreg_writes_chain_through_tsr() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        enable_async_tx(&mut mem);
+
+        eusart.on_sfr_write(TXREG_ADDR, 0xAA, &mut mem);
+        // TXREG empty after immediate transfer -> TXIF=1.
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(pir1 & PIR1_TXIF, PIR1_TXIF);
+
+        // Second write while TSR is shifting first byte.
+        eusart.on_sfr_write(TXREG_ADDR, 0xBB, &mut mem);
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(
+            pir1 & PIR1_TXIF, 0,
+            "TXIF must clear when TXREG holds queued byte"
+        );
+
+        // After first frame drains: B chains into TSR; TXREG
+        // is empty again -> TXIF asserts; TRMT stays 0.
+        eusart.tick_tcy(960, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT stays 0 with B in TSR");
+        assert_eq!(pir1 & PIR1_TXIF, PIR1_TXIF, "TXIF reasserts after chain");
+
+        // After second frame drains.
+        eusart.tick_tcy(960, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(txsta & TXSTA_TRMT, TXSTA_TRMT);
+    }
+
+    /// TXREG write while TX disabled (TXEN=0): byte loads into
+    /// TXREG holding latch but TSR doesn't start; TXIF stays 0
+    /// because the gate is off.
+    #[test]
+    fn txreg_write_without_txen_holds_byte_no_frame() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        // SPEN=1 but TXEN=0 -> async path disabled.
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+
+        eusart.on_sfr_write(TXREG_ADDR, 0x42, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(
+            txsta & TXSTA_TRMT, 0,
+            "TRMT POR is 0 in this synthetic mem; not changed"
+        );
+        assert_eq!(
+            pir1 & PIR1_TXIF, 0,
+            "TXIF must be 0 with async-tx gate off"
+        );
+
+        // No frame should drain even after many Tcy.
+        eusart.tick_tcy(10_000, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(txsta & TXSTA_TRMT, 0, "no TSR shift -> TRMT unchanged");
+    }
+
+    /// Enabling TX (TXEN 0->1) with TXREG empty must assert
+    /// TXIF without a TXREG write -- the hardware fires TXIF
+    /// as soon as the transmitter is enabled (DS §17.4.1.5).
+    #[test]
+    fn enabling_txen_with_empty_txreg_asserts_txif() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+        // TXIF should still be 0 with TXEN=0.
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(pir1 & PIR1_TXIF, 0);
+
+        // Firmware writes TXSTA to enable TXEN.  The peripheral
+        // observes that change and recomputes TXIF.
+        mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_TRMT);
+        eusart.on_sfr_write(TXSTA_ADDR, TXSTA_TXEN | TXSTA_TRMT, &mut mem);
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(
+            pir1 & PIR1_TXIF, PIR1_TXIF,
+            "TXIF must assert when TXEN goes 0->1 with empty TXREG"
+        );
+    }
+
+    /// TX9=1: frame is 11 bits, not 10.  Frame Tcy = 11 × 96 = 1056.
+    #[test]
+    fn tx9_extends_frame_to_11_bits() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        // TXEN | TX9 | TRMT.
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+        mem.write_raw(
+            Address::from_raw(TXSTA_ADDR),
+            TXSTA_TXEN | TXSTA_TX9 | TXSTA_TRMT,
+        );
+        eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem);
+
+        // Tick exactly 960 Tcy (10-bit boundary): TRMT must
+        // still be 0 because the frame is 11 bits.
+        eusart.tick_tcy(960, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(
+            txsta & TXSTA_TRMT, 0,
+            "TX9=1 keeps TRMT low past 10-bit boundary"
+        );
+
+        // Tick to 1056 (11-bit boundary): TRMT reasserts.
+        eusart.tick_tcy(96, &mut mem);
+        let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(
+            txsta & TXSTA_TRMT, TXSTA_TRMT,
+            "TX9=1 frame completes at 11-bit boundary (1056 Tcy)"
+        );
     }
 
     #[test]
@@ -337,14 +538,30 @@ mod tests {
     #[test]
     fn is_async_tx_enabled_requires_spen_and_txen_and_not_sync() {
         let mut mem = fresh_mem();
-        // Default: all zero.  Not enabled.
         assert!(!is_async_tx_enabled(&mem));
         mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
         assert!(!is_async_tx_enabled(&mem));
         mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN);
         assert!(is_async_tx_enabled(&mem));
-        // Sync mode disables the async path.
         mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_SYNC);
         assert!(!is_async_tx_enabled(&mem));
+    }
+
+    /// `reset_state` clears any in-flight TX so a SLEEP-then-
+    /// reset sequence doesn't carry a phantom frame across the
+    /// boundary.
+    #[test]
+    fn reset_state_clears_in_flight_frame() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        enable_async_tx(&mut mem);
+        eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem);
+        assert!(eusart.tsr_busy_tcy.is_some());
+
+        eusart.reset_state();
+        assert!(eusart.tsr_busy_tcy.is_none());
+        assert!(eusart.txreg_holding.is_none());
     }
 }

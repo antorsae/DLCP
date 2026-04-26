@@ -65,4 +65,15 @@ impl Peripherals {
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
         self.eusart.tick_tcy(n, mem);
     }
+
+    /// Throw away each peripheral's internal state machine.
+    /// Called from `apply_reset` for every reset source so an
+    /// in-flight TX frame / EEPROM write / ADC conversion
+    /// doesn't survive a POR/BOR/MCLR/WDT/RESET into the next
+    /// boot.  SFR-side defaults are restored separately by
+    /// `apply_reset`'s POR table; this method only resets the
+    /// non-SFR state hidden inside each peripheral struct.
+    pub fn reset_state(&mut self) {
+        self.eusart.reset_state();
+    }
 }
