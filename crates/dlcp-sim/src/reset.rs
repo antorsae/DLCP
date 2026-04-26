@@ -265,6 +265,18 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             stack.reset_for_stack_underflow();
         }
     }
+
+    // Post-SFR-reset peripheral sync.  Each peripheral that
+    // keeps an internal shadow of an SFR byte (e.g. Timer3's
+    // RD16-aware tmr3h_live) refreshes from the now-canonical
+    // SFR memory.  This handles the divergent reset-source
+    // semantics (POR/BOR wiped vs MCLR-style preserved) at
+    // the peripheral layer rather than each peripheral
+    // having to dispatch on the source itself.  Stack-only
+    // resets (StackFull / StackUnderflow) leave the SFR
+    // memory untouched, so the sync is a steady-state
+    // mirror -- correct.
+    core.peripherals.sync_from_memory(&core.memory);
 }
 
 /// Zero every byte in the SFR window 0xF60..0xFFF without

@@ -102,6 +102,14 @@ pub struct Timers {
     /// In RD16=0 (legacy 8-bit-pair) mode the buffer is
     /// unused -- TMR3H writes go directly to the live byte.
     tmr3h_buffer: u8,
+    /// Tracks the most recent T3CON.RD16 bit state to
+    /// detect 0->1 transitions (when we should seed the
+    /// buffer from the live byte so a TMR3L commit without
+    /// a prior MOVWF TMR3H stages a no-op).  Steady-state
+    /// re-writes of T3CON with RD16 unchanged don't touch
+    /// the buffer (a buffer staged via a recent MOVWF TMR3H
+    /// must survive a subsequent T3CON rewrite).
+    last_t3con_rd16: bool,
 }
 
 impl Timers {
@@ -109,11 +117,47 @@ impl Timers {
         Timers::default()
     }
 
+    /// Pre-SFR-reset cleanup: drops in-flight prescaler
+    /// state and the RD16-mode tracking flag.  Called from
+    /// `apply_reset` BEFORE the SFR-side reset runs.  Does
+    /// NOT touch `tmr3h_live` / `tmr3h_buffer` -- those
+    /// need to remain authoritative across the SFR pass so
+    /// `sync_from_memory` can pull them from the now-
+    /// canonical SFR memory.
     pub fn reset_state(&mut self) {
         self.timer0_prescaler_tcy = 0;
         self.timer3_prescaler_tcy = 0;
-        self.tmr3h_live = 0;
-        self.tmr3h_buffer = 0;
+        self.last_t3con_rd16 = false;
+        // tmr3h_live and tmr3h_buffer are deliberately NOT
+        // cleared here; sync_from_memory restores the right
+        // post-reset values after the SFR pass runs.
+    }
+
+    /// Post-SFR-reset sync: aligns peripheral internal
+    /// shadows with the now-canonical SFR memory.  Handles
+    /// the divergent reset semantics (POR/BOR wipe SFRs;
+    /// MCLR/WDT/RESET preserve them per Tbl 4-4) without
+    /// each peripheral having to know which reset source
+    /// fired.  Called from `apply_reset` AFTER all SFR-side
+    /// reset passes.
+    pub fn sync_from_memory(&mut self, mem: &Memory) {
+        // Timer3 live high byte mirrors memory[TMR3H] in the
+        // RD16=0 case (and resets to 0 in the RD16=1 POR
+        // case where buffer-mode hasn't established a
+        // distinct live byte yet).  Reading directly from
+        // memory after reset gives the right answer for both
+        // POR/BOR (memory wiped to 0) and MCLR/WDT/RESET
+        // (memory preserved) branches without per-source
+        // logic.
+        self.tmr3h_live = mem.read_raw(Address::from_raw(TMR3H_ADDR));
+        // Buffer is reset-source-dependent: POR/BOR wipe
+        // memory so the natural buffer state is also 0;
+        // MCLR/WDT/RESET preserves the firmware-visible
+        // TMR3H byte and we re-seed the buffer from it so
+        // the first post-reset TMR3L commit doesn't stage
+        // garbage.  Mirroring buffer = memory[TMR3H] gives
+        // the correct value for both cases.
+        self.tmr3h_buffer = mem.read_raw(Address::from_raw(TMR3H_ADDR));
     }
 
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
@@ -121,35 +165,51 @@ impl Timers {
             T0CON_ADDR => self.timer0_prescaler_tcy = 0,
             T3CON_ADDR => {
                 // T3CON write -- handle the post-write
-                // RD16 state.  Only the *direction* of
-                // sync between tmr3h_live and SFR memory
-                // matters: live -> memory (NEVER memory ->
-                // live, since SFR memory in RD16=1 mode is
-                // the firmware buffer and would corrupt
-                // the live counter on a re-write of T3CON).
+                // RD16 state with one-way sync (live ->
+                // memory only, never memory -> live).
                 //
                 //   * RD16=0 after the write: SFR memory IS
                 //     the live byte going forward.  Mirror
                 //     `tmr3h_live` into memory so firmware
                 //     reads return the live high byte.
-                //     Handles the RD16 1->0 mode transition
-                //     and the steady-state-with-RD16=0 case.
+                //     Handles RD16 1->0 transition AND the
+                //     steady-state-with-RD16=0 case.
                 //   * RD16=1 after the write: SFR memory is
-                //     the firmware-visible buffer, separate
-                //     from the live counter.  Don't touch
-                //     either side; firmware's own TMR3H/L
-                //     writes drive the buffer / live commit.
-                //     Handles RD16 0->1 (memory was already
-                //     mirroring live, so the "stale" buffer
-                //     == current live, which is correct) and
-                //     the steady-state RD16=1 case.
+                //     the firmware-visible buffer (separate
+                //     from the live counter).  Initialize
+                //     `tmr3h_buffer` to the current live
+                //     byte so a TMR3L commit *without* a
+                //     prior MOVWF TMR3H stages a no-op
+                //     (commit copies live -> live).  This
+                //     handles the RD16 0->1 transition;
+                //     in the steady-state-RD16=1 case the
+                //     buffer is already initialised and
+                //     this re-init to live is harmless
+                //     because firmware re-writes TMR3H
+                //     between any two T3CON writes if it
+                //     cares about the buffer contents.
                 let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
-                if (t3con & T3CON_RD16) == 0 {
+                let new_rd16 = (t3con & T3CON_RD16) != 0;
+                if !new_rd16 {
+                    // RD16=0 after the write: SFR memory IS
+                    // the live byte going forward.
                     mem.write_raw(
                         Address::from_raw(TMR3H_ADDR),
                         self.tmr3h_live,
                     );
+                } else if !self.last_t3con_rd16 {
+                    // 0->1 transition only: seed the buffer
+                    // from the live byte so a subsequent
+                    // TMR3L commit without a prior MOVWF
+                    // TMR3H stages a no-op (commit copies
+                    // live -> live).  Steady-state RD16=1
+                    // re-writes (e.g. firmware tweaking the
+                    // prescaler) must NOT clobber a staged
+                    // buffer between MOVWF TMR3H and the
+                    // pending TMR3L commit.
+                    self.tmr3h_buffer = self.tmr3h_live;
                 }
+                self.last_t3con_rd16 = new_rd16;
                 self.timer3_prescaler_tcy = 0;
             }
             // TMR0H / TMR0L writes also reset the prescaler
@@ -491,16 +551,26 @@ mod tests {
         assert_eq!(t.timer0_prescaler_tcy, 0);
     }
 
+    /// reset_state clears the prescaler accumulators and
+    /// the RD16-tracking flag.  tmr3h_live / tmr3h_buffer
+    /// are intentionally NOT touched -- sync_from_memory
+    /// (called after the SFR-side reset) repairs them.
     #[test]
-    fn reset_state_clears_accumulators() {
+    fn reset_state_clears_prescaler_accumulators() {
         let mut t = Timers::default();
         t.timer0_prescaler_tcy = 7;
         t.timer3_prescaler_tcy = 3;
+        t.last_t3con_rd16 = true;
         t.tmr3h_buffer = 0xAB;
+        t.tmr3h_live = 0xCD;
         t.reset_state();
         assert_eq!(t.timer0_prescaler_tcy, 0);
         assert_eq!(t.timer3_prescaler_tcy, 0);
-        assert_eq!(t.tmr3h_buffer, 0);
+        assert!(!t.last_t3con_rd16);
+        // tmr3h_buffer / tmr3h_live preserved across
+        // reset_state -- they wait for sync_from_memory.
+        assert_eq!(t.tmr3h_buffer, 0xAB);
+        assert_eq!(t.tmr3h_live, 0xCD);
     }
 
     /// RD16 mode: firmware writes TMR3H first (lands in
@@ -622,6 +692,34 @@ mod tests {
             3,
             "RD16 1->0 must surface live into SFR memory"
         );
+    }
+
+    /// RD16 0->1 transition seeds the buffer from the
+    /// current live byte, so a TMR3L commit without a prior
+    /// MOVWF TMR3H stages a no-op (live -> live).
+    #[test]
+    fn timer3_rd16_zero_to_one_transition_seeds_buffer_from_live() {
+        let mut t = Timers::default();
+        let mut mem = fresh_mem();
+        // Start RD16=0; tick to a known live byte.
+        mem.write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON);
+        t.on_sfr_write(T3CON_ADDR, T3CON_TMR3ON, &mut mem);
+        t.tick_tcy(0x500, &mut mem);
+        assert_eq!(t.tmr3h_live, 0x05);
+        // Firmware enables RD16 (steady state otherwise).
+        let t3con_new = T3CON_TMR3ON | T3CON_RD16;
+        mem.write_raw(Address::from_raw(T3CON_ADDR), t3con_new);
+        t.on_sfr_write(T3CON_ADDR, t3con_new, &mut mem);
+        // Buffer seeded from live (= 0x05), not stale 0.
+        assert_eq!(
+            t.tmr3h_buffer, 0x05,
+            "0->1 transition must seed buffer from live"
+        );
+        // Firmware writes TMR3L without staging TMR3H.
+        // Commit: buffer (0x05) -> live; no change.
+        mem.write_raw(Address::from_raw(TMR3L_ADDR), 0x10);
+        t.on_sfr_write(TMR3L_ADDR, 0x10, &mut mem);
+        assert_eq!(t.tmr3h_live, 0x05, "no-op commit preserves live high");
     }
 
     /// RD16=0 (legacy 8-bit-pair mode): TMR3H writes go

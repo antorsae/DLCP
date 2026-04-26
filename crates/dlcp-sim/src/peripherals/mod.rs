@@ -76,16 +76,29 @@ impl Peripherals {
         self.timers.tick_tcy(n, mem);
     }
 
-    /// Throw away each peripheral's internal state machine.
-    /// Called from `apply_reset` for every reset source so an
-    /// in-flight TX frame / EEPROM write / ADC conversion
-    /// doesn't survive a POR/BOR/MCLR/WDT/RESET into the next
-    /// boot.  SFR-side defaults are restored separately by
-    /// `apply_reset`'s POR table; this method only resets the
-    /// non-SFR state hidden inside each peripheral struct.
+    /// Throw away each peripheral's in-flight state machine.
+    /// Called from `apply_reset` BEFORE the SFR-side reset
+    /// runs, so an in-flight TX frame / I²C transfer /
+    /// timer prescaler doesn't survive into the next boot.
+    /// Peripheral shadows that depend on the post-reset
+    /// SFR state (e.g. Timer3's RD16-aware tmr3h_live)
+    /// are left for `sync_from_memory` to repair after the
+    /// SFR pass completes.
     pub fn reset_state(&mut self) {
         self.eusart.reset_state();
         self.mssp.reset_state();
         self.timers.reset_state();
+    }
+
+    /// Post-SFR-reset sync.  Aligns each peripheral's
+    /// internal shadows with the now-canonical SFR memory.
+    /// Called from `apply_reset` AFTER every reset arm's
+    /// SFR-side pass (POR/BOR memory + K20_POR; MCLR/WDT/
+    /// RESET zero/RMW lists + K20_POR), so each shadow
+    /// reflects the correct mix of "wiped to 0" (POR/BOR)
+    /// versus "preserved" (MCLR/WDT/RESET) without the
+    /// peripheral having to know which reset source fired.
+    pub fn sync_from_memory(&mut self, mem: &Memory) {
+        self.timers.sync_from_memory(mem);
     }
 }
