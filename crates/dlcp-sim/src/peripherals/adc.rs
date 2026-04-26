@@ -13,11 +13,16 @@
 //!
 //! - ADCON0 / ADCON1 / ADCON2 SFRs tracked.
 //! - GO/DONE bit (ADCON0 bit 1) triggers a conversion when
-//!   set with ADON=1.  The Phase-2 model schedules a fixed
-//!   `tacq_tcy + tconv_tcy` Tcy delay derived from
-//!   ADCON2.{ACQT, ADCS} per DS39632E §21.  At completion:
-//!   GO/DONE clears, ADIF (PIR1.6) asserts, ADRESH:ADRESL
-//!   loads the configured AN0 input value (test-injected).
+//!   set with ADON=1, edge-sensitive on the not-busy
+//!   transition.  The Phase-2 model uses a fixed 12-Tcy
+//!   conversion delay regardless of ADCON2.{ACQT, ADCS} --
+//!   accurate Tacq + Tconv math is deferred to P2.7.  At
+//!   completion: GO/DONE clears, ADIF (PIR1 bit 6) asserts,
+//!   ADRESH:ADRESL loads the configured AN0 input value
+//!   (test-injected).
+//! - Mid-conversion writes that clear GO/DONE OR disable
+//!   ADON abort the conversion (DS §21.6) -- ADRESH:ADRESL
+//!   are NOT updated and ADIF stays low.
 //! - Phase-2 has no analog pin network; tests inject the
 //!   AN0 sample value via [`Adc::set_an0_sample`].  Phase-3
 //!   pin network will route the sample from a virtual
@@ -115,15 +120,30 @@ impl Adc {
     }
 
     fn handle_adcon0_write(&mut self, value: u8, _mem: &mut Memory) {
-        // GO/DONE 0->1 with ADON=1 triggers a new
-        // conversion.  Phase-2 simplification: the conversion
-        // delay is a fixed 12 Tcy (Tacq=0 + 11 Tcq + 1) for
-        // any ADCON2 setting.  This is enough fidelity for
-        // the AN0-boot threshold tests, which only check
-        // post-conversion register state, not the exact
-        // Tcy delay.  Phase-3 / P2.7 will derive the
-        // actual delay from ADCON2.ACQT + ADCS.
-        if (value & ADCON0_GODONE) != 0 && (value & ADCON0_ADON) != 0 {
+        let go_done = (value & ADCON0_GODONE) != 0;
+        let adon = (value & ADCON0_ADON) != 0;
+        let busy = self.pending_tcy.is_some();
+        // Abort path: if firmware clears GO/DONE OR disables
+        // ADON while a conversion is in flight, drop the
+        // pending state.  Per DS39632E §21.6 ("Aborting a
+        // Conversion"): clearing GO/DONE mid-conversion
+        // aborts and does NOT update ADRESH:ADRESL.  Same
+        // effect for clearing ADON (the entire ADC is
+        // disabled).
+        if busy && (!go_done || !adon) {
+            self.pending_tcy = None;
+            return;
+        }
+        // Trigger path: edge-sensitive on GO/DONE 0->1.  We
+        // approximate the edge by gating on "not currently
+        // busy", which collapses the firmware-visible
+        // "while busy, writes are ignored" rule and the
+        // edge-on-rise semantic into one check.  The fixed
+        // 12-Tcy delay (Phase-2 simplification) lands enough
+        // fidelity for the AN0-boot-threshold tests; the
+        // accurate Tacq + Tconv math derived from
+        // ADCON2.{ACQT, ADCS} is deferred to P2.7.
+        if go_done && adon && !busy {
             self.pending_tcy = Some(12);
         }
     }
@@ -220,5 +240,59 @@ mod tests {
         let mut adc = Adc::default();
         adc.set_an0_sample(0xFFFF);
         assert_eq!(adc.an0_sample, 0x3FF);
+    }
+
+    /// Mid-conversion clear of GO/DONE aborts: pending_tcy
+    /// becomes None; ADRESH/L not updated; ADIF NOT
+    /// asserted.
+    #[test]
+    fn clearing_go_done_mid_conversion_aborts() {
+        let mut adc = Adc::default();
+        let mut mem = fresh_mem();
+        adc.set_an0_sample(0x0236);
+        // Trigger.
+        adc.on_sfr_write(ADCON0_ADDR, ADCON0_GODONE | ADCON0_ADON, &mut mem);
+        assert!(adc.pending_tcy.is_some());
+        // Tick partway -- still in flight.
+        adc.tick_tcy(5, &mut mem);
+        // Firmware clears GO/DONE (still ADON=1).
+        adc.on_sfr_write(ADCON0_ADDR, ADCON0_ADON, &mut mem);
+        assert!(adc.pending_tcy.is_none(), "abort drops pending state");
+        // Subsequent ticks are no-ops; ADIF stays low.
+        adc.tick_tcy(100, &mut mem);
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(pir1 & PIR1_ADIF, 0);
+        // ADRESH:ADRESL stay 0 (POR default; never loaded).
+        assert_eq!(mem.read_raw(Address::from_raw(ADRESH_ADDR)), 0);
+        assert_eq!(mem.read_raw(Address::from_raw(ADRESL_ADDR)), 0);
+    }
+
+    /// Mid-conversion clear of ADON also aborts.
+    #[test]
+    fn disabling_adon_mid_conversion_aborts() {
+        let mut adc = Adc::default();
+        let mut mem = fresh_mem();
+        adc.on_sfr_write(ADCON0_ADDR, ADCON0_GODONE | ADCON0_ADON, &mut mem);
+        assert!(adc.pending_tcy.is_some());
+        // Firmware disables ADC (ADON=0).
+        adc.on_sfr_write(ADCON0_ADDR, 0, &mut mem);
+        assert!(adc.pending_tcy.is_none());
+    }
+
+    /// Re-writing GO/DONE | ADON while already busy is
+    /// ignored (no restart).
+    #[test]
+    fn rewriting_go_done_while_busy_does_not_restart() {
+        let mut adc = Adc::default();
+        let mut mem = fresh_mem();
+        adc.on_sfr_write(ADCON0_ADDR, ADCON0_GODONE | ADCON0_ADON, &mut mem);
+        let initial = adc.pending_tcy;
+        adc.tick_tcy(5, &mut mem);
+        let mid = adc.pending_tcy;
+        assert_ne!(initial, mid, "pending_tcy should have decremented");
+        // Re-write the same bits.  pending_tcy should NOT
+        // reset to 12 (no restart).
+        adc.on_sfr_write(ADCON0_ADDR, ADCON0_GODONE | ADCON0_ADON, &mut mem);
+        assert_eq!(adc.pending_tcy, mid, "busy re-write must not restart");
     }
 }
