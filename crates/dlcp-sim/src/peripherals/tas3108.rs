@@ -64,6 +64,18 @@ enum Phase {
     /// No transaction in progress.  The next byte from the
     /// master is interpreted as the slave-address byte.
     Idle,
+    /// Address byte didn't match this slave; the slave is
+    /// "off the bus" for the current transaction and
+    /// drops every subsequent byte (no ACK, no state
+    /// transitions on `consume_tx_byte`).  Only `on_start`
+    /// / `on_stop` / `on_repeated_start` clear this state
+    /// -- mirrors real silicon, where a slave that NACKed
+    /// the address phase stays quiet until the master
+    /// issues a fresh START.  Without this state, a multi-
+    /// slave bus can spuriously address a NACKing slave
+    /// when a later data byte happens to match its
+    /// address (codex review of 167ee52).
+    Ignored,
     /// Address matched with R/W = write.  The next byte is
     /// the subaddress (first data byte of a write
     /// transaction per §6.2.1).
@@ -198,6 +210,7 @@ impl Tas3108 {
     pub fn consume_tx_byte(&mut self, byte: u8) -> bool {
         let acked = match self.phase {
             Phase::Idle => self.handle_address_byte(byte),
+            Phase::Ignored => false,
             Phase::AwaitingSubaddress => self.handle_subaddress_byte(byte),
             Phase::Writing { next_subaddr } => self.handle_write_data_byte(byte, next_subaddr),
             Phase::Reading { .. } => false,
@@ -235,7 +248,15 @@ impl Tas3108 {
                     self.phase = Phase::Reading { next_subaddr: start };
                     true
                 }
-                None => false,
+                None => {
+                    // Same Ignored-on-NACK rule as the
+                    // address-mismatch branch below: a NACKing
+                    // slave must stay quiet for the rest of
+                    // the transaction, not re-process later
+                    // bytes as fresh address candidates.
+                    self.phase = Phase::Ignored;
+                    false
+                }
             }
         } else if byte == BROADCAST_ADDR {
             // §6.2 line 585: broadcast address ACKed.  Treat
@@ -245,7 +266,12 @@ impl Tas3108 {
             self.phase = Phase::AwaitingSubaddress;
             true
         } else {
-            // Address mismatch: NACK; stay Idle.
+            // Address mismatch: NACK and transition to
+            // Ignored so subsequent payload bytes from this
+            // transaction don't accidentally re-address us.
+            // `on_start` / `on_stop` / `on_repeated_start`
+            // clear Ignored back to Idle.
+            self.phase = Phase::Ignored;
             false
         }
     }
@@ -462,6 +488,39 @@ mod tests {
             );
         }
         assert_eq!(dsp.bytes_acked, 22); // address + subaddr + 20 data
+    }
+
+    /// LOW from codex review of 167ee52: after a NACK on the
+    /// address phase, the slave must drop subsequent payload
+    /// bytes (Ignored state) instead of staying Idle and
+    /// re-interpreting later data bytes as fresh addresses.
+    /// On a multi-slave bus, a data byte that happens to
+    /// match this slave's address would otherwise spuriously
+    /// trigger a transaction.
+    #[test]
+    fn nacked_slave_ignores_payload_until_next_start() {
+        let mut dsp = Tas3108::default();
+        // Slave A's address is 0x68; we simulate slave B
+        // (CS0=true -> 0x6A) seeing the same bus traffic
+        // intended for slave A.  Slave B should NACK the
+        // 0x68 address and IGNORE subsequent bytes -- even
+        // if they include 0x6A (its own address) as
+        // subaddress or data.
+        let mut slave_b = Tas3108::new(true);
+        slave_b.on_start();
+        // Slave B: address byte 0x68 is not its (0x6A) -> NACK
+        assert!(!slave_b.consume_tx_byte(0x68));
+        // Slave A's transaction continues with data 0x6A as a
+        // SUBADDRESS or DATA byte.  Slave B must NOT reawaken.
+        assert!(!slave_b.consume_tx_byte(0x6A), "ignored slave must not re-address");
+        assert!(!slave_b.consume_tx_byte(0xAA));
+        slave_b.on_stop();
+        // After the next START, slave B's state is reset
+        // and addressing 0x6A ACKs again.
+        slave_b.on_start();
+        assert!(slave_b.consume_tx_byte(0x6A));
+        // Sanity: dsp (slave A) keeps independent state.
+        let _ = dsp.write_address();
     }
 
     /// LOW from codex review of 5330a68: a master that issues

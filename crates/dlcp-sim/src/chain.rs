@@ -1230,6 +1230,175 @@ mod tests {
         );
     }
 
+    /// Multi-byte chain transaction shaped after V3.1's
+    /// `volume_dsp_write` (lst:7838): START + 0x68 +
+    /// 0x30 (subaddress) + 4 data bytes + STOP.  Verifies
+    /// the chain dispatch routes Start/Stop correctly,
+    /// sequences multiple TxByte events through the slave's
+    /// state machine, and the data lands at the right
+    /// subaddresses.  Uses SSPCON2.SEN/PEN to fire the
+    /// Start/Stop conditions through the actual MSSP state
+    /// machine (rather than test-only shortcuts).
+    #[test]
+    fn coupled_tas3108_handles_volume_dsp_write_burst() {
+        // Program:
+        //   MOVLW 0x28; MOVWF SSPCON1     (enable I2C master)
+        //   MOVLW 0x01; MOVWF SSPADD       (fast bit period)
+        //   BSF SSPCON2, 0                 (SEN = start)
+        //   <wait>: BTFSC SSPCON2, 0; BRA -1  (poll until Start completes)
+        //   MOVLW 0x68; MOVWF SSPBUF       (write addr)
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -1  (poll BF clear)
+        //   MOVLW 0x30; MOVWF SSPBUF       (subaddr)
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -1
+        //   MOVLW 0xDE; MOVWF SSPBUF
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -1
+        //   MOVLW 0xAD; MOVWF SSPBUF
+        //   <wait>: BTFSC SSPSTAT, 0; BRA -1
+        //   BSF SSPCON2, 2                 (PEN = stop)
+        //   BRA -1                          (done)
+        //
+        // Encoding cheat-sheet:
+        //   MOVLW k:        0x0Ekk -> [kk, 0x0E]
+        //   MOVWF f, a=0:   0x6E__ where __ = f<7:0>
+        //   BSF f, b, a=0:  0x80__ + (b<<9) where __ = f<7:0>
+        //                   for SSPCON2 (0xC5):
+        //                     bit0 (SEN): 0x80C5 -> [0xC5, 0x80]
+        //                     bit2 (PEN): 0x84C5 -> [0xC5, 0x84]
+        //   BTFSC f, b, a=0: 0xB0__ + (b<<9) where __ = f<7:0>
+        //                    SSPCON2 bit0 (SEN poll): 0xB0C5 -> [0xC5, 0xB0]
+        //                    SSPSTAT (0xC7) bit0 (BF poll): 0xB0C7 -> [0xC7, 0xB0]
+        //   BRA -1:         0xD7FF -> [0xFF, 0xD7]
+        let mut flash = vec![0u8; 32 * 1024];
+        let prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x28, 0x0E]),       // MOVLW 0x28 (SSPEN | I2C master)
+            (0x0002, [0xC6, 0x6E]),       // MOVWF SSPCON1
+            (0x0004, [0x01, 0x0E]),       // MOVLW 0x01 (SSPADD)
+            (0x0006, [0xC8, 0x6E]),       // MOVWF SSPADD
+            (0x0008, [0xC5, 0x80]),       // BSF SSPCON2, 0 (SEN = start)
+            (0x000A, [0xC5, 0xB0]),       // BTFSC SSPCON2, 0 (poll until SEN clears)
+            (0x000C, [0xFE, 0xD7]),       // BRA -2 (back to BTFSC)
+            (0x000E, [0x68, 0x0E]),       // MOVLW 0x68
+            (0x0010, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x0012, [0xC7, 0xB0]),       // BTFSC SSPSTAT, 0 (poll BF)
+            (0x0014, [0xFE, 0xD7]),       // BRA -2 (back to BTFSC)
+            (0x0016, [0x30, 0x0E]),       // MOVLW 0x30
+            (0x0018, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x001A, [0xC7, 0xB0]),
+            (0x001C, [0xFE, 0xD7]),       // BRA -2
+            (0x001E, [0xDE, 0x0E]),       // MOVLW 0xDE
+            (0x0020, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x0022, [0xC7, 0xB0]),
+            (0x0024, [0xFE, 0xD7]),       // BRA -2
+            (0x0026, [0xAD, 0x0E]),       // MOVLW 0xAD
+            (0x0028, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x002A, [0xC7, 0xB0]),
+            (0x002C, [0xFE, 0xD7]),       // BRA -2
+            (0x002E, [0xC5, 0x84]),       // BSF SSPCON2, 2 (PEN = stop)
+            (0x0030, [0xFF, 0xD7]),       // BRA -1 (done)
+        ];
+        for (a, bytes) in prog {
+            flash[*a as usize] = bytes[0];
+            flash[*a as usize + 1] = bytes[1];
+        }
+
+        let mut chain = Chain::new();
+        let mut master = Core::new(Variant::Pic18F25K20);
+        master.flash_mut().copy_from_slice(&flash);
+        let i_master = chain.push_core(master);
+        let i_slave = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::default());
+        chain.couple_tas3108(i_master, i_slave);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0]);
+
+        // Step long enough for: setup (~6 instr) + Start
+        // (~2 SCL periods = 4 Tcy) + 4 TxBytes (each 9 SCL
+        // periods = 18 Tcy) + Stop + a few BRA loops.
+        // Generous budget.
+        chain.step_ticks(20_000);
+
+        // The slave must have ACKed exactly 4 bytes (addr +
+        // subaddr + 2 data); no NACKs because address
+        // matched and all data went through.
+        assert_eq!(
+            chain.tas3108_slaves[i_slave].bytes_acked, 4,
+            "slave must ACK 4 bytes (addr + subaddr + 2 data); got acked={}",
+            chain.tas3108_slaves[i_slave].bytes_acked,
+        );
+        assert_eq!(chain.tas3108_slaves[i_slave].bytes_nacked, 0);
+
+        // Data bytes must land at subaddresses 0x30 and 0x31.
+        assert_eq!(chain.tas3108_slaves[i_slave].read_subaddr(0x30), 0xDE);
+        assert_eq!(chain.tas3108_slaves[i_slave].read_subaddr(0x31), 0xAD);
+    }
+
+    /// Two slaves coupled to one master, master addresses
+    /// only one (slave A at 0x68); slave B (0x6A) must
+    /// NACK and stay quiet for the rest of the transaction
+    /// even when later data bytes match its address.
+    /// Locks in the Phase::Ignored contract from codex
+    /// review LOW #1.
+    #[test]
+    fn two_coupled_slaves_only_addressed_one_acks() {
+        // Program: enable I2C master, START, write 0x68
+        // (slave A's addr), write 0x6A (data byte equal to
+        // slave B's addr), STOP.  Slave B must NOT
+        // re-awaken on the 0x6A data byte.
+        let mut flash = vec![0u8; 32 * 1024];
+        let prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x28, 0x0E]),       // MOVLW 0x28
+            (0x0002, [0xC6, 0x6E]),       // MOVWF SSPCON1
+            (0x0004, [0x01, 0x0E]),
+            (0x0006, [0xC8, 0x6E]),       // MOVWF SSPADD
+            (0x0008, [0xC5, 0x80]),       // BSF SSPCON2, 0 (SEN)
+            (0x000A, [0xC5, 0xB0]),       // BTFSC SSPCON2, 0
+            (0x000C, [0xFE, 0xD7]),       // BRA -2 (back to BTFSC)
+            (0x000E, [0x68, 0x0E]),       // MOVLW 0x68 (slave A)
+            (0x0010, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x0012, [0xC7, 0xB0]),       // BTFSC SSPSTAT, 0
+            (0x0014, [0xFE, 0xD7]),       // BRA -2
+            (0x0016, [0x6A, 0x0E]),       // MOVLW 0x6A (slave B's addr as data)
+            (0x0018, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x001A, [0xC7, 0xB0]),
+            (0x001C, [0xFE, 0xD7]),       // BRA -2
+            (0x001E, [0xC5, 0x84]),       // BSF SSPCON2, 2 (PEN)
+            (0x0020, [0xFF, 0xD7]),       // BRA -1 (done)
+        ];
+        for (a, bytes) in prog {
+            flash[*a as usize] = bytes[0];
+            flash[*a as usize + 1] = bytes[1];
+        }
+
+        let mut chain = Chain::new();
+        let mut master = Core::new(Variant::Pic18F25K20);
+        master.flash_mut().copy_from_slice(&flash);
+        let i_master = chain.push_core(master);
+        let i_a = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::new(false)); // 0x68
+        let i_b = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::new(true));  // 0x6A
+        chain.couple_tas3108(i_master, i_a);
+        chain.couple_tas3108(i_master, i_b);
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0]);
+        chain.step_ticks(20_000);
+
+        // Slave A (0x68): ACKed address byte AND the 0x6A
+        // data byte (per its sequential-write semantics).
+        // bytes_acked = 2.  bytes_nacked = 0.
+        assert_eq!(chain.tas3108_slaves[i_a].bytes_acked, 2);
+        assert_eq!(chain.tas3108_slaves[i_a].bytes_nacked, 0);
+
+        // Slave B (0x6A): NACKed 0x68 (not its address);
+        // then received 0x6A as a payload byte, but Phase::Ignored
+        // means it stays quiet -- bytes_nacked counts the
+        // NACK on 0x68 + the dropped 0x6A payload byte.
+        // bytes_acked = 0.
+        assert_eq!(
+            chain.tas3108_slaves[i_b].bytes_acked, 0,
+            "slave B must NOT ACK any byte in this transaction; got acked={}",
+            chain.tas3108_slaves[i_b].bytes_acked,
+        );
+        assert!(chain.tas3108_slaves[i_b].bytes_nacked >= 1);
+    }
+
     /// Without a coupled TAS3108, the master's ACKSTAT
     /// stays at 1 (NACK -- bus-less default).  Locks in
     /// the contract that the override is a chain-dispatch
