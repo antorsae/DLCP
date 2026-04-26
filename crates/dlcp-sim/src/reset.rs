@@ -197,21 +197,31 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // can be read via TOSU/H/L after firmware writes a
             // new depth into STKPTR.
             stack.reset_pointer_preserve_flags();
-            // Per DS40001303H Table 4-4 column "MCLR Resets,
-            // WDT Reset, RESET Instruction, Stack Resets":
-            // many SFRs DO reset to fixed values for these
-            // sources (TXSTA -> 0x02, PIR1 -> 0x00, IPRx ->
-            // 0xFF, TRISx -> 0xFF, ...) -- the column is a
-            // mix of fixed and `u` (preserved) entries, NOT
-            // uniformly preserved.  Every SFR currently in
-            // K20_POR re-initialises to the same value on
-            // MCLR/WDT/RESET as on POR/BOR, so re-running the
-            // POR-defaults table here is correct.  Data memory
-            // (GPRs) IS preserved -- only POR wipes RAM.  When
-            // a future K20 SFR with a "u" entry on MCLR (e.g.
-            // T1CON `u0uu uuuu`) gets added to K20_POR, it
-            // will need a per-source guard inside
-            // apply_k20_por_sfr_defaults.
+            // Per DS40001303H Table 4-4 "MCLR Resets, WDT
+            // Reset, RESET Instruction, Stack Resets" column:
+            // many SFRs reset to fixed values for these
+            // sources (PIR1/2 -> 0, PIE1/2 -> 0, TXREG -> 0,
+            // SPBRG{,H} -> 0, RCSTA -> 0x00 ignoring RX9D,
+            // OSCTUNE -> 0, ADCON{0,1,2} -> 0, etc.) -- not
+            // uniformly preserved.  Data memory (GPRs) IS
+            // preserved across these resets -- only POR wipes
+            // RAM -- so we must touch the SFR window
+            // explicitly.  Two passes:
+            //   (1) zero the "fully-zero on MCLR" SFR list
+            //       (these were brought to 0 by the POR memory
+            //        wipe but a non-POR reset doesn't wipe).
+            //   (2) re-apply the K20_POR table (non-zero
+            //       defaults like INTCON2 = 0xF5, T0CON =
+            //       0xFF, PR2 = 0xFF, etc. -- every entry has
+            //       the same value in the POR/BOR column and
+            //       the MCLR-style column of Tbl 4-4).
+            // SFRs with mixed preserved/fixed bits on MCLR
+            // (T1CON, RCSTA, EECON1, STATUS) are deferred to
+            // a follow-up; the cycle-10 V1.71 parity test
+            // uses POR exclusively so the gap is theoretical.
+            if core.variant() == Variant::Pic18F25K20 {
+                apply_k20_mclr_zero_sfrs(core);
+            }
             apply_por_sfr_defaults(core);
         }
         ResetSource::StackFull => {
@@ -363,6 +373,70 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
     }
 }
 
+/// SFRs that reset to a fully-zero byte on every reset source
+/// listed in Tbl 4-4's "MCLR Resets, WDT Reset, RESET
+/// Instruction, Stack Resets" column.  POR/BOR cover these
+/// implicitly via the `for byte in core.memory.as_mut_slice()`
+/// wipe in `apply_reset`; for non-POR resets we have to zero
+/// them explicitly because data memory is preserved.
+///
+/// SFRs whose MCLR-column value mixes preserved bits with
+/// fixed bits (T1CON `u0uu uuuu`, RCSTA bit 0 RX9D `u`,
+/// EECON1 bits 7/6/3 `u`, STATUS bits 4..0 `u`) are NOT in
+/// this list -- they need RMW-style per-bit handling that's
+/// a known follow-up.  INTCON bit 0 (RBIF) is similarly `u`
+/// on MCLR but is included anyway because in the absence of
+/// an active port-change interrupt RBIF is 0 throughout
+/// boot, so zeroing it on a synthetic reset is correct in
+/// scope.  At the cycle-10 V1.71 parity scope no firmware
+/// exercises a non-POR reset so the gap is theoretical, but
+/// flagged for completeness.
+fn apply_k20_mclr_zero_sfrs(core: &mut Core) {
+    const K20_MCLR_ZERO_SFRS: &[u16] = &[
+        0xF79, // CM2CON1
+        0xF7A, // CM2CON0
+        0xF7B, // CM1CON0
+        0xF7D, // IOCB
+        0xF9B, // OSCTUNE
+        0xF9D, // PIE1
+        0xF9E, // PIR1
+        0xFA0, // PIE2
+        0xFA1, // PIR2
+        0xFA8, // EEDATA
+        0xFA9, // EEADR
+        0xFAA, // EEADRH (PIC18F26K20-only; harmless on 25K20)
+        0xFAD, // TXREG
+        0xFAE, // RCREG
+        0xFAF, // SPBRG
+        0xFB0, // SPBRGH
+        0xFB4, // CVRCON2
+        0xFB5, // CVRCON
+        0xFB6, // ECCP1AS
+        0xFB7, // PWM1CON
+        0xFBA, // CCP2CON  (POR `--00 0000` = 0)
+        0xFBD, // CCP1CON
+        0xFC0, // ADCON2  (POR `0-00 0000` = 0)
+        0xFC1, // ADCON1  (POR `--00 0qqq`; conservative 0)
+        0xFC2, // ADCON0  (POR `--00 0000` = 0)
+        0xFC5, // SSPCON2
+        0xFC6, // SSPCON1
+        0xFC7, // SSPSTAT
+        0xFC8, // SSPADD
+        0xFCA, // T2CON  (POR `-000 0000` = 0)
+        0xFCC, // TMR2
+        0xFD1, // WDTCON  (POR `---- ---0` = 0)
+        0xFD7, // TMR0H
+        0xFDA, // FSR2H  (POR `---- 0000` = 0)
+        0xFE0, // BSR  (POR `---- 0000` = 0)
+        0xFE2, // FSR1H
+        0xFEA, // FSR0H
+        0xFF2, // INTCON  (bit 0 is `u` on MCLR; see docstring)
+    ];
+    for addr in K20_MCLR_ZERO_SFRS {
+        core.memory.write_raw(Address::from_raw(*addr), 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +513,62 @@ mod tests {
         // TO forced to 1; bit 7 (IPEN) preserved.
         assert!(rcon & RCON_TO != 0);
         assert!(rcon & 0x80 != 0);
+    }
+
+    /// MCLR/WDT/RESET on a K20 zeros the SFRs whose Tbl 4-4
+    /// MCLR column is fully-zero -- not just the non-zero
+    /// ones in K20_POR.  Without this, a non-POR reset would
+    /// leave dirty PIR1/PIE1/SPBRG/etc. bytes alive.
+    #[test]
+    fn mclr_zeros_pir1_pie1_spbrg_and_friends_on_k20() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        // Pre-fill several SFRs with junk a firmware run might
+        // leave behind (TXIF set, PIE1 enables, baud divisor).
+        for (addr, value) in [
+            (0xF9Eu16, 0xFFu8), // PIR1
+            (0xF9D, 0x55),       // PIE1
+            (0xFA1, 0xAA),       // PIR2
+            (0xFA0, 0x33),       // PIE2
+            (0xFAD, 0x99),       // TXREG
+            (0xFAF, 0x05),       // SPBRG
+            (0xF9B, 0x42),       // OSCTUNE
+        ] {
+            core.memory.write_raw(Address::from_raw(addr), value);
+        }
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        for addr in [0xF9Eu16, 0xF9D, 0xFA1, 0xFA0, 0xFAD, 0xFAF, 0xF9B] {
+            assert_eq!(
+                core.memory.read_raw(Address::from_raw(addr)),
+                0,
+                "SFR 0x{addr:03X} must zero on MCLR per Tbl 4-4"
+            );
+        }
+        // K20_POR's non-zero entries also re-establish.
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFCB)),
+            0xFF,
+            "PR2 must be 0xFF after MCLR (K20_POR re-applies)"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFAC)),
+            0x02,
+            "TXSTA must be 0x02 (TRMT=1) after MCLR"
+        );
+    }
+
+    /// GPRs (data memory below 0xF60) MUST survive MCLR per
+    /// Tbl 4-4 -- only POR wipes RAM.  Regression test against
+    /// an over-eager MCLR clear.
+    #[test]
+    fn mclr_preserves_gpr_data_memory() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut stack = Stack::new();
+        core.memory.write_raw(Address::from_raw(0x100), 0x42);
+        core.memory.write_raw(Address::from_raw(0x200), 0xA5);
+        apply_reset(&mut core, &mut stack, ResetSource::Mclr);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x100)), 0x42);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0x200)), 0xA5);
     }
 
     #[test]
