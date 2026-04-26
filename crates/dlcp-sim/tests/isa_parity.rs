@@ -449,7 +449,7 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
         (0xFB8, 0x40, 0x00, "BAUDCON: gpsim init uses porv=0x00; DS Tbl 4-4 = 0x40 (RCIDL=1)"),
         (0xFB9, 0x01, 0x00, "PSTRCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x01 (STRA=1)"),
         (0xFD2, 0x05, 0x00, "HLVDCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x05 (HLVDL=0101)"),
-        (0xFD3, 0x30, 0x40, "OSCCON: rust uses DS Tbl 4-4 POR `0011 qq00` = 0x30; gpsim ships its base-class initial value 0x40 (16bit-processors.cc:560) and never overrides it on the K20 subclass.  P2 will model the OSCCON HFINTOSC settle state machine; until then this is a single-cell static deviation."),
+        (0xFD3, 0x30, 0x40, "OSCCON: rust uses DS Tbl 4-4 POR `0011 qq00` = 0x30; gpsim ships its base-class initial value 0x40 (16bit-processors.cc:560) and never overrides it on the K20 subclass.  Phase 3's chain scheduler will model the OSCCON HFINTOSC settle / IOFS transition state machine on the universal clock; until then this is a single-cell static deviation."),
     ];
 
     let mut sfr_diffs: Vec<(u16, u8, u8)> = Vec::new();
