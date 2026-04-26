@@ -192,14 +192,15 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // does on real silicon when not in update mode.
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
     let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
-    // V3.x MAIN early-boot reads AN0 to gate "is the unit
-    // plugged in?".  Without an injected sample the ADC
-    // peripheral returns 0x0000 and MAIN parks in a
-    // standby-poll loop forever.  Inject a value comfortably
-    // above the V3.x boot threshold (0x0228 per the AN0
-    // standby trace + `peripheral_adc_parity.rs::v32_boot_threshold`
-    // pin) so MAIN clears the gate and continues into the
-    // current-loop service path where TX bytes start flowing.
+    // V3.x MAIN early-boot reads AN0 in `adc_boot_gate` to
+    // decide "is the unit plugged in?".  Without an injected
+    // sample the ADC peripheral returns 0x0000 and MAIN parks
+    // in a standby-poll loop forever.  Inject a value
+    // comfortably above the V3.1/V3.2 boot-gate threshold
+    // (0x0236 per `src/dlcp_fw/asm/dlcp_main_v31.asm::adc_boot_gate`;
+    // 0x0228 is the runtime low-trip standby threshold, NOT
+    // the boot gate) so MAIN clears the gate and continues
+    // into chain protocol convergence.
     main.peripherals.adc.set_an0_sample(0x0300);
 
     let mut chain = Chain::new();
@@ -217,32 +218,24 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // Same-PSU boot: CONTROL and MAIN come up together.
     chain.schedule_initial_steps(&[0, 0]);
 
-    // Step a bounded universal-tick budget.  100 ticks
-    // (~6 Tcy K20, ~8 Tcy 2455) is the original smoke
-    // budget that proved chain dispatch + dual-trampoline
-    // execution worked.  Phase-3.5 part-5 bumps this to
-    // 1000 ticks (~62 Tcy K20, ~83 Tcy 2455) so MAIN runs
-    // through more of its early-boot init -- close enough
-    // to surface the next peripheral fidelity gap (if
-    // any) but still well short of converging on real
-    // chain protocol traffic.  Bump again incrementally
-    // as gaps are closed.
     // Step budget: 10 million universal ticks ≈ 209 ms
-    // simulated time on K20 (625k Tcy at 16 ticks/Tcy) and
-    // ≈ 208 ms on 2455 (833k Tcy at 12 ticks/Tcy).  Long
-    // enough to clear early-boot init + AN0 standby gate +
-    // EUSART setup on MAIN, and to push CONTROL well past
-    // the bootloader-window NOP march into V1.71's IRQ
-    // vector / main-loop region.  Wall-clock < 100 ms.
+    // simulated time on K20 (625 k Tcy at 16 ticks/Tcy) and
+    // ≈ 208 ms on 2455 (833 k Tcy at 12 ticks/Tcy).  Long
+    // enough to clear early-boot init + AN0 standby gate on
+    // MAIN, and to let CONTROL traverse the V1.71-shipped
+    // bootloader at 0x7800 and hand control back to user
+    // code (V1.71 hex DOES include the bootloader image; see
+    // hex records starting at offset 0x7800).  Wall-clock
+    // < 100 ms locally.
     //
-    // Whether any TX bytes flow yet depends on (a) MAIN
-    // reaching the current-loop service path that emits
-    // its first frame and (b) CONTROL reaching the point
-    // where it polls / responds.  Phase-3.5 part-5
-    // documents the observed `tx_history.len()` so
-    // subsequent sub-tasks can tighten the assertion to
-    // a non-zero count once stimulus + peripheral fidelity
-    // are sufficient.
+    // Whether TX bytes flow yet depends on (a) MAIN reaching
+    // the current-loop service path that emits its first
+    // frame and (b) CONTROL reaching the point where it
+    // polls / responds.  At 10M ticks `tx_history.len()` is
+    // still 0 -- MAIN parks in a chain-stimulus polling loop
+    // around 0x428C (tracked as task #21).  Subsequent
+    // sub-tasks tighten the assertion to a non-zero count
+    // once stimulus + peripheral fidelity are sufficient.
     chain.step_ticks(10_000_000);
 
     // Both cores made forward progress (cycle counter
@@ -277,25 +270,24 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     );
 
     // CONTROL's shipped reset vector points at the Microchip
-    // USB bootloader (0x7800) and the V1.71 hex doesn't
-    // include the bootloader image.  flash[0x7800..0x7FFF]
-    // is the erased default 0xFF, which decodes as
-    // `NopContinuation` (1-Tcy NOP).  After ~625 k Tcy of
-    // NOP-walking through the bootloader window, CONTROL's
-    // PC wraps and lands back in V1.71 application code
-    // around 0x01E4 (observed during scaffolding).  This is
-    // a quirk of running V1.71 without the bootloader image
-    // -- on real silicon the bootloader does GOTO back to
-    // user code; here we get back via NOP-walk wraparound.
-    // A future P3.5 sub-task will either load the bootloader
-    // alongside V1.71 or bake a synthetic GOTO past the
-    // V1.71 vector block to reach the app entry directly.
-    // Until then the `> 0x100` bound here just locks in
-    // that CONTROL has left the bootloader window.
+    // USB bootloader at 0x7800.  V1.71 ships the bootloader
+    // image inline -- hex records starting at offset 0x7800
+    // are real bootloader code (V1.71 hex line 1922:
+    // `:107800007FEF3DF0...` = GOTO 0x7AFE → bootloader's
+    // setup → user-code handoff).  After ~625 k Tcy CONTROL
+    // has executed through the bootloader and back into
+    // V1.71 user code (PC observed at 0x01E4 during
+    // scaffolding).  Lock in "left the bootloader window"
+    // with a strict `< 0x7800` upper bound (the K20's PC is
+    // 21-bit but the program memory only spans
+    // 0x0000..0x7FFF, so an out-of-bounds fetch would have
+    // panicked via `ExecError::PcOutOfBounds` before reaching
+    // this assertion -- the `>= 0x8000` allowance from the
+    // prior commit was wrong and is dropped here).
     let control_pc = chain.cores[i_control].pc();
     assert!(
-        control_pc < 0x7800 || control_pc >= 0x8000,
-        "CONTROL must have left the bootloader window (0x7800..0x7FFF), got 0x{:04X}",
+        control_pc < 0x7800,
+        "CONTROL must be back in user code (PC < 0x7800), got 0x{:04X}",
         control_pc
     );
 
