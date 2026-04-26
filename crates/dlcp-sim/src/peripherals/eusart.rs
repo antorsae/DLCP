@@ -68,6 +68,8 @@
 //! `tick_tcy` still makes progress and the firmware bug becomes
 //! self-evident.
 
+use std::collections::VecDeque;
+
 use crate::memory::{Address, Memory, Variant};
 
 /// Address of the TXSTA SFR on both supported variants.
@@ -95,6 +97,7 @@ const TXSTA_TRMT: u8 = 1 << 1;
 const RCSTA_SPEN: u8 = 1 << 7;
 const BAUDCON_BRG16: u8 = 1 << 3;
 const PIR1_TXIF: u8 = 1 << 4;
+const PIR1_RCIF: u8 = 1 << 5;
 
 #[derive(Clone, Debug, Default)]
 pub struct Eusart {
@@ -103,11 +106,25 @@ pub struct Eusart {
     /// TXSTA.TRMT from 0 back to 1 when this reaches 0.
     /// `None` means TSR is idle and TRMT is already 1.
     tsr_busy_tcy: Option<u32>,
+    /// Byte currently held in TSR (the shift register).
+    /// `None` when TSR is idle.  Phase-3.5 chain dispatch
+    /// reads this when the frame drains so the
+    /// firmware-emitted byte can be propagated to the peer
+    /// core's EUSART RX via the pin network.
+    tsr_byte: Option<u8>,
     /// Byte queued in TXREG while TSR was busy (PIC18 EUSART
     /// has a 1-deep TX FIFO: TXREG holds the next byte while
     /// TSR shifts the current one).  `None` means TXREG is
     /// empty and TXIF should be asserted (assuming TXEN=1).
     txreg_holding: Option<u8>,
+    /// FIFO of bytes that have completed TX and are waiting
+    /// to be drained by the chain dispatcher (Phase-3.5
+    /// `Chain::execute_core_step` pulls them via
+    /// `take_completed_tx_byte` and posts a
+    /// `PinPropagation` event for each matching UART
+    /// coupling).  Bytes accumulate here in TX order; the
+    /// chain consumes them in the same order.
+    completed_tx_bytes: VecDeque<u8>,
 }
 
 impl Eusart {
@@ -122,7 +139,42 @@ impl Eusart {
     /// SFRs after the boot vector starts running again.
     pub fn reset_state(&mut self) {
         self.tsr_busy_tcy = None;
+        self.tsr_byte = None;
         self.txreg_holding = None;
+        self.completed_tx_bytes.clear();
+    }
+
+    /// Drain one completed TX byte from the FIFO, or
+    /// `None` if no byte has finished shifting since the
+    /// last call.  Called by the chain dispatcher after
+    /// each `execute_core_step` to propagate emitted bytes
+    /// to peer cores via the pin network.
+    pub fn take_completed_tx_byte(&mut self) -> Option<u8> {
+        self.completed_tx_bytes.pop_front()
+    }
+
+    /// Deliver an inbound RX byte from the pin network.
+    /// Loads RCREG with the byte and asserts PIR1.RCIF.
+    /// Phase-3.5 minimum: no OERR / FERR modeling for the
+    /// in-flight RX shifter (the byte arrives whole-frame
+    /// at a single moment); Phase-4 dual-run will sharpen
+    /// that against gpsim's bit-level RX timing if needed.
+    /// Disabled (SPEN=0 or CREN=0) RX silently drops the
+    /// byte.
+    pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) {
+        let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+        // Need SPEN AND CREN (Continuous Receive Enable,
+        // bit 4) for the receiver to accept bytes.
+        const RCSTA_CREN: u8 = 1 << 4;
+        if (rcsta & RCSTA_SPEN) == 0 || (rcsta & RCSTA_CREN) == 0 {
+            return;
+        }
+        mem.write_raw(Address::from_raw(RCREG_ADDR), byte);
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        mem.write_raw(
+            Address::from_raw(PIR1_ADDR),
+            pir1 | PIR1_RCIF,
+        );
     }
 
     /// React to a SW-driven SFR write at `addr` whose new
@@ -160,9 +212,9 @@ impl Eusart {
         if self.tsr_busy_tcy.is_some() {
             return;
         }
-        if self.txreg_holding.is_none() {
+        let Some(byte) = self.txreg_holding else {
             return;
-        }
+        };
         if !is_async_tx_enabled(mem) {
             return;
         }
@@ -170,16 +222,20 @@ impl Eusart {
         // -> TXIF asserts via the caller's recompute_txif.
         // TSR busy -> TRMT clears.
         self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+        self.tsr_byte = Some(byte);
         self.txreg_holding = None;
         set_txsta_trmt(mem, false);
     }
 
     /// Advance the EUSART by `n` Tcy, updating TXSTA.TRMT and
     /// PIR1.TXIF when the in-flight TSR shift completes.
-    /// Drains carry-over Tcy across multiple frame boundaries:
-    /// a single big tick that crosses N frames correctly
-    /// retires N held bytes (within the bound of how many are
-    /// queued in `txreg_holding`, which is at most one).
+    /// Each completed frame's byte is appended to
+    /// `completed_tx_bytes` for the chain dispatcher to
+    /// drain via `take_completed_tx_byte`.  Drains carry-
+    /// over Tcy across multiple frame boundaries: a single
+    /// big tick that crosses N frames correctly retires N
+    /// bytes in TX order (the held byte chains in immediately
+    /// after the prior frame drains).
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
         let mut remaining_tick = n;
         while remaining_tick > 0 {
@@ -192,13 +248,20 @@ impl Eusart {
                 self.tsr_busy_tcy = Some(busy - remaining_tick);
                 return;
             }
-            // TSR drains; consume `busy` from the tick budget.
+            // TSR drains the current byte.  Emit it to the
+            // completed-TX FIFO before chaining the next
+            // (or going idle) -- the chain dispatcher will
+            // pull it on the next execute_core_step.
             remaining_tick -= busy;
-            if self.txreg_holding.take().is_some() {
+            if let Some(byte) = self.tsr_byte.take() {
+                self.completed_tx_bytes.push_back(byte);
+            }
+            if let Some(byte) = self.txreg_holding.take() {
                 // Held byte chains into TSR; a new frame
                 // begins.  TXREG empty -> TXIF asserts;
                 // TSR busy -> TRMT stays 0.
                 self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+                self.tsr_byte = Some(byte);
                 self.recompute_txif(mem);
                 // Loop continues -- the remaining_tick budget
                 // may still cross this new frame's deadline,
@@ -237,6 +300,7 @@ impl Eusart {
             // TXREG is empty; TXIF asserts (gate is on).
             // TSR is busy; TRMT clears.
             self.tsr_busy_tcy = Some(current_frame_tcy(mem));
+            self.tsr_byte = Some(byte);
             self.txreg_holding = None;
             set_txsta_trmt(mem, false);
             self.recompute_txif(mem);
@@ -667,6 +731,101 @@ mod tests {
         assert_eq!(pir1 & PIR1_TXIF, PIR1_TXIF);
         assert!(eusart.tsr_busy_tcy.is_none());
         assert!(eusart.txreg_holding.is_none());
+    }
+
+    /// Frame completion appends the transmitted byte to
+    /// the completed-TX FIFO; the chain dispatcher drains
+    /// it via `take_completed_tx_byte`.
+    #[test]
+    fn frame_completion_appends_byte_to_completed_tx_fifo() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        enable_async_tx(&mut mem);
+        eusart.on_sfr_write(TXREG_ADDR, 0xAA, &mut mem);
+        // Mid-frame: nothing in FIFO yet.
+        eusart.tick_tcy(500, &mut mem);
+        assert!(eusart.take_completed_tx_byte().is_none());
+        // Frame completes (10 bits × 96 Tcy = 960; we've
+        // ticked 500, need 460 more).
+        eusart.tick_tcy(500, &mut mem);
+        assert_eq!(eusart.take_completed_tx_byte(), Some(0xAA));
+        // FIFO empty after drain.
+        assert!(eusart.take_completed_tx_byte().is_none());
+    }
+
+    /// Chained TX (back-to-back writes) appends both bytes
+    /// to the FIFO in TX order.
+    #[test]
+    fn chained_tx_appends_in_order() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+        mem.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+        enable_async_tx(&mut mem);
+        eusart.on_sfr_write(TXREG_ADDR, 0x11, &mut mem);
+        eusart.on_sfr_write(TXREG_ADDR, 0x22, &mut mem);
+        // Tick past both frames.
+        eusart.tick_tcy(2_000, &mut mem);
+        assert_eq!(eusart.take_completed_tx_byte(), Some(0x11));
+        assert_eq!(eusart.take_completed_tx_byte(), Some(0x22));
+        assert!(eusart.take_completed_tx_byte().is_none());
+    }
+
+    /// `deliver_rx_byte` loads RCREG and asserts RCIF when
+    /// SPEN AND CREN are set; silently drops otherwise.
+    #[test]
+    fn deliver_rx_byte_asserts_rcif_when_spen_and_cren_set() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        // SPEN | CREN.
+        const RCSTA_CREN: u8 = 1 << 4;
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0x77, &mut mem);
+        assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0x77);
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+        assert_eq!(pir1 & PIR1_RCIF, PIR1_RCIF);
+    }
+
+    #[test]
+    fn deliver_rx_byte_drops_when_spen_clear() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        // CREN=1 but SPEN=0.
+        const RCSTA_CREN: u8 = 1 << 4;
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_CREN);
+        eusart.deliver_rx_byte(0x77, &mut mem);
+        assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0);
+        assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF, 0);
+    }
+
+    #[test]
+    fn deliver_rx_byte_drops_when_cren_clear() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        // SPEN=1 but CREN=0 (POR default for CREN).
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+        eusart.deliver_rx_byte(0x88, &mut mem);
+        assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0);
+        assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF, 0);
+    }
+
+    /// reset_state drains the completed-TX FIFO so a
+    /// MCLR-then-bootstrap sequence doesn't deliver
+    /// stale bytes to the peer.
+    #[test]
+    fn reset_state_drains_completed_tx_fifo() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        eusart.completed_tx_bytes.push_back(0xDE);
+        eusart.completed_tx_bytes.push_back(0xAD);
+        eusart.reset_state();
+        assert!(eusart.take_completed_tx_byte().is_none());
+        let _ = &mem;
     }
 
     /// `reset_state` clears any in-flight TX so a SLEEP-then-

@@ -39,8 +39,21 @@ pub enum EventKind {
     /// chain's `cores` vector.
     CoreInstructionComplete(usize),
     /// A pin-network propagation event (Phase 3.2).
-    /// Carries an opaque ID resolved by the pin net.
+    /// Carries the opaque coupling id (index into the
+    /// chain's pinnet's UART/pin/I²C vec, depending on
+    /// `coupling_kind`) plus the byte to deliver.  Phase-
+    /// 3.5 uses this to deliver UART bytes from a source-
+    /// core's EUSART TX to a destination-core's EUSART RX.
     PinPropagation(u32),
+    /// UART byte propagation from a source-core EUSART TX
+    /// to the destination-core EUSART RX through the
+    /// chain's pinnet UART couplings.  `uart_coupling_idx`
+    /// indexes `Chain::pinnet::uart`; `byte` is the
+    /// already-shifted-out byte.
+    UartByteDelivery {
+        uart_coupling_idx: usize,
+        byte: u8,
+    },
     /// A peripheral-internal deadline (timer overflow,
     /// EEPROM write completion, ADC conversion done, etc.)
     /// scheduled by a peripheral via the queue.  Carries

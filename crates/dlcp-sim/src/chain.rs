@@ -187,41 +187,72 @@ impl Chain {
         self.current_tick = target;
     }
 
-    /// Dispatch one drained event.  Phase-3.5 wires the
-    /// `CoreInstructionComplete` arm to actually execute
-    /// the next instruction on the named core and
-    /// reschedule its next completion event; pin
-    /// propagation and peripheral deadlines remain stubs
-    /// until subsequent P3.x sub-tasks fill them in.
+    /// Dispatch one drained event.  Phase-3.5 wires:
+    ///   * `CoreInstructionComplete`: execute one
+    ///     instruction on the named core, drain any
+    ///     completed TX bytes into UartByteDelivery
+    ///     events, reschedule the next completion event.
+    ///   * `UartByteDelivery`: deliver the byte to the
+    ///     destination core's EUSART RX via
+    ///     `Eusart::deliver_rx_byte`.
+    /// `PinPropagation` (general-purpose pin events) and
+    /// `PeripheralDeadline` remain stubs until subsequent
+    /// P3.x sub-tasks fill them in.
     fn dispatch_event(&mut self, event: Event) {
         match event.kind {
             EventKind::CoreInstructionComplete(core_idx) => {
                 self.execute_core_step(core_idx);
             }
+            EventKind::UartByteDelivery {
+                uart_coupling_idx,
+                byte,
+            } => {
+                self.deliver_uart_byte(uart_coupling_idx, byte);
+            }
             EventKind::PinPropagation(_) => {
-                // P3.5 next-commit: deliver byte to peer
-                // RCREG.
+                // General-purpose pin events deferred to
+                // P3.7 alongside the late-boot recovery
+                // test that exercises MCLR / RA0 wakeup.
             }
             EventKind::PeripheralDeadline { .. } => {
                 // Peripherals currently advance via
                 // `core.advance_cycles -> tick_tcy`; the
                 // queue-driven path is reserved for
                 // peripherals whose deadline outruns the
-                // executor (EEPROM 12 000-Tcy write,
-                // ADC conversion, etc.) -- to be wired
-                // in P3.7 alongside the late-boot
-                // recovery test.
+                // executor (EEPROM 12 000-Tcy write, etc.)
+                // -- to be wired alongside multi-core
+                // EEPROM-write-time parity in P3.7.
             }
         }
     }
 
-    /// Execute one instruction on `core_idx` and schedule
-    /// the next `CoreInstructionComplete` event at the
-    /// drifted-tick boundary derived from
-    /// [`ClockDomain::apply_drift`].  This is the
-    /// per-core driver Phase-3.5+ exercises via
-    /// `step_ticks` to keep all cores progressing on the
-    /// universal-clock timeline.
+    /// Deliver a UART byte from a source-core's EUSART
+    /// TX to the wired destination-core's EUSART RX.  The
+    /// `uart_coupling_idx` indexes `pinnet.uart`; the byte
+    /// is loaded into RCREG + sets RCIF on the destination
+    /// (gated on the destination's RCSTA.SPEN AND CREN).
+    fn deliver_uart_byte(&mut self, uart_coupling_idx: usize, byte: u8) {
+        let coupling = match self.pinnet.uart.get(uart_coupling_idx) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        // Borrow-checker: take a single &mut Core for the
+        // destination, then split-borrow `peripherals` and
+        // `memory` -- they're disjoint pub fields so the
+        // compiler accepts the simultaneous &mut on each.
+        let dst_core = &mut self.cores[coupling.dst_core];
+        let memory = &mut dst_core.memory;
+        let eusart = &mut dst_core.peripherals.eusart;
+        eusart.deliver_rx_byte(byte, memory);
+    }
+
+    /// Execute one instruction on `core_idx`, drain any
+    /// EUSART TX bytes that completed shifting during the
+    /// step into `UartByteDelivery` events for the wired
+    /// peer cores, and schedule the next
+    /// `CoreInstructionComplete` event at the drifted-tick
+    /// boundary derived from
+    /// [`ClockDomain::apply_drift`].
     pub fn execute_core_step(&mut self, core_idx: usize) {
         let core = &mut self.cores[core_idx];
         let stack = &mut self.stacks[core_idx];
@@ -233,7 +264,70 @@ impl Chain {
         // keeps the panic so test failures are obvious.
         let _ = step(core, stack)
             .unwrap_or_else(|e| panic!("exec::step failed on core {core_idx}: {e:?}"));
+        self.drain_completed_tx_bytes(core_idx);
         self.schedule_next_core_step(core_idx);
+    }
+
+    /// Pull any bytes that the source-core EUSART
+    /// completed shifting since the last drain, and post a
+    /// `UartByteDelivery` event for each matching UART
+    /// coupling at the current universal tick (instant
+    /// delivery; pin-network propagation delay is a
+    /// Phase-4 dual-run refinement).
+    fn drain_completed_tx_bytes(&mut self, src_core_idx: usize) {
+        // Snapshot which UART couplings source from this
+        // core (by index).  We need the snapshot up-front
+        // because we'll mutably borrow the source core's
+        // EUSART next.
+        let matching_couplings: Vec<usize> = self
+            .pinnet
+            .uart
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, c)| {
+                if c.src_core == src_core_idx {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if matching_couplings.is_empty() {
+            // Nothing wired -- still drain the FIFO so it
+            // doesn't accumulate and force-deliver
+            // already-aged bytes when a coupling lands
+            // later.
+            let core = &mut self.cores[src_core_idx];
+            while core.peripherals.eusart.take_completed_tx_byte().is_some() {}
+            return;
+        }
+        // Drain bytes from the source core's EUSART into
+        // a local Vec first (split-borrow: the &mut on
+        // self.cores conflicts with a later self.events
+        // push if held simultaneously).
+        let bytes: Vec<u8> = {
+            let src_core = &mut self.cores[src_core_idx];
+            let eusart = &mut src_core.peripherals.eusart;
+            let mut acc = Vec::new();
+            while let Some(byte) = eusart.take_completed_tx_byte() {
+                acc.push(byte);
+            }
+            acc
+        };
+        // Now post a UartByteDelivery event per (byte,
+        // coupling) pair at the current tick.
+        let now = self.current_tick;
+        for byte in bytes {
+            for &coupling_idx in &matching_couplings {
+                self.events.push(
+                    now,
+                    EventKind::UartByteDelivery {
+                        uart_coupling_idx: coupling_idx,
+                        byte,
+                    },
+                );
+            }
+        }
     }
 
     /// Schedule a `CoreInstructionComplete` event for the
@@ -587,6 +681,81 @@ mod tests {
         assert_eq!(chain.events.len(), 1);
         assert_eq!(chain.current_tick, 0);
         assert_eq!(chain.boot_epochs[idx], 2000);
+    }
+
+    /// End-to-end UART chain: source core transmits a
+    /// byte; chain dispatch propagates it to the wired
+    /// destination core's EUSART RX (RCREG + RCIF).
+    #[test]
+    fn uart_byte_propagates_from_src_tx_to_dst_rx() {
+        // Build a flash that runs the V1.71 EUSART setup
+        // + a TXREG=0x55 write, then loops on BRA -1.
+        // Reuse the existing peripheral_eusart_parity
+        // demo encoding inline here -- 11 setup
+        // instructions + a 960-Tcy frame on the source.
+        let mut flash_src = vec![0u8; 32 * 1024];
+        let prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x05, 0x0E]),       // MOVLW 0x05
+            (0x0002, [0xAF, 0x6E]),       // MOVWF SPBRG (a=0)
+            (0x0004, [0x20, 0x0E]),       // MOVLW 0x20 (TXEN)
+            (0x0006, [0xAC, 0x6E]),       // MOVWF TXSTA
+            (0x0008, [0x80, 0x0E]),       // MOVLW 0x80 (SPEN)
+            (0x000A, [0xAB, 0x6E]),       // MOVWF RCSTA
+            (0x000C, [0x40, 0x0E]),       // MOVLW 0x40
+            (0x000E, [0xB8, 0x6E]),       // MOVWF BAUDCON
+            (0x0010, [0x55, 0x0E]),       // MOVLW 0x55
+            (0x0012, [0xAD, 0x6E]),       // MOVWF TXREG
+            (0x0014, [0xFF, 0xD7]),       // BRA -1
+        ];
+        for (a, bytes) in prog {
+            flash_src[*a as usize] = bytes[0];
+            flash_src[*a as usize + 1] = bytes[1];
+        }
+        // Destination flash: enable RX (SPEN | CREN) then
+        // BRA loop.
+        let mut flash_dst = vec![0u8; 32 * 1024];
+        let dst_prog: &[(u32, [u8; 2])] = &[
+            (0x0000, [0x90, 0x0E]),       // MOVLW 0x90 (SPEN|CREN)
+            (0x0002, [0xAB, 0x6E]),       // MOVWF RCSTA
+            (0x0004, [0xFF, 0xD7]),       // BRA -1
+        ];
+        for (a, bytes) in dst_prog {
+            flash_dst[*a as usize] = bytes[0];
+            flash_dst[*a as usize + 1] = bytes[1];
+        }
+
+        let mut chain = Chain::new();
+        let mut src = Core::new(Variant::Pic18F25K20);
+        src.flash_mut().copy_from_slice(&flash_src);
+        let i_src = chain.push_core(src);
+        let mut dst = Core::new(Variant::Pic18F25K20);
+        dst.flash_mut().copy_from_slice(&flash_dst);
+        let i_dst = chain.push_core(dst);
+        chain.couple_uart(
+            i_src,
+            crate::pinnet::default_tx_pin(),
+            i_dst,
+            crate::pinnet::default_rx_pin(),
+        );
+        chain.apply_reset_all(ResetSource::PowerOn);
+        chain.schedule_initial_steps(&[0, 0]);
+
+        // Step long enough for both cores to set up + the
+        // 960-Tcy frame to drain.  K20 setup ~11 cycles =
+        // 11 * 16 = 176 ticks; frame = 960 Tcy = 15360
+        // ticks.  Give it 30 000.
+        chain.step_ticks(30_000);
+
+        // Destination's RCREG should hold 0x55.
+        let rcreg = chain.cores[i_dst].memory.read_raw(
+            crate::memory::Address::from_raw(0xFAE),
+        );
+        assert_eq!(rcreg, 0x55, "destination RCREG must hold the propagated byte");
+        // PIR1.RCIF (bit 5) must be set.
+        let pir1 = chain.cores[i_dst].memory.read_raw(
+            crate::memory::Address::from_raw(0xF9E),
+        );
+        assert_eq!(pir1 & (1 << 5), 1 << 5, "destination RCIF must assert");
     }
 
     /// Regression: late-booted core stays delayed across
