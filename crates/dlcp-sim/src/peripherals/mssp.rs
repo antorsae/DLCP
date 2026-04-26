@@ -96,6 +96,7 @@ pub const SSPMSK_ADDR: u16 = 0xF77;
 pub const PIR1_ADDR: u16 = 0xF9E;
 
 const SSPSTAT_BF: u8 = 1 << 0;
+const SSPCON1_WCOL: u8 = 1 << 7;
 const SSPCON1_SSPEN: u8 = 1 << 5;
 const SSPCON1_SSPM_MASK: u8 = 0x0F;
 const SSPCON2_SEN: u8 = 1 << 0;
@@ -104,6 +105,8 @@ const SSPCON2_PEN: u8 = 1 << 2;
 const SSPCON2_RCEN: u8 = 1 << 3;
 const SSPCON2_ACKEN: u8 = 1 << 4;
 const SSPCON2_ACKSTAT: u8 = 1 << 6;
+const SSPCON2_ALL_TRIGGERS: u8 =
+    SSPCON2_SEN | SSPCON2_RSEN | SSPCON2_PEN | SSPCON2_RCEN | SSPCON2_ACKEN;
 const PIR1_SSPIF: u8 = 1 << 3;
 
 /// I²C master-mode SSPCON1<3:0> SSPM encoding.  Per DS Tbl
@@ -214,9 +217,20 @@ impl Mssp {
             return;
         }
         if !matches!(self.state, I2cState::Idle) {
-            // Module busy -- write lands in memory but no new
-            // sequence is scheduled.  The previously-scheduled
-            // sequence completes first.
+            // Module busy -- silicon ignores any newly-set
+            // event-trigger bit.  But the SW write has
+            // already landed in memory via apply_sfr_sw_write,
+            // so we have to roll back any orphan trigger
+            // bits the firmware is trying to set right now.
+            // Without this, a "SEN in flight; firmware writes
+            // PEN=1" sequence leaves PEN=1 in memory after
+            // SEN auto-clears -- causing the firmware's later
+            // PEN-clear poll to hang.  Strategy: keep the
+            // in-flight trigger bit, clear all others.
+            let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
+            let in_flight = current_in_flight_trigger_bit(&self.state);
+            let new_con2 = (con2 & !SSPCON2_ALL_TRIGGERS) | in_flight;
+            mem.write_raw(crate::memory::Address::from_raw(SSPCON2_ADDR), new_con2);
             return;
         }
         let period = scl_period_tcy(mem);
@@ -231,30 +245,61 @@ impl Mssp {
         } else if (value & SSPCON2_PEN) != 0 {
             self.state = I2cState::Stop(period);
         } else if (value & SSPCON2_RCEN) != 0 {
-            // Receive: 8 bit shifts + 1 ACK from master.
-            self.state = I2cState::RxByte(9 * period);
+            // Master receive: 8 SCL periods of data shift
+            // (per DS §17.4.6: "RCEN must be set after each
+            // byte received").  The master ACK on the 9th
+            // bit is a SEPARATE ACKEN sequence that
+            // firmware schedules after RCEN clears -- not
+            // part of RCEN's window.
+            self.state = I2cState::RxByte(8 * period);
         } else if (value & SSPCON2_ACKEN) != 0 {
             self.state = I2cState::AckPulse(period);
         }
     }
 
-    /// SSPBUF write in master-transmit mode: schedule an
-    /// 8-bit shift + 1-bit slave-ACK, set BF, clear when
-    /// done.  In Phase 2 with no bus-side slave we model
-    /// NACK (ACKSTAT = 1) as the default outcome.
+    /// SSPBUF write semantics:
+    ///   * If peripheral is enabled AND idle: load byte,
+    ///     set BF, schedule TxByte (8 bits + ACK = 9 SCL
+    ///     periods).
+    ///   * If peripheral is enabled AND busy: silicon sets
+    ///     SSPCON1.WCOL (write-collision) and discards the
+    ///     write.  BF stays as-is; no TxByte scheduled.
+    ///     Per DS40001303H §17.4.7 ("Master mode transmit
+    ///     -- write collision").
+    ///   * If peripheral is disabled: SSPBUF is just a
+    ///     memory latch.  BF asserts (buffer holds the
+    ///     byte) -- matches the SSPBUF-as-latch behavior --
+    ///     but no TxByte runs.  Phase-2 firmware idiom is
+    ///     to enable the peripheral first then write
+    ///     SSPBUF, so this branch is mostly defensive.
     fn handle_sspbuf_write(&mut self, mem: &mut Memory) {
-        // BF asserts (buffer holds the byte to transmit).
+        if !is_i2c_master_enabled(mem) {
+            // Peripheral off; SSPBUF is just memory.  BF
+            // mirrors the latch-occupied state.
+            let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
+            mem.write_raw(
+                crate::memory::Address::from_raw(SSPSTAT_ADDR),
+                s | SSPSTAT_BF,
+            );
+            return;
+        }
+        if !matches!(self.state, I2cState::Idle) {
+            // Write-collision: set WCOL, leave BF unchanged,
+            // don't schedule.  Firmware must clear WCOL by
+            // SW write before retrying.
+            let con1 = mem.read_raw(crate::memory::Address::from_raw(SSPCON1_ADDR));
+            mem.write_raw(
+                crate::memory::Address::from_raw(SSPCON1_ADDR),
+                con1 | SSPCON1_WCOL,
+            );
+            return;
+        }
+        // Idle path: BF asserts, TxByte scheduled.
         let s = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
         mem.write_raw(
             crate::memory::Address::from_raw(SSPSTAT_ADDR),
             s | SSPSTAT_BF,
         );
-        if !is_i2c_master_enabled(mem) {
-            return;
-        }
-        if !matches!(self.state, I2cState::Idle) {
-            return;
-        }
         let period = scl_period_tcy(mem);
         self.state = I2cState::TxByte(9 * period);
     }
@@ -311,6 +356,23 @@ impl Mssp {
     fn complete_ack_pulse(&self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_ACKEN);
         assert_sspif(mem);
+    }
+}
+
+/// Map an in-flight state to the SSPCON2 trigger bit that's
+/// associated with it (the bit silicon auto-clears at the
+/// end of the sequence).  Returns 0 for in-flight states
+/// triggered by something other than SSPCON2 (TxByte is
+/// triggered by an SSPBUF write, no SSPCON2 bit involved).
+fn current_in_flight_trigger_bit(state: &I2cState) -> u8 {
+    match state {
+        I2cState::Idle => 0,
+        I2cState::Start(_) => SSPCON2_SEN,
+        I2cState::RepeatedStart(_) => SSPCON2_RSEN,
+        I2cState::Stop(_) => SSPCON2_PEN,
+        I2cState::RxByte(_) => SSPCON2_RCEN,
+        I2cState::AckPulse(_) => SSPCON2_ACKEN,
+        I2cState::TxByte(_) => 0,
     }
 }
 
@@ -411,13 +473,64 @@ mod tests {
         assert_eq!(mssp.state, I2cState::Stop(120));
     }
 
+    /// RCEN -> 8 SCL periods (8-bit shift; ACK is a
+    /// separate ACKEN sequence per DS §17.4.6).
     #[test]
-    fn rcen_schedules_rx_byte_9_periods() {
+    fn rcen_schedules_rx_byte_8_periods() {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
         enable_i2c_master(&mut mem, 0x77);
         mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_RCEN, &mut mem);
-        assert_eq!(mssp.state, I2cState::RxByte(9 * 120));
+        assert_eq!(mssp.state, I2cState::RxByte(8 * 120));
+    }
+
+    /// SSPBUF write while busy must set WCOL and not change
+    /// BF nor schedule a TX.
+    #[test]
+    fn sspbuf_write_while_busy_sets_wcol_no_schedule() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        // Kick a Start sequence.
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut mem);
+        let saved_state = mssp.state.clone();
+        // Try SSPBUF write while Start is in flight.
+        mssp.on_sfr_write(SSPBUF_ADDR, 0xAA, &mut mem);
+        assert_eq!(
+            mssp.state, saved_state,
+            "SSPBUF write during busy must not change state"
+        );
+        let con1 = mem.read_raw(Address::from_raw(SSPCON1_ADDR));
+        assert_eq!(
+            con1 & SSPCON1_WCOL, SSPCON1_WCOL,
+            "WCOL must assert on collision write"
+        );
+        let stat = mem.read_raw(Address::from_raw(SSPSTAT_ADDR));
+        assert_eq!(stat & SSPSTAT_BF, 0, "BF must NOT change on collision");
+    }
+
+    /// SSPCON2 write while busy with a different trigger bit
+    /// must not leave the orphan bit alive in memory.
+    #[test]
+    fn sspcon2_busy_write_rolls_back_orphan_trigger_bits() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut mem);
+        // Firmware bug: writes SSPCON2 = PEN while SEN is in
+        // flight.  The pre-mssp-hook write_addr_masked
+        // already stored the value; we simulate that:
+        mem.write_raw(Address::from_raw(SSPCON2_ADDR), SSPCON2_PEN);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+        let con2 = mem.read_raw(Address::from_raw(SSPCON2_ADDR));
+        assert_eq!(
+            con2 & SSPCON2_PEN, 0,
+            "PEN must be rolled back -- module was busy"
+        );
+        assert_eq!(
+            con2 & SSPCON2_SEN, SSPCON2_SEN,
+            "SEN must remain set (the in-flight trigger)"
+        );
     }
 
     #[test]
