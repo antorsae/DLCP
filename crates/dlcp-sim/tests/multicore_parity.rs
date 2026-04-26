@@ -236,8 +236,11 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // V3.1's boot has multiple `timer3_blocking_delay` calls
     // totaling many seconds of simulated time -- by 1B ticks
     // (~21 s simulated, ~7 s wall) MAIN clears those and
-    // advances to a new poll at PC=0x4738
-    // (`wait_bf_clear_loop`, I2C SSPSTAT.BF poll).  That
+    // advances to a new poll inside `wait_bf_clear_loop`
+    // (label at 0x4732; the observed park point at 0x4738
+    // is the `bnc wait_bf_clear_loop` retry-on-timeout).
+    // The loop polls SSPSTAT.BF -- the I2C "buffer full"
+    // bit.  That
     // loop spin-retries because there's no DSP slave on the
     // I2C bus to ACK transfers -- task #23 (TAS3108 DSP I2C
     // slave model) covers the next chain-convergence step.
@@ -265,13 +268,14 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // and the shipped GOTO 0x1014 at flash[0x1000..0x1004])
     // and into V3.1 application code.  At 10M universal
     // ticks ≈ 833 k Tcy on the 2455, MAIN's PC has been
-    // observed to land in the 0x4000..0x4400 region (the
-    // observed PC during scaffolding was 0x428C, parked in
-    // a polling loop waiting for chain stimulus).  Lock the
-    // progression in with a `> 0x4000` lower bound.  If
-    // a future regression strands MAIN somewhere earlier
-    // (back at 0x1014, in early-init bank-clear loops, etc.)
-    // this assertion fires.
+    // observed at 0x428C (mid-`flow_timer3_blocking_delay_449e`,
+    // a normal Timer3 overflow poll -- see the longer
+    // comment above the `step_ticks` call for the full
+    // per-loop progression).  Lock the progression in with
+    // a `> 0x4000` lower bound.  If a future regression
+    // strands MAIN somewhere earlier (back at 0x1014, in
+    // early-init bank-clear loops, etc.) this assertion
+    // fires.
     let main_pc = chain.cores[i_main].pc();
     assert!(
         main_pc > 0x4000,
