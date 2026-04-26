@@ -118,19 +118,18 @@ impl Timers {
     }
 
     /// Pre-SFR-reset cleanup: drops in-flight prescaler
-    /// state and the RD16-mode tracking flag.  Called from
-    /// `apply_reset` BEFORE the SFR-side reset runs.  Does
-    /// NOT touch `tmr3h_live` / `tmr3h_buffer` -- those
-    /// need to remain authoritative across the SFR pass so
-    /// `sync_from_memory` can pull them from the now-
-    /// canonical SFR memory.
+    /// accumulators only.  Called from `apply_reset` BEFORE
+    /// the SFR-side reset runs.  Deliberately does NOT
+    /// touch `tmr3h_live`, `tmr3h_buffer`, or
+    /// `last_t3con_rd16` -- those are authoritatively
+    /// re-derived from canonical SFR memory by
+    /// `sync_from_memory` for sources that touch the SFR
+    /// window (POR/BOR/MCLR/WDT/RESET) and intentionally
+    /// preserved across stack-only resets that don't
+    /// touch SFRs.
     pub fn reset_state(&mut self) {
         self.timer0_prescaler_tcy = 0;
         self.timer3_prescaler_tcy = 0;
-        self.last_t3con_rd16 = false;
-        // tmr3h_live and tmr3h_buffer are deliberately NOT
-        // cleared here; sync_from_memory restores the right
-        // post-reset values after the SFR pass runs.
     }
 
     /// Test-only: read the current Timer3 live high byte
@@ -168,6 +167,12 @@ impl Timers {
         // garbage.  Mirroring buffer = memory[TMR3H] gives
         // the correct value for both cases.
         self.tmr3h_buffer = mem.read_raw(Address::from_raw(TMR3H_ADDR));
+        // Re-derive the RD16-tracking flag from the
+        // canonical post-reset T3CON byte so the next T3CON
+        // write doesn't misclassify a steady-state mode as a
+        // 0->1 transition.
+        let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
+        self.last_t3con_rd16 = (t3con & T3CON_RD16) != 0;
     }
 
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
@@ -561,12 +566,14 @@ mod tests {
         assert_eq!(t.timer0_prescaler_tcy, 0);
     }
 
-    /// reset_state clears the prescaler accumulators and
-    /// the RD16-tracking flag.  tmr3h_live / tmr3h_buffer
-    /// are intentionally NOT touched -- sync_from_memory
-    /// (called after the SFR-side reset) repairs them.
+    /// reset_state clears prescaler accumulators only.
+    /// tmr3h_live / tmr3h_buffer / last_t3con_rd16 are
+    /// intentionally NOT touched -- sync_from_memory
+    /// repairs them (for SFR-touching resets) or they're
+    /// preserved (for stack-only resets that don't touch
+    /// SFRs).
     #[test]
-    fn reset_state_clears_prescaler_accumulators() {
+    fn reset_state_clears_prescaler_accumulators_only() {
         let mut t = Timers::default();
         t.timer0_prescaler_tcy = 7;
         t.timer3_prescaler_tcy = 3;
@@ -576,9 +583,9 @@ mod tests {
         t.reset_state();
         assert_eq!(t.timer0_prescaler_tcy, 0);
         assert_eq!(t.timer3_prescaler_tcy, 0);
-        assert!(!t.last_t3con_rd16);
-        // tmr3h_buffer / tmr3h_live preserved across
-        // reset_state -- they wait for sync_from_memory.
+        // last_t3con_rd16, tmr3h_buffer, tmr3h_live all
+        // preserved across reset_state.
+        assert!(t.last_t3con_rd16);
         assert_eq!(t.tmr3h_buffer, 0xAB);
         assert_eq!(t.tmr3h_live, 0xCD);
     }
