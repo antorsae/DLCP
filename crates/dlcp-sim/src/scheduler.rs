@@ -59,20 +59,49 @@ pub struct Event {
 }
 
 /// Min-heap ordering: earlier `tick` first; on ties,
-/// earlier `seq` first.  `BinaryHeap` is a max-heap, so
-/// invert `Ord`.
+/// earlier `seq` first; final tie-break by `kind` (so the
+/// `Ord` total order is consistent with the derived `Eq`
+/// implementation -- two `Event` values are `Eq` only when
+/// every field matches, so the order must distinguish them
+/// when `tick` + `seq` collide).  In practice `EventQueue`
+/// hands out monotonically-increasing `seq` values so the
+/// kind-tie path is unreachable, but defining the order
+/// totally avoids violating the `Ord`/`Eq` contract for
+/// directly-constructed `Event` values that callers may
+/// (e.g.) clone and compare manually.  `BinaryHeap` is a
+/// max-heap, so invert.
 impl Ord for Event {
     fn cmp(&self, other: &Self) -> Ordering {
+        // Primary: earlier tick first.
         other
             .tick
             .cmp(&self.tick)
             .then_with(|| other.seq.cmp(&self.seq))
+            // Final tie-break: discriminant order on the
+            // EventKind variants.  Stable across runs because
+            // we use the variant index, not the payload.
+            .then_with(|| {
+                kind_discriminant(&other.kind)
+                    .cmp(&kind_discriminant(&self.kind))
+            })
     }
 }
 
 impl PartialOrd for Event {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+/// Stable variant-discriminant for tie-break.  Used only
+/// when two `Event`s share `tick` and `seq` -- by
+/// construction `EventQueue::push` assigns unique seq, so
+/// this path is dead in normal use.
+fn kind_discriminant(k: &EventKind) -> u8 {
+    match k {
+        EventKind::CoreInstructionComplete(_) => 0,
+        EventKind::PinPropagation(_) => 1,
+        EventKind::PeripheralDeadline { .. } => 2,
     }
 }
 

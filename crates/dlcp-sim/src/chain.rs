@@ -78,8 +78,17 @@ impl Chain {
                 break;
             }
             let event = self.events.pop().expect("peek/pop consistency");
+            // Advance the universal clock to the event's
+            // firing tick BEFORE dispatching so handlers
+            // observe a coherent `current_tick`.  Phase-3.2+
+            // handlers will rely on this for pin-network
+            // propagation timing and peripheral deadline
+            // routing.
+            self.current_tick = event.tick;
             self.dispatch_event(event);
         }
+        // After draining all due events, jump to the target
+        // even if it's later than the last fired event.
         self.current_tick = target;
     }
 
