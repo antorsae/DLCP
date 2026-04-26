@@ -432,18 +432,23 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     //
     // Sources:
     //   - vendor/gpsim-0.32.1-xtc/src/p18fk.cc:create_sfr_map
-    //     for the missing por_value entries
+    //     for the missing por_value entries on the K20 path
+    //   - vendor/gpsim-0.32.1-xtc/src/16bit-processors.cc:560
+    //     for the OSCCON initial value gpsim ships at the base
+    //     `_16bit_processor::create_sfr_map` level (the K20
+    //     subclass does not override this entry)
     //   - DS40001303H Table 4-4 (p.56-60) for the datasheet
     //     POR values the Rust executor uses
-    //   - vendor/gpsim-0.32.1-xtc/src/14bit-registers.cc:460
-    //     OSCCON::por_wake for the OSCCON post-callback transient
+    //   - DS40001303H Table 5-2 footnote 2 for the 28-pin /
+    //     ANSEL bit-implementation rule
     const GPSIM_K20_DEVIATIONS: &[(u16, u8, u8, &str)] = &[
+        (0xF7E, 0x1F, 0xFF, "ANSEL: rust honours Tbl 5-2 footnote 2 (ANS5/6/7 unimpl on 28-pin K20 -> 0x1F); gpsim's K20 model misses the footnote and brings ANSEL up at 0xFF"),
         (0xF9F, 0x7F, 0x00, "IPR1: gpsim K20 omits POR init; DS Tbl 4-4 = 0x7F (28-pin)"),
         (0xFA2, 0xFF, 0x00, "IPR2: gpsim K20 omits POR init; DS Tbl 4-4 = 0xFF"),
         (0xFB8, 0x40, 0x00, "BAUDCON: gpsim init uses porv=0x00; DS Tbl 4-4 = 0x40 (RCIDL=1)"),
         (0xFB9, 0x01, 0x00, "PSTRCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x01 (STRA=1)"),
         (0xFD2, 0x05, 0x00, "HLVDCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x05 (HLVDL=0101)"),
-        (0xFD3, 0x30, 0x40, "OSCCON: rust uses DS POR base 0x30; gpsim runs por_wake() that flips to HFINTOSC IRCF=100 (0x40) before cycle 10 -- modelled in P2's oscillator peripheral"),
+        (0xFD3, 0x30, 0x40, "OSCCON: rust uses DS Tbl 4-4 POR `0011 qq00` = 0x30; gpsim ships its base-class initial value 0x40 (16bit-processors.cc:560) and never overrides it on the K20 subclass.  P2 will model the OSCCON HFINTOSC settle state machine; until then this is a single-cell static deviation."),
     ];
 
     let mut sfr_diffs: Vec<(u16, u8, u8)> = Vec::new();

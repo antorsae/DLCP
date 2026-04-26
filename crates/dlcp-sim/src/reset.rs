@@ -36,8 +36,6 @@
 //! POR, ANSEL = 1s for all-analog, T0CON = 1s, IPRx = 1s,
 //! etc.) and immediately diverge.
 
-#![allow(dead_code, reason = "P1.6 dispatcher; consumed by P1.7 boot path + P1.2 RESET instruction")]
-
 use crate::core::Core;
 use crate::memory::{Address, Variant};
 use crate::stack::Stack;
@@ -166,19 +164,32 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // SFR POR initialisation table (variant-specific).
             apply_por_sfr_defaults(core);
         }
-        ResetSource::BrownOut
-        | ResetSource::Mclr
-        | ResetSource::Wdt
-        | ResetSource::ResetInstruction => {
+        ResetSource::BrownOut => {
             // DS39632E §5.4 ("On Reset, the Stack Pointer
             // value will be zero") + Table 4-1 (STKFUL=u,
             // STKUNF=u for all of these): the pointer drops
             // to 0 on these resets, but the sticky flags AND
             // the slot data are preserved across the reset.
-            // A previous CALL/RCALL pushed onto the stack
-            // remains in slot[depth_pre_reset-1] and can be
-            // read via TOSU/H/L after firmware writes a new
-            // depth into STKPTR.
+            stack.reset_pointer_preserve_flags();
+            // BOR shares the "Power-on Reset, Brown-out Reset"
+            // column in DS40001303H Table 4-4 -- so the SFR
+            // initial values that POR brings up also apply to
+            // BOR.  Note we do NOT zero data memory: BOR
+            // preserves general-purpose RAM contents (only POR
+            // wipes); we just re-establish the SFR defaults.
+            apply_por_sfr_defaults(core);
+        }
+        ResetSource::Mclr
+        | ResetSource::Wdt
+        | ResetSource::ResetInstruction => {
+            // DS39632E §5.4 + Table 4-1: STKPTR depth → 0;
+            // sticky flags + slot data preserved.  A previous
+            // CALL/RCALL push remains in slot[depth_pre-1] and
+            // can be read via TOSU/H/L after firmware writes a
+            // new depth into STKPTR.  These reset sources leave
+            // SFRs at their pre-reset values (Table 4-4 column
+            // "MCLR Resets, WDT Reset, RESET Instruction, Stack
+            // Resets" lists `u` for almost all entries).
             stack.reset_pointer_preserve_flags();
         }
         ResetSource::StackFull => {
@@ -282,10 +293,17 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
         (0xF93, 0xFF),
         // TRISC: all-input.
         (0xF94, 0xFF),
-        // ANSEL / ANSELH: all-analog (PORTA/B start as analog).
-        // ANSELH is conditional on PBADEN config bit per Note 6;
-        // V1.71's CONFIG3H has PBADEN=1 -> 0x1F.
-        (0xF7E, 0xFF),
+        // ANSEL: all-analog on the bits the silicon implements.
+        // Table 5-2 footnote 2 marks ANS5/6/7 unimplemented on
+        // 28-pin (PIC18F2XK20) -- they read as 0 -- so the
+        // effective POR is 0x1F, not the 0xFF shown for the
+        // 40/44-pin family.  gpsim's K20 model misses this
+        // footnote and brings ANSEL up at 0xFF; the parity test
+        // exempts the resulting (rust=0x1F, gpsim=0xFF) cell.
+        (0xF7E, 0x1F),
+        // ANSELH: ANS<12:8> implemented; conditional on the
+        // PBADEN config bit per Note 6.  V1.71's CONFIG3H has
+        // PBADEN=1 -> 0x1F.
         (0xF7F, 0x1F),
         // WPUB: weak pull-ups enabled.
         (0xF7C, 0xFF),
