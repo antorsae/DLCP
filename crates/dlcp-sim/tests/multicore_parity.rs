@@ -1084,8 +1084,11 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // v171_diag_present.  Budget was 10 B during the
     // discovery probe; trimmed to 2 B (~16 s simulated,
     // ~30 s wall) since we know convergence does NOT
-    // happen -- per the docstring above, present saturates
-    // at 0x01.  Smaller budget = faster iteration when
+    // happen -- per the docstring above, present stays
+    // at 0x00 (CONTROL never successfully processes
+    // BF/27 through the BF/2N last-frame path; both
+    // PENDING bits stay set, target trajectory `[00]`).
+    // Smaller budget = faster iteration when
     // investigating root cause.
     chain.run_until(
         50_000_000, // 50 M = ~350 ms wall per chunk
