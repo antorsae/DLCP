@@ -1254,9 +1254,10 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         // CALL / RCALL / RETURN / RETLW / RETFIE / PUSH / POP.
         //
         // Implemented features (no longer deferred):
-        //   - Fast register stack (CALL/RCALL `fast=true`,
-        //     RETURN/RETFIE `fast=true`) per DS39632E §5.5.3
-        //     -- task #15.
+        //   - Fast register stack (CALL `fast=true`,
+        //     RETURN `fast=true`, RETFIE `fast=true`) per
+        //     DS39632E §5.5.3 -- task #15.  RCALL has no `s`
+        //     bit on PIC18 and never touches the fast shadow.
         //   - RETFIE's GIE / GIEH / GIEL update -- task #15
         //     via `irq::restore_gie_on_retfie`.
         //   - STKPTR / TOSU / TOSH / TOSL memory mirroring on
