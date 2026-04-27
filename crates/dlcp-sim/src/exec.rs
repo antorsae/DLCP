@@ -1243,16 +1243,31 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             stack.mirror_to_sfrs(&mut core.memory);
             if !pushed && core.config.stvren() {
                 // Stack overflow + STVREN=1: HW resets the
-                // device.  Per DS39632E §5.4.2, the failing
-                // push doesn't take effect; STKFUL is
-                // already latched by `Stack::push`; reset
-                // entry tags `RCON` to surface the source.
-                // Task #16.
+                // device.  Per DS39632E §5.1.2.4 the
+                // FAILING push (push attempt with depth=31)
+                // is the "full condition" that triggers
+                // reset -- the prior 31st push that just
+                // FILLED the stack only latches STKFUL as a
+                // forewarning.  This matches the existing
+                // `Stack::push` contract: the filling push
+                // returns `true`, the overflow push returns
+                // `false`.  An alternate DS reading treats
+                // the filling push as the reset trigger;
+                // documented as a deferred interpretation
+                // ambiguity (codex review of 2fa7d0a
+                // MEDIUM 1).
+                //
+                // Re-mirror the SFR window AFTER reset so
+                // STKPTR / TOSU/H/L reflect the post-reset
+                // state (depth=0) instead of the pre-reset
+                // (depth=31 + STKFUL).  Codex review
+                // MEDIUM 2.
                 crate::reset::apply_reset(
                     core,
                     stack,
                     crate::reset::ResetSource::StackFull,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
             }
@@ -1279,6 +1294,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     stack,
                     crate::reset::ResetSource::StackFull,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
             }
@@ -1297,6 +1313,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     stack,
                     crate::reset::ResetSource::StackUnderflow,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
             }
@@ -1311,7 +1328,11 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(2)
         }
         Instruction::RetLw { k } => {
-            write_w(core, k);
+            // Pop FIRST, check underflow, then commit WREG
+            // -- otherwise the STVREN=1 reset path would
+            // leak a partial side effect (k written to
+            // WREG before reset) past the reset boundary.
+            // Codex review of 2fa7d0a LOW.
             let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
             if popped.is_none() && core.config.stvren() {
@@ -1320,9 +1341,11 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     stack,
                     crate::reset::ResetSource::StackUnderflow,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
             }
+            write_w(core, k);
             core.set_pc(popped.unwrap_or(0));
             core.advance_cycles(2);
             Ok(2)
@@ -1336,6 +1359,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     stack,
                     crate::reset::ResetSource::StackUnderflow,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
             }
@@ -1364,6 +1388,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     stack,
                     crate::reset::ResetSource::StackFull,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(1);
                 return Ok(1);
             }
@@ -1379,6 +1404,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     stack,
                     crate::reset::ResetSource::StackUnderflow,
                 );
+                stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(1);
                 return Ok(1);
             }
