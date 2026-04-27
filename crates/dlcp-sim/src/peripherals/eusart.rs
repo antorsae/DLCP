@@ -189,16 +189,18 @@ impl Eusart {
 
     /// React to a SW-driven SFR read at `addr`.  Today the
     /// only EUSART SFR with a documented read-side effect is
-    /// RCREG: per DS39632E §20.4 / §20.4.1, "Reading the
-    /// RCREG register will load the RCREG with the next
-    /// pending word and clear the RCIF if the FIFO is now
-    /// empty."  Our EUSART model is single-byte (no 2-deep
-    /// FIFO) so an RCREG read is always a "FIFO now empty"
-    /// case -- clear RCIF unconditionally.  Without this
-    /// clear, RCIF stays asserted after the read and a
-    /// level-triggered IRQ dispatcher would re-fire on the
-    /// stale (already-consumed) byte, causing the ISR's
-    /// frame parser to re-process the same byte.  Task #30.
+    /// RCREG: per DS39632E Reg 9-4 (PIR1) bit 5, "RCIF:
+    /// EUSART Receive Interrupt Flag bit -- 1 = the EUSART
+    /// receive buffer, RCREG, is full (cleared when RCREG is
+    /// read); 0 = the EUSART receive buffer is empty."  The
+    /// silicon FIFO is 2-deep (DS §20.0 EUSART chapter); our
+    /// model is single-byte, so an RCREG read is always a
+    /// "FIFO now empty" case and we clear RCIF
+    /// unconditionally.  Without this clear, RCIF stays
+    /// asserted after the read and a level-triggered IRQ
+    /// dispatcher would re-fire on the stale (already-
+    /// consumed) byte, causing the ISR's frame parser to
+    /// re-process the same byte.  Task #30.
     pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
         if addr == RCREG_ADDR {
             let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
@@ -846,15 +848,16 @@ mod tests {
         assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF, 0);
     }
 
-    /// Task #30: reading RCREG must clear RCIF (DS39632E
-    /// §20.4.1: "Reading the RCREG register will load the
-    /// RCREG with the next pending word and clear the RCIF
-    /// if the FIFO is now empty.").  Our 1-byte model is
-    /// always "FIFO now empty" after a read.  Without this
-    /// clear, V3.1's level-triggered IRQ dispatcher
-    /// re-fires on the same byte and the ISR's frame
-    /// parser re-processes it, completing bogus 3-byte
-    /// frames that the firmware rejects.
+    /// Task #30: reading RCREG must clear RCIF.  DS39632E
+    /// Reg 9-4 (PIR1) bit 5: "RCIF: EUSART Receive Interrupt
+    /// Flag bit -- 1 = the EUSART receive buffer, RCREG, is
+    /// full (cleared when RCREG is read); 0 = the EUSART
+    /// receive buffer is empty."  Our 1-byte model is always
+    /// "FIFO now empty" after a read.  Without this clear,
+    /// V3.1's level-triggered IRQ dispatcher re-fires on the
+    /// same byte and the ISR's frame parser re-processes it,
+    /// completing bogus 3-byte frames that the firmware
+    /// rejects.
     #[test]
     fn rcreg_read_clears_rcif() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);

@@ -524,7 +524,8 @@ fn read_addr(core: &mut Core, addr: Address) -> u8 {
 
 /// Raw memory read at an already-resolved target plus the
 /// peripheral read-side-effect hook (e.g. RCREG read clears
-/// RCIF per DS §20.4 -- task #30).  Used by dispatch arms
+/// RCIF per DS39632E Reg 9-4 PIR1 bit 5 -- task #30).
+/// Used by dispatch arms
 /// that share the operand target between read and write
 /// (RMW ops, MOVF d=F+POST*, BTFSS, etc.) where calling
 /// `read_addr` would double-commit the FSR mutation.  The
@@ -1976,11 +1977,12 @@ mod tests {
 
     /// Task #30: executing `MOVF RCREG, W` (firmware reads
     /// the RX buffer) must clear PIR1.RCIF -- the silicon
-    /// "FIFO now empty" contract from DS39632E §20.4.1.
-    /// Without this end-to-end clear, V3.1 MAIN's level-
-    /// triggered IRQ dispatch re-fires on every `step()`
-    /// after the read, the ISR re-processes the same byte,
-    /// and the chain protocol's frame parser is corrupted.
+    /// contract from DS39632E Reg 9-4 (PIR1) bit 5 ("RCIF
+    /// ... cleared when RCREG is read").  Without this
+    /// end-to-end clear, V3.1 MAIN's level-triggered IRQ
+    /// dispatch re-fires on every `step()` after the read,
+    /// the ISR re-processes the same byte, and the chain
+    /// protocol's frame parser is corrupted.
     #[test]
     fn movf_rcreg_clears_rcif_via_peripheral_read_hook() {
         // MOVF f, d=W, a=ACCESS at f=0xAE (RCREG offset in

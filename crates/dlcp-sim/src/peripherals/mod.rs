@@ -91,13 +91,14 @@ impl Peripherals {
     /// have no peripheral side effect (the byte is already
     /// in `mem`; the peripheral does nothing).  Some reads
     /// DO carry side effects per the silicon spec --
-    /// reading RCREG clears RCIF when the FIFO is now empty
-    /// (DS39632E §20.4 / §20.4.1), reading TMR3L latches
-    /// TMR3H into a buffer in RD16=1 mode (DS §13.2), etc.
-    /// Each peripheral's `on_sfr_read` handles its own.
-    /// Task #30 wired this in for RCREG -> RCIF clearing
-    /// after observing V3.1 MAIN's ISR get stuck reprocessing
-    /// the same byte because RCIF never cleared.
+    /// reading RCREG clears RCIF (DS39632E Reg 9-4 PIR1
+    /// bit 5: "cleared when RCREG is read"), reading TMR3L
+    /// latches TMR3H into a buffer in RD16=1 mode (DS
+    /// §13.2), etc.  Each peripheral's `on_sfr_read`
+    /// handles its own.  Task #30 wired this in for
+    /// RCREG -> RCIF clearing after observing V3.1 MAIN's
+    /// ISR get stuck reprocessing the same byte because
+    /// RCIF never cleared.
     pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
         self.eusart.on_sfr_read(addr, mem);
     }
