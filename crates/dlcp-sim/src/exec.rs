@@ -2440,7 +2440,10 @@ mod tests {
         stack.push(0x00A0);
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x00A0);
-        // GIE-update is a P2 deferred feature; not asserted here.
+        // GIE re-enable is exercised by `peripherals::irq::tests`
+        // (`restore_gie_on_retfie_*`) and the round-trip
+        // `irq_round_trip_dispatches_runs_isr_and_returns`
+        // covers the full enter-RETFIE flow through `step`.
     }
 
     #[test]

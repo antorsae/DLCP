@@ -513,8 +513,10 @@ mod tests {
         assert_eq!(intcon & INTCON_PEIE_GIEL, 0);
     }
 
-    /// IPEN=1 with both high AND low pending: high wins
-    /// (priority order, DS §9.3).
+    /// IPEN=1 with both HIGH AND LOW pending simultaneously:
+    /// high wins (priority order, DS §9.3).  Pin both
+    /// sources active to validate the tie-break rather than
+    /// just "high pending alone goes high".
     #[test]
     fn try_dispatch_irq_ipen1_high_wins_over_low() {
         let mut core = k20_core_at_pc(0x4000);
@@ -525,13 +527,138 @@ mod tests {
             Address::from_raw(INTCON_ADDR),
             INTCON_GIE_GIEH | INTCON_PEIE_GIEL,
         );
-        // High-priority TMR1 (IPR1.bit0 = 1).
-        core.memory.write_raw(Address::from_raw(PIE1_ADDR), 0x01);
-        core.memory.write_raw(Address::from_raw(PIR1_ADDR), 0x01);
+        // Two PIR1 sources pending+enabled: bit 0 = TMR1IF
+        // (high-priority via IPR1.bit0 = 1) AND bit 1 = TMR2IF
+        // (low-priority via IPR1.bit1 = 0).
+        core.memory.write_raw(Address::from_raw(PIE1_ADDR), 0x03);
+        core.memory.write_raw(Address::from_raw(PIR1_ADDR), 0x03);
         core.memory.write_raw(Address::from_raw(IPR1_ADDR), 0x01);
+        // Sanity: both pending paths see traffic.
+        assert!(is_irq_pending_high(&core.memory));
+        assert!(is_irq_pending_low(&core.memory));
         let cycles = try_dispatch_irq(&mut core, &mut stack);
         assert_eq!(cycles, Some(2));
         assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
+        // GIEH cleared, GIEL preserved -- low IRQ stays
+        // pending until a future RETFIE re-enables GIEH and
+        // the low source wins on the next dispatch.
+        let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(intcon & INTCON_GIE_GIEH, 0);
+        assert_eq!(intcon & INTCON_PEIE_GIEL, INTCON_PEIE_GIEL);
+    }
+
+    /// End-to-end round-trip through `exec::step`: enter ISR
+    /// vector, RETFIE back to the original PC, GIE
+    /// re-enabled.  Exercises the IRQ-dispatch + RETFIE
+    /// integration through the executor.
+    #[test]
+    fn irq_round_trip_dispatches_runs_isr_and_returns() {
+        use crate::exec::step;
+        // Flash layout:
+        //   0x0000: NOP (where the "main" was about to run)
+        //   0x0008: RETFIE 0 (high-priority ISR vector --
+        //                     immediately return)
+        // RETFIE 0 encoding: 0x0010 = bytes [0x10, 0x00].
+        let mut core = Core::new(Variant::Pic18F25K20);
+        // Set "main code" PC.  We pretend main was at 0x0042
+        // when the IRQ fires.
+        core.set_pc(0x0042);
+        // Bake a RETFIE at the high-priority vector.
+        let flash = core.flash_mut();
+        flash[0x0008] = 0x10;
+        flash[0x0009] = 0x00;
+        // Bake a NOP at 0x0042 so a follow-up step from the
+        // restored PC finds something to execute.
+        flash[0x0042] = 0x00;
+        flash[0x0043] = 0x00;
+        // Pre-IRQ state: IPEN=0, GIE+INT0IE+INT0IF set.
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x10 | 0x02,
+        );
+        let mut stack = Stack::new();
+
+        // Step 1: IRQ should dispatch (no instruction
+        // fetched), 2 Tcy cost, PC = 0x0008.
+        let c1 = step(&mut core, &mut stack).unwrap();
+        assert_eq!(c1, 2);
+        assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
+        // Stack holds the pre-IRQ PC.
+        assert_eq!(stack.top(), 0x0042);
+        // GIE cleared.
+        let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(intcon & INTCON_GIE_GIEH, 0);
+
+        // Step 2: ISR runs RETFIE -- pops PC, sets GIE.  But
+        // INT0IF is still set, so the very next step will
+        // re-dispatch unless we clear the flag.  Clear it
+        // so we can assert the post-RETFIE state cleanly.
+        // (Real ISRs clear IF before RETFIE; here we do it
+        // out-of-band via memory write since this test
+        // doesn't run real ISR code.)
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            intcon | 0x10, // INT0IE preserved, INT0IF (bit 1) cleared by mask, just leave bit 4
+        );
+        // Specifically clear INT0IF (bit 1) so the next step
+        // doesn't immediately re-dispatch.
+        let cleared = core.memory.read_raw(Address::from_raw(INTCON_ADDR)) & !0x02;
+        core.memory.write_raw(Address::from_raw(INTCON_ADDR), cleared);
+        let c2 = step(&mut core, &mut stack).unwrap();
+        assert_eq!(c2, 2, "RETFIE billed at 2 Tcy");
+        assert_eq!(core.pc(), 0x0042, "RETFIE restored pre-IRQ PC");
+        // GIE re-enabled by RETFIE.
+        let intcon2 = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(
+            intcon2 & INTCON_GIE_GIEH,
+            INTCON_GIE_GIEH,
+            "RETFIE must re-enable GIE"
+        );
+
+        // Step 3: would normally fetch NOP at 0x0042, but
+        // since INT0IF is now clear no IRQ re-dispatches.
+        let c3 = step(&mut core, &mut stack).unwrap();
+        assert_eq!(c3, 1, "NOP at 0x0042 runs in 1 Tcy");
+        assert_eq!(core.pc(), 0x0044);
+    }
+
+    /// After RETFIE, if a (different) IRQ flag is still
+    /// pending, the very next step re-dispatches.  Locks in
+    /// the back-to-back ISR pattern: ISR clears one flag,
+    /// RETFIE re-enables GIE, another flag immediately
+    /// triggers a new vector entry.
+    #[test]
+    fn irq_redispatches_immediately_after_retfie_if_still_pending() {
+        use crate::exec::step;
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.set_pc(0x0042);
+        let flash = core.flash_mut();
+        flash[0x0008] = 0x10; // RETFIE
+        flash[0x0009] = 0x00;
+        // INT0 pending+enabled, GIE set.
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x10 | 0x02,
+        );
+        let mut stack = Stack::new();
+
+        // First IRQ: dispatch.
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
+        // RETFIE: pops PC, re-enables GIE.  We do NOT clear
+        // INT0IF.
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.pc(), 0x0042);
+        // Third step: IRQ still pending + GIE re-enabled ->
+        // re-dispatch immediately.
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(
+            core.pc(),
+            IRQ_VECTOR_HIGH,
+            "IRQ must re-dispatch immediately after RETFIE if flag still pending"
+        );
+        // The pre-IRQ PC pushed this round is 0x0042 again.
+        assert_eq!(stack.top(), 0x0042);
     }
 
     /// `restore_gie_on_retfie`: in IPEN=0 mode, RETFIE sets
