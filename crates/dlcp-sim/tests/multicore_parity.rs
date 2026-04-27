@@ -446,10 +446,13 @@ fn chain_v171_v31_emits_full_handshake_burst() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0]);
 
-    // Wait for 21 bytes total (7 frames * 3 bytes), or 5 B
-    // ticks max (~35 s wall).  Ground-truth gpsim run took
-    // 118 s wall to complete the test; Rust should be much
-    // faster but allow generous headroom.
+    // Wait for 21 bytes total (7 frames * 3 bytes each --
+    // the gpsim-observed handshake length).  CONTROL alone
+    // fills the budget today by retrying its BF/04 frame
+    // since MAIN is silent (task #30); the probe surfaces
+    // that divergence quickly (< 3 s wall) without needing
+    // to wait the full chain-protocol-convergence budget
+    // (which is unknown post-fix and could be much longer).
     let advanced = chain.run_until(
         10_000_000,
         5_000_000_000,
@@ -488,6 +491,34 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         main_to_ctrl
     );
     eprintln!("  MAIN→CTRL frames ({}): {:?}", main_frames.len(), main_frames);
+
+    // Investigate why MAIN is silent (task #30 probe).  Dump
+    // MAIN's RX/IRQ state at convergence so we can see
+    // whether (a) RCREG receives bytes (chain delivery path
+    // working), (b) RCIF asserts (EUSART RX accept), (c)
+    // PIE1.RCIE is enabled (firmware asked for the IRQ),
+    // (d) GIE/IPEN gate the IRQ in.
+    let main = &chain.cores[i_main];
+    let rcsta = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAB));
+    let rcreg = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAE));
+    let pir1 = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
+    let pie1 = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
+    let intcon = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
+    let rcon = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
+    let txsta = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAC));
+    eprintln!(
+        "  MAIN state: pc=0x{:04X} rcsta=0x{:02X} (SPEN={}, CREN={}) rcreg=0x{:02X} \
+         pir1=0x{:02X} (RCIF={}) pie1=0x{:02X} (RCIE={}) txsta=0x{:02X} (TXEN={}) \
+         intcon=0x{:02X} (GIE={}, PEIE={}) rcon=0x{:02X} (IPEN={})",
+        main.pc(),
+        rcsta, (rcsta >> 7) & 1, (rcsta >> 4) & 1,
+        rcreg,
+        pir1, (pir1 >> 5) & 1,
+        pie1, (pie1 >> 5) & 1,
+        txsta, (txsta >> 5) & 1,
+        intcon, (intcon >> 7) & 1, (intcon >> 6) & 1,
+        rcon, (rcon >> 7) & 1,
+    );
 
     // Compare against ground truth IF the fixture is
     // present; otherwise just report.
