@@ -333,8 +333,21 @@ impl Eusart {
     /// silicon stale-FIFO contract; SPEN=0 didn't drain.
     fn handle_rcsta_write(&mut self, value: u8, mem: &mut Memory) {
         if (value & RCSTA_SPEN) == 0 {
-            // SPEN=0: full RX shutdown.  FIFO drains, RCREG
-            // clears, RCIF clears, OERR clears.
+            // SPEN=0: full EUSART shutdown.  Per DS39632E
+            // §20.0 "Serial Port Enable bit -- 1 = Serial
+            // port enabled (configures RX/DT and TX/CK pins
+            // as serial port pins); 0 = Serial port disabled
+            // (held in Reset)".  Both RX and TX state
+            // machines drain.
+            //   RX side: FIFO + RCREG + RCIF + OERR clear.
+            //   TX side: TSR busy, TSR byte, TXREG holding,
+            //   and completed-TX FIFO all clear.  Without
+            //   the TX-side drain, a held `txreg_holding`
+            //   byte would resume mid-frame when SPEN is
+            //   re-asserted, and `tick_tcy` could retire an
+            //   in-flight TSR byte after the firmware
+            //   thought the EUSART was off.  Codex review of
+            //   4f7deb5 MEDIUM.
             self.rx_fifo.clear();
             let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
             mem.write_raw(
@@ -347,6 +360,10 @@ impl Eusart {
                 Address::from_raw(PIR1_ADDR),
                 pir1 & !PIR1_RCIF,
             );
+            self.tsr_busy_tcy = None;
+            self.tsr_byte = None;
+            self.txreg_holding = None;
+            self.completed_tx_bytes.clear();
             return;
         }
         if (value & RCSTA_CREN) == 0 {
@@ -1225,9 +1242,13 @@ mod tests {
     }
 
     /// SPEN=0 (Serial Port Disable) is the harder reset --
-    /// it shuts down the EUSART entirely, draining the
-    /// FIFO and clearing RCREG / RCIF / OERR.  Distinct
-    /// from CREN=0 which only clears OERR.
+    /// it shuts down the EUSART entirely, draining BOTH
+    /// the RX FIFO and the TX-side state machine (TSR
+    /// busy, TXREG holding, completed-TX queue).  Per
+    /// DS39632E §20.0 SPEN description: "0 = Serial port
+    /// disabled (held in Reset)".  Distinct from CREN=0
+    /// which only clears OERR.  Codex review of 35c2e3d
+    /// MEDIUM extended this to cover the TX side.
     #[test]
     fn rcsta_spen_falling_edge_drains_fifo_and_clears_state() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
@@ -1239,13 +1260,24 @@ mod tests {
         eusart.deliver_rx_byte(0xAA, &mut mem);
         eusart.deliver_rx_byte(0xBB, &mut mem);
         eusart.deliver_rx_byte(0xCC, &mut mem); // OERR set
+        // Push some TX state too: a frame in the TSR + a
+        // held byte queued for after.
+        mem.write_raw(
+            Address::from_raw(TXSTA_ADDR),
+            TXSTA_TXEN | TXSTA_TRMT,
+        );
+        eusart.on_sfr_write(TXSTA_ADDR, TXSTA_TXEN | TXSTA_TRMT, &mut mem);
+        eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem); // -> TSR
+        eusart.on_sfr_write(TXREG_ADDR, 0x77, &mut mem); // -> txreg_holding
+        assert!(eusart.tsr_busy_tcy.is_some());
+        assert!(eusart.tsr_byte.is_some());
+        assert!(eusart.txreg_holding.is_some());
         // Firmware: bcf RCSTA, 7 (clear SPEN).
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
         let new_rcsta = rcsta & !RCSTA_SPEN;
         mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
         eusart.on_sfr_write(RCSTA_ADDR, new_rcsta, &mut mem);
-        // Full shutdown: OERR cleared, FIFO drained, RCREG
-        // cleared, RCIF cleared.
+        // Full shutdown: RX side clears.
         assert_eq!(
             mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
             0
@@ -1254,6 +1286,24 @@ mod tests {
         assert_eq!(
             mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
             0
+        );
+        // TX side also drains -- the held byte and TSR
+        // state are gone.
+        assert!(
+            eusart.tsr_busy_tcy.is_none(),
+            "SPEN=0 must drain TSR busy state"
+        );
+        assert!(
+            eusart.tsr_byte.is_none(),
+            "SPEN=0 must drop in-flight TSR byte"
+        );
+        assert!(
+            eusart.txreg_holding.is_none(),
+            "SPEN=0 must drop held TXREG byte"
+        );
+        assert!(
+            eusart.take_completed_tx_byte().is_none(),
+            "SPEN=0 must drain completed-TX queue"
         );
     }
 
