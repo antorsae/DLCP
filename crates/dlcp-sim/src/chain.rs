@@ -1267,62 +1267,86 @@ mod tests {
     /// P3.6 scope probe — "is the Task #22 echo-loop
     /// architecturally absent in the Rust chain?"
     ///
-    /// `wire_chain_gpsim.py` (Python) bridges three gpsim
-    /// processes via PTY pairs and -- as the test file
+    /// Background:
+    /// `wire_chain_gpsim.py` bridges three gpsim processes
+    /// through PTY pairs and -- as
     /// `tests/sim/test_v171_v32_layer5_diag_chain.py:166`
     /// documents -- mirrors MAIN0's TX into BOTH `m0_to_m1`
-    /// (downstream) AND `m0_to_ctl` (upstream) PTYs.  Real
-    /// current-loop hardware constrains bytes to one
-    /// direction per polarity, so the mirror is non-physical
-    /// and creates a feedback loop that corrupts CONTROL's
-    /// PB2 reply parser.  Four `pytest.mark.xfail` decorators
-    /// quarantine the diag-page tests pending the
-    /// chain-rewrite (Task #22).
+    /// (downstream) AND `m0_to_ctl` (upstream) PTYs.  This
+    /// is non-physical: real DLCP hardware is a
+    /// single-direction current-loop **ring** in which each
+    /// TX has exactly ONE listener.  Bytes propagate around
+    /// the ring CONTROL -> MAIN0 -> MAIN1 -> CONTROL via
+    /// firmware forwarding (each MAIN's parser receives a
+    /// byte on RX and either consumes it or re-transmits on
+    /// its own TX).  The gpsim mirror short-circuits this
+    /// ring by injecting MAIN0's TX directly into
+    /// CONTROL.RX, creating a feedback loop that corrupts
+    /// CONTROL's PB2-reply parser state.  Four
+    /// `pytest.mark.xfail` decorators quarantine the
+    /// diag-page tests pending the chain-rewrite (Task #22).
     ///
+    /// What this test pins:
     /// In `pinnet::PinNet`, each `couple_uart` records ONE
     /// directed edge `(src_core, src_tx_pin, dst_core,
-    /// dst_rx_pin)`.  The dispatch in
-    /// `drain_completed_tx_bytes` only delivers to
-    /// destinations where `coupling.src_core ==
-    /// src_core_idx`.  There is no mechanism by which a
-    /// TX can land back at its own source core.  This test
-    /// pins that promise: it wires the real DLCP daisy
-    /// chain (CONTROL.TX -> MAIN0.RX, MAIN0.TX -> MAIN1.RX
-    /// AND CONTROL.RX (fan-out), MAIN1.TX -> MAIN0.RX) and
-    /// asserts:
-    ///   1. MAIN0.TX fans out to BOTH MAIN1.RCREG AND
-    ///      CONTROL.RCREG.
-    ///   2. MAIN0's own RCREG is untouched (no echo).
+    /// dst_rx_pin)` with no implicit replication.  The
+    /// dispatch in `drain_completed_tx_bytes` delivers a
+    /// completed TX byte to every coupling whose
+    /// `src_core == src_core_idx`, and only to those
+    /// couplings.  This test wires the **silicon-correct
+    /// single-direction ring** (3 directional edges, no
+    /// fan-out, no self-loops) and exercises every TX hop:
+    ///
+    ///   * CONTROL.TX -> MAIN0.RX
+    ///   * MAIN0.TX   -> MAIN1.RX
+    ///   * MAIN1.TX   -> CONTROL.RX
+    ///
+    /// For each hop, snapshots all three RCREGs, injects a
+    /// hop-unique byte, drains, then asserts that
+    /// **exactly one** RCREG changed -- the wired listener
+    /// -- and that the other two are unchanged.  The
+    /// `uart_tx_history` cardinality is also asserted to
+    /// catch any hidden duplicate-delivery path.
     ///
     /// If this passes, the architectural guarantee
-    /// `docs/SIM_REWRITE_RUST_SPEC.md:14` claims holds, and
-    /// the full P3.6 un-XFAIL gate is unblocked from a
-    /// wiring standpoint -- the remaining work to retire
-    /// Task #22 is then "build the firmware-driven 3-core
-    /// diag-page chain test", not "fix the bridge model".
+    /// `docs/SIM_REWRITE_RUST_SPEC.md:14` claims holds:
+    /// the gpsim-style mirror cannot arise because the
+    /// pin-net offers no implicit fan-out and the dispatch
+    /// honours exactly the wiring the user typed.  The full
+    /// P3.6 un-XFAIL gate then reduces to "build the
+    /// firmware-driven 3-core diag-page chain test", not
+    /// "fix the bridge model".
+    ///
+    /// Note: `couple_uart` does NOT currently reject the
+    /// degenerate `src_core == dst_core` self-coupling; if
+    /// a caller wired one, the dispatch would silently
+    /// echo.  Tracked separately as task #38 (codex LOW
+    /// from review of 8e180a6).  This test demonstrates the
+    /// well-formed-wiring case.
     #[test]
-    fn three_core_directional_uart_fans_out_without_echo() {
+    fn three_core_silicon_ring_uart_topology_has_no_echo_or_duplicates() {
         use crate::memory::Address;
+
+        const RCREG: Address = Address::from_raw(0xFAE);
+        const RCSTA: Address = Address::from_raw(0xFAB);
+        const RCSTA_SPEN_CREN: u8 = 0x90; // SPEN | CREN
 
         let mut chain = Chain::new();
 
         let mut ctl = Core::new(Variant::Pic18F25K20);
-        ctl.memory.write_raw(Address::from_raw(0xFAB), 0x90);
+        ctl.memory.write_raw(RCSTA, RCSTA_SPEN_CREN);
         let i_ctl = chain.push_core(ctl);
 
         let mut main0 = Core::new(Variant::Pic18F2455);
-        main0.memory.write_raw(Address::from_raw(0xFAB), 0x90);
+        main0.memory.write_raw(RCSTA, RCSTA_SPEN_CREN);
         let i_main0 = chain.push_core(main0);
 
         let mut main1 = Core::new(Variant::Pic18F2455);
-        main1.memory.write_raw(Address::from_raw(0xFAB), 0x90);
+        main1.memory.write_raw(RCSTA, RCSTA_SPEN_CREN);
         let i_main1 = chain.push_core(main1);
 
-        // DLCP daisy chain.  Note the FAN-OUT on MAIN0.TX:
-        // two couplings sharing the same src_tx_pin but
-        // different dst_core.  This is the multi-listener
-        // wiring the legacy gpsim harness could not express
-        // cleanly.
+        // Silicon-correct single-direction ring: 3 edges,
+        // no fan-out, no self-loops.
         chain.couple_uart(
             i_ctl,
             crate::pinnet::default_tx_pin(),
@@ -1336,73 +1360,88 @@ mod tests {
             crate::pinnet::default_rx_pin(),
         );
         chain.couple_uart(
-            i_main0,
+            i_main1,
             crate::pinnet::default_tx_pin(),
             i_ctl,
             crate::pinnet::default_rx_pin(),
         );
-        chain.couple_uart(
-            i_main1,
-            crate::pinnet::default_tx_pin(),
-            i_main0,
-            crate::pinnet::default_rx_pin(),
-        );
 
-        // Snapshot MAIN0's RCREG before the drain so we can
-        // prove the no-echo invariant without depending on
-        // the absolute POR default of RCREG.
-        let main0_rcreg_before = chain.cores[i_main0]
-            .memory
-            .read_raw(Address::from_raw(0xFAE));
+        // Helper: inject `byte` at `src`, drain, verify only
+        // `expected_dst`'s RCREG changes (and to the right
+        // value), the other two RCREGs are unchanged, and
+        // exactly one delivery record landed.
+        let cores = [i_ctl, i_main0, i_main1];
+        let core_names = ["CONTROL", "MAIN0", "MAIN1"];
+        let hops: [(usize, usize, u8); 3] = [
+            (i_ctl, i_main0, 0x11),   // CONTROL.TX -> MAIN0.RX
+            (i_main0, i_main1, 0x22), // MAIN0.TX   -> MAIN1.RX
+            (i_main1, i_ctl, 0x33),   // MAIN1.TX   -> CONTROL.RX
+        ];
 
-        // Inject a recognizable byte into MAIN0's
-        // completed-TX FIFO; mirrors what `tick_tcy` does at
-        // frame completion.
-        chain.cores[i_main0]
-            .peripherals
-            .eusart
-            .push_completed_tx_byte_for_test(0xC3);
-        chain.drain_completed_tx_bytes(i_main0);
+        for (src, expected_dst, byte) in hops {
+            let snapshot: Vec<u8> = cores
+                .iter()
+                .map(|&i| chain.cores[i].memory.read_raw(RCREG))
+                .collect();
+            let history_len_before = chain.uart_tx_history.len();
 
-        // Fan-out: both downstream MAIN1 and upstream
-        // CONTROL receive the byte.
-        let main1_rcreg = chain.cores[i_main1]
-            .memory
-            .read_raw(Address::from_raw(0xFAE));
-        let ctl_rcreg = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xFAE));
+            chain.cores[src]
+                .peripherals
+                .eusart
+                .push_completed_tx_byte_for_test(byte);
+            chain.drain_completed_tx_bytes(src);
+
+            // Exactly one delivery recorded.
+            let new_records: Vec<&UartByteRecord> = chain
+                .uart_tx_history
+                .iter()
+                .skip(history_len_before)
+                .collect();
+            assert_eq!(
+                new_records.len(),
+                1,
+                "{}.TX should deliver exactly once on the single-direction ring; \
+                 got {} new records",
+                core_names[cores.iter().position(|&c| c == src).unwrap()],
+                new_records.len()
+            );
+            assert_eq!(new_records[0].src_core, src);
+            assert_eq!(new_records[0].dst_core, expected_dst);
+            assert_eq!(new_records[0].byte, byte);
+
+            // Exactly the expected destination's RCREG
+            // changed; both other cores' RCREGs are
+            // unchanged from the snapshot.
+            for (idx, &core_idx) in cores.iter().enumerate() {
+                let now = chain.cores[core_idx].memory.read_raw(RCREG);
+                if core_idx == expected_dst {
+                    assert_eq!(
+                        now, byte,
+                        "{}.RCREG must hold {byte:#04x} after wired hop",
+                        core_names[idx]
+                    );
+                } else {
+                    assert_eq!(
+                        now, snapshot[idx],
+                        "{}.RCREG must be unchanged (was {:#04x}, now {now:#04x}); \
+                         no echo or accidental fan-out is permitted",
+                        core_names[idx], snapshot[idx]
+                    );
+                }
+            }
+        }
+
+        // Final history audit: 3 hops -> 3 records, none of
+        // them self-loops.
         assert_eq!(
-            main1_rcreg, 0xC3,
-            "MAIN0.TX must fan out to MAIN1.RCREG (downstream hop)"
+            chain.uart_tx_history.len(),
+            3,
+            "ring exercised once per hop must yield exactly 3 deliveries"
         );
-        assert_eq!(
-            ctl_rcreg, 0xC3,
-            "MAIN0.TX must fan out to CONTROL.RCREG (upstream return)"
-        );
-
-        // No echo: MAIN0's own RCREG is unchanged.  This is
-        // THE architectural assertion that distinguishes the
-        // Rust pin-net from gpsim's bridge harness.  Without
-        // it, P3.6 would just inherit the same parser-state
-        // corruption the Python tests xfail for.
-        let main0_rcreg_after = chain.cores[i_main0]
-            .memory
-            .read_raw(Address::from_raw(0xFAE));
-        assert_eq!(
-            main0_rcreg_after, main0_rcreg_before,
-            "MAIN0's TX must NOT echo back into its own RCREG; \
-             absence of self-coupling in pinnet::PinNet is the \
-             retirement condition for Task #22"
-        );
-
-        // Defence in depth: walk the recorded delivery
-        // history and assert NO record routed MAIN0 -> MAIN0.
         for record in &chain.uart_tx_history {
-            assert!(
-                !(record.src_core == i_main0 && record.dst_core == i_main0),
-                "uart_tx_history must contain zero MAIN0 -> MAIN0 deliveries; \
-                 got record {record:?}"
+            assert_ne!(
+                record.src_core, record.dst_core,
+                "no record may be a self-loop; got {record:?}"
             );
         }
     }
