@@ -1239,29 +1239,21 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         //     `Config` reference in `step()` -- structural
         //     change, deferred.  (Task #16)
         Instruction::Call { n, fast } => {
-            let pushed = stack.push(core.pc());
+            // Stack-full reset trigger: per DS39632E §5.1.2.4,
+            // "If STVREN is set (default), the 31st push will
+            // push the (PC + 2) value onto the stack, set the
+            // STKFUL bit and reset the device."  The trigger
+            // is the FILLING push -- the one that takes depth
+            // from 30 to 31 and latches STKFUL -- not a later
+            // overflow attempt at depth=31.  Detect that by
+            // snapshotting STKFUL pre-push and checking for
+            // the 0->1 transition post-push.  Codex review
+            // of 41d6195 MEDIUM (corrects the prior 32nd-push
+            // misinterpretation).
+            let was_stkful = stack.overflow();
+            let _pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if !pushed && core.config.stvren() {
-                // Stack overflow + STVREN=1: HW resets the
-                // device.  Per DS39632E §5.1.2.4 the
-                // FAILING push (push attempt with depth=31)
-                // is the "full condition" that triggers
-                // reset -- the prior 31st push that just
-                // FILLED the stack only latches STKFUL as a
-                // forewarning.  This matches the existing
-                // `Stack::push` contract: the filling push
-                // returns `true`, the overflow push returns
-                // `false`.  An alternate DS reading treats
-                // the filling push as the reset trigger;
-                // documented as a deferred interpretation
-                // ambiguity (codex review of 2fa7d0a
-                // MEDIUM 1).
-                //
-                // Re-mirror the SFR window AFTER reset so
-                // STKPTR / TOSU/H/L reflect the post-reset
-                // state (depth=0) instead of the pre-reset
-                // (depth=31 + STKFUL).  Codex review
-                // MEDIUM 2.
+            if !was_stkful && stack.overflow() && core.config.stvren() {
                 crate::reset::apply_reset(
                     core,
                     stack,
@@ -1286,9 +1278,10 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Rcall { n } => {
             // RCALL has no `s` bit on PIC18; never touches
             // the fast shadow.
-            let pushed = stack.push(core.pc());
+            let was_stkful = stack.overflow();
+            let _pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if !pushed && core.config.stvren() {
+            if !was_stkful && stack.overflow() && core.config.stvren() {
                 crate::reset::apply_reset(
                     core,
                     stack,
@@ -1380,9 +1373,10 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(2)
         }
         Instruction::Push => {
-            let pushed = stack.push(core.pc());
+            let was_stkful = stack.overflow();
+            let _pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if !pushed && core.config.stvren() {
+            if !was_stkful && stack.overflow() && core.config.stvren() {
                 crate::reset::apply_reset(
                     core,
                     stack,
@@ -1765,38 +1759,46 @@ mod tests {
         assert_eq!(after, 0x04, "non-writable bit 2 keeps old value");
     }
 
-    /// Task #16: with STVREN=1 in CONFIG4L, a stack-overflow
-    /// push triggers a hardware Reset (PC=0, RCON updated to
-    /// reflect StackFull).  With STVREN=0 (latch-only), no
-    /// reset; STKFUL latches; PC continues normally.
+    /// Task #16: with STVREN=1 in CONFIG4L, the FILLING push
+    /// (the 31st push that latches STKFUL per DS39632E
+    /// §5.1.2.4) triggers a hardware Reset.  With STVREN=0
+    /// the same push only latches STKFUL.
     #[test]
     fn stvren_one_call_overflow_triggers_reset() {
         // Build flash with one CALL 0x0010 (encoded
         // 0xEC08 0xF000) at PC=0.  Pre-fill the stack to
-        // depth=31 (max) so the CALL's push fails.
-        // Encoding: CALL k, s=0; high8 = 0xEC; low byte
-        // = k<7:0> = 0x08.  Word2 = 0xF0 | k<19:16>=0,
-        // low = k<15:8>=0.  Bytes [0x08, 0xEC, 0x00, 0xF0].
+        // depth=30 so the CALL's push is THE filling push
+        // (depth 30->31, STKFUL transition 0->1).  Codex
+        // review of 41d6195 MEDIUM: pre-fill was 31 (one
+        // off); the trigger is the filling push, not a
+        // later overflow attempt.
         let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
-        // STVREN=1: CONFIG4L bit 0.
-        // CONFIG4L is byte 6; STVREN = bit 0.
         core.config = crate::config::Config::from_bytes(
             [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
         );
         let mut stack = Stack::new();
-        // Pre-fill to capacity by repeated push.  After
-        // 31 pushes the stack is full and STKFUL latches.
-        for _ in 0..31 {
+        for _ in 0..30 {
             stack.push(0x0042);
         }
-        // The CALL's push will overflow.  STVREN=1 -> reset.
+        assert_eq!(stack.depth(), 30);
+        assert!(!stack.overflow(), "STKFUL clear at depth=30");
         let cycles = step(&mut core, &mut stack).unwrap();
         assert_eq!(cycles, 2, "CALL still bills 2 Tcy even on reset");
-        // Reset path: PC=0, RCON tagged with reset source.
         assert_eq!(core.pc(), 0, "reset PC = 0");
-        // Stack should be reset to empty depth (Stack::reset_for_stack_full).
-        // We verify via mirror SFR rather than internal field.
-        // Per `Stack::reset_for_stack_full`, depth=0 + STKFUL latch.
+        assert_eq!(stack.depth(), 0, "stack depth=0 after StackFull reset");
+        assert!(stack.overflow(), "STKFUL stays latched across reset");
+        // SFR reset side effect (codex review of 41d6195
+        // HIGH): Tbl 4-4 column 6 grouping means INTCON
+        // resets to 0 -- if the reset hadn't applied the
+        // SFR side effects, GIE could remain set and the
+        // post-reset firmware would re-vector immediately
+        // on a still-pending IRQ.
+        let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
+        assert_eq!(
+            intcon & 0xFE,
+            0,
+            "INTCON bits 7..1 (incl. GIE) clear after StackFull reset"
+        );
     }
 
     #[test]
@@ -1804,13 +1806,45 @@ mod tests {
         let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
         // STVREN=0 (default config): latch-only behavior.
         let mut stack = Stack::new();
-        for _ in 0..31 {
+        for _ in 0..30 {
             stack.push(0x0042);
         }
         let cycles = step(&mut core, &mut stack).unwrap();
         assert_eq!(cycles, 2);
         // No reset: PC continued to call target (0x0010).
         assert_eq!(core.pc(), 0x0010, "STVREN=0 lets CALL set PC normally");
+        assert!(stack.overflow(), "STKFUL latched on filling push regardless of STVREN");
+        assert_eq!(stack.depth(), 31);
+    }
+
+    /// Task #16: a CALL push that ATTEMPTS to overflow at
+    /// depth=31 (a 32nd push) is the silicon "drop and
+    /// reassert STKFUL" path.  Per DS this is NOT a fresh
+    /// reset trigger -- the reset already fired on the 31st
+    /// push.  Verify our model matches: STKFUL-already-set
+    /// + push attempt at depth=31 + STVREN=1 must NOT fire
+    /// a second reset (no STKFUL transition = no trigger).
+    #[test]
+    fn stvren_one_push_at_full_does_not_double_reset() {
+        let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
+        core.config = crate::config::Config::from_bytes(
+            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let mut stack = Stack::new();
+        for _ in 0..31 {
+            stack.push(0x0042);
+        }
+        assert!(stack.overflow(), "pre: STKFUL already latched at depth=31");
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        // No fresh reset: PC reaches the call target.  The
+        // overflow push at depth=31 is silently dropped per
+        // Stack::push's contract.  In real silicon the prior
+        // 31st push would have already reset; this tests the
+        // pathological "firmware cleared STKFUL via STKPTR
+        // write but is still at depth=31" case which our
+        // model now handles without spurious double-reset.
+        assert_eq!(core.pc(), 0x0010, "no fresh reset on stale-overflow push");
     }
 
     /// Task #16: RETURN underflow with STVREN=1 triggers
@@ -1828,6 +1862,11 @@ mod tests {
         let cycles = step(&mut core, &mut stack).unwrap();
         assert_eq!(cycles, 2);
         assert_eq!(core.pc(), 0, "underflow + STVREN=1 resets PC=0");
+        // Same SFR-reset side effect as the CALL-overflow
+        // case: INTCON bits 7..1 clear on Tbl 4-4 column 6
+        // resets.
+        let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
+        assert_eq!(intcon & 0xFE, 0);
     }
 
     /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are

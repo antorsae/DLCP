@@ -137,11 +137,15 @@ pub const IRQ_VECTOR_LOW: u32 = 0x0018;
 /// * IPEN=0 (compatibility) and IPEN=1 (priority) modes both
 ///   recognised; vector selection follows priority in
 ///   IPEN=1.
-/// * Fast-stack push of WREG/STATUS/BSR (DS §5.5.3) is NOT
-///   modelled today.  Most PIC18 ISRs save these manually
-///   so the gap is firmware-tolerant for typical ISRs;
-///   firmware that relies on the silicon shadow stack will
-///   misbehave.  Tracked as task #15.
+/// * Fast-stack push of WREG/STATUS/BSR (DS §5.5.3) IS now
+///   modelled in both IPEN modes (task #15).  Every
+///   successful vector entry calls `core.save_fast_regs()`
+///   so a matching `RETFIE FAST` restores the snapshot.
+/// * Stack-full reset is honoured during IRQ vectoring
+///   (task #16): if the return-PC push is the FILLING push
+///   (depth 30->31, STKFUL latches) and `STVREN=1`, the
+///   dispatch fires `apply_reset(StackFull)` and returns
+///   without clearing GIE or setting the vector PC.
 /// * Cost is reported as 2 Tcy (fetch+vector).  Real silicon
 ///   takes 1-2 Tcy depending on the in-flight instruction;
 ///   close enough for Phase-3.5 cycle accounting.
@@ -177,16 +181,21 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
             return None;
         }
         let return_pc = core.pc();
-        let pushed = stack.push(return_pc);
+        let was_stkful = stack.overflow();
+        let _pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if !pushed && core.config.stvren() {
-            // Stack overflow during IRQ dispatch + STVREN=1
-            // -> hardware reset, same as CALL/RCALL/PUSH.
-            // Per DS39632E §5.1.2.4 the overflow push triggers
-            // the reset; STKFUL is already latched.  Do NOT
-            // save fast regs, clear GIE, or set the vector PC
-            // -- the reset preempts vectoring.  Codex review
-            // of 2fa7d0a MEDIUM 3.
+        if !was_stkful && stack.overflow() && core.config.stvren() {
+            // Stack-full reset during IRQ dispatch.  Per
+            // DS39632E §5.1.2.4 the FILLING push (depth
+            // 30->31, STKFUL transition 0->1) triggers the
+            // reset.  Do NOT save fast regs, clear GIE, or
+            // set the vector PC -- the reset preempts
+            // vectoring.  Stack-full reset uses the
+            // MCLR-style SFR reset path (Tbl 4-4 column 6),
+            // which clears INTCON.GIE so the very next step
+            // cannot immediately re-vector.  Codex review of
+            // 2fa7d0a MEDIUM 3 + 41d6195 MEDIUM (trigger
+            // semantics).
             crate::reset::apply_reset(
                 core,
                 stack,
@@ -218,9 +227,10 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     // save/restore in software during the low-priority ISR.
     if is_irq_pending_high(mem_ref) {
         let return_pc = core.pc();
-        let pushed = stack.push(return_pc);
+        let was_stkful = stack.overflow();
+        let _pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if !pushed && core.config.stvren() {
+        if !was_stkful && stack.overflow() && core.config.stvren() {
             crate::reset::apply_reset(
                 core,
                 stack,
@@ -238,9 +248,10 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     }
     if is_irq_pending_low(mem_ref) {
         let return_pc = core.pc();
-        let pushed = stack.push(return_pc);
+        let was_stkful = stack.overflow();
+        let _pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if !pushed && core.config.stvren() {
+        if !was_stkful && stack.overflow() && core.config.stvren() {
             crate::reset::apply_reset(
                 core,
                 stack,
@@ -857,9 +868,11 @@ mod tests {
         assert_eq!(intcon & INTCON_PEIE_GIEL, INTCON_PEIE_GIEL);
     }
 
-    /// IRQ dispatch with stack already full + STVREN=1 must
-    /// fire a hardware reset instead of vectoring.  Codex
-    /// review of 2fa7d0a MEDIUM 3 (task #16 follow-up).
+    /// IRQ dispatch where the return-PC push is THE filling
+    /// push (depth 30->31, STKFUL transition 0->1) + STVREN=1
+    /// must fire a hardware reset instead of vectoring.  Codex
+    /// review of 2fa7d0a MEDIUM 3 + 41d6195 MEDIUM (trigger
+    /// is the FILLING push per DS39632E §5.1.2.4).
     #[test]
     fn irq_dispatch_overflow_with_stvren_triggers_reset() {
         let mut core = Core::new(Variant::Pic18F25K20);
@@ -868,28 +881,38 @@ mod tests {
         let mut cfg = [0u8; 14];
         cfg[6] = 0x01;
         core.config = crate::config::Config::from_bytes(cfg);
-        // Pre-fill the stack to depth=31 (full).
+        // Pre-fill to depth=30: the IRQ's return-PC push
+        // will take depth 30->31 and latch STKFUL, which
+        // is the documented reset trigger.
         let mut stack = Stack::new();
-        for _ in 0..31 {
+        for _ in 0..30 {
             assert!(stack.push(0x1000));
         }
-        assert_eq!(stack.depth(), 31);
+        assert_eq!(stack.depth(), 30);
+        assert!(!stack.overflow(), "pre: STKFUL clear at depth=30");
         // INT0 pending+enabled, GIE set.
         core.set_pc(0x0042);
         core.memory.write_raw(
             Address::from_raw(INTCON_ADDR),
             INTCON_GIE_GIEH | 0x10 | 0x02,
         );
-        // Dispatch attempts the 32nd push -> overflow + STVREN
-        // must apply the reset and return WITHOUT vectoring.
         let cycles = try_dispatch_irq(&mut core, &mut stack);
         assert_eq!(cycles, Some(2));
-        // Reset post-conditions: PC=0, stack depth=0, RCON
-        // has STKFUL/PD/TO state per ResetSource::StackFull.
+        // Reset post-conditions: PC=0, stack depth=0, STKFUL
+        // latched, INTCON.GIE cleared by Tbl 4-4 column 6 SFR
+        // reset (HIGH from 41d6195 review).
         assert_eq!(core.pc(), 0, "reset must preempt vector entry");
         assert_eq!(stack.depth(), 0, "stack depth=0 after reset");
-        // SFR mirrors must be re-mirrored AFTER the reset
-        // (post-MEDIUM 2 fix): STKPTR=0, TOSU/H/L all 0.
+        assert!(stack.overflow(), "STKFUL stays latched across reset");
+        let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(
+            intcon & 0xFE,
+            0,
+            "INTCON bits 7..1 must clear on Tbl 4-4 col-6 reset \
+             so the next step does not re-vector immediately"
+        );
+        // SFR mirrors must be re-mirrored AFTER the reset:
+        // STKPTR depth field = 0.
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xFFC)) & 0x1F,
             0,
@@ -897,17 +920,15 @@ mod tests {
         );
     }
 
-    /// IRQ dispatch with stack already full + STVREN=0 must
-    /// vector normally (latch STKFUL but NOT reset).  This
-    /// is the silicon contract: latch always sets, reset
-    /// gated on STVREN.  Mirror of the CALL-overflow
-    /// "STVREN=0 latches only" test for the IRQ path.
+    /// IRQ dispatch where the return-PC push fills the stack
+    /// (depth 30->31) but STVREN=0 must vector normally
+    /// (latch STKFUL but NOT reset).
     #[test]
     fn irq_dispatch_overflow_with_stvren_clear_latches_only() {
         let mut core = Core::new(Variant::Pic18F25K20);
         // STVREN=0 (default Config::from_bytes([0;14])).
         let mut stack = Stack::new();
-        for _ in 0..31 {
+        for _ in 0..30 {
             assert!(stack.push(0x1000));
         }
         core.set_pc(0x0042);
@@ -917,11 +938,10 @@ mod tests {
         );
         let cycles = try_dispatch_irq(&mut core, &mut stack);
         assert_eq!(cycles, Some(2));
-        // No reset: PC must be the vector, stack depth=31
-        // (the failing 32nd push left depth unchanged), and
-        // STKFUL latched.
+        // No reset: PC = vector, depth=31 (filling push
+        // accepted), STKFUL latched.
         assert_eq!(core.pc(), IRQ_VECTOR_HIGH, "STVREN=0 must vector normally");
-        assert_eq!(stack.depth(), 31, "failing push leaves depth at 31");
-        assert!(stack.overflow(), "STKFUL latched on overflow regardless of STVREN");
+        assert_eq!(stack.depth(), 31, "filling push reaches depth=31");
+        assert!(stack.overflow(), "STKFUL latched on filling push regardless of STVREN");
     }
 }
