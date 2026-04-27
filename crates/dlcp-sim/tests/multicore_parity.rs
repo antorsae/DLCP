@@ -893,31 +893,36 @@ fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
         main_to_ctrl.len()
     );
 
-    // gpsim's expected 6-frame response burst, flattened
-    // to bytes (route, cmd, data per frame).
-    const GPSIM_BURST: &[u8] = &[
-        0xBF, 0x08, 0x00,
-        0xBF, 0x05, 0x03,
-        0xBF, 0x07, 0x4F,
-        0xBF, 0x03, 0x01,
-        0xBF, 0x06, 0x00,
-        0xBF, 0x1D, 0x04,
+    // Parse MAIN's byte stream into 3-byte frames so the
+    // gpsim-burst search is FRAME-ALIGNED (codex review of
+    // 3d2d350 LOW: a raw-byte subsequence search could
+    // match at a misaligned offset, e.g. mid-frame).
+    // Truncate any trailing partial frame.
+    let aligned_len = (main_to_ctrl.len() / 3) * 3;
+    let main_frames: Vec<ChainFrame> = main_to_ctrl[..aligned_len]
+        .chunks_exact(3)
+        .map(|c| ChainFrame { route: c[0], cmd: c[1], data: c[2] })
+        .collect();
+
+    // gpsim's expected 6-frame response burst.
+    const GPSIM_BURST: &[ChainFrame] = &[
+        ChainFrame { route: 0xBF, cmd: 0x08, data: 0x00 },
+        ChainFrame { route: 0xBF, cmd: 0x05, data: 0x03 },
+        ChainFrame { route: 0xBF, cmd: 0x07, data: 0x4F },
+        ChainFrame { route: 0xBF, cmd: 0x03, data: 0x01 },
+        ChainFrame { route: 0xBF, cmd: 0x06, data: 0x00 },
+        ChainFrame { route: 0xBF, cmd: 0x1D, data: 0x04 },
     ];
 
-    let pos = find_subsequence(&main_to_ctrl, GPSIM_BURST).unwrap_or_else(|| {
+    find_subsequence(&main_frames, GPSIM_BURST).unwrap_or_else(|| {
         panic!(
-            "gpsim 6-frame burst not found as contiguous subsequence \
-             in MAIN→CTRL bytes.\n  MAIN bytes ({}): {:02X?}\n  Expected: {:02X?}",
-            main_to_ctrl.len(),
-            main_to_ctrl,
+            "gpsim 6-frame burst not found as contiguous frame subsequence \
+             in MAIN→CTRL stream.\n  MAIN frames ({}): {:?}\n  Expected: {:?}",
+            main_frames.len(),
+            main_frames,
             GPSIM_BURST,
         )
     });
-    assert!(
-        pos < main_to_ctrl.len(),
-        "subsequence position {pos} out of bounds (len={})",
-        main_to_ctrl.len()
-    );
 }
 
 #[cfg(test)]
