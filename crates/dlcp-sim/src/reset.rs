@@ -306,28 +306,30 @@ fn wipe_sfr_window(core: &mut Core) {
 ///
 /// K20: DS40001303H Table 4-4 ("Initialization Conditions for All
 /// Registers", p.56-60) + Table 5-2 footnotes for 28-pin masking.
-/// Only entries that are non-zero at POR are listed -- everything
-/// else is already 0 from the memory wipe above.
+/// Full coverage of every non-zero POR default.
 ///
-/// 2455: not yet wired.  When the 2455 isa-parity gate lands,
-/// add a parallel match arm with DS39632E Table 4-2's defaults.
+/// 2455: TARGETED coverage from task #30 -- only the SFRs whose
+/// POR ≠ 0 AND that V3.1 boot actually depends on (TXSTA.TRMT,
+/// INTCONn priority defaults, T0CON / PR2 / BAUDCON / IPRn).
+/// Driven by `apply_2455_por_sfr_defaults`.  See its docstring
+/// for the full deferral list.  The remaining 2455 defaults
+/// (OSCCON / HLVDCON / TRISx / CCP / SPP / USB / etc.) land
+/// alongside the V2.3 MAIN parity gate (P1.8e).
 ///
-/// **Known gap (scoped to Phase 2 V1.71 K20 parity):**
-/// because the 2455 arm is a no-op:
-///   * On POR a 2455 core ends with all-zero SFRs (the
-///     pre-call data-memory wipe leaves them 0, and the
-///     no-op 2455 arm doesn't restore the non-zero
-///     defaults).
-///   * On BOR a 2455 core ends with all-zero SFRs (the
-///     BOR-arm SFR-window wipe leaves them 0, same path).
-///   * On MCLR/WDT/RESET a 2455 core preserves whatever
-///     SFR bytes existed pre-reset because the MCLR
-///     zero/RMW lists are K20-only.
+/// **Known gap (scoped):**
+///   * On BOR a 2455 core wipes the SFR window via the BOR
+///     arm and then re-applies POR defaults -- the targeted
+///     2455 set above is now restored, but the K20-only
+///     entries (TRISx / OSCCON / etc.) stay zero.
+///   * On MCLR/WDT/RESET a 2455 core preserves whatever SFR
+///     bytes existed pre-reset because the MCLR zero/RMW
+///     lists are K20-only.  The 2455 stack-fault path goes
+///     through `apply_2455_mclr_irq_sfrs` (task #31) which
+///     covers the IRQ subset only.
 /// The current Phase-2 parity test suite does not exercise
-/// any 2455 reset path, so this is a deliberately deferred
-/// limitation.  The V2.3 MAIN parity gate landing later will
-/// add the 2455 K20-equivalent table (and parallel MCLR
-/// zero/RMW lists).
+/// any 2455 MCLR / WDT / RESET-instruction reset path, so
+/// the gap is bounded.  The V2.3 MAIN parity gate landing
+/// later will add the 2455 K20-equivalent zero/RMW lists.
 fn apply_por_sfr_defaults(core: &mut Core) {
     match core.variant() {
         Variant::Pic18F25K20 => apply_k20_por_sfr_defaults(core),
@@ -363,8 +365,11 @@ fn apply_2455_por_sfr_defaults(core: &mut Core) {
         (0xFF0, 0xC0, "INTCON3"),
         // T0CON: all 1s at POR (timer disabled, max prescaler).
         (0xFD5, 0xFF, "T0CON"),
-        // PR2: Timer2 period match value = 0xFF.
-        (0xFAB, 0xFF, "PR2"),
+        // PR2: Timer2 period match value = 0xFF.  Address
+        // 0xFCB per DS39632E Tbl 5-1 (NOT 0xFAB -- that's
+        // RCSTA, whose POR value is `0000 000x` and stays
+        // zeroed by the SFR-window wipe).
+        (0xFCB, 0xFF, "PR2"),
         // TXSTA: TRMT=1 (TSR empty).  TRMT is hardware-driven
         // read-only; the SFR write mask in exec.rs preserves
         // it across SW writes -- so without seeding it here
@@ -1409,9 +1414,19 @@ mod tests {
             "T0CON = 0xFF (timer disabled, max prescaler)"
         );
         assert_eq!(
-            core.memory.read_raw(Address::from_raw(0xFAB)),
+            core.memory.read_raw(Address::from_raw(0xFCB)),
             0xFF,
-            "PR2 = 0xFF"
+            "PR2 = 0xFF (address 0xFCB per DS Tbl 5-1)"
+        );
+        // RCSTA at 0xFAB stays zero (POR value `0000 000x`,
+        // SFR-window wipe leaves it 0; the prior commit's
+        // typo wrote 0xFF here, which would have set
+        // SPEN/CREN/FERR/OERR pre-firmware).
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFAB)),
+            0,
+            "RCSTA = 0 at POR (regression guard for the
+             swapped PR2/RCSTA address typo)"
         );
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xFB8)),
