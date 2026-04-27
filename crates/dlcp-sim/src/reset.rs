@@ -43,10 +43,15 @@
 //!     preserved/fixed-bit rows) +
 //!     `apply_por_sfr_defaults` on top.  GPRs preserved.
 //!
-//! 2455 is not yet wired (tracked inside
-//! `apply_por_sfr_defaults`'s docstring); the V2.3 MAIN
-//! parity gate work will add the parallel DS39632E
-//! Table 4-2 tables when it lands.
+//! 2455 has TARGETED POR/BOR defaults (task #30:
+//! `apply_2455_por_sfr_defaults` covers TXSTA.TRMT,
+//! INTCONn priority defaults, T0CON / PR2 / BAUDCON /
+//! IPRn -- the SFRs V3.1 boot actually depends on).
+//! The broader 2455 SFR table (OSCCON / HLVDCON / TRISx
+//! / CCP / SPP / USB / etc.) and the 2455 MCLR zero/RMW
+//! lists still land alongside the V2.3 MAIN parity gate
+//! (P1.8e); 2455 stack-fault has its own targeted
+//! `apply_2455_mclr_irq_sfrs` (task #31).
 
 use crate::core::Core;
 use crate::memory::{Address, Variant};
