@@ -619,7 +619,7 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // OSCCON: bits 3 (OSTS) and 2 (IOFS) are R-only HW
         // status (oscillator startup-timer and HFINTOSC
         // frequency-stable indicators per DS39632E Register
-        // 2-2 / DS40001303H Register 2-2).  Bits 7 (IDLEN),
+        // 2-2 / DS40001303H Register 2-1).  Bits 7 (IDLEN),
         // 6..4 (IRCF<2:0>), and 1..0 (SCS<1:0>) are R/W.
         // Without this mask, a `MOVWF OSCCON` clobbers the
         // HW status bits firmware uses to gate clock-switch
