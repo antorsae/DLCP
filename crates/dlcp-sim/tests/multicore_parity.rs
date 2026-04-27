@@ -708,52 +708,54 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     }
 }
 
-/// P3.6 step 2 PROBE -- non-converging.  Documents the
-/// current divergence: `v171_diag_present` reaches `0x01`
-/// (PB1 reply landed) but never `0x03` (PB1 + PB2).  Same
-/// symptom the Python harness logs in
-/// `tests/sim/test_v171_v32_layer5_diag_chain.py:166`,
-/// even though the Rust sim's silicon-correct ring has no
-/// bridge-style echo loop.
+/// P3.6 step 2 + step (B) -- diag-page convergence probe.
 ///
-/// Empirical state at exit (10 B-tick ceiling, 148 s wall):
-///   * `v171_diag_present = 0x01` (PB1 only)
-///   * `v171_diag_target  = 0x01` (CONTROL next-queries PB2)
-///   * `menu_state        = 4`    (PB1 Diag, as set)
-///   * `main0_pc          = 0x4456`
-///   * `main1_pc          = 0x1872`
-///   * 2105 UART deliveries during the polling window
+/// Now drives CONTROL via simulated RIGHT-button presses
+/// (task #35 minimum-viable input injection -- see
+/// `Chain::set_pin_high/low`) instead of the prior
+/// `RAM[0xbf]=4` direct poke.  Navigation is verified: 4
+/// RIGHT presses cleanly advance state 0 -> 1 -> 2 -> 3 ->
+/// 4 (Volume -> Preset -> Input -> Setup -> PB1Diag).
 ///
-/// Working hypotheses (all unconfirmed):
-///   1. Same-tick UART seq-order race (task #19): MAIN0
-///      forwards PB2 query to MAIN1 and MAIN1's TSR-complete
-///      fire at the same universal tick; non-deterministic
-///      dispatch order may strand MAIN1 mid-reply.
-///   2. V3.2 MAIN forward-path firmware: cmd 0x23/0x24 (PB2)
-///      may have a frame-handling subtlety that the chain
-///      has to satisfy to elicit a reply (versus cmd
-///      0x21/0x22 (PB1) which works).  Worth a focused look
-///      at `dlcp_main_v32.asm`'s BF/2N parser before
-///      assuming a sim bug.
-///   3. Hidden peripheral fidelity gap surfaced only by
-///      the longer chain (e.g., RCREG FIFO depth, RCIF
-///      latch under back-to-back MAIN0->MAIN1 traffic).
+/// Empirical state at exit (current state, NON-CONVERGING):
+///   * Navigation: state lands at 4 ✓
+///   * Buttons: PORTA=0xEF (RA4 LOW) → btn_cache=0x20 ✓
+///   * Debounce: 4 stable cycles before state increment ✓
+///   * `v171_diag_present = 0x00` (no PB has replied!)
+///   * `v171_diag_target  = 0x00`
+///   * `menu_state = 4` at end
+///   * Stage 3 traffic: only `B0` periodic broadcasts
+///     (cmd 03/1D/20/07/06).  ZERO `B1 22` or `B1 21`
+///     diag-poll queries from CONTROL.
+///
+/// So once CONTROL is on PB1 Diag (state=4), the
+/// `v171_diag_pb_screen` cadence loop should fire
+/// alternating cmd 0x22 + cmd 0x21 queries every ~1 s.
+/// It doesn't.  Either:
+///   1. `v171_diag_pb_screen` is not actually being
+///      entered by the dispatcher (despite menu_state=4),
+///      OR
+///   2. It is entered but exits before any query fires
+///      (e.g., spurious 0x9A button-event latch from the
+///      navigation residue), OR
+///   3. `display_loop_iteration` (called from inside
+///      `v171_diag_loop`) blocks long enough for the
+///      cadence countdown to never expire.
 ///
 /// What this probe DOES prove:
-///   * The 3-core ring under V1.71+V3.2+V3.2 boots, runs
-///     the diag-poll state machine, exchanges 2k+ UART
-///     bytes through the silicon ring, and lands PB1 reply
-///     correctly.
+///   * The 3-core ring under V1.71+V3.2+V3.2 boots
+///     cleanly.
+///   * Button-press injection drives state-machine
+///     navigation through the firmware's own debounce +
+///     event handlers (task #35 minimum-viable validated).
 ///   * No record in `uart_tx_history` is a self-loop --
-///     the gpsim bridge echo is structurally absent (this
-///     is the half of Task #22 the Rust rewrite has
-///     genuinely retired).
+///     the gpsim bridge echo is structurally absent.
 ///
-/// `#[ignore]`d so the routine suite stays fast; budget
-/// is 2 B ticks (was 10 B during the discovery probe) so
-/// each manual iteration completes in ~30 s wall.
+/// `#[ignore]`d.  Wall ~ 60 s.  Convergence work pending:
+/// inspect why `v171_diag_pb_screen` doesn't actually
+/// enter / drive the cadence loop.
 #[test]
-#[ignore = "P3.6 step 2 probe; PB2 reply never lands -- diverging investigation needed (see docstring)"]
+#[ignore = "P3.6 step (B) -- diag-poll cadence still doesn't fire after firmware-driven navigation"]
 fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     use dlcp_sim::memory::Address;
 
@@ -830,13 +832,120 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         chain.current_tick,
     );
 
-    // Stage 2: force CONTROL onto the PB1 Diag screen.
-    // Real hardware reaches this via two RIGHT button
-    // presses; in the absence of GPIO input modeling
-    // (task #35) we poke the menu-state RAM directly.
+    // Stage 1.5: continue stepping until CONTROL has reached
+    // the display-loop range (post_connect_init has finished
+    // and the dispatcher is firing periodically).  We detect
+    // this via PORTA bit 4: if buttons are released and
+    // button_scan_debounce is firing, btn_cache(0xBC) stays
+    // at 0; but the act of running button_scan touches
+    // various RAM cells.  Simpler heuristic: wait until the
+    // CTL menu_state reflects the firmware-default value (0
+    // = Volume), which only gets initialized once display
+    // mode is entered.  But actually 0 IS the default on POR
+    // -- so we instead need a different signal.
+    //
+    // Empirical: at stage 1 (170 M ticks), CTL PC=0x01E2.
+    // That's deep in post-handshake init, before
+    // display_loop_iteration is reachable.  Step more until
+    // PC is in the post_connect range (~0x11D8+).
     chain.cores[i_ctl]
         .memory
-        .write_raw(Address::from_raw(MENU_STATE_RAM), MENU_STATE_PB1_DIAG);
+        .write_raw(Address::from_raw(0xF80), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF);
+    chain.run_until(
+        50_000_000,
+        2_000_000_000,
+        |c| {
+            let pc = c.cores[i_ctl].pc();
+            pc >= 0x0CB2 && pc < 0x2000
+        },
+    );
+    let ctl_pc_stage1_5 = chain.cores[i_ctl].pc();
+    eprintln!(
+        "Stage 1.5 exit: CONTROL PC=0x{ctl_pc_stage1_5:04X} \
+         (target: in display-loop range 0x0CB2..0x2000)"
+    );
+
+    // Stage 2: navigate CONTROL to the PB1 Diag screen via
+    // simulated RIGHT-button presses (task #35 minimum-
+    // viable input injection).  V1.71's 6-state menu ring
+    // is 0=Vol / 1=Preset / 2=Input / 3=Setup / 4=PB1Diag /
+    // 5=PB2Diag (`dlcp_control_v171.asm:4805+`).  Each
+    // RIGHT press advances state by 1, so 4 presses from
+    // state 0 reach state 4.
+    //
+    // Button mapping (V1.71): RIGHT=RA4, LEFT=RC5,
+    // SELECT=RA3, DOWN=RC0, STBY=RA2, UP=RA1.  Active-low.
+    //
+    // Baseline: PORTA = PORTC = 0xFF (all buttons released)
+    // so spurious presses don't trigger STBY etc.
+    use dlcp_sim::pinnet::PortLetter;
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+
+    // Run a few M ticks first so the released-button
+    // state is observed by the firmware's debounce logic
+    // before we start pressing.
+    chain.step_ticks(5_000_000);
+
+    // Press RIGHT (RA4) 4 times to navigate state 0 -> 4.
+    // Each press cycle: pull pin LOW, hold ~5 M ticks for
+    // firmware debounce (4 stable cycles of
+    // `display_loop_iteration`), release, hold ~5 M ticks
+    // for release debounce + state increment + LCD redraw.
+    for press in 0..4 {
+        chain.set_pin_low(i_ctl, PortLetter::A, 4); // RIGHT pressed
+        let porta_after_press = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0xF80));
+        eprintln!(
+            "press #{press_n}: PORTA after pin_low = 0x{porta_after_press:02X}",
+            press_n = press + 1
+        );
+        chain.step_ticks(5_000_000);
+        let porta_held = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0xF80));
+        let cached_btn_0xbc = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x0BC));
+        let debounce_0xbb = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x0BB));
+        eprintln!(
+            "press #{press_n}: after 5M ticks: PORTA=0x{porta_held:02X}, \
+             btn_cache(0xBC)=0x{cached_btn_0xbc:02X}, debounce(0xBB)={debounce_0xbb}",
+            press_n = press + 1
+        );
+        chain.set_pin_high(i_ctl, PortLetter::A, 4); // RIGHT released
+        chain.step_ticks(5_000_000);
+        let state_now = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(MENU_STATE_RAM));
+        eprintln!(
+            "After RIGHT press #{press_n}: menu_state = {state_now}",
+            press_n = press + 1
+        );
+    }
+
+    let menu_state_after_nav = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(MENU_STATE_RAM));
+    assert_eq!(
+        menu_state_after_nav, MENU_STATE_PB1_DIAG,
+        "after 4 RIGHT presses CONTROL must be on state 4 (PB1Diag); \
+         got state {menu_state_after_nav}"
+    );
+
+    // Snapshot history just before stage 3 polling so we
+    // can dump byte streams for diagnosis on failure.
+    let stage2_history_len = chain.uart_tx_history.len();
 
     // Stage 3: run until both PB-reply bits land in
     // v171_diag_present.  Budget was 10 B during the
@@ -884,6 +993,28 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     };
     let pb1_cache_present = pb_cache_has_content(&chain, DIAG_PB1_BASE_RAM);
     let pb2_cache_present = pb_cache_has_content(&chain, DIAG_PB2_BASE_RAM);
+
+    // Diagnostic: dump per-edge byte streams from stage 3
+    // (post-navigation polling window).
+    let stage3_records: Vec<_> = chain
+        .uart_tx_history
+        .iter()
+        .skip(stage2_history_len)
+        .collect();
+    let extract = |src: usize| -> Vec<u8> {
+        stage3_records
+            .iter()
+            .filter(|r| r.src_core == src)
+            .map(|r| r.byte)
+            .collect()
+    };
+    let ctl_tx_s3 = extract(i_ctl);
+    let m0_tx_s3 = extract(i_main0);
+    let m1_tx_s3 = extract(i_main1);
+    eprintln!("Stage 3 byte streams (post-navigation):");
+    eprintln!("  CTL.TX  ({} bytes): {:02X?}", ctl_tx_s3.len(), &ctl_tx_s3[..ctl_tx_s3.len().min(60)]);
+    eprintln!("  MAIN0.TX ({} bytes): {:02X?}", m0_tx_s3.len(), &m0_tx_s3[..m0_tx_s3.len().min(60)]);
+    eprintln!("  MAIN1.TX ({} bytes): {:02X?}", m1_tx_s3.len(), &m1_tx_s3[..m1_tx_s3.len().min(60)]);
 
     assert_eq!(
         diag_present, 0x03,

@@ -28,7 +28,20 @@ use crate::memory::Address;
 use crate::peripherals::mssp::{I2cBusEvent, Mssp};
 use crate::peripherals::osc;
 use crate::peripherals::tas3108::Tas3108;
-use crate::pinnet::{PinId, PinNet};
+use crate::pinnet::{PinId, PinNet, PortLetter};
+
+/// PORTx SFR base address (PIC18F25K20 + PIC18F2455 share
+/// the layout).  Used by `Chain::set_pin_high/low` for
+/// minimum-viable input-pin injection (task #35).
+fn port_addr(port: PortLetter) -> u16 {
+    match port {
+        PortLetter::A => 0xF80,
+        PortLetter::B => 0xF81,
+        PortLetter::C => 0xF82,
+        PortLetter::D => 0xF83,
+        PortLetter::E => 0xF84,
+    }
+}
 use crate::reset::{ResetSource, apply_reset};
 use crate::scheduler::{Event, EventKind, EventQueue};
 use crate::stack::Stack;
@@ -251,6 +264,48 @@ impl Chain {
     ) {
         self.pinnet
             .couple_pin(src_core, src_pin, dst_core, dst_pin);
+    }
+
+    /// Set an input pin's PORT bit to logic-high (released
+    /// for active-low buttons).  Minimum-viable
+    /// pin-injection for task #35: directly manipulates the
+    /// PORTx memory cell at `0xF80 + port_offset`, preserving
+    /// other bits.  Works for input pins where firmware reads
+    /// via `btfss/btfsc PORTx, n` (no R-M-W) -- which V1.71
+    /// CONTROL's button reads do.  Does NOT model TRIS
+    /// gating; for output pins firmware should still read
+    /// LATx, not PORTx.
+    ///
+    /// Caller convention:
+    ///   in: core_idx, port (A/B/C), bit (0..=7)
+    ///   side: writes the PORTx memory cell directly; does
+    ///         not call `peripherals.on_sfr_write`.
+    pub fn set_pin_high(&mut self, core_idx: usize, port: PortLetter, bit: u8) {
+        let addr = port_addr(port);
+        let cur = self.cores[core_idx]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(addr));
+        self.cores[core_idx]
+            .memory
+            .write_raw(
+                crate::memory::Address::from_raw(addr),
+                cur | (1 << bit),
+            );
+    }
+
+    /// Set an input pin's PORT bit to logic-low (pressed for
+    /// active-low buttons).  Sibling of `set_pin_high`.
+    pub fn set_pin_low(&mut self, core_idx: usize, port: PortLetter, bit: u8) {
+        let addr = port_addr(port);
+        let cur = self.cores[core_idx]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(addr));
+        self.cores[core_idx]
+            .memory
+            .write_raw(
+                crate::memory::Address::from_raw(addr),
+                cur & !(1 << bit),
+            );
     }
 
     /// Wire a master-mode I²C bus on `master_core` to a
