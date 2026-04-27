@@ -415,7 +415,22 @@ fn chain_v171_v31_reaches_first_uart_tx() {
         );
     }
 
-    // Report-only test today: pass regardless of TX
-    // convergence so default suite stays clean.  Tighten to
-    // assert-on-convergence once task #28 lands.
+    // Report-only on TX convergence today (pass regardless
+    // so default suite stays clean once `#[ignore]` is
+    // dropped).  Once task #28 lands, tighten to
+    // `assert!(tx_count >= 1)` as the P3.5 final-acceptance
+    // milestone.
+    //
+    // Defensive floor: even though TX convergence is not
+    // asserted, the probe MUST observe substantial DSP I2C
+    // traffic (>= 1000 ACKs) -- if a future regression
+    // (e.g., the TAS3108 coupling unwiring, ADC AN0 gate
+    // breaking, or the executor losing forward progress)
+    // makes this probe a no-op, this assertion fires.
+    // Codex review of 691f859 LOW.
+    assert!(
+        dsp_acked >= 1000,
+        "probe baseline regression: V3.1 + V1.71 chain ran {} ticks but only {} DSP ACKs landed -- something upstream broke (TAS3108 coupling? ADC AN0 gate? executor forward progress?)",
+        advanced, dsp_acked,
+    );
 }
