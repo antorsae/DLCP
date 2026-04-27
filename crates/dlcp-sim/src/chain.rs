@@ -1415,10 +1415,26 @@ mod tests {
             for (idx, &core_idx) in cores.iter().enumerate() {
                 let now = chain.cores[core_idx].memory.read_raw(RCREG);
                 if core_idx == expected_dst {
+                    // Pin BOTH halves of "the byte landed":
+                    // post-state matches the injected byte
+                    // AND post-state actually changed from
+                    // the pre-injection snapshot.  Without
+                    // the second check, a future hop whose
+                    // byte happened to equal the
+                    // destination's pre-state would pass
+                    // even if the dispatch silently dropped
+                    // the delivery.
                     assert_eq!(
                         now, byte,
                         "{}.RCREG must hold {byte:#04x} after wired hop",
                         core_names[idx]
+                    );
+                    assert_ne!(
+                        now, snapshot[idx],
+                        "{}.RCREG must have changed from its pre-injection \
+                         snapshot ({:#04x}); equal-byte silent-drop would \
+                         otherwise pass the post-state assert vacuously",
+                        core_names[idx], snapshot[idx]
                     );
                 } else {
                     assert_eq!(
