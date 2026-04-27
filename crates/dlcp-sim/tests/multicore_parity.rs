@@ -540,17 +540,31 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     // Same-PSU boot: all three units come up together.
     chain.schedule_initial_steps(&[0, 0, 0]);
 
-    // Convergence: both MAINs cross DSP-init threshold.
-    // Three cores instead of two roughly doubles the
-    // wall-clock budget vs. the V3.1 2-core test (which
-    // converged in < 500 M ticks); allow 3 B as the
-    // safety ceiling.
+    // Convergence: both MAINs cross DSP-init threshold
+    // AND at least one UART byte has flowed.  The DSP-
+    // init predicate alone is insufficient because
+    // `bytes_acked` counts I²C traffic internal to each
+    // MAIN's MSSP -- it tells us nothing about whether
+    // the ring's UART couplings are actually conducting,
+    // which is what makes the firmware-driven echo-loop
+    // check below meaningful.  V1.71's `full_sync_burst`
+    // emits CONTROL.TX bytes early in boot, so adding
+    // `!uart_tx_history.is_empty()` to the predicate
+    // doesn't extend convergence by much (empirically
+    // the 2-core V3.1 chain reaches first UART TX in
+    // < 600 M ticks; the 3-core variant fits in 5 B).
+    //
+    // Codex review of f985498 (MEDIUM): without this
+    // strengthening the no-echo loop would scan a
+    // possibly-empty `uart_tx_history` and pass
+    // vacuously.
     chain.run_until(
         10_000_000,    // chunk_ticks: 10 M = ~70 ms wall
-        3_000_000_000, // max_ticks: 3 B safety ceiling
+        5_000_000_000, // max_ticks: 5 B safety ceiling
         |c| {
             c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
                 && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+                && !c.uart_tx_history.is_empty()
         },
     );
 
@@ -599,8 +613,8 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     // run_until exited via the predicate, not the
     // safety ceiling.
     assert!(
-        chain.current_tick < 3_000_000_000,
-        "run_until hit the 3 B safety ceiling without converging; current_tick={}",
+        chain.current_tick < 5_000_000_000,
+        "run_until hit the 5 B safety ceiling without converging; current_tick={}",
         chain.current_tick,
     );
 
@@ -617,11 +631,48 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     // `drain_completed_tx_bytes` introduces a self-loop,
     // it will surface here -- with the actual Task #22
     // chain protocol traffic exercising it.
+    //
+    // The assertion is only load-bearing if UART traffic
+    // *actually flowed* during the run.  The convergence
+    // predicate above already guarantees
+    // `!uart_tx_history.is_empty()` at exit (`run_until`
+    // exits as soon as the predicate fires), so this
+    // assert duplicates a postcondition for documentation
+    // -- but it costs nothing and pins the contract
+    // should the predicate ever change.
+    assert!(
+        !chain.uart_tx_history.is_empty(),
+        "uart_tx_history must be non-empty by convergence so the \
+         no-echo loop below has something to scan"
+    );
     for record in &chain.uart_tx_history {
         assert_ne!(
             record.src_core, record.dst_core,
             "no UART delivery may route a core's TX to its own RX; \
              firmware-driven echo-loop check failed on record {record:?}"
+        );
+    }
+
+    // Cardinality / topology audit: every record must
+    // route along one of the three wired ring edges
+    // (CONTROL->MAIN0, MAIN0->MAIN1, MAIN1->CONTROL).
+    // Any record on a non-ring edge would indicate a
+    // wiring drift -- fan-out, reverse coupling, etc. --
+    // and is exactly the class of defect Task #22
+    // chases.  This is the firmware-driven analogue of
+    // the cardinality check the architectural scope
+    // probe in `chain.rs::tests` makes under synthetic
+    // injection.
+    for record in &chain.uart_tx_history {
+        let edge = (record.src_core, record.dst_core);
+        let is_ring_edge = edge == (i_ctl, i_main0)
+            || edge == (i_main0, i_main1)
+            || edge == (i_main1, i_ctl);
+        assert!(
+            is_ring_edge,
+            "uart_tx_history record routes on a non-ring edge {edge:?} \
+             (i_ctl={i_ctl}, i_main0={i_main0}, i_main1={i_main1}); \
+             record: {record:?}"
         );
     }
 }
