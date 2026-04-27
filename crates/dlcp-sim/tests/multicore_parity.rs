@@ -91,6 +91,58 @@ fn v23_main_combined_hex_path() -> PathBuf {
     repo_root().join("firmware/stock/main/DLCP Firmware V2.3-combined.hex")
 }
 
+/// V3.x app-code patch range.  Mirrors gpsim's
+/// `MAIN_APP_PATCH_START` / `MAIN_APP_PATCH_LIMIT` in
+/// `src/dlcp_fw/sim/main_gpsim.py`: V3.x hex covers app
+/// code at `[0x1000, 0x5600)`; everything else (boot
+/// block at 0x0000-0x0FFF, preset/DSP table at
+/// 0x5600-0x5FFF, EEPROM, User ID, CONFIG) comes from
+/// the V2.3-combined recovered-device seed.
+const MAIN_APP_PATCH_START: usize = 0x1000;
+const MAIN_APP_PATCH_LIMIT: usize = 0x5600;
+
+/// Build a silicon-correct MAIN flash image by merging a
+/// V3.x app-only hex onto the V2.3-combined recovered-
+/// device seed.  Mirror of gpsim's `build_seeded_main_sim_hex`
+/// (`src/dlcp_fw/sim/main_gpsim.py:321`).  Result:
+///   * `flash[0x0000..0x1000]`: V2.3 boot block (real
+///     V2.3 reset/IRQ vectors + RAM init at 0x058E,
+///     etc.).
+///   * `flash[0x1000..0x5600]`: V3.x app code.
+///   * `flash[0x5600..0x8000]`: V2.3 preset/DSP tables.
+/// The resulting flash is what real silicon sees after
+/// V3.x is patched onto a V2.3-flashed device.  No bake-
+/// trampoline hack required: V2.3's reset vector at
+/// 0x0000 already points at V2.3 boot init, which after
+/// init naturally jumps to the V3.x app at 0x1000; the
+/// V2.3 high-IRQ vector at 0x0008 already trampolines to
+/// 0x1008 (V3.x's user IRQ handler).  Task #36.
+fn build_seeded_main_flash(v3_app: &HexImage, v23_seed: &HexImage) -> Box<[u8; dlcp_sim::hex::FLASH_BYTES]> {
+    let mut flash = v23_seed.flash.clone();
+    let app_end = MAIN_APP_PATCH_LIMIT.min(v3_app.flash.len());
+    flash[MAIN_APP_PATCH_START..app_end]
+        .copy_from_slice(&v3_app.flash[MAIN_APP_PATCH_START..app_end]);
+    flash
+}
+
+/// Build a silicon-correct MAIN core from a V3.x app hex
+/// merged onto a V2.3-combined seed.  Combines the
+/// `build_seeded_main_flash` flash merge with the V2.3
+/// EEPROM seed (task #33).  No bake-trampoline: V2.3's
+/// real reset/IRQ vectors at 0x0000/0x0008 land in the
+/// merged flash.  Task #36.
+fn build_seeded_main_core(v3_app: &HexImage, v23_seed: &HexImage) -> Core {
+    let mut core = Core::new(Variant::Pic18F2455);
+    core.flash_mut().copy_from_slice(&*build_seeded_main_flash(v3_app, v23_seed));
+    // EEPROM seed from V2.3 (task #33).  Without this,
+    // BF/07 / BF/06 status-burst data bytes diverge from
+    // gpsim ground truth.
+    for (addr, &byte) in v23_seed.eeprom.iter().enumerate() {
+        core.peripherals.eeprom.set_byte(addr as u8, byte);
+    }
+    core
+}
+
 /// Bake a PIC18 `GOTO target_byte_addr` instruction at
 /// `flash[at]`.  4 bytes long; both addresses must be even.
 /// Encoding per DS39632E §26 / DS41303 §25:
@@ -844,15 +896,12 @@ fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
     let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
         .expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
-    let mut main = build_core_from_hex(
-        Variant::Pic18F2455,
-        &v31,
-        Some(0x1000),
-        Some(0x1008),
-    );
-    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
-        main.peripherals.eeprom.set_byte(addr as u8, byte);
-    }
+    // Task #36: silicon-correct boot via V2.3-combined
+    // merge.  Replaces the prior bake-trampoline approach
+    // (`Some(0x1000), Some(0x1008)`) -- now V2.3's real
+    // boot block at 0x0000-0x0FFF runs naturally and
+    // jumps to the V3.1 app at 0x1000.
+    let mut main = build_seeded_main_core(&v31, &v23_combined);
     main.peripherals.adc.set_an0_sample(0x0300);
     let mut chain = Chain::new();
     let i_control = chain.push_core(control);
@@ -952,15 +1001,8 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
     let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
         .expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
-    let mut main = build_core_from_hex(
-        Variant::Pic18F2455,
-        &v31,
-        Some(0x1000),
-        Some(0x1008),
-    );
-    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
-        main.peripherals.eeprom.set_byte(addr as u8, byte);
-    }
+    // Task #36: silicon-correct boot via V2.3-combined merge.
+    let mut main = build_seeded_main_core(&v31, &v23_combined);
     main.peripherals.adc.set_an0_sample(0x0300);
     let mut chain = Chain::new();
     let i_control = chain.push_core(control);
