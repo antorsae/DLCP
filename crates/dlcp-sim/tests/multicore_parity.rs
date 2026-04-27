@@ -331,40 +331,22 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     );
 }
 
-/// Probe: how long until V3.1 + V1.71 chain emits its first
-/// UART byte across the current loop?  Ignored by default
-/// (~32 s wall locally to run the full 5 B-tick budget); run
-/// explicitly with `cargo test --release --test multicore_parity
-/// -- --ignored chain_v171_v31_reaches_first_uart_tx --nocapture`.
+/// V3.1 + V1.71 chain reaches its first UART TX byte across
+/// the current loop.  This is the P3.5 final-acceptance
+/// milestone: end-to-end demonstration that the Rust
+/// simulator runs both shipped firmware images concurrently
+/// through the chain dispatcher, with the TAS3108 DSP
+/// responding on I2C and IRQ-driven CONTROL state machine
+/// pumping its main loop.
 ///
-/// As of this commit the chain does NOT converge on a UART TX
-/// within 5 B ticks (~110 s simulated time): V3.1 MAIN runs
-/// continuous DSP I2C traffic (~63 k ACKed bytes by 5 B
-/// ticks) but never reaches the chain protocol path that
-/// would prompt CONTROL→MAIN or MAIN→CONTROL UART traffic.
-/// CONTROL parks early at PC ≈ 0x01E2.
+/// Convergence point during scaffolding (post-task-#28):
+/// first UART TX at ~300 M universal ticks, ~2.7 s wall
+/// locally.  600 M-tick safety ceiling gives ~2x headroom.
 ///
-/// The block is task #28 (IRQ vector dispatch in executor):
-/// V1.71's main loop is interrupt-driven (Timer0 idle tick,
-/// EUSART RX byte, IR decode); without ISR vectoring CONTROL
-/// never advances past its initialization-poll state.  Once
-/// task #28 lands, this probe should converge -- if not, it
-/// surfaces the NEXT bottleneck.
-///
-/// The probe is `#[ignore]`-gated so default `cargo test`
-/// runs stay fast (< 1 s).  It is report-only for the
-/// UART-TX convergence dimension: prints the diagnostic
-/// state and the convergence point if any, but does NOT
-/// fail solely for missing UART TX.  A defensive
-/// `dsp_acked >= 1000` floor DOES fire on the no-UART
-/// timeout path so a future regression (TAS3108 unwiring,
-/// ADC AN0 gate breaking, executor losing forward
-/// progress) doesn't silently turn the probe into a
-/// no-op.  When task #28 lands a follow-up commit can
-/// tighten the UART side into a hard-pass assertion (P3.5
-/// final-acceptance milestone).
+/// Tighten this to bit-exact stream parity against gpsim
+/// ground truth in subsequent P3.5+ work; today's contract
+/// is just "the chain converges on TX traffic at all".
 #[test]
-#[ignore = "probe test; ~32 s wall to run.  See test body for current state."]
 fn chain_v171_v31_reaches_first_uart_tx() {
     let v171 = HexImage::from_hex_path(v171_control_hex_path())
         .expect("V1.71 hex parses");
@@ -385,13 +367,13 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0]);
 
-    // Up to 5 B ticks (~35 s wall locally) waiting for the
-    // first UART TX byte from either core.  10 M-tick chunks
-    // keep polling cadence at ~70 ms wall, leaving room for
-    // many predicate checks.
+    // Up to 600 M ticks (~13 s simulated, ~5 s wall locally
+    // -- 2x the observed 2.7 s convergence budget gives
+    // headroom for clock drift / scheduler overhead).  10 M-
+    // tick chunks keep polling cadence at ~70 ms wall.
     let advanced = chain.run_until(
         10_000_000,
-        5_000_000_000,
+        600_000_000,
         |c| !c.uart_tx_history.is_empty(),
     );
 
@@ -400,48 +382,18 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     let main_pc = chain.cores[i_main].pc();
     let control_pc = chain.cores[i_control].pc();
 
-    eprintln!(
-        "PROBE: V3.1+V1.71 chain at {advanced}-tick budget: \
-         tx_count={tx_count}, dsp_acked={dsp_acked}, \
-         main_pc=0x{main_pc:04X}, ctrl_pc=0x{control_pc:04X}, \
-         current_tick={}",
-        chain.current_tick
+    // Hard-pass: at least one UART byte flowed within the
+    // safety ceiling.  If this fires, EITHER the IRQ
+    // dispatcher (task #28) regressed OR another peripheral
+    // fidelity gap pushed the convergence point past
+    // 600 M ticks.  Diagnostic state in the message helps
+    // pinpoint which.
+    assert!(
+        tx_count >= 1,
+        "V3.1 + V1.71 chain did NOT emit a UART byte within {} ticks: \
+         tx_count={}, dsp_acked={}, main_pc=0x{:04X}, ctrl_pc=0x{:04X}.  \
+         Either the IRQ dispatcher regressed (task #28) or another \
+         peripheral fidelity gap pushed convergence past 600 M ticks.",
+        advanced, tx_count, dsp_acked, main_pc, control_pc,
     );
-
-    if tx_count > 0 {
-        eprintln!(
-            "PROBE: convergence reached!  Run a follow-up commit to \
-             tighten this test into a hard-pass assertion (task #28 \
-             follow-up)."
-        );
-    } else {
-        eprintln!(
-            "PROBE: no UART TX within 5 B ticks.  Likely blocker: \
-             task #28 (IRQ vector dispatch).  Re-probe after task #28 \
-             lands to see if convergence appears."
-        );
-    }
-
-    // Report-only on TX convergence today (pass regardless
-    // so default suite stays clean once `#[ignore]` is
-    // dropped).  Once task #28 lands, tighten to
-    // `assert!(tx_count >= 1)` as the P3.5 final-acceptance
-    // milestone.
-    //
-    // Defensive floor: only asserted on the timeout path.
-    // The probe stops `run_until` on first UART TX, so a
-    // post-task-#28 chain that converges quickly may have
-    // dsp_acked < 1000 at exit -- that's a SUCCESS case,
-    // not rot.  Apply the floor only when no UART byte
-    // flowed (the "we ran but did meaningless work" case
-    // codex review of 691f859 worried about).  After task
-    // #28 a TX-convergence path with low ACK count is
-    // the intended new normal.
-    if tx_count == 0 {
-        assert!(
-            dsp_acked >= 1000,
-            "probe baseline regression: V3.1 + V1.71 chain ran {} ticks with no UART TX, and only {} DSP ACKs landed -- something upstream broke (TAS3108 coupling? ADC AN0 gate? executor forward progress?)",
-            advanced, dsp_acked,
-        );
-    }
 }
