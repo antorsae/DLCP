@@ -607,6 +607,24 @@ const fn sfr_write_mask(addr: u16) -> u8 {
         // 9th bit, also read-only.  SW writes preserve them
         // (DS40001303H §17.4 + Reg 17-2).
         0xFAB => 0xF8,
+        // BAUDCON bit 2 unimplemented, reads as 0 (DS39632E
+        // Register 20-3).  Bits 7 (ABDOVF) and 6 (RCIDL) are
+        // documented as R-only HW status flags but the DS
+        // legend tags them R/W with the "must be cleared in
+        // software" note for ABDOVF -- modelling them as
+        // writable matches gpsim and the firmware idiom of
+        // clearing ABDOVF via a SW write.  Mask 0xFB just
+        // gates out the unambiguously-unimplemented bit 2.
+        0xFB8 => 0xFB,
+        // OSCCON: bits 3 (OSTS) and 2 (IOFS) are R-only HW
+        // status (oscillator startup-timer and HFINTOSC
+        // frequency-stable indicators per DS39632E Register
+        // 2-2 / DS40001303H Register 2-2).  Bits 7 (IDLEN),
+        // 6..4 (IRCF<2:0>), and 1..0 (SCS<1:0>) are R/W.
+        // Without this mask, a `MOVWF OSCCON` clobbers the
+        // HW status bits firmware uses to gate clock-switch
+        // behavior.
+        0xFD3 => 0xF3,
         // FSR0H / FSR1H / FSR2H high nibbles unimplemented
         // (12-bit FSRs; only <3:0> alive in the H register).
         0xFEA | 0xFE2 | 0xFDA => 0x0F,
@@ -1629,6 +1647,51 @@ mod tests {
 
     // 0x0000 is the NOP encoding (`0000 0000 0000 0000`).
     const NOP_BYTES: [u8; 2] = [0x00, 0x00];
+
+    /// Task #14: BAUDCON bit 2 is unimplemented per DS39632E
+    /// Register 20-3.  A SW write of 0xFF must land as 0xFB
+    /// in the SFR backing store (bit 2 stripped to 0).
+    #[test]
+    fn sfr_write_mask_baudcon_strips_bit2_unimplemented() {
+        // Arbitrary "old" byte to confirm `apply_sfr_sw_write`
+        // composition: writable bits come from `value`,
+        // non-writable bits stay from `old`.  Bit 2 mask is
+        // not writable, so the post-write byte's bit 2
+        // matches `old`'s bit 2.
+        let after = apply_sfr_sw_write(0x00, 0xFF, 0xFB8);
+        assert_eq!(after, 0xFB, "BAUDCON bit 2 must read as 0");
+        // Reverse: writing 0x00 over old=0xFF.  Non-writable
+        // bit 2 stays at old's value (1) -- unimplemented bit
+        // STAYS 0 by silicon, but the mask only describes
+        // writability, not "always-0" semantics.  The real
+        // silicon-clean way is to enforce 0 in the reset/POR
+        // table; the mask just gates SW writes.
+        let after = apply_sfr_sw_write(0xFF, 0x00, 0xFB8);
+        assert_eq!(after, 0x04, "non-writable bit 2 keeps old value");
+    }
+
+    /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are
+    /// HW-driven read-only status bits per DS39632E
+    /// Register 2-2.  SW writes must preserve them.
+    #[test]
+    fn sfr_write_mask_osccon_preserves_osts_and_iofs() {
+        // Pre-set HW status bits via direct memory write
+        // (in production the reset/peripheral path sets them).
+        // Then a SW write of 0x00 to OSCCON must preserve
+        // bits 3 and 2 from `old` while clearing the others.
+        let after = apply_sfr_sw_write(0xFF, 0x00, 0xFD3);
+        assert_eq!(
+            after, 0x0C,
+            "OSCCON SW write must preserve OSTS (bit 3) + IOFS (bit 2)"
+        );
+        // Conversely: SW writes to the writable bits land in
+        // the SFR; HW status bits keep `old`'s value.
+        let after = apply_sfr_sw_write(0x0C, 0xF0, 0xFD3);
+        assert_eq!(
+            after, 0xFC,
+            "OSCCON SW write of 0xF0 over old=0x0C lands writable bits, keeps HW bits"
+        );
+    }
 
     #[test]
     fn step_nop_advances_pc_by_two_and_charges_one_cycle() {
