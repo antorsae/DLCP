@@ -739,16 +739,29 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 /// Residual divergence (HOP E -- the LAST hop):
 ///   * `v171_diag_present = 0x00` -- never set.
 ///   * `v171_diag_target = 0x00` -- never toggled.
-///   * Across 200 PC samples (10M ticks each, 2B total
-///     ticks), CONTROL's PC NEVER lands in the
-///     v171_bf2x_case_check dispatch range
-///     (0x0630..0x0700).  v171_diag_target trajectory:
-///     `[00]` (no change throughout stage 3).
+///   * v171_diag_target trajectory: `[00]` (no change
+///     throughout the 2 B-tick stage 3 sampling window).
 ///
-/// So CONTROL's parser RECEIVES the BF/27 byte stream but
-/// never DISPATCHES the v171_bf2x_case_check handler that
-/// would set v171_diag_present.  Hypotheses for the open
-/// hop:
+/// **The load-bearing evidence is the target trajectory,
+/// not PC sampling.**  If the BF/27 last-frame path had
+/// fired even ONCE, target would have toggled (0->1 via
+/// `btg v171_diag_target, 0`).  It didn't.  Combined with
+/// `v171_diag_present == 0x00` and `v171_diag_flags ==
+/// 0x06` (PENDING bits never cleared), this is sound
+/// evidence that the BF/27 last-frame path did not
+/// complete.  The PC histogram is informational only --
+/// 200 samples * 10 M ticks = 2 B ticks at K20's
+/// 16 ticks/Tcy = 125 M Tcy.  A ~50-Tcy dispatch body
+/// has only ~1.6% probability of being caught per sample
+/// even when firing once per chunk -- so 0/200 hits is
+/// consistent with sparse sampling, not proof of
+/// non-execution.
+///
+/// Phrased correctly: CONTROL never **successfully
+/// processes** BF/27 through the BF/2N last-frame path.
+///
+/// Hypotheses for the open hop (codex review of 56841f4
+/// added the 4th):
 ///   1. CONTROL's parser frame-state machine (0xA6
 ///      counter) is in the wrong state when the BF byte
 ///      arrives -- maybe stuck mid-frame from prior
@@ -759,7 +772,12 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 ///      v171_bf2x_case_check.
 ///   3. RXIF ISR latency: bytes are dropped from the SW
 ///      ring at 0x0200 before the parser drains them
-///      (less likely since RCSTA shows no OERR).
+///      (less likely since RCSTA shows no OERR at exit).
+///   4. RCSTA = 0x90 at exit only proves no OERR latched
+///      AT EXIT.  Transient OERR / CREN-toggle recovery
+///      / SW-ring overflow during the BF burst itself
+///      could have dropped bytes mid-stream and recovered
+///      before sample time.
 ///
 /// `#[ignore]`d.  Wall ~ 60 s.  Hop E investigation
 /// pending: trace CONTROL's parser state during the
@@ -988,7 +1006,12 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         let pc = chain.cores[i_ctl].pc();
         let pc_high: u16 = (pc & 0xFF00) as u16;
         *pc_histogram.entry(pc_high).or_insert(0) += 1;
-        if pc >= 0x0630 && pc < 0x0700 {
+        // Tightened range: v171_bf2x_case_check body runs from
+        // 0x0630 through 0x0696 (flow_rx_parser_entry_05EA, the
+        // shared parser tail).  Prior 0x0700 ceiling included
+        // unrelated following routines and would overcount any
+        // hits.  Codex review of 56841f4 LOW.
+        if pc >= 0x0630 && pc < 0x0696 {
             bf2x_dispatch_hits += 1;
         }
         let target_now = chain.cores[i_ctl]
@@ -1045,7 +1068,10 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     eprintln!("menu_state distribution: {:?}", menu_state_histogram);
     eprintln!("0x9A bit 5 (RIGHT event) set count: {bit5_set_count}");
     eprintln!("v171_diag_poll_lo (0x198): 0x{diag_poll_lo_min:02X}..0x{diag_poll_lo_max:02X}");
-    eprintln!("v171_diag_flags (0x19C) at end: 0x{diag_flags:02X} (bit 0=RESET_PENDING, bit 1=RUNTIME_PENDING)");
+    eprintln!(
+        "v171_diag_flags (0x19C) at end: 0x{diag_flags:02X} \
+         (bit 0=DIRTY, bit 1=RUNTIME_PENDING, bit 2=RESET_PENDING per dlcp_control_ram.inc:307+)"
+    );
     eprintln!("v171_diag_reset_seen (0x19D) at end: 0x{diag_reset_seen:02X}");
     eprintln!("v171_diag_present_snap (0x19A) at end: 0x{diag_present_snap:02X}");
     eprintln!("BF/2N dispatch hits (PC in 0x0630..0x0700): {bf2x_dispatch_hits} / {samples}");
