@@ -43,10 +43,12 @@
 //!     preserved/fixed-bit rows) +
 //!     `apply_por_sfr_defaults` on top.  GPRs preserved.
 //!
-//! 2455 has TARGETED POR/BOR defaults (task #30:
-//! `apply_2455_por_sfr_defaults` covers TXSTA.TRMT,
-//! INTCONn priority defaults, T0CON / PR2 / BAUDCON /
-//! IPRn -- the SFRs V3.1 boot actually depends on).
+//! 2455 has TARGETED POR/BOR defaults (task #30):
+//! `apply_2455_por_sfr_defaults` covers TXSTA.TRMT (the
+//! boot-critical one -- without it V3.1's wait_trmt_bounded
+//! times out and `hard_reset` reboots forever) plus
+//! INTCONn / T0CON / PR2 / BAUDCON / IPRn rounded out for
+//! symmetry with the K20 table.
 //! The broader 2455 SFR table (OSCCON / HLVDCON / TRISx
 //! / CCP / SPP / USB / etc.) and the 2455 MCLR zero/RMW
 //! lists still land alongside the V2.3 MAIN parity gate
@@ -313,11 +315,11 @@ fn wipe_sfr_window(core: &mut Core) {
 /// Registers", p.56-60) + Table 5-2 footnotes for 28-pin masking.
 /// Full coverage of every non-zero POR default.
 ///
-/// 2455: TARGETED coverage from task #30 -- only the SFRs whose
-/// POR ≠ 0 AND that V3.1 boot actually depends on (TXSTA.TRMT,
-/// INTCONn priority defaults, T0CON / PR2 / BAUDCON / IPRn).
-/// Driven by `apply_2455_por_sfr_defaults`.  See its docstring
-/// for the full deferral list.  The remaining 2455 defaults
+/// 2455: TARGETED coverage from task #30 -- TXSTA.TRMT (the
+/// boot-critical one) plus INTCONn / T0CON / PR2 / BAUDCON /
+/// IPRn rounded out for symmetry with the K20 table.  Driven by
+/// `apply_2455_por_sfr_defaults`.  See its docstring for the
+/// boot-dependency rationale.  The remaining 2455 defaults
 /// (OSCCON / HLVDCON / TRISx / CCP / SPP / USB / etc.) land
 /// alongside the V2.3 MAIN parity gate (P1.8e).
 ///
