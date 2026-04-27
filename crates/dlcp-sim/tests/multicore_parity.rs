@@ -332,20 +332,23 @@ fn chain_with_v171_and_v31_steps_without_panic() {
 }
 
 /// V3.1 + V1.71 chain reaches its first UART TX byte across
-/// the current loop.  This is the P3.5 final-acceptance
-/// milestone: end-to-end demonstration that the Rust
-/// simulator runs both shipped firmware images concurrently
-/// through the chain dispatcher, with the TAS3108 DSP
-/// responding on I2C and IRQ-driven CONTROL state machine
-/// pumping its main loop.
+/// the current loop.  This is the P3.5 *minimum-viable*
+/// acceptance milestone: end-to-end demonstration that the
+/// Rust simulator runs both shipped firmware images
+/// concurrently through the chain dispatcher, with the
+/// TAS3108 DSP responding on I2C and IRQ-driven CONTROL
+/// state machine pumping its main loop.
+///
+/// **Full P3.5** per `docs/SIM_REWRITE_RUST_PROGRESS.md`
+/// requires bit-exact TX byte streams + LCD raster
+/// compared against gpsim ground truth.  Today's contract
+/// is the strictly weaker "the chain converges on TX
+/// traffic at all"; bit-exact comparison lands in P3.5
+/// part-10+.
 ///
 /// Convergence point during scaffolding (post-task-#28):
 /// first UART TX at ~300 M universal ticks, ~2.7 s wall
 /// locally.  600 M-tick safety ceiling gives ~2x headroom.
-///
-/// Tighten this to bit-exact stream parity against gpsim
-/// ground truth in subsequent P3.5+ work; today's contract
-/// is just "the chain converges on TX traffic at all".
 #[test]
 fn chain_v171_v31_reaches_first_uart_tx() {
     let v171 = HexImage::from_hex_path(v171_control_hex_path())
