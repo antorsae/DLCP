@@ -939,6 +939,203 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     }
 }
 
+/// P3.6 step 2 byte-level trace -- which hop of the
+/// route-byte decrement-and-forward protocol breaks for
+/// PB2 queries?
+///
+/// V3.2 MAIN identifies its PB index implicitly via chain
+/// position.  CONTROL sends `0xB1` for PB1 and `0xB2` for
+/// PB2 (`dlcp_control_v171.asm:4296`).  Each MAIN's parser
+/// (`dlcp_main_v32.asm:1799`) handles route bytes:
+///
+///   * `0xB0` -> broadcast: clear bit0, fall through to
+///     consume-or-forward.
+///   * `0xB1` -> addressed-to-me: set bit0, consume locally
+///     (do NOT forward downstream).
+///   * `0xBx` (x in 2..=E) -> not me yet; clear bit0,
+///     decrement byte by 1, forward downstream.  This is
+///     the hop counter: every MAIN burns one decrement.
+///   * `0xBF` -> reply prefix: don't decrement, forward
+///     unchanged so reply chains return upstream intact.
+///
+/// So a `0xB2` query from CONTROL should:
+///   1. land at MAIN0.RX,
+///   2. trigger MAIN0 to emit `0xB1` on its TX (decremented
+///      and forwarded),
+///   3. land at MAIN1.RX,
+///   4. trigger MAIN1 to consume locally + emit a 7-frame
+///      `BF/21..BF/27` reply burst on its TX,
+///   5. arrive at CONTROL.RX (closing the ring), where
+///      v171_diag_present bit 1 gets set.
+///
+/// This probe runs the diag-poll convergence and dumps the
+/// route-byte traffic per ring edge so we can see which
+/// step (1-5) actually fires.  `#[ignore]`d so the routine
+/// suite stays fast; budget is 2 B ticks (~30 s wall).
+#[test]
+#[ignore = "P3.6 step 2 byte-level trace -- run with --nocapture to inspect"]
+fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
+    use dlcp_sim::memory::Address;
+
+    const MENU_STATE_RAM: u16 = 0x0BF;
+    const DIAG_PRESENT_RAM: u16 = 0x197;
+    const MENU_STATE_PB1_DIAG: u8 = 4;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    // Seed CONTROL's PORTA / PORTC = 0xFF so the 6 button
+    // inputs (RA1/RA2/RA3/RA4 + RC0/RC5) read as RELEASED.
+    // Without this, the diag-page cadence loop exits
+    // immediately on its first iteration -- the
+    // `v171_diag_check_buttons` block at
+    // `dlcp_control_v171.asm:4153` reads 0x9A bits 4/5
+    // (LEFT/RIGHT cached pin state) and returns from the
+    // page driver if either is set, which they are when
+    // PORTA/PORTC default to 0.  Same fix the existing
+    // LCD parity test applies (task #34); here it gates
+    // whether the cadence loop iterates long enough to
+    // actually fire a PB2 query.
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+
+    // Stage 1: boot to first UART so CONTROL is in main loop.
+    chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| {
+            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+                && !c.uart_tx_history.is_empty()
+        },
+    );
+    let stage1_history_len = chain.uart_tx_history.len();
+    let stage1_tick = chain.current_tick;
+
+    // Stage 2: poke menu_state to PB1 Diag.
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(MENU_STATE_RAM), MENU_STATE_PB1_DIAG);
+
+    // Stage 3: run for the bounded budget OR until diag_present == 0x03.
+    chain.run_until(
+        50_000_000,
+        2_000_000_000,
+        |c| c.cores[i_ctl].memory.read_raw(Address::from_raw(DIAG_PRESENT_RAM)) == 0x03,
+    );
+
+    // Slice off the diag-poll window (post-stage1 records).
+    let diag_records: Vec<_> = chain
+        .uart_tx_history
+        .iter()
+        .skip(stage1_history_len)
+        .collect();
+
+    // Per-edge byte streams, in tick order.
+    let mut ctl_tx: Vec<u8> = Vec::new();
+    let mut m0_tx: Vec<u8> = Vec::new();
+    let mut m1_tx: Vec<u8> = Vec::new();
+    for r in &diag_records {
+        if r.src_core == i_ctl {
+            ctl_tx.push(r.byte);
+        } else if r.src_core == i_main0 {
+            m0_tx.push(r.byte);
+        } else if r.src_core == i_main1 {
+            m1_tx.push(r.byte);
+        }
+    }
+
+    let final_present = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(DIAG_PRESENT_RAM));
+
+    eprintln!("=== P3.6 byte-level trace ===");
+    eprintln!(
+        "stage1_tick={stage1_tick}, current_tick={}, diag_records={}, final_present=0x{final_present:02X}",
+        chain.current_tick,
+        diag_records.len()
+    );
+    eprintln!();
+
+    // Find indices of B1 / B2 frames in CTL.TX (frame starts).
+    let ctl_b1_count = ctl_tx.iter().filter(|&&b| b == 0xB1).count();
+    let ctl_b2_count = ctl_tx.iter().filter(|&&b| b == 0xB2).count();
+    eprintln!("CTL.TX byte count: {}", ctl_tx.len());
+    eprintln!("  0xB1 frames sent: {ctl_b1_count} (PB1 queries)");
+    eprintln!("  0xB2 frames sent: {ctl_b2_count} (PB2 queries)");
+    if ctl_b2_count == 0 {
+        eprintln!("  ** CONTROL never sent a PB2 query (0xB2). Hop 1 broken. **");
+    }
+
+    // Step 2 check: did MAIN0 forward 0xB1 (the decremented form of 0xB2)?
+    // Counts may exceed B2 query count because MAIN0 also receives B1 PB1
+    // queries -- but those are "consume locally, do NOT forward".  So every
+    // 0xB1 in MAIN0.TX should correspond to a 0xB2 received from CONTROL.
+    let m0_b1_count = m0_tx.iter().filter(|&&b| b == 0xB1).count();
+    let m0_b2_count = m0_tx.iter().filter(|&&b| b == 0xB2).count();
+    let m0_bf_count = m0_tx.iter().filter(|&&b| b == 0xBF).count();
+    eprintln!("MAIN0.TX byte count: {}", m0_tx.len());
+    eprintln!("  0xB1 frames forwarded: {m0_b1_count} (decremented PB2 queries)");
+    eprintln!("  0xB2 frames forwarded: {m0_b2_count} (should be 0 -- only PB1+ chain would emit)");
+    eprintln!("  0xBF frames emitted: {m0_bf_count} (PB1 reply prefixes)");
+    if ctl_b2_count > 0 && m0_b1_count == 0 {
+        eprintln!("  ** MAIN0 received PB2 queries but never forwarded 0xB1 to MAIN1. Hop 2 broken. **");
+    }
+
+    // Step 4 check: did MAIN1 emit any reply traffic?
+    let m1_bf_count = m1_tx.iter().filter(|&&b| b == 0xBF).count();
+    eprintln!("MAIN1.TX byte count: {}", m1_tx.len());
+    eprintln!("  0xBF frames emitted: {m1_bf_count} (reply prefixes)");
+    if m0_b1_count > 0 && m1_bf_count == 0 {
+        eprintln!("  ** MAIN0 forwarded queries to MAIN1 but MAIN1 never replied. Hop 4 broken. **");
+    }
+
+    // Slice the first ~80 bytes of each edge for human inspection.
+    let dump = |label: &str, bytes: &[u8]| {
+        let head: Vec<String> = bytes
+            .iter()
+            .take(80)
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        eprintln!("{label} (first {} bytes): {}", head.len(), head.join(" "));
+    };
+    eprintln!();
+    dump("CTL.TX  ", &ctl_tx);
+    dump("MAIN0.TX", &m0_tx);
+    dump("MAIN1.TX", &m1_tx);
+}
+
 /// V3.1 + V1.71 chain reaches its first UART TX byte across
 /// the current loop.  This is the P3.5 *minimum-viable*
 /// acceptance milestone: end-to-end demonstration that the
