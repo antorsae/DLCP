@@ -794,6 +794,132 @@ fn extract_u8_field(line: &str, key: &str) -> Option<u8> {
     digits.parse::<u8>().ok()
 }
 
+/// Find `needle` as a contiguous subsequence in `haystack`.
+/// Returns the starting index of the first match, or
+/// `None`.  Used by the V3.1 chain bit-exact parity gate to
+/// locate gpsim's expected MAIN→CTRL frame burst inside our
+/// emitted byte stream (which may include leading boot-time
+/// emits or trailing passthrough traffic that gpsim's
+/// capture window doesn't cover).  Task #29.
+fn find_subsequence<T: PartialEq>(haystack: &[T], needle: &[T]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len())
+        .find(|&i| haystack[i..i + needle.len()] == *needle)
+}
+
+/// P3.5 part-10 bit-exact parity gate: V3.1 + V1.71 chain
+/// emits gpsim's captured 6-frame MAIN→CTRL response burst
+/// in response to CONTROL's BF/04 heartbeat.  Task #29.
+///
+/// gpsim ground truth (captured via P0.4's
+/// `--capture-ground-truth` pytest hook):
+///   {BF, 08, 00}, {BF, 05, 03}, {BF, 07, 4F},
+///   {BF, 03, 01}, {BF, 06, 00}, {BF, 1D, 04}
+///
+/// We assert this 6-frame sequence appears as a contiguous
+/// subsequence in MAIN's TX byte stream.  Allows for
+/// leading boot-time emits (our sim may fire one extra
+/// `send_dsp_fault_status` before the response burst that
+/// gpsim's capture window starts after) and trailing
+/// passthrough traffic.
+///
+/// Builds on top of:
+///   * task #30 (RCIF read-clear, 2455 POR TXSTA.TRMT,
+///     2-deep RX FIFO + OERR) -- without these MAIN was
+///     stuck in reset loop / never parsed frames.
+///   * task #33 (V2.3-combined EEPROM seed) -- without
+///     this BF/07 and BF/06 data bytes don't match.
+#[test]
+fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path())
+        .expect("V3.1 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main = build_core_from_hex(
+        Variant::Pic18F2455,
+        &v31,
+        Some(0x1000),
+        Some(0x1008),
+    );
+    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
+        main.peripherals.eeprom.set_byte(addr as u8, byte);
+    }
+    main.peripherals.adc.set_an0_sample(0x0300);
+    let mut chain = Chain::new();
+    let i_control = chain.push_core(control);
+    let i_main = chain.push_core(main);
+    chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
+    let i_tas3108 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_tas3108);
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    // Run until MAIN has emitted at least 21 bytes (7 BF
+    // frames -- enough to cover the 6-frame gpsim burst
+    // even if our sim emits an extra leading BF/08).
+    // Universal-tick budget sized to ~2 s sim time at 16
+    // ticks/Tcy / 4 MIPS, then increase by 50% safety
+    // margin.
+    let _advanced = chain.run_until(
+        10_000_000,
+        2_000_000_000,
+        |c| {
+            c.uart_tx_history
+                .iter()
+                .filter(|r| r.src_core == i_main && r.dst_core == i_control)
+                .count()
+                >= 21
+        },
+    );
+
+    let main_to_ctrl: Vec<u8> = chain
+        .uart_tx_history
+        .iter()
+        .filter(|r| r.src_core == i_main && r.dst_core == i_control)
+        .map(|r| r.byte)
+        .collect();
+    assert!(
+        main_to_ctrl.len() >= 21,
+        "MAIN must emit ≥21 bytes (7 frames) to contain gpsim's 6-frame burst; got {} bytes",
+        main_to_ctrl.len()
+    );
+
+    // gpsim's expected 6-frame response burst, flattened
+    // to bytes (route, cmd, data per frame).
+    const GPSIM_BURST: &[u8] = &[
+        0xBF, 0x08, 0x00,
+        0xBF, 0x05, 0x03,
+        0xBF, 0x07, 0x4F,
+        0xBF, 0x03, 0x01,
+        0xBF, 0x06, 0x00,
+        0xBF, 0x1D, 0x04,
+    ];
+
+    let pos = find_subsequence(&main_to_ctrl, GPSIM_BURST).unwrap_or_else(|| {
+        panic!(
+            "gpsim 6-frame burst not found as contiguous subsequence \
+             in MAIN→CTRL bytes.\n  MAIN bytes ({}): {:02X?}\n  Expected: {:02X?}",
+            main_to_ctrl.len(),
+            main_to_ctrl,
+            GPSIM_BURST,
+        )
+    });
+    assert!(
+        pos < main_to_ctrl.len(),
+        "subsequence position {pos} out of bounds (len={})",
+        main_to_ctrl.len()
+    );
+}
+
 #[cfg(test)]
 mod ground_truth_tests {
     use super::*;
