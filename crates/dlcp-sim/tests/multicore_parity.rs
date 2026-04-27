@@ -498,11 +498,48 @@ fn chain_v171_v31_emits_full_handshake_burst() {
     // that divergence quickly (< 3 s wall) without needing
     // to wait the full chain-protocol-convergence budget
     // (which is unknown post-fix and could be much longer).
-    let advanced = chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| c.uart_tx_history.len() >= 21,
-    );
+    //
+    // Time-series dump for task #30 Timer3 investigation:
+    // run in fixed chunks (no early-exit) so we can watch
+    // TMR3 progress across the run.
+    let mut advanced = 0u64;
+    for chunk in 1..=10u64 {
+        let chunk_advance = chain.run_until(
+            10_000_000,
+            500_000_000,
+            |_| false, // no early exit; run full chunk
+        );
+        advanced += chunk_advance;
+        let m = &chain.cores[i_main];
+        let pc = m.pc();
+        let pie1 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
+        let pir1 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
+        let rcsta = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAB));
+        let rcreg = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAE));
+        let intcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
+        let main_rx: usize = chain
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.dst_core == i_main)
+            .count();
+        let main_tx: usize = chain
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == i_main)
+            .count();
+        eprintln!(
+            "  CHUNK {chunk}: cycles={} pc=0x{:04X} pie1=0x{:02X}(RCIE={}) \
+             pir1=0x{:02X}(RCIF={}) rcsta=0x{:02X}(OERR={},FERR={}) rcreg=0x{:02X} \
+             intcon=0x{:02X}(GIE={}) main_rx={} main_tx={}",
+            m.cycles(),
+            pc, pie1, (pie1 >> 5) & 1,
+            pir1, (pir1 >> 5) & 1,
+            rcsta, (rcsta >> 1) & 1, (rcsta >> 2) & 1,
+            rcreg,
+            intcon, (intcon >> 7) & 1,
+            main_rx, main_tx,
+        );
+    }
 
     // Split into direction-specific byte streams.
     let ctrl_to_main: Vec<u8> = chain
@@ -563,6 +600,20 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         txsta, (txsta >> 5) & 1,
         intcon, (intcon >> 7) & 1, (intcon >> 6) & 1,
         rcon, (rcon >> 7) & 1,
+    );
+    // Task #30: PC=0x428C is V3.1's flow_timer3_blocking_delay_449e
+    // (`btfss PIR2, 1` polling TMR3IF).  Dump Timer3 state.
+    let t3con = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFB1));
+    let tmr3h = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFB3));
+    let tmr3l = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFB2));
+    let pir2 = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFA1));
+    eprintln!(
+        "  MAIN TMR3: t3con=0x{:02X} (TMR3ON={}, RD16={}) tmr3h=0x{:02X} \
+         tmr3l=0x{:02X} pir2=0x{:02X} (TMR3IF={}) cycles={}",
+        t3con, t3con & 0x01, (t3con >> 7) & 1,
+        tmr3h, tmr3l,
+        pir2, (pir2 >> 1) & 1,
+        main.cycles(),
     );
 
     // Compare against ground truth IF the fixture is

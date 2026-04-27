@@ -187,6 +187,28 @@ impl Eusart {
         );
     }
 
+    /// React to a SW-driven SFR read at `addr`.  Today the
+    /// only EUSART SFR with a documented read-side effect is
+    /// RCREG: per DS39632E §20.4 / §20.4.1, "Reading the
+    /// RCREG register will load the RCREG with the next
+    /// pending word and clear the RCIF if the FIFO is now
+    /// empty."  Our EUSART model is single-byte (no 2-deep
+    /// FIFO) so an RCREG read is always a "FIFO now empty"
+    /// case -- clear RCIF unconditionally.  Without this
+    /// clear, RCIF stays asserted after the read and a
+    /// level-triggered IRQ dispatcher would re-fire on the
+    /// stale (already-consumed) byte, causing the ISR's
+    /// frame parser to re-process the same byte.  Task #30.
+    pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
+        if addr == RCREG_ADDR {
+            let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+            mem.write_raw(
+                Address::from_raw(PIR1_ADDR),
+                pir1 & !PIR1_RCIF,
+            );
+        }
+    }
+
     /// React to a SW-driven SFR write at `addr` whose new
     /// post-mask value is `value`.  Reads/writes other SFRs
     /// in `mem` only when actually needed (TXREG write reads
@@ -822,6 +844,73 @@ mod tests {
         eusart.deliver_rx_byte(0x88, &mut mem);
         assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0);
         assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF, 0);
+    }
+
+    /// Task #30: reading RCREG must clear RCIF (DS39632E
+    /// §20.4.1: "Reading the RCREG register will load the
+    /// RCREG with the next pending word and clear the RCIF
+    /// if the FIFO is now empty.").  Our 1-byte model is
+    /// always "FIFO now empty" after a read.  Without this
+    /// clear, V3.1's level-triggered IRQ dispatcher
+    /// re-fires on the same byte and the ISR's frame
+    /// parser re-processes it, completing bogus 3-byte
+    /// frames that the firmware rejects.
+    #[test]
+    fn rcreg_read_clears_rcif() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        const RCSTA_CREN: u8 = 1 << 4;
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0xAB, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            PIR1_RCIF,
+            "pre: RCIF asserted by deliver"
+        );
+        // Simulate an executor read by invoking on_sfr_read
+        // at RCREG's address.  (Memory side: the byte was
+        // already read by the executor; on_sfr_read just
+        // updates collateral state.)
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            0,
+            "post: RCIF cleared by RCREG read"
+        );
+    }
+
+    /// `on_sfr_read` is a no-op for non-RCREG addresses
+    /// (defensive: a future caller wiring it through the
+    /// memory dispatch must not clobber unrelated SFR
+    /// state).
+    #[test]
+    fn on_sfr_read_noop_for_non_rcreg() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        // Pre-set every PIR1 bit so any spurious clear is
+        // visible.
+        mem.write_raw(Address::from_raw(PIR1_ADDR), 0xFF);
+        // Read TXREG, RCSTA, TXSTA, SPBRG, BAUDCON, PIR1
+        // itself: none should change PIR1.
+        for addr in [
+            TXREG_ADDR,
+            RCSTA_ADDR,
+            TXSTA_ADDR,
+            SPBRG_ADDR,
+            BAUDCON_ADDR,
+            PIR1_ADDR,
+        ] {
+            eusart.on_sfr_read(addr, &mut mem);
+            assert_eq!(
+                mem.read_raw(Address::from_raw(PIR1_ADDR)),
+                0xFF,
+                "on_sfr_read({:#X}) must not touch PIR1",
+                addr
+            );
+        }
     }
 
     /// reset_state drains the completed-TX FIFO so a

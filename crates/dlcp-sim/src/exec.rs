@@ -399,7 +399,7 @@ where
 {
     let operand_addr = resolve_f(core, f, a);
     let (target, pending) = resolve_target_no_commit(core, operand_addr);
-    let f_value = core.memory.read_raw(target);
+    let f_value = read_target_with_hook(core, target);
     let result = compute(f_value);
     match d {
         Dest::W => write_w(core, result),
@@ -425,7 +425,7 @@ where
 {
     let operand_addr = resolve_f(core, f, a);
     let (target, pending) = resolve_target_no_commit(core, operand_addr);
-    let f_value = core.memory.read_raw(target);
+    let f_value = read_target_with_hook(core, target);
     let result = transform(f_value);
     write_addr_masked(core, target, result);
     if let Some((fsr, new_fsr)) = pending {
@@ -454,7 +454,7 @@ fn execute_op_with_dest<F>(
 {
     let operand_addr = resolve_f(core, f, a);
     let (target, pending) = resolve_target_no_commit(core, operand_addr);
-    let f_value = core.memory.read_raw(target);
+    let f_value = read_target_with_hook(core, target);
     let result = compute_and_status(core, f_value);
     match d {
         Dest::W => write_w(core, result),
@@ -515,10 +515,26 @@ fn read_f(core: &mut Core, f: u8, a: Access) -> u8 {
 /// Otherwise it's a plain `Memory::read_raw`.
 fn read_addr(core: &mut Core, addr: Address) -> u8 {
     let (target, pending) = resolve_target_no_commit(core, addr);
-    let value = core.memory.read_raw(target);
+    let value = read_target_with_hook(core, target);
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
     }
+    value
+}
+
+/// Raw memory read at an already-resolved target plus the
+/// peripheral read-side-effect hook (e.g. RCREG read clears
+/// RCIF per DS §20.4 -- task #30).  Used by dispatch arms
+/// that share the operand target between read and write
+/// (RMW ops, MOVF d=F+POST*, BTFSS, etc.) where calling
+/// `read_addr` would double-commit the FSR mutation.  The
+/// returned byte is captured BEFORE the hook so the
+/// firmware sees the byte that was just there; the hook
+/// only updates collateral state for the NEXT read.
+fn read_target_with_hook(core: &mut Core, target: Address) -> u8 {
+    let value = core.memory.read_raw(target);
+    core.peripherals
+        .on_sfr_read(target.as_u16(), &mut core.memory);
     value
 }
 
@@ -954,7 +970,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // write is dropped so the flag update stands.
             let operand_addr = resolve_f(core, f, a);
             let (target, pending) = resolve_target_no_commit(core, operand_addr);
-            let v = core.memory.read_raw(target);
+            let v = read_target_with_hook(core, target);
             set_status_zn(core, v);
             match d {
                 Dest::W => write_w(core, v),
@@ -1092,7 +1108,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // point of negation in 8-bit signed).
             let operand_addr = resolve_f(core, f, a);
             let (target, pending) = resolve_target_no_commit(core, operand_addr);
-            let f_value = core.memory.read_raw(target);
+            let f_value = read_target_with_hook(core, target);
             let (result, c, dc, ov) = sub_byte(0, f_value, false);
             set_status_arith(core, result, c, dc, ov);
             if target.as_u16() != STATUS_ADDR {
@@ -1763,7 +1779,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // the d=F + target=STATUS path writes through.
             let operand_addr = resolve_f(core, f, a);
             let (target, pending) = resolve_target_no_commit(core, operand_addr);
-            let f_value = core.memory.read_raw(target);
+            let f_value = read_target_with_hook(core, target);
             let result = (f_value << 4) | (f_value >> 4);
             match d {
                 Dest::W => write_w(core, result),
@@ -1956,6 +1972,44 @@ mod tests {
         assert_eq!(cycles, 2);
         assert_eq!(core.pc(), 0, "depth-becomes-full + STVREN=1 must reset");
         assert_eq!(stack.depth(), 0);
+    }
+
+    /// Task #30: executing `MOVF RCREG, W` (firmware reads
+    /// the RX buffer) must clear PIR1.RCIF -- the silicon
+    /// "FIFO now empty" contract from DS39632E §20.4.1.
+    /// Without this end-to-end clear, V3.1 MAIN's level-
+    /// triggered IRQ dispatch re-fires on every `step()`
+    /// after the read, the ISR re-processes the same byte,
+    /// and the chain protocol's frame parser is corrupted.
+    #[test]
+    fn movf_rcreg_clears_rcif_via_peripheral_read_hook() {
+        // MOVF f, d=W, a=ACCESS at f=0xAE (RCREG offset in
+        // bank 15).  Encoding: `0101 00aa ffff ffff` with
+        // d=0 (result -> WREG) and a=0 (Access).  Top
+        // nibble 0x50 | a=0 -> 0x50; bottom byte 0xAE ->
+        // little-endian bytes [0xAE, 0x50].
+        let mut core = k20_core_with_flash(&[0xAE, 0x50]);
+        // Pre-load RCREG byte and assert RCIF.  Use a
+        // direct memory write -- the executor read path
+        // doesn't depend on the byte being delivered via
+        // `deliver_rx_byte`.
+        core.memory
+            .write_raw(Address::from_raw(0xFAE), 0x42);
+        core.memory
+            .write_raw(Address::from_raw(0xF9E), 0x20); // PIR1.RCIF
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        // WREG = 0x42 (the byte read).  PIR1.RCIF cleared.
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFE8)),
+            0x42,
+            "MOVF RCREG, W must land 0x42 in WREG"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xF9E)),
+            0,
+            "PIR1.RCIF must clear when firmware reads RCREG"
+        );
     }
 
     /// Task #17: TBLRD with TBLPTR pointing into the User ID
