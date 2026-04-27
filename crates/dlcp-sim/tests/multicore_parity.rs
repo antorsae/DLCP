@@ -6,18 +6,31 @@
 //!
 //! ## Sub-task progression
 //!
-//! * P3.5 part-1 (commit f4c9a70): chain dispatch wires
-//!   `exec::step` for `CoreInstructionComplete` events and
-//!   reschedules the next event at the drifted-tick boundary.
-//! * P3.5 part-2 (commit d916ffa, with same-tick race fixed
-//!   in 8938eda): EUSART completed-TX bytes propagate
-//!   directly to wired peer cores' RCREGs.
-//! * **P3.5 part-3 (this file)**: smoke-test that the
-//!   chain can load V1.71 + V3.1 hex images, wire the
-//!   bidirectional UART, apply POR, and step for a small
-//!   bounded number of universal ticks WITHOUT panicking.
-//!   No bit-exact comparison yet -- ground-truth capture +
-//!   diff lands in P3.5 part-4+.
+//! * P3.5 part-1: chain dispatch wires `exec::step` for
+//!   `CoreInstructionComplete` events and reschedules the
+//!   next event at the drifted-tick boundary.
+//! * P3.5 part-2: EUSART completed-TX bytes propagate
+//!   directly to wired peer cores' RCREGs (same-tick race
+//!   fixed in part-2 follow-up).
+//! * P3.5 part-3: smoke-test that the chain can load V1.71
+//!   + V3.1 hex images, wire bidirectional UART, apply POR,
+//!   and step without panicking.
+//! * P3.5 part-4: `Chain::uart_tx_history` recorder.
+//! * P3.5 part-5: bumped budget to 10M, AN0 injection.
+//! * P3.5 part-6: probe findings (Timer3 OK; I2C BF
+//!   blocker).
+//! * P3.5 part-7 (a/b/c): TAS3108 DSP I2C slave model +
+//!   chain dispatch wiring + multicore_parity integration.
+//! * P3.5 part-8 (a/b/c): `Chain::run_until` chunked-step
+//!   harness + adoption + V3.1 TX-convergence probe.
+//! * P3.5 part-9: IRQ vector dispatch in executor (closes
+//!   task #28; unblocks V3.1 chain protocol convergence).
+//! * P3.5 final-acceptance (minimum-viable): chain reaches
+//!   first UART TX byte (~300 M ticks, ~2.7 s wall).
+//! * P3.5 part-10+ (future): bit-exact TX byte stream and
+//!   LCD raster comparison against gpsim ground truth --
+//!   the strictly stronger spec contract per
+//!   `docs/SIM_REWRITE_RUST_PROGRESS.md`.
 //!
 //! ## Why a smoke test first
 //!
