@@ -138,17 +138,24 @@ impl Core {
     /// silicon FIFO -- the same value would be re-restored
     /// on a follow-up RETURN FAST without an intervening
     /// CALL FAST, but firmware doesn't typically do that).
+    ///
+    /// STATUS unimplemented bits (7..5) read as 0 per DS
+    /// Register 5-2; BSR <7:4> unimplemented per §5.3.2.
+    /// `save_fast_regs` snapshots via `read_raw` which is
+    /// the direct backing byte, NOT the masked-on-write
+    /// path, so a peripheral or reset path that wrote raw
+    /// bytes could leave dirty bits in the snapshot.  Mask
+    /// defensively on restore so the SFR window stays
+    /// silicon-clean regardless of how the snapshot was
+    /// produced.
     pub fn restore_fast_regs(&mut self) {
         let snap = self.fast_shadow;
-        self.memory.write_raw(crate::memory::Address::from_raw(0xFE8), snap.wreg);
-        // STATUS unimplemented bits (7..5) read as 0 per
-        // DS Register 5-2; the snapshot is taken from a
-        // memory read that already passed through the SFR
-        // mask, so the stored value is already clean.
-        self.memory.write_raw(crate::memory::Address::from_raw(0xFD8), snap.status);
-        // BSR <7:4> unimplemented (DS §5.3.2); mask on
-        // restore for defensive parity with `write_bsr`.
-        self.memory.write_raw(crate::memory::Address::from_raw(0xFE0), snap.bsr & 0x0F);
+        self.memory
+            .write_raw(crate::memory::Address::from_raw(0xFE8), snap.wreg);
+        self.memory
+            .write_raw(crate::memory::Address::from_raw(0xFD8), snap.status & 0x1F);
+        self.memory
+            .write_raw(crate::memory::Address::from_raw(0xFE0), snap.bsr & 0x0F);
     }
 
     /// Variant this core was constructed for.

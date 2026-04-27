@@ -161,6 +161,16 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
         return None;
     }
 
+    // Per DS39632E §5.5.3 ("It is loaded with the current
+    // value of the corresponding register when the
+    // processor vectors for an interrupt.  All interrupt
+    // sources will push values into the stack registers.")
+    // -- the fast shadow is pushed on EVERY interrupt
+    // dispatch, regardless of IPEN.  In IPEN=0
+    // (compatibility) mode, "all interrupts may use the
+    // Fast Register Stack for returns from interrupt"
+    // (§5.5.3 again) -- so the push is unconditional.
+
     if !ipen {
         // IPEN=0 (compatibility): single vector, single gate.
         if !is_irq_pending_high(mem_ref) {
@@ -169,6 +179,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
         let return_pc = core.pc();
         stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
+        core.save_fast_regs();
         // Clear GIE.
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_GIE_GIEH;
@@ -182,12 +193,13 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     // high before low so a same-cycle high+low pending pair
     // takes the high path first (per DS §9.3 priority order).
     //
-    // Per DS §5.5.3, IRQ entry in IPEN=1 mode ALSO pushes
-    // W/STATUS/BSR onto the 1-deep fast shadow stack (the
-    // matching RETFIE 1 pops it).  IPEN=0 IRQ entry does NOT
-    // push the shadow -- that path's RETFIE 1 still pops
-    // (whatever was last saved by an explicit `CALL FAST`),
-    // which is V3.1's idiom.
+    // Caveat in IPEN=1: per DS §5.5.3, "If a high-priority
+    // interrupt occurs while servicing a low-priority
+    // interrupt, the stack register values stored by the
+    // low-priority interrupt will be overwritten."  Our
+    // 1-deep shadow models that exact corruption mode --
+    // firmware that runs both priorities is expected to
+    // save/restore in software during the low-priority ISR.
     if is_irq_pending_high(mem_ref) {
         let return_pc = core.pc();
         stack.push(return_pc);
@@ -672,31 +684,30 @@ mod tests {
         );
     }
 
-    /// IRQ entry in IPEN=1 mode pushes the fast shadow; in
-    /// IPEN=0 mode it does NOT (compatibility, per
-    /// DS39632E §5.5.3).  Verify both paths.
+    /// IRQ entry pushes the fast shadow regardless of IPEN
+    /// per DS39632E §5.5.3 ("All interrupt sources will
+    /// push values into the stack registers"; "If
+    /// interrupt priority is not used, all interrupts may
+    /// use the Fast Register Stack for returns from
+    /// interrupt").  Verify both modes push.
     #[test]
-    fn irq_dispatch_pushes_fast_shadow_only_in_ipen1() {
-        // IPEN=0 path: IRQ entry must NOT touch fast shadow.
+    fn irq_dispatch_pushes_fast_shadow_in_both_ipen_modes() {
+        // IPEN=0 path: IRQ entry MUST push current W/STATUS/BSR
+        // onto the shadow.
         let mut core = Core::new(Variant::Pic18F25K20);
         core.set_pc(0x0042);
         core.memory
             .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH | 0x10 | 0x02);
-        // Pre-stage shadow with a sentinel value.
-        core.fast_shadow = crate::core::FastRegs {
-            wreg: 0x55,
-            status: 0x06,
-            bsr: 0x07,
-        };
+        core.memory.write_raw(Address::from_raw(0xFE8), 0x66); // WREG
+        core.memory.write_raw(Address::from_raw(0xFD8), 0x07); // STATUS
+        core.memory.write_raw(Address::from_raw(0xFE0), 0x02); // BSR
         let mut stack = Stack::new();
         try_dispatch_irq(&mut core, &mut stack).unwrap();
-        // Shadow unchanged: IPEN=0 IRQ entry doesn't push.
-        assert_eq!(core.fast_shadow.wreg, 0x55);
-        assert_eq!(core.fast_shadow.status, 0x06);
-        assert_eq!(core.fast_shadow.bsr, 0x07);
+        assert_eq!(core.fast_shadow.wreg, 0x66, "IPEN=0 IRQ pushes WREG");
+        assert_eq!(core.fast_shadow.status, 0x07);
+        assert_eq!(core.fast_shadow.bsr, 0x02);
 
-        // IPEN=1 path: IRQ entry MUST push current
-        // W/STATUS/BSR onto the shadow.
+        // IPEN=1 path: same contract.
         let mut core = Core::new(Variant::Pic18F25K20);
         core.set_pc(0x0042);
         core.memory
@@ -711,7 +722,7 @@ mod tests {
         core.fast_shadow = crate::core::FastRegs::default();
         let mut stack = Stack::new();
         try_dispatch_irq(&mut core, &mut stack).unwrap();
-        assert_eq!(core.fast_shadow.wreg, 0xAA, "WREG pushed on IPEN=1 entry");
+        assert_eq!(core.fast_shadow.wreg, 0xAA, "IPEN=1 IRQ pushes WREG");
         assert_eq!(core.fast_shadow.status, 0x0F);
         assert_eq!(core.fast_shadow.bsr, 0x03);
     }
