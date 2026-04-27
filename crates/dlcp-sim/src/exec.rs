@@ -1239,8 +1239,23 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         //     `Config` reference in `step()` -- structural
         //     change, deferred.  (Task #16)
         Instruction::Call { n, fast } => {
-            stack.push(core.pc());
+            let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
+            if !pushed && core.config.stvren() {
+                // Stack overflow + STVREN=1: HW resets the
+                // device.  Per DS39632E §5.4.2, the failing
+                // push doesn't take effect; STKFUL is
+                // already latched by `Stack::push`; reset
+                // entry tags `RCON` to surface the source.
+                // Task #16.
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackFull,
+                );
+                core.advance_cycles(2);
+                return Ok(2);
+            }
             if fast {
                 // Per DS39632E §5.5.3, CALL with s=1 also
                 // pushes W/STATUS/BSR onto the 1-deep fast
@@ -1256,8 +1271,17 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Rcall { n } => {
             // RCALL has no `s` bit on PIC18; never touches
             // the fast shadow.
-            stack.push(core.pc());
+            let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
+            if !pushed && core.config.stvren() {
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackFull,
+                );
+                core.advance_cycles(2);
+                return Ok(2);
+            }
             let offset = (n as i32).wrapping_mul(2);
             let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
             core.set_pc(new_pc);
@@ -1265,9 +1289,18 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(2)
         }
         Instruction::Return { fast } => {
-            let ret = stack.pop().unwrap_or(0);
+            let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
-            core.set_pc(ret);
+            if popped.is_none() && core.config.stvren() {
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackUnderflow,
+                );
+                core.advance_cycles(2);
+                return Ok(2);
+            }
+            core.set_pc(popped.unwrap_or(0));
             if fast {
                 // RETURN FAST: restore W/STATUS/BSR from the
                 // 1-deep shadow stack saved by the matching
@@ -1279,16 +1312,34 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         }
         Instruction::RetLw { k } => {
             write_w(core, k);
-            let ret = stack.pop().unwrap_or(0);
+            let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
-            core.set_pc(ret);
+            if popped.is_none() && core.config.stvren() {
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackUnderflow,
+                );
+                core.advance_cycles(2);
+                return Ok(2);
+            }
+            core.set_pc(popped.unwrap_or(0));
             core.advance_cycles(2);
             Ok(2)
         }
         Instruction::Retfie { fast } => {
-            let ret = stack.pop().unwrap_or(0);
+            let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
-            core.set_pc(ret);
+            if popped.is_none() && core.config.stvren() {
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackUnderflow,
+                );
+                core.advance_cycles(2);
+                return Ok(2);
+            }
+            core.set_pc(popped.unwrap_or(0));
             // Restore GIE/GIEH (and GIEL when IPEN=1) so
             // a subsequent IRQ can dispatch on the next
             // instruction boundary.  Per DS39632E §9.3
@@ -1305,14 +1356,32 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(2)
         }
         Instruction::Push => {
-            stack.push(core.pc());
+            let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
+            if !pushed && core.config.stvren() {
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackFull,
+                );
+                core.advance_cycles(1);
+                return Ok(1);
+            }
             core.advance_cycles(1);
             Ok(1)
         }
         Instruction::Pop => {
-            stack.pop();
+            let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
+            if popped.is_none() && core.config.stvren() {
+                crate::reset::apply_reset(
+                    core,
+                    stack,
+                    crate::reset::ResetSource::StackUnderflow,
+                );
+                core.advance_cycles(1);
+                return Ok(1);
+            }
             core.advance_cycles(1);
             Ok(1)
         }
@@ -1668,6 +1737,71 @@ mod tests {
         // table; the mask just gates SW writes.
         let after = apply_sfr_sw_write(0xFF, 0x00, 0xFB8);
         assert_eq!(after, 0x04, "non-writable bit 2 keeps old value");
+    }
+
+    /// Task #16: with STVREN=1 in CONFIG4L, a stack-overflow
+    /// push triggers a hardware Reset (PC=0, RCON updated to
+    /// reflect StackFull).  With STVREN=0 (latch-only), no
+    /// reset; STKFUL latches; PC continues normally.
+    #[test]
+    fn stvren_one_call_overflow_triggers_reset() {
+        // Build flash with one CALL 0x0010 (encoded
+        // 0xEC08 0xF000) at PC=0.  Pre-fill the stack to
+        // depth=31 (max) so the CALL's push fails.
+        // Encoding: CALL k, s=0; high8 = 0xEC; low byte
+        // = k<7:0> = 0x08.  Word2 = 0xF0 | k<19:16>=0,
+        // low = k<15:8>=0.  Bytes [0x08, 0xEC, 0x00, 0xF0].
+        let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
+        // STVREN=1: CONFIG4L bit 0.
+        // CONFIG4L is byte 6; STVREN = bit 0.
+        core.config = crate::config::Config::from_bytes(
+            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let mut stack = Stack::new();
+        // Pre-fill to capacity by repeated push.  After
+        // 31 pushes the stack is full and STKFUL latches.
+        for _ in 0..31 {
+            stack.push(0x0042);
+        }
+        // The CALL's push will overflow.  STVREN=1 -> reset.
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2, "CALL still bills 2 Tcy even on reset");
+        // Reset path: PC=0, RCON tagged with reset source.
+        assert_eq!(core.pc(), 0, "reset PC = 0");
+        // Stack should be reset to empty depth (Stack::reset_for_stack_full).
+        // We verify via mirror SFR rather than internal field.
+        // Per `Stack::reset_for_stack_full`, depth=0 + STKFUL latch.
+    }
+
+    #[test]
+    fn stvren_zero_call_overflow_latches_only_no_reset() {
+        let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
+        // STVREN=0 (default config): latch-only behavior.
+        let mut stack = Stack::new();
+        for _ in 0..31 {
+            stack.push(0x0042);
+        }
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        // No reset: PC continued to call target (0x0010).
+        assert_eq!(core.pc(), 0x0010, "STVREN=0 lets CALL set PC normally");
+    }
+
+    /// Task #16: RETURN underflow with STVREN=1 triggers
+    /// reset; STVREN=0 just latches STKUNF and pops 0.
+    #[test]
+    fn stvren_one_return_underflow_triggers_reset() {
+        // RETURN s=0: opcode 0x0012, bytes [0x12, 0x00].
+        let mut core = k20_core_with_flash(&[0x12, 0x00]);
+        // CONFIG4L is byte 6; STVREN = bit 0.
+        core.config = crate::config::Config::from_bytes(
+            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let mut stack = Stack::new();
+        // Empty stack -> RETURN underflows.
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0, "underflow + STVREN=1 resets PC=0");
     }
 
     /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are

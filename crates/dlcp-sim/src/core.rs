@@ -30,6 +30,7 @@
 
 #![allow(dead_code, reason = "P1.1 skeleton; behaviour wired in P1.2+")]
 
+use crate::config::Config;
 use crate::memory::{Memory, Variant};
 use crate::peripherals::Peripherals;
 
@@ -95,6 +96,15 @@ pub struct Core {
     /// main_isr_dispatch` + `RETFIE 1`) corrupts main-line
     /// W/STATUS/BSR.  Task #15.
     pub fast_shadow: FastRegs,
+    /// Parsed CONFIG-region bits.  Consumers: STVREN gating
+    /// in `exec::step`'s stack-fault path (task #16); future
+    /// peripheral fidelity for FOSC / WDT / IESO.  Default
+    /// is all-zero CONFIG bytes -- STVREN=0 (latch-only),
+    /// matching the deployed DLCP firmware's CONFIG4L=0x80.
+    /// Test/loader code that wants strict silicon defaults
+    /// (un-programmed = all-1s = STVREN=1) writes the field
+    /// explicitly.
+    pub config: Config,
 }
 
 impl Core {
@@ -115,6 +125,7 @@ impl Core {
             pc: RESET_VECTOR,
             cycles: 0,
             fast_shadow: FastRegs::default(),
+            config: Config::from_bytes([0u8; 14]),
         }
     }
 
