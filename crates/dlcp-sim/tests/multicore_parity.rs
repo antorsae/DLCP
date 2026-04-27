@@ -117,11 +117,15 @@ fn bake_goto(flash: &mut [u8], at: usize, target_byte_addr: u32) {
 /// IRQs at 0x0008 → user-defined IRQ handler (V3.1 puts it
 /// at 0x1008).  The simulator has no bootloader image, so
 /// the caller can ask us to bake those `GOTO`s.  Without
-/// the IRQ trampoline, hardware vectoring to 0x0008 lands
-/// in 0xFF erased flash → NopContinuation forever, and
-/// V3.1's `main_isr_dispatch` ISR never runs (UART RX bytes
-/// pile up unread, chain protocol stalls).  Task #30
-/// findings.
+/// the IRQ trampoline, hardware vectoring to 0x0008 starts
+/// NOP-walking through erased flash (`0xFFFF` decodes as
+/// `NopContinuation`, advancing PC by 2 each Tcy), and
+/// eventually reaches our shipped `GOTO 0x1014` at flash
+/// offset 0x1000 -- skipping V3.1's user IRQ handler at
+/// 0x1008 entirely and **spuriously re-entering V3.1 app
+/// code from the boot trampoline**.  That's a worse fault
+/// than "infinite NOP": MAIN keeps re-initializing each
+/// time an IRQ fires.  Task #30 findings.
 fn build_core_from_hex(
     variant: Variant,
     image: &HexImage,
