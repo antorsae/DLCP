@@ -77,6 +77,19 @@ fn v31_main_hex_path() -> PathBuf {
     repo_root().join("firmware/patched/releases/DLCP_Firmware_V3.1.hex")
 }
 
+/// Path to the stock V2.3 MAIN combined hex.  Used as the
+/// EEPROM / boot-block / preset-table seed for V3.x chain
+/// probes to mirror gpsim's `build_seeded_main_sim_hex`
+/// fixture (which merges app code from V3.x onto V2.3
+/// recovered-device context).  Without this seed, MAIN's
+/// EEPROM-backed status bytes (BF/07 = computed_volume +
+/// 0x60, BF/06 = input_select) emit the V3.1 hex's own
+/// EEPROM defaults, which differ from gpsim ground truth.
+/// Task #33.
+fn v23_main_combined_hex_path() -> PathBuf {
+    repo_root().join("firmware/stock/main/DLCP Firmware V2.3-combined.hex")
+}
+
 /// Bake a PIC18 `GOTO target_byte_addr` instruction at
 /// `flash[at]`.  4 bytes long; both addresses must be even.
 /// Encoding per DS39632E §26 / DS41303 §25:
@@ -469,6 +482,8 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         .expect("V1.71 hex parses");
     let v31 = HexImage::from_hex_path(v31_main_hex_path())
         .expect("V3.1 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
     // FSR2 + CALL FAST main_isr_dispatch); the bootloader
@@ -480,6 +495,18 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         Some(0x1000),
         Some(0x1008),
     );
+    // Task #33: override MAIN's EEPROM with the V2.3-
+    // combined seed so BF/07 (computed_volume+0x60) and
+    // BF/06 (input_select) match gpsim ground truth.
+    // Mirrors gpsim's `build_seeded_main_sim_hex` policy:
+    // V3.1 hex provides app code; V2.3-combined provides
+    // the EEPROM context (and, in gpsim's full version,
+    // boot block + preset tables; we override only EEPROM
+    // here since the chain probe doesn't exercise those
+    // regions).
+    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
+        main.peripherals.eeprom.set_byte(addr as u8, byte);
+    }
     main.peripherals.adc.set_an0_sample(0x0300);
     let mut chain = Chain::new();
     let i_control = chain.push_core(control);
