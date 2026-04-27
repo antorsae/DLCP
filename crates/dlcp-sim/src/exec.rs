@@ -799,9 +799,19 @@ const fn opcode_needs_word2(word1: u16) -> bool {
 /// Step the core by one instruction.  Returns the Tcy cost of
 /// the instruction on success.
 pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
-    let _ = stack; // kept in the signature even though P1.8b's
-    // initial NOP-only dispatch doesn't touch the stack — control-
-    // flow instructions land in subsequent commits.
+    // Check for pending interrupts before fetching the next
+    // instruction.  Per DS39632E §9.3, IRQ vectoring happens
+    // at instruction boundaries with GIE / GIEH / GIEL / IPEN
+    // gating.  If a vector is taken, the caller's PC has
+    // already been pushed onto the stack and PC is now at
+    // the appropriate vector (0x0008 high or 0x0018 low).
+    // Bill the entry as 2 Tcy and return -- the next
+    // exec::step call will fetch the ISR's first instruction.
+    // (Task #28.)
+    if let Some(cycles) = crate::peripherals::irq::try_dispatch_irq(core, stack) {
+        core.advance_cycles(cycles as u32);
+        return Ok(cycles);
+    }
 
     let pc = core.pc();
     let pc_idx = pc as usize;
@@ -1240,6 +1250,15 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Retfie { fast: _ } => {
             let ret = stack.pop().unwrap_or(0);
             core.set_pc(ret);
+            // Restore GIE/GIEH (and GIEL when IPEN=1) so
+            // a subsequent IRQ can dispatch on the next
+            // instruction boundary.  Per DS39632E §9.3
+            // RETFIE always re-enables interrupts -- the
+            // `fast=true` flavour ALSO restores the
+            // shadow-stack WREG/STATUS/BSR (task #15
+            // deferral).  Phase-3.5 minimum: restore the
+            // gate bits only.  (Task #28.)
+            crate::peripherals::irq::restore_gie_on_retfie(&mut core.memory);
             core.advance_cycles(2);
             Ok(2)
         }

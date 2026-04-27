@@ -32,7 +32,9 @@
 //! | 0xF9E | PIR1    | PSPIF/ADIF/RCIF/TXIF/SSPIF/CCP1IF/TMR2IF/TMR1IF |
 //! | 0xF9D | PIE1    | PSPIE/ADIE/RCIE/TXIE/SSPIE/CCP1IE/TMR2IE/TMR1IE |
 
+use crate::core::Core;
 use crate::memory::{Address, Memory, Variant};
+use crate::stack::Stack;
 
 pub const INTCON_ADDR: u16 = 0xFF2;
 pub const INTCON2_ADDR: u16 = 0xFF1;
@@ -110,6 +112,114 @@ pub fn is_irq_pending_low(mem: &Memory) -> bool {
 /// Convenience: any IRQ pending (high OR low).
 pub fn is_irq_pending(mem: &Memory) -> bool {
     is_irq_pending_high(mem) || is_irq_pending_low(mem)
+}
+
+/// PIC18 high-priority interrupt vector address (DS39632E
+/// §9.3, DS40001303H §9.3).  Same on both K20 and 2455.
+pub const IRQ_VECTOR_HIGH: u32 = 0x0008;
+/// Low-priority interrupt vector address.  Only used when
+/// RCON.IPEN=1.
+pub const IRQ_VECTOR_LOW: u32 = 0x0018;
+
+/// Try to dispatch a pending interrupt at the current
+/// instruction boundary.  Returns the Tcy cost of the
+/// vector entry if an interrupt was taken, or `None` if
+/// no interrupt is pending or the gates are closed.
+///
+/// On entry: pushes the caller's PC onto the hardware stack
+/// (so RETFIE can return to it), clears the appropriate GIE
+/// bit (GIE in IPEN=0; GIEH for high/GIEL for low in
+/// IPEN=1), and sets PC to the matching vector
+/// (`IRQ_VECTOR_HIGH` or `IRQ_VECTOR_LOW`).
+///
+/// **Phase-3.5 minimum-viable scope** (task #28):
+///
+/// * IPEN=0 (compatibility) and IPEN=1 (priority) modes both
+///   recognised; vector selection follows priority in
+///   IPEN=1.
+/// * Fast-stack push of WREG/STATUS/BSR (DS §5.5.3) is NOT
+///   modelled today.  Most PIC18 ISRs save these manually
+///   so the gap is firmware-tolerant for typical ISRs;
+///   firmware that relies on the silicon shadow stack will
+///   misbehave.  Tracked as task #15.
+/// * Cost is reported as 2 Tcy (fetch+vector).  Real silicon
+///   takes 1-2 Tcy depending on the in-flight instruction;
+///   close enough for Phase-3.5 cycle accounting.
+pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
+    // Snapshot the gate state up-front to choose the vector.
+    // Read directly off the SFR window -- callers (the
+    // executor) hold a `&mut Core` so we have the access we
+    // need for both reads and the post-decision writes.
+    let mem_ref: &Memory = &core.memory;
+    let intcon = mem_ref.read_raw(Address::from_raw(INTCON_ADDR));
+    let rcon = mem_ref.read_raw(Address::from_raw(RCON_ADDR));
+    let ipen = (rcon & RCON_IPEN) != 0;
+
+    // GIE/GIEH gate -- IPEN=0 master, IPEN=1 high-priority master.
+    let gieh = (intcon & INTCON_GIE_GIEH) != 0;
+    if !gieh {
+        return None;
+    }
+
+    if !ipen {
+        // IPEN=0 (compatibility): single vector, single gate.
+        if !is_irq_pending_high(mem_ref) {
+            return None;
+        }
+        let return_pc = core.pc();
+        stack.push(return_pc);
+        // Clear GIE.
+        let mem = &mut core.memory;
+        let new_intcon = intcon & !INTCON_GIE_GIEH;
+        mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
+        core.set_pc(IRQ_VECTOR_HIGH);
+        return Some(2);
+    }
+
+    // IPEN=1: high-priority IRQs go to 0x0008 and clear GIEH;
+    // low-priority IRQs go to 0x0018 and clear GIEL.  Check
+    // high before low so a same-cycle high+low pending pair
+    // takes the high path first (per DS §9.3 priority order).
+    if is_irq_pending_high(mem_ref) {
+        let return_pc = core.pc();
+        stack.push(return_pc);
+        let mem = &mut core.memory;
+        let new_intcon = intcon & !INTCON_GIE_GIEH;
+        mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
+        core.set_pc(IRQ_VECTOR_HIGH);
+        return Some(2);
+    }
+    if is_irq_pending_low(mem_ref) {
+        let return_pc = core.pc();
+        stack.push(return_pc);
+        let mem = &mut core.memory;
+        let new_intcon = intcon & !INTCON_PEIE_GIEL;
+        mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
+        core.set_pc(IRQ_VECTOR_LOW);
+        return Some(2);
+    }
+    None
+}
+
+/// Restore the appropriate GIE bit on RETFIE.
+///
+/// Per DS39632E §9.3: RETFIE always sets GIEH=1 (the
+/// high-priority gate).  In IPEN=1 mode, returning from a
+/// LOW-priority ISR also re-enables GIEL.  Without
+/// hardware-tracked "which ISR are we in?" state, the
+/// safe approximation is: always set both GIEH and
+/// (if IPEN=1) GIEL.  In IPEN=0 mode GIEL/PEIE is
+/// untouched -- it serves a different role
+/// (peripheral-master-enable).
+pub fn restore_gie_on_retfie(mem: &mut Memory) {
+    let rcon = mem.read_raw(Address::from_raw(RCON_ADDR));
+    let ipen = (rcon & RCON_IPEN) != 0;
+    let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
+    let mut new_intcon = intcon | INTCON_GIE_GIEH;
+    if ipen {
+        new_intcon |= INTCON_PEIE_GIEL;
+    }
+    mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
 }
 
 /// True if any INTCON-residing flag is enabled+set
@@ -319,5 +429,137 @@ mod tests {
             INTCON_GIE_GIEH | 0x10 | 0x02, // GIE | INT0IE | INT0IF
         );
         assert!(is_irq_pending_high(&mem));
+    }
+
+    // ---------- try_dispatch_irq + restore_gie_on_retfie ----------
+
+    fn k20_core_at_pc(pc: u32) -> Core {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.set_pc(pc);
+        core
+    }
+
+    /// IPEN=0 + GIE set + INT0 pending -> dispatch to 0x0008,
+    /// PC pushed, GIE cleared.
+    #[test]
+    fn try_dispatch_irq_ipen0_takes_high_vector() {
+        let mut core = k20_core_at_pc(0x1234);
+        let mut stack = Stack::new();
+        // INT0IE | INT0IF | GIE = 0x90 + 0x02 = 0x92
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x10 | 0x02,
+        );
+        let cycles = try_dispatch_irq(&mut core, &mut stack);
+        assert_eq!(cycles, Some(2));
+        assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
+        assert_eq!(stack.top(), 0x1234);
+        // GIE cleared (other bits preserved).
+        let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(intcon & INTCON_GIE_GIEH, 0);
+        assert_eq!(intcon & 0x12, 0x12, "INT0IE / INT0IF preserved");
+    }
+
+    /// GIE clear -> no dispatch, no state changes.
+    #[test]
+    fn try_dispatch_irq_gie_clear_no_dispatch() {
+        let mut core = k20_core_at_pc(0x1234);
+        let mut stack = Stack::new();
+        // INT0IE | INT0IF set but GIE clear.
+        core.memory.write_raw(Address::from_raw(INTCON_ADDR), 0x12);
+        let cycles = try_dispatch_irq(&mut core, &mut stack);
+        assert!(cycles.is_none());
+        assert_eq!(core.pc(), 0x1234);
+        assert_eq!(stack.depth(), 0);
+    }
+
+    /// No pending IRQ -> no dispatch.
+    #[test]
+    fn try_dispatch_irq_no_pending_no_dispatch() {
+        let mut core = k20_core_at_pc(0x1234);
+        let mut stack = Stack::new();
+        core.memory
+            .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH);
+        let cycles = try_dispatch_irq(&mut core, &mut stack);
+        assert!(cycles.is_none());
+        assert_eq!(core.pc(), 0x1234);
+    }
+
+    /// IPEN=1 + low-priority IRQ pending + GIEH+GIEL set ->
+    /// dispatch to 0x0018, GIEL cleared, GIEH preserved.
+    #[test]
+    fn try_dispatch_irq_ipen1_takes_low_vector() {
+        let mut core = k20_core_at_pc(0x4000);
+        let mut stack = Stack::new();
+        core.memory
+            .write_raw(Address::from_raw(RCON_ADDR), RCON_IPEN);
+        // GIE | PEIE both set; PEIE=1 means GIEL in IPEN=1.
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | INTCON_PEIE_GIEL,
+        );
+        // Low-priority TMR1 IRQ pending.  PIE1 bit 0 = TMR1IE,
+        // PIR1 bit 0 = TMR1IF, IPR1 bit 0 = TMR1IP (0 = low).
+        core.memory.write_raw(Address::from_raw(PIE1_ADDR), 0x01);
+        core.memory.write_raw(Address::from_raw(PIR1_ADDR), 0x01);
+        core.memory.write_raw(Address::from_raw(IPR1_ADDR), 0x00);
+        let cycles = try_dispatch_irq(&mut core, &mut stack);
+        assert_eq!(cycles, Some(2));
+        assert_eq!(core.pc(), IRQ_VECTOR_LOW);
+        assert_eq!(stack.top(), 0x4000);
+        // GIEL cleared, GIEH still set.
+        let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(intcon & INTCON_GIE_GIEH, INTCON_GIE_GIEH);
+        assert_eq!(intcon & INTCON_PEIE_GIEL, 0);
+    }
+
+    /// IPEN=1 with both high AND low pending: high wins
+    /// (priority order, DS §9.3).
+    #[test]
+    fn try_dispatch_irq_ipen1_high_wins_over_low() {
+        let mut core = k20_core_at_pc(0x4000);
+        let mut stack = Stack::new();
+        core.memory
+            .write_raw(Address::from_raw(RCON_ADDR), RCON_IPEN);
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | INTCON_PEIE_GIEL,
+        );
+        // High-priority TMR1 (IPR1.bit0 = 1).
+        core.memory.write_raw(Address::from_raw(PIE1_ADDR), 0x01);
+        core.memory.write_raw(Address::from_raw(PIR1_ADDR), 0x01);
+        core.memory.write_raw(Address::from_raw(IPR1_ADDR), 0x01);
+        let cycles = try_dispatch_irq(&mut core, &mut stack);
+        assert_eq!(cycles, Some(2));
+        assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
+    }
+
+    /// `restore_gie_on_retfie`: in IPEN=0 mode, RETFIE sets
+    /// GIE only (PEIE untouched).
+    #[test]
+    fn restore_gie_on_retfie_ipen0_sets_gie_only() {
+        let mut mem = fresh_mem();
+        // IPEN=0 (RCON.bit7 clear), GIE clear, PEIE clear.
+        mem.write_raw(Address::from_raw(RCON_ADDR), 0);
+        mem.write_raw(Address::from_raw(INTCON_ADDR), 0);
+        restore_gie_on_retfie(&mut mem);
+        let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(intcon & INTCON_GIE_GIEH, INTCON_GIE_GIEH);
+        assert_eq!(intcon & INTCON_PEIE_GIEL, 0);
+    }
+
+    /// `restore_gie_on_retfie`: in IPEN=1 mode, RETFIE sets
+    /// both GIEH and GIEL (Phase-3.5 simplification per
+    /// docstring; precise high-vs-low fast-stack semantics
+    /// land with task #15).
+    #[test]
+    fn restore_gie_on_retfie_ipen1_sets_both_gates() {
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(RCON_ADDR), RCON_IPEN);
+        mem.write_raw(Address::from_raw(INTCON_ADDR), 0);
+        restore_gie_on_retfie(&mut mem);
+        let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
+        assert_eq!(intcon & INTCON_GIE_GIEH, INTCON_GIE_GIEH);
+        assert_eq!(intcon & INTCON_PEIE_GIEL, INTCON_PEIE_GIEL);
     }
 }
