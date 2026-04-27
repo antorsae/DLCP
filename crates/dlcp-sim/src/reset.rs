@@ -349,8 +349,12 @@ fn apply_por_sfr_defaults(core: &mut Core) {
 /// Source: DS39632E Tbl 4-4 (p.53-57).  This is a TARGETED
 /// subset, not the full 2455 POR table -- the broader
 /// rewrite lands with the V2.3 MAIN parity gate (P1.8e).
-/// Until then, only SFRs whose POR value ≠ 0 AND that
-/// shipped firmware actually relies on are seeded here.
+/// Coverage scope: TXSTA.TRMT (the boot-critical one) plus
+/// the remaining INTCONn / T0CON / PR2 / BAUDCON / IPRn
+/// non-zero defaults rounded out for symmetry with the
+/// K20 table -- so the 2455 reset side stays close to its
+/// K20 cousin even though only TRMT is currently
+/// load-bearing for V3.1 boot.
 ///
 /// Coverage rationale (task #30 root-cause): V3.1 MAIN's
 /// boot path calls `wait_trmt_bounded` which polls
