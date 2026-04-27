@@ -73,10 +73,14 @@ pub struct Chain {
     /// Time-stamped UART byte deliveries between cores.
     /// Appended to every time `deliver_uart_byte` runs --
     /// captures the (tick, src_core, dst_core, byte) tuple.
-    /// Phase-3.5 part-4+ uses this to compare TX byte
-    /// streams bit-exact against gpsim ground truth.
-    /// Cleared by `apply_reset_all` so a re-bootstrap
-    /// doesn't carry pre-reset history forward.
+    /// Phase-3.5 part-10+ will use this to compare TX byte
+    /// streams bit-exact against gpsim ground truth (per
+    /// `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.5 spec); the
+    /// part-9 minimum-viable acceptance test
+    /// (`chain_v171_v31_reaches_first_uart_tx`) just
+    /// asserts the recorder is non-empty after V3.1 chain
+    /// convergence.  Cleared by `apply_reset_all` so a
+    /// re-bootstrap doesn't carry pre-reset history forward.
     pub uart_tx_history: Vec<UartByteRecord>,
     /// TAS3108 audio-DSP I²C slaves connected to one or
     /// more master cores via `couple_tas3108`.  Phase-3.5
