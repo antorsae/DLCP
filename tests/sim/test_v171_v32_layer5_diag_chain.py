@@ -176,6 +176,28 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # Phase B (CONTROL-side parser + render) is verified standalone.  The
 # two-MAIN end-to-end gate is xfailed here pending the parser-vs-echo
 # investigation in Task #22.
+#
+# UPDATE (2026-04-27, see `feature/sim-rewrite-rust`,
+# `docs/SIM_REWRITE_RUST_PROGRESS.md` task P3.6a/P3.6b):
+# The "bridge-mirror echo" diagnosis above turned out to be only
+# half the story.  The Rust simulator rewrite uses a silicon-correct
+# directional ring (CONTROL.TX -> MAIN0.RX -> MAIN1.RX -> CONTROL.RX,
+# 3 directional edges, no fan-out, no self-loops) which is
+# *structurally* incapable of reproducing the bridge mirror.  Yet
+# the same `v171_diag_present` PB2 saturation occurs in the Rust
+# sim too: synthetic + firmware-driven probes show CONTROL emits
+# both queries, MAIN0 emits the full 7-frame reply burst, MAIN1
+# forwards the BF/27/00 frame to CONTROL.RX cleanly (no OERR), but
+# CONTROL never successfully processes BF/27 through the BF/2N
+# last-frame path.  No real-hardware test currently validates PB2
+# reply convergence (the existing Layer 5 hardware test only checks
+# LCD render).  So the bridge-mirror diagnosis is invalidated as
+# the *sole* cause: the residual PB2 saturation may be a latent
+# V1.71 firmware behavior that has never been exercised on real
+# silicon either, or it may be a shared timing/electrical fidelity
+# gap that both simulators have.  Resolution requires hardware
+# evidence -- see `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b for
+# the proposed hardware-test extension.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
         "Bytes flow through every wire-chain bridge (verified by canary "

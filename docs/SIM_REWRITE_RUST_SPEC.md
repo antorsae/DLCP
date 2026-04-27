@@ -300,7 +300,7 @@ cargo test -p dlcp-sim --test 'peripheral_*_parity' --release
 `crates/dlcp-sim/tests/multicore_parity.rs`:
 
 - Reproduce `test_v171_v31_chain.py` end-to-end (CONTROL + MAIN0); diff TX byte streams + LCD raster + final EEPROM bit-exact against ground truth.
-- Reproduce `test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2` (the Task #22 XFAIL); under the new architecture this must **PASS**, not XFAIL — and the result is the canonical proof that the echo-loop was a sim artifact, not a firmware bug.
+- Reproduce `test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2` (the Task #22 XFAIL).  **Status (2026-04-27): split into P3.6a / P3.6b** — see `SIM_REWRITE_RUST_PROGRESS.md`.  P3.6a (architectural retirement of the bridge-mirror echo loop) is **completed** — the Rust silicon-correct ring is structurally incapable of producing the gpsim PTY-bridge mirror echo, proven by synthetic + firmware-driven probes.  P3.6b (CONTROL BF/2N reply-path processing parity, i.e. `v171_diag_present` reaching `0x03`) is **blocked on hardware data**: the same `present == 0x01` saturation gpsim shows is reproducible in our silicon-ring sim too, and no real-hardware test currently validates PB2 reply convergence — only LCD render.  Resolution requires extending `tests/hardware/test_live_state_transitions.py` to assert PB2 counter cells render real values; if hardware also stalls, V1.71 firmware is suspect (this branch cannot answer it).
 - Boot-offset tests: with `main1_offset = +72_000_000` universal ticks (= 1.5 s @ 48 MHz; MAIN1 boots 1.5 s after CONTROL), CONTROL's `WAITING FOR DLCP` LCD must clear within the V1.71 reconnect-wake budget after MAIN1 comes online. Diff against `test_chain_gpsim_v25_v162b_recovery.py` family.
 
 ### Exit gate
@@ -521,7 +521,7 @@ at 0xF98.
 | Ground truth      | Captured gpsim output blessed as "what the new sim must reproduce". |
 | Dual-run          | Test executed under both gpsim and Rust sim with bit-exact diff.   |
 | XFAIL             | pytest expected-failure marker for known-broken tests.             |
-| Task #22          | Pre-existing tracking task for the `chain_gpsim.py` two-MAIN echo-loop. Phase 3 invalidates the bug; XFAILs become PASSes. |
+| Task #22          | Pre-existing tracking task for the `chain_gpsim.py` two-MAIN echo-loop. **Status: split (2026-04-27)** -- the architectural bridge-mirror echo (P3.6a) is retired by the Rust silicon ring; the residual `v171_diag_present` PB2 saturation (P3.6b) is unresolved on either simulator and is blocked on hardware confirmation of whether V1.71 firmware actually delivers PB2 reply convergence. |
 
 ---
 
