@@ -494,7 +494,34 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
         )
         return
 
-    # Short layout (no colon at col 3): row 0 = "PB2" + 13 spaces;
+    # Short layout requires row 0 to be exactly "PB2" (after
+    # rstrip).  Row 0 starting with "PB2" but not equal to "PB2"
+    # and not starting with "PB2:" (e.g., OCR garbage like "PB2?"
+    # or "PB2X") is NOT one of the four documented Tier-1
+    # layouts, so it routes to the ambiguous fail rather than
+    # being silently accepted via the row-1 short-layout
+    # verdict path.  Codex review of 75a2428 LOW.
+    if line1 != "PB2":
+        pytest.fail(
+            f"\n  Row 0 starts with 'PB2' but is not exactly 'PB2' "
+            f"(short layout) and not 'PB2:' (degraded/overflow):\n"
+            f"  line1 = {line1_raw!r}\n"
+            f"  line2 = {line2_raw!r}\n"
+            f"\n  V1.71 Tier-1 spec ('docs/V32_DIAG_TIER1_SPEC.md' "
+            f"§'Phase 3.4 implementation notes') prescribes only\n"
+            f"  these four layouts for the PB2 page:\n"
+            f"    Absent:   row 0 = 'PB2'   row 1 = 'n/a'\n"
+            f"    Healthy:  row 0 = 'PB2'   row 1 = 'OK'\n"
+            f"    Degraded: row 0 = 'PB2:' + entries  row 1 = (entries|empty)\n"
+            f"    Overflow: row 0 = 'PB2:' + 4 entries row 1 = entries + '..'\n"
+            f"  Anything else is most likely OCR garbage / partial render.  Disambiguate by:\n"
+            f"    (a) re-capturing with more cycles via "
+            f"DLCP_HW_LAYER5_LCD_CAPTURES (default 10),\n"
+            f"    (b) confirming the rig is visually on the PB2 Diag "
+            f"page (state 5).\n"
+        )
+
+    # Short layout (line1 == "PB2"): row 0 = "PB2" + 13 spaces;
     # row 1 carries the verdict.
     if pb2_row1 == "n/a":
         pytest.fail(
