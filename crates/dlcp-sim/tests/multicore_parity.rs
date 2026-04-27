@@ -761,6 +761,13 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     const DIAG_TARGET_RAM: u16 = 0x196;
     const DIAG_PRESENT_RAM: u16 = 0x197;
     const MENU_STATE_PB1_DIAG: u8 = 4;
+    // Per-PB diag cache: 11 cells (I/D/S/B/R/A/P/O/V/W/X)
+    // per PB.  Bases pinned in
+    // `tests/sim/test_v171_v32_layer5_diag_chain.py` and
+    // `src/dlcp_fw/asm/dlcp_control_v171.asm`.
+    const DIAG_PB1_BASE_RAM: u16 = 0x180;
+    const DIAG_PB2_BASE_RAM: u16 = 0x18B;
+    const DIAG_PB_CACHE_LEN: u16 = 11;
 
     let v171 = HexImage::from_hex_path(v171_control_hex_path())
         .expect("V1.71 hex parses");
@@ -805,6 +812,24 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let stage1_tick = chain.current_tick;
     let stage1_history_len = chain.uart_tx_history.len();
 
+    // Stage 1 must have actually converged via the
+    // predicate (codex LOW from 3a43e43): otherwise a
+    // future boot regression would surface as the SAME
+    // PB2 saturation symptom this probe is investigating,
+    // muddying the diagnosis.  Pin "we got out of stage 1
+    // for the right reason" before poking RAM.
+    assert!(
+        chain.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && chain.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && !chain.uart_tx_history.is_empty(),
+        "stage 1 boot did NOT converge via the predicate -- \
+         dsp0_acks={}, dsp1_acks={}, uart_tx_len={}, current_tick={}",
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
+        chain.tas3108_slaves[i_dsp1].bytes_acked,
+        chain.uart_tx_history.len(),
+        chain.current_tick,
+    );
+
     // Stage 2: force CONTROL onto the PB1 Diag screen.
     // Real hardware reaches this via two RIGHT button
     // presses; in the absence of GPIO input modeling
@@ -841,22 +866,75 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let stage3_history_len = chain.uart_tx_history.len();
     let post_stage1_tx = stage3_history_len.saturating_sub(stage1_history_len);
 
+    // Helper: read a per-PB diag cache slice and report
+    // whether any cell is non-zero.  A genuine PB reply
+    // must land cell content; an unrelated RAM clobber
+    // to v171_diag_present alone would leave the cache
+    // empty.  Codex MEDIUM from 3a43e43 review -- this
+    // is what makes the present-byte assertion robust
+    // against false-positive convergence if/when this
+    // probe transitions from `#[ignore]` to hard-pass.
+    let pb_cache_has_content = |chain: &Chain, base: u16| -> bool {
+        (0..DIAG_PB_CACHE_LEN).any(|offset| {
+            chain.cores[i_ctl]
+                .memory
+                .read_raw(Address::from_raw(base + offset))
+                != 0x00
+        })
+    };
+    let pb1_cache_present = pb_cache_has_content(&chain, DIAG_PB1_BASE_RAM);
+    let pb2_cache_present = pb_cache_has_content(&chain, DIAG_PB2_BASE_RAM);
+
     assert_eq!(
         diag_present, 0x03,
         "v171_diag_present must show both PBs replied (0x03); \
          got 0x{diag_present:02X}\n  \
          diag_target=0x{diag_target:02X}, menu_state={menu_state}, \
          main0_pc=0x{main0_pc:04X}, main1_pc=0x{main1_pc:04X}\n  \
+         pb1_cache_has_content={pb1_cache_present}, pb2_cache_has_content={pb2_cache_present}\n  \
          stage1_tick={stage1_tick}, stage3_tick={stage3_tick}, \
          post-stage1 UART deliveries={post_stage1_tx}"
     );
+    // Codex MEDIUM follow-through: present == 0x03 alone
+    // could be set by an unrelated RAM clobber.  A real
+    // PB reply must also have updated the per-PB cache
+    // cells.  Both must hold.
+    assert!(
+        pb1_cache_present,
+        "v171_diag_present == 0x03 but PB1 cache at 0x{:03X}..0x{:03X} is all-zero -- \
+         present byte was clobbered, not set by a real reply",
+        DIAG_PB1_BASE_RAM,
+        DIAG_PB1_BASE_RAM + DIAG_PB_CACHE_LEN
+    );
+    assert!(
+        pb2_cache_present,
+        "v171_diag_present == 0x03 but PB2 cache at 0x{:03X}..0x{:03X} is all-zero -- \
+         present byte was clobbered, not set by a real reply",
+        DIAG_PB2_BASE_RAM,
+        DIAG_PB2_BASE_RAM + DIAG_PB_CACHE_LEN
+    );
 
-    // No echo even during diag polling.
+    // Codex LOW: the no-echo assertion below is too
+    // weak in isolation -- a non-ring delivery (fan-out
+    // drift, reverse coupling) would still pass `src !=
+    // dst`.  Mirror the step-1 smoke test's stronger
+    // edge-whitelist audit so the diag-polling window
+    // is held to the same contract.
     for record in &chain.uart_tx_history {
         assert_ne!(
             record.src_core, record.dst_core,
             "no UART delivery may route a core's TX to its own RX; \
              firmware-driven echo-loop check failed during diag poll: {record:?}"
+        );
+        let edge = (record.src_core, record.dst_core);
+        let is_ring_edge = edge == (i_ctl, i_main0)
+            || edge == (i_main0, i_main1)
+            || edge == (i_main1, i_ctl);
+        assert!(
+            is_ring_edge,
+            "uart_tx_history record routes on a non-ring edge {edge:?} \
+             (i_ctl={i_ctl}, i_main0={i_main0}, i_main1={i_main1}); \
+             record: {record:?}"
         );
     }
 }
