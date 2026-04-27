@@ -376,14 +376,22 @@ fn apply_stack_fault_sfr_reset(core: &mut Core) {
 /// Function Register Map, p.61) -- 2455 shares the PIC18-
 /// architectural high-SFR layout with the K20
 /// (DS40001303H Tbl 5-1, p.81) for every register touched
-/// here.  The K20 mclr_zero / mclr_rmw lists already use
-/// these addresses; we re-list them inline rather than
-/// delegating to `apply_k20_mclr_zero_sfrs` because the
-/// K20 helper also touches K20-specific registers
-/// (CM1CON0 at 0xF7B, IOCB at 0xF7D, ANSEL at 0xF7E, etc.)
-/// at addresses that on the 2455 belong to USB / SPP
-/// peripherals or are unimplemented -- a blanket K20
-/// reset would clobber unrelated 2455 state.
+/// here.  The K20 reset machinery already uses these
+/// addresses across its three passes:
+///   * `K20_MCLR_ZERO_SFRS` covers PIE1 / PIR1 / PIE2 /
+///     PIR2 / WDTCON.
+///   * `K20_MCLR_RMW` covers INTCON (RBIF preserve mask).
+///   * `apply_k20_por_sfr_defaults` re-applies the fixed
+///     non-zero defaults for INTCON2 / INTCON3 / IPR1 /
+///     IPR2 (their MCLR-column values match the POR-column
+///     values per DS Tbl 4-4).
+/// We re-list inline rather than delegating to
+/// `apply_k20_mclr_zero_sfrs` because the K20 helper also
+/// touches K20-specific registers (CM1CON0 at 0xF7B, IOCB
+/// at 0xF7D, ANSEL at 0xF7E, etc.) at addresses that on
+/// the 2455 belong to USB / SPP peripherals or are
+/// unimplemented -- a blanket K20 reset would clobber
+/// unrelated 2455 state.
 ///
 /// Coverage scope (task #31): every SFR that gates an
 /// interrupt source -- INTCON / INTCON2 / INTCON3 / PIE1 /
