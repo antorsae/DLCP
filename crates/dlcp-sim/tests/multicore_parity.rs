@@ -411,7 +411,8 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     if tx_count > 0 {
         eprintln!(
             "PROBE: convergence reached!  Run a follow-up commit to \
-             tighten this test into a hard-pass assertion (task #27)."
+             tighten this test into a hard-pass assertion (task #28 \
+             follow-up)."
         );
     } else {
         eprintln!(
