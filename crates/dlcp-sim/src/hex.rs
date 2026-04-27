@@ -55,9 +55,18 @@ pub const EEPROM_BASE: u32 = 0x00F0_0000;
 /// Loaded HEX image, with each PIC18 memory window broken
 /// out separately.  Default fill is `0xFF` (PIC18 erased
 /// state).
+///
+/// `flash_present[i]` distinguishes "byte `0xFF` because no
+/// record covered this address" from "byte `0xFF` because a
+/// record explicitly wrote `0xFF` here".  Mirror of Python's
+/// sparse `dict[int, int]` from `parse_intel_hex`; required by
+/// merge policies like gpsim's `build_seeded_main_sim_hex`
+/// (`src/dlcp_fw/sim/main_gpsim.py:321`) that must preserve
+/// seed bytes in app-range holes of an app-only V3.x HEX.
 #[derive(Debug)]
 pub struct HexImage {
     pub flash: Box<[u8; FLASH_BYTES]>,
+    pub flash_present: Box<[bool; FLASH_BYTES]>,
     pub user_id: [u8; USER_ID_BYTES],
     pub config: [u8; CONFIG_BYTES],
     pub eeprom: [u8; EEPROM_BYTES],
@@ -65,10 +74,11 @@ pub struct HexImage {
 
 impl HexImage {
     /// Empty image — every byte set to the PIC18 erased
-    /// value (`0xFF`).
+    /// value (`0xFF`); every flash byte marked absent.
     pub fn new() -> Self {
         Self {
             flash: Box::new([0xFF; FLASH_BYTES]),
+            flash_present: Box::new([false; FLASH_BYTES]),
             user_id: [0xFF; USER_ID_BYTES],
             config: [0xFF; CONFIG_BYTES],
             eeprom: [0xFF; EEPROM_BYTES],
@@ -184,6 +194,7 @@ impl HexImage {
     ) -> Result<(), HexLoadError> {
         if addr < FLASH_BASE + FLASH_BYTES as u32 {
             self.flash[addr as usize] = byte;
+            self.flash_present[addr as usize] = true;
         } else if (USER_ID_BASE..USER_ID_BASE + USER_ID_BYTES as u32).contains(&addr) {
             self.user_id[(addr - USER_ID_BASE) as usize] = byte;
         } else if (CONFIG_BASE..CONFIG_BASE + CONFIG_BYTES as u32).contains(&addr) {
@@ -589,6 +600,7 @@ mod tests {
     fn empty_hex_with_eof_yields_default_image() {
         let img = HexImage::from_hex_str(&build_hex(&[eof_rec()])).unwrap();
         assert!(img.flash.iter().all(|&b| b == 0xFF));
+        assert!(img.flash_present.iter().all(|&p| !p));
         assert_eq!(img.user_id, [0xFF; USER_ID_BYTES]);
         assert_eq!(img.config, [0xFF; CONFIG_BYTES]);
         assert_eq!(img.eeprom, [0xFF; EEPROM_BYTES]);
@@ -603,6 +615,30 @@ mod tests {
         .unwrap();
         assert_eq!(img.flash[0], 0x00);
         assert_eq!(img.flash[1], 0xFF);
+        assert!(img.flash_present[0]);
+        assert!(!img.flash_present[1]);
+    }
+
+    #[test]
+    fn flash_present_distinguishes_explicit_ff_from_absent_record() {
+        // gpsim's `build_seeded_main_sim_hex` policy depends on this:
+        // a record carrying `0xFF` must be treated differently from
+        // an address with no record.  Without this distinction, an
+        // app-only V3.x merge would over-write the V2.3 seed at
+        // every app-range hole.
+        let img = HexImage::from_hex_str(&build_hex(&[
+            data_rec(0x0010, &[0xFF, 0xFF]),
+            eof_rec(),
+        ]))
+        .unwrap();
+        // Both bytes read as 0xFF (their default + the record).
+        assert_eq!(img.flash[0x0010], 0xFF);
+        assert_eq!(img.flash[0x0011], 0xFF);
+        // But presence distinguishes them from neighbours.
+        assert!(img.flash_present[0x0010]);
+        assert!(img.flash_present[0x0011]);
+        assert!(!img.flash_present[0x000F]);
+        assert!(!img.flash_present[0x0012]);
     }
 
     #[test]

@@ -108,7 +108,18 @@ const MAIN_APP_PATCH_LIMIT: usize = 0x5600;
 ///   * `flash[0x0000..0x1000]`: V2.3 boot block (real
 ///     V2.3 reset/IRQ vectors + RAM init at 0x058E,
 ///     etc.).
-///   * `flash[0x1000..0x5600]`: V3.x app code.
+///   * `flash[0x1000..0x5600]`: V3.x app code, but only at
+///     addresses that the V3.x source HEX actually wrote.
+///     Addresses within the app range that V3.x left as
+///     holes (no record) preserve the V2.3 seed value --
+///     matching gpsim's sparse `dict[int, int]` merge in
+///     Python (`build_seeded_main_sim_hex` iterates
+///     `source_mem.items()`).  Without this, app-range
+///     holes would be over-written with `0xFF`, destroying
+///     V2.3 seed bytes (e.g. ~126 bytes around
+///     0x48f2..0x4bff that V3.1 leaves untouched).  The
+///     `flash_present` mask on `HexImage` is what makes
+///     this distinction possible.
 ///   * `flash[0x5600..0x8000]`: V2.3 preset/DSP tables.
 /// The resulting flash is what real silicon sees after
 /// V3.x is patched onto a V2.3-flashed device.  No bake-
@@ -120,8 +131,11 @@ const MAIN_APP_PATCH_LIMIT: usize = 0x5600;
 fn build_seeded_main_flash(v3_app: &HexImage, v23_seed: &HexImage) -> Box<[u8; dlcp_sim::hex::FLASH_BYTES]> {
     let mut flash = v23_seed.flash.clone();
     let app_end = MAIN_APP_PATCH_LIMIT.min(v3_app.flash.len());
-    flash[MAIN_APP_PATCH_START..app_end]
-        .copy_from_slice(&v3_app.flash[MAIN_APP_PATCH_START..app_end]);
+    for addr in MAIN_APP_PATCH_START..app_end {
+        if v3_app.flash_present[addr] {
+            flash[addr] = v3_app.flash[addr];
+        }
+    }
     flash
 }
 
