@@ -364,6 +364,14 @@ impl Eusart {
             self.tsr_byte = None;
             self.txreg_holding = None;
             self.completed_tx_bytes.clear();
+            // TSR idle -> TXSTA.TRMT = 1.  Without this,
+            // an in-flight frame's TRMT=0 state would
+            // survive: `tick_tcy` returns early once
+            // `tsr_busy_tcy == None` and never reasserts
+            // TRMT, so firmware that polls TRMT after a
+            // SPEN-recovery cycle would see stale 0.  Codex
+            // review of 35c2e3d MEDIUM (TX-side drain).
+            set_txsta_trmt(mem, true);
             return;
         }
         if (value & RCSTA_CREN) == 0 {
@@ -1261,7 +1269,9 @@ mod tests {
         eusart.deliver_rx_byte(0xBB, &mut mem);
         eusart.deliver_rx_byte(0xCC, &mut mem); // OERR set
         // Push some TX state too: a frame in the TSR + a
-        // held byte queued for after.
+        // held byte queued for after + a previously-
+        // completed byte sitting in the TX history (a
+        // chain dispatcher hasn't yet drained).
         mem.write_raw(
             Address::from_raw(TXSTA_ADDR),
             TXSTA_TXEN | TXSTA_TRMT,
@@ -1269,9 +1279,18 @@ mod tests {
         eusart.on_sfr_write(TXSTA_ADDR, TXSTA_TXEN | TXSTA_TRMT, &mut mem);
         eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem); // -> TSR
         eusart.on_sfr_write(TXREG_ADDR, 0x77, &mut mem); // -> txreg_holding
+        eusart.push_completed_tx_byte_for_test(0x99); // queue a finished byte
         assert!(eusart.tsr_busy_tcy.is_some());
         assert!(eusart.tsr_byte.is_some());
         assert!(eusart.txreg_holding.is_some());
+        // TRMT was cleared when TXREG -> TSR launched the
+        // first frame.
+        let txsta_pre = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+        assert_eq!(
+            txsta_pre & TXSTA_TRMT,
+            0,
+            "pre: TRMT cleared while TSR busy"
+        );
         // Firmware: bcf RCSTA, 7 (clear SPEN).
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
         let new_rcsta = rcsta & !RCSTA_SPEN;
@@ -1304,6 +1323,15 @@ mod tests {
         assert!(
             eusart.take_completed_tx_byte().is_none(),
             "SPEN=0 must drain completed-TX queue"
+        );
+        // TRMT re-asserts (TSR idle) so firmware that
+        // polls TXSTA.TRMT after the SPEN-shutdown sees
+        // a non-stale value.  Codex review of 6335c3a
+        // MEDIUM.
+        assert_eq!(
+            mem.read_raw(Address::from_raw(TXSTA_ADDR)) & TXSTA_TRMT,
+            TXSTA_TRMT,
+            "SPEN=0 must reassert TRMT (TSR idle)"
         );
     }
 
