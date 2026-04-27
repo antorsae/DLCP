@@ -77,6 +77,34 @@ fn v31_main_hex_path() -> PathBuf {
     repo_root().join("firmware/patched/releases/DLCP_Firmware_V3.1.hex")
 }
 
+/// Bake a PIC18 `GOTO target_byte_addr` instruction at
+/// `flash[at]`.  4 bytes long; both addresses must be even.
+/// Encoding per DS39632E §26 / DS41303 §25:
+///   word1 = `1110 1111 k<7:0>`     (high byte 0xEF)
+///   word2 = `1111 k<19:16> k<15:8>` (high byte = 0xF0 | k<19:16>)
+/// where `k` is the WORD address (target_byte_addr / 2);
+/// PCL bit 0 is hard-wired to 0 on PIC18, so target
+/// addresses are always even.
+fn bake_goto(flash: &mut [u8], at: usize, target_byte_addr: u32) {
+    assert!(
+        target_byte_addr & 1 == 0,
+        "GOTO target byte address must be even, got 0x{target_byte_addr:X}"
+    );
+    assert!(
+        at % 2 == 0,
+        "GOTO bake address must be even, got 0x{at:X}"
+    );
+    let k_word = target_byte_addr >> 1;
+    assert!(
+        k_word <= 0x000F_FFFF,
+        "GOTO target out of 21-bit PC range: 0x{target_byte_addr:X}"
+    );
+    flash[at] = (k_word & 0xFF) as u8;
+    flash[at + 1] = 0xEFu8;
+    flash[at + 2] = ((k_word >> 8) & 0xFF) as u8;
+    flash[at + 3] = 0xF0u8 | (((k_word >> 16) & 0x0F) as u8);
+}
+
 /// Load a hex file into a fresh core of the given variant.
 /// Mirrors `isa_parity.rs::run_to_cycle`'s setup minus the
 /// step loop: copies flash, initialises EEPROM contents from
@@ -85,43 +113,29 @@ fn v31_main_hex_path() -> PathBuf {
 /// The 2455 V3.x main image leaves the bootloader window
 /// (`flash[0..0x1000]`) erased.  On real silicon the
 /// Microchip USB bootloader at 0x0000 jumps to the app
-/// entry at 0x1000 when not in update mode; the simulator
-/// has no bootloader image, so the caller can ask us to
-/// bake a `GOTO 0x1000` into `flash[0..4]` to mimic that
-/// jump and get the V3.1 app actually executing.
+/// entry at 0x1000 when not in update mode AND trampolines
+/// IRQs at 0x0008 → user-defined IRQ handler (V3.1 puts it
+/// at 0x1008).  The simulator has no bootloader image, so
+/// the caller can ask us to bake those `GOTO`s.  Without
+/// the IRQ trampoline, hardware vectoring to 0x0008 lands
+/// in 0xFF erased flash → NopContinuation forever, and
+/// V3.1's `main_isr_dispatch` ISR never runs (UART RX bytes
+/// pile up unread, chain protocol stalls).  Task #30
+/// findings.
 fn build_core_from_hex(
     variant: Variant,
     image: &HexImage,
     bake_goto_app_entry: Option<u32>,
+    bake_goto_irq_vector: Option<u32>,
 ) -> Core {
     let mut core = Core::new(variant);
     core.flash_mut().copy_from_slice(&*image.flash);
 
-    if let Some(app_entry_byte_addr) = bake_goto_app_entry {
-        // PIC18 GOTO encoding (DS39632E §26 / DS41303 §25):
-        //   word1 = 1110 1111 k<7:0>     (high byte 0xEF, low = k<7:0>)
-        //   word2 = 1111 0000 k<19:8>    (high byte 0xF0 | k<19:16>,
-        //                                  low byte = k<15:8>)
-        // `k` is the **word** address (target_byte_addr / 2).  PCL bit 0
-        // is hard-wired to 0 on PIC18, so app-entry addresses are even.
-        assert!(
-            app_entry_byte_addr & 1 == 0,
-            "GOTO target byte address must be even"
-        );
-        let k_word = app_entry_byte_addr >> 1;
-        assert!(
-            k_word <= 0x000F_FFFF,
-            "GOTO target out of 21-bit PC range"
-        );
-        let word1_lo = (k_word & 0xFF) as u8;
-        let word1_hi = 0xEFu8;
-        let word2_lo = ((k_word >> 8) & 0xFF) as u8;
-        let word2_hi = 0xF0u8 | (((k_word >> 16) & 0x0F) as u8);
-        let flash = core.flash_mut();
-        flash[0] = word1_lo;
-        flash[1] = word1_hi;
-        flash[2] = word2_lo;
-        flash[3] = word2_hi;
+    if let Some(target) = bake_goto_app_entry {
+        bake_goto(core.flash_mut(), 0x0000, target);
+    }
+    if let Some(target) = bake_goto_irq_vector {
+        bake_goto(core.flash_mut(), 0x0008, target);
     }
 
     // Seed EEPROM bytes from the hex image.  The EEPROM
@@ -204,8 +218,17 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // is not in the shipped hex), so we bake `GOTO 0x1000`
     // into MAIN's reset vector to mimic what the bootloader
     // does on real silicon when not in update mode.
-    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
-    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
+    // FSR2 + CALL FAST main_isr_dispatch); the bootloader
+    // would normally trampoline 0x0008 → 0x1008 but isn't
+    // loaded, so we bake the trampoline here.  Task #30 fix.
+    let mut main = build_core_from_hex(
+        Variant::Pic18F2455,
+        &v31,
+        Some(0x1000),
+        Some(0x1008),
+    );
     // V3.x MAIN early-boot reads AN0 in `adc_boot_gate` to
     // decide "is the unit plugged in?".  Without an injected
     // sample the ADC peripheral returns 0x0000 and MAIN parks
@@ -369,8 +392,17 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     let v31 = HexImage::from_hex_path(v31_main_hex_path())
         .expect("V3.1 hex parses");
 
-    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
-    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
+    // FSR2 + CALL FAST main_isr_dispatch); the bootloader
+    // would normally trampoline 0x0008 → 0x1008 but isn't
+    // loaded, so we bake the trampoline here.  Task #30 fix.
+    let mut main = build_core_from_hex(
+        Variant::Pic18F2455,
+        &v31,
+        Some(0x1000),
+        Some(0x1008),
+    );
     main.peripherals.adc.set_an0_sample(0x0300);
 
     let mut chain = Chain::new();
@@ -433,8 +465,17 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         .expect("V1.71 hex parses");
     let v31 = HexImage::from_hex_path(v31_main_hex_path())
         .expect("V3.1 hex parses");
-    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
-    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
+    // FSR2 + CALL FAST main_isr_dispatch); the bootloader
+    // would normally trampoline 0x0008 → 0x1008 but isn't
+    // loaded, so we bake the trampoline here.  Task #30 fix.
+    let mut main = build_core_from_hex(
+        Variant::Pic18F2455,
+        &v31,
+        Some(0x1000),
+        Some(0x1008),
+    );
     main.peripherals.adc.set_an0_sample(0x0300);
     let mut chain = Chain::new();
     let i_control = chain.push_core(control);
