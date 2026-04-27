@@ -47,7 +47,7 @@
 //! the step count so a regression shows up as a fast test
 //! failure (one panicked step) instead of a long hang.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dlcp_sim::chain::Chain;
 use dlcp_sim::core::Core;
@@ -412,4 +412,184 @@ fn chain_v171_v31_reaches_first_uart_tx() {
          peripheral fidelity gap pushed convergence past 600 M ticks.",
         advanced, tx_count, dsp_acked, main_pc, control_pc,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ground-truth comparison helpers (P3.5 part-10).
+//
+// gpsim ground truth captured via P0.4's `--capture-ground-truth`
+// pytest hook lives at:
+//   artifacts/ground_truth/test_v171_v31_chain__test_v171_v31_chain_reaches_display__*/
+// with two relevant files for this scaffold:
+//   * uart_tx_control.jsonl  -- CONTROL → MAIN frames
+//   * uart_tx_main_0.jsonl   -- MAIN → CONTROL frames
+// Each line is a one-frame JSON object:
+//   {"cmd": <u8>, "data": <u8>, "route": <u8>, "seq": <u32>}
+//
+// The DLCP chain protocol is 3-byte frames over the
+// 31250-baud current-loop EUSART (route, cmd, data).  When
+// the Rust simulator's `Chain::uart_tx_history` records raw
+// bytes for a coupling, every 3 consecutive bytes form one
+// frame.
+//
+// This helper module lives inline in the test binary
+// (zero-dep manual JSONL parse) so the parity-comparison
+// path stays self-contained.  If/when more tests need this
+// machinery we can lift it into a shared
+// `dlcp-sim-test-utils` crate.
+// ---------------------------------------------------------------------------
+
+/// One DLCP chain protocol frame (3 bytes on the wire).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct ChainFrame {
+    route: u8,
+    cmd: u8,
+    data: u8,
+}
+
+/// Group a flat byte stream into 3-byte chain frames.
+/// Returns an empty vec if the stream length is not a
+/// multiple of 3 (caller's job to handle partial frames if
+/// they care).
+fn parse_chain_frames(bytes: &[u8]) -> Vec<ChainFrame> {
+    if !bytes.len().is_multiple_of(3) {
+        return Vec::new();
+    }
+    bytes
+        .chunks_exact(3)
+        .map(|c| ChainFrame { route: c[0], cmd: c[1], data: c[2] })
+        .collect()
+}
+
+/// Tiny JSONL parser tailored for the
+/// `{"cmd": N, "data": N, "route": N, "seq": N}` line shape
+/// captured by `OutputCapture` in
+/// `src/dlcp_fw/sim/ground_truth.py`.  Returns frames in the
+/// JSON-encoded order (which is the actual bus-time order
+/// since the capture preserves wire order in the file).
+///
+/// Hand-rolled to avoid pulling in serde+serde_json just
+/// for this one test fixture.  Returns `Err` only on
+/// malformed lines so caller can panic with a useful
+/// message.
+fn load_ground_truth_frames(path: &Path) -> Result<Vec<ChainFrame>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut frames = Vec::new();
+    for (idx, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let cmd = extract_u8_field(line, "cmd")
+            .ok_or_else(|| format!("line {}: missing/bad `cmd`", idx + 1))?;
+        let data = extract_u8_field(line, "data")
+            .ok_or_else(|| format!("line {}: missing/bad `data`", idx + 1))?;
+        let route = extract_u8_field(line, "route")
+            .ok_or_else(|| format!("line {}: missing/bad `route`", idx + 1))?;
+        frames.push(ChainFrame { route, cmd, data });
+    }
+    Ok(frames)
+}
+
+/// Extract `"key": <integer>` from a JSON line.  Tolerates
+/// whitespace and trailing commas.  Returns `None` if the
+/// key is missing or the value isn't a 0..=255 integer.
+fn extract_u8_field(line: &str, key: &str) -> Option<u8> {
+    let needle = format!("\"{key}\"");
+    let key_pos = line.find(&needle)?;
+    let after_key = &line[key_pos + needle.len()..];
+    let colon_pos = after_key.find(':')?;
+    let value_start = &after_key[colon_pos + 1..];
+    // Walk past whitespace, then collect digits.
+    let trimmed = value_start.trim_start();
+    let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u8>().ok()
+}
+
+#[cfg(test)]
+mod ground_truth_tests {
+    use super::*;
+
+    #[test]
+    fn parse_chain_frames_groups_into_3byte_frames() {
+        let bytes = vec![0xBF, 0x08, 0x00, 0xBF, 0x05, 0x03];
+        let frames = parse_chain_frames(&bytes);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0], ChainFrame { route: 0xBF, cmd: 0x08, data: 0x00 });
+        assert_eq!(frames[1], ChainFrame { route: 0xBF, cmd: 0x05, data: 0x03 });
+    }
+
+    #[test]
+    fn parse_chain_frames_empty_on_partial_frame() {
+        // 5 bytes is not divisible by 3 -- caller's data is
+        // a partial frame, return empty rather than truncate.
+        assert!(parse_chain_frames(&[0xBF, 0x08, 0x00, 0xBF, 0x05]).is_empty());
+    }
+
+    #[test]
+    fn extract_u8_field_handles_simple_objects() {
+        let line = r#"{"cmd": 4, "data": 0, "route": 177, "seq": 0}"#;
+        assert_eq!(extract_u8_field(line, "cmd"), Some(4));
+        assert_eq!(extract_u8_field(line, "data"), Some(0));
+        assert_eq!(extract_u8_field(line, "route"), Some(177));
+        assert_eq!(extract_u8_field(line, "seq"), Some(0));
+        assert_eq!(extract_u8_field(line, "missing"), None);
+    }
+
+    #[test]
+    fn extract_u8_field_rejects_out_of_range() {
+        let line = r#"{"big": 999}"#;
+        assert_eq!(extract_u8_field(line, "big"), None);
+    }
+
+    /// Smoke test against the actual gpsim-captured
+    /// fixture.  The `test_v171_v31_chain_reaches_display`
+    /// run produced 1 CONTROL→MAIN frame
+    /// (route=0xB1, cmd=4, data=0) and 6 MAIN→CONTROL
+    /// frames.  Verify the loader correctly parses both
+    /// files.  See
+    /// `artifacts/ground_truth/test_v171_v31_chain__test_v171_v31_chain_reaches_display__*/`
+    /// for the source-of-truth fixtures.
+    #[test]
+    fn load_ground_truth_frames_parses_v171_v31_fixture() {
+        let root = repo_root();
+        let dir = root.join(
+            "artifacts/ground_truth/\
+             test_v171_v31_chain__test_v171_v31_chain_reaches_display__\
+             23ccf08e11a5",
+        );
+        if !dir.exists() {
+            // Fixture isn't in the worktree -- skip rather
+            // than fail.  The fixture is regenerated by
+            // running `pytest tests/sim/test_v171_v31_chain.py
+            // --capture-ground-truth`; CI environments without
+            // gpsim won't have it.
+            return;
+        }
+        let ctrl_frames = load_ground_truth_frames(&dir.join("uart_tx_control.jsonl"))
+            .expect("CONTROL frames parse");
+        let main_frames = load_ground_truth_frames(&dir.join("uart_tx_main_0.jsonl"))
+            .expect("MAIN frames parse");
+        assert_eq!(
+            ctrl_frames,
+            vec![ChainFrame { route: 0xB1, cmd: 4, data: 0 }],
+            "CONTROL→MAIN ground truth shape"
+        );
+        assert_eq!(
+            main_frames,
+            vec![
+                ChainFrame { route: 0xBF, cmd: 8, data: 0 },
+                ChainFrame { route: 0xBF, cmd: 5, data: 3 },
+                ChainFrame { route: 0xBF, cmd: 7, data: 79 },
+                ChainFrame { route: 0xBF, cmd: 3, data: 1 },
+                ChainFrame { route: 0xBF, cmd: 6, data: 0 },
+                ChainFrame { route: 0xBF, cmd: 29, data: 4 },
+            ],
+            "MAIN→CONTROL ground truth shape"
+        );
+    }
 }
