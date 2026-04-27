@@ -330,3 +330,92 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         chain.current_tick,
     );
 }
+
+/// Probe: how long until V3.1 + V1.71 chain emits its first
+/// UART byte across the current loop?  Ignored by default
+/// (~32 s wall locally to run the full 5 B-tick budget); run
+/// explicitly with `cargo test --release --test multicore_parity
+/// -- --ignored chain_v171_v31_reaches_first_uart_tx --nocapture`.
+///
+/// As of this commit the chain does NOT converge on a UART TX
+/// within 5 B ticks (~110 s simulated time): V3.1 MAIN runs
+/// continuous DSP I2C traffic (~63 k ACKed bytes by 5 B
+/// ticks) but never reaches the chain protocol path that
+/// would prompt CONTROL→MAIN or MAIN→CONTROL UART traffic.
+/// CONTROL parks early at PC ≈ 0x01E2.
+///
+/// The block is task #28 (IRQ vector dispatch in executor):
+/// V1.71's main loop is interrupt-driven (Timer0 idle tick,
+/// EUSART RX byte, IR decode); without ISR vectoring CONTROL
+/// never advances past its initialization-poll state.  Once
+/// task #28 lands, this probe should converge -- if not, it
+/// surfaces the NEXT bottleneck.
+///
+/// The probe is `#[ignore]`-gated so default `cargo test`
+/// runs stay fast (< 1 s).  It's report-only today: prints
+/// the diagnostic state and the convergence point if any,
+/// but does NOT panic on timeout.  When task #28 lands a
+/// follow-up commit can tighten this into a hard-pass
+/// assertion (P3.5 final-acceptance milestone).
+#[test]
+#[ignore = "probe test; ~32 s wall to run.  See test body for current state."]
+fn chain_v171_v31_reaches_first_uart_tx() {
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path())
+        .expect("V3.1 hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    main.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_control = chain.push_core(control);
+    let i_main = chain.push_core(main);
+    chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
+    let i_tas3108 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_tas3108);
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    // Up to 5 B ticks (~35 s wall locally) waiting for the
+    // first UART TX byte from either core.  10 M-tick chunks
+    // keep polling cadence at ~70 ms wall, leaving room for
+    // many predicate checks.
+    let advanced = chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| !c.uart_tx_history.is_empty(),
+    );
+
+    let tx_count = chain.uart_tx_history.len();
+    let dsp_acked = chain.tas3108_slaves[i_tas3108].bytes_acked;
+    let main_pc = chain.cores[i_main].pc();
+    let control_pc = chain.cores[i_control].pc();
+
+    eprintln!(
+        "PROBE: V3.1+V1.71 chain at {advanced}-tick budget: \
+         tx_count={tx_count}, dsp_acked={dsp_acked}, \
+         main_pc=0x{main_pc:04X}, ctrl_pc=0x{control_pc:04X}, \
+         current_tick={}",
+        chain.current_tick
+    );
+
+    if tx_count > 0 {
+        eprintln!(
+            "PROBE: convergence reached!  Run a follow-up commit to \
+             tighten this test into a hard-pass assertion (task #27)."
+        );
+    } else {
+        eprintln!(
+            "PROBE: no UART TX within 5 B ticks.  Likely blocker: \
+             task #28 (IRQ vector dispatch).  Re-probe after task #28 \
+             lands to see if convergence appears."
+        );
+    }
+
+    // Report-only test today: pass regardless of TX
+    // convergence so default suite stays clean.  Tighten to
+    // assert-on-convergence once task #28 lands.
+}
