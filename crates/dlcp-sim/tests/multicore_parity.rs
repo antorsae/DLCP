@@ -78,6 +78,18 @@ fn v31_main_hex_path() -> PathBuf {
     repo_root().join("firmware/patched/releases/DLCP_Firmware_V3.1.hex")
 }
 
+/// Canonical V3.2 MAIN release.  Layer 5 Diagnostics is
+/// V3.2-only: V3.2 ships the per-counter diag-block at
+/// physical RAM 0x123..0x12A and the BF/2N reply burst
+/// firmware that V1.71 CONTROL polls for the Diagnostics
+/// page.  The full P3.6 un-XFAIL gate uses this.  Task #36's
+/// `build_seeded_main_core` works for V3.2 the same way it
+/// does for V3.1 (both are app-only hexes covering
+/// `[0x1000, 0x5600)`).
+fn v32_main_hex_path() -> PathBuf {
+    repo_root().join("firmware/patched/releases/DLCP_Firmware_V3.2.hex")
+}
+
 /// Path to the stock V2.3 MAIN combined hex.  Used as the
 /// EEPROM / boot-block / preset-table seed for V3.x chain
 /// probes to mirror gpsim's `build_seeded_main_sim_hex`
@@ -449,6 +461,169 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         "run_until hit the 1 B safety ceiling without converging; current_tick={}",
         chain.current_tick,
     );
+}
+
+/// P3.6 step 1 -- firmware-driven 3-core ring smoke test.
+///
+/// Wires a silicon-correct DLCP single-direction current-
+/// loop ring (CONTROL -> MAIN0 -> MAIN1 -> CONTROL) with
+/// V1.71 + V3.2 + V3.2 firmware images, two TAS3108 audio
+/// DSP slaves (one per MAIN), and the V2.3-combined boot-
+/// block merge from task #36 on both MAINs.  The point is
+/// to verify the chain *boots* under the correct topology
+/// without panicking before we layer on Layer 5
+/// Diagnostics-page convergence.
+///
+/// Convergence predicate: BOTH MAINs must reach
+/// `bytes_acked >= 1000` on their respective TAS3108
+/// slaves -- proves DSP init bursts are firing on both
+/// MAINs in parallel under the ring topology, which is the
+/// strongest pre-Layer-5 milestone that terminates within
+/// a unit-test wall-clock budget.
+///
+/// What this test does NOT cover (deferred to subsequent
+/// P3.6 steps):
+///   * Driving CONTROL to the Diagnostics page (needs
+///     button stimulus injection -- task #35 -- or a
+///     host-side cmd burst path).
+///   * Asserting `v171_diag_present == 0x03` at the end of
+///     a polling cycle.
+///   * Removing the four `pytest.mark.xfail` decorators in
+///     `tests/sim/test_v171_v32_layer5_diag_chain.py`.
+///
+/// Step-1 deliverable: ring boots, both MAINs cross DSP-
+/// init threshold, no panics.
+#[test]
+fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    // Both MAINs use the silicon-correct V2.3 boot-block
+    // merge from task #36; no bake-trampolines.  The
+    // EEPROM seed (also from V2.3-combined) gives both
+    // MAINs the recovered-device EEPROM defaults that
+    // V3.2 expects on first boot.
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    // Silicon-correct DLCP single-direction current-loop
+    // ring: 3 directional edges, no fan-out, no
+    // self-loops.  Pinned by the architectural scope
+    // probe in
+    // `chain::tests::three_core_silicon_ring_uart_topology_has_no_echo_or_duplicates`.
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    // Each MAIN has its own TAS3108 audio DSP wired to
+    // its MSSP I²C bus.  Without the slaves both MAINs
+    // park in `dsp_ping`'s NACK retry loop and never
+    // make forward progress past DSP init.
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    // Same-PSU boot: all three units come up together.
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    // Convergence: both MAINs cross DSP-init threshold.
+    // Three cores instead of two roughly doubles the
+    // wall-clock budget vs. the V3.1 2-core test (which
+    // converged in < 500 M ticks); allow 3 B as the
+    // safety ceiling.
+    chain.run_until(
+        10_000_000,    // chunk_ticks: 10 M = ~70 ms wall
+        3_000_000_000, // max_ticks: 3 B safety ceiling
+        |c| {
+            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+        },
+    );
+
+    // All three cores made forward progress.
+    let ctl_cycles = chain.cores[i_ctl].cycles();
+    let main0_cycles = chain.cores[i_main0].cycles();
+    let main1_cycles = chain.cores[i_main1].cycles();
+    assert!(ctl_cycles > 0, "CONTROL did not advance under chain dispatch");
+    assert!(main0_cycles > 0, "MAIN0 did not advance under chain dispatch");
+    assert!(main1_cycles > 0, "MAIN1 did not advance under chain dispatch");
+
+    // Both MAINs ran past V3.2 boot init into application
+    // code (PC > 0x4000); same threshold the V3.1 2-core
+    // smoke test uses.
+    let main0_pc = chain.cores[i_main0].pc();
+    let main1_pc = chain.cores[i_main1].pc();
+    assert!(
+        main0_pc > 0x4000,
+        "MAIN0 PC must have progressed deep into V3.2 app code (> 0x4000); got 0x{main0_pc:04X}"
+    );
+    assert!(
+        main1_pc > 0x4000,
+        "MAIN1 PC must have progressed deep into V3.2 app code (> 0x4000); got 0x{main1_pc:04X}"
+    );
+
+    // CONTROL has left the bootloader window and is back
+    // in V1.71 user code.
+    let ctl_pc = chain.cores[i_ctl].pc();
+    assert!(
+        ctl_pc < 0x7800,
+        "CONTROL must be back in user code (PC < 0x7800), got 0x{ctl_pc:04X}"
+    );
+
+    // Both DSP slaves crossed the convergence threshold.
+    assert!(
+        chain.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
+        "MAIN0 TAS3108 slave should have ACKed >= 1000 DSP-init bytes; got {}",
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
+    );
+    assert!(
+        chain.tas3108_slaves[i_dsp1].bytes_acked >= 1000,
+        "MAIN1 TAS3108 slave should have ACKed >= 1000 DSP-init bytes; got {}",
+        chain.tas3108_slaves[i_dsp1].bytes_acked,
+    );
+
+    // run_until exited via the predicate, not the
+    // safety ceiling.
+    assert!(
+        chain.current_tick < 3_000_000_000,
+        "run_until hit the 3 B safety ceiling without converging; current_tick={}",
+        chain.current_tick,
+    );
+
+    // Firmware-driven Task #22 echo-loop check.  The
+    // architectural scope probe in
+    // `chain::tests::three_core_silicon_ring_uart_topology_has_no_echo_or_duplicates`
+    // proves the dispatch model can't echo under
+    // synthetic injection.  This is the *firmware* version
+    // of that assertion: across an actual V1.71+V3.2+V3.2
+    // boot run, scan every recorded UART delivery and
+    // assert no record has `src_core == dst_core`.  Real
+    // hardware can't echo a TX into its own RX; if any
+    // future regression in `couple_uart` or
+    // `drain_completed_tx_bytes` introduces a self-loop,
+    // it will surface here -- with the actual Task #22
+    // chain protocol traffic exercising it.
+    for record in &chain.uart_tx_history {
+        assert_ne!(
+            record.src_core, record.dst_core,
+            "no UART delivery may route a core's TX to its own RX; \
+             firmware-driven echo-loop check failed on record {record:?}"
+        );
+    }
 }
 
 /// V3.1 + V1.71 chain reaches its first UART TX byte across
