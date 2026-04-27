@@ -195,15 +195,31 @@ impl Eusart {
     /// `PIR1.RCIF`.  Per DS39632E §20.0 / Reg 9-4 the
     /// silicon FIFO holds two characters; a third byte
     /// arriving while the FIFO is full latches `RCSTA.OERR`
-    /// and is dropped (DS §20.4.4).  Phase-3.5 minimum: no
-    /// FERR modeling -- the in-flight RX shifter still
-    /// arrives whole-frame at a single moment; Phase-4
-    /// dual-run will sharpen that against gpsim's bit-level
-    /// RX timing if needed.  Disabled (SPEN=0 or CREN=0)
-    /// RX silently drops the byte.  Task #30.
+    /// and is dropped (DS §20.4.4).  Once OERR is set the
+    /// silicon STOPS accepting further bytes until firmware
+    /// clears OERR via `CREN=0` -- even if the firmware
+    /// reads RCREG to free FIFO slots, no new bytes land
+    /// until OERR is cleared (DS §20.4.4 + DS40001303H Reg
+    /// 17-2 OERR description: "no additional characters
+    /// are received until the overrun condition is
+    /// cleared").  Phase-3.5 minimum: no FERR modeling --
+    /// the in-flight RX shifter still arrives whole-frame
+    /// at a single moment; Phase-4 dual-run will sharpen
+    /// that against gpsim's bit-level RX timing if needed.
+    /// Disabled (SPEN=0 or CREN=0) RX silently drops the
+    /// byte.  Task #30.
     pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) {
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
         if (rcsta & RCSTA_SPEN) == 0 || (rcsta & RCSTA_CREN) == 0 {
+            return;
+        }
+        // OERR latched -> reception blocked until firmware
+        // clears OERR (via CREN=0).  Codex review of 4f7deb5
+        // MEDIUM: previously we'd accept a fresh byte the
+        // moment firmware read RCREG to free a FIFO slot,
+        // masking firmware that forgets the CREN-toggle
+        // recovery dance.
+        if (rcsta & RCSTA_OERR) != 0 {
             return;
         }
         if self.rx_fifo.len() >= RX_FIFO_DEPTH {
@@ -298,29 +314,52 @@ impl Eusart {
     }
 
     /// Handle the RX-side state effects of an RCSTA write.
-    /// Per DS39632E §20.4.4: writing CREN=0 clears the OERR
-    /// latch and (silicon-side) drains the RX FIFO.  V3.1's
-    /// uart_oerr_recover idiom is `bcf RCSTA, 4; ...; bsf
-    /// RCSTA, 4` -- the falling-edge of CREN clears OERR
-    /// and the rising-edge re-arms the receiver.  Task #30.
+    ///
+    /// Per DS39632E §20.4.4 / DS40001303H Reg 17-2 OERR
+    /// description, the silicon CREN-falling-edge contract
+    /// is narrower than "reset the receiver": writing
+    /// CREN=0 ONLY clears the OERR latch.  Already-buffered
+    /// FIFO bytes remain readable (the firmware can drain
+    /// them via RCREG reads after the recovery sequence);
+    /// the receiver merely refuses to accept NEW bytes
+    /// while CREN=0.  V3.1's `uart_oerr_recover` idiom
+    /// (`bcf RCSTA, 4; bsf RCSTA, 4`) relies on this:
+    /// falling edge clears OERR, rising edge re-arms.
+    ///
+    /// SPEN=0 (Serial Port Disable) is the harder reset --
+    /// it disables the entire EUSART module, drains the
+    /// FIFO, and clears RCREG.  Codex review of 4f7deb5
+    /// HIGH: previously CREN=0 over-drained, masking the
+    /// silicon stale-FIFO contract; SPEN=0 didn't drain.
     fn handle_rcsta_write(&mut self, value: u8, mem: &mut Memory) {
-        if (value & RCSTA_CREN) == 0 {
-            // CREN=0: clear OERR (DS §20.4.4) and drain the
-            // RX FIFO (silicon side: receiver is disabled,
-            // pending bytes are discarded).
+        if (value & RCSTA_SPEN) == 0 {
+            // SPEN=0: full RX shutdown.  FIFO drains, RCREG
+            // clears, RCIF clears, OERR clears.
+            self.rx_fifo.clear();
             let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
             mem.write_raw(
                 Address::from_raw(RCSTA_ADDR),
                 rcsta & !RCSTA_OERR,
             );
-            self.rx_fifo.clear();
-            // RCREG no longer holds a valid pending byte.
             mem.write_raw(Address::from_raw(RCREG_ADDR), 0);
-            // FIFO drained -> RCIF clears.
             let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
             mem.write_raw(
                 Address::from_raw(PIR1_ADDR),
                 pir1 & !PIR1_RCIF,
+            );
+            return;
+        }
+        if (value & RCSTA_CREN) == 0 {
+            // CREN=0 with SPEN=1: clear OERR latch only.
+            // FIFO + RCREG + RCIF preserved per DS
+            // §20.4.4 -- firmware can still read out
+            // already-buffered bytes; the receiver just
+            // refuses to accept NEW bytes (gated by the
+            // SPEN/CREN check in `deliver_rx_byte`).
+            let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+            mem.write_raw(
+                Address::from_raw(RCSTA_ADDR),
+                rcsta & !RCSTA_OERR,
             );
         }
     }
@@ -1061,10 +1100,15 @@ mod tests {
 
     /// V3.1's `uart_oerr_recover` writes `RCSTA.CREN=0` to
     /// clear OERR, then writes CREN=1 to re-arm the
-    /// receiver.  Per DS §20.4.4 the falling edge of CREN
-    /// clears OERR and the silicon drains the RX FIFO.
+    /// receiver.  Per DS39632E §20.4.4 / DS40001303H Reg
+    /// 17-2 OERR description, the CREN-falling-edge ONLY
+    /// clears the OERR latch -- the FIFO + RCREG + RCIF are
+    /// preserved (firmware can still read out already-
+    /// buffered bytes).  Codex review of 4f7deb5 HIGH:
+    /// the prior commit over-drained, masking the silicon
+    /// stale-FIFO contract.
     #[test]
-    fn rcsta_cren_falling_edge_clears_oerr_and_drains_fifo() {
+    fn rcsta_cren_falling_edge_clears_oerr_only_preserving_fifo() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
         mem.write_raw(
@@ -1083,21 +1127,133 @@ mod tests {
         let new_rcsta = rcsta & !RCSTA_CREN;
         mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
         eusart.on_sfr_write(RCSTA_ADDR, new_rcsta, &mut mem);
-        // OERR cleared, FIFO drained, RCIF cleared.
+        // OERR cleared.
         assert_eq!(
             mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
             0,
             "CREN=0 must clear OERR"
         );
+        // FIFO + RCREG + RCIF preserved -- firmware can
+        // still drain the already-buffered bytes after the
+        // recovery sequence.
         assert_eq!(
             mem.read_raw(Address::from_raw(RCREG_ADDR)),
-            0,
-            "RCREG cleared when receiver disabled"
+            0xAA,
+            "RCREG preserves the front FIFO byte across CREN=0"
         );
         assert_eq!(
             mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            PIR1_RCIF,
+            "RCIF stays asserted -- FIFO non-empty"
+        );
+        // Drain the FIFO via reads.
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0xAA
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0xBB,
+            "second FIFO byte still readable"
+        );
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0xBB
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
             0,
-            "RCIF cleared when FIFO drains"
+            "RCIF clears when FIFO empties"
+        );
+    }
+
+    /// Codex review of 4f7deb5 MEDIUM: once OERR is set,
+    /// the silicon refuses to accept further bytes until
+    /// firmware clears OERR (via CREN=0).  Even reading
+    /// RCREG to free a FIFO slot is NOT enough.
+    #[test]
+    fn oerr_blocks_rx_until_cren_toggle() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0x11, &mut mem);
+        eusart.deliver_rx_byte(0x22, &mut mem);
+        eusart.deliver_rx_byte(0x33, &mut mem); // -> OERR set, dropped
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
+            RCSTA_OERR
+        );
+        // Firmware reads RCREG to free a FIFO slot.
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0x11
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
+            RCSTA_OERR,
+            "OERR still latched after RCREG drain"
+        );
+        // New byte arrives while OERR set: silicon refuses.
+        eusart.deliver_rx_byte(0x44, &mut mem);
+        // FIFO should still have only 0x22 (the original
+        // second byte); 0x44 was rejected.
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x22,
+            "0x44 must be rejected while OERR latched"
+        );
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0x22
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            0,
+            "FIFO drained: only original 0x11/0x22 ever landed"
+        );
+        // Now firmware does the recovery: CREN=0 then CREN=1.
+        let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            rcsta & !RCSTA_CREN,
+        );
+        eusart.on_sfr_write(RCSTA_ADDR, rcsta & !RCSTA_CREN, &mut mem);
+        let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            rcsta | RCSTA_CREN,
+        );
+        eusart.on_sfr_write(RCSTA_ADDR, rcsta | RCSTA_CREN, &mut mem);
+        // Receiver re-armed: new bytes accepted.
+        eusart.deliver_rx_byte(0x55, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x55,
+            "after CREN-toggle recovery, new bytes accepted"
+        );
+    }
+
+    /// SPEN=0 (Serial Port Disable) is the harder reset --
+    /// it shuts down the EUSART entirely, draining the
+    /// FIFO and clearing RCREG / RCIF / OERR.  Distinct
+    /// from CREN=0 which only clears OERR.
+    #[test]
+    fn rcsta_spen_falling_edge_drains_fifo_and_clears_state() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0xAA, &mut mem);
+        eusart.deliver_rx_byte(0xBB, &mut mem);
+        eusart.deliver_rx_byte(0xCC, &mut mem); // OERR set
+        // Firmware: bcf RCSTA, 7 (clear SPEN).
+        let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+        let new_rcsta = rcsta & !RCSTA_SPEN;
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
+        eusart.on_sfr_write(RCSTA_ADDR, new_rcsta, &mut mem);
+        // Full shutdown: OERR cleared, FIFO drained, RCREG
+        // cleared, RCIF cleared.
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
+            0
+        );
+        assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            0
         );
     }
 
