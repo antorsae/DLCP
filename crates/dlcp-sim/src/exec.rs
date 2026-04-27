@@ -1211,49 +1211,40 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         // ---------------- stack-manipulating control flow -------
         // CALL / RCALL / RETURN / RETLW / RETFIE / PUSH / POP.
         //
-        // **Deferred features** -- known gaps tracked outside
-        // the dispatch:
+        // Implemented features (no longer deferred):
         //   - Fast register stack (CALL/RCALL `fast=true`,
-        //     RETURN/RETFIE `fast=true`): per DS39632E §5.5.3
-        //     the silicon saves/restores W / STATUS / BSR via
-        //     a 1-deep shadow stack.  The DLCP firmware uses
-        //     `fast=false` for explicit subroutine calls and
-        //     relies on the implicit shadow on interrupts; the
-        //     fast-stack model lands when interrupts do.
-        //     (Task #15)
-        //   - RETFIE's GIE / GIEH / GIEL update: re-enabling
-        //     interrupts at the end of an ISR.  Lands with the
-        //     interrupt-priority machinery in P2.  (Task #15)
-        //   - STKPTR / TOSU / TOSH / TOSL memory mirroring:
-        //     Stack struct is canonical, SFR bytes at
-        //     0xFFC..0xFFF don't reflect push/pop.  (Task #15)
+        //     RETURN/RETFIE `fast=true`) per DS39632E §5.5.3
+        //     -- task #15.
+        //   - RETFIE's GIE / GIEH / GIEL update -- task #15
+        //     via `irq::restore_gie_on_retfie`.
+        //   - STKPTR / TOSU / TOSH / TOSL memory mirroring on
+        //     every push/pop -- task #15 via
+        //     `Stack::mirror_to_sfrs`.
         //   - STVREN-gated stack-overflow / stack-underflow
-        //     reset: when CONFIG4L STVREN=1, push-on-full or
-        //     pop-on-empty must trigger the StackFull /
-        //     StackUnderflow reset sources from
-        //     `crate::reset`.  The DLCP firmware ships with
-        //     STVREN=0 (V3.2 CONFIG4L=0x80) so latch-only is
-        //     the correct silicon behaviour for the firmware
-        //     this rewrite targets, but a silicon-complete
-        //     executor needs to gate on STVREN.  Requires a
-        //     `Config` reference in `step()` -- structural
-        //     change, deferred.  (Task #16)
+        //     reset (CONFIG4L bit 0) -- task #16.  Each push
+        //     site checks for the depth->STACK_DEPTH transition
+        //     and fires `apply_reset(StackFull)` if STVREN=1;
+        //     each pop site checks for `popped.is_none()` and
+        //     fires `apply_reset(StackUnderflow)` if STVREN=1.
         Instruction::Call { n, fast } => {
             // Stack-full reset trigger: per DS39632E §5.1.2.4,
-            // "If STVREN is set (default), the 31st push will
-            // push the (PC + 2) value onto the stack, set the
-            // STKFUL bit and reset the device."  The trigger
-            // is the FILLING push -- the one that takes depth
-            // from 30 to 31 and latches STKFUL -- not a later
-            // overflow attempt at depth=31.  Detect that by
-            // snapshotting STKFUL pre-push and checking for
-            // the 0->1 transition post-push.  Codex review
-            // of 41d6195 MEDIUM (corrects the prior 32nd-push
-            // misinterpretation).
-            let was_stkful = stack.overflow();
-            let _pushed = stack.push(core.pc());
+            // "the 31st push will push the (PC + 2) value
+            // onto the stack, set the STKFUL bit and reset
+            // the device."  Equivalent contract: this push
+            // makes the stack become FULL (depth reaches
+            // STACK_DEPTH=31) AND was accepted (pushed=true).
+            // Using the "becomes full" condition, not a
+            // STKFUL latch transition, handles the
+            // pathological "STKFUL latched while depth<31"
+            // case correctly (no spurious suppression on the
+            // depth-30->31 push).  Codex review of 5a315b3
+            // MEDIUM.
+            let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if !was_stkful && stack.overflow() && core.config.stvren() {
+            if pushed
+                && stack.depth() as usize == crate::stack::STACK_DEPTH
+                && core.config.stvren()
+            {
                 crate::reset::apply_reset(
                     core,
                     stack,
@@ -1278,10 +1269,12 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Rcall { n } => {
             // RCALL has no `s` bit on PIC18; never touches
             // the fast shadow.
-            let was_stkful = stack.overflow();
-            let _pushed = stack.push(core.pc());
+            let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if !was_stkful && stack.overflow() && core.config.stvren() {
+            if pushed
+                && stack.depth() as usize == crate::stack::STACK_DEPTH
+                && core.config.stvren()
+            {
                 crate::reset::apply_reset(
                     core,
                     stack,
@@ -1373,10 +1366,12 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(2)
         }
         Instruction::Push => {
-            let was_stkful = stack.overflow();
-            let _pushed = stack.push(core.pc());
+            let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if !was_stkful && stack.overflow() && core.config.stvren() {
+            if pushed
+                && stack.depth() as usize == crate::stack::STACK_DEPTH
+                && core.config.stvren()
+            {
                 crate::reset::apply_reset(
                     core,
                     stack,
@@ -1867,6 +1862,39 @@ mod tests {
         // resets.
         let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
         assert_eq!(intcon & 0xFE, 0);
+    }
+
+    /// Codex review of 5a315b3 MEDIUM: when STKFUL is already
+    /// latched (e.g., via a software write to STKPTR.STKFUL,
+    /// or from a prior overflow that cleared depth) and the
+    /// stack subsequently fills via the 31st push, that push
+    /// IS the reset trigger -- the "stack becomes full" event
+    /// per DS §5.1.2.4, not a STKFUL latch transition.  This
+    /// test pins the new depth-becomes-31 trigger semantics.
+    #[test]
+    fn stvren_one_call_with_pre_latched_stkful_still_resets_on_fill() {
+        let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
+        core.config = crate::config::Config::from_bytes(
+            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
+        );
+        let mut stack = Stack::new();
+        // Pre-fill to depth=30 and force STKFUL latched (via
+        // the "fill to 31, pop one" path -- STKFUL is sticky
+        // through the pop).
+        for _ in 0..31 {
+            stack.push(0x0042);
+        }
+        let _ = stack.pop();
+        assert_eq!(stack.depth(), 30);
+        assert!(stack.overflow(), "pre: STKFUL sticky-latched at depth=30");
+        // CALL push takes depth 30->31.  Per the new
+        // depth-becomes-full trigger, this must reset
+        // (the STKFUL-latch-transition trigger from the
+        // prior commit would have suppressed the reset).
+        let cycles = step(&mut core, &mut stack).unwrap();
+        assert_eq!(cycles, 2);
+        assert_eq!(core.pc(), 0, "depth-becomes-full + STVREN=1 must reset");
+        assert_eq!(stack.depth(), 0);
     }
 
     /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are

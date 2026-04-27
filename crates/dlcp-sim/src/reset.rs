@@ -268,21 +268,13 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // an IRQ-induced stack-full reset cannot
             // immediately re-vector into 0x0008.
             stack.reset_for_stack_full();
-            if core.variant() == Variant::Pic18F25K20 {
-                apply_k20_mclr_zero_sfrs(core);
-                apply_k20_mclr_rmw_sfrs(core);
-            }
-            apply_por_sfr_defaults(core);
+            apply_stack_fault_sfr_reset(core);
         }
         ResetSource::StackUnderflow => {
             // Depth stays 0; STKUNF latches.  Same Tbl 4-4
             // column-6 SFR reset as StackFull.
             stack.reset_for_stack_underflow();
-            if core.variant() == Variant::Pic18F25K20 {
-                apply_k20_mclr_zero_sfrs(core);
-                apply_k20_mclr_rmw_sfrs(core);
-            }
-            apply_por_sfr_defaults(core);
+            apply_stack_fault_sfr_reset(core);
         }
     }
 
@@ -342,6 +334,46 @@ fn apply_por_sfr_defaults(core: &mut Core) {
         Variant::Pic18F2455 => {
             // P1.8d covers K20 only; the 2455 POR table will land
             // alongside the V2.3 MAIN parity gate.
+        }
+    }
+}
+
+/// Apply the Tbl 4-4 column-6 SFR reset for stack-fault
+/// (StackFull / StackUnderflow) resets.  Shared between
+/// the two arms.
+///
+/// On K20 this delegates to the full MCLR-style reset
+/// machinery -- zero SFRs, RMW SFRs, POR fixed defaults,
+/// covering INTCON / PIE1 / PIR1 / PIE2 / PIR2 etc.
+///
+/// On 2455 the full MCLR machinery is not yet ported (the
+/// V2.3 MAIN parity gate will land it).  Per DS39632E
+/// Tbl 4-4 the column-6 INTCON reset value is `0000 000u`
+/// (only RBIF preserved).  Without that, a stack-fault
+/// reset triggered during IRQ vectoring would leave
+/// INTCON.GIE set and the very next `step()` could
+/// immediately re-vector on the still-pending flag,
+/// defeating the reset.  Apply that targeted INTCON
+/// clear so the IRQ re-vector hazard is closed for both
+/// MCUs even before the broader 2455 MCLR table arrives.
+/// Codex review of 5a315b3 MEDIUM (2455 IRQ re-vector).
+fn apply_stack_fault_sfr_reset(core: &mut Core) {
+    match core.variant() {
+        Variant::Pic18F25K20 => {
+            apply_k20_mclr_zero_sfrs(core);
+            apply_k20_mclr_rmw_sfrs(core);
+            apply_por_sfr_defaults(core);
+        }
+        Variant::Pic18F2455 => {
+            // INTCON: clear bits 7..1 (incl. GIE/GIEH and
+            // PEIE/GIEL); preserve RBIF (bit 0).  Address
+            // matches the K20 layout (DS39632E p.53 / Reg 9-1).
+            const INTCON_ADDR_2455: u16 = 0xFF2;
+            let cur = core
+                .memory
+                .read_raw(Address::from_raw(INTCON_ADDR_2455));
+            core.memory
+                .write_raw(Address::from_raw(INTCON_ADDR_2455), cur & 0x01);
         }
     }
 }
@@ -1093,21 +1125,20 @@ mod tests {
 
     /// Stack-fault resets share Tbl 4-4 column 6 SFR-reset
     /// semantics with MCLR/WDT/RESET (codex review of 41d6195
-    /// HIGH).  In particular: peripherals re-derive from the
-    /// canonical post-reset SFR window via `sync_from_memory`
-    /// after the stack-fault reset path runs.  This test
-    /// pins that contract for the Timer3 RD16=1 buffer/live
-    /// pair: in the silicon-correct flow, a stack reset is
-    /// indistinguishable (peripheral-side) from an MCLR.
-    ///
-    /// History: this test previously asserted the OPPOSITE
-    /// (stack reset must NOT touch peripheral shadows), based
-    /// on a partial reading of §5.4.2.  Tbl 4-4 column 6 is
-    /// authoritative -- stack resets share the MCLR-style
-    /// SFR-reset column, so the post-reset peripheral
-    /// re-derivation is mandatory.
+    /// HIGH).  Concretely: after `apply_reset(StackFull)` the
+    /// post-reset `peripherals.sync_from_memory` pass runs,
+    /// re-derives Timer3's RD16-aware shadow from the now-
+    /// canonical SFR memory.  This test pins that the SFR-side
+    /// reset machinery executes for stack-fault resets -- it
+    /// does NOT make a silicon-fidelity claim about whether
+    /// the post-reset Timer3 live counter is "correct" relative
+    /// to the silicon's internal hidden register.  The latter
+    /// is a Phase-2 concern (peripheral self-reset semantics)
+    /// outside the scope of task #16.  Codex review of 5a315b3
+    /// LOW noted that the prior wording overclaimed silicon
+    /// correctness for the live-shadow value.
     #[test]
-    fn stack_full_resets_peripherals_via_sfr_window() {
+    fn stack_full_runs_post_reset_peripheral_sync() {
         let mut core = Core::new(Variant::Pic18F25K20);
         let mut stack = Stack::new();
         // Set up Timer3 in RD16 mode with a divergent
@@ -1122,29 +1153,38 @@ mod tests {
         core.peripherals
             .timers
             .on_sfr_write(0xFB3, 0x99, &mut core.memory);
-        // Push 30 frames so the next push fills the stack.
+        // Pre-reset live-shadow snapshot to detect that
+        // sync_from_memory ran (it overwrites the pre-reset
+        // value with memory[TMR3H]).
+        let pre_live = core.peripherals.timers.tmr3h_live_for_test();
         for i in 0..30 {
             stack.push(0x100 + i as u32);
         }
-        // Manually push the 31st to fill (the live test for
-        // the trigger lives in exec.rs::stvren_one_call_*).
         stack.push(0x131);
         apply_reset(&mut core, &mut stack, ResetSource::StackFull);
-        // T3CON's MCLR row is fully `u` (preserved); same for
-        // TMR3H.  So memory[TMR3H] is still 0x99 after the
-        // SFR-side reset, and `sync_from_memory` propagates
-        // that into tmr3h_live -- silicon-correct because the
-        // peripheral itself reset and re-derives state from
-        // the canonical SFR byte.
+        // T3CON / TMR3H rows are fully `u` (preserved) on
+        // Tbl 4-4 column 6 -- the SFR-side reset does not
+        // touch them.  `sync_from_memory` then mirrors
+        // memory[TMR3H] into tmr3h_live; assert the post-
+        // reset live shadow matches the SFR-memory value
+        // (tracking the model contract that sync is
+        // executed).  Silicon-fidelity of peripheral
+        // internal hidden state is deferred.
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xFB3)),
             0x99,
-            "TMR3H is fully `u` on Tbl 4-4 col 6 -> preserved"
+            "TMR3H is fully `u` on Tbl 4-4 col 6 -> preserved across reset"
         );
+        let post_live = core.peripherals.timers.tmr3h_live_for_test();
         assert_eq!(
-            core.peripherals.timers.tmr3h_live_for_test(),
-            0x99,
-            "stack-fault reset re-derives Timer3 live shadow from canonical SFR"
+            post_live,
+            core.memory.read_raw(Address::from_raw(0xFB3)),
+            "post-reset live shadow must equal memory[TMR3H] (model contract)"
+        );
+        assert_ne!(
+            post_live, pre_live,
+            "sync_from_memory must run -- post-reset live shadow \
+             differs from pre-reset divergent value"
         );
     }
 
@@ -1170,6 +1210,49 @@ mod tests {
         core.memory.write_raw(Address::from_raw(RCON_ADDR), 0xA5);
         apply_reset(&mut core, &mut stack, ResetSource::StackFull);
         assert_eq!(rcon_byte(&core), 0xA5);
+    }
+
+    /// Both K20 and 2455 must clear INTCON bits 7..1 on
+    /// stack-fault reset (codex review of 5a315b3 MEDIUM:
+    /// the prior K20-only path left 2455's INTCON.GIE
+    /// set, which would let a still-pending IRQ
+    /// immediately re-vector after reset).  RBIF (bit 0)
+    /// is preserved per Tbl 4-4 column 6.
+    #[test]
+    fn stack_full_clears_intcon_on_both_variants() {
+        for variant in [Variant::Pic18F25K20, Variant::Pic18F2455] {
+            let mut core = Core::new(variant);
+            let mut stack = Stack::new();
+            // Set every INTCON bit.
+            core.memory.write_raw(Address::from_raw(0xFF2), 0xFF);
+            apply_reset(&mut core, &mut stack, ResetSource::StackFull);
+            let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
+            assert_eq!(
+                intcon & 0xFE,
+                0,
+                "{:?}: INTCON bits 7..1 must clear on stack-full reset",
+                variant
+            );
+            assert_eq!(
+                intcon & 0x01,
+                0x01,
+                "{:?}: INTCON.RBIF (bit 0) preserved per Tbl 4-4 col 6",
+                variant
+            );
+        }
+    }
+
+    #[test]
+    fn stack_underflow_clears_intcon_on_both_variants() {
+        for variant in [Variant::Pic18F25K20, Variant::Pic18F2455] {
+            let mut core = Core::new(variant);
+            let mut stack = Stack::new();
+            core.memory.write_raw(Address::from_raw(0xFF2), 0xFF);
+            apply_reset(&mut core, &mut stack, ResetSource::StackUnderflow);
+            let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
+            assert_eq!(intcon & 0xFE, 0, "{:?}: INTCON bits 7..1 clear", variant);
+            assert_eq!(intcon & 0x01, 0x01, "{:?}: RBIF preserved", variant);
+        }
     }
 
     #[test]

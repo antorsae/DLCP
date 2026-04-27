@@ -181,21 +181,26 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
             return None;
         }
         let return_pc = core.pc();
-        let was_stkful = stack.overflow();
-        let _pushed = stack.push(return_pc);
+        let pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if !was_stkful && stack.overflow() && core.config.stvren() {
+        if pushed
+            && stack.depth() as usize == crate::stack::STACK_DEPTH
+            && core.config.stvren()
+        {
             // Stack-full reset during IRQ dispatch.  Per
-            // DS39632E §5.1.2.4 the FILLING push (depth
-            // 30->31, STKFUL transition 0->1) triggers the
-            // reset.  Do NOT save fast regs, clear GIE, or
-            // set the vector PC -- the reset preempts
-            // vectoring.  Stack-full reset uses the
-            // MCLR-style SFR reset path (Tbl 4-4 column 6),
-            // which clears INTCON.GIE so the very next step
-            // cannot immediately re-vector.  Codex review of
+            // DS39632E §5.1.2.4 the push that takes the
+            // stack to depth=31 ("becomes full") triggers
+            // the reset; STKFUL latches as a side effect.
+            // Do NOT save fast regs, clear GIE, or set the
+            // vector PC -- the reset preempts vectoring.
+            // Stack-full reset uses the MCLR-style SFR
+            // reset path (Tbl 4-4 column 6), which clears
+            // INTCON.GIE so the very next step cannot
+            // immediately re-vector.  Codex review of
             // 2fa7d0a MEDIUM 3 + 41d6195 MEDIUM (trigger
-            // semantics).
+            // is the FILLING push) + 5a315b3 MEDIUM
+            // (trigger keyed to depth-becomes-full, not
+            // STKFUL latch transition).
             crate::reset::apply_reset(
                 core,
                 stack,
@@ -227,10 +232,12 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     // save/restore in software during the low-priority ISR.
     if is_irq_pending_high(mem_ref) {
         let return_pc = core.pc();
-        let was_stkful = stack.overflow();
-        let _pushed = stack.push(return_pc);
+        let pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if !was_stkful && stack.overflow() && core.config.stvren() {
+        if pushed
+            && stack.depth() as usize == crate::stack::STACK_DEPTH
+            && core.config.stvren()
+        {
             crate::reset::apply_reset(
                 core,
                 stack,
@@ -248,10 +255,12 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     }
     if is_irq_pending_low(mem_ref) {
         let return_pc = core.pc();
-        let was_stkful = stack.overflow();
-        let _pushed = stack.push(return_pc);
+        let pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if !was_stkful && stack.overflow() && core.config.stvren() {
+        if pushed
+            && stack.depth() as usize == crate::stack::STACK_DEPTH
+            && core.config.stvren()
+        {
             crate::reset::apply_reset(
                 core,
                 stack,
