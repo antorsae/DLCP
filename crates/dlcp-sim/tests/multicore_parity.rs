@@ -352,11 +352,17 @@ fn chain_with_v171_and_v31_steps_without_panic() {
 /// surfaces the NEXT bottleneck.
 ///
 /// The probe is `#[ignore]`-gated so default `cargo test`
-/// runs stay fast (< 1 s).  It's report-only today: prints
-/// the diagnostic state and the convergence point if any,
-/// but does NOT panic on timeout.  When task #28 lands a
-/// follow-up commit can tighten this into a hard-pass
-/// assertion (P3.5 final-acceptance milestone).
+/// runs stay fast (< 1 s).  It is report-only for the
+/// UART-TX convergence dimension: prints the diagnostic
+/// state and the convergence point if any, but does NOT
+/// fail solely for missing UART TX.  A defensive
+/// `dsp_acked >= 1000` floor DOES fire on the no-UART
+/// timeout path so a future regression (TAS3108 unwiring,
+/// ADC AN0 gate breaking, executor losing forward
+/// progress) doesn't silently turn the probe into a
+/// no-op.  When task #28 lands a follow-up commit can
+/// tighten the UART side into a hard-pass assertion (P3.5
+/// final-acceptance milestone).
 #[test]
 #[ignore = "probe test; ~32 s wall to run.  See test body for current state."]
 fn chain_v171_v31_reaches_first_uart_tx() {
