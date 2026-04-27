@@ -414,6 +414,116 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     );
 }
 
+/// Probe (P3.5 part-10b): how long until V3.1 + V1.71 emits
+/// the FULL gpsim-observed 7-frame burst (1 CONTROL→MAIN +
+/// 6 MAIN→CONTROL = 21 bytes total)?  Empirical convergence
+/// point informs the safety ceiling for the hard-pass
+/// bit-exact test.
+///
+/// Prints the captured bytes (per direction) so we can
+/// see whether the sequence matches gpsim ground truth at
+/// the byte level before tightening to a strict
+/// `assert_eq!`.  Marked `#[ignore]` because the wall-clock
+/// is unknown until the probe runs (likely several seconds
+/// while the firmware emits all 7 frames).
+#[test]
+#[ignore = "P3.5 part-10b probe; wall-clock TBD until V3.1 emits all 7 frames"]
+fn chain_v171_v31_emits_full_handshake_burst() {
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path())
+        .expect("V3.1 hex parses");
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None);
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000));
+    main.peripherals.adc.set_an0_sample(0x0300);
+    let mut chain = Chain::new();
+    let i_control = chain.push_core(control);
+    let i_main = chain.push_core(main);
+    chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
+    let i_tas3108 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_tas3108);
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    // Wait for 21 bytes total (7 frames * 3 bytes), or 5 B
+    // ticks max (~35 s wall).  Ground-truth gpsim run took
+    // 118 s wall to complete the test; Rust should be much
+    // faster but allow generous headroom.
+    let advanced = chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| c.uart_tx_history.len() >= 21,
+    );
+
+    // Split into direction-specific byte streams.
+    let ctrl_to_main: Vec<u8> = chain
+        .uart_tx_history
+        .iter()
+        .filter(|r| r.src_core == i_control && r.dst_core == i_main)
+        .map(|r| r.byte)
+        .collect();
+    let main_to_ctrl: Vec<u8> = chain
+        .uart_tx_history
+        .iter()
+        .filter(|r| r.src_core == i_main && r.dst_core == i_control)
+        .map(|r| r.byte)
+        .collect();
+    let ctrl_frames = parse_chain_frames(&ctrl_to_main);
+    let main_frames = parse_chain_frames(&main_to_ctrl);
+
+    eprintln!(
+        "PROBE 10b: advanced={advanced} ticks ({:.1} s sim @ 16 ticks/Tcy / 4 MIPS)",
+        advanced as f64 / 16.0 / 4_000_000.0,
+    );
+    eprintln!(
+        "  CTRL→MAIN bytes ({}): {:02X?}",
+        ctrl_to_main.len(),
+        ctrl_to_main
+    );
+    eprintln!("  CTRL→MAIN frames ({}): {:?}", ctrl_frames.len(), ctrl_frames);
+    eprintln!(
+        "  MAIN→CTRL bytes ({}): {:02X?}",
+        main_to_ctrl.len(),
+        main_to_ctrl
+    );
+    eprintln!("  MAIN→CTRL frames ({}): {:?}", main_frames.len(), main_frames);
+
+    // Compare against ground truth IF the fixture is
+    // present; otherwise just report.
+    let root = repo_root();
+    let dir = root.join(
+        "artifacts/ground_truth/\
+         test_v171_v31_chain__test_v171_v31_chain_reaches_display__\
+         23ccf08e11a5",
+    );
+    if dir.exists() {
+        let gt_ctrl = load_ground_truth_frames(&dir.join("uart_tx_control.jsonl"))
+            .expect("CONTROL ground truth parses");
+        let gt_main = load_ground_truth_frames(&dir.join("uart_tx_main_0.jsonl"))
+            .expect("MAIN ground truth parses");
+        eprintln!(
+            "  GROUND-TRUTH CTRL→MAIN frames ({}): {:?}",
+            gt_ctrl.len(),
+            gt_ctrl
+        );
+        eprintln!(
+            "  GROUND-TRUTH MAIN→CTRL frames ({}): {:?}",
+            gt_main.len(),
+            gt_main
+        );
+        if ctrl_frames == gt_ctrl && main_frames == gt_main {
+            eprintln!("  STATUS: bit-exact match ✓");
+        } else {
+            eprintln!(
+                "  STATUS: divergence -- ctrl_match={}, main_match={}",
+                ctrl_frames == gt_ctrl,
+                main_frames == gt_main,
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ground-truth comparison helpers (P3.5 part-10).
 //
