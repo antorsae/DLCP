@@ -1008,10 +1008,11 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         let pc_high: u16 = (pc & 0xFF00) as u16;
         *pc_histogram.entry(pc_high).or_insert(0) += 1;
         // Tightened range: v171_bf2x_case_check body runs from
-        // 0x0630 through 0x0696 (flow_rx_parser_entry_05EA, the
-        // shared parser tail).  Prior 0x0700 ceiling included
-        // unrelated following routines and would overcount any
-        // hits.  Codex review of 56841f4 LOW.
+        // 0x0630 up to (but excluding) 0x0696, where the shared
+        // parser tail flow_rx_parser_entry_05EA begins.  Prior
+        // 0x0700 ceiling included unrelated following routines
+        // and would overcount any hits.  Codex review of 56841f4
+        // LOW.
         if pc >= 0x0630 && pc < 0x0696 {
             bf2x_dispatch_hits += 1;
         }
