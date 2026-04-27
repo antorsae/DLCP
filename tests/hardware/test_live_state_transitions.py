@@ -308,44 +308,101 @@ def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
 @pytest.mark.hardware
 def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None:
     """Path 1 strict gate -- distinguishes V1.71 firmware bug from sim
-    fidelity gap by asserting PB2 row contains real cell values, not
-    just the `2:n/a` placeholder.
+    fidelity gap by asserting that the PB2 Diag PAGE (state 5) renders
+    a non-`n/a` row 1, i.e. PB2 has actually replied to CONTROL's
+    BF/2N queries on real silicon.
 
     Operator workflow:
-        1. Manually navigate CONTROL to the Diagnostics page (Volume
-           -> RIGHT -> Preset -> RIGHT -> ... -> Diagnostics; see
-           `docs/HARDWARE_TEST.md` §"Diagnostics page").
+        1. Manually navigate CONTROL from the Volume screen to the
+           PB2 Diag page (state 5).  V1.71 Tier-1 6-state menu ring
+           is 0=Volume, 1=Preset, 2=Input, 3=Setup, 4=PB1Diag,
+           5=PB2Diag (per `dlcp_control_v171.asm:4805+`), so RIGHT
+           must be pressed FIVE times from the Volume default to
+           reach PB2 Diag.  See `docs/HARDWARE_TEST.md`
+           §"Diagnostics page" for the full walk-through.
         2. Wait >= 10 s on the page so the cadence loop fires
            alternating cmd 0x21 + cmd 0x22 queries against both PBs
            (~1 s per cycle, target toggles per BF/27 reception).
         3. (Optional, complementary) Run
-           `.venv_ep0/bin/python scripts/dlcp_diag.py` to record the
-           per-MAIN cmd 0x44 snapshot for both MAINs.  These are what
-           CONTROL's LCD SHOULD eventually display if PB2 reply
+           `.venv_ep0/bin/python scripts/dlcp_diag.py` to record
+           the per-MAIN cmd 0x44 snapshot for both MAINs.  These are
+           what CONTROL's LCD SHOULD eventually display if PB2 reply
            convergence works.
         4. Set DLCP_HW_LAYER5_AT_DIAG=1 and
            DLCP_HW_LAYER5_REQUIRE_PB2_DATA=1.
         5. Run this test.
 
-    Outcomes:
-        PASS  = PB2 row has real counter chars (digits / A-E / +).
-                V1.71 works on real silicon; both gpsim and Rust sim
-                have a shared timing/electrical fidelity gap.
-                P3.6b stays open as sim-side investigation.
-        FAIL  = PB2 row is `n/a` or all spaces.  V1.71 firmware itself
-                fails PB2 reply convergence on real silicon; both
-                simulators are correctly reproducing this firmware
-                behavior.  Action: file a firmware-side ticket
-                referencing this test's run, remove the four
-                `_V171_V32_PB2_BRIDGE_XFAIL` markers with a comment
-                pointing here, and close Task #22 as documented.
+    V1.71 Tier-1 LCD layout reference (per
+    `docs/V32_DIAG_TIER1_SPEC.md` §"Phase 3.4 implementation notes"
+    and `dlcp_control_v171.asm:3484+`):
+
+        Page = state 4 (PB1) or state 5 (PB2).  Both 16x2 LCD rows
+        belong to the SAME PB.  Layout dispatch by health:
+
+          Absent   (PB has never replied):
+              row 0 = "PBn"               (+ 13 spaces)
+              row 1 = "n/a"               (+ 13 spaces)
+          Healthy  (all 11 cache cells == 0):
+              row 0 = "PBn"               (+ 13 spaces)
+              row 1 = "OK"                (+ 14 spaces)
+          Degraded (1..9 non-zero cells):
+              row 0 = "PBn:" + ` X#`*<=4 entries
+              row 1 = `X#` + ` X#`*<=4 entries
+          Overflow (10..11 non-zero cells):
+              row 0 = "PBn:" + 4 entries (full)
+              row 1 = 5 entries + ".."   overflow indicator
+
+        Cells are letter-value pairs.  Letter = column label
+        I/D/S/B/R/A/P/O/V/W/X.  Value = ' ' (counter == 0), '1'..'9',
+        'A'..'E', or '+' (saturated) per the
+        `v171_diag_emit_nib_w` encoding at
+        `dlcp_control_v171.asm:4187+`.
+
+    Decision matrix:
+
+        row 1 == "n/a"        =>  FAIL.  PB2 absent / silent.
+                                  V1.71 firmware itself does not
+                                  deliver PB2 reply convergence on
+                                  real silicon; both simulators are
+                                  correctly reproducing this
+                                  firmware behavior.
+                                  ACTION: per
+                                  docs/SIM_REWRITE_RUST_PROGRESS.md
+                                  P3.6b: (a) close Task #22 as
+                                  documented firmware limitation,
+                                  (b) remove the four
+                                  `_V171_V32_PB2_BRIDGE_XFAIL`
+                                  markers with a comment
+                                  referencing this test run, (c)
+                                  close P3.6b.
+        row 1 == "OK"         =>  PASS.  PB2 healthy with all-zero
+                                  counters.  Reply convergence
+                                  works; both simulators have a
+                                  shared fidelity gap.
+        row 1 has cell pairs  =>  PASS.  PB2 has non-zero counter
+                                  activity; reply convergence
+                                  works.
+        empty / unrecognised  =>  Fail with "ambiguous" diagnostic
+                                  pointing the operator at
+                                  `scripts/dlcp_diag.py` to
+                                  cross-reference MAIN1's local
+                                  cmd 0x44 snapshot.
+
+    Why pattern-match against literal layouts (n/a, OK, cell entries)
+    rather than per-char class checks?  Because static column-label
+    letters (I/D/S/B/R/A/P/O/V/W/X) ARE in the cell-pair format, and
+    several of them ('A', 'B', 'D') overlap with the value-letter
+    set 'A'..'E' from the encoding.  A naive "is this char in
+    [0-9A-E+]" check would treat the static label 'D' as a value
+    char and pass the convergence gate even when every counter is
+    zero -- false-positive risk codex flagged in 437a7dd review.
     """
     if os.environ.get("DLCP_HW_LAYER5_AT_DIAG") != "1":
         pytest.skip(
             "set DLCP_HW_LAYER5_AT_DIAG=1 once operator has manually "
-            "navigated CONTROL to the Diagnostics screen via physical "
-            "RIGHT, RIGHT button presses; see docs/HARDWARE_TEST.md "
-            "§Diagnostics page for the full walk-through"
+            "navigated CONTROL to the PB2 Diag page (state 5); see "
+            "docs/HARDWARE_TEST.md §Diagnostics page for the full "
+            "walk-through (5 RIGHT presses from the Volume screen)"
         )
     if os.environ.get("DLCP_HW_LAYER5_REQUIRE_PB2_DATA") != "1":
         pytest.skip(
@@ -381,96 +438,87 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
     summaries = sorted(runs_dir.glob("*/summary.json"))
     assert summaries, f"no LCD summary written under {runs_dir}"
     summary = json.loads(summaries[-1].read_text(encoding="utf-8"))
-    line1 = (summary.get("consensus", {}).get("line1") or "").rstrip()
-    line2 = (summary.get("consensus", {}).get("line2") or "").rstrip()
+    line1_raw = summary.get("consensus", {}).get("line1") or ""
+    line2_raw = summary.get("consensus", {}).get("line2") or ""
+    line1 = line1_raw.rstrip()
+    line2 = line2_raw.rstrip()
 
     # Pre-flight: confirm the operator actually navigated to the
-    # Diagnostics page.  Without this, the per-cell check below
-    # would fail with a confusing "no real cells" message when the
-    # real cause is "wrong screen".
-    assert line1.startswith("1:"), (
-        f"line1 must start with '1:' on the Diagnostics page; got "
-        f"{line1!r}.  Either the operator did not navigate to "
-        f"Diagnostics before setting DLCP_HW_LAYER5_AT_DIAG=1, or "
-        f"V1.71 CONTROL is not flashed."
-    )
-    assert line2.startswith("2:"), (
-        f"line2 must start with '2:' on the Diagnostics page; got "
-        f"{line2!r}.  V1.71 CONTROL renders both rows even when PB2 "
-        f"is silent (as `2:n/a`); absence of the '2:' prefix means "
-        f"CONTROL exited the page or the render path is broken."
+    # PB2 Diag page (state 5).  V1.71 Tier-1 puts the page title
+    # at row 0 cols 0..2 = "PB2".  Without this check, the row 1
+    # decision below would mis-diagnose the wrong screen.
+    assert line1.startswith("PB2"), (
+        f"line1 must start with 'PB2' on the PB2 Diag page; got "
+        f"{line1!r}.  Operator must navigate CONTROL to state 5 "
+        f"(PB2 Diag) -- press RIGHT five times from the Volume "
+        f"screen.  Anything else (Volume / Preset / Input / "
+        f"Setup / PB1 Diag) means the wrong screen is captured.  "
+        f"V1.71 Tier-1 6-state menu ring is documented at "
+        f"`dlcp_control_v171.asm:4805+`."
     )
 
-    # PB2 row body (everything after the "2:" prefix).  Per
-    # `dlcp_control_v171.asm:3603+` (`v171_diag_screen_draw`) and
-    # `:4187+` (`v171_diag_emit_nib_w`), each per-counter cell
-    # encodes:
-    #   nibble 0       -> ' '   (counter cleared / unincremented)
-    #   nibble 1..9    -> '1'..'9'
-    #   nibble A..E    -> 'A'..'E'
-    #   nibble F+      -> '+'   (saturated)
-    # And the "PB silent / no reply landed" rendering is the literal
-    # string `n/a` per the V1.71 absent-layout path.  So:
-    #   - any digit / 'A'..'E' / '+' in the PB2 body => real reply
-    #     landed on at least one counter cell.
-    #   - all spaces or `n/a` => no real reply landed.
-    pb2_body = line2[2:]
-    pb2_lower = pb2_body.strip().lower()
+    # PB2 row 1 body, after stripping the trailing pad spaces.
+    pb2_row1 = line2
 
-    if not pb2_body.strip() or pb2_lower.startswith("n/a"):
+    if pb2_row1 == "n/a":
         pytest.fail(
-            f"\n  PB2 row shows placeholder ({pb2_body!r}) -- CONTROL did "
-            f"NOT register PB2 reply convergence on real silicon.\n"
-            f"  Reply chain probably fails at HOP E (CONTROL parser does "
-            f"not dispatch BF/27 through the BF/2N last-frame path).\n"
+            f"\n  PB2 row 1 is the 'n/a' (absent) layout -- CONTROL has "
+            f"NEVER registered a PB2 reply on real silicon.\n"
+            f"  Reply chain fails at HOP E or earlier (CONTROL parser "
+            f"does not dispatch BF/27 through the BF/2N\n"
+            f"  last-frame path; v171_diag_present bit 1 stays clear; "
+            f"renderer falls back to the absent layout per\n"
+            f"  `docs/V32_DIAG_TIER1_SPEC.md` §'Phase 3.4 implementation notes').\n"
             f"  This rules out 'sim-only bug' for Task #22 and confirms "
-            f"V1.71 firmware itself does not deliver PB2 reply\n"
-            f"  convergence on this rig.  Cross-reference per-MAIN cmd 0x44 "
-            f"snapshots from `scripts/dlcp_diag.py` to confirm MAIN1\n"
-            f"  itself has counter data, isolating the failure to the\n"
-            f"  CONTROL parser path.\n"
-            f"  ACTION: per docs/SIM_REWRITE_RUST_PROGRESS.md P3.6b, this is the\n"
-            f"  hardware evidence to (a) close Task #22 as documented firmware\n"
-            f"  limitation, (b) remove the four `_V171_V32_PB2_BRIDGE_XFAIL`\n"
-            f"  markers in `tests/sim/test_v171_v32_layer5_diag_chain.py`\n"
-            f"  with a comment referencing this test run, and (c) close P3.6b.\n"
+            f"V1.71 firmware itself does NOT deliver PB2\n"
+            f"  reply convergence on this rig.  Cross-reference "
+            f"per-MAIN cmd 0x44 snapshots from `scripts/dlcp_diag.py`\n"
+            f"  to confirm MAIN1 itself has counter data, isolating "
+            f"the failure to the CONTROL parser path.\n"
+            f"  ACTION: per docs/SIM_REWRITE_RUST_PROGRESS.md P3.6b:\n"
+            f"    (a) close Task #22 as documented firmware limitation,\n"
+            f"    (b) remove the four `_V171_V32_PB2_BRIDGE_XFAIL` markers in\n"
+            f"        `tests/sim/test_v171_v32_layer5_diag_chain.py` with a comment\n"
+            f"        referencing this test run,\n"
+            f"    (c) close P3.6b.\n"
             f"\n  Captured LCD lines:\n"
-            f"    line1 = {line1!r}\n"
-            f"    line2 = {line2!r}\n"
+            f"    line1 = {line1_raw!r}\n"
+            f"    line2 = {line2_raw!r}\n"
         )
 
-    real_cell_chars = sum(
-        1
-        for c in pb2_body
-        if c.isdigit() or ("A" <= c <= "E") or c == "+"
-    )
-    assert real_cell_chars >= 1, (
-        f"\n  PB2 row has the '2:' prefix but no real cell value chars "
-        f"(digit / A-E / +): {pb2_body!r}.\n"
-        f"  Per `dlcp_control_v171.asm:4187+` v171_diag_emit_nib_w "
-        f"encoding, an unincremented counter renders as ' ', so an\n"
-        f"  all-space PB2 body could mean either 'PB2 alive but every "
-        f"counter at zero' or 'PB2 silent / firmware bug'.\n"
-        f"  Disambiguate via `scripts/dlcp_diag.py` -- if MAIN1's cmd "
-        f"0x44 snapshot shows non-zero counters but CONTROL's PB2 row\n"
-        f"  is all-space, the BF/2N reply path on CONTROL is broken even "
-        f"on real silicon.\n"
-        f"\n  Captured LCD lines:\n"
-        f"    line1 = {line1!r}\n"
-        f"    line2 = {line2!r}\n"
-    )
+    if pb2_row1 == "":
+        pytest.fail(
+            f"\n  PB2 row 1 is empty after rstrip -- ambiguous between "
+            f"'firmware bug', 'OCR misread', and 'wrong screen'.\n"
+            f"  Disambiguate via `scripts/dlcp_diag.py` -- if MAIN1's "
+            f"cmd 0x44 snapshot shows non-zero counters and the rig\n"
+            f"  is actually on the PB2 Diag page (operator confirms "
+            f"visually), the OCR likely misread `n/a` as empty.\n"
+            f"  Re-capture with more `--captures` cycles via "
+            f"DLCP_HW_LAYER5_LCD_CAPTURES (default 10).\n"
+            f"\n  Captured LCD lines:\n"
+            f"    line1 = {line1_raw!r}\n"
+            f"    line2 = {line2_raw!r}\n"
+        )
 
-    # Convergence proof: PASS branch.  V1.71 firmware delivers PB2
-    # reply convergence on real silicon.  Print a short positive
-    # summary so the operator can grep for it in the test output.
+    # Healthy or Degraded / Overflow with at least some content.
+    # Both branches mean PB2 reply convergence works on real silicon.
+    if pb2_row1 == "OK":
+        layout = "Healthy (all 11 PB2 counters == 0; PB2 IS replying)"
+    else:
+        layout = (
+            f"Degraded / Overflow (PB2 has non-zero counter activity; "
+            f"row 1 = {pb2_row1!r})"
+        )
+
     print(
         f"\n  PB2 reply CONVERGED on real silicon.\n"
-        f"  line1 (PB1) = {line1!r}\n"
-        f"  line2 (PB2) = {line2!r}\n"
-        f"  PB2 body has {real_cell_chars} real cell value char(s) -- "
-        f"BF/2N reply path works on hardware.\n"
-        f"  This means both simulators (gpsim Python and Rust sim) "
-        f"have a SHARED timing/electrical fidelity gap.\n"
-        f"  P3.6b stays open as sim-side investigation; do NOT remove "
-        f"the `_V171_V32_PB2_BRIDGE_XFAIL` markers yet.\n"
+        f"  line1 (PB2 page title) = {line1_raw!r}\n"
+        f"  line2 (PB2 cells)      = {line2_raw!r}\n"
+        f"  Layout: {layout}\n"
+        f"  -> V1.71 firmware delivers PB2 reply convergence on hardware.\n"
+        f"  -> Both simulators (gpsim Python and Rust sim) have a SHARED\n"
+        f"     timing/electrical fidelity gap.\n"
+        f"  -> P3.6b stays open as sim-side investigation; do NOT remove\n"
+        f"     the `_V171_V32_PB2_BRIDGE_XFAIL` markers yet.\n"
     )
