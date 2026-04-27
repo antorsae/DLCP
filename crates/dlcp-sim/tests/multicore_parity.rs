@@ -752,10 +752,11 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 /// complete.  The PC histogram is informational only --
 /// 200 samples * 10 M ticks = 2 B ticks at K20's
 /// 16 ticks/Tcy = 125 M Tcy.  A ~50-Tcy dispatch body
-/// has only ~1.6% probability of being caught per sample
-/// even when firing once per chunk -- so 0/200 hits is
-/// consistent with sparse sampling, not proof of
-/// non-execution.
+/// (~800 ticks) gives only ~0.008% per-sample chance of
+/// landing on the dispatch -- ~1.6% cumulative across
+/// the 200 sample windows even when firing once per
+/// chunk.  So 0/200 hits is consistent with sparse
+/// sampling, not proof of non-execution.
 ///
 /// Phrased correctly: CONTROL never **successfully
 /// processes** BF/27 through the BF/2N last-frame path.
@@ -990,7 +991,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let mut target_changes: Vec<u8> = Vec::new();
     let mut last_target: u8 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196));
     target_changes.push(last_target);
-    let mut bf2x_dispatch_hits: u32 = 0; // PC in 0x0630..0x0700
+    let mut bf2x_dispatch_hits: u32 = 0; // PC in 0x0630..0x0696
     let total_chunks: u64 = 200;
     let chunk_ticks: u64 = 10_000_000;
     for _ in 0..total_chunks {
@@ -1037,7 +1038,8 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         //   0x198 = v171_diag_poll_lo
         //   0x199 = v171_diag_poll_hi
         //   0x19A = v171_diag_present_snap
-        //   0x19C = v171_diag_flags (RESET_PENDING / RUNTIME_PENDING)
+        //   0x19C = v171_diag_flags (bit 0 DIRTY, bit 1 RUNTIME_PENDING,
+        //                             bit 2 RESET_PENDING per dlcp_control_ram.inc:307+)
         //   0x19D = v171_diag_reset_seen
         let poll_lo = chain.cores[i_ctl]
             .memory
@@ -1074,7 +1076,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     );
     eprintln!("v171_diag_reset_seen (0x19D) at end: 0x{diag_reset_seen:02X}");
     eprintln!("v171_diag_present_snap (0x19A) at end: 0x{diag_present_snap:02X}");
-    eprintln!("BF/2N dispatch hits (PC in 0x0630..0x0700): {bf2x_dispatch_hits} / {samples}");
+    eprintln!("BF/2N dispatch hits (PC in 0x0630..0x0696): {bf2x_dispatch_hits} / {samples}");
     eprintln!("v171_diag_target trajectory: {:02X?}", target_changes);
 
     // Stage 3: run until both PB-reply bits land in
