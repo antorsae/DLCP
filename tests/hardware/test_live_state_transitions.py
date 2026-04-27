@@ -333,8 +333,11 @@ def _assert_pb_diag_page_converged(
     Captures the LCD via `hardware_lcd_probe` and asserts the
     operator-navigated page is in one of the documented PASS layouts
     (Degraded/Overflow with cell entries, or Healthy short with
-    `OK`).  Routes the Absent (`n/a`) layout to a FAIL with the
-    Task #22 P3.6b action items.
+    `OK`).  Routes the Absent (`n/a`) layout to a FAIL pointing at
+    the PB1 x PB2 decision matrix in the section header above
+    (each PB's failure cannot be acted on in isolation -- the
+    actions depend on the OTHER PB's result, so per-message
+    action items would mislead).
 
     `pb_num` selects the page to validate (1 or 2).  The literal
     page-title prefix is `"PB1"` or `"PB2"` per the V1.71 Tier-1
