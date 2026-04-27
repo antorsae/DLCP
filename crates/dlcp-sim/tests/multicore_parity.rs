@@ -527,6 +527,37 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
     chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
 
+    // Configuration audit (codex LOW from 40864f7
+    // review): the observation-side ring-edge whitelist
+    // below is a necessary but not sufficient check --
+    // it can't detect a duplicate or extra coupling
+    // whose source happened not to emit before
+    // convergence.  Pin the wiring at the source by
+    // walking `pinnet.uart` and asserting EXACTLY the
+    // three ring edges, in the order they were added,
+    // with no duplicates or extras.
+    let expected_uart_edges = [
+        (i_ctl, i_main0),
+        (i_main0, i_main1),
+        (i_main1, i_ctl),
+    ];
+    assert_eq!(
+        chain.pinnet.uart.len(),
+        expected_uart_edges.len(),
+        "ring must have exactly 3 UART couplings, got {}",
+        chain.pinnet.uart.len(),
+    );
+    for (idx, expected) in expected_uart_edges.iter().enumerate() {
+        let actual = (
+            chain.pinnet.uart[idx].src_core,
+            chain.pinnet.uart[idx].dst_core,
+        );
+        assert_eq!(
+            actual, *expected,
+            "ring edge {idx} mismatch: got {actual:?}, expected {expected:?}"
+        );
+    }
+
     // Each MAIN has its own TAS3108 audio DSP wired to
     // its MSSP I²C bus.  Without the slaves both MAINs
     // park in `dsp_ping`'s NACK retry loop and never
