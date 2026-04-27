@@ -308,9 +308,14 @@ fn tblptr_auto_dec(value: u32) -> u32 {
 ///     `core.config.raw()` so TBLRD reflects the same bytes
 ///     the hex loader stored in the parsed CONFIG region.
 ///   * `0x3FFFFE..0x400000` -- silicon DEVID (read-only).
-///     Reported as `0xFF` until per-variant DEVID values are
-///     wired in (gpsim reports the actual silicon DEVID;
-///     deferred until any test needs it).
+///     Reported as `0` until per-variant DEVID values are
+///     wired in -- gpsim reports the actual silicon DEVID,
+///     but reading 0 from the gap is a strict subset of
+///     "Read '0'" silicon behaviour, so firmware that does
+///     a TBLRD on DEVID without programming sees the same
+///     bytes regardless.  Codex review of 1bd913b LOW:
+///     keep the fallback consistent with the gap-region
+///     `0` until a test demands the real DEVID values.
 ///
 /// EEPROM read-back is NOT a TBLRD path -- firmware reads
 /// EEPROM via EECON1.EEPGD=0 + EECON1.RD which goes through
@@ -1479,10 +1484,12 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             //                                  then TBLPTR ±= 1.
             // No flag effects; 2 Tcy.
             //
-            // CONFIG / User ID / EEPROM read-back via TBLRD is
-            // deferred -- those windows aren't yet wired into
-            // Core (only `core.flash()` for program memory
-            // 0x000..0x8000).  Out-of-range reads return 0xFF.
+            // CONFIG (`core.config`), User ID (`core.user_id`),
+            // and the unimplemented memory gaps are all routed
+            // through `read_flash_byte` (task #17).  EEPROM
+            // read-back is NOT a TBLRD path -- firmware reads
+            // EEPROM via EECON1.EEPGD=0 + EECON1.RD through
+            // the P2.5 EEPROM peripheral.
             if mode == TableMode::PreIncrement {
                 let new_ptr = tblptr_auto_inc(read_tblptr(core));
                 write_tblptr(core, new_ptr);
