@@ -27,6 +27,7 @@
 #![allow(dead_code, reason = "P1.5 storage; consumed by P1.6 reset path + P1.2 CALL/RETURN executor")]
 
 use crate::core::Core;
+use crate::memory::{Address, Memory};
 
 /// Maximum number of return addresses the PIC18 hardware stack
 /// can hold.
@@ -296,6 +297,29 @@ impl Stack {
         // can't mark the stack as full just by writing 1).
         let mask = STKPTR_STKFUL | STKPTR_STKUNF;
         self.flags &= value & mask;
+    }
+
+    /// Mirror canonical stack state into the SFR bytes at
+    /// 0xFFC (STKPTR), 0xFFD (TOSL), 0xFFE (TOSH), 0xFFF
+    /// (TOSU).  Called by the executor after every stack
+    /// mutation (CALL / RCALL / RETURN / RETLW / RETFIE /
+    /// PUSH / POP / IRQ entry) so firmware reads of these
+    /// SFRs return current values.  Per DS39632E §5.4 the
+    /// TOS is always exposed at the top three SFR bytes;
+    /// software can also WRITE these to manipulate the
+    /// stack (handled by `crate::stack::write_tos_byte` via
+    /// the executor's SFR-write hooks; a separate concern).
+    pub fn mirror_to_sfrs(&self, mem: &mut Memory) {
+        mem.write_raw(Address::from_raw(STKPTR_ADDR), self.stkptr());
+        let tos = self.top();
+        mem.write_raw(Address::from_raw(TOSL_ADDR), tos as u8);
+        mem.write_raw(Address::from_raw(TOSH_ADDR), (tos >> 8) as u8);
+        // TOSU<7:5> unimplemented per DS Tbl 5-1 footnote;
+        // TOS uses bits <20:16> of PC.
+        mem.write_raw(
+            Address::from_raw(TOSU_ADDR),
+            ((tos >> 16) as u8) & 0x1F,
+        );
     }
 }
 

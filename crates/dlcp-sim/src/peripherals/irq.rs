@@ -168,6 +168,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
         }
         let return_pc = core.pc();
         stack.push(return_pc);
+        stack.mirror_to_sfrs(&mut core.memory);
         // Clear GIE.
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_GIE_GIEH;
@@ -180,9 +181,18 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     // low-priority IRQs go to 0x0018 and clear GIEL.  Check
     // high before low so a same-cycle high+low pending pair
     // takes the high path first (per DS §9.3 priority order).
+    //
+    // Per DS §5.5.3, IRQ entry in IPEN=1 mode ALSO pushes
+    // W/STATUS/BSR onto the 1-deep fast shadow stack (the
+    // matching RETFIE 1 pops it).  IPEN=0 IRQ entry does NOT
+    // push the shadow -- that path's RETFIE 1 still pops
+    // (whatever was last saved by an explicit `CALL FAST`),
+    // which is V3.1's idiom.
     if is_irq_pending_high(mem_ref) {
         let return_pc = core.pc();
         stack.push(return_pc);
+        stack.mirror_to_sfrs(&mut core.memory);
+        core.save_fast_regs();
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_GIE_GIEH;
         mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
@@ -192,6 +202,8 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
     if is_irq_pending_low(mem_ref) {
         let return_pc = core.pc();
         stack.push(return_pc);
+        stack.mirror_to_sfrs(&mut core.memory);
+        core.save_fast_regs();
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_PEIE_GIEL;
         mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
@@ -617,6 +629,108 @@ mod tests {
         let c3 = step(&mut core, &mut stack).unwrap();
         assert_eq!(c3, 1, "NOP at 0x0042 runs in 1 Tcy");
         assert_eq!(core.pc(), 0x0044);
+    }
+
+    /// Task #15: `Core::save_fast_regs` / `restore_fast_regs`
+    /// snapshot and restore W/STATUS/BSR through a 1-deep
+    /// shadow.  Required for V3.1's `CALL FAST` +
+    /// `RETFIE 1` ISR idiom.
+    #[test]
+    fn fast_regs_save_and_restore_round_trip() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        // Stage initial W/STATUS/BSR via direct memory writes
+        // so the test doesn't depend on the executor.
+        core.memory
+            .write_raw(Address::from_raw(0xFE8), 0xAB); // WREG
+        core.memory
+            .write_raw(Address::from_raw(0xFD8), 0x1F); // STATUS (5 LSBs)
+        core.memory
+            .write_raw(Address::from_raw(0xFE0), 0x05); // BSR
+        core.save_fast_regs();
+        // Clobber.
+        core.memory
+            .write_raw(Address::from_raw(0xFE8), 0x00);
+        core.memory
+            .write_raw(Address::from_raw(0xFD8), 0x00);
+        core.memory
+            .write_raw(Address::from_raw(0xFE0), 0x00);
+        core.restore_fast_regs();
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFE8)),
+            0xAB,
+            "WREG must restore"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFD8)),
+            0x1F,
+            "STATUS must restore"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFE0)),
+            0x05,
+            "BSR must restore (low nibble)"
+        );
+    }
+
+    /// IRQ entry in IPEN=1 mode pushes the fast shadow; in
+    /// IPEN=0 mode it does NOT (compatibility, per
+    /// DS39632E §5.5.3).  Verify both paths.
+    #[test]
+    fn irq_dispatch_pushes_fast_shadow_only_in_ipen1() {
+        // IPEN=0 path: IRQ entry must NOT touch fast shadow.
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.set_pc(0x0042);
+        core.memory
+            .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH | 0x10 | 0x02);
+        // Pre-stage shadow with a sentinel value.
+        core.fast_shadow = crate::core::FastRegs {
+            wreg: 0x55,
+            status: 0x06,
+            bsr: 0x07,
+        };
+        let mut stack = Stack::new();
+        try_dispatch_irq(&mut core, &mut stack).unwrap();
+        // Shadow unchanged: IPEN=0 IRQ entry doesn't push.
+        assert_eq!(core.fast_shadow.wreg, 0x55);
+        assert_eq!(core.fast_shadow.status, 0x06);
+        assert_eq!(core.fast_shadow.bsr, 0x07);
+
+        // IPEN=1 path: IRQ entry MUST push current
+        // W/STATUS/BSR onto the shadow.
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.set_pc(0x0042);
+        core.memory
+            .write_raw(Address::from_raw(RCON_ADDR), RCON_IPEN);
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x10 | 0x02,
+        );
+        core.memory.write_raw(Address::from_raw(0xFE8), 0xAA);
+        core.memory.write_raw(Address::from_raw(0xFD8), 0x0F);
+        core.memory.write_raw(Address::from_raw(0xFE0), 0x03);
+        core.fast_shadow = crate::core::FastRegs::default();
+        let mut stack = Stack::new();
+        try_dispatch_irq(&mut core, &mut stack).unwrap();
+        assert_eq!(core.fast_shadow.wreg, 0xAA, "WREG pushed on IPEN=1 entry");
+        assert_eq!(core.fast_shadow.status, 0x0F);
+        assert_eq!(core.fast_shadow.bsr, 0x03);
+    }
+
+    /// IRQ entry mirrors the new TOS into 0xFFC..0xFFF SFRs
+    /// so firmware reads match the canonical Stack state.
+    #[test]
+    fn irq_dispatch_mirrors_stack_into_tos_sfrs() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        core.set_pc(0x1234);
+        core.memory
+            .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH | 0x10 | 0x02);
+        let mut stack = Stack::new();
+        try_dispatch_irq(&mut core, &mut stack).unwrap();
+        // Pushed PC = 0x001234.  SFR mirror must reflect it.
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFFC)), 1, "STKPTR depth=1");
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFFD)), 0x34, "TOSL");
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFFE)), 0x12, "TOSH");
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFFF)), 0x00, "TOSU");
     }
 
     /// After RETFIE, if a (different) IRQ flag is still

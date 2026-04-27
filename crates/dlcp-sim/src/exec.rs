@@ -1220,55 +1220,81 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         //     executor needs to gate on STVREN.  Requires a
         //     `Config` reference in `step()` -- structural
         //     change, deferred.  (Task #16)
-        Instruction::Call { n, fast: _ } => {
+        Instruction::Call { n, fast } => {
             stack.push(core.pc());
+            stack.mirror_to_sfrs(&mut core.memory);
+            if fast {
+                // Per DS39632E §5.5.3, CALL with s=1 also
+                // pushes W/STATUS/BSR onto the 1-deep fast
+                // shadow stack.  RETURN FAST / RETFIE FAST
+                // pops it.  V3.1's IRQ flow uses this idiom
+                // around `CALL main_isr_dispatch, FAST`.
+                core.save_fast_regs();
+            }
             core.set_pc(n.wrapping_mul(2));
             core.advance_cycles(2);
             Ok(2)
         }
         Instruction::Rcall { n } => {
+            // RCALL has no `s` bit on PIC18; never touches
+            // the fast shadow.
             stack.push(core.pc());
+            stack.mirror_to_sfrs(&mut core.memory);
             let offset = (n as i32).wrapping_mul(2);
             let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
             core.set_pc(new_pc);
             core.advance_cycles(2);
             Ok(2)
         }
-        Instruction::Return { fast: _ } => {
+        Instruction::Return { fast } => {
             let ret = stack.pop().unwrap_or(0);
+            stack.mirror_to_sfrs(&mut core.memory);
             core.set_pc(ret);
+            if fast {
+                // RETURN FAST: restore W/STATUS/BSR from the
+                // 1-deep shadow stack saved by the matching
+                // CALL FAST (DS §5.5.3).
+                core.restore_fast_regs();
+            }
             core.advance_cycles(2);
             Ok(2)
         }
         Instruction::RetLw { k } => {
             write_w(core, k);
             let ret = stack.pop().unwrap_or(0);
+            stack.mirror_to_sfrs(&mut core.memory);
             core.set_pc(ret);
             core.advance_cycles(2);
             Ok(2)
         }
-        Instruction::Retfie { fast: _ } => {
+        Instruction::Retfie { fast } => {
             let ret = stack.pop().unwrap_or(0);
+            stack.mirror_to_sfrs(&mut core.memory);
             core.set_pc(ret);
             // Restore GIE/GIEH (and GIEL when IPEN=1) so
             // a subsequent IRQ can dispatch on the next
             // instruction boundary.  Per DS39632E §9.3
             // RETFIE always re-enables interrupts -- the
             // `fast=true` flavour ALSO restores the
-            // shadow-stack WREG/STATUS/BSR (task #15
-            // deferral).  Phase-3.5 minimum: restore the
-            // gate bits only.  (Task #28.)
+            // 1-deep shadow stack of W/STATUS/BSR.  V3.1's
+            // ISR uses RETFIE 1 to undo the shadow push
+            // from `CALL FAST main_isr_dispatch`.  Task #15.
             crate::peripherals::irq::restore_gie_on_retfie(&mut core.memory);
+            if fast {
+                core.restore_fast_regs();
+            }
             core.advance_cycles(2);
             Ok(2)
         }
         Instruction::Push => {
             stack.push(core.pc());
+            stack.mirror_to_sfrs(&mut core.memory);
             core.advance_cycles(1);
             Ok(1)
         }
         Instruction::Pop => {
             stack.pop();
+            stack.mirror_to_sfrs(&mut core.memory);
             core.advance_cycles(1);
             Ok(1)
         }

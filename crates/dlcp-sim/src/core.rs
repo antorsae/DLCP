@@ -38,6 +38,22 @@ use crate::peripherals::Peripherals;
 /// (PIC18 ISA architectural constant, same for every PIC18 chip).
 pub const RESET_VECTOR: u32 = 0x0000;
 
+/// One-deep fast register shadow per DS39632E §5.5.3 /
+/// DS40001303H §5.5.3.  Saved on `CALL FAST` / hardware IRQ
+/// entry (in IPEN=1 mode); restored on `RETURN FAST` /
+/// `RETFIE FAST`.  When IPEN=0 (compatibility) the hardware
+/// IRQ entry does NOT push the shadow, but `CALL FAST` and
+/// `RETFIE FAST` still use it (the firmware can rely on the
+/// shadow to save W/STATUS/BSR around an explicit `CALL
+/// FAST main_isr_dispatch` even with IPEN=0 -- this is V3.1's
+/// idiom).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct FastRegs {
+    pub wreg: u8,
+    pub status: u8,
+    pub bsr: u8,
+}
+
 /// One PIC18 core: program memory + data memory + cycle counter
 /// + peripheral state machines.  P1.1 only allocates storage.
 /// Reset, instruction fetch, decode, and execute come online in
@@ -71,6 +87,14 @@ pub struct Core {
     /// Total Tcy elapsed since the last reset.  Plain `u64` is
     /// enough for >250 years at 4 MIPS, far beyond any test run.
     cycles: u64,
+    /// Fast register shadow (DS39632E §5.5.3): 1-deep
+    /// silicon-private stack of W/STATUS/BSR.  Pushed on
+    /// `CALL FAST` (s=1) and on hardware IRQ entry when
+    /// IPEN=1; popped on `RETURN FAST` and `RETFIE FAST`.
+    /// Without this, V3.1's ISR pattern (`CALL FAST
+    /// main_isr_dispatch` + `RETFIE 1`) corrupts main-line
+    /// W/STATUS/BSR.  Task #15.
+    pub fast_shadow: FastRegs,
 }
 
 impl Core {
@@ -90,7 +114,41 @@ impl Core {
             peripherals,
             pc: RESET_VECTOR,
             cycles: 0,
+            fast_shadow: FastRegs::default(),
         }
+    }
+
+    /// Snapshot W/STATUS/BSR into the fast shadow stack.
+    /// Called from `CALL FAST` (s=1) and from the IRQ
+    /// dispatcher when IPEN=1.  Per DS39632E §5.5.3 the
+    /// shadow is 1-deep -- nesting overwrites the prior
+    /// snapshot (firmware that nests CALL FAST inside an
+    /// IRQ does so at its own peril; V3.1 doesn't).
+    pub fn save_fast_regs(&mut self) {
+        self.fast_shadow = FastRegs {
+            wreg: self.memory.read_raw(crate::memory::Address::from_raw(0xFE8)),
+            status: self.memory.read_raw(crate::memory::Address::from_raw(0xFD8)),
+            bsr: self.memory.read_raw(crate::memory::Address::from_raw(0xFE0)),
+        };
+    }
+
+    /// Restore W/STATUS/BSR from the fast shadow stack.
+    /// Called from `RETURN FAST` and `RETFIE FAST`.  The
+    /// shadow stays populated across the restore (1-deep
+    /// silicon FIFO -- the same value would be re-restored
+    /// on a follow-up RETURN FAST without an intervening
+    /// CALL FAST, but firmware doesn't typically do that).
+    pub fn restore_fast_regs(&mut self) {
+        let snap = self.fast_shadow;
+        self.memory.write_raw(crate::memory::Address::from_raw(0xFE8), snap.wreg);
+        // STATUS unimplemented bits (7..5) read as 0 per
+        // DS Register 5-2; the snapshot is taken from a
+        // memory read that already passed through the SFR
+        // mask, so the stored value is already clean.
+        self.memory.write_raw(crate::memory::Address::from_raw(0xFD8), snap.status);
+        // BSR <7:4> unimplemented (DS §5.3.2); mask on
+        // restore for defensive parity with `write_bsr`.
+        self.memory.write_raw(crate::memory::Address::from_raw(0xFE0), snap.bsr & 0x0F);
     }
 
     /// Variant this core was constructed for.
