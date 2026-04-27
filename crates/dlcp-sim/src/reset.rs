@@ -429,13 +429,16 @@ fn apply_2455_mclr_irq_sfrs(core: &mut Core) {
     // = 0).
     core.memory
         .write_raw(Address::from_raw(0xFF0), 0xC0);
-    // IPR1 `1111 1111` -> on PIC18F2455 (28-pin) PSPIP
-    // (bit 7) is unimplemented and reads as 0 per DS39632E
-    // Tbl 4-4 second row + footnote 3 ("SPP not present on
+    // IPR1 `1111 1111` -> on PIC18F2455 (28-pin) SPPIP
+    // (Streaming Parallel Port Interrupt Priority, bit 7)
+    // is unimplemented and reads as 0 per DS39632E Tbl
+    // 4-4 second row + footnote 3 ("SPP not present on
     // 28-pin"), so the effective post-reset byte is 0x7F.
-    // This mirrors the K20 28-pin handling in
-    // `apply_k20_por_sfr_defaults` (also 0x7F).  Address
-    // 0xF9F per Tbl 5-1.
+    // The K20 has the same bit pattern but names it PSPIP
+    // (Parallel Slave Port -- different peripheral, same
+    // unimplemented-on-28-pin contract; see
+    // `apply_k20_por_sfr_defaults`).  Address 0xF9F per
+    // Tbl 5-1.
     core.memory
         .write_raw(Address::from_raw(0xF9F), 0x7F);
     // IPR2 `1111 1111` -> 0xFF.  Address 0xFA2 per Tbl 5-1.
@@ -1333,8 +1336,8 @@ mod tests {
     /// clear beyond INTCON to cover the full IRQ-related
     /// Tbl 4-4 column-6 group: PIE1 / PIR1 / PIE2 / PIR2
     /// zero, INTCON2 = 0xF5, INTCON3 = 0xC0, IPR1 = 0x7F
-    /// (PSPIP bit 7 unimplemented on 28-pin per DS footnote
-    /// 3), IPR2 = 0xFF, WDTCON zero.  Without these
+    /// (SPPIP bit 7 unimplemented on 28-pin 2455 per DS
+    /// footnote 3), IPR2 = 0xFF, WDTCON zero.  Without these
     /// clears, a stack-
     /// fault reset would leave stale enable / flag bits
     /// that could re-trigger an IRQ on the very next
@@ -1395,7 +1398,7 @@ mod tests {
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xF9F)),
             0x7F,
-            "IPR1 = 0x7F on 28-pin 2455 (PSPIP bit 7 unimplemented)"
+            "IPR1 = 0x7F on 28-pin 2455 (SPPIP bit 7 unimplemented)"
         );
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xFA2)),
