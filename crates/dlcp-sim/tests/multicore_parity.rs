@@ -52,6 +52,7 @@ use std::path::{Path, PathBuf};
 use dlcp_sim::chain::Chain;
 use dlcp_sim::core::Core;
 use dlcp_sim::hex::HexImage;
+use dlcp_sim::lcd::Hd44780;
 use dlcp_sim::memory::Variant;
 use dlcp_sim::peripherals::tas3108::Tas3108;
 use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin};
@@ -923,6 +924,114 @@ fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
             GPSIM_BURST,
         )
     });
+}
+
+/// P3.5 part-10 LCD bit-exact parity gate (task #34).
+///
+/// gpsim ground truth at the
+/// `test_v171_v31_chain_reaches_display` capture point
+/// shows CONTROL's LCD displaying:
+///   Line 1: "Volume:-17.0dB A"
+///   Line 2: "Auto Detect"
+///
+/// Our chain probe drives an `Hd44780` slave coupled to
+/// CONTROL's GPIO bus (RS=LATA[5], E=LATB[4], D4..D7 =
+/// PORTB[3:0]).  Run until both lines stabilise to the
+/// expected text or hit a budget ceiling, then assert
+/// bit-exact match.
+///
+/// Builds on tasks #30 (chain protocol unblock), #33
+/// (V2.3-combined EEPROM seed), and #34 (HD44780 model
+/// + chain coupling).
+#[test]
+fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path())
+        .expect("V3.1 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main = build_core_from_hex(
+        Variant::Pic18F2455,
+        &v31,
+        Some(0x1000),
+        Some(0x1008),
+    );
+    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
+        main.peripherals.eeprom.set_byte(addr as u8, byte);
+    }
+    main.peripherals.adc.set_an0_sample(0x0300);
+    let mut chain = Chain::new();
+    let i_control = chain.push_core(control);
+    let i_main = chain.push_core(main);
+    chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
+    let i_tas3108 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_tas3108);
+    // HD44780 slave coupled to CONTROL.  Pin map is baked
+    // into `Chain::dispatch_lcd_pins_to_coupled_slaves`
+    // (RS=LATA[5], E=LATB[4], D4..D7=PORTB[3:0] per V1.71
+    // CONTROL `lcd_char_write`).
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_control, i_lcd);
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+    // V1.71 CONTROL reads its 6 button inputs as ACTIVE-LOW
+    // pins on RA1/RA2/RA3/RA4 (SELECT/DOWN/STBY/RIGHT) and
+    // RC0/RC5 (UP/LEFT).  In gpsim these are stimulated
+    // with `initial_state 1` (released).  Our sim has no
+    // pin-state injection yet, so PORTA / PORTC default to
+    // 0 -- which CONTROL reads as "all buttons pressed",
+    // triggers the STBY handler, and parks the LCD on the
+    // `Zzz...` standby screen.  Seed PORTA = PORTC = 0xFF
+    // so all buttons read as released.  Done AFTER
+    // `apply_reset_all` because POR wipes the SFR window.
+    // Mirrors `_setup_button_stimuli` in
+    // `src/dlcp_fw/sim/control_gpsim.py:494`.  Task #34.
+    chain.cores[i_control]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_control]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+
+    // Expected LCD content from gpsim's
+    // `lcd_control.txt` ground truth.  Both lines are
+    // padded to 16 chars (HD44780 line width).
+    const EXPECTED_LINE1: &str = "Volume:-17.0dB A";
+    const EXPECTED_LINE2: &str = "Auto Detect     ";
+
+    // Run until BOTH lines match, with an upper budget so
+    // a regression fails fast instead of hanging.  The
+    // matching predicate borrows the LCD slave through
+    // `chain.lcd_slaves[i_lcd]`; `run_until` re-checks it
+    // every chunk.  Budget sized to ~5 s sim time at
+    // 16 ticks/Tcy (4 MIPS for K20).
+    let _advanced = chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| {
+            let l = &c.lcd_slaves[i_lcd];
+            l.line1() == EXPECTED_LINE1 && l.line2() == EXPECTED_LINE2
+        },
+    );
+
+    let lcd = &chain.lcd_slaves[i_lcd];
+    assert_eq!(
+        lcd.line1(),
+        EXPECTED_LINE1,
+        "LCD line 1 mismatch.  Full state:\n  line1 = {:?}\n  line2 = {:?}",
+        lcd.line1(),
+        lcd.line2(),
+    );
+    assert_eq!(
+        lcd.line2(),
+        EXPECTED_LINE2,
+        "LCD line 2 mismatch.  Full state:\n  line1 = {:?}\n  line2 = {:?}",
+        lcd.line1(),
+        lcd.line2(),
+    );
 }
 
 #[cfg(test)]

@@ -23,6 +23,8 @@
 use crate::clock::ClockDomain;
 use crate::core::Core;
 use crate::exec::step;
+use crate::lcd::Hd44780;
+use crate::memory::Address;
 use crate::peripherals::mssp::{I2cBusEvent, Mssp};
 use crate::peripherals::osc;
 use crate::peripherals::tas3108::Tas3108;
@@ -96,6 +98,18 @@ pub struct Chain {
     /// override the master's ACKSTAT to 0 if any slave
     /// ACKed the byte.
     pub tas3108_couplings: Vec<(usize, usize)>,
+    /// Virtual HD44780 character LCDs driven by one or more
+    /// controller cores via `couple_lcd`.  Each LCD watches
+    /// the controller core's pin state (RS = LATA[5], E =
+    /// LATB[4], D4..D7 = PORTB[3:0]) after every executed
+    /// instruction and reconstructs DDRAM contents from the
+    /// E-falling-edge nibble stream.  Task #34.
+    pub lcd_slaves: Vec<Hd44780>,
+    /// (controller_core, lcd_slave_idx) coupling list.
+    /// Parallel to `tas3108_couplings`; one controller core
+    /// can drive multiple LCDs (rare on the DLCP hardware
+    /// but the model permits it).  Task #34.
+    pub lcd_couplings: Vec<(usize, usize)>,
 }
 
 /// One UART byte delivered between two cores.  See
@@ -137,7 +151,41 @@ impl Chain {
             uart_tx_history: Vec::new(),
             tas3108_slaves: Vec::new(),
             tas3108_couplings: Vec::new(),
+            lcd_slaves: Vec::new(),
+            lcd_couplings: Vec::new(),
         }
+    }
+
+    /// Push an HD44780 LCD slave into the chain.  Returns
+    /// the slave's index for use by `couple_lcd`.  Task #34.
+    pub fn push_lcd(&mut self, lcd: Hd44780) -> usize {
+        let idx = self.lcd_slaves.len();
+        self.lcd_slaves.push(lcd);
+        idx
+    }
+
+    /// Wire an LCD slave (by index in `lcd_slaves`) to a
+    /// controller core's GPIO bus.  After each
+    /// `execute_core_step` the chain samples the
+    /// controller's RS / E / D4..D7 pins and feeds them
+    /// to every coupled LCD's pin observer.  Pin map (per
+    /// V1.71 CONTROL `lcd_char_write`):
+    /// `LATA[5]=RS`, `LATB[4]=E`, `PORTB[3:0]=D4..D7`.
+    /// Task #34.
+    pub fn couple_lcd(&mut self, controller_core_idx: usize, lcd_idx: usize) {
+        assert!(
+            controller_core_idx < self.cores.len(),
+            "couple_lcd: controller_core_idx {} out of range (cores.len()={})",
+            controller_core_idx,
+            self.cores.len()
+        );
+        assert!(
+            lcd_idx < self.lcd_slaves.len(),
+            "couple_lcd: lcd_idx {} out of range (lcd_slaves.len()={})",
+            lcd_idx,
+            self.lcd_slaves.len()
+        );
+        self.lcd_couplings.push((controller_core_idx, lcd_idx));
     }
 
     /// Push a TAS3108 slave into the chain.  Returns the
@@ -437,7 +485,43 @@ impl Chain {
             .unwrap_or_else(|e| panic!("exec::step failed on core {core_idx}: {e:?}"));
         self.drain_completed_tx_bytes(core_idx);
         self.dispatch_i2c_to_coupled_slaves(core_idx);
+        self.dispatch_lcd_pins_to_coupled_slaves(core_idx);
         self.schedule_next_core_step(core_idx);
+    }
+
+    /// Sample the controller core's LCD-driving pins and
+    /// feed the observation to every coupled HD44780 slave.
+    /// Per V1.71 CONTROL's `lcd_char_write`: RS = LATA[5],
+    /// E = LATB[4], D4..D7 = PORTB[3:0].  The LCD model's
+    /// internal E-falling-edge detector pairs nibbles into
+    /// bytes and dispatches to the HD44780 instruction
+    /// decoder.  Task #34.
+    fn dispatch_lcd_pins_to_coupled_slaves(&mut self, controller_core_idx: usize) {
+        // Snapshot which LCDs this controller drives (avoid
+        // borrow conflict with the mut self.lcd_slaves below).
+        let coupled: Vec<usize> = self
+            .lcd_couplings
+            .iter()
+            .filter_map(|&(c, l)| if c == controller_core_idx { Some(l) } else { None })
+            .collect();
+        if coupled.is_empty() {
+            return;
+        }
+        // PIC18 SFR addresses (architectural, same on K20
+        // and 2455).
+        const LATA_ADDR: u16 = 0xF89;
+        const LATB_ADDR: u16 = 0xF8A;
+        const PORTB_ADDR: u16 = 0xF81;
+        let core = &self.cores[controller_core_idx];
+        let lata = core.memory.read_raw(Address::from_raw(LATA_ADDR));
+        let latb = core.memory.read_raw(Address::from_raw(LATB_ADDR));
+        let portb = core.memory.read_raw(Address::from_raw(PORTB_ADDR));
+        let rs = (lata >> 5) & 1 != 0;
+        let e = (latb >> 4) & 1 != 0;
+        let nibble = portb & 0x0F;
+        for slave_idx in coupled {
+            self.lcd_slaves[slave_idx].observe_pins(rs, e, nibble);
+        }
     }
 
     /// Drain the master core's MSSP `last_bus_event` (set
