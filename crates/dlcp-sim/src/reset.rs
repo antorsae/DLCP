@@ -1332,8 +1332,10 @@ mod tests {
     /// Task #31: 2455 stack-fault reset broadens the SFR
     /// clear beyond INTCON to cover the full IRQ-related
     /// Tbl 4-4 column-6 group: PIE1 / PIR1 / PIE2 / PIR2
-    /// zero, INTCON2 = 0xF5, INTCON3 = 0xC0, IPR1 / IPR2 =
-    /// 0xFF, WDTCON zero.  Without these clears, a stack-
+    /// zero, INTCON2 = 0xF5, INTCON3 = 0xC0, IPR1 = 0x7F
+    /// (PSPIP bit 7 unimplemented on 28-pin per DS footnote
+    /// 3), IPR2 = 0xFF, WDTCON zero.  Without these
+    /// clears, a stack-
     /// fault reset would leave stale enable / flag bits
     /// that could re-trigger an IRQ on the very next
     /// `step()` after the reset, even with INTCON.GIE
