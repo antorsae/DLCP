@@ -421,16 +421,20 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     // `assert!(tx_count >= 1)` as the P3.5 final-acceptance
     // milestone.
     //
-    // Defensive floor: even though TX convergence is not
-    // asserted, the probe MUST observe substantial DSP I2C
-    // traffic (>= 1000 ACKs) -- if a future regression
-    // (e.g., the TAS3108 coupling unwiring, ADC AN0 gate
-    // breaking, or the executor losing forward progress)
-    // makes this probe a no-op, this assertion fires.
-    // Codex review of 691f859 LOW.
-    assert!(
-        dsp_acked >= 1000,
-        "probe baseline regression: V3.1 + V1.71 chain ran {} ticks but only {} DSP ACKs landed -- something upstream broke (TAS3108 coupling? ADC AN0 gate? executor forward progress?)",
-        advanced, dsp_acked,
-    );
+    // Defensive floor: only asserted on the timeout path.
+    // The probe stops `run_until` on first UART TX, so a
+    // post-task-#28 chain that converges quickly may have
+    // dsp_acked < 1000 at exit -- that's a SUCCESS case,
+    // not rot.  Apply the floor only when no UART byte
+    // flowed (the "we ran but did meaningless work" case
+    // codex review of 691f859 worried about).  After task
+    // #28 a TX-convergence path with low ACK count is
+    // the intended new normal.
+    if tx_count == 0 {
+        assert!(
+            dsp_acked >= 1000,
+            "probe baseline regression: V3.1 + V1.71 chain ran {} ticks with no UART TX, and only {} DSP ACKs landed -- something upstream broke (TAS3108 coupling? ADC AN0 gate? executor forward progress?)",
+            advanced, dsp_acked,
+        );
+    }
 }
