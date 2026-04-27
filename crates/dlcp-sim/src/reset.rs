@@ -372,9 +372,18 @@ fn apply_stack_fault_sfr_reset(core: &mut Core) {
 /// ("MCLR Resets, WDT Reset, RESET Instruction, Stack
 /// Resets") forces to fixed values on a stack-fault reset.
 ///
-/// SFR addresses sourced from DS39632E p.61 ("Special
-/// Function Register Map") and the per-register reset
-/// tables on DS pages 53..57.
+/// SFR addresses sourced from DS39632E Tbl 5-1 (Special
+/// Function Register Map, p.61) -- 2455 shares the PIC18-
+/// architectural high-SFR layout with the K20
+/// (DS40001303H Tbl 5-1, p.81) for every register touched
+/// here.  The K20 mclr_zero / mclr_rmw lists already use
+/// these addresses; we re-list them inline rather than
+/// delegating to `apply_k20_mclr_zero_sfrs` because the
+/// K20 helper also touches K20-specific registers
+/// (CM1CON0 at 0xF7B, IOCB at 0xF7D, ANSEL at 0xF7E, etc.)
+/// at addresses that on the 2455 belong to USB / SPP
+/// peripherals or are unimplemented -- a blanket K20
+/// reset would clobber unrelated 2455 state.
 ///
 /// Coverage scope (task #31): every SFR that gates an
 /// interrupt source -- INTCON / INTCON2 / INTCON3 / PIE1 /
@@ -382,27 +391,23 @@ fn apply_stack_fault_sfr_reset(core: &mut Core) {
 /// stale WDT enable carried across a stack-fault reset
 /// could resume timing the wrong reset.  The remaining Tbl
 /// 4-4 col 6 entries (T0CON, PR2, TRISx, TXSTA, BAUDCON,
-/// CMCON, peripheral CCP/ECCP/SSP/ADC defaults, etc.) are
-/// deferred to the 2455 MCLR-table port that the V2.3
-/// MAIN parity gate will land.  Until then those SFRs
-/// retain whatever value the firmware (or POR-zero
-/// default) left them at across the stack-fault reset --
-/// silicon-incorrect for any test that asserts MCLR-style
-/// post-reset state on 2455, but no such test exists yet.
+/// CMCON, peripheral CCP/ECCP/SSP/ADC defaults, USB / SPP
+/// defaults, etc.) are deferred to the 2455 MCLR-table
+/// port that the V2.3 MAIN parity gate will land.  Until
+/// then those SFRs retain whatever value the firmware
+/// (or POR-zero default) left them at across the stack-
+/// fault reset -- silicon-incorrect for any test that
+/// asserts MCLR-style post-reset state on 2455, but no
+/// such test exists yet.
 fn apply_2455_mclr_irq_sfrs(core: &mut Core) {
     // ----- Zero (full byte forced to 0) -----
-    const PIE1_ADDR_2455: u16 = 0xF7D;
-    const PIR1_ADDR_2455: u16 = 0xF7E;
-    const PIE2_ADDR_2455: u16 = 0xF80;
-    const PIR2_ADDR_2455: u16 = 0xF81;
-    const WDTCON_ADDR_2455: u16 = 0xFB1;
-    for addr in [
-        PIE1_ADDR_2455,
-        PIR1_ADDR_2455,
-        PIE2_ADDR_2455,
-        PIR2_ADDR_2455,
-        WDTCON_ADDR_2455,
-    ] {
+    // Addresses verified against DS39632E Tbl 5-1 p.61.
+    const PIE1_ADDR: u16 = 0xF9D;
+    const PIR1_ADDR: u16 = 0xF9E;
+    const PIE2_ADDR: u16 = 0xFA0;
+    const PIR2_ADDR: u16 = 0xFA1;
+    const WDTCON_ADDR: u16 = 0xFD1;
+    for addr in [PIE1_ADDR, PIR1_ADDR, PIE2_ADDR, PIR2_ADDR, WDTCON_ADDR] {
         core.memory.write_raw(Address::from_raw(addr), 0);
     }
 
@@ -417,23 +422,21 @@ fn apply_2455_mclr_irq_sfrs(core: &mut Core) {
     core.memory
         .write_raw(Address::from_raw(0xFF0), 0xC0);
     // IPR1 `1111 1111` -> 0xFF (all peripheral interrupt
-    // priorities high).
+    // priorities high).  Address 0xF9F per Tbl 5-1.
     core.memory
-        .write_raw(Address::from_raw(0xF7F), 0xFF);
-    // IPR2 `1111 1111` -> 0xFF.
+        .write_raw(Address::from_raw(0xF9F), 0xFF);
+    // IPR2 `1111 1111` -> 0xFF.  Address 0xFA2 per Tbl 5-1.
     core.memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+        .write_raw(Address::from_raw(0xFA2), 0xFF);
 
     // ----- INTCON: RMW (clear bits 7..1; preserve RBIF=bit 0) -----
-    // Same address as K20 (PIC18 architectural).  Done last
-    // so any (hypothetical) prior bit twiddle doesn't leak
-    // a higher INTCON bit into the preserved RBIF read.
-    const INTCON_ADDR_2455: u16 = 0xFF2;
-    let cur = core
-        .memory
-        .read_raw(Address::from_raw(INTCON_ADDR_2455));
+    // Done last so any (hypothetical) prior bit twiddle
+    // doesn't leak a higher INTCON bit into the preserved
+    // RBIF read.
+    const INTCON_ADDR: u16 = 0xFF2;
+    let cur = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
     core.memory
-        .write_raw(Address::from_raw(INTCON_ADDR_2455), cur & 0x01);
+        .write_raw(Address::from_raw(INTCON_ADDR), cur & 0x01);
 }
 
 /// PIC18F25K20 POR/BOR SFR initial values.
@@ -1322,7 +1325,11 @@ mod tests {
     /// that could re-trigger an IRQ on the very next
     /// `step()` after the reset, even with INTCON.GIE
     /// cleared (because re-enabling GIE in firmware would
-    /// re-vector on the stale flag).
+    /// re-vector on the stale flag).  Codex review of
+    /// 95722c8 HIGH: addresses corrected to the DS39632E
+    /// Tbl 5-1 layout (0xF9D-0xFA2 / 0xFD1) -- the prior
+    /// commit used wrong addresses (0xF7D-0xF82 / 0xFB1)
+    /// that hit USB / port / T3CON registers instead.
     #[test]
     fn stack_full_reset_2455_broader_irq_sfrs() {
         let mut core = Core::new(Variant::Pic18F2455);
@@ -1330,13 +1337,13 @@ mod tests {
         // Pre-load every IRQ-related SFR with a non-zero
         // sentinel so the reset can transition each.
         for addr in [
-            0xF7D, // PIE1
-            0xF7E, // PIR1
-            0xF7F, // IPR1
-            0xF80, // PIE2
-            0xF81, // PIR2
-            0xF82, // IPR2
-            0xFB1, // WDTCON
+            0xF9D, // PIE1
+            0xF9E, // PIR1
+            0xF9F, // IPR1
+            0xFA0, // PIE2
+            0xFA1, // PIR2
+            0xFA2, // IPR2
+            0xFD1, // WDTCON
             0xFF0, // INTCON3
             0xFF1, // INTCON2
             0xFF2, // INTCON
@@ -1346,11 +1353,11 @@ mod tests {
         apply_reset(&mut core, &mut stack, ResetSource::StackFull);
         // Zeroed:
         for (name, addr) in [
-            ("PIE1", 0xF7D),
-            ("PIR1", 0xF7E),
-            ("PIE2", 0xF80),
-            ("PIR2", 0xF81),
-            ("WDTCON", 0xFB1),
+            ("PIE1", 0xF9D),
+            ("PIR1", 0xF9E),
+            ("PIE2", 0xFA0),
+            ("PIR2", 0xFA1),
+            ("WDTCON", 0xFD1),
         ] {
             assert_eq!(
                 core.memory.read_raw(Address::from_raw(addr)),
@@ -1371,12 +1378,12 @@ mod tests {
             "INTCON3 = 0xC0 (INT1IP/INT2IP=1, others 0)"
         );
         assert_eq!(
-            core.memory.read_raw(Address::from_raw(0xF7F)),
+            core.memory.read_raw(Address::from_raw(0xF9F)),
             0xFF,
             "IPR1 = 0xFF (all peripheral priorities high)"
         );
         assert_eq!(
-            core.memory.read_raw(Address::from_raw(0xF82)),
+            core.memory.read_raw(Address::from_raw(0xFA2)),
             0xFF,
             "IPR2 = 0xFF"
         );
@@ -1396,16 +1403,16 @@ mod tests {
     fn stack_underflow_reset_2455_broader_irq_sfrs() {
         let mut core = Core::new(Variant::Pic18F2455);
         let mut stack = Stack::new();
-        for addr in [0xF7D, 0xF7E, 0xF80, 0xF81, 0xFB1] {
+        for addr in [0xF9D, 0xF9E, 0xFA0, 0xFA1, 0xFD1] {
             core.memory.write_raw(Address::from_raw(addr), 0xAA);
         }
         apply_reset(&mut core, &mut stack, ResetSource::StackUnderflow);
         for (name, addr) in [
-            ("PIE1", 0xF7D),
-            ("PIR1", 0xF7E),
-            ("PIE2", 0xF80),
-            ("PIR2", 0xF81),
-            ("WDTCON", 0xFB1),
+            ("PIE1", 0xF9D),
+            ("PIR1", 0xF9E),
+            ("PIE2", 0xFA0),
+            ("PIR2", 0xFA1),
+            ("WDTCON", 0xFD1),
         ] {
             assert_eq!(
                 core.memory.read_raw(Address::from_raw(addr)),
