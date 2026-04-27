@@ -457,9 +457,45 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
         f"`dlcp_control_v171.asm:4805+`."
     )
 
-    # PB2 row 1 body, after stripping the trailing pad spaces.
+    # Layout discriminator: per
+    # `docs/V32_DIAG_TIER1_SPEC.md` §"Phase 3.4 implementation notes",
+    # the colon-after-PBn distinguishes the two layout families:
+    #   * "PB2"   (no colon) = Absent or Healthy short layout.
+    #                          Verdict comes from row 1 ("n/a" or
+    #                          "OK").
+    #   * "PB2:"  (colon at col 3) = Degraded or Overflow layout.
+    #                          Row 0 itself carries cell entries
+    #                          (any non-zero counter is enough to
+    #                          trigger this layout), so PB2 reply
+    #                          convergence is proven by row 0
+    #                          alone -- row 1 may be empty (1..4
+    #                          non-zero cells) or carry overflow
+    #                          entries (5..11 non-zero cells).
     pb2_row1 = line2
 
+    if line1.startswith("PB2:"):
+        # Degraded or Overflow layout.  Row 0 has cell entries =>
+        # at least one non-zero PB2 counter or reset-cause flag.
+        # PB2 reply convergence works on real silicon.  Row 1 can
+        # be empty (1..4 cells case) or have more entries
+        # (5..11 cells case); both are PASS.
+        print(
+            f"\n  PB2 reply CONVERGED on real silicon.\n"
+            f"  line1 (PB2 page row 0) = {line1_raw!r}\n"
+            f"  line2 (PB2 page row 1) = {line2_raw!r}\n"
+            f"  Layout: Degraded / Overflow ('PB2:' colon at col 3 + "
+            f"cell entries on row 0).\n"
+            f"  -> V1.71 firmware delivers PB2 reply convergence "
+            f"with non-zero counter activity on hardware.\n"
+            f"  -> Both simulators (gpsim Python and Rust sim) have "
+            f"a SHARED timing/electrical fidelity gap.\n"
+            f"  -> P3.6b stays open as sim-side investigation; do NOT "
+            f"remove the `_V171_V32_PB2_BRIDGE_XFAIL` markers yet.\n"
+        )
+        return
+
+    # Short layout (no colon at col 3): row 0 = "PB2" + 13 spaces;
+    # row 1 carries the verdict.
     if pb2_row1 == "n/a":
         pytest.fail(
             f"\n  PB2 row 1 is the 'n/a' (absent) layout -- CONTROL has "
@@ -486,39 +522,42 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
             f"    line2 = {line2_raw!r}\n"
         )
 
-    if pb2_row1 == "":
-        pytest.fail(
-            f"\n  PB2 row 1 is empty after rstrip -- ambiguous between "
-            f"'firmware bug', 'OCR misread', and 'wrong screen'.\n"
-            f"  Disambiguate via `scripts/dlcp_diag.py` -- if MAIN1's "
-            f"cmd 0x44 snapshot shows non-zero counters and the rig\n"
-            f"  is actually on the PB2 Diag page (operator confirms "
-            f"visually), the OCR likely misread `n/a` as empty.\n"
-            f"  Re-capture with more `--captures` cycles via "
-            f"DLCP_HW_LAYER5_LCD_CAPTURES (default 10).\n"
-            f"\n  Captured LCD lines:\n"
-            f"    line1 = {line1_raw!r}\n"
-            f"    line2 = {line2_raw!r}\n"
-        )
-
-    # Healthy or Degraded / Overflow with at least some content.
-    # Both branches mean PB2 reply convergence works on real silicon.
     if pb2_row1 == "OK":
-        layout = "Healthy (all 11 PB2 counters == 0; PB2 IS replying)"
-    else:
-        layout = (
-            f"Degraded / Overflow (PB2 has non-zero counter activity; "
-            f"row 1 = {pb2_row1!r})"
+        # Healthy short layout: PB2 is replying but every counter +
+        # reset-cause cell is at zero.  Reply convergence works.
+        print(
+            f"\n  PB2 reply CONVERGED on real silicon.\n"
+            f"  line1 (PB2 page row 0) = {line1_raw!r}\n"
+            f"  line2 (PB2 page row 1) = {line2_raw!r}\n"
+            f"  Layout: Healthy (all 11 PB2 cache cells == 0; PB2 "
+            f"IS replying with clean state).\n"
+            f"  -> V1.71 firmware delivers PB2 reply convergence "
+            f"on hardware.\n"
+            f"  -> Both simulators (gpsim Python and Rust sim) have "
+            f"a SHARED timing/electrical fidelity gap.\n"
+            f"  -> P3.6b stays open as sim-side investigation; do NOT "
+            f"remove the `_V171_V32_PB2_BRIDGE_XFAIL` markers yet.\n"
         )
+        return
 
-    print(
-        f"\n  PB2 reply CONVERGED on real silicon.\n"
-        f"  line1 (PB2 page title) = {line1_raw!r}\n"
-        f"  line2 (PB2 cells)      = {line2_raw!r}\n"
-        f"  Layout: {layout}\n"
-        f"  -> V1.71 firmware delivers PB2 reply convergence on hardware.\n"
-        f"  -> Both simulators (gpsim Python and Rust sim) have a SHARED\n"
-        f"     timing/electrical fidelity gap.\n"
-        f"  -> P3.6b stays open as sim-side investigation; do NOT remove\n"
-        f"     the `_V171_V32_PB2_BRIDGE_XFAIL` markers yet.\n"
+    # Anything else under the short layout (row 0 = "PB2" plain,
+    # row 1 != "n/a" and != "OK") is unexpected.  Could be OCR
+    # garbage, partial render, or a rare in-flight transitional
+    # frame.  Route to the ambiguous-fail path.
+    pytest.fail(
+        f"\n  PB2 page is the SHORT layout (row 0 = 'PB2' with no "
+        f"trailing colon) but row 1 is neither 'n/a' nor 'OK':\n"
+        f"  Captured LCD lines:\n"
+        f"    line1 = {line1_raw!r}\n"
+        f"    line2 = {line2_raw!r}\n"
+        f"\n  V1.71 Tier-1 spec ('docs/V32_DIAG_TIER1_SPEC.md' §'Phase "
+        f"3.4 implementation notes') prescribes only 'n/a' or 'OK'\n"
+        f"  for row 1 of the short layout.  Anything else is most "
+        f"likely OCR garbage / partial render.  Disambiguate by:\n"
+        f"    (a) re-capturing with more cycles via "
+        f"DLCP_HW_LAYER5_LCD_CAPTURES (default 10),\n"
+        f"    (b) cross-referencing per-MAIN cmd 0x44 snapshots from "
+        f"`scripts/dlcp_diag.py` to confirm MAIN1 has counter data,\n"
+        f"    (c) confirming the rig is visually on the PB2 Diag page "
+        f"(state 5) and not transitioning between pages.\n"
     )
