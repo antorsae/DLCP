@@ -708,52 +708,62 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     }
 }
 
-/// P3.6 step 2 + step (B) -- diag-page convergence probe.
+/// P3.6 step (B) -- diag-page convergence probe.
 ///
-/// Now drives CONTROL via simulated RIGHT-button presses
+/// Drives CONTROL via simulated RIGHT-button presses
 /// (task #35 minimum-viable input injection -- see
-/// `Chain::set_pin_high/low`) instead of the prior
-/// `RAM[0xbf]=4` direct poke.  Navigation is verified: 4
-/// RIGHT presses cleanly advance state 0 -> 1 -> 2 -> 3 ->
-/// 4 (Volume -> Preset -> Input -> Setup -> PB1Diag).
+/// `Chain::set_pin_high/low`) and instruments stage 3
+/// with rich diagnostic counters (PC histogram, target
+/// trajectory, BF/2N dispatch hits, byte-level CTL/MAIN
+/// streams).  Provides the highest-resolution view of
+/// the residual divergence we've achieved.
 ///
-/// Empirical state at exit (current state, NON-CONVERGING):
-///   * Navigation: state lands at 4 ✓
-///   * Buttons: PORTA=0xEF (RA4 LOW) → btn_cache=0x20 ✓
-///   * Debounce: 4 stable cycles before state increment ✓
-///   * `v171_diag_present = 0x00` (no PB has replied!)
-///   * `v171_diag_target  = 0x00`
-///   * `menu_state = 4` at end
-///   * Stage 3 traffic: only `B0` periodic broadcasts
-///     (cmd 03/1D/20/07/06).  ZERO `B1 22` or `B1 21`
-///     diag-poll queries from CONTROL.
+/// Verified working (HOPS A, B, C, D):
+///   * 4 RIGHT-press cycles cleanly advance state 0 ->
+///     1 -> 2 -> 3 -> 4.  menu_state = 4 throughout
+///     stage 3.
+///   * `v171_diag_pb_screen` IS entered: `v171_diag_flags
+///     = 0x06` (RUNTIME_PENDING + RESET_PENDING both set).
+///   * cmd 0x22 (reset-flags) AND cmd 0x21 (runtime
+///     counters) queries are emitted by CONTROL:
+///     `B1/22/00 = 1, B1/21/00 = 1` in CTL.TX.
+///   * MAIN0 emits its 7-frame `BF/21..BF/27` reply burst.
+///   * MAIN1 forwards the full burst, including the
+///     critical `BF 27 00` (last frame, sets present
+///     bit + toggles target).  Verified by direct
+///     byte-stream inspection: MAIN1.TX[147..150] =
+///     `BF 24 00 BF 25 00 BF 26 00 BF 27 00`.
+///   * `BF 27 00` arrives at CONTROL.RX cleanly: RCSTA =
+///     0x90 (no OERR), no FIFO overflow.
 ///
-/// So once CONTROL is on PB1 Diag (state=4), the
-/// `v171_diag_pb_screen` cadence loop should fire
-/// alternating cmd 0x22 + cmd 0x21 queries every ~1 s.
-/// It doesn't.  Either:
-///   1. `v171_diag_pb_screen` is not actually being
-///      entered by the dispatcher (despite menu_state=4),
-///      OR
-///   2. It is entered but exits before any query fires
-///      (e.g., spurious 0x9A button-event latch from the
-///      navigation residue), OR
-///   3. `display_loop_iteration` (called from inside
-///      `v171_diag_loop`) blocks long enough for the
-///      cadence countdown to never expire.
+/// Residual divergence (HOP E -- the LAST hop):
+///   * `v171_diag_present = 0x00` -- never set.
+///   * `v171_diag_target = 0x00` -- never toggled.
+///   * Across 200 PC samples (10M ticks each, 2B total
+///     ticks), CONTROL's PC NEVER lands in the
+///     v171_bf2x_case_check dispatch range
+///     (0x0630..0x0700).  v171_diag_target trajectory:
+///     `[00]` (no change throughout stage 3).
 ///
-/// What this probe DOES prove:
-///   * The 3-core ring under V1.71+V3.2+V3.2 boots
-///     cleanly.
-///   * Button-press injection drives state-machine
-///     navigation through the firmware's own debounce +
-///     event handlers (task #35 minimum-viable validated).
-///   * No record in `uart_tx_history` is a self-loop --
-///     the gpsim bridge echo is structurally absent.
+/// So CONTROL's parser RECEIVES the BF/27 byte stream but
+/// never DISPATCHES the v171_bf2x_case_check handler that
+/// would set v171_diag_present.  Hypotheses for the open
+/// hop:
+///   1. CONTROL's parser frame-state machine (0xA6
+///      counter) is in the wrong state when the BF byte
+///      arrives -- maybe stuck mid-frame from prior
+///      traffic, so the cmd byte doesn't latch correctly.
+///   2. The cmd-dispatch chain has a path where cmd =
+///      0x27 (or some other BF/2N value) is consumed by
+///      an earlier handler instead of falling through to
+///      v171_bf2x_case_check.
+///   3. RXIF ISR latency: bytes are dropped from the SW
+///      ring at 0x0200 before the parser drains them
+///      (less likely since RCSTA shows no OERR).
 ///
-/// `#[ignore]`d.  Wall ~ 60 s.  Convergence work pending:
-/// inspect why `v171_diag_pb_screen` doesn't actually
-/// enter / drive the cadence loop.
+/// `#[ignore]`d.  Wall ~ 60 s.  Hop E investigation
+/// pending: trace CONTROL's parser state during the
+/// BF/27 byte arrival window.
 #[test]
 #[ignore = "P3.6 step (B) -- diag-poll cadence still doesn't fire after firmware-driven navigation"]
 fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
@@ -947,6 +957,100 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // can dump byte streams for diagnosis on failure.
     let stage2_history_len = chain.uart_tx_history.len();
 
+    // Stage 3 PC sampler: step in small chunks and capture
+    // CONTROL.PC + key state at each pause.  Helps surface
+    // whether `v171_diag_pb_screen` (around asm line 3550)
+    // is actually entered.
+    let mut pc_histogram: std::collections::HashMap<u16, u32> =
+        std::collections::HashMap::new();
+    let mut menu_state_histogram: std::collections::HashMap<u8, u32> =
+        std::collections::HashMap::new();
+    let mut bit5_set_count: u32 = 0;
+    let mut diag_poll_lo_min: u8 = 0xFF;
+    let mut diag_poll_lo_max: u8 = 0x00;
+    let mut samples = 0u32;
+    let mut target_changes: Vec<u8> = Vec::new();
+    let mut last_target: u8 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196));
+    target_changes.push(last_target);
+    let mut bf2x_dispatch_hits: u32 = 0; // PC in 0x0630..0x0700
+    let total_chunks: u64 = 200;
+    let chunk_ticks: u64 = 10_000_000;
+    for _ in 0..total_chunks {
+        chain.step_ticks(chunk_ticks);
+        if chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(DIAG_PRESENT_RAM))
+            == 0x03
+        {
+            break;
+        }
+        samples += 1;
+        let pc = chain.cores[i_ctl].pc();
+        let pc_high: u16 = (pc & 0xFF00) as u16;
+        *pc_histogram.entry(pc_high).or_insert(0) += 1;
+        if pc >= 0x0630 && pc < 0x0700 {
+            bf2x_dispatch_hits += 1;
+        }
+        let target_now = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x196));
+        if target_now != last_target {
+            target_changes.push(target_now);
+            last_target = target_now;
+        }
+        let mstate = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(MENU_STATE_RAM));
+        *menu_state_histogram.entry(mstate).or_insert(0) += 1;
+        let cache_9a = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x09A));
+        if cache_9a & 0x20 != 0 {
+            bit5_set_count += 1;
+        }
+        // V1.71 diag state RAM (BANK 1, physical addresses):
+        //   0x196 = v171_diag_target
+        //   0x197 = v171_diag_present
+        //   0x198 = v171_diag_poll_lo
+        //   0x199 = v171_diag_poll_hi
+        //   0x19A = v171_diag_present_snap
+        //   0x19C = v171_diag_flags (RESET_PENDING / RUNTIME_PENDING)
+        //   0x19D = v171_diag_reset_seen
+        let poll_lo = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x198));
+        if poll_lo < diag_poll_lo_min {
+            diag_poll_lo_min = poll_lo;
+        }
+        if poll_lo > diag_poll_lo_max {
+            diag_poll_lo_max = poll_lo;
+        }
+    }
+    let diag_flags = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0x19C));
+    let diag_reset_seen = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0x19D));
+    let diag_present_snap = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0x19A));
+    eprintln!("\n=== Stage 3 sampler ({samples} samples @ {chunk_ticks} ticks each) ===");
+    let mut pc_buckets: Vec<_> = pc_histogram.iter().collect();
+    pc_buckets.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+    eprintln!("PC distribution (high byte): {:02X?}", pc_buckets);
+    eprintln!("  -- key labels: 0x094 button_scan, 0x0E1 display_loop_iteration,");
+    eprintln!("                 0x12C v171_diag_pb_screen, 0x151 v171_diag_loop,");
+    eprintln!("                 0x190 flow_post_connect_init_11F0, 0x1AB volume_screen");
+    eprintln!("menu_state distribution: {:?}", menu_state_histogram);
+    eprintln!("0x9A bit 5 (RIGHT event) set count: {bit5_set_count}");
+    eprintln!("v171_diag_poll_lo (0x198): 0x{diag_poll_lo_min:02X}..0x{diag_poll_lo_max:02X}");
+    eprintln!("v171_diag_flags (0x19C) at end: 0x{diag_flags:02X} (bit 0=RESET_PENDING, bit 1=RUNTIME_PENDING)");
+    eprintln!("v171_diag_reset_seen (0x19D) at end: 0x{diag_reset_seen:02X}");
+    eprintln!("v171_diag_present_snap (0x19A) at end: 0x{diag_present_snap:02X}");
+    eprintln!("BF/2N dispatch hits (PC in 0x0630..0x0700): {bf2x_dispatch_hits} / {samples}");
+    eprintln!("v171_diag_target trajectory: {:02X?}", target_changes);
+
     // Stage 3: run until both PB-reply bits land in
     // v171_diag_present.  Budget was 10 B during the
     // discovery probe; trimmed to 2 B (~16 s simulated,
@@ -1015,6 +1119,54 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     eprintln!("  CTL.TX  ({} bytes): {:02X?}", ctl_tx_s3.len(), &ctl_tx_s3[..ctl_tx_s3.len().min(60)]);
     eprintln!("  MAIN0.TX ({} bytes): {:02X?}", m0_tx_s3.len(), &m0_tx_s3[..m0_tx_s3.len().min(60)]);
     eprintln!("  MAIN1.TX ({} bytes): {:02X?}", m1_tx_s3.len(), &m1_tx_s3[..m1_tx_s3.len().min(60)]);
+    // Search for diag-query frames anywhere in CTL.TX.
+    let ctl_b1_22 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB1, 0x22, 0x00]).count();
+    let ctl_b1_21 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB1, 0x21, 0x00]).count();
+    let ctl_b2_22 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB2, 0x22, 0x00]).count();
+    let ctl_b2_21 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB2, 0x21, 0x00]).count();
+    eprintln!("CTL diag query counts: B1/22/00={ctl_b1_22}, B1/21/00={ctl_b1_21}, B2/22/00={ctl_b2_22}, B2/21/00={ctl_b2_21}");
+    let m0_bf21 = m0_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x21]).count();
+    let m1_bf21 = m1_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x21]).count();
+    let m0_bf27 = m0_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x27]).count();
+    let m1_bf27 = m1_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x27]).count();
+    eprintln!("MAIN BF/2N reply markers: MAIN0 BF/21={m0_bf21} BF/27={m0_bf27}, MAIN1 BF/21={m1_bf21} BF/27={m1_bf27}");
+
+    // Count BF byte totals on MAIN1.TX (forwarded reply burst).
+    let m0_bf_total = m0_tx_s3.iter().filter(|&&b| b == 0xBF).count();
+    let m1_bf_total = m1_tx_s3.iter().filter(|&&b| b == 0xBF).count();
+    eprintln!("BF byte totals: MAIN0 = {m0_bf_total}, MAIN1 = {m1_bf_total} (full 7-frame cmd 21 burst = 7 BF, plus 4 BF for cmd 22 = 11 BF)");
+
+    // Print a window AROUND each BF/27 in MAIN1.TX (10 bytes before + 5 after).
+    for (i, w) in m1_tx_s3.windows(3).enumerate() {
+        if w[0] == 0xBF && w[1] == 0x27 {
+            let start = i.saturating_sub(10);
+            let end = (i + 5).min(m1_tx_s3.len());
+            eprintln!("MAIN1.TX BF/27 frame at offset {i}: bytes [{}..{}] = {:02X?}", start, end, &m1_tx_s3[start..end]);
+        }
+    }
+
+    // Check CONTROL's RX state: RCSTA, OERR latch, RCREG, frame_pos
+    let ctl_rcsta = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0xFAB));
+    let ctl_rcreg = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0xFAE));
+    let ctl_frame_pos = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0x0A6));
+    let ctl_parsed_cmd = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0x02F));
+    let ctl_parsed_data = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0x030));
+    eprintln!(
+        "CTL RX state: RCSTA=0x{ctl_rcsta:02X} (OERR bit 1={}), RCREG=0x{ctl_rcreg:02X}, \
+         frame_pos(0xA6)=0x{ctl_frame_pos:02X}, parsed_cmd(0x2F)=0x{ctl_parsed_cmd:02X}, \
+         parsed_data(0x30)=0x{ctl_parsed_data:02X}",
+        if ctl_rcsta & 0x02 != 0 { "1 (OERR LATCHED -- bytes dropped)" } else { "0" }
+    );
 
     assert_eq!(
         diag_present, 0x03,
