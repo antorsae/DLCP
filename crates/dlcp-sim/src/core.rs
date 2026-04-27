@@ -105,7 +105,49 @@ pub struct Core {
     /// (un-programmed = all-1s = STVREN=1) writes the field
     /// explicitly.
     pub config: Config,
+    /// User-ID region bytes (DS39632E §6.7 / DS40001303H §3.1):
+    /// 8 bytes at TBLPTR=0x200000..0x200007, application-
+    /// defined.  TBLRD with TBLPTR pointing here returns
+    /// these bytes; TBLWT with EECON1.CFGS=1 + EECON1.WR=1
+    /// commits the holding latch to this window (the WR
+    /// commit itself is a P2 EEPROM/flash-write peripheral
+    /// concern -- this struct just owns the storage).
+    /// Default `0xFF` matches the un-programmed silicon
+    /// state.  Hex loaders populate this via
+    /// `Core::user_id_mut`.  Task #17.
+    pub user_id: [u8; 8],
+    /// TBLWT staging buffer (DS39632E §6.5.2 / DS40001303H
+    /// §6.5.2).  PIC18 self-programming loads bytes into a
+    /// silicon-internal holding register via TBLWT, then
+    /// firmware sets EECON1.WR (with the EE unlock sequence)
+    /// to commit the holding-buffer block to flash / config
+    /// / user-id memory.  Block sizes vary by device:
+    /// 32 bytes on 2455 (DS §6.4 -- "32-byte write block"),
+    /// 16 bytes on 25K20 (DS40001303H §6.4 -- "16-byte
+    /// write block").  Sizing the buffer to the larger block
+    /// keeps the executor variant-agnostic; the EECON1.WR
+    /// commit path will use the appropriate block-size mask
+    /// when committing.  TBLWT writes byte at
+    /// `tblwt_holding[TBLPTR & (block_size-1)]`.  The
+    /// commit-to-flash path is the future P2 flash-write
+    /// peripheral's concern; this struct just owns the
+    /// staging.  Default all-`0xFF` (silicon erased).
+    /// Task #17.
+    pub tblwt_holding: [u8; TBLWT_HOLDING_SIZE],
 }
+
+/// Size of the TBLWT staging buffer.  Sized to the larger of
+/// the two write-block sizes (2455's 32-byte block) so the
+/// same buffer covers both variants.  EECON1.WR commit logic
+/// masks down to the variant-specific block size before
+/// writing into flash.
+pub const TBLWT_HOLDING_SIZE: usize = 32;
+
+/// 2455 flash write block size (DS39632E §6.4).
+pub const TBLWT_BLOCK_SIZE_2455: usize = 32;
+
+/// 25K20 flash write block size (DS40001303H §6.4).
+pub const TBLWT_BLOCK_SIZE_K20: usize = 16;
 
 impl Core {
     /// Construct an empty core with `flash` and `memory` zero-
@@ -126,6 +168,21 @@ impl Core {
             cycles: 0,
             fast_shadow: FastRegs::default(),
             config: Config::from_bytes([0u8; 14]),
+            user_id: [0xFF; 8],
+            tblwt_holding: [0xFF; TBLWT_HOLDING_SIZE],
+        }
+    }
+
+    /// Block size (in bytes) of the silicon-internal flash
+    /// write holding register for this variant.  TBLWT
+    /// indexes into `tblwt_holding` by `TBLPTR & (block_size
+    /// - 1)`; EECON1.WR commits the buffer's
+    /// `block_size` bytes back to flash / user-id / config.
+    /// Task #17.
+    pub const fn tblwt_block_size(&self) -> usize {
+        match self.variant {
+            Variant::Pic18F2455 => TBLWT_BLOCK_SIZE_2455,
+            Variant::Pic18F25K20 => TBLWT_BLOCK_SIZE_K20,
         }
     }
 

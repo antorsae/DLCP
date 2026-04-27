@@ -290,20 +290,44 @@ fn tblptr_auto_dec(value: u32) -> u32 {
     preserved | modifiable
 }
 
-/// Read a flash byte at `addr`.  For now `core.flash()` only
-/// covers program memory at `0x000..0x8000`; addresses outside
-/// that range return `0xFF` (unprogrammed-flash silicon
-/// default).  CONFIG / User ID / EEPROM read-back via TBLRD is
-/// deferred -- the hex loader (P1.8a) loads those into the
-/// HexImage struct, but threading them into Core happens with
-/// the boot path in P2.
+/// Read a byte from program-memory space at TBLPTR address
+/// `addr`.  TBLRD with TBLPTR pointing into any of the four
+/// PIC18 program-memory windows is handled here; out-of-range
+/// reads return `0xFF` (un-programmed silicon default).
+///
+/// Windows (DS39632E §5.1 / DS40001303H §5.1):
+///   * `0x000000..0x008000` -- program flash (per-variant
+///     limit enforced at fetch-time, not here).
+///   * `0x200000..0x200008` -- 8-byte User ID.  Task #17
+///     wired this through `core.user_id`.
+///   * `0x300000..0x30000E` -- 14-byte CONFIG.  Read via
+///     `core.config.raw()` so TBLRD reflects the same bytes
+///     the hex loader stored in the parsed CONFIG region.
+///   * `0x3FFFFE..0x400000` -- silicon DEVID (read-only).
+///     Reported as `0xFF` until per-variant DEVID values are
+///     wired in.
+///
+/// EEPROM read-back is NOT a TBLRD path -- firmware reads
+/// EEPROM via EECON1.EEPGD=0 + EECON1.RD which goes through
+/// the EEPROM peripheral (P2.5).  Task #17 only covers
+/// TBLPTR address space.
 fn read_flash_byte(core: &Core, addr: u32) -> u8 {
     let flash = core.flash();
     if (addr as usize) < flash.len() {
-        flash[addr as usize]
-    } else {
-        0xFF
+        return flash[addr as usize];
     }
+    if (crate::hex::USER_ID_BASE..crate::hex::USER_ID_BASE + crate::hex::USER_ID_BYTES as u32)
+        .contains(&addr)
+    {
+        return core.user_id[(addr - crate::hex::USER_ID_BASE) as usize];
+    }
+    if (crate::hex::CONFIG_BASE..crate::hex::CONFIG_BASE + crate::hex::CONFIG_BYTES as u32)
+        .contains(&addr)
+    {
+        return core.config.raw()[(addr - crate::hex::CONFIG_BASE) as usize];
+    }
+    // DEVID + every other gap reads as 0xFF.
+    0xFF
 }
 
 /// Skip the next instruction by advancing PC past it and
@@ -1469,21 +1493,37 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             Ok(2)
         }
         Instruction::TblWt { mode } => {
-            // TBLWT*: model TBLPTR mutation only.  The actual
-            // flash write goes through Microchip's holding-
-            // register + EE-unlock + EECON1.WR sequence; that
-            // peripheral state machine is a P2 deliverable.
-            // Until then, TBLWT is a no-op for the flash
-            // bytes themselves -- TBLPTR still mutates per
-            // mode so a `MOVF TBLPTRL, W` after the write
-            // reflects the post-write pointer state, but the
-            // target flash byte stays whatever it was loaded
-            // with.
+            // TBLWT*: load TABLAT into the silicon-internal
+            // flash-write holding register at the byte slot
+            // selected by `TBLPTR & (block_size - 1)`, then
+            // mutate TBLPTR per `mode`.  Per DS39632E §6.5.2
+            // / DS40001303H §6.5.2, TBLWT does NOT commit to
+            // flash; firmware completes the EE unlock
+            // sequence and sets EECON1.WR to commit the
+            // staged block.  That commit is the future P2
+            // flash-write peripheral's job; this dispatch
+            // arm only does the staging side so subsequent
+            // TBLRD@same-TBLPTR (after a hypothetical
+            // commit) and the holding-buffer accessor see
+            // the right bytes.
             //
-            // Tracked via the same P2 EEPROM peripheral work
-            // referenced in TaskCreate #14.
+            // Pre-increment: bump TBLPTR before the stage,
+            // matching TBLRD's pre-increment semantics
+            // (DS §6.4 + Reg 6-1).
+            // Post-increment / post-decrement: stage first,
+            // then bump.
+            // No-modify: stage at current TBLPTR.  Task #17.
+            if mode == TableMode::PreIncrement {
+                let new_ptr = tblptr_auto_inc(read_tblptr(core));
+                write_tblptr(core, new_ptr);
+            }
+            let target = read_tblptr(core);
+            let block_mask = (core.tblwt_block_size() - 1) as u32;
+            let tablat = core.memory.read_raw(Address::from_raw(TABLAT_ADDR));
+            let slot = (target & block_mask) as usize;
+            core.tblwt_holding[slot] = tablat;
             match mode {
-                TableMode::PreIncrement | TableMode::PostIncrement => {
+                TableMode::PostIncrement => {
                     let new_ptr = tblptr_auto_inc(read_tblptr(core));
                     write_tblptr(core, new_ptr);
                 }
@@ -1491,7 +1531,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                     let new_ptr = tblptr_auto_dec(read_tblptr(core));
                     write_tblptr(core, new_ptr);
                 }
-                TableMode::NoModify => {}
+                TableMode::NoModify | TableMode::PreIncrement => {}
             }
             core.advance_cycles(2);
             Ok(2)
@@ -1895,6 +1935,182 @@ mod tests {
         assert_eq!(cycles, 2);
         assert_eq!(core.pc(), 0, "depth-becomes-full + STVREN=1 must reset");
         assert_eq!(stack.depth(), 0);
+    }
+
+    /// Task #17: TBLRD with TBLPTR pointing into the User ID
+    /// window (`0x200000..0x200008`) returns the bytes from
+    /// `core.user_id`.  Default `0xFF` (un-programmed
+    /// silicon).  Verifies dispatch path and per-byte read
+    /// across all 8 slots.  Use NoModify (TBLRD*) since the
+    /// 21-bit auto-modify mask cannot cross the
+    /// flash<->user-id boundary in one increment.
+    #[test]
+    fn tblrd_user_id_window_reads_core_user_id_bytes() {
+        // TBLRD* (NoModify): opcode 0x0008, bytes [0x08, 0x00].
+        let mut core = k20_core_with_flash(&[0x08, 0x00, 0x08, 0x00]);
+        core.user_id = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xF0, 0xF1, 0xF2];
+        // First: TBLPTR = 0x200000 (user_id[0]).
+        core.memory.write_raw(Address::from_raw(0xFF6), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFF7), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFF8), 0x20);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(TABLAT_ADDR)),
+            0xAA,
+            "TBLRD must surface user_id[0]"
+        );
+        // Second: TBLPTR = 0x200005 (user_id[5] = 0xF0).
+        core.memory.write_raw(Address::from_raw(0xFF6), 0x05);
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(TABLAT_ADDR)),
+            0xF0,
+            "TBLRD must surface user_id[5]"
+        );
+    }
+
+    /// Task #17: TBLRD with TBLPTR in the CONFIG window
+    /// (`0x300000..0x30000E`) returns the parsed config raw
+    /// bytes.  Verifies that `core.config.raw()` is the
+    /// canonical TBLRD source for the config region.
+    #[test]
+    fn tblrd_config_window_reads_core_config_bytes() {
+        let mut core = k20_core_with_flash(&[0x08, 0x00]); // TBLRD*: 0x0008
+        let mut cfg = [0u8; 14];
+        cfg[6] = 0x55; // CONFIG4L sentinel
+        cfg[8] = 0xA5; // CONFIG5L sentinel
+        core.config = crate::config::Config::from_bytes(cfg);
+        // Set TBLPTR = 0x300006 (CONFIG4L).
+        core.memory.write_raw(Address::from_raw(0xFF6), 0x06);
+        core.memory.write_raw(Address::from_raw(0xFF7), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFF8), 0x30);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(TABLAT_ADDR)),
+            0x55,
+            "TBLRD must surface config[6] (CONFIG4L)"
+        );
+    }
+
+    /// Task #17: TBLRD outside any of the four PIC18
+    /// program-memory windows reads `0xFF` (silicon
+    /// un-programmed).  In particular the gap between flash
+    /// and User ID (`0x008000..0x200000`).
+    #[test]
+    fn tblrd_outside_known_windows_reads_0xff() {
+        let mut core = k20_core_with_flash(&[0x08, 0x00]); // TBLRD*
+        // TBLPTR = 0x100000 (gap region).
+        core.memory.write_raw(Address::from_raw(0xFF6), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFF7), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFF8), 0x10);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(TABLAT_ADDR)),
+            0xFF,
+            "out-of-window TBLRD reads 0xFF"
+        );
+    }
+
+    /// Task #17: TBLWT loads TABLAT into the holding register
+    /// at index `TBLPTR & (block_size - 1)`.  K20 block size
+    /// is 16 bytes -- low 4 bits of TBLPTR select the slot.
+    #[test]
+    fn tblwt_loads_tablat_into_holding_at_block_offset_k20() {
+        // TBLWT*: opcode 0x000C, bytes [0x0C, 0x00].
+        let mut core = k20_core_with_flash(&[0x0C, 0x00]);
+        // Stage TABLAT = 0x42 and set TBLPTR = 0x4007 (slot 7
+        // within the 16-byte K20 block).
+        core.memory.write_raw(Address::from_raw(TABLAT_ADDR), 0x42);
+        core.memory.write_raw(Address::from_raw(0xFF6), 0x07);
+        core.memory.write_raw(Address::from_raw(0xFF7), 0x40);
+        core.memory.write_raw(Address::from_raw(0xFF8), 0x00);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(
+            core.tblwt_holding[7], 0x42,
+            "TBLWT must stage TABLAT into holding[block_offset]"
+        );
+        // Other holding slots untouched (still 0xFF default).
+        assert_eq!(core.tblwt_holding[0], 0xFF);
+        assert_eq!(core.tblwt_holding[8], 0xFF);
+    }
+
+    /// Task #17: TBLWT*+ stages then increments TBLPTR; a
+    /// second TBLWT*+ stages at the next slot.  Pins
+    /// post-increment ordering for sequential block fills.
+    #[test]
+    fn tblwt_post_increment_stages_then_advances_tblptr() {
+        // Two TBLWT*+ in a row: opcode 0x000D = [0x0D, 0x00].
+        let mut core = k20_core_with_flash(&[0x0D, 0x00, 0x0D, 0x00]);
+        core.memory.write_raw(Address::from_raw(0xFF6), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFF7), 0x40);
+        core.memory.write_raw(Address::from_raw(0xFF8), 0x00);
+        // First TBLWT*+: stage 0x11 at offset 0; TBLPTR -> 0x4001.
+        core.memory.write_raw(Address::from_raw(TABLAT_ADDR), 0x11);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.tblwt_holding[0], 0x11);
+        assert_eq!(read_tblptr(&core), 0x4001);
+        // Second TBLWT*+: stage 0x22 at offset 1; TBLPTR -> 0x4002.
+        core.memory.write_raw(Address::from_raw(TABLAT_ADDR), 0x22);
+        step(&mut core, &mut stack).unwrap();
+        assert_eq!(core.tblwt_holding[1], 0x22);
+        assert_eq!(read_tblptr(&core), 0x4002);
+    }
+
+    /// Task #17: variant-aware block-size mask.  PIC18F2455
+    /// has a 32-byte block (low 5 bits of TBLPTR), K20 has
+    /// 16-byte (low 4 bits).  A TBLPTR that wraps past the
+    /// K20 block boundary (TBLPTR=0x4010) lands at slot 0
+    /// for K20 but slot 16 for 2455.
+    #[test]
+    fn tblwt_block_size_differs_between_variants() {
+        // Build a 2455 core (32-byte block).  k20_core_with_flash
+        // is K20-only; replicate inline.
+        let mut core_2455 = Core::new(Variant::Pic18F2455);
+        let prog = [0x0C, 0x00]; // TBLWT*
+        core_2455.flash_mut()[..prog.len()].copy_from_slice(&prog);
+        core_2455
+            .memory
+            .write_raw(Address::from_raw(TABLAT_ADDR), 0x77);
+        // TBLPTR = 0x4010: slot 16 within a 32-byte block.
+        core_2455.memory.write_raw(Address::from_raw(0xFF6), 0x10);
+        core_2455.memory.write_raw(Address::from_raw(0xFF7), 0x40);
+        core_2455.memory.write_raw(Address::from_raw(0xFF8), 0x00);
+        let mut stack = Stack::new();
+        step(&mut core_2455, &mut stack).unwrap();
+        assert_eq!(
+            core_2455.tblwt_block_size(),
+            32,
+            "PIC18F2455 has a 32-byte flash write block"
+        );
+        assert_eq!(
+            core_2455.tblwt_holding[16], 0x77,
+            "2455 stages at slot 16 for TBLPTR<5:0>=16"
+        );
+
+        // Mirror on K20: TBLPTR=0x4010 -> slot 0 (low 4 bits).
+        let mut core_k20 = k20_core_with_flash(&prog);
+        core_k20
+            .memory
+            .write_raw(Address::from_raw(TABLAT_ADDR), 0x88);
+        core_k20.memory.write_raw(Address::from_raw(0xFF6), 0x10);
+        core_k20.memory.write_raw(Address::from_raw(0xFF7), 0x40);
+        core_k20.memory.write_raw(Address::from_raw(0xFF8), 0x00);
+        let mut stack_k20 = Stack::new();
+        step(&mut core_k20, &mut stack_k20).unwrap();
+        assert_eq!(
+            core_k20.tblwt_block_size(),
+            16,
+            "PIC18F25K20 has a 16-byte flash write block"
+        );
+        assert_eq!(
+            core_k20.tblwt_holding[0], 0x88,
+            "K20 wraps TBLPTR=0x4010 to slot 0 (low 4 bits)"
+        );
     }
 
     /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are
