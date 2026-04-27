@@ -356,10 +356,11 @@ fn apply_por_sfr_defaults(core: &mut Core) {
 /// this seeding, our SFR wipe leaves TRMT=0 and the wait
 /// times out, the firmware hits `hard_reset` (RESET
 /// instruction), and reboots in an infinite loop, never
-/// reaching the chain protocol parser.  PR2 / IPR1 / IPR2
-/// rounded out for symmetry with the K20 table; the
-/// remaining peripheral SFR defaults (T0CON / OSCCON /
-/// HLVDCON / TRISx / etc.) stay deferred.
+/// reaching the chain protocol parser.  T0CON / PR2 /
+/// BAUDCON / IPR1 / IPR2 rounded out for symmetry with
+/// the K20 table; the remaining peripheral SFR defaults
+/// (OSCCON / HLVDCON / TRISx / CCP / SPP / USB / etc.)
+/// stay deferred.
 fn apply_2455_por_sfr_defaults(core: &mut Core) {
     const POR_2455: &[(u16, u8, &str)] = &[
         // INTCON2: RBPU=1, INTEDG0/1/2=1, TMR0IP=1, RBIP=1.
