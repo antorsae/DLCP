@@ -591,19 +591,16 @@ mod tests {
 
         // Step 2: ISR runs RETFIE -- pops PC, sets GIE.  But
         // INT0IF is still set, so the very next step will
-        // re-dispatch unless we clear the flag.  Clear it
-        // so we can assert the post-RETFIE state cleanly.
-        // (Real ISRs clear IF before RETFIE; here we do it
-        // out-of-band via memory write since this test
-        // doesn't run real ISR code.)
-        core.memory.write_raw(
-            Address::from_raw(INTCON_ADDR),
-            intcon | 0x10, // INT0IE preserved, INT0IF (bit 1) cleared by mask, just leave bit 4
-        );
-        // Specifically clear INT0IF (bit 1) so the next step
-        // doesn't immediately re-dispatch.
-        let cleared = core.memory.read_raw(Address::from_raw(INTCON_ADDR)) & !0x02;
-        core.memory.write_raw(Address::from_raw(INTCON_ADDR), cleared);
+        // re-dispatch unless we clear the flag.  Real ISRs
+        // clear IF before RETFIE; we do the same here via a
+        // single memory write that clears INT0IF (bit 1)
+        // while preserving INT0IE (bit 4) and the GIE bit
+        // currently held by `intcon` (which is 0 from the
+        // step-1 dispatch -- correct: GIE is supposed to
+        // stay clear inside an ISR until RETFIE re-enables
+        // it).
+        let int_flag_cleared = intcon & !0x02; // clear INT0IF only
+        core.memory.write_raw(Address::from_raw(INTCON_ADDR), int_flag_cleared);
         let c2 = step(&mut core, &mut stack).unwrap();
         assert_eq!(c2, 2, "RETFIE billed at 2 Tcy");
         assert_eq!(core.pc(), 0x0042, "RETFIE restored pre-IRQ PC");
@@ -631,6 +628,7 @@ mod tests {
     fn irq_redispatches_immediately_after_retfie_if_still_pending() {
         use crate::exec::step;
         let mut core = Core::new(Variant::Pic18F25K20);
+        // First-IRQ pre-PC = 0x0042.
         core.set_pc(0x0042);
         let flash = core.flash_mut();
         flash[0x0008] = 0x10; // RETFIE
@@ -642,22 +640,32 @@ mod tests {
         );
         let mut stack = Stack::new();
 
-        // First IRQ: dispatch.
+        // First IRQ: dispatch.  Stack push #1 at depth 1.
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
+        assert_eq!(stack.depth(), 1);
         // RETFIE: pops PC, re-enables GIE.  We do NOT clear
-        // INT0IF.
+        // INT0IF.  Stack now empty (depth 0).
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x0042);
+        assert_eq!(stack.depth(), 0, "RETFIE must pop the stack");
         // Third step: IRQ still pending + GIE re-enabled ->
-        // re-dispatch immediately.
+        // re-dispatch immediately.  Stack push #2 at depth 1.
         step(&mut core, &mut stack).unwrap();
         assert_eq!(
             core.pc(),
             IRQ_VECTOR_HIGH,
             "IRQ must re-dispatch immediately after RETFIE if flag still pending"
         );
-        // The pre-IRQ PC pushed this round is 0x0042 again.
+        assert_eq!(
+            stack.depth(),
+            1,
+            "redispatch must push a NEW stack entry, not reuse the popped one",
+        );
+        // The pre-IRQ PC pushed this round is the post-RETFIE
+        // 0x0042 (the firmware was about to fetch its next
+        // instruction at the restored PC when the still-
+        // pending IRQ fired).
         assert_eq!(stack.top(), 0x0042);
     }
 
