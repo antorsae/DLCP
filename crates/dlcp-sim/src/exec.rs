@@ -292,8 +292,12 @@ fn tblptr_auto_dec(value: u32) -> u32 {
 
 /// Read a byte from program-memory space at TBLPTR address
 /// `addr`.  TBLRD with TBLPTR pointing into any of the four
-/// PIC18 program-memory windows is handled here; out-of-range
-/// reads return `0xFF` (un-programmed silicon default).
+/// PIC18 program-memory windows is handled here; gap regions
+/// outside any implemented window return `0` (silicon
+/// "Read '0'" behaviour per DS39632E Fig 5-1 / DS40001303H
+/// Fig 5-1 -- the unimplemented program-memory regions
+/// between flash and the 0x200000 user-memory space read as
+/// zero).
 ///
 /// Windows (DS39632E §5.1 / DS40001303H §5.1):
 ///   * `0x000000..0x008000` -- program flash (per-variant
@@ -305,7 +309,8 @@ fn tblptr_auto_dec(value: u32) -> u32 {
 ///     the hex loader stored in the parsed CONFIG region.
 ///   * `0x3FFFFE..0x400000` -- silicon DEVID (read-only).
 ///     Reported as `0xFF` until per-variant DEVID values are
-///     wired in.
+///     wired in (gpsim reports the actual silicon DEVID;
+///     deferred until any test needs it).
 ///
 /// EEPROM read-back is NOT a TBLRD path -- firmware reads
 /// EEPROM via EECON1.EEPGD=0 + EECON1.RD which goes through
@@ -326,8 +331,16 @@ fn read_flash_byte(core: &Core, addr: u32) -> u8 {
     {
         return core.config.raw()[(addr - crate::hex::CONFIG_BASE) as usize];
     }
-    // DEVID + every other gap reads as 0xFF.
-    0xFF
+    // DEVID window: silicon-only data.  Until per-variant
+    // DEVID values are wired in, treat as "Read '0'" (same
+    // as the program-memory gaps).
+    if (crate::hex::DEVID_BASE..crate::hex::DEVID_BASE + 2).contains(&addr) {
+        return 0;
+    }
+    // Every other address -- the unimplemented program-memory
+    // gaps between flash, User ID, CONFIG, and DEVID -- reads
+    // as zero per the silicon memory-map figures.
+    0
 }
 
 /// Skip the next instruction by advancing PC past it and
@@ -1994,12 +2007,14 @@ mod tests {
         );
     }
 
-    /// Task #17: TBLRD outside any of the four PIC18
-    /// program-memory windows reads `0xFF` (silicon
-    /// un-programmed).  In particular the gap between flash
-    /// and User ID (`0x008000..0x200000`).
+    /// Task #17: TBLRD in the unimplemented program-memory
+    /// gaps (e.g. between flash end and User ID base)
+    /// reads `0` per the DS memory-map figures
+    /// ("Read '0'", DS39632E Fig 5-1 / DS40001303H Fig 5-1).
+    /// Codex review of b82f1ee LOW corrected this from the
+    /// initial `0xFF` interpretation.
     #[test]
-    fn tblrd_outside_known_windows_reads_0xff() {
+    fn tblrd_outside_known_windows_reads_zero() {
         let mut core = k20_core_with_flash(&[0x08, 0x00]); // TBLRD*
         // TBLPTR = 0x100000 (gap region).
         core.memory.write_raw(Address::from_raw(0xFF6), 0x00);
@@ -2009,20 +2024,21 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         assert_eq!(
             core.memory.read_raw(Address::from_raw(TABLAT_ADDR)),
-            0xFF,
-            "out-of-window TBLRD reads 0xFF"
+            0,
+            "out-of-window TBLRD reads 0 per silicon memory-map"
         );
     }
 
     /// Task #17: TBLWT loads TABLAT into the holding register
-    /// at index `TBLPTR & (block_size - 1)`.  K20 block size
-    /// is 16 bytes -- low 4 bits of TBLPTR select the slot.
+    /// at index `TBLPTR & (block_size - 1)`.  Both supported
+    /// variants share a 32-byte block, so low 5 bits of
+    /// TBLPTR select the slot.
     #[test]
     fn tblwt_loads_tablat_into_holding_at_block_offset_k20() {
         // TBLWT*: opcode 0x000C, bytes [0x0C, 0x00].
         let mut core = k20_core_with_flash(&[0x0C, 0x00]);
         // Stage TABLAT = 0x42 and set TBLPTR = 0x4007 (slot 7
-        // within the 16-byte K20 block).
+        // within the 32-byte K20 block).
         core.memory.write_raw(Address::from_raw(TABLAT_ADDR), 0x42);
         core.memory.write_raw(Address::from_raw(0xFF6), 0x07);
         core.memory.write_raw(Address::from_raw(0xFF7), 0x40);
@@ -2061,56 +2077,38 @@ mod tests {
         assert_eq!(read_tblptr(&core), 0x4002);
     }
 
-    /// Task #17: variant-aware block-size mask.  PIC18F2455
-    /// has a 32-byte block (low 5 bits of TBLPTR), K20 has
-    /// 16-byte (low 4 bits).  A TBLPTR that wraps past the
-    /// K20 block boundary (TBLPTR=0x4010) lands at slot 0
-    /// for K20 but slot 16 for 2455.
+    /// Task #17: variant block-size constant.  Both supported
+    /// variants share a 32-byte write block (DS39632E §6.4
+    /// for 2455; DS40001303H Tbl 6-1 places PIC18F25K20 in
+    /// the 32-byte row -- the 16-byte row applies only to
+    /// PIC18F23K20 / 43K20 which we don't target).  Codex
+    /// review of b82f1ee MEDIUM corrected this from the
+    /// initial K20=16 bytes interpretation.
     #[test]
-    fn tblwt_block_size_differs_between_variants() {
-        // Build a 2455 core (32-byte block).  k20_core_with_flash
-        // is K20-only; replicate inline.
-        let mut core_2455 = Core::new(Variant::Pic18F2455);
-        let prog = [0x0C, 0x00]; // TBLWT*
-        core_2455.flash_mut()[..prog.len()].copy_from_slice(&prog);
-        core_2455
-            .memory
-            .write_raw(Address::from_raw(TABLAT_ADDR), 0x77);
-        // TBLPTR = 0x4010: slot 16 within a 32-byte block.
-        core_2455.memory.write_raw(Address::from_raw(0xFF6), 0x10);
-        core_2455.memory.write_raw(Address::from_raw(0xFF7), 0x40);
-        core_2455.memory.write_raw(Address::from_raw(0xFF8), 0x00);
-        let mut stack = Stack::new();
-        step(&mut core_2455, &mut stack).unwrap();
-        assert_eq!(
-            core_2455.tblwt_block_size(),
-            32,
-            "PIC18F2455 has a 32-byte flash write block"
-        );
-        assert_eq!(
-            core_2455.tblwt_holding[16], 0x77,
-            "2455 stages at slot 16 for TBLPTR<5:0>=16"
-        );
-
-        // Mirror on K20: TBLPTR=0x4010 -> slot 0 (low 4 bits).
-        let mut core_k20 = k20_core_with_flash(&prog);
-        core_k20
-            .memory
-            .write_raw(Address::from_raw(TABLAT_ADDR), 0x88);
-        core_k20.memory.write_raw(Address::from_raw(0xFF6), 0x10);
-        core_k20.memory.write_raw(Address::from_raw(0xFF7), 0x40);
-        core_k20.memory.write_raw(Address::from_raw(0xFF8), 0x00);
-        let mut stack_k20 = Stack::new();
-        step(&mut core_k20, &mut stack_k20).unwrap();
-        assert_eq!(
-            core_k20.tblwt_block_size(),
-            16,
-            "PIC18F25K20 has a 16-byte flash write block"
-        );
-        assert_eq!(
-            core_k20.tblwt_holding[0], 0x88,
-            "K20 wraps TBLPTR=0x4010 to slot 0 (low 4 bits)"
-        );
+    fn tblwt_block_size_is_32_bytes_on_both_variants() {
+        let core_2455 = Core::new(Variant::Pic18F2455);
+        let core_k20 = Core::new(Variant::Pic18F25K20);
+        assert_eq!(core_2455.tblwt_block_size(), 32);
+        assert_eq!(core_k20.tblwt_block_size(), 32);
+        // TBLPTR=0x4010 lands at slot 16 (low 5 bits) on both
+        // variants.  Run TBLWT on each and verify.
+        for variant in [Variant::Pic18F2455, Variant::Pic18F25K20] {
+            let mut core = Core::new(variant);
+            let prog = [0x0C, 0x00]; // TBLWT*
+            core.flash_mut()[..prog.len()].copy_from_slice(&prog);
+            core.memory
+                .write_raw(Address::from_raw(TABLAT_ADDR), 0x77);
+            core.memory.write_raw(Address::from_raw(0xFF6), 0x10);
+            core.memory.write_raw(Address::from_raw(0xFF7), 0x40);
+            core.memory.write_raw(Address::from_raw(0xFF8), 0x00);
+            let mut stack = Stack::new();
+            step(&mut core, &mut stack).unwrap();
+            assert_eq!(
+                core.tblwt_holding[16], 0x77,
+                "{:?}: TBLPTR<4:0>=0x10 stages at slot 16",
+                variant
+            );
+        }
     }
 
     /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are
