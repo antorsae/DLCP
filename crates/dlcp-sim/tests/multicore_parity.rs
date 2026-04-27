@@ -708,6 +708,159 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     }
 }
 
+/// P3.6 step 2 PROBE -- non-converging.  Documents the
+/// current divergence: `v171_diag_present` reaches `0x01`
+/// (PB1 reply landed) but never `0x03` (PB1 + PB2).  Same
+/// symptom the Python harness logs in
+/// `tests/sim/test_v171_v32_layer5_diag_chain.py:166`,
+/// even though the Rust sim's silicon-correct ring has no
+/// bridge-style echo loop.
+///
+/// Empirical state at exit (10 B-tick ceiling, 148 s wall):
+///   * `v171_diag_present = 0x01` (PB1 only)
+///   * `v171_diag_target  = 0x01` (CONTROL next-queries PB2)
+///   * `menu_state        = 4`    (PB1 Diag, as set)
+///   * `main0_pc          = 0x4456`
+///   * `main1_pc          = 0x1872`
+///   * 2105 UART deliveries during the polling window
+///
+/// Working hypotheses (all unconfirmed):
+///   1. Same-tick UART seq-order race (task #19): MAIN0
+///      forwards PB2 query to MAIN1 and MAIN1's TSR-complete
+///      fire at the same universal tick; non-deterministic
+///      dispatch order may strand MAIN1 mid-reply.
+///   2. V3.2 MAIN forward-path firmware: cmd 0x23/0x24 (PB2)
+///      may have a frame-handling subtlety that the chain
+///      has to satisfy to elicit a reply (versus cmd
+///      0x21/0x22 (PB1) which works).  Worth a focused look
+///      at `dlcp_main_v32.asm`'s BF/2N parser before
+///      assuming a sim bug.
+///   3. Hidden peripheral fidelity gap surfaced only by
+///      the longer chain (e.g., RCREG FIFO depth, RCIF
+///      latch under back-to-back MAIN0->MAIN1 traffic).
+///
+/// What this probe DOES prove:
+///   * The 3-core ring under V1.71+V3.2+V3.2 boots, runs
+///     the diag-poll state machine, exchanges 2k+ UART
+///     bytes through the silicon ring, and lands PB1 reply
+///     correctly.
+///   * No record in `uart_tx_history` is a self-loop --
+///     the gpsim bridge echo is structurally absent (this
+///     is the half of Task #22 the Rust rewrite has
+///     genuinely retired).
+///
+/// `#[ignore]`d so the routine suite stays fast; budget
+/// is 2 B ticks (was 10 B during the discovery probe) so
+/// each manual iteration completes in ~30 s wall.
+#[test]
+#[ignore = "P3.6 step 2 probe; PB2 reply never lands -- diverging investigation needed (see docstring)"]
+fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
+    use dlcp_sim::memory::Address;
+
+    const MENU_STATE_RAM: u16 = 0x0BF;
+    const DIAG_TARGET_RAM: u16 = 0x196;
+    const DIAG_PRESENT_RAM: u16 = 0x197;
+    const MENU_STATE_PB1_DIAG: u8 = 4;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    // Stage 1: boot to first UART so CONTROL is in main loop.
+    chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| {
+            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+                && !c.uart_tx_history.is_empty()
+        },
+    );
+    let stage1_tick = chain.current_tick;
+    let stage1_history_len = chain.uart_tx_history.len();
+
+    // Stage 2: force CONTROL onto the PB1 Diag screen.
+    // Real hardware reaches this via two RIGHT button
+    // presses; in the absence of GPIO input modeling
+    // (task #35) we poke the menu-state RAM directly.
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(MENU_STATE_RAM), MENU_STATE_PB1_DIAG);
+
+    // Stage 3: run until both PB-reply bits land in
+    // v171_diag_present.  Budget was 10 B during the
+    // discovery probe; trimmed to 2 B (~16 s simulated,
+    // ~30 s wall) since we know convergence does NOT
+    // happen -- per the docstring above, present saturates
+    // at 0x01.  Smaller budget = faster iteration when
+    // investigating root cause.
+    chain.run_until(
+        50_000_000, // 50 M = ~350 ms wall per chunk
+        2_000_000_000,
+        |c| c.cores[i_ctl].memory.read_raw(Address::from_raw(DIAG_PRESENT_RAM)) == 0x03,
+    );
+
+    let diag_present = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(DIAG_PRESENT_RAM));
+    let diag_target = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(DIAG_TARGET_RAM));
+    let menu_state = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(MENU_STATE_RAM));
+    let main0_pc = chain.cores[i_main0].pc();
+    let main1_pc = chain.cores[i_main1].pc();
+    let stage3_tick = chain.current_tick;
+    let stage3_history_len = chain.uart_tx_history.len();
+    let post_stage1_tx = stage3_history_len.saturating_sub(stage1_history_len);
+
+    assert_eq!(
+        diag_present, 0x03,
+        "v171_diag_present must show both PBs replied (0x03); \
+         got 0x{diag_present:02X}\n  \
+         diag_target=0x{diag_target:02X}, menu_state={menu_state}, \
+         main0_pc=0x{main0_pc:04X}, main1_pc=0x{main1_pc:04X}\n  \
+         stage1_tick={stage1_tick}, stage3_tick={stage3_tick}, \
+         post-stage1 UART deliveries={post_stage1_tx}"
+    );
+
+    // No echo even during diag polling.
+    for record in &chain.uart_tx_history {
+        assert_ne!(
+            record.src_core, record.dst_core,
+            "no UART delivery may route a core's TX to its own RX; \
+             firmware-driven echo-loop check failed during diag poll: {record:?}"
+        );
+    }
+}
+
 /// V3.1 + V1.71 chain reaches its first UART TX byte across
 /// the current loop.  This is the P3.5 *minimum-viable*
 /// acceptance milestone: end-to-end demonstration that the
