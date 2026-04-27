@@ -99,6 +99,20 @@ const BAUDCON_BRG16: u8 = 1 << 3;
 const PIR1_TXIF: u8 = 1 << 4;
 const PIR1_RCIF: u8 = 1 << 5;
 
+/// RCSTA.CREN (Continuous Receive Enable, bit 4).
+const RCSTA_CREN: u8 = 1 << 4;
+
+/// RCSTA.OERR (Overrun Error, bit 1).  Sticky; cleared by
+/// firmware writing CREN=0 or by software-resetting the
+/// EUSART.
+const RCSTA_OERR: u8 = 1 << 1;
+
+/// Depth of the silicon RX FIFO behind RCREG.  Per DS39632E
+/// §20.0 the EUSART has a "two character deep FIFO".  Our
+/// model uses a small fixed array so the per-byte path
+/// stays heap-free.
+const RX_FIFO_DEPTH: usize = 2;
+
 #[derive(Clone, Debug, Default)]
 pub struct Eusart {
     /// Tcy remaining until the in-flight TX shift register
@@ -125,6 +139,18 @@ pub struct Eusart {
     /// coupling).  Bytes accumulate here in TX order; the
     /// chain consumes them in the same order.
     completed_tx_bytes: VecDeque<u8>,
+    /// Silicon RX FIFO behind RCREG.  Per DS39632E §20.0 the
+    /// EUSART has a "two character deep FIFO".  Bytes are
+    /// pushed here on `deliver_rx_byte` and popped on RCREG
+    /// read.  RCIF tracks "FIFO non-empty"; OERR latches
+    /// when a third byte arrives while the FIFO is full
+    /// (the third byte is dropped per DS §20.4.4).  Without
+    /// this depth, V3.1's chain protocol parser sees only
+    /// the latest byte after each ISR-latency window,
+    /// turning intact `B1 04 00` frames into phase-shifted
+    /// debris -- the cmd/data bytes are lost before the
+    /// firmware reads them.  Task #30.
+    rx_fifo: VecDeque<u8>,
 }
 
 impl Eusart {
@@ -142,6 +168,7 @@ impl Eusart {
         self.tsr_byte = None;
         self.txreg_holding = None;
         self.completed_tx_bytes.clear();
+        self.rx_fifo.clear();
     }
 
     /// Drain one completed TX byte from the FIFO, or
@@ -164,22 +191,38 @@ impl Eusart {
     }
 
     /// Deliver an inbound RX byte from the pin network.
-    /// Loads RCREG with the byte and asserts PIR1.RCIF.
-    /// Phase-3.5 minimum: no OERR / FERR modeling for the
-    /// in-flight RX shifter (the byte arrives whole-frame
-    /// at a single moment); Phase-4 dual-run will sharpen
-    /// that against gpsim's bit-level RX timing if needed.
-    /// Disabled (SPEN=0 or CREN=0) RX silently drops the
-    /// byte.
+    /// Push into the 2-deep FIFO behind RCREG and assert
+    /// `PIR1.RCIF`.  Per DS39632E §20.0 / Reg 9-4 the
+    /// silicon FIFO holds two characters; a third byte
+    /// arriving while the FIFO is full latches `RCSTA.OERR`
+    /// and is dropped (DS §20.4.4).  Phase-3.5 minimum: no
+    /// FERR modeling -- the in-flight RX shifter still
+    /// arrives whole-frame at a single moment; Phase-4
+    /// dual-run will sharpen that against gpsim's bit-level
+    /// RX timing if needed.  Disabled (SPEN=0 or CREN=0)
+    /// RX silently drops the byte.  Task #30.
     pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) {
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
-        // Need SPEN AND CREN (Continuous Receive Enable,
-        // bit 4) for the receiver to accept bytes.
-        const RCSTA_CREN: u8 = 1 << 4;
         if (rcsta & RCSTA_SPEN) == 0 || (rcsta & RCSTA_CREN) == 0 {
             return;
         }
-        mem.write_raw(Address::from_raw(RCREG_ADDR), byte);
+        if self.rx_fifo.len() >= RX_FIFO_DEPTH {
+            // FIFO full: latch OERR, drop the byte.  Per DS
+            // §20.4.4 OERR clears when firmware writes
+            // CREN=0 (handled in `on_sfr_write` for RCSTA).
+            mem.write_raw(
+                Address::from_raw(RCSTA_ADDR),
+                rcsta | RCSTA_OERR,
+            );
+            return;
+        }
+        self.rx_fifo.push_back(byte);
+        // RCREG memory always reflects the OLDEST FIFO byte
+        // (the next read returns it).  RCIF stays asserted
+        // while FIFO is non-empty.
+        if let Some(&front) = self.rx_fifo.front() {
+            mem.write_raw(Address::from_raw(RCREG_ADDR), front);
+        }
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         mem.write_raw(
             Address::from_raw(PIR1_ADDR),
@@ -193,21 +236,35 @@ impl Eusart {
     /// EUSART Receive Interrupt Flag bit -- 1 = the EUSART
     /// receive buffer, RCREG, is full (cleared when RCREG is
     /// read); 0 = the EUSART receive buffer is empty."  The
-    /// silicon FIFO is 2-deep (DS §20.0 EUSART chapter); our
-    /// model is single-byte, so an RCREG read is always a
-    /// "FIFO now empty" case and we clear RCIF
-    /// unconditionally.  Without this clear, RCIF stays
-    /// asserted after the read and a level-triggered IRQ
-    /// dispatcher would re-fire on the stale (already-
-    /// consumed) byte, causing the ISR's frame parser to
-    /// re-process the same byte.  Task #30.
+    /// silicon FIFO is 2-deep (DS §20.0 EUSART chapter):
+    /// each RCREG read pops the OLDEST byte, leaving the
+    /// next byte (if any) staged in RCREG, and clears RCIF
+    /// only when the FIFO is now empty.  Without the FIFO
+    /// depth, V3.1 MAIN's chain protocol parser sees only
+    /// the latest byte after each ISR-latency window,
+    /// turning intact `B1 04 00` frames into phase-shifted
+    /// debris.  Task #30.
     pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
         if addr == RCREG_ADDR {
-            let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-            mem.write_raw(
-                Address::from_raw(PIR1_ADDR),
-                pir1 & !PIR1_RCIF,
-            );
+            // Pop the byte the executor just returned to the
+            // firmware.  The byte already at `RCREG_ADDR` in
+            // `mem` was the front of the FIFO; the executor's
+            // `read_target_with_hook` captured it BEFORE
+            // calling us.  Update `mem[RCREG]` so the next
+            // read returns the next FIFO byte (or 0 if the
+            // FIFO drains).
+            self.rx_fifo.pop_front();
+            let next = self.rx_fifo.front().copied().unwrap_or(0);
+            mem.write_raw(Address::from_raw(RCREG_ADDR), next);
+            // RCIF tracks "FIFO non-empty".  Clear it only
+            // when the FIFO is now empty.
+            if self.rx_fifo.is_empty() {
+                let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+                mem.write_raw(
+                    Address::from_raw(PIR1_ADDR),
+                    pir1 & !PIR1_RCIF,
+                );
+            }
         }
     }
 
@@ -226,6 +283,9 @@ impl Eusart {
             // transfer NOW -- otherwise the held byte would
             // be stuck forever.
             TXSTA_ADDR | RCSTA_ADDR => {
+                if addr == RCSTA_ADDR {
+                    self.handle_rcsta_write(value, mem);
+                }
                 self.maybe_start_held_byte(mem);
                 self.recompute_txif(mem);
             }
@@ -234,6 +294,34 @@ impl Eusart {
             // eager work needed.
             SPBRG_ADDR | SPBRGH_ADDR | BAUDCON_ADDR => {}
             _ => {}
+        }
+    }
+
+    /// Handle the RX-side state effects of an RCSTA write.
+    /// Per DS39632E §20.4.4: writing CREN=0 clears the OERR
+    /// latch and (silicon-side) drains the RX FIFO.  V3.1's
+    /// uart_oerr_recover idiom is `bcf RCSTA, 4; ...; bsf
+    /// RCSTA, 4` -- the falling-edge of CREN clears OERR
+    /// and the rising-edge re-arms the receiver.  Task #30.
+    fn handle_rcsta_write(&mut self, value: u8, mem: &mut Memory) {
+        if (value & RCSTA_CREN) == 0 {
+            // CREN=0: clear OERR (DS §20.4.4) and drain the
+            // RX FIFO (silicon side: receiver is disabled,
+            // pending bytes are discarded).
+            let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+            mem.write_raw(
+                Address::from_raw(RCSTA_ADDR),
+                rcsta & !RCSTA_OERR,
+            );
+            self.rx_fifo.clear();
+            // RCREG no longer holds a valid pending byte.
+            mem.write_raw(Address::from_raw(RCREG_ADDR), 0);
+            // FIFO drained -> RCIF clears.
+            let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+            mem.write_raw(
+                Address::from_raw(PIR1_ADDR),
+                pir1 & !PIR1_RCIF,
+            );
         }
     }
 
@@ -882,6 +970,134 @@ mod tests {
             mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
             0,
             "post: RCIF cleared by RCREG read"
+        );
+    }
+
+    /// 2-deep RX FIFO contract (DS39632E §20.0): two
+    /// consecutive `deliver_rx_byte` calls without an
+    /// intervening RCREG read leave both bytes available;
+    /// the first read returns byte #1, the second returns
+    /// byte #2.  RCIF stays asserted while the FIFO is
+    /// non-empty; clears on the read that drains it.
+    /// Task #30 root-cause -- without this depth, V3.1's
+    /// chain-protocol parser sees only the latest byte.
+    #[test]
+    fn rx_fifo_holds_two_bytes_in_order() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0xB1, &mut mem);
+        eusart.deliver_rx_byte(0x04, &mut mem);
+        // RCREG holds the OLDEST (front) byte.
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0xB1,
+            "RCREG must show the oldest FIFO byte"
+        );
+        // RCIF set (FIFO non-empty).
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            PIR1_RCIF
+        );
+        // First read: pop 0xB1; RCREG shows next (0x04); RCIF stays.
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x04,
+            "after popping 0xB1, RCREG must show next byte 0x04"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            PIR1_RCIF,
+            "RCIF stays asserted while FIFO non-empty"
+        );
+        // Second read: pop 0x04; FIFO empty; RCIF clears.
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            0,
+            "RCIF clears when FIFO drains"
+        );
+    }
+
+    /// A third byte arriving while the FIFO is full latches
+    /// `RCSTA.OERR` and is dropped (DS §20.4.4 / Reg 9-4).
+    /// Firmware clears OERR by writing `RCSTA.CREN=0`.
+    #[test]
+    fn rx_fifo_third_byte_sets_oerr_and_is_dropped() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0x11, &mut mem);
+        eusart.deliver_rx_byte(0x22, &mut mem);
+        // Third byte: dropped, OERR latched.
+        eusart.deliver_rx_byte(0x33, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
+            RCSTA_OERR,
+            "third byte while FIFO full must latch OERR"
+        );
+        // FIFO still has the original two bytes; the dropped
+        // 0x33 never appears.
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0x11
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x22,
+            "after popping 0x11, RCREG shows 0x22 (NOT 0x33)"
+        );
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0x22
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0,
+            "FIFO empty -- dropped 0x33 was lost"
+        );
+    }
+
+    /// V3.1's `uart_oerr_recover` writes `RCSTA.CREN=0` to
+    /// clear OERR, then writes CREN=1 to re-arm the
+    /// receiver.  Per DS §20.4.4 the falling edge of CREN
+    /// clears OERR and the silicon drains the RX FIFO.
+    #[test]
+    fn rcsta_cren_falling_edge_clears_oerr_and_drains_fifo() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(
+            Address::from_raw(RCSTA_ADDR),
+            RCSTA_SPEN | RCSTA_CREN,
+        );
+        eusart.deliver_rx_byte(0xAA, &mut mem);
+        eusart.deliver_rx_byte(0xBB, &mut mem);
+        eusart.deliver_rx_byte(0xCC, &mut mem); // overflow -> OERR set
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
+            RCSTA_OERR
+        );
+        // Firmware: bcf RCSTA, 4 (clear CREN).
+        let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+        let new_rcsta = rcsta & !RCSTA_CREN;
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
+        eusart.on_sfr_write(RCSTA_ADDR, new_rcsta, &mut mem);
+        // OERR cleared, FIFO drained, RCIF cleared.
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
+            0,
+            "CREN=0 must clear OERR"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0,
+            "RCREG cleared when receiver disabled"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            0,
+            "RCIF cleared when FIFO drains"
         );
     }
 
