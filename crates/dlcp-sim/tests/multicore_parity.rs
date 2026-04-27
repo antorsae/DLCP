@@ -490,6 +490,16 @@ fn chain_v171_v31_emits_full_handshake_burst() {
     chain.couple_tas3108(i_main, i_tas3108);
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0]);
+    {
+        let m = &chain.cores[i_main];
+        let rcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
+        let txsta = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAC));
+        eprintln!(
+            "  POR-MAIN: rcon=0x{:02X} (RI={}, TO={}, PD={}) txsta=0x{:02X} (TRMT={})",
+            rcon, (rcon >> 4) & 1, (rcon >> 3) & 1, (rcon >> 2) & 1,
+            txsta, (txsta >> 1) & 1,
+        );
+    }
 
     // Wait for 21 bytes total (7 frames * 3 bytes each --
     // the gpsim-observed handshake length).  CONTROL alone
@@ -514,9 +524,15 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         let pc = m.pc();
         let pie1 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
         let pir1 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
-        let rcsta = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAB));
-        let rcreg = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAE));
         let intcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
+        // V3.1 ring buffer pointers (banked):
+        // - rx_ring_wr: 0x0C7 (bank 0)
+        // - rx_ring_rd: 0x0C6 (bank 0)
+        // - delay counter ram_0x003/0x004: 0x003/0x004 (Access)
+        let rx_wr = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x0C7));
+        let rx_rd = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x0C6));
+        let ram3 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x003));
+        let ram4 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x004));
         let main_rx: usize = chain
             .uart_tx_history
             .iter()
@@ -527,16 +543,20 @@ fn chain_v171_v31_emits_full_handshake_burst() {
             .iter()
             .filter(|r| r.src_core == i_main)
             .count();
+        let rcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
+        let stkptr = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFFC));
         eprintln!(
             "  CHUNK {chunk}: cycles={} pc=0x{:04X} pie1=0x{:02X}(RCIE={}) \
-             pir1=0x{:02X}(RCIF={}) rcsta=0x{:02X}(OERR={},FERR={}) rcreg=0x{:02X} \
-             intcon=0x{:02X}(GIE={}) main_rx={} main_tx={}",
+             pir1=0x{:02X}(RCIF={}) intcon=0x{:02X}(GIE={}) \
+             stkptr=0x{:02X} rcon=0x{:02X} \
+             rx_wr=0x{:02X} rx_rd=0x{:02X} ram003={:02X}{:02X} \
+             rx={} tx={}",
             m.cycles(),
             pc, pie1, (pie1 >> 5) & 1,
             pir1, (pir1 >> 5) & 1,
-            rcsta, (rcsta >> 1) & 1, (rcsta >> 2) & 1,
-            rcreg,
             intcon, (intcon >> 7) & 1,
+            stkptr, rcon,
+            rx_wr, rx_rd, ram4, ram3,
             main_rx, main_tx,
         );
     }

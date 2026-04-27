@@ -331,10 +331,57 @@ fn wipe_sfr_window(core: &mut Core) {
 fn apply_por_sfr_defaults(core: &mut Core) {
     match core.variant() {
         Variant::Pic18F25K20 => apply_k20_por_sfr_defaults(core),
-        Variant::Pic18F2455 => {
-            // P1.8d covers K20 only; the 2455 POR table will land
-            // alongside the V2.3 MAIN parity gate.
-        }
+        Variant::Pic18F2455 => apply_2455_por_sfr_defaults(core),
+    }
+}
+
+/// PIC18F2455 POR/BOR SFR initial values, narrow scope.
+///
+/// Source: DS39632E Tbl 4-4 (p.53-57).  This is a TARGETED
+/// subset, not the full 2455 POR table -- the broader
+/// rewrite lands with the V2.3 MAIN parity gate (P1.8e).
+/// Until then, only SFRs whose POR value ≠ 0 AND that
+/// shipped firmware actually relies on are seeded here.
+///
+/// Coverage rationale (task #30 root-cause): V3.1 MAIN's
+/// boot path calls `wait_trmt_bounded` which polls
+/// TXSTA.TRMT.  TRMT's POR value is 1 (TSR idle); without
+/// this seeding, our SFR wipe leaves TRMT=0 and the wait
+/// times out, the firmware hits `hard_reset` (RESET
+/// instruction), and reboots in an infinite loop, never
+/// reaching the chain protocol parser.  PR2 / IPR1 / IPR2
+/// rounded out for symmetry with the K20 table; the
+/// remaining peripheral SFR defaults (T0CON / OSCCON /
+/// HLVDCON / TRISx / etc.) stay deferred.
+fn apply_2455_por_sfr_defaults(core: &mut Core) {
+    const POR_2455: &[(u16, u8, &str)] = &[
+        // INTCON2: RBPU=1, INTEDG0/1/2=1, TMR0IP=1, RBIP=1.
+        // Bits 3 and 1 unimplemented.  Per Tbl 4-4 row.
+        (0xFF1, 0xF5, "INTCON2"),
+        // INTCON3: INT2IP=1, INT1IP=1.  Bits 5 and 2
+        // unimplemented.
+        (0xFF0, 0xC0, "INTCON3"),
+        // T0CON: all 1s at POR (timer disabled, max prescaler).
+        (0xFD5, 0xFF, "T0CON"),
+        // PR2: Timer2 period match value = 0xFF.
+        (0xFAB, 0xFF, "PR2"),
+        // TXSTA: TRMT=1 (TSR empty).  TRMT is hardware-driven
+        // read-only; the SFR write mask in exec.rs preserves
+        // it across SW writes -- so without seeding it here
+        // the firmware's wait_trmt_bounded poll never observes
+        // TRMT=1 and times out.  Task #30 root-cause.
+        (0xFAC, 0x02, "TXSTA"),
+        // BAUDCON: RCIDL=1 (receiver idle).  Bit 2 unimpl.
+        (0xFB8, 0x40, "BAUDCON"),
+        // IPR1: all peripheral interrupt priorities high.
+        // PIC18F2455 (28-pin) has SPPIP (bit 7) unimplemented
+        // per DS Tbl 4-4 second row + footnote 3 -> 0x7F.
+        (0xF9F, 0x7F, "IPR1"),
+        // IPR2: all bits 1.
+        (0xFA2, 0xFF, "IPR2"),
+    ];
+    for &(addr, value, _name) in POR_2455 {
+        core.memory.write_raw(Address::from_raw(addr), value);
     }
 }
 
@@ -1317,6 +1364,70 @@ mod tests {
                 variant
             );
         }
+    }
+
+    /// Task #30 root-cause: V3.1 MAIN's boot path calls
+    /// `wait_trmt_bounded` which polls TXSTA.TRMT.  TRMT's
+    /// POR value is 1 per DS39632E Tbl 4-4, but our 2455
+    /// POR formerly wiped the SFR window to 0 with no
+    /// re-seeding (only K20 had a POR table).  Result:
+    /// firmware times out, hits `hard_reset`, reboots in
+    /// an infinite loop, never reaches the chain protocol
+    /// parser.  This test pins the 2455 POR contract for
+    /// every IRQ + UART SFR the boot path depends on.
+    #[test]
+    fn por_seeds_2455_irq_and_uart_sfrs_per_tbl_4_4() {
+        let mut core = Core::new(Variant::Pic18F2455);
+        let mut stack = Stack::new();
+        apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
+        // The most important one for task #30: TRMT=1
+        // (TXSTA bit 1) so MAIN's wait_trmt_bounded poll
+        // succeeds at boot.
+        let txsta = core.memory.read_raw(Address::from_raw(0xFAC));
+        assert_eq!(
+            txsta & 0x02,
+            0x02,
+            "TXSTA.TRMT must be 1 at POR (DS Tbl 4-4 `0000 0010`)"
+        );
+        // INTCON2 / INTCON3: per-bit non-zero defaults so
+        // firmware reads RBPU=1 / TMR0IP=1 etc.
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFF1)),
+            0xF5,
+            "INTCON2 = 0xF5 (RBPU/INTEDG0/1/2/TMR0IP/RBIP=1)"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFF0)),
+            0xC0,
+            "INTCON3 = 0xC0 (INT1IP/INT2IP=1)"
+        );
+        // T0CON / PR2 / BAUDCON / IPRn: all non-zero
+        // POR defaults per Tbl 4-4.
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFD5)),
+            0xFF,
+            "T0CON = 0xFF (timer disabled, max prescaler)"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFAB)),
+            0xFF,
+            "PR2 = 0xFF"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFB8)),
+            0x40,
+            "BAUDCON = 0x40 (RCIDL=1)"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xF9F)),
+            0x7F,
+            "IPR1 = 0x7F (28-pin SPPIP unimplemented)"
+        );
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFA2)),
+            0xFF,
+            "IPR2 = 0xFF"
+        );
     }
 
     #[test]
