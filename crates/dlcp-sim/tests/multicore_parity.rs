@@ -2425,9 +2425,21 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
 /// a 1.5 s late MAIN1 boot offset under the V1.71 reconnect-wake
 /// budget.  In universal ticks the spec quotes `+72_000_000` as
 /// 1.5 s @ 48 MHz, matching `crates/dlcp-sim/src/boot_offset.rs:15`.
-/// The chain has a single 48 MHz universal clock per
-/// `crates/dlcp-sim/src/chain.rs:17`; the test uses this canonical
-/// offset.
+///
+/// Hardware reality (per `docs/analysis/CONTROL_UNIT_ANALYSIS.md:104+`
+/// and `docs/analysis/MAIN_CLOCK_TIMING.md`): each MCU has its own
+/// local oscillator chain -- CONTROL has a 12 MHz XT crystal on the
+/// control board (Fosc = 12 MHz, 3 MIPS), each MAIN has a 12 MHz
+/// external source + HSPLL on its own main board (Fosc = 16 MHz,
+/// 4 MIPS).  The boards are connected only by the 31,250-baud
+/// optically-isolated current-loop serial link (CAT5 via J3 Midi
+/// pins), NOT by any clock copy.  The "48 MHz universal clock" in
+/// `chain.rs:17` is a SIMULATION TIME BASE (LCM of 12 and 16 MHz),
+/// not a claim that the physical oscillators are unified -- the sim
+/// supports per-core `tick_drift_ppm` (`clock.rs`) to model the
+/// independent phase/drift between oscillators.  This test uses the
+/// canonical 72 M-tick offset on the unified time base; per-core
+/// drift is left at the nominal-zero default.
 ///
 /// Test shape:
 ///   1. Build 3-core ring (CONTROL + MAIN0 + MAIN1) with HD44780
@@ -2487,8 +2499,11 @@ fn test_main1_late_boot_recovery() {
 
     // Boot offset: spec calls for 1.5 s at 48 MHz = 72_000_000
     // universal ticks (`docs/SIM_REWRITE_RUST_SPEC.md:304`,
-    // `crates/dlcp-sim/src/boot_offset.rs:15`).  The chain has a
-    // single 48 MHz universal clock per `chain.rs:17`.
+    // `crates/dlcp-sim/src/boot_offset.rs:15`).  The 48 MHz
+    // figure is the sim's universal time base -- the LCM of
+    // CONTROL's 12 MHz XT Fosc and MAIN's 16 MHz HSPLL Fosc,
+    // not a shared physical clock; see test docstring above
+    // for the per-board oscillator topology.
     const LATE_OFFSET: u64 = 72_000_000;
     chain.schedule_initial_steps(&[0, 0, LATE_OFFSET]);
 
