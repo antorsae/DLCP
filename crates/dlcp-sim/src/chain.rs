@@ -509,6 +509,23 @@ impl Chain {
             dst_core: coupling.dst_core,
             byte,
         });
+        // MCLR-held-low gate (codex review of c993454, MEDIUM #1):
+        // a core whose MCLR pin is held LOW has its EUSART block
+        // in reset on real silicon -- it doesn't accept inbound
+        // bytes (RCSTA reset, SPEN/CREN cleared, RX shift register
+        // disabled).  Without this gate, P3.8b's "RIGHT MAIN held
+        // in reset" probe silently buffered bytes into the held
+        // core's RCREG that no CPU was draining; the test still
+        // passed because the assertion is on CONTROL behaviour,
+        // but the held-core silicon model was leaking.  Drop the
+        // delivery here -- the byte is still recorded in
+        // `uart_tx_history` above (gpsim ground truth records
+        // wire-time delivery regardless of destination acceptance,
+        // so this matches that semantic), it just doesn't reach
+        // the held core's RX path.
+        if self.cores[coupling.dst_core].mclr_held {
+            return;
+        }
         // Borrow-checker: take a single &mut Core for the
         // destination, then split-borrow `peripherals` and
         // `memory` -- they're disjoint pub fields so the
@@ -571,11 +588,27 @@ impl Chain {
         self.cores[core_idx].mclr_held = true;
     }
 
-    /// Release a core's MCLR pin (HIGH).  Resumes stepping at
-    /// the core's current PC -- to fully re-bootstrap (PC ←
-    /// reset vector, peripherals re-initialised) the test
-    /// harness should additionally call `apply_reset_all` or
-    /// the per-core variant.
+    /// Release a core's MCLR pin (HIGH).  Clears the
+    /// `mclr_held` flag, but **does not re-arm the scheduler**.
+    /// While held, `execute_core_step` drops the core from the
+    /// event queue (see the `mclr_held` short-circuit at the
+    /// top of `execute_core_step`); after release, the core is
+    /// no longer scheduled to step until the caller explicitly
+    /// re-primes it.  The two supported re-prime paths today
+    /// are:
+    ///   * `Chain::schedule_initial_steps(&[...])` -- treats
+    ///     each entry as a per-core boot offset and re-pushes
+    ///     a fresh `CoreInstructionComplete` event for every
+    ///     core (matches the cold-boot harness pattern).
+    ///   * `Chain::schedule_next_core_step(idx)` -- pushes a
+    ///     single event for one core at the tick derived from
+    ///     its current `Core::cycles`; combine with a manual
+    ///     reset (e.g. `apply_reset_all` for the whole chain
+    ///     or per-core re-bootstrap) when re-arming a core
+    ///     mid-run.
+    /// To fully re-bootstrap (PC ← reset vector, peripherals
+    /// re-initialised) the test harness should additionally
+    /// call `apply_reset_all` or its per-core variant.
     pub fn release_core_from_reset(&mut self, core_idx: usize) {
         self.cores[core_idx].mclr_held = false;
     }

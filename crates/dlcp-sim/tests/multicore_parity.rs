@@ -2157,33 +2157,120 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     // wait loop at `dlcp_control_v171.asm:4657`, before the
     // ~10 s grace counter even starts.  Stale chunks log LCD
     // state so a failed convergence shows where CONTROL parked.
-    let mut converged = false;
-    for chunk in 0..8 {
+    // Codex review of c993454, MEDIUM #3: the previous test broke
+    // out of the chunk loop on first LCD match, then asserted that
+    // instantaneous LCD state.  That could legitimately catch a
+    // *transient* WAITING screen during early boot (before MAIN0's
+    // sentinel burst lands at CONTROL), which is the same content
+    // CONTROL writes in the cold-boot pre-handshake path -- not the
+    // post-failure stuck-in-WAITING state we're trying to model.
+    //
+    // Stronger convergence pattern:
+    //   (1) require MAIN0 PC > 0x4000 (V3.2 app code -- same
+    //       threshold the 3-core boot test uses).  This rules out
+    //       the `WAITING == startup banner` failure mode.
+    //   (2) THEN require LCD line 1 == `Waiting for DLCP`.
+    //   (3) THEN step further chunks and require it to stay there
+    //       (a chain-ring regression that lets MAIN0 alone satisfy
+    //       CONTROL's heartbeat would surface here as a transition
+    //       to `Volume:-...` or similar).
+    //
+    // 8 B-tick budget chosen to give ample headroom: the working
+    // 2-core LCD parity test converges in ~5 B ticks; with MAIN1
+    // held in reset only 2 cores effectively step, so this is
+    // generous.
+    let mut main0_booted_at_chunk: Option<usize> = None;
+    let mut first_waiting_chunk: Option<usize> = None;
+    for chunk in 0..32 {
         chain.step_ticks(250_000_000);
+        let main0_pc = chain.cores[i_main0].pc();
         let lcd = &chain.lcd_slaves[i_lcd];
         eprintln!(
-            "P3.8b chunk {chunk}: tick={}, LCD line1={:?}, line2={:?}",
+            "P3.8b chunk {chunk}: tick={}, MAIN0 PC=0x{main0_pc:04X}, \
+             LCD line1={:?}, line2={:?}",
             chain.current_tick,
             lcd.line1(),
             lcd.line2(),
         );
-        if lcd.line1() == EXPECTED_LINE1 {
-            converged = true;
+        if main0_booted_at_chunk.is_none() && main0_pc > 0x1000 {
+            main0_booted_at_chunk = Some(chunk);
+        }
+        // Only honour a WAITING match AFTER MAIN0 has crossed
+        // the boot threshold -- the startup-banner false-positive
+        // sits below that.
+        if main0_booted_at_chunk.is_some()
+            && lcd.line1() == EXPECTED_LINE1
+            && first_waiting_chunk.is_none()
+        {
+            first_waiting_chunk = Some(chunk);
             break;
         }
     }
-    eprintln!("P3.8b converged={converged}");
+    eprintln!(
+        "P3.8b main0_booted_at_chunk={main0_booted_at_chunk:?}, \
+         first_waiting_chunk={first_waiting_chunk:?}"
+    );
+
+    assert!(
+        main0_booted_at_chunk.is_some(),
+        "MAIN0 PC never crossed V3.2 boot threshold (>0x4000) in 8 B \
+         ticks; final PC=0x{:04X}.  Chain harness regression or budget \
+         too short.",
+        chain.cores[i_main0].pc(),
+    );
+    assert!(
+        first_waiting_chunk.is_some(),
+        "CONTROL LCD never reached `Waiting for DLCP` AFTER MAIN0 \
+         booted to app code; final LCD: line1={:?}, line2={:?}, \
+         MAIN0 PC=0x{:04X}.  Either MAIN0 is somehow satisfying \
+         CONTROL's heartbeat without MAIN1 forwarding (chain-ring \
+         regression -- check `couple_uart` edges) or CONTROL parked \
+         on a different screen.",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2(),
+        chain.cores[i_main0].pc(),
+    );
+
+    // Stay-in-WAITING confirmation: step further chunks and
+    // require the LCD to remain parked on `Waiting for DLCP`.
+    const STAY_CONFIRM_CHUNKS: usize = 3;
+    for confirm_chunk in 0..STAY_CONFIRM_CHUNKS {
+        chain.step_ticks(250_000_000);
+        let lcd = &chain.lcd_slaves[i_lcd];
+        let main0_pc = chain.cores[i_main0].pc();
+        eprintln!(
+            "P3.8b stay-confirm chunk {confirm_chunk}: tick={}, \
+             MAIN0 PC=0x{main0_pc:04X}, LCD line1={:?}, line2={:?}",
+            chain.current_tick,
+            lcd.line1(),
+            lcd.line2(),
+        );
+        assert_eq!(
+            lcd.line1(),
+            EXPECTED_LINE1,
+            "CONTROL LCD must STAY on `Waiting for DLCP` after MAIN0 \
+             reached app code while MAIN1 is held in reset; got \
+             line1={:?} on stay-confirm chunk {confirm_chunk}.  A \
+             transient WAITING followed by a move out indicates \
+             MAIN0 alone is satisfying CONTROL's heartbeat -- chain \
+             ring regression.",
+            lcd.line1(),
+        );
+    }
 
     let lcd = &chain.lcd_slaves[i_lcd];
+    let main0_pc = chain.cores[i_main0].pc();
+    assert!(
+        main0_pc > 0x1000,
+        "MAIN0 PC must still be in V3.2 app code at final \
+         assertion; got 0x{main0_pc:04X}"
+    );
     assert_eq!(
         lcd.line1(),
         EXPECTED_LINE1,
-        "CONTROL LCD line 1 must read `Waiting for DLCP` when MAIN1 \
-         is held in reset.  Full LCD state: line1={:?}, line2={:?}.  \
-         If this fails: either the WAITING-budget timed out (extend \
-         the run_until ceiling) or MAIN0 is somehow keeping CONTROL's \
-         heartbeat happy without MAIN1's forwarding (chain ring \
-         coupling regression -- check `couple_uart` edges).",
+        "Final assertion: CONTROL LCD line 1 must read \
+         `Waiting for DLCP` when MAIN1 is held in reset and MAIN0 \
+         has booted.  Full LCD state: line1={:?}, line2={:?}.",
         lcd.line1(),
         lcd.line2(),
     );

@@ -397,7 +397,18 @@ outgoing UART frame on CONTROL.TX". Codex proposed a 3-way diagnostic
 shape: byte-stream + debounce-cells (`0x09A`/`0x0BE`) + CONNECTED flag
 (`0x01F.bit1`). The 3-way shape diagnoses whether the gate is structural
 (state machine refuses to leave WAITING) or soft (debounce timer reset)
-regardless of test outcome. Section 7.2.C now uses the 3-way assertion.
+regardless of test outcome.
+
+**Status correction (post-c993454 codex re-review)**: the 3-way shape
+described above did NOT actually land in the implemented Test C.  The
+test as committed only scans CONTROL.TX for the `B0/03/0x` triplet
+plus a final LCD-still-WAITING assertion (no `0x09A` / `0x0BE`
+debounce snapshot, no `0x01F.bit1` CONNECTED-flag check).  Section
+7.2.C's text reflects that simpler form; the stronger 3-way probe is
+deferred and would be a follow-up upgrade.  The byte-stream + LCD
+combination is enough to lock in the gate-held contract for the
+hardware-observed second-STDBY-press case, but does not classify
+*why* the gate held (structural vs soft).
 
 **[MEDIUM]** Test B primitive choice. Original proposal offered two
 options: `Chain::pause_core(idx)` first-class API OR improved MCLR
