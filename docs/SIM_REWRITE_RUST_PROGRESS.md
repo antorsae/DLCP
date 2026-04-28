@@ -307,9 +307,27 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - sub-task [done] layer1_bounded_tx + layer5_diag_page (2 files, 55 tests + 3 cleanly skipped).
   - sub-task [pending] test_v171_v32_layer5_diag_chain.py wire-chain migration.
 
-- [pending] P4.6 Migrate `test_v31_*` and `test_v32_*` tests
+- [in_progress] P4.6 Migrate `test_v31_*` and `test_v32_*` tests
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -k 'v31 or v32' -n 16 -q`
   - artifact: ledger update.
+  - status: 3 of 13 v31/v32 files migrated to dual-mode (~33 tests covered after parametrize).  Plus 2 files documented as gpsim-only (pre-existing failures on main).
+  - sub-task [done] structural baseline (3 files, ~33 tests):
+    - test_v31_usb_preset_ab.py (8 tests)
+    - test_v32_no_pop_flash_entry.py (13 tests, ~22 after parametrize)
+    - test_v32_main_i2c_service_2100_tables.py (3 tests)
+  - sub-task [pending pre-existing-failure follow-up] 2 files NOT migrated due to pre-existing source failures on main:
+    - test_v31_diag_memread_usb_safe.py (1/3 tests fail)
+    - test_v31_patch_builders.py (2/5 tests fail)
+  - sub-task [pending] 8 files using `MainGpsimHarness` (MAIN-only simulation) -- requires substantial new rust facade surface (`Chain.from_v3x_main_only(hex)` factory, I2C bus mocking via `MainI2CRegFileDevice` equivalent, MAIN-side stimulus + observation methods):
+    - test_v31_combined_dsp_table_apply.py (5 tests)
+    - test_v31_command_matrix.py (1 test, ~16 after parametrize)
+    - test_v31_dsp_boot_equivalence.py (3 tests)
+    - test_v31_happy_path.py (4 tests, ~16 after parametrize)
+    - test_v31_review_findings.py (8 tests)
+    - test_v31_usb_hid_dispatch.py (3 tests)
+    - test_v31_v163b_robustness.py (11 tests)
+    - test_v32_layer5_diag_counters.py (37 tests)
+    These are deferred as a P4.6 follow-up batch -- the MAIN-only rust harness is a discrete, sizable piece of work that warrants its own dedicated commit train.
 
 - [pending] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
