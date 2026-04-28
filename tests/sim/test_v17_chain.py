@@ -118,6 +118,37 @@ def _assert_v17_chain_reaches_display_rust(control_hex: Path) -> None:
     )
 
 
+def _assert_v17_chain_reaches_display_gpsim(
+    control_hex: Path, main_hex: Path, label: str
+) -> None:
+    """gpsim-backend body of the chain-reaches-display tests.
+
+    Mirror of the original gpsim-only body; lifted out so the
+    three dual-mode `_chain_reaches_display` tests share a
+    single implementation.  ``label`` shows up in failure
+    messages so the matrix entry is identifiable in pytest
+    output (e.g. ``"V1.6b+V2.3"``, ``"V1.7+V2.3"``,
+    ``"V1.7-shifted+V2.3"``).
+    """
+    _require_gpsim()
+    pair = _new_pair(control_hex, main_hex)
+    try:
+        last = pair.run_until_connected(limit=140)
+        assert last is not None
+        assert pair.is_connected(), (
+            f"{label} never connected; lcd={last.lcd!r} "
+            f"flags=0x{last.control_flags:02X}"
+        )
+        assert not pair.is_waiting(), (
+            f"{label} stayed in WAITING; lcd={last.lcd!r}"
+        )
+        assert "Volume:" in last.lcd[0], (
+            f"{label} did not reach Volume: {last.lcd!r}"
+        )
+    finally:
+        pair.close()
+
+
 @pytest.fixture(scope="module")
 def v17_chain_images(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Assemble V1.7 + V1.7 shifted hex once per test module."""
@@ -181,56 +212,41 @@ def test_v17_stock_v16b_chain_reaches_display(
     # the rust path with it.  Codex review of 2983ff8 (LOW).
     if dlcp_sim_backend in {"rust", "dual"}:
         _assert_v17_chain_reaches_display_rust(STOCK_CONTROL_HEX_V16B)
-
     if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        pair = _new_pair(STOCK_CONTROL_HEX_V16B, stock_main_hex)
-        try:
-            last = pair.run_until_connected(limit=140)
-            assert last is not None
-            assert pair.is_connected(), (
-                f"V1.6b+V2.3 never connected; lcd={last.lcd!r} "
-                f"flags=0x{last.control_flags:02X}"
-            )
-            assert not pair.is_waiting(), (
-                f"V1.6b+V2.3 stayed in WAITING; lcd={last.lcd!r}"
-            )
-            assert "Volume:" in last.lcd[0], (
-                f"V1.6b+V2.3 did not reach Volume: {last.lcd!r}"
-            )
-        finally:
-            pair.close()
+        _assert_v17_chain_reaches_display_gpsim(
+            STOCK_CONTROL_HEX_V16B, stock_main_hex, "V1.6b+V2.3"
+        )
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v17_rebuilt_chain_reaches_display(
-    v17_chain_images, stock_main_hex: Path
+    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
 ) -> None:
-    """V1.7 byte-identical rebuild behaves exactly like stock V1.6b."""
-    _require_gpsim()
-    pair = _new_pair(v17_chain_images["v17"], stock_main_hex)
-    try:
-        last = pair.run_until_connected(limit=140)
-        assert last is not None
-        assert pair.is_connected(), (
-            f"V1.7+V2.3 never connected; lcd={last.lcd!r} "
-            f"flags=0x{last.control_flags:02X}"
+    """V1.7 byte-identical rebuild behaves exactly like stock V1.6b.
+
+    Dual-mode migration (P4.4): the rebuilt hex
+    (``v17_chain_images["v17"]``) is, by construction,
+    byte-identical to ``STOCK_CONTROL_HEX_V16B`` -- so the
+    rust path is logically equivalent to
+    `test_v17_stock_v16b_chain_reaches_display`'s rust path.
+    Running both anyway acts as a regression gate against an
+    accidental ``assemble_v17`` divergence.
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _assert_v17_chain_reaches_display_rust(v17_chain_images["v17"])
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _assert_v17_chain_reaches_display_gpsim(
+            v17_chain_images["v17"], stock_main_hex, "V1.7+V2.3"
         )
-        assert not pair.is_waiting(), (
-            f"V1.7+V2.3 stayed in WAITING; lcd={last.lcd!r}"
-        )
-        assert "Volume:" in last.lcd[0], (
-            f"V1.7+V2.3 did not reach Volume: {last.lcd!r}"
-        )
-    finally:
-        pair.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v17_shifted_chain_reaches_display(
-    v17_chain_images, stock_main_hex: Path
+    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
 ) -> None:
     """V1.7 shifted (+0x222) must still converge to Volume screen.
 
@@ -239,24 +255,19 @@ def test_v17_shifted_chain_reaches_display(
     relocation broke anything behaviorally — a missed TBLPTR load, a
     hardcoded branch, a stale address in the overlay stack — the
     chain would either fail to connect or land in WAITING.
+
+    Dual-mode migration (P4.4): the rust facade loads the
+    shifted hex via :meth:`Chain.from_v17_chain` like any
+    other K20 hex; the executor's PIC18 dispatch is
+    relocation-agnostic, so the same behavioural parity gate
+    holds for the rust backend.
     """
-    _require_gpsim()
-    pair = _new_pair(v17_chain_images["shifted"], stock_main_hex)
-    try:
-        last = pair.run_until_connected(limit=140)
-        assert last is not None
-        assert pair.is_connected(), (
-            f"V1.7-shifted+V2.3 never connected; lcd={last.lcd!r} "
-            f"flags=0x{last.control_flags:02X}"
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _assert_v17_chain_reaches_display_rust(v17_chain_images["shifted"])
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _assert_v17_chain_reaches_display_gpsim(
+            v17_chain_images["shifted"], stock_main_hex, "V1.7-shifted+V2.3"
         )
-        assert not pair.is_waiting(), (
-            f"V1.7-shifted+V2.3 stayed in WAITING; lcd={last.lcd!r}"
-        )
-        assert "Volume:" in last.lcd[0], (
-            f"V1.7-shifted+V2.3 did not reach Volume: {last.lcd!r}"
-        )
-    finally:
-        pair.close()
 
 
 # ---------------------------------------------------------------------------
