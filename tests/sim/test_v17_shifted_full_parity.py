@@ -192,15 +192,29 @@ def _run_scenario_rust(
     """Rust-backend equivalent of :func:`_run_scenario`.
 
     Builds a single-MAIN chain (V1.6b/V1.7-shifted CONTROL +
-    V2.3-combined MAIN), warms up to the same Tcy budget the
-    gpsim path uses (25 M Tcy, post-handshake), runs the
-    scenario, drains 6 chunks, and captures the outcome.
+    V2.3-combined MAIN), warms up to the gpsim parity
+    budget (25 M Tcy = ~8 s sim, post-handshake), runs the
+    scenario, drains 6 chunks via `chain.step()` (which
+    advances the rust facade's fixed 200K-Tcy convenience
+    cadence), and captures the outcome.
+
+    No `set_chunk_cycles` knob: the rust simulator has a
+    universal-clock event scheduler, not gpsim's chunked-
+    alternating execution model, so the gpsim concept of
+    a per-harness chunk size doesn't translate.  Scenarios
+    that need a specific amount of simulated time per step
+    can call `chain.step_tcy(N)` directly; the duck-typed
+    `_press_sequence` / `_rx_sequence` / `_ir_event`
+    helpers use the parameterless `step()` which suffices
+    for the parity gates here (verified empirically: all
+    18 scenarios converge to the same observable end state
+    on stock-vs-shifted with the 200K-Tcy default).
 
     Note on the warmup / heartbeat model: gpsim runs
     CONTROL standalone with synthetic ``heartbeat_rx_mode=
-    "full"`` BF replies; the rust facade currently has no
-    synthetic-heartbeat mode, so the chain runs against a
-    real V2.3-combined MAIN which converges to CONNECTED
+    "full"`` BF replies; the rust facade has no synthetic-
+    heartbeat mode, so the chain runs against a real
+    V2.3-combined MAIN which converges to CONNECTED
     naturally.  Both backends reach the same steady-state
     (Volume display, ``control_flags.CONNECTED`` set);
     parity is asserted between stock and shifted runs ON

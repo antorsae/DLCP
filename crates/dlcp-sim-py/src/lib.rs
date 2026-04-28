@@ -319,16 +319,25 @@ struct Chain {
     i_lcd: usize,
 }
 
-/// One CONTROL chunk in the gpsim harness is 200_000 Tcy
-/// (`SingleMainChainHarness::__init__` ->
-/// `control_chunk_cycles=200_000`); the K20 runs at
-/// 16 universal ticks per Tcy, so each chunk advances
-/// 3_200_000 universal ticks.  `run_until_connected(limit)`
-/// matches gpsim's chunk-count contract by stepping
-/// `limit * V17_CHUNK_TICKS` total ticks (broken into
-/// per-chunk sub-steps so the connection check has the
-/// same granularity as the gpsim path).
-const V17_CHUNK_TICKS: u64 = 200_000 * 16;
+/// Default `step()` advance = 200_000 Tcy.  This is just a
+/// convenience cadence for tests that don't care about the
+/// exact amount; it happens to match gpsim's
+/// `SingleMainChainHarness` `chunk_cycles=200_000` default,
+/// so tests previously written for gpsim that call
+/// `h.step()` repeatedly run the same per-step Tcy here.
+/// The rust simulator's universal-clock scheduler makes the
+/// notion of "chunks" obsolete -- this is a fixed
+/// convenience constant, NOT a configurable per-instance
+/// cadence (gpsim's chunked-alternating execution is a
+/// serialization artifact we deliberately do NOT replicate
+/// here; see `step_tcy` for explicit advancement when a
+/// test needs a specific amount).
+const DEFAULT_STEP_TCY: u64 = 200_000;
+/// K20 universal ticks per Tcy (Fosc 12 MHz, Tcy = 4/Fosc,
+/// universal clock 48 MHz -> 48 / 3 = 16 ticks/Tcy).  See
+/// `crates/dlcp-sim/src/chain.rs:17` for the universal-
+/// clock derivation.
+const TICKS_PER_TCY_K20: u64 = 16;
 
 /// Match the gpsim harness's WAITING screen heuristic
 /// (`chain_gpsim.py::_is_waiting_lcd`): the substring
@@ -457,6 +466,24 @@ impl Chain {
         })
     }
 
+    /// Advance the universal clock by `tcy` K20 instruction
+    /// cycles.  Each Tcy = 16 universal ticks for the K20
+    /// (universal clock 48 MHz / Fosc 12 MHz × 4 Fosc/Tcy
+    /// = 16; see `crates/dlcp-sim/src/chain.rs:17`).  Use
+    /// this when a test needs a specific amount of
+    /// simulated time -- e.g. parity tests that previously
+    /// relied on gpsim's per-harness `chunk_cycles` should
+    /// say `chain.step_tcy(600_000)` explicitly rather than
+    /// expect a configurable chunk size.  The rust
+    /// simulator's universal-clock scheduler runs both
+    /// cores in lock-step at instruction-level granularity;
+    /// gpsim's chunked-alternating execution is a
+    /// serialization artifact we deliberately do NOT
+    /// replicate.
+    fn step_tcy(&mut self, tcy: u64) {
+        self.inner.step_ticks(tcy * TICKS_PER_TCY_K20);
+    }
+
     /// Advance the universal clock by `n_ticks` and dispatch
     /// every event whose deadline `<=` the new tick.  Direct
     /// passthrough to `Chain::step_ticks`.
@@ -520,12 +547,12 @@ impl Chain {
         lcd_is_waiting(&lcd.line1(), &lcd.line2())
     }
 
-    /// Step the chain in `V17_CHUNK_TICKS` chunks (mirroring
-    /// gpsim's 200K-Tcy / 3.2M-tick chunk cadence) up to
-    /// `limit` chunks, returning early as soon as the
-    /// chain has reached the steady-state CONNECTED Volume
-    /// display.  Returns the number of chunks actually
-    /// consumed (== `limit` if the predicate never fired).
+    /// Step the chain in `DEFAULT_STEP_TCY`-Tcy chunks (200K
+    /// Tcy = 3.2 M universal ticks) up to `limit` chunks,
+    /// returning early as soon as the chain has reached the
+    /// steady-state CONNECTED Volume display.  Returns the
+    /// number of chunks actually consumed (== `limit` if
+    /// the predicate never fired).
     ///
     /// Predicate: `is_connected()` AND `!is_waiting()` AND
     /// LCD line 1 contains the substring `"Volume:"`.
@@ -551,8 +578,9 @@ impl Chain {
     /// available as standalone getters for tests that need
     /// the gpsim-compatible flag-only check.
     fn run_until_connected(&mut self, limit: usize) -> usize {
+        let step_ticks = DEFAULT_STEP_TCY * TICKS_PER_TCY_K20;
         for chunk in 0..limit {
-            self.inner.step_ticks(V17_CHUNK_TICKS);
+            self.inner.step_ticks(step_ticks);
             if self.is_connected()
                 && !self.is_waiting()
                 && self.inner.lcd_slaves[self.i_lcd]
@@ -565,18 +593,19 @@ impl Chain {
         limit
     }
 
-    /// Step in `V17_CHUNK_TICKS` chunks (mirroring gpsim's
-    /// 200K-Tcy / 3.2M-tick chunk cadence) up to `limit`
-    /// chunks, returning early as soon as `is_waiting()` is
-    /// true.  Returns the number of chunks actually consumed
-    /// (== `limit` if the predicate never fired).  Mirror of
+    /// Step in `DEFAULT_STEP_TCY`-Tcy chunks (200K Tcy each)
+    /// up to `limit` chunks, returning early as soon as
+    /// `is_waiting()` is true.  Returns the number of
+    /// chunks actually consumed (== `limit` if the
+    /// predicate never fired).  Mirror of
     /// `chain_gpsim.py::SingleMainChainHarness::run_until_waiting`.
     /// Used by the V1.7 blackout/wake migration test to
     /// verify CONTROL falls back to the WAITING screen after
     /// a wake-while-blacked-out.
     fn run_until_waiting(&mut self, limit: usize) -> usize {
+        let step_ticks = DEFAULT_STEP_TCY * TICKS_PER_TCY_K20;
         for chunk in 0..limit {
-            self.inner.step_ticks(V17_CHUNK_TICKS);
+            self.inner.step_ticks(step_ticks);
             if self.is_waiting() {
                 return chunk + 1;
             }
@@ -585,15 +614,16 @@ impl Chain {
     }
 
     /// Step the chain by `n_chunks` chunks of
-    /// `V17_CHUNK_TICKS` ticks each (no early-exit
+    /// `DEFAULT_STEP_TCY * 16` ticks each (no early-exit
     /// predicate).  Mirror of
     /// `chain_gpsim.py::SingleMainChainHarness::step_many`.
     /// Used by the V1.7 blackout/wake migration test to
     /// give the firmware time to settle into standby (Zzz)
     /// after the STBY-press, before re-pressing to wake.
     fn step_many(&mut self, n_chunks: usize) {
+        let step_ticks = DEFAULT_STEP_TCY * TICKS_PER_TCY_K20;
         for _ in 0..n_chunks {
-            self.inner.step_ticks(V17_CHUNK_TICKS);
+            self.inner.step_ticks(step_ticks);
         }
     }
 
@@ -736,12 +766,16 @@ impl Chain {
             .collect()
     }
 
-    /// Step a single 200K-Tcy / 3.2 M-tick chunk.  Mirror
-    /// of gpsim's `step()` cadence (used by the
-    /// test_v17_shifted_full_parity scenario helpers
-    /// `_press_sequence`, `_rx_sequence`, `_ir_event`).
+    /// Step a fixed `DEFAULT_STEP_TCY`-Tcy convenience
+    /// chunk (200K Tcy = 3.2 M universal ticks).  Provides
+    /// the same parameterless-step interface the gpsim
+    /// harness exposes, so duck-typed scenario helpers
+    /// (`_press_sequence`, `_rx_sequence`, `_ir_event`) work
+    /// on either backend.  When a test needs a specific
+    /// amount of simulated time, call `step_tcy(N)`
+    /// instead.
     fn step(&mut self) {
-        self.inner.step_ticks(V17_CHUNK_TICKS);
+        self.inner.step_ticks(DEFAULT_STEP_TCY * TICKS_PER_TCY_K20);
     }
 
     /// Run the chain to a CONNECTED steady-state by stepping
@@ -766,32 +800,43 @@ impl Chain {
     /// layout: `rx_ring_base = 0x066`,
     /// `rx_ring_rd = 0x098`, `rx_ring_wr = 0x099`, depth
     /// = 48 bytes.
+    ///
+    /// Wrap-aware used = (wr + DEPTH - rd) mod DEPTH (NOT
+    /// `wr.wrapping_sub(rd) mod DEPTH` -- the latter agrees
+    /// with Python's `(wr - rd) % DEPTH` only when wr >= rd
+    /// and silently corrupts the count when the ring has
+    /// wrapped past rd.  Codex review of 46d7163 (HIGH)
+    /// caught the regression: e.g. rd=10/wr=9 should yield
+    /// used=47/free=0, but the prior expression yielded
+    /// used=15/free=32, which would let a near-full wrapped
+    /// ring accept new bytes that overwrite unread data.)
+    /// `wr` is read as u8 from memory but widened to u16
+    /// here so `wr + DEPTH` cannot overflow even on
+    /// pathological out-of-range register values; the
+    /// final modulo masks the result back to [0, DEPTH).
     fn inject_rx_bytes_inner(&mut self, bytes: &[u8]) -> bool {
         const RX_RING_BASE: u16 = 0x066;
         const RX_RING_RD: u16 = 0x098;
         const RX_RING_WR: u16 = 0x099;
-        const RX_RING_DEPTH: u8 = 48;
+        const RX_RING_DEPTH: u16 = 48;
 
         let mem = &mut self.inner.cores[self.i_ctl].memory;
-        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD));
-        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR));
-        // Used = (wr - rd) mod depth; free = depth - used - 1
-        // (one slot reserved to distinguish empty from full,
-        // matching the V1.6b ISR's wraparound semantics --
-        // gpsim's _inject_rx_bytes uses depth-1 = 47 as the
-        // effective limit per `chain_gpsim.py:1016` rx_fifo_limit
-        // = 47).
-        let used = (wr.wrapping_sub(rd)) % RX_RING_DEPTH;
+        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD)) as u16;
+        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR)) as u16;
+        let used = (wr + RX_RING_DEPTH - rd) % RX_RING_DEPTH;
         let free = (RX_RING_DEPTH - 1).saturating_sub(used);
-        if (bytes.len() as u8) > free {
+        if (bytes.len() as u16) > free {
             return false;
         }
         for &byte in bytes {
-            let addr = RX_RING_BASE + (wr % RX_RING_DEPTH) as u16;
+            let addr = RX_RING_BASE + (wr % RX_RING_DEPTH);
             mem.write_raw(dlcp_sim::memory::Address::from_raw(addr), byte);
             wr = (wr + 1) % RX_RING_DEPTH;
         }
-        mem.write_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR), wr);
+        mem.write_raw(
+            dlcp_sim::memory::Address::from_raw(RX_RING_WR),
+            wr as u8,
+        );
         true
     }
 }

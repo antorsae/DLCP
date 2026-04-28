@@ -429,5 +429,23 @@ class Chain:
         """
         self._inner.warmup(int(cycles))
 
+    def step_tcy(self, tcy: int) -> None:
+        """Advance the universal clock by ``tcy`` K20
+        instruction cycles.  Each Tcy = 16 universal ticks
+        on the K20.
+
+        Use this when a test needs a specific amount of
+        simulated time -- e.g. parity tests that previously
+        used gpsim's per-harness ``chunk_cycles`` config
+        should call ``chain.step_tcy(600_000)`` explicitly.
+        The rust simulator's universal-clock scheduler
+        runs both cores in lock-step at instruction-level
+        granularity; gpsim's chunked-alternating execution
+        is a serialization artifact we deliberately do NOT
+        replicate, so there is no per-instance chunk_cycles
+        knob to tune.
+        """
+        self._inner.step_tcy(int(tcy))
+
 
 __all__ = ["Chain", "__version__"]
