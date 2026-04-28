@@ -103,6 +103,17 @@ fn v23_main_combined_hex_path() -> PathBuf {
     repo_root().join("firmware/stock/main/DLCP Firmware V2.3-combined.hex")
 }
 
+/// Stock V1.6b CONTROL hex (PIC18F25K20).  Source of the
+/// V1.7 byte-identical rebuild and behavioural baseline for
+/// `tests/sim/test_v17_chain.py`.  Unlike V1.71, this hex
+/// covers the full 0x0000-0x7FFF flash (no separate
+/// bootloader window on the K20 CONTROL board); the reset
+/// vector at 0x0000 lands directly on the stock cold-init
+/// trampoline.
+fn v16b_control_hex_path() -> PathBuf {
+    repo_root().join("firmware/stock/control/DLCP Control Firmware V1.6b.hex")
+}
+
 /// V3.x app-code patch range.  Mirrors gpsim's
 /// `MAIN_APP_PATCH_START` / `MAIN_APP_PATCH_LIMIT` in
 /// `src/dlcp_fw/sim/main_gpsim.py`: V3.x hex covers app
@@ -5031,6 +5042,131 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
         "LCD line 2 mismatch.  Full state:\n  line1 = {:?}\n  line2 = {:?}",
         lcd.line1(),
         lcd.line2(),
+    );
+}
+
+/// P4.4 prerequisite: stock V1.6b CONTROL + stock V2.3 MAIN
+/// single-MAIN chain reaches the Volume screen on CONTROL's
+/// LCD.  Mirrors `tests/sim/test_v17_chain.py
+/// ::test_v17_stock_v16b_chain_reaches_display`, which uses
+/// the gpsim harness; this is the Rust-engine equivalent that
+/// must pass before we can flip the test to
+/// `@pytest.mark.dual_supported`.
+///
+/// Topology:
+///   * 1 CONTROL (PIC18F25K20, V1.6b stock).
+///   * 1 MAIN (PIC18F2455, V2.3 stock — loaded from
+///     V2.3-combined so the boot block + EEPROM seed are
+///     silicon-correct, mirroring the recovered-device image
+///     real silicon flashes back from PICkit).
+///   * Bidirectional UART: CONTROL.TX → MAIN.RX,
+///     MAIN.TX → CONTROL.RX.
+///   * TAS3108 DSP slave on MAIN's MSSP I²C bus (V2.3 also
+///     drives DSP init at boot; without this the firmware
+///     spins in `wait_bf_clear_loop`).
+///   * HD44780 LCD slave on CONTROL's GPIO bus (4-bit mode,
+///     RS=LATA[5], E=LATB[4], D4..D7=PORTB[3:0] per
+///     `dlcp_control_v17.asm::lcd_char_write`).
+///
+/// Convergence target: CONTROL drives the chain handshake to
+/// completion and renders the steady-state Volume display.
+/// We assert on the substring `Volume:` rather than the
+/// full bit-exact `Volume:-XX.XdB Y` form because (a) the
+/// gpsim test only checks substring containment
+/// (`assert "Volume:" in last.lcd[0]`) and (b) the stock
+/// V2.3 baseline boot output may differ from the
+/// V1.71+V3.1 ground-truth fixture's volume / input fields
+/// even on a working chain (different EEPROM defaults, no
+/// V3.x preset-table overrides).  The substring gate is
+/// what the dual-mode migration path commits to.
+///
+/// Sim-time budget: 5 B universal ticks (~5.2 s sim, well
+/// under the V1.71+V3.1 LCD parity test's 5 B ceiling) sized
+/// to give the K20 CONTROL's heartbeat handshake a full
+/// retry cycle if the first burst misses MAIN's RX FIFO.
+#[test]
+fn chain_v16b_v23_stock_reaches_volume_screen() {
+    let v16b = HexImage::from_hex_path(v16b_control_hex_path())
+        .expect("V1.6b CONTROL hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v16b, None, None);
+    // V2.3-combined ships the full silicon image (boot block
+    // + V2.3 app + EEPROM + preset tables), so no
+    // bake-trampolines or `build_seeded_main_core` merge
+    // needed -- it IS the silicon-correct image.  V2.3's
+    // reset vector at 0x0000 = `GOTO 0x02CE` is the cold-init
+    // entry; from there V2.3 jumps to its app code at 0x1000
+    // naturally.
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v23_combined, None, None);
+    // V2.3 boot also gates on AN0 (mains-detect ADC).  Same
+    // 0x0300 mid-rail value used for V3.x; V3.x's
+    // `adc_boot_gate` is a behavioural reimplementation of
+    // V2.3's, so the threshold inheritance is direct.
+    main.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_control = chain.push_core(control);
+    let i_main = chain.push_core(main);
+    chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
+    let i_tas3108 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_tas3108);
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_control, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    // V1.6b reads the same 6 active-low button pins as V1.71
+    // (RA1/RA2/RA3/RA4 + RC0/RC5).  Default 0x00 reads "all
+    // pressed" → STBY screen.  Seed both PORTA and PORTC to
+    // 0xFF so the operator-released state is the default.
+    // Done AFTER `apply_reset_all` because POR wipes the SFR
+    // window.  Mirrors the V1.71+V3.1 LCD parity test seed
+    // (line 4992-4997).
+    chain.cores[i_control]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_control]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+
+    // Run until LCD line 1 contains "Volume:" or budget
+    // ceiling.  Substring containment matches the gpsim
+    // test's contract (`assert "Volume:" in last.lcd[0]`).
+    // Per-chunk diagnostic dump is intentionally scoped
+    // OUTSIDE the closure (closures can't borrow `c` for
+    // stderr output without lifetime gymnastics).
+    let _advanced = chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| c.lcd_slaves[i_lcd].line1().contains("Volume:"),
+    );
+
+    let lcd = &chain.lcd_slaves[i_lcd];
+    let main_pc = chain.cores[i_main].pc();
+    let ctrl_pc = chain.cores[i_control].pc();
+    let dsp_acks = chain.tas3108_slaves[i_tas3108].bytes_acked;
+    eprintln!(
+        "P4.4-prereq end state: ctrl_pc=0x{:04X}, main_pc=0x{:04X}, \
+         dsp_acks={}, lcd_line1={:?}, lcd_line2={:?}",
+        ctrl_pc, main_pc, dsp_acks, lcd.line1(), lcd.line2(),
+    );
+
+    assert!(
+        lcd.line1().contains("Volume:"),
+        "V1.6b CONTROL + V2.3 MAIN single-chain failed to reach \
+         Volume screen.  LCD: line1={:?}, line2={:?}.  CONTROL \
+         PC=0x{:04X}, MAIN PC=0x{:04X}, DSP acks={}.  Likely \
+         causes: (a) heartbeat handshake never completed -- \
+         check UART byte history for missing BF frames; (b) \
+         DSP I²C init faulted -- expect dsp_acks ≥ 100 in a \
+         working V2.3 boot; (c) CONTROL parked on `Waiting for \
+         DLCP` -- chain-ring regression or budget exhausted.",
+        lcd.line1(), lcd.line2(),
+        ctrl_pc, main_pc, dsp_acks,
     );
 }
 

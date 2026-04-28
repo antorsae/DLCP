@@ -287,6 +287,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [pending] P4.4 Migrate `test_v17_*` tests (single-MAIN baseline)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim/test_v17_chain.py tests/sim/test_v17_shifted_full_parity.py -n 16 -q`
   - artifact: progress ledger marks each test migrated.
+  - prereq [done] V1.6b CONTROL + V2.3 stock MAIN single-MAIN chain reaches Volume screen on Rust engine: `crates/dlcp-sim/tests/multicore_parity.rs::chain_v16b_v23_stock_reaches_volume_screen` -- verified output `lcd_line1="Volume:-17.0dB  ", lcd_line2="Auto Detect     "` after 5 B-tick budget (2.6 s wall on local hardware).  Confirms the Rust engine already supports the V1.6b/K20 + V2.3/2455 single-MAIN topology that the gpsim `_new_pair` harness drives in `tests/sim/test_v17_chain.py`.  The V1.7 byte-identical rebuild is hex-equivalent to V1.6b stock (the V1.7 source rewrite was designed to produce identical hex), so this prereq covers the rebuild path too; the V1.7-shifted variant is functionally identical (+0x222 relocation only) and will be re-validated in the per-test migration commit.
 
 - [pending] P4.5 Migrate `test_v171_*` tests
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -k v171 -n 16 -q`
