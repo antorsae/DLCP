@@ -866,13 +866,18 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 ///   * `control_flags.bit3` transitions: 0  (no mute frames
 ///     in test traffic; bit 3 is set only by cmd 0x03 / data
 ///     2|3 mute-on / mute-off paths)
-/// The 39 observed loop-exits happen via BSR=1 leak (618
-/// observed BSR transitions in the run): when a service
-/// routine leaves BSR at 1, the loop check's banked
-/// `movf 0x9a, F, B` reads physical 0x19A (=
-/// v171_diag_present_snap), which became 0x01 once after
-/// PB1's BF/27 dispatch.  Without the BSR leak, the loop
-/// would never exit in this test scenario.
+/// The 39 observed loop-exits are CONSISTENT WITH a BSR=1
+/// leak: 618 observed BSR transitions in the run mean
+/// service routines DO leave BSR at 1 sometimes, and when
+/// the loop check's banked `movf 0x9a, F, B` runs with
+/// BSR=1 it reads physical 0x19A (= v171_diag_present_
+/// snap), which became 0x01 once after PB1's BF/27
+/// dispatch.  This is INFERENTIAL evidence -- a per-PC-hit
+/// BSR snapshot at PC=0x0EEC would be needed for direct
+/// proof, and the current `CycleProbe` doesn't support
+/// that.  Step-8 follow-up (5ee7625) explicitly downgraded
+/// "proven by" to "supported by"; this closure preserves
+/// that softening.
 ///
 /// DEFINITIVE CONCLUSION: P3.6b's non-convergence is a
 /// TEST-SCENARIO ARTIFACT, not a simulator fidelity bug.
