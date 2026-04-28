@@ -190,11 +190,21 @@ struct V17SingleMainHandle {
 /// step is applied.  App-only hexes (V3.x releases, which
 /// leave `[0x0000, 0x1000)` erased because the Microchip
 /// USB bootloader owns that window) would cold-boot into a
-/// `0xFF`-erased reset vector and immediately fault.
-/// Callers that need V3.x-app-on-V2.3-seed must use a
-/// 3-core factory like `from_v171_v32` (which performs the
-/// merge via `build_seeded_main_flash`).
-/// Codex review of ec0381a (LOW).
+/// `0xFFFF`-filled reset vector; `0xFFFF` decodes as
+/// `NopContinuation` (executor: `crates/dlcp-sim/src/exec.rs`
+/// silently advances PC by 2 each Tcy), so the core does
+/// not fault -- it walks 0x0000-0x0FFF as NOPs and
+/// eventually hits whatever bytes follow at the start of
+/// the patched app code.  In V3.x's case that's the shipped
+/// `GOTO 0x1014` at flash offset 0x1000, which skips the
+/// V3.x user-IRQ handler at 0x1008 entirely and re-enters
+/// app code from a non-init code path -- much worse than
+/// a clean fault.  See task #30 for the original V3.x
+/// chain-probe finding.  Callers that need V3.x-app-on-V2.3-
+/// seed must use a 3-core factory like `from_v171_v32`
+/// (which performs the merge via `build_seeded_main_flash`).
+/// Codex review of ec0381a (LOW), tightened by review of
+/// 2983ff8 (LOW: "fault" was inaccurate).
 fn build_v17_chain_single_main(
     control_hex_path: PathBuf,
     main_hex_path: PathBuf,
@@ -374,11 +384,13 @@ impl Chain {
     /// the V1.7 / V1.71 CONTROL rebuild source is byte-
     /// identical to V1.6b stock (the V1.7 source rewrite
     /// was designed to produce identical hex; see
-    /// `test_v17_equivalence.py`).  Passing a V3.x app-only
-    /// MAIN hex would fault on cold boot (the
-    /// `[0x0000, 0x1000)` bootloader window is erased in
-    /// app-only releases) -- use a 3-core factory like
-    /// `from_v171_v32` for V3.x.  Mirror of
+    /// `test_v17_equivalence.py`).  V3.x app-only MAIN hexes
+    /// won't work -- they leave `[0x0000, 0x1000)` erased,
+    /// and the executor walks the erased reset window as
+    /// NOPs before re-entering app code from the wrong path
+    /// (see `build_v17_chain_single_main` for the full
+    /// rationale).  Use a 3-core factory like `from_v171_v32`
+    /// for V3.x.  Mirror of
     /// `multicore_parity.rs::chain_v16b_v23_stock_reaches_volume_screen`'s
     /// chain-construction prelude.
     #[staticmethod]

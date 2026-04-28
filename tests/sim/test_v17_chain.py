@@ -174,6 +174,14 @@ def test_v17_stock_v16b_chain_reaches_display(
     state: ``is_connected``, not ``is_waiting``, and
     ``"Volume:"`` on LCD line 1.
     """
+    # In dual mode, validate the rust facade FIRST so a missing
+    # native binding fails fast (before the slow ~50 s gpsim
+    # path even starts) and so a gpsim-side skip
+    # (`_require_gpsim` -> pytest.skip) cannot silently swallow
+    # the rust path with it.  Codex review of 2983ff8 (LOW).
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _assert_v17_chain_reaches_display_rust(STOCK_CONTROL_HEX_V16B)
+
     if dlcp_sim_backend in {"gpsim", "dual"}:
         _require_gpsim()
         pair = _new_pair(STOCK_CONTROL_HEX_V16B, stock_main_hex)
@@ -192,9 +200,6 @@ def test_v17_stock_v16b_chain_reaches_display(
             )
         finally:
             pair.close()
-
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _assert_v17_chain_reaches_display_rust(STOCK_CONTROL_HEX_V16B)
 
 
 @pytest.mark.gpsim

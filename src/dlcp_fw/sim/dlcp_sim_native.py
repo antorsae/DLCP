@@ -170,9 +170,15 @@ class Chain:
         ``main_hex_path`` must be a complete silicon image
         (boot block + app + EEPROM); the builder does NOT
         merge an app-only V3.x release onto a V2.3 seed.
-        Passing a V3.x app-only hex would cold-boot into an
-        erased reset vector and fault.  For V3.x main use a
-        3-core factory like :meth:`from_v171_v32`.
+        Passing a V3.x app-only hex won't fault outright --
+        the executor walks the erased ``[0x0000, 0x1000)``
+        bootloader window as NOPs (``0xFFFF`` decodes as
+        NopContinuation) and re-enters app code from the
+        wrong path (skipping the V3.x user-IRQ handler at
+        0x1008).  See the rust pyclass docstring for the
+        full rationale and task #30 for the original V3.x
+        chain-probe finding.  For V3.x main use a 3-core
+        factory like :meth:`from_v171_v32`.
         """
         return cls(_native.Chain.from_v17_chain(control_hex_path, main_hex_path))
 
@@ -214,9 +220,14 @@ class Chain:
         For single-MAIN topologies (``from_v16b_v23``,
         ``from_v17_chain``) this returns the same index as
         :attr:`main0` (the topology has no second MAIN to
-        distinguish).  Callers that need to detect the
-        topology kind should branch on the factory used
-        rather than comparing ``main0`` to ``main1``.
+        distinguish).  Callers that constructed the chain
+        themselves should branch on the factory used; generic
+        helpers handed an already-built ``Chain`` may inspect
+        ``main0 == main1`` as the only object-local
+        topology signal exposed today (a future
+        ``main_count`` accessor could replace this idiom --
+        track it as a P4.x backlog item if/when a generic
+        helper hits the limitation).
         """
         return self._inner.main1
 
