@@ -585,19 +585,41 @@ impl Chain {
     /// real hardware (task #45) without faking it through a
     /// debug pause hook.  See `Core::mclr_held`.
     ///
-    /// Real silicon also resets the EUSART state machine
-    /// when MCLR is held LOW (RCSTA reset, in-flight TX
-    /// dropped, RX FIFO cleared).  We approximate that here
-    /// by calling `eusart::reset_state()` so any residual
-    /// pre-held FIFO content does not survive into the
-    /// post-release world.  This matters for tests that hold
-    /// a core mid-run (P3.8b holds MAIN1 immediately after
-    /// POR so the eusart was already empty); future tests
-    /// that hold a running core depend on this clean.
-    /// Codex review of 1356ed2, MEDIUM #1.
+    /// Real silicon resets the EUSART block at MCLR=LOW.  We
+    /// approximate that here by:
+    ///   * calling `eusart::reset_state()` to clear the
+    ///     internal in-flight TX, completed-TX queue, and RX
+    ///     FIFO (so pre-held bytes don't survive into the
+    ///     post-release world);
+    ///   * clearing the SFR-visible RCSTA/TXSTA/RCREG cells
+    ///     and the PIR1.RCIF/TXIF flags to their POR values
+    ///     (so post-release firmware reads of those SFRs see
+    ///     a clean reset state, not stale OERR / dirty RCREG /
+    ///     spurious interrupt flags from the pre-hold world).
+    /// This matters for tests that hold a core mid-run; P3.8b
+    /// holds MAIN1 immediately after POR so the SFRs are
+    /// already at POR values, but the SFR clears here close
+    /// the silicon-fidelity gap for any future test that
+    /// holds a running core.  Codex review of 1356ed2 + f8ceb67,
+    /// MEDIUM #1.
     pub fn hold_core_in_reset(&mut self, core_idx: usize) {
+        use crate::memory::Address;
+        use crate::peripherals::eusart::{
+            PIR1_ADDR, RCREG_ADDR, RCSTA_ADDR, TXSTA_ADDR,
+        };
         self.cores[core_idx].mclr_held = true;
         self.cores[core_idx].peripherals.eusart.reset_state();
+        let memory = &mut self.cores[core_idx].memory;
+        memory.write_raw(Address::from_raw(RCSTA_ADDR), 0x00);
+        memory.write_raw(Address::from_raw(TXSTA_ADDR), 0x02); // POR: TRMT=1
+        memory.write_raw(Address::from_raw(RCREG_ADDR), 0x00);
+        // Clear PIR1.TXIF (bit4) + PIR1.RCIF (bit5) without
+        // touching other bits in PIR1 (ADIF, TMR2IF, etc.).
+        let pir1 = memory.read_raw(Address::from_raw(PIR1_ADDR));
+        memory.write_raw(
+            Address::from_raw(PIR1_ADDR),
+            pir1 & !(1 << 4) & !(1 << 5),
+        );
     }
 
     /// Release a core's MCLR pin (HIGH).  Clears the

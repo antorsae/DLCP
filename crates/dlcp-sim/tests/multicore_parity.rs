@@ -2169,15 +2169,19 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     // fix used `MAIN0 PC > 0x1000` as the boot anchor, but 0x1000
     // is just the user reset trampoline -- a startup-banner state
     // could PC-sample at 0x1014 (cold-init jump) and falsely pass.
-    // The more authoritative anchor is "DSP init has acked at
-    // least 1000 bytes" -- the same predicate the 3-core boot test
-    // uses to declare convergence, proving MAIN0 ran deep into the
-    // V3.2 I2C-driven DSP setup which only happens after the
-    // cold-init cascade is well past the startup-banner phase.
+    // The more authoritative (monotonic) anchor is "DSP I2C
+    // traffic is past the empirical 1000-ack convergence
+    // sentinel" -- the same predicate the 3-core boot test uses
+    // to declare convergence (`asm:574`).  This is *not* a
+    // proven minimum-complete boundary for V3.2 DSP init; it's a
+    // sentinel that empirically only fires after the cold-init
+    // cascade is well past the startup-banner phase.  Codex
+    // review of f8ceb67, LOW #3.
     //
     // Stronger convergence pattern:
-    //   (1) require DSP bytes_acked >= 1000 (MAIN0 cleared deep
-    //       boot init, regardless of where PC samples).
+    //   (1) require DSP bytes_acked >= 1000 (MAIN0 well past the
+    //       startup-banner phase; I2C-driven DSP traffic is
+    //       flowing).
     //   (2) THEN require LCD line 1 == `Waiting for DLCP`.
     //   (3) THEN step further chunks and require it to stay there
     //       (a chain-ring regression that lets MAIN0 alone satisfy
@@ -2413,24 +2417,45 @@ fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
 
     const EXPECTED_LINE1: &str = "Waiting for DLCP";
 
-    // Step until CONTROL reaches WAITING (same convergence
-    // mechanism as P3.8b — typically chunk 0 succeeds).
+    // Codex review of f8ceb67, MEDIUM #2: precondition uses the
+    // same boot-then-WAITING anchor pattern as P3.8b -- gate the
+    // LCD match on `MAIN0 DSP bytes_acked >= 1000` (monotonic
+    // sentinel proving MAIN0 ran past startup banner) so we do
+    // not run the STDBY-press test against the early-boot WAITING
+    // banner.  Without this gate, the byte-stream / LCD-stay
+    // assertions below would still pass but against a CONTROL
+    // that hasn't actually reached the post-failure stuck state.
+    const MAIN0_DSP_BOOT_ACK_THRESHOLD: u64 = 1000;
+    let mut main0_dsp_booted = false;
     let mut converged = false;
-    for _ in 0..8 {
+    for chunk in 0..32 {
         chain.step_ticks(250_000_000);
-        if chain.lcd_slaves[i_lcd].line1() == EXPECTED_LINE1 {
+        let dsp_acks = chain.tas3108_slaves[i_dsp0].bytes_acked;
+        if !main0_dsp_booted
+            && dsp_acks >= MAIN0_DSP_BOOT_ACK_THRESHOLD
+        {
+            main0_dsp_booted = true;
+        }
+        if main0_dsp_booted
+            && chain.lcd_slaves[i_lcd].line1() == EXPECTED_LINE1
+        {
+            eprintln!(
+                "P3.8c reached WAITING at chunk {chunk} \
+                 (DSP acks={dsp_acks})"
+            );
             converged = true;
             break;
         }
     }
     assert!(
         converged,
-        "P3.8c precondition failed: CONTROL did not reach `Waiting for DLCP` \
-         within budget (final LCD: line1={:?}, line2={:?}).  \
-         If P3.8b passes but P3.8c fails here, the chunked-step \
-         convergence is timing-sensitive — extend the budget.",
+        "P3.8c precondition failed: CONTROL did not reach \
+         `Waiting for DLCP` AFTER MAIN0 crossed the DSP-acks boot \
+         threshold within 8 B-tick budget (final LCD: line1={:?}, \
+         line2={:?}, DSP acks={}).",
         chain.lcd_slaves[i_lcd].line1(),
         chain.lcd_slaves[i_lcd].line2(),
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
     );
 
     // Snapshot CONTROL.TX history length BEFORE the button

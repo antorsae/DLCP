@@ -329,7 +329,11 @@ A → B → C → D.
 - A is independent + low risk + validates the RAM-probe approach for
   cmd 0x44 cells
 - B introduces the MCLR-held-low fidelity improvement
-- C reuses B's setup and adds the button-pin + state-cell probes
+- C reuses B's setup and adds the button-pin probe (the originally
+  drafted state-cell probes -- `0x09A`/`0x0BE`/`0x01F.bit1` -- were
+  deferred during implementation, see §7.2.C status note and §9
+  Test C entry; the as-landed test asserts only the byte-stream +
+  LCD-stay form)
 - D is independent of B/C; it can be parallelised with A or deferred
 
 ### 7.4 Ledger placement
