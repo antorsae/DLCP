@@ -400,6 +400,18 @@ class Chain:
         """
         self._inner.pause_heartbeat()
 
+    def write_control_eeprom_byte(self, addr: int, value: int) -> None:
+        """Seed CONTROL's EEPROM peripheral at the given
+        8-bit address.  Mirror of gpsim's
+        ``GpsimControlHarness(eeprom_file=...)`` constructor
+        argument that pre-loads CONTROL's EEPROM HEX before
+        simulation starts.  Use this immediately after
+        ``Chain.from_v17_chain(...)`` and BEFORE the first
+        ``step()`` / ``warmup()`` call -- the firmware
+        reads EEPROM during early boot.
+        """
+        self._inner.write_control_eeprom_byte(int(addr) & 0xFF, int(value) & 0xFF)
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of

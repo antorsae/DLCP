@@ -834,6 +834,25 @@ impl Chain {
     /// gpsim test bodies.
     fn pause_heartbeat(&self) {}
 
+    /// Write a single byte to CONTROL's EEPROM peripheral
+    /// at the given 8-bit address (CONTROL EEPROM is 256
+    /// bytes per PIC18F25K20 datasheet).  Mirror of
+    /// gpsim's `eeprom_file=` constructor argument that
+    /// preloads CONTROL's EEPROM HEX image before the
+    /// simulation starts -- for rust callers that need to
+    /// inject a single byte (e.g. the V1.71 preset-init
+    /// tests that seed EEPROM[0x74]), this provides the
+    /// minimum-viable per-byte poke.  Should be called
+    /// AFTER chain construction but BEFORE the first
+    /// step / warmup, since the firmware reads EEPROM
+    /// during early boot.
+    fn write_control_eeprom_byte(&mut self, addr: u8, value: u8) {
+        self.inner.cores[self.i_ctl]
+            .peripherals
+            .eeprom
+            .set_byte(addr, value);
+    }
+
     /// Inject a 3-byte chain frame directly into CONTROL's
     /// RX ring buffer (V1.6b/V1.7/V1.71 layout: ring base
     /// at physical 0x066, parser-consumer index at 0x098,
