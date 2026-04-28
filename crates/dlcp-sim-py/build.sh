@@ -53,11 +53,22 @@ if [ -z "$src" ]; then
     exit 1
 fi
 
-# Symlink (or replace existing symlink) so the import works
-# from this crate dir.  Using `ln -sf` rather than copying
-# avoids stale artifacts after `cargo clean` -- the broken
-# symlink will fail import loudly rather than silently
-# loading an old build.
-target="$script_dir/dlcp_sim_native.so"
-ln -sf "$src" "$target"
-echo "build.sh: $target -> $src"
+# Symlink the cdylib into TWO locations so Python can find
+# the native module both ways:
+#   1. `crates/dlcp-sim-py/dlcp_sim_native.so` -- import
+#      from the crate dir (P4.1 verify command, useful for
+#      ad-hoc testing of just the native module).
+#   2. `src/dlcp_sim_native.so` -- import via PYTHONPATH=src
+#      (the project's standard Python invocation; required by
+#      P4.2's verify command and the
+#      `src/dlcp_fw/sim/dlcp_sim_native.py` facade's
+#      `import dlcp_sim_native` line).
+# Using `ln -sf` rather than copying avoids stale artifacts
+# after `cargo clean` -- the broken symlink will fail
+# import loudly rather than silently loading an old build.
+crate_target="$script_dir/dlcp_sim_native.so"
+src_target="$script_dir/../../src/dlcp_sim_native.so"
+ln -sf "$src" "$crate_target"
+ln -sf "$src" "$src_target"
+echo "build.sh: $crate_target -> $src"
+echo "build.sh: $src_target -> $src"

@@ -28,13 +28,20 @@ artifacts/sim_rewrite_divergences/
 /target/
 crates/*/target/
 
-# P4.1: PyO3 wrapper crate's post-build import symlink.
-# `crates/dlcp-sim-py/build.sh` creates this after every
-# `cargo build --release` to make `python -c "import
-# dlcp_sim_native"` work from the crate directory.  The
-# symlink target lives under `target/` (already ignored)
-# and the symlink itself shouldn't be tracked.
+# P4.1+P4.2: PyO3 wrapper crate's post-build import symlinks.
+# `crates/dlcp-sim-py/build.sh` creates these after every
+# `cargo build --release` to make `import dlcp_sim_native`
+# resolvable two ways:
+#   * `crates/dlcp-sim-py/dlcp_sim_native.so` -- import from
+#     the crate dir (P4.1 verify path).
+#   * `src/dlcp_sim_native.so` -- import via PYTHONPATH=src
+#     (project-standard incantation; P4.2's verify path
+#     and the `src/dlcp_fw/sim/dlcp_sim_native.py` facade).
+# Both symlinks point at `target/release/libdlcp_sim_native.{
+# dylib,so}` (target/ is already ignored above) and are
+# regenerated on every cargo build, so we don't track them.
 crates/dlcp-sim-py/dlcp_sim_native.so
+src/dlcp_sim_native.so
 
 sim_artifacts/
 tmp_gpsim_lcd_capture/
