@@ -1052,9 +1052,14 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let pre_stage3_tick = chain.current_tick;
 
     // Stage 3 PC sampler: step in small chunks and capture
-    // CONTROL.PC + key state at each pause.  Helps surface
-    // whether `v171_diag_pb_screen` (around asm line 3550)
-    // is actually entered.
+    // CONTROL.PC + key state at each pause.  Sampler-bound
+    // observation only -- if `v171_diag_pb_screen` (around
+    // asm line 3550) holds the PC for ANY visible fraction
+    // of a chunk it lights up the histogram, but a brief
+    // visit (~50 Tcy ~= 0.04% of a 10 M-tick chunk) can be
+    // missed; absence of PC hits is therefore weak evidence
+    // and step-2 PC-trace hooks are needed before claiming
+    // "v171_diag_pb_screen never entered".
     //
     // P3.6b research instrumentation (codex review of 67bfa1d):
     // also track per-chunk CONTROL EUSART/RX state, OERR rising
@@ -1125,8 +1130,16 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // P3.6b research: parser-latch transition log -- record
     // (tick, frame_pos, cmd, data, ring_rd, ring_wr) every
     // time any of (frame_pos, cmd, data) changes since the
-    // last sample.  Reveals whether the parser is reaching
-    // the BF/27 dispatch (cmd=0x27) or stalling earlier.
+    // last sample.  Boundary-sampled at the same 10 M-tick
+    // granularity as the rest of the sampler, so a positive
+    // observation (cmd=0x27 visible at any boundary) is
+    // hard evidence the parser entered BF/27 dispatch, but
+    // the negative case (no boundary samples in 0x21..0x27)
+    // does NOT prove the parser failed to reach dispatch --
+    // the entire 21-byte burst lasts ~310 K ticks (well
+    // under one chunk) and dispatch+clear can complete
+    // entirely between samples.  Step-2 cycle-level probes
+    // are required to make negative-dispatch claims.
     let mut last_parser_latch: (u8, u8, u8, u8, u8) = (
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6)), // rx_frame_position
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F)), // rx_parsed_cmd
