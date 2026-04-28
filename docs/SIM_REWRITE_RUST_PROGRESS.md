@@ -318,7 +318,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - sub-task [pending pre-existing-failure follow-up] 2 files NOT migrated due to pre-existing source failures on main:
     - test_v31_diag_memread_usb_safe.py (1/3 tests fail)
     - test_v31_patch_builders.py (2/5 tests fail)
-  - sub-task [pending] 8 files using `MainGpsimHarness` (MAIN-only simulation) -- requires substantial new rust facade surface (`Chain.from_v3x_main_only(hex)` factory, I2C bus mocking via `MainI2CRegFileDevice` equivalent, MAIN-side stimulus + observation methods):
+  - sub-task [pending] 8 files using `MainChainHarness` (from `dlcp_fw.sim.chain_gpsim`; MAIN-only simulation -- a single 2455 core driven by gpsim with synthetic CONTROL-side UART RX injection and configurable MSSP I²C device mocks via `MainI2CRegFileDevice`).  Requires substantial new rust facade surface (`Chain.from_v3x_main_only(hex)` factory, I2C bus mocking equivalent to `MainI2CRegFileDevice`, MAIN-side stimulus + observation methods):
     - test_v31_combined_dsp_table_apply.py (5 tests)
     - test_v31_command_matrix.py (1 test, ~16 after parametrize)
     - test_v31_dsp_boot_equivalence.py (3 tests)
