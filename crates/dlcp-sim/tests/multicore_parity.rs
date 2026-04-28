@@ -1135,7 +1135,27 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         let initial_reset_seen = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x19D));
-        probe.add_watched_ram(0x02F, "rx_parsed_cmd", initial_parsed_cmd);
+        // P3.6b research step 4 (task #65): intervention
+        // experiment per codex on edb77b4.  Watch
+        // rx_parsed_cmd AND attach a trigger -- when cmd
+        // transitions to a BF/2N value (0x21..=0x2B), reset
+        // v171_rx_frame_gap_timeout (0x0AC) to 0x01.  At
+        // 0x01, the watchdog needs ~255 increments
+        // (~720 K ticks) to expire, well past the 15 K-tick
+        // cmd->data spacing.  If the watchdog hypothesis is
+        // the SOLE root cause, this should make BF/2N data
+        // bytes process and the BF/2B body / BF/27 tail run.
+        // If anything else is still blocking dispatch, the
+        // intervention probes will surface it.
+        probe.add_watched_ram_with_trigger(
+            0x02F,
+            "rx_parsed_cmd",
+            initial_parsed_cmd,
+            0x21,    // match_min
+            0x2B,    // match_max (covers BF/21..BF/2B inclusive)
+            0x0AC,   // target_addr = v171_rx_frame_gap_timeout
+            0x01,    // target_value = 1 (255 increments to expire)
+        );
         probe.add_watched_ram(0x030, "rx_parsed_data", initial_parsed_data);
         probe.add_watched_ram(0x0A6, "rx_frame_position", initial_frame_pos);
         probe.add_watched_ram(0xFAB, "RCSTA", initial_rcsta);
@@ -1809,12 +1829,24 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         }
         eprintln!("Watched RAM transition logs (full per-instruction history):");
         for w in &probe.watched_ram {
+            // P3.6b research step 4: also dump trigger
+            // fire-count if a trigger is attached -- this
+            // is what tells us the intervention actually
+            // ran.
+            let trigger_suffix = match &w.trigger {
+                Some(t) => format!(
+                    "  [TRIGGER on [0x{:02X}..=0x{:02X}] -> RAM 0x{:03X} = 0x{:02X}, fired {}x]",
+                    t.match_min, t.match_max, t.target_addr, t.target_value, t.fire_count
+                ),
+                None => String::new(),
+            };
             eprintln!(
-                "  RAM 0x{:03X} {} -- {} transitions, last_value=0x{:02X}",
+                "  RAM 0x{:03X} {} -- {} transitions, last_value=0x{:02X}{}",
                 w.addr,
                 w.label,
                 w.transitions.len(),
-                w.last_value
+                w.last_value,
+                trigger_suffix
             );
             // Cap dump for readability.  rx_parsed_cmd / data /
             // ring_rd / frame_pos / rx_frame_gap_timeout can each

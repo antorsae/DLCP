@@ -615,16 +615,45 @@ impl Chain {
                         .read_raw(crate::memory::Address::from_raw(*addr))
                 })
                 .collect();
-            let probe = self.cores[core_idx]
-                .cycle_probe
-                .as_mut()
-                .expect("still Some");
-            for (i, w) in probe.watched_ram.iter_mut().enumerate() {
-                let new_val = new_values[i];
-                if new_val != w.last_value {
-                    w.transitions.push((current_tick, new_val));
-                    w.last_value = new_val;
+            // Two-phase pass over watched cells:
+            //   1. Update transitions + last_value (mutable pass on probe).
+            //   2. For each probe trigger that fired, perform the
+            //      RAM write (mutable pass on memory).  Triggers
+            //      have to be applied AFTER the transition log
+            //      is updated so the transition that drove the
+            //      trigger is recorded; and they have to be
+            //      applied via memory.write_raw so a future probe
+            //      cycle picks up the new value as the cell's
+            //      latest state.
+            let mut pending_trigger_writes: Vec<(u16, u8)> = Vec::new();
+            {
+                let probe = self.cores[core_idx]
+                    .cycle_probe
+                    .as_mut()
+                    .expect("still Some");
+                for (i, w) in probe.watched_ram.iter_mut().enumerate() {
+                    let new_val = new_values[i];
+                    if new_val != w.last_value {
+                        w.transitions.push((current_tick, new_val));
+                        w.last_value = new_val;
+                        if let Some(t) = w.trigger.as_mut() {
+                            if new_val >= t.match_min && new_val <= t.match_max {
+                                t.fire_count += 1;
+                                pending_trigger_writes
+                                    .push((t.target_addr, t.target_value));
+                            }
+                        }
+                    }
                 }
+            }
+            // P3.6b research step 4 (task #65): apply any
+            // trigger-driven RAM writes.  Done AFTER the probe
+            // mutation pass so the trigger's `fire_count` is
+            // updated atomically with the write.
+            for (addr, val) in pending_trigger_writes {
+                self.cores[core_idx]
+                    .memory
+                    .write_raw(crate::memory::Address::from_raw(addr), val);
             }
         }
         self.drain_completed_tx_bytes(core_idx);

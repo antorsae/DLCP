@@ -221,6 +221,41 @@ pub struct WatchedRamProbe {
     /// each `exec::step` call when the post-step value
     /// differs from `last_value`.
     pub transitions: Vec<(u64, u8)>,
+    /// Optional intervention: when the watched cell
+    /// transitions to a value in `[trigger_min, trigger_max]`
+    /// (inclusive), write `trigger_target_value` to
+    /// `trigger_target_addr` and increment `trigger_fire_count`.
+    /// Used by P3.6b research step 4 (task #65) to validate
+    /// the parser-stall watchdog hypothesis: when
+    /// `rx_parsed_cmd` (0x02F) transitions to a BF/2N cmd
+    /// (0x21..=0x2B), reset `v171_rx_frame_gap_timeout`
+    /// (0x0AC) to 0x01 so the watchdog's 8-step count-up
+    /// won't expire before the data byte arrives.  None means
+    /// "transition log only, no intervention".
+    pub trigger: Option<RamTransitionTrigger>,
+}
+
+/// Minimal transition-driven memory write -- see
+/// `WatchedRamProbe::trigger`.  When the parent watched cell
+/// transitions to a value in `[match_min, match_max]`
+/// (inclusive), the chain writes `target_value` to
+/// `target_addr` and increments `fire_count`.  Static fields
+/// (no closures / function pointers) so the struct stays
+/// `Clone + Debug` and probes remain easy to inspect.
+#[derive(Clone, Debug)]
+pub struct RamTransitionTrigger {
+    /// Inclusive lower bound for the new value to match.
+    pub match_min: u8,
+    /// Inclusive upper bound for the new value to match.
+    pub match_max: u8,
+    /// Physical RAM address (bank-flattened) to write.
+    pub target_addr: u16,
+    /// Value to write to `target_addr`.
+    pub target_value: u8,
+    /// Count of times this trigger has fired -- read at
+    /// probe-dump time to confirm the intervention took
+    /// effect.
+    pub fire_count: u64,
 }
 
 impl CycleProbe {
@@ -253,6 +288,39 @@ impl CycleProbe {
             label,
             last_value: initial_value,
             transitions: Vec::new(),
+            trigger: None,
+        });
+    }
+
+    /// Register a labelled RAM cell to watch AND attach a
+    /// transition-driven intervention trigger.  When the
+    /// watched cell transitions to a value in `[match_min,
+    /// match_max]`, the chain writes `target_value` to
+    /// `target_addr`.  Used by P3.6b research step 4
+    /// (task #65) for the watchdog-causality experiment;
+    /// production tests should use `add_watched_ram`.
+    pub fn add_watched_ram_with_trigger(
+        &mut self,
+        addr: u16,
+        label: &'static str,
+        initial_value: u8,
+        match_min: u8,
+        match_max: u8,
+        target_addr: u16,
+        target_value: u8,
+    ) {
+        self.watched_ram.push(WatchedRamProbe {
+            addr,
+            label,
+            last_value: initial_value,
+            transitions: Vec::new(),
+            trigger: Some(RamTransitionTrigger {
+                match_min,
+                match_max,
+                target_addr,
+                target_value,
+                fire_count: 0,
+            }),
         });
     }
 }
