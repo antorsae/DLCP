@@ -1146,9 +1146,19 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x0D92, 0x0DB2, "v171_service_pending_ir_decode FULL BODY (32 bytes)");
         probe.add_pc_range(0x0458, 0x060C, "rx_parser_entry FULL BODY (436 bytes -- includes dispatch)");
         probe.add_pc_range(0x0DB2, 0x0DE0, "v171_service_rx_frame_gap FULL BODY (46 bytes -- watchdog)");
-        probe.add_pc_range(0x0A78, 0x0A96, "control_core_service_0990 FULL BODY (30 bytes)");
-        probe.add_pc_range(0x0F40, 0x0F50, "control_core_service_0DCE FULL BODY (16 bytes)");
-        probe.add_pc_range(0x0C24, 0x0C32, "full_sync_burst FULL BODY (14 bytes)");
+        // Codex MEDIUM from 1067b66: the original bounds for these
+        // three FULL BODY ranges ended at the first `flow_*` sub-
+        // label, which is INSIDE the same function body (e.g. the
+        // EEPROM write loop in control_core_service_0990, the IR/
+        // preset endpoint dispatch in control_core_service_0DCE,
+        // and the step dispatch in full_sync_burst).  Widen each
+        // range to the next label whose name is unrelated to the
+        // function (per scripts/find_body_extents.py-style heuristic
+        // that treats `flow_<func>_*`, `flow_ccs_<addr>_*`, and
+        // `v171_fs_*` as same-body sub-labels).
+        probe.add_pc_range(0x0A78, 0x0B2E, "control_core_service_0990 FULL BODY (182 bytes)");
+        probe.add_pc_range(0x0F40, 0x10DE, "control_core_service_0DCE FULL BODY (414 bytes)");
+        probe.add_pc_range(0x0C24, 0x0C62, "full_sync_burst FULL BODY (62 bytes)");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
