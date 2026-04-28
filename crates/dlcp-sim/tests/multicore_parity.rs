@@ -2424,7 +2424,7 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
 /// Spec reference: `docs/SIM_REWRITE_RUST_SPEC.md` §7.4 calls for
 /// a 1.5 s late MAIN1 boot offset under the V1.71 reconnect-wake
 /// budget.  In universal ticks the spec quotes `+72_000_000` as
-/// 1.5 s @ 48 MHz, matching `crates/dlcp-sim/src/boot_offset.rs:14`.
+/// 1.5 s @ 48 MHz, matching `crates/dlcp-sim/src/boot_offset.rs:15`.
 /// The chain has a single 48 MHz universal clock per
 /// `crates/dlcp-sim/src/chain.rs:17`; the test uses this canonical
 /// offset.
