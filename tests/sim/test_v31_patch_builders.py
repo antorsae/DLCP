@@ -2,6 +2,17 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
+
+# NOTE: this file is intentionally NOT marked dual_supported --
+# 2 of its 5 tests are pre-existing idempotence failures on main
+# (the V3.1 cmd07-guard and diag-coeff source builders are not
+# fully idempotent on the current canonical source).  Marking
+# the file dual_supported would surface the pre-existing failures
+# under DLCP_SIM_BACKEND=dual without any behavioural change.
+# Once the builders are made idempotent, this file gets the marker.
+
 
 def _reload(module_name: str):
     return importlib.reload(importlib.import_module(module_name))

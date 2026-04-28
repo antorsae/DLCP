@@ -9,6 +9,10 @@ from pathlib import Path
 
 import pytest
 
+# Pure source / hex tests -- no sim backend needed.
+pytestmark = pytest.mark.dual_supported
+
+
 from dlcp_fw.paths import (
     PATCHED_MAIN_HEX_V24,
     PATCHED_MAIN_HEX_V28,

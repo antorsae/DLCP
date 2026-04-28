@@ -28,6 +28,10 @@ from dlcp_fw.paths import V32_MAIN_ASM
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
 
+# Pure source / hex tests -- no sim backend needed.
+pytestmark = pytest.mark.dual_supported
+
+
 # ---------------------------------------------------------------------------
 # Constants pinned to the no-pop design
 # ---------------------------------------------------------------------------
