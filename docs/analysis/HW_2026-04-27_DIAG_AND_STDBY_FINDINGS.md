@@ -431,6 +431,22 @@ diag cache nonzero while MAIN diag RAM stays zero, then asserts LCD
 can disagree with MAIN's `0x2E5..0x2EB`. This encodes the task-#44
 contract without needing randomized POR RAM-init. Section 7.2.D added.
 
+**Status update (post-c993454 codex re-review)**: The c993454-shipped
+Test D was characterised by codex as "mostly separate-memory
+tautology" -- it asserted RAM-address independence but never entered
+`v171_diag_pb_screen` or asserted the LCD raster.  That stronger
+LCD-render version (task #52) was deferred during the c993454
+landing and has now landed as **P3.8d-strong**
+(`control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram`):
+two-core chain + HD44780 slave, navigates to PB1 Diag via 4
+RIGHT-press cycles, seeds the cache, walks chunked steps until the
+cadence-driven redraw flips the layout to `PB1:` (cells visible),
+asserts LCD shows seeded values (`E` for `diag_pb1_s = 0x0E` -- a
+value MAIN cannot produce naturally) AND MAIN0 `diag_d`/`s`/`b`/
+`r`/`a`/`p` remain `0x00`.  The original "mostly tautology" weak
+test stays in place as a fast structural regression alongside the
+strong probe.
+
 **[LOW]** Test A faithfulness caveat. RAM probe is bit-equivalent to
 cmd 0x44 reply payload `[3..9]`, but the **UART BF/2N reply burst masks
 each cell with `andlw 0x0F`** at `src/dlcp_fw/asm/dlcp_main_v32.asm:9267`.
