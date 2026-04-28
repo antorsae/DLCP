@@ -34,6 +34,14 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 CONTROL_FLAGS_ADDR = 0x01F
 PRESET_BIT = 6
@@ -46,6 +54,14 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
 
 
 @pytest.fixture(scope="module")
@@ -72,41 +88,53 @@ def _boot(hex_path: Path) -> GpsimControlHarness:
 # Menu dispatch: state 1 exists and calls preset screen
 # ---------------------------------------------------------------------------
 
+def _run_menu_state_index_check(h) -> None:  # type: ignore[no-untyped-def]
+    """Backend-agnostic body shared by both gpsim and rust paths."""
+    h.warmup(25_000_000)
+    for target in (0x01, 0x02, 0x03, 0x00):
+        h.write_reg(DISPLAY_STATE_INDEX_ADDR, target) if hasattr(h, "write_reg") else \
+            h._issue(f"reg(0x{DISPLAY_STATE_INDEX_ADDR:03X})=0x{target:02X}", 5.0)
+        for _ in range(4):
+            h.step()
+        current = h.read_reg(DISPLAY_STATE_INDEX_ADDR)
+        assert current in (0x00, 0x01, 0x02, 0x03), (
+            f"display_state_index out of V1.71 range: got 0x{current:02X}"
+        )
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_menu_state_index_reaches_1_and_2_and_3(v171_hex: Path) -> None:
+def test_v171_menu_state_index_reaches_1_and_2_and_3(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """Writing display_state_index directly to 1/2/3 does not crash.
 
     Structural reach check: V1.71's 4-way dispatch must accept all
     four indices (0..3) without a wedged register read or infinite
     loop.  Pressing SELECT from the harness is flakey at the edge
     between boot-handshake and display-loop states, so this test
-    sets the index directly via gpsim's reg() override.
+    sets the index directly via gpsim's reg() override or the
+    rust facade's `write_reg`.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        h.warmup(25_000_000)
-        for target in (0x01, 0x02, 0x03, 0x00):
-            h._issue(f"reg(0x{DISPLAY_STATE_INDEX_ADDR:03X})=0x{target:02X}", 5.0)
-            for _ in range(4):
-                h.step()
-            # The index value we wrote may be consumed + rewritten by
-            # the main-loop state machine; we only assert the firmware
-            # kept running (gpsim process alive) and the RAM read
-            # returns some valid value.
-            current = h.read_reg(DISPLAY_STATE_INDEX_ADDR)
-            assert current in (0x00, 0x01, 0x02, 0x03), (
-                f"display_state_index out of V1.71 range: got 0x{current:02X}"
-            )
-    finally:
-        h.close()
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(v171_hex))
+        _run_menu_state_index_check(chain)
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(v171_hex)
+        try:
+            _run_menu_state_index_check(h)
+        finally:
+            h.close()
 
 
 # ---------------------------------------------------------------------------
 # Static symbol + source checks: preset screen exists, nav literals bumped
 # ---------------------------------------------------------------------------
 
+@pytest.mark.dual_supported
 def test_v171_source_defines_preset_screen_symbol() -> None:
     """``v171_preset_screen`` and its helper labels exist in the source.
 
@@ -127,6 +155,7 @@ def test_v171_source_defines_preset_screen_symbol() -> None:
     assert not missing, f"preset-screen labels missing from V1.71 source: {missing}"
 
 
+@pytest.mark.dual_supported
 def test_v171_source_bumps_nav_wrap_literals() -> None:
     """Nav wrap literals progression across V1.71 evolution:
 
@@ -154,6 +183,7 @@ def test_v171_source_bumps_nav_wrap_literals() -> None:
     # test_v171_layer5_diag_page.py).
 
 
+@pytest.mark.dual_supported
 def test_v171_menu_dispatch_routes_state_1_to_preset_screen() -> None:
     """Source check: the 4-way dispatch at flow_post_connect_init_11F0
     calls ``v171_preset_screen`` when display_state_index == 1.

@@ -797,6 +797,43 @@ impl Chain {
             .read_raw(dlcp_sim::memory::Address::from_raw(addr))
     }
 
+    /// Write a single byte of CONTROL's data memory at the
+    /// given physical address.  Mirror of gpsim's
+    /// `_issue(f"reg(0xADDR)=0xVAL")` register-poke
+    /// command, used by V1.71 tests that drive specific
+    /// firmware paths via direct RAM writes (e.g.
+    /// display_state_index, button-debounce, sentinels).
+    fn write_reg(&mut self, addr: u16, value: u8) {
+        self.inner.cores[self.i_ctl]
+            .memory
+            .write_raw(dlcp_sim::memory::Address::from_raw(addr), value);
+    }
+
+    /// CONTROL's K20-Tcy cycle counter at the current
+    /// universal-clock tick.  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.current_cycle`
+    /// which tracks gpsim's `cycle` value (in Tcy) after the
+    /// last `run` command.  The rust engine schedules cores
+    /// on the universal-clock tick timeline; CONTROL's Tcy
+    /// counter is `core.cycles()` directly.
+    #[getter]
+    fn current_cycle(&self) -> u64 {
+        self.inner.cores[self.i_ctl].cycles()
+    }
+
+    /// No-op for rust backend.  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.pause_heartbeat`,
+    /// which suppresses gpsim's synthetic
+    /// `heartbeat_rx_mode="full"` BF-reply pump used by
+    /// the CONTROL-only harness to keep the firmware in
+    /// CONNECTED mode without a real MAIN.  The rust
+    /// facade has no synthetic-heartbeat mode -- the
+    /// chain runs against a real V2.3-combined MAIN that
+    /// emits actual BF replies -- so there is nothing to
+    /// pause.  Provided for duck-typing parity with the
+    /// gpsim test bodies.
+    fn pause_heartbeat(&self) {}
+
     /// Inject a 3-byte chain frame directly into CONTROL's
     /// RX ring buffer (V1.6b/V1.7/V1.71 layout: ring base
     /// at physical 0x066, parser-consumer index at 0x098,

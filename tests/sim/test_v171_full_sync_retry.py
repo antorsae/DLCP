@@ -35,6 +35,14 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 CONTROL_FLAGS_ADDR = 0x01F
 PRESET_BIT = 6
@@ -47,6 +55,14 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
 
 
 @pytest.fixture(scope="module")
@@ -73,9 +89,31 @@ def _boot(hex_path: Path) -> GpsimControlHarness:
 # Behavioral: preset frame appears in TX during the periodic full-sync cycle
 # ---------------------------------------------------------------------------
 
+def _run_full_sync_preset_check(h) -> None:  # type: ignore[no-untyped-def]
+    """Backend-agnostic body shared by both gpsim and rust paths."""
+    h.warmup(80_000_000)
+    for _ in range(160):
+        h.step()
+    tx_iter = h.tx_frames()
+    # gpsim returns TxTriplet objects with .route/.cmd/.data; rust
+    # returns plain (route, cmd, data) tuples.  Normalize.
+    tx: set[tuple[int, int, int]] = set()
+    for f in tx_iter:
+        if isinstance(f, tuple):
+            tx.add(f)
+        else:
+            tx.add((f.route, f.cmd, f.data))
+    assert PRESET_FRAME_A in tx or PRESET_FRAME_B in tx, (
+        f"no preset-select frame in TX after warmup; got {sorted(tx)}"
+    )
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_full_sync_emits_preset_frame_after_connect(v171_hex: Path) -> None:
+def test_v171_full_sync_emits_preset_frame_after_connect(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """After warmup the TX stream contains at least one preset frame.
 
     Under Layer 2, preset is value-bearing in the periodic full-sync:
@@ -88,15 +126,14 @@ def test_v171_full_sync_emits_preset_frame_after_connect(v171_hex: Path) -> None
     Warmup is generous (≥80M cycles) to make sure step 6 has cycled
     around at least once even if the trigger period varies.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        h.warmup(80_000_000)
-        for _ in range(160):
-            h.step()
-        tx = {(f.route, f.cmd, f.data) for f in h.tx_frames()}
-        assert PRESET_FRAME_A in tx or PRESET_FRAME_B in tx, (
-            f"no preset-select frame in TX after warmup; got {sorted(tx)}"
-        )
-    finally:
-        h.close()
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(v171_hex))
+        _run_full_sync_preset_check(chain)
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(v171_hex)
+        try:
+            _run_full_sync_preset_check(h)
+        finally:
+            h.close()

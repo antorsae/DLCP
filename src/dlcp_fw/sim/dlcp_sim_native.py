@@ -373,6 +373,33 @@ class Chain:
         """
         return int(self._inner.read_reg(int(addr) & 0xFFF))
 
+    def write_reg(self, addr: int, value: int) -> None:
+        """Write a single byte of CONTROL's data memory at
+        the given physical address.  Mirror of gpsim's
+        ``_issue(f"reg(0xADDR)=0xVAL")`` register-poke
+        command, used by V1.71 tests that drive specific
+        firmware paths via direct RAM writes.
+        """
+        self._inner.write_reg(int(addr) & 0xFFF, int(value) & 0xFF)
+
+    @property
+    def current_cycle(self) -> int:
+        """CONTROL's K20-Tcy cycle counter (mirror of
+        ``control_gpsim.py::GpsimControlHarness.current_cycle``).
+        """
+        return int(self._inner.current_cycle)
+
+    def pause_heartbeat(self) -> None:
+        """No-op on the rust backend.  Mirror of
+        ``control_gpsim.py::GpsimControlHarness.pause_heartbeat``,
+        which suppresses gpsim's synthetic heartbeat-RX
+        pump.  The rust facade has no synthetic-heartbeat
+        mode -- the chain runs against a real V2.3-combined
+        MAIN that emits actual BF replies -- so there is
+        nothing to pause.  Provided for duck-typing parity.
+        """
+        self._inner.pause_heartbeat()
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of
