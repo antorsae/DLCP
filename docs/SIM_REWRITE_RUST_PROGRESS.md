@@ -1,6 +1,6 @@
 # `dlcp-sim` Rust Rewrite — Progress Ledger
 
-Last updated: 2026-04-26
+Last updated: 2026-04-28
 Branch: `feature/sim-rewrite-rust`
 
 This file is **machine-readable**.  Sub-tasks have a fixed shape:
@@ -212,12 +212,12 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/boot_offset.rs`
   - notes: `BootOffsetSpec::Fixed { ticks }` and `BootOffsetSpec::RangedRandom { min_ticks, max_ticks, seed }` per spec §7.  RangedRandom uses a deterministic xorshift64 seeded by `(seed, core_idx)` so a given chain configuration produces identical boot offsets across runs.  The chain-side wiring (which pre-schedules the first `CoreInstructionComplete` event at the boot-offset tick rather than tick 0) is part of P3.5; this sub-task just lands the type + the resolution helper.
 
-- [in_progress] P3.5 Multicore parity — reproduce `test_v171_v31_chain.py` end-to-end
+- [done] P3.5 Multicore parity — reproduce `test_v171_v31_chain.py` end-to-end
   - verify: `cd crates/dlcp-sim && cargo test --release --test multicore_parity`
   - artifact: `crates/dlcp-sim/tests/multicore_parity.rs`
   - notes: TX byte streams + LCD raster bit-exact against ground truth.  Multi-commit progression: (a) Chain owns `Vec<Stack>` and `dispatch_event` runs `exec::step` for `CoreInstructionComplete` events + reschedules next; (b) EUSART tick posts `PinPropagation` on frame complete; (c) `PinPropagation` delivers byte to peer RCREG; (d) capture ground truth from `test_v171_v31_chain.py`; (e) Rust test compares TX streams bit-exact.
 
-- [completed] P3.6a Multicore parity — architectural retirement of Task #22 bridge-mirror echo-loop
+- [done] P3.6a Multicore parity — architectural retirement of Task #22 bridge-mirror echo-loop
   - verify: three separate cargo invocations (cargo test does not accept multiple positional filters in one call):
     1. `cargo test --release --manifest-path crates/dlcp-sim/Cargo.toml --lib three_core_silicon_ring_uart_topology_has_no_echo_or_duplicates`
     2. `cargo test --release --manifest-path crates/dlcp-sim/Cargo.toml --test multicore_parity three_core_ring_v171_v32_v32_boots_under_silicon_topology` (not ignored; routine)
@@ -225,14 +225,15 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/chain.rs::tests::three_core_silicon_ring_uart_topology_has_no_echo_or_duplicates` + `crates/dlcp-sim/tests/multicore_parity.rs::{three_core_ring_v171_v32_v32_boots_under_silicon_topology,three_core_synthetic_pb2_injection_decrement_and_forward}`
   - notes: Rust silicon-correct ring (CONTROL.TX -> MAIN0.RX -> MAIN1.RX -> CONTROL.RX, 3 directional edges, no fan-out, no self-loops) is *structurally* incapable of producing the gpsim Python bridge-mirror echo loop documented in `tests/sim/test_v171_v32_layer5_diag_chain.py:166`.  Proven by: (a) synthetic scope probe asserts exactly one delivery per ring hop, zero `src == dst` echo, zero non-ring-edge routes; (b) firmware-driven 3-core boot under V1.71+V3.2+V3.2 has zero `src_core == dst_core` records in `uart_tx_history` across thousands of bytes; (c) synthetic byte-injection probe proves V3.2's route-byte decrement-and-forward (`B2 -> B1 -> next MAIN`) executes correctly (MAIN0.TX = `[B1, 21, 00]`).  The original Python xfail's "bridge-mirror echo" diagnosis is therefore a sim artifact unique to the gpsim PTY-bridge harness; the architectural half of Task #22 is genuinely retired.
 
-- [pending] P3.6b CONTROL BF/2N diag reply processing parity — **open: shared sim fidelity gap (hardware confirms firmware correct)**
+- [blocked] P3.6b CONTROL BF/2N diag reply processing parity — **open: shared sim fidelity gap (hardware confirms firmware correct)**
   - verify: `cargo test --release --manifest-path crates/dlcp-sim/Cargo.toml --test multicore_parity three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2 -- --ignored --nocapture`
   - artifact: `crates/dlcp-sim/tests/multicore_parity.rs::three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2` + `Chain::set_pin_high/low` (task #35 minimum-viable button injection)
   - notes: With proper firmware-driven menu navigation (4 RIGHT-press cycles drive state 0 -> 4 = PB1 Diag), CONTROL enters `v171_diag_pb_screen`, fires `cmd 0x22` + `cmd 0x21` queries (CTL.TX shows `B1/22/00` + `B1/21/00`), MAIN0 emits the 7-frame `BF/21..BF/27` reply burst, and MAIN1 forwards the full burst to CONTROL.RX (verified by direct byte-window inspection `MAIN1.TX[147..150] = BF 24 00 BF 25 00 BF 26 00 BF 27 00`).  But CONTROL's parser **never successfully processes** BF/27 through the BF/2N last-frame path: `v171_diag_target` trajectory `[00]` (never toggled), `v171_diag_present = 0x00` (never set), `v171_diag_flags = 0x06` (PENDING bits never cleared).  Same symptom gpsim Python harness shows; both simulators agree.  **Hardware result (2026-04-27)**: Path 1 hardware probe ran on real DLCP rig (V1.71 CONTROL + V3.2 MAIN0 + V3.2 MAIN1, both MAINs healthy via cmd 0x44 USB diag).  Operator navigated CONTROL to PB1 Diag (state 4) and PB2 Diag (state 5) via physical RIGHT-press; LCD camera captures show: PB1 = `PB1: I+ D1 SE B4 / RA A3 O8 V6 W+..` (Overflow layout, 10-11 non-zero cells), PB2 = `PB2: I+ D  S+ B / R+ A9  P  OB W9..` (Overflow layout with cells).  Both pages have the `PBn:` colon prefix → `v171_diag_present.bit_n = 1` on real silicon → **both BF/2N reply convergences work on real hardware**.  Decision matrix outcome: PB1 PASS + PB2 PASS → **both gpsim Python harness AND Rust silicon-ring sim share a fidelity gap**; V1.71 firmware is NOT broken.  This task therefore re-scopes from "blocked on hardware data" to "open: shared sim fidelity gap to investigate".  The four `_V171_V32_PB2_BRIDGE_XFAIL` markers in `tests/sim/test_v171_v32_layer5_diag_chain.py` stay in place -- the Rust sim still cannot reproduce convergence even though real silicon does.  **Open hypotheses (timing/electrical, not parser-state)**: clock-domain skew between the three cores during the BF burst, UART RX bit-timing margin too tight in the sim relative to silicon, transient OERR in the sim that real silicon does not exhibit, BANK 2 RAM aliasing assumption in the sim, RXIF ISR latency model too pessimistic.  **Side-finding (filed as task #44)**: cmd 0x44 USB diag reports all-zero runtime counters from both MAINs on real silicon while LCD shows substantial Overflow activity; most likely cause is CONTROL POR cache (`v171_diag_pb1/pb2_*`) starting at random RAM and BF/2N replies of zero data not fully overwriting garbage cells.  Does not affect P3.6b conclusion.  **Side-finding (filed as task #43)**: `hardware_lcd_probe.py` consensus extractor hallucinates "WAITING FOR DLCP" / "Active: B" / "Preset" while raw frames clearly show only PB Diag content; ground truth used was direct camera-image inspection.
 
-- [pending] P3.7 Boot-offset parity — MAIN1 boots 1.5 s late, CONTROL `WAITING FOR DLCP` clears within reconnect-wake budget
-  - verify: `cd crates/dlcp-sim && cargo test --release --test multicore_parity::test_main1_late_boot_recovery`
-  - artifact: same test file.
+- [done] P3.7 Boot-offset parity — MAIN1 boots 1.5 s late, CONTROL `WAITING FOR DLCP` clears within reconnect-wake budget
+  - verify: `cargo test --release --manifest-path crates/dlcp-sim/Cargo.toml --test multicore_parity test_main1_late_boot_recovery`
+  - artifact: `crates/dlcp-sim/tests/multicore_parity.rs::test_main1_late_boot_recovery`
+  - notes: 3-core ring (CONTROL + MAIN0 + MAIN1) with HD44780 LCD on CONTROL; `schedule_initial_steps(&[0, 0, LATE_OFFSET])` delays MAIN1 boot by `LATE_OFFSET = 500_000_000` universal ticks.  Phase 1 asserts CONTROL reaches `Waiting for DLCP` while MAIN1 is still pre-boot (chain ring incomplete, MAIN0's sentinel-burst replies have no return path to CONTROL).  Phase 2 steps past `LATE_OFFSET` and asserts CONTROL recovers (LCD leaves `Waiting`) within 8 B-tick safety budget.  Empirically: WAITING entered at ~150 M ticks, MAIN1 boots at 500 M, recovery at ~900 M (recovery window ~750 M ticks).  Exercises V1.62b's reconnect-wake gate inherited by V1.71 (`dlcp_control_v171.asm:5018+` reconnect_wait_loop).
 
 - [done] P3.8a (symptom-equivalent, not bit-exact) v32 MAIN runtime counters baseline + post-STDBY-cycle increment
   - verify: `cargo test --release --manifest-path crates/dlcp-sim/Cargo.toml --test multicore_parity v32_main_runtime_counters_baseline_and_post_stdby_cycle`

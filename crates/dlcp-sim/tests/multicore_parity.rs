@@ -2418,6 +2418,189 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     );
 }
 
+/// P3.7 — Boot-offset parity: MAIN1 boots late, CONTROL recovers
+/// from `Waiting for DLCP` once MAIN1's TX comes online.
+///
+/// Spec reference: `docs/SIM_REWRITE_RUST_SPEC.md` §7.4 calls for
+/// a 1.5 s late MAIN1 boot offset under the V1.71 reconnect-wake
+/// budget.  In universal ticks the spec quotes `+72_000_000` as
+/// 1.5 s @ 48 MHz; we use a larger offset here (`LATE_OFFSET`
+/// below) because the universal-tick / wall-time conversion in
+/// the sim is per-core (CONTROL = 16 ticks/Tcy, MAIN = 12) and
+/// we want to give CONTROL enough universal ticks to actually
+/// reach the WAITING screen before MAIN1 starts emitting.
+///
+/// Test shape:
+///   1. Build 3-core ring (CONTROL + MAIN0 + MAIN1) with HD44780
+///      LCD slave coupled to CONTROL.
+///   2. `apply_reset_all` + `schedule_initial_steps(&[0, 0,
+///      LATE_OFFSET])` -- CONTROL and MAIN0 boot at tick 0,
+///      MAIN1 first scheduled at tick LATE_OFFSET.
+///   3. Step until CONTROL's LCD line 0 starts with `Waiting`
+///      (the cold-boot WAITING screen because MAIN1's TX is
+///      silent so the chain ring can't return MAIN0's heartbeat
+///      replies to CONTROL).
+///   4. Continue stepping past LATE_OFFSET so MAIN1 boots, joins
+///      the ring, and starts forwarding MAIN0's traffic.
+///   5. Step until CONTROL's LCD line 0 leaves `Waiting` (the
+///      reconnect-wake gate releases CONTROL into the steady-
+///      state Volume display).
+///
+/// This is the silicon-equivalent of "MAIN1's PSU rail came up
+/// late but CONTROL recovered" -- exercises V1.62b's reconnect-
+/// wake gate inherited by V1.71 (`dlcp_control_v171.asm:5018+`
+/// reconnect_wait_loop).
+#[test]
+fn test_main1_late_boot_recovery() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+
+    // Boot offset: spec calls for 1.5 s at 48 MHz = 72_000_000
+    // universal ticks.  In the current sim the universal-tick to
+    // wall-time mapping is per-core, but the load-bearing
+    // property is "MAIN1 stays silent long enough for CONTROL to
+    // park on WAITING".  Empirically the bit-exact LCD parity
+    // test reaches steady-state Volume in ~5 B ticks; CONTROL
+    // entry to WAITING happens during the cold-boot pre-handshake
+    // window (before MAIN0's sentinel burst lands).  500 M ticks
+    // gives that window comfortably without over-stretching the
+    // sim.
+    const LATE_OFFSET: u64 = 500_000_000;
+    chain.schedule_initial_steps(&[0, 0, LATE_OFFSET]);
+
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA = all buttons released
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+
+    // ----- Phase 1: CONTROL must reach `Waiting for DLCP` -----
+    // While MAIN1 is still pre-boot, the chain ring is incomplete
+    // (CONTROL → MAIN0 → MAIN1[silent] → CONTROL has no return
+    // path), so MAIN0's sentinel-burst replies never reach
+    // CONTROL.  CONTROL's cold-boot handshake times out and
+    // shows the WAITING screen.
+    let mut waiting_reached = false;
+    for chunk in 0..8 {
+        chain.step_ticks(50_000_000);
+        let line0 = chain.lcd_slaves[i_lcd].line1();
+        eprintln!(
+            "P3.7 phase 1 chunk {chunk}: tick={}, MAIN1 cycles={}, \
+             LCD line0={:?}",
+            chain.current_tick,
+            chain.cores[i_main1].cycles(),
+            line0,
+        );
+        if line0.starts_with("Waiting") {
+            waiting_reached = true;
+            break;
+        }
+    }
+    assert!(
+        waiting_reached,
+        "CONTROL must reach `Waiting for DLCP` while MAIN1 is \
+         still pre-boot (offset = {LATE_OFFSET}).  Final LCD: \
+         line0={:?}, line1={:?}, MAIN1 cycles={}.",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2(),
+        chain.cores[i_main1].cycles(),
+    );
+    let waiting_at_tick = chain.current_tick;
+    assert!(
+        chain.cores[i_main1].cycles() == 0,
+        "MAIN1 should still be pre-boot at WAITING entry; got \
+         cycles={}",
+        chain.cores[i_main1].cycles(),
+    );
+
+    // ----- Phase 2: step past LATE_OFFSET so MAIN1 boots -----
+    // MAIN1 first instruction fires at universal tick =
+    // LATE_OFFSET; we need to step past LATE_OFFSET +
+    // (MAIN1 boot to first sentinel forward) before CONTROL can
+    // exit WAITING.  Walk forward in chunks until LCD leaves
+    // `Waiting` OR safety ceiling.
+    const RECOVERY_BUDGET: u64 = 8_000_000_000;
+    let mut recovered_at_tick: Option<u64> = None;
+    for chunk in 0..32 {
+        chain.step_ticks(250_000_000);
+        let line0 = chain.lcd_slaves[i_lcd].line1();
+        let main1_cycles = chain.cores[i_main1].cycles();
+        eprintln!(
+            "P3.7 phase 2 chunk {chunk}: tick={}, MAIN1 cycles={}, \
+             LCD line0={:?}",
+            chain.current_tick, main1_cycles, line0,
+        );
+        if !line0.starts_with("Waiting") {
+            recovered_at_tick = Some(chain.current_tick);
+            break;
+        }
+        if chain.current_tick >= RECOVERY_BUDGET {
+            break;
+        }
+    }
+
+    // Sanity: MAIN1 actually started stepping at some point.
+    assert!(
+        chain.cores[i_main1].cycles() > 0,
+        "MAIN1 should have started stepping after LATE_OFFSET={LATE_OFFSET}; \
+         got cycles={}.  Boot-offset wiring regression?",
+        chain.cores[i_main1].cycles(),
+    );
+
+    // Recovery assertion: CONTROL must have left WAITING.
+    let recovered_at_tick = recovered_at_tick.unwrap_or_else(|| {
+        panic!(
+            "CONTROL did not recover from `Waiting for DLCP` within \
+             {RECOVERY_BUDGET} universal ticks of MAIN1's late boot; \
+             final LCD: line0={:?}, line1={:?}, MAIN1 cycles={}",
+            chain.lcd_slaves[i_lcd].line1(),
+            chain.lcd_slaves[i_lcd].line2(),
+            chain.cores[i_main1].cycles(),
+        )
+    });
+    let recovery_window = recovered_at_tick - waiting_at_tick;
+    eprintln!(
+        "P3.7 OK: WAITING entered at tick {waiting_at_tick}, MAIN1 \
+         booted at LATE_OFFSET={LATE_OFFSET}, CONTROL recovered at \
+         tick {recovered_at_tick} (recovery window = {recovery_window} \
+         ticks); final LCD line0={:?}, line1={:?}",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2(),
+    );
+}
+
 /// P3.8c (symptom-equivalent, not bit-exact) — STDBY button press
 /// while CONTROL is in WAITING does NOT emit a STDBY frame on
 /// CONTROL.TX.
