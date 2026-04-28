@@ -49,6 +49,20 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+# All tests in this file are dual-mode-supported.  Tier A / Tier B
+# tests are pure source/hex integrity gates (no sim backend); Tier C
+# tests dispatch through `_run_in_backends` with a duck-typed body.
+pytestmark = pytest.mark.dual_supported
+
 
 # ---------------------------------------------------------------------------
 # Constants pinned by the Layer 2 design (see ram.inc + asm header)
@@ -94,6 +108,44 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
+def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+    if isinstance(f, tuple):
+        return f
+    return (f.route, f.cmd, f.data)
+
+
+def _read_full_sync_step(h) -> int:  # type: ignore[no-untyped-def]
+    """Read v171_full_sync_step (BANKED phys 0x170) regardless of backend."""
+    if hasattr(h, "read_reg"):
+        return h.read_reg(V171_FULL_SYNC_STEP_PHYS)
+    return _read_reg(h._issue, V171_FULL_SYNC_STEP_PHYS)
+
+
+def _run_in_backends(
+    backend: str, hex_path: Path, body  # Callable[[harness], None]
+) -> None:
+    """Dispatch a duck-typed body to gpsim / rust / both."""
+    if backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(hex_path))
+        body(chain)
+    if backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(hex_path)
+        try:
+            body(h)
+        finally:
+            h.close()
 
 
 def _equ_address(text: str, name: str) -> int | None:
@@ -352,30 +404,31 @@ def _boot(hex_path: Path) -> "GpsimControlHarness":
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_layer2_step_advances_through_full_cycle(v171_hex: Path) -> None:
+def test_v171_layer2_step_advances_through_full_cycle(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """After enough warmup for the periodic full-sync trigger to fire
     several times, ``v171_full_sync_step`` should land in the 1..6
     range — proving the state machine is being driven and the wrap
     is keeping the value bounded."""
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(40_000_000)
         for _ in range(80):
             h.step()
-        step = _read_reg(h._issue, V171_FULL_SYNC_STEP_PHYS)
+        step = _read_full_sync_step(h)
         assert 1 <= step <= 6, (
             f"v171_full_sync_step out of range after warmup: 0x{step:02X} "
             f"(expected 1..6, value 0 means trigger never fired, value > 6 "
             f"means wrap is broken)"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(v171_hex: Path) -> None:
+def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """After enough trigger cycles for every step to fire at least once,
     all six step destinations must appear in the TX stream.
 
@@ -384,19 +437,13 @@ def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(v171_hex: Path)
     {0x00, 0x01}), so to prove both steps fired we need to inspect
     (cmd, data) pairs for cmd 0x03 — not just the cmd byte alone.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        # Need ≥6 full-sync triggers for every step to fire.  At
-        # ~80,000 main-loop iterations per trigger, ≥480k iters total.
-        # Extra warmup margin to be robust against startup variance.
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(80_000_000)
         for _ in range(160):
             h.step()
-        frames = h.tx_frames()
-        cmds_seen = {f.cmd for f in frames}
-        cmd03_data = {f.data for f in frames if f.cmd == CMD_STDBY_MUTE}
-        # Single-cmd steps: each must have at least one frame in the stream.
+        frames = [_frame_tuple(f) for f in h.tx_frames()]
+        cmds_seen = {cmd for (_, cmd, _) in frames}
+        cmd03_data = {data for (_, cmd, data) in frames if cmd == CMD_STDBY_MUTE}
         for cmd, name in (
             (CMD_VOLUME, "step 1 volume"),
             (CMD_INPUT, "step 2 input"),
@@ -407,8 +454,6 @@ def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(v171_hex: Path)
                 f"Layer 2 dispatch did not fire {name}; "
                 f"observed cmds={sorted(hex(c) for c in cmds_seen)}"
             )
-        # Shared-cmd steps: cmd 0x03 must show BOTH a mute-data byte
-        # AND a standby-data byte to prove steps 3 and 5 both fired.
         assert cmd03_data & DATA_STBY, (
             f"step 5 (standby_wake_broadcast) did not fire — cmd 0x03 stream "
             f"contains no standby/wake data byte; observed cmd03 data={sorted(hex(d) for d in cmd03_data)}"
@@ -417,43 +462,41 @@ def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(v171_hex: Path)
             f"step 3 (mute_frame_send) did not fire — cmd 0x03 stream "
             f"contains no mute data byte; observed cmd03 data={sorted(hex(d) for d in cmd03_data)}"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_layer2_preset_frame_appears_without_v161b_retry_arm(v171_hex: Path) -> None:
+def test_v171_layer2_preset_frame_appears_without_v161b_retry_arm(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """The Layer-2 design replaces the V1.61b reconnect-edge retry queue
     (0x70/0x71) with periodic value-bearing emit.  This test verifies
     the preset frame appears in the TX stream EVEN THOUGH 0x70 is
     repurposed and the V1.61b "primed" handshake is gone — i.e. the
     new dispatch path is the actual driver, not residual state.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(80_000_000)
         for _ in range(160):
             h.step()
-        tx = {(f.route, f.cmd, f.data) for f in h.tx_frames()}
+        tx = {_frame_tuple(f) for f in h.tx_frames()}
         assert PRESET_FRAME_A in tx or PRESET_FRAME_B in tx, (
             f"no preset frame in TX after warmup; got {sorted(tx)}"
         )
-        # Also confirm 0x70 holds a Layer-2 step value (1..6), not a
-        # legacy V1.61b retry counter (which would be 0..3).
-        step = _read_reg(h._issue, V171_FULL_SYNC_STEP_PHYS)
+        step = _read_full_sync_step(h)
         assert 1 <= step <= 6, (
             f"0x070 holds 0x{step:02X}, outside the Layer-2 step range — "
             f"is the V1.61b retry counter still alive?"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_layer2_no_dual_preset_frames_per_trigger(v171_hex: Path) -> None:
+def test_v171_layer2_no_dual_preset_frames_per_trigger(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """Sanity check: each full-sync trigger emits AT MOST one preset
     frame.  If both the legacy V1.61b retry block and the Layer-2 step
     machine were active, we'd see ≥2 preset frames per trigger window
@@ -461,26 +504,17 @@ def test_v171_layer2_no_dual_preset_frames_per_trigger(v171_hex: Path) -> None:
     cycle).  With the legacy block fully removed, each trigger window
     contributes exactly one frame of each step type.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(40_000_000)
         for _ in range(60):
             h.step()
-        baseline = sum(1 for f in h.tx_frames() if f.cmd == CMD_PRESET)
-        # One more trigger window worth of steps.
+        baseline = sum(1 for (_, cmd, _) in (_frame_tuple(f) for f in h.tx_frames()) if cmd == CMD_PRESET)
         for _ in range(60):
             h.step()
-        followup = sum(1 for f in h.tx_frames() if f.cmd == CMD_PRESET)
+        followup = sum(1 for (_, cmd, _) in (_frame_tuple(f) for f in h.tx_frames()) if cmd == CMD_PRESET)
         delta = followup - baseline
-        # In one window of ~60 chunk-steps, the Layer-2 dispatch can
-        # emit at most a couple of preset frames (each requires step
-        # to land on 6, which happens ~once per 6 triggers).  Anything
-        # ≥6 in a single 60-step window strongly suggests the legacy
-        # retry block is also firing.
         assert delta < 6, (
             f"too many preset frames in a single 60-step window ({delta}); "
             f"suspect the V1.61b retry block is still active alongside Layer 2"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)

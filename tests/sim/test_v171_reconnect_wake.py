@@ -40,6 +40,14 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 RCSTA_ADDR = 0xFAB
 OERR_BIT = 1
@@ -54,6 +62,44 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
+def _force_oerr_latch(h) -> None:  # type: ignore[no-untyped-def]
+    """Set RCSTA.OERR = 1 directly via register-poke.  Backend-agnostic:
+    rust uses `write_reg`; gpsim uses `_issue("reg(0xADDR)=0xVAL")`.
+    """
+    new = h.read_reg(RCSTA_ADDR) | (1 << OERR_BIT)
+    if hasattr(h, "write_reg"):
+        h.write_reg(RCSTA_ADDR, new)
+    else:
+        h._issue(f"reg(0x{RCSTA_ADDR:03X})=0x{new:02X}", 5.0)
+
+
+def _run_in_backends(
+    backend: str,
+    hex_path: Path,
+    body,  # Callable[[harness], None]
+) -> None:
+    """Dispatch a duck-typed body to gpsim, rust, or both per backend."""
+    if backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(hex_path))
+        body(chain)
+    if backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(hex_path)
+        try:
+            body(h)
+        finally:
+            h.close()
 
 
 @pytest.fixture(scope="module")
@@ -80,9 +126,12 @@ def _boot(hex_path: Path) -> GpsimControlHarness:
 # OERR soft-recover: forced OERR latch clears after parser cycle
 # ---------------------------------------------------------------------------
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_parser_clears_oerr_latch(v171_hex: Path) -> None:
+def test_v171_parser_clears_oerr_latch(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """Forcing RCSTA.OERR = 1 at parser entry clears on the next cycle.
 
     The stock parser does this too via the CREN toggle, so this is
@@ -90,54 +139,42 @@ def test_v171_parser_clears_oerr_latch(v171_hex: Path) -> None:
     must still clear the latch (it does more state cleanup, but the
     OERR clear is a superset of stock behavior).
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
-        # Force OERR latch.  gpsim accepts direct bit-set on SFR.
-        h._issue(
-            f"reg(0x{RCSTA_ADDR:03X})=0x{h.read_reg(RCSTA_ADDR) | (1 << OERR_BIT):02X}",
-            5.0,
-        )
-        # Step to let the parser run at least once.
+        _force_oerr_latch(h)
         for _ in range(6):
             h.step()
         rcsta = h.read_reg(RCSTA_ADDR)
         assert not (rcsta & (1 << OERR_BIT)), (
             f"OERR latch still set after parser cycle (RCSTA=0x{rcsta:02X})"
         )
-        # CREN must also be re-enabled post-recovery.
         assert rcsta & (1 << CREN_BIT), (
             f"CREN not re-enabled after OERR soft-recover (RCSTA=0x{rcsta:02X})"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_oerr_recovery_leaves_parser_loop_progressing(v171_hex: Path) -> None:
+def test_v171_oerr_recovery_leaves_parser_loop_progressing(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """After OERR recovery the parser loop keeps making progress.
 
     Source-level verification of the V1.62b soft-recover's internal
     state cleanup (rx_parsed_cmd/data ← 0, ring indices ← 0) is
     covered structurally by the assembly in dlcp_control_v171.asm;
-    observing those writes cycle-exactly from gpsim would require a
-    breakpoint harness that races the parser's own next-byte
-    advance.  The behavioral signal we can check deterministically is
-    that the parser doesn't deadlock after an OERR — it continues
-    processing heartbeat frames and advancing cycle count as before.
+    observing those writes cycle-exactly would require a breakpoint
+    harness that races the parser's own next-byte advance.  The
+    behavioral signal we can check deterministically is that the
+    parser doesn't deadlock after an OERR — it continues processing
+    heartbeat frames and advancing cycle count as before.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
         cycle_before = h.current_cycle
-        # Force OERR.
-        h._issue(
-            f"reg(0x{RCSTA_ADDR:03X})=0x{h.read_reg(RCSTA_ADDR) | (1 << OERR_BIT):02X}",
-            5.0,
-        )
+        _force_oerr_latch(h)
         for _ in range(6):
             h.step()
         cycle_after = h.current_cycle
@@ -148,26 +185,21 @@ def test_v171_oerr_recovery_leaves_parser_loop_progressing(v171_hex: Path) -> No
         assert not (h.read_reg(RCSTA_ADDR) & (1 << OERR_BIT)), (
             "OERR latch still asserted — recovery path did not complete"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_parser_still_functional_after_oerr_recovery(v171_hex: Path) -> None:
+def test_v171_parser_still_functional_after_oerr_recovery(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """After a forced OERR, the parser can still process a fresh frame."""
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
-        # Force OERR.
-        h._issue(
-            f"reg(0x{RCSTA_ADDR:03X})=0x{h.read_reg(RCSTA_ADDR) | (1 << OERR_BIT):02X}",
-            5.0,
-        )
+        _force_oerr_latch(h)
         for _ in range(6):
             h.step()
-        # Inject a fresh BF/08 frame and verify it still sets DSP_FAULT_BIT.
         for attempt in range(3):
             h.inject_triplet(RxTriplet(route=0xBF, cmd=0x08, data=0x42))
             for _ in range(40):
@@ -176,5 +208,4 @@ def test_v171_parser_still_functional_after_oerr_recovery(v171_hex: Path) -> Non
                 break
         else:
             pytest.fail("parser did not recover enough to process BF/08 after OERR")
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
