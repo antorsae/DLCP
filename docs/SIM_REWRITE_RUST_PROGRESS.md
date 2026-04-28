@@ -269,9 +269,10 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
 ## Phase 4 — Python Bindings + Dual-Run Test Migration
 
-- [pending] P4.1 `crates/dlcp-sim-py/` PyO3 wrapper crate
-  - verify: `cd crates/dlcp-sim-py && cargo build --release && .venv_ep0/bin/python -c "import dlcp_sim_native; print(dlcp_sim_native.__version__)"`
-  - artifact: `crates/dlcp-sim-py/Cargo.toml`, `src/lib.rs`.
+- [done] P4.1 `crates/dlcp-sim-py/` PyO3 wrapper crate
+  - verify: `cd crates/dlcp-sim-py && cargo build --release && bash build.sh && .venv_ep0/bin/python -c "import dlcp_sim_native; print(dlcp_sim_native.__version__)"`
+  - artifact: `crates/dlcp-sim-py/Cargo.toml`, `src/lib.rs`, `build.sh`, `.cargo/config.toml`.
+  - notes: PyO3 0.28 with `extension-module` feature, `crate-type = ["cdylib"]`, `[lib] name = "dlcp_sim_native"`. The compiled artifact lands at `target/release/libdlcp_sim_native.dylib` (macOS) / `.so` (Linux); `build.sh` symlinks that into `crates/dlcp-sim-py/dlcp_sim_native.so` so the verify command can `import dlcp_sim_native` from CWD without PYTHONPATH manipulation.  macOS-specific linker flags (`-undefined dynamic_lookup`) live in `crates/dlcp-sim-py/.cargo/config.toml` so plain `cargo build --release` works without maturin -- the standard pyo3-without-maturin pattern (resolves `_Py_*` symbols at runtime via dyld instead of failing at link time).  Symlink is gitignored at `crates/dlcp-sim-py/dlcp_sim_native.so`.  Module surface today: just `__version__` from `CARGO_PKG_VERSION`; P4.2 layers the `Chain`, `Core`, `step_ticks`, `lcd_lines()` etc. on top.
 
 - [pending] P4.2 Python facade `src/dlcp_fw/sim/dlcp_sim_native.py` matching `chain_gpsim.py` API surface
   - verify: `python -c "from dlcp_fw.sim.dlcp_sim_native import Chain; c = Chain.from_v171_v32(); c.step_ticks(48_000_000); print(c.lcd_lines())"`

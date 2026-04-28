@@ -1,0 +1,36 @@
+[package]
+name = "dlcp-sim-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# Python's import machinery looks for `dlcp_sim_native.{so,pyd}`
+# (the `lib` prefix is stripped by macOS's dynamic loader on
+# import), so set the cdylib name explicitly.  The compiled
+# artifact still lands at `target/release/libdlcp_sim_native.{
+# dylib,so}` -- see `build.sh` for the post-build symlink that
+# makes `.venv_ep0/bin/python -c "import dlcp_sim_native"` work
+# from inside the crate directory.
+name = "dlcp_sim_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pinned to 0.28.x for Python 3.14 support (added in PyO3
+# 0.24+; we use the latest stable so we get any new
+# limited-API improvements).  `extension-module` enables
+# the `Py_LIMITED_API` linker flag and avoids embedding
+# `libpython` -- required when building a Python C
+# extension rather than embedding a Python interpreter.
+pyo3 = { version = "0.28", features = ["extension-module"] }
+
+# Workspace-shared core simulation engine.  P4.1 only uses
+# `CARGO_PKG_VERSION` from this crate to populate
+# `dlcp_sim_native.__version__`; later sub-tasks (P4.2+)
+# will expose `Chain`, `Core`, `step_ticks`, etc. through
+# this dep.
+dlcp-sim = { path = "../dlcp-sim" }
+
+[lints]
+workspace = true
