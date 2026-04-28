@@ -85,6 +85,28 @@ impl HexImage {
         }
     }
 
+    /// Return the byte at `addr` only if a hex record explicitly
+    /// wrote it (consults `flash_present[addr]`).  Returns `None`
+    /// for addresses that were never touched by the source HEX
+    /// (where `flash[addr] == 0xFF` is the default-fill, not a
+    /// real record).
+    ///
+    /// Encapsulates the `flash` ↔ `flash_present` invariant so
+    /// merge-style consumers (e.g. `build_seeded_main_flash` in
+    /// `tests/multicore_parity.rs`, the Python parallel
+    /// `build_seeded_main_sim_hex` at
+    /// `src/dlcp_fw/sim/main_gpsim.py:321`) don't have to read
+    /// both fields and re-derive the same predicate.
+    /// Codex LOW from c8cf249, task #37.
+    #[inline]
+    pub fn byte_at(&self, addr: usize) -> Option<u8> {
+        if addr < FLASH_BYTES && self.flash_present[addr] {
+            Some(self.flash[addr])
+        } else {
+            None
+        }
+    }
+
     /// Parse an Intel HEX text blob and route bytes into
     /// the four windows.  Strict: missing EOF, records
     /// after EOF, bad checksums, unknown record types,

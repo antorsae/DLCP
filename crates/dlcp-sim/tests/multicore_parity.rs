@@ -144,8 +144,14 @@ fn build_seeded_main_flash(v3_app: &HexImage, v23_seed: &HexImage) -> Box<[u8; d
     let mut flash = v23_seed.flash.clone();
     let app_end = MAIN_APP_PATCH_LIMIT.min(v3_app.flash.len());
     for addr in MAIN_APP_PATCH_START..app_end {
-        if v3_app.flash_present[addr] {
-            flash[addr] = v3_app.flash[addr];
+        // Use HexImage::byte_at to consult flash + flash_present
+        // through one call -- encapsulates the invariant the
+        // c8cf249 codex review flagged (task #37).  Skips
+        // addresses where v3_app has no record so the V2.3 seed
+        // bytes underneath survive (e.g. boot block, recovery
+        // vectors that V3.x doesn't repaint).
+        if let Some(byte) = v3_app.byte_at(addr) {
+            flash[addr] = byte;
         }
     }
     flash
@@ -536,10 +542,16 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     // walking `pinnet.uart` and asserting EXACTLY the
     // three ring edges, in the order they were added,
     // with no duplicates or extras.
+    // Codex LOW from 8e180a6 review (task #39): compare the
+    // FULL `UartCoupling` (src/dst core IDs + src TX pin +
+    // dst RX pin), not just the (src_core, dst_core) tuple.
+    // Without the pin check a regression in `couple_uart`'s
+    // pin handling would slip past this audit even though
+    // the cores wire up correctly.
     let expected_uart_edges = [
-        (i_ctl, i_main0),
-        (i_main0, i_main1),
-        (i_main1, i_ctl),
+        (i_ctl, default_tx_pin(), i_main0, default_rx_pin()),
+        (i_main0, default_tx_pin(), i_main1, default_rx_pin()),
+        (i_main1, default_tx_pin(), i_ctl, default_rx_pin()),
     ];
     assert_eq!(
         chain.pinnet.uart.len(),
@@ -547,14 +559,18 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
         "ring must have exactly 3 UART couplings, got {}",
         chain.pinnet.uart.len(),
     );
-    for (idx, expected) in expected_uart_edges.iter().enumerate() {
-        let actual = (
-            chain.pinnet.uart[idx].src_core,
-            chain.pinnet.uart[idx].dst_core,
-        );
+    for (idx, &(exp_src, exp_src_pin, exp_dst, exp_dst_pin)) in
+        expected_uart_edges.iter().enumerate()
+    {
+        let coupling = &chain.pinnet.uart[idx];
         assert_eq!(
-            actual, *expected,
-            "ring edge {idx} mismatch: got {actual:?}, expected {expected:?}"
+            (coupling.src_core, coupling.src_tx_pin, coupling.dst_core, coupling.dst_rx_pin),
+            (exp_src, exp_src_pin, exp_dst, exp_dst_pin),
+            "ring edge {idx} mismatch: got src={}.{:?}->dst={}.{:?}, \
+             expected src={}.{:?}->dst={}.{:?}",
+            coupling.src_core, coupling.src_tx_pin,
+            coupling.dst_core, coupling.dst_rx_pin,
+            exp_src, exp_src_pin, exp_dst, exp_dst_pin,
         );
     }
 
@@ -960,6 +976,27 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         eprintln!(
             "After RIGHT press #{press_n}: menu_state = {state_now}",
             press_n = press + 1
+        );
+        // Codex LOW from aa8ba84 review (task #42): per-press
+        // contract -- after each RIGHT press, menu_state MUST
+        // have advanced by exactly 1 (state ring increments
+        // on each accepted press).  Without this assertion a
+        // press that fails to register (e.g. debounce window
+        // skipped, button-scan suppressed) would silently
+        // skip a state and leave the final-state check at
+        // line ~990 to catch it -- but that final assert
+        // can't tell *which* press failed, only that we ended
+        // up somewhere unexpected.
+        assert_eq!(
+            state_now,
+            (press + 1) as u8,
+            "menu_state after RIGHT press #{press_n} must equal {expected} \
+             (state-ring increments by 1 per accepted press); got {state_now}.  \
+             A press that didn't register here means the button-injection \
+             debounce / scan timing is off -- check the 5 M-tick hold \
+             window vs V1.71's 4-stable-poll debounce.",
+            press_n = press + 1,
+            expected = press + 1,
         );
     }
 
@@ -1752,6 +1789,26 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
         "feeder.TX must contain exactly the 3 injected bytes; got {feeder_tx:02X?}"
     );
 
+    // Codex LOW from e591f31 review (task #41): explicit
+    // delivery-count contract.  The feeder pushes 3 bytes; the
+    // chain dispatcher should record EXACTLY 3 feeder->MAIN0
+    // deliveries in the post-inject window.  Without this
+    // assertion, a regression where the chain delivered the
+    // bytes more than once (e.g. via a duplicate coupling or
+    // an event-replay bug) would still pass the
+    // feeder_tx == [B2,21,00] check above because that records
+    // *attempts*, not deliveries.
+    let feeder_to_main0_count = post_inject_records
+        .iter()
+        .filter(|r| r.src_core == i_feeder && r.dst_core == i_main0)
+        .count();
+    assert_eq!(
+        feeder_to_main0_count, 3,
+        "chain must record exactly 3 feeder->MAIN0 deliveries in \
+         the post-inject window; got {feeder_to_main0_count}.  \
+         Larger value indicates a duplicate-delivery regression."
+    );
+
     // Hop A: MAIN0 must have emitted `B1 21 00` somewhere in its
     // TX history (decremented from `B2 21 00` and forwarded
     // downstream).  The window may also contain unrelated MAIN0
@@ -1765,6 +1822,22 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
         "MAIN0.TX must contain the forwarded sequence `B1 21 00` \
          (route-byte decrement-and-forward of injected `B2 21 00`); \
          got {m0_tx:02X?}"
+    );
+
+    // Codex LOW from e591f31 review (task #41) follow-up:
+    // assert MAIN0 emits the forwarded sequence EXACTLY ONCE
+    // -- a duplicate would slip past the position-search above
+    // and indicate a parser-loop or chain replay bug.
+    let m0_b1_seq_count = m0_tx
+        .windows(3)
+        .filter(|w| *w == [0xB1, 0x21, 0x00])
+        .count();
+    assert_eq!(
+        m0_b1_seq_count, 1,
+        "MAIN0.TX must contain exactly ONE `B1 21 00` forwarded \
+         sequence (no duplicates from parser-loop or chain \
+         replay regression); got {m0_b1_seq_count}.  Full m0_tx: \
+         {m0_tx:02X?}"
     );
 
     // Hop B (informational only -- not asserted; see docstring):
