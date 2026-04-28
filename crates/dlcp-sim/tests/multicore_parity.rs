@@ -1107,7 +1107,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // mis-banked" from "BF/2B body inner never ran".
         probe.add_pc_range(0x0682, 0x0692, "v171_bf2x_check_reset_last FULL BODY");
         probe.add_pc_range(0x0682, 0x0684, "v171_bf2x_check_reset_last ENTRY ONLY");
-        probe.add_pc_range(0x0688, 0x068E, "BF/2B body inner (col==10 path)");
+        probe.add_pc_range(0x0688, 0x0690, "BF/2B body inner (col==10 path)");
         probe.add_pc_range(0x0690, 0x0692, "bcf RESET_PENDING SINGLE");
         probe.add_pc_range(0x0692, 0x0694, "exit_bsr0 ENTRY (movlb 0)");
         let initial_parsed_data = chain.cores[i_ctl]
