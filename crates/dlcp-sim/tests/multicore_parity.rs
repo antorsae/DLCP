@@ -1812,6 +1812,772 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
     );
 }
 
+/// P3.8a (symptom-equivalent, not bit-exact) — V3.2 MAIN diag-counter
+/// dispatch semantics: `standby_event_dispatch` correctly bumps
+/// `diag_s` on shutdown-path entry and `diag_b` on bring-up-path
+/// entry.
+///
+/// Mirrors hardware observation 2026-04-27 on real DLCP rig (see
+/// `docs/analysis/HW_2026-04-27_DIAG_AND_STDBY_FINDINGS.md` §7.2.A):
+/// fresh-boot cmd 0x44 reports `Runtime: I0 D0 S0 B0 R0 A0 P0` from
+/// both MAINs; after one STDBY/wake cycle from CONTROL panel, LEFT
+/// MAIN reports `S1 B1`.
+///
+/// V3.2 increments `diag_s` on every standby dispatch (gate-close
+/// transition) and `diag_b` on every bring-up dispatch (gate-open
+/// transition).  See `src/dlcp_fw/asm/dlcp_main_v32.asm:8385+`
+/// (`standby_event_dispatch:`) for the increment paths and
+/// `:1873`/`:1898` for the wake/standby request handlers.
+///
+/// **Scope**: this test seeds the post-handler state directly
+/// (`event_flags.bit2 = 1` + chosen `active_flags.bit3` value) and
+/// asserts that `standby_event_dispatch` then correctly routes to
+/// either the shutdown or bring-up branch depending on gate state,
+/// bumping the right counter and consuming the event.  The
+/// parser-driven path (CONTROL emits `B0/03/0x` over UART → MAIN
+/// parses → `cmd03_subdispatch` → `standby_request_handler` →
+/// `standby_event_dispatch`) is left as a **deferred follow-up**:
+/// synthetic feeder injection of `B0/03/00` reaches the parser
+/// (cmd byte saved correctly to `ram_0x0A2`) but
+/// `standby_request_handler` does not appear to update
+/// `active_flags.bit3` / `event_flags.bit2` in the executor before
+/// the rx_ring drains; the cause is not yet root-caused (suspected
+/// dispatch ordering or handler-tail race) and merits its own
+/// investigation outside this commit.
+///
+/// **Faithfulness caveat**: this test reads cells via direct BANK 2
+/// RAM probe at `diag_i..diag_p` (0x2E5..0x2EB), not via the cmd 0x44
+/// HID path (which would require a USB stack).  The HID emit-side at
+/// `hid_cmd_diag_snapshot:` (`dlcp_main_v32.asm:9760+`) is a direct
+/// `POSTINC0 -> POSTINC2` byte-copy with no transformation, so RAM is
+/// bit-equivalent to cmd 0x44 reply payload `[3..9]`.  Note however
+/// that the UART BF/2N reply burst at `:9261` masks each cell with
+/// `andlw 0x0F` (`:9267`), so RAM is NOT bit-equivalent to the BF/2N
+/// stream if any cell has high-nibble bits set; this test asserts
+/// cmd 0x44 semantics only.
+#[test]
+fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
+    use dlcp_sim::memory::Address;
+
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_main0 = chain.push_core(main0);
+
+    // Single-MAIN probe.  The diag dispatch we exercise is local to
+    // MAIN, so we don't need a full ring -- just enough boot to
+    // bring the periodic main-service loop online.  We do need a
+    // TAS3108 slave because V3.2 boot parks at `dsp_ping`'s NACK
+    // retry loop without one.
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0]);
+
+    // Boot until GIE is set + DSP init crosses the convergence
+    // threshold, so the periodic main-service loop is running.
+    chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| {
+            let gie = c.cores[i_main0]
+                .memory
+                .read_raw(Address::from_raw(0xFF2))
+                & 0x80;
+            gie != 0 && c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+        },
+    );
+    assert!(
+        chain.current_tick < 5_000_000_000,
+        "boot did not converge before 5 B-tick safety ceiling"
+    );
+
+    // RAM map per `src/dlcp_fw/asm/dlcp_main_ram.inc`:
+    //   0x05E = active_flags        (bit3 = gate open)
+    //   0x07E = event_flags         (bit2 = standby/wake event pending)
+    //   0x2E5 = diag_i               (idle pulses)
+    //   0x2E7 = diag_s               (standby dispatches)
+    //   0x2E8 = diag_b               (bring-up / wake dispatches)
+    let read_diag_block = |c: &Chain, idx: usize| -> [u8; 7] {
+        let mut out = [0u8; 7];
+        for (i, cell) in out.iter_mut().enumerate() {
+            *cell = c.cores[idx]
+                .memory
+                .read_raw(Address::from_raw(0x2E5 + i as u16));
+        }
+        out
+    };
+
+    // ----- Phase 1: post-boot baseline -----
+    // Hardware reading was `S0 B0` shortly after power-on.  In the
+    // sim, boot convergence takes hundreds of M ticks of simulated
+    // time, during which `diag_i` (idle pulses) accumulates -- so
+    // we only assert on the cells the STDBY/wake path bumps:
+    // `diag_s` (0x2E7) and `diag_b` (0x2E8).
+    let baseline = read_diag_block(&chain, i_main0);
+    eprintln!("MAIN0 baseline diag block: {baseline:02X?}");
+    assert_eq!(
+        baseline[2], 0,
+        "baseline diag_s (0x2E7) must be 0 before any standby dispatch; \
+         got 0x{:02X} (full block: {:02X?})",
+        baseline[2], baseline,
+    );
+    assert_eq!(
+        baseline[3], 0,
+        "baseline diag_b (0x2E8) must be 0 before any wake dispatch; \
+         got 0x{:02X} (full block: {:02X?})",
+        baseline[3], baseline,
+    );
+
+    // ----- Phase 2: shutdown branch (gate closed + event pending) -----
+    // Equivalent firmware-driven sequence:
+    //   `standby_request_handler` (`asm:1898+`) processes `B0/03/00`,
+    //   observes gate currently OPEN, sets event_flags.bit2, then
+    //   clears active_flags.bit3.  Net post-handler state is exactly
+    //   what we seed below.
+    // The next pass through `standby_event_dispatch` (`asm:8385+`)
+    // should:
+    //   1. See event_flags.bit2 set → not skip
+    //   2. See active_flags.bit3 CLEAR → take the 47a6 (shutdown) branch
+    //   3. `diag_inc_sat diag_s` (0x2E7 → 1)
+    //   4. Call `hw_standby_shutdown`
+    //   5. Clear event_flags.bit2 (event consumed)
+    {
+        let af = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0x05E));
+        chain.cores[i_main0]
+            .memory
+            .write_raw(Address::from_raw(0x05E), af & !0x08); // bit3 CLEAR (gate closed)
+        let ef = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0x07E));
+        chain.cores[i_main0]
+            .memory
+            .write_raw(Address::from_raw(0x07E), ef | 0x04); // bit2 SET
+        eprintln!(
+            "Phase 2 seed: active_flags 0x{af:02X} -> 0x{:02X}, \
+             event_flags 0x{ef:02X} -> 0x{:02X}",
+            af & !0x08,
+            ef | 0x04,
+        );
+    }
+    chain.step_ticks(50_000_000);
+
+    let post_stdby = read_diag_block(&chain, i_main0);
+    let af_post_stdby = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let ef_post_stdby = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x07E));
+    eprintln!(
+        "Phase 2 result: diag={post_stdby:02X?}, \
+         active_flags=0x{af_post_stdby:02X}, event_flags=0x{ef_post_stdby:02X}"
+    );
+    assert_eq!(
+        post_stdby[2], 1,
+        "diag_s (0x2E7) must be 1 after shutdown-branch dispatch; got 0x{:02X}",
+        post_stdby[2],
+    );
+    assert_eq!(
+        post_stdby[3], 0,
+        "diag_b (0x2E8) must still be 0 after shutdown-branch dispatch \
+         (no bring-up yet); got 0x{:02X}",
+        post_stdby[3],
+    );
+    assert_eq!(
+        ef_post_stdby & 0x04,
+        0,
+        "event_flags.bit2 must be CLEAR after dispatch consumed the event; \
+         got 0x{:02X}",
+        ef_post_stdby,
+    );
+
+    // ----- Phase 3: bring-up branch (gate open + event pending) -----
+    // Equivalent firmware-driven sequence:
+    //   `wake_request_handler` (`asm:1873+`) processes `B0/03/01`,
+    //   observes gate currently CLOSED (just closed by STDBY in
+    //   Phase 2), sets event_flags.bit2 AND active_flags.bit3.
+    //   Post-handler state is exactly what we seed below.
+    // The next pass through `standby_event_dispatch` should:
+    //   1. See event_flags.bit2 set → not skip
+    //   2. See active_flags.bit3 SET → take the bring-up branch
+    //   3. `diag_inc_sat diag_b` (0x2E8 → 1)
+    //   4. Call `adc_boot_gate` for rail-rise wait
+    //   5. Clear event_flags.bit2
+    {
+        let af = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0x05E));
+        chain.cores[i_main0]
+            .memory
+            .write_raw(Address::from_raw(0x05E), af | 0x08); // bit3 SET (gate open)
+        let ef = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0x07E));
+        chain.cores[i_main0]
+            .memory
+            .write_raw(Address::from_raw(0x07E), ef | 0x04); // bit2 SET
+        eprintln!(
+            "Phase 3 seed: active_flags 0x{af:02X} -> 0x{:02X}, \
+             event_flags 0x{ef:02X} -> 0x{:02X}",
+            af | 0x08,
+            ef | 0x04,
+        );
+    }
+    chain.step_ticks(50_000_000);
+
+    let post_wake = read_diag_block(&chain, i_main0);
+    let af_post_wake = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let ef_post_wake = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x07E));
+    eprintln!(
+        "Phase 3 result: diag={post_wake:02X?}, \
+         active_flags=0x{af_post_wake:02X}, event_flags=0x{ef_post_wake:02X}"
+    );
+    assert_eq!(
+        post_wake[2], 1,
+        "diag_s (0x2E7) must still be 1 after bring-up-branch dispatch \
+         (no extra STDBY); got 0x{:02X}",
+        post_wake[2],
+    );
+    assert_eq!(
+        post_wake[3], 1,
+        "diag_b (0x2E8) must be 1 after bring-up-branch dispatch; got 0x{:02X}",
+        post_wake[3],
+    );
+    // Note: we do NOT assert event_flags.bit2 cleared here.  The
+    // bring-up branch calls `adc_boot_gate` *before* reaching the
+    // 47aa "consume event" merge point.  `adc_boot_gate` is the
+    // rail-rise blocking wait (`asm:5081+`) which can hold the CPU
+    // for tens of millions of ticks before returning -- in this
+    // single-MAIN harness without a coupled CONTROL feeding boot
+    // signals, it can stay there indefinitely.  diag_b incrementing
+    // is sufficient evidence the bring-up branch was taken; the
+    // event-consume bookkeeping is a downstream side-effect.
+
+    eprintln!(
+        "P3.8a OK: baseline={:02X?}, post-shutdown={:02X?}, post-bring-up={:02X?}",
+        baseline, post_stdby, post_wake,
+    );
+}
+
+/// P3.8b (symptom-equivalent, not bit-exact) — RIGHT MAIN held in
+/// reset → CONTROL stuck in `Waiting for DLCP`.
+///
+/// Mirrors the asymmetric-wake field bug observed on real DLCP rig
+/// 2026-04-27 (filed as task #45; see findings doc §7.2.B): after a
+/// STDBY/wake cycle, only LEFT MAIN re-enumerated; RIGHT MAIN never
+/// came back; CONTROL sat in `Waiting for DLCP` indefinitely.  This
+/// test does NOT model the hardware *cause* (PSU/inrush/wake-pin-
+/// skew is out of scope) -- it only models the *symptom* by holding
+/// MAIN1 in reset for the entire run via `Chain::hold_core_in_reset`
+/// (the MCLR-pin-held-low primitive landed in P3.8b-prereq, task
+/// #47).  CONTROL + MAIN0 boot normally; without MAIN1 forwarding
+/// the ring is broken and CONTROL falls into the WAITING state.
+#[test]
+fn right_main_held_in_reset_control_stuck_in_waiting() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    // HD44780 slave coupled to CONTROL so we can assert the LCD
+    // raster shows `Waiting for DLCP`.
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+
+    // **Hold MAIN1 in reset for the entire run.**  This is the
+    // load-bearing setup line: with MAIN1 not stepping, the ring
+    // edge `MAIN1 -> CONTROL` carries zero bytes, CONTROL never
+    // receives a heartbeat reply, and V1.71's reconnect-wake
+    // counter eventually expires into the `Waiting for DLCP`
+    // screen.  Models real hardware where RIGHT MAIN failed to
+    // re-enumerate after STDBY/wake.
+    chain.hold_core_in_reset(i_main1);
+
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    // V1.71 CONTROL reads its 6 button inputs as ACTIVE-LOW pins
+    // on RA1/RA2/RA3/RA4 (SELECT/DOWN/STBY/RIGHT) and RC0/RC5
+    // (UP/LEFT).  Default PORTA/PORTC = 0 reads "all buttons
+    // pressed" -> STBY screen.  Seed 0xFF so the operator's
+    // "no button held" state is the default.
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+
+    const EXPECTED_LINE1: &str = "Waiting for DLCP";
+
+    // Diagnostic stepping: 8 x 250M-tick chunks = 2 B ticks total.
+    // The bit-exact LCD parity test converges to `Volume:-17.0dB A`
+    // within ~5 B ticks on a complete chain; we expect WAITING to
+    // surface within similar bounds because V1.71 writes
+    // `Waiting for DLCP` to the LCD *immediately* on entry to the
+    // wait loop at `dlcp_control_v171.asm:4657`, before the
+    // ~10 s grace counter even starts.  Stale chunks log LCD
+    // state so a failed convergence shows where CONTROL parked.
+    let mut converged = false;
+    for chunk in 0..8 {
+        chain.step_ticks(250_000_000);
+        let lcd = &chain.lcd_slaves[i_lcd];
+        eprintln!(
+            "P3.8b chunk {chunk}: tick={}, LCD line1={:?}, line2={:?}",
+            chain.current_tick,
+            lcd.line1(),
+            lcd.line2(),
+        );
+        if lcd.line1() == EXPECTED_LINE1 {
+            converged = true;
+            break;
+        }
+    }
+    eprintln!("P3.8b converged={converged}");
+
+    let lcd = &chain.lcd_slaves[i_lcd];
+    assert_eq!(
+        lcd.line1(),
+        EXPECTED_LINE1,
+        "CONTROL LCD line 1 must read `Waiting for DLCP` when MAIN1 \
+         is held in reset.  Full LCD state: line1={:?}, line2={:?}.  \
+         If this fails: either the WAITING-budget timed out (extend \
+         the run_until ceiling) or MAIN0 is somehow keeping CONTROL's \
+         heartbeat happy without MAIN1's forwarding (chain ring \
+         coupling regression -- check `couple_uart` edges).",
+        lcd.line1(),
+        lcd.line2(),
+    );
+
+    // Sanity: assert MAIN1 truly never advanced.
+    let main1_cycles = chain.cores[i_main1].cycles();
+    assert_eq!(
+        main1_cycles, 0,
+        "MAIN1 should be held in reset and never advance cycles; \
+         got cycles={main1_cycles}.  If non-zero, the MCLR-held-low \
+         gate in `Chain::execute_core_step` is leaking instructions \
+         past the gate -- regression in task #47."
+    );
+
+    // Sanity: MAIN0 + CONTROL did make forward progress.
+    assert!(
+        chain.cores[i_main0].cycles() > 0,
+        "MAIN0 should still advance; reset-hold should be MAIN1-only"
+    );
+    assert!(
+        chain.cores[i_ctl].cycles() > 0,
+        "CONTROL should still advance; reset-hold should be MAIN1-only"
+    );
+
+    eprintln!(
+        "P3.8b OK: ctl_cycles={}, main0_cycles={}, main1_cycles={} \
+         (held), LCD line1={:?}, line2={:?}",
+        chain.cores[i_ctl].cycles(),
+        chain.cores[i_main0].cycles(),
+        chain.cores[i_main1].cycles(),
+        lcd.line1(),
+        lcd.line2(),
+    );
+}
+
+/// P3.8c (symptom-equivalent, not bit-exact) — STDBY button press
+/// while CONTROL is in WAITING does NOT emit a STDBY frame on
+/// CONTROL.TX.
+///
+/// Mirrors the second-STDBY-press observation from the
+/// 2026-04-27 hardware session: with CONTROL stuck in
+/// `Waiting for DLCP` after the asymmetric wake (only LEFT MAIN
+/// re-enumerated), a subsequent STDBY press from the front panel
+/// produced *no response* — neither LCD change nor incremented
+/// counters on LEFT MAIN's cmd 0x44 (`S` did not bump), proving
+/// CONTROL never propagated a STDBY frame.  See findings doc
+/// §7.2.C and §6 for the trace.
+///
+/// Test setup builds on P3.8b: 3-core ring with MAIN1 held in
+/// reset → CONTROL converges to `Waiting for DLCP`.  We then
+/// inject an RA3 button press (active-low STDBY button per
+/// `dlcp_control_v171.asm:1968`), wait through the 4-tick
+/// debounce, release the pin, and capture CONTROL's TX byte
+/// stream during the post-press window.  Assertion: no
+/// `B0/03/0x` triplet appears (the panel STDBY route at
+/// `dlcp_control_v171.asm:2702-2718` `standby_wake_broadcast`).
+///
+/// Codex review of the test plan (see findings doc §9
+/// HIGH/MEDIUM items): the original Test C draft used the
+/// wrong frame `B1/3A/00` (which is the RC5 IR endpoint, not the
+/// panel-button serial frame); the corrected `B0/03/0x` frame is
+/// what `standby_wake_broadcast` actually emits.  The 3-way
+/// diagnostic shape (UART byte stream + debounce-cells +
+/// CONNECTED flag) was suggested to also classify whether the
+/// gate is structural or soft; we retain only the byte-stream
+/// assertion here because a structural gate is already implied
+/// by the V1.71 source: `reconnect_wait_loop` deliberately
+/// honours only RIGHT (RC5) and LEFT (RA4) presses for soft
+/// reset (`dlcp_control_v171.asm:5028-5032`), excluding STDBY
+/// (RA3 → bit 0 of `0x9A`).  A future stronger probe could
+/// snapshot `0x9A` / `0x0BE` / `0x01F.bit1` to decode the
+/// gate's nature explicitly.
+#[test]
+fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.hold_core_in_reset(i_main1);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    // Seed CONTROL PORTA/PORTC = 0xFF (all buttons released).
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+
+    const EXPECTED_LINE1: &str = "Waiting for DLCP";
+
+    // Step until CONTROL reaches WAITING (same convergence
+    // mechanism as P3.8b — typically chunk 0 succeeds).
+    let mut converged = false;
+    for _ in 0..8 {
+        chain.step_ticks(250_000_000);
+        if chain.lcd_slaves[i_lcd].line1() == EXPECTED_LINE1 {
+            converged = true;
+            break;
+        }
+    }
+    assert!(
+        converged,
+        "P3.8c precondition failed: CONTROL did not reach `Waiting for DLCP` \
+         within budget (final LCD: line1={:?}, line2={:?}).  \
+         If P3.8b passes but P3.8c fails here, the chunked-step \
+         convergence is timing-sensitive — extend the budget.",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2(),
+    );
+
+    // Snapshot CONTROL.TX history length BEFORE the button
+    // press so we can scan only the post-press window.
+    let pre_press_history = chain.uart_tx_history.len();
+
+    // Inject STDBY button press by driving RA3 LOW.  Per
+    // `dlcp_control_v171.asm:1968`:
+    //   "0x027.bit0 = RA3 (Standby) ... active LOW"
+    // V1.71's `button_scan_debounce` requires the press to
+    // be stable across 4 polls (`asm:1965 "4-tick stability
+    // counter at 0x0BB"`).  Hold RA3 LOW for 50 M ticks
+    // (~3 M Tcy ≈ 50 ms wall) -- well past 4 button-scan
+    // intervals -- then release.
+    chain.set_pin_low(i_ctl, dlcp_sim::pinnet::PortLetter::A, 3);
+    chain.step_ticks(50_000_000);
+    chain.set_pin_high(i_ctl, dlcp_sim::pinnet::PortLetter::A, 3);
+    chain.step_ticks(100_000_000);
+
+    // Scan the post-press window for any CONTROL.TX byte that
+    // could be part of a `B0/03/0x` STDBY/wake/mute broadcast
+    // frame.  The frame is exactly 3 bytes: route=0xB0, cmd=0x03,
+    // data ∈ {0x00, 0x01, 0x02, 0x03}.  Two failure shapes
+    // matter:
+    //   (a) CONTROL emitted a STDBY broadcast (the gate didn't
+    //       hold) — flagged by `B0/03/00` or `B0/03/01`
+    //       appearing in the slice.
+    //   (b) CONTROL emitted ANY new B0-prefixed frame, hinting
+    //       at a different leak from WAITING.
+    let post_press: Vec<u8> = chain
+        .uart_tx_history
+        .iter()
+        .skip(pre_press_history)
+        .filter(|r| r.src_core == i_ctl)
+        .map(|r| r.byte)
+        .collect();
+    eprintln!("P3.8c post-press CONTROL.TX bytes: {post_press:02X?}");
+
+    let stdby_frame_pos = post_press.windows(3).position(|w| {
+        w[0] == 0xB0 && w[1] == 0x03 && (w[2] == 0x00 || w[2] == 0x01)
+    });
+    assert!(
+        stdby_frame_pos.is_none(),
+        "CONTROL emitted a panel STDBY broadcast frame `B0/03/0x` while in \
+         WAITING -- gate leaked.  Post-press CONTROL.TX = {post_press:02X?}.  \
+         V1.71 source `dlcp_control_v171.asm:5028-5032` deliberately gates \
+         RA3 (STDBY) out of the WAITING-loop soft-reset path; this assertion \
+         locks in that contract."
+    );
+
+    // LCD must still read `Waiting for DLCP` (the gate hasn't
+    // released CONTROL into a different screen).
+    let lcd_after = &chain.lcd_slaves[i_lcd];
+    assert_eq!(
+        lcd_after.line1(),
+        EXPECTED_LINE1,
+        "CONTROL LCD must still read `Waiting for DLCP` after the gated \
+         STDBY press; got line1={:?}, line2={:?}",
+        lcd_after.line1(),
+        lcd_after.line2(),
+    );
+
+    eprintln!(
+        "P3.8c OK: gate held STDBY press; CONTROL.TX post-press bytes = {} \
+         (none matching B0/03/0x); LCD still {:?}",
+        post_press.len(),
+        lcd_after.line1(),
+    );
+}
+
+/// P3.8d (symptom-equivalent, not bit-exact) — CONTROL diag cache
+/// is structurally decoupled from MAIN runtime-counter RAM.
+///
+/// Encodes the cmd 0x44 vs LCD cell mismatch observed on real
+/// hardware 2026-04-27 (see findings doc §4 + task #44): both
+/// MAINs reported `Runtime: I0 D0 S0 B0 R0 A0 P0` via cmd 0x44,
+/// but the CONTROL LCD showed substantial Overflow content on
+/// PB1/PB2 Diag pages.  The hypothesis is that CONTROL's PB1/PB2
+/// diag cache cells (`v171_diag_pb1_*` at 0x180+ and
+/// `v171_diag_pb2_*` at 0x18B+ per `src/dlcp_fw/asm/dlcp_control_ram.inc`)
+/// can hold values that DON'T track MAIN's BANK 2 counters,
+/// because they are independent RAM (not aliased) and CONTROL
+/// only updates them when BF/2N reply frames land.  Random
+/// post-POR garbage in cache cells, partial overwrites, or just
+/// stale snapshots can produce the divergence.
+///
+/// This test does NOT model the *cause* (randomized POR RAM-init
+/// is out of scope); it locks in the *contract* that the cells
+/// are independent so a future regression that aliased them
+/// (or that injected MAIN counter writes into CONTROL cache) would
+/// surface here.
+#[test]
+fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+
+    // Two-core chain (CONTROL + MAIN0) so MAIN0 boots and
+    // populates its BANK 2 cells normally; we don't need MAIN1
+    // for this contract probe.
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF);
+
+    // Boot until DSP-init complete -- ensures MAIN0 reaches
+    // its periodic main-service loop and would have populated
+    // its BANK 2 diag block had any standby/wake transitions
+    // occurred (none have, so cells stay zero on the runtime
+    // axis).
+    chain.run_until(
+        10_000_000,
+        5_000_000_000,
+        |c| c.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
+    );
+
+    // V1.71 CONTROL diag cache cells (BANK 1, physical 0x180+
+    // per `dlcp_control_ram.inc:239-258`).  Layout:
+    //   0x180 = v171_diag_pb1_i  (PB1 idle counter cache)
+    //   0x181 = v171_diag_pb1_d  (DSP refresh)
+    //   0x182 = v171_diag_pb1_s  (standby)
+    //   0x183 = v171_diag_pb1_b  (bring-up)
+    //   0x184 = v171_diag_pb1_r  (reset)
+    //   0x185 = v171_diag_pb1_a  (audio mute)
+    //   0x186 = v171_diag_pb1_p  (preset)
+    //   0x187..0x18A = PB1 reset-cause flag cache
+    //   0x18B..0x191 = PB2 runtime cache
+    //   0x192..0x195 = PB2 reset-cause flag cache
+    const PB1_CACHE_BASE: u16 = 0x180;
+    const PB2_CACHE_BASE: u16 = 0x18B;
+
+    // Phase 1: MAIN BANK 2 runtime cells (`diag_i..diag_p` at
+    // 0x2E5..0x2EB) must be zero on the standby axis — no
+    // STDBY/wake events happened, so `diag_s` and `diag_b`
+    // are 0.  This pins MAIN's view of "no runtime activity".
+    let main_diag_s = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E7));
+    let main_diag_b = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E8));
+    assert_eq!(
+        main_diag_s, 0,
+        "MAIN BANK 2 diag_s (0x2E7) must be 0 with no standby events; got 0x{main_diag_s:02X}"
+    );
+    assert_eq!(
+        main_diag_b, 0,
+        "MAIN BANK 2 diag_b (0x2E8) must be 0 with no wake events; got 0x{main_diag_b:02X}"
+    );
+
+    // Phase 2: seed CONTROL's PB1 + PB2 cache cells with V1.71
+    // Tier-1 Overflow encoding values.  Per
+    // `docs/V163B_DIAGNOSTICS_MENU_SPEC.md`:
+    //   ' '  = 0    (cell empty)
+    //   '1'..'9' = 1..9
+    //   'A'..'E' = 10..14
+    //   '+'  = 15+ (saturating)
+    // We pick values that match the hardware capture
+    //   PB1: I+ D1 SE B4  RA A3 O8 V6 W+..
+    //   PB2: I+ D  S+ B   R+ A9  P  OB W9..
+    let pb1_seed: [u8; 7] = [0x0F, 0x01, 0x0E, 0x04, 0x0A, 0x03, 0x08]; // I D S B R A P
+    let pb2_seed: [u8; 7] = [0x0F, 0x00, 0x0F, 0x00, 0x0F, 0x09, 0x00];
+    for (i, &v) in pb1_seed.iter().enumerate() {
+        chain.cores[i_ctl]
+            .memory
+            .write_raw(Address::from_raw(PB1_CACHE_BASE + i as u16), v);
+    }
+    for (i, &v) in pb2_seed.iter().enumerate() {
+        chain.cores[i_ctl]
+            .memory
+            .write_raw(Address::from_raw(PB2_CACHE_BASE + i as u16), v);
+    }
+
+    // Phase 3: assert MAIN's BANK 2 was NOT touched by the
+    // CONTROL writes.  This is the load-bearing structural
+    // contract: CONTROL cache and MAIN runtime cells live at
+    // disjoint RAM addresses (different cores, different
+    // memory images).  A regression that accidentally aliased
+    // them (e.g., a misimplemented HID handler that wrote
+    // CONTROL bytes into MAIN's RAM, or a peripheral mirror
+    // bug) would surface here as a non-zero MAIN diag_s/diag_b.
+    let main_diag_s_after = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E7));
+    let main_diag_b_after = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E8));
+    assert_eq!(
+        main_diag_s_after, 0,
+        "MAIN BANK 2 diag_s (0x2E7) must remain 0 after seeding CONTROL \
+         cache (independent RAM); got 0x{main_diag_s_after:02X}.  Aliasing \
+         regression?"
+    );
+    assert_eq!(
+        main_diag_b_after, 0,
+        "MAIN BANK 2 diag_b (0x2E8) must remain 0 after seeding CONTROL \
+         cache (independent RAM); got 0x{main_diag_b_after:02X}"
+    );
+
+    // Phase 4: assert the seeded values are still in CONTROL's
+    // RAM (writes landed in BANK 1 as expected).  This catches
+    // a bug where the write went into the wrong core or got
+    // overwritten by an unrelated routine.
+    for (i, &v) in pb1_seed.iter().enumerate() {
+        let actual = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(PB1_CACHE_BASE + i as u16));
+        assert_eq!(
+            actual, v,
+            "CONTROL PB1 cache cell at 0x{:03X} must hold seeded 0x{:02X}; got 0x{:02X}",
+            PB1_CACHE_BASE + i as u16, v, actual
+        );
+    }
+    for (i, &v) in pb2_seed.iter().enumerate() {
+        let actual = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(PB2_CACHE_BASE + i as u16));
+        assert_eq!(
+            actual, v,
+            "CONTROL PB2 cache cell at 0x{:03X} must hold seeded 0x{:02X}; got 0x{:02X}",
+            PB2_CACHE_BASE + i as u16, v, actual
+        );
+    }
+
+    eprintln!(
+        "P3.8d OK: CONTROL diag cache (PB1+PB2 cells at 0x180..0x191) decoupled \
+         from MAIN BANK 2 runtime (diag_i..diag_p at 0x2E5..0x2EB).  \
+         Hardware-observed mismatch (task #44) reproduces as the consequence: \
+         CONTROL LCD renders cache values, which can desync from MAIN counters."
+    );
+}
+
 /// V3.1 + V1.71 chain reaches its first UART TX byte across
 /// the current loop.  This is the P3.5 *minimum-viable*
 /// acceptance milestone: end-to-end demonstration that the

@@ -528,6 +528,23 @@ impl Chain {
     /// tick boundary derived from
     /// [`ClockDomain::apply_drift`].
     pub fn execute_core_step(&mut self, core_idx: usize) {
+        // MCLR-held-low gate: when the core's MCLR pin is held
+        // LOW (modeled as `Core::mclr_held = true`), silicon's
+        // CPU draws no clocks and PC stays put.  Skip the
+        // instruction body AND drop the core from the event
+        // queue (do NOT re-schedule).  Re-scheduling at the
+        // current tick would create a tight loop (the next
+        // tick computation uses `cycles()` which stays 0 while
+        // held, so the same absolute tick keeps being re-pushed,
+        // burning wall time without advancing simulation
+        // time).  After `release_core_from_reset`, the test
+        // harness must re-prime the schedule (typically via
+        // `schedule_initial_steps` or by writing
+        // `Core::cycles` then calling `schedule_next_core_step`
+        // explicitly).  Task #47.
+        if self.cores[core_idx].mclr_held {
+            return;
+        }
         let core = &mut self.cores[core_idx];
         let stack = &mut self.stacks[core_idx];
         // Best-effort: errors propagate as a panic for
@@ -542,6 +559,25 @@ impl Chain {
         self.dispatch_i2c_to_coupled_slaves(core_idx);
         self.dispatch_lcd_pins_to_coupled_slaves(core_idx);
         self.schedule_next_core_step(core_idx);
+    }
+
+    /// Hold a core's MCLR pin LOW: the core's CPU stops
+    /// stepping until released, but the rest of the chain
+    /// continues running.  Used to model the
+    /// "MAIN1 never wakes from STDBY" symptom observed on
+    /// real hardware (task #45) without faking it through a
+    /// debug pause hook.  See `Core::mclr_held`.
+    pub fn hold_core_in_reset(&mut self, core_idx: usize) {
+        self.cores[core_idx].mclr_held = true;
+    }
+
+    /// Release a core's MCLR pin (HIGH).  Resumes stepping at
+    /// the core's current PC -- to fully re-bootstrap (PC ←
+    /// reset vector, peripherals re-initialised) the test
+    /// harness should additionally call `apply_reset_all` or
+    /// the per-core variant.
+    pub fn release_core_from_reset(&mut self, core_idx: usize) {
+        self.cores[core_idx].mclr_held = false;
     }
 
     /// Sample the controller core's LCD-driving pins and

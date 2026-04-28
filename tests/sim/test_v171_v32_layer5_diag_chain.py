@@ -189,15 +189,26 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # both queries, MAIN0 emits the full 7-frame reply burst, MAIN1
 # forwards the BF/27/00 frame to CONTROL.RX cleanly (no OERR), but
 # CONTROL never successfully processes BF/27 through the BF/2N
-# last-frame path.  No real-hardware test currently validates PB2
-# reply convergence (the existing Layer 5 hardware test only checks
-# LCD render).  So the bridge-mirror diagnosis is invalidated as
-# the *sole* cause: the residual PB2 saturation may be a latent
-# V1.71 firmware behavior that has never been exercised on real
-# silicon either, or it may be a shared timing/electrical fidelity
-# gap that both simulators have.  Resolution requires hardware
-# evidence -- see `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b for
-# the proposed hardware-test extension.
+# last-frame path.
+#
+# HARDWARE RESULT (2026-04-27): Path 1 hardware probe ran on the
+# real DLCP rig (V1.71 CONTROL + V3.2 MAIN0 + V3.2 MAIN1, both MAINs
+# healthy via cmd 0x44 USB diag).  Operator navigated CONTROL to
+# PB1 Diag (state 4) and PB2 Diag (state 5); LCD camera captures
+# show:
+#   PB1: I+ D1 SE B4 / RA A3 O8 V6 W+..   (Overflow layout, cells)
+#   PB2: I+ D  S+ B  / R+ A9  P  OB W9..  (Overflow layout, cells)
+# Both pages have the `PBn:` colon prefix -> per V1.71 Tier-1 layout
+# spec `v171_diag_present.bit_n = 1` on real silicon -> BOTH BF/2N
+# reply convergences work on real hardware.  V1.71 firmware is
+# therefore CORRECT; the residual PB2 saturation in BOTH simulators
+# (gpsim Python harness AND Rust silicon-correct ring) is a SHARED
+# sim fidelity gap, most likely timing/electrical/clock-domain.
+# This XFAIL marker stays in place until the sim gap is closed --
+# see `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b for open hypotheses
+# (clock-domain skew, UART RX bit-timing margin, transient OERR in
+# sim that silicon does not exhibit, BANK 2 RAM aliasing, RXIF
+# latency model).
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
         "Bytes flow through every wire-chain bridge (verified by canary "

@@ -137,6 +137,17 @@ pub struct Core {
     /// concern; this struct just owns the staging.  Default
     /// all-`0xFF` (silicon erased).  Task #17.
     pub tblwt_holding: [u8; TBLWT_HOLDING_SIZE],
+    /// MCLR-held-low gate.  When `true`, `Chain::execute_core_step`
+    /// short-circuits before the instruction body runs -- the core's
+    /// PC, cycles, and peripheral state are frozen, but scheduling
+    /// for other cores continues.  Models the silicon behaviour of a
+    /// PIC18 with its MCLR pin held LOW: the CPU is in reset, drawing
+    /// no clocks, while the rest of the chain runs.  Used by P3.8b's
+    /// "MAIN1 never wakes" probe to model the asymmetric-wake field
+    /// bug filed as task #45 without inventing an artificial
+    /// `pause_core` debug hook.  Default `false` (core runs).
+    /// Task #47 (P3.8b-prereq).
+    pub mclr_held: bool,
 }
 
 /// Size of the TBLWT staging buffer.  Both supported variants
@@ -174,6 +185,7 @@ impl Core {
             config: Config::from_bytes([0u8; 14]),
             user_id: [0xFF; 8],
             tblwt_holding: [0xFF; TBLWT_HOLDING_SIZE],
+            mclr_held: false,
         }
     }
 
