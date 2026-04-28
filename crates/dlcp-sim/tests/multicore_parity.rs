@@ -1110,6 +1110,18 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x0688, 0x0690, "BF/2B body inner (col==10 path)");
         probe.add_pc_range(0x0690, 0x0692, "bcf RESET_PENDING SINGLE");
         probe.add_pc_range(0x0692, 0x0694, "exit_bsr0 ENTRY (movlb 0)");
+        // P3.6b research step 5 (task #66): cadence-loop
+        // probes to investigate why PB2 query never fires
+        // even with the watchdog intervention enabled.
+        probe.add_pc_range(0x1514, 0x1516, "v171_diag_loop ENTRY");
+        probe.add_pc_range(0x152A, 0x152C, "v171_diag_send_now ENTRY (poll==0)");
+        probe.add_pc_range(0x153E, 0x1540, "v171_diag_check_reset_seen ENTRY");
+        probe.add_pc_range(0x155A, 0x155C, "v171_diag_send_runtime_only ENTRY");
+        probe.add_pc_range(0x15F0, 0x15F2, "v171_diag_send_runtime_query ENTRY");
+        probe.add_pc_range(0x15F4, 0x15F6, "v171_diag_send_reset_query ENTRY");
+        probe.add_pc_range(0x12CC, 0x12CE, "v171_diag_pb_screen ENTRY");
+        probe.add_pc_range(0x0E1A, 0x0E1C, "display_loop_iteration ENTRY");
+        probe.add_pc_range(0x1D0C, 0x1D0E, "main_event_loop ENTRY");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
@@ -1162,8 +1174,16 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_watched_ram(0x098, "rx_ring_rd", initial_ring_rd);
         probe.add_watched_ram(0x099, "rx_ring_wr", initial_ring_wr);
         probe.add_watched_ram(0x0AC, "v171_rx_frame_gap_timeout", initial_gap_timeout);
+        let initial_poll_lo = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x198));
+        let initial_poll_hi = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x199));
         probe.add_watched_ram(0x196, "v171_diag_target", initial_target);
         probe.add_watched_ram(0x197, "v171_diag_present", initial_present);
+        probe.add_watched_ram(0x198, "v171_diag_poll_lo", initial_poll_lo);
+        probe.add_watched_ram(0x199, "v171_diag_poll_hi", initial_poll_hi);
         probe.add_watched_ram(0x19C, "v171_diag_flags", initial_flags);
         probe.add_watched_ram(0x19D, "v171_diag_reset_seen", initial_reset_seen);
         chain.cores[i_ctl].cycle_probe = Some(probe);
@@ -1702,9 +1722,18 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // PENDING bits stay set, target trajectory `[00]`).
     // Smaller budget = faster iteration when
     // investigating root cause.
+    // P3.6b research step 5 (task #66): extend the
+    // post-sampler budget from 2G to 8G ticks so that, with
+    // the step-4 watchdog intervention enabled, we have
+    // ~50 polling cycles past the PB1 dispatch point for
+    // PB2 to converge.  Test wall time scales linearly --
+    // ~80 s previously, ~5-6 min with this budget --
+    // acceptable for a research probe.  If PB2 still
+    // doesn't converge in this window, there's a second
+    // root cause beyond the watchdog.
     chain.run_until(
         50_000_000, // 50 M = ~350 ms wall per chunk
-        2_000_000_000,
+        8_000_000_000,
         |c| c.cores[i_ctl].memory.read_raw(Address::from_raw(DIAG_PRESENT_RAM)) == 0x03,
     );
 
