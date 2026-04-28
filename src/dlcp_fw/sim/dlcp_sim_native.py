@@ -330,5 +330,104 @@ class Chain:
         """
         self._inner.press(str(key))
 
+    def read_reg(self, addr: int) -> int:
+        """Read a single byte of CONTROL's data memory at
+        the given physical address.  Mirror of
+        ``control_gpsim.py::GpsimControlHarness.read_reg``.
+        Common addresses: 0x01F (control_flags), 0x0BF
+        (display_state_index), 0x0B8 (input_select_cache),
+        0x0B9 (volume_cache).
+        """
+        return int(self._inner.read_reg(int(addr) & 0xFFF))
+
+    def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
+        """Inject a 3-byte chain frame directly into
+        CONTROL's RX ring buffer.  Mirror of
+        ``control_gpsim.py::GpsimControlHarness.inject_triplet``.
+
+        Two call shapes (gpsim-compat duck typing):
+
+          * Single object with ``.route`` / ``.cmd`` /
+            ``.data`` attributes (e.g. an ``RxTriplet`` /
+            ``TxTriplet`` from ``control_gpsim.py``); same
+            shape gpsim's ``inject_triplet`` accepts.
+          * Three positional ints: ``inject_triplet(route,
+            cmd, data)``.
+
+        Returns True on success, False if the ring buffer
+        was too full.
+        """
+        if cmd is None and data is None:
+            # Object-with-attrs form (gpsim-compat).
+            triplet = frame_or_route
+            route_val = triplet.route
+            cmd_val = triplet.cmd
+            data_val = triplet.data
+        else:
+            route_val = frame_or_route
+            cmd_val = cmd
+            data_val = data
+        return bool(self._inner.inject_triplet(
+            int(route_val) & 0xFF,
+            int(cmd_val) & 0xFF,
+            int(data_val) & 0xFF,
+        ))
+
+    def inject_host_command(
+        self, *, cmd: int, data: int, route: int = 0xBF
+    ) -> bool:
+        """Inject a host command (HFD-over-BF) into
+        CONTROL's RX ring buffer.  Mirror of
+        ``control_gpsim.py::GpsimControlHarness.inject_host_command``.
+        Default route is 0xBF (the parser dispatch tag).
+        Returns True on success, False if the ring buffer
+        was too full.
+        """
+        return bool(self._inner.inject_host_command(
+            int(cmd) & 0xFF, int(data) & 0xFF, int(route) & 0xFF
+        ))
+
+    def inject_decoded_ir_event(
+        self, *, addr: int, cmd: int, clear_debounce: bool = True
+    ) -> None:
+        """Inject a decoded IR event through the ISR
+        handoff cells (0x01D = decoded cmd, 0x01E = decoded
+        addr) and clear ``control_flags.IR_ARMED``.  Mirror
+        of
+        ``control_gpsim.py::GpsimControlHarness.inject_decoded_ir_event``.
+        Bypasses RB5 IR-waveform decoding.
+        """
+        self._inner.inject_decoded_ir_event(
+            int(addr) & 0xFF,
+            int(cmd) & 0xFF,
+            bool(clear_debounce),
+        )
+
+    def tx_frames(self) -> list[tuple[int, int, int]]:
+        """Snapshot CONTROL's TX byte history as a list of
+        3-byte ``(route, cmd, data)`` tuples (frame-
+        aligned; trailing partial frame truncated).  Mirror
+        of
+        ``control_gpsim.py::GpsimControlHarness.tx_frames``.
+        """
+        return [tuple(t) for t in self._inner.tx_frames()]  # type: ignore[misc]
+
+    def step(self) -> None:
+        """Step a single 200K-Tcy / 3.2 M-tick chunk.
+        Mirror of gpsim's ``step()`` cadence.  Used by the
+        ``test_v17_shifted_full_parity`` scenario helpers.
+        """
+        self._inner.step()
+
+    def warmup(self, cycles: int) -> None:
+        """Step ``cycles`` K20-Tcy worth of universal
+        ticks (each Tcy = 16 universal ticks).  Mirror of
+        ``control_gpsim.py::GpsimControlHarness.warmup``.
+        Used by the parity-test helpers to advance past
+        the cold-boot handshake before driving the
+        scenario.
+        """
+        self._inner.warmup(int(cycles))
+
 
 __all__ = ["Chain", "__version__"]

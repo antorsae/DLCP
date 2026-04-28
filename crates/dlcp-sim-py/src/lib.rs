@@ -633,6 +633,167 @@ impl Chain {
         self.inner.step_ticks(BUTTON_RELEASE_SETTLE_TICKS);
         Ok(())
     }
+
+    /// Read a single byte of CONTROL's data memory at the
+    /// given physical address (e.g. 0x01F = control_flags,
+    /// 0x0BF = display_state_index, 0x0B8 = input_select_
+    /// cache, 0x0B9 = volume_cache).  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.read_reg`.
+    /// `addr` is interpreted as a raw 12-bit physical
+    /// address; the caller is responsible for resolving
+    /// any banking / Access-Bank translation.
+    fn read_reg(&self, addr: u16) -> u8 {
+        self.inner.cores[self.i_ctl]
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(addr))
+    }
+
+    /// Inject a 3-byte chain frame directly into CONTROL's
+    /// RX ring buffer (V1.6b/V1.7/V1.71 layout: ring base
+    /// at physical 0x066, parser-consumer index at 0x098,
+    /// ISR-producer index at 0x099, depth 48 bytes per
+    /// `dlcp_control_ram.inc`).  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.inject_triplet`
+    /// (ultimately routes through `_inject_rx_bytes`).
+    /// Returns True if the bytes were enqueued, False if
+    /// the ring was too full.  The firmware's parser will
+    /// pick them up on the next idle scan -- callers
+    /// should `step_many` or `step_ticks` afterwards to
+    /// give the parser time to consume.
+    fn inject_triplet(&mut self, route: u8, cmd: u8, data: u8) -> bool {
+        self.inject_rx_bytes_inner(&[route, cmd, data])
+    }
+
+    /// Convenience over `inject_triplet`: V1.6b/V1.71 host-
+    /// command injection.  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.inject_host_command`.
+    /// Default route is 0xBF (the parser dispatch tag the
+    /// gpsim helper uses for HFD-over-BF host commands).
+    #[pyo3(signature = (cmd, data, route=0xBF))]
+    fn inject_host_command(&mut self, cmd: u8, data: u8, route: u8) -> bool {
+        self.inject_triplet(route, cmd, data)
+    }
+
+    /// Inject a decoded IR event through the ISR handoff
+    /// registers.  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.inject_decoded_ir_event`:
+    ///
+    ///   * Optionally clear the IR debounce cells at 0x01B
+    ///     and 0x01C (default `clear_debounce=True`).
+    ///   * Write `cmd` to 0x01D and `addr` to 0x01E (the
+    ///     decoded-IR cmd/addr ISR handoff cells).
+    ///   * Clear bit 0 of 0x01F (control_flags.IR_ARMED)
+    ///     so the foreground IR-dispatch path will run.
+    ///
+    /// Bypasses RB5 IR-waveform decoding -- this is a
+    /// pure RAM poke through the same registers gpsim
+    /// targets.  Caller is responsible for stepping
+    /// afterwards to let the dispatch fire.
+    #[pyo3(signature = (addr, cmd, clear_debounce=true))]
+    fn inject_decoded_ir_event(
+        &mut self,
+        addr: u8,
+        cmd: u8,
+        clear_debounce: bool,
+    ) {
+        let mem = &mut self.inner.cores[self.i_ctl].memory;
+        if clear_debounce {
+            mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01B), 0x00);
+            mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01C), 0x00);
+        }
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01D), cmd);
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01E), addr);
+        // Clear control_flags.IR_ARMED (bit 0 of 0x01F).
+        let flags = mem.read_raw(dlcp_sim::memory::Address::from_raw(0x01F));
+        mem.write_raw(
+            dlcp_sim::memory::Address::from_raw(0x01F),
+            flags & !0x01,
+        );
+    }
+
+    /// Snapshot CONTROL's TX byte history as a list of
+    /// 3-byte `(route, cmd, data)` tuples.  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.tx_frames`.
+    /// The chain stores per-byte records in
+    /// `uart_tx_history`; this method filters for bytes
+    /// emitted from CONTROL (`src_core == i_ctl`) and groups
+    /// every 3 consecutive bytes into a frame.  Trailing
+    /// partial frames (history length not divisible by 3)
+    /// are TRUNCATED -- gpsim's tx_frames is also frame-
+    /// aligned, and a partial frame at the wire boundary
+    /// would not yet be visible to the parser anyway.
+    fn tx_frames(&self) -> Vec<(u8, u8, u8)> {
+        let bytes: Vec<u8> = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == self.i_ctl)
+            .map(|r| r.byte)
+            .collect();
+        bytes
+            .chunks_exact(3)
+            .map(|c| (c[0], c[1], c[2]))
+            .collect()
+    }
+
+    /// Step a single 200K-Tcy / 3.2 M-tick chunk.  Mirror
+    /// of gpsim's `step()` cadence (used by the
+    /// test_v17_shifted_full_parity scenario helpers
+    /// `_press_sequence`, `_rx_sequence`, `_ir_event`).
+    fn step(&mut self) {
+        self.inner.step_ticks(V17_CHUNK_TICKS);
+    }
+
+    /// Run the chain to a CONNECTED steady-state by stepping
+    /// `cycles` Tcy worth of universal ticks.  Mirror of
+    /// `control_gpsim.py::GpsimControlHarness.warmup`.
+    /// `cycles` is in K20 instruction cycles (Tcy); each
+    /// Tcy is 16 universal ticks for the K20 core, so the
+    /// total advance is `cycles * 16` ticks.  No early-exit
+    /// predicate -- the test's _WARMUP_CYCLES (25 M Tcy =
+    /// 400 M ticks ≈ 8.3 s sim) is empirically sized to
+    /// cover both the cold-boot handshake AND a few
+    /// post-handshake polls.
+    fn warmup(&mut self, cycles: u64) {
+        self.inner.step_ticks(cycles * 16);
+    }
+}
+
+impl Chain {
+    /// Internal helper: push `bytes` (typically 3 for one
+    /// chain frame) into CONTROL's RX ring buffer.  Returns
+    /// false if the ring would overflow.  V1.6b/V1.71 ring
+    /// layout: `rx_ring_base = 0x066`,
+    /// `rx_ring_rd = 0x098`, `rx_ring_wr = 0x099`, depth
+    /// = 48 bytes.
+    fn inject_rx_bytes_inner(&mut self, bytes: &[u8]) -> bool {
+        const RX_RING_BASE: u16 = 0x066;
+        const RX_RING_RD: u16 = 0x098;
+        const RX_RING_WR: u16 = 0x099;
+        const RX_RING_DEPTH: u8 = 48;
+
+        let mem = &mut self.inner.cores[self.i_ctl].memory;
+        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD));
+        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR));
+        // Used = (wr - rd) mod depth; free = depth - used - 1
+        // (one slot reserved to distinguish empty from full,
+        // matching the V1.6b ISR's wraparound semantics --
+        // gpsim's _inject_rx_bytes uses depth-1 = 47 as the
+        // effective limit per `chain_gpsim.py:1016` rx_fifo_limit
+        // = 47).
+        let used = (wr.wrapping_sub(rd)) % RX_RING_DEPTH;
+        let free = (RX_RING_DEPTH - 1).saturating_sub(used);
+        if (bytes.len() as u8) > free {
+            return false;
+        }
+        for &byte in bytes {
+            let addr = RX_RING_BASE + (wr % RX_RING_DEPTH) as u16;
+            mem.write_raw(dlcp_sim::memory::Address::from_raw(addr), byte);
+            wr = (wr + 1) % RX_RING_DEPTH;
+        }
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR), wr);
+        true
+    }
 }
 
 #[pymodule]
