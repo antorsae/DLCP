@@ -1093,7 +1093,8 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let mut oerr_rising_edges: u32 = 0;
     let mut cren_falling_edges: u32 = 0; // 1 -> 0 = CREN-toggle recovery start
     let mut max_rx_fifo_depth: usize = 0;
-    let mut max_ring_depth: u8 = 0; // wr - rd modulo ring size
+    let mut max_ring_depth: u8 = 0; // (wr - rd + 48) mod 48
+    let mut ring_oor_chunks: u32 = 0; // chunks where rd or wr left [0, 48)
     let mut rcif_set_chunks: u32 = 0;
     let mut rcif_clear_chunks: u32 = 0;
     // P3.6b research: parser-latch transition log -- record
@@ -1193,15 +1194,33 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         if fifo_depth > max_rx_fifo_depth {
             max_rx_fifo_depth = fifo_depth;
         }
-        // SW rx_ring depth (wr - rd, wraparound modulo ring size).
+        // SW rx_ring depth: parser-side fill = (wr - rd) modulo
+        // ring size.  V1.71 RX ring is 48 bytes at 0x066..0x095
+        // (`rx_ring_base equ 0x066` with `subwf 0x99, 0x30` wrap
+        // logic in the cooperative ISR at v171.asm:817-835), so
+        // both `rx_ring_rd` and `rx_ring_wr` live in [0, 48) and
+        // depth = (wr - rd + 48) mod 48.  Using `u8::wrapping_sub`
+        // would compute mod 256 and report a false 200+-byte
+        // backlog every time `wr` wraps past 0 ahead of `rd` --
+        // codex MEDIUM from 2dbaea9.  `RING_OOR_SENTINEL` (0xFF)
+        // surfaces a pointer that escaped the [0, 48) window so a
+        // probe corruption shows up as 0xFF instead of a noisy
+        // depth value.
+        const RING_SIZE: u8 = 48;
+        const RING_OOR_SENTINEL: u8 = 0xFF;
         let ring_rd = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x098)); // rx_ring_rd
         let ring_wr = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x099)); // rx_ring_wr
-        let ring_depth = ring_wr.wrapping_sub(ring_rd);
-        if ring_depth > max_ring_depth {
+        let ring_depth = if ring_rd < RING_SIZE && ring_wr < RING_SIZE {
+            (ring_wr + RING_SIZE - ring_rd) % RING_SIZE
+        } else {
+            ring_oor_chunks += 1;
+            RING_OOR_SENTINEL
+        };
+        if ring_depth != RING_OOR_SENTINEL && ring_depth > max_ring_depth {
             max_ring_depth = ring_depth;
         }
         // P3.6b research: parser latch transitions.
@@ -1257,23 +1276,35 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
 
     // P3.6b research: pre/post-sampler diag-state snapshot
     // delta + EUSART RX flow summary + parser-latch
-    // transition log.  Distinguishes the 5 hypotheses:
-    //   - max_rx_fifo_depth always 0 + no parser cmd
-    //     transitions = bytes never enter HW FIFO (clock /
-    //     wire-coupling bug).
-    //   - rcif_set_chunks > 0 but no parser-latch motion =
-    //     ISR not draining FIFO (RXIF latency bug,
-    //     hypothesis #1).
-    //   - oerr_rising_edges > 0 = transient overrun,
-    //     hypothesis #2 (recovery via CREN toggle visible
-    //     as cren_falling_edges > 0).
-    //   - parser-latch reaches cmd=0x21..0x26 but never
-    //     0x27 = burst arrives but BF/27 last-frame byte
-    //     gets dropped/corrupted (alignment bug between
-    //     hop-2 forward and CONTROL parse).
-    //   - parser-latch reaches cmd=0x27 but diag_present
-    //     stays 0 = dispatch reaches handler but RAM bit
-    //     write fails (BANK/RAM aliasing, hypothesis #5).
+    // transition log.  All counters below are sampled at
+    // 10 M-tick chunk boundaries -- this is far longer than
+    // a 31250-baud frame (~46 K ticks), so OERR rising,
+    // CREN falling, RCIF assert, FIFO depth>0, and
+    // parsed_cmd transitions can all happen and clear
+    // entirely *within* one chunk and never be observed.
+    // Therefore:
+    //   - "0 OERR rising edges" == not observed at boundary,
+    //     not "no transient OERR ever happened".
+    //   - "0 chunks with RCIF set" == ISR drained FIFO
+    //     within one chunk, not "RCIF never asserted".
+    //   - "no parser-latch with cmd=0x21..0x27" == not
+    //     observed at boundary, not "dispatch never fired".
+    // These weaknesses motivate the finer-grained step-2
+    // probes (PC-hit counter at v171_bf2x_case_check entry,
+    // cycle-by-cycle parsed_cmd sniffer).
+    //
+    // Direction the counters can still distinguish:
+    //   - max_rx_fifo_depth always 0 AND ring depth always
+    //     0 AND no rd advance = bytes never enter FIFO
+    //     (clock / wire-coupling bug).  Negation of any
+    //     of these proves bytes flow somewhere.
+    //   - parser-latch shows a steady stream of non-BF/2N
+    //     cmds (0x03, 0x06, 0x07, 0x08, 0x1D) AND ring
+    //     drains cleanly = parser is alive and consuming
+    //     non-BF/2N frames -- the BF/2N burst either
+    //     happens within one chunk, gets dispatched
+    //     without latching parsed_cmd visibly, or never
+    //     reaches dispatch at all.
     let post_stage3_snapshot = (
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196)),
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x197)),
@@ -1337,7 +1368,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         "max RX FIFO depth (HW, 0..=2):          {max_rx_fifo_depth} (sampler granularity {chunk_ticks} ticks)"
     );
     eprintln!(
-        "max SW rx_ring depth (wr-rd):           {max_ring_depth} (u8 wraparound; nonzero = parser falling behind)"
+        "max SW rx_ring depth ((wr-rd+48)%48):   {max_ring_depth} (nonzero = parser falling behind; OOR chunks={ring_oor_chunks})"
     );
     eprintln!(
         "PIR1.RCIF chunks:                       set={rcif_set_chunks}, clear={rcif_clear_chunks} (ratio = ISR drain duty cycle)"
@@ -1360,12 +1391,17 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     }
 
     // P3.6b research: per-byte CONTROL.RX arrivals during
-    // the stage-3 window (delivery view).  Each record is a
-    // byte that successfully reached
-    // `Eusart::deliver_rx_byte` on CONTROL -- the byte may
-    // still have been gated by RCSTA SPEN/CREN, but its
-    // tick + value lets us correlate against parser-latch
-    // motion and spot timing gaps.
+    // the stage-3 window.  Codex MEDIUM/LOW from 2dbaea9:
+    // `chain.uart_tx_history` is recorded at TX-emit time
+    // (just before `Chain::deliver_uart_byte` calls
+    // `Eusart::deliver_rx_byte`; see chain.rs:131-149,
+    // 497-526), NOT after destination acceptance.  These
+    // records therefore represent **wire-delivery
+    // attempts** -- the byte may still be rejected by
+    // RCSTA.SPEN / RCSTA.CREN gating, dropped by an MCLR
+    // hold (not the case here), or never reach the
+    // software ring.  Use them to confirm the wire side,
+    // not to claim FIFO acceptance.
     let ctl_rx_arrivals: Vec<(u64, usize, u8)> = chain
         .uart_tx_history
         .iter()
@@ -1427,14 +1463,28 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             eprintln!("      tick={tick:>12} src=core[{src}] byte=0x{byte:02X}");
         }
     }
-    // Also dump the FULL arrival stream so we can correlate
-    // tick with each arrival (no truncation -- 186 lines is
-    // small; this lets codex spot patterns the burst-window
-    // dump alone misses).
-    eprintln!("  full arrival stream:");
-    for (tick, src, byte) in ctl_rx_arrivals.iter() {
+    // Also dump the arrival stream so we can correlate tick
+    // with each arrival.  Capped at FULL_STREAM_CAP lines to
+    // bound the failure output -- the cap is purely a
+    // defensive guard against future probe variants that
+    // open longer stage-3 windows or feed denser cadences;
+    // todays nominal run is well below the cap (~186 lines).
+    // Codex LOW from 2dbaea9.
+    const FULL_STREAM_CAP: usize = 500;
+    let stream_n = ctl_rx_arrivals.len().min(FULL_STREAM_CAP);
+    eprintln!(
+        "  arrival stream (first {stream_n} of {} total):",
+        ctl_rx_arrivals.len()
+    );
+    for (tick, src, byte) in ctl_rx_arrivals.iter().take(stream_n) {
         eprintln!(
             "    tick={tick:>12} src=core[{src}] byte=0x{byte:02X}"
+        );
+    }
+    if ctl_rx_arrivals.len() > stream_n {
+        eprintln!(
+            "    ... ({} more arrivals truncated; raise FULL_STREAM_CAP if needed)",
+            ctl_rx_arrivals.len() - stream_n
         );
     }
 
