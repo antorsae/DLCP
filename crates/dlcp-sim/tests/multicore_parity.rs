@@ -1058,20 +1058,26 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     //                     INSTRUCTION (the present-mask
     //                     OR-in)
     //
-    // RAM transitions watched on CONTROL (9 cells):
-    //   0x02F  rx_parsed_cmd       (every parsed_cmd value
-    //                                the parser ever latches,
-    //                                with tick stamp -- no
-    //                                boundary blind spot)
-    //   0x030  rx_parsed_data       (every parsed_data value)
-    //   0x098  rx_ring_rd           (every ring-consumer advance)
-    //   0x099  rx_ring_wr           (every ring-producer advance)
-    //   0x0A6  rx_frame_position    (every frame_pos transition,
-    //                                including watchdog clears)
-    //   0xFAB  RCSTA                (every OERR/CREN/SPEN edit)
-    //   0x196  v171_diag_target     (every toggle)
-    //   0x197  v171_diag_present    (every present-mask write)
-    //   0x19C  v171_diag_flags      (every flag-bit edit)
+    // RAM transitions watched on CONTROL (11 cells; step-3 added
+    // 0x0AC + 0x19D per codex guidance on cfa9e6e):
+    //   0x02F  rx_parsed_cmd            (every parsed_cmd value
+    //                                     the parser ever latches,
+    //                                     with tick stamp -- no
+    //                                     boundary blind spot)
+    //   0x030  rx_parsed_data            (every parsed_data value)
+    //   0x098  rx_ring_rd                (every ring-consumer advance)
+    //   0x099  rx_ring_wr                (every ring-producer advance)
+    //   0x0A6  rx_frame_position         (every frame_pos transition,
+    //                                     including watchdog clears)
+    //   0x0AC  v171_rx_frame_gap_timeout (parser-stall watchdog state;
+    //                                     reload V171_RX_FRAME_GAP_RELOAD
+    //                                     = 0xF8 = 8-step countdown to
+    //                                     `clrf rx_frame_position`)
+    //   0xFAB  RCSTA                     (every OERR/CREN/SPEN edit)
+    //   0x196  v171_diag_target          (every toggle)
+    //   0x197  v171_diag_present         (every present-mask write)
+    //   0x19C  v171_diag_flags           (every flag-bit edit)
+    //   0x19D  v171_diag_reset_seen      (every BF/2B reset_seen OR-in)
     {
         let initial_parsed_cmd = chain.cores[i_ctl]
             .memory
@@ -1094,6 +1100,16 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x0672, 0x0682, "BF/27 RUNTIME-LAST tail");
         probe.add_pc_range(0x067C, 0x067E, "btg v171_diag_target SINGLE");
         probe.add_pc_range(0x0678, 0x067A, "iorwf v171_diag_present SINGLE");
+        // P3.6b research step 3 (task #63 -- per codex on cfa9e6e):
+        // PC ranges to resolve the "4 entries to v171_bf2x_case_check
+        // but no RESET_PENDING clear" contradiction.  Without these
+        // we cannot distinguish "BF/2B body inner ran but bcf
+        // mis-banked" from "BF/2B body inner never ran".
+        probe.add_pc_range(0x0682, 0x0692, "v171_bf2x_check_reset_last FULL BODY");
+        probe.add_pc_range(0x0682, 0x0684, "v171_bf2x_check_reset_last ENTRY ONLY");
+        probe.add_pc_range(0x0688, 0x068E, "BF/2B body inner (col==10 path)");
+        probe.add_pc_range(0x0690, 0x0692, "bcf RESET_PENDING SINGLE");
+        probe.add_pc_range(0x0692, 0x0694, "exit_bsr0 ENTRY (movlb 0)");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
@@ -1109,15 +1125,27 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         let initial_ring_wr = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x099));
+        // P3.6b research step 3 (task #63): also watch the parser-
+        // stall watchdog state and the diag_reset_seen mask -- the
+        // two RAM cells that, with the new BF/2B body PC ranges,
+        // close the "4 entries but no flag clear" contradiction.
+        let initial_gap_timeout = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x0AC));
+        let initial_reset_seen = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x19D));
         probe.add_watched_ram(0x02F, "rx_parsed_cmd", initial_parsed_cmd);
         probe.add_watched_ram(0x030, "rx_parsed_data", initial_parsed_data);
         probe.add_watched_ram(0x0A6, "rx_frame_position", initial_frame_pos);
         probe.add_watched_ram(0xFAB, "RCSTA", initial_rcsta);
         probe.add_watched_ram(0x098, "rx_ring_rd", initial_ring_rd);
         probe.add_watched_ram(0x099, "rx_ring_wr", initial_ring_wr);
+        probe.add_watched_ram(0x0AC, "v171_rx_frame_gap_timeout", initial_gap_timeout);
         probe.add_watched_ram(0x196, "v171_diag_target", initial_target);
         probe.add_watched_ram(0x197, "v171_diag_present", initial_present);
         probe.add_watched_ram(0x19C, "v171_diag_flags", initial_flags);
+        probe.add_watched_ram(0x19D, "v171_diag_reset_seen", initial_reset_seen);
         chain.cores[i_ctl].cycle_probe = Some(probe);
     }
 
@@ -1788,9 +1816,13 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
                 w.transitions.len(),
                 w.last_value
             );
-            // Cap dump for readability; rx_parsed_cmd may have
-            // many transitions but the others should be small.
-            const TRANSITION_DUMP_CAP: usize = 80;
+            // Cap dump for readability.  rx_parsed_cmd / data /
+            // ring_rd / frame_pos / rx_frame_gap_timeout can each
+            // produce hundreds of transitions across a 5 s sim,
+            // so the cap is set generously to keep the burst
+            // window's transitions visible at the end of long
+            // logs (P3.6b research step 3, task #63).
+            const TRANSITION_DUMP_CAP: usize = 1500;
             let n = w.transitions.len().min(TRANSITION_DUMP_CAP);
             for (tick, val) in w.transitions.iter().take(n) {
                 eprintln!("    tick={tick:>12} new_value=0x{val:02X}");
