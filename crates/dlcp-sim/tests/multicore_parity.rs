@@ -1163,11 +1163,23 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // probes for each `call button_scan_debounce` site in
         // V1.71 firmware, so the per-site hit count reveals
         // which caller is responsible for the ~1.9-4.6 M body
-        // executions step 6 saw (display_loop_iteration's call
-        // site at 0x0E1C accounts for only 39, matching the 39
-        // display_loop_iteration ENTRY hits).  Each `call` is a
-        // 2-word PIC18 instruction; the [start, start+2) range
-        // counts exactly one hit per call invocation.
+        // executions step 6 saw.  As measured (and described in
+        // the 033d51e commit body), the 0x0E1C call site --
+        // which COINCIDES with the sub-label
+        // `flow_display_loop_iteration_0CB4` -- fires
+        // 3 651 176 times because the body's tail
+        // (`flow_display_loop_iteration_0D7A` at asm:2897)
+        // does a backward `bra flow_display_loop_iteration_
+        // 0CB4` to busy-poll for `0x9A != 0 || control_flags.
+        // bit3`.  The `display_loop_iteration ENTRY` probe
+        // (PC 0x0E1A..0x0E1C) at 39 hits measures only outer
+        // entries, NOT the inner-loop returns to 0x0E1C; the
+        // call-site count therefore dominates by ~93 600x.
+        // All other 8 call sites measure 0 hits in this run
+        // (cold WAITING / reconnect WAITING / etc. are not
+        // entered while menu_state == 4 holds).  Each `call`
+        // is a 2-word PIC18 instruction; the [start, start+2)
+        // range counts exactly one hit per call invocation.
         probe.add_pc_range(0x0E1C, 0x0E1E, "call button_scan @ 0x0E1C (display_loop_iteration)");
         probe.add_pc_range(0x1880, 0x1882, "call button_scan @ 0x1880 (cold WAITING)");
         probe.add_pc_range(0x1986, 0x1988, "call button_scan @ 0x1986 (display_state_entry)");
