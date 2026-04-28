@@ -148,6 +148,104 @@ pub struct Core {
     /// `pause_core` debug hook.  Default `false` (core runs).
     /// Task #47 (P3.8b-prereq).
     pub mclr_held: bool,
+    /// Optional cycle-level probe used by research scaffolding
+    /// (e.g. P3.6b research step 2, task #62) to count exact
+    /// per-instruction PC entries to a labelled flash range AND
+    /// log every transition of a watched RAM cell.  Default
+    /// `None` -- when `None`, `Chain::execute_core_step` adds
+    /// zero overhead per instruction step (one branch on the
+    /// outer `Option`).  When `Some(_)`, the chain dispatcher
+    /// updates the probe BEFORE and AFTER each `exec::step`
+    /// call (PC range hits checked against the pre-step PC,
+    /// RAM transitions checked against the post-step memory),
+    /// so a single instruction that both enters a watched PC
+    /// range AND mutates a watched RAM cell is observed in
+    /// both lists.  Test-only field; production chains should
+    /// leave this `None`.
+    pub cycle_probe: Option<CycleProbe>,
+}
+
+/// Per-instruction probe -- see `Core::cycle_probe`.  Holds an
+/// arbitrary number of labelled PC ranges (each with a hit
+/// counter) and watched RAM cells (each with a last-value
+/// cache and a transition log keyed by `Chain::current_tick`).
+///
+/// Construct via `CycleProbe::new()` then `add_pc_range(..)`
+/// / `add_watched_ram(..)` to register the things you want
+/// monitored before attaching to `Core::cycle_probe`.
+#[derive(Clone, Default, Debug)]
+pub struct CycleProbe {
+    /// PC ranges to count instruction entries to.  Each entry
+    /// is `(start_inclusive, end_exclusive, label, hit_count)`.
+    pub pc_ranges: Vec<PcRangeProbe>,
+    /// RAM cells to watch.  Each entry tracks `(addr, label,
+    /// last_value, transitions)`.
+    pub watched_ram: Vec<WatchedRamProbe>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PcRangeProbe {
+    /// Inclusive start of the flash byte range (PC values).
+    pub start: u16,
+    /// Exclusive end of the flash byte range.
+    pub end: u16,
+    /// Human-readable label printed in probe summaries
+    /// (e.g. `"v171_bf2x_case_check"`).
+    pub label: &'static str,
+    /// Count of instructions whose PRE-step PC fell in
+    /// `[start, end)`.  Each call to `exec::step` increments
+    /// this once if the PC at entry is in range.
+    pub hit_count: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct WatchedRamProbe {
+    /// Physical RAM address (bank-flattened) to watch.
+    pub addr: u16,
+    /// Human-readable label.
+    pub label: &'static str,
+    /// Last observed value.  Initialized to whatever was in
+    /// the RAM cell at the moment the probe was attached.
+    pub last_value: u8,
+    /// Transition log: `(tick, new_value)` for every observed
+    /// change.  Pushed by `Chain::execute_core_step` AFTER
+    /// each `exec::step` call when the post-step value
+    /// differs from `last_value`.
+    pub transitions: Vec<(u64, u8)>,
+}
+
+impl CycleProbe {
+    /// Construct an empty probe with no PC ranges and no
+    /// watched RAM cells.  Add registrations before
+    /// attaching to `Core::cycle_probe`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a labelled PC range to count instruction
+    /// entries to.
+    pub fn add_pc_range(&mut self, start: u16, end: u16, label: &'static str) {
+        self.pc_ranges.push(PcRangeProbe { start, end, label, hit_count: 0 });
+    }
+
+    /// Register a labelled RAM cell to watch for
+    /// transitions.  `initial_value` should be read from the
+    /// core's memory at attach time so the first real
+    /// transition produces a clean `(tick, new_value)` log
+    /// entry instead of a spurious "0 -> initial".
+    pub fn add_watched_ram(
+        &mut self,
+        addr: u16,
+        label: &'static str,
+        initial_value: u8,
+    ) {
+        self.watched_ram.push(WatchedRamProbe {
+            addr,
+            label,
+            last_value: initial_value,
+            transitions: Vec::new(),
+        });
+    }
 }
 
 /// Size of the TBLWT staging buffer.  Both supported variants
@@ -186,6 +284,7 @@ impl Core {
             user_id: [0xFF; 8],
             tblwt_holding: [0xFF; TBLWT_HOLDING_SIZE],
             mclr_held: false,
+            cycle_probe: None,
         }
     }
 

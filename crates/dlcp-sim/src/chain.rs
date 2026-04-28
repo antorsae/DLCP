@@ -562,6 +562,24 @@ impl Chain {
         if self.cores[core_idx].mclr_held {
             return;
         }
+        // P3.6b research step 2 (task #62): if a cycle-level
+        // probe is attached, sample PC ranges BEFORE the
+        // step -- a single instruction whose PC is in a
+        // watched range is counted exactly once, even if the
+        // instruction takes multiple Tcy or branches out of
+        // the range during execution.  Default-off when
+        // `cycle_probe == None`, so non-probing tests pay
+        // exactly one `Option` discriminant check per step.
+        if self.cores[core_idx].cycle_probe.is_some() {
+            let pc = self.cores[core_idx].pc() as u16;
+            if let Some(probe) = self.cores[core_idx].cycle_probe.as_mut() {
+                for range in &mut probe.pc_ranges {
+                    if pc >= range.start && pc < range.end {
+                        range.hit_count += 1;
+                    }
+                }
+            }
+        }
         let core = &mut self.cores[core_idx];
         let stack = &mut self.stacks[core_idx];
         // Best-effort: errors propagate as a panic for
@@ -572,6 +590,54 @@ impl Chain {
         // keeps the panic so test failures are obvious.
         let _ = step(core, stack)
             .unwrap_or_else(|e| panic!("exec::step failed on core {core_idx}: {e:?}"));
+        // P3.6b research step 2: post-step RAM transition log.
+        // Read each watched cell and push a transition entry
+        // when the value changed since the last observation.
+        // The check is "post-step" so a single instruction that
+        // mutates a watched cell logs the new value at the
+        // tick that committed the write (= `current_tick` at
+        // the moment of the mutation).  Compared to a per-write
+        // hook in `Memory::write_raw`, this misses transient
+        // values that an instruction sets and then overwrites
+        // within its own body (PIC18 has no such instruction
+        // semantics on a single SFR/RAM cell), but is far
+        // less invasive.
+        let current_tick = self.current_tick;
+        if self.cores[core_idx].cycle_probe.is_some() {
+            // Two-phase to avoid borrow-overlap: read all
+            // watched values first, then mutate the probe's
+            // last_value / transitions vec.
+            let probe_addrs: Vec<(u16, u8)> = {
+                let probe = self.cores[core_idx]
+                    .cycle_probe
+                    .as_ref()
+                    .expect("checked Some above");
+                probe
+                    .watched_ram
+                    .iter()
+                    .map(|w| (w.addr, w.last_value))
+                    .collect()
+            };
+            let new_values: Vec<u8> = probe_addrs
+                .iter()
+                .map(|(addr, _)| {
+                    self.cores[core_idx]
+                        .memory
+                        .read_raw(crate::memory::Address::from_raw(*addr))
+                })
+                .collect();
+            let probe = self.cores[core_idx]
+                .cycle_probe
+                .as_mut()
+                .expect("still Some");
+            for (i, w) in probe.watched_ram.iter_mut().enumerate() {
+                let new_val = new_values[i];
+                if new_val != w.last_value {
+                    w.transitions.push((current_tick, new_val));
+                    w.last_value = new_val;
+                }
+            }
+        }
         self.drain_completed_tx_bytes(core_idx);
         self.dispatch_i2c_to_coupled_slaves(core_idx);
         self.dispatch_lcd_pins_to_coupled_slaves(core_idx);
