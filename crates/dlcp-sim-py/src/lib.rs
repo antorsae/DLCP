@@ -810,10 +810,17 @@ impl Chain {
     /// used=47/free=0, but the prior expression yielded
     /// used=15/free=32, which would let a near-full wrapped
     /// ring accept new bytes that overwrite unread data.)
-    /// `wr` is read as u8 from memory but widened to u16
-    /// here so `wr + DEPTH` cannot overflow even on
-    /// pathological out-of-range register values; the
-    /// final modulo masks the result back to [0, DEPTH).
+    ///
+    /// `wr` and `rd` are read as u8 from memory but
+    /// normalized to `[0, DEPTH)` BEFORE the subtraction
+    /// (codex review of 3a3afb9 (LOW): without normalization,
+    /// out-of-range register values like `rd=0xFF, wr=0` --
+    /// possible during pre-warmup uninitialised RAM windows
+    /// or pathological injections -- can underflow `wr +
+    /// DEPTH - rd` and diverge from Python's arbitrary-
+    /// precision `(wr - rd) % DEPTH`.  After normalization,
+    /// both indices are in `[0, DEPTH)` and `wr + DEPTH >
+    /// rd` always, so the subtraction is well-defined.)
     fn inject_rx_bytes_inner(&mut self, bytes: &[u8]) -> bool {
         const RX_RING_BASE: u16 = 0x066;
         const RX_RING_RD: u16 = 0x098;
@@ -821,15 +828,17 @@ impl Chain {
         const RX_RING_DEPTH: u16 = 48;
 
         let mem = &mut self.inner.cores[self.i_ctl].memory;
-        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD)) as u16;
-        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR)) as u16;
+        let rd = (mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD)) as u16)
+            % RX_RING_DEPTH;
+        let mut wr = (mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR)) as u16)
+            % RX_RING_DEPTH;
         let used = (wr + RX_RING_DEPTH - rd) % RX_RING_DEPTH;
         let free = (RX_RING_DEPTH - 1).saturating_sub(used);
         if (bytes.len() as u16) > free {
             return false;
         }
         for &byte in bytes {
-            let addr = RX_RING_BASE + (wr % RX_RING_DEPTH);
+            let addr = RX_RING_BASE + wr;
             mem.write_raw(dlcp_sim::memory::Address::from_raw(addr), byte);
             wr = (wr + 1) % RX_RING_DEPTH;
         }
