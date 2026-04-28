@@ -763,19 +763,25 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 ///     required to make that claim.
 ///
 /// Residual divergence (HOP E -- the LAST hop):
-///   * `v171_diag_present = 0x00` -- never set.
-///   * `v171_diag_target = 0x00` -- never toggled.
-///   * v171_diag_target trajectory: `[00]` (no change
-///     throughout the 2 B-tick stage 3 sampling window).
+///   * `v171_diag_present = 0x00` at every observed sampler
+///     boundary (200 boundaries spanning 2 B ticks).
+///   * `v171_diag_target = 0x00` at every observed sampler
+///     boundary; trajectory `[00]`.
+///   * `v171_diag_flags = 0x06` (PENDING bits set, never
+///     observed cleared).
 ///
 /// **The load-bearing evidence is the target trajectory,
-/// not PC sampling.**  If the BF/27 last-frame path had
-/// fired even ONCE, target would have toggled (0->1 via
-/// `btg v171_diag_target, 0`).  It didn't.  Combined with
-/// `v171_diag_present == 0x00` and `v171_diag_flags ==
-/// 0x06` (PENDING bits never cleared), this is sound
-/// evidence that the BF/27 last-frame path did not
-/// complete.  The PC histogram is informational only --
+/// not PC sampling -- but it's still sampler-bounded.**  At
+/// strict boundary-sampling, target = 0x00 across 200
+/// boundaries proves only "no sampled target change", not
+/// "never toggled".  However, V1.71's polling state machine
+/// waits for one reply before issuing the next query
+/// (cycle ~54 M ticks); any BF/27 that completed should
+/// park target = 0x01 for at least one full cycle (~5
+/// consecutive boundaries).  So observing `[00]` across
+/// 200 boundaries is strong-but-not-cycle-level evidence
+/// that the BF/27 last-frame path did not complete.  Step-2
+/// cycle-level probes will upgrade this to a hard claim.  The PC histogram is informational only --
 /// 200 samples * 10 M ticks = 2 B ticks at K20's
 /// 16 ticks/Tcy = 125 M Tcy.  A ~50-Tcy dispatch body
 /// (~800 ticks) gives only ~0.008% per-sample chance of
