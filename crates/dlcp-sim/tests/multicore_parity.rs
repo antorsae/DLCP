@@ -749,8 +749,18 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 ///     bit + toggles target).  Verified by direct
 ///     byte-stream inspection: MAIN1.TX[147..150] =
 ///     `BF 24 00 BF 25 00 BF 26 00 BF 27 00`.
-///   * `BF 27 00` arrives at CONTROL.RX cleanly: RCSTA =
-///     0x90 (no OERR), no FIFO overflow.
+///   * The wire-side delivery view (`Chain::uart_tx_history`
+///     filtered by `dst_core == CONTROL`) records 21
+///     contiguous BF/2N bytes including the trailing
+///     `BF 27 00` at the expected ~15 480-tick spacing,
+///     so wire emission was attempted.  RCSTA at the end
+///     of stage 3 reads `0x90` -- no OERR latched at exit
+///     time.  This DOES NOT prove every byte was accepted
+///     by RCSTA / pushed to the SW rx_ring -- a transient
+///     OERR or ring-overrun roll-back at v171.asm:837-849
+///     could still drop bytes within a 10 M-tick sampler
+///     chunk; step-2 cycle-level instrumentation is
+///     required to make that claim.
 ///
 /// Residual divergence (HOP E -- the LAST hop):
 ///   * `v171_diag_present = 0x00` -- never set.
@@ -1015,10 +1025,13 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
 
     // P3.6b research: snapshot V1.71 diag-state RAM + EUSART
     // RX state right before the stage-3 sampler enters its
-    // poll/reply window.  Compared against post-sampler
-    // values it tells us whether the sampler window saw any
-    // diag-related state movement at all (e.g. parser
-    // ever-touched cmd-byte vs frozen at 0x00).
+    // poll/reply window.  Compared against the post-sampler
+    // snapshot, deltas confirm SOME state moved during the
+    // window (positive observation only).  The ABSENCE of a
+    // delta is weaker evidence -- the value could have moved
+    // and returned to the same byte within the window
+    // without ever being observed at the chunk boundaries
+    // (10 M-tick granularity vs ~46 K-tick byte time).
     let pre_stage3_snapshot = (
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196)), // diag_target
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x197)), // diag_present
@@ -1040,10 +1053,16 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // P3.6b research instrumentation (codex review of 67bfa1d):
     // also track per-chunk CONTROL EUSART/RX state, OERR rising
     // edges, parser-latch transitions, and parser-cmd-data
-    // history, so we can distinguish "byte dropped" vs "byte
-    // accepted but not latched" vs "latched but wrong cmd/data"
-    // vs "entered BF/2N but missed last-frame branch" vs
-    // "executed branch but RAM write/toggle failed".
+    // history.  The hypothesis ladder this is meant to support
+    // -- "byte dropped" / "byte accepted but not latched" /
+    // "latched but wrong cmd/data" / "entered BF/2N but missed
+    // last-frame branch" / "executed branch but RAM write/toggle
+    // failed" -- can only be DEFINITIVELY discriminated by
+    // step-2 cycle-level probes.  At 10 M-tick boundary
+    // sampling the most these counters can do is rule in or
+    // out the FAR ENDS of that ladder (e.g. parser totally
+    // dead vs alive-and-consuming-non-BF/2N) and corroborate
+    // wire-side observations from `Chain::uart_tx_history`.
     //
     // RAM addresses (from `src/dlcp_fw/asm/dlcp_control_ram.inc`,
     // *physical* addresses -- simulator's `Address::from_raw`
