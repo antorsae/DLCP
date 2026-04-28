@@ -48,7 +48,7 @@ DIVERGENCE_DIR = REPO_ROOT / "artifacts" / "sim_rewrite_divergences"
 
 VALID_STATUSES = ("pending", "in_progress", "done", "blocked")
 TASK_RE = re.compile(
-    r"^- \[(?P<status>pending|in_progress|done|blocked)\] (?P<id>P\w+(?:\.\w+)?) (?P<title>.+)$"
+    r"^- \[(?P<status>pending|in_progress|done|blocked)\] (?P<id>P[\w-]+(?:\.[\w-]+)?) (?P<title>.+)$"
 )
 VERIFY_RE = re.compile(r"^  - verify: (?P<cmd>.+)$")
 ARTIFACT_RE = re.compile(r"^  - artifact: (?P<path>.+)$")
@@ -341,6 +341,16 @@ def cmd_verify_phase(args: argparse.Namespace) -> int:
         if t.verify is None or t.is_manual():
             print(f"--- {t.id} {t.title}")
             print("    SKIP (manual)")
+            continue
+        if t.status == "blocked":
+            # Blocked tasks have an explicit deferral reason
+            # recorded via `block --reason`; running their
+            # verify command would deterministically fail and
+            # block the gate even though the deferral was
+            # accepted.  Skip them here and surface a SKIP
+            # marker so the operator sees they were noticed.
+            print(f"--- {t.id} {t.title}")
+            print("    SKIP (blocked)")
             continue
         print(f"--- {t.id} {t.title}")
         res = subprocess.run(

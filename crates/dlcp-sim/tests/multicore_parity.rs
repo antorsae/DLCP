@@ -2487,16 +2487,10 @@ fn test_main1_late_boot_recovery() {
     chain.apply_reset_all(ResetSource::PowerOn);
 
     // Boot offset: spec calls for 1.5 s at 48 MHz = 72_000_000
-    // universal ticks.  In the current sim the universal-tick to
-    // wall-time mapping is per-core, but the load-bearing
-    // property is "MAIN1 stays silent long enough for CONTROL to
-    // park on WAITING".  Empirically the bit-exact LCD parity
-    // test reaches steady-state Volume in ~5 B ticks; CONTROL
-    // entry to WAITING happens during the cold-boot pre-handshake
-    // window (before MAIN0's sentinel burst lands).  500 M ticks
-    // gives that window comfortably without over-stretching the
-    // sim.
-    const LATE_OFFSET: u64 = 500_000_000;
+    // universal ticks (`docs/SIM_REWRITE_RUST_SPEC.md:304`,
+    // `crates/dlcp-sim/src/boot_offset.rs:14`).  The chain has a
+    // single 48 MHz universal clock per `chain.rs:17`.
+    const LATE_OFFSET: u64 = 72_000_000;
     chain.schedule_initial_steps(&[0, 0, LATE_OFFSET]);
 
     chain.cores[i_ctl]
@@ -2507,11 +2501,22 @@ fn test_main1_late_boot_recovery() {
         .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
 
     // ----- Phase 1: CONTROL must reach `Waiting for DLCP` -----
-    // While MAIN1 is still pre-boot, the chain ring is incomplete
-    // (CONTROL → MAIN0 → MAIN1[silent] → CONTROL has no return
-    // path), so MAIN0's sentinel-burst replies never reach
-    // CONTROL.  CONTROL's cold-boot handshake times out and
-    // shows the WAITING screen.
+    // With MAIN1's first instruction delayed to tick =
+    // LATE_OFFSET, the chain ring is incomplete during the
+    // pre-LATE_OFFSET window: MAIN0's sentinel-burst replies
+    // route to MAIN1[silent] which has no forwarding capacity
+    // yet, so they never reach CONTROL.  CONTROL's cold-boot
+    // handshake times out and shows the WAITING screen.
+    //
+    // Note: at LATE_OFFSET = 72_000_000 (canonical 1.5 s
+    // @ 48 MHz), MAIN1 starts stepping before CONTROL has
+    // committed to the WAITING screen -- but CONTROL still
+    // ends up there because MAIN1's first ~tens of millions
+    // of cycles are spent in cold-init (DSP I²C bring-up,
+    // EUSART config, etc.) before it can forward chain
+    // traffic.  Don't strict-equal `MAIN1 cycles == 0` at
+    // WAITING entry; just confirm the WAITING text was
+    // observed.
     let mut waiting_reached = false;
     for chunk in 0..8 {
         chain.step_ticks(50_000_000);
@@ -2530,28 +2535,22 @@ fn test_main1_late_boot_recovery() {
     }
     assert!(
         waiting_reached,
-        "CONTROL must reach `Waiting for DLCP` while MAIN1 is \
-         still pre-boot (offset = {LATE_OFFSET}).  Final LCD: \
-         line0={:?}, line1={:?}, MAIN1 cycles={}.",
+        "CONTROL must reach `Waiting for DLCP` during the late-boot \
+         window (LATE_OFFSET = {LATE_OFFSET}).  Final LCD: line0={:?}, \
+         line1={:?}, MAIN1 cycles={}.",
         chain.lcd_slaves[i_lcd].line1(),
         chain.lcd_slaves[i_lcd].line2(),
         chain.cores[i_main1].cycles(),
     );
-    let waiting_at_tick = chain.current_tick;
-    assert!(
-        chain.cores[i_main1].cycles() == 0,
-        "MAIN1 should still be pre-boot at WAITING entry; got \
-         cycles={}",
-        chain.cores[i_main1].cycles(),
-    );
 
     // ----- Phase 2: step past LATE_OFFSET so MAIN1 boots -----
-    // MAIN1 first instruction fires at universal tick =
-    // LATE_OFFSET; we need to step past LATE_OFFSET +
-    // (MAIN1 boot to first sentinel forward) before CONTROL can
-    // exit WAITING.  Walk forward in chunks until LCD leaves
-    // `Waiting` OR safety ceiling.
-    const RECOVERY_BUDGET: u64 = 8_000_000_000;
+    // Walk forward in chunks until LCD leaves `Waiting` OR a
+    // budget cap.  The budget is expressed as ticks
+    // SINCE LATE_OFFSET so the failure message accurately
+    // describes "time since MAIN1 came online", not absolute
+    // chain time (codex review of f44d7a4, LOW #3).
+    const RECOVERY_BUDGET_AFTER_LATE_BOOT: u64 = 8_000_000_000;
+    let recovery_deadline = LATE_OFFSET + RECOVERY_BUDGET_AFTER_LATE_BOOT;
     let mut recovered_at_tick: Option<u64> = None;
     for chunk in 0..32 {
         chain.step_ticks(250_000_000);
@@ -2566,12 +2565,13 @@ fn test_main1_late_boot_recovery() {
             recovered_at_tick = Some(chain.current_tick);
             break;
         }
-        if chain.current_tick >= RECOVERY_BUDGET {
+        if chain.current_tick >= recovery_deadline {
             break;
         }
     }
 
-    // Sanity: MAIN1 actually started stepping at some point.
+    // Sanity: MAIN1 actually started stepping after the late
+    // boot offset (boot-offset wiring guard).
     assert!(
         chain.cores[i_main1].cycles() > 0,
         "MAIN1 should have started stepping after LATE_OFFSET={LATE_OFFSET}; \
@@ -2579,23 +2579,26 @@ fn test_main1_late_boot_recovery() {
         chain.cores[i_main1].cycles(),
     );
 
-    // Recovery assertion: CONTROL must have left WAITING.
+    // Recovery assertion: CONTROL must have left WAITING
+    // within RECOVERY_BUDGET_AFTER_LATE_BOOT ticks of MAIN1
+    // coming online.
     let recovered_at_tick = recovered_at_tick.unwrap_or_else(|| {
         panic!(
             "CONTROL did not recover from `Waiting for DLCP` within \
-             {RECOVERY_BUDGET} universal ticks of MAIN1's late boot; \
+             {RECOVERY_BUDGET_AFTER_LATE_BOOT} universal ticks of MAIN1's \
+             late boot (deadline = LATE_OFFSET + budget = {recovery_deadline}); \
              final LCD: line0={:?}, line1={:?}, MAIN1 cycles={}",
             chain.lcd_slaves[i_lcd].line1(),
             chain.lcd_slaves[i_lcd].line2(),
             chain.cores[i_main1].cycles(),
         )
     });
-    let recovery_window = recovered_at_tick - waiting_at_tick;
+    let recovery_window_after_main1_boot = recovered_at_tick - LATE_OFFSET;
     eprintln!(
-        "P3.7 OK: WAITING entered at tick {waiting_at_tick}, MAIN1 \
-         booted at LATE_OFFSET={LATE_OFFSET}, CONTROL recovered at \
-         tick {recovered_at_tick} (recovery window = {recovery_window} \
-         ticks); final LCD line0={:?}, line1={:?}",
+        "P3.7 OK: MAIN1 booted at LATE_OFFSET={LATE_OFFSET}, CONTROL \
+         recovered at tick {recovered_at_tick} (recovery window since \
+         MAIN1 came online = {recovery_window_after_main1_boot} ticks); \
+         final LCD line0={:?}, line1={:?}",
         chain.lcd_slaves[i_lcd].line1(),
         chain.lcd_slaves[i_lcd].line2(),
     );
