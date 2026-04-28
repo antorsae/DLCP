@@ -2436,10 +2436,11 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
 /// pins), NOT by any clock copy.  The "48 MHz universal clock" in
 /// `chain.rs:17` is a SIMULATION TIME BASE (LCM of 12 and 16 MHz),
 /// not a claim that the physical oscillators are unified -- the sim
-/// supports per-core `tick_drift_ppm` (`clock.rs`) to model the
-/// independent phase/drift between oscillators.  This test uses the
-/// canonical 72 M-tick offset on the unified time base; per-core
-/// drift is left at the nominal-zero default.
+/// supports per-core `ClockDomain::drift_ppm` (`clock.rs`, set via
+/// `ClockDomain::with_drift_ppm`) to model the independent
+/// phase/drift between oscillators.  This test uses the canonical
+/// 72 M-tick offset on the unified time base; per-core drift is left
+/// at the nominal-zero default.
 ///
 /// Test shape:
 ///   1. Build 3-core ring (CONTROL + MAIN0 + MAIN1) with HD44780
