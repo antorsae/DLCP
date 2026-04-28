@@ -2487,7 +2487,7 @@ fn test_main1_late_boot_recovery() {
 
     // Boot offset: spec calls for 1.5 s at 48 MHz = 72_000_000
     // universal ticks (`docs/SIM_REWRITE_RUST_SPEC.md:304`,
-    // `crates/dlcp-sim/src/boot_offset.rs:14`).  The chain has a
+    // `crates/dlcp-sim/src/boot_offset.rs:15`).  The chain has a
     // single 48 MHz universal clock per `chain.rs:17`.
     const LATE_OFFSET: u64 = 72_000_000;
     chain.schedule_initial_steps(&[0, 0, LATE_OFFSET]);
