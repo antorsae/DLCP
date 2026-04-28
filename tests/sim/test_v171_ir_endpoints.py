@@ -23,6 +23,14 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 PRESET_ADDR = 0x10
 STANDBY_FRAME = (0xB0, 0x03, 0x00)
@@ -34,6 +42,24 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
+def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+    """Normalise a TX frame into a (route, cmd, data) tuple.
+    gpsim's `tx_frames()` returns TxTriplet dataclass instances
+    (with .route/.cmd/.data attrs); rust returns plain tuples.
+    """
+    if isinstance(f, tuple):
+        return f
+    return (f.route, f.cmd, f.data)
 
 
 @pytest.fixture(scope="module")
@@ -74,49 +100,77 @@ def _warmup_and_quiesce(h: GpsimControlHarness) -> None:
         h.step()
 
 
+def _run_in_backends(
+    backend: str,
+    hex_path: Path,
+    body,  # Callable[[harness], None]
+) -> None:
+    """Dispatch a duck-typed scenario body to gpsim, rust, or both
+    per the `dlcp_sim_backend` fixture.  Rust runs first in dual
+    mode so a missing native binding fails fast.
+    """
+    if backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(hex_path))
+        body(chain)
+    if backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(hex_path)
+        try:
+            body(h)
+        finally:
+            h.close()
+
+
+def _run_ir_emits_frame(cmd: int, expected: tuple[int, int, int], label: str):
+    """Build a duck-typed body asserting that injecting `cmd` yields
+    `expected` somewhere in the TX stream after a 24-step settle.
+    """
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
+        _warmup_and_quiesce(h)
+        before = len(h.tx_frames())
+        h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=cmd)
+        for _ in range(24):
+            h.step()
+        tx = [_frame_tuple(f) for f in h.tx_frames()[before:]]
+        assert expected in tx, (
+            f"{label}: expected {expected} after IR {cmd:#x}; got {tx}"
+        )
+    return _do
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_ir_0x3a_emits_standby_frame(v171_hex: Path) -> None:
+def test_v171_ir_0x3a_emits_standby_frame(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """RC5 0x3A on menu address → [B0, 03, 00]."""
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        _warmup_and_quiesce(h)
-        before = len(h.tx_frames())
-        h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x3A)
-        for _ in range(24):
-            h.step()
-        tx = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before:]]
-        assert STANDBY_FRAME in tx, (
-            f"expected {STANDBY_FRAME} after IR 0x3A; got {tx}"
-        )
-    finally:
-        h.close()
+    _run_in_backends(
+        dlcp_sim_backend, v171_hex,
+        _run_ir_emits_frame(0x3A, STANDBY_FRAME, "IR 0x3A"),
+    )
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_ir_0x3b_emits_wake_frame(v171_hex: Path) -> None:
+def test_v171_ir_0x3b_emits_wake_frame(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """RC5 0x3B on menu address → [B0, 03, 01]."""
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        _warmup_and_quiesce(h)
-        before = len(h.tx_frames())
-        h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x3B)
-        for _ in range(24):
-            h.step()
-        tx = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before:]]
-        assert WAKE_FRAME in tx, (
-            f"expected {WAKE_FRAME} after IR 0x3B; got {tx}"
-        )
-    finally:
-        h.close()
+    _run_in_backends(
+        dlcp_sim_backend, v171_hex,
+        _run_ir_emits_frame(0x3B, WAKE_FRAME, "IR 0x3B"),
+    )
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_ir_endpoints_emit_expected_order(v171_hex: Path) -> None:
+def test_v171_ir_endpoints_emit_expected_order(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """The IR-triggered frame appears as the FIRST new frame after injection.
 
     Distinguishing an IR-triggered emission from a coincident stock
@@ -127,9 +181,7 @@ def test_v171_ir_endpoints_emit_expected_order(v171_hex: Path) -> None:
     any stock periodic code gets cycles.  So the first new frame
     captured after the IR event should be the IR-triggered one.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         _warmup_and_quiesce(h)
 
         # Take TX snapshot immediately before the IR event.
@@ -139,7 +191,7 @@ def test_v171_ir_endpoints_emit_expected_order(v171_hex: Path) -> None:
         # cycles needed to emit the 3-byte frame via tx_byte_enqueue.
         for _ in range(2):
             h.step()
-        new_frames_a = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before:]]
+        new_frames_a = [_frame_tuple(f) for f in h.tx_frames()[before:]]
         assert new_frames_a, "0x3A did not emit any TX frame"
         assert new_frames_a[0] == STANDBY_FRAME, (
             f"0x3A first new frame != standby; got {new_frames_a[0]}"
@@ -149,18 +201,20 @@ def test_v171_ir_endpoints_emit_expected_order(v171_hex: Path) -> None:
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x3B)
         for _ in range(2):
             h.step()
-        new_frames_b = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before:]]
+        new_frames_b = [_frame_tuple(f) for f in h.tx_frames()[before:]]
         assert new_frames_b, "0x3B did not emit any TX frame"
         assert new_frames_b[0] == WAKE_FRAME, (
             f"0x3B first new frame != wake; got {new_frames_b[0]}"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_ir_unknown_code_does_not_prepend_v171_frame(v171_hex: Path) -> None:
+def test_v171_ir_unknown_code_does_not_prepend_v171_frame(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """Unmapped RC5 code: the first new frame (if any) must not be V1.71's.
 
     Deliberately loose: the stock periodic full-sync burst can land in
@@ -169,15 +223,13 @@ def test_v171_ir_unknown_code_does_not_prepend_v171_frame(v171_hex: Path) -> Non
     before any natural stock frame — if it does, my inline dispatch
     is leaking into non-endpoint codes.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         _warmup_and_quiesce(h)
         before = len(h.tx_frames())
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x40)
         for _ in range(2):
             h.step()
-        new_frames = [(f.route, f.cmd, f.data) for f in h.tx_frames()[before:]]
+        new_frames = [_frame_tuple(f) for f in h.tx_frames()[before:]]
         if not new_frames:
             return  # no TX activity at all — also acceptable
         first = new_frames[0]
@@ -187,5 +239,4 @@ def test_v171_ir_unknown_code_does_not_prepend_v171_frame(v171_hex: Path) -> Non
         assert first != WAKE_FRAME, (
             f"unmapped IR 0x40 emitted wake frame first; got {new_frames}"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)

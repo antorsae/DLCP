@@ -36,6 +36,14 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 CONTROL_FLAGS_ADDR = 0x01F
 CONNECTED_BIT = 1
@@ -50,6 +58,14 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
 
 
 @pytest.fixture(scope="module")
@@ -76,6 +92,7 @@ def _boot(hex_path: Path) -> GpsimControlHarness:
 # Source-level guards
 # ---------------------------------------------------------------------------
 
+@pytest.mark.dual_supported
 def test_v171_source_replaces_reconnect_loop_with_sentinel_body() -> None:
     """reconnect_wait_loop body must contain the sentinel-check block."""
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
@@ -116,6 +133,7 @@ def test_v171_source_replaces_reconnect_loop_with_sentinel_body() -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_v171_source_embeds_uart_soft_recover_in_sentinel_loop() -> None:
     """Every 8 iterations, the sentinel loop runs a UART soft-recover."""
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
@@ -138,6 +156,7 @@ def test_v171_source_embeds_uart_soft_recover_in_sentinel_loop() -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_v171_cold_wait_restores_bsr_before_sentinel_compares() -> None:
     """The cold WAITING loop must read the real sentinel cache bank after parser.
 
@@ -159,6 +178,11 @@ def test_v171_cold_wait_restores_bsr_before_sentinel_compares() -> None:
     )
 
 
+# NOTE: not @pytest.mark.dual_supported -- this test is a
+# pre-existing failure on main (the V1.71 source's
+# `v171_reconnect_wait_done` block doesn't yet have a marker
+# substring `RECONNECT_WAIT_DONE`).  Once the source rewrite
+# adds the marker, this test goes dual_supported.
 def test_v171_source_emits_wake_and_reseeds_idle_timer_on_loop_exit() -> None:
     """Exit path: wake frame + reload idle timer to 0xEA61 + zero full-sync."""
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
@@ -185,38 +209,50 @@ def test_v171_source_emits_wake_and_reseeds_idle_timer_on_loop_exit() -> None:
 # Behavioral: boot proceeds past reconnect loop when heartbeat is on
 # ---------------------------------------------------------------------------
 
+def _run_sentinel_loop_exit_check(h) -> None:  # type: ignore[no-untyped-def]
+    """Backend-agnostic body shared by both gpsim and rust paths."""
+    h.warmup(25_000_000)
+    flags = h.read_reg(CONTROL_FLAGS_ADDR)
+    assert flags & (1 << CONNECTED_BIT), (
+        f"CONTROL did not reach CONNECTED; sentinel loop may be stuck "
+        f"(flags=0x{flags:02X})"
+    )
+    for name, addr in (
+        ("input_select_cache", INPUT_SELECT_CACHE_ADDR),
+        ("volume_cache", VOLUME_CACHE_ADDR),
+        ("cmd1d_setting_cache", CMD1D_SETTING_CACHE_ADDR),
+        ("raw_status_cache", RAW_STATUS_CACHE_ADDR),
+    ):
+        value = h.read_reg(addr)
+        assert value != 0x80, (
+            f"sentinel {name} still 0x80 after warmup; got 0x{value:02X}"
+        )
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_sentinel_loop_exits_when_heartbeat_fills_sentinels(v171_hex: Path) -> None:
+def test_v171_sentinel_loop_exits_when_heartbeat_fills_sentinels(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """After warmup, all 4 sentinels are non-0x80 and CONNECTED is set.
 
-    Heartbeat "full" injects BF/06, BF/07, BF/1D, BF/03 periodically.
-    Each frame's parser dispatch writes its respective sentinel slot
-    (non-0x80 values from the stored volume / input / cmd1d / raw
-    status).  Once all four clear, the V1.71 sentinel loop exits,
-    emits the wake frame, and sets CONNECTED.  Warmup of 25M cycles
-    is 8+ heartbeat rounds — plenty.
+    Heartbeat "full" (gpsim) / real V2.3-combined MAIN (rust) injects
+    BF/06, BF/07, BF/1D, BF/03 periodically.  Each frame's parser
+    dispatch writes its respective sentinel slot (non-0x80 values
+    from the stored volume / input / cmd1d / raw status).  Once
+    all four clear, the V1.71 sentinel loop exits, emits the wake
+    frame, and sets CONNECTED.  Warmup of 25M cycles is 8+
+    heartbeat rounds — plenty.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        h.warmup(25_000_000)
-        flags = h.read_reg(CONTROL_FLAGS_ADDR)
-        assert flags & (1 << CONNECTED_BIT), (
-            f"CONTROL did not reach CONNECTED; sentinel loop may be stuck "
-            f"(flags=0x{flags:02X})"
-        )
-        # Sentinels — each must have moved off the initial 0x80.
-        for name, addr in (
-            ("input_select_cache", INPUT_SELECT_CACHE_ADDR),
-            ("volume_cache", VOLUME_CACHE_ADDR),
-            ("cmd1d_setting_cache", CMD1D_SETTING_CACHE_ADDR),
-            ("raw_status_cache", RAW_STATUS_CACHE_ADDR),
-        ):
-            value = h.read_reg(addr)
-            assert value != 0x80, (
-                f"sentinel {name} still 0x80 after warmup — heartbeat may "
-                f"have been paused; got 0x{value:02X}"
-            )
-    finally:
-        h.close()
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(v171_hex))
+        _run_sentinel_loop_exit_check(chain)
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(v171_hex)
+        try:
+            _run_sentinel_loop_exit_check(h)
+        finally:
+            h.close()
