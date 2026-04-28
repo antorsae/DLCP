@@ -105,11 +105,14 @@ fn v23_main_combined_hex_path() -> PathBuf {
 
 /// Stock V1.6b CONTROL hex (PIC18F25K20).  Source of the
 /// V1.7 byte-identical rebuild and behavioural baseline for
-/// `tests/sim/test_v17_chain.py`.  Unlike V1.71, this hex
-/// covers the full 0x0000-0x7FFF flash (no separate
-/// bootloader window on the K20 CONTROL board); the reset
-/// vector at 0x0000 lands directly on the stock cold-init
-/// trampoline.
+/// `tests/sim/test_v17_chain.py`.  Like V1.71, this hex
+/// covers the full 0x0000-0x7FFF flash including the
+/// 0x7800-0x7FFF Microchip bootloader window (V1.71's source
+/// rewrite preserves that block byte-for-byte; see
+/// `dlcp_control_v171.asm:25` for the inheritance note).
+/// The reset vector at 0x0000 is `GOTO 0x7800` (bootloader
+/// entry); the bootloader then trampolines to the V1.6b /
+/// V1.7 / V1.71 app entry.
 fn v16b_control_hex_path() -> PathBuf {
     repo_root().join("firmware/stock/control/DLCP Control Firmware V1.6b.hex")
 }
@@ -5080,10 +5083,12 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
 /// V3.x preset-table overrides).  The substring gate is
 /// what the dual-mode migration path commits to.
 ///
-/// Sim-time budget: 5 B universal ticks (~5.2 s sim, well
-/// under the V1.71+V3.1 LCD parity test's 5 B ceiling) sized
-/// to give the K20 CONTROL's heartbeat handshake a full
-/// retry cycle if the first burst misses MAIN's RX FIFO.
+/// Sim-time budget: 5 B universal ticks (~104 s sim at the
+/// 48 MHz universal clock; same ceiling the V1.71+V3.1 LCD
+/// parity test uses) sized to give the K20 CONTROL's
+/// heartbeat handshake several retry cycles if the first
+/// burst misses MAIN's RX FIFO.  Empirical convergence on
+/// local hardware is ~2.6 s wall, well under the budget.
 #[test]
 fn chain_v16b_v23_stock_reaches_volume_screen() {
     let v16b = HexImage::from_hex_path(v16b_control_hex_path())
@@ -5096,9 +5101,9 @@ fn chain_v16b_v23_stock_reaches_volume_screen() {
     // + V2.3 app + EEPROM + preset tables), so no
     // bake-trampolines or `build_seeded_main_core` merge
     // needed -- it IS the silicon-correct image.  V2.3's
-    // reset vector at 0x0000 = `GOTO 0x02CE` is the cold-init
-    // entry; from there V2.3 jumps to its app code at 0x1000
-    // naturally.
+    // reset vector at 0x0000 decodes as `GOTO 0x058E` (the
+    // cold-init entry inside V2.3's boot block); from there
+    // V2.3 jumps to its app code at 0x1000 naturally.
     let mut main = build_core_from_hex(Variant::Pic18F2455, &v23_combined, None, None);
     // V2.3 boot also gates on AN0 (mains-detect ADC).  Same
     // 0x0300 mid-rail value used for V3.x; V3.x's
