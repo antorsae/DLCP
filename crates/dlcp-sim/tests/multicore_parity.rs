@@ -1119,9 +1119,22 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x155A, 0x155C, "v171_diag_send_runtime_only ENTRY");
         probe.add_pc_range(0x15F0, 0x15F2, "v171_diag_send_runtime_query ENTRY");
         probe.add_pc_range(0x15F4, 0x15F6, "v171_diag_send_reset_query ENTRY");
-        probe.add_pc_range(0x12CC, 0x12CE, "v171_diag_pb_screen ENTRY");
+        // NOTE on the next three "ENTRY" probes: the cycle
+        // probe is attached AFTER stage 2 has navigated to
+        // menu_state == 4, so the firmware has already
+        // executed `main_event_loop` -> `v171_diag_pb_screen`
+        // entry once before the probe exists.  These ENTRY
+        // counters therefore measure RE-ENTRIES only, not
+        // the boot-time first-entry hit.  If the body tail-
+        // loops through sub-labels (it does -- v171.asm:3550+
+        // and main_event_loop's flow_main_event_loop_1532
+        // sub-label), the ENTRY counter stays at 0 and the
+        // re-execution counts must be inferred from the
+        // body's individual instructions.  Codex MEDIUM
+        // from 82f29c5.
+        probe.add_pc_range(0x12CC, 0x12CE, "v171_diag_pb_screen ENTRY (re-entries only)");
         probe.add_pc_range(0x0E1A, 0x0E1C, "display_loop_iteration ENTRY");
-        probe.add_pc_range(0x1D0C, 0x1D0E, "main_event_loop ENTRY");
+        probe.add_pc_range(0x1D0C, 0x1D0E, "main_event_loop ENTRY (re-entries only)");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
@@ -1724,13 +1737,23 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // investigating root cause.
     // P3.6b research step 5 (task #66): extend the
     // post-sampler budget from 2G to 8G ticks so that, with
-    // the step-4 watchdog intervention enabled, we have
-    // ~50 polling cycles past the PB1 dispatch point for
-    // PB2 to converge.  Test wall time scales linearly --
-    // ~80 s previously, ~5-6 min with this budget --
-    // acceptable for a research probe.  If PB2 still
-    // doesn't converge in this window, there's a second
-    // root cause beyond the watchdog.
+    // the step-4 watchdog intervention enabled, we have a
+    // longer window for PB2 to converge.  Test wall time
+    // scales linearly -- ~80 s previously, ~5-6 min with
+    // this budget -- acceptable for a research probe.
+    //
+    // Result of step-5 run with the 8G budget: PB2 still
+    // does NOT converge -- the cadence loop only fires the
+    // PB1 query once and v171_diag_poll_lo only decrements
+    // 38 times (from 0x80 to 0x5A) over ~218 sim seconds.
+    // This is NOT a "second root cause beyond the watchdog";
+    // it's pure cadence starvation: V171_DIAG_POLL_RELOAD =
+    // 0x80 needs 128 cadence-loop calls to expire once, the
+    // sim only ran 39 calls in this window, and the call
+    // rate is bottlenecked by display_loop_iteration time.
+    // Codex MEDIUM from 82f29c5 review.  Step-6 work: cycle-
+    // count display_loop_iteration's callees vs design
+    // budget (~31,250 Tcy per 128 Hz cadence tick).
     chain.run_until(
         50_000_000, // 50 M = ~350 ms wall per chunk
         8_000_000_000,
