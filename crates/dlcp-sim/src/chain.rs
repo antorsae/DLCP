@@ -584,8 +584,20 @@ impl Chain {
     /// "MAIN1 never wakes from STDBY" symptom observed on
     /// real hardware (task #45) without faking it through a
     /// debug pause hook.  See `Core::mclr_held`.
+    ///
+    /// Real silicon also resets the EUSART state machine
+    /// when MCLR is held LOW (RCSTA reset, in-flight TX
+    /// dropped, RX FIFO cleared).  We approximate that here
+    /// by calling `eusart::reset_state()` so any residual
+    /// pre-held FIFO content does not survive into the
+    /// post-release world.  This matters for tests that hold
+    /// a core mid-run (P3.8b holds MAIN1 immediately after
+    /// POR so the eusart was already empty); future tests
+    /// that hold a running core depend on this clean.
+    /// Codex review of 1356ed2, MEDIUM #1.
     pub fn hold_core_in_reset(&mut self, core_idx: usize) {
         self.cores[core_idx].mclr_held = true;
+        self.cores[core_idx].peripherals.eusart.reset_state();
     }
 
     /// Release a core's MCLR pin (HIGH).  Clears the
@@ -608,7 +620,10 @@ impl Chain {
     ///     mid-run.
     /// To fully re-bootstrap (PC ← reset vector, peripherals
     /// re-initialised) the test harness should additionally
-    /// call `apply_reset_all` or its per-core variant.
+    /// call `Chain::apply_reset_all` (whole-chain reset) or,
+    /// for a per-core re-bootstrap, the lower-level
+    /// `dlcp_sim::reset::apply_reset(core, stack, source)`
+    /// (no per-core helper is exposed on `Chain` today).
     pub fn release_core_from_reset(&mut self, core_idx: usize) {
         self.cores[core_idx].mclr_held = false;
     }

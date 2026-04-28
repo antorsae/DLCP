@@ -238,28 +238,32 @@ in the executor's per-core step gate.
 **Mirrors**: "second STDBY press from panel — no response, `S1` did not
 increment, no UART frame on the wire".
 
-**Steps**:
+**Steps (as actually landed in c993454)**:
 
-1. Use Test B setup (MAIN1 held in reset → CONTROL in WAITING)
-2. Snapshot pre-press state: `0x09A` (button_event_cache),
-   `0x0BE` (button_debounced), `0x01F.bit1` (`control_flags.CONNECTED`)
-3. Inject STDBY-button-press by driving CONTROL **RA3 LOW** (active-low
+1. Use Test B setup (MAIN1 held in reset → CONTROL in WAITING).
+2. Inject STDBY-button-press by driving CONTROL **RA3 LOW** (active-low
    button) via `Chain::set_pin_low(0, PortLetter::A, 3)`, then back HIGH
-   after enough ticks for the 4-tick debounce
-4. Step the chain further; capture CONTROL.TX byte stream + post-press
-   internal state
-5. **Assertions** (per codex review — these together diagnose the gate's
-   nature):
+   after enough ticks for the 4-tick debounce.
+3. Step the chain further; capture CONTROL.TX byte stream after the
+   press.
+4. **Assertions** (simpler form than originally proposed — see status
+   note below):
    - **No new `B0/03/00` or `B0/03/01` frame** on CONTROL.TX after the
      press (the panel STDBY route emits this triplet, see
      `src/dlcp_fw/asm/dlcp_control_v171.asm:2702-2718`,
      `standby_wake_broadcast`).
-   - **Debounce DID register the press**: post-press snapshot of `0x09A`
-     and/or `0x0BE` shows bit 0 (RA3) toggled — proves it's not an
-     IR/debounce miss.
-   - **WAITING/reconnect gate still active**: `0x01F.bit1` stays
-     CLEAR after the press — proves the gate is structural (state machine
-     never left WAITING), not soft (which would have toggled the flag).
+   - **CONTROL LCD still reads `Waiting for DLCP`** after the press —
+     proves CONTROL did not transition out of the gated state.
+
+**Status (post-c993454 codex re-review)**: the originally drafted
+3-way diagnostic (UART byte-stream + debounce-cells `0x09A`/`0x0BE` +
+`0x01F.bit1` `control_flags.CONNECTED`) was deferred; the implemented
+test only locks in the byte-stream + LCD-stay form above.  The
+deferred diagnostic would have classified *whether* the gate is
+structural (state machine refuses to leave WAITING) or soft (debounce
+timer reset).  The simpler form is enough to lock the gate-held
+contract for the hardware-observed second-STDBY-press case but does
+not classify the gate's nature.  Tracked as a follow-up upgrade.
 
 **Why this gate is expected to hold** (per codex cross-reference): the
 V1.71 reconnect_wait_loop intentionally consumes only RIGHT (RC5) and
@@ -281,8 +285,7 @@ comment.
 **Primitives**: same as Test B + RA3 pin injection (already supported by
 existing `set_pin_high/low` API).
 **Risk**: medium — depends on whether the gate is structural or soft;
-the three-way assertion shape resolves which it is, regardless of
-outcome.
+the deferred 3-way upgrade would resolve which it is.
 
 #### Test 7.2.D (optional, encodes task #44) — `control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded`
 

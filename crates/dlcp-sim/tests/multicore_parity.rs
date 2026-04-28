@@ -2165,10 +2165,19 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     // CONTROL writes in the cold-boot pre-handshake path -- not the
     // post-failure stuck-in-WAITING state we're trying to model.
     //
+    // Codex review of 1356ed2, MEDIUM #2 follow-up: the original
+    // fix used `MAIN0 PC > 0x1000` as the boot anchor, but 0x1000
+    // is just the user reset trampoline -- a startup-banner state
+    // could PC-sample at 0x1014 (cold-init jump) and falsely pass.
+    // The more authoritative anchor is "DSP init has acked at
+    // least 1000 bytes" -- the same predicate the 3-core boot test
+    // uses to declare convergence, proving MAIN0 ran deep into the
+    // V3.2 I2C-driven DSP setup which only happens after the
+    // cold-init cascade is well past the startup-banner phase.
+    //
     // Stronger convergence pattern:
-    //   (1) require MAIN0 PC > 0x4000 (V3.2 app code -- same
-    //       threshold the 3-core boot test uses).  This rules out
-    //       the `WAITING == startup banner` failure mode.
+    //   (1) require DSP bytes_acked >= 1000 (MAIN0 cleared deep
+    //       boot init, regardless of where PC samples).
     //   (2) THEN require LCD line 1 == `Waiting for DLCP`.
     //   (3) THEN step further chunks and require it to stay there
     //       (a chain-ring regression that lets MAIN0 alone satisfy
@@ -2179,26 +2188,30 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     // 2-core LCD parity test converges in ~5 B ticks; with MAIN1
     // held in reset only 2 cores effectively step, so this is
     // generous.
-    let mut main0_booted_at_chunk: Option<usize> = None;
+    const MAIN0_DSP_BOOT_ACK_THRESHOLD: u64 = 1000;
+    let mut main0_dsp_booted_at_chunk: Option<usize> = None;
     let mut first_waiting_chunk: Option<usize> = None;
     for chunk in 0..32 {
         chain.step_ticks(250_000_000);
         let main0_pc = chain.cores[i_main0].pc();
+        let dsp_acks = chain.tas3108_slaves[i_dsp0].bytes_acked;
         let lcd = &chain.lcd_slaves[i_lcd];
         eprintln!(
             "P3.8b chunk {chunk}: tick={}, MAIN0 PC=0x{main0_pc:04X}, \
-             LCD line1={:?}, line2={:?}",
+             DSP acks={dsp_acks}, LCD line1={:?}, line2={:?}",
             chain.current_tick,
             lcd.line1(),
             lcd.line2(),
         );
-        if main0_booted_at_chunk.is_none() && main0_pc > 0x1000 {
-            main0_booted_at_chunk = Some(chunk);
+        if main0_dsp_booted_at_chunk.is_none()
+            && dsp_acks >= MAIN0_DSP_BOOT_ACK_THRESHOLD
+        {
+            main0_dsp_booted_at_chunk = Some(chunk);
         }
-        // Only honour a WAITING match AFTER MAIN0 has crossed
-        // the boot threshold -- the startup-banner false-positive
-        // sits below that.
-        if main0_booted_at_chunk.is_some()
+        // Only honour a WAITING match AFTER MAIN0's DSP has
+        // crossed the deep-boot threshold -- the startup-banner
+        // false-positive sits before this.
+        if main0_dsp_booted_at_chunk.is_some()
             && lcd.line1() == EXPECTED_LINE1
             && first_waiting_chunk.is_none()
         {
@@ -2207,28 +2220,31 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
         }
     }
     eprintln!(
-        "P3.8b main0_booted_at_chunk={main0_booted_at_chunk:?}, \
+        "P3.8b main0_dsp_booted_at_chunk={main0_dsp_booted_at_chunk:?}, \
          first_waiting_chunk={first_waiting_chunk:?}"
     );
 
     assert!(
-        main0_booted_at_chunk.is_some(),
-        "MAIN0 PC never crossed V3.2 boot threshold (>0x4000) in 8 B \
-         ticks; final PC=0x{:04X}.  Chain harness regression or budget \
-         too short.",
+        main0_dsp_booted_at_chunk.is_some(),
+        "MAIN0 DSP bytes_acked never reached {} in 8 B ticks; final \
+         acks={}, MAIN0 PC=0x{:04X}.  Chain harness regression or \
+         budget too short.",
+        MAIN0_DSP_BOOT_ACK_THRESHOLD,
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
         chain.cores[i_main0].pc(),
     );
     assert!(
         first_waiting_chunk.is_some(),
         "CONTROL LCD never reached `Waiting for DLCP` AFTER MAIN0 \
-         booted to app code; final LCD: line1={:?}, line2={:?}, \
-         MAIN0 PC=0x{:04X}.  Either MAIN0 is somehow satisfying \
-         CONTROL's heartbeat without MAIN1 forwarding (chain-ring \
-         regression -- check `couple_uart` edges) or CONTROL parked \
-         on a different screen.",
+         crossed DSP-init boot threshold; final LCD: line1={:?}, \
+         line2={:?}, MAIN0 PC=0x{:04X}, DSP acks={}.  Either MAIN0 \
+         is somehow satisfying CONTROL's heartbeat without MAIN1 \
+         forwarding (chain-ring regression -- check `couple_uart` \
+         edges) or CONTROL parked on a different screen.",
         chain.lcd_slaves[i_lcd].line1(),
         chain.lcd_slaves[i_lcd].line2(),
         chain.cores[i_main0].pc(),
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
     );
 
     // Stay-in-WAITING confirmation: step further chunks and
@@ -2259,11 +2275,17 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     }
 
     let lcd = &chain.lcd_slaves[i_lcd];
-    let main0_pc = chain.cores[i_main0].pc();
+    // Final DSP-acks sanity: MAIN0 must still be past the
+    // deep-boot threshold (DSP init complete) -- this is the
+    // monotonic, authoritative "MAIN0 ran past startup banner"
+    // anchor that PC-range checks can't provide reliably.
     assert!(
-        main0_pc > 0x1000,
-        "MAIN0 PC must still be in V3.2 app code at final \
-         assertion; got 0x{main0_pc:04X}"
+        chain.tas3108_slaves[i_dsp0].bytes_acked
+            >= MAIN0_DSP_BOOT_ACK_THRESHOLD,
+        "MAIN0 DSP bytes_acked must remain >= {} at final \
+         assertion; got {}",
+        MAIN0_DSP_BOOT_ACK_THRESHOLD,
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
     );
     assert_eq!(
         lcd.line1(),
