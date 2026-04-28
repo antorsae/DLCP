@@ -283,5 +283,52 @@ class Chain:
         """
         return int(self._inner.run_until_connected(int(limit)))
 
+    def run_until_waiting(self, limit: int) -> int:
+        """Step in 3.2 M-tick chunks up to ``limit`` chunks,
+        returning early as soon as ``is_waiting()`` is True
+        (LCD shows ``"WAITING FOR DLCP"`` on either row).
+        Mirror of
+        ``chain_gpsim.py::SingleMainChainHarness.run_until_waiting``.
+        """
+        return int(self._inner.run_until_waiting(int(limit)))
+
+    def step_many(self, n_chunks: int) -> None:
+        """Step ``n_chunks`` chunks of 3.2 M ticks each (no
+        early-exit predicate).  Mirror of
+        ``chain_gpsim.py::SingleMainChainHarness.step_many``.
+        Used by the V1.7 blackout/wake test to give the
+        firmware time to render the standby screen after
+        a STBY press.
+        """
+        self._inner.step_many(int(n_chunks))
+
+    def set_blackout(self, enabled: bool) -> None:
+        """Toggle the chain's UART-blackout flag.  When
+        enabled, every completed UART TX byte is dropped
+        instead of delivered -- modelling a physical chain
+        disconnect (CAT5 unplug, optocoupler fault).  Cores
+        keep running and TX history is NOT updated for
+        dropped bytes.  Mirror of
+        ``chain_gpsim.py::SingleMainChainHarness.set_blackout``
+        (modulo gpsim's `LinkPipe.clear` step -- the rust
+        engine's destination-side RCREG residual is bounded
+        by the firmware's read latency).
+        """
+        self._inner.set_blackout(bool(enabled))
+
+    def press(self, key: str) -> None:
+        """Inject a panel-button press on CONTROL.  Drives
+        the button's active-low PORTx bit LOW, holds ~1 sec
+        sim (50 M universal ticks, well past V1.71's 4-poll
+        button debounce), releases HIGH, and settles
+        another ~1 sec sim.  Mirror of
+        ``chain_gpsim.py::SingleMainChainHarness.press``.
+
+        Accepted keys (case-insensitive): SELECT, DOWN,
+        STBY, RIGHT, UP, LEFT.  Raises ``ValueError`` for
+        any other key.
+        """
+        self._inner.press(str(key))
+
 
 __all__ = ["Chain", "__version__"]

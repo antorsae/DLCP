@@ -123,6 +123,27 @@ pub struct Chain {
     /// can drive multiple LCDs (rare on the DLCP hardware
     /// but the model permits it).  Task #34.
     pub lcd_couplings: Vec<(usize, usize)>,
+    /// When true, `drain_completed_tx_bytes` discards every
+    /// completed UART TX byte instead of delivering it to
+    /// the destination core's RX path.  Mirror of gpsim's
+    /// `SingleMainChainHarness._blackout` flag (see
+    /// `src/dlcp_fw/sim/chain_gpsim.py::set_blackout`):
+    /// during blackout the cores keep running but no UART
+    /// traffic flows in either direction, modelling a
+    /// physical chain disconnect (CAT5 unplug, optocoupler
+    /// fault, etc.).  The source core's EUSART is still
+    /// drained on every step so completed TX bytes don't
+    /// accumulate -- they're just dropped on the floor
+    /// instead of routed to the wired destination(s).
+    /// Pre-blackout bytes already sitting in the
+    /// destination's RCREG are NOT cleared (gpsim clears
+    /// its `LinkPipe` FIFOs on blackout entry, but the
+    /// destination's silicon-level RCREG is a 1-byte
+    /// holding register, not a FIFO -- the firmware
+    /// reads it within a few hundred Tcy of arrival, so
+    /// the residual is bounded).  Toggle via
+    /// `set_uart_blackout`.
+    pub uart_blackout: bool,
 }
 
 /// One UART byte delivered between two cores.  See
@@ -166,7 +187,17 @@ impl Chain {
             tas3108_couplings: Vec::new(),
             lcd_slaves: Vec::new(),
             lcd_couplings: Vec::new(),
+            uart_blackout: false,
         }
+    }
+
+    /// Enable or disable the UART blackout flag.  When
+    /// enabled, `drain_completed_tx_bytes` discards every
+    /// completed TX byte instead of routing it to wired
+    /// destinations.  See the `Chain::uart_blackout` field
+    /// docstring for the full semantics.
+    pub fn set_uart_blackout(&mut self, enabled: bool) {
+        self.uart_blackout = enabled;
     }
 
     /// Push an HD44780 LCD slave into the chain.  Returns
@@ -902,6 +933,17 @@ impl Chain {
         // the EventKind enum for Phase-4 dual-run delayed
         // propagation, but Phase-3.5 minimum-viable uses
         // the synchronous path.
+        //
+        // Blackout: when `uart_blackout` is true, every
+        // drained byte is discarded instead of delivered.
+        // The drain still ran above so the source EUSART
+        // doesn't pile up bytes that would force-deliver
+        // when blackout clears.  See `Chain::uart_blackout`
+        // for the full semantics + parity rationale vs
+        // gpsim's `SingleMainChainHarness._blackout`.
+        if self.uart_blackout {
+            return;
+        }
         for byte in bytes {
             for &coupling_idx in &matching_couplings {
                 self.deliver_uart_byte(coupling_idx, byte);
@@ -1515,6 +1557,99 @@ mod tests {
             queued_after, 0,
             "drain_completed_tx_bytes must not enqueue UartByteDelivery events; \
              synchronous delivery is required to avoid the same-tick seq race"
+        );
+    }
+
+    /// Regression: `set_uart_blackout(true)` must cause
+    /// `drain_completed_tx_bytes` to discard completed TX
+    /// bytes (no delivery to destination RCREG, no
+    /// `uart_tx_history` entry) while still draining the
+    /// source EUSART so bytes don't accumulate.  Mirror of
+    /// gpsim's `SingleMainChainHarness._blackout` semantics
+    /// for the V1.7 chain blackout/wake migration tests.
+    ///
+    /// Setup mirrors `drain_completed_tx_bytes_does_not_enqueue_*`
+    /// (the test directly above).  The only behavioural delta
+    /// is the `set_uart_blackout(true)` call right before the
+    /// drain.
+    #[test]
+    fn drain_completed_tx_bytes_under_blackout_drops_byte_silently() {
+        let mut chain = Chain::new();
+        let i_src = chain.push_core(Core::new(Variant::Pic18F25K20));
+        let mut dst = Core::new(Variant::Pic18F25K20);
+        dst.memory.write_raw(
+            crate::memory::Address::from_raw(0xFAB),
+            0x90, // SPEN | CREN
+        );
+        let i_dst = chain.push_core(dst);
+        chain.couple_uart(
+            i_src,
+            crate::pinnet::default_tx_pin(),
+            i_dst,
+            crate::pinnet::default_rx_pin(),
+        );
+
+        // Snapshot destination RCREG before injection so we
+        // can prove blackout left it untouched.
+        let rcreg_before = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFAE));
+        let history_len_before = chain.uart_tx_history.len();
+
+        chain.cores[i_src]
+            .peripherals
+            .eusart
+            .push_completed_tx_byte_for_test(0x42);
+
+        // Engage blackout, then drain.
+        chain.set_uart_blackout(true);
+        assert!(chain.uart_blackout, "set_uart_blackout(true) must flip the flag");
+        chain.drain_completed_tx_bytes(i_src);
+
+        // Destination RCREG unchanged (byte dropped, not delivered).
+        let rcreg_after = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFAE));
+        assert_eq!(
+            rcreg_after, rcreg_before,
+            "blackout must NOT route the byte to destination RCREG"
+        );
+
+        // No history record (delivery skipped).
+        assert_eq!(
+            chain.uart_tx_history.len(),
+            history_len_before,
+            "blackout must NOT push a uart_tx_history record"
+        );
+
+        // Source EUSART completed-TX FIFO is drained (the
+        // outer take-loop ran before the per-byte deliver
+        // gate).  A second drain finds nothing.
+        chain.drain_completed_tx_bytes(i_src);
+        assert_eq!(
+            chain.uart_tx_history.len(),
+            history_len_before,
+            "second drain under blackout must still produce no history record"
+        );
+
+        // Disengage blackout; subsequent bytes deliver again.
+        chain.set_uart_blackout(false);
+        chain.cores[i_src]
+            .peripherals
+            .eusart
+            .push_completed_tx_byte_for_test(0x55);
+        chain.drain_completed_tx_bytes(i_src);
+        let rcreg_recovered = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFAE));
+        assert_eq!(
+            rcreg_recovered, 0x55,
+            "after clearing blackout, drain must resume delivering bytes"
+        );
+        assert_eq!(
+            chain.uart_tx_history.len(),
+            history_len_before + 1,
+            "after clearing blackout, history records the freshly delivered byte"
         );
     }
 

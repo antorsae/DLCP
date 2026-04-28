@@ -27,7 +27,7 @@
 //! incrementally.
 
 use pyo3::prelude::*;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use std::path::PathBuf;
 
 use dlcp_sim::chain::Chain as RustChain;
@@ -36,7 +36,7 @@ use dlcp_sim::hex::HexImage;
 use dlcp_sim::lcd::Hd44780;
 use dlcp_sim::memory::Variant;
 use dlcp_sim::peripherals::tas3108::Tas3108;
-use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin};
+use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin, PortLetter};
 use dlcp_sim::reset::ResetSource;
 
 /// Path to the project root (the `analysis-sim-rewrite-rust`
@@ -342,6 +342,44 @@ fn lcd_is_waiting(line1: &str, line2: &str) -> bool {
     l1.contains("WAITING FOR DLCP") || l2.contains("WAITING FOR DLCP")
 }
 
+/// V1.6b / V1.71 panel-button keymap: which active-low
+/// PORTx bit each panel button is wired to.  Per the V1.71
+/// source `dlcp_control_v171.asm:1968+` ("0x027.bit0 = RA3
+/// (Standby) ... active LOW"), the firmware treats logic-
+/// LOW on these pins as "button pressed".  Names match
+/// gpsim's `GpsimControlHarness.press` keys so dual-mode
+/// callers can pass identical strings.
+fn panel_button_pin(key: &str) -> Result<(PortLetter, u8), String> {
+    let canonical = key.trim().to_ascii_uppercase();
+    match canonical.as_str() {
+        "SELECT" => Ok((PortLetter::A, 1)),
+        "DOWN" => Ok((PortLetter::A, 2)),
+        "STBY" => Ok((PortLetter::A, 3)),
+        "RIGHT" => Ok((PortLetter::A, 4)),
+        "UP" => Ok((PortLetter::C, 0)),
+        "LEFT" => Ok((PortLetter::C, 5)),
+        _ => Err(format!(
+            "unknown panel button {key:?}; expected one of \
+             SELECT, DOWN, STBY, RIGHT, UP, LEFT"
+        )),
+    }
+}
+
+/// Universal-tick budget for a button press: hold the bit
+/// LOW for `BUTTON_HOLD_TICKS`, then release HIGH and
+/// step `BUTTON_RELEASE_SETTLE_TICKS` more.  V1.71's
+/// `button_scan_debounce` requires the press to be stable
+/// across 4 button-scan polls (`asm:1965 "4-tick stability
+/// counter at 0x0BB"`).  At the K20's ~2.5 ms button-scan
+/// interval, holding for 50 M ticks (~3 M Tcy ≈ 1 sec sim
+/// at 48 MHz universal) gives ~400 polls of headroom -- far
+/// more than the firmware needs and safely past the
+/// debounce threshold.  Mirrors the V1.71+V3.2 STDBY-
+/// button test in
+/// `crates/dlcp-sim/tests/multicore_parity.rs:3736-3739`.
+const BUTTON_HOLD_TICKS: u64 = 50_000_000;
+const BUTTON_RELEASE_SETTLE_TICKS: u64 = 50_000_000;
+
 #[pymethods]
 impl Chain {
     /// Construct a 3-core ring (V1.71 CONTROL + V3.2
@@ -525,6 +563,75 @@ impl Chain {
             }
         }
         limit
+    }
+
+    /// Step in `V17_CHUNK_TICKS` chunks (mirroring gpsim's
+    /// 200K-Tcy / 3.2M-tick chunk cadence) up to `limit`
+    /// chunks, returning early as soon as `is_waiting()` is
+    /// true.  Returns the number of chunks actually consumed
+    /// (== `limit` if the predicate never fired).  Mirror of
+    /// `chain_gpsim.py::SingleMainChainHarness::run_until_waiting`.
+    /// Used by the V1.7 blackout/wake migration test to
+    /// verify CONTROL falls back to the WAITING screen after
+    /// a wake-while-blacked-out.
+    fn run_until_waiting(&mut self, limit: usize) -> usize {
+        for chunk in 0..limit {
+            self.inner.step_ticks(V17_CHUNK_TICKS);
+            if self.is_waiting() {
+                return chunk + 1;
+            }
+        }
+        limit
+    }
+
+    /// Step the chain by `n_chunks` chunks of
+    /// `V17_CHUNK_TICKS` ticks each (no early-exit
+    /// predicate).  Mirror of
+    /// `chain_gpsim.py::SingleMainChainHarness::step_many`.
+    /// Used by the V1.7 blackout/wake migration test to
+    /// give the firmware time to settle into standby (Zzz)
+    /// after the STBY-press, before re-pressing to wake.
+    fn step_many(&mut self, n_chunks: usize) {
+        for _ in 0..n_chunks {
+            self.inner.step_ticks(V17_CHUNK_TICKS);
+        }
+    }
+
+    /// Toggle the chain's UART-blackout flag (defaults to
+    /// false at construction).  When enabled, every
+    /// completed UART TX byte is dropped instead of
+    /// delivered to wired destinations -- modelling a
+    /// physical chain disconnect (CAT5 unplug, optocoupler
+    /// fault).  Cores keep running and TX history is NOT
+    /// updated for dropped bytes.  Mirror of
+    /// `chain_gpsim.py::SingleMainChainHarness::set_blackout`
+    /// modulo gpsim's `LinkPipe.clear` step (gpsim flushes
+    /// in-flight bytes at the bridge layer; the rust
+    /// engine's destination-side RCREG residual is bounded
+    /// by the firmware's read latency, ~hundreds of Tcy).
+    fn set_blackout(&mut self, enabled: bool) {
+        self.inner.set_uart_blackout(enabled);
+    }
+
+    /// Inject a panel-button press on CONTROL.  Drives the
+    /// button's active-low PORTx bit LOW, holds for
+    /// `BUTTON_HOLD_TICKS` (50 M ticks ≈ 1 sec sim, well
+    /// past V1.71's 4-poll debounce window), releases the
+    /// bit HIGH, and steps `BUTTON_RELEASE_SETTLE_TICKS`
+    /// more.  Mirror of
+    /// `chain_gpsim.py::SingleMainChainHarness::press`.
+    /// Accepted keys (case-insensitive): SELECT, DOWN,
+    /// STBY, RIGHT, UP, LEFT.  Raises `ValueError` for
+    /// any other key.  See `panel_button_pin` for the
+    /// PORTx mapping rationale.
+    fn press(&mut self, key: &str) -> PyResult<()> {
+        let (port, bit) = panel_button_pin(key)
+            .map_err(PyValueError::new_err)?;
+        self.inner.set_pin_low(self.i_ctl, port, bit);
+        self.inner.step_ticks(BUTTON_HOLD_TICKS);
+        self.inner.set_pin_high(self.i_ctl, port, bit);
+        self.inner.step_ticks(BUTTON_RELEASE_SETTLE_TICKS);
+        Ok(())
     }
 }
 

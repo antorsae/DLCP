@@ -14,8 +14,10 @@ The two parity gates are:
 2. Blackout + STBY press leaves the chain in the WAITING state after
    wake — spec §A5 "Chain blackout/wake WAITING".
 
-Each test is marked ``gpsim`` + ``slow``; the shifted variant is a
-session-scoped fixture so the V1.7 sources are assembled only once.
+Each test is marked ``gpsim`` + ``slow``; the V1.7 hex images are
+built once per test module by the ``v17_chain_images`` fixture
+(scope=module) so the V1.7 source is assembled at most twice
+(canonical + shifted) per pytest invocation.
 
 Phase 4 dual-mode migration (P4.4): each test that has been wired to
 both gpsim AND the rust ``dlcp-sim`` engine carries the
@@ -295,38 +297,84 @@ def _run_blackout_wake(pair: SingleMainChainHarness) -> None:
     )
 
 
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_v17_stock_v16b_blackout_wake_shows_waiting(stock_main_hex: Path) -> None:
+def _run_blackout_wake_rust(control_hex: Path) -> None:
+    """Rust-backend body of the chain blackout/wake tests.
+
+    Mirror of `_run_blackout_wake` but uses the rust facade.
+    Build a single-MAIN chain via :meth:`Chain.from_v17_chain`,
+    run to the connected Volume display, set blackout, press
+    STBY (CONTROL enters Zzz standby), step until the standby
+    screen is rendered, press STBY again (wake), and confirm
+    CONTROL falls back to WAITING because the chain link is
+    blacked out.
+    """
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(control_hex))
+    chain.run_until_connected(limit=140)
+    assert chain.is_connected(), (
+        f"rust chain not connected; lcd={chain.lcd_lines()!r}"
+    )
+    chain.set_blackout(True)
+    chain.press("STBY")
+    chain.step_many(80)
+    assert "ZZZ" in chain.lcd_lines()[0].upper(), (
+        f"rust chain did not enter standby before wake; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+    chain.press("STBY")
+    chain.run_until_waiting(limit=20)
+    assert chain.is_waiting(), (
+        f"rust chain did not fall back to WAITING after wake "
+        f"blackout; lcd={chain.lcd_lines()!r}"
+    )
+
+
+def _run_blackout_wake_gpsim(control_hex: Path, main_hex: Path) -> None:
+    """gpsim-backend body of the chain blackout/wake tests.
+
+    Lifted from the original 3 gpsim-only tests so the dual-
+    mode wrappers share a single implementation.  No logic
+    change.
+    """
     _require_gpsim()
-    pair = _new_pair(STOCK_CONTROL_HEX_V16B, stock_main_hex)
+    pair = _new_pair(control_hex, main_hex)
     try:
         _run_blackout_wake(pair)
     finally:
         pair.close()
 
 
+@pytest.mark.dual_supported
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v17_stock_v16b_blackout_wake_shows_waiting(
+    stock_main_hex: Path, dlcp_sim_backend: str
+) -> None:
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _run_blackout_wake_rust(STOCK_CONTROL_HEX_V16B)
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _run_blackout_wake_gpsim(STOCK_CONTROL_HEX_V16B, stock_main_hex)
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v17_rebuilt_blackout_wake_shows_waiting(
-    v17_chain_images, stock_main_hex: Path
+    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
 ) -> None:
-    _require_gpsim()
-    pair = _new_pair(v17_chain_images["v17"], stock_main_hex)
-    try:
-        _run_blackout_wake(pair)
-    finally:
-        pair.close()
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _run_blackout_wake_rust(v17_chain_images["v17"])
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _run_blackout_wake_gpsim(v17_chain_images["v17"], stock_main_hex)
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v17_shifted_blackout_wake_shows_waiting(
-    v17_chain_images, stock_main_hex: Path
+    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
 ) -> None:
-    _require_gpsim()
-    pair = _new_pair(v17_chain_images["shifted"], stock_main_hex)
-    try:
-        _run_blackout_wake(pair)
-    finally:
-        pair.close()
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _run_blackout_wake_rust(v17_chain_images["shifted"])
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _run_blackout_wake_gpsim(v17_chain_images["shifted"], stock_main_hex)
