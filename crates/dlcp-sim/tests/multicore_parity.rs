@@ -1324,6 +1324,18 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
 /// route-byte traffic per ring edge so we can see which
 /// step (1-5) actually fires.  `#[ignore]`d so the routine
 /// suite stays fast; budget is 2 B ticks (~30 s wall).
+///
+/// **Status (post-9430ec1)**: dev-time diagnostic dump only --
+/// the contract-checking equivalents codex originally requested
+/// for this probe (stage-1 convergence assert, frame-level
+/// `windows()` parsing) live in the richer
+/// `three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2`
+/// probe (commits 368e8c3 + 56841f4).  Task #40 was closed as
+/// obsolete on that basis; this probe is intentionally retained
+/// as a byte-level dump aid for P3.6b research, NOT a regression
+/// gate.  Do not strengthen the in-body asserts here without
+/// re-evaluating whether the work belongs in
+/// diag_page_polls_pb1_and_pb2 instead.
 #[test]
 #[ignore = "P3.6 step 2 byte-level trace -- run with --nocapture to inspect"]
 fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
