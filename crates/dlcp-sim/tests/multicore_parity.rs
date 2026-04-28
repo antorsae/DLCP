@@ -1281,9 +1281,24 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         let initial_control_flags = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x01F));
+        // BSR is at PIC18 SFR 0xFE0.  Watching it lets the
+        // probe see how often BSR transitions to/from BANK 1
+        // during the run.  Frequent BSR=1 transitions support
+        // the step-8(a) inference that the busy-loop check
+        // sometimes sees physical 0x19A (= v171_diag_present_
+        // snap) instead of physical 0x09A.  Codex LOW from
+        // 367a381 -- the inference is now backed by direct
+        // BSR-transition data, but to be perfectly tight we'd
+        // need a per-PC-hit BSR snapshot at PC=0x0EEC, which
+        // CycleProbe doesnt support and is out of scope for
+        // research closure.
+        let initial_bsr = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0xFE0));
         probe.add_watched_ram(0x01F, "control_flags (bit3 = busy-loop exit predicate)", initial_control_flags);
         probe.add_watched_ram(0x09A, "0x09A BANK0 (busy-loop predicate when BSR=0; RIGHT event byte)", initial_event_byte_b0);
         probe.add_watched_ram(0x19A, "0x19A BANK1 (v171_diag_present_snap; busy-loop predicate when BSR=1)", initial_event_byte_b1);
+        probe.add_watched_ram(0xFE0, "BSR (bank-select; if leaks to 1 mid-loop, check reads 0x19A not 0x09A)", initial_bsr);
         probe.add_watched_ram(0x196, "v171_diag_target", initial_target);
         probe.add_watched_ram(0x197, "v171_diag_present", initial_present);
         probe.add_watched_ram(0x198, "v171_diag_poll_lo", initial_poll_lo);
