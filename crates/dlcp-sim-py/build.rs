@@ -19,9 +19,14 @@
 //! examples / etc., so a future `cargo test` inside this
 //! crate that links against pyo3 would still hit the
 //! `_Py_*` link errors -- we'll address that in P4.2 if it
-//! comes up.  On non-macOS targets the helper is a no-op
-//! (Linux's ELF linker tolerates undefined shared-lib
-//! symbols by default).
+//! comes up.  On Linux (ELF) the helper is a no-op --
+//! ELF linkers tolerate undefined shared-lib symbols by
+//! default, so no extra flags are needed.  On
+//! `wasm32-unknown-emscripten` the helper emits its own
+//! emscripten-specific cdylib link args (`-sSIDE_MODULE=2`,
+//! `-sWASM_BIGINT`); we don't target wasm today but the
+//! comment used to call those targets "no-op", which was
+//! wrong.
 
 fn main() {
     pyo3_build_config::add_extension_module_link_args();
