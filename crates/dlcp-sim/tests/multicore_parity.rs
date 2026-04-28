@@ -1751,9 +1751,10 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // 0x80 needs 128 cadence-loop calls to expire once, the
     // sim only ran 39 calls in this window, and the call
     // rate is bottlenecked by display_loop_iteration time.
-    // Codex MEDIUM from 82f29c5 review.  Step-6 work: cycle-
-    // count display_loop_iteration's callees vs design
-    // budget (~31,250 Tcy per 128 Hz cadence tick).
+    // Codex LOW from 82f29c5 review (Stage 3 budget comment
+    // wording).  Step-6 work: cycle-count display_loop_
+    // iteration's callees vs design budget (~31,250 Tcy
+    // per 128 Hz cadence tick).
     chain.run_until(
         50_000_000, // 50 M = ~350 ms wall per chunk
         8_000_000_000,
