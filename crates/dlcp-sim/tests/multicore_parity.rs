@@ -1189,6 +1189,18 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x1FE6, 0x1FE8, "call button_scan @ 0x1FE6 (control_core_service_17E8)");
         probe.add_pc_range(0x21AE, 0x21B0, "call button_scan @ 0x21AE (unknown #2)");
         probe.add_pc_range(0x21DC, 0x21DE, "call button_scan @ 0x21DC (unknown #3)");
+        // P3.6b research step 8a: count actual loop exits by
+        // probing the instruction immediately AFTER the
+        // busy-loop's `bra flow_display_loop_iteration_0CB4`
+        // at PC 0x0F00.  PC 0x0F02 = `movlw 0x00` (second-
+        // check start at asm:2898).  hit_count here = number
+        // of times the busy-loop check let execution fall
+        // through, i.e. the number of loop exits.
+        probe.add_pc_range(0x0F02, 0x0F04, "loop EXIT (after bra @ 0x0F00)");
+        // Also probe the loop-check entry PC so we can compute
+        // average iterations-per-exit = loop-check-entries /
+        // loop-exits.
+        probe.add_pc_range(0x0EEC, 0x0EEE, "loop CHECK ENTRY (flow_..._0D7A)");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
@@ -1247,6 +1259,31 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         let initial_poll_hi = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x199));
+        // P3.6b research step 8a (task #69): the
+        // display_loop_iteration busy-loop at
+        // flow_display_loop_iteration_0D7A (asm:2885-2897)
+        // exits when `0x9A != 0 || control_flags.bit3` is
+        // true.  Watch all three cells.  Note that 0x9A
+        // BANKED reads physical 0x09A when BSR=0
+        // (display_loop_iteration sets `movlb 0x00` near
+        // its top at asm:2767) and physical 0x19A when
+        // BSR=1; watch both to disambiguate which one the
+        // loop actually polls in this run.  Also watch
+        // 0x01F (control_flags) so bit-3 transitions are
+        // visible alongside other flag edits (bit 0 ir_armed,
+        // bit 1 connected, bit 2 rx_route_seen, bit 3 ?).
+        let initial_event_byte_b0 = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x09A));
+        let initial_event_byte_b1 = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x19A));
+        let initial_control_flags = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x01F));
+        probe.add_watched_ram(0x01F, "control_flags (bit3 = busy-loop exit predicate)", initial_control_flags);
+        probe.add_watched_ram(0x09A, "0x09A BANK0 (busy-loop predicate when BSR=0; RIGHT event byte)", initial_event_byte_b0);
+        probe.add_watched_ram(0x19A, "0x19A BANK1 (v171_diag_present_snap; busy-loop predicate when BSR=1)", initial_event_byte_b1);
         probe.add_watched_ram(0x196, "v171_diag_target", initial_target);
         probe.add_watched_ram(0x197, "v171_diag_present", initial_present);
         probe.add_watched_ram(0x198, "v171_diag_poll_lo", initial_poll_lo);
