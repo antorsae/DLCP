@@ -1013,10 +1013,67 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // can dump byte streams for diagnosis on failure.
     let stage2_history_len = chain.uart_tx_history.len();
 
+    // P3.6b research: snapshot V1.71 diag-state RAM + EUSART
+    // RX state right before the stage-3 sampler enters its
+    // poll/reply window.  Compared against post-sampler
+    // values it tells us whether the sampler window saw any
+    // diag-related state movement at all (e.g. parser
+    // ever-touched cmd-byte vs frozen at 0x00).
+    let pre_stage3_snapshot = (
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196)), // diag_target
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x197)), // diag_present
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19A)), // diag_present_snap
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19C)), // diag_flags
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19D)), // diag_reset_seen
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAB)), // RCSTA
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6)), // rx_frame_position
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F)), // rx_parsed_cmd
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030)), // rx_parsed_data
+    );
+    let pre_stage3_tick = chain.current_tick;
+
     // Stage 3 PC sampler: step in small chunks and capture
     // CONTROL.PC + key state at each pause.  Helps surface
     // whether `v171_diag_pb_screen` (around asm line 3550)
     // is actually entered.
+    //
+    // P3.6b research instrumentation (codex review of 67bfa1d):
+    // also track per-chunk CONTROL EUSART/RX state, OERR rising
+    // edges, parser-latch transitions, and parser-cmd-data
+    // history, so we can distinguish "byte dropped" vs "byte
+    // accepted but not latched" vs "latched but wrong cmd/data"
+    // vs "entered BF/2N but missed last-frame branch" vs
+    // "executed branch but RAM write/toggle failed".
+    //
+    // RAM addresses (from `src/dlcp_fw/asm/dlcp_control_ram.inc`,
+    // *physical* addresses -- simulator's `Address::from_raw`
+    // uses bank-flattened addressing).
+    // BANK 0 parser state:
+    //   0x02F = rx_parsed_cmd      (latched by rx_parser_entry)
+    //   0x030 = rx_parsed_data     (latched by rx_parser_entry)
+    //   0x098 = rx_ring_rd         (parser consumer index;
+    //                                advances by 1 per byte
+    //                                consumed from the 48-byte
+    //                                rx_ring_base@0x066)
+    //   0x099 = rx_ring_wr         (ISR producer index)
+    //   0x0A6 = rx_frame_position  (parser state: 0=route, 1=cmd, 2=data)
+    //   0x0AB = bf08_fault_byte    (V1.71 BF/08 cache)
+    //   0x0B7 = rx_ring_staging    (single-byte holding cell)
+    // BANK 1 V1.71 diag state (physical 0x18N):
+    //   0x196 = v171_diag_target
+    //   0x197 = v171_diag_present
+    //   0x198 = v171_diag_poll_lo
+    //   0x199 = v171_diag_poll_hi
+    //   0x19A = v171_diag_present_snap
+    //   0x19C = v171_diag_flags    (bit 0 DIRTY, bit 1 RUNTIME_PENDING,
+    //                                bit 2 RESET_PENDING per dlcp_control_ram.inc:307+)
+    //   0x19D = v171_diag_reset_seen
+    //
+    // SFR addresses (PIC18 access bank):
+    //   0xFAB = RCSTA  (bit 7 SPEN, bit 4 CREN, bit 1 OERR, bit 2 FERR)
+    //   0xFAE = RCREG
+    //   0xF9D = PIE1   (bit 5 RCIE)
+    //   0xF9E = PIR1   (bit 5 RCIF)
     let mut pc_histogram: std::collections::HashMap<u16, u32> =
         std::collections::HashMap::new();
     let mut menu_state_histogram: std::collections::HashMap<u8, u32> =
@@ -1029,6 +1086,37 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let mut last_target: u8 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196));
     target_changes.push(last_target);
     let mut bf2x_dispatch_hits: u32 = 0; // PC in 0x0630..0x0696
+    // P3.6b research: EUSART RX state tracking.
+    let mut last_rcsta: u8 = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(0xFAB));
+    let mut oerr_rising_edges: u32 = 0;
+    let mut cren_falling_edges: u32 = 0; // 1 -> 0 = CREN-toggle recovery start
+    let mut max_rx_fifo_depth: usize = 0;
+    let mut max_ring_depth: u8 = 0; // wr - rd modulo ring size
+    let mut rcif_set_chunks: u32 = 0;
+    let mut rcif_clear_chunks: u32 = 0;
+    // P3.6b research: parser-latch transition log -- record
+    // (tick, frame_pos, cmd, data, ring_rd, ring_wr) every
+    // time any of (frame_pos, cmd, data) changes since the
+    // last sample.  Reveals whether the parser is reaching
+    // the BF/27 dispatch (cmd=0x27) or stalling earlier.
+    let mut last_parser_latch: (u8, u8, u8, u8, u8) = (
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6)), // rx_frame_position
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F)), // rx_parsed_cmd
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030)), // rx_parsed_data
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x098)), // rx_ring_rd
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x099)), // rx_ring_wr
+    );
+    let mut parser_latch_log: Vec<(u64, u8, u8, u8, u8, u8)> = Vec::new();
+    parser_latch_log.push((
+        chain.current_tick,
+        last_parser_latch.0,
+        last_parser_latch.1,
+        last_parser_latch.2,
+        last_parser_latch.3,
+        last_parser_latch.4,
+    ));
     let total_chunks: u64 = 200;
     let chunk_ticks: u64 = 10_000_000;
     for _ in 0..total_chunks {
@@ -1070,15 +1158,6 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         if cache_9a & 0x20 != 0 {
             bit5_set_count += 1;
         }
-        // V1.71 diag state RAM (BANK 1, physical addresses):
-        //   0x196 = v171_diag_target
-        //   0x197 = v171_diag_present
-        //   0x198 = v171_diag_poll_lo
-        //   0x199 = v171_diag_poll_hi
-        //   0x19A = v171_diag_present_snap
-        //   0x19C = v171_diag_flags (bit 0 DIRTY, bit 1 RUNTIME_PENDING,
-        //                             bit 2 RESET_PENDING per dlcp_control_ram.inc:307+)
-        //   0x19D = v171_diag_reset_seen
         let poll_lo = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x198));
@@ -1087,6 +1166,65 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         }
         if poll_lo > diag_poll_lo_max {
             diag_poll_lo_max = poll_lo;
+        }
+        // P3.6b research: EUSART RX state.
+        let rcsta = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0xFAB));
+        // OERR rising edge: bit 1 went 0 -> 1.
+        if (rcsta & 0x02) != 0 && (last_rcsta & 0x02) == 0 {
+            oerr_rising_edges += 1;
+        }
+        // CREN falling edge: bit 4 went 1 -> 0 (toggle-recover start).
+        if (rcsta & 0x10) == 0 && (last_rcsta & 0x10) != 0 {
+            cren_falling_edges += 1;
+        }
+        last_rcsta = rcsta;
+        // PIR1.RCIF (bit 5): asserted while FIFO non-empty.
+        let pir1 = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0xF9E));
+        if (pir1 & 0x20) != 0 {
+            rcif_set_chunks += 1;
+        } else {
+            rcif_clear_chunks += 1;
+        }
+        let fifo_depth = chain.cores[i_ctl].peripherals.eusart.rx_fifo_depth();
+        if fifo_depth > max_rx_fifo_depth {
+            max_rx_fifo_depth = fifo_depth;
+        }
+        // SW rx_ring depth (wr - rd, wraparound modulo ring size).
+        let ring_rd = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x098)); // rx_ring_rd
+        let ring_wr = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x099)); // rx_ring_wr
+        let ring_depth = ring_wr.wrapping_sub(ring_rd);
+        if ring_depth > max_ring_depth {
+            max_ring_depth = ring_depth;
+        }
+        // P3.6b research: parser latch transitions.
+        let frame_pos = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x0A6)); // rx_frame_position
+        let cmd_byte = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x02F)); // rx_parsed_cmd
+        let data_byte = chain.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(0x030)); // rx_parsed_data
+        let latch_now = (frame_pos, cmd_byte, data_byte, ring_rd, ring_wr);
+        if latch_now != last_parser_latch {
+            parser_latch_log.push((
+                chain.current_tick,
+                frame_pos,
+                cmd_byte,
+                data_byte,
+                ring_rd,
+                ring_wr,
+            ));
+            last_parser_latch = latch_now;
         }
     }
     let diag_flags = chain.cores[i_ctl]
@@ -1116,6 +1254,189 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     eprintln!("v171_diag_present_snap (0x19A) at end: 0x{diag_present_snap:02X}");
     eprintln!("BF/2N dispatch hits (PC in 0x0630..0x0696): {bf2x_dispatch_hits} / {samples}");
     eprintln!("v171_diag_target trajectory: {:02X?}", target_changes);
+
+    // P3.6b research: pre/post-sampler diag-state snapshot
+    // delta + EUSART RX flow summary + parser-latch
+    // transition log.  Distinguishes the 5 hypotheses:
+    //   - max_rx_fifo_depth always 0 + no parser cmd
+    //     transitions = bytes never enter HW FIFO (clock /
+    //     wire-coupling bug).
+    //   - rcif_set_chunks > 0 but no parser-latch motion =
+    //     ISR not draining FIFO (RXIF latency bug,
+    //     hypothesis #1).
+    //   - oerr_rising_edges > 0 = transient overrun,
+    //     hypothesis #2 (recovery via CREN toggle visible
+    //     as cren_falling_edges > 0).
+    //   - parser-latch reaches cmd=0x21..0x26 but never
+    //     0x27 = burst arrives but BF/27 last-frame byte
+    //     gets dropped/corrupted (alignment bug between
+    //     hop-2 forward and CONTROL parse).
+    //   - parser-latch reaches cmd=0x27 but diag_present
+    //     stays 0 = dispatch reaches handler but RAM bit
+    //     write fails (BANK/RAM aliasing, hypothesis #5).
+    let post_stage3_snapshot = (
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196)),
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x197)),
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19A)),
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19C)),
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19D)),
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAB)),
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6)), // rx_frame_position
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F)), // rx_parsed_cmd
+        chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030)), // rx_parsed_data
+    );
+    let post_stage3_tick = chain.current_tick;
+    eprintln!(
+        "\n=== P3.6b research: diag-state snapshot delta (pre vs post sampler) ==="
+    );
+    eprintln!(
+        "tick: pre={pre_stage3_tick}, post={post_stage3_tick}, \
+         delta={}",
+        post_stage3_tick - pre_stage3_tick
+    );
+    eprintln!(
+        "RAM 0x196 diag_target:        pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.0, post_stage3_snapshot.0
+    );
+    eprintln!(
+        "RAM 0x197 diag_present:       pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.1, post_stage3_snapshot.1
+    );
+    eprintln!(
+        "RAM 0x19A diag_present_snap:  pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.2, post_stage3_snapshot.2
+    );
+    eprintln!(
+        "RAM 0x19C diag_flags:         pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.3, post_stage3_snapshot.3
+    );
+    eprintln!(
+        "RAM 0x19D diag_reset_seen:    pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.4, post_stage3_snapshot.4
+    );
+    eprintln!(
+        "SFR 0xFAB RCSTA:              pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.5, post_stage3_snapshot.5
+    );
+    eprintln!(
+        "RAM 0x0A6 rx_frame_position:  pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.6, post_stage3_snapshot.6
+    );
+    eprintln!(
+        "RAM 0x02F rx_parsed_cmd:      pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.7, post_stage3_snapshot.7
+    );
+    eprintln!(
+        "RAM 0x030 rx_parsed_data:     pre=0x{:02X}, post=0x{:02X}",
+        pre_stage3_snapshot.8, post_stage3_snapshot.8
+    );
+    eprintln!("\n=== P3.6b research: EUSART RX flow summary ===");
+    eprintln!("OERR rising edges (RCSTA bit 1, 0->1):  {oerr_rising_edges}");
+    eprintln!("CREN falling edges (RCSTA bit 4, 1->0): {cren_falling_edges}");
+    eprintln!(
+        "max RX FIFO depth (HW, 0..=2):          {max_rx_fifo_depth} (sampler granularity {chunk_ticks} ticks)"
+    );
+    eprintln!(
+        "max SW rx_ring depth (wr-rd):           {max_ring_depth} (u8 wraparound; nonzero = parser falling behind)"
+    );
+    eprintln!(
+        "PIR1.RCIF chunks:                       set={rcif_set_chunks}, clear={rcif_clear_chunks} (ratio = ISR drain duty cycle)"
+    );
+    eprintln!(
+        "parser-latch transitions captured:      {} (each = (frame_pos, cmd, data, ring_rd, ring_wr) changed at sampler boundary)",
+        parser_latch_log.len()
+    );
+    let head = parser_latch_log.iter().take(8);
+    let tail_start = parser_latch_log.len().saturating_sub(8);
+    eprintln!(
+        "parser-latch first 8: {:#?}",
+        head.collect::<Vec<_>>()
+    );
+    if parser_latch_log.len() > 8 {
+        eprintln!(
+            "parser-latch last 8:  {:#?}",
+            parser_latch_log.iter().skip(tail_start).collect::<Vec<_>>()
+        );
+    }
+
+    // P3.6b research: per-byte CONTROL.RX arrivals during
+    // the stage-3 window (delivery view).  Each record is a
+    // byte that successfully reached
+    // `Eusart::deliver_rx_byte` on CONTROL -- the byte may
+    // still have been gated by RCSTA SPEN/CREN, but its
+    // tick + value lets us correlate against parser-latch
+    // motion and spot timing gaps.
+    let ctl_rx_arrivals: Vec<(u64, usize, u8)> = chain
+        .uart_tx_history
+        .iter()
+        .skip(stage2_history_len)
+        .filter(|r| r.dst_core == i_ctl)
+        .map(|r| (r.tick, r.src_core, r.byte))
+        .collect();
+    eprintln!(
+        "\n=== P3.6b research: per-byte CONTROL.RX arrivals (stage 3, total {}) ===",
+        ctl_rx_arrivals.len()
+    );
+    // Inter-byte spacing histogram (in chunk_ticks units),
+    // bucketed to surface obvious bursts vs droughts.
+    if ctl_rx_arrivals.len() >= 2 {
+        let mut gaps: Vec<u64> = Vec::with_capacity(ctl_rx_arrivals.len() - 1);
+        for w in ctl_rx_arrivals.windows(2) {
+            gaps.push(w[1].0 - w[0].0);
+        }
+        gaps.sort_unstable();
+        let n = gaps.len();
+        let p50 = gaps[n / 2];
+        let p90 = gaps[(n * 9) / 10];
+        let max_gap = *gaps.last().unwrap();
+        let min_gap = *gaps.first().unwrap();
+        eprintln!(
+            "  inter-byte tick gaps (n={n}): min={min_gap}, p50={p50}, p90={p90}, max={max_gap} \
+             (15444 ticks ~= one 31250-baud byte time @ 48 MHz universal time base)"
+        );
+    }
+    // Locate any BF/2N reply burst (route 0xBF + cmd in
+    // 0x21..=0x27) and dump a window around it -- this is
+    // the byte stream that should arrive at CONTROL.RX
+    // immediately AFTER the B1/21 query and that the
+    // parser is supposed to dispatch to v171_bf2x_case_check.
+    // If the burst is missing entirely, the wire-coupling
+    // dropped it.  If present but not consumed, the parser
+    // is failing to latch cmd in 0x21..0x27 -- that's the
+    // smoking gun for hypothesis #4 (alignment) or #5
+    // (BANK/RAM aliasing in the BF/2N dispatch handler).
+    let mut burst_starts: Vec<usize> = Vec::new();
+    for (i, w) in ctl_rx_arrivals.windows(2).enumerate() {
+        if w[0].2 == 0xBF && (0x21..=0x27).contains(&w[1].2) {
+            burst_starts.push(i);
+        }
+    }
+    eprintln!(
+        "  BF/2N (route 0xBF + cmd 0x21..0x27) byte pairs in CONTROL.RX: {}",
+        burst_starts.len()
+    );
+    for &start in &burst_starts {
+        let from = start.saturating_sub(2);
+        let to = (start + 24).min(ctl_rx_arrivals.len());
+        eprintln!(
+            "    burst @ idx={start} (tick={}): {} bytes around it:",
+            ctl_rx_arrivals[start].0,
+            to - from
+        );
+        for (tick, src, byte) in &ctl_rx_arrivals[from..to] {
+            eprintln!("      tick={tick:>12} src=core[{src}] byte=0x{byte:02X}");
+        }
+    }
+    // Also dump the FULL arrival stream so we can correlate
+    // tick with each arrival (no truncation -- 186 lines is
+    // small; this lets codex spot patterns the burst-window
+    // dump alone misses).
+    eprintln!("  full arrival stream:");
+    for (tick, src, byte) in ctl_rx_arrivals.iter() {
+        eprintln!(
+            "    tick={tick:>12} src=core[{src}] byte=0x{byte:02X}"
+        );
+    }
 
     // Stage 3: run until both PB-reply bits land in
     // v171_diag_present.  Budget was 10 B during the

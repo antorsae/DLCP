@@ -171,6 +171,18 @@ impl Eusart {
         self.rx_fifo.clear();
     }
 
+    /// Current RX FIFO occupancy (0..=RX_FIFO_DEPTH = 0..=2).
+    /// Read-only accessor for diagnostic probes (e.g. P3.6b
+    /// research probe) that need to distinguish "byte
+    /// accepted into FIFO and waiting for RCREG drain" from
+    /// "FIFO empty (parser already drained)" without reading
+    /// the SFR-visible RCREG (which always shows the OLDEST
+    /// buffered byte regardless of depth).
+    #[inline]
+    pub fn rx_fifo_depth(&self) -> usize {
+        self.rx_fifo.len()
+    }
+
     /// Drain one completed TX byte from the FIFO, or
     /// `None` if no byte has finished shifting since the
     /// last call.  Called by the chain dispatcher after
