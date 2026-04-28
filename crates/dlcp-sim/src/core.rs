@@ -196,9 +196,14 @@ pub struct PcRangeProbe {
     /// Human-readable label printed in probe summaries
     /// (e.g. `"v171_bf2x_case_check"`).
     pub label: &'static str,
-    /// Count of instructions whose PRE-step PC fell in
-    /// `[start, end)`.  Each call to `exec::step` increments
-    /// this once if the PC at entry is in range.
+    /// Count of instructions ACTUALLY EXECUTED whose
+    /// pre-fetch PC fell in `[start, end)`.  Incremented
+    /// inside `exec::step` AFTER the IRQ-dispatch
+    /// early-return, so a step that vectors to an ISR
+    /// (rather than executing the instruction at PC) does
+    /// NOT increment -- the same PC counts on the next
+    /// step that actually fetches+executes it.  Codex
+    /// MEDIUM from 92fe865.
     pub hit_count: u64,
 }
 
