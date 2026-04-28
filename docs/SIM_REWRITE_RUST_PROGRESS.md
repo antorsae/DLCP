@@ -202,7 +202,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: `crates/dlcp-sim/src/chain.rs` + `crates/dlcp-sim/src/pinnet.rs`.
   - notes: Phase-3.2 lands the API surface only -- the three coupling primitives record their wiring in `Chain::pinnet` (`UartCoupling` / `PinCoupling` / `I2cCoupling`) but the actual event-driven byte/edge propagation is dispatched in P3.5 (multicore parity test).  `PinId { PortLetter, bit }` types are defined here for use across all three primitives.  Default TX/RX pin constants (RC6/RC7) anchor the PIC18 EUSART convention.
 
-- [done] P3.3 Clock-domain handling — per-Core `ticks_per_tcy` (CONTROL=16, MAIN=12), optional `tick_drift_ppm`
+- [done] P3.3 Clock-domain handling — per-Core `ticks_per_tcy` (CONTROL=16, MAIN=12), optional `ClockDomain::drift_ppm`
   - verify: `cd crates/dlcp-sim && cargo test --release -- clock::tests`
   - artifact: `crates/dlcp-sim/src/clock.rs`.
   - notes: `ClockDomain { ticks_per_tcy, drift_ppm }` per-core wrapper; `apply_drift(ticks)` returns the drifted-tick count using parts-per-million arithmetic.  Default drift is 0 (matches the spec's optional `drift_ppm`).  `ticks_per_tcy` already exists in `peripherals/osc.rs`; this module wraps it with the per-core drift state Phase-3.5 will use to model the documented HFINTOSC tolerance (±2% per DS40001303H §26.2 / DS39632E §27.2).

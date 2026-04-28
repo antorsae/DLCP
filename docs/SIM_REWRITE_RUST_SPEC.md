@@ -272,7 +272,7 @@ cargo test -p dlcp-sim --test 'peripheral_*_parity' --release
 - **Clock domain handling**:
   - Each `Core` has `ticks_per_tcy: u32` derived from its `ClockSpec`. CONTROL = 16 universal ticks per Tcy; MAIN = 12 universal ticks per Tcy. Both are exact integers — no rounding loss.
   - Single global `now_tick: u64` (48 MHz universal clock). To advance one instruction on a core, the scheduler dequeues the next event (any peripheral or instruction-complete deadline) and calls back into the appropriate core.
-  - Crystal skew (optional): per-core `tick_drift_ppm: i32` field (default 0). When non-zero, each instruction's deadline is `ticks_per_tcy × (1 + drift_ppm × 1e-6)` rounded to the nearest tick; default seeded PRNG produces reproducible drift sequences. (At ±2000 ppm the drift is ±0.032 ticks per Tcy — small enough that integer rounding doesn't deplete fidelity.)
+  - Crystal skew (optional): per-core `ClockDomain::drift_ppm: i32` field (default 0; settable via `ClockDomain::with_drift_ppm`). When non-zero, each instruction's deadline is `ticks_per_tcy × (1 + drift_ppm × 1e-6)` rounded to the nearest tick; default seeded PRNG produces reproducible drift sequences. (At ±2000 ppm the drift is ±0.032 ticks per Tcy — small enough that integer rounding doesn't deplete fidelity.)
 
 - **Boot-offset model** — three configurable scenarios per `Chain`:
   ```rust
