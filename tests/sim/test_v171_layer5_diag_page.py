@@ -46,6 +46,30 @@ from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+# All 39 tests in this file are dual-mode-supported.  37 are pure
+# source/hex structural gates (no sim backend); 2 sim tests
+# (test_v171_layer5_diag_block_zero_at_boot,
+# test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup)
+# dispatch through `_run_in_backends` with duck-typed bodies.
+pytestmark = pytest.mark.dual_supported
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Constants pinned by the Phase B design (see ram.inc + asm)
@@ -702,10 +726,47 @@ def test_v171_layer5_symbols_resolve(v171_hex: tuple[Path, dict[str, int]]) -> N
 # ===========================================================================
 
 
+def _read_diag_phys(h, phys: int) -> int:  # type: ignore[no-untyped-def]
+    """Backend-agnostic read of a CONTROL physical-address register byte."""
+    if hasattr(h, "_issue"):
+        from dlcp_fw.sim.control_gpsim import _read_reg as _gpsim_read_reg
+        return _gpsim_read_reg(h._issue, phys)
+    return h.read_reg(phys)
+
+
+def _run_diag_in_backends(
+    backend: str,
+    hex_path: Path,
+    body,  # Callable[[harness], None]
+    *,
+    heartbeat_force_connected: bool = False,
+) -> None:
+    if backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(hex_path))
+        body(chain)
+    if backend in {"gpsim", "dual"}:
+        if not gpsim_available():
+            pytest.skip("gpsim not installed")
+        try:
+            from dlcp_fw.sim.control_gpsim import GpsimControlHarness
+        except Exception:
+            pytest.skip("control_gpsim harness not importable")
+        kwargs = {}
+        if heartbeat_force_connected:
+            kwargs["heartbeat_force_connected"] = True
+        h = GpsimControlHarness(hex_path, **kwargs)
+        try:
+            body(h)
+        finally:
+            h.close()
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer5_diag_block_zero_at_boot(
-    v171_hex: tuple[Path, dict[str, int]]
+    v171_hex: tuple[Path, dict[str, int]],
+    dlcp_sim_backend: str,
 ) -> None:
     """Healthy boot must leave the diag cache and present mask at 0.
 
@@ -713,32 +774,25 @@ def test_v171_layer5_diag_block_zero_at_boot(
     mask reads 0 — the renderer's `n/a` path will fire when the page
     is opened.
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.control_gpsim import GpsimControlHarness, _read_reg
-    except Exception:
-        pytest.skip("control_gpsim harness not importable")
-
     hex_path, _ = v171_hex
-    h = GpsimControlHarness(hex_path)
-    try:
+
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(2_000_000)
         for name, equ_addr in ALL_DIAG_CACHE_EQUS:
             phys = 0x100 | equ_addr
-            value = _read_reg(h._issue, phys)
+            value = _read_diag_phys(h, phys)
             assert value == 0, (
                 f"healthy boot left {name} (phys 0x{phys:03X}) at 0x{value:02X}; "
                 f"expected 0 — cold-init must clear the diag cache"
             )
-    finally:
-        h.close()
+    _run_diag_in_backends(dlcp_sim_backend, hex_path, _do)
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup(
-    v171_hex: tuple[Path, dict[str, int]]
+    v171_hex: tuple[Path, dict[str, int]],
+    dlcp_sim_backend: str,
 ) -> None:
     """Across a long warmup with the harness's heartbeat injection
     (which drives CONTROL into DISPLAY mode and exercises the volume /
@@ -752,32 +806,21 @@ def test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup(
     test (where CONTROL+V3.2 MAIN are co-simulated and we can drive
     the page → query → reply round trip end-to-end).
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.control_gpsim import GpsimControlHarness, _read_reg
-    except Exception:
-        pytest.skip("control_gpsim harness not importable")
-
     hex_path, _ = v171_hex
-    h = GpsimControlHarness(
-        hex_path,
-        heartbeat_force_connected=True,
-    )
-    try:
+
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
-        # Even if DISPLAY mode never reached the active state, the
-        # diag cache must stay zero — there's no path that touches it
-        # without the Diagnostics page being entered.
         for name, equ_addr in ALL_DIAG_CACHE_EQUS:
             phys = 0x100 | equ_addr
-            value = _read_reg(h._issue, phys)
+            value = _read_diag_phys(h, phys)
             assert value == 0, (
                 f"warmup leaked into {name} (phys 0x{phys:03X}) at 0x{value:02X}; "
                 f"diag block must stay zero outside the Diagnostics page"
             )
-    finally:
-        h.close()
+    _run_diag_in_backends(
+        dlcp_sim_backend, hex_path, _do,
+        heartbeat_force_connected=True,
+    )
 
 
 # ===========================================================================

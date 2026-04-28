@@ -91,11 +91,71 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
+# Module-level dual_supported marker.  Most tests in this file
+# work on either backend (structural source/hex gates + 3 sim tests
+# that use only register-poke patterns).  The parametrized
+# `test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits`
+# uses gpsim-specific PC manipulation and breakpoint commands; it
+# self-skips in rust mode at the top of its body.
+pytestmark = pytest.mark.dual_supported
+
+
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
     if not _IMPORT_OK:
         pytest.skip("control_gpsim harness not importable")
+
+
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
+def _read_phys(h, addr: int) -> int:  # type: ignore[no-untyped-def]
+    """Read a physical-address register byte; backend-agnostic."""
+    if hasattr(h, "read_reg") and not hasattr(h, "_issue"):
+        return h.read_reg(addr)
+    if hasattr(h, "_issue"):
+        return _read_reg(h._issue, addr)
+    return h.read_reg(addr)
+
+
+def _write_phys(h, addr: int, value: int) -> None:  # type: ignore[no-untyped-def]
+    """Write a physical-address register byte; backend-agnostic."""
+    if hasattr(h, "write_reg"):
+        h.write_reg(addr, value)
+    else:
+        h._issue(f"reg(0x{addr:03X})=0x{value & 0xFF:02X}", 5.0)
+
+
+def _run_in_backends(
+    backend: str, hex_path: Path, body  # Callable[[harness], None]
+) -> None:
+    """Dispatch a duck-typed body to gpsim / rust / both."""
+    if backend in {"rust", "dual"}:
+        _require_rust()
+        chain = RustChain.from_v17_chain(str(hex_path))
+        body(chain)
+    if backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        h = _boot(hex_path)
+        try:
+            body(h)
+        finally:
+            h.close()
 
 
 def _equ_address(text: str, name: str) -> int | None:
@@ -352,7 +412,9 @@ def _stage_saturated_direct_send(h: "GpsimControlHarness") -> None:
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_layer1_healthy_boot_keeps_saturation_count_zero(v171_hex: Path) -> None:
+def test_v171_layer1_healthy_boot_keeps_saturation_count_zero(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """A boot with a healthy heartbeat-replying MAIN must not trigger the
     Layer 1 saturation path at all.  The TX ring drains every byte well
     before the 256-tick budget expires, so the counter stays at 0.
@@ -360,24 +422,23 @@ def test_v171_layer1_healthy_boot_keeps_saturation_count_zero(v171_hex: Path) ->
     This is the steady-state regression check: if some future change makes
     Layer 1 fire spuriously on healthy traffic, this test catches it.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        h.warmup(25_000_000)        # ~6 s sim time, several full-sync cycles
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
+        h.warmup(25_000_000)
         for _ in range(40):
             h.step()
-        sat = _read_reg(h._issue, V171_TX_SAT_COUNT_PHYS)
+        sat = _read_phys(h, V171_TX_SAT_COUNT_PHYS)
         assert sat == 0, (
             f"Layer 1 saturation counter fired during healthy boot: "
             f"v171_tx_saturate_count = 0x{sat:02X}"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_layer1_saturation_counter_clamps_at_ff(v171_hex: Path) -> None:
+def test_v171_layer1_saturation_counter_clamps_at_ff(
+    v171_hex: Path, dlcp_sim_backend: str
+) -> None:
     """Saturating-arithmetic invariant: pre-load the counter to 0xFE,
     drive one organic saturation event, expect 0xFF.  Pre-load to 0xFF,
     drive another, expect 0xFF (no wrap to 0).
@@ -392,31 +453,26 @@ def test_v171_layer1_saturation_counter_clamps_at_ff(v171_hex: Path) -> None:
 
     The arithmetic itself is verified by source structure
     (test_v171_source_uses_saturating_clamp_pattern) — this test
-    confirms that the chosen RAM slot is reachable via the gpsim
-    introspection path, which Layer 5 (diagnostics page) will rely on.
+    confirms that the chosen RAM slot is reachable via the
+    introspection path (gpsim's reg() / rust's read_reg/write_reg).
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(5_000_000)
-        # Direct register write to bank-1 0xAD via gpsim CLI.
-        h._issue(f"reg(0x{V171_TX_SAT_COUNT_PHYS:03x})=0xFE", 5.0)
-        readback_fe = _read_reg(h._issue, V171_TX_SAT_COUNT_PHYS)
+        _write_phys(h, V171_TX_SAT_COUNT_PHYS, 0xFE)
+        readback_fe = _read_phys(h, V171_TX_SAT_COUNT_PHYS)
         assert readback_fe == 0xFE, (
-            f"counter slot at 0x{V171_TX_SAT_COUNT_PHYS:03X} not writable via gpsim: "
+            f"counter slot at 0x{V171_TX_SAT_COUNT_PHYS:03X} not writable: "
             f"wrote 0xFE, read 0x{readback_fe:02X}"
         )
-        # Push to 0xFF and verify the slot persists across a few sim ticks.
-        h._issue(f"reg(0x{V171_TX_SAT_COUNT_PHYS:03x})=0xFF", 5.0)
+        _write_phys(h, V171_TX_SAT_COUNT_PHYS, 0xFF)
         for _ in range(10):
             h.step()
-        readback_ff = _read_reg(h._issue, V171_TX_SAT_COUNT_PHYS)
+        readback_ff = _read_phys(h, V171_TX_SAT_COUNT_PHYS)
         assert readback_ff == 0xFF, (
             f"saturation counter at 0xFF must persist across sim ticks: "
             f"now 0x{readback_ff:02X}"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
 
 
 @pytest.mark.gpsim
@@ -457,6 +513,7 @@ def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
     payload_reg: int,
     payload_value: int,
     label: str,
+    dlcp_sim_backend: str,
 ) -> None:
     """A saturated direct helper must branch to its abort label before
     clearing the full-sync timer.
@@ -472,7 +529,18 @@ def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
     saturation counter once, and leave full_sync_lo/full_sync_hi at
     the staged sentinels because the success-only `clrf` path was not
     taken.
+
+    This test uses gpsim-specific PC manipulation (`pc=0xADDR`) and
+    breakpoints (`break e 0xADDR`); the rust facade has no PC-jump
+    or breakpoint primitive (the universal-clock scheduler runs
+    instructions in lock-step without per-instruction inspection
+    hooks), so this test is intrinsically gpsim-only.
     """
+    if dlcp_sim_backend == "rust":
+        pytest.skip(
+            "gpsim-only test: requires PC manipulation + breakpoints "
+            "which the rust universal-clock scheduler does not expose"
+        )
     _require_gpsim()
     h = _boot(v171_hex)
     try:
@@ -522,10 +590,16 @@ def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
         h.close()
 
 
+def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+    if isinstance(f, tuple):
+        return f
+    return (f.route, f.cmd, f.data)
+
+
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer1_main_loop_remains_alive_under_simulated_pressure(
-    v171_hex: Path,
+    v171_hex: Path, dlcp_sim_backend: str
 ) -> None:
     """Even if the saturation counter is non-zero, CONTROL's main loop must
     still emit periodic full-sync frames.  We simulate "pressure" by
@@ -533,29 +607,26 @@ def test_v171_layer1_main_loop_remains_alive_under_simulated_pressure(
     normal TX frame stream continues — i.e. Layer 1 doesn't introduce
     any state that gates the rest of the firmware.
     """
-    _require_gpsim()
-    h = _boot(v171_hex)
-    try:
-        h.warmup(5_000_000)
-        h._issue(f"reg(0x{V171_TX_SAT_COUNT_PHYS:03x})=0x42", 5.0)
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
+        # 25M-Tcy warmup matches the other Tier-C bodies in this
+        # file; the original 5M-Tcy figure was sized against gpsim's
+        # synthetic-heartbeat CONTROL-only harness which reaches
+        # DISPLAY-mode in ~3M cycles, but rust runs against a real
+        # V2.3-combined MAIN whose chain handshake takes ~25M Tcy.
+        # 25M is safe for both backends.
+        h.warmup(25_000_000)
+        _write_phys(h, V171_TX_SAT_COUNT_PHYS, 0x42)
         for _ in range(80):
             h.step()
-        frames = h.tx_frames()
-        # Stock V1.6b full_sync_burst emits volume / input / mute /
-        # cmd1d_setting / standby_wake_broadcast plus the V1.71 preset
-        # retry frame.  After a 5M-cycle warmup + 80 chunk steps we
-        # should see at least one volume frame from full_sync.
-        cmds = {(f.route, f.cmd) for f in frames}
+        frames = [_frame_tuple(f) for f in h.tx_frames()]
+        cmds = {(route, cmd) for (route, cmd, _) in frames}
         assert any(c == 0x07 for _, c in cmds) or any(c == 0x06 for _, c in cmds), (
             f"CONTROL stopped emitting status traffic after a non-zero saturation "
             f"counter; observed cmds={sorted(cmds)} — Layer 1 must be transparent "
             f"to the rest of the firmware"
         )
-        # And the counter we set must still be there (Layer 1 doesn't
-        # clear it as a side effect).
-        sat = _read_reg(h._issue, V171_TX_SAT_COUNT_PHYS)
+        sat = _read_phys(h, V171_TX_SAT_COUNT_PHYS)
         assert sat == 0x42, (
             f"counter clobbered by unrelated activity: expected 0x42, got 0x{sat:02X}"
         )
-    finally:
-        h.close()
+    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
