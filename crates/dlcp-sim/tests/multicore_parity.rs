@@ -1159,6 +1159,24 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x0A78, 0x0B2E, "control_core_service_0990 FULL BODY (182 bytes)");
         probe.add_pc_range(0x0F40, 0x10DE, "control_core_service_0DCE FULL BODY (414 bytes)");
         probe.add_pc_range(0x0C24, 0x0C62, "full_sync_burst FULL BODY (62 bytes)");
+        // P3.6b research step 7 (task #68): single-instruction
+        // probes for each `call button_scan_debounce` site in
+        // V1.71 firmware, so the per-site hit count reveals
+        // which caller is responsible for the ~1.9-4.6 M body
+        // executions step 6 saw (display_loop_iteration's call
+        // site at 0x0E1C accounts for only 39, matching the 39
+        // display_loop_iteration ENTRY hits).  Each `call` is a
+        // 2-word PIC18 instruction; the [start, start+2) range
+        // counts exactly one hit per call invocation.
+        probe.add_pc_range(0x0E1C, 0x0E1E, "call button_scan @ 0x0E1C (display_loop_iteration)");
+        probe.add_pc_range(0x1880, 0x1882, "call button_scan @ 0x1880 (cold WAITING)");
+        probe.add_pc_range(0x1986, 0x1988, "call button_scan @ 0x1986 (display_state_entry)");
+        probe.add_pc_range(0x1A08, 0x1A0A, "call button_scan @ 0x1A08 (reconnect WAITING)");
+        probe.add_pc_range(0x1D6A, 0x1D6C, "call button_scan @ 0x1D6A (main_event_loop body)");
+        probe.add_pc_range(0x1FE0, 0x1FE2, "call button_scan @ 0x1FE0 (unknown #1)");
+        probe.add_pc_range(0x1FE6, 0x1FE8, "call button_scan @ 0x1FE6 (control_core_service_17E8)");
+        probe.add_pc_range(0x21AE, 0x21B0, "call button_scan @ 0x21AE (unknown #2)");
+        probe.add_pc_range(0x21DC, 0x21DE, "call button_scan @ 0x21DC (unknown #3)");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
