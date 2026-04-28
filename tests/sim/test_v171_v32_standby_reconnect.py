@@ -22,7 +22,14 @@ This file pins the MAIN-side hardening that fixes that path:
 
 from __future__ import annotations
 
+import pytest
+
 from dlcp_fw.paths import V171_CONTROL_ASM, V32_MAIN_ASM
+
+
+# Pure source / hex integrity gates -- no sim backend needed.
+# See `test_v171_atomic_3byte_frame.py` for the full rationale.
+pytestmark = pytest.mark.dual_supported
 
 
 def test_v32_source_hardens_wake_uart_path() -> None:

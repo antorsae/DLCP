@@ -71,6 +71,16 @@ fn v16b_control_hex_path() -> PathBuf {
     repo_root().join("firmware/stock/control/DLCP Control Firmware V1.6b.hex")
 }
 
+/// V3.1 MAIN canonical release hex (PIC18F2455, app-only).
+/// Used by `tests/sim/test_v171_v31_chain.py`'s V1.71+V3.1
+/// pairing.  Like V3.2 it leaves `[0x0000, 0x1000)` erased
+/// (the Microchip USB bootloader window), so callers must
+/// merge it onto a full-silicon V2.3-combined seed before
+/// running -- see `build_v17_v3x_chain_single_main`.
+fn v31_main_hex_path() -> PathBuf {
+    repo_root().join("firmware/patched/releases/DLCP_Firmware_V3.1.hex")
+}
+
 /// V3.x app-code patch range.  Mirror of
 /// `multicore_parity.rs:113-114` (which itself mirrors
 /// gpsim's `MAIN_APP_PATCH_START` / `MAIN_APP_PATCH_LIMIT`).
@@ -254,6 +264,60 @@ fn build_v17_chain_single_main(
     })
 }
 
+/// Build a 2-core single-MAIN chain with a V3.x-app-on-V2.3-
+/// seed MAIN (silicon-correct boot + V3.x app code).  Mirror
+/// of `build_v17_chain_single_main` but with the V3.x app /
+/// V2.3 seed merge MAIN core (`build_seeded_main_core`)
+/// instead of a full-silicon MAIN copy.  Used by the V1.71
+/// + V3.1 / V3.2 single-MAIN factories.
+fn build_v17_v3x_chain_single_main(
+    control_hex_path: PathBuf,
+    v3x_main_hex_path: PathBuf,
+    v23_seed_hex_path: PathBuf,
+) -> Result<V17SingleMainHandle, String> {
+    let control_hex = HexImage::from_hex_path(&control_hex_path)
+        .map_err(|e| format!("control hex parse ({:?}): {e:?}", control_hex_path))?;
+    let v3x = HexImage::from_hex_path(&v3x_main_hex_path)
+        .map_err(|e| format!("V3.x main hex parse ({:?}): {e:?}", v3x_main_hex_path))?;
+    let v23_seed = HexImage::from_hex_path(&v23_seed_hex_path)
+        .map_err(|e| format!("V2.3 seed hex parse ({:?}): {e:?}", v23_seed_hex_path))?;
+
+    let control = build_v171_control_core(&control_hex);
+    let mut main = build_seeded_main_core(&v3x, &v23_seed);
+    main.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = RustChain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main = chain.push_core(main);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_dsp);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+
+    Ok(V17SingleMainHandle {
+        chain,
+        i_ctl,
+        i_main,
+        i_lcd,
+        i_dsp,
+    })
+}
+
 fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
     let v171 = HexImage::from_hex_path(v171_control_hex_path())
         .map_err(|e| format!("V1.71 hex parse: {e:?}"))?;
@@ -418,6 +482,61 @@ impl Chain {
     fn from_v16b_v23() -> PyResult<Self> {
         Self::from_v17_chain(
             v16b_control_hex_path().to_string_lossy().into_owned(),
+            None,
+        )
+    }
+
+    /// Generic V1.7-family + V3.x single-MAIN factory.
+    /// Accepts any K20 CONTROL hex (V1.71, V1.7-shifted,
+    /// etc.) paired with a V3.x app-only MAIN hex (V3.1,
+    /// V3.2 release, V3.x diagnostic build).  The V3.x
+    /// app is merged onto a V2.3-combined seed
+    /// (`build_seeded_main_core`) for silicon-correct
+    /// boot.  Mirror of the chain-construction prelude in
+    /// `crates/dlcp-sim/tests/multicore_parity.rs::
+    /// chain_v171_v31_reaches_first_uart_tx` (modulo the
+    /// 3-core ring topology -- this is a 2-core single-MAIN
+    /// variant for `tests/sim/test_v171_v31_chain.py`).
+    /// `v23_seed_hex_path=None` defaults to
+    /// `firmware/stock/main/DLCP Firmware V2.3-combined.hex`.
+    #[staticmethod]
+    #[pyo3(signature = (control_hex_path, v3x_main_hex_path, v23_seed_hex_path=None))]
+    fn from_v17_v3x_chain(
+        control_hex_path: String,
+        v3x_main_hex_path: String,
+        v23_seed_hex_path: Option<String>,
+    ) -> PyResult<Self> {
+        let v23_seed = v23_seed_hex_path
+            .map(PathBuf::from)
+            .unwrap_or_else(v23_main_combined_hex_path);
+        let handle = build_v17_v3x_chain_single_main(
+            PathBuf::from(control_hex_path),
+            PathBuf::from(v3x_main_hex_path),
+            v23_seed,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("from_v17_v3x_chain: {e}")))?;
+        Ok(Self {
+            inner: handle.chain,
+            i_ctl: handle.i_ctl,
+            i_main0: handle.i_main,
+            i_main1: handle.i_main,
+            i_lcd: handle.i_lcd,
+        })
+    }
+
+    /// Convenience: V1.71 CONTROL + V3.1 MAIN single-MAIN
+    /// chain.  Mirror of
+    /// `tests/sim/test_v171_v31_chain.py::_new_pair`.
+    /// Uses the canonical V3.1 release hex (app-only)
+    /// merged onto V2.3-combined.
+    #[staticmethod]
+    fn from_v171_v31() -> PyResult<Self> {
+        Self::from_v17_v3x_chain(
+            repo_root()
+                .join("firmware/patched/releases/DLCP_Control_V1.71.hex")
+                .to_string_lossy()
+                .into_owned(),
+            v31_main_hex_path().to_string_lossy().into_owned(),
             None,
         )
     }

@@ -42,6 +42,20 @@ import pytest
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 
 
+# Note: this file is intentionally NOT marked
+# `@pytest.mark.dual_supported` for the P4.5 dual-mode
+# migration.  4 of the 14 tests (the
+# `*_checks_each_enqueue*` family) are pre-existing
+# failures on main -- they document an in-progress V1.71
+# hardening goal (see `docs/V32_MAIN_HANG_HARDENING_PLAN.md`
+# §3b).  Marking the file dual-supported would surface the
+# pre-existing failures under DLCP_SIM_BACKEND=dual without
+# any behavioural change, which would unnecessarily make
+# the P4.5 dual-gate redder than the gpsim-mode gate.
+# Once the hardening lands and all 14 tests pass, this
+# file gets the marker in a follow-up commit.
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

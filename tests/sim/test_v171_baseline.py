@@ -30,6 +30,11 @@ from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.v17_symbols import assemble_v17
 
 
+# Pure source / hex integrity gates -- no sim backend needed.
+# See `test_v171_atomic_3byte_frame.py` for the full rationale.
+pytestmark = pytest.mark.dual_supported
+
+
 @pytest.fixture(scope="module")
 def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     tmp = tmp_path_factory.mktemp("v171_baseline")

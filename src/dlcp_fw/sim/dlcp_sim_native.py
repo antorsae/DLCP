@@ -151,6 +151,39 @@ class Chain:
         return cls(_native.Chain.from_v16b_v23())
 
     @classmethod
+    def from_v171_v31(cls) -> "Chain":
+        """Convenience: V1.71 CONTROL + V3.1 MAIN single-
+        MAIN chain.  Mirror of
+        ``tests/sim/test_v171_v31_chain.py::_new_pair``.
+        Uses the canonical V3.1 release hex (app-only)
+        merged onto V2.3-combined (silicon-correct boot
+        block + EEPROM).
+        """
+        return cls(_native.Chain.from_v171_v31())
+
+    @classmethod
+    def from_v17_v3x_chain(
+        cls,
+        control_hex_path: str,
+        v3x_main_hex_path: str,
+        v23_seed_hex_path: str | None = None,
+    ) -> "Chain":
+        """Generic V1.7-family CONTROL + V3.x MAIN single-
+        MAIN factory.
+
+        Accepts any K20 CONTROL hex (V1.71, V1.7-shifted,
+        etc.) paired with a V3.x app-only MAIN hex (V3.1,
+        V3.2 release, V3.x diagnostic build).  The V3.x app
+        is merged onto a V2.3-combined seed
+        (defaults to ``firmware/stock/main/DLCP Firmware
+        V2.3-combined.hex`` when ``v23_seed_hex_path`` is
+        ``None``) for silicon-correct boot.
+        """
+        return cls(_native.Chain.from_v17_v3x_chain(
+            control_hex_path, v3x_main_hex_path, v23_seed_hex_path,
+        ))
+
+    @classmethod
     def from_v17_chain(
         cls,
         control_hex_path: str,
