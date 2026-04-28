@@ -1058,14 +1058,20 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     //                     INSTRUCTION (the present-mask
     //                     OR-in)
     //
-    // RAM transitions watched on CONTROL:
-    //   0x02F  rx_parsed_cmd     (every parsed_cmd value
-    //                              the parser ever latches,
-    //                              with tick stamp -- no
-    //                              boundary blind spot)
-    //   0x196  v171_diag_target   (every toggle, with tick)
-    //   0x197  v171_diag_present  (every present-mask write)
-    //   0x19C  v171_diag_flags    (every flag bit edit)
+    // RAM transitions watched on CONTROL (9 cells):
+    //   0x02F  rx_parsed_cmd       (every parsed_cmd value
+    //                                the parser ever latches,
+    //                                with tick stamp -- no
+    //                                boundary blind spot)
+    //   0x030  rx_parsed_data       (every parsed_data value)
+    //   0x098  rx_ring_rd           (every ring-consumer advance)
+    //   0x099  rx_ring_wr           (every ring-producer advance)
+    //   0x0A6  rx_frame_position    (every frame_pos transition,
+    //                                including watchdog clears)
+    //   0xFAB  RCSTA                (every OERR/CREN/SPEN edit)
+    //   0x196  v171_diag_target     (every toggle)
+    //   0x197  v171_diag_present    (every present-mask write)
+    //   0x19C  v171_diag_flags      (every flag-bit edit)
     {
         let initial_parsed_cmd = chain.cores[i_ctl]
             .memory

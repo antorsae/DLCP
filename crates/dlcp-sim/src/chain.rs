@@ -562,24 +562,13 @@ impl Chain {
         if self.cores[core_idx].mclr_held {
             return;
         }
-        // P3.6b research step 2 (task #62): if a cycle-level
-        // probe is attached, sample PC ranges BEFORE the
-        // step -- a single instruction whose PC is in a
-        // watched range is counted exactly once, even if the
-        // instruction takes multiple Tcy or branches out of
-        // the range during execution.  Default-off when
-        // `cycle_probe == None`, so non-probing tests pay
-        // exactly one `Option` discriminant check per step.
-        if self.cores[core_idx].cycle_probe.is_some() {
-            let pc = self.cores[core_idx].pc() as u16;
-            if let Some(probe) = self.cores[core_idx].cycle_probe.as_mut() {
-                for range in &mut probe.pc_ranges {
-                    if pc >= range.start && pc < range.end {
-                        range.hit_count += 1;
-                    }
-                }
-            }
-        }
+        // P3.6b research step 2 (task #62): the PC-range hit
+        // counter lives inside `exec::step` (after the IRQ
+        // dispatch check) so only PCs of actual instruction
+        // executions are counted.  Codex MEDIUM from 92fe865:
+        // counting BEFORE step here would record hits for
+        // instructions about to be vectored away from when
+        // an IRQ fires at PC inside a watched range.
         let core = &mut self.cores[core_idx];
         let stack = &mut self.stacks[core_idx];
         // Best-effort: errors propagate as a panic for

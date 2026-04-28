@@ -890,6 +890,24 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         return Ok(cycles);
     }
 
+    // P3.6b research step 2 (task #62): cycle-level PC-range
+    // hit counter.  Increment AFTER the IRQ-dispatch early-
+    // return so we count the PC of an instruction that will
+    // actually execute, not one that's about to be vectored
+    // away from.  Codex MEDIUM from 92fe865.  Default-off:
+    // when `core.cycle_probe.is_none()`, the body costs one
+    // `Option` discriminant check.
+    if core.cycle_probe.is_some() {
+        let pc_u16 = (core.pc() & 0xFFFF) as u16;
+        if let Some(probe) = core.cycle_probe.as_mut() {
+            for range in &mut probe.pc_ranges {
+                if pc_u16 >= range.start && pc_u16 < range.end {
+                    range.hit_count += 1;
+                }
+            }
+        }
+    }
+
     let pc = core.pc();
     let pc_idx = pc as usize;
     let flash = core.flash();

@@ -152,16 +152,20 @@ pub struct Core {
     /// (e.g. P3.6b research step 2, task #62) to count exact
     /// per-instruction PC entries to a labelled flash range AND
     /// log every transition of a watched RAM cell.  Default
-    /// `None` -- when `None`, `Chain::execute_core_step` adds
-    /// zero overhead per instruction step (one branch on the
-    /// outer `Option`).  When `Some(_)`, the chain dispatcher
-    /// updates the probe BEFORE and AFTER each `exec::step`
-    /// call (PC range hits checked against the pre-step PC,
-    /// RAM transitions checked against the post-step memory),
-    /// so a single instruction that both enters a watched PC
-    /// range AND mutates a watched RAM cell is observed in
-    /// both lists.  Test-only field; production chains should
-    /// leave this `None`.
+    /// `None` -- when `None`, the only cost is two `Option`
+    /// discriminant checks per step (one in `exec::step` before
+    /// instruction fetch for the PC range counter, one in
+    /// `Chain::execute_core_step` after the step for the RAM
+    /// watch).  When `Some(_)`:
+    ///   * `exec::step` increments PC range hit counters AFTER
+    ///     the IRQ-dispatch early-return, so only PCs of
+    ///     instructions that will actually execute are counted.
+    ///     Codex MEDIUM from 92fe865.
+    ///   * `Chain::execute_core_step` walks watched RAM cells
+    ///     after the step returns and pushes a transition entry
+    ///     when the post-step value differs from `last_value`.
+    /// Test-only field; production chains should leave this
+    /// `None`.
     pub cycle_probe: Option<CycleProbe>,
 }
 
