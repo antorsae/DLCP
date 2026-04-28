@@ -48,8 +48,10 @@ except Exception:  # pragma: no cover
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
     _RUST_CHAIN_IMPORT_OK = True
-except Exception:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
 
 
 def _require_gpsim() -> None:
@@ -60,11 +62,23 @@ def _require_gpsim() -> None:
 
 
 def _require_rust() -> None:
+    """Hard-fail if the rust facade isn't importable.
+
+    Tests that opted into ``DLCP_SIM_BACKEND={rust,dual}`` via
+    ``@pytest.mark.dual_supported`` MUST exercise the rust path
+    when invoked under those backends; silently skipping (the
+    P4.3 plugin already handles the "test not migrated yet"
+    case via the marker) would let a broken
+    ``crates/dlcp-sim-py/build.sh`` pass the dual-mode gate.
+    Codex review of ec0381a (MEDIUM): the original
+    ``pytest.skip`` here masked import-path regressions.
+    """
     if not _RUST_CHAIN_IMPORT_OK:
-        pytest.skip(
+        pytest.fail(
             "rust dlcp_sim_native facade not importable -- "
             "run `cargo build --release -p dlcp-sim-py && "
-            "bash crates/dlcp-sim-py/build.sh` and retry"
+            "bash crates/dlcp-sim-py/build.sh` and retry. "
+            f"Underlying error: {_RUST_CHAIN_IMPORT_ERROR!r}"
         )
 
 
@@ -81,20 +95,26 @@ def _assert_v17_chain_reaches_display_rust(control_hex: Path) -> None:
     """
     _require_rust()
     chain = RustChain.from_v17_chain(str(control_hex))
-    chunks = chain.run_until_connected(limit=140)
-    assert chunks < 140, (
-        f"rust chain did not reach Volume display within 140 chunks; "
-        f"final tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
-    )
+    # gpsim contract: limit=140 chunks; predicate firing on the
+    # 140th iteration counts as success.  We therefore don't
+    # gate on the chunk count -- the explicit is_connected /
+    # is_waiting / lcd-content assertions below catch
+    # non-convergence (run_until_connected returns the limit
+    # both when the predicate fires on the last chunk and when
+    # it never fires; the post-loop assertions disambiguate).
+    # Codex review of ec0381a (LOW).
+    chain.run_until_connected(limit=140)
     assert chain.is_connected(), (
         f"rust chain not connected after run_until_connected; "
-        f"lcd={chain.lcd_lines()!r}"
+        f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
     assert not chain.is_waiting(), (
-        f"rust chain still in WAITING state; lcd={chain.lcd_lines()!r}"
+        f"rust chain still in WAITING state; "
+        f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
     assert "Volume:" in chain.lcd_lines()[0], (
-        f"rust chain LCD did not reach Volume screen: {chain.lcd_lines()!r}"
+        f"rust chain LCD did not reach Volume screen; "
+        f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
 
 

@@ -160,12 +160,19 @@ class Chain:
 
         Accepts any K20 CONTROL hex (V1.6b stock, V1.7
         byte-identical rebuild, V1.7 shifted +0x222, V1.71)
-        paired with any 2455 MAIN hex (defaults to
-        V2.3-combined when ``main_hex_path`` is ``None``).
+        paired with a FULL-SILICON 2455 MAIN hex (defaults
+        to V2.3-combined when ``main_hex_path`` is ``None``).
         Used by the dual-mode migration of
         ``tests/sim/test_v17_chain.py`` to drive the rust
         engine with the same hex files the gpsim
         ``v17_chain_images`` fixture builds.
+
+        ``main_hex_path`` must be a complete silicon image
+        (boot block + app + EEPROM); the builder does NOT
+        merge an app-only V3.x release onto a V2.3 seed.
+        Passing a V3.x app-only hex would cold-boot into an
+        erased reset vector and fault.  For V3.x main use a
+        3-core factory like :meth:`from_v171_v32`.
         """
         return cls(_native.Chain.from_v17_chain(control_hex_path, main_hex_path))
 
@@ -190,12 +197,27 @@ class Chain:
 
     @property
     def main0(self) -> int:
-        """Index of MAIN0 in the chain."""
+        """Index of MAIN0 in the chain.
+
+        For single-MAIN topologies (``from_v16b_v23``,
+        ``from_v17_chain``) this returns the same index as
+        :attr:`main1`; the two getters collapse to the only
+        MAIN core's index.  See the rust pyclass docstring
+        for rationale.
+        """
         return self._inner.main0
 
     @property
     def main1(self) -> int:
-        """Index of MAIN1 in the chain."""
+        """Index of MAIN1 in the chain.
+
+        For single-MAIN topologies (``from_v16b_v23``,
+        ``from_v17_chain``) this returns the same index as
+        :attr:`main0` (the topology has no second MAIN to
+        distinguish).  Callers that need to detect the
+        topology kind should branch on the factory used
+        rather than comparing ``main0`` to ``main1``.
+        """
         return self._inner.main1
 
     def lcd_lines(self) -> tuple[str, str]:

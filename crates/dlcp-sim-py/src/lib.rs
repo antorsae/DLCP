@@ -182,11 +182,19 @@ struct V17SingleMainHandle {
 ///
 /// `control_hex_path` accepts any K20 hex (V1.6b stock,
 /// V1.7 byte-identical rebuild, V1.7 shifted, V1.71, etc.).
-/// `main_hex_path` accepts any 2455 hex; the typical caller
-/// for `test_v17_chain.py` migrations passes V2.3-combined
-/// (the silicon-correct stock image).  No flash merge is
-/// applied -- callers that need V3.x-app-on-V2.3-seed must
-/// use the `from_v171_v32`-style factory instead.
+///
+/// `main_hex_path` MUST be a full-silicon 2455 image (boot
+/// block + app + EEPROM), e.g. V2.3-combined.  The builder
+/// copies the entire flash directly via `core.flash_mut().
+/// copy_from_slice` -- no merge or `bake_goto`-trampoline
+/// step is applied.  App-only hexes (V3.x releases, which
+/// leave `[0x0000, 0x1000)` erased because the Microchip
+/// USB bootloader owns that window) would cold-boot into a
+/// `0xFF`-erased reset vector and immediately fault.
+/// Callers that need V3.x-app-on-V2.3-seed must use a
+/// 3-core factory like `from_v171_v32` (which performs the
+/// merge via `build_seeded_main_flash`).
+/// Codex review of ec0381a (LOW).
 fn build_v17_chain_single_main(
     control_hex_path: PathBuf,
     main_hex_path: PathBuf,
@@ -359,15 +367,20 @@ impl Chain {
 
     /// Generic V1.7-family single-MAIN factory.  Accepts
     /// any K20 CONTROL hex (V1.6b stock, V1.7 byte-identical
-    /// rebuild, V1.7 shifted, V1.71) paired with any 2455
-    /// MAIN hex (defaults to V2.3-combined when
-    /// `main_hex_path` is None).  Mirror of
+    /// rebuild, V1.7 shifted, V1.71) paired with a
+    /// FULL-SILICON 2455 MAIN hex (defaults to V2.3-combined
+    /// when `main_hex_path` is None).  No flash merge:
+    /// stock V2.3-combined is silicon-correct as-is, and
+    /// the V1.7 / V1.71 CONTROL rebuild source is byte-
+    /// identical to V1.6b stock (the V1.7 source rewrite
+    /// was designed to produce identical hex; see
+    /// `test_v17_equivalence.py`).  Passing a V3.x app-only
+    /// MAIN hex would fault on cold boot (the
+    /// `[0x0000, 0x1000)` bootloader window is erased in
+    /// app-only releases) -- use a 3-core factory like
+    /// `from_v171_v32` for V3.x.  Mirror of
     /// `multicore_parity.rs::chain_v16b_v23_stock_reaches_volume_screen`'s
-    /// chain-construction prelude.  No flash merge --
-    /// stock V2.3 is silicon-correct as-is, and the
-    /// V1.7 / V1.71 rebuild source is byte-identical to
-    /// V1.6b stock (the V1.7 source rewrite was designed
-    /// to produce identical hex; see `test_v17_equivalence.py`).
+    /// chain-construction prelude.
     #[staticmethod]
     #[pyo3(signature = (control_hex_path, main_hex_path=None))]
     fn from_v17_chain(
