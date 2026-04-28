@@ -1902,7 +1902,7 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
     // RAM map per `src/dlcp_fw/asm/dlcp_main_ram.inc`:
     //   0x05E = active_flags        (bit3 = gate open)
     //   0x07E = event_flags         (bit2 = standby/wake event pending)
-    //   0x2E5 = diag_i               (idle pulses)
+    //   0x2E5 = diag_i               (I -- I2C transport faults)
     //   0x2E7 = diag_s               (standby dispatches)
     //   0x2E8 = diag_b               (bring-up / wake dispatches)
     let read_diag_block = |c: &Chain, idx: usize| -> [u8; 7] {
@@ -1918,7 +1918,8 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
     // ----- Phase 1: post-boot baseline -----
     // Hardware reading was `S0 B0` shortly after power-on.  In the
     // sim, boot convergence takes hundreds of M ticks of simulated
-    // time, during which `diag_i` (idle pulses) accumulates -- so
+    // time, during which `diag_i` (I2C transport-fault counter)
+    // accumulates from TAS3108 NACKs / coeff-write retries -- so
     // we only assert on the cells the STDBY/wake path bumps:
     // `diag_s` (0x2E7) and `diag_b` (0x2E8).
     let baseline = read_diag_block(&chain, i_main0);
@@ -2598,7 +2599,7 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 
     // V1.71 CONTROL diag cache cells (BANK 1, physical 0x180+
     // per `dlcp_control_ram.inc:239-258`).  Layout:
-    //   0x180 = v171_diag_pb1_i  (PB1 idle counter cache)
+    //   0x180 = v171_diag_pb1_i  (I2C transport faults)
     //   0x181 = v171_diag_pb1_d  (DSP refresh)
     //   0x182 = v171_diag_pb1_s  (standby)
     //   0x183 = v171_diag_pb1_b  (bring-up)
@@ -2724,13 +2725,14 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 /// `v171_diag_pb_screen` or asserts the LCD raster.  This test
 /// closes that gap by:
 ///
-///   1. Booting CONTROL + MAIN0 to DSP-init convergence.
-///   2. Directly poking `menu_state = PB1_DIAG (4)` to
-///      `0x0BF` (skips the 4-RIGHT-press navigation; the
-///      ignored P3.6b probe shows the navigation IS reachable
-///      via button injection, but for this contract probe the
-///      direct write keeps the test fast and focused on the
-///      render path).
+///   1. Booting CONTROL + MAIN0 to DSP-init convergence AND
+///      CONTROL clearing its `Waiting for DLCP` startup-handshake
+///      screen.
+///   2. Navigating Volume → PB1 Diag via 4 RIGHT-press cycles on
+///      RA4 (button-injection, same primitive the P3.6b probe
+///      uses).  Direct `menu_state` writes don't take effect once
+///      a sub-screen's loop is active -- only the menu dispatcher
+///      consumes menu_state at the top of the cycle.
 ///   3. Seeding `v171_diag_present = 0x01` (PB1 present mask)
 ///      AND `v171_diag_pb1_*` cache cells (0x180..0x186) to
 ///      V1.71 Tier-1 Overflow encoding values matching the
@@ -2740,11 +2742,17 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 ///   5. Asserting the LCD line 0 starts with `PB1:` (the
 ///      Degraded/Overflow layout, distinguishing it from the
 ///      Healthy layout `PBn / OK` and the Absent layout
-///      `PBn / n/a`).
-///   6. Asserting MAIN0 BANK 2 (`diag_i..diag_p` at 0x2E5..0x2EB)
-///      remains unchanged at all-zero -- proving the LCD
-///      content is sourced from CONTROL's local cache, not from
-///      MAIN's runtime cells.
+///      `PBn / n/a`) AND that line 1 has flipped out of the
+///      pre-seed `n/a` content into the per-PB cell row (R-prefix
+///      is the V1.71 Tier-1 row-1 layout's first letter).
+///   6. Asserting MAIN0 BANK 2 `diag_d`/`s`/`b`/`r`/`a`/`p`
+///      remain unchanged at 0x00 -- proving the LCD content is
+///      sourced from CONTROL's local cache, not from MAIN's
+///      runtime cells.  `diag_i` is excluded because V3.2's
+///      I2C transport-fault counter (per
+///      `src/dlcp_fw/asm/dlcp_main_ram.inc:338`) drifts upward
+///      naturally during the test's ~13-sim-second run from
+///      TAS3108 NACKs / coeff-write retries.
 ///
 /// The combination of (5) + (6) is the load-bearing evidence
 /// that the hardware-observed cmd 0x44 vs LCD divergence (task
@@ -2952,18 +2960,24 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     // seeded v171_diag_present=0x01 above; snap was initialized
     // to 0 on screen entry.  XOR is 0x01 -> non-zero -> redraw.
     //
-    // Walk forward in chunks and stop once the LCD shows the
-    // Degraded/Overflow layout (`PB1:` prefix), to avoid
-    // hardcoding a budget that's either too short or wastes time.
+    // Walk forward in chunks and stop once BOTH LCD rows have
+    // flipped to the Degraded/Overflow layout (row 0 starts
+    // with `PB1:`, row 1 starts with `R` per V1.71 Tier-1
+    // row-1 layout `R<r> A<a> P<p> O<o> V<v> W<w>`).  Codex
+    // review of b367528, LOW #2: stopping on row 0 alone could
+    // catch a partial-redraw race where row 0 has flipped but
+    // row 1 still shows the pre-seed `n/a` content.  Requiring
+    // both rows past their pre-seed shape closes that gap.
     let mut redrawn = false;
     for chunk in 0..16 {
         chain.step_ticks(200_000_000);
         let line0 = chain.lcd_slaves[i_lcd].line1();
-        if line0.starts_with("PB1:") {
+        let line1 = chain.lcd_slaves[i_lcd].line2();
+        if line0.starts_with("PB1:") && line1.starts_with("R") {
             eprintln!(
-                "P3.8d-strong redraw fired at chunk {chunk} \
-                 (tick={}, line0={:?})",
-                chain.current_tick, line0
+                "P3.8d-strong redraw fired (both rows) at chunk {chunk} \
+                 (tick={}, line0={:?}, line1={:?})",
+                chain.current_tick, line0, line1
             );
             redrawn = true;
             break;
@@ -2971,8 +2985,8 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     }
     if !redrawn {
         eprintln!(
-            "P3.8d-strong WARNING: cadence redraw did not flip layout \
-             to PB1: in 16 chunks (3.2 B ticks)"
+            "P3.8d-strong WARNING: cadence redraw did not flip BOTH \
+             rows in 16 chunks (3.2 B ticks)"
         );
     }
 
@@ -3022,36 +3036,54 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
          mask + cache; got {:?}",
         lcd_post_seed_line0
     );
+    // Codex LOW from b367528 #2 follow-up: also assert row 1
+    // has flipped out of pre-seed `n/a` content into per-PB
+    // cell row.  V1.71 Tier-1 row-1 layout starts with `R`
+    // (rendering `R<r-cell> A<a-cell> ...`); the Absent layout
+    // had `n/a             `.  Pairing the row-0 `PB1:` check
+    // with this row-1 `R` prefix prevents the partial-redraw
+    // race from spuriously passing.
+    assert!(
+        lcd_post_seed_line1.starts_with("R"),
+        "LCD line 1 must start with `R` (V1.71 Tier-1 row-1 cell \
+         layout) after redraw; got {:?}.  If still `n/a...`, the \
+         row-1 redraw didn't fire even though row 0 did -- \
+         partial-redraw race.",
+        lcd_post_seed_line1
+    );
     // Specific-char check: the seeded diag_pb1_s = 0x0E should
     // render as 'E' (Tier-1 alpha encoding for nibble values
     // 0xA..0xE).  This char is NOT one MAIN can produce naturally
-    // through idle dispatch -- it requires diag_s == 14 which
-    // means 14 explicit standby-event_dispatches, none of which
-    // we triggered.  Finding 'E' on the LCD is therefore
-    // load-bearing evidence that the LCD is rendering CONTROL's
-    // cache, not MAIN's actual counter values.
+    // -- it requires diag_s == 14 which means 14 explicit
+    // standby-event_dispatches, none of which we triggered.
+    // Finding 'E' on the LCD is therefore load-bearing evidence
+    // that the LCD is rendering CONTROL's cache, not MAIN's
+    // actual counter values.
     assert!(
         lcd_post_seed_line0.contains('E'),
         "LCD line 0 must contain 'E' (rendered from seeded \
          diag_pb1_s = 0x0E -- a value MAIN cannot produce through \
-         normal idle dispatch); got {:?}",
+         standby_event_dispatch in this test setup); got {:?}",
         lcd_post_seed_line0
     );
 
     // Step 6: assert MAIN0 BANK 2 runtime cells reflect MAIN's
     // actual idle behaviour, NOT our seeded LCD content.
-    // diag_i (idle pulses) does drift upward during the
-    // ~13-sim-second test run -- V3.2 firmware bumps it on every
-    // idle dispatch.  But diag_d/s/b/r/a/p only fire on specific
-    // event triggers (DSP refresh / standby / bring-up / reset /
-    // mute / preset) which never occur in this test setup, so
-    // they should remain at MAIN's POR baseline of 0x00.  Our
-    // seed for those cells (1, 14, 4, 10, 3, 8) cannot have
-    // come from MAIN's BANK 2 -- they could only have come from
-    // the test harness writing CONTROL's cache directly.
+    // `diag_i` (I2C transport-fault counter per
+    // `dlcp_main_ram.inc:338`) drifts upward during the
+    // ~13-sim-second test run because V3.2 boot probe sequences
+    // and TAS3108 NACK retries land in this counter -- so we
+    // exclude it from the strict-zero check.  But
+    // diag_d/s/b/r/a/p only fire on specific event triggers
+    // (DSP refresh / standby / bring-up / reset / mute /
+    // preset) which never occur in this test setup, so they
+    // should remain at MAIN's POR baseline of 0x00.  Our seed
+    // for those cells (1, 14, 4, 10, 3, 8) cannot have come
+    // from MAIN's BANK 2 -- they could only have come from the
+    // test harness writing CONTROL's cache directly.
     //
-    // Per-cell assertions: skip diag_i (naturally saturates
-    // during idle), assert all other cells stay 0.
+    // Per-cell assertions: skip diag_i (drifts on I2C faults),
+    // assert all other cells stay 0.
     for (offset, name) in [
         (1u16, "diag_d"),
         (2, "diag_s"),
@@ -3073,15 +3105,17 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
             name, 0x2E5 + offset, cell
         );
     }
-    // Log diag_i (idle counter) for visibility -- it drifts upward
-    // naturally during idle, so we don't strict-equal it but we
-    // do verify it didn't somehow exceed saturation in a way that
-    // matches our seed coincidentally.
+    // Log diag_i (I2C transport-fault counter) for visibility --
+    // it drifts upward during the test run from V3.2 boot probes
+    // / TAS3108 NACK retries, so we don't strict-equal it but
+    // observability matters when reasoning about the test's
+    // behaviour.
     let main0_diag_i = chain.cores[i_main0]
         .memory
         .read_raw(Address::from_raw(0x2E5));
     eprintln!(
-        "P3.8d-strong info: MAIN0 diag_i (idle counter, naturally drifts) \
+        "P3.8d-strong info: MAIN0 diag_i (I2C transport-fault \
+         counter, naturally drifts on TAS3108 NACK retries) \
          = 0x{main0_diag_i:02X} (seed was 0x0F)"
     );
 

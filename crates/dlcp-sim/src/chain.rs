@@ -594,13 +594,13 @@ impl Chain {
     ///     post-release world);
     ///   * clearing the SFR-visible RCSTA/TXSTA/RCREG cells
     ///     to their POR values;
-    ///   * clearing PIR1 + PIE1 entirely to `0x00` (per
-    ///     DS39632E §4.4 Tbl 4-4 / DS40001303H §4.5 Tbl 4-4
-    ///     -- MCLR-class resets clear the full PIR1/PIE1
-    ///     bytes, not just the EUSART-related bits, so this
-    ///     matches the silicon-faithful reset behaviour that
-    ///     the simulator's full reset path already encodes
-    ///     in `reset.rs`).
+    ///   * clearing PIR1 + PIE1 + PIR2 + PIE2 + WDTCON
+    ///     entirely to `0x00` (per DS39632E §4.6 Tbl 4-4 /
+    ///     DS40001303H §4.6 Tbl 4-4 "Reset State of Registers"
+    ///     -- MCLR-class resets clear all five SFRs, not just
+    ///     the EUSART-related bits; this matches the
+    ///     silicon-faithful policy `reset.rs::apply_k20_mclr_zero_sfrs`
+    ///     already encodes for full-MCLR resets).
     /// This matters for tests that hold a core mid-run; P3.8b
     /// holds MAIN1 immediately after POR so the SFRs are
     /// already at POR values, but the SFR clears here close
@@ -608,13 +608,16 @@ impl Chain {
     /// holds a running core (without these clears, post-
     /// release firmware would observe stale ADIF/SSPIF/
     /// TMRxIF flags and stale TXIE/RCIE enables).  Codex
-    /// review of 1356ed2 + f8ceb67 + 2df47e3, MEDIUM #1.
+    /// review chain 1356ed2 → f8ceb67 → 2df47e3 → ec5df8b
+    /// (MEDIUM #1 + the post-ec5df8b LOWs covering PIE2/PIR2/
+    /// WDTCON, datasheet anchor, and constant duplication).
     pub fn hold_core_in_reset(&mut self, core_idx: usize) {
         use crate::memory::Address;
         use crate::peripherals::eusart::{
             PIR1_ADDR, RCREG_ADDR, RCSTA_ADDR, TXSTA_ADDR,
         };
-        const PIE1_ADDR: u16 = 0xF9D;
+        use crate::peripherals::irq::{PIE1_ADDR, PIE2_ADDR, PIR2_ADDR};
+        const WDTCON_ADDR: u16 = 0xFD1;
         self.cores[core_idx].mclr_held = true;
         self.cores[core_idx].peripherals.eusart.reset_state();
         let memory = &mut self.cores[core_idx].memory;
@@ -623,6 +626,9 @@ impl Chain {
         memory.write_raw(Address::from_raw(RCREG_ADDR), 0x00);
         memory.write_raw(Address::from_raw(PIR1_ADDR), 0x00);
         memory.write_raw(Address::from_raw(PIE1_ADDR), 0x00);
+        memory.write_raw(Address::from_raw(PIR2_ADDR), 0x00);
+        memory.write_raw(Address::from_raw(PIE2_ADDR), 0x00);
+        memory.write_raw(Address::from_raw(WDTCON_ADDR), 0x00);
     }
 
     /// Release a core's MCLR pin (HIGH).  Clears the

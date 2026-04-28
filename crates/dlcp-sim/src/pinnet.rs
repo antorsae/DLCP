@@ -100,6 +100,21 @@ impl PinNet {
         dst_core: usize,
         dst_rx_pin: PinId,
     ) {
+        // Reject self-loops outright: real silicon cannot route a
+        // core's TX into its own RX (the TX and RX shift registers
+        // share no internal path), and the firmware-driven
+        // no-echo invariant in `chain.rs::tests::three_core_silicon_ring_uart_topology_has_no_echo_or_duplicates`
+        // is a structural cardinality check downstream of this
+        // coupling.  Catching the misconfiguration here surfaces
+        // the topology bug at fixture-build time, not as a
+        // mysterious "echoed byte arrived at src" later.  Codex
+        // LOW from 8e180a6 review (task #38).
+        assert_ne!(
+            src_core, dst_core,
+            "couple_uart: src_core == dst_core ({src_core}) is a \
+             self-loop, not supported by real silicon and not \
+             modelled by the chain dispatcher"
+        );
         self.uart.push(UartCoupling {
             src_core,
             src_tx_pin,
