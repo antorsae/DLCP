@@ -1293,18 +1293,29 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // probes (PC-hit counter at v171_bf2x_case_check entry,
     // cycle-by-cycle parsed_cmd sniffer).
     //
-    // Direction the counters can still distinguish:
-    //   - max_rx_fifo_depth always 0 AND ring depth always
-    //     0 AND no rd advance = bytes never enter FIFO
-    //     (clock / wire-coupling bug).  Negation of any
-    //     of these proves bytes flow somewhere.
-    //   - parser-latch shows a steady stream of non-BF/2N
-    //     cmds (0x03, 0x06, 0x07, 0x08, 0x1D) AND ring
-    //     drains cleanly = parser is alive and consuming
-    //     non-BF/2N frames -- the BF/2N burst either
-    //     happens within one chunk, gets dispatched
-    //     without latching parsed_cmd visibly, or never
-    //     reaches dispatch at all.
+    // Direction the counters can still distinguish, in
+    // cautious language:
+    //   - The full per-byte CONTROL.RX arrival stream
+    //     (recorded at TX-emit time, not boundary-sampled)
+    //     IS authoritative for "did the byte attempt
+    //     wire delivery?" -- so a positive observation of
+    //     21 contiguous BF/2N bytes in that stream is a
+    //     hard fact, independent of the boundary sampler.
+    //   - For the ring/FIFO/parser-latch counters,
+    //     observations like "rd advanced" or "non-BF/2N
+    //     cmds visible" are still proof of *some* parser
+    //     activity, but NEGATIVE observations ("rd never
+    //     advanced", "parser-latch never showed cmd in
+    //     0x21..0x27") are weaker -- the parser could
+    //     have advanced and returned to the same value
+    //     within a chunk, or latched cmd briefly and had
+    //     it cleared by the dispatch tail before the
+    //     next sampler boundary.  Step-2 needs finer
+    //     instrumentation (PC-hit counter at
+    //     v171_bf2x_case_check entry, cycle-by-cycle
+    //     parsed_cmd sniffer, executor-side write hooks)
+    //     before any negative claim about the dispatch
+    //     path is safe to make.
     let post_stage3_snapshot = (
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196)),
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x197)),
