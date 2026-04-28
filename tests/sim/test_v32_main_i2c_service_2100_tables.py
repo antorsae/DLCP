@@ -26,6 +26,10 @@ from dlcp_fw.sim.v30_symbols import (
 )
 
 
+# Pure source / hex tests -- no sim backend needed.
+pytestmark = pytest.mark.dual_supported
+
+
 # Counter -> (FSR1L, FSR1H) pairs that the old xorlw chains dispatched to.
 # See docs/V32_SIZE_OPTIMIZATION_PROGRESS.md and the body comments on
 # ``main_i2c_service_2100_dispatch_table`` / ``_source_table``.
