@@ -64,6 +64,13 @@ fn v23_main_combined_hex_path() -> PathBuf {
     repo_root().join("firmware/stock/main/DLCP Firmware V2.3-combined.hex")
 }
 
+/// Stock V1.6b CONTROL hex (PIC18F25K20).  Source of the
+/// V1.7 byte-identical rebuild; behavioural baseline for
+/// `tests/sim/test_v17_chain.py`.
+fn v16b_control_hex_path() -> PathBuf {
+    repo_root().join("firmware/stock/control/DLCP Control Firmware V1.6b.hex")
+}
+
 /// V3.x app-code patch range.  Mirror of
 /// `multicore_parity.rs:113-114` (which itself mirrors
 /// gpsim's `MAIN_APP_PATCH_START` / `MAIN_APP_PATCH_LIMIT`).
@@ -121,6 +128,19 @@ fn build_v171_control_core(v171: &HexImage) -> Core {
     core
 }
 
+/// Build a stock V2.3 MAIN core from V2.3-combined.  Unlike
+/// V3.x, V2.3-combined ships the FULL silicon image (boot
+/// block + V2.3 app + EEPROM + preset tables) -- no merge
+/// or `bake_goto` trampolines needed.
+fn build_stock_v23_main_core(v23_combined: &HexImage) -> Core {
+    let mut core = Core::new(Variant::Pic18F2455);
+    core.flash_mut().copy_from_slice(&*v23_combined.flash);
+    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
+        core.peripherals.eeprom.set_byte(addr as u8, byte);
+    }
+    core
+}
+
 /// Top-level helper: build a 3-core ring (V1.71 CONTROL +
 /// V3.2 MAIN0 + V3.2 MAIN1) wired with UART, DSP slaves,
 /// and LCD slave, ready for `step_ticks`.  Mirror of the
@@ -138,6 +158,82 @@ struct V171V32ChainHandle {
     i_dsp0: usize,
     #[allow(dead_code)]
     i_dsp1: usize,
+}
+
+/// Single-MAIN topology handle returned by
+/// `build_v17_chain_single_main` -- 1 CONTROL + 1 MAIN +
+/// LCD/DSP slaves.  Mirror of the Rust prereq test
+/// `chain_v16b_v23_stock_reaches_volume_screen` in
+/// `multicore_parity.rs`.
+struct V17SingleMainHandle {
+    chain: RustChain,
+    i_ctl: usize,
+    i_main: usize,
+    i_lcd: usize,
+    #[allow(dead_code)]
+    i_dsp: usize,
+}
+
+/// Build a 2-core chain (1 CONTROL/K20 + 1 MAIN/2455) with
+/// bidirectional UART, TAS3108 DSP slave on MAIN, HD44780
+/// LCD slave on CONTROL.  POR-reset, initial steps scheduled
+/// at tick 0.  PORTA/PORTC seeded to 0xFF (buttons released);
+/// AN0 ADC sample seeded to 0x0300 (mid-rail mains-detect).
+///
+/// `control_hex_path` accepts any K20 hex (V1.6b stock,
+/// V1.7 byte-identical rebuild, V1.7 shifted, V1.71, etc.).
+/// `main_hex_path` accepts any 2455 hex; the typical caller
+/// for `test_v17_chain.py` migrations passes V2.3-combined
+/// (the silicon-correct stock image).  No flash merge is
+/// applied -- callers that need V3.x-app-on-V2.3-seed must
+/// use the `from_v171_v32`-style factory instead.
+fn build_v17_chain_single_main(
+    control_hex_path: PathBuf,
+    main_hex_path: PathBuf,
+) -> Result<V17SingleMainHandle, String> {
+    let control_hex = HexImage::from_hex_path(&control_hex_path)
+        .map_err(|e| format!("control hex parse ({:?}): {e:?}", control_hex_path))?;
+    let main_hex = HexImage::from_hex_path(&main_hex_path)
+        .map_err(|e| format!("main hex parse ({:?}): {e:?}", main_hex_path))?;
+
+    let control = build_v171_control_core(&control_hex);
+    let mut main = build_stock_v23_main_core(&main_hex);
+    main.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = RustChain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main = chain.push_core(main);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main, default_rx_pin());
+    chain.couple_uart(i_main, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_dsp);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0]);
+
+    // Seed buttons-released AFTER POR (which wipes SFRs).
+    // Mirrors `multicore_parity.rs::chain_v16b_v23_stock_
+    // reaches_volume_screen` (lines ~5092-5097) and the
+    // V1.71+V3.1 LCD parity test seed (ibid lines ~4992-4997).
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+
+    Ok(V17SingleMainHandle {
+        chain,
+        i_ctl,
+        i_main,
+        i_lcd,
+        i_dsp,
+    })
 }
 
 fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
@@ -186,9 +282,16 @@ fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
 }
 
 /// Python-visible Chain: thin wrapper over
-/// `dlcp_sim::chain::Chain` plus the bookkeeping
-/// indices that `from_v171_v32()` populated (so methods
-/// like `lcd_lines()` know which LCD slave to read from).
+/// `dlcp_sim::chain::Chain` plus the bookkeeping indices
+/// each factory populated (so methods like `lcd_lines()`
+/// know which LCD slave to read from).
+///
+/// `i_main0` / `i_main1` are 3-core-specific (`from_v171_v32`):
+/// for single-MAIN topologies (`from_v16b_v23`,
+/// `from_v17_chain`) both fields collapse to the single
+/// MAIN's index.  Callers that care about the distinction
+/// should not call `main1` for single-MAIN chains; the
+/// migration tests don't yet read those getters.
 #[pyclass]
 struct Chain {
     inner: RustChain,
@@ -196,6 +299,29 @@ struct Chain {
     i_main0: usize,
     i_main1: usize,
     i_lcd: usize,
+}
+
+/// One CONTROL chunk in the gpsim harness is 200_000 Tcy
+/// (`SingleMainChainHarness::__init__` ->
+/// `control_chunk_cycles=200_000`); the K20 runs at
+/// 16 universal ticks per Tcy, so each chunk advances
+/// 3_200_000 universal ticks.  `run_until_connected(limit)`
+/// matches gpsim's chunk-count contract by stepping
+/// `limit * V17_CHUNK_TICKS` total ticks (broken into
+/// per-chunk sub-steps so the connection check has the
+/// same granularity as the gpsim path).
+const V17_CHUNK_TICKS: u64 = 200_000 * 16;
+
+/// Match the gpsim harness's WAITING screen heuristic
+/// (`chain_gpsim.py::_is_waiting_lcd`): the substring
+/// "WAITING FOR DLCP" (case-insensitive) appears on
+/// either line of the HD44780 display.  Kept centralised
+/// so any future tightening of the gpsim heuristic flows
+/// to the rust facade in one place.
+fn lcd_is_waiting(line1: &str, line2: &str) -> bool {
+    let l1 = line1.to_uppercase();
+    let l2 = line2.to_uppercase();
+    l1.contains("WAITING FOR DLCP") || l2.contains("WAITING FOR DLCP")
 }
 
 #[pymethods]
@@ -218,6 +344,56 @@ impl Chain {
         })
     }
 
+    /// Convenience: stock V1.6b CONTROL + stock V2.3 MAIN
+    /// single-MAIN chain.  Mirror of the Rust prereq test
+    /// `multicore_parity.rs::chain_v16b_v23_stock_reaches_volume_screen`
+    /// and the gpsim baseline
+    /// `tests/sim/test_v17_chain.py::test_v17_stock_v16b_chain_reaches_display`.
+    #[staticmethod]
+    fn from_v16b_v23() -> PyResult<Self> {
+        Self::from_v17_chain(
+            v16b_control_hex_path().to_string_lossy().into_owned(),
+            None,
+        )
+    }
+
+    /// Generic V1.7-family single-MAIN factory.  Accepts
+    /// any K20 CONTROL hex (V1.6b stock, V1.7 byte-identical
+    /// rebuild, V1.7 shifted, V1.71) paired with any 2455
+    /// MAIN hex (defaults to V2.3-combined when
+    /// `main_hex_path` is None).  Mirror of
+    /// `multicore_parity.rs::chain_v16b_v23_stock_reaches_volume_screen`'s
+    /// chain-construction prelude.  No flash merge --
+    /// stock V2.3 is silicon-correct as-is, and the
+    /// V1.7 / V1.71 rebuild source is byte-identical to
+    /// V1.6b stock (the V1.7 source rewrite was designed
+    /// to produce identical hex; see `test_v17_equivalence.py`).
+    #[staticmethod]
+    #[pyo3(signature = (control_hex_path, main_hex_path=None))]
+    fn from_v17_chain(
+        control_hex_path: String,
+        main_hex_path: Option<String>,
+    ) -> PyResult<Self> {
+        let main_path = main_hex_path
+            .map(PathBuf::from)
+            .unwrap_or_else(v23_main_combined_hex_path);
+        let handle = build_v17_chain_single_main(
+            PathBuf::from(control_hex_path),
+            main_path,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("from_v17_chain: {e}")))?;
+        Ok(Self {
+            inner: handle.chain,
+            i_ctl: handle.i_ctl,
+            // Single-MAIN: both legacy main0/main1 getters
+            // collapse to the single MAIN's index.  See the
+            // pyclass docstring above for rationale.
+            i_main0: handle.i_main,
+            i_main1: handle.i_main,
+            i_lcd: handle.i_lcd,
+        })
+    }
+
     /// Advance the universal clock by `n_ticks` and dispatch
     /// every event whose deadline `<=` the new tick.  Direct
     /// passthrough to `Chain::step_ticks`.
@@ -236,13 +412,15 @@ impl Chain {
         self.i_ctl
     }
 
-    /// Index of MAIN0.
+    /// Index of MAIN0.  For single-MAIN topologies this
+    /// returns the same index as `main1`.
     #[getter]
     fn main0(&self) -> usize {
         self.i_main0
     }
 
-    /// Index of MAIN1.
+    /// Index of MAIN1.  For single-MAIN topologies this
+    /// returns the same index as `main0`.
     #[getter]
     fn main1(&self) -> usize {
         self.i_main1
@@ -256,6 +434,72 @@ impl Chain {
     fn lcd_lines(&self) -> (String, String) {
         let lcd = &self.inner.lcd_slaves[self.i_lcd];
         (lcd.line1(), lcd.line2())
+    }
+
+    /// True when CONTROL has marked itself as connected to
+    /// the chain ring.  Reads bit 1 of physical RAM 0x01F
+    /// on the CONTROL core (the `control_flags` byte the
+    /// V1.6b / V1.71 firmware uses to record handshake
+    /// state).  Mirror of
+    /// `chain_gpsim.py::SingleMainChainHarness::is_connected`.
+    fn is_connected(&self) -> bool {
+        let flags = self.inner.cores[self.i_ctl]
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0x01F));
+        (flags & 0x02) != 0
+    }
+
+    /// True when CONTROL's LCD shows the WAITING screen on
+    /// either row.  Mirror of
+    /// `chain_gpsim.py::_is_waiting_lcd`.
+    fn is_waiting(&self) -> bool {
+        let lcd = &self.inner.lcd_slaves[self.i_lcd];
+        lcd_is_waiting(&lcd.line1(), &lcd.line2())
+    }
+
+    /// Step the chain in `V17_CHUNK_TICKS` chunks (mirroring
+    /// gpsim's 200K-Tcy / 3.2M-tick chunk cadence) up to
+    /// `limit` chunks, returning early as soon as the
+    /// chain has reached the steady-state CONNECTED Volume
+    /// display.  Returns the number of chunks actually
+    /// consumed (== `limit` if the predicate never fired).
+    ///
+    /// Predicate: `is_connected()` AND `!is_waiting()` AND
+    /// LCD line 1 contains the substring `"Volume:"`.
+    ///
+    /// Why stricter than `chain_gpsim.py::SingleMainChainHarness::run_until_connected`:
+    /// gpsim's predicate is just `is_connected AND !is_waiting`,
+    /// and gpsim's chunk-stepping happens to align such that
+    /// when the predicate first fires, the LCD already shows
+    /// `Volume:` (an empirical coincidence -- the gpsim
+    /// `_run_pair` test relies on `assert "Volume:" in last.lcd[0]`
+    /// holding at that moment).  The Rust chain advances
+    /// CONTROL and MAIN within the same universal-tick
+    /// scheduler instead of gpsim's per-MAIN/per-CONTROL
+    /// alternating chunks, so byte delivery is faster and
+    /// `control_flags.CONNECTED` (bit 1 of 0x01F) can flip
+    /// True on transient chain-frame parses (V1.7 source
+    /// `dlcp_control_v17.asm:828` -- `bsf control_flags, 1`
+    /// inside the cmd=0x03 / data=0x01 parser branch) before
+    /// the LCD has rendered the Volume screen.  Tightening
+    /// the predicate to also require `Volume:` aligns the
+    /// Rust facade with the assertion the migrated test
+    /// makes.  `is_connected()` and `is_waiting()` are still
+    /// available as standalone getters for tests that need
+    /// the gpsim-compatible flag-only check.
+    fn run_until_connected(&mut self, limit: usize) -> usize {
+        for chunk in 0..limit {
+            self.inner.step_ticks(V17_CHUNK_TICKS);
+            if self.is_connected()
+                && !self.is_waiting()
+                && self.inner.lcd_slaves[self.i_lcd]
+                    .line1()
+                    .contains("Volume:")
+            {
+                return chunk + 1;
+            }
+        }
+        limit
     }
 }
 

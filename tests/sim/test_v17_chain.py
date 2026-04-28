@@ -16,6 +16,13 @@ The two parity gates are:
 
 Each test is marked ``gpsim`` + ``slow``; the shifted variant is a
 session-scoped fixture so the V1.7 sources are assembled only once.
+
+Phase 4 dual-mode migration (P4.4): each test that has been wired to
+both gpsim AND the rust ``dlcp-sim`` engine carries the
+``@pytest.mark.dual_supported`` marker.  The test body branches on the
+session-scoped ``dlcp_sim_backend`` fixture and runs the matching
+backend.  Tests without the marker stay gpsim-only until their
+adapter is added.
 """
 
 from __future__ import annotations
@@ -38,12 +45,57 @@ try:
 except Exception:  # pragma: no cover
     _CHAIN_IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+except Exception:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+
 
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
     if not _CHAIN_IMPORT_OK:
         pytest.skip("chain_gpsim harness not importable in this env")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.skip(
+            "rust dlcp_sim_native facade not importable -- "
+            "run `cargo build --release -p dlcp-sim-py && "
+            "bash crates/dlcp-sim-py/build.sh` and retry"
+        )
+
+
+def _assert_v17_chain_reaches_display_rust(control_hex: Path) -> None:
+    """Rust-backend body of the chain-reaches-display tests.
+
+    Builds the rust V1.7-family single-MAIN chain via
+    :meth:`Chain.from_v17_chain` (V2.3-combined MAIN by
+    default), runs the steady-state convergence predicate up
+    to 140 chunks (the gpsim chunk-limit contract for
+    ``run_until_connected``), then asserts the V1.6b chain
+    parity gates -- ``is_connected``, ``not is_waiting``,
+    and ``"Volume:" in lcd[0]``.
+    """
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(control_hex))
+    chunks = chain.run_until_connected(limit=140)
+    assert chunks < 140, (
+        f"rust chain did not reach Volume display within 140 chunks; "
+        f"final tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
+    )
+    assert chain.is_connected(), (
+        f"rust chain not connected after run_until_connected; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+    assert not chain.is_waiting(), (
+        f"rust chain still in WAITING state; lcd={chain.lcd_lines()!r}"
+    )
+    assert "Volume:" in chain.lcd_lines()[0], (
+        f"rust chain LCD did not reach Volume screen: {chain.lcd_lines()!r}"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -83,27 +135,46 @@ def _new_pair(control_hex: Path, main_hex: Path) -> SingleMainChainHarness:
 # Spec §A5 gate #1: chain reaches Volume screen.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v17_stock_v16b_chain_reaches_display(stock_main_hex: Path) -> None:
-    """Sanity baseline: stock V1.6b CONTROL + stock MAIN V2.3 reach Volume."""
-    _require_gpsim()
-    pair = _new_pair(STOCK_CONTROL_HEX_V16B, stock_main_hex)
-    try:
-        last = pair.run_until_connected(limit=140)
-        assert last is not None
-        assert pair.is_connected(), (
-            f"V1.6b+V2.3 never connected; lcd={last.lcd!r} "
-            f"flags=0x{last.control_flags:02X}"
-        )
-        assert not pair.is_waiting(), (
-            f"V1.6b+V2.3 stayed in WAITING; lcd={last.lcd!r}"
-        )
-        assert "Volume:" in last.lcd[0], (
-            f"V1.6b+V2.3 did not reach Volume: {last.lcd!r}"
-        )
-    finally:
-        pair.close()
+def test_v17_stock_v16b_chain_reaches_display(
+    stock_main_hex: Path, dlcp_sim_backend: str
+) -> None:
+    """Sanity baseline: stock V1.6b CONTROL + stock MAIN V2.3 reach Volume.
+
+    Dual-mode migration (P4.4): runs gpsim by default, runs rust
+    when ``DLCP_SIM_BACKEND=rust``, runs both when
+    ``DLCP_SIM_BACKEND=dual``.  The rust path uses the
+    V2.3-combined silicon image (same boot block + EEPROM that
+    real silicon flashes back from PICkit); the gpsim path
+    uses ``stock_main_hex`` (the app-only V2.3.hex; gpsim's
+    ``MainChainHarness`` synthesizes the boot block on the
+    fly).  Both backends converge to the same observable end
+    state: ``is_connected``, not ``is_waiting``, and
+    ``"Volume:"`` on LCD line 1.
+    """
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        pair = _new_pair(STOCK_CONTROL_HEX_V16B, stock_main_hex)
+        try:
+            last = pair.run_until_connected(limit=140)
+            assert last is not None
+            assert pair.is_connected(), (
+                f"V1.6b+V2.3 never connected; lcd={last.lcd!r} "
+                f"flags=0x{last.control_flags:02X}"
+            )
+            assert not pair.is_waiting(), (
+                f"V1.6b+V2.3 stayed in WAITING; lcd={last.lcd!r}"
+            )
+            assert "Volume:" in last.lcd[0], (
+                f"V1.6b+V2.3 did not reach Volume: {last.lcd!r}"
+            )
+        finally:
+            pair.close()
+
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _assert_v17_chain_reaches_display_rust(STOCK_CONTROL_HEX_V16B)
 
 
 @pytest.mark.gpsim

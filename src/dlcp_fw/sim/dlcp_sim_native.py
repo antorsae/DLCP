@@ -137,6 +137,38 @@ class Chain:
         """
         return cls(_native.Chain.from_v171_v32())
 
+    @classmethod
+    def from_v16b_v23(cls) -> "Chain":
+        """Convenience: stock V1.6b CONTROL + stock V2.3 MAIN single-MAIN chain.
+
+        Mirror of the gpsim baseline
+        ``tests/sim/test_v17_chain.py::test_v17_stock_v16b_chain_reaches_display``.
+        Uses the canonical stock V1.6b CONTROL hex
+        (``firmware/stock/control/DLCP Control Firmware V1.6b.hex``)
+        and the V2.3-combined silicon image (full boot block
+        + V2.3 app + EEPROM + preset tables).
+        """
+        return cls(_native.Chain.from_v16b_v23())
+
+    @classmethod
+    def from_v17_chain(
+        cls,
+        control_hex_path: str,
+        main_hex_path: str | None = None,
+    ) -> "Chain":
+        """Generic V1.7-family single-MAIN factory.
+
+        Accepts any K20 CONTROL hex (V1.6b stock, V1.7
+        byte-identical rebuild, V1.7 shifted +0x222, V1.71)
+        paired with any 2455 MAIN hex (defaults to
+        V2.3-combined when ``main_hex_path`` is ``None``).
+        Used by the dual-mode migration of
+        ``tests/sim/test_v17_chain.py`` to drive the rust
+        engine with the same hex files the gpsim
+        ``v17_chain_images`` fixture builds.
+        """
+        return cls(_native.Chain.from_v17_chain(control_hex_path, main_hex_path))
+
     def step_ticks(self, n_ticks: int) -> None:
         """Advance the chain's universal scheduler by ``n_ticks``.
 
@@ -177,6 +209,46 @@ class Chain:
         the visible characters.
         """
         return tuple(self._inner.lcd_lines())  # type: ignore[return-value]
+
+    def is_connected(self) -> bool:
+        """True when CONTROL has marked itself as connected.
+
+        Reads bit 1 of physical RAM 0x01F on the CONTROL
+        core (the ``control_flags`` byte).  Mirror of
+        ``chain_gpsim.py::SingleMainChainHarness.is_connected``.
+        """
+        return bool(self._inner.is_connected())
+
+    def is_waiting(self) -> bool:
+        """True when CONTROL's LCD shows the WAITING screen.
+
+        Mirror of ``chain_gpsim.py::_is_waiting_lcd``: the
+        substring ``"WAITING FOR DLCP"`` (case-insensitive)
+        appears on either of the two LCD rows.
+        """
+        return bool(self._inner.is_waiting())
+
+    def run_until_connected(self, limit: int) -> int:
+        """Step in 200K-Tcy chunks (3.2M universal ticks each)
+        up to ``limit`` chunks, returning early as soon as the
+        chain has reached the steady-state CONNECTED Volume
+        display.  Returns the number of chunks actually
+        consumed (== ``limit`` if the predicate never fired).
+
+        Predicate: ``is_connected() AND not is_waiting() AND
+        "Volume:" in lcd_lines()[0]``.  This is STRICTER than
+        ``chain_gpsim.py::SingleMainChainHarness.run_until_connected``,
+        which uses just ``is_connected AND not is_waiting``.
+        See the rust-side comment on
+        ``Chain::run_until_connected`` for why the Rust facade
+        adds the LCD check (briefly: the Rust chain advances
+        cores within the same universal-tick scheduler rather
+        than gpsim's alternating per-MAIN / per-CONTROL chunks,
+        so ``control_flags.CONNECTED`` can transiently flip
+        True before the LCD has rendered the Volume screen --
+        the LCD check rejects those transients).
+        """
+        return int(self._inner.run_until_connected(int(limit)))
 
 
 __all__ = ["Chain", "__version__"]
