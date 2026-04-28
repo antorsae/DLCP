@@ -875,7 +875,41 @@ const fn opcode_needs_word2(word1: u16) -> bool {
 
 /// Step the core by one instruction.  Returns the Tcy cost of
 /// the instruction on success.
+///
+/// Wrapper that, when `core.cycle_probe` is attached, also
+/// records pre-step PC + cycles, then accumulates the per-
+/// instruction Tcy cost into matching PC-range probes after
+/// `step_inner` completes (P3.6b research step 6, task #67 --
+/// per-PC-range cycle accumulator for the
+/// display_loop_iteration cycle audit).  Default-off path is
+/// one `Option` discriminant check per call.
 pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
+    let probe_pre = if core.cycle_probe.is_some() {
+        Some(((core.pc() & 0xFFFF) as u16, core.cycles()))
+    } else {
+        None
+    };
+    let result = step_inner(core, stack);
+    if let Some((pre_pc, pre_cycles)) = probe_pre {
+        let post_cycles = core.cycles();
+        if let Some(probe) = core.cycle_probe.as_mut() {
+            let delta = post_cycles.saturating_sub(pre_cycles);
+            for range in &mut probe.pc_ranges {
+                if pre_pc >= range.start && pre_pc < range.end {
+                    range.total_cycles = range.total_cycles.saturating_add(delta);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Inner step body: IRQ dispatch + probe hit-count + actual
+/// instruction execution.  Separated from `step` so the
+/// wrapper can do pre/post cycle measurement around any
+/// return path without each return having to repeat the
+/// post-step probe logic.
+fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     // Check for pending interrupts before fetching the next
     // instruction.  Per DS39632E §9.3, IRQ vectoring happens
     // at instruction boundaries with GIE / GIEH / GIEL / IPEN

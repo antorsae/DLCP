@@ -1135,6 +1135,20 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_pc_range(0x12CC, 0x12CE, "v171_diag_pb_screen ENTRY (re-entries only)");
         probe.add_pc_range(0x0E1A, 0x0E1C, "display_loop_iteration ENTRY");
         probe.add_pc_range(0x1D0C, 0x1D0E, "main_event_loop ENTRY (re-entries only)");
+        // P3.6b research step 6 (task #67): display_loop_iteration
+        // FULL BODY plus each direct callee.  hits = instructions
+        // executed in body, total Tcy = sum of per-instruction
+        // cycle costs, avg = body Tcy per instruction.  Compare
+        // body Tcy against a cadence design budget of ~31 250 Tcy
+        // (1 sec @ 4 MIPS / 128 cadence ticks per sec).
+        probe.add_pc_range(0x0E1A, 0x0F40, "display_loop_iteration FULL BODY (294 bytes)");
+        probe.add_pc_range(0x0994, 0x0A28, "button_scan_debounce FULL BODY (148 bytes)");
+        probe.add_pc_range(0x0D92, 0x0DB2, "v171_service_pending_ir_decode FULL BODY (32 bytes)");
+        probe.add_pc_range(0x0458, 0x060C, "rx_parser_entry FULL BODY (436 bytes -- includes dispatch)");
+        probe.add_pc_range(0x0DB2, 0x0DE0, "v171_service_rx_frame_gap FULL BODY (46 bytes -- watchdog)");
+        probe.add_pc_range(0x0A78, 0x0A96, "control_core_service_0990 FULL BODY (30 bytes)");
+        probe.add_pc_range(0x0F40, 0x0F50, "control_core_service_0DCE FULL BODY (16 bytes)");
+        probe.add_pc_range(0x0C24, 0x0C32, "full_sync_burst FULL BODY (14 bytes)");
         let initial_parsed_data = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(0x030));
@@ -1873,11 +1887,22 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // (no instruction with PC in range was ever stepped).
     if let Some(probe) = chain.cores[i_ctl].cycle_probe.as_ref() {
         eprintln!("\n=== P3.6b research step 2: cycle-level probe summary ===");
-        eprintln!("PC-range hit counts (per-instruction, NOT boundary-sampled):");
+        eprintln!(
+            "PC-range hit counts + total Tcy (per-instruction, NOT boundary-sampled):"
+        );
         for r in &probe.pc_ranges {
+            // Average Tcy per hit -- gives a useful "instructions
+            // average X cycles each" view that helps spot
+            // subroutines containing multi-Tcy operations
+            // (CALL/RETURN/2-word instructions, long branches).
+            let avg_per_hit = if r.hit_count > 0 {
+                r.total_cycles as f64 / r.hit_count as f64
+            } else {
+                0.0
+            };
             eprintln!(
-                "  [{:#06X}..{:#06X})  hit_count = {:>10}  -- {}",
-                r.start, r.end, r.hit_count, r.label
+                "  [{:#06X}..{:#06X})  hits = {:>10}  Tcy = {:>14}  avg = {:>5.2}  -- {}",
+                r.start, r.end, r.hit_count, r.total_cycles, avg_per_hit, r.label
             );
         }
         eprintln!("Watched RAM transition logs (full per-instruction history):");

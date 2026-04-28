@@ -205,6 +205,16 @@ pub struct PcRangeProbe {
     /// step that actually fetches+executes it.  Codex
     /// MEDIUM from 92fe865.
     pub hit_count: u64,
+    /// Total Tcy accumulated for instructions whose
+    /// pre-fetch PC fell in `[start, end)`.  Updated
+    /// inside `exec::step` AFTER instruction execution by
+    /// adding the post-step `Core::cycles()` minus the
+    /// pre-step `Core::cycles()`.  P3.6b research step 6
+    /// (task #67): together with `hit_count`, this lets
+    /// the probe attribute Tcy budgets to specific
+    /// subroutines / dispatch branches without touching
+    /// the firmware or the sampling cadence.
+    pub total_cycles: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -267,9 +277,15 @@ impl CycleProbe {
     }
 
     /// Register a labelled PC range to count instruction
-    /// entries to.
+    /// entries to and accumulate Tcy spent in.
     pub fn add_pc_range(&mut self, start: u16, end: u16, label: &'static str) {
-        self.pc_ranges.push(PcRangeProbe { start, end, label, hit_count: 0 });
+        self.pc_ranges.push(PcRangeProbe {
+            start,
+            end,
+            label,
+            hit_count: 0,
+            total_cycles: 0,
+        });
     }
 
     /// Register a labelled RAM cell to watch for
