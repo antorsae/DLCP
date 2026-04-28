@@ -39,13 +39,20 @@ dlcp-sim = { path = "../dlcp-sim" }
 
 [build-dependencies]
 # `pyo3-build-config` exposes `add_extension_module_link_args()`
-# which emits the macOS `-undefined dynamic_lookup` /
-# `-flat_namespace` linker flags via `cargo:rustc-link-arg=`.
-# Doing this from `build.rs` (rather than `.cargo/config.toml`)
-# means the flags apply regardless of cargo's invocation cwd
-# -- in particular `cargo build -p dlcp-sim-py` from the
-# workspace root (or `cargo test --workspace`) succeeds on
-# macOS.  Codex MEDIUM from 45b041d.
+# which (per pyo3-build-config 0.28.3 source) emits two
+# `cargo:rustc-cdylib-link-arg=` directives on macOS:
+#     -undefined
+#     dynamic_lookup
+# These are cdylib-specific link args, so they fix the
+# `cargo build` cdylib output regardless of cargo's
+# invocation cwd -- in particular `cargo build -p
+# dlcp-sim-py` from the workspace root now succeeds on
+# macOS (codex MEDIUM from 45b041d).  They do NOT apply
+# to test binaries / examples, so a future
+# `cargo test --workspace` that compiled tests inside this
+# crate could still hit `_Py_*` link errors on macOS;
+# we'll cross that bridge in P4.2 if/when this crate
+# grows test code that links against pyo3.
 pyo3-build-config = "0.28"
 
 [lints]
