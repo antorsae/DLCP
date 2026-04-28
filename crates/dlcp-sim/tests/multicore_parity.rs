@@ -1443,15 +1443,30 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         );
     }
     // Locate any BF/2N reply burst (route 0xBF + cmd in
-    // 0x21..=0x27) and dump a window around it -- this is
-    // the byte stream that should arrive at CONTROL.RX
-    // immediately AFTER the B1/21 query and that the
-    // parser is supposed to dispatch to v171_bf2x_case_check.
-    // If the burst is missing entirely, the wire-coupling
-    // dropped it.  If present but not consumed, the parser
-    // is failing to latch cmd in 0x21..0x27 -- that's the
-    // smoking gun for hypothesis #4 (alignment) or #5
-    // (BANK/RAM aliasing in the BF/2N dispatch handler).
+    // 0x21..=0x27) on the wire and dump a window around
+    // it.  This is the byte stream that *should* arrive
+    // at CONTROL.RX immediately AFTER the B1/21 query
+    // and that the parser would normally dispatch to
+    // v171_bf2x_case_check.
+    //
+    // What this view CAN tell us (positive observation):
+    //   - 21 contiguous bytes [BF,21,d, BF,22,d, ..., BF,27,d]
+    //     with ~15 480-tick spacing means the wire side
+    //     delivered the burst (records are pushed at
+    //     TX-emit time in `Chain::uart_tx_history`,
+    //     before destination SPEN/CREN gating, so this is
+    //     authoritative for "wire emission attempted",
+    //     not for FIFO acceptance).
+    //
+    // What this view CANNOT tell us:
+    //   - whether the bytes were latched into RCREG and
+    //     pushed onto rx_ring (the SW ISR could still
+    //     drop them via OERR, CREN-toggle, or a ring-
+    //     overrun roll-back at v171.asm:837-849), and
+    //   - whether the parser ever entered the BF/2N
+    //     dispatch path or wrote diag_present.
+    // Negative claims about parser/dispatch behaviour
+    // require step-2 cycle-level instrumentation.
     let mut burst_starts: Vec<usize> = Vec::new();
     for (i, w) in ctl_rx_arrivals.windows(2).enumerate() {
         if w[0].2 == 0xBF && (0x21..=0x27).contains(&w[1].2) {
