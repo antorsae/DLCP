@@ -2424,11 +2424,10 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
 /// Spec reference: `docs/SIM_REWRITE_RUST_SPEC.md` §7.4 calls for
 /// a 1.5 s late MAIN1 boot offset under the V1.71 reconnect-wake
 /// budget.  In universal ticks the spec quotes `+72_000_000` as
-/// 1.5 s @ 48 MHz; we use a larger offset here (`LATE_OFFSET`
-/// below) because the universal-tick / wall-time conversion in
-/// the sim is per-core (CONTROL = 16 ticks/Tcy, MAIN = 12) and
-/// we want to give CONTROL enough universal ticks to actually
-/// reach the WAITING screen before MAIN1 starts emitting.
+/// 1.5 s @ 48 MHz, matching `crates/dlcp-sim/src/boot_offset.rs:14`.
+/// The chain has a single 48 MHz universal clock per
+/// `crates/dlcp-sim/src/chain.rs:17`; the test uses this canonical
+/// offset.
 ///
 /// Test shape:
 ///   1. Build 3-core ring (CONTROL + MAIN0 + MAIN1) with HD44780
@@ -2499,6 +2498,33 @@ fn test_main1_late_boot_recovery() {
     chain.cores[i_ctl]
         .memory
         .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+
+    // ----- Phase 0: prove the late-boot offset was actually
+    // honored.  Step LATE_OFFSET / 2 ticks (i.e. 36 M ticks --
+    // half the offset, well below it) and assert MAIN1 hasn't
+    // started stepping yet.  Codex review of a8bd432, MEDIUM:
+    // without this guard the test would still pass even if
+    // `schedule_initial_steps` regressed to ignore the offset
+    // and MAIN1 booted at tick 0 -- CONTROL might still hit a
+    // transient WAITING during cold boot and recover, with no
+    // way to tell whether the late-boot path was actually
+    // exercised.  Stepping past LATE_OFFSET/2 is a much
+    // cheaper boot-offset wiring guard than the post-recovery
+    // `cycles() > 0` check (which only proves MAIN1 ran at
+    // some point).
+    chain.step_ticks(LATE_OFFSET / 2);
+    let main1_cycles_before_offset = chain.cores[i_main1].cycles();
+    assert_eq!(
+        main1_cycles_before_offset, 0,
+        "MAIN1 must NOT have started stepping at tick={} \
+         (LATE_OFFSET/2 = {}, well below the {LATE_OFFSET}-tick \
+         delay).  Got cycles={}; boot-offset wiring regression \
+         (`schedule_initial_steps` not honoring the per-core \
+         offset).",
+        chain.current_tick,
+        LATE_OFFSET / 2,
+        main1_cycles_before_offset,
+    );
 
     // ----- Phase 1: CONTROL must reach `Waiting for DLCP` -----
     // With MAIN1's first instruction delayed to tick =
