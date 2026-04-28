@@ -70,6 +70,20 @@ def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
     return (f.route, f.cmd, f.data)
 
 
+def _step_tcy(h, tcy: int) -> None:  # type: ignore[no-untyped-def]
+    """Advance the harness by exactly `tcy` K20 instruction cycles.
+    Rust facade exposes `step_tcy(N)` directly.  gpsim's harness
+    only has `step()` which advances `chunk_cycles` (passed at
+    construction) per call -- so for the gpsim path the caller
+    must construct the harness with `chunk_cycles=tcy` first; this
+    helper then issues exactly one `step()` call.
+    """
+    if hasattr(h, "step_tcy"):
+        h.step_tcy(tcy)
+    else:
+        h.step()
+
+
 @pytest.fixture(scope="module")
 def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     tmp = tmp_path_factory.mktemp("v171_preset")
@@ -259,21 +273,27 @@ def test_v171_ir_0x39_twice_emits_once(
 ) -> None:
     """Second RC5 0x39 when already in B is a no-op.
 
-    Use a tighter chunk size here so the assertion isolates an immediate
-    duplicate IR emit instead of catching the independent Layer-2 periodic
-    preset broadcast that can legitimately arrive later in a coarse 600k-
-    cycle step window.
+    Use a tighter step granularity here (10K Tcy per advancement)
+    so the assertion isolates an immediate duplicate IR emit
+    instead of catching the independent Layer-2 periodic preset
+    broadcast that can legitimately arrive later in a coarse
+    200K-Tcy step window.  Codex review of 8917f3f (MEDIUM)
+    flagged that rust's fixed 200K-Tcy `step()` was 20x wider
+    than gpsim's configured 10K-Tcy chunks, so the body now uses
+    `_step_tcy(h, 10_000)` which dispatches to `step_tcy(10000)`
+    on rust and (after the gpsim harness is built with
+    chunk_cycles=10_000) `step()` on gpsim.
     """
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
         _set_preset_bit(h, False)
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x39)
         for _ in range(200):
-            h.step()
+            _step_tcy(h, 10_000)
         before_second = len(h.tx_frames())
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x39)
         for _ in range(50):
-            h.step()
+            _step_tcy(h, 10_000)
 
         tx_after = [_frame_tuple(f) for f in h.tx_frames()[before_second:]]
         assert _preset_frame(0x01) not in tx_after, (
@@ -296,18 +316,21 @@ def test_v171_ir_0x38_twice_emits_once(
 ) -> None:
     """Second RC5 0x38 when already in A is a no-op.
 
-    Same tightened window rationale as the repeat-0x39 test above.
+    Same tightened-window rationale as the repeat-0x39 test
+    above (codex MEDIUM): use `_step_tcy(h, 10_000)` so the
+    rust path advances at the same 10K-Tcy granularity as
+    gpsim's configured chunk size.
     """
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
         _set_preset_bit(h, True)
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x38)
         for _ in range(200):
-            h.step()
+            _step_tcy(h, 10_000)
         before_second = len(h.tx_frames())
         h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x38)
         for _ in range(50):
-            h.step()
+            _step_tcy(h, 10_000)
 
         tx_after = [_frame_tuple(f) for f in h.tx_frames()[before_second:]]
         assert _preset_frame(0x00) not in tx_after, (
