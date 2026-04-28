@@ -19,10 +19,15 @@ crate-type = ["cdylib"]
 [dependencies]
 # Pinned to 0.28.x for Python 3.14 support (added in PyO3
 # 0.24+; we use the latest stable so we get any new
-# limited-API improvements).  `extension-module` enables
-# the `Py_LIMITED_API` linker flag and avoids embedding
-# `libpython` -- required when building a Python C
-# extension rather than embedding a Python interpreter.
+# limited-API improvements).  `extension-module` tells
+# PyO3 we are building a C extension that the host Python
+# interpreter will `dlopen` -- it switches off the link-
+# against-libpython path that `cargo build` would otherwise
+# take, leaving `_Py_*` symbols to be resolved at runtime.
+# (NOT to be confused with `abi3*` features, which control
+# `Py_LIMITED_API` opt-in for binary stability across
+# Python releases.  We don't enable abi3 today because the
+# verify path pins one Python version anyway.)
 pyo3 = { version = "0.28", features = ["extension-module"] }
 
 # Workspace-shared core simulation engine.  P4.1 only uses
@@ -31,6 +36,17 @@ pyo3 = { version = "0.28", features = ["extension-module"] }
 # will expose `Chain`, `Core`, `step_ticks`, etc. through
 # this dep.
 dlcp-sim = { path = "../dlcp-sim" }
+
+[build-dependencies]
+# `pyo3-build-config` exposes `add_extension_module_link_args()`
+# which emits the macOS `-undefined dynamic_lookup` /
+# `-flat_namespace` linker flags via `cargo:rustc-link-arg=`.
+# Doing this from `build.rs` (rather than `.cargo/config.toml`)
+# means the flags apply regardless of cargo's invocation cwd
+# -- in particular `cargo build -p dlcp-sim-py` from the
+# workspace root (or `cargo test --workspace`) succeeds on
+# macOS.  Codex MEDIUM from 45b041d.
+pyo3-build-config = "0.28"
 
 [lints]
 workspace = true

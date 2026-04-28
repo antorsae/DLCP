@@ -12,6 +12,7 @@ version = "0.0.0"
 dependencies = [
  "dlcp-sim",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
