@@ -194,6 +194,11 @@ def pytest_configure(config: pytest.Config) -> None:
     warn `PytestUnknownMarkWarning` for tests that opt in to
     the new backends.  Sourcing the docstring here makes
     `pytest --markers` self-document the migration contract.
+
+    The four legacy markers (`gpsim`, `wire`, `slow`,
+    `hardware`) are already registered in the project's
+    root `pytest.ini`; this conftest does NOT duplicate
+    those registrations (codex LOW from 311738d).
     """
     config.addinivalue_line(
         "markers",
@@ -204,28 +209,37 @@ def pytest_configure(config: pytest.Config) -> None:
         "AFTER landing the rust-side adapter glue for the "
         "test's chain harness in P4.4..P4.7.",
     )
-    config.addinivalue_line(
-        "markers",
-        "gpsim: test requires the gpsim binary (legacy PTY harness).",
-    )
-    config.addinivalue_line(
-        "markers",
-        "wire: gpsim wire-chain test (legacy PTY-bridge multi-MAIN).",
-    )
-    config.addinivalue_line(
-        "markers",
-        "slow: long-running simulation test.",
-    )
-    config.addinivalue_line(
-        "markers",
-        "hardware: live hardware test; skipped by default unless "
-        "--run-hardware is passed.",
-    )
     # Stash the resolved backend on the config object so
     # pytest_collection_modifyitems can read it without
     # re-reading the env var (and racing any caller who
     # mutated DLCP_SIM_BACKEND mid-run).
     config._dlcp_sim_backend = _resolve_dlcp_sim_backend()  # type: ignore[attr-defined]
+
+
+# Cached `tests/sim/` directory (resolved once) used to
+# guard `pytest_collection_modifyitems` so the auto-skip
+# rule only touches sim tests, not unrelated trees that
+# happened to be in the same pytest invocation (e.g.
+# `pytest tests/sim tests/asm_unit_tests/...` with
+# DLCP_SIM_BACKEND=dual would previously have skipped
+# the asm tests too).  Codex LOW from 311738d.
+_TESTS_SIM_DIR = Path(__file__).resolve().parent
+
+
+def _item_is_in_sim_tree(item: pytest.Item) -> bool:
+    """Return True iff `item.path` is under `tests/sim/`.
+
+    Uses a resolved-real-path check so symlinks don't
+    accidentally let a non-sim test slip through.  pytest
+    >= 7 always sets `item.path`; earlier versions used
+    `item.fspath` (we don't support those).
+    """
+    item_path = Path(item.path).resolve()
+    try:
+        item_path.relative_to(_TESTS_SIM_DIR)
+    except ValueError:
+        return False
+    return True
 
 
 def pytest_collection_modifyitems(
@@ -234,12 +248,17 @@ def pytest_collection_modifyitems(
 ) -> None:
     """Apply the DLCP_SIM_BACKEND auto-skip rule.
 
-    For DLCP_SIM_BACKEND in {dual, rust}, every test that
-    LACKS `@pytest.mark.dual_supported` gets a skip marker
-    added with a clear message pointing at the migration
-    plan.  Tests that HAVE the marker are left untouched
-    (their adapters are responsible for picking up the
-    backend choice at fixture-resolution time).
+    For DLCP_SIM_BACKEND in {dual, rust}, every test that:
+      (a) LIVES UNDER `tests/sim/` (codex LOW from 311738d --
+          the plugin loads as soon as a `tests/sim/...` arg
+          is in the pytest invocation, but the auto-skip
+          should only touch sim tests, not unrelated trees
+          that happened to be in the same invocation), AND
+      (b) LACKS `@pytest.mark.dual_supported`,
+    gets a skip marker added with a clear message pointing
+    at the migration plan.  Tests with the marker are left
+    untouched (their adapters branch on the backend at
+    fixture-resolution time).
     """
     backend: str = getattr(
         config, "_dlcp_sim_backend", DLCP_SIM_BACKEND_GPSIM
@@ -254,6 +273,8 @@ def pytest_collection_modifyitems(
     )
     skip_marker = pytest.mark.skip(reason=skip_reason)
     for item in items:
+        if not _item_is_in_sim_tree(item):
+            continue
         if "dual_supported" in {m.name for m in item.iter_markers()}:
             continue
         item.add_marker(skip_marker)
