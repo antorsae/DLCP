@@ -815,6 +815,109 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 /// `#[ignore]`d.  Wall ~ 60 s.  Hop E investigation
 /// pending: trace CONTROL's parser state during the
 /// BF/27 byte arrival window.
+///
+/// =====================================================
+/// P3.6b RESEARCH CLOSURE (2026-04-28, post-step-8)
+/// =====================================================
+///
+/// Steps 1..8 walked from boundary-sampled instrumentation
+/// to cycle-level intervention to busy-loop exit-predicate
+/// audit, building a complete causal chain that explains
+/// why this probe never converges to `diag_present == 0x03`
+/// AND why it is NOT a sim fidelity bug.
+///
+/// PRIMARY ROOT CAUSE (steps 1..4): the V1.71 parser-stall
+/// watchdog `v171_service_rx_frame_gap` (asm:2633+) reload
+/// constant `V171_RX_FRAME_GAP_RELOAD = 0xF8` (8-step
+/// count-up to expire) clears `rx_frame_position` ~7 K
+/// ticks BEFORE the data byte of each BF/2N frame arrives
+/// (cmd-to-data spacing = ~15.5 K ticks; reload-to-expire
+/// = ~24 K ticks).  With frame_pos cleared, the data byte
+/// is dropped at `flow_rx_parser_entry_04D6`.  Step 4
+/// proved causality by intervention: when `rx_parsed_cmd`
+/// transitions to BF/2N, force-reset the watchdog timeout
+/// to 0x01.  All 11 BF/2N frames then dispatch correctly,
+/// PB1's BF/27 RUNTIME-LAST tail fires once (target toggles
+/// 0->1, present.bit_0 set), and PB1's BF/2B RESET-LAST
+/// fires once (reset_seen.bit_0 set, RESET_PENDING cleared).
+///
+/// SECONDARY OBSERVATION (steps 5..8): even with the
+/// watchdog intervention enabled, PB2 query (B2/22 / B2/21)
+/// never fires within a 4x-extended (8 G ticks) test
+/// budget.  Step 5 traced this to cadence-loop starvation:
+/// `v171_diag_loop` runs only 39 times in ~218 sim seconds
+/// (= 1 call / 5.6 sim sec) instead of the design-intent
+/// 128 calls / sec.  Step 6 found the bottleneck is in
+/// `display_loop_iteration` (called once per cadence-loop
+/// pass): per-call body Tcy = ~7.3 M, total tracked-callee
+/// Tcy = ~14.9 M -- ~480x over the design budget of
+/// ~31 250 Tcy per cadence call.  Step 7 attributed the
+/// dominant cost to `button_scan_debounce` (30 % of total
+/// run Tcy, 138 M instructions executed in body) called
+/// from a busy-loop at PC 0x0E1C
+/// (`flow_display_loop_iteration_0CB4`) that branches back
+/// to itself from the body's tail at asm:2897.  Step 8
+/// found the busy-loop's named exit predicates --
+/// `0x09A` BANK 0 (RIGHT-button event byte) and
+/// `control_flags.bit3` (mute-state-change event flag) --
+/// NEVER fire in this test scenario:
+///   * `0x09A` BANK 0 transitions: 0  (no buttons pressed
+///     during PB1Diag dwell)
+///   * `control_flags.bit3` transitions: 0  (no mute frames
+///     in test traffic; bit 3 is set only by cmd 0x03 / data
+///     2|3 mute-on / mute-off paths)
+/// The 39 observed loop-exits happen via BSR=1 leak (618
+/// observed BSR transitions in the run): when a service
+/// routine leaves BSR at 1, the loop check's banked
+/// `movf 0x9a, F, B` reads physical 0x19A (=
+/// v171_diag_present_snap), which became 0x01 once after
+/// PB1's BF/27 dispatch.  Without the BSR leak, the loop
+/// would never exit in this test scenario.
+///
+/// DEFINITIVE CONCLUSION: P3.6b's non-convergence is a
+/// TEST-SCENARIO ARTIFACT, not a simulator fidelity bug.
+/// V1.71 firmware is designed as a foreground busy-loop
+/// that exits on user-driven events (button presses,
+/// mute toggles, IR remote, etc.).  The diag-page probe
+/// drives no such events after the initial 4-RIGHT-press
+/// navigation -- so the loop iterates ~93 K times per
+/// cadence call, the cadence runs ~700x slower than
+/// intended, and PB2 doesn't get a query within any
+/// reasonable test budget.  Real hardware running the
+/// diag page in practice receives constant button /
+/// mute / volume / IR traffic that exits the loop every
+/// few ms.
+///
+/// CLOSURE STATUS: research goal complete -- the BF/2N
+/// dispatch path is fully explained.  The probe stays
+/// `#[ignore]`'d because converging to `diag_present ==
+/// 0x03` would require either:
+///   (a) Synthetic stimulus injection (button-press / IR
+///       events at probe attach time) to drive the busy-
+///       loop's exit cadence to design rate -- this
+///       would answer a different question ("can
+///       stimulated firmware converge?") rather than
+///       documenting actual unstimulated behaviour, OR
+///   (b) Accept the existing `#[ignore]` as a tracked
+///       research artifact whose docstring documents
+///       findings rather than enforcing them.
+///
+/// We chose (b) per codex recommendation on 367a381
+/// (research closure preferred over synthetic-stimulus).
+/// The tracked progress-ledger entry for P3.6b stays
+/// `[blocked]` -- not because the research is incomplete
+/// but because the verify-phase command is non-converging
+/// by design.  The ledger description is updated to
+/// reflect the closure conclusion.
+///
+/// Related ledger entries:
+///   - tasks #60..#69: per-step research milestones
+///   - task #61: deferred docstring tightening (cycle-level
+///     wording at line ~793 -- now superseded by this
+///     closure block)
+///   - task #64: wording-discipline tracking for several
+///     earlier commit-body claims (kept as a polish-pass
+///     reminder if the docstring is ever reopened)
 #[test]
 #[ignore = "P3.6 step (B) -- diag-poll cadence still doesn't fire after firmware-driven navigation"]
 fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
