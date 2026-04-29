@@ -310,7 +310,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [in_progress] P4.6 Migrate `test_v31_*` and `test_v32_*` tests
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -k 'v31 or v32' -n 16 -q`
   - artifact: ledger update.
-  - status: 8 of 13 v31/v32 files migrated to dual-mode (with 6 of 8 review_findings tests now dual_supported).  Plus 2 files documented as gpsim-only (pre-existing failures on main).
+  - status: 9 of 13 v31/v32 files migrated to dual-mode (with 6 of 8 review_findings tests + 8 of 11 v163b_robustness tests now dual_supported).  Plus 2 files documented as gpsim-only (pre-existing failures on main).
   - sub-task [done] structural baseline (3 files, ~33 tests):
     - test_v31_usb_preset_ab.py (8 tests)
     - test_v32_no_pop_flash_entry.py (13 tests, ~22 after parametrize)
@@ -327,9 +327,12 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - sub-task [done] MSSP STOP-bit fault injection (`Chain.set_mssp_stop_fault(stop_busy_cycles=N, stop_busy_count=M)` / `Chain.clear_mssp_stop_faults()`) + 3 more review_findings tests dual-mode.  See commit 1444016.  Test status (cumulative for review_findings):
     - 6 of 8 dual_supported: `test_bsr_safety_no_ram_corruption_on_nack`, `test_idle_wait_blocks_during_pen_fault_then_recovers`, `test_dsp_path_recovers_after_mssp_stop_fault_cleared` (renamed from `..._degraded_during_mssp_stop_fault` per codex MEDIUM on 1444016 -- the original docstring claimed degradation testing but the test body only checked recovery; both backends show I²C bytes lead the faulted STOP, so a "DSP unchanged during fault" assertion is unsound), `test_boot_complete_flag_set_during_activation`, `test_pen_timeout_firmware_detects_before_sspcon2_poke`, `test_volume_dsp_write_retry_counter_increments`.
     - 2 retained gpsim-only with rationale: `test_bsr_safety_ackstat_write_after_volume_nack` (rust MSSP/TAS3108 path leaves SSPCON2.ACKSTAT=1 after a successful volume burst -- baseline `dsp_fault_flags == 0x00` invariant doesn't hold; documented in b828519's commit body); `test_bf08_payload_bytes_on_dsp_fault` (needs MAIN-side UART TX byte observation in a no-peer chain -- rust uart_tx_history is populated only through couplings; MAIN-only chain has no UART coupling so MAIN's BF/08 frames aren't recorded).
-  - sub-task [pending] 3 sim-based files NOT migrated, each with discrete blockers warranting dedicated sub-tasks:
+  - sub-task [done] v163b_robustness migration + `Chain.force_reset_main_mssp` (commit 3eda8f5):
+    - 8 of 11 tests dual_supported (V3.1: bus-clear, dsp-ping, pen-timeout; V3.2: bus-clear, pen-timeout, async-apply-stop-{responsive,does-not-advance,recovers-and-completes}).
+    - 3 of 11 tests stay gpsim-only -- they use `WireMultiMainChainHarness` (multi-MAIN wire chain), which is a P4.7-class sub-task: test_wire_dsp_fault_reporting, test_wire_mssp_stop_cascade_control_path_recovers_without_sim_pokes, test_wire_mssp_stop_cascade_full_dsp_recovery.
+    - The new `Chain.force_reset_main_mssp` PyO3 method mirrors gpsim's `harness._issue("p18f2455.sspcon2 = 0")` privileged-write workaround: BOTH `mssp.reset_state()` (aborts in-flight `I2cState::Stop(N)` countdown) AND clears the SSPCON2 SFR memory.  Without the state-machine reset, an in-flight STOP-fault-extended STOP keeps counting down even after the fault knobs are cleared.
+  - sub-task [pending] 2 sim-based files NOT migrated, each with discrete blockers warranting dedicated sub-tasks:
     - test_v31_combined_dsp_table_apply.py (5 tests) -- BLOCKER: subprocess-driven `gpsim -i -c <stc>` scripts using break-on-PC, PC override, `dsp34.regNN` regfile readbacks.  Migration requires break-on-PC primitives in the rust executor + PC-override + return-PC-detection on the rust facade.  This is structurally distinct from the MAIN-only harness pattern and warrants a separate "rust executor breakpoint primitives" sub-task.
-    - test_v31_v163b_robustness.py (11 tests) -- the I²C and MSSP STOP-fault sub-tasks above unblock 8 of 11 tests; 3 of 11 use `WireMultiMainChainHarness` (multi-MAIN wire chain) which is a P4.7-class sub-task.
     - test_v32_layer5_diag_counters.py (37 tests) -- many static source-pattern matchers (already backend-independent), plus several MainChainHarness-based diag-counter probes.  Sketch of the MAIN-only sub-batch already exists in the test body comments (`chain.write_rx_bytes` / `step_until_tx_quiescent` / `tx_record_since_last_capture`).  Worth a dedicated sub-task because of the test-count and the new TX-recording observability surface; that surface would also unblock `test_bf08_payload_bytes_on_dsp_fault` in review_findings.
 
 - [pending] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.)
