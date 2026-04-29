@@ -695,7 +695,6 @@ def test_v32_cmd21_masks_high_nibble_before_tx() -> None:
     )
 
 
-@pytest.mark.dual_supported
 def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
     v32_hex: Path,
 ) -> None:
@@ -705,10 +704,10 @@ def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
     only.
 
     Test shape:
-      1. Boot V3.2 MAIN under gpsim.
-      2. Force the diag cells (0x2E5..0x2EC) to a high-nibble pattern
-         via gpsim CLI: 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0
-         (each with bit 7 set; chain forwarder would mis-frame these).
+      1. Boot V3.2 MAIN.
+      2. Force the diag cells (0x2E5..0x2EC) to a high-nibble pattern:
+         0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0 (each with bit 7
+         set; chain forwarder would mis-frame these).
       3. Inject a cmd 0x21 query (CONTROL→MAIN B1/0x21/0x00).
       4. Capture MAIN's TX byte stream during the reply burst.
       5. Verify every data byte (offsets 2, 5, 8, 11, 14, 17, 20 of
@@ -719,11 +718,29 @@ def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
     `test_v32_cmd21_masks_high_nibble_before_tx` — even if the source
     test passes (mask is in place), this gpsim test confirms the mask
     is APPLIED at the right point in the instruction sequence.
+
+    NOT marked dual_supported: the gpsim path was sketched but
+    `_capture_cmd21_tx_burst` was never implemented and
+    `GpsimMainHarness` doesn't exist in `main_gpsim.py`, so the
+    test skipped on gpsim too (always-skip).  Probed the rust path
+    using the new TX-recording API (cc01363):
+    `inject_main_frames_fifo([[0xB0|B1|BF, 0x21, 0x00]])` does NOT
+    elicit the expected 7-frame BF/2N diag-counter burst on rust --
+    the cmd 0x21 dispatcher requires firmware state that
+    MAIN-only boot+activate doesn't reach (likely CONNECTED state
+    via heartbeat-pump traffic from a CONTROL peer).  Migrating
+    this test would require either (a) a full V1.71 + V3.2 chain
+    factory exposing tx_record_since_last_capture, or (b) a
+    CONTROL-side stimulus pump that drives the firmware into the
+    state where cmd 0x21 fires.  Tracked as a P4.6/P4.7 follow-up;
+    the source-level mask test
+    (`test_v32_cmd21_masks_high_nibble_before_tx`) covers the
+    same `andlw 0x0F` invariant at compile time.
     """
     if not gpsim_available():
         pytest.skip("gpsim not installed")
     try:
-        from dlcp_fw.sim.main_gpsim import GpsimMainHarness
+        from dlcp_fw.sim.main_gpsim import GpsimMainHarness  # type: ignore[attr-defined]
     except Exception:
         pytest.skip("main_gpsim harness not importable")
 
@@ -742,12 +759,6 @@ def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
                 f"to 0x{value:02X} (got 0x{actual:02X})"
             )
         # Inject cmd 0x21 query and capture MAIN's TX stream.
-        # NOTE: the MainHarness API for injecting a chain frame and
-        # reading TX exists — wire it up via inject_frames_fifo and
-        # then sample the TX recorder.  If a simpler interface is
-        # available, prefer that.  Detail intentionally elided here
-        # so the test stays focused on the WHAT being asserted; the
-        # implementation can adapt to the harness API.
         try:
             tx_bytes = _capture_cmd21_tx_burst(h, query_route=0xB1)
         except NotImplementedError as exc:
@@ -757,15 +768,6 @@ def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
                 f"test (`test_v32_cmd21_masks_high_nibble_before_tx`) "
                 f"covers the same invariant at compile time."
             )
-        # Reply burst structure: 7 frames of [BF, 2N, data].
-        # Offsets in the captured stream:
-        #   0  : BF
-        #   1  : 0x21
-        #   2  : data (diag_i)
-        #   3  : BF
-        #   4  : 0x22
-        #   5  : data (diag_d)
-        #   ... (every 3 bytes)
         assert len(tx_bytes) >= 21, (
             f"reply burst too short ({len(tx_bytes)} bytes), expected "
             f">= 21 for 7 frames"
@@ -1233,6 +1235,7 @@ DIAG_RESET_WDT_ADDR = 0x2EF
 DIAG_RESET_SW_ADDR  = 0x2F0
 
 
+@pytest.mark.dual_supported
 @pytest.mark.parametrize(
     "name,addr",
     [
@@ -1242,7 +1245,6 @@ DIAG_RESET_SW_ADDR  = 0x2F0
         ("diag_reset_sw",  DIAG_RESET_SW_ADDR),
     ],
 )
-@pytest.mark.dual_supported
 def test_ram_inc_defines_reset_cause_flag(name: str, addr: int) -> None:
     """Tier-1 reset-cause flag cells live in the wipe-protected BANK 2
     upper region (0x2DE..0x2FF), immediately after the runtime counter
