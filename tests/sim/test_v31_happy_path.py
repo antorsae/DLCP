@@ -319,14 +319,21 @@ def test_two_volumes_produce_different_computed_volume(
 # Test 4: Boot volume from EEPROM is applied to DSP
 # ===================================================================
 #
-# NOTE: NOT marked `dual_supported`.  Same timing-coincidence
-# rationale as test 2: the second assertion ("volume cmd produces
-# DSP changes") relies on preset loading still being in flight on
-# gpsim's slower scheduler.  The first assertion ("computed_volume
-# or logical_volume non-zero after boot") is robust on both
-# backends and is already covered by `test_dsp_preset_registers_
-# nonzero_after_boot` and `test_two_volumes_produce_different_
-# computed_volume` in this file.
+# NOTE: NOT marked `dual_supported`.  The SECOND assertion in this
+# test ("volume cmd produces DSP changes") relies on preset loading
+# still being in flight on gpsim's slower scheduler -- same
+# timing-coincidence rationale as test 2 above.
+#
+# The FIRST assertion ("computed_volume or logical_volume non-zero
+# after boot") is robust on both backends and exercises the
+# EEPROM-boot-volume-applied-to-RAM init path that no other test in
+# this file covers (test 1 checks DSP preset regs, test 3 checks
+# that two POST-boot injected volumes differ in RAM but doesn't
+# establish that EEPROM boot init populated RAM).  A future P4.6
+# follow-up could split this test so the EEPROM-init assertion
+# becomes a standalone dual_supported function and only the
+# DSP-diff assertion stays gpsim-only; for now the whole function
+# stays gpsim-only to keep the migration scope tight.
 
 
 @pytest.mark.gpsim
