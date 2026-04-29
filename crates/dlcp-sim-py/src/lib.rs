@@ -466,8 +466,18 @@ const DEFAULT_STEP_TCY: u64 = 200_000;
 /// K20 universal ticks per Tcy (Fosc 12 MHz, Tcy = 4/Fosc,
 /// universal clock 48 MHz -> 48 / 3 = 16 ticks/Tcy).  See
 /// `crates/dlcp-sim/src/chain.rs:17` for the universal-
-/// clock derivation.
+/// clock derivation.  Mirror of
+/// `peripherals::osc::ticks_per_tcy(Variant::Pic18F25K20)`.
 const TICKS_PER_TCY_K20: u64 = 16;
+/// PIC18F2455 universal ticks per Tcy (Fosc 16 MHz, Tcy =
+/// 4/Fosc, universal clock 48 MHz -> 48 / 4 = 12 ticks/Tcy).
+/// Mirror of
+/// `peripherals::osc::ticks_per_tcy(Variant::Pic18F2455)`.
+/// Used by `step_tcy` for MAIN-only chains where `tcy`
+/// is interpreted as PIC18F2455 instruction cycles
+/// (matching gpsim's MainChainHarness `chunk_cycles=N`
+/// constructor knob).
+const TICKS_PER_TCY_2455: u64 = 12;
 
 /// Match the gpsim harness's WAITING screen heuristic
 /// (`chain_gpsim.py::_is_waiting_lcd`): the substring
@@ -743,7 +753,27 @@ impl Chain {
     /// serialization artifact we deliberately do NOT
     /// replicate.
     fn step_tcy(&mut self, tcy: u64) {
-        self.inner.step_ticks(tcy * TICKS_PER_TCY_K20);
+        // Pick the universal-clock conversion factor that
+        // matches the test's intent.  MAIN-only chains
+        // (i_ctl == i_main0, no real CONTROL core) interpret
+        // `tcy` as PIC18F2455 instruction cycles -> 12
+        // ticks/Tcy.  Mixed CONTROL+MAIN chains interpret
+        // `tcy` as K20 instruction cycles -> 16 ticks/Tcy
+        // (the K20 is the "primary" timekeeper for those
+        // chains, matching the v171_v32 parity tests that
+        // pre-date MAIN-only and expect K20-Tcy semantics).
+        // Without this gate, MAIN-only tests using gpsim's
+        // chunk_cycles=N analogue see 33% more MAIN time
+        // than gpsim (16/12 = 1.33), which breaks fine-
+        // grained transient probes.  Reference: codex review
+        // of b828519 LOW.
+        let main_only = self.i_ctl == self.i_main0;
+        let factor = if main_only {
+            TICKS_PER_TCY_2455
+        } else {
+            TICKS_PER_TCY_K20
+        };
+        self.inner.step_ticks(tcy * factor);
     }
 
     /// Advance the universal clock by `n_ticks` and dispatch
@@ -1204,15 +1234,25 @@ impl Chain {
     }
 
     /// Step a fixed `DEFAULT_STEP_TCY`-Tcy convenience
-    /// chunk (200K Tcy = 3.2 M universal ticks).  Provides
-    /// the same parameterless-step interface the gpsim
-    /// harness exposes, so duck-typed scenario helpers
-    /// (`_press_sequence`, `_rx_sequence`, `_ir_event`) work
-    /// on either backend.  When a test needs a specific
-    /// amount of simulated time, call `step_tcy(N)`
-    /// instead.
+    /// chunk (200K Tcy).  Provides the same parameterless-
+    /// step interface the gpsim harness exposes, so duck-
+    /// typed scenario helpers (`_press_sequence`,
+    /// `_rx_sequence`, `_ir_event`) work on either backend.
+    /// When a test needs a specific amount of simulated
+    /// time, call `step_tcy(N)` instead.
+    ///
+    /// Tcy interpretation matches `step_tcy`: MAIN-only
+    /// chains use the PIC18F2455 factor (12 ticks/Tcy,
+    /// 2.4 M ticks total); mixed CONTROL+MAIN chains use
+    /// the K20 factor (16 ticks/Tcy, 3.2 M ticks total).
     fn step(&mut self) {
-        self.inner.step_ticks(DEFAULT_STEP_TCY * TICKS_PER_TCY_K20);
+        let main_only = self.i_ctl == self.i_main0;
+        let factor = if main_only {
+            TICKS_PER_TCY_2455
+        } else {
+            TICKS_PER_TCY_K20
+        };
+        self.inner.step_ticks(DEFAULT_STEP_TCY * factor);
     }
 
     /// Run the chain to a CONNECTED steady-state by stepping

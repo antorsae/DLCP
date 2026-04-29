@@ -72,7 +72,15 @@ def _boot_and_snapshot_dsp_gpsim(main_hex: Path) -> dict[int, int]:
             harness.step()
         assert _read_reg(harness._issue, 0x05E) & 0x08, "MAIN not active"
 
-        for _ in range(30):
+        # 60-chunk settle (was 30 before the b828519 codex-LOW
+        # step_tcy factor fix).  Rust now matches gpsim's
+        # 200_000 MAIN-Tcy/chunk rather than the 33%-over-step
+        # K20-Tcy factor; with the matched cadence, the V3.1
+        # preset-loader takes a few more chunks than gpsim to
+        # finish the per-entry I²C bursts.  60 is safely past
+        # the convergence point on both backends; gpsim
+        # converges around chunk ~30, rust around chunk ~50.
+        for _ in range(60):
             harness.step()
 
         return {r: harness.read_i2c_regfile("dsp34", r) for r in range(256)}
@@ -81,7 +89,7 @@ def _boot_and_snapshot_dsp_gpsim(main_hex: Path) -> dict[int, int]:
 
 
 def _boot_and_snapshot_dsp_rust(main_hex: Path) -> dict[int, int]:
-    """rust path: same cadence as gpsim (20+20+30 chunk-steps), reads the
+    """rust path: same cadence as gpsim (20+20+60 chunk-steps), reads the
     rust TAS3108 slave's register file."""
     chain = RustChain.from_v3x_main_only(str(main_hex))
     for _ in range(20):
@@ -91,7 +99,7 @@ def _boot_and_snapshot_dsp_rust(main_hex: Path) -> dict[int, int]:
         chain.step()
     assert chain.read_reg(0x05E) & 0x08, "MAIN not active (rust)"
 
-    for _ in range(30):
+    for _ in range(60):
         chain.step()
 
     return {r: chain.read_dsp_reg(r) for r in range(256)}
