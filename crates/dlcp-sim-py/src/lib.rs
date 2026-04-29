@@ -987,8 +987,15 @@ impl Chain {
         const MAIN_RX_RING_WR: u16 = 0x0C7;
 
         let mem = &mut self.inner.cores[self.i_main0].memory;
-        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_RD)) as u16;
-        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_WR)) as u16;
+        // Normalize rd/wr to [0, DEPTH) before any arithmetic or
+        // address calculation -- mirrors the V1.71 RX-ring
+        // hardening in inject_rx_bytes_inner so corrupt or
+        // out-of-range RAM state can't underflow `wr + DEPTH - rd`
+        // or write outside the 0x0200..0x02BF ring window.
+        let rd = (mem.read_raw(dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_RD)) as u16)
+            % MAIN_NATIVE_RX_SIZE;
+        let mut wr = (mem.read_raw(dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_WR)) as u16)
+            % MAIN_NATIVE_RX_SIZE;
 
         // Cap fifo_limit at MAIN_NATIVE_RX_SIZE - 1 (depth - 1
         // free-slot accounting matches gpsim's native_ring
