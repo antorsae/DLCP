@@ -468,6 +468,18 @@ class Chain:
         """
         self._inner.write_control_eeprom_byte(int(addr) & 0xFF, int(value) & 0xFF)
 
+    def read_dsp_reg(self, subaddr: int) -> int:
+        """Read a single TAS3108 DSP register at ``subaddr``.
+
+        Mirror of gpsim's
+        ``MainChainHarness.read_i2c_regfile("dsp34", subaddr)``.
+        Returns the byte stored in the rust TAS3108 slave's
+        in-memory register file (latched as MAIN's MSSP I²C
+        burst writes the DSP).  The rust facade reads the
+        first DSP slave coupled to MAIN0.
+        """
+        return int(self._inner.read_dsp_reg(int(subaddr) & 0xFF)) & 0xFF
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of

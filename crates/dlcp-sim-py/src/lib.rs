@@ -1027,6 +1027,30 @@ impl Chain {
         (delivered, overruns)
     }
 
+    /// Read a single TAS3108 DSP subaddress register from the
+    /// DSP slave coupled to MAIN0.  Mirror of gpsim's
+    /// `MainChainHarness.read_i2c_regfile("dsp34", subaddr)`
+    /// which reads the gpsim regfile module bound to MAIN's
+    /// MSSP I²C bus.  For MAIN-only chains and multi-MAIN
+    /// chains alike, this reads the FIRST DSP slave coupled
+    /// to MAIN0 (which is the V3.x convention -- gpsim's
+    /// MainChainHarness only attaches one regfile per MAIN).
+    fn read_dsp_reg(&self, subaddr: u8) -> PyResult<u8> {
+        let i_dsp = self
+            .inner
+            .tas3108_couplings
+            .iter()
+            .find(|(master, _)| *master == self.i_main0)
+            .map(|(_, slave)| *slave)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "no TAS3108 slave coupled to MAIN0 -- chain was \
+                     not built with a DSP slave",
+                )
+            })?;
+        Ok(self.inner.tas3108_slaves[i_dsp].read_subaddr(subaddr))
+    }
+
     /// Write a single byte to CONTROL's EEPROM peripheral
     /// at the given 8-bit address (CONTROL EEPROM is 256
     /// bytes per PIC18F25K20 datasheet).  Mirror of
