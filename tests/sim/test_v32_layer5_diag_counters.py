@@ -490,16 +490,33 @@ def test_v32_layer5_symbols_resolve(v32_hex: Path) -> None:
 # ===========================================================================
 
 
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_v32_layer5_healthy_boot_keeps_counters_zero(v32_hex: Path) -> None:
-    """A healthy boot must NOT fire any counter.  If a normal startup
-    increments any of them, either the hook is mis-placed or the cold-init
-    POR clear isn't running.
+def _boot_v32_main_only_and_step_tcy(v32_hex: Path, backend: str, total_tcy: int):
+    """Boot V3.2 MAIN under the chosen backend and step `total_tcy`
+    MAIN-Tcy.  Returns an object with `read_reg(addr) -> int` and
+    `close()` so the caller can read RAM cells and clean up.
 
-    Imports gpsim symbols inline so the test file stays import-clean for
-    the source-only Tiers A/B.
+    gpsim path: MainChainHarness chunked via `chunk_cycles=200_000`.
+    rust path: `Chain.from_v3x_main_only(...).step_tcy(total_tcy)`
+    in a single call (no chunking).
     """
+    if backend == "rust":
+        try:
+            from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+        except Exception as exc:  # pragma: no cover
+            pytest.fail(f"rust dlcp_sim_native facade not importable -- {exc!r}")
+
+        chain = RustChain.from_v3x_main_only(str(v32_hex))
+        chain.step_tcy(total_tcy)
+
+        class _RustHandle:
+            def read_reg(self, addr: int) -> int:
+                return chain.read_reg(addr)
+
+            def close(self) -> None:
+                pass
+
+        return _RustHandle()
+
     if not gpsim_available():
         pytest.skip("gpsim not installed")
     try:
@@ -516,18 +533,51 @@ def test_v32_layer5_healthy_boot_keeps_counters_zero(v32_hex: Path) -> None:
         bypass_i2c=False,
         transport_mode="native_ring",
     )
+    chunks = total_tcy // 200_000
     try:
-        for _ in range(40):  # ~8M cycles total
+        for _ in range(chunks):
             h.step()
-        for name, addr in ALL_COUNTER_ADDRS:
-            value = _read_reg(h._issue, addr)
-            assert value == 0, (
-                f"healthy boot left counter {name} at 0x{value:02X} (expected 0); "
-                f"either an unrelated code path is hitting the hook or POR "
-                f"clear isn't running"
-            )
-    finally:
+    except Exception:
         h.close()
+        raise
+
+    class _GpsimHandle:
+        def read_reg(self, addr: int) -> int:
+            return _read_reg(h._issue, addr)
+
+        def close(self) -> None:
+            h.close()
+
+    return _GpsimHandle()
+
+
+@pytest.mark.dual_supported
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_layer5_healthy_boot_keeps_counters_zero(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
+    """A healthy boot must NOT fire any counter.  If a normal startup
+    increments any of them, either the hook is mis-placed or the cold-init
+    POR clear isn't running.
+    """
+    backends = ["rust"] if dlcp_sim_backend == "rust" else (
+        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
+    )
+    for backend in backends:
+        h = _boot_v32_main_only_and_step_tcy(
+            v32_hex, backend, total_tcy=40 * 200_000,
+        )
+        try:
+            for name, addr in ALL_COUNTER_ADDRS:
+                value = h.read_reg(addr)
+                assert value == 0, (
+                    f"[{backend}] healthy boot left counter {name} at "
+                    f"0x{value:02X} (expected 0); either an unrelated code "
+                    f"path is hitting the hook or POR clear isn't running"
+                )
+        finally:
+            h.close()
 
 
 @pytest.mark.gpsim
@@ -934,6 +984,21 @@ def test_v32_diag_counters_stay_zero_during_extended_idle(v32_hex: Path) -> None
     The existing test_v32_layer5_healthy_boot_keeps_counters_zero
     covers a SHORT (~8M cycle) window; this test extends to ~40M
     cycles to catch slower / periodic-only counter drift.
+
+    NOT marked dual_supported: the rust MAIN-only path saturates
+    `diag_i` to 0x0F during the same 40M-Tcy idle window because
+    the rust MSSP/TAS3108 path leaves SSPCON2.ACKSTAT=1 after
+    successful coeff writes (documented backend divergence,
+    cf. test_bsr_safety_ackstat_write_after_volume_nack in
+    test_v31_review_findings.py).  Each of the firmware's
+    periodic dsp_ping/coeff-write attempts trips the diag_i hook
+    on rust.  Interestingly, the rust observation MATCHES the
+    real-HW operator's symptom (diag_i 7..15+ within seconds),
+    suggesting rust may be reproducing a firmware/silicon
+    interaction that gpsim's I²C model masks.  Tracking that
+    investigation is out-of-scope for the P4.6 migration -- the
+    test stays gpsim-only here and is logged as a candidate
+    for the ACKSTAT-divergence follow-up sub-task.
     """
     if not gpsim_available():
         pytest.skip("gpsim not installed")
