@@ -515,6 +515,14 @@ def _boot_v32_main_only_and_step_tcy(v32_hex: Path, backend: str, total_tcy: int
             def write_reg(self, addr: int, value: int) -> None:
                 chain.write_reg(addr, value)
 
+            def inject_main_frames_fifo(
+                self, frames: list[list[int]], fifo_limit: int
+            ) -> tuple[int, int]:
+                return chain.inject_main_frames_fifo(frames, fifo_limit)
+
+            def advance_tcy(self, tcy: int) -> None:
+                chain.step_tcy(tcy)
+
             def close(self) -> None:
                 pass
 
@@ -550,6 +558,16 @@ def _boot_v32_main_only_and_step_tcy(v32_hex: Path, backend: str, total_tcy: int
 
         def write_reg(self, addr: int, value: int) -> None:
             h._issue(f"reg(0x{addr:03X})=0x{value:02X}", 5.0)
+
+        def inject_main_frames_fifo(
+            self, frames: list[list[int]], fifo_limit: int
+        ) -> tuple[int, int]:
+            return h.inject_frames_fifo(frames, fifo_limit=fifo_limit)
+
+        def advance_tcy(self, tcy: int) -> None:
+            chunks = tcy // 200_000
+            for _ in range(chunks):
+                h.step()
 
         def close(self) -> None:
             h.close()
@@ -1194,6 +1212,19 @@ def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
     that case the invariant is partially covered by the extended-
     idle test (which doesn't trigger preset switches but does run
     long enough for any periodic preset-related write to surface).
+
+    NOT marked dual_supported: same rust ACKSTAT-divergence
+    rationale as `test_v32_diag_counters_stay_zero_during_extended_
+    idle`.  The 120-chunk post-switch settle window lets the rust
+    MSSP/TAS3108 path's ACKSTAT-after-coeff-write divergence
+    saturate diag_i to 0x0F (real backend bug, not a preset-job
+    overlap), so the diag-block-unchanged assertion would always
+    fail on rust regardless of the actual preset-overlap invariant.
+    Migrating this test would require either fixing the
+    ACKSTAT divergence OR settling the diag_i saturation BEFORE
+    the baseline snapshot (so any preset-driven increment over the
+    saturated value is still detectable).  Tracked as a follow-up
+    to the ACKSTAT-divergence sub-task.
     """
     if not gpsim_available():
         pytest.skip("gpsim not installed")
@@ -1236,9 +1267,12 @@ def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
         h.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_preset_job_state_unchanged_by_diag_traffic(v32_hex: Path) -> None:
+def test_v32_preset_job_state_unchanged_by_diag_traffic(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """REGRESSION (mirror of above): cmd 0x21 reply traffic must NOT
     write into preset_job state (0x2DE..0x2E4) either.  If the cmd 0x21
     handler accidentally clobbers preset_job_state (e.g., from a
@@ -1249,45 +1283,39 @@ def test_v32_preset_job_state_unchanged_by_diag_traffic(v32_hex: Path) -> None:
     = all zeros), inject many cmd 0x21 queries, snapshot again.
     State must be unchanged.
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
-
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
+    backends = ["rust"] if dlcp_sim_backend == "rust" else (
+        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
     )
-    try:
-        for _ in range(20):
-            h.step()
-        # preset_job_state at 0x2DE, preset_job_target 0x2DF, etc., 7 bytes
-        baseline = tuple(_read_reg(h._issue, 0x2DE + i) for i in range(7))
-        # Many cmd 0x21 queries.
-        try:
-            for _ in range(20):
-                h.inject_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
-                for _ in range(8):
-                    h.step()
-        except (AttributeError, NotImplementedError) as exc:
-            pytest.skip(f"injection unavailable ({exc})")
-        post = tuple(_read_reg(h._issue, 0x2DE + i) for i in range(7))
-        assert post == baseline, (
-            f"preset_job state changed during sustained cmd 0x21 traffic!  "
-            f"baseline={baseline}, post={post}.  cmd21 handler is writing "
-            f"into preset_job state — this would cause the next genuine "
-            f"preset switch to find preset_job in an unexpected state "
-            f"and hang.  Stack-overflow in cmd21 handler?  FSR mishap?"
+    for backend in backends:
+        h = _boot_v32_main_only_and_step_tcy(
+            v32_hex, backend, total_tcy=20 * 200_000,
         )
-    finally:
-        h.close()
+        try:
+            # preset_job_state at 0x2DE, preset_job_target 0x2DF, etc.,
+            # 7 bytes
+            baseline = tuple(h.read_reg(0x2DE + i) for i in range(7))
+            # Many cmd 0x21 queries.  Use route 0xB0 for parity with
+            # `inject_main_frames_fifo`'s MAIN0-targeted dispatch on
+            # rust (the route 0xB1 the original gpsim test used was
+            # ignored on rust because MAIN-only chains have only
+            # MAIN0; cmd 0x21 emission isn't asserted here, only that
+            # the cmd 0x21 PARSER doesn't clobber preset_job state).
+            for _ in range(20):
+                h.inject_main_frames_fifo(
+                    [[0xB0, 0x21, 0x00]], fifo_limit=47,
+                )
+                h.advance_tcy(8 * 200_000)
+            post = tuple(h.read_reg(0x2DE + i) for i in range(7))
+            assert post == baseline, (
+                f"[{backend}] preset_job state changed during sustained "
+                f"cmd 0x21 traffic!  baseline={baseline}, post={post}.  "
+                f"cmd21 handler is writing into preset_job state -- this "
+                f"would cause the next genuine preset switch to find "
+                f"preset_job in an unexpected state and hang.  Stack-"
+                f"overflow in cmd21 handler?  FSR mishap?"
+            )
+        finally:
+            h.close()
 
 
 # ===========================================================================
