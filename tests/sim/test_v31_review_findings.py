@@ -94,11 +94,21 @@ def _dsp34_diff(before: dict[int, int], after: dict[int, int]) -> list:
 
 # ---- Backend-uniform helpers (mirror of test_v31_happy_path.py) ----
 #
-# Each adapter exposes a per-call `step()` that advances ~`chunk_cycles`
-# Tcy worth of simulated time -- gpsim drives it via the
-# `chunk_cycles=N` constructor knob; rust drives it via per-call
-# `step_tcy(N)` (the rust universal-clock scheduler doesn't have
-# pre-chunked semantics).
+# Each adapter exposes:
+#   * `advance_tcy(tcy)` -- advance by `tcy` MAIN-Tcy.  gpsim
+#     loops `tcy // chunk_tcy` chunked step() calls (its
+#     single-process scheduler can't advance more than
+#     chunk_tcy between core swaps); rust does a single
+#     `step_tcy(tcy)` call (universal-clock scheduler runs
+#     both cores in lock-step at instruction granularity, so
+#     chunking is a gpsim implementation artifact we don't
+#     replicate).
+#   * `probe_step()` -- advance exactly one chunk_tcy worth of
+#     simulated time and return so the caller can sample
+#     transient state.  Used by the volume_dsp_write_retry
+#     test where the firmware's retry counter is only briefly
+#     elevated and per-chunk granularity is needed on both
+#     backends to catch it.
 
 
 class _GpsimMainOnlyAdapter:
