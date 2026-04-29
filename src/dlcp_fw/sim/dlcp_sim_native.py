@@ -162,6 +162,39 @@ class Chain:
         return cls(_native.Chain.from_v171_v31())
 
     @classmethod
+    def from_v3x_main_only(
+        cls,
+        v3x_main_hex_path: str,
+        v23_seed_hex_path: str | None = None,
+    ) -> "Chain":
+        """MAIN-only single-core factory.
+
+        Mirror of gpsim's
+        ``MainChainHarness(main_hex, transport_mode="native_ring")``.
+        Builds a single 2455 core with V3.x app + V2.3-combined
+        seed merge, TAS3108 DSP slave on MSSP I²C, AN0 ADC =
+        0x0300, no CONTROL.  All Chain methods (read_reg,
+        write_reg, step, ...) target the MAIN core because
+        internally ``i_ctl == i_main`` for MAIN-only chains.
+        Use :meth:`inject_main_frames_fifo` to inject synthetic
+        chain frames into MAIN's RX ring (V3.x native_ring
+        layout: rd at 0x0C6, wr at 0x0C7, ring at 0x0200).
+        """
+        return cls(_native.Chain.from_v3x_main_only(
+            v3x_main_hex_path, v23_seed_hex_path,
+        ))
+
+    @classmethod
+    def from_v31_main_only(cls) -> "Chain":
+        """Convenience: V3.1 MAIN-only chain."""
+        return cls(_native.Chain.from_v31_main_only())
+
+    @classmethod
+    def from_v32_main_only(cls) -> "Chain":
+        """Convenience: V3.2 MAIN-only chain."""
+        return cls(_native.Chain.from_v32_main_only())
+
+    @classmethod
     def from_v17_v3x_chain(
         cls,
         control_hex_path: str,
@@ -399,6 +432,29 @@ class Chain:
         nothing to pause.  Provided for duck-typing parity.
         """
         self._inner.pause_heartbeat()
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        """Inject 3-byte chain frames into MAIN's RX ring.
+
+        Mirror of gpsim's
+        ``MainChainHarness.inject_frames_fifo`` for
+        ``transport_mode="native_ring"``.  Targets the V3.x
+        firmware's RX ring at physical 0x0200..0x02BF, with rd
+        index at 0x0C6 and wr index at 0x0C7.  Frame-aligned
+        overrun semantics: each 3-byte frame is either fully
+        delivered or fully dropped.  Returns
+        ``(delivered_bytes, overrun_bytes)``.
+
+        ``frames`` is a list of 3-element byte sequences
+        (route, cmd, data).  ``fifo_limit`` is capped at 191;
+        gpsim tests typically pass ``fifo_limit=47``.
+        """
+        py_frames = [[int(b) & 0xFF for b in f] for f in frames]
+        return tuple(self._inner.inject_main_frames_fifo(
+            py_frames, int(fifo_limit),
+        ))
 
     def write_control_eeprom_byte(self, addr: int, value: int) -> None:
         """Seed CONTROL's EEPROM peripheral at the given

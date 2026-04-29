@@ -264,6 +264,72 @@ fn build_v17_chain_single_main(
     })
 }
 
+/// Build a 1-core MAIN-only chain (no CONTROL, no UART
+/// couplings, no LCD).  Mirror of gpsim's `MainChainHarness`
+/// (`src/dlcp_fw/sim/chain_gpsim.py:254`) -- a single 2455
+/// core driven by direct register pokes and synthetic
+/// chain-frame injection into the firmware's RX ring at
+/// physical 0x0200..0x02BF (V3.x native_ring layout, depth
+/// `MAIN_NATIVE_RX_SIZE = 192` bytes; rd index at 0x0C6,
+/// wr index at 0x0C7).  Used by V3.1 / V3.2 MAIN-only
+/// command-matrix / DSP-boot / I²C-fault tests that don't
+/// need a real CONTROL peer.
+///
+/// `v3x_main_hex_path` is a V3.x app-only hex
+/// (firmware/patched/releases/DLCP_Firmware_V3.x.hex);
+/// `v23_seed_hex_path` is the silicon-correct seed (defaults
+/// to V2.3-combined when None).  TAS3108 DSP slave attached
+/// to MAIN's MSSP I²C bus -- without it, V3.x's `dsp_ping`
+/// spin-loops on `wait_bf_clear_loop`.  AN0 ADC = 0x0300
+/// (mid-rail mains-detect "high"), matching the gpsim
+/// harness's default `standby_mode="hold"` post-boot ADC.
+///
+/// The chain has NO CONTROL core.  The pyclass `Chain` collapses
+/// `i_ctl == i_main` so existing methods (`read_reg`,
+/// `write_reg`, `step`, etc.) target the MAIN core.  An empty
+/// HD44780 slave is pushed at `i_lcd = 0` so `lcd_lines()`
+/// returns the 16-space default (LCD is unused on MAIN-only).
+fn build_v3x_main_only_chain(
+    v3x_main_hex_path: PathBuf,
+    v23_seed_hex_path: PathBuf,
+) -> Result<V17SingleMainHandle, String> {
+    let v3x = HexImage::from_hex_path(&v3x_main_hex_path)
+        .map_err(|e| format!("V3.x main hex parse ({:?}): {e:?}", v3x_main_hex_path))?;
+    let v23_seed = HexImage::from_hex_path(&v23_seed_hex_path)
+        .map_err(|e| format!("V2.3 seed hex parse ({:?}): {e:?}", v23_seed_hex_path))?;
+
+    let mut main = build_seeded_main_core(&v3x, &v23_seed);
+    main.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = RustChain::new();
+    let i_main = chain.push_core(main);
+
+    let i_dsp = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main, i_dsp);
+
+    // Push a placeholder HD44780 -- never written to (no LCD
+    // coupling), so `lcd_lines()` returns the 16-space default.
+    // Lets MAIN-only callers reuse the existing `lcd_lines()`
+    // method without crashing on an empty Vec; tests for
+    // MAIN-only mode don't read LCD.
+    let i_lcd = chain.push_lcd(Hd44780::new());
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0]);
+
+    Ok(V17SingleMainHandle {
+        chain,
+        // Collapse i_ctl == i_main: every chain pyclass method
+        // routes through `i_ctl`, and there's no CONTROL core
+        // in MAIN-only mode.  read_reg / write_reg etc. then
+        // target MAIN's data memory.
+        i_ctl: i_main,
+        i_main,
+        i_lcd,
+        i_dsp,
+    })
+}
+
 /// Build a 2-core single-MAIN chain with a V3.x-app-on-V2.3-
 /// seed MAIN (silicon-correct boot + V3.x app code).  Mirror
 /// of `build_v17_chain_single_main` but with the V3.x app /
@@ -537,6 +603,60 @@ impl Chain {
                 .to_string_lossy()
                 .into_owned(),
             v31_main_hex_path().to_string_lossy().into_owned(),
+            None,
+        )
+    }
+
+    /// MAIN-only single-core factory.  Mirror of gpsim's
+    /// `MainChainHarness(main_hex, transport_mode="native_ring")`
+    /// (see `chain_gpsim.py:254`).  Builds a single 2455
+    /// core with V3.x app + V2.3-combined seed merge,
+    /// TAS3108 DSP slave on MSSP I²C, AN0 ADC = 0x0300,
+    /// no CONTROL.  All other Chain methods (`read_reg`,
+    /// `write_reg`, `step`, ...) target the MAIN core
+    /// because internally `i_ctl == i_main` for MAIN-only
+    /// chains.  Use `inject_main_frames_fifo` to inject
+    /// synthetic chain frames into MAIN's RX ring.
+    /// `v23_seed_hex_path` defaults to V2.3-combined.
+    #[staticmethod]
+    #[pyo3(signature = (v3x_main_hex_path, v23_seed_hex_path=None))]
+    fn from_v3x_main_only(
+        v3x_main_hex_path: String,
+        v23_seed_hex_path: Option<String>,
+    ) -> PyResult<Self> {
+        let v23_seed = v23_seed_hex_path
+            .map(PathBuf::from)
+            .unwrap_or_else(v23_main_combined_hex_path);
+        let handle = build_v3x_main_only_chain(
+            PathBuf::from(v3x_main_hex_path),
+            v23_seed,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("from_v3x_main_only: {e}")))?;
+        Ok(Self {
+            inner: handle.chain,
+            i_ctl: handle.i_ctl,
+            i_main0: handle.i_main,
+            i_main1: handle.i_main,
+            i_lcd: handle.i_lcd,
+        })
+    }
+
+    /// Convenience: V3.1 MAIN-only chain (canonical V3.1
+    /// release hex + V2.3-combined seed).
+    #[staticmethod]
+    fn from_v31_main_only() -> PyResult<Self> {
+        Self::from_v3x_main_only(
+            v31_main_hex_path().to_string_lossy().into_owned(),
+            None,
+        )
+    }
+
+    /// Convenience: V3.2 MAIN-only chain (canonical V3.2
+    /// release hex + V2.3-combined seed).
+    #[staticmethod]
+    fn from_v32_main_only() -> PyResult<Self> {
+        Self::from_v3x_main_only(
+            v32_main_hex_path().to_string_lossy().into_owned(),
             None,
         )
     }
@@ -833,6 +953,72 @@ impl Chain {
     /// pause.  Provided for duck-typing parity with the
     /// gpsim test bodies.
     fn pause_heartbeat(&self) {}
+
+    /// Inject synthetic 3-byte chain frames into MAIN's RX
+    /// ring buffer (V3.x native_ring layout: ring base at
+    /// physical 0x0200, depth 192 bytes; rd index at 0x0C6,
+    /// wr index at 0x0C7).  Mirror of gpsim's
+    /// `MainChainHarness.inject_frames_fifo` for
+    /// `transport_mode="native_ring"`.  Frame-aligned
+    /// overrun semantics: each 3-byte frame is either fully
+    /// delivered or fully dropped (NOT split mid-frame).
+    /// Returns `(delivered_bytes, overrun_bytes)`.
+    ///
+    /// `frames` is a list of 3-element byte sequences (route,
+    /// cmd, data).  `fifo_limit` is capped at
+    /// `MAIN_NATIVE_RX_SIZE - 1 = 191`; gpsim tests typically
+    /// pass `fifo_limit=47` to mimic the V1.7 software-ring
+    /// limit, but the V3.x native ring itself is 192 bytes.
+    ///
+    /// Targets the chain's `i_main` (which equals `i_ctl` in
+    /// MAIN-only chains constructed via `from_v3x_main_only`,
+    /// or the MAIN0 index in V1.x+V2.3 single-MAIN chains).
+    /// Since this writes to the V3.x firmware's RAM-defined
+    /// ring layout, callers must use it on a chain built
+    /// with a V3.x MAIN hex.
+    fn inject_main_frames_fifo(
+        &mut self,
+        frames: Vec<Vec<u8>>,
+        fifo_limit: usize,
+    ) -> (usize, usize) {
+        const MAIN_NATIVE_RX_BASE: u16 = 0x0200;
+        const MAIN_NATIVE_RX_SIZE: u16 = 0xC0; // 192 bytes
+        const MAIN_RX_RING_RD: u16 = 0x0C6;
+        const MAIN_RX_RING_WR: u16 = 0x0C7;
+
+        let mem = &mut self.inner.cores[self.i_main0].memory;
+        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_RD)) as u16;
+        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_WR)) as u16;
+
+        // Cap fifo_limit at MAIN_NATIVE_RX_SIZE - 1 (depth - 1
+        // free-slot accounting matches gpsim's native_ring
+        // semantics in chain_gpsim.py:705).
+        let limit = fifo_limit.min((MAIN_NATIVE_RX_SIZE - 1) as usize).max(1);
+        let mut delivered: usize = 0;
+        let mut overruns: usize = 0;
+
+        for frame in &frames {
+            let used = ((wr + MAIN_NATIVE_RX_SIZE - rd) % MAIN_NATIVE_RX_SIZE) as usize;
+            let free = limit.saturating_sub(used);
+            if free < frame.len() {
+                overruns += frame.len();
+                continue;
+            }
+            for &byte in frame {
+                let addr = MAIN_NATIVE_RX_BASE + wr;
+                mem.write_raw(dlcp_sim::memory::Address::from_raw(addr), byte);
+                wr = (wr + 1) % MAIN_NATIVE_RX_SIZE;
+                delivered += 1;
+            }
+        }
+        if delivered > 0 {
+            mem.write_raw(
+                dlcp_sim::memory::Address::from_raw(MAIN_RX_RING_WR),
+                wr as u8,
+            );
+        }
+        (delivered, overruns)
+    }
 
     /// Write a single byte to CONTROL's EEPROM peripheral
     /// at the given 8-bit address (CONTROL EEPROM is 256

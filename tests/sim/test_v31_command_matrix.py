@@ -15,10 +15,26 @@ from dlcp_fw.sim.chain_gpsim import MainChainHarness
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
 
 
 def _skip_missing(*paths: Path) -> None:
@@ -27,29 +43,63 @@ def _skip_missing(*paths: Path) -> None:
             pytest.skip(f"missing: {p.name}")
 
 
-def _run_command(main_hex: Path, cmd: int, data: int, watch_regs: tuple[int, ...]) -> dict[int, int]:
-    """Boot firmware, send one command, read register state."""
+def _run_command_gpsim(
+    main_hex: Path, cmd: int, data: int, watch_regs: tuple[int, ...]
+) -> dict[int, int]:
+    """Boot firmware via gpsim MainChainHarness, send one command,
+    read register state."""
     h = MainChainHarness(
         main_hex, chunk_cycles=200_000, standby_mode="hold",
         rc2_mode="low", bypass_i2c=False, transport_mode="native_ring",
     )
     try:
-        # Boot + activate
         for _ in range(20):
             h.step()
         h.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
         for _ in range(20):
             h.step()
 
-        # Send command
         h.inject_frames_fifo([[0xB0, cmd, data]], fifo_limit=47)
         for _ in range(20):
             h.step()
 
-        # Read registers
         return {r: _read_reg(h._issue, r) for r in watch_regs}
     finally:
         h.close()
+
+
+def _run_command_rust(
+    main_hex: Path, cmd: int, data: int, watch_regs: tuple[int, ...]
+) -> dict[int, int]:
+    """Same as `_run_command_gpsim` but uses the rust MAIN-only
+    chain.  Mirrors the gpsim cadence: 20 chunk-steps boot,
+    inject standby-off, 20 chunk-steps, inject command,
+    20 chunk-steps, snapshot."""
+    chain = RustChain.from_v3x_main_only(str(main_hex))
+    for _ in range(20):
+        chain.step()
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    for _ in range(20):
+        chain.step()
+
+    chain.inject_main_frames_fifo([[0xB0, cmd, data]], fifo_limit=47)
+    for _ in range(20):
+        chain.step()
+
+    return {r: chain.read_reg(r) for r in watch_regs}
+
+
+def _run_command(
+    main_hex: Path,
+    cmd: int,
+    data: int,
+    watch_regs: tuple[int, ...],
+    backend: str,
+) -> dict[int, int]:
+    """Backend-dispatch wrapper used by the migrated tests."""
+    if backend == "rust":
+        return _run_command_rust(main_hex, cmd, data, watch_regs)
+    return _run_command_gpsim(main_hex, cmd, data, watch_regs)
 
 
 # The 16 original DLCP serial commands and the registers they affect.
@@ -73,6 +123,7 @@ _COMMAND_MATRIX = [
 ]
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize(
@@ -81,19 +132,38 @@ _COMMAND_MATRIX = [
     ids=[m[2] for m in _COMMAND_MATRIX],
 )
 def test_v31_command_matches_stock(
-    cmd: int, data: int, label: str, check_regs: tuple[int, ...],
+    cmd: int,
+    data: int,
+    label: str,
+    check_regs: tuple[int, ...],
+    dlcp_sim_backend: str,
 ) -> None:
     """V3.1 must produce identical register state as stock V2.3 for every
-    original serial command."""
-    _require_gpsim()
+    original serial command.
+
+    Dual-mode (P4.6): both the stock V2.3 baseline and the V3.1
+    candidate run on whichever backend `dlcp_sim_backend` selects.
+    The stock-vs-V3.1 equivalence assertion is per-backend, so any
+    rust/gpsim cadence difference doesn't affect the diff.
+    """
     _skip_missing(STOCK_MAIN_HEX, V31_MAIN_HEX)
-
-    stock_regs = _run_command(STOCK_MAIN_HEX, cmd, data, check_regs)
-    v31_regs = _run_command(V31_MAIN_HEX, cmd, data, check_regs)
-
-    for reg in check_regs:
-        assert v31_regs[reg] == stock_regs[reg], (
-            f"Command 0x{cmd:02X} data=0x{data:02X} ({label}): "
-            f"reg 0x{reg:03X} V3.1=0x{v31_regs[reg]:02X} "
-            f"stock=0x{stock_regs[reg]:02X}"
-        )
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        stock_rust = _run_command(STOCK_MAIN_HEX, cmd, data, check_regs, "rust")
+        v31_rust = _run_command(V31_MAIN_HEX, cmd, data, check_regs, "rust")
+        for reg in check_regs:
+            assert v31_rust[reg] == stock_rust[reg], (
+                f"[rust] Command 0x{cmd:02X} data=0x{data:02X} ({label}): "
+                f"reg 0x{reg:03X} V3.1=0x{v31_rust[reg]:02X} "
+                f"stock=0x{stock_rust[reg]:02X}"
+            )
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        stock_regs = _run_command(STOCK_MAIN_HEX, cmd, data, check_regs, "gpsim")
+        v31_regs = _run_command(V31_MAIN_HEX, cmd, data, check_regs, "gpsim")
+        for reg in check_regs:
+            assert v31_regs[reg] == stock_regs[reg], (
+                f"[gpsim] Command 0x{cmd:02X} data=0x{data:02X} ({label}): "
+                f"reg 0x{reg:03X} V3.1=0x{v31_regs[reg]:02X} "
+                f"stock=0x{stock_regs[reg]:02X}"
+            )
