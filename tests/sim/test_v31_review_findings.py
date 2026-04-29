@@ -102,18 +102,36 @@ def _dsp34_diff(before: dict[int, int], after: dict[int, int]) -> list:
 
 
 class _GpsimMainOnlyAdapter:
-    def __init__(self, main_hex: Path, *, chunk_cycles: int = 200_000) -> None:
+    """gpsim-side adapter.  `chunk_tcy` is the gpsim
+    `chunk_cycles` constructor knob: gpsim's single-process
+    scheduler can't advance more than `chunk_tcy` between core
+    swaps, so `advance_tcy(N)` loops `N // chunk_tcy` step()
+    calls and `probe_step()` does exactly one chunk."""
+
+    def __init__(self, main_hex: Path, *, chunk_tcy: int = 200_000) -> None:
+        self._chunk_tcy = chunk_tcy
         self._h = MainChainHarness(
             main_hex,
-            chunk_cycles=chunk_cycles,
+            chunk_cycles=chunk_tcy,
             standby_mode="hold",
             rc2_mode="low",
             bypass_i2c=False,
             transport_mode="native_ring",
         )
 
-    def step(self) -> None:
+    def advance_tcy(self, tcy: int) -> None:
+        for _ in range(tcy // self._chunk_tcy):
+            self._h.step()
+
+    def probe_step(self) -> None:
+        """Advance exactly one chunk, returning so the caller
+        can sample state.  Used by tests that need to catch
+        transient firmware state mid-burst."""
         self._h.step()
+
+    @property
+    def chunk_tcy(self) -> int:
+        return self._chunk_tcy
 
     def inject_main_frames_fifo(
         self, frames: list[list[int]], fifo_limit: int
@@ -137,12 +155,27 @@ class _GpsimMainOnlyAdapter:
 
 
 class _RustMainOnlyAdapter:
-    def __init__(self, main_hex: Path, *, chunk_cycles: int = 200_000) -> None:
-        self._c = RustChain.from_v3x_main_only(str(main_hex))
-        self._chunk_cycles = chunk_cycles
+    """rust-side adapter.  `chunk_tcy` is only used by
+    `probe_step` (per-call advancement for tests that need to
+    catch transient state); `advance_tcy(N)` advances the full
+    `N` MAIN-Tcy in a single `step_tcy` call -- the rust
+    universal-clock scheduler runs both cores in lock-step at
+    instruction granularity, so chunking is a gpsim
+    implementation artifact we don't replicate."""
 
-    def step(self) -> None:
-        self._c.step_tcy(self._chunk_cycles)
+    def __init__(self, main_hex: Path, *, chunk_tcy: int = 200_000) -> None:
+        self._c = RustChain.from_v3x_main_only(str(main_hex))
+        self._chunk_tcy = chunk_tcy
+
+    def advance_tcy(self, tcy: int) -> None:
+        self._c.step_tcy(tcy)
+
+    def probe_step(self) -> None:
+        self._c.step_tcy(self._chunk_tcy)
+
+    @property
+    def chunk_tcy(self) -> int:
+        return self._chunk_tcy
 
     def inject_main_frames_fifo(
         self, frames: list[list[int]], fifo_limit: int
@@ -165,10 +198,10 @@ class _RustMainOnlyAdapter:
         pass
 
 
-def _make_adapter(main_hex: Path, backend: str, *, chunk_cycles: int = 200_000):
+def _make_adapter(main_hex: Path, backend: str, *, chunk_tcy: int = 200_000):
     if backend == "rust":
-        return _RustMainOnlyAdapter(main_hex, chunk_cycles=chunk_cycles)
-    return _GpsimMainOnlyAdapter(main_hex, chunk_cycles=chunk_cycles)
+        return _RustMainOnlyAdapter(main_hex, chunk_tcy=chunk_tcy)
+    return _GpsimMainOnlyAdapter(main_hex, chunk_tcy=chunk_tcy)
 
 
 def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
@@ -183,11 +216,9 @@ def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
 
 
 def _boot_and_activate_h(h) -> None:
-    for _ in range(20):
-        h.step()
+    h.advance_tcy(20 * h.chunk_tcy)
     h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-    for _ in range(20):
-        h.step()
+    h.advance_tcy(20 * h.chunk_tcy)
     assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
 
 
@@ -291,16 +322,14 @@ def test_bsr_safety_no_ram_corruption_on_nack(
         try:
             _boot_and_activate_h(h)
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-            for _ in range(20):
-                h.step()
+            h.advance_tcy(20 * h.chunk_tcy)
 
             bank_addrs = [0x17F, 0x27F, 0x37F]
             before = {a: h.read_reg(a) for a in bank_addrs}
 
             h.set_i2c_fault("dsp34", address_nack_count=60000)
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-            for _ in range(30):
-                h.step()
+            h.advance_tcy(30 * h.chunk_tcy)
 
             after = {a: h.read_reg(a) for a in bank_addrs}
             corrupted = [
@@ -599,11 +628,9 @@ def test_boot_complete_flag_set_during_activation(
     for backend in _enabled_backends(dlcp_sim_backend):
         h = _make_adapter(V31_MAIN_HEX, backend)
         try:
-            for _ in range(20):
-                h.step()
+            h.advance_tcy(20 * h.chunk_tcy)
             h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-            for _ in range(20):
-                h.step()
+            h.advance_tcy(20 * h.chunk_tcy)
 
             boot_complete = bool(h.read_reg(_FLAGS_7E) & 0x80)
             assert boot_complete, (
@@ -628,24 +655,27 @@ def test_volume_dsp_write_retry_counter_increments(
     _skip_missing(V31_MAIN_HEX)
 
     for backend in _enabled_backends(dlcp_sim_backend):
-        # Fine granularity (50_000 Tcy/step) to catch transient state.
-        h = _make_adapter(V31_MAIN_HEX, backend, chunk_cycles=50_000)
+        # Fine probe granularity (50_000 Tcy/probe_step) to
+        # catch transient retry-counter state.  Bulk advances
+        # before the probe loop go through advance_tcy
+        # (single step_tcy on rust, gpsim chunked internally).
+        h = _make_adapter(V31_MAIN_HEX, backend, chunk_tcy=50_000)
         try:
-            for _ in range(100):
-                h.step()
+            h.advance_tcy(100 * h.chunk_tcy)
             h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-            for _ in range(100):
-                h.step()
+            h.advance_tcy(100 * h.chunk_tcy)
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-            for _ in range(200):
-                h.step()
+            h.advance_tcy(200 * h.chunk_tcy)
 
             h.set_i2c_fault("dsp34", address_nack_count=60000)
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
 
+            # Probe loop: per-iteration sample of the retry
+            # counter at chunk_tcy granularity.  Both backends
+            # need this granularity to catch the transient.
             max_retry_seen = 0
             for _ in range(200):
-                h.step()
+                h.probe_step()
                 flags = h.read_reg(_FLAGS_7F)
                 retry = (flags >> 3) & 0x07
                 if retry > max_retry_seen:

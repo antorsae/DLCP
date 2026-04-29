@@ -63,23 +63,30 @@ def _skip_missing(*paths: Path) -> None:
 # `read_dsp_reg` helpers.
 
 
+_GPSIM_CHUNK_TCY = 200_000
+
+
 class _GpsimHarness:
     """Thin gpsim adapter mirroring the rust Chain interface used
-    in this file (read_reg / read_dsp_reg / step / inject /
+    in this file (read_reg / read_dsp_reg / advance_tcy / inject /
     close)."""
 
     def __init__(self, main_hex: Path) -> None:
         self._h = MainChainHarness(
             main_hex,
-            chunk_cycles=200_000,
+            chunk_cycles=_GPSIM_CHUNK_TCY,
             standby_mode="hold",
             rc2_mode="low",
             bypass_i2c=False,
             transport_mode="native_ring",
         )
 
-    def step(self) -> None:
-        self._h.step()
+    def advance_tcy(self, tcy: int) -> None:
+        # gpsim's single-process scheduler can't advance more
+        # than `chunk_cycles` between core swaps; loop the
+        # required number of chunked steps.
+        for _ in range(tcy // _GPSIM_CHUNK_TCY):
+            self._h.step()
 
     def inject_main_frames_fifo(
         self, frames: list[list[int]], fifo_limit: int
@@ -97,13 +104,15 @@ class _GpsimHarness:
 
 
 class _RustHarness:
-    """Thin rust adapter mirroring the same surface."""
+    """Thin rust adapter mirroring the same surface.  Advances
+    time in single `step_tcy` calls -- no chunk granularity, so
+    no for-loops in the test body."""
 
     def __init__(self, main_hex: Path) -> None:
         self._c = RustChain.from_v3x_main_only(str(main_hex))
 
-    def step(self) -> None:
-        self._c.step()
+    def advance_tcy(self, tcy: int) -> None:
+        self._c.step_tcy(tcy)
 
     def inject_main_frames_fifo(
         self, frames: list[list[int]], fifo_limit: int
@@ -127,11 +136,9 @@ def _make_harness(main_hex: Path, backend: str):
 
 
 def _boot_and_activate(h) -> None:
-    for _ in range(20):
-        h.step()
+    h.advance_tcy(20 * 200_000)
     h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-    for _ in range(20):
-        h.step()
+    h.advance_tcy(20 * 200_000)
     assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
 
 
@@ -191,8 +198,7 @@ def test_dsp_preset_registers_nonzero_after_boot(
         h = _make_harness(main_hex, backend)
         try:
             _boot_and_activate(h)
-            for _ in range(30):
-                h.step()
+            h.advance_tcy(30 * 200_000)
 
             preset_regs = [0x29, 0x46, 0x55, 0x6B, 0x91, 0xD7]
             nonzero = {r: h.read_dsp_reg(r) for r in preset_regs}
@@ -246,13 +252,11 @@ def test_volume_command_changes_dsp_registers(main_hex: Path) -> None:
     h = _GpsimHarness(main_hex)
     try:
         _boot_and_activate(h)
-        for _ in range(20):
-            h.step()
+        h.advance_tcy(20 * 200_000)
 
         snap_before = _dsp_snapshot(h)
         h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(30):
-            h.step()
+        h.advance_tcy(30 * 200_000)
         snap_after = _dsp_snapshot(h)
 
         diff = _dsp_diff(snap_before, snap_after)
@@ -292,17 +296,14 @@ def test_two_volumes_produce_different_computed_volume(
         h = _make_harness(main_hex, backend)
         try:
             _boot_and_activate(h)
-            for _ in range(20):
-                h.step()
+            h.advance_tcy(20 * 200_000)
 
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-            for _ in range(30):
-                h.step()
+            h.advance_tcy(30 * 200_000)
             vol1 = tuple(h.read_reg(r) for r in (0x06E, 0x06F, 0x070, 0x071))
 
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x60]], fifo_limit=47)
-            for _ in range(30):
-                h.step()
+            h.advance_tcy(30 * 200_000)
             vol2 = tuple(h.read_reg(r) for r in (0x06E, 0x06F, 0x070, 0x071))
 
             assert vol1 != vol2, (
@@ -355,8 +356,7 @@ def test_boot_volume_applied_to_dsp(main_hex: Path) -> None:
     h = _GpsimHarness(main_hex)
     try:
         _boot_and_activate(h)
-        for _ in range(40):
-            h.step()
+        h.advance_tcy(40 * 200_000)
 
         computed = h.read_reg(0x06E)
         logical = h.read_reg(0x066)
@@ -368,8 +368,7 @@ def test_boot_volume_applied_to_dsp(main_hex: Path) -> None:
 
         snap = _dsp_snapshot(h)
         h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(30):
-            h.step()
+        h.advance_tcy(30 * 200_000)
         diff = _dsp_diff(snap, _dsp_snapshot(h))
 
         assert len(diff) > 0, (

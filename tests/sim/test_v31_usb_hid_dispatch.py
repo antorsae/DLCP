@@ -55,20 +55,25 @@ def _skip_missing(*paths: Path) -> None:
 
 # ---- Backend-uniform helpers (mirror of test_v31_happy_path.py) ----
 
+_GPSIM_CHUNK_TCY = 200_000
+
 
 class _GpsimHarness:
     def __init__(self, main_hex: Path) -> None:
         self._h = MainChainHarness(
             main_hex,
-            chunk_cycles=200_000,
+            chunk_cycles=_GPSIM_CHUNK_TCY,
             standby_mode="hold",
             rc2_mode="low",
             bypass_i2c=False,
             transport_mode="native_ring",
         )
 
-    def step(self) -> None:
-        self._h.step()
+    def advance_tcy(self, tcy: int) -> None:
+        # gpsim chunked-stepping: required by gpsim's single-
+        # process scheduler.
+        for _ in range(tcy // _GPSIM_CHUNK_TCY):
+            self._h.step()
 
     def inject_main_frames_fifo(
         self, frames: list[list[int]], fifo_limit: int
@@ -86,8 +91,10 @@ class _RustHarness:
     def __init__(self, main_hex: Path) -> None:
         self._c = RustChain.from_v3x_main_only(str(main_hex))
 
-    def step(self) -> None:
-        self._c.step()
+    def advance_tcy(self, tcy: int) -> None:
+        # Single step_tcy call -- universal-clock scheduler runs
+        # both cores in lock-step, no chunking needed.
+        self._c.step_tcy(tcy)
 
     def inject_main_frames_fifo(
         self, frames: list[list[int]], fifo_limit: int
@@ -119,11 +126,9 @@ def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
 
 
 def _boot_and_activate(h) -> None:
-    for _ in range(20):
-        h.step()
+    h.advance_tcy(20 * 200_000)
     h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-    for _ in range(20):
-        h.step()
+    h.advance_tcy(20 * 200_000)
     assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
 
 
@@ -159,8 +164,7 @@ def test_filename_ram_populated_after_boot(
         h = _make_harness(hex_path, backend)
         try:
             _boot_and_activate(h)
-            for _ in range(10):
-                h.step()
+            h.advance_tcy(10 * 200_000)
 
             name = _read_filename_ram(h)
             assert name != bytes(0x1E), (
@@ -196,14 +200,12 @@ def test_cmd20_switches_filename_slot(
         h = _make_harness(hex_path, backend)
         try:
             _boot_and_activate(h)
-            for _ in range(10):
-                h.step()
+            h.advance_tcy(10 * 200_000)
 
             name_a = _read_filename_ram(h)
 
             h.inject_main_frames_fifo([[0xB0, 0x20, 0x01]], fifo_limit=47)
-            for _ in range(30):
-                h.step()
+            h.advance_tcy(30 * 200_000)
 
             _ = _read_filename_ram(h)  # name_b -- not asserted, see below
 
@@ -213,8 +215,7 @@ def test_cmd20_switches_filename_slot(
             )
 
             h.inject_main_frames_fifo([[0xB0, 0x20, 0x00]], fifo_limit=47)
-            for _ in range(30):
-                h.step()
+            h.advance_tcy(30 * 200_000)
 
             name_a2 = _read_filename_ram(h)
             assert name_a == name_a2, (
@@ -282,8 +283,7 @@ def test_version_ram_bytes_after_boot(
         _boot_and_activate(h)
 
         h.inject_main_frames_fifo([[0xB0, 0x04, 0x00]], fifo_limit=47)
-        for _ in range(20):
-            h.step()
+        h.advance_tcy(20 * 200_000)
 
         flag = h.read_reg(0x15B)
         major = h.read_reg(0x15C)

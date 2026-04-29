@@ -88,19 +88,31 @@ def _boot_and_snapshot_dsp_gpsim(main_hex: Path) -> dict[int, int]:
         harness.close()
 
 
+# Total MAIN-Tcy for each phase.  gpsim must chunk into
+# 200_000-Tcy step() calls because of its single-process
+# scheduler; rust advances the same total in a single
+# `step_tcy` call (universal-clock scheduler runs both cores
+# in lock-step at instruction granularity, so the gpsim
+# chunking is an implementation artifact we don't replicate).
+_BOOT_TCY = 20 * 200_000  # 4 M MAIN-Tcy
+_ACTIVATE_TCY = 20 * 200_000
+_SETTLE_TCY = 60 * 200_000  # 12 M MAIN-Tcy; safely past the
+# preset-loader convergence point on both backends (gpsim ~30
+# chunks = 6 M Tcy, rust ~50 chunks = 10 M Tcy).
+
+
 def _boot_and_snapshot_dsp_rust(main_hex: Path) -> dict[int, int]:
-    """rust path: same cadence as gpsim (20+20+60 chunk-steps), reads the
-    rust TAS3108 slave's register file."""
+    """rust path: same total MAIN-Tcy as gpsim, advanced in a
+    single `step_tcy` call per phase rather than gpsim's chunked
+    step() loops.  Reads the rust TAS3108 slave's register file
+    after the preset loader has converged."""
     chain = RustChain.from_v3x_main_only(str(main_hex))
-    for _ in range(20):
-        chain.step()
+    chain.step_tcy(_BOOT_TCY)
     chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-    for _ in range(20):
-        chain.step()
+    chain.step_tcy(_ACTIVATE_TCY)
     assert chain.read_reg(0x05E) & 0x08, "MAIN not active (rust)"
 
-    for _ in range(60):
-        chain.step()
+    chain.step_tcy(_SETTLE_TCY)
 
     return {r: chain.read_dsp_reg(r) for r in range(256)}
 

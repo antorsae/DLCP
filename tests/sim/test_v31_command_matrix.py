@@ -43,6 +43,17 @@ def _skip_missing(*paths: Path) -> None:
             pytest.skip(f"missing: {p.name}")
 
 
+# Per-phase MAIN-Tcy advancement.  20 gpsim chunks × 200_000
+# MAIN-Tcy/chunk = 4 M MAIN-Tcy.  gpsim must loop over
+# `chunk_cycles` (its single-process scheduler can't run more
+# than chunk_cycles between core swaps); rust advances the same
+# total Tcy in a single `step_tcy` call -- the universal-clock
+# scheduler runs both cores in lock-step at instruction
+# granularity, so chunking is a gpsim implementation artifact
+# we deliberately do NOT replicate.
+_PHASE_TCY = 4_000_000
+
+
 def _run_command_gpsim(
     main_hex: Path, cmd: int, data: int, watch_regs: tuple[int, ...]
 ) -> dict[int, int]:
@@ -72,19 +83,17 @@ def _run_command_rust(
     main_hex: Path, cmd: int, data: int, watch_regs: tuple[int, ...]
 ) -> dict[int, int]:
     """Same as `_run_command_gpsim` but uses the rust MAIN-only
-    chain.  Mirrors the gpsim cadence: 20 chunk-steps boot,
-    inject standby-off, 20 chunk-steps, inject command,
-    20 chunk-steps, snapshot."""
+    chain.  Advances the same total MAIN-Tcy as the gpsim path
+    in single `step_tcy(_PHASE_TCY)` calls instead of looping
+    chunked steps -- rust's universal-clock scheduler doesn't
+    need gpsim's chunk granularity."""
     chain = RustChain.from_v3x_main_only(str(main_hex))
-    for _ in range(20):
-        chain.step()
+    chain.step_tcy(_PHASE_TCY)
     chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-    for _ in range(20):
-        chain.step()
+    chain.step_tcy(_PHASE_TCY)
 
     chain.inject_main_frames_fifo([[0xB0, cmd, data]], fifo_limit=47)
-    for _ in range(20):
-        chain.step()
+    chain.step_tcy(_PHASE_TCY)
 
     return {r: chain.read_reg(r) for r in watch_regs}
 
