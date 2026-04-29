@@ -310,7 +310,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [in_progress] P4.6 Migrate `test_v31_*` and `test_v32_*` tests
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -k 'v31 or v32' -n 16 -q`
   - artifact: ledger update.
-  - status: 10 of 13 v31/v32 files migrated to dual-mode (with 6 of 8 review_findings tests + 8 of 11 v163b_robustness tests + 30 of 37 layer5_diag_counters tests / 39 of 46 instances dual_supported -- 38 passing, 1 xfailing on the documented `diag_inc_sat` upper-bound bug).  Plus 2 files documented as gpsim-only (pre-existing failures on main).
+  - status: 10 of 13 v31/v32 files migrated to dual-mode (with 6 of 8 review_findings tests + 8 of 11 v163b_robustness tests + 33 of 37 layer5_diag_counters tests / 42 of 46 instances dual_supported -- 41 passing, 1 xfailing on the documented `diag_inc_sat` upper-bound bug).  Plus 2 files documented as gpsim-only (pre-existing failures on main).  Full P4.6 + v17/v171 chain suite under DLCP_SIM_BACKEND=rust: 95 passed in ~72 s wall.
   - sub-task [done] structural baseline (3 files, ~33 tests):
     - test_v31_usb_preset_ab.py (8 tests)
     - test_v32_no_pop_flash_entry.py (13 tests, ~22 after parametrize)
