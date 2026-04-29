@@ -474,13 +474,23 @@ def test_dsp_path_recovers_after_mssp_stop_fault_cleared(
 
     Renamed and re-docstring'd so the test name matches what
     the assertion actually checks (recovery), not what the
-    original docstring aspired to (degradation).  The
-    fault-model fidelity itself is exercised by
-    `test_idle_wait_blocks_during_pen_fault_then_recovers`
-    (active_flags survive the fault, new volume processes after
-    clear) and `test_pen_timeout_firmware_detects_before_sspcon2_
-    poke` (canonical V3.1 doesn't latch a bounded-PEN-wait
-    fault under a 5M-cycle stuck PEN).
+    original docstring aspired to (degradation).  Two sibling
+    tests in this file also drive the STOP-fault knobs but,
+    like this one, only assert post-fault behaviour rather
+    than direct fault-window observability:
+      - test_idle_wait_blocks_during_pen_fault_then_recovers
+        (active_flags still set + new volume processes after
+        the fault is cleared)
+      - test_pen_timeout_firmware_detects_before_sspcon2_poke
+        (canonical V3.1 must NOT latch the bounded-PEN-wait
+        fault flag under a 5M-cycle stuck-PEN injection -- the
+        only one in this trio whose assertion would break if
+        the rust MSSP STOP-fault model is a no-op, since a
+        no-op fault would let the firmware complete normally
+        without ever entering the bounded wait path).
+    Hence: the STOP-fault model fidelity is only loosely
+    exercised by the two recovery tests; the canonical
+    "fault not latched" test is the load-bearing check.
     """
     _skip_missing(V31_MAIN_HEX)
 
