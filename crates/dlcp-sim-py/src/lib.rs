@@ -1189,7 +1189,9 @@ impl Chain {
         let core = &mut self.inner.cores[self.i_main0];
         core.peripherals.mssp.reset_state();
         core.memory.write_raw(
-            dlcp_sim::memory::Address::from_raw(0xFC5),
+            dlcp_sim::memory::Address::from_raw(
+                dlcp_sim::peripherals::mssp::SSPCON2_ADDR,
+            ),
             0,
         );
     }
