@@ -29,6 +29,14 @@ from dlcp_fw.sim.v30_symbols import assemble_v30, parse_gpasm_symbols
 from dlcp_fw.sim.manifests import main_serial_mailbox_hooks_dynamic
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 _STATUS_5E = 0x05E
 _FLAGS_7E = 0x07E
 _FLAGS_7F = 0x07F
@@ -45,10 +53,252 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
 def _skip_missing(*paths: Path) -> None:
     for p in paths:
         if not p.exists():
             pytest.skip(f"missing: {p.name}")
+
+
+# ---- Backend-uniform helpers (mirror of test_v31_review_findings) ----
+#
+# Each adapter exposes:
+#   * `advance_tcy(tcy)`  -- bulk time advance.  gpsim loops
+#     `tcy // chunk_tcy` chunked step() calls; rust does a
+#     single `step_tcy(tcy)` call.
+#   * `probe_step()` -- advance exactly chunk_tcy and return so
+#     the caller can sample state.
+#   * standard read/inject/fault accessors.
+
+_GPSIM_CHUNK_TCY = 200_000
+
+
+class _GpsimMainOnlyAdapter:
+    def __init__(self, main_hex: Path, *, chunk_tcy: int = _GPSIM_CHUNK_TCY) -> None:
+        self._chunk_tcy = chunk_tcy
+        self._h = MainChainHarness(
+            main_hex,
+            chunk_cycles=chunk_tcy,
+            standby_mode="hold",
+            rc2_mode="low",
+            bypass_i2c=False,
+            transport_mode="native_ring",
+        )
+
+    def advance_tcy(self, tcy: int) -> None:
+        for _ in range(tcy // self._chunk_tcy):
+            self._h.step()
+
+    def probe_step(self) -> None:
+        self._h.step()
+
+    @property
+    def chunk_tcy(self) -> int:
+        return self._chunk_tcy
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._h.inject_frames_fifo(frames, fifo_limit=fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return _read_reg(self._h._issue, addr)
+
+    def write_reg(self, addr: int, value: int) -> None:
+        # gpsim's SSPCON2.put() ignores writes during active I2C;
+        # use the raw register-poke command which bypasses the
+        # SFR write filter.  Mirrors `harness._issue("p18f2455.
+        # sspcon2 = ...")` shape for SFR addresses.
+        sfr_name = _GPSIM_SFR_NAME_BY_ADDR.get(addr)
+        if sfr_name is not None:
+            try:
+                self._h._issue(f"p18f2455.{sfr_name} = 0x{value:02x}", 5.0)
+            except Exception:
+                pass
+        else:
+            self._h._issue(f"reg(0x{addr:03X})=0x{value:02X}", 5.0)
+
+    def read_dsp_reg(self, subaddr: int) -> int:
+        return self._h.read_i2c_regfile("dsp34", subaddr)
+
+    def read_dsp_snapshot(self) -> dict[int, int]:
+        return {r: self._h.read_i2c_regfile("dsp34", r) for r in range(256)}
+
+    def set_i2c_fault(self, device: str, *, address_nack_count: int) -> None:
+        self._h.set_i2c_fault(device, address_nack_count=address_nack_count)
+
+    def clear_i2c_faults(self, device: str = "dsp34") -> None:
+        self._h.clear_i2c_faults(device)
+
+    def set_mssp_stop_fault(
+        self, *, stop_busy_cycles: int, stop_busy_count: int
+    ) -> None:
+        self._h.set_mssp_stop_fault(
+            stop_busy_cycles=stop_busy_cycles,
+            stop_busy_count=stop_busy_count,
+        )
+
+    def clear_mssp_stop_faults(self) -> None:
+        self._h.clear_mssp_stop_faults()
+
+    def force_clear_sspcon2(self) -> None:
+        try:
+            self._h._issue("p18f2455.sspcon2 = 0", 5.0)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self._h.close()
+
+
+# Mapping from physical SFR address to gpsim's `p18f2455.<sfr>`
+# name for harness write-bypass.  Only SFRs whose put() filter
+# blocks normal RAM-poke writes need an entry here.
+_GPSIM_SFR_NAME_BY_ADDR = {
+    0xFC5: "sspcon2",
+}
+
+
+class _RustMainOnlyAdapter:
+    def __init__(self, main_hex: Path, *, chunk_tcy: int = _GPSIM_CHUNK_TCY) -> None:
+        self._c = RustChain.from_v3x_main_only(str(main_hex))
+        self._chunk_tcy = chunk_tcy
+
+    def advance_tcy(self, tcy: int) -> None:
+        self._c.step_tcy(tcy)
+
+    def probe_step(self) -> None:
+        self._c.step_tcy(self._chunk_tcy)
+
+    @property
+    def chunk_tcy(self) -> int:
+        return self._chunk_tcy
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._c.inject_main_frames_fifo(frames, fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return self._c.read_reg(addr)
+
+    def write_reg(self, addr: int, value: int) -> None:
+        self._c.write_reg(addr, value)
+
+    def read_dsp_reg(self, subaddr: int) -> int:
+        return self._c.read_dsp_reg(subaddr)
+
+    def read_dsp_snapshot(self) -> dict[int, int]:
+        return {r: self._c.read_dsp_reg(r) for r in range(256)}
+
+    def set_i2c_fault(self, device: str, *, address_nack_count: int) -> None:
+        self._c.set_i2c_fault(device, address_nack_count=address_nack_count)
+
+    def clear_i2c_faults(self, device: str = "dsp34") -> None:
+        self._c.clear_i2c_faults(device)
+
+    def set_mssp_stop_fault(
+        self, *, stop_busy_cycles: int, stop_busy_count: int
+    ) -> None:
+        self._c.set_mssp_stop_fault(
+            stop_busy_cycles=stop_busy_cycles,
+            stop_busy_count=stop_busy_count,
+        )
+
+    def clear_mssp_stop_faults(self) -> None:
+        self._c.clear_mssp_stop_faults()
+
+    def force_clear_sspcon2(self) -> None:
+        # Mirror of gpsim's `p18f2455.sspcon2 = 0` privileged
+        # register write: BOTH clears SSPCON2 SFR trigger bits
+        # AND aborts any in-flight MSSP state-machine
+        # transaction (gpsim polls SSPCON2 each tick and
+        # aborts when trigger bits are cleared externally; the
+        # rust MSSP keeps its own state-machine countdown so
+        # we need an explicit reset).
+        self._c.force_reset_main_mssp()
+
+    def close(self) -> None:
+        pass
+
+
+def _make_adapter(main_hex: Path, backend: str, *, chunk_tcy: int = _GPSIM_CHUNK_TCY):
+    if backend == "rust":
+        return _RustMainOnlyAdapter(main_hex, chunk_tcy=chunk_tcy)
+    return _GpsimMainOnlyAdapter(main_hex, chunk_tcy=chunk_tcy)
+
+
+def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
+    backends: list[str] = []
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        backends.append("rust")
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        backends.append("gpsim")
+    return backends
+
+
+def _boot_and_activate_h(h) -> None:
+    h.advance_tcy(20 * h.chunk_tcy)
+    h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    h.advance_tcy(20 * h.chunk_tcy)
+    assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
+
+
+def _wait_for_uart_settled_h(h, *, limit: int = 80) -> None:
+    """Poll until the V3.2 wake path finishes arming the UART
+    and clears the native RX ring (RCSTA SPEN+CREN set, rx_ring_wr
+    cleared)."""
+    rcsta = 0
+    rx_wr = 0
+    for _ in range(limit):
+        rcsta = h.read_reg(0xFAB)  # RCSTA SFR
+        rx_wr = h.read_reg(0x0C7)  # rx_ring_wr
+        if (rcsta & 0x90) == 0x90 and rx_wr == 0:
+            return
+        h.probe_step()
+    raise AssertionError(
+        f"wake never reached quiescent UART state within {limit} probes: "
+        f"RCSTA=0x{rcsta:02X} rx_wr=0x{rx_wr:02X}"
+    )
+
+
+def _wait_for_preset_job_state_h(
+    h, expected_state: int, *, limit: int = 300
+) -> None:
+    state = 0
+    for _ in range(limit):
+        h.probe_step()
+        state = h.read_reg(_PRESET_JOB_STATE)
+        if state == expected_state:
+            return
+    raise AssertionError(
+        f"preset job did not reach state {expected_state} within {limit} probes: "
+        f"state=0x{state:02X} index=0x{h.read_reg(_PRESET_JOB_INDEX):02X} "
+        f"target=0x{h.read_reg(_PRESET_JOB_TARGET):02X}"
+    )
+
+
+def _wait_for_preset_job_idle_h(h, *, limit: int = 320) -> None:
+    _wait_for_preset_job_state_h(h, 0x00, limit=limit)
+
+
+def _inject_main_frame_h(h, *, cmd: int, data: int) -> None:
+    delivered, overruns = h.inject_main_frames_fifo(
+        [[0xB0, cmd, data]], fifo_limit=47
+    )
+    assert delivered == 3 and overruns == 0, (
+        f"failed to inject MAIN frame B0/{cmd:02X}/{data:02X}: "
+        f"delivered={delivered} overruns={overruns}"
+    )
 
 
 def _dsp34_snapshot(harness: MainChainHarness) -> dict[int, int]:
@@ -150,49 +400,52 @@ def _wait_for_preset_job_idle(harness: MainChainHarness, *, limit: int = 320) ->
 # -----------------------------------------------------------------------
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_main_bus_clear_recovers_after_mssp_stop_fault() -> None:
+def test_main_bus_clear_recovers_after_mssp_stop_fault(
+    dlcp_sim_backend: str,
+) -> None:
     """After extended MSSP STOP fault cascade, bus-clear recovers DSP."""
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
 
-        # DSP baseline
-        snap_a = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        assert len(_dsp34_diff(snap_a, _dsp34_snapshot(harness))) > 0, "baseline broken"
+            snap_a = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            assert any(
+                snap_a[r] != h.read_dsp_reg(r) for r in range(256)
+            ), f"[{backend}] baseline broken"
 
-        # Inject extended MSSP STOP fault
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
 
-        # Clear fault and let firmware recover
-        harness.clear_mssp_stop_faults()
-        for _ in range(15):
-            harness.step()
+            h.clear_mssp_stop_faults()
+            h.advance_tcy(15 * h.chunk_tcy)
 
-        # New volume command — bus-clear should recover DSP path
-        snap_b = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff_recovery = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
+            snap_b = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            after_b = h.read_dsp_snapshot()
+            diff_recovery = [
+                (r, snap_b[r], after_b[r])
+                for r in range(256)
+                if snap_b[r] != after_b[r]
+            ]
 
-        assert len(diff_recovery) > 0, (
-            "DSP path not recovered after MSSP STOP cascade — "
-            "bus-clear did not restore I2C communication"
-        )
-
-    finally:
-        harness.close()
+            assert len(diff_recovery) > 0, (
+                f"[{backend}] DSP path not recovered after MSSP STOP "
+                f"cascade -- bus-clear did not restore I2C communication"
+            )
+        finally:
+            h.close()
 
 
 # -----------------------------------------------------------------------
@@ -200,35 +453,34 @@ def test_main_bus_clear_recovers_after_mssp_stop_fault() -> None:
 # -----------------------------------------------------------------------
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_main_dsp_ping_latches_fault_on_persistent_nack() -> None:
+def test_main_dsp_ping_latches_fault_on_persistent_nack(
+    dlcp_sim_backend: str,
+) -> None:
     """DSP ping latches 0x07F.bit6 when TAS3108 is persistently NACKing."""
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
 
-        # Persistent NACKs — DSP is "dead"
-        harness.set_i2c_fault("dsp34", address_nack_count=60000)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
+            h.set_i2c_fault("dsp34", address_nack_count=60000)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
 
-        # DSP fault flag (0x07F.bit6) should be latched
-        fault = _read_reg(harness._issue, _FLAGS_7F) & (1 << _DSP_FAULT_BIT)
-        assert fault != 0, (
-            f"DSP fault flag (0x07F.bit6) not latched after persistent "
-            f"NACK — 0x07F=0x{_read_reg(harness._issue, _FLAGS_7F):02X}"
-        )
-
-    finally:
-        harness.close()
+            flags = h.read_reg(_FLAGS_7F)
+            fault = flags & (1 << _DSP_FAULT_BIT)
+            assert fault != 0, (
+                f"[{backend}] DSP fault flag (0x07F.bit6) not latched "
+                f"after persistent NACK -- 0x07F=0x{flags:02X}"
+            )
+        finally:
+            h.close()
 
 
 # -----------------------------------------------------------------------
@@ -403,50 +655,47 @@ def test_wire_mssp_stop_cascade_full_dsp_recovery() -> None:
 # -----------------------------------------------------------------------
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_main_pen_timeout_recovers() -> None:
+def test_main_pen_timeout_recovers(dlcp_sim_backend: str) -> None:
     """PEN busy-wait timeout prevents permanent hang on stuck STOP."""
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-
-        # Single very long STOP fault — should trigger PEN timeout
-        harness.set_mssp_stop_fault(stop_busy_cycles=50_000_000, stop_busy_count=1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(10):
-            harness.step()
-
-        harness.clear_mssp_stop_faults()
-        # Force-clear SSPCON2 PEN bit via gpsim (gpsim's SSPCON2.put()
-        # ignores writes during active I2C; we need put_value to bypass)
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
         try:
-            harness._issue("p18f2455.sspcon2 = 0", 5.0)
-        except Exception:
-            pass
-        for _ in range(5):
-            harness.step()
+            _boot_and_activate_h(h)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
 
-        # After PEN timeout + recovery, DSP should still work
-        snap = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-        diff = _dsp34_diff(snap, _dsp34_snapshot(harness))
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=50_000_000, stop_busy_count=1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(10 * h.chunk_tcy)
 
-        assert len(diff) > 0, (
-            "DSP path broken after PEN timeout — V3.1 should recover "
-            "from stuck STOP condition via bounded PEN wait + bus-clear"
-        )
+            h.clear_mssp_stop_faults()
+            h.force_clear_sspcon2()
+            h.advance_tcy(5 * h.chunk_tcy)
 
-    finally:
-        harness.close()
+            snap = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
+            after = h.read_dsp_snapshot()
+            diff = [
+                (r, snap[r], after[r])
+                for r in range(256)
+                if snap[r] != after[r]
+            ]
+
+            assert len(diff) > 0, (
+                f"[{backend}] DSP path broken after PEN timeout -- V3.1 "
+                f"should recover from stuck STOP condition via bounded "
+                f"PEN wait + bus-clear"
+            )
+        finally:
+            h.close()
 
 
 # -----------------------------------------------------------------------
@@ -454,201 +703,218 @@ def test_main_pen_timeout_recovers() -> None:
 # -----------------------------------------------------------------------
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_main_bus_clear_recovers_after_mssp_stop_fault() -> None:
+def test_v32_main_bus_clear_recovers_after_mssp_stop_fault(
+    dlcp_sim_backend: str,
+) -> None:
     """V3.2 preserves bus-clear recovery after MSSP STOP fault cascade."""
-    _require_gpsim()
     _skip_missing(V32_MAIN_HEX)
 
-    harness = _new_main_harness(V32_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-
-        snap_a = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        assert len(_dsp34_diff(snap_a, _dsp34_snapshot(harness))) > 0, "baseline broken"
-
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-
-        harness.clear_mssp_stop_faults()
-        for _ in range(15):
-            harness.step()
-
-        snap_b = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff_recovery = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
-
-        assert len(diff_recovery) > 0, (
-            "V3.2 DSP path not recovered after MSSP STOP cascade"
-        )
-
-    finally:
-        harness.close()
-
-
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_v32_main_pen_timeout_recovers() -> None:
-    """V3.2 preserves PEN timeout recovery from stuck STOP condition."""
-    _require_gpsim()
-    _skip_missing(V32_MAIN_HEX)
-
-    harness = _new_main_harness(V32_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-
-        harness.set_mssp_stop_fault(stop_busy_cycles=50_000_000, stop_busy_count=1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(10):
-            harness.step()
-
-        harness.clear_mssp_stop_faults()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V32_MAIN_HEX, backend)
         try:
-            harness._issue("p18f2455.sspcon2 = 0", 5.0)
-        except Exception:
-            pass
-        for _ in range(5):
-            harness.step()
+            _boot_and_activate_h(h)
 
-        snap = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-        diff = _dsp34_diff(snap, _dsp34_snapshot(harness))
+            snap_a = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            assert any(
+                snap_a[r] != h.read_dsp_reg(r) for r in range(256)
+            ), f"[{backend}] baseline broken"
 
-        assert len(diff) > 0, (
-            "V3.2 DSP path broken after PEN timeout"
-        )
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
 
-    finally:
-        harness.close()
+            h.clear_mssp_stop_faults()
+            h.advance_tcy(15 * h.chunk_tcy)
+
+            snap_b = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            after_b = h.read_dsp_snapshot()
+            diff_recovery = [
+                (r, snap_b[r], after_b[r])
+                for r in range(256)
+                if snap_b[r] != after_b[r]
+            ]
+
+            assert len(diff_recovery) > 0, (
+                f"[{backend}] V3.2 DSP path not recovered after MSSP "
+                f"STOP cascade"
+            )
+        finally:
+            h.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_async_apply_stop_timeout_keeps_main_loop_responsive() -> None:
+def test_v32_main_pen_timeout_recovers(dlcp_sim_backend: str) -> None:
+    """V3.2 preserves PEN timeout recovery from stuck STOP condition."""
+    _skip_missing(V32_MAIN_HEX)
+
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V32_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=50_000_000, stop_busy_count=1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(10 * h.chunk_tcy)
+
+            h.clear_mssp_stop_faults()
+            h.force_clear_sspcon2()
+            h.advance_tcy(5 * h.chunk_tcy)
+
+            snap = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
+            after = h.read_dsp_snapshot()
+            diff = [
+                (r, snap[r], after[r])
+                for r in range(256)
+                if snap[r] != after[r]
+            ]
+
+            assert len(diff) > 0, (
+                f"[{backend}] V3.2 DSP path broken after PEN timeout"
+            )
+        finally:
+            h.close()
+
+
+@pytest.mark.dual_supported
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_v32_async_apply_stop_timeout_keeps_main_loop_responsive(
+    dlcp_sim_backend: str,
+) -> None:
     """A stuck STOP during async APPLY must return to the main loop.
 
     Arms the persistent STOP fault BEFORE injecting the preset-select
-    frame so the first APPLY iteration hits the fault — otherwise the
-    harness's chunk_cycles=200_000 lets several APPLY entries complete
-    before we can observe state=3 and set the fault.
+    frame so the first APPLY iteration hits the fault.
     """
-    _require_gpsim()
     _skip_missing(V32_MAIN_HEX)
 
-    harness = _new_main_harness(V32_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        _wait_for_uart_settled(harness)
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        _inject_main_frame(harness, cmd=0x20, data=0x01)
-        _wait_for_preset_job_state(harness, 0x03)
-        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
-            "async APPLY advanced past the first table entry even though the "
-            "STOP fault was armed before preset-select"
-        )
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V32_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            _wait_for_uart_settled_h(h)
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            _inject_main_frame_h(h, cmd=0x20, data=0x01)
+            _wait_for_preset_job_state_h(h, 0x03)
+            assert h.read_reg(_PRESET_JOB_INDEX) == 0x00, (
+                f"[{backend}] async APPLY advanced past the first table "
+                f"entry even though the STOP fault was armed before "
+                f"preset-select"
+            )
 
-        # Re-arm coalescing: second preset command while retry loop is running.
-        _inject_main_frame(harness, cmd=0x20, data=0x00)
-        for _ in range(8):
-            harness.step()
+            _inject_main_frame_h(h, cmd=0x20, data=0x00)
+            h.advance_tcy(8 * h.chunk_tcy)
 
-        assert _read_reg(harness._issue, _PRESET_JOB_STATE) == 0x03, (
-            "async APPLY left retryable state during persistent STOP fault"
-        )
-        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
-            "async APPLY advanced the table index during STOP timeout"
-        )
-        assert _read_reg(harness._issue, _PRESET_JOB_TARGET) == 0x00, (
-            "follow-up preset command was not consumed while STOP fault was active; "
-            "the APPLY path likely wedged instead of returning to the main loop"
-        )
-    finally:
-        harness.close()
+            assert h.read_reg(_PRESET_JOB_STATE) == 0x03, (
+                f"[{backend}] async APPLY left retryable state during "
+                f"persistent STOP fault"
+            )
+            assert h.read_reg(_PRESET_JOB_INDEX) == 0x00, (
+                f"[{backend}] async APPLY advanced the table index "
+                f"during STOP timeout"
+            )
+            assert h.read_reg(_PRESET_JOB_TARGET) == 0x00, (
+                f"[{backend}] follow-up preset command was not consumed "
+                f"while STOP fault was active; the APPLY path likely "
+                f"wedged instead of returning to the main loop"
+            )
+        finally:
+            h.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_async_apply_stop_timeout_does_not_advance_index() -> None:
-    """A timed-out APPLY entry must stay queued until the fault clears.
-
-    Same arm-first ordering as _keeps_main_loop_responsive: the fault
-    must be active from the very first APPLY iteration, otherwise the
-    chunk_cycles granularity (~200 k cycles per step) lets APPLY complete
-    several table entries before we can observe state=3 and arm.
-    """
-    _require_gpsim()
+def test_v32_async_apply_stop_timeout_does_not_advance_index(
+    dlcp_sim_backend: str,
+) -> None:
+    """A timed-out APPLY entry must stay queued until the fault clears."""
     _skip_missing(V32_MAIN_HEX)
 
-    harness = _new_main_harness(V32_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        _wait_for_uart_settled(harness)
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        _inject_main_frame(harness, cmd=0x20, data=0x01)
-        _wait_for_preset_job_state(harness, 0x03)
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V32_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            _wait_for_uart_settled_h(h)
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            _inject_main_frame_h(h, cmd=0x20, data=0x01)
+            _wait_for_preset_job_state_h(h, 0x03)
 
-        index_before = _read_reg(harness._issue, _PRESET_JOB_INDEX)
-        for _ in range(12):
-            harness.step()
+            index_before = h.read_reg(_PRESET_JOB_INDEX)
+            h.advance_tcy(12 * h.chunk_tcy)
 
-        assert index_before == 0x00, (
-            f"test setup expected the first APPLY entry to be pending; "
-            f"got index_before=0x{index_before:02X}"
-        )
-        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == index_before, (
-            "async APPLY index advanced while STOP timeout recovery was still retrying"
-        )
-        assert _read_reg(harness._issue, _PRESET_JOB_STATE) == 0x03, (
-            "async APPLY left state 3 during a retryable STOP timeout"
-        )
-    finally:
-        harness.close()
+            assert index_before == 0x00, (
+                f"[{backend}] test setup expected the first APPLY entry "
+                f"to be pending; got index_before=0x{index_before:02X}"
+            )
+            assert h.read_reg(_PRESET_JOB_INDEX) == index_before, (
+                f"[{backend}] async APPLY index advanced while STOP "
+                f"timeout recovery was still retrying"
+            )
+            assert h.read_reg(_PRESET_JOB_STATE) == 0x03, (
+                f"[{backend}] async APPLY left state 3 during a "
+                f"retryable STOP timeout"
+            )
+        finally:
+            h.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_async_apply_stop_timeout_recovers_and_completes() -> None:
-    """Clearing a STOP fault must let the same async APPLY job finish cleanly.
-
-    Arm-first ordering (see _keeps_main_loop_responsive for rationale).
-    """
-    _require_gpsim()
+def test_v32_async_apply_stop_timeout_recovers_and_completes(
+    dlcp_sim_backend: str,
+) -> None:
+    """Clearing a STOP fault must let the same async APPLY job finish."""
     _skip_missing(V32_MAIN_HEX)
 
-    harness = _new_main_harness(V32_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        _wait_for_uart_settled(harness)
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        _inject_main_frame(harness, cmd=0x20, data=0x01)
-        _wait_for_preset_job_state(harness, 0x03)
-        for _ in range(8):
-            harness.step()
-        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x00, (
-            "STOP timeout test lost the first pending APPLY entry before recovery"
-        )
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V32_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            _wait_for_uart_settled_h(h)
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            _inject_main_frame_h(h, cmd=0x20, data=0x01)
+            _wait_for_preset_job_state_h(h, 0x03)
+            h.advance_tcy(8 * h.chunk_tcy)
+            assert h.read_reg(_PRESET_JOB_INDEX) == 0x00, (
+                f"[{backend}] STOP timeout test lost the first pending "
+                f"APPLY entry before recovery"
+            )
 
-        harness.clear_mssp_stop_faults()
-        _wait_for_preset_job_idle(harness)
+            h.clear_mssp_stop_faults()
+            _wait_for_preset_job_idle_h(h)
 
-        assert _read_reg(harness._issue, _PRESET_JOB_INDEX) == 0x60, (
-            "async APPLY did not finish the 96 regular table entries after STOP fault recovery"
-        )
-        assert _read_reg(harness._issue, _STATUS_5E) & _PRESET_B_BIT, (
-            "preset B was not committed after STOP fault recovery"
-        )
-    finally:
-        harness.close()
+            assert h.read_reg(_PRESET_JOB_INDEX) == 0x60, (
+                f"[{backend}] async APPLY did not finish the 96 regular "
+                f"table entries after STOP fault recovery"
+            )
+            assert h.read_reg(_STATUS_5E) & _PRESET_B_BIT, (
+                f"[{backend}] preset B was not committed after STOP "
+                f"fault recovery"
+            )
+        finally:
+            h.close()

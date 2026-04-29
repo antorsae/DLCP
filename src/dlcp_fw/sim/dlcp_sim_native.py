@@ -611,6 +611,15 @@ class Chain:
         """
         self._inner.clear_mssp_stop_faults()
 
+    def force_reset_main_mssp(self) -> None:
+        """Force-abort any in-flight MSSP transaction on MAIN0
+        and clear the SSPCON2 trigger bits.  Mirror of gpsim's
+        ``harness._issue("p18f2455.sspcon2 = 0")`` privileged-
+        register-write workaround used by V3.1/V3.2 PEN-timeout
+        recovery tests.
+        """
+        self._inner.force_reset_main_mssp()
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of

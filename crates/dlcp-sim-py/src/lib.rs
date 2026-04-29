@@ -1166,6 +1166,34 @@ impl Chain {
             .clear_stop_faults();
     }
 
+    /// Force-abort any in-flight MSSP transaction on MAIN0
+    /// and clear the SSPCON2 trigger bits.  Mirror of gpsim's
+    /// `harness._issue("p18f2455.sspcon2 = 0")` workaround
+    /// used by V3.1/V3.2 PEN-timeout-recovery tests: gpsim's
+    /// SSPCON2.put() filter blocks normal firmware writes
+    /// during active I²C, so the workaround uses a privileged
+    /// register write that BOTH clears the SFR trigger bits
+    /// AND ends the in-flight transaction (gpsim's MSSP
+    /// polls SSPCON2 each tick and aborts when trigger bits
+    /// are cleared externally).
+    ///
+    /// The rust MSSP state machine has its own
+    /// `state: I2cState::Stop(N)` countdown that's
+    /// independent of SSPCON2 memory contents -- so just
+    /// writing 0 to SSPCON2 doesn't abort an in-flight
+    /// STOP-fault-extended STOP.  This method does both:
+    /// `mssp.reset_state()` -> Idle + writes 0 to SSPCON2
+    /// memory, fully matching the gpsim privileged-write
+    /// semantics.
+    fn force_reset_main_mssp(&mut self) {
+        let core = &mut self.inner.cores[self.i_main0];
+        core.peripherals.mssp.reset_state();
+        core.memory.write_raw(
+            dlcp_sim::memory::Address::from_raw(0xFC5),
+            0,
+        );
+    }
+
     /// Write a single byte to CONTROL's EEPROM peripheral
     /// at the given 8-bit address (CONTROL EEPROM is 256
     /// bytes per PIC18F25K20 datasheet).  Mirror of
