@@ -475,22 +475,27 @@ def test_dsp_path_recovers_after_mssp_stop_fault_cleared(
     Renamed and re-docstring'd so the test name matches what
     the assertion actually checks (recovery), not what the
     original docstring aspired to (degradation).  Two sibling
-    tests in this file also drive the STOP-fault knobs but,
-    like this one, only assert post-fault behaviour rather
-    than direct fault-window observability:
+    tests in this file also drive the STOP-fault knobs:
       - test_idle_wait_blocks_during_pen_fault_then_recovers
-        (active_flags still set + new volume processes after
-        the fault is cleared)
       - test_pen_timeout_firmware_detects_before_sspcon2_poke
-        (canonical V3.1 must NOT latch the bounded-PEN-wait
-        fault flag under a 5M-cycle stuck-PEN injection -- the
-        only one in this trio whose assertion would break if
-        the rust MSSP STOP-fault model is a no-op, since a
-        no-op fault would let the firmware complete normally
-        without ever entering the bounded wait path).
-    Hence: the STOP-fault model fidelity is only loosely
-    exercised by the two recovery tests; the canonical
-    "fault not latched" test is the load-bearing check.
+
+    NOTE: under a hypothetical no-op STOP-fault model, ALL
+    three of these tests (including this one) would still
+    pass for the wrong reason: a no-op fault lets the
+    firmware complete the volume burst normally, so the
+    recovery checks pass trivially and the
+    pen_timeout test's `assert not fault6_seen` also passes
+    because the firmware never enters the bounded-PEN-wait
+    path that would set fault6.  Hence: the actual
+    STOP-fault model fidelity is exercised by the rust
+    `Mssp` unit tests
+    (`pen_with_stop_fault_extends_deadline`,
+    `pen_with_stop_fault_count_negative_one_runs_forever`,
+    `clear_stop_faults_disables_extension`) at
+    `crates/dlcp-sim/src/peripherals/mssp.rs`; the migrated
+    integration tests here exercise the firmware's
+    response-under-fault graceful behaviour, not the
+    fidelity of the fault model itself.
     """
     _skip_missing(V31_MAIN_HEX)
 
