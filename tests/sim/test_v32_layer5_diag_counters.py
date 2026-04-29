@@ -110,6 +110,7 @@ def _label_offset(text: str, name: str) -> int:
 # ===========================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.parametrize("name,addr", ALL_COUNTER_ADDRS)
 def test_ram_inc_defines_diag_counter(name: str, addr: int) -> None:
     """Each diag counter EQU is at the relocated address (BANK 2 upper).
@@ -129,6 +130,7 @@ def test_ram_inc_defines_diag_counter(name: str, addr: int) -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_ram_inc_defines_diag_ra1_prev() -> None:
     """diag_ra1_prev is the edge-detect shadow at 0x2EC."""
     ram_inc = (V32_MAIN_ASM.parent / "dlcp_main_ram.inc").read_text(encoding="utf-8")
@@ -136,6 +138,7 @@ def test_ram_inc_defines_diag_ra1_prev() -> None:
     assert addr == DIAG_RA1_PREV_ADDR
 
 
+@pytest.mark.dual_supported
 def test_diag_block_outside_usb_endpoint_buffers() -> None:
     """Pin the diag block OUTSIDE every USB endpoint buffer range.
 
@@ -171,6 +174,7 @@ def test_diag_block_outside_usb_endpoint_buffers() -> None:
             )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_defines_diag_inc_sat_macro() -> None:
     """The saturating-increment macro must exist (used by every hook).
 
@@ -189,6 +193,7 @@ def test_v32_source_defines_diag_inc_sat_macro() -> None:
     assert "ENDM" in body, "macro must terminate with ENDM"
 
 
+@pytest.mark.dual_supported
 def test_v32_source_invokes_diag_inc_sat_at_each_hook() -> None:
     """Each of the 7 counters has at least one diag_inc_sat invocation."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
@@ -197,6 +202,7 @@ def test_v32_source_invokes_diag_inc_sat_at_each_hook() -> None:
         assert hook is not None, f"no diag_inc_sat hook for counter {name}"
 
 
+@pytest.mark.dual_supported
 def test_v32_source_diag_i_hook_lives_in_i2c_byte_tx() -> None:
     """diag_i hook must be inside i2c_byte_tx (per spec §I2C / DSP fault path)."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
@@ -210,6 +216,7 @@ def test_v32_source_diag_i_hook_lives_in_i2c_byte_tx() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_diag_s_and_diag_b_hooks_in_standby_event_dispatch() -> None:
     """S/B counters wired into standby_event_dispatch's two arms."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
@@ -226,6 +233,7 @@ def test_v32_source_diag_s_and_diag_b_hooks_in_standby_event_dispatch() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_diag_r_and_diag_d_hooks_in_volume_dsp_write_recovery() -> None:
     """R/D counters wired into volume_dsp_write's exhaustion path; D is
     transition-gated (only fires on dsp_fault_flags.6 0→1)."""
@@ -249,6 +257,7 @@ def test_v32_source_diag_r_and_diag_d_hooks_in_volume_dsp_write_recovery() -> No
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_diag_a_hook_in_an0_hysteresis_monitor() -> None:
     """A counter hooks the AN0-low standby trigger."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
@@ -262,6 +271,7 @@ def test_v32_source_diag_a_hook_in_an0_hysteresis_monitor() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_ra1_edge_monitor_called_from_periodic_loop() -> None:
     """ra1_edge_monitor must run every periodic_service_loop pass."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
@@ -275,6 +285,7 @@ def test_v32_source_ra1_edge_monitor_called_from_periodic_loop() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cmd21_dispatch_in_main_uart_service_1be6() -> None:
     """The cmd 0x21 dispatch hook must extend the cumulative xorlw chain
     after the cmd 0x20 (preset_select_handler) entry."""
@@ -293,6 +304,7 @@ def test_v32_source_cmd21_dispatch_in_main_uart_service_1be6() -> None:
     ), "cmd 0x21 dispatch hook missing or malformed"
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cmd21_handler_seeds_burst_loop_with_seven_frames() -> None:
     """The reply handler must emit 7 BF/2N frames at runtime (BF/21..27
     in order, low-nibble data so each data byte stays < 0x80 and
@@ -344,6 +356,7 @@ def test_v32_source_cmd21_handler_seeds_burst_loop_with_seven_frames() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cold_init_does_not_save_diag_block_before_wipe() -> None:
     """Negative regression: after the 2026-04-19 relocation, the diag block
     lives in the wipe-protected BANK 2 upper region, so the cold init
@@ -364,6 +377,7 @@ def test_v32_source_cold_init_does_not_save_diag_block_before_wipe() -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cold_init_unconditionally_clears_diag_block() -> None:
     """Cold init (post-2026-04-20 redesign per operator request):
     UNCONDITIONALLY zero the 8 diag cells on every cold-init pass,
@@ -438,10 +452,12 @@ def test_v32_source_cold_init_unconditionally_clears_diag_block() -> None:
 # ===========================================================================
 
 
+@pytest.mark.dual_supported
 def test_v32_assembles_with_layer5(v32_hex: Path) -> None:
     assert v32_hex.exists() and v32_hex.stat().st_size > 0
 
 
+@pytest.mark.dual_supported
 def test_v32_layer5_symbols_resolve(v32_hex: Path) -> None:
     syms = load_gpasm_symbols_for_hex(v32_hex)
     # Note: ``diag_post_rcon_check`` was a label for the RCON-gated
@@ -561,6 +577,7 @@ def test_v32_layer5_diag_block_clears_on_cold_start(v32_hex: Path) -> None:
         h.close()
 
 
+@pytest.mark.dual_supported
 def test_v32_diag_send_burst_helper_uses_postinc0_indirect() -> None:
     """Rev 0x37 (Tier-1) refactored cmd 0x21 + cmd 0x22 to share a
     common ``diag_send_burst_xx`` helper that walks the diag block via
@@ -630,6 +647,7 @@ def test_v32_diag_send_burst_helper_uses_postinc0_indirect() -> None:
 # ===========================================================================
 
 
+@pytest.mark.dual_supported
 def test_v32_cmd21_masks_high_nibble_before_tx() -> None:
     """REGRESSION: cmd21_diag_query_handler must `andlw 0x0F` after each
     `movf diag_X, W, BANKED` and BEFORE the `rcall uart_tx_byte_blocking`.
@@ -677,6 +695,7 @@ def test_v32_cmd21_masks_high_nibble_before_tx() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
     v32_hex: Path,
 ) -> None:
@@ -801,6 +820,7 @@ def _capture_cmd21_tx_burst(h, *, query_route: int) -> bytes:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_diag_block_address_range_within_wipe_protected_window() -> None:
     """The diag block (0x2E5..0x2EC) must live INSIDE the wipe-
     protected BANK 2 upper window (0x2DE..0x2FF).  If a future
@@ -824,6 +844,7 @@ def test_v32_diag_block_address_range_within_wipe_protected_window() -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_v32_diag_inc_sat_macro_has_explicit_upper_bound_clamp() -> None:
     """REGRESSION: `diag_inc_sat` saturates at 0x0F via `cpfslt
     counter, BANKED` with W=0x0F.  If the counter is ALREADY > 0x0F
@@ -1023,6 +1044,7 @@ def test_v32_diag_counters_isolated_per_hook(v32_hex: Path) -> None:
         h.close()
 
 
+@pytest.mark.dual_supported
 def test_v32_cold_init_does_not_skip_clear_on_software_reset() -> None:
     """REGRESSION (post-2026-04-20 redesign): the operator's recovery
     path (re-flash + bootloader `reset` instruction) is a SOFTWARE
@@ -1220,6 +1242,7 @@ DIAG_RESET_SW_ADDR  = 0x2F0
         ("diag_reset_sw",  DIAG_RESET_SW_ADDR),
     ],
 )
+@pytest.mark.dual_supported
 def test_ram_inc_defines_reset_cause_flag(name: str, addr: int) -> None:
     """Tier-1 reset-cause flag cells live in the wipe-protected BANK 2
     upper region (0x2DE..0x2FF), immediately after the runtime counter
@@ -1239,6 +1262,7 @@ def test_ram_inc_defines_reset_cause_flag(name: str, addr: int) -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cold_init_classifies_reset_cause() -> None:
     """The cold-init body (between flow_main_flash_service_3ce8_3d4e
     and flash_erase) must contain a reset-cause classification cascade
@@ -1283,6 +1307,7 @@ def test_v32_source_cold_init_classifies_reset_cause() -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cold_init_rearms_all_four_rcon_bits() -> None:
     """Rev 0x37 (Tier-1) extends the RCON re-arm from 2 bits (BOR,POR)
     to all 4 classification bits (BOR,POR,TO,RI).  Without re-arming
@@ -1308,6 +1333,7 @@ def test_v32_source_cold_init_rearms_all_four_rcon_bits() -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cmd22_dispatched_after_cmd21_in_chain() -> None:
     """The chain dispatch (main_uart_service_1be6) tests cmd bytes via
     a cumulative-XOR cascade.  cmd 0x21 dispatches via ``xorlw 0x01``
@@ -1342,6 +1368,7 @@ def test_v32_source_cmd22_dispatched_after_cmd21_in_chain() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_cmd22_handler_seeds_burst_loop_with_four_frames() -> None:
     """Mirror of the cmd 0x21 seed test: cmd 0x22 must seed the shared
     diag_send_burst_xx helper with sentinel = 0x2C (= first sub-cmd
@@ -1371,6 +1398,7 @@ def test_v32_source_cmd22_handler_seeds_burst_loop_with_four_frames() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_diag_send_burst_xx_helper_present() -> None:
     """The shared helper that cmd 0x21 + cmd 0x22 both bra into.  Pin
     its presence + ACK-echo suppression + parser-tail return path so
@@ -1400,6 +1428,7 @@ def test_v32_source_diag_send_burst_xx_helper_present() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_hid_cmd_44_dispatched() -> None:
     """The HID dispatch chain (hid_cmd_xor_dispatch) must route cmd
     0x44 to hid_cmd_diag_snapshot.  Pin the dispatch entry so a
@@ -1414,6 +1443,7 @@ def test_v32_source_hid_cmd_44_dispatched() -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_v32_source_hid_cmd_diag_snapshot_response_layout() -> None:
     """The hid_cmd_diag_snapshot handler writes its 64-byte HID IN
     report at FSR2 = 0x015A.  Pin the response layout: cmd echo at
