@@ -188,6 +188,26 @@ pub struct Mssp {
     /// drop rule means the next trigger waits on a fresh
     /// SFR write.
     last_bus_event: Option<I2cBusEvent>,
+    /// Fault-injection: extra Tcy added to the STOP
+    /// completion deadline beyond the normal `scl_period`.
+    /// While `stop_busy_count != 0` and a PEN-driven STOP is
+    /// scheduled, the state-machine deadline is
+    /// `scl_period + stop_busy_cycles` instead of
+    /// `scl_period`, simulating a stuck PEN bit (firmware
+    /// writes 1 to PEN, MSSP keeps PEN=1 longer than usual
+    /// before clearing it via `complete_stop`).  Mirror of
+    /// gpsim's `MainChainHarness.set_mssp_stop_fault(
+    /// stop_busy_cycles=N)` (chain_gpsim.py:451).  Set to 0
+    /// to disable the cycle extension; `clear_mssp_stop_
+    /// faults()` zeroes both.
+    stop_busy_cycles: u32,
+    /// Fault-injection: how many more PEN-driven STOPs to
+    /// fault.  Decrements per scheduled STOP while > 0;
+    /// -1 means "fault every STOP indefinitely".  When 0
+    /// no STOP is faulted regardless of `stop_busy_cycles`.
+    /// Mirror of gpsim's `stop_busy_count` knob.  Defaults
+    /// to 0 (no fault).
+    stop_busy_count: i64,
 }
 
 impl Mssp {
@@ -199,6 +219,29 @@ impl Mssp {
         self.state = I2cState::Idle;
         self.last_accepted_sspbuf_byte = 0;
         self.last_bus_event = None;
+    }
+
+    /// Program the STOP-fault knobs.  While `count != 0` and
+    /// the firmware schedules a PEN-driven STOP, the
+    /// state-machine deadline is extended by `cycles` Tcy
+    /// before `complete_stop` clears PEN.  `count > 0`
+    /// decrements per scheduled STOP and stops faulting once
+    /// it reaches 0; `count = -1` faults indefinitely.
+    /// Mirror of gpsim's
+    /// `MainChainHarness.set_mssp_stop_fault(
+    /// stop_busy_cycles=N, stop_busy_count=M)`
+    /// (chain_gpsim.py:451).
+    pub fn set_stop_fault(&mut self, cycles: u32, count: i64) {
+        self.stop_busy_cycles = cycles;
+        self.stop_busy_count = count;
+    }
+
+    /// Clear all MSSP fault-injection knobs.  Mirror of
+    /// gpsim's `MainChainHarness.clear_mssp_stop_faults()`
+    /// (chain_gpsim.py:468) which zeroes both knobs.
+    pub fn clear_stop_faults(&mut self) {
+        self.stop_busy_cycles = 0;
+        self.stop_busy_count = 0;
     }
 
     /// Drain the most-recently-completed bus event for the
@@ -308,7 +351,21 @@ impl Mssp {
         } else if (value & SSPCON2_RSEN) != 0 {
             self.state = I2cState::RepeatedStart(period);
         } else if (value & SSPCON2_PEN) != 0 {
-            self.state = I2cState::Stop(period);
+            // Fault-injection: extend STOP deadline by
+            // `stop_busy_cycles` while `stop_busy_count != 0`.
+            // Mirrors gpsim's `set_mssp_stop_fault(
+            // stop_busy_cycles=N, stop_busy_count=M)` knob
+            // used by V3.1 robustness tests to pin the firmware
+            // in i2c_wait_bus_idle while PEN appears stuck.
+            let extra = if self.stop_busy_count != 0 {
+                if self.stop_busy_count > 0 {
+                    self.stop_busy_count -= 1;
+                }
+                self.stop_busy_cycles
+            } else {
+                0
+            };
+            self.state = I2cState::Stop(period.saturating_add(extra));
         } else if (value & SSPCON2_RCEN) != 0 {
             // Master receive: 8 SCL periods of data shift
             // (per DS §17.4.6: "RCEN must be set after each
@@ -547,6 +604,67 @@ mod tests {
         let mut mssp = Mssp::default();
         let mut mem = fresh_mem();
         enable_i2c_master(&mut mem, 0x77);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::Stop(120));
+    }
+
+    /// Fault-injection: while `set_stop_fault(N, count)`
+    /// is active and count != 0, scheduling a PEN-driven
+    /// STOP extends the deadline by N Tcy beyond the
+    /// normal scl_period.  Mirror of gpsim's
+    /// `set_mssp_stop_fault(stop_busy_cycles=N,
+    /// stop_busy_count=M)`.
+    #[test]
+    fn pen_with_stop_fault_extends_deadline() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.set_stop_fault(5_000, 2);
+        // First STOP: faulted, deadline = 120 + 5000.
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::Stop(120 + 5_000));
+        assert_eq!(mssp.stop_busy_count, 1);
+        // Reset state to allow another schedule, then
+        // second STOP: also faulted (count=1 -> 0).
+        mssp.state = I2cState::Idle;
+        mem.write_raw(crate::memory::Address::from_raw(SSPCON2_ADDR), 0);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::Stop(120 + 5_000));
+        assert_eq!(mssp.stop_busy_count, 0);
+        // Third STOP: counter exhausted, no fault.
+        mssp.state = I2cState::Idle;
+        mem.write_raw(crate::memory::Address::from_raw(SSPCON2_ADDR), 0);
+        mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+        assert_eq!(mssp.state, I2cState::Stop(120));
+    }
+
+    /// Fault-injection: count = -1 means "fault every STOP
+    /// indefinitely"; counter is NOT decremented and stays
+    /// at -1.
+    #[test]
+    fn pen_with_stop_fault_count_negative_one_runs_forever() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.set_stop_fault(1_000, -1);
+        for _ in 0..5 {
+            mssp.state = I2cState::Idle;
+            mem.write_raw(crate::memory::Address::from_raw(SSPCON2_ADDR), 0);
+            mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
+            assert_eq!(mssp.state, I2cState::Stop(120 + 1_000));
+            assert_eq!(mssp.stop_busy_count, -1);
+        }
+    }
+
+    /// `clear_stop_faults` zeroes both knobs; subsequent
+    /// PEN reverts to the unmodified scl_period schedule.
+    #[test]
+    fn clear_stop_faults_disables_extension() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mssp.set_stop_fault(5_000, -1);
+        mssp.clear_stop_faults();
         mssp.on_sfr_write(SSPCON2_ADDR, SSPCON2_PEN, &mut mem);
         assert_eq!(mssp.state, I2cState::Stop(120));
     }

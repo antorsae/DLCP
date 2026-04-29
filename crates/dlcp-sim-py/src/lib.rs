@@ -1133,6 +1133,39 @@ impl Chain {
         Ok(())
     }
 
+    /// Program the MSSP STOP-fault knobs on MAIN0's MSSP
+    /// peripheral.  While `stop_busy_count != 0` and the
+    /// firmware schedules a PEN-driven STOP, the
+    /// state-machine deadline is extended by
+    /// `stop_busy_cycles` Tcy beyond the normal SCL period
+    /// before `complete_stop` clears PEN.  Mirror of gpsim's
+    /// `MainChainHarness.set_mssp_stop_fault(
+    /// stop_busy_cycles=N, stop_busy_count=M)`
+    /// (chain_gpsim.py:451) used by V3.1 robustness tests
+    /// to pin the firmware in i2c_wait_bus_idle while PEN
+    /// appears stuck.
+    fn set_mssp_stop_fault(
+        &mut self,
+        stop_busy_cycles: u32,
+        stop_busy_count: i64,
+    ) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .set_stop_fault(stop_busy_cycles, stop_busy_count);
+    }
+
+    /// Clear all MSSP fault-injection knobs on MAIN0's MSSP
+    /// peripheral.  Mirror of gpsim's
+    /// `MainChainHarness.clear_mssp_stop_faults()`
+    /// (chain_gpsim.py:468).
+    fn clear_mssp_stop_faults(&mut self) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .clear_stop_faults();
+    }
+
     /// Write a single byte to CONTROL's EEPROM peripheral
     /// at the given 8-bit address (CONTROL EEPROM is 256
     /// bytes per PIC18F25K20 datasheet).  Mirror of

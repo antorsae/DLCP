@@ -160,6 +160,20 @@ class _GpsimMainOnlyAdapter:
     def clear_i2c_faults(self, device: str = "dsp34") -> None:
         self._h.clear_i2c_faults(device)
 
+    def set_mssp_stop_fault(
+        self, *, stop_busy_cycles: int, stop_busy_count: int
+    ) -> None:
+        self._h.set_mssp_stop_fault(
+            stop_busy_cycles=stop_busy_cycles,
+            stop_busy_count=stop_busy_count,
+        )
+
+    def clear_mssp_stop_faults(self) -> None:
+        self._h.clear_mssp_stop_faults()
+
+    def read_dsp_snapshot(self) -> dict[int, int]:
+        return {r: self._h.read_i2c_regfile("dsp34", r) for r in range(256)}
+
     def close(self) -> None:
         self._h.close()
 
@@ -203,6 +217,20 @@ class _RustMainOnlyAdapter:
 
     def clear_i2c_faults(self, device: str = "dsp34") -> None:
         self._c.clear_i2c_faults(device)
+
+    def set_mssp_stop_fault(
+        self, *, stop_busy_cycles: int, stop_busy_count: int
+    ) -> None:
+        self._c.set_mssp_stop_fault(
+            stop_busy_cycles=stop_busy_cycles,
+            stop_busy_count=stop_busy_count,
+        )
+
+    def clear_mssp_stop_faults(self) -> None:
+        self._c.clear_mssp_stop_faults()
+
+    def read_dsp_snapshot(self) -> dict[int, int]:
+        return {r: self._c.read_dsp_reg(r) for r in range(256)}
 
     def close(self) -> None:
         pass
@@ -363,9 +391,12 @@ def test_bsr_safety_no_ram_corruption_on_nack(
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_idle_wait_blocks_during_pen_fault_then_recovers() -> None:
+def test_idle_wait_blocks_during_pen_fault_then_recovers(
+    dlcp_sim_backend: str,
+) -> None:
     """i2c_wait_bus_idle blocks while PEN is pending, then resumes.
 
     With stock unbounded i2c_wait_bus_idle, a stuck PEN causes the
@@ -373,44 +404,45 @@ def test_idle_wait_blocks_during_pen_fault_then_recovers() -> None:
     and the firmware continues.  Verify the firmware is NOT crashed
     (active_flags still set) and processes new volume after recovery.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
 
-        # MSSP STOP fault — same params as test_main_bus_clear_recovers (proven)
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
 
-        # Clear fault and let firmware recover (same as test 1)
-        harness.clear_mssp_stop_faults()
-        for _ in range(15):
-            harness.step()
+            h.clear_mssp_stop_faults()
+            h.advance_tcy(15 * h.chunk_tcy)
 
-        # Firmware should still be alive after PEN resolved
-        active = _read_reg(harness._issue, _STATUS_5E) & 0x08
-        assert active, "MAIN lost active state during PEN fault — hard_reset?"
+            active = h.read_reg(_STATUS_5E) & 0x08
+            assert active, (
+                f"[{backend}] MAIN lost active state during PEN fault "
+                f"-- hard_reset?"
+            )
 
-        # New volume must work (same timing as test 1)
-        snap = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff = _dsp34_diff(snap, _dsp34_snapshot(harness))
-        assert len(diff) > 0, (
-            "DSP path broken after PEN fault resolved — "
-            "i2c_wait_bus_idle may not have recovered"
-        )
-
-    finally:
-        harness.close()
+            snap = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            after = h.read_dsp_snapshot()
+            diff = [
+                (r, snap[r], after[r])
+                for r in range(256)
+                if snap[r] != after[r]
+            ]
+            assert len(diff) > 0, (
+                f"[{backend}] DSP path broken after PEN fault resolved -- "
+                f"i2c_wait_bus_idle may not have recovered"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
@@ -418,9 +450,12 @@ def test_idle_wait_blocks_during_pen_fault_then_recovers() -> None:
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_dsp_path_degraded_during_mssp_stop_fault() -> None:
+def test_dsp_path_degraded_during_mssp_stop_fault(
+    dlcp_sim_backend: str,
+) -> None:
     """During active MSSP STOP fault, DSP path MUST be degraded.
 
     This proves the fault model is working: volume commands sent
@@ -429,45 +464,45 @@ def test_dsp_path_degraded_during_mssp_stop_fault() -> None:
 
     Addresses review gap: tests 1 & 4 assert recovery but not degradation.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
 
-        # Baseline: volume reaches DSP
-        snap_pre = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        assert len(_dsp34_diff(snap_pre, _dsp34_snapshot(harness))) > 0, (
-            "baseline volume failed"
-        )
+            snap_pre = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            mid = h.read_dsp_snapshot()
+            assert any(snap_pre[r] != mid[r] for r in range(256)), (
+                f"[{backend}] baseline volume failed"
+            )
 
-        # Activate fault — same structure as test_main_bus_clear_recovers
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
 
-        # Clear fault and let firmware recover (same timing as test 1)
-        harness.clear_mssp_stop_faults()
-        for _ in range(15):
-            harness.step()
+            h.clear_mssp_stop_faults()
+            h.advance_tcy(15 * h.chunk_tcy)
 
-        # After recovery: volume MUST reach DSP
-        snap_post = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff_post = _dsp34_diff(snap_post, _dsp34_snapshot(harness))
-        assert len(diff_post) > 0, (
-            "DSP path not recovered after MSSP STOP fault cleared"
-        )
-
-    finally:
-        harness.close()
+            snap_post = h.read_dsp_snapshot()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            after_post = h.read_dsp_snapshot()
+            diff_post = [
+                (r, snap_post[r], after_post[r])
+                for r in range(256)
+                if snap_post[r] != after_post[r]
+            ]
+            assert len(diff_post) > 0, (
+                f"[{backend}] DSP path not recovered after MSSP STOP fault "
+                f"cleared"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
@@ -554,67 +589,61 @@ def test_bf08_payload_bytes_on_dsp_fault() -> None:
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_pen_timeout_firmware_detects_before_sspcon2_poke() -> None:
-    """Canonical V3.1 should NOT latch a coeff-write PEN timeout in gpsim.
+def test_pen_timeout_firmware_detects_before_sspcon2_poke(
+    dlcp_sim_backend: str,
+) -> None:
+    """Canonical V3.1 should NOT latch a coeff-write PEN timeout in
+    simulator.
 
-    The canonical hardware-fixed V3.1 restores stock coeff-write START/STOP
-    waits. That means gpsim's synthetic stuck-PEN model should not produce the
-    old bounded-wait fault latch before the explicit `SSPCON2` clear workaround.
+    The canonical hardware-fixed V3.1 restores stock coeff-write
+    START/STOP waits. That means a simulator's synthetic stuck-PEN
+    model should not produce the old bounded-wait fault latch before
+    the explicit `SSPCON2` clear workaround.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    # Use fine granularity to catch the transient dsp_fault_flags state
-    harness = MainChainHarness(
-        V31_MAIN_HEX,
-        chunk_cycles=50_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
-    try:
-        for _ in range(100):
-            harness.step()
-        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-        for _ in range(100):
-            harness.step()
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(200):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        # Fine probe granularity (50_000 Tcy/probe_step) to catch the
+        # transient dsp_fault_flags state.
+        h = _make_adapter(V31_MAIN_HEX, backend, chunk_tcy=50_000)
+        try:
+            h.advance_tcy(100 * h.chunk_tcy)
+            h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+            h.advance_tcy(100 * h.chunk_tcy)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(200 * h.chunk_tcy)
 
-        boot_complete = bool(_read_reg(harness._issue, _FLAGS_7E) & 0x80)
-        assert boot_complete, "boot_complete not set — can't test PEN timeout"
+            boot_complete = bool(h.read_reg(_FLAGS_7E) & 0x80)
+            assert boot_complete, (
+                f"[{backend}] boot_complete not set -- can't test PEN timeout"
+            )
 
-        # PEN fault — infinite count so any old bounded-wait latch would be
-        # observable if the canonical build still used it.
-        harness.set_mssp_stop_fault(stop_busy_cycles=5_000_000, stop_busy_count=-1)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.set_mssp_stop_fault(
+                stop_busy_cycles=5_000_000, stop_busy_count=-1
+            )
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
 
-        # Step with fine granularity and confirm the old bounded PEN fault
-        # latch does not appear before the gpsim workaround clears SSPCON2.
-        fault6_seen = False
-        for i in range(200):
-            harness.step()
-            flags = _read_reg(harness._issue, _FLAGS_7F)
-            if flags & (1 << _DSP_FAULT_BIT):
-                fault6_seen = True
-                break
+            fault6_seen = False
+            for _ in range(200):
+                h.probe_step()
+                flags = h.read_reg(_FLAGS_7F)
+                if flags & (1 << _DSP_FAULT_BIT):
+                    fault6_seen = True
+                    break
 
-        assert not fault6_seen, (
-            "canonical V3.1 unexpectedly latched the old bounded PEN timeout "
-            "fault before the gpsim SSPCON2 clear workaround"
-        )
+            assert not fault6_seen, (
+                f"[{backend}] canonical V3.1 unexpectedly latched the old "
+                f"bounded PEN timeout fault before the SSPCON2 clear "
+                f"workaround"
+            )
 
-        # Clean up: clear faults and verify recovery
-        harness.clear_mssp_stop_faults()
-        for _ in range(100):
-            harness.step()
-
-    finally:
-        harness.close()
+            h.clear_mssp_stop_faults()
+            h.advance_tcy(100 * h.chunk_tcy)
+        finally:
+            h.close()
 
 
 # ===================================================================

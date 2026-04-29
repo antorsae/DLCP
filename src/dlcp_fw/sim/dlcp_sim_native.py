@@ -552,6 +552,58 @@ class Chain:
             )
         self._inner.clear_dsp_i2c_faults()
 
+    def set_mssp_stop_fault(
+        self,
+        *,
+        stop_busy_cycles: int | None = None,
+        stop_busy_count: int | None = None,
+    ) -> None:
+        """Program the MSSP STOP-fault knobs on MAIN0's MSSP.
+        Mirror of gpsim's
+        ``MainChainHarness.set_mssp_stop_fault`` (chain_gpsim.py:451).
+
+        While ``stop_busy_count != 0`` and the firmware
+        schedules a PEN-driven STOP, the MSSP keeps PEN=1 for
+        ``stop_busy_cycles`` Tcy beyond the normal SCL-period
+        deadline.  Used to simulate the field-observed
+        "stuck PEN" condition that V3.1's bounded
+        i2c_wait_bus_idle is designed to recover from.
+
+        Either kwarg may be omitted to keep its current
+        value; passing both replaces both.  Both are
+        forwarded as gpsim does (`max(0, int(...))` for
+        cycles, `max(-1, int(...))` for count) so the
+        signature is gpsim-compatible.
+        """
+        # gpsim allows keeping one knob unchanged when only
+        # the other is passed; mirror that by reading the
+        # current values back from the rust inner if needed.
+        # The rust facade doesn't expose getters for these,
+        # so we require the caller to pass both knobs (matches
+        # the most-common gpsim test usage pattern).  Tests
+        # that need partial updates can call
+        # `clear_mssp_stop_faults` and then pass both.
+        if stop_busy_cycles is None and stop_busy_count is None:
+            return
+        if stop_busy_cycles is None or stop_busy_count is None:
+            raise ValueError(
+                "set_mssp_stop_fault: rust facade requires both "
+                "stop_busy_cycles AND stop_busy_count to be passed "
+                "together (no partial-update helper exists today)."
+            )
+        self._inner.set_mssp_stop_fault(
+            max(0, int(stop_busy_cycles)),
+            max(-1, int(stop_busy_count)),
+        )
+
+    def clear_mssp_stop_faults(self) -> None:
+        """Clear all MSSP fault-injection knobs on MAIN0's
+        MSSP.  Mirror of gpsim's
+        ``MainChainHarness.clear_mssp_stop_faults``
+        (chain_gpsim.py:468).
+        """
+        self._inner.clear_mssp_stop_faults()
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of
