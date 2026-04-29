@@ -909,9 +909,27 @@ impl Chain {
             // Nothing wired -- still drain the FIFO so it
             // doesn't accumulate and force-deliver
             // already-aged bytes when a coupling lands
-            // later.
+            // later.  ALSO record each drained byte to
+            // `uart_tx_history` with `dst_core == src_core`
+            // (loopback sentinel) so the firmware's TX
+            // bytes are observable even on chains with no
+            // UART couplings (MAIN-only chains).  Mirror of
+            // gpsim's `MainChainHarness.decoder.tx_frames`,
+            // which captures MAIN's USART TXREG completions
+            // independent of any peer.
             let core = &mut self.cores[src_core_idx];
-            while core.peripherals.eusart.take_completed_tx_byte().is_some() {}
+            let mut acc: Vec<u8> = Vec::new();
+            while let Some(byte) = core.peripherals.eusart.take_completed_tx_byte() {
+                acc.push(byte);
+            }
+            for byte in acc {
+                self.uart_tx_history.push(UartByteRecord {
+                    tick: self.current_tick,
+                    src_core: src_core_idx,
+                    dst_core: src_core_idx,
+                    byte,
+                });
+            }
             return;
         }
         // Drain bytes from the source core's EUSART into

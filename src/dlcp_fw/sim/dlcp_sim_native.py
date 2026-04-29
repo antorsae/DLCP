@@ -692,6 +692,65 @@ class Chain:
         """
         return [tuple(t) for t in self._inner.tx_frames()]  # type: ignore[misc]
 
+    def tx_record_since_last_capture(self) -> list[int]:
+        """Return MAIN0's TX bytes since the previous call
+        (or chain construction).  Mirror of gpsim's
+        ``MainChainHarness.decoder.tx_record_since_last_capture()``
+        used by ``test_v32_layer5_diag_counters`` for
+        byte-level inspection of cmd-0x21 diag responses.
+
+        On MAIN-only chains (no UART couplings), the rust
+        ``Chain::drain_completed_tx_bytes`` path records each
+        completed TX byte to ``uart_tx_history`` even without
+        a peer, so MAIN's USART output is observable
+        independent of any coupling.
+        """
+        return list(self._inner.tx_record_since_last_capture())
+
+    def mark_tx_capture_point(self) -> None:
+        """Reset the TX capture pointer to the current end
+        of MAIN0's recorded TX history.  Subsequent
+        ``tx_record_since_last_capture`` calls only return
+        bytes pushed AFTER this call.  Use to drop
+        pre-stimulus bytes (boot-time TX, prior responses)
+        before injecting the next stimulus.
+        """
+        self._inner.mark_tx_capture_point()
+
+    def step_until_tx_quiescent(
+        self,
+        *,
+        quiescent_tcy: int = 10_000,
+        max_tcy: int = 5_000_000,
+        require_tx_activity: bool = True,
+    ) -> int:
+        """Advance simulation until MAIN0 stops emitting TX
+        bytes for ``quiescent_tcy`` consecutive Tcy, or up
+        to ``max_tcy`` total.  Returns the number of Tcy
+        actually advanced.  Mirror of gpsim's
+        ``chain.step_until_tx_quiescent()``.
+
+        ``require_tx_activity`` (default True): wait for at
+        least one TX byte to appear before applying the
+        quiescence check, so the function doesn't return
+        immediately on the first quiescence chunk if the
+        firmware hasn't yet started responding.  Pass False
+        if the test wants the bare "no activity for one
+        chunk" semantic (e.g. asserting NO response is
+        generated under some condition).
+
+        Defaults: 10_000 Tcy quiescence window (~2.5 ms at
+        4 MIPS, comfortably longer than a 31_250-baud frame
+        at ~320 us/byte); 5_000_000 Tcy upper bound (~1.25 s
+        sim time, long enough for a multi-frame burst
+        response).
+        """
+        return int(self._inner.step_until_tx_quiescent(
+            int(quiescent_tcy),
+            int(max_tcy),
+            bool(require_tx_activity),
+        ))
+
     def step(self) -> None:
         """Step a single 200K-Tcy / 3.2 M-tick chunk.
         Mirror of gpsim's ``step()`` cadence.  Used by the

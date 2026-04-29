@@ -447,6 +447,15 @@ struct Chain {
     i_main0: usize,
     i_main1: usize,
     i_lcd: usize,
+    /// MAIN0-side TX-record capture point.  Counts the number
+    /// of `uart_tx_history` entries whose `src_core == i_main0`
+    /// at the time of the last `tx_record_since_last_capture()`
+    /// call (or 0 at construction).  The next call returns
+    /// only entries pushed AFTER this point and advances the
+    /// pointer to the new total.  See
+    /// `tx_record_since_last_capture` for the mirror-of-gpsim
+    /// semantics.
+    tx_capture_main0: usize,
 }
 
 /// Default `step()` advance = 200_000 Tcy.  This is just a
@@ -569,6 +578,7 @@ impl Chain {
             i_main0: handle.i_main0,
             i_main1: handle.i_main1,
             i_lcd: handle.i_lcd,
+            tx_capture_main0: 0,
         })
     }
 
@@ -620,6 +630,7 @@ impl Chain {
             i_main0: handle.i_main,
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
+            tx_capture_main0: 0,
         })
     }
 
@@ -671,6 +682,7 @@ impl Chain {
             i_main0: handle.i_main,
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
+            tx_capture_main0: 0,
         })
     }
 
@@ -735,6 +747,7 @@ impl Chain {
             i_main0: handle.i_main,
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
+            tx_capture_main0: 0,
         })
     }
 
@@ -1301,6 +1314,124 @@ impl Chain {
             .chunks_exact(3)
             .map(|c| (c[0], c[1], c[2]))
             .collect()
+    }
+
+    /// Return MAIN0's TX bytes recorded since the last call
+    /// to this method (or since chain construction), then
+    /// advance the capture pointer to the current end.
+    /// Mirror of gpsim's
+    /// `MainChainHarness.decoder.tx_record_since_last_capture()`
+    /// pattern: tests inject a query frame, advance time
+    /// until the firmware's response is fully drained, then
+    /// inspect the captured bytes for byte-level assertions
+    /// (e.g. cmd 0x21 high-nibble masking).
+    ///
+    /// On MAIN-only chains (no UART couplings), the
+    /// `Chain::drain_completed_tx_bytes` path records each
+    /// completed TX byte to `uart_tx_history` with
+    /// `src_core == dst_core == src_core` (loopback
+    /// sentinel) so the firmware's USART output is
+    /// observable independent of any peer.
+    fn tx_record_since_last_capture(&mut self) -> Vec<u8> {
+        let main0 = self.i_main0;
+        let main_records: Vec<u8> = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == main0)
+            .map(|r| r.byte)
+            .collect();
+        let result = main_records[self.tx_capture_main0..].to_vec();
+        self.tx_capture_main0 = main_records.len();
+        result
+    }
+
+    /// Reset the TX capture pointer to the current end of
+    /// MAIN0's recorded TX history -- subsequent
+    /// `tx_record_since_last_capture` calls only see bytes
+    /// pushed AFTER this call.  Use when the test wants to
+    /// drop pre-stimulus bytes (boot-time TX, prior query
+    /// responses) before injecting the next stimulus.
+    fn mark_tx_capture_point(&mut self) {
+        let main0 = self.i_main0;
+        self.tx_capture_main0 = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == main0)
+            .count();
+    }
+
+    /// Advance simulation until MAIN0 stops emitting TX
+    /// bytes for `quiescent_tcy` consecutive Tcy, or up to
+    /// `max_tcy` total Tcy.  Returns the number of Tcy
+    /// actually advanced (<= max_tcy).  Mirror of gpsim's
+    /// `chain.step_until_tx_quiescent()` pattern: the
+    /// firmware finishes responding to a query when the
+    /// USART TXREG/TRMT pair stays empty for a "long
+    /// enough" interval.
+    ///
+    /// Quiescence is checked in fixed `quiescent_tcy`
+    /// chunks: advance one chunk, see if any new MAIN0 TX
+    /// records arrived since the last chunk; if not AND at
+    /// least one TX byte has been observed during this call
+    /// (when `require_tx_activity = True`), declare
+    /// quiescent.
+    ///
+    /// `require_tx_activity` (default True): wait for at
+    /// least one TX byte to appear before applying the
+    /// quiescence check.  Without this guard the function
+    /// would return immediately on the first chunk if the
+    /// firmware hasn't yet started responding -- giving the
+    /// caller an empty TX-record buffer and the false
+    /// impression that the response already completed.
+    /// Pass False if the test wants the bare "no activity
+    /// for one chunk" semantics (e.g. asserting that NO
+    /// response is generated under some condition).
+    ///
+    /// Defaults: `quiescent_tcy` = 10_000 Tcy (~2.5 ms at
+    /// 4 MIPS, comfortably longer than a 31_250-baud frame
+    /// at ~320 us/byte); `max_tcy` = 5_000_000 Tcy (~1.25 s
+    /// sim time, long enough for a multi-frame burst
+    /// response).
+    #[pyo3(signature = (quiescent_tcy=10_000, max_tcy=5_000_000, require_tx_activity=true))]
+    fn step_until_tx_quiescent(
+        &mut self,
+        quiescent_tcy: u64,
+        max_tcy: u64,
+        require_tx_activity: bool,
+    ) -> u64 {
+        let main0 = self.i_main0;
+        let factor = if self.i_ctl == self.i_main0 {
+            TICKS_PER_TCY_2455
+        } else {
+            TICKS_PER_TCY_K20
+        };
+        let count_main_records = |inner: &RustChain| -> usize {
+            inner
+                .uart_tx_history
+                .iter()
+                .filter(|r| r.src_core == main0)
+                .count()
+        };
+        let mut advanced: u64 = 0;
+        let initial_count = count_main_records(&self.inner);
+        let mut last_count = initial_count;
+        while advanced < max_tcy {
+            let chunk = quiescent_tcy.min(max_tcy - advanced);
+            self.inner.step_ticks(chunk * factor);
+            advanced += chunk;
+            let new_count = count_main_records(&self.inner);
+            let saw_tx_this_call = new_count > initial_count;
+            if new_count == last_count && (saw_tx_this_call || !require_tx_activity) {
+                // No new TX bytes during this chunk and (we've
+                // already seen at least one TX byte this call,
+                // or the caller doesn't require activity).
+                return advanced;
+            }
+            last_count = new_count;
+        }
+        advanced
     }
 
     /// Step a fixed `DEFAULT_STEP_TCY`-Tcy convenience
