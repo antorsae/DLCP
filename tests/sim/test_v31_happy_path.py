@@ -24,6 +24,14 @@ from dlcp_fw.sim.chain_gpsim import MainChainHarness
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 # ---- Helpers ----
 
 _STATUS_5E = 0x05E
@@ -34,40 +42,116 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
 def _skip_missing(*paths: Path) -> None:
     for p in paths:
         if not p.exists():
             pytest.skip(f"missing: {p.name}")
 
 
-def _boot_harness(main_hex: Path) -> MainChainHarness:
-    """Create a MainChainHarness configured for full boot + I2C."""
-    return MainChainHarness(
-        main_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
+# ---- Backend-uniform helpers ----
+# Each test body uses these helpers + the per-backend factory below
+# so the test logic can stay backend-agnostic. The rust/gpsim split
+# lives entirely inside `_make_harness` and the `read_main_reg` /
+# `read_dsp_reg` helpers.
 
 
-def _boot_and_activate(harness: MainChainHarness) -> None:
+class _GpsimHarness:
+    """Thin gpsim adapter mirroring the rust Chain interface used
+    in this file (read_reg / read_dsp_reg / step / inject /
+    close)."""
+
+    def __init__(self, main_hex: Path) -> None:
+        self._h = MainChainHarness(
+            main_hex,
+            chunk_cycles=200_000,
+            standby_mode="hold",
+            rc2_mode="low",
+            bypass_i2c=False,
+            transport_mode="native_ring",
+        )
+
+    def step(self) -> None:
+        self._h.step()
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._h.inject_frames_fifo(frames, fifo_limit=fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return _read_reg(self._h._issue, addr)
+
+    def read_dsp_reg(self, subaddr: int) -> int:
+        return self._h.read_i2c_regfile("dsp34", subaddr)
+
+    def close(self) -> None:
+        self._h.close()
+
+
+class _RustHarness:
+    """Thin rust adapter mirroring the same surface."""
+
+    def __init__(self, main_hex: Path) -> None:
+        self._c = RustChain.from_v3x_main_only(str(main_hex))
+
+    def step(self) -> None:
+        self._c.step()
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._c.inject_main_frames_fifo(frames, fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return self._c.read_reg(addr)
+
+    def read_dsp_reg(self, subaddr: int) -> int:
+        return self._c.read_dsp_reg(subaddr)
+
+    def close(self) -> None:  # rust chain has no resource to release
+        pass
+
+
+def _make_harness(main_hex: Path, backend: str):
+    if backend == "rust":
+        return _RustHarness(main_hex)
+    return _GpsimHarness(main_hex)
+
+
+def _boot_and_activate(h) -> None:
     for _ in range(20):
-        harness.step()
-    harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+        h.step()
+    h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
     for _ in range(20):
-        harness.step()
-    assert _read_reg(harness._issue, _STATUS_5E) & 0x08, "MAIN not active"
+        h.step()
+    assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
 
 
-def _dsp_snapshot(harness: MainChainHarness) -> dict[int, int]:
-    """Read all 256 DSP registers."""
-    return {r: harness.read_i2c_regfile("dsp34", r) for r in range(256)}
+def _dsp_snapshot(h) -> dict[int, int]:
+    return {r: h.read_dsp_reg(r) for r in range(256)}
 
 
 def _dsp_diff(before: dict[int, int], after: dict[int, int]) -> list:
     return [(r, before[r], after[r]) for r in range(256) if before[r] != after[r]]
+
+
+def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
+    backends: list[str] = []
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        backends.append("rust")
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        backends.append("gpsim")
+    return backends
 
 
 # ---- Firmware versions under test ----
@@ -86,10 +170,13 @@ _ALL_VERSIONS = [
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize("main_hex", _ALL_VERSIONS)
-def test_dsp_preset_registers_nonzero_after_boot(main_hex: Path) -> None:
+def test_dsp_preset_registers_nonzero_after_boot(
+    main_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """After boot + activation, DSP preset registers must have data.
 
     The firmware loads the DSP preset table (0x5600) into the TAS3108
@@ -98,37 +185,47 @@ def test_dsp_preset_registers_nonzero_after_boot(main_hex: Path) -> None:
 
     This catches i2c_byte_tx regressions that silently drop I2C data.
     """
-    _require_gpsim()
     _skip_missing(main_hex)
 
-    harness = _boot_harness(main_hex)
-    try:
-        _boot_and_activate(harness)
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_harness(main_hex, backend)
+        try:
+            _boot_and_activate(h)
+            for _ in range(30):
+                h.step()
 
-        # Allow preset loading to complete (happens after activation)
-        for _ in range(30):
-            harness.step()
+            preset_regs = [0x29, 0x46, 0x55, 0x6B, 0x91, 0xD7]
+            nonzero = {r: h.read_dsp_reg(r) for r in preset_regs}
+            nonzero_count = sum(1 for v in nonzero.values() if v != 0)
 
-        # Check DSP registers that gpsim's TAS3108 model populates during
-        # preset table loading.  Empirically confirmed on stock V2.3:
-        # 0x29=0x80, 0x46=0x0F, 0x55=0x0F, 0x6B=0x01, 0x91=0x80, 0xD7=0x01
-        preset_regs = [0x29, 0x46, 0x55, 0x6B, 0x91, 0xD7]
-        nonzero = {r: harness.read_i2c_regfile("dsp34", r) for r in preset_regs}
-        nonzero_count = sum(1 for v in nonzero.values() if v != 0)
-
-        assert nonzero_count >= 4, (
-            f"Only {nonzero_count}/6 DSP preset registers non-zero after boot — "
-            f"preset table not loaded via I2C. Values: "
-            f"{{{', '.join(f'0x{r:02X}:0x{v:02X}' for r,v in nonzero.items())}}}"
-        )
-
-    finally:
-        harness.close()
+            assert nonzero_count >= 4, (
+                f"[{backend}] Only {nonzero_count}/6 DSP preset registers "
+                f"non-zero after boot — preset table not loaded via I2C. "
+                f"Values: "
+                f"{{{', '.join(f'0x{r:02X}:0x{v:02X}' for r,v in nonzero.items())}}}"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
 # Test 2: Volume command changes DSP coefficient register
 # ===================================================================
+#
+# NOTE: NOT marked `dual_supported`.  This test passes on gpsim only
+# because gpsim's preset-table I²C burst is still in flight when the
+# pre-volume snapshot is taken, so the post-volume snapshot diff
+# captures preset bytes finishing as well as the volume write.  The
+# rust engine completes preset loading earlier (faster scheduler),
+# so by the snapshot window only the volume write is in flight --
+# and a single volume command on V3.x writes 0 or 1 DSP subaddresses
+# (verified by probing both backends with an extra 50-chunk
+# settle: gpsim shows 1 reg change for 0x07/0x50 then 0 for the
+# next volume cmd).  The test as written documents a gpsim timing
+# coincidence, not a real invariant about the volume-to-DSP path.
+# Test #3 (`test_two_volumes_produce_different_computed_volume`)
+# already covers the volume-computation path via MAIN RAM
+# (0x06E-0x071) and is dual-mode-validated.
 
 
 @pytest.mark.gpsim
@@ -146,27 +243,25 @@ def test_volume_command_changes_dsp_registers(main_hex: Path) -> None:
     _require_gpsim()
     _skip_missing(main_hex)
 
-    harness = _boot_harness(main_hex)
+    h = _GpsimHarness(main_hex)
     try:
-        _boot_and_activate(harness)
+        _boot_and_activate(h)
         for _ in range(20):
-            harness.step()
+            h.step()
 
-        # Snapshot DSP state, send volume command, check for changes
-        snap_before = _dsp_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+        snap_before = _dsp_snapshot(h)
+        h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
         for _ in range(30):
-            harness.step()
-        snap_after = _dsp_snapshot(harness)
+            h.step()
+        snap_after = _dsp_snapshot(h)
 
         diff = _dsp_diff(snap_before, snap_after)
         assert len(diff) > 0, (
             "Volume command 0x50 produced zero DSP register changes — "
             "volume I2C path is broken"
         )
-
     finally:
-        harness.close()
+        h.close()
 
 
 # ===================================================================
@@ -174,10 +269,13 @@ def test_volume_command_changes_dsp_registers(main_hex: Path) -> None:
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize("main_hex", _ALL_VERSIONS)
-def test_two_volumes_produce_different_computed_volume(main_hex: Path) -> None:
+def test_two_volumes_produce_different_computed_volume(
+    main_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """Two different volume commands must produce different computed_volume.
 
     The firmware's volume computation converts serial data byte to a
@@ -188,41 +286,47 @@ def test_two_volumes_produce_different_computed_volume(main_hex: Path) -> None:
     volume coefficients (the MSB might be the same).  So we check
     the 32-bit computed_volume in MAIN RAM instead.
     """
-    _require_gpsim()
     _skip_missing(main_hex)
 
-    harness = _boot_harness(main_hex)
-    try:
-        _boot_and_activate(harness)
-        for _ in range(20):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_harness(main_hex, backend)
+        try:
+            _boot_and_activate(h)
+            for _ in range(20):
+                h.step()
 
-        # First volume
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-        vol1 = tuple(_read_reg(harness._issue, r) for r in (0x06E, 0x06F, 0x070, 0x071))
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            for _ in range(30):
+                h.step()
+            vol1 = tuple(h.read_reg(r) for r in (0x06E, 0x06F, 0x070, 0x071))
 
-        # Second volume (different value)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x60]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-        vol2 = tuple(_read_reg(harness._issue, r) for r in (0x06E, 0x06F, 0x070, 0x071))
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x60]], fifo_limit=47)
+            for _ in range(30):
+                h.step()
+            vol2 = tuple(h.read_reg(r) for r in (0x06E, 0x06F, 0x070, 0x071))
 
-        assert vol1 != vol2, (
-            f"Two different volume commands produced same computed_volume: "
-            f"vol1={tuple(hex(v) for v in vol1)}, "
-            f"vol2={tuple(hex(v) for v in vol2)} — "
-            f"volume computation or commit may be broken"
-        )
-
-    finally:
-        harness.close()
+            assert vol1 != vol2, (
+                f"[{backend}] Two different volume commands produced same "
+                f"computed_volume: vol1={tuple(hex(v) for v in vol1)}, "
+                f"vol2={tuple(hex(v) for v in vol2)} — "
+                f"volume computation or commit may be broken"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
 # Test 4: Boot volume from EEPROM is applied to DSP
 # ===================================================================
+#
+# NOTE: NOT marked `dual_supported`.  Same timing-coincidence
+# rationale as test 2: the second assertion ("volume cmd produces
+# DSP changes") relies on preset loading still being in flight on
+# gpsim's slower scheduler.  The first assertion ("computed_volume
+# or logical_volume non-zero after boot") is robust on both
+# backends and is already covered by `test_dsp_preset_registers_
+# nonzero_after_boot` and `test_two_volumes_produce_different_
+# computed_volume` in this file.
 
 
 @pytest.mark.gpsim
@@ -241,38 +345,29 @@ def test_boot_volume_applied_to_dsp(main_hex: Path) -> None:
     _require_gpsim()
     _skip_missing(main_hex)
 
-    harness = _boot_harness(main_hex)
+    h = _GpsimHarness(main_hex)
     try:
-        _boot_and_activate(harness)
-
-        # Give boot volume time to be processed
+        _boot_and_activate(h)
         for _ in range(40):
-            harness.step()
+            h.step()
 
-        # The EEPROM default volume is 0xA0 (from EEPROM[0x03]).
-        # After boot, computed_volume (0x06E) and logical_volume (0x066)
-        # should be set.
-        computed = _read_reg(harness._issue, 0x06E)
-        logical = _read_reg(harness._issue, 0x066)
+        computed = h.read_reg(0x06E)
+        logical = h.read_reg(0x066)
 
-        # Both should be non-zero (EEPROM default is 0xA0)
         assert computed != 0 or logical != 0, (
             f"Boot volume not loaded: computed=0x{computed:02X}, "
             f"logical=0x{logical:02X} — EEPROM volume init may be broken"
         )
 
-        # Verify volume was actually written to DSP:
-        # Send a DIFFERENT volume and check DSP changes
-        snap = _dsp_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+        snap = _dsp_snapshot(h)
+        h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
         for _ in range(30):
-            harness.step()
-        diff = _dsp_diff(snap, _dsp_snapshot(harness))
+            h.step()
+        diff = _dsp_diff(snap, _dsp_snapshot(h))
 
         assert len(diff) > 0, (
             "Volume command after boot produced no DSP changes — "
             "DSP I2C path may be broken"
         )
-
     finally:
-        harness.close()
+        h.close()
