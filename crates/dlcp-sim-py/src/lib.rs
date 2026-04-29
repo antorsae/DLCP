@@ -1401,6 +1401,10 @@ impl Chain {
         max_tcy: u64,
         require_tx_activity: bool,
     ) -> u64 {
+        // Clamp `quiescent_tcy` to at least 1 so the chunk
+        // size is always positive; otherwise the loop would
+        // spin forever (chunk=0 -> advanced never increases).
+        let quiescent_tcy = quiescent_tcy.max(1);
         let main0 = self.i_main0;
         let factor = if self.i_ctl == self.i_main0 {
             TICKS_PER_TCY_2455
