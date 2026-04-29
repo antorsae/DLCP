@@ -1295,14 +1295,13 @@ def test_v32_preset_job_state_unchanged_by_diag_traffic(
             # 7 bytes
             baseline = tuple(h.read_reg(0x2DE + i) for i in range(7))
             # Many cmd 0x21 queries.  Route was swapped from the
-            # original test's 0xB1 (MAIN1 broadcast) to 0xB0 (MAIN0
-            # broadcast) for explicit parity with the MAIN-only
-            # rust chain (`from_v3x_main_only` collapses i_main0 ==
-            # i_main1; the parser accepts both routes on both
-            # backends per V3.2 source dispatch, but 0xB0 is the
-            # backend-uniform "MAIN0-targeted" choice and matches
-            # the migration pattern in test_v31_v163b_robustness's
-            # _inject_main_frame_h helper).  cmd 0x21 emission
+            # original test's 0xB1 (addressed-unit-only per
+            # dlcp_main_v32.asm:1769) to 0xB0 (broadcast: MAIN0
+            # + MAIN1, sets active_flags.bit0 = 0).  The parser
+            # accepts both on both backends; 0xB0 is the
+            # backend-uniform broadcast choice that matches the
+            # migration pattern in test_v31_v163b_robustness's
+            # _inject_main_frame_h helper.  cmd 0x21 emission
             # isn't asserted here, only that the cmd 0x21 PARSER
             # doesn't clobber preset_job state.
             for _ in range(20):
