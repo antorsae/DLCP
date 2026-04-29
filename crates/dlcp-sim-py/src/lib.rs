@@ -519,6 +519,29 @@ fn panel_button_pin(key: &str) -> Result<(PortLetter, u8), String> {
 const BUTTON_HOLD_TICKS: u64 = 50_000_000;
 const BUTTON_RELEASE_SETTLE_TICKS: u64 = 50_000_000;
 
+impl Chain {
+    /// Look up the index of the FIRST TAS3108 slave coupled
+    /// to MAIN0 in `inner.tas3108_slaves`.  Used by methods
+    /// that read or program DSP state (`read_dsp_reg`,
+    /// `set_dsp_i2c_fault`, `clear_dsp_i2c_faults`).  Returns
+    /// a Python-visible RuntimeError if no DSP slave is wired
+    /// to MAIN0 (e.g. a chain built without
+    /// `couple_tas3108`).
+    fn dsp_slave_index(&self) -> PyResult<usize> {
+        self.inner
+            .tas3108_couplings
+            .iter()
+            .find(|(master, _)| *master == self.i_main0)
+            .map(|(_, slave)| *slave)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "no TAS3108 slave coupled to MAIN0 -- chain was \
+                     not built with a DSP slave",
+                )
+            })
+    }
+}
+
 #[pymethods]
 impl Chain {
     /// Construct a 3-core ring (V1.71 CONTROL + V3.2
@@ -1036,19 +1059,41 @@ impl Chain {
     /// to MAIN0 (which is the V3.x convention -- gpsim's
     /// MainChainHarness only attaches one regfile per MAIN).
     fn read_dsp_reg(&self, subaddr: u8) -> PyResult<u8> {
-        let i_dsp = self
-            .inner
-            .tas3108_couplings
-            .iter()
-            .find(|(master, _)| *master == self.i_main0)
-            .map(|(_, slave)| *slave)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err(
-                    "no TAS3108 slave coupled to MAIN0 -- chain was \
-                     not built with a DSP slave",
-                )
-            })?;
+        let i_dsp = self.dsp_slave_index()?;
         Ok(self.inner.tas3108_slaves[i_dsp].read_subaddr(subaddr))
+    }
+
+    /// Program the address-NACK fault counter on the TAS3108
+    /// slave coupled to MAIN0.  While `address_nack_count > 0`,
+    /// the slave NACKs every address-phase byte that matches
+    /// its own write or read address, then decrements.
+    /// Used by the V3.1 robustness tests
+    /// (`test_v31_review_findings.py`) to simulate persistent
+    /// DSP unresponsiveness.  Mirror of gpsim's
+    /// `MainChainHarness.set_i2c_fault("dsp34",
+    /// address_nack_count=N)` (chain_gpsim.py:471) -- only the
+    /// `address_nack_count` knob is implemented today; the
+    /// other gpsim fault-injection knobs (address_stretch_*,
+    /// data_nack_count, data_stuck_sda_*, stretch_scl_cycles)
+    /// are stubs that raise NotImplementedError on the python
+    /// facade.
+    fn set_dsp_i2c_fault(&mut self, address_nack_count: u32) -> PyResult<()> {
+        let i_dsp = self.dsp_slave_index()?;
+        self.inner.tas3108_slaves[i_dsp].set_address_nack_count(address_nack_count);
+        Ok(())
+    }
+
+    /// Clear all I²C fault-injection counters on the TAS3108
+    /// slave coupled to MAIN0.  Mirror of gpsim's
+    /// `MainChainHarness.clear_i2c_faults("dsp34")`
+    /// (chain_gpsim.py:526) which resets address_nack +
+    /// stretch + data_nack + stuck_sda back to defaults.
+    /// In rust today only the `address_nack_count` counter
+    /// exists; this method zeroes it.
+    fn clear_dsp_i2c_faults(&mut self) -> PyResult<()> {
+        let i_dsp = self.dsp_slave_index()?;
+        self.inner.tas3108_slaves[i_dsp].clear_i2c_faults();
+        Ok(())
     }
 
     /// Write a single byte to CONTROL's EEPROM peripheral

@@ -480,6 +480,78 @@ class Chain:
         """
         return int(self._inner.read_dsp_reg(int(subaddr) & 0xFF)) & 0xFF
 
+    def set_i2c_fault(
+        self,
+        device_name: str,
+        *,
+        address_nack_count: int | None = None,
+        address_stretch_scl_cycles: int | None = None,
+        address_stretch_count: int | None = None,
+        data_nack_count: int | None = None,
+        data_stuck_sda_cycles: int | None = None,
+        data_stuck_sda_count: int | None = None,
+        hold_scl_low: bool | None = None,
+        stretch_scl_cycles: int | None = None,
+    ) -> None:
+        """Program I²C fault-injection on the rust TAS3108
+        slave coupled to MAIN0.  Mirror of gpsim's
+        ``MainChainHarness.set_i2c_fault`` (chain_gpsim.py:471).
+
+        Today only ``address_nack_count`` is implemented in the
+        rust slave model.  The other knobs (address_stretch_*,
+        data_nack_count, data_stuck_sda_*, stretch_scl_cycles,
+        hold_scl_low) raise ``NotImplementedError`` so callers
+        get a clear failure rather than a silent no-op.
+
+        ``device_name`` is required for gpsim signature parity
+        but not used by the rust path -- the rust chain has at
+        most one DSP slave coupled to MAIN0, so the device name
+        is implicit.  We still validate it equals ``"dsp34"``
+        (the only DSP device gpsim's MainChainHarness exposes)
+        to surface typos before they get tunnelled past the
+        facade.
+        """
+        if device_name != "dsp34":
+            raise ValueError(
+                f"set_i2c_fault: rust facade only supports device "
+                f"\"dsp34\" (got {device_name!r})"
+            )
+        unsupported: list[str] = []
+        if address_stretch_scl_cycles is not None:
+            unsupported.append("address_stretch_scl_cycles")
+        if address_stretch_count is not None:
+            unsupported.append("address_stretch_count")
+        if data_nack_count is not None:
+            unsupported.append("data_nack_count")
+        if data_stuck_sda_cycles is not None:
+            unsupported.append("data_stuck_sda_cycles")
+        if data_stuck_sda_count is not None:
+            unsupported.append("data_stuck_sda_count")
+        if hold_scl_low is not None:
+            unsupported.append("hold_scl_low")
+        if stretch_scl_cycles is not None:
+            unsupported.append("stretch_scl_cycles")
+        if unsupported:
+            raise NotImplementedError(
+                f"rust TAS3108 slave does not yet model the "
+                f"following I²C fault-injection knobs: "
+                f"{', '.join(unsupported)}"
+            )
+        if address_nack_count is not None:
+            self._inner.set_dsp_i2c_fault(max(0, int(address_nack_count)))
+
+    def clear_i2c_faults(self, device_name: str = "dsp34") -> None:
+        """Clear all I²C fault-injection counters on the rust
+        TAS3108 slave coupled to MAIN0.  Mirror of gpsim's
+        ``MainChainHarness.clear_i2c_faults`` (chain_gpsim.py:526).
+        """
+        if device_name != "dsp34":
+            raise ValueError(
+                f"clear_i2c_faults: rust facade only supports device "
+                f"\"dsp34\" (got {device_name!r})"
+            )
+        self._inner.clear_dsp_i2c_faults()
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of

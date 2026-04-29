@@ -23,6 +23,14 @@ from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 # --- PIC18F2455 SFR addresses (absolute) ---
 _BSR = 0xFE0
 _SSPCON2 = 0xFC5
@@ -40,6 +48,14 @@ _ACKSTAT_BIT = 2    # 0x07F.bit2
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
 
 
 def _skip_missing(*paths: Path) -> None:
@@ -76,9 +92,130 @@ def _dsp34_diff(before: dict[int, int], after: dict[int, int]) -> list:
     return [(r, before[r], after[r]) for r in range(256) if before[r] != after[r]]
 
 
+# ---- Backend-uniform helpers (mirror of test_v31_happy_path.py) ----
+#
+# Each adapter exposes a per-call `step()` that advances ~`chunk_cycles`
+# Tcy worth of simulated time -- gpsim drives it via the
+# `chunk_cycles=N` constructor knob; rust drives it via per-call
+# `step_tcy(N)` (the rust universal-clock scheduler doesn't have
+# pre-chunked semantics).
+
+
+class _GpsimMainOnlyAdapter:
+    def __init__(self, main_hex: Path, *, chunk_cycles: int = 200_000) -> None:
+        self._h = MainChainHarness(
+            main_hex,
+            chunk_cycles=chunk_cycles,
+            standby_mode="hold",
+            rc2_mode="low",
+            bypass_i2c=False,
+            transport_mode="native_ring",
+        )
+
+    def step(self) -> None:
+        self._h.step()
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._h.inject_frames_fifo(frames, fifo_limit=fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return _read_reg(self._h._issue, addr)
+
+    def read_dsp_reg(self, subaddr: int) -> int:
+        return self._h.read_i2c_regfile("dsp34", subaddr)
+
+    def set_i2c_fault(self, device: str, *, address_nack_count: int) -> None:
+        self._h.set_i2c_fault(device, address_nack_count=address_nack_count)
+
+    def clear_i2c_faults(self, device: str = "dsp34") -> None:
+        self._h.clear_i2c_faults(device)
+
+    def close(self) -> None:
+        self._h.close()
+
+
+class _RustMainOnlyAdapter:
+    def __init__(self, main_hex: Path, *, chunk_cycles: int = 200_000) -> None:
+        self._c = RustChain.from_v3x_main_only(str(main_hex))
+        self._chunk_cycles = chunk_cycles
+
+    def step(self) -> None:
+        self._c.step_tcy(self._chunk_cycles)
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._c.inject_main_frames_fifo(frames, fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return self._c.read_reg(addr)
+
+    def read_dsp_reg(self, subaddr: int) -> int:
+        return self._c.read_dsp_reg(subaddr)
+
+    def set_i2c_fault(self, device: str, *, address_nack_count: int) -> None:
+        self._c.set_i2c_fault(device, address_nack_count=address_nack_count)
+
+    def clear_i2c_faults(self, device: str = "dsp34") -> None:
+        self._c.clear_i2c_faults(device)
+
+    def close(self) -> None:
+        pass
+
+
+def _make_adapter(main_hex: Path, backend: str, *, chunk_cycles: int = 200_000):
+    if backend == "rust":
+        return _RustMainOnlyAdapter(main_hex, chunk_cycles=chunk_cycles)
+    return _GpsimMainOnlyAdapter(main_hex, chunk_cycles=chunk_cycles)
+
+
+def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
+    backends: list[str] = []
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        backends.append("rust")
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        backends.append("gpsim")
+    return backends
+
+
+def _boot_and_activate_h(h) -> None:
+    for _ in range(20):
+        h.step()
+    h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    for _ in range(20):
+        h.step()
+    assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
+
+
 # ===================================================================
 # (a) Critical: BSR safety — i2c_byte_tx ACKSTAT write to 0x07F
 # ===================================================================
+
+
+# NOTE: NOT marked `dual_supported`.  This test asserts a CLEAN
+# `dsp_fault_flags == 0x00` baseline after a successful volume
+# command, before injecting NACKs.  On rust the baseline is 0x04
+# (ACKSTAT bit set) after the same boot+activate+volume sequence:
+# the rust MSSP/TAS3108 path leaves SSPCON2.ACKSTAT=1 after some
+# byte in the burst, which the firmware latches to
+# `dsp_fault_flags.2` via the V3.1 BSR-safe ACKSTAT-check at
+# dlcp_main_v31.asm:5933.  Probed both backends:
+#   * gpsim: 0x07F = 0x00 throughout (clean baseline).
+#   * rust:  0x07F transitions 0x00 -> 0x04 between step+10 and
+#            step+15 of the volume burst.
+# This is a real backend divergence in the rust I²C TX path
+# (`Chain::dispatch_i2c_to_coupled_slaves` + `Mssp::override_
+# acked` interaction); investigating it is a separate sub-task.
+# The post-NACK ACKSTAT-set invariant this test signals is
+# partly covered by `test_volume_dsp_write_retry_counter_
+# increments` (dual_supported below) -- that test asserts the
+# retry counter at `dsp_fault_flags[5:3]` increments under
+# persistent NACKs, which only happens if the BSR-safe ACKSTAT
+# check at :5933 is firing correctly.
 
 
 @pytest.mark.gpsim
@@ -132,9 +269,12 @@ def test_bsr_safety_ackstat_write_after_volume_nack() -> None:
         harness.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_bsr_safety_no_ram_corruption_on_nack() -> None:
+def test_bsr_safety_no_ram_corruption_on_nack(
+    dlcp_sim_backend: str,
+) -> None:
     """Verify that NACKed I2C doesn't corrupt RAM at wrong bank addresses.
 
     If BSR != 0 when `bsf dsp_fault_flags, 2, BANKED` executes, the
@@ -144,42 +284,39 @@ def test_bsr_safety_no_ram_corruption_on_nack() -> None:
     The V3.1 fix adds `movlb 0x0` before the ACKSTAT write to
     guarantee BSR=0 regardless of the caller's bank context.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            for _ in range(20):
+                h.step()
 
-        # Snapshot potential corruption targets (bank 1, 2, 3 offsets of 0x7F)
-        bank_addrs = [0x17F, 0x27F, 0x37F]
-        before = {a: _read_reg(harness._issue, a) for a in bank_addrs}
+            bank_addrs = [0x17F, 0x27F, 0x37F]
+            before = {a: h.read_reg(a) for a in bank_addrs}
 
-        # Inject NACKs
-        harness.set_i2c_fault("dsp34", address_nack_count=60000)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
+            h.set_i2c_fault("dsp34", address_nack_count=60000)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            for _ in range(30):
+                h.step()
 
-        # Check no corruption at other bank offsets.
-        # Only flag as corruption if the value changed TO 0x04 (the ACKSTAT
-        # bit pattern) which is the signature of a misbanked write.
-        after = {a: _read_reg(harness._issue, a) for a in bank_addrs}
-        corrupted = [
-            (a, before[a], after[a])
-            for a in bank_addrs
-            if before[a] != after[a] and (after[a] & 0x04) and not (before[a] & 0x04)
-        ]
-        assert not corrupted, (
-            f"RAM corrupted at wrong bank offsets (BSR issue): "
-            f"{[(hex(a), hex(b), hex(v)) for a, b, v in corrupted]}"
-        )
-
-    finally:
-        harness.close()
+            after = {a: h.read_reg(a) for a in bank_addrs}
+            corrupted = [
+                (a, before[a], after[a])
+                for a in bank_addrs
+                if before[a] != after[a]
+                and (after[a] & 0x04)
+                and not (before[a] & 0x04)
+            ]
+            assert not corrupted, (
+                f"[{backend}] RAM corrupted at wrong bank offsets "
+                f"(BSR issue): "
+                f"{[(hex(a), hex(b), hex(v)) for a, b, v in corrupted]}"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
@@ -446,81 +583,78 @@ def test_pen_timeout_firmware_detects_before_sspcon2_poke() -> None:
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_boot_complete_flag_set_during_activation() -> None:
+def test_boot_complete_flag_set_during_activation(
+    dlcp_sim_backend: str,
+) -> None:
     """Verify event_flags.7 (boot_complete) is set during activation.
 
     V3.1 sets boot_complete in the activation sequence (after
     adaptive_baud_select).  This gates the bounded PEN wait.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        for _ in range(20):
-            harness.step()
-        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            for _ in range(20):
+                h.step()
+            h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+            for _ in range(20):
+                h.step()
 
-        boot_complete = bool(_read_reg(harness._issue, _FLAGS_7E) & 0x80)
-        assert boot_complete, (
-            "event_flags.7 (boot_complete) not set after activation — "
-            "bounded PEN wait will not be used"
-        )
+            boot_complete = bool(h.read_reg(_FLAGS_7E) & 0x80)
+            assert boot_complete, (
+                f"[{backend}] event_flags.7 (boot_complete) not set after "
+                f"activation — bounded PEN wait will not be used"
+            )
+        finally:
+            h.close()
 
-    finally:
-        harness.close()
 
-
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_volume_dsp_write_retry_counter_increments() -> None:
+def test_volume_dsp_write_retry_counter_increments(
+    dlcp_sim_backend: str,
+) -> None:
     """Verify the retry counter in dsp_fault_flags[5:3] increments on NACK.
 
     After injecting NACKs, volume_dsp_write should bump the retry
     counter.  This proves the NACK detection → retry path works.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = MainChainHarness(
-        V31_MAIN_HEX,
-        chunk_cycles=50_000,  # Fine granularity to catch transient state
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
-    try:
-        for _ in range(100):
-            harness.step()
-        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-        for _ in range(100):
-            harness.step()
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(200):
-            harness.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        # Fine granularity (50_000 Tcy/step) to catch transient state.
+        h = _make_adapter(V31_MAIN_HEX, backend, chunk_cycles=50_000)
+        try:
+            for _ in range(100):
+                h.step()
+            h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+            for _ in range(100):
+                h.step()
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            for _ in range(200):
+                h.step()
 
-        # Inject NACKs
-        harness.set_i2c_fault("dsp34", address_nack_count=60000)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.set_i2c_fault("dsp34", address_nack_count=60000)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
 
-        # Step with fine granularity and look for retry counter > 0
-        max_retry_seen = 0
-        for _ in range(200):
-            harness.step()
-            flags = _read_reg(harness._issue, _FLAGS_7F)
-            retry = (flags >> 3) & 0x07
-            if retry > max_retry_seen:
-                max_retry_seen = retry
+            max_retry_seen = 0
+            for _ in range(200):
+                h.step()
+                flags = h.read_reg(_FLAGS_7F)
+                retry = (flags >> 3) & 0x07
+                if retry > max_retry_seen:
+                    max_retry_seen = retry
 
-        assert max_retry_seen > 0, (
-            "Retry counter never incremented — volume_dsp_write NACK "
-            "path may not be executing (BSR issue? ACKSTAT not set?)"
-        )
-
-    finally:
-        harness.close()
+            assert max_retry_seen > 0, (
+                f"[{backend}] Retry counter never incremented — "
+                f"volume_dsp_write NACK path may not be executing "
+                f"(BSR issue? ACKSTAT not set?)"
+            )
+        finally:
+            h.close()

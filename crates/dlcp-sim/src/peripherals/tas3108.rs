@@ -126,6 +126,17 @@ pub struct Tas3108 {
     /// completed exactly N writes to subaddress 0x30").
     pub bytes_acked: u64,
     pub bytes_nacked: u64,
+    /// Fault-injection: remaining count of address-phase
+    /// NACKs.  When `> 0`, the slave NACKs its own write/read
+    /// address byte (transitioning to `Ignored` for the rest
+    /// of the transaction) and decrements.  Mirror of gpsim's
+    /// `i2c-regfile.Address_Nack_Count` knob exposed by
+    /// `MainChainHarness.set_i2c_fault(device, address_nack_
+    /// count=N)` (chain_gpsim.py:471).  Only the device's own
+    /// addresses are NACKed; broadcast (0x00) and other
+    /// addresses still take their default code paths.  Set to
+    /// 0 to clear; defaults to 0 (no fault).
+    address_nack_count_remaining: u32,
 }
 
 impl Default for Tas3108 {
@@ -146,7 +157,34 @@ impl Tas3108 {
             phase: Phase::Idle,
             bytes_acked: 0,
             bytes_nacked: 0,
+            address_nack_count_remaining: 0,
         }
+    }
+
+    /// Program the fault-injection address-NACK counter.
+    /// While `count > 0`, every address-phase byte that
+    /// matches the slave's own write or read address is
+    /// NACKed (the slave transitions to `Ignored` for the
+    /// rest of that transaction) and the counter is
+    /// decremented.  Used to simulate persistent DSP
+    /// unresponsiveness for the V3.1 robustness tests
+    /// (test_v31_review_findings.py).
+    ///
+    /// Mirror of gpsim's
+    /// `i2c-regfile.Address_Nack_Count` knob exposed by
+    /// `MainChainHarness.set_i2c_fault(device,
+    /// address_nack_count=N)` (chain_gpsim.py:471).
+    pub fn set_address_nack_count(&mut self, count: u32) {
+        self.address_nack_count_remaining = count;
+    }
+
+    /// Clear all fault-injection counters back to their
+    /// default (no-fault) state.  Mirror of
+    /// `MainChainHarness.clear_i2c_faults` (chain_gpsim.py:526),
+    /// which resets address-NACK and the (not-yet-modeled)
+    /// stretch / data-NACK / stuck-SDA knobs.
+    pub fn clear_i2c_faults(&mut self) {
+        self.address_nack_count_remaining = 0;
     }
 
     /// Slave-address byte the master must use to ADDRESS this
@@ -226,6 +264,19 @@ impl Tas3108 {
     fn handle_address_byte(&mut self, byte: u8) -> bool {
         let write_addr = self.write_address();
         let read_addr = write_addr | 1;
+        // Fault-injection: NACK our own write/read address
+        // while the address-NACK counter is non-zero.  The
+        // slave goes Ignored for the rest of the transaction
+        // (subsequent payload bytes don't re-address us;
+        // `on_start`/`on_stop` clear back to `Idle`).
+        // Broadcast (0x00) and other addresses are unaffected
+        // -- mirrors gpsim's per-device `Address_Nack_Count`,
+        // which only NACKs the device's own slave addresses.
+        if self.address_nack_count_remaining > 0 && (byte == write_addr || byte == read_addr) {
+            self.address_nack_count_remaining -= 1;
+            self.phase = Phase::Ignored;
+            return false;
+        }
         if byte == write_addr {
             // Master is starting a write transaction.  The
             // next byte is the subaddress (§6.2.1).
@@ -329,6 +380,71 @@ mod tests {
         dsp.on_stop();
         assert_eq!(dsp.bytes_acked, 1);
         assert_eq!(dsp.bytes_nacked, 0);
+    }
+
+    /// Fault-injection: while `set_address_nack_count(N)` is
+    /// non-zero, the slave NACKs its own write and read
+    /// addresses and decrements the counter.  Once the
+    /// counter reaches 0, normal ACK behaviour resumes.
+    /// Mirrors gpsim's `i2c-regfile.Address_Nack_Count` per-
+    /// device knob exposed by
+    /// `MainChainHarness.set_i2c_fault(device,
+    /// address_nack_count=N)` (chain_gpsim.py:471).
+    #[test]
+    fn address_nack_counter_nacks_then_recovers() {
+        let mut dsp = Tas3108::default();
+        dsp.set_address_nack_count(2);
+
+        // First address byte: NACKed.
+        dsp.on_start();
+        assert!(!dsp.consume_tx_byte(0x68), "first address must NACK");
+        dsp.on_stop();
+        assert_eq!(dsp.bytes_nacked, 1);
+
+        // Second address byte (read direction): NACKed too.
+        dsp.on_start();
+        assert!(!dsp.consume_tx_byte(0x69), "second address (read) must NACK");
+        dsp.on_stop();
+        assert_eq!(dsp.bytes_nacked, 2);
+
+        // Third address byte: counter exhausted, normal ACK.
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x68), "third address must ACK after counter exhausted");
+        dsp.on_stop();
+        assert_eq!(dsp.bytes_acked, 1);
+    }
+
+    /// Fault-injection: broadcast (0x00) and other (mismatched)
+    /// addresses are NOT affected by the address-NACK counter.
+    /// Broadcast still ACKs; non-matching addresses still NACK
+    /// silently without touching the counter.
+    #[test]
+    fn address_nack_counter_only_targets_own_addresses() {
+        let mut dsp = Tas3108::default();
+        dsp.set_address_nack_count(5);
+
+        // Broadcast: ACKed; counter untouched.
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x00), "broadcast must ACK regardless of fault");
+        dsp.on_stop();
+
+        // Non-matching address (0xA0): NACKed-as-Ignored, but
+        // not counted against the address-NACK counter (no
+        // decrement).
+        dsp.on_start();
+        assert!(!dsp.consume_tx_byte(0xA0), "non-matching address always NACKs");
+        dsp.on_stop();
+
+        // Counter is still 5 -- own write address still NACKs.
+        dsp.on_start();
+        assert!(!dsp.consume_tx_byte(0x68), "own address must still NACK (counter 5 -> 4)");
+        dsp.on_stop();
+
+        // clear_i2c_faults zeroes the counter.
+        dsp.clear_i2c_faults();
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x68), "post-clear, own address ACKs");
+        dsp.on_stop();
     }
 
     /// V3.1's `volume_dsp_write` (lst:7838): Master sends
