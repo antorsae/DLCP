@@ -1294,12 +1294,17 @@ def test_v32_preset_job_state_unchanged_by_diag_traffic(
             # preset_job_state at 0x2DE, preset_job_target 0x2DF, etc.,
             # 7 bytes
             baseline = tuple(h.read_reg(0x2DE + i) for i in range(7))
-            # Many cmd 0x21 queries.  Use route 0xB0 for parity with
-            # `inject_main_frames_fifo`'s MAIN0-targeted dispatch on
-            # rust (the route 0xB1 the original gpsim test used was
-            # ignored on rust because MAIN-only chains have only
-            # MAIN0; cmd 0x21 emission isn't asserted here, only that
-            # the cmd 0x21 PARSER doesn't clobber preset_job state).
+            # Many cmd 0x21 queries.  Route was swapped from the
+            # original test's 0xB1 (MAIN1 broadcast) to 0xB0 (MAIN0
+            # broadcast) for explicit parity with the MAIN-only
+            # rust chain (`from_v3x_main_only` collapses i_main0 ==
+            # i_main1; the parser accepts both routes on both
+            # backends per V3.2 source dispatch, but 0xB0 is the
+            # backend-uniform "MAIN0-targeted" choice and matches
+            # the migration pattern in test_v31_v163b_robustness's
+            # _inject_main_frame_h helper).  cmd 0x21 emission
+            # isn't asserted here, only that the cmd 0x21 PARSER
+            # doesn't clobber preset_job state.
             for _ in range(20):
                 h.inject_main_frames_fifo(
                     [[0xB0, 0x21, 0x00]], fifo_limit=47,
