@@ -310,7 +310,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [in_progress] P4.6 Migrate `test_v31_*` and `test_v32_*` tests
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -k 'v31 or v32' -n 16 -q`
   - artifact: ledger update.
-  - status: 3 of 13 v31/v32 files migrated to dual-mode (~33 tests covered after parametrize).  Plus 2 files documented as gpsim-only (pre-existing failures on main).
+  - status: 7 of 13 v31/v32 files migrated to dual-mode.  Plus 2 files documented as gpsim-only (pre-existing failures on main).
   - sub-task [done] structural baseline (3 files, ~33 tests):
     - test_v31_usb_preset_ab.py (8 tests)
     - test_v32_no_pop_flash_entry.py (13 tests, ~22 after parametrize)
@@ -318,16 +318,16 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - sub-task [pending pre-existing-failure follow-up] 2 files NOT migrated due to pre-existing source failures on main:
     - test_v31_diag_memread_usb_safe.py (1/3 tests fail)
     - test_v31_patch_builders.py (2/5 tests fail)
-  - sub-task [pending] 8 files using `MainChainHarness` (from `dlcp_fw.sim.chain_gpsim`; MAIN-only simulation -- a single 2455 core driven by gpsim with synthetic CONTROL-side UART RX injection and configurable MSSP I²C device mocks via `MainI2CRegFileDevice`).  Requires substantial new rust facade surface (`Chain.from_v3x_main_only(hex)` factory, I2C bus mocking equivalent to `MainI2CRegFileDevice`, MAIN-side stimulus + observation methods):
-    - test_v31_combined_dsp_table_apply.py (5 tests)
-    - test_v31_command_matrix.py (1 test, ~16 after parametrize)
-    - test_v31_dsp_boot_equivalence.py (3 tests)
-    - test_v31_happy_path.py (4 tests, ~16 after parametrize)
-    - test_v31_review_findings.py (8 tests)
-    - test_v31_usb_hid_dispatch.py (3 tests)
-    - test_v31_v163b_robustness.py (11 tests)
-    - test_v32_layer5_diag_counters.py (37 tests)
-    These are deferred as a P4.6 follow-up batch -- the MAIN-only rust harness is a discrete, sizable piece of work that warrants its own dedicated commit train.
+  - sub-task [done] MAIN-only rust harness + first 4 sim-test migrations (`Chain.from_v3x_main_only(hex)` factory, `Chain.inject_main_frames_fifo(frames, fifo_limit)`, `Chain.read_dsp_reg(subaddr)`).  See commits 4e50188 / c386214 / 350e7f6 / 69cf93f for details.  Test status:
+    - test_v31_command_matrix.py (1 test, 16 instances) -- ALL dual_supported (rust: 16 passed in ~15 s).
+    - test_v31_dsp_boot_equivalence.py (3 tests, 5 instances) -- ALL dual_supported (rust: 5 passed in ~5 s).
+    - test_v31_happy_path.py (4 tests, 16 instances) -- 8 instances dual_supported, 8 retained gpsim-only with rationale (timing-coincidence on preset-loading cadence; volume-cmd-changes-DSP and boot-volume-applied-to-DSP assertions don't hold structurally on the faster rust scheduler; covered by `test_two_volumes_produce_different_computed_volume` via MAIN RAM).
+    - test_v31_usb_hid_dispatch.py (3 tests, 5 instances) -- 3 instances dual_supported, 2 retained gpsim-only with rationale (RAM[0x15B]==0x03 sentinel-detection not portable; rust hits 0x03 from a different code path; covered by `test_firmware_version_label.py` which scans flash directly).
+  - sub-task [pending] 4 sim-based files NOT migrated, each with discrete blockers warranting dedicated sub-tasks:
+    - test_v31_combined_dsp_table_apply.py (5 tests) -- BLOCKER: subprocess-driven `gpsim -i -c <stc>` scripts using break-on-PC, PC override, `dsp34.regNN` regfile readbacks.  Migration requires break-on-PC primitives in the rust executor + PC-override + return-PC-detection on the rust facade.  This is structurally distinct from the MAIN-only harness pattern and warrants a separate "rust executor breakpoint primitives" sub-task.
+    - test_v31_review_findings.py (8 tests) -- BLOCKER: needs I²C fault injection on the rust TAS3108 slave model (`harness.set_i2c_fault("dsp34", address_nack_count=N)` / `clear_i2c_faults()`).  Adding `set_i2c_fault` to `crates/dlcp-sim/src/peripherals/tas3108.rs` + plumbing through Chain pyclass is a discrete sub-task.
+    - test_v31_v163b_robustness.py (11 tests) -- BLOCKER: needs both I²C fault injection (above) AND MSSP STOP-bit fault injection (`harness.set_mssp_stop_fault(...)`) AND wire-chain (`WireMultiMainChainHarness`) for 3 of 11 tests.  Wire-chain migration is a P4.7-class sub-task; the others depend on the I²C fault-injection sub-task.
+    - test_v32_layer5_diag_counters.py (37 tests) -- many static source-pattern matchers (already backend-independent), plus several MainChainHarness-based diag-counter probes.  Sketch of the MAIN-only sub-batch already exists in the test body comments (`chain.write_rx_bytes` / `step_until_tx_quiescent` / `tx_record_since_last_capture`).  Worth a dedicated sub-task because of the test-count and the new TX-recording observability surface.
 
 - [pending] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
