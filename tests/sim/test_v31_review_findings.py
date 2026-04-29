@@ -453,16 +453,34 @@ def test_idle_wait_blocks_during_pen_fault_then_recovers(
 @pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_dsp_path_degraded_during_mssp_stop_fault(
+def test_dsp_path_recovers_after_mssp_stop_fault_cleared(
     dlcp_sim_backend: str,
 ) -> None:
-    """During active MSSP STOP fault, DSP path MUST be degraded.
+    """After clearing an active MSSP STOP fault, the DSP path
+    must recover and process subsequent volumes.
 
-    This proves the fault model is working: volume commands sent
-    during the fault should NOT reach the DSP.  After clearing the
-    fault, the DSP path recovers.
+    Note on naming/scope: this test was originally named
+    `test_dsp_path_degraded_during_mssp_stop_fault` with a
+    docstring claiming it "addresses the review gap: tests 1 & 4
+    assert recovery but not degradation".  In practice, asserting
+    "DSP not changed during fault" is unsound on either backend:
+    I²C bytes land in the slave's regs DURING the data phase
+    of a transaction (STOP comes AFTER the bytes are accepted),
+    and the STOP-fault only delays the trailing STOP -- the data
+    bytes already reached the slave by then.  Probed both
+    backends with a degradation-during-fault assertion: gpsim
+    AND rust both show the volume cmd reaches the DSP during
+    the fault, because the bytes lead the faulted STOP.
 
-    Addresses review gap: tests 1 & 4 assert recovery but not degradation.
+    Renamed and re-docstring'd so the test name matches what
+    the assertion actually checks (recovery), not what the
+    original docstring aspired to (degradation).  The
+    fault-model fidelity itself is exercised by
+    `test_idle_wait_blocks_during_pen_fault_then_recovers`
+    (active_flags survive the fault, new volume processes after
+    clear) and `test_pen_timeout_firmware_detects_before_sspcon2_
+    poke` (canonical V3.1 doesn't latch a bounded-PEN-wait
+    fault under a 5M-cycle stuck PEN).
     """
     _skip_missing(V31_MAIN_HEX)
 
@@ -471,23 +489,28 @@ def test_dsp_path_degraded_during_mssp_stop_fault(
         try:
             _boot_and_activate_h(h)
 
+            # Baseline: volume reaches DSP.
             snap_pre = h.read_dsp_snapshot()
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
             h.advance_tcy(20 * h.chunk_tcy)
-            mid = h.read_dsp_snapshot()
-            assert any(snap_pre[r] != mid[r] for r in range(256)), (
-                f"[{backend}] baseline volume failed"
-            )
+            assert any(
+                snap_pre[r] != h.read_dsp_reg(r) for r in range(256)
+            ), f"[{backend}] baseline volume failed"
 
+            # Activate fault, drive a volume cmd through the
+            # fault window.  We don't assert anything about the
+            # DSP state DURING the fault -- see test docstring.
             h.set_mssp_stop_fault(
                 stop_busy_cycles=5_000_000, stop_busy_count=-1
             )
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
             h.advance_tcy(30 * h.chunk_tcy)
 
+            # Clear fault, let firmware recover.
             h.clear_mssp_stop_faults()
             h.advance_tcy(15 * h.chunk_tcy)
 
+            # After recovery: a new volume MUST reach the DSP.
             snap_post = h.read_dsp_snapshot()
             h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
             h.advance_tcy(20 * h.chunk_tcy)

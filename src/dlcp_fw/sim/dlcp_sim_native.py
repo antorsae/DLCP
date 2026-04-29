@@ -569,27 +569,34 @@ class Chain:
         "stuck PEN" condition that V3.1's bounded
         i2c_wait_bus_idle is designed to recover from.
 
-        Either kwarg may be omitted to keep its current
-        value; passing both replaces both.  Both are
-        forwarded as gpsim does (`max(0, int(...))` for
-        cycles, `max(-1, int(...))` for count) so the
+        Both kwargs MUST be passed together: the rust facade
+        doesn't expose getters for the current MSSP fault
+        state, so accepting a partial update would conceal an
+        ambiguous "keep the other" semantics that gpsim's
+        ``MainI2CHarness.set_mssp_stop_fault`` only handles
+        because gpsim's CLI lets you address each attribute
+        independently.  Tests that need to update one knob
+        without disturbing the other should call
+        ``clear_mssp_stop_faults()`` first and then pass both.
+
+        Both args are clamped as gpsim does
+        (``max(0, int(...))`` for cycles,
+        ``max(-1, int(...))`` for count) so the
         signature is gpsim-compatible.
+
+        Calling with both args ``None`` is a no-op (matches
+        gpsim's behaviour when its corresponding `if x is not
+        None` chain finds nothing to forward).
         """
-        # gpsim allows keeping one knob unchanged when only
-        # the other is passed; mirror that by reading the
-        # current values back from the rust inner if needed.
-        # The rust facade doesn't expose getters for these,
-        # so we require the caller to pass both knobs (matches
-        # the most-common gpsim test usage pattern).  Tests
-        # that need partial updates can call
-        # `clear_mssp_stop_faults` and then pass both.
         if stop_busy_cycles is None and stop_busy_count is None:
             return
         if stop_busy_cycles is None or stop_busy_count is None:
             raise ValueError(
                 "set_mssp_stop_fault: rust facade requires both "
                 "stop_busy_cycles AND stop_busy_count to be passed "
-                "together (no partial-update helper exists today)."
+                "together (no partial-update helper exists today; "
+                "call clear_mssp_stop_faults() first if you only "
+                "want to update one knob)."
             )
         self._inner.set_mssp_stop_fault(
             max(0, int(stop_busy_cycles)),
