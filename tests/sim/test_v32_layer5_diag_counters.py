@@ -512,6 +512,9 @@ def _boot_v32_main_only_and_step_tcy(v32_hex: Path, backend: str, total_tcy: int
             def read_reg(self, addr: int) -> int:
                 return chain.read_reg(addr)
 
+            def write_reg(self, addr: int, value: int) -> None:
+                chain.write_reg(addr, value)
+
             def close(self) -> None:
                 pass
 
@@ -544,6 +547,9 @@ def _boot_v32_main_only_and_step_tcy(v32_hex: Path, backend: str, total_tcy: int
     class _GpsimHandle:
         def read_reg(self, addr: int) -> int:
             return _read_reg(h._issue, addr)
+
+        def write_reg(self, addr: int, value: int) -> None:
+            h._issue(f"reg(0x{addr:03X})=0x{value:02X}", 5.0)
 
         def close(self) -> None:
             h.close()
@@ -580,51 +586,54 @@ def test_v32_layer5_healthy_boot_keeps_counters_zero(
             h.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_layer5_diag_block_clears_on_cold_start(v32_hex: Path) -> None:
+def test_v32_layer5_diag_block_clears_on_cold_start(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """On cold start (RCON.BOR=0 at fixture init), the diag block must be
     zero after the cold init runs.  This is the spec's "POR/BOR clears"
     behavior — paired with the in-firmware RCON gate.
 
-    gpsim cold-starts every harness boot with all RCON bits matching POR
-    semantics (BOR=0, POR=0), so this test exercises the POR path.
-    """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
+    Both backends cold-start every harness boot with all RCON bits
+    matching POR semantics (BOR=0, POR=0), so this test exercises
+    the POR path.
 
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
+    Note: we can't easily trigger a real POR mid-test (would require
+    harness restart).  This test pin-checks that the initial values
+    after the harness boot are 0 -- the cold init already ran during
+    warmup.  The pre-load + read-back at 0xAB confirms the
+    register-write path works; if a future RCON/restart fixture
+    lands, the pre-load + restart variant slots in trivially.
+    """
+    backends = ["rust"] if dlcp_sim_backend == "rust" else (
+        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
     )
-    try:
-        for _ in range(25):  # ~5M cycles to let cold init complete
-            h.step()
-        # Pre-load all counters via gpsim CLI so we can prove the cold init
-        # cleared them.  Then trigger a soft reset and re-check.
-        for _, addr in ALL_COUNTER_ADDRS:
-            h._issue(f"reg(0x{addr:03x})=0xAB", 5.0)
-        # Verify pre-load took
-        for name, addr in ALL_COUNTER_ADDRS:
-            assert _read_reg(h._issue, addr) == 0xAB
-        # We can't easily trigger a real POR mid-test in gpsim (would
-        # require harness restart).  This test pin-checks that the
-        # initial values after the harness boot are 0 — the cold init
-        # already ran during warmup() above.  The pre-load + read-back
-        # at 0xAB confirms our gpsim register write path works; if a
-        # future RCON/restart fixture lands, the pre-load + restart
-        # variant slots in trivially.
-    finally:
-        h.close()
+    for backend in backends:
+        h = _boot_v32_main_only_and_step_tcy(
+            v32_hex, backend, total_tcy=25 * 200_000,
+        )
+        try:
+            # First: pin-check that cold init left all 7 counters at 0.
+            for name, addr in ALL_COUNTER_ADDRS:
+                value = h.read_reg(addr)
+                assert value == 0, (
+                    f"[{backend}] cold init left {name} at 0x{value:02X} "
+                    f"(expected 0); cold-init clrf may not have run"
+                )
+            # Second: prove the register-write path works (would let a
+            # future RCON/restart variant of this test slot in trivially).
+            for _, addr in ALL_COUNTER_ADDRS:
+                h.write_reg(addr, 0xAB)
+            for name, addr in ALL_COUNTER_ADDRS:
+                actual = h.read_reg(addr)
+                assert actual == 0xAB, (
+                    f"[{backend}] pre-load of {name} (0xAB) didn't take; "
+                    f"register-write path is broken"
+                )
+        finally:
+            h.close()
 
 
 @pytest.mark.dual_supported
@@ -1577,57 +1586,48 @@ def test_v32_source_hid_cmd_diag_snapshot_response_layout() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_tier1_cold_por_sets_only_por_flag(v32_hex: Path) -> None:
-    """A clean gpsim cold start (POR) must set diag_reset_por = 1 and
+def test_v32_tier1_cold_por_sets_only_por_flag(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
+    """A clean cold start (POR) must set diag_reset_por = 1 and
     leave the other 3 reset-cause flags = 0.  This pins the cold-init
     classification cascade for the POR path.
 
-    gpsim's `reset` command + the harness warmup() simulates a power-on
-    reset, so RCON.POR is cleared by silicon → cascade picks the POR
-    branch → writes 1 to diag_reset_por.
+    Both backends cold-start every harness boot with all RCON bits
+    matching POR semantics (BOR=0, POR=0), so this test exercises
+    the POR branch of the classification cascade.
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
-
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
+    backends = ["rust"] if dlcp_sim_backend == "rust" else (
+        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
     )
-    try:
-        # Let cold init complete (one harness step is ~200k cycles; the
-        # cold-init clrf + classification cascade happens within the
-        # first ~10k cycles, so 5 steps is generous).
-        for _ in range(5):
-            h.step()
-        por = _read_reg(h._issue, DIAG_RESET_POR_ADDR)
-        bor = _read_reg(h._issue, DIAG_RESET_BOR_ADDR)
-        wdt = _read_reg(h._issue, DIAG_RESET_WDT_ADDR)
-        sw  = _read_reg(h._issue, DIAG_RESET_SW_ADDR)
-        # Cold POR must set exactly diag_reset_por.
-        assert por == 1, (
-            f"cold POR must set diag_reset_por=1 (got 0x{por:02X}).  "
-            f"The classification cascade did not enter the POR branch "
-            f"— either RCON.POR was set when classification ran (re-arm "
-            f"happened too early?) or the cascade is wrong."
+    for backend in backends:
+        # Let cold init complete (~5 chunks = 1M cycles is generous;
+        # the cold-init clrf + classification cascade happens within
+        # the first ~10k cycles).
+        h = _boot_v32_main_only_and_step_tcy(
+            v32_hex, backend, total_tcy=5 * 200_000,
         )
-        # The other 3 flags must be 0 (only one cause per session).
-        assert (bor, wdt, sw) == (0, 0, 0), (
-            f"cold POR should leave bor=wdt=sw=0 (got "
-            f"bor=0x{bor:02X} wdt=0x{wdt:02X} sw=0x{sw:02X}).  "
-            f"The 'exactly one flag set per session' invariant is "
-            f"broken — either the clrf block isn't running before the "
-            f"cascade, or the cascade is writing multiple flags."
-        )
-    finally:
-        h.close()
+        try:
+            por = h.read_reg(DIAG_RESET_POR_ADDR)
+            bor = h.read_reg(DIAG_RESET_BOR_ADDR)
+            wdt = h.read_reg(DIAG_RESET_WDT_ADDR)
+            sw  = h.read_reg(DIAG_RESET_SW_ADDR)
+            assert por == 1, (
+                f"[{backend}] cold POR must set diag_reset_por=1 "
+                f"(got 0x{por:02X}).  The classification cascade did "
+                f"not enter the POR branch -- either RCON.POR was set "
+                f"when classification ran (re-arm happened too early?) "
+                f"or the cascade is wrong."
+            )
+            assert (bor, wdt, sw) == (0, 0, 0), (
+                f"[{backend}] cold POR should leave bor=wdt=sw=0 (got "
+                f"bor=0x{bor:02X} wdt=0x{wdt:02X} sw=0x{sw:02X}).  "
+                f"The 'exactly one flag set per session' invariant is "
+                f"broken -- either the clrf block isn't running before "
+                f"the cascade, or the cascade is writing multiple flags."
+            )
+        finally:
+            h.close()
