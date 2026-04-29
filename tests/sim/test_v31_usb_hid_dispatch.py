@@ -21,6 +21,14 @@ from dlcp_fw.sim.chain_gpsim import MainChainHarness
 from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 _FILENAME_RAM_BASE = 0x2C0
 _FILENAME_LEN = 0x1E
 _STATUS_5E = 0x05E
@@ -31,35 +39,96 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
 def _skip_missing(*paths: Path) -> None:
     for p in paths:
         if not p.exists():
             pytest.skip(f"missing: {p.name}")
 
 
-def _boot_harness(main_hex: Path) -> MainChainHarness:
-    return MainChainHarness(
-        main_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
+# ---- Backend-uniform helpers (mirror of test_v31_happy_path.py) ----
 
 
-def _boot_and_activate(h: MainChainHarness) -> None:
+class _GpsimHarness:
+    def __init__(self, main_hex: Path) -> None:
+        self._h = MainChainHarness(
+            main_hex,
+            chunk_cycles=200_000,
+            standby_mode="hold",
+            rc2_mode="low",
+            bypass_i2c=False,
+            transport_mode="native_ring",
+        )
+
+    def step(self) -> None:
+        self._h.step()
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._h.inject_frames_fifo(frames, fifo_limit=fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return _read_reg(self._h._issue, addr)
+
+    def close(self) -> None:
+        self._h.close()
+
+
+class _RustHarness:
+    def __init__(self, main_hex: Path) -> None:
+        self._c = RustChain.from_v3x_main_only(str(main_hex))
+
+    def step(self) -> None:
+        self._c.step()
+
+    def inject_main_frames_fifo(
+        self, frames: list[list[int]], fifo_limit: int
+    ) -> tuple[int, int]:
+        return self._c.inject_main_frames_fifo(frames, fifo_limit)
+
+    def read_reg(self, addr: int) -> int:
+        return self._c.read_reg(addr)
+
+    def close(self) -> None:
+        pass
+
+
+def _make_harness(main_hex: Path, backend: str):
+    if backend == "rust":
+        return _RustHarness(main_hex)
+    return _GpsimHarness(main_hex)
+
+
+def _enabled_backends(dlcp_sim_backend: str) -> list[str]:
+    backends: list[str] = []
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        backends.append("rust")
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        backends.append("gpsim")
+    return backends
+
+
+def _boot_and_activate(h) -> None:
     for _ in range(20):
         h.step()
-    h.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    h.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
     for _ in range(20):
         h.step()
-    assert _read_reg(h._issue, _STATUS_5E) & 0x08, "MAIN not active"
+    assert h.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
 
 
-def _read_filename_ram(h: MainChainHarness) -> bytes:
-    """Read the 30-byte filename slot from RAM 0x2C0."""
-    return bytes(_read_reg(h._issue, _FILENAME_RAM_BASE + i) for i in range(_FILENAME_LEN))
+def _read_filename_ram(h) -> bytes:
+    return bytes(h.read_reg(_FILENAME_RAM_BASE + i) for i in range(_FILENAME_LEN))
 
 
 # ===================================================================
@@ -72,32 +141,34 @@ _ALL_VERSIONS = [
 ]
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize("hex_path", _ALL_VERSIONS)
-def test_filename_ram_populated_after_boot(hex_path: Path) -> None:
+def test_filename_ram_populated_after_boot(
+    hex_path: Path, dlcp_sim_backend: str,
+) -> None:
     """After boot, the filename RAM slot (0x2C0) should be loaded from EEPROM.
 
     The firmware reads EEPROM 0x60-0x7D (preset A) into RAM 0x2C0-0x2DD
     during boot. This tests the boot filename loading path.
     """
-    _require_gpsim()
     _skip_missing(hex_path)
 
-    h = _boot_harness(hex_path)
-    try:
-        _boot_and_activate(h)
-        for _ in range(10):
-            h.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_harness(hex_path, backend)
+        try:
+            _boot_and_activate(h)
+            for _ in range(10):
+                h.step()
 
-        name = _read_filename_ram(h)
-        # Stock EEPROM has all 0xFF in filename slots (no config loaded)
-        # Just verify the RAM was written (not all zeros = uninitialized)
-        assert name != bytes(0x1E), (
-            "Filename RAM slot is all zeros — boot filename load may have failed"
-        )
-    finally:
-        h.close()
+            name = _read_filename_ram(h)
+            assert name != bytes(0x1E), (
+                f"[{backend}] Filename RAM slot is all zeros — boot "
+                f"filename load may have failed"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
@@ -105,58 +176,80 @@ def test_filename_ram_populated_after_boot(hex_path: Path) -> None:
 # ===================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize("hex_path", [
     pytest.param(V31_MAIN_HEX, id="v31"),
 ])
-def test_cmd20_switches_filename_slot(hex_path: Path) -> None:
+def test_cmd20_switches_filename_slot(
+    hex_path: Path, dlcp_sim_backend: str,
+) -> None:
     """cmd=0x20 (preset select) switches the active filename RAM slot.
 
     Write a filename via EEPROM seeding, switch presets via serial
     cmd=0x20, verify the RAM slot changes.
     """
-    _require_gpsim()
     _skip_missing(hex_path)
 
-    h = _boot_harness(hex_path)
-    try:
-        _boot_and_activate(h)
-        for _ in range(10):
-            h.step()
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_harness(hex_path, backend)
+        try:
+            _boot_and_activate(h)
+            for _ in range(10):
+                h.step()
 
-        # Read filename on preset A (default)
-        name_a = _read_filename_ram(h)
+            name_a = _read_filename_ram(h)
 
-        # Switch to preset B via cmd=0x20 data=0x01
-        h.inject_frames_fifo([[0xB0, 0x20, 0x01]], fifo_limit=47)
-        for _ in range(30):
-            h.step()
+            h.inject_main_frames_fifo([[0xB0, 0x20, 0x01]], fifo_limit=47)
+            for _ in range(30):
+                h.step()
 
-        name_b = _read_filename_ram(h)
+            _ = _read_filename_ram(h)  # name_b -- not asserted, see below
 
-        # The two slots should be different (unless both are uninitialized)
-        # At minimum, the switch should have executed without crashing
-        active = _read_reg(h._issue, _STATUS_5E)
-        assert active & 0x08, "MAIN lost active state after preset switch"
+            active = h.read_reg(_STATUS_5E)
+            assert active & 0x08, (
+                f"[{backend}] MAIN lost active state after preset switch"
+            )
 
-        # Switch back to A
-        h.inject_frames_fifo([[0xB0, 0x20, 0x00]], fifo_limit=47)
-        for _ in range(30):
-            h.step()
+            h.inject_main_frames_fifo([[0xB0, 0x20, 0x00]], fifo_limit=47)
+            for _ in range(30):
+                h.step()
 
-        name_a2 = _read_filename_ram(h)
-        assert name_a == name_a2, (
-            f"Preset A filename not restored after A→B→A switch: "
-            f"before={name_a.hex()} after={name_a2.hex()}"
-        )
-    finally:
-        h.close()
+            name_a2 = _read_filename_ram(h)
+            assert name_a == name_a2, (
+                f"[{backend}] Preset A filename not restored after A→B→A "
+                f"switch: before={name_a.hex()} after={name_a2.hex()}"
+            )
+        finally:
+            h.close()
 
 
 # ===================================================================
 # Test 3: HID cmd 0x06 version bytes in response builder RAM
 # ===================================================================
+#
+# NOTE: NOT marked `dual_supported`.  The test's
+# `if flag == 0x03: assert major/minor` predicate is fragile across
+# simulators: it interprets RAM[0x15B] == 0x03 as a sentinel meaning
+# "cmd 0x06 response was built and major/minor at 0x15C/0x15D are
+# valid".  Probed both backends after the same boot+activate+cmd04
+# sequence:
+#   * gpsim: RAM[0x15A..0x160] is all 0x00 -> test skips.
+#   * rust:  RAM[0x15A..0x160] is 0x05/0x03/0x00/0x00/0x00/0xFF/0xFF
+#            -> flag==0x03 triggers the assert path, but 0x15C/0x15D
+#            are 0x00/0x00 instead of the expected 0x03/0x01 (V3.1)
+#            because the 0x03 byte at 0x15B was written by a
+#            different firmware code path that is not the cmd-0x06
+#            response builder.
+# Without an actual USB SIE model in either simulator, there's no
+# clean way to make this test backend-independent.  Keep it gpsim-
+# only with the conservative "not staged in RAM (no USB)" skip
+# that gpsim's slower scheduler happens to take.
+#
+# Note: the version-byte-correctness invariant is also covered by
+# `test_firmware_version_label.py` which verifies the bytes at
+# their flash-resident locations directly without simulation.
 
 
 _VERSION_CASES = [
@@ -184,31 +277,18 @@ def test_version_ram_bytes_after_boot(
     _require_gpsim()
     _skip_missing(hex_path)
 
-    h = _boot_harness(hex_path)
+    h = _GpsimHarness(hex_path)
     try:
         _boot_and_activate(h)
 
-        # The version bytes are set when the firmware processes a USB
-        # status query (cmd 0x06).  In normal operation this happens
-        # during USB enumeration.  We can trigger it by sending a
-        # serial cmd 0x04 (status request) which causes the firmware
-        # to build a response including version info.
-        h.inject_frames_fifo([[0xB0, 0x04, 0x00]], fifo_limit=47)
+        h.inject_main_frames_fifo([[0xB0, 0x04, 0x00]], fifo_limit=47)
         for _ in range(20):
             h.step()
 
-        # Read the response builder RAM.  The cmd 0x06 handler writes:
-        # ram_0x15B (bank1: 0x05B) = flag (0x03)
-        # ram_0x15C (bank1: 0x05C) = major version
-        # ram_0x15D (bank1: 0x05D) = minor version
-        # These are in bank 1 RAM (absolute 0x15B-0x15D).
-        flag = _read_reg(h._issue, 0x15B)
-        major = _read_reg(h._issue, 0x15C)
-        minor = _read_reg(h._issue, 0x15D)
+        flag = h.read_reg(0x15B)
+        major = h.read_reg(0x15C)
+        minor = h.read_reg(0x15D)
 
-        # The cmd 0x06 handler may not have been triggered by the serial
-        # command.  Check if the flag byte is 0x03 (indicating cmd 0x06
-        # response was built at some point).
         if flag == 0x03:
             assert major == expected_major and minor == expected_minor, (
                 f"Version RAM: flag=0x{flag:02X} major=0x{major:02X} "
@@ -216,9 +296,6 @@ def test_version_ram_bytes_after_boot(
                 f"0x{expected_minor:02X}"
             )
         else:
-            # cmd 0x06 response not built yet (no USB enumeration in gpsim)
-            # Fall back to static HEX verification
             pytest.skip("cmd 0x06 response not staged in RAM (no USB in gpsim)")
-
     finally:
         h.close()
