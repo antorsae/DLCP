@@ -738,11 +738,18 @@ impl Chain {
         })
     }
 
-    /// Advance the universal clock by `tcy` K20 instruction
-    /// cycles.  Each Tcy = 16 universal ticks for the K20
-    /// (universal clock 48 MHz / Fosc 12 MHz × 4 Fosc/Tcy
-    /// = 16; see `crates/dlcp-sim/src/chain.rs:17`).  Use
-    /// this when a test needs a specific amount of
+    /// Advance the universal clock by `tcy` instruction
+    /// cycles.  The Tcy unit is interpreted as PIC18F25K20
+    /// instruction cycles (16 ticks/Tcy) for mixed
+    /// CONTROL+MAIN chains, and as PIC18F2455 instruction
+    /// cycles (12 ticks/Tcy) for MAIN-only chains.  See the
+    /// per-call comment block below for the exact gate
+    /// (`i_ctl == i_main0`).  Universal-clock derivation:
+    /// `crates/dlcp-sim/src/chain.rs:17` (48 MHz universal
+    /// clock; K20 Fosc=12 MHz so Tcy=4/12 MHz=333 ns; 2455
+    /// Fosc=16 MHz so Tcy=4/16 MHz=250 ns).
+    ///
+    /// Use this when a test needs a specific amount of
     /// simulated time -- e.g. parity tests that previously
     /// relied on gpsim's per-harness `chunk_cycles` should
     /// say `chain.step_tcy(600_000)` explicitly rather than
