@@ -35,6 +35,7 @@ use dlcp_sim::core::Core;
 use dlcp_sim::hex::HexImage;
 use dlcp_sim::lcd::Hd44780;
 use dlcp_sim::memory::Variant;
+use dlcp_sim::peripherals::src4382::Src4382;
 use dlcp_sim::peripherals::tas3108::Tas3108;
 use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin, PortLetter};
 use dlcp_sim::reset::ResetSource;
@@ -237,6 +238,8 @@ fn build_v17_chain_single_main(
 
     let i_dsp = chain.push_tas3108(Tas3108::default());
     chain.couple_tas3108(i_main, i_dsp);
+    let i_src = chain.push_src4382(Src4382::default());
+    chain.couple_src4382(i_main, i_src);
 
     let i_lcd = chain.push_lcd(Hd44780::new());
     chain.couple_lcd(i_ctl, i_lcd);
@@ -306,6 +309,8 @@ fn build_v3x_main_only_chain(
 
     let i_dsp = chain.push_tas3108(Tas3108::default());
     chain.couple_tas3108(i_main, i_dsp);
+    let i_src = chain.push_src4382(Src4382::default());
+    chain.couple_src4382(i_main, i_src);
 
     // Push a placeholder HD44780 -- never written to (no LCD
     // coupling), so `lcd_lines()` returns the 16-space default.
@@ -361,6 +366,8 @@ fn build_v17_v3x_chain_single_main(
 
     let i_dsp = chain.push_tas3108(Tas3108::default());
     chain.couple_tas3108(i_main, i_dsp);
+    let i_src = chain.push_src4382(Src4382::default());
+    chain.couple_src4382(i_main, i_src);
 
     let i_lcd = chain.push_lcd(Hd44780::new());
     chain.couple_lcd(i_ctl, i_lcd);
@@ -411,6 +418,10 @@ fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
     let i_dsp1 = chain.push_tas3108(Tas3108::default());
     chain.couple_tas3108(i_main0, i_dsp0);
     chain.couple_tas3108(i_main1, i_dsp1);
+    let i_src0 = chain.push_src4382(Src4382::default());
+    let i_src1 = chain.push_src4382(Src4382::default());
+    chain.couple_src4382(i_main0, i_src0);
+    chain.couple_src4382(i_main1, i_src1);
 
     let i_lcd = chain.push_lcd(Hd44780::new());
     chain.couple_lcd(i_ctl, i_lcd);

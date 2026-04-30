@@ -27,6 +27,7 @@ use crate::lcd::Hd44780;
 use crate::memory::Address;
 use crate::peripherals::mssp::{I2cBusEvent, Mssp};
 use crate::peripherals::osc;
+use crate::peripherals::src4382::Src4382;
 use crate::peripherals::tas3108::Tas3108;
 use crate::pinnet::{PinId, PinNet, PortLetter};
 
@@ -111,6 +112,28 @@ pub struct Chain {
     /// override the master's ACKSTAT to 0 if any slave
     /// ACKed the byte.
     pub tas3108_couplings: Vec<(usize, usize)>,
+    /// SRC4382 (digital-audio interface receiver-transmitter
+    /// + sample-rate converter) I²C slaves connected to one
+    /// or more master cores via `couple_src4382`.  V3.2
+    /// firmware addresses this as the "secondary I²C device"
+    /// (gpsim's `cfg71` placeholder) at 7-bit address 0x71;
+    /// the firmware writes amp-routing / GPO / SRC-control
+    /// registers via `i2c_secondary_dev_write`
+    /// (`src/dlcp_fw/asm/dlcp_main_v32.asm:8179`).  Without
+    /// this slave on the bus, every secondary-device write
+    /// NACKs and the V3.2 `diag_i` I²C-fault counter saturates
+    /// to 0x0F during idle.  See
+    /// `crates/dlcp-sim/src/peripherals/src4382.rs` for the
+    /// device-identification rationale.
+    pub src4382_slaves: Vec<Src4382>,
+    /// (master_core, slave_idx) coupling list for SRC4382
+    /// slaves, parallel to `tas3108_couplings`.  Same dispatch
+    /// shape: each `execute_core_step` drains the master's
+    /// MSSP `last_bus_event` and routes Start/Stop/
+    /// RepeatedStart/TxByte to every coupled SRC4382 slave;
+    /// TxByte routes override the master's ACKSTAT to 0 if
+    /// any coupled slave (TAS3108 or SRC4382) ACKed.
+    pub src4382_couplings: Vec<(usize, usize)>,
     /// Virtual HD44780 character LCDs driven by one or more
     /// controller cores via `couple_lcd`.  Each LCD watches
     /// the controller core's pin state (RS = LATA[5], E =
@@ -185,6 +208,8 @@ impl Chain {
             uart_tx_history: Vec::new(),
             tas3108_slaves: Vec::new(),
             tas3108_couplings: Vec::new(),
+            src4382_slaves: Vec::new(),
+            src4382_couplings: Vec::new(),
             lcd_slaves: Vec::new(),
             lcd_couplings: Vec::new(),
             uart_blackout: false,
@@ -266,6 +291,47 @@ impl Chain {
             self.tas3108_slaves.len()
         );
         self.tas3108_couplings.push((master_core_idx, slave_idx));
+    }
+
+    /// Push an SRC4382 slave into the chain.  Returns the
+    /// slave's index in `src4382_slaves` for use by
+    /// `couple_src4382`.  See
+    /// `crates/dlcp-sim/src/peripherals/src4382.rs` for the
+    /// device-identification rationale (SRC4382 is the DLCP's
+    /// I²C address-0x71 secondary device that handles digital
+    /// input routing + GPO-driven external rail control;
+    /// gpsim's `cfg71` placeholder).
+    pub fn push_src4382(&mut self, slave: Src4382) -> usize {
+        let idx = self.src4382_slaves.len();
+        self.src4382_slaves.push(slave);
+        idx
+    }
+
+    /// Wire an SRC4382 slave (by index in `src4382_slaves`)
+    /// to a master core's MSSP I²C bus.  Same dispatch shape
+    /// as `couple_tas3108`: each `execute_core_step` routes
+    /// the master's I²C events to this slave.  TAS3108 and
+    /// SRC4382 slaves coexist on the same bus -- a TxByte's
+    /// ACKSTAT-override fires if ANY coupled slave (either
+    /// type) ACKs.
+    pub fn couple_src4382(
+        &mut self,
+        master_core_idx: usize,
+        slave_idx: usize,
+    ) {
+        assert!(
+            master_core_idx < self.cores.len(),
+            "master_core_idx {} out of range ({} cores)",
+            master_core_idx,
+            self.cores.len()
+        );
+        assert!(
+            slave_idx < self.src4382_slaves.len(),
+            "slave_idx {} out of range ({} slaves)",
+            slave_idx,
+            self.src4382_slaves.len()
+        );
+        self.src4382_couplings.push((master_core_idx, slave_idx));
     }
 
     /// Wire source-core EUSART TX to destination-core
@@ -831,19 +897,26 @@ impl Chain {
         };
         // Snapshot which slaves are coupled to this master
         // (avoid borrow conflict with the mut self.cores
-        // memory access below).
-        let coupled_slave_indices: Vec<usize> = self
+        // memory access below).  Both TAS3108 and SRC4382
+        // slaves can sit on the same bus -- routing is
+        // symmetric per slave type.
+        let coupled_tas3108_indices: Vec<usize> = self
             .tas3108_couplings
+            .iter()
+            .filter_map(|&(mc, si)| if mc == master_core_idx { Some(si) } else { None })
+            .collect();
+        let coupled_src4382_indices: Vec<usize> = self
+            .src4382_couplings
             .iter()
             .filter_map(|&(mc, si)| if mc == master_core_idx { Some(si) } else { None })
             .collect();
         // Drive each coupled slave's I²C state machine.
         // For TxByte, also override ACKSTAT if any slave
-        // ACKs.  Other events (Start/Stop/RepeatedStart)
-        // are pure state transitions on the slave; no
-        // master-side memory effect today.
+        // (either type) ACKs.  Other events (Start/Stop/
+        // RepeatedStart) are pure state transitions on the
+        // slave; no master-side memory effect today.
         let mut any_slave_acked = false;
-        for slave_idx in coupled_slave_indices {
+        for slave_idx in coupled_tas3108_indices {
             let slave = &mut self.tas3108_slaves[slave_idx];
             match event {
                 I2cBusEvent::Start => slave.on_start(),
@@ -861,6 +934,34 @@ impl Chain {
                     // SSPBUF byte at whatever `complete_rx_byte`
                     // left it (random / zero).  Track as
                     // future work alongside task #24.
+                }
+            }
+        }
+        for slave_idx in coupled_src4382_indices {
+            let slave = &mut self.src4382_slaves[slave_idx];
+            match event {
+                I2cBusEvent::Start => slave.on_start(),
+                I2cBusEvent::RepeatedStart => slave.on_repeated_start(),
+                I2cBusEvent::Stop => slave.on_stop(),
+                I2cBusEvent::TxByte(byte) => {
+                    if slave.consume_tx_byte(byte) {
+                        any_slave_acked = true;
+                    }
+                }
+                I2cBusEvent::RxByte => {
+                    // Same SSPBUF-write deferral as the
+                    // TAS3108 branch; firmware reads of
+                    // SRC4382 status registers (0x12/0x13)
+                    // would land here, but the V3.2 secondary-
+                    // read path that uses
+                    // `i2c_secondary_dev_random_read` doesn't
+                    // currently force the simulator into a
+                    // path that depends on the SSPBUF byte
+                    // value -- it just needs the address phase
+                    // to ACK.  When a future test needs the
+                    // actual receiver-status byte, plumb
+                    // `slave.provide_rx_byte()` into SSPBUF
+                    // here.
                 }
             }
         }

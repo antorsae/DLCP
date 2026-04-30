@@ -29,6 +29,7 @@ pub mod eusart;
 pub mod irq;
 pub mod mssp;
 pub mod osc;
+pub mod src4382;
 pub mod tas3108;
 pub mod timer;
 pub mod usb;
