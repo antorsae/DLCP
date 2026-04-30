@@ -59,6 +59,7 @@ def shifted_build(tmp_path_factory: pytest.TempPathFactory):
     return hex_out, symbols
 
 
+@pytest.mark.dual_supported
 def test_shifted_committed_file_exists() -> None:
     """The canonical shifted source must be regeneratable to the committed path."""
     # Not committed on disk by default; build_shifted_asm drives the
@@ -66,11 +67,13 @@ def test_shifted_committed_file_exists() -> None:
     assert V17_CONTROL_ASM_SHIFTED.name == "dlcp_control_v17_shifted.asm"
 
 
+@pytest.mark.dual_supported
 def test_shifted_assembles_without_errors(shifted_build) -> None:
     hex_out, _ = shifted_build
     assert hex_out.exists() and hex_out.stat().st_size > 0
 
 
+@pytest.mark.dual_supported
 def test_shifted_bootloader_preserved(shifted_build) -> None:
     hex_out, _ = shifted_build
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
@@ -82,6 +85,7 @@ def test_shifted_bootloader_preserved(shifted_build) -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_shifted_config_preserved(shifted_build) -> None:
     hex_out, _ = shifted_build
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
@@ -90,6 +94,7 @@ def test_shifted_config_preserved(shifted_build) -> None:
         assert built.get(addr, 0xFF) == stock.get(addr, 0xFF)
 
 
+@pytest.mark.dual_supported
 def test_shifted_eeprom_preserved(shifted_build) -> None:
     hex_out, _ = shifted_build
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
@@ -98,6 +103,7 @@ def test_shifted_eeprom_preserved(shifted_build) -> None:
         assert built.get(addr, 0xFF) == stock.get(addr, 0xFF)
 
 
+@pytest.mark.dual_supported
 def test_shifted_vector_block_length_preserved(shifted_build) -> None:
     """Vector block spans 0x0000–0x004B (0x4C bytes).
 
@@ -115,6 +121,7 @@ def test_shifted_vector_block_length_preserved(shifted_build) -> None:
         )
 
 
+@pytest.mark.dual_supported
 def test_shifted_application_region_leads_with_padding(shifted_build) -> None:
     hex_out, _ = shifted_build
     built = parse_intel_hex(hex_out)
@@ -138,6 +145,7 @@ def test_shifted_application_region_leads_with_padding(shifted_build) -> None:
         ("main_event_loop", 0x150E),
     ],
 )
+@pytest.mark.dual_supported
 def test_shifted_symbols_track_expected_shift(shifted_build, label, stock_addr) -> None:
     """Application-code labels shift by +0x222; bootloader stays pinned."""
     _, symbols = shifted_build
@@ -271,6 +279,7 @@ def test_shifted_gpsim_with_dynamic_standby_overlay(v17_smoke_images) -> None:
     )
 
 
+@pytest.mark.dual_supported
 def test_shifted_hex_is_larger_than_unshifted() -> None:
     """Shifted build has 0x222 more bytes of code than the baseline."""
     # Baseline code region byte count equals stock V1.6b.  Shifted build

@@ -78,12 +78,14 @@ def _require_gpsim() -> None:
 # Structural tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.dual_supported
 def test_shifted_assembles(shifted_hex: Path) -> None:
     """Shifted ASM assembles without errors and produces a hex file."""
     assert shifted_hex.exists()
     assert shifted_hex.stat().st_size > 0
 
 
+@pytest.mark.dual_supported
 def test_shifted_app_entry_at_0x1000(shifted_hex: Path) -> None:
     """App entry at 0x1000 is present (boot block target)."""
     mem = parse_intel_hex(shifted_hex)
@@ -92,6 +94,7 @@ def test_shifted_app_entry_at_0x1000(shifted_hex: Path) -> None:
     assert mem.get(0x1001, 0) == 0xEF, "0x1000 is not a GOTO"
 
 
+@pytest.mark.dual_supported
 def test_shifted_isr_at_0x1008(shifted_hex: Path) -> None:
     """ISR dispatch stub is at 0x1008 (before padding)."""
     mem = parse_intel_hex(shifted_hex)
@@ -103,6 +106,7 @@ def test_shifted_isr_at_0x1008(shifted_hex: Path) -> None:
         f"0x1009 high nibble: expected 0xC, got 0x{mem.get(0x1009, 0):02X}"
 
 
+@pytest.mark.dual_supported
 def test_shifted_no_boot_block(shifted_hex: Path) -> None:
     """Shifted hex must not emit boot block bytes."""
     mem = parse_intel_hex(shifted_hex)
@@ -111,6 +115,7 @@ def test_shifted_no_boot_block(shifted_hex: Path) -> None:
         f"Boot block bytes: {[hex(a) for a in boot_bytes[:10]]}"
 
 
+@pytest.mark.dual_supported
 def test_shifted_config_identical(shifted_hex: Path) -> None:
     """Config bits must match stock V2.3."""
     stock = parse_intel_hex(STOCK_MAIN_HEX)
@@ -120,6 +125,7 @@ def test_shifted_config_identical(shifted_hex: Path) -> None:
             f"Config mismatch at 0x{addr:06X}"
 
 
+@pytest.mark.dual_supported
 def test_shifted_eeprom_identical(shifted_hex: Path) -> None:
     """EEPROM data must match stock V2.3."""
     stock = parse_intel_hex(STOCK_MAIN_HEX)
@@ -129,6 +135,7 @@ def test_shifted_eeprom_identical(shifted_hex: Path) -> None:
             f"EEPROM mismatch at 0x{addr:06X}"
 
 
+@pytest.mark.dual_supported
 def test_shifted_preset_pinned_at_0x5600(shifted_hex: Path) -> None:
     """Preset table A must remain at 0x5600."""
     stock = parse_intel_hex(STOCK_MAIN_HEX)
@@ -138,6 +145,7 @@ def test_shifted_preset_pinned_at_0x5600(shifted_hex: Path) -> None:
             f"Preset mismatch at 0x{addr:04X}"
 
 
+@pytest.mark.dual_supported
 def test_shifted_code_region_larger(shifted_hex: Path) -> None:
     """Shifted code+data region is ~0x222 bytes larger than stock."""
     stock = parse_intel_hex(STOCK_MAIN_HEX)
@@ -151,6 +159,7 @@ def test_shifted_code_region_larger(shifted_hex: Path) -> None:
         f"Code region delta: {delta} (expected ~{SHIFT_AMOUNT})"
 
 
+@pytest.mark.dual_supported
 def test_shifted_symbols_consistent(shifted_symbols: Dict[str, int]) -> None:
     """All code symbols shift by exactly 0x222; preset_table_a stays pinned."""
     stock_addrs = {
@@ -170,6 +179,7 @@ def test_shifted_symbols_consistent(shifted_symbols: Dict[str, int]) -> None:
     assert shifted_symbols.get("preset_table_a") == 0x5600
 
 
+@pytest.mark.dual_supported
 def test_shifted_padding_is_nop(shifted_hex: Path) -> None:
     """The NOP padding region (0x1014-0x1235) must be all 0x00 (NOP)."""
     mem = parse_intel_hex(shifted_hex)
