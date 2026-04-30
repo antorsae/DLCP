@@ -8,6 +8,16 @@ from dlcp_fw.sim.overlay import apply_overlay
 from dlcp_fw.sim.scenarios import verify_patch_compat
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def test_patch_compatibility_bytes(patched_main_hex, patched_control_hex) -> None:
     verify_patch_compat(patched_main_hex, patched_control_hex)
 

@@ -8,6 +8,14 @@ from dlcp_fw.flash import dlcp_ep0_eeprom_shadow_dump as shadow
 from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def test_decode_shadow_with_zero_ram_start() -> None:
     ram = bytearray([0x00] * 0x200)
     ram[0x71] = 0xAA

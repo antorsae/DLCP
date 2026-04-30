@@ -5,6 +5,16 @@ from dlcp_fw.sim.main_model import MainUnitModel
 from dlcp_fw.sim.protocol import SerialFrame
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def _make_bus(patched_main_hex, fault: FaultProfile) -> tuple[CurrentLoopBus, MainUnitModel, MainUnitModel]:
     left = MainUnitModel.from_hex("left", 1, patched_main_hex)
     right = MainUnitModel.from_hex("right", 2, patched_main_hex)

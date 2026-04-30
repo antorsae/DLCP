@@ -5,6 +5,16 @@ from dlcp_fw.sim.protocol import SerialFrame
 from dlcp_fw.sim.scenarios import build_payload
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def test_bank_mapping_and_flash_write_log(patched_main_hex) -> None:
     m = MainUnitModel.from_hex("main", 1, patched_main_hex)
     payload_a = build_payload(0x11)

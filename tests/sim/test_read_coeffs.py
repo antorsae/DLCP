@@ -18,6 +18,14 @@ from dlcp_fw.flash.read_coeffs import (
 )
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def test_decode_config_name_accepts_ascii_with_padding() -> None:
     assert decode_config_name(b"Preset A\x00\xFF\xFF") == "Preset A"
 

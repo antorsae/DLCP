@@ -9,6 +9,16 @@ from intelhex import IntelHex
 from dlcp_fw.paths import PATCHED_CONTROL_HEX_V164B
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def _read_eeprom_version(hex_path: Path) -> tuple[int, int, int]:
     ih = IntelHex(str(hex_path))
     return (ih[0xF00070], ih[0xF00071], ih[0xF00072])

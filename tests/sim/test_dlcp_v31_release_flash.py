@@ -7,6 +7,14 @@ import pytest
 from dlcp_fw.flash import dlcp_v31_release_flash as release_flash
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def _touch(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("x", encoding="ascii")

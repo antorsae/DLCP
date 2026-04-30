@@ -3,6 +3,16 @@ from __future__ import annotations
 from dlcp_fw.sim.scenarios import run_fault_matrix, run_preset_ab_roundtrip
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def test_roundtrip_scenario_defaults() -> None:
     res = run_preset_ab_roundtrip()
     assert res.control_frames >= 2

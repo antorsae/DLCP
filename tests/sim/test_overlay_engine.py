@@ -9,6 +9,14 @@ from dlcp_fw.sim.manifests import control_disable_boot_wait, control_reset_to_ap
 from dlcp_fw.sim.overlay import OverlayError, OverlayManifest, apply_overlay, apply_overlays
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def test_reset_overlay_applies_temp_only(tmp_path: Path, patched_control_hex: Path) -> None:
     src_before = patched_control_hex.read_bytes()
     out_hex = tmp_path / "sim.hex"

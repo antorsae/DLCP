@@ -7,6 +7,16 @@ from dlcp_fw.patch.bake_preset_capture import main
 from dlcp_fw.sim.hexio import parse_intel_hex, write_intel_hex
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def test_bake_capture_patches_flash_and_eeprom(tmp_path: Path) -> None:
     base_hex = tmp_path / "base.hex"
     out_hex = tmp_path / "baked.hex"

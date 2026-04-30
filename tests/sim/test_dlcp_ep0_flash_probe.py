@@ -5,6 +5,14 @@ import pytest
 from dlcp_fw.flash import dlcp_ep0_flash_probe as probe
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def test_parse_span_start_size_form() -> None:
     start, size = probe.parse_span("0x561C:0x14")
     assert start == 0x561C

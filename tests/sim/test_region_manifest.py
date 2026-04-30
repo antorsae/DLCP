@@ -5,6 +5,16 @@ from __future__ import annotations
 from dlcp_fw.asm.region_manifest import classify_address
 
 
+# All tests in this module are backend-agnostic (Python-level
+# behavioral models, hex/source byte comparisons, flash-tool plumbing,
+# scenario runners).  No gpsim runtime, no rust facade.  Mark the
+# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
+# not auto-skip them.
+import pytest
+
+pytestmark = pytest.mark.dual_supported
+
+
 def test_manifest_covers_full_stock_range():
     for addr in range(0x1000, 0x6000):
         assert classify_address(addr) in ("code", "data", "erased")
