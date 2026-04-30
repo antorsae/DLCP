@@ -290,6 +290,15 @@ impl Src4382 {
         true
     }
 
+    /// True iff the slave is currently in a read transaction
+    /// (`Phase::Reading`).  Symmetric with TAS3108's
+    /// `is_reading` accessor; the chain dispatcher uses this
+    /// to pick the SRC4382 slave that should drive the
+    /// next master-RX byte.
+    pub fn is_reading(&self) -> bool {
+        matches!(self.phase, Phase::Reading { .. })
+    }
+
     /// Provide one byte for a master-driven read.  Returns
     /// the register-file byte at the current subaddress and
     /// auto-increments.  Returns 0 if no read transaction is

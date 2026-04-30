@@ -912,10 +912,40 @@ impl Chain {
             .collect();
         // Drive each coupled slave's I²C state machine.
         // For TxByte, also override ACKSTAT if any slave
-        // (either type) ACKs.  Other events (Start/Stop/
+        // (either type) ACKs.  For RxByte, the slave that's
+        // currently in Reading phase drives a byte into
+        // SSPBUF on the master.  Other events (Start/Stop/
         // RepeatedStart) are pure state transitions on the
         // slave; no master-side memory effect today.
         let mut any_slave_acked = false;
+        // Snapshot RxByte handling: only one slave should be
+        // in Reading phase at any time on a well-formed I²C
+        // bus.  Take the first one that reports
+        // `is_reading()` and use its `provide_rx_byte()` to
+        // drive SSPBUF.  The TxByte path doesn't need this
+        // selection (every coupled slave consumes the byte
+        // and decides ACK/NACK independently), but RxByte
+        // semantics require exactly one driver.
+        let rx_byte = if matches!(event, I2cBusEvent::RxByte) {
+            let mut byte: Option<u8> = None;
+            for &slave_idx in &coupled_tas3108_indices {
+                if self.tas3108_slaves[slave_idx].is_reading() {
+                    byte = Some(self.tas3108_slaves[slave_idx].provide_rx_byte());
+                    break;
+                }
+            }
+            if byte.is_none() {
+                for &slave_idx in &coupled_src4382_indices {
+                    if self.src4382_slaves[slave_idx].is_reading() {
+                        byte = Some(self.src4382_slaves[slave_idx].provide_rx_byte());
+                        break;
+                    }
+                }
+            }
+            byte
+        } else {
+            None
+        };
         for slave_idx in coupled_tas3108_indices {
             let slave = &mut self.tas3108_slaves[slave_idx];
             match event {
@@ -928,12 +958,10 @@ impl Chain {
                     }
                 }
                 I2cBusEvent::RxByte => {
-                    // Phase-3.5+: a coupled slave drives the
-                    // RX byte into SSPBUF.  V3.1's chain
-                    // doesn't read the DSP, so we leave the
-                    // SSPBUF byte at whatever `complete_rx_byte`
-                    // left it (random / zero).  Track as
-                    // future work alongside task #24.
+                    // RX byte handled above via the
+                    // is_reading-based selection; this arm
+                    // is just the start/stop/repeated-start
+                    // pass.
                 }
             }
         }
@@ -949,19 +977,8 @@ impl Chain {
                     }
                 }
                 I2cBusEvent::RxByte => {
-                    // Same SSPBUF-write deferral as the
-                    // TAS3108 branch; firmware reads of
-                    // SRC4382 status registers (0x12/0x13)
-                    // would land here, but the V3.2 secondary-
-                    // read path that uses
-                    // `i2c_secondary_dev_random_read` doesn't
-                    // currently force the simulator into a
-                    // path that depends on the SSPBUF byte
-                    // value -- it just needs the address phase
-                    // to ACK.  When a future test needs the
-                    // actual receiver-status byte, plumb
-                    // `slave.provide_rx_byte()` into SSPBUF
-                    // here.
+                    // RX byte handled above via the
+                    // is_reading-based selection.
                 }
             }
         }
@@ -969,6 +986,23 @@ impl Chain {
             if any_slave_acked {
                 Mssp::override_acked(&mut self.cores[master_core_idx].memory);
             }
+        }
+        if let Some(byte) = rx_byte {
+            // Drive the read-byte into SSPBUF + assert BF
+            // (per real-silicon `complete_rx_byte` semantics
+            // -- BF was already set by Mssp::complete_rx_byte;
+            // we just override the data byte from default-
+            // garbage to the actual slave-driven value).
+            // Reference: `i2c_secondary_dev_random_read` in
+            // V3.2 firmware (asm:7181) reads back receiver-
+            // status registers (0x12/0x13) and uses the
+            // returned byte; without this wiring the firmware
+            // sees whatever `complete_rx_byte` left in SSPBUF
+            // (typically zero / pre-write residue).
+            self.cores[master_core_idx].memory.write_raw(
+                Address::from_raw(crate::peripherals::mssp::SSPBUF_ADDR),
+                byte,
+            );
         }
     }
 

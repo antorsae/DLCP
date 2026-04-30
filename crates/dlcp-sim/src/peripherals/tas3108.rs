@@ -344,6 +344,16 @@ impl Tas3108 {
         true
     }
 
+    /// True iff the slave is currently in a read transaction
+    /// (`Phase::Reading`).  The chain dispatcher uses this to
+    /// pick the slave that should drive the next master-RX
+    /// byte: at most one slave is `Reading` at any time on a
+    /// well-formed bus, so the dispatcher iterates coupled
+    /// slaves and takes the first that returns true.
+    pub fn is_reading(&self) -> bool {
+        matches!(self.phase, Phase::Reading { .. })
+    }
+
     /// Provide one byte for a master-driven read.  Returns
     /// the register-file byte at the current subaddress and
     /// auto-increments per §6.2.2.  Returns 0 if no read
