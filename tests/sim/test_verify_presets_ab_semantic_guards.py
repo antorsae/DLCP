@@ -11,6 +11,13 @@ from dlcp_fw.patch import build_main_presets_ab
 from dlcp_fw.patch.verify_presets_ab import check_control, check_main, parse_intel_hex
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 STOCK_MAIN_HEX = ROOT / "firmware" / "stock" / "main" / "DLCP Firmware V2.3.hex"
 STOCK_CONTROL_HEX = ROOT / "firmware" / "stock" / "control" / "DLCP Control Firmware V1.4.hex"

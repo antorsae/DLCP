@@ -24,6 +24,13 @@ from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.v17_symbols import assemble_v17
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def _assemble(asm_path: Path, tmp_path: Path) -> Path:
     """Assemble the .asm through gpasm and return the produced .hex path."""
     out = tmp_path / (asm_path.stem + ".hex")

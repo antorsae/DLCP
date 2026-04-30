@@ -37,6 +37,13 @@ from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
 from dlcp_fw.sim.hexio import write_intel_hex
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def _write_minimal_main_hex(path: Path, *, major: int, minor: int, flag: int = 0x03) -> None:
     addr = 0x240C
     mem = {

@@ -6,6 +6,13 @@ from dlcp_fw.patch.verify_presets_ab import check_control_v15b, parse_intel_hex
 from dlcp_fw.paths import PATCHED_CONTROL_HEX_V151B, STOCK_CONTROL_HEX_V15B
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def test_check_control_v15b_accepts_current_full_sync_hook() -> None:
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V15B)
     patched = parse_intel_hex(PATCHED_CONTROL_HEX_V151B)

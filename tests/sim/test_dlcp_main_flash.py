@@ -28,6 +28,13 @@ from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
 from dlcp_fw.patch.build_v32_release import build_v32_release
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 def test_build_main_stream_covers_app_window(stock_main_hex) -> None:
     candidate = parse_intel_hex(str(stock_main_hex))
     stream = build_main_stream(candidate)

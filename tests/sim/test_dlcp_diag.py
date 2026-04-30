@@ -32,6 +32,13 @@ from dlcp_fw.flash.dlcp_diag import (
 )
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 # ---------------------------------------------------------------------------
 # Helpers: synthesize a 64-byte cmd 0x44 response
 # ---------------------------------------------------------------------------

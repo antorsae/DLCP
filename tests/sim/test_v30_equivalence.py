@@ -15,6 +15,13 @@ from dlcp_fw.paths import PROJECT_ROOT
 from dlcp_fw.sim.hexio import parse_intel_hex
 
 
+# All tests in this module are backend-agnostic (static source/hex
+# analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
+# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
+# does not auto-skip them.
+pytestmark = pytest.mark.dual_supported
+
+
 # ---------------------------------------------------------------------------
 # Test 1: hex file exists
 # ---------------------------------------------------------------------------
