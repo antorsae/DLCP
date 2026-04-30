@@ -336,9 +336,21 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
     - test_v31_combined_dsp_table_apply.py (5 tests) -- BLOCKER: subprocess-driven `gpsim -i -c <stc>` scripts using break-on-PC, PC override, `dsp34.regNN` regfile readbacks.  Migration requires break-on-PC primitives in the rust executor + PC-override + return-PC-detection on the rust facade.  This is structurally distinct from the MAIN-only harness pattern and warrants a separate "rust executor breakpoint primitives" sub-task.
     - test_v32_layer5_diag_counters.py (37 tests) -- 35 of 37 dual_supported (44 of 46 instances; 43 passing + 1 xfailing on the documented `diag_inc_sat` upper-bound bug).  2 tests retained gpsim-only: `test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells` and `test_v32_diag_counters_isolated_per_hook` -- both need MAIN-side UART TX byte observation that depends on the same TX-recording observability surface flagged for `test_bf08_payload_bytes_on_dsp_fault` in review_findings.
 
-- [pending] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.)
+- [in_progress] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
   - artifact: ledger update; full sim gate green under dual-run.
+  - status: 350 of 800 still-skipped tests unblocked under DLCP_SIM_BACKEND=rust by tagging 34 backend-agnostic test files dual_supported (commits 5f67aab + 47411c6 + codex LOW fix 4e1cfcd).  450 tests remain skipped; almost all are tied to `chain_gpsim` / `wire_chain_gpsim` / `control_gpsim` runtime harnesses and require actual rust-side adapter migration, not marker batching.
+  - sub-task [done] batch-1 (commit 5f67aab): 11 files, 213 tests -- pure static analysis (hex byte comparisons, source-pattern regex matchers, semantic-guard checks, flash-tool CLI plumbing).
+  - sub-task [done] batch-2 (commit 47411c6 + 4e1cfcd): 23 files, 137 tests -- Python-level behavioral models (`MainUnitModel`, `ControlUISim`, `CurrentLoopBus`, `scenarios`), plus pure-Python flash/HID/regex tooling.  11 of these files lacked a top-level `import pytest`; the bootstrap import was inserted in PEP-8 position.
+  - sub-task [pending pre-existing-failure follow-up] 4 files NOT tagged due to pre-existing source failures on `main` (would gate the full sim suite green under DLCP_SIM_BACKEND=rust if tagged):
+    - test_disasm_to_source.py (5/5 fail)
+    - test_v31_diag_memread_usb_safe.py (1/3 fail)
+    - test_v31_patch_builders.py (2/5 fail)
+    - test_v171_hang_modes.py (4/14 fail; pending V1.71 hardening per `docs/V32_MAIN_HANG_HARDENING_PLAN.md`)
+  - sub-task [pending] gpsim-runtime test migration (~450 tests across ~50 files).  These require:
+    - Per-file inspection to identify which existing rust-side harness/facade methods cover the test (`Chain.from_*`, `inject_main_frames_fifo`, `read_dsp_reg`, `set_i2c_fault`, `set_mssp_stop_fault`, `force_reset_main_mssp`).
+    - For tests not covered: new facade methods or harness extensions.
+    - Largest remaining files: `test_v31_combined_dsp_table_apply.py` (34, blocked on rust executor breakpoint primitives), `test_main_gpsim_command_edges.py` (25), `test_control_v15b/v16b_port_compatibility.py` (42 combined, blocked on V1.5b/V1.6b CONTROL chain factories), `test_v17_relocation.py` + `test_v30_relocation.py` (35 combined, gpsim shifted-source parity tests), `test_wire_chain_*` (50+ combined, needs multi-MAIN wire-chain rust harness).
 
 - [pending] P4.8 Switch default backend to Rust; gpsim now opt-in only
   - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
