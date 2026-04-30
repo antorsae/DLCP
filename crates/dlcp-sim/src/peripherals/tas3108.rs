@@ -350,7 +350,10 @@ impl Tas3108 {
     /// byte: at most one slave is `Reading` at any time on a
     /// well-formed bus, so the dispatcher iterates coupled
     /// slaves and takes the first that returns true.
-    pub fn is_reading(&self) -> bool {
+    /// `pub(crate)` because the only consumer is the chain
+    /// dispatcher in `crate::chain`; external callers should
+    /// drive the read transaction via `provide_rx_byte()`.
+    pub(crate) fn is_reading(&self) -> bool {
         matches!(self.phase, Phase::Reading { .. })
     }
 

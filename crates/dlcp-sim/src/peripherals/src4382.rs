@@ -294,8 +294,9 @@ impl Src4382 {
     /// (`Phase::Reading`).  Symmetric with TAS3108's
     /// `is_reading` accessor; the chain dispatcher uses this
     /// to pick the SRC4382 slave that should drive the
-    /// next master-RX byte.
-    pub fn is_reading(&self) -> bool {
+    /// next master-RX byte.  `pub(crate)` because the only
+    /// consumer is the chain dispatcher in `crate::chain`.
+    pub(crate) fn is_reading(&self) -> bool {
         matches!(self.phase, Phase::Reading { .. })
     }
 
