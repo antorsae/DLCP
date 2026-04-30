@@ -6,14 +6,13 @@ from pathlib import Path
 from dlcp_fw.sim.control_ui import ControlPersistentState, ControlStrings, ControlUISim
 from dlcp_fw.sim.protocol import SerialFrame
 
+import pytest
 
 # All tests in this module are backend-agnostic (Python-level
 # behavioral models, hex/source byte comparisons, flash-tool plumbing,
 # scenario runners).  No gpsim runtime, no rust facade.  Mark the
 # whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
 # not auto-skip them.
-import pytest
-
 pytestmark = pytest.mark.dual_supported
 
 
