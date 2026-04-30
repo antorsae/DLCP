@@ -265,31 +265,12 @@ def _boot_and_activate_h(h) -> None:
 # ===================================================================
 
 
-# NOTE: NOT marked `dual_supported`.  This test asserts a CLEAN
-# `dsp_fault_flags == 0x00` baseline after a successful volume
-# command, before injecting NACKs.  On rust the baseline is 0x04
-# (ACKSTAT bit set) after the same boot+activate+volume sequence:
-# the rust MSSP/TAS3108 path leaves SSPCON2.ACKSTAT=1 after some
-# byte in the burst, which the firmware latches to
-# `dsp_fault_flags.2` via the V3.1 BSR-safe ACKSTAT-check at
-# dlcp_main_v31.asm:5933.  Probed both backends:
-#   * gpsim: 0x07F = 0x00 throughout (clean baseline).
-#   * rust:  0x07F transitions 0x00 -> 0x04 between step+10 and
-#            step+15 of the volume burst.
-# This is a real backend divergence in the rust I²C TX path
-# (`Chain::dispatch_i2c_to_coupled_slaves` + `Mssp::override_
-# acked` interaction); investigating it is a separate sub-task.
-# The post-NACK ACKSTAT-set invariant this test signals is
-# partly covered by `test_volume_dsp_write_retry_counter_
-# increments` (dual_supported below) -- that test asserts the
-# retry counter at `dsp_fault_flags[5:3]` increments under
-# persistent NACKs, which only happens if the BSR-safe ACKSTAT
-# check at :5933 is firing correctly.
-
-
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_bsr_safety_ackstat_write_after_volume_nack() -> None:
+def test_bsr_safety_ackstat_write_after_volume_nack(
+    dlcp_sim_backend: str,
+) -> None:
     """Verify dsp_fault_flags.2 is correctly set when DSP NACKs volume.
 
     The ACKSTAT latch in i2c_byte_tx uses BANKED access to 0x07F,
@@ -300,42 +281,52 @@ def test_bsr_safety_ackstat_write_after_volume_nack() -> None:
 
     If BSR were wrong, 0x07F would remain 0 and the retry mechanism
     would not trigger.
+
+    Previously gpsim-only: the rust MAIN-only chain leaked
+    ACKSTAT=1 after a successful volume burst because the
+    secondary I²C device at 0xE2/0xE3 (cfg71 / SRC4382) wasn't
+    modeled -- every cfg71 access NACKed the address phase and
+    set `dsp_fault_flags.2` via the BSR-safe ACKSTAT-check at
+    dlcp_main_v31.asm:5933, breaking the clean-baseline assertion.
+    Fixed by the SRC4382 slave wiring (commit 89e2623); rust now
+    keeps the baseline at 0x00.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
 
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
+    for backend in _enabled_backends(dlcp_sim_backend):
+        h = _make_adapter(V31_MAIN_HEX, backend)
+        try:
+            _boot_and_activate_h(h)
 
-        # Baseline volume — must succeed
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        assert _read_reg(harness._issue, _FLAGS_7F) == 0x00, (
-            "dsp_fault_flags should be clean after successful volume"
-        )
+            # Baseline volume — must succeed.
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+            h.advance_tcy(20 * h.chunk_tcy)
+            assert h.read_reg(_FLAGS_7F) == 0x00, (
+                f"[{backend}] dsp_fault_flags should be clean after "
+                f"successful volume (0x07F=0x{h.read_reg(_FLAGS_7F):02X})"
+            )
 
-        # NACKs on DSP
-        harness.set_i2c_fault("dsp34", address_nack_count=60000)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
+            # NACKs on DSP.
+            h.set_i2c_fault("dsp34", address_nack_count=60000)
+            h.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+            h.advance_tcy(30 * h.chunk_tcy)
 
-        flags = _read_reg(harness._issue, _FLAGS_7F)
-        ackstat = bool(flags & (1 << _ACKSTAT_BIT))
-        assert ackstat, (
-            f"dsp_fault_flags.2 (ACKSTAT) not set after NACKed volume — "
-            f"0x07F=0x{flags:02X}.  BSR may have been wrong during "
-            f"i2c_byte_tx ACKSTAT write (BANKED access to 0x07F)."
-        )
+            flags = h.read_reg(_FLAGS_7F)
+            ackstat = bool(flags & (1 << _ACKSTAT_BIT))
+            assert ackstat, (
+                f"[{backend}] dsp_fault_flags.2 (ACKSTAT) not set after "
+                f"NACKed volume -- 0x07F=0x{flags:02X}.  BSR may have "
+                f"been wrong during i2c_byte_tx ACKSTAT write "
+                f"(BANKED access to 0x07F)."
+            )
 
-        # Also verify BSR is 0 at this point (main loop context)
-        bsr = _read_reg(harness._issue, _BSR)
-        assert bsr == 0, f"BSR={bsr}, expected 0 in main loop context"
-
-    finally:
-        harness.close()
+            # Also verify BSR is 0 at this point (main loop context).
+            bsr = h.read_reg(_BSR)
+            assert bsr == 0, (
+                f"[{backend}] BSR={bsr}, expected 0 in main loop context"
+            )
+        finally:
+            h.close()
 
 
 @pytest.mark.dual_supported

@@ -989,17 +989,20 @@ def test_v32_diag_inc_sat_macro_has_explicit_upper_bound_clamp() -> None:
 # (A) Instrumentation
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_diag_counters_stay_zero_during_extended_idle(v32_hex: Path) -> None:
+def test_v32_diag_counters_stay_zero_during_extended_idle(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """REGRESSION: real-HW operator saw counter values 7..15+ within
     seconds of a power-cycle.  If MAIN's cold-init properly clears
     the diag block AND no internal code path bumps counters during
     normal idle, the cells must remain ALL ZERO across an extended
     idle window.
 
-    Test shape: boot MAIN under gpsim, run for an extended idle window
-    (no chain stress, no commands injected), assert all counters are
+    Test shape: boot MAIN, run for an extended idle window (no
+    chain stress, no commands injected), assert all counters are
     still 0.
 
     What this catches:
@@ -1012,59 +1015,42 @@ def test_v32_diag_counters_stay_zero_during_extended_idle(v32_hex: Path) -> None
     covers a SHORT (~8M cycle) window; this test extends to ~40M
     cycles to catch slower / periodic-only counter drift.
 
-    NOT marked dual_supported: the rust MAIN-only path saturates
-    `diag_i` to 0x0F during the same 40M-Tcy idle window because
-    the rust MSSP/TAS3108 path leaves SSPCON2.ACKSTAT=1 after
-    successful coeff writes (documented backend divergence,
-    cf. test_bsr_safety_ackstat_write_after_volume_nack in
-    test_v31_review_findings.py).  Each of the firmware's
-    periodic dsp_ping/coeff-write attempts trips the diag_i hook
-    on rust.  Interestingly, the rust observation MATCHES the
-    real-HW operator's symptom (diag_i 7..15+ within seconds),
-    suggesting rust may be reproducing a firmware/silicon
-    interaction that gpsim's I²C model masks.  Tracking that
-    investigation is out-of-scope for the P4.6 migration -- the
-    test stays gpsim-only here and is logged as a candidate
-    for the ACKSTAT-divergence follow-up sub-task.
+    Previously gpsim-only: rust MAIN-only chains used to saturate
+    diag_i to 0x0F during this idle window because the secondary
+    I²C device at 0xE2/0xE3 (cfg71 / SRC4382) wasn't modeled --
+    every cfg71 write NACKed and tripped the diag_i I²C-fault
+    hook.  The rust symptom MATCHED the real-HW operator's report
+    (diag_i 7..15+ in seconds), suggesting the operator's rig
+    might also have had a cfg71/SRC4382 dropout.  Fixed by the
+    SRC4382 slave wiring (commit 89e2623).
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
-
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
+    backends = ["rust"] if dlcp_sim_backend == "rust" else (
+        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
     )
-    try:
-        # 200 chain steps × 200_000 cycles = 40M cycles ≈ 3.3 seconds
-        # of real-time at 12 MIPS.  Long enough for any periodic counter
-        # bump to surface.
-        for _ in range(200):
-            h.step()
-        anomalies = []
-        for name, addr in ALL_COUNTER_ADDRS:
-            value = _read_reg(h._issue, addr)
-            if value != 0:
-                anomalies.append((name, value))
-        assert not anomalies, (
-            f"counter(s) bumped during extended idle (no external events): "
-            f"{anomalies}.  Either an internal periodic path is firing the "
-            f"diag_inc_sat macro spuriously, or the cold-init clrf isn't "
-            f"running, or RAM[0x2E5..0x2EC] is being written by another "
-            f"code path that overlaps the diag block.  This is the bug "
-            f"class the real-HW operator saw on the rig (counters 7..15+ "
-            f"within seconds of cold boot)."
+    for backend in backends:
+        # 40M MAIN-Tcy ≈ 3.3 s at 12 MIPS.  Long enough for any
+        # periodic counter bump to surface.
+        h = _boot_v32_main_only_and_step_tcy(
+            v32_hex, backend, total_tcy=200 * 200_000,
         )
-    finally:
-        h.close()
+        try:
+            anomalies = []
+            for name, addr in ALL_COUNTER_ADDRS:
+                value = h.read_reg(addr)
+                if value != 0:
+                    anomalies.append((name, value))
+            assert not anomalies, (
+                f"[{backend}] counter(s) bumped during extended idle "
+                f"(no external events): {anomalies}.  Either an internal "
+                f"periodic path is firing the diag_inc_sat macro "
+                f"spuriously, or the cold-init clrf isn't running, or "
+                f"RAM[0x2E5..0x2EC] is being written by another code "
+                f"path that overlaps the diag block.  This is the bug "
+                f"class the real-HW operator saw on the rig (counters "
+                f"7..15+ within seconds of cold boot)."
+            )
+        finally:
+            h.close()
 
 
 @pytest.mark.gpsim
@@ -1192,9 +1178,12 @@ def test_v32_cold_init_does_not_skip_clear_on_software_reset() -> None:
 # (C) Memory-overlap regression
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
+def test_v32_diag_block_unchanged_by_preset_job(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """REGRESSION: the V3.2 preset_job state machine lives at
     0x2DE..0x2E4, immediately below the diag block at 0x2E5..0x2EC.
     If preset_job_apply uses an FSR-base + offset write that overruns
@@ -1202,69 +1191,53 @@ def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
     iterating > 4 bytes), it would clobber diag cells.
 
     Test shape: boot MAIN, snapshot diag block (should be all zero
-    after cold init), trigger a preset switch (via cmd 0x20 or
-    by writing active_flags.bit2 directly), wait for preset job to
-    complete, snapshot diag block again.  Diag block must be
-    unchanged — preset switching has nothing to do with diagnostic
-    counters and must not write into the diag region.
+    after cold init), trigger a preset switch via cmd 0x20, wait
+    for preset job to complete, snapshot diag block again.  Diag
+    block must be unchanged -- preset switching has nothing to do
+    with diagnostic counters and must not write into the diag
+    region.
 
-    Marked skip when the chain injection helper is unavailable; in
-    that case the invariant is partially covered by the extended-
-    idle test (which doesn't trigger preset switches but does run
-    long enough for any periodic preset-related write to surface).
+    Previously gpsim-only: rust MAIN-only chains used to saturate
+    diag_i to 0x0F during the 120-chunk post-switch settle (cfg71
+    NACK from missing SRC4382 slave).  Fixed by the SRC4382 slave
+    wiring (commit 89e2623); rust now keeps diag_i at 0 across
+    the full post-switch window so the preset-overlap invariant
+    is testable.
 
-    NOT marked dual_supported: same rust ACKSTAT-divergence
-    rationale as `test_v32_diag_counters_stay_zero_during_extended_
-    idle`.  The 120-chunk post-switch settle window lets the rust
-    MSSP/TAS3108 path's ACKSTAT-after-coeff-write divergence
-    saturate diag_i to 0x0F (real backend bug, not a preset-job
-    overlap), so the diag-block-unchanged assertion would always
-    fail on rust regardless of the actual preset-overlap invariant.
-    Migrating this test would require either fixing the
-    ACKSTAT divergence OR settling the diag_i saturation BEFORE
-    the baseline snapshot (so any preset-driven increment over the
-    saturated value is still detectable).  Tracked as a follow-up
-    to the ACKSTAT-divergence sub-task.
+    Route swapped from 0xB1 to 0xB0 for backend-uniform
+    "MAIN0-broadcast" semantics matching the rest of the migrated
+    suite (cf. test_v31_v163b_robustness's _inject_main_frame_h).
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
-
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
+    backends = ["rust"] if dlcp_sim_backend == "rust" else (
+        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
     )
-    try:
-        for _ in range(20):
-            h.step()
-        baseline = tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(8))
-        try:
-            # Trigger preset switch via cmd 0x20 (preset select B)
-            h.inject_frames_fifo([[0xB1, 0x20, 0x01]], fifo_limit=47)
-        except (AttributeError, NotImplementedError) as exc:
-            pytest.skip(f"preset injection unavailable ({exc})")
-        for _ in range(120):  # let preset job complete (PENDING → HOLDING → APPLY → COMMIT)
-            h.step()
-        post = tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(8))
-        assert post == baseline, (
-            f"diag block changed during preset switch!  "
-            f"baseline={baseline}, post={post}.  preset_job_service "
-            f"or one of its helpers (preset_job_apply, preset_force_mute, "
-            f"etc.) wrote into 0x2E5..0x2EC.  This is the memory-overlap "
-            f"hypothesis the operator's instinct flagged — diag cells "
-            f"are being clobbered by an unrelated routine, then read "
-            f"as 'elevated counters' on the Diag page."
+    for backend in backends:
+        h = _boot_v32_main_only_and_step_tcy(
+            v32_hex, backend, total_tcy=20 * 200_000,
         )
-    finally:
-        h.close()
+        try:
+            baseline = tuple(h.read_reg(0x2E5 + i) for i in range(8))
+            # Trigger preset switch via cmd 0x20 (preset select B).
+            h.inject_main_frames_fifo(
+                [[0xB0, 0x20, 0x01]], fifo_limit=47,
+            )
+            # Let preset job complete (PENDING → HOLDING → APPLY →
+            # COMMIT).  120 chunks = 24M MAIN-Tcy is enough on both
+            # backends.
+            h.advance_tcy(120 * 200_000)
+            post = tuple(h.read_reg(0x2E5 + i) for i in range(8))
+            assert post == baseline, (
+                f"[{backend}] diag block changed during preset switch!  "
+                f"baseline={baseline}, post={post}.  preset_job_service "
+                f"or one of its helpers (preset_job_apply, "
+                f"preset_force_mute, etc.) wrote into 0x2E5..0x2EC.  "
+                f"This is the memory-overlap hypothesis the operator's "
+                f"instinct flagged -- diag cells are being clobbered "
+                f"by an unrelated routine, then read as 'elevated "
+                f"counters' on the Diag page."
+            )
+        finally:
+            h.close()
 
 
 @pytest.mark.dual_supported
