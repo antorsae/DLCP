@@ -1696,29 +1696,38 @@ impl Chain {
     }
 
     /// Run a CONTROL-only chain through cold-boot -> WAITING ->
-    /// DISPLAY transition by repeatedly applying the
-    /// force-connected hook AND injecting a synthetic BF status
-    /// burst (5-frame `BF/05/33 BF/07/60 BF/03/01 BF/06/00
-    /// BF/1D/00`) until DISPLAY mode is detected (0x01F bit 1
-    /// set), or the cycle budget is exhausted.  Mirror of
+    /// DISPLAY transition by feeding the firmware synthetic BF
+    /// status replies (5-frame `BF/05/33 BF/07/60 BF/03/01
+    /// BF/06/00 BF/1D/00`) until DISPLAY mode is detected
+    /// (0x01F.bit1 set BY THE FIRMWARE ITSELF), then continues
+    /// stepping with the force-connected hook applied each
+    /// chunk to keep CONNECTED + event-exit asserted.  Mirror of
     /// `GpsimControlHarness.warmup` when the harness was
     /// constructed with `heartbeat_rx_mode in {"full",
     /// "connected_only"}` and `heartbeat_force_connected=True`.
     ///
     /// `cycles` is in K20 instruction cycles (Tcy).  Each chunk
     /// advances `CHUNK_TCY = 2_000_000 K20-Tcy` (matches gpsim's
-    /// `warmup_chunk = max(chunk_cycles, 2_000_000)`) so the hook
-    /// fires regularly during boot.  Each chunk samples 0x01F.bit1
-    /// BEFORE applying the force-connected hook (the hook itself
-    /// would otherwise set bit1 and make every chunk look like
-    /// "DISPLAY entered"); once the firmware itself reaches
-    /// DISPLAY mode, the BF burst stops (to avoid ring-overflow on
-    /// long warmups) and the WAITING-screen sentinels at
-    /// 0x0B8/0x0B9/0x0A7/0x0A1 are seeded once to plausible non-
-    /// 0x80 values.  The per-chunk force-connected hook continues
-    /// to keep CONNECTED + event-exit set.  Implicitly also calls
-    /// `enable_force_connected()` so post-warmup `step()` calls
-    /// keep applying the hook.
+    /// `warmup_chunk = max(chunk_cycles, 2_000_000)`).  The hook
+    /// is gated on `display_entered` (mirrors gpsim's
+    /// `_heartbeat_active` gate around `_heartbeat_pre_step`):
+    /// during the pre-DISPLAY phase the hook is NOT applied, so
+    /// the firmware's own bit1 transition can be observed
+    /// reliably by the next pre-chunk read; if the hook were
+    /// applied unconditionally before DISPLAY entry, its bit1
+    /// OR would leak into the next chunk's pre-hook read and
+    /// trip `display_entered` early (codex MEDIUM-2 from review
+    /// of ac6eb09: "cross-iteration stale-bit risk").  Once the
+    /// firmware itself enters DISPLAY mode:
+    ///   * The 5-frame BF burst stops (avoids ring-overflow on
+    ///     long warmups).
+    ///   * The WAITING-screen sentinels at 0x0B8/0x0B9/0x0A7/
+    ///     0x0A1 are seeded once to plausible non-0x80 values.
+    ///   * The force-connected hook starts firing every chunk.
+    ///
+    /// Implicitly calls `enable_force_connected()` so post-
+    /// warmup `step()` calls keep applying the hook even after
+    /// `warmup_force_connected` returns.
     fn warmup_force_connected(&mut self, cycles: u64) {
         self.force_connected = true;
         const WARMUP_BF_BURST: [u8; 15] = [
@@ -1733,11 +1742,13 @@ impl Chain {
         let mut remaining = cycles;
         let mut display_entered = false;
         while remaining > 0 {
-            // Sample DISPLAY mode BEFORE the hook runs.  The hook
-            // sets bit1 itself, so reading after it would always
-            // observe "DISPLAY entered" on the first chunk and
-            // mask the firmware's actual transition (codex MEDIUM
-            // from review of 1a4e0a9).
+            // Sample DISPLAY mode at the start of each chunk.
+            // Pre-DISPLAY: the hook hasn't run, so any bit1=1
+            // we observe came from the firmware itself (BF/03/01
+            // RX → CONNECTED).  Post-DISPLAY: the hook is
+            // already firing each chunk, so bit1 is always 1;
+            // the latched `display_entered` flag prevents this
+            // from re-running the seeding block.
             let in_display = {
                 let v = self.inner.cores[self.i_ctl]
                     .memory
@@ -1752,7 +1763,15 @@ impl Chain {
                 mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0A7), 0x01); // cmd1d
                 mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0A1), 0x01); // unit_count
             }
-            self.apply_force_connected_hook();
+            // The force-connected hook is gated on
+            // `display_entered` -- mirror of gpsim's
+            // `_heartbeat_pre_step`'s `if self._heartbeat_active`
+            // guard.  Pre-DISPLAY, the firmware's natural bit1
+            // transition needs to be observable; post-DISPLAY,
+            // the hook keeps CONNECTED + event-exit asserted.
+            if display_entered {
+                self.apply_force_connected_hook();
+            }
             // Mirror of `control_gpsim.py::warmup` -- inject the
             // 5-frame BF status burst ONLY while the firmware is
             // still pre-DISPLAY.  Once DISPLAY mode is observed,
