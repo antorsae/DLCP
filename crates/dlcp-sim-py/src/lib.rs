@@ -535,15 +535,26 @@ struct Chain {
     /// `tx_record_since_last_capture` for the mirror-of-gpsim
     /// semantics.
     tx_capture_main0: usize,
-    /// When true, every step() / warmup_force_connected()
-    /// chunk applies the per-step "force CONNECTED" hook to
-    /// CONTROL: ORs bits 1+3 into 0x01F (CONNECTED + event-
-    /// exit) and resets the idle timer at 0x09D/0x09E.
-    /// Mirror of gpsim's
+    /// When true, `step()` applies the per-step "force
+    /// CONNECTED" hook to CONTROL: ORs bits 1+3 into 0x01F
+    /// (CONNECTED + event-exit) and resets the idle timer at
+    /// 0x09D/0x09E.  Mirror of gpsim's
     /// `GpsimControlHarness(heartbeat_force_connected=True)`
     /// behavior.  Used by CONTROL-only chains that must keep
     /// the firmware in DISPLAY mode without a real MAIN peer.
-    /// Default false; enable via `enable_force_connected()`.
+    ///
+    /// `warmup_force_connected()` ALSO honours this flag for
+    /// post-warmup `step()` calls, but during warmup itself
+    /// the hook is gated on a local `display_entered` flag
+    /// (mirror of gpsim's `_heartbeat_active` gate around
+    /// `_heartbeat_pre_step`): the hook is NOT applied
+    /// pre-DISPLAY so the firmware's natural bit1 transition
+    /// stays observable; once observed, the hook starts firing
+    /// each chunk.  See `warmup_force_connected` for the full
+    /// flow.
+    ///
+    /// Default false; enable via `enable_force_connected()` or
+    /// implicitly via `warmup_force_connected()`.
     force_connected: bool,
 }
 
@@ -1670,10 +1681,17 @@ impl Chain {
     /// Enable the per-step "force CONNECTED" hook that mirrors
     /// gpsim's `GpsimControlHarness(heartbeat_force_connected=
     /// True)`.  After this is called, every subsequent `step()`
-    /// AND every chunk inside `warmup_force_connected()`
     /// applies the pokes documented on
     /// `apply_force_connected_hook` (OR 0x0A into 0x01F, reset
     /// 0x09D/0x09E to 0xFF) BEFORE advancing time.
+    ///
+    /// `warmup_force_connected()` honours this flag for post-
+    /// warmup `step()` calls but applies its own
+    /// `display_entered` gate during the warmup loop itself
+    /// (the hook is NOT applied pre-DISPLAY -- mirror of
+    /// gpsim's `_heartbeat_active` gate; codex MEDIUM-2 from
+    /// review of ac6eb09).  See `warmup_force_connected` for
+    /// the full flow.
     ///
     /// Used by CONTROL-only chains that must keep the firmware
     /// in DISPLAY mode without a real MAIN peer driving BF
