@@ -890,25 +890,27 @@ impl Chain {
     /// serialization artifact we deliberately do NOT
     /// replicate.
     fn step_tcy(&mut self, tcy: u64) {
-        // Pick the universal-clock conversion factor that
-        // matches the test's intent.  MAIN-only chains
-        // (i_ctl == i_main0, no real CONTROL core) interpret
-        // `tcy` as PIC18F2455 instruction cycles -> 12
-        // ticks/Tcy.  Mixed CONTROL+MAIN chains interpret
-        // `tcy` as K20 instruction cycles -> 16 ticks/Tcy
-        // (the K20 is the "primary" timekeeper for those
-        // chains, matching the v171_v32 parity tests that
-        // pre-date MAIN-only and expect K20-Tcy semantics).
-        // Without this gate, MAIN-only tests using gpsim's
+        // Pick the universal-clock conversion factor by
+        // inspecting the variant of the core at `i_ctl`.
+        // K20 chains (mixed CONTROL+MAIN, where K20 is the
+        // primary timekeeper, OR CONTROL-only chains where
+        // K20 is the only core) advance at 16 ticks/Tcy.
+        // 2455 chains (MAIN-only, where MAIN is collapsed
+        // onto i_ctl) advance at 12 ticks/Tcy.  The earlier
+        // heuristic `i_ctl == i_main0` correctly identified
+        // MAIN-only AND mixed CONTROL+MAIN chains because
+        // they only ever collapsed when MAIN was the
+        // primary, but it broke once `from_v17_control_only`
+        // also collapsed `i_ctl == i_main0` with a K20 core
+        // (codex MEDIUM from review of 933872b).  Without
+        // this gate, MAIN-only tests using gpsim's
         // chunk_cycles=N analogue see 33% more MAIN time
-        // than gpsim (16/12 = 1.33), which breaks fine-
-        // grained transient probes.  Reference: codex review
-        // of b828519 LOW.
-        let main_only = self.i_ctl == self.i_main0;
-        let factor = if main_only {
-            TICKS_PER_TCY_2455
-        } else {
-            TICKS_PER_TCY_K20
+        // than gpsim (16/12 = 1.33); see codex review of
+        // b828519 LOW for the original gate rationale.
+        use dlcp_sim::memory::Variant;
+        let factor = match self.inner.cores[self.i_ctl].variant() {
+            Variant::Pic18F25K20 => TICKS_PER_TCY_K20,
+            Variant::Pic18F2455 => TICKS_PER_TCY_2455,
         };
         self.inner.step_ticks(tcy * factor);
     }
