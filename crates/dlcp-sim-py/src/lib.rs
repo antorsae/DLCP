@@ -638,6 +638,27 @@ impl Chain {
                 )
             })
     }
+
+    /// Universal-clock ticks per Tcy for the core at `i_ctl`.
+    /// K20 chains (mixed CONTROL+MAIN where K20 is the primary
+    /// timekeeper, OR CONTROL-only chains where K20 is the only
+    /// core) advance at 16 ticks/Tcy; PIC18F2455 chains
+    /// (MAIN-only, where MAIN is collapsed onto i_ctl) advance
+    /// at 12 ticks/Tcy.  Used by `step_tcy`, `step`, and
+    /// `step_until_tx_quiescent` to convert a Tcy budget into a
+    /// universal-tick budget.  The earlier `i_ctl == i_main0`
+    /// collapse-detection heuristic (b828519 LOW) broke once
+    /// `from_v17_control_only` collapsed those indices with a
+    /// K20 core (codex MEDIUM from review of 933872b /
+    /// follow-up of e7a72f3); switching to direct variant
+    /// inspection covers all three topologies correctly.
+    fn tcy_factor(&self) -> u64 {
+        use dlcp_sim::memory::Variant;
+        match self.inner.cores[self.i_ctl].variant() {
+            Variant::Pic18F25K20 => TICKS_PER_TCY_K20,
+            Variant::Pic18F2455 => TICKS_PER_TCY_2455,
+        }
+    }
 }
 
 #[pymethods]
@@ -869,12 +890,17 @@ impl Chain {
     }
 
     /// Advance the universal clock by `tcy` instruction
-    /// cycles.  The Tcy unit is interpreted as PIC18F25K20
-    /// instruction cycles (16 ticks/Tcy) for mixed
-    /// CONTROL+MAIN chains, and as PIC18F2455 instruction
-    /// cycles (12 ticks/Tcy) for MAIN-only chains.  See the
-    /// per-call comment block below for the exact gate
-    /// (`i_ctl == i_main0`).  Universal-clock derivation:
+    /// cycles.  The Tcy unit is interpreted by inspecting the
+    /// variant of the core at `i_ctl`: K20 chains (mixed
+    /// CONTROL+MAIN where K20 is the primary timekeeper, or
+    /// CONTROL-only chains where K20 is the only core) advance
+    /// at 16 ticks/Tcy; 2455 chains (MAIN-only chains where
+    /// MAIN is collapsed onto i_ctl) advance at 12 ticks/Tcy.
+    /// See `tcy_factor` for the helper, and codex review of
+    /// 933872b / b828519 for the rationale (the earlier
+    /// `i_ctl == i_main0` collapse-detection heuristic broke
+    /// once `from_v17_control_only` also collapsed those
+    /// indices with a K20 core).  Universal-clock derivation:
     /// `crates/dlcp-sim/src/chain.rs:17` (48 MHz universal
     /// clock; K20 Fosc=12 MHz so Tcy=4/12 MHz=333 ns; 2455
     /// Fosc=16 MHz so Tcy=4/16 MHz=250 ns).
@@ -890,29 +916,7 @@ impl Chain {
     /// serialization artifact we deliberately do NOT
     /// replicate.
     fn step_tcy(&mut self, tcy: u64) {
-        // Pick the universal-clock conversion factor by
-        // inspecting the variant of the core at `i_ctl`.
-        // K20 chains (mixed CONTROL+MAIN, where K20 is the
-        // primary timekeeper, OR CONTROL-only chains where
-        // K20 is the only core) advance at 16 ticks/Tcy.
-        // 2455 chains (MAIN-only, where MAIN is collapsed
-        // onto i_ctl) advance at 12 ticks/Tcy.  The earlier
-        // heuristic `i_ctl == i_main0` correctly identified
-        // MAIN-only AND mixed CONTROL+MAIN chains because
-        // they only ever collapsed when MAIN was the
-        // primary, but it broke once `from_v17_control_only`
-        // also collapsed `i_ctl == i_main0` with a K20 core
-        // (codex MEDIUM from review of 933872b).  Without
-        // this gate, MAIN-only tests using gpsim's
-        // chunk_cycles=N analogue see 33% more MAIN time
-        // than gpsim (16/12 = 1.33); see codex review of
-        // b828519 LOW for the original gate rationale.
-        use dlcp_sim::memory::Variant;
-        let factor = match self.inner.cores[self.i_ctl].variant() {
-            Variant::Pic18F25K20 => TICKS_PER_TCY_K20,
-            Variant::Pic18F2455 => TICKS_PER_TCY_2455,
-        };
-        self.inner.step_ticks(tcy * factor);
+        self.inner.step_ticks(tcy * self.tcy_factor());
     }
 
     /// Advance the universal clock by `n_ticks` and dispatch
@@ -1525,11 +1529,7 @@ impl Chain {
         // spin forever (chunk=0 -> advanced never increases).
         let quiescent_tcy = quiescent_tcy.max(1);
         let main0 = self.i_main0;
-        let factor = if self.i_ctl == self.i_main0 {
-            TICKS_PER_TCY_2455
-        } else {
-            TICKS_PER_TCY_K20
-        };
+        let factor = self.tcy_factor();
         let count_main_records = |inner: &RustChain| -> usize {
             inner
                 .uart_tx_history
@@ -1567,16 +1567,11 @@ impl Chain {
     ///
     /// Tcy interpretation matches `step_tcy`: MAIN-only
     /// chains use the PIC18F2455 factor (12 ticks/Tcy,
-    /// 2.4 M ticks total); mixed CONTROL+MAIN chains use
-    /// the K20 factor (16 ticks/Tcy, 3.2 M ticks total).
+    /// 2.4 M ticks total); K20 chains -- mixed CONTROL+MAIN
+    /// AND CONTROL-only -- use the K20 factor (16 ticks/Tcy,
+    /// 3.2 M ticks total).  See `tcy_factor`.
     fn step(&mut self) {
-        let main_only = self.i_ctl == self.i_main0;
-        let factor = if main_only {
-            TICKS_PER_TCY_2455
-        } else {
-            TICKS_PER_TCY_K20
-        };
-        self.inner.step_ticks(DEFAULT_STEP_TCY * factor);
+        self.inner.step_ticks(DEFAULT_STEP_TCY * self.tcy_factor());
     }
 
     /// Run the chain to a CONNECTED steady-state by stepping
