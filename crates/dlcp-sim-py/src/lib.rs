@@ -535,6 +535,16 @@ struct Chain {
     /// `tx_record_since_last_capture` for the mirror-of-gpsim
     /// semantics.
     tx_capture_main0: usize,
+    /// When true, every step() / warmup_force_connected()
+    /// chunk applies the per-step "force CONNECTED" hook to
+    /// CONTROL: ORs bits 1+3 into 0x01F (CONNECTED + event-
+    /// exit) and resets the idle timer at 0x09D/0x09E.
+    /// Mirror of gpsim's
+    /// `GpsimControlHarness(heartbeat_force_connected=True)`
+    /// behavior.  Used by CONTROL-only chains that must keep
+    /// the firmware in DISPLAY mode without a real MAIN peer.
+    /// Default false; enable via `enable_force_connected()`.
+    force_connected: bool,
 }
 
 /// Default `step()` advance = 200_000 Tcy.  This is just a
@@ -659,6 +669,63 @@ impl Chain {
             Variant::Pic18F2455 => TICKS_PER_TCY_2455,
         }
     }
+
+    /// Apply the gpsim heartbeat-force-connected pre-step
+    /// pokes to CONTROL's RAM (mirror of
+    /// `control_gpsim.py::GpsimControlHarness._heartbeat_pre_step`
+    /// for `heartbeat_force_connected=True`):
+    ///   * 0x01F |= 0x0A    (bit3 = event-exit flag used by
+    ///                       function_042; bit1 = CONNECTED)
+    ///   * 0x09D = 0xFF     (idle-timeout LSB)
+    ///   * 0x09E = 0xFF     (idle-timeout MSB)
+    ///
+    /// The first OR keeps the firmware in DISPLAY/CONNECTED
+    /// mode without a real MAIN peer; the idle-timer reset
+    /// prevents the firmware's local reconnect logic from
+    /// clearing CONNECTED within a single chunk.
+    fn apply_force_connected_hook(&mut self) {
+        let mem = &mut self.inner.cores[self.i_ctl].memory;
+        let cur = mem.read_raw(dlcp_sim::memory::Address::from_raw(0x01F));
+        mem.write_raw(
+            dlcp_sim::memory::Address::from_raw(0x01F),
+            cur | 0x0A,
+        );
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(0x09D), 0xFF);
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(0x09E), 0xFF);
+    }
+
+    /// Inject `bytes` into CONTROL's RX ring buffer.  V1.6b /
+    /// V1.71 ring layout: base = 0x066, depth = 0x30 (48 bytes),
+    /// rd index at 0x098, wr index at 0x099.  Returns false if
+    /// the ring would overflow (>= 0x2C bytes pending).  Mirror
+    /// of `control_gpsim.py::_inject_rx_bytes`.
+    fn inject_control_rx_bytes_inner(&mut self, bytes: &[u8]) -> bool {
+        const RX_BASE: u16 = 0x066;
+        const RX_DEPTH: u16 = 0x30;
+        const RX_RD: u16 = 0x098;
+        const RX_WR: u16 = 0x099;
+        let mem = &mut self.inner.cores[self.i_ctl].memory;
+        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RD)) as u16
+            % RX_DEPTH;
+        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_WR)) as u16
+            % RX_DEPTH;
+        let used = (wr + RX_DEPTH - rd) % RX_DEPTH;
+        if used > 0x2C {
+            return false;
+        }
+        for &b in bytes {
+            mem.write_raw(
+                dlcp_sim::memory::Address::from_raw(RX_BASE + (wr % RX_DEPTH)),
+                b,
+            );
+            wr = (wr + 1) % RX_DEPTH;
+        }
+        mem.write_raw(
+            dlcp_sim::memory::Address::from_raw(RX_WR),
+            (wr & 0xFF) as u8,
+        );
+        true
+    }
 }
 
 #[pymethods]
@@ -679,6 +746,7 @@ impl Chain {
             i_main1: handle.i_main1,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            force_connected: false,
         })
     }
 
@@ -731,6 +799,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            force_connected: false,
         })
     }
 
@@ -783,6 +852,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            force_connected: false,
         })
     }
 
@@ -848,6 +918,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            force_connected: false,
         })
     }
 
@@ -886,6 +957,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            force_connected: false,
         })
     }
 
@@ -1571,12 +1643,19 @@ impl Chain {
     /// AND CONTROL-only -- use the K20 factor (16 ticks/Tcy,
     /// 3.2 M ticks total).  See `tcy_factor`.
     fn step(&mut self) {
+        if self.force_connected {
+            self.apply_force_connected_hook();
+        }
         self.inner.step_ticks(DEFAULT_STEP_TCY * self.tcy_factor());
     }
 
     /// Run the chain to a CONNECTED steady-state by stepping
     /// `cycles` Tcy worth of universal ticks.  Mirror of
-    /// `control_gpsim.py::GpsimControlHarness.warmup`.
+    /// `control_gpsim.py::GpsimControlHarness.warmup` for
+    /// chains that DON'T need the heartbeat-force-connected
+    /// hook (i.e. those built with a real MAIN peer that
+    /// drives BF replies on the UART).  For CONTROL-only
+    /// chains, use `warmup_force_connected(cycles)` instead.
     /// `cycles` is in K20 instruction cycles (Tcy); each
     /// Tcy is 16 universal ticks for the K20 core, so the
     /// total advance is `cycles * 16` ticks.  No early-exit
@@ -1586,6 +1665,106 @@ impl Chain {
     /// post-handshake polls.
     fn warmup(&mut self, cycles: u64) {
         self.inner.step_ticks(cycles * 16);
+    }
+
+    /// Enable the per-step "force CONNECTED" hook that mirrors
+    /// gpsim's `GpsimControlHarness(heartbeat_force_connected=
+    /// True)`.  After this is called, every subsequent `step()`
+    /// AND every chunk inside `warmup_force_connected()`
+    /// applies the pokes documented on
+    /// `apply_force_connected_hook` (OR 0x0A into 0x01F, reset
+    /// 0x09D/0x09E to 0xFF) BEFORE advancing time.
+    ///
+    /// Used by CONTROL-only chains that must keep the firmware
+    /// in DISPLAY mode without a real MAIN peer driving BF
+    /// replies.  No-op (idempotent) once enabled.
+    fn enable_force_connected(&mut self) {
+        self.force_connected = true;
+    }
+
+    /// Inject 3-byte chain frames (BF/cmd/data) into CONTROL's
+    /// RX ring at base 0x066 (depth 48 bytes; rd=0x098,
+    /// wr=0x099).  Mirror of gpsim's
+    /// `_CliSession::_inject_rx_bytes`.  Returns False if the
+    /// ring is too full (>= 0x2C bytes pending) and silently
+    /// drops the burst -- callers should let the firmware drain
+    /// the ring and retry.  `bytes` is a flat list of byte
+    /// values; alignment to 3-byte frames is the caller's
+    /// responsibility.
+    fn inject_control_rx_bytes(&mut self, bytes: Vec<u8>) -> bool {
+        self.inject_control_rx_bytes_inner(&bytes)
+    }
+
+    /// Run a CONTROL-only chain through cold-boot -> WAITING ->
+    /// DISPLAY transition by repeatedly applying the
+    /// force-connected hook AND injecting a synthetic BF status
+    /// burst (5-frame `BF/05/33 BF/07/60 BF/03/01 BF/06/00
+    /// BF/1D/00`) until DISPLAY mode is detected (0x01F bit 1
+    /// set), or the cycle budget is exhausted.  Mirror of
+    /// `GpsimControlHarness.warmup` when the harness was
+    /// constructed with `heartbeat_rx_mode in {"full",
+    /// "connected_only"}` and `heartbeat_force_connected=True`.
+    ///
+    /// `cycles` is in K20 instruction cycles (Tcy).  Each
+    /// chunk advances `chunk_tcy = 200_000 K20-Tcy` (gpsim's
+    /// default `chunk_cycles`) so the hook fires regularly
+    /// during boot.  Once DISPLAY mode is detected, the
+    /// 5-frame BF burst stops (to avoid ring-overflow) but
+    /// the per-chunk force-connected hook continues to keep
+    /// CONNECTED + event-exit set.  This is enough to drive
+    /// the IR / button / preset-action tests in the V1.5b /
+    /// V1.6b port-compatibility suite that need DISPLAY
+    /// mode but no real MAIN peer.  Implicitly also calls
+    /// `enable_force_connected()` so post-warmup `step()` calls
+    /// keep applying the hook.
+    fn warmup_force_connected(&mut self, cycles: u64) {
+        self.force_connected = true;
+        const WARMUP_BF_BURST: [u8; 15] = [
+            0xBF, 0x05, 0x33, // volume = 0x33 (-45 dB)
+            0xBF, 0x07, 0x60, // input = 0x60 (Auto)
+            0xBF, 0x03, 0x01, // mute = off, sets CONNECTED
+            0xBF, 0x06, 0x00, // source config
+            0xBF, 0x1D, 0x00, // display/timeout
+        ];
+        // 2 M Tcy chunks during warmup (matches gpsim's
+        // `warmup_chunk = max(chunk_cycles, 2_000_000)`).  At
+        // 31_250 baud the ring drains ~2602 bytes per 2 M Tcy
+        // chunk, far more than the 15-byte burst, so the burst
+        // never overflows.
+        const CHUNK_TCY: u64 = 2_000_000;
+        let factor = self.tcy_factor();
+        let mut remaining = cycles;
+        let mut display_entered = false;
+        while remaining > 0 {
+            self.apply_force_connected_hook();
+            // Inject the BF status burst every chunk so the
+            // firmware's MAIN-discovery / sentinel-update logic
+            // keeps making progress.  Once we observe DISPLAY
+            // mode (0x01F.bit1 set) for the first time, force
+            // the WAITING-screen sentinels to plausible non-
+            // 0x80 values so the firmware's subsequent
+            // "WAITING entered?" checks succeed (mirror of
+            // `control_gpsim.py::_update_waiting_detection`'s
+            // post-detection seeding).
+            let in_display = {
+                let v = self.inner.cores[self.i_ctl]
+                    .memory
+                    .read_raw(dlcp_sim::memory::Address::from_raw(0x01F));
+                v & 0x02 != 0
+            };
+            if in_display && !display_entered {
+                display_entered = true;
+                let mem = &mut self.inner.cores[self.i_ctl].memory;
+                mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0B8), 0x00); // input_sel
+                mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0B9), 0x33); // volume
+                mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0A7), 0x01); // cmd1d
+                mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0A1), 0x01); // unit_count
+            }
+            self.inject_control_rx_bytes_inner(&WARMUP_BF_BURST);
+            let advance = CHUNK_TCY.min(remaining);
+            self.inner.step_ticks(advance * factor);
+            remaining -= advance;
+        }
     }
 }
 
