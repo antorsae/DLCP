@@ -1705,16 +1705,18 @@ impl Chain {
     /// constructed with `heartbeat_rx_mode in {"full",
     /// "connected_only"}` and `heartbeat_force_connected=True`.
     ///
-    /// `cycles` is in K20 instruction cycles (Tcy).  Each
-    /// chunk advances `chunk_tcy = 200_000 K20-Tcy` (gpsim's
-    /// default `chunk_cycles`) so the hook fires regularly
-    /// during boot.  Once DISPLAY mode is detected, the
-    /// 5-frame BF burst stops (to avoid ring-overflow) but
-    /// the per-chunk force-connected hook continues to keep
-    /// CONNECTED + event-exit set.  This is enough to drive
-    /// the IR / button / preset-action tests in the V1.5b /
-    /// V1.6b port-compatibility suite that need DISPLAY
-    /// mode but no real MAIN peer.  Implicitly also calls
+    /// `cycles` is in K20 instruction cycles (Tcy).  Each chunk
+    /// advances `CHUNK_TCY = 2_000_000 K20-Tcy` (matches gpsim's
+    /// `warmup_chunk = max(chunk_cycles, 2_000_000)`) so the hook
+    /// fires regularly during boot.  Each chunk samples 0x01F.bit1
+    /// BEFORE applying the force-connected hook (the hook itself
+    /// would otherwise set bit1 and make every chunk look like
+    /// "DISPLAY entered"); once the firmware itself reaches
+    /// DISPLAY mode, the BF burst stops (to avoid ring-overflow on
+    /// long warmups) and the WAITING-screen sentinels at
+    /// 0x0B8/0x0B9/0x0A7/0x0A1 are seeded once to plausible non-
+    /// 0x80 values.  The per-chunk force-connected hook continues
+    /// to keep CONNECTED + event-exit set.  Implicitly also calls
     /// `enable_force_connected()` so post-warmup `step()` calls
     /// keep applying the hook.
     fn warmup_force_connected(&mut self, cycles: u64) {
@@ -1726,26 +1728,16 @@ impl Chain {
             0xBF, 0x06, 0x00, // source config
             0xBF, 0x1D, 0x00, // display/timeout
         ];
-        // 2 M Tcy chunks during warmup (matches gpsim's
-        // `warmup_chunk = max(chunk_cycles, 2_000_000)`).  At
-        // 31_250 baud the ring drains ~2602 bytes per 2 M Tcy
-        // chunk, far more than the 15-byte burst, so the burst
-        // never overflows.
         const CHUNK_TCY: u64 = 2_000_000;
         let factor = self.tcy_factor();
         let mut remaining = cycles;
         let mut display_entered = false;
         while remaining > 0 {
-            self.apply_force_connected_hook();
-            // Inject the BF status burst every chunk so the
-            // firmware's MAIN-discovery / sentinel-update logic
-            // keeps making progress.  Once we observe DISPLAY
-            // mode (0x01F.bit1 set) for the first time, force
-            // the WAITING-screen sentinels to plausible non-
-            // 0x80 values so the firmware's subsequent
-            // "WAITING entered?" checks succeed (mirror of
-            // `control_gpsim.py::_update_waiting_detection`'s
-            // post-detection seeding).
+            // Sample DISPLAY mode BEFORE the hook runs.  The hook
+            // sets bit1 itself, so reading after it would always
+            // observe "DISPLAY entered" on the first chunk and
+            // mask the firmware's actual transition (codex MEDIUM
+            // from review of 1a4e0a9).
             let in_display = {
                 let v = self.inner.cores[self.i_ctl]
                     .memory
@@ -1760,7 +1752,16 @@ impl Chain {
                 mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0A7), 0x01); // cmd1d
                 mem.write_raw(dlcp_sim::memory::Address::from_raw(0x0A1), 0x01); // unit_count
             }
-            self.inject_control_rx_bytes_inner(&WARMUP_BF_BURST);
+            self.apply_force_connected_hook();
+            // Mirror of `control_gpsim.py::warmup` -- inject the
+            // 5-frame BF status burst ONLY while the firmware is
+            // still pre-DISPLAY.  Once DISPLAY mode is observed,
+            // stop injecting so the RX ring doesn't accumulate
+            // unread BF replies that would overflow on a long
+            // warmup.
+            if !display_entered {
+                self.inject_control_rx_bytes_inner(&WARMUP_BF_BURST);
+            }
             let advance = CHUNK_TCY.min(remaining);
             self.inner.step_ticks(advance * factor);
             remaining -= advance;
