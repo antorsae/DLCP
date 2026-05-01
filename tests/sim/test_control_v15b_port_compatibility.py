@@ -172,12 +172,14 @@ def _run_action_frames(control_hex: Path, *, pre_keys: list[str], action_key: st
         h.close()
 
 
+@pytest.mark.dual_supported
 def test_control_v151b_static_verifier_accepts_current_patch(patched_control_hex_v151b: Path) -> None:
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V15B)
     patched = parse_intel_hex(patched_control_hex_v151b)
     check_control_v15b(stock, patched)
 
 
+@pytest.mark.dual_supported
 def test_control_v14_v15b_stock_delta_preserved_in_v151b(patched_control_hex_v151b: Path) -> None:
     v14 = parse_intel_hex(STOCK_CONTROL_HEX_V14)
     v15 = parse_intel_hex(STOCK_CONTROL_HEX_V15B)

@@ -267,6 +267,74 @@ fn build_v17_chain_single_main(
     })
 }
 
+/// Build a 1-core CONTROL-only chain (no MAIN, no UART
+/// couplings, no DSP/SRC4382).  Mirror of gpsim's
+/// `GpsimControlHarness` (`src/dlcp_fw/sim/control_gpsim.py`)
+/// when invoked WITHOUT a synthetic-heartbeat pump -- a single
+/// K20 core with an HD44780 LCD slave on the LCD-control pins,
+/// driven by direct register pokes.  Used by V1.7 / V1.71
+/// relocation-safety parity tests that boot CONTROL alone (no
+/// MAIN heartbeats) and assert that stock V1.6b / rebuilt V1.7
+/// / shifted V1.7 advance identical Tcy and emit identical
+/// UART TX byte sequences.
+///
+/// `control_hex_path` accepts any K20 hex (V1.6b stock, V1.7
+/// byte-identical rebuild, V1.7 shifted, V1.71).
+///
+/// The chain has NO MAIN core.  The pyclass `Chain` collapses
+/// `i_main0 == i_main1 == i_ctl` so legacy main-targeting
+/// methods don't crash if accidentally invoked, but
+/// `inject_main_frames_fifo` and `read_dsp_reg` are not
+/// meaningful in this topology.  Without a UART coupling,
+/// `Chain::drain_completed_tx_bytes` falls through to its
+/// loopback-sentinel branch and records every CONTROL TX byte
+/// to `uart_tx_history` with `src_core == dst_core == i_ctl`,
+/// so `tx_frames()` reports CONTROL's USART output even
+/// without a peer (matching MAIN-only chain semantics).
+fn build_v17_control_only_chain(
+    control_hex_path: PathBuf,
+) -> Result<V17SingleMainHandle, String> {
+    let control_hex = HexImage::from_hex_path(&control_hex_path)
+        .map_err(|e| format!("control hex parse ({:?}): {e:?}", control_hex_path))?;
+
+    let control = build_v171_control_core(&control_hex);
+
+    let mut chain = RustChain::new();
+    let i_ctl = chain.push_core(control);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0]);
+
+    // Seed buttons-released AFTER POR (which wipes SFRs).
+    // Mirrors the seeding pattern in
+    // `build_v17_chain_single_main` so a V1.7 boot under
+    // `disable_standby_check=False` does not interpret the
+    // wiped PORTA/PORTC as "buttons stuck pressed".
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+
+    Ok(V17SingleMainHandle {
+        chain,
+        // Collapse i_main0/i_main1 onto i_ctl so legacy main-
+        // targeting methods don't crash if accidentally
+        // invoked.  CONTROL-only callers should not call
+        // inject_main_frames_fifo / read_dsp_reg / etc. --
+        // those only have meaningful semantics in chains with
+        // a real MAIN core.
+        i_ctl,
+        i_main: i_ctl,
+        i_lcd,
+        i_dsp: 0, // placeholder; no DSP slave attached
+    })
+}
+
 /// Build a 1-core MAIN-only chain (no CONTROL, no UART
 /// couplings, no LCD).  Mirror of gpsim's `MainChainHarness`
 /// (`src/dlcp_fw/sim/chain_gpsim.py:254`) -- a single 2455
@@ -755,6 +823,44 @@ impl Chain {
             // Single-MAIN: both legacy main0/main1 getters
             // collapse to the single MAIN's index.  See the
             // pyclass docstring above for rationale.
+            i_main0: handle.i_main,
+            i_main1: handle.i_main,
+            i_lcd: handle.i_lcd,
+            tx_capture_main0: 0,
+        })
+    }
+
+    /// CONTROL-only single-K20 chain: 1 K20 core + HD44780
+    /// LCD slave, no MAIN, no UART couplings, no DSP / SRC4382.
+    /// Mirror of gpsim's `GpsimControlHarness(hex,
+    /// fast_boot=False)` invocation without a synthetic-
+    /// heartbeat pump.
+    ///
+    /// Used by V1.7 / V1.71 relocation-safety tests that boot
+    /// CONTROL alone (no MAIN heartbeats) and assert that
+    /// stock V1.6b, rebuilt V1.7, and shifted V1.7 advance
+    /// identical Tcy and emit identical UART TX byte sequences.
+    /// `current_cycle` and `tx_frames()` work without changes
+    /// (TX bytes are captured via the `drain_completed_tx_bytes`
+    /// loopback-sentinel branch -- the same mechanism that
+    /// makes MAIN-only chains observable).
+    ///
+    /// Methods that require a MAIN core (`inject_main_frames_
+    /// fifo`, `read_dsp_reg`, `set_dsp_i2c_fault`, etc.) will
+    /// silently target CONTROL or raise RuntimeError -- callers
+    /// must not invoke them on this topology.
+    #[staticmethod]
+    fn from_v17_control_only(control_hex_path: String) -> PyResult<Self> {
+        let handle = build_v17_control_only_chain(PathBuf::from(control_hex_path))
+            .map_err(|e| PyRuntimeError::new_err(format!("from_v17_control_only: {e}")))?;
+        Ok(Self {
+            inner: handle.chain,
+            i_ctl: handle.i_ctl,
+            // Collapse main0/main1 onto i_ctl: the chain has
+            // no MAIN core, so legacy main-targeting getters
+            // return CONTROL's index.  Methods that semantically
+            // need a MAIN (DSP regs, frame injection) are not
+            // meaningful in this topology.
             i_main0: handle.i_main,
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,

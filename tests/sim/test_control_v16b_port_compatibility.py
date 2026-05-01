@@ -194,12 +194,14 @@ def _enter_setup_screen(h: GpsimControlHarness, *, max_moves: int = 8) -> tuple[
     raise AssertionError(f"failed to reach Setup screen: lcd={h.lcd_lines()} state=0x{h.read_reg(0x0BF):02X}")
 
 
+@pytest.mark.dual_supported
 def test_control_v161b_static_verifier_accepts_current_patch(patched_control_hex_v161b: Path) -> None:
     stock = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
     patched = parse_intel_hex(patched_control_hex_v161b)
     check_control_v16b(stock, patched)
 
 
+@pytest.mark.dual_supported
 def test_control_v15b_v16b_stock_delta_preserved_in_v161b(patched_control_hex_v161b: Path) -> None:
     v15 = parse_intel_hex(STOCK_CONTROL_HEX_V15B)
     v16 = parse_intel_hex(STOCK_CONTROL_HEX_V16B)
@@ -224,6 +226,7 @@ def test_control_v15b_v16b_stock_delta_preserved_in_v161b(patched_control_hex_v1
     assert v161.get(0x11E8, 0xFF) == 0x68
 
 
+@pytest.mark.dual_supported
 def test_control_v161b_preserves_setup_usb_surface_code_blocks(patched_control_hex_v161b: Path) -> None:
     """Keep V1.6b setup-related blocks byte-identical.
 

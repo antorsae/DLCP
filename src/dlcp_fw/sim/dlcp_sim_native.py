@@ -248,6 +248,33 @@ class Chain:
         """
         return cls(_native.Chain.from_v17_chain(control_hex_path, main_hex_path))
 
+    @classmethod
+    def from_v17_control_only(cls, control_hex_path: str) -> "Chain":
+        """CONTROL-only single-K20 chain (no MAIN, no UART couplings).
+
+        Mirror of gpsim's ``GpsimControlHarness(hex,
+        fast_boot=False)`` invocation without a synthetic-
+        heartbeat pump.  Boots a single K20 core with an
+        HD44780 LCD slave on the LCD-control pins.  Used by
+        V1.7 / V1.71 relocation-safety tests that compare
+        stock V1.6b vs rebuilt V1.7 vs shifted V1.7 in
+        CONTROL-only mode (no MAIN heartbeats) and assert
+        that all three advance identical Tcy and emit
+        identical UART TX byte sequences.
+
+        :attr:`current_cycle` and :meth:`tx_frames` work
+        without changes -- TX bytes are captured via the
+        ``Chain::drain_completed_tx_bytes`` loopback-sentinel
+        branch (the same mechanism that makes MAIN-only
+        chains observable when no UART coupling exists).
+
+        Methods that require a MAIN core
+        (:meth:`inject_main_frames_fifo`, :meth:`read_dsp_reg`,
+        :meth:`set_dsp_i2c_fault`, etc.) are NOT meaningful
+        in this topology -- callers must avoid them.
+        """
+        return cls(_native.Chain.from_v17_control_only(control_hex_path))
+
     def step_ticks(self, n_ticks: int) -> None:
         """Advance the chain's universal scheduler by ``n_ticks``.
 
