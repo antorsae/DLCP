@@ -1,8 +1,12 @@
 # Task #45 — V1.71+V3.2 STDBY/wake asymmetric-recovery field bug
 
-**Status:** root cause not yet determined. 3 ranked hypotheses (codex investigation 2026-05-02) with rust-sim reproduction paths and HW confirm/deny tests for each.
+**Status:** root cause refined — H1 now points to shared-rail coupling, not just generic per-board variance. 3 ranked hypotheses (codex investigations 2026-05-02 and 2026-05-02-pass-2) with rust-sim reproduction paths and HW confirm/deny tests for each.
 **Hardware session:** 2026-04-27 (V1.71 CONTROL + 2× V3.2 MAIN).
-**Existing sim coverage:** symptom-equivalent end-state only (`right_main_held_in_reset_control_stuck_in_waiting`, `control_in_waiting_state_does_not_emit_stdby_frame_on_button_press`, `v32_main_runtime_counters_baseline_and_post_stdby_cycle`, `v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle`).
+**Existing sim coverage:**
+- Symptom-equivalent INJECTED-FAULT reproductions: `v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition` (H1 via MCLR-hold), `v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet` (H2 via per-coupling drop).
+- End-state only: `right_main_held_in_reset_control_stuck_in_waiting`, `control_in_waiting_state_does_not_emit_stdby_frame_on_button_press`.
+- Counter contracts: `v32_main_runtime_counters_baseline_and_post_stdby_cycle`, `v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle`.
+- **What's MISSING for spontaneous reproduction** (no fault injection): a board-level rail-coupling model linking AMP_ENABLE pins to AN0 rail-sense — see §4 below.
 
 ## 1. Field-observation timeline (2026-04-27)
 
@@ -19,15 +23,34 @@ Source: `docs/analysis/HW_2026-04-27_DIAG_AND_STDBY_FINDINGS.md` §6.
 
 ## 2. Three ranked root-cause hypotheses
 
-### H1 (HIGH confidence) — MAIN1 stuck in `adc_boot_gate` due to per-board PSU/MCLR/AN0 wake conditions
+### H1 (HIGH confidence) — MAIN0's wake-time amp-enable transient depresses MAIN1's AN0 rail-sense below threshold (shared-rail coupling)
 
-**Hypothesis**: CONTROL did broadcast wake. MAIN0 received it, `wake_request_handler` raised the event, `standby_event_dispatch` took the bring-up branch, `diag_b → 1`, the bring-up path called `adc_boot_gate` which sampled AN0 until rail-rise threshold `>= 0x0236`, returned, and USB rearmed. MAIN1 received the same wake byte stream but its `adc_boot_gate` never returned because AN0 (rail-sense input) never crossed the threshold — meaning RIGHT MAIN's rail/MCLR/inrush behavior on this specific power cycle didn't bring the board up.
+**Refined hypothesis (2026-05-02 codex pass-2)**: not a generic "per-board variance" issue — a SPECIFIC chain-protocol mechanism that should be **deterministic** given the chain ordering. The bug is not random; it's an emergent property of the silicon-correct ring topology + shared analog rail + amp-enable sequencing.
 
-**Why it fits the timeline**:
-- Single broadcast wake reaches both MAINs; only one completes bring-up because rail-rise / MCLR-release / inrush / local board wake timing is per-board.
-- `adc_boot_gate` has no timeout — it busy-waits for the AN0 sample to cross threshold. If the rail never rises (PSU droop, MCLR held externally, BOR triggered, etc.), MAIN1's CPU stays in that loop indefinitely.
-- USB enumeration only happens after `adc_boot_gate` returns + DSP/coeff-write bring-up completes. Stuck MAIN1 → no USB.
-- Hard mains-side power cycle resets the MAIN's wake-state machine entirely → both rails come up cleanly → both MAINs boot.
+**Pin map** (V3.2 MAIN, codex investigation 2026-05-02-pass-2):
+- **RB3 / LATB.bit3** — primary final amp gate. Driven LOW during STDBY shutdown; driven HIGH late in wake (after DSP mute / coeff-write completes). Cite: `src/dlcp_fw/asm/dlcp_main_v32.asm:4029,4101,6144,8847`.
+- **RB4 / LATB.bit4** — companion amp/rail enable. Raised early in wake BEFORE a 1500 ms settle. Cite: `src/dlcp_fw/asm/dlcp_main_v32.asm:4022-4025,4076-4098`; `docs/NO_POP_FIRMWARE_FLASH.md:80-83`.
+- **RA6 / LATA.bit6** — companion amp/rail enable. Raised before DSP coefficient work. Cite: `src/dlcp_fw/asm/dlcp_main_v32.asm:6118-6119,184-193`.
+- **SRC4382 (cfg71 at I²C 0x71) GPOs `0x1B/0x1C/0x1D`** — rail-control GPOs driving external amp-standby circuits. Cite: `crates/dlcp-sim/src/peripherals/src4382.rs:23-27`; `src/dlcp_fw/asm/dlcp_main_v32.asm:6078-6089`.
+- **RA0 / AN0** — rail-sense ADC input. `adc_boot_gate` (`asm:4041`) busy-waits until sample `>= 0x0236`; runtime hysteresis `0x0229/0x0228`. Cite: `docs/analysis/PIN_SEMANTICS.md:76`; `docs/analysis/MAIN_AN0_STANDBY_TRACE.md:9-23,54-66`.
+- **PCB-level coupling**: `docs/analysis/PIN_SEMANTICS.md:105-107` notes that exact PCB/netlist continuity from `RA6/RB3/RB4` to connector pins is "still required" — i.e. NOT proven in repo. The shared-rail-coupling claim below is INFERRED from firmware behavior + board-doc references, not from the schematic directly.
+
+**Causal chain (deterministic, no fault injection)**:
+
+1. Operator presses panel STBY again. CONTROL emits broadcast `B0/03/01` via `standby_wake_broadcast` (`src/dlcp_fw/asm/dlcp_control_v171.asm:2716`).
+2. Silicon-correct ring delivery: MAIN0 receives the wake byte triplet first via `CTL.tx -> M0.rx`. MAIN1 receives the SAME triplet a few UART bytes later via `M0.tx -> M1.rx` forwarding (MAIN0's parser retransmits on its TX while it dispatches the wake).
+3. Both MAINs enter `wake_request_handler` (asm:1881) → set `active_flags.bit3` + `event_flags.bit2` → `standby_event_dispatch` (asm:8386) → bring-up branch → `diag_b` increments → `adc_boot_gate` (asm:4041) for rail-rise wait.
+4. **Asymmetric exit ordering**: MAIN0's `adc_boot_gate` exits FIRST because MAIN0 entered the loop FIRST (received wake byte first). MAIN0's wake path then drives its amp-enable outputs in sequence: SRC4382 GPO writes (`asm:6078-6089`) → `LATB4` HIGH → 1500 ms settle (`asm:4076-4098`) → `LATA6` HIGH → DSP coeff-write → `LATB3` HIGH (`asm:8847`).
+5. **Shared-rail loading**: when MAIN0 asserts its amp-enable outputs, the audio amplifier rail begins to draw current. If MAIN1's AN0 sense is connected to the SAME rail node (board-level coupling — TBD per `PIN_SEMANTICS.md:105-107`), MAIN0's inrush transiently depresses that rail, dropping MAIN1's AN0 sample below the `0x0236` threshold.
+6. **`adc_boot_gate` has NO timeout** — MAIN1 re-samples AN0, sees the depressed value, stays in the polling loop. If the depression persists long enough (or oscillates near threshold for long enough), MAIN1 never exits.
+7. **Symptom**: MAIN0 finishes wake, brings up USB enumeration, accepts cmd 0x44, returns `S1 B1`. MAIN1 stays in `adc_boot_gate` forever — CPU runs but doesn't return to main loop, USB never rearms (cmd 0x44 absent), MAIN1.TX → CONTROL.RX edge stays silent (no chain heartbeat). CONTROL's reconnect-wait loop times out → LCD shows `Waiting for DLCP`.
+8. **Recovery**: hard mains-side power cycle interrupts the rail entirely → both MAINs cold-boot → both `adc_boot_gate` instances see the rail rise simultaneously from 0V → both exit at the same time → both wake symmetrically.
+
+**Why the existing rust sim doesn't reproduce this spontaneously**:
+- Rust seeds both MAINs' AN0 to STATIC `0x0300` via `MAIN.peripherals.adc.set_an0_sample(0x0300)` in the factory (`crates/dlcp-sim-py/src/lib.rs:472,474`). The value never changes during simulation — both MAINs see `>= 0x0236` always, both exit `adc_boot_gate` immediately, no asymmetric outcome.
+- SRC4382 model is register-only (`crates/dlcp-sim/src/peripherals/src4382.rs:46-52`) — GPO writes latch but don't drive any external rail state.
+- No `RailCoupler` between MAIN0's amp-enable outputs and MAIN1's AN0 input.
+- Both cores have identical clock + boot epoch (no per-MAIN timing variance to make the asymmetric ordering manifest).
 
 **Source citations**:
 - `wake_request_handler:` label at `src/dlcp_fw/asm/dlcp_main_v32.asm:1881`
@@ -113,15 +136,97 @@ While LCD says `Waiting for DLCP`, attempt cmd 0x44 against BOTH MAINs over USB.
 - **Confirm**: both MAINs USB-visible, both gate-open, both healthy via cmd 0x44, but CONTROL RAM shows reconnect sentinels still at `0x80` and BF status bursts at CONTROL RX not reflected in CONTROL cache/state.
 - **Deny**: RIGHT remains USB-absent (the actual T2 observation) — strengthens H1.
 
+## 2.5. Why doesn't the rust simulator reproduce bug #45 spontaneously?
+
+The bug is **deterministic** on real hardware (operator confirms it happens reliably on certain power cycles, not as a spurious random fault). For a deterministic field bug, the simulator SHOULD be able to reproduce it spontaneously without injecting any explicit fault — anything less indicates a sim fidelity gap.
+
+Ranked sim fidelity gaps that mask H1 (codex investigation 2026-05-02-pass-2):
+
+### Gap #1 (CRITICAL for H1 reproduction) — no rail / inrush / AN0 coupling model
+
+Rust seeds both MAINs' AN0 to STATIC `0x0300` via `MAIN.peripherals.adc.set_an0_sample(0x0300)` in the chain factory (`crates/dlcp-sim-py/src/lib.rs:472,474`). The value never changes during simulation. SRC4382 is register-only (`crates/dlcp-sim/src/peripherals/src4382.rs:46-52`) — GPO writes latch but don't drive any external rail state. There is NO `RailCoupler` between MAIN0's amp-enable outputs (RB3/RB4/RA6 + SRC4382 GPOs) and MAIN1's AN0 input.
+
+Without a rail-coupling model, both MAINs see `>= 0x0236` always; both exit `adc_boot_gate` immediately after the wake byte arrives; no asymmetric outcome is possible.
+
+**Minimum change to unblock**: add a `RailCoupler` test model that:
+
+1. Observes MAIN0's writes to SRC4382 `0x1B/0x1C/0x1D` and to `LATB.bit3/bit4` and `LATA.bit6`.
+2. Maintains a "rail node" voltage state with rise/fall/inrush dynamics (rise time ~10s of ms; transient sag on amp-enable assertion).
+3. Drives each MAIN's `adc.set_an0_sample(...)` from the rail node state, sampled per-MAIN with potentially different coupling coefficients (modeling per-board variance).
+
+### Gap #2 (HIGH for H1 reproduction) — no per-board / per-MAIN analog variance
+
+Rust models all cores identically: same clock domain, same boot epoch, same ADC value, same rail timing. Real DLCP silicon has per-board parameter variance (rail rise time, ADC offset, amp-enable transistor characteristics, decoupling capacitance, etc.). For the asymmetric-wake mechanism to manifest, MAIN1's coupling coefficient or threshold margin must differ slightly from MAIN0's.
+
+**Minimum change to unblock**: per-MAIN rail-rise time constants, per-MAIN ADC offset/noise, optionally per-MAIN clock or boot skew (currently both schedule_initial_steps=&[0,0,0]).
+
+### Gap #3 (MEDIUM but lower priority for #45) — POR RAM zeroing
+
+User asked: "Why does rust POR clear RAM to known values? is it equivalent to the PIC datasheet spec?"
+
+**Answer**: rust POR does `memory.clear()` in `crates/dlcp-sim/src/reset.rs:177-193` which wipes RAM to all zeros. The PIC18F2455 datasheet (DS39632E §3.4 "Power-on Reset (POR)") specifies that on POR the GPRs and most SFRs have **"Unknown"** initial state — i.e. silicon does NOT guarantee any particular value. Most SFRs are "u-uuu uuuu" or "xxxx xxxx" per Table 4-3.
+
+Rust's choice to clear to zero is a **deterministic-simulation simplification**, matching gpsim's default behavior. It does NOT match real silicon's "unknown" state — but for bug #45 specifically, it is **NOT the masking factor**, because:
+
+- Bug #45 happens AFTER healthy cold boot + healthy first STDBY/wake cycle.
+- Firmware explicitly initializes the relevant RAM cells during cold init (peripheral state, `active_flags`, `event_flags`, `diag_*` block) and those writes overwrite any POR garbage.
+- The asymmetric-wake mechanism is in the rail/AN0/amp-enable analog domain, not in POR RAM state.
+
+For bug #44 (cmd 0x44 vs LCD divergence), POR RAM zeroing IS a masking factor — the V1.71 diag cache cells (0x180+) start at 0 in rust but at random POR garbage on silicon. See `docs/analysis/TASK_44_LCD_VS_CMD44_DIVERGENCE.md` for that case. For bug #45, fix gap #1 and #2 first.
+
+### Gap #4 (LOW) — adc_boot_gate has no timeout in firmware
+
+This is a FIRMWARE issue, not a sim issue. `adc_boot_gate` busy-waits until AN0 crosses threshold with no timeout. Once MAIN1 is stuck, no firmware-level recovery fires. The mitigation is the adc_boot_gate timeout proposed in `docs/V32_MAIN_HANG_HARDENING_PLAN.md`.
+
+## 2.6. Refined H1 reproduction recipe (without explicit fault injection)
+
+Goal: spontaneous reproduction in rust simulator without `hold_core_in_reset` or per-coupling drop.
+
+```
+1. Build V1.71 + MAIN0 V3.2 + MAIN1 V3.2 chain (existing factory).
+2. Add `RailCoupler` test model:
+   - Inputs: MAIN0's SRC4382 GPO writes (0x1B/0x1C/0x1D) +
+            MAIN0's LATB.bit3/bit4 + MAIN0's LATA.bit6 + MAIN1's
+            corresponding outputs (symmetrical for the bring-up
+            sequence, in case the coupling is bidirectional).
+   - State: a single shared "rail voltage" value, advancing via
+            ODE-like rise/fall/inrush dynamics on a tick step.
+   - Output: drives each MAIN's adc_an0_sample value once per Tcy.
+3. Tuning parameters:
+   - Per-MAIN base rail rise constant (small variance enough to
+     guarantee MAIN0 exits adc_boot_gate first).
+   - Inrush sag depth + recovery time when amp-enable asserts
+     (must drop below 0x0236 long enough for MAIN1's
+     adc_boot_gate polling cycle to re-sample and stay below
+     threshold).
+4. Run STDBY broadcast as in the existing tests.  No explicit fault.
+5. Inject WAKE.  Observe:
+   - MAIN0 exits adc_boot_gate first, completes wake.
+   - MAIN1's AN0 was depressed by MAIN0's amp-enable activity;
+     MAIN1 stays in adc_boot_gate.
+6. Assertion: same as existing H1 injected-fault test (MAIN0 woke,
+   MAIN1 stuck), but achieved without explicit fault.
+```
+
+If the spontaneous reproduction matches the existing INJECTED-fault tests' chain-level outcome, that is strong evidence that H1 (shared-rail coupling) is the actual root cause.
+
+If the spontaneous reproduction does NOT manifest the asymmetric outcome with reasonable parameters, that's evidence the mechanism is something else (forwarder bug per H2, or different rail topology, etc.).
+
+**Implementation cost estimate**: 200-400 lines for the RailCoupler model, plus parameter tuning. Substantial work. Tracked as a follow-up below.
+
 ## 3. Recommended next investigation steps
 
 ### A. Rust-sim work (no HW required)
 
-**A1. Build the H1 reproduction (HIGHEST priority)**: dynamic 3-core test with parser-driven STDBY + `hold_core_in_reset(MAIN1)` mid-cycle + parser-driven WAKE + LCD-WAITING assertion. Re-uses `v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle` shape with multi-core + reset-hold injection. Estimated ~150 lines.
+**A1. Build the H1 INJECTED-FAULT reproduction (DONE 2026-05-02, commit 93092d6)**: dynamic 3-core test with parser-driven STDBY + `hold_core_in_reset(MAIN1)` mid-cycle + parser-driven WAKE + asymmetric outcome assertion. Re-uses `v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle` shape with multi-core + reset-hold injection. Test name: `v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition`.
 
-**A2. Add per-coupling UART fault primitive (for H2)**: extend `Chain::set_uart_blackout` to a per-coupling form `Chain::set_uart_coupling_drop(coupling_idx, drop_count)`. This generalizes the existing whole-chain blackout and unblocks H2 reproduction + ~25 wire-chain fault-injection tests in P4.7 (gpsim has the gpsim-side equivalent `set_link_fault`). Estimated ~80 lines rust + facade.
+**A2. Add per-coupling UART fault primitive (DONE 2026-05-02, commit 93092d6)**: `Chain::set_uart_coupling_drop(coupling_idx, drop_count)` generalizes the existing whole-chain `set_uart_blackout` and unblocks H2 reproduction + ~25 wire-chain fault-injection tests in P4.7. Mirror of gpsim's `set_link_fault(name, drop=True)`. Used by H2 test `v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet`.
 
 **A3. Upgrade test #49 with the deferred 3-way diagnostic (for H3 sub-behavior)**: extend the existing test to also probe 0x09A debounce counter, 0x0BE button-edge state, 0x01F.bit1 CONNECTED before/after the STBY press while CONTROL is in WAITING. Classifies the gate as structural vs soft. Estimated ~30 lines.
+
+**A4. Build the H1 SPONTANEOUS reproduction via RailCoupler model (HIGH priority — see §2.6)**: new `RailCoupler` test fixture that observes MAIN0's amp-enable outputs (RB3/RB4/RA6 + SRC4382 GPOs) and drives both MAINs' AN0 samples from a shared rail-voltage state with rise/fall/inrush dynamics. Goal: reproduce the asymmetric wake without injecting any explicit fault. Estimated 200-400 lines + parameter tuning. Strong evidence for H1 if it works; falsifies H1 if it cannot manifest with reasonable parameters. Pre-requisite: instrument SRC4382 GPO writes + LATB/LATA observable from chain-level test code.
+
+**A5. Add per-MAIN AN0 setter to PyO3 facade (for H1 partial reproduction at the Python facade)**: `Chain::set_main_an0_sample(unit, value)` allows test scripts to model rail droop on MAIN1 specifically (set AN0 below 0x0236 just before wake). Lighter-weight than the full RailCoupler in A4 — useful as a Python-facade-only stop-gap test. Estimated ~30 lines rust facade.
 
 ### B. Hardware operator session (required for full root-cause)
 
@@ -144,5 +249,18 @@ If B1 confirms H1, the firmware-level mitigation is to add a TIMEOUT to `adc_boo
 - `crates/dlcp-sim/tests/multicore_parity.rs::right_main_held_in_reset_control_stuck_in_waiting` — symptom-equivalent end-state model
 - `crates/dlcp-sim/tests/multicore_parity.rs::control_in_waiting_state_does_not_emit_stdby_frame_on_button_press` — T4 input-gate contract
 - `crates/dlcp-sim/tests/multicore_parity.rs::v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle` — full parser-driven STDBY/WAKE/STDBY single-MAIN baseline (closes task #51)
-- `src/dlcp_fw/asm/dlcp_main_v32.asm:4008` — adc_boot_gate (the H1 stuck point)
+- `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition` — H1 INJECTED-FAULT reproduction (commit 93092d6)
+- `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet` — H2 INJECTED-FAULT reproduction (commit 93092d6)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4041` — `adc_boot_gate:` label (the H1 stuck point; loop body at :4049; header comment at :4008)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4022-4025` — early-wake LATB.bit4 raise (RB4 amp/rail enable) + 1500 ms settle
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:6118-6119` — pre-DSP-coeff LATA.bit6 raise (RA6 amp/rail enable)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:8847` — late-wake LATB.bit3 raise (RB3 final amp gate)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:6078-6089` — SRC4382 GPO writes (`0x1B/0x1C/0x1D` rail control)
 - `src/dlcp_fw/asm/dlcp_control_v171.asm:5018` — V1.71 reconnect_wait_loop button gate (the H3-confirmed STBY-ignored mechanism)
+- `crates/dlcp-sim-py/src/lib.rs:472,474` — STATIC `set_an0_sample(0x0300)` seed (the sim fidelity gap that prevents spontaneous H1 reproduction)
+- `crates/dlcp-sim/src/peripherals/src4382.rs:46-52` — SRC4382 register-only model (no rail-state side effects)
+- `crates/dlcp-sim/src/reset.rs:177-193` — POR `memory.clear()` zeros RAM; PIC18F2455 datasheet DS39632E §3.4 specifies POR RAM as "unknown" so this is a deterministic-simulation simplification (NOT silicon-faithful, but lower-priority for #45 because firmware overwrites the relevant cells during cold init)
+- `docs/analysis/PIN_SEMANTICS.md:76` — RA0/AN0 standby/rail-sense semantics
+- `docs/analysis/PIN_SEMANTICS.md:105-107` — OPEN QUESTION: PCB netlist continuity from RA6/RB3/RB4 to connector pins (NOT proven in repo; the shared-rail-coupling claim in §H1 is INFERRED, not directly verified)
+- `docs/analysis/MAIN_AN0_STANDBY_TRACE.md:9-23,54-66` — AN0 threshold/hysteresis values (`>= 0x0236` boot, `0x0229/0x0228` runtime hysteresis)
+- `firmware/reference/dlcp.md:417-418,497-503` — board-doc references to `Amplifier standby` (J16/J4) and `Supply standby`
