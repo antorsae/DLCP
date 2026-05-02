@@ -3318,13 +3318,18 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 /// MODEL what we hypothesize the field-bug condition looks like at
 /// the chain-protocol level.  The test's value is twofold:
 ///
-///   1. **Regression gate**: a future firmware mitigation (e.g.
-///      `adc_boot_gate` timeout per `docs/V32_MAIN_HANG_HARDENING_PLAN.md`)
-///      should change this test's assertions -- with the fix, MAIN1
-///      should at least *attempt* dispatch (even if eventually
-///      reverting to standby) rather than stay frozen in active=0x30
-///      forever.  Without the fix, the held-condition produces the
-///      asymmetric outcome documented here.
+///   1. **Regression gate (firmware-orthogonal contract)**: this
+///      test models the MCLR-HELD failure mode specifically -- the
+///      CPU is not running while held, so a *firmware* timeout
+///      (e.g. `adc_boot_gate` timeout per
+///      `docs/V32_MAIN_HANG_HARDENING_PLAN.md`) cannot fire because
+///      no firmware is executing.  The contract this test pins is
+///      the chain-protocol response to "MAIN1's CPU is unavailable":
+///      MAIN0 wakes alone, MAIN1 stays gate-closed.  A separate
+///      future test using `set_an0_sample(MAIN1, 0x0000)` (CPU
+///      running but stuck in adc_boot_gate's polling loop) would
+///      exercise the firmware-timeout path and become the
+///      regression gate for the timeout fix.
 ///   2. **Hypothesis check**: if HW operator captures during the
 ///      next field reproduction show wake bytes arriving cleanly at
 ///      MAIN1's UART RX but MAIN1's CPU not advancing (MCLR/rail
@@ -3348,12 +3353,16 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 ///         the forwarded bytes and ALSO dispatches standby.  Verify
 ///         BOTH MAINs `diag_s>=1` and `active_flags.bit3` cleared.
 /// Step 3: Hold MAIN1 in reset BEFORE WAKE injection.  Models the
-///         hardware-observed condition where MAIN1's MCLR is held LOW
-///         (or, equivalently, AN0 rail-sense never crosses
-///         `adc_boot_gate`'s 0x0236 threshold).  After this point
-///         MAIN1's CPU does not advance instructions, so any wake byte
-///         arriving at its RX is silently buffered with no firmware
-///         handling.
+///         MCLR-held-LOW hardware condition specifically.  An
+///         AN0-stuck variant (`set_an0_sample(MAIN1, 0x0000)`) is
+///         a related but distinct failure mode where the CPU runs
+///         but stays in adc_boot_gate's polling loop indefinitely;
+///         that variant is left for a future test.  After this
+///         point MAIN1's CPU does not advance instructions; any
+///         wake byte arriving at its UART pin gets recorded in
+///         `uart_tx_history` (wire attempt) but is dropped at the
+///         MCLR-held gate inside `Chain::deliver_uart_byte` BEFORE
+///         reaching MAIN1's RCREG, so no firmware handling occurs.
 /// Step 4: Inject parser-driven WAKE (B0/03/01) into MAIN0's RX ring.
 ///         MAIN0 dispatches wake_request_handler -> diag_b=1, gate
 ///         re-opens.  MAIN0's TX retransmits to MAIN1, but MAIN1 is
@@ -3693,13 +3702,19 @@ fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
     assert_eq!(read_main1(&chain, 0x2E7), 1, "MAIN1 STDBY dispatched (forward worked)");
 
     // ----- Arm the M0->M1 wire fault BEFORE wake -----
-    // Drop a generous count to cover MAIN0's full retransmit during
-    // the wake window (the firmware path may emit more than just the
-    // 3 wake-triplet bytes -- e.g. status frames or the sentinel
-    // burst between handler calls).  256 is well past anything MAIN0
-    // could re-emit during the bounded wake-dispatch window.  The
-    // alternative is a gpsim-style "blackout for N source-Tcy" model
-    // which would be a different primitive shape.
+    // Drop a generous count to keep the M0->M1 segment "broken" for
+    // the duration of the bounded `run_until` predicate below
+    // (which exits as soon as MAIN0 `diag_b >= 1`).  The wake
+    // triplet alone is 3 bytes; in practice the gate fires before
+    // any further M0 retransmit pressure builds.  256 is a safety
+    // ceiling for the current code path -- if MAIN0 ever ends up
+    // emitting more than 256 bytes between wake-injection and the
+    // diag_b>=1 gate, the post-budget bytes WOULD reach MAIN1 and
+    // dispatch wake there, failing the MAIN1 `diag_b == 0`
+    // assertion at the bottom of the test.  In that case, either
+    // raise the drop count or re-arm inside the run_until predicate.
+    // The alternative is a gpsim-style "blackout for N source-Tcy"
+    // model which would be a different primitive shape.
     chain.set_uart_coupling_drop(coupling_m0_to_m1, 256);
 
     // ----- Inject WAKE -----
