@@ -3109,7 +3109,7 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
 }
 
 /// P3.8a-parser-driven (closes task #51) — full UART-frame-driven
-/// STDBY/wake cycle through the parser.
+/// STDBY/wake/STDBY cycle through the parser.
 ///
 /// The original P3.8a test seeds the post-handler state directly
 /// (`event_flags.bit2 = 1` + chosen `active_flags.bit3` value) because
@@ -3121,32 +3121,42 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
 /// Filed as task #51 follow-up.
 ///
 /// Investigation (2026-05-02): the parser-driven path works fine; the
-/// gap was wake-settle time.  After `wake_request_handler` calls
-/// `adc_boot_gate` (`asm:5081+`) for the rail-rise blocking wait, the
-/// CPU stays in that loop for ~10 M Tcy before returning to the main
-/// service loop.  An STDBY frame injected before the wake settles will
-/// sit in the rx_ring (rd stays 0, wr advances) because the parser
-/// service routine isn't running.  Once wake completes, the parser
+/// gap was settle time after `adc_boot_gate` (`asm:5081+`).  Both cold
+/// boot AND `wake_request_handler` route through `adc_boot_gate` for
+/// the rail-rise blocking wait, which holds the CPU in that loop for
+/// ~10 M Tcy before returning to the main service loop.  Any frame
+/// injected during that window sits in the rx_ring (rd stays at the
+/// pre-injection value, wr advances) because the parser service
+/// routine isn't running.  Once `adc_boot_gate` returns, the parser
 /// drains the ring and dispatches normally.
 ///
-/// Bisected boundary: STDBY frame injected
-///   - 5 M Tcy after wake -> never processed (rx ring stuck)
-///   - 9.5 M Tcy after wake -> never processed
-///   - 10 M Tcy after wake -> processed within 0.5 M Tcy (gate closes,
-///     diag_s increments, event_flags.bit2 cleared)
-///
-/// The boundary is sharp (not gradual) which is consistent with a
+/// Bisected boundary (STDBY frame after wake): processed within
+/// 0.5 M Tcy of injection at >=10 M Tcy settle; not processed at
+/// <=9.5 M Tcy settle.  Sharp (not gradual), consistent with a
 /// specific firmware completion gate at ~10 M Tcy.
 ///
+/// Test sequence:
+///
+///   1. Boot to DSP ACK threshold (cold boot opens the gate by setting
+///      active_flags.bit3 BEFORE entering adc_boot_gate at asm:5124).
+///   2. Settle 15 M Tcy past boot to clear adc_boot_gate.
+///   3. PARSER-DRIVEN STDBY: inject B0/03/00, wait for gate close +
+///      diag_s=1 + event consumed.
+///   4. PARSER-DRIVEN WAKE: inject B0/03/01, wait for gate open +
+///      diag_b=1.  The wake handler then re-enters adc_boot_gate.
+///   5. Settle 15 M Tcy past wake.
+///   6. PARSER-DRIVEN STDBY (second): inject B0/03/00, wait for gate
+///      close + diag_s=2.  Proves the cycle repeats.
+///
 /// **Bug #45 relevance**: this closes a sim-fidelity question that was
-/// blocking parser-driven STDBY/wake reproduction in rust.  With
-/// parser-driven STDBY working, future investigations of the
+/// blocking parser-driven STDBY/wake reproduction in rust.  With the
+/// full parser cycle working, future investigations of the
 /// hardware-observed asymmetric-wake field bug (#45) can model the
-/// FULL CONTROL→MAIN STDBY cycle (CONTROL emits the panel-button-
-/// triggered B0/03/00 frame over UART → MAIN parser dispatches),
-/// rather than seeding post-handler state directly.
+/// FULL CONTROL→MAIN STDBY cycle (CONTROL emits panel-button-triggered
+/// B0/03/00 over UART → MAIN parser dispatches), rather than seeding
+/// post-handler state directly.
 #[test]
-fn v32_main_parser_driven_stdby_cycle_after_wake_settle() {
+fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     use dlcp_sim::memory::Address;
 
     let v32 = HexImage::from_hex_path(v32_main_hex_path())
@@ -3165,33 +3175,15 @@ fn v32_main_parser_driven_stdby_cycle_after_wake_settle() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0]);
 
-    // Boot until DSP ack threshold so periodic main-service loop is
-    // running.  Less aggressive than the P3.8a test's GIE+ack double
-    // gate; the main loop is up well before GIE on the rust scheduler.
-    chain.run_until(
-        10_000_000,
-        2_000_000_000,
-        |c| c.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
-    );
-    assert!(
-        chain.current_tick < 2_000_000_000,
-        "boot did not converge before 2 B-tick safety ceiling"
-    );
-
     // RAM map (per `src/dlcp_fw/asm/dlcp_main_ram.inc`):
     //   0x05E = active_flags        (bit3 = gate open)
     //   0x07E = event_flags         (bit2 = standby/wake event pending)
-    //   0x2E5 = diag_i               (I -- I2C transport faults)
     //   0x2E7 = diag_s               (standby dispatches)
     //   0x2E8 = diag_b               (bring-up / wake dispatches)
-    //   0x0C6 = rx_ring_rd
-    //   0x0C7 = rx_ring_wr
     let read_u8 = |c: &Chain, addr: u16| -> u8 {
         c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
     };
     let inject_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
-        // Mirror of `Chain::inject_main_frames_fifo` via direct ring
-        // write (no Python facade in rust crate tests).
         const RING_BASE: u16 = 0x0200;
         const RING_SIZE: u16 = 0xC0;
         const RX_WR: u16 = 0x0C7;
@@ -3204,69 +3196,101 @@ fn v32_main_parser_driven_stdby_cycle_after_wake_settle() {
         mem.write_raw(Address::from_raw(RX_WR), wr as u8);
     };
 
-    // ----- Phase 1: wake via B0/03/01 -----
-    inject_frame(&mut chain, 0xB0, 0x03, 0x01);
-    chain.run_until(1_000_000, 2_000_000_000, |c| {
-        c.cores[i_main0].memory.read_raw(Address::from_raw(0x05E)) & 0x08 != 0
-    });
+    // ----- Phase 1: cold boot to DSP ACK threshold -----
+    chain.run_until(
+        10_000_000,
+        2_000_000_000,
+        |c| c.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
+    );
+    assert!(
+        chain.current_tick < 2_000_000_000,
+        "boot did not converge before 2 B-tick safety ceiling"
+    );
+
+    // After cold boot, V3.2 sets active_flags.bit3 BEFORE entering
+    // adc_boot_gate (`asm:5124`), so the gate is OPEN when the boot
+    // gate's rail-rise wait completes.  Sanity-check that.
+    chain.step_ticks(15_000_000 * 12); // 15 M Tcy boot-settle (past adc_boot_gate)
+    let af_after_boot = read_u8(&chain, 0x05E);
+    let diag_s_after_boot = read_u8(&chain, 0x2E7);
+    let diag_b_after_boot = read_u8(&chain, 0x2E8);
+    eprintln!(
+        "P3.8a-parser after-boot+settle: af=0x{af_after_boot:02X} \
+         diag_s=0x{diag_s_after_boot:02X} diag_b=0x{diag_b_after_boot:02X}"
+    );
     assert_eq!(
-        read_u8(&chain, 0x05E) & 0x08,
+        af_after_boot & 0x08,
         0x08,
-        "wake frame B0/03/01 must set active_flags.bit3"
+        "post-boot active_flags.bit3 must be SET (V3.2 cold-init opens gate); \
+         got af=0x{af_after_boot:02X}"
     );
 
-    // ----- Phase 2: wake-settle window -----
-    // Empirically bisected: STDBY frame injected before ~10 M Tcy
-    // after wake stays in rx_ring (parser is in adc_boot_gate's
-    // rail-rise wait); after ~10 M Tcy the parser drains and
-    // dispatches normally.  Using 15 M Tcy for safety margin.
-    chain.step_ticks(15_000_000 * 12); // 15 M Tcy * 12 ticks/Tcy
-
-    // ----- Phase 3: STDBY via B0/03/00 -----
-    let af_pre_stdby = read_u8(&chain, 0x05E);
-    let ef_pre_stdby = read_u8(&chain, 0x07E);
-    let diag_s_pre_stdby = read_u8(&chain, 0x2E7);
-    eprintln!(
-        "P3.8a-parser pre-STDBY: af=0x{af_pre_stdby:02X} ef=0x{ef_pre_stdby:02X} \
-         diag_s=0x{diag_s_pre_stdby:02X}"
-    );
+    // ----- Phase 2: parser-driven STDBY (gate-open -> closed) -----
     inject_frame(&mut chain, 0xB0, 0x03, 0x00);
-
-    // Run until the gate closes (active_flags.bit3 cleared).
+    // Wait for BOTH the gate close (standby_request_handler asm:1916)
+    // AND the event consumption (standby_event_dispatch asm:8399 clears
+    // event_flags.bit2 and increments diag_s).  Waiting for diag_s>=1
+    // is the tighter predicate -- it implies the dispatch path ran end
+    // to end.
     chain.run_until(500_000, 2_000_000_000, |c| {
-        let af = c.cores[i_main0].memory.read_raw(Address::from_raw(0x05E));
-        af & 0x08 == 0
+        c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7)) >= 1
     });
-
-    let af_post_stdby = read_u8(&chain, 0x05E);
-    let ef_post_stdby = read_u8(&chain, 0x07E);
-    let diag_s_post_stdby = read_u8(&chain, 0x2E7);
-    let diag_b_post_stdby = read_u8(&chain, 0x2E8);
-    eprintln!(
-        "P3.8a-parser post-STDBY: af=0x{af_post_stdby:02X} ef=0x{ef_post_stdby:02X} \
-         diag_s=0x{diag_s_post_stdby:02X} diag_b=0x{diag_b_post_stdby:02X}"
-    );
+    let af1 = read_u8(&chain, 0x05E);
+    let ef1 = read_u8(&chain, 0x07E);
+    let diag_s1 = read_u8(&chain, 0x2E7);
+    eprintln!("P3.8a-parser post-STDBY1: af=0x{af1:02X} ef=0x{ef1:02X} diag_s=0x{diag_s1:02X}");
     assert_eq!(
-        af_post_stdby & 0x08,
-        0,
-        "STDBY frame B0/03/00 (parser-driven) must clear active_flags.bit3; \
-         got af=0x{af_post_stdby:02X}"
+        af1 & 0x08, 0,
+        "STDBY1: active_flags.bit3 must be CLEAR; got af=0x{af1:02X}"
     );
+    assert_eq!(diag_s1, 1, "STDBY1: diag_s must be 1; got 0x{diag_s1:02X}");
     assert_eq!(
-        diag_s_post_stdby, 1,
-        "STDBY dispatch must increment diag_s (0x2E7) to 1; \
-         got 0x{diag_s_post_stdby:02X}"
-    );
-    assert_eq!(
-        ef_post_stdby & 0x04,
-        0,
-        "STDBY dispatch must consume event_flags.bit2; \
-         got ef=0x{ef_post_stdby:02X}"
+        ef1 & 0x04, 0,
+        "STDBY1: event_flags.bit2 must be CLEAR (dispatch consumed); got ef=0x{ef1:02X}"
     );
 
+    // ----- Phase 3: parser-driven WAKE (gate-closed -> open) -----
+    // wake_request_handler at asm:1881 sets event_flags.bit2 + sets
+    // active_flags.bit3 (BEFORE adc_boot_gate); then standby_event_dispatch
+    // takes the bring-up branch and increments diag_b.  diag_b=1 is the
+    // tighter end-to-end predicate.
+    inject_frame(&mut chain, 0xB0, 0x03, 0x01);
+    chain.run_until(500_000, 2_000_000_000, |c| {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E8)) >= 1
+    });
+    let af2 = read_u8(&chain, 0x05E);
+    let diag_b2 = read_u8(&chain, 0x2E8);
+    eprintln!("P3.8a-parser post-WAKE: af=0x{af2:02X} diag_b=0x{diag_b2:02X}");
+    assert_eq!(
+        af2 & 0x08,
+        0x08,
+        "WAKE: active_flags.bit3 must be SET; got af=0x{af2:02X}"
+    );
+    assert_eq!(diag_b2, 1, "WAKE: diag_b must be 1; got 0x{diag_b2:02X}");
+
+    // ----- Phase 4: wake-settle (re-enters adc_boot_gate) -----
+    chain.step_ticks(15_000_000 * 12); // 15 M Tcy wake-settle
+
+    // ----- Phase 5: parser-driven STDBY (second time, proves repeatable) -----
+    inject_frame(&mut chain, 0xB0, 0x03, 0x00);
+    chain.run_until(500_000, 2_000_000_000, |c| {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7)) >= 2
+    });
+    let af3 = read_u8(&chain, 0x05E);
+    let diag_s3 = read_u8(&chain, 0x2E7);
+    eprintln!("P3.8a-parser post-STDBY2: af=0x{af3:02X} diag_s=0x{diag_s3:02X}");
+    assert_eq!(
+        af3 & 0x08, 0,
+        "STDBY2: active_flags.bit3 must be CLEAR; got af=0x{af3:02X}"
+    );
+    assert_eq!(
+        diag_s3, 2,
+        "STDBY2: diag_s must be 2 (incremented again); got 0x{diag_s3:02X}"
+    );
+
     eprintln!(
-        "P3.8a-parser OK (closes task #51): wake-settle=15 M Tcy then \
-         B0/03/00 dispatches via parser path, diag_s->1, gate closed."
+        "P3.8a-parser OK (closes task #51): full STDBY/WAKE/STDBY cycle \
+         dispatches via parser path; diag_s->2, diag_b->1."
     );
 }
 
