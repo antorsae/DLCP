@@ -117,13 +117,26 @@ def main() -> int:
         flag = "OK" if match else "DIFFER"
         print(f"          0x{PB1_BASE + i:03X} = 0x{actual:02X} (seeded 0x{expected:02X}) {flag}")
 
+    # Strict reproduction gate: LCD MUST equal the seeded-cache pattern
+    # exactly so the persisted script doesn't false-pass on partial
+    # convergence (e.g. line0 starting with "PB1:" but holding
+    # "PB1: I0 D0 ..." because the cache got cleared between seed and
+    # render).
+    EXPECTED_LINE0 = "PB1: I+ D1 SE B4"
+    EXPECTED_LINE1 = "RA A3 P8        "
+
+    line0_match = (line0 == EXPECTED_LINE0)
+    line1_match = (line1 == EXPECTED_LINE1)
+    redraw_ok = (redraw_chunk >= 0)
+
     print()
     print("=" * 70)
     print("BUG #44 REPRODUCTION VERDICT:")
-    if line0.startswith("PB1:") and all_match and redraw_chunk >= 0:
+    if line0_match and line1_match and all_match and redraw_ok:
         print("  - LCD shows substantial cell content sourced from CONTROL cache")
-        print("  - LCD content matches real-HW PB1 capture pattern")
-        print("    (I+ D1 SE B4 / RA A3 P8)")
+        print(f"  - line0 == {EXPECTED_LINE0!r}  OK")
+        print(f"  - line1 == {EXPECTED_LINE1!r}  OK")
+        print("  - LCD content matches real-HW PB1 capture pattern exactly")
         print("  - Cache values are independent RAM from MAIN0 runtime counters")
         print("  - CONTROL render-from-cache architecture allows LCD to desync")
         print("    from MAIN runtime cells when cache holds non-MAIN values")
@@ -135,9 +148,10 @@ def main() -> int:
         return 0
 
     print(
-        f"  Reproduction did not converge: line0.startswith('PB1:')="
-        f"{line0.startswith('PB1:')}; cache_match={all_match}; "
-        f"redraw_chunk={redraw_chunk}"
+        f"  Reproduction did not converge:"
+        f"\n    line0 = {line0!r}  (expected {EXPECTED_LINE0!r}, match={line0_match})"
+        f"\n    line1 = {line1!r}  (expected {EXPECTED_LINE1!r}, match={line1_match})"
+        f"\n    cache_match={all_match}; redraw_chunk={redraw_chunk}"
     )
     print("=" * 70)
     return 1

@@ -58,10 +58,11 @@ with 0. So the cache CAN be made consistent with MAIN, given a successful reply 
 
 ### What goes wrong
 
-V1.71 `app_cold_init` (`src/dlcp_fw/asm/dlcp_control_v171.asm:752+`) configures peripherals
-(TBLPTRU, RCSTA, TRIS, ANSEL, ADC, IOCB, baud rate, RCSTA.SPEN, RCSTA.CREN), but does **NOT**
-zero the diag cache cells at 0x180..0x191. After POR the cache holds whatever random RAM state
-the silicon left there.
+V1.71 `app_cold_init` (`src/dlcp_fw/asm/dlcp_control_v171.asm:752..784`) configures peripherals
+(TBLPTRU, RCSTA, TRIS, ANSEL, ADC, IOCB, baud rate, RCSTA.SPEN, RCSTA.CREN), then jumps to
+`flow_ccs_0FA0_103C` (asm:784 `goto flow_ccs_0FA0_103C`).  It does **NOT** zero the diag cache
+cells at 0x180..0x195 (PB1 11 cells at 0x180..0x18A + PB2 11 cells at 0x18B..0x195) before the
+final `goto`.  After POR the cache holds whatever random RAM state the silicon left there.
 
 If a BF/2N reply burst delivers **all 11 cells**, the cache fully overwrites the POR garbage and
 LCD matches cmd 0x44. But if any BF/2N frame is dropped — and on real silicon at least some are,
@@ -150,48 +151,63 @@ that allows the field bug, without modeling the random POR RAM state itself.
 
 **Initialize the diag cache cells to zero in `app_cold_init`.**
 
-Add the following at the end of `app_cold_init` in `src/dlcp_fw/asm/dlcp_control_v171.asm`
-(just before `isr_entry:` at asm:786), guarded by `movlb 0x01`:
+Insert the following block IN PLACE of (i.e., immediately before) the existing
+`goto flow_ccs_0FA0_103C` at `src/dlcp_fw/asm/dlcp_control_v171.asm:784`.  The current
+`app_cold_init` ends with `bsf RCSTA, CREN, A` at asm:783 followed by an unconditional `goto`
+at asm:784; any block placed AFTER the `goto` (e.g. between asm:784 and `isr_entry:` at
+asm:786) is unreachable, so the new clrfs MUST be inserted before line 784.
 
 ```asm
-        ; Zero the V1.71 Tier-1 diag cache cells (0x180..0x195).
+        ; ... existing app_cold_init body up through asm:783 ...
+        bsf     RCSTA, CREN, A                              ; reg: 0xfab, bit: 4 (asm:783)
+
+        ; --- Task #44 fix: zero the V1.71 Tier-1 diag cache cells ---
         ; Without this, the cells start at random POR RAM and a partial
         ; BF/2N reply burst (e.g. some frames dropped by the parser-stall
         ; watchdog v171_service_rx_frame_gap) leaves the LCD rendering
         ; garbage that diverges from cmd 0x44's direct read of MAIN BANK 2.
         ; See docs/analysis/TASK_44_LCD_VS_CMD44_DIVERGENCE.md.
         movlb   0x01
-        clrf    v171_diag_pb1_i,        BANKED  ; 0x180
-        clrf    v171_diag_pb1_d,        BANKED  ; 0x181
-        clrf    v171_diag_pb1_s,        BANKED  ; 0x182
-        clrf    v171_diag_pb1_b,        BANKED  ; 0x183
-        clrf    v171_diag_pb1_r,        BANKED  ; 0x184
-        clrf    v171_diag_pb1_a,        BANKED  ; 0x185
-        clrf    v171_diag_pb1_p,        BANKED  ; 0x186
-        clrf    v171_diag_pb1_reset_por,BANKED  ; 0x187
-        clrf    v171_diag_pb1_reset_bor,BANKED  ; 0x188
-        clrf    v171_diag_pb1_reset_wdt,BANKED  ; 0x189
-        clrf    v171_diag_pb1_reset_sw, BANKED  ; 0x18A
-        clrf    v171_diag_pb2_i,        BANKED  ; 0x18B
-        clrf    v171_diag_pb2_d,        BANKED  ; 0x18C
-        clrf    v171_diag_pb2_s,        BANKED  ; 0x18D
-        clrf    v171_diag_pb2_b,        BANKED  ; 0x18E
-        clrf    v171_diag_pb2_r,        BANKED  ; 0x18F
-        clrf    v171_diag_pb2_a,        BANKED  ; 0x190
-        clrf    v171_diag_pb2_p,        BANKED  ; 0x191
-        clrf    v171_diag_pb2_reset_por,BANKED  ; 0x192
-        clrf    v171_diag_pb2_reset_bor,BANKED  ; 0x193
-        clrf    v171_diag_pb2_reset_wdt,BANKED  ; 0x194
-        clrf    v171_diag_pb2_reset_sw, BANKED  ; 0x195
-        clrf    v171_diag_present,      BANKED  ; 0x197
-        clrf    v171_diag_target,       BANKED  ; 0x196
-        clrf    v171_diag_reset_seen,   BANKED  ; (Tier-1; also 0x198 if present)
+        clrf    v171_diag_pb1_i,        BANKED  ; phys 0x180
+        clrf    v171_diag_pb1_d,        BANKED  ; phys 0x181
+        clrf    v171_diag_pb1_s,        BANKED  ; phys 0x182
+        clrf    v171_diag_pb1_b,        BANKED  ; phys 0x183
+        clrf    v171_diag_pb1_r,        BANKED  ; phys 0x184
+        clrf    v171_diag_pb1_a,        BANKED  ; phys 0x185
+        clrf    v171_diag_pb1_p,        BANKED  ; phys 0x186
+        clrf    v171_diag_pb1_reset_por,BANKED  ; phys 0x187
+        clrf    v171_diag_pb1_reset_bor,BANKED  ; phys 0x188
+        clrf    v171_diag_pb1_reset_wdt,BANKED  ; phys 0x189
+        clrf    v171_diag_pb1_reset_sw, BANKED  ; phys 0x18A
+        clrf    v171_diag_pb2_i,        BANKED  ; phys 0x18B
+        clrf    v171_diag_pb2_d,        BANKED  ; phys 0x18C
+        clrf    v171_diag_pb2_s,        BANKED  ; phys 0x18D
+        clrf    v171_diag_pb2_b,        BANKED  ; phys 0x18E
+        clrf    v171_diag_pb2_r,        BANKED  ; phys 0x18F
+        clrf    v171_diag_pb2_a,        BANKED  ; phys 0x190
+        clrf    v171_diag_pb2_p,        BANKED  ; phys 0x191
+        clrf    v171_diag_pb2_reset_por,BANKED  ; phys 0x192
+        clrf    v171_diag_pb2_reset_bor,BANKED  ; phys 0x193
+        clrf    v171_diag_pb2_reset_wdt,BANKED  ; phys 0x194
+        clrf    v171_diag_pb2_reset_sw, BANKED  ; phys 0x195
+        clrf    v171_diag_target,       BANKED  ; phys 0x196 (banked 0x096)
+        clrf    v171_diag_present,      BANKED  ; phys 0x197 (banked 0x097)
+        clrf    v171_diag_reset_seen,   BANKED  ; phys 0x19D (banked 0x09D)
+        movlb   0x00                            ; restore default bank
+        ; --- end Task #44 fix ---
+
+        goto    flow_ccs_0FA0_103C                          ; dest: 0x00103c (was asm:784)
 ```
 
-A loop with FSR0 is more compact (~6-8 instructions vs ~24) but the unrolled form above is
+This places the zero-init AFTER all peripheral configuration (so RCSTA.SPEN/CREN, TRIS, baud
+rate, etc. are already up — same way as the existing layout) but BEFORE the existing
+`goto flow_ccs_0FA0_103C` so the block is on the live execution path.  The `movlb 0x00` after
+the clrfs restores the bank for the goto target, which expects access bank.
+
+A loop with FSR0 is more compact (~6-8 instructions vs ~25) but the unrolled form above is
 clearer and the flash budget on V1.71 has headroom (per `docs/V32_DIAG_TIER1_SPEC.md`).
 
-**Cost:** ~24 instruction words once, executes only at POR / cold reset.
+**Cost:** ~25 instruction words once, executes only at POR / cold reset.
 
 **Effect:** all cache cells start at 0. On a healthy idle rig, the LCD renders `PB1` + 13 spaces
 (or `PB2`) on entry to the Diag page, matching cmd 0x44's all-zero report. After a partial BF/2N
