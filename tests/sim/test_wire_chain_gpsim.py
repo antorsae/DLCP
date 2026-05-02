@@ -8,12 +8,40 @@ from dlcp_fw.paths import PATCHED_MAIN_HEX_V24, PATCHED_MAIN_HEX_V25, V31_MAIN_H
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 pytestmark = [pytest.mark.wire]
 
 
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+
+def _scan_for_frame(
+    raw: list[int], route: int, cmd: int, data: int,
+) -> int:
+    """Return index of first 3-byte (route, cmd, data) match in `raw`,
+    or -1 if not present.  Mirror of the gpsim-side
+    ``main_tx_frames(0)`` scan, but operating on a flat byte list."""
+    for i in range(len(raw) - 2):
+        if raw[i] == route and raw[i + 1] == cmd and raw[i + 2] == data:
+            return i
+    return -1
 
 
 def _new_stock_wire_chain(
@@ -48,27 +76,60 @@ def _enter_standby(chain: WireMultiMainChainHarness) -> None:
     assert "ZZZ" in chain.lcd_lines()[0].upper(), f"pair did not enter standby before wake: {chain.lcd_lines()!r}"
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_stock_wire_single_main_chain_exchanges_real_uart_frames(
     stock_control_hex_v14: Path,
     stock_main_hex: Path,
+    dlcp_sim_backend: str,
 ) -> None:
-    _require_gpsim()
-    chain = _new_stock_wire_chain(stock_control_hex_v14, stock_main_hex)
-    try:
-        assert not chain.mains[0].uses_adc_boot_wait_hook
+    """Stock V1.4 CONTROL + V2.3 MAIN: real UART frames flow over the wire chain.
 
-        last = chain.run_until_main_reply(limit=45, main_index=0)
-        assert last is not None, "wire chain never produced a step result"
-        assert chain.main_rx_activity(0), "MAIN0 never showed native RX activity from CONTROL"
-        assert chain.control_rx_activity(), "CONTROL never consumed UART data from MAIN0"
+    The proof-of-life invariant: MAIN0 must emit BF/03/01 (the version
+    announce frame) once it boots and CONTROL must consume those bytes
+    over the chain.
 
-        frames = chain.main_tx_frames(0)
-        assert frames, "MAIN0 never emitted a UART reply over the wire bridge"
-        assert any((f.route, f.cmd, f.data) == (0xBF, 0x03, 0x01) for f in frames), frames[-10:]
-    finally:
-        chain.close()
+    Migrated to dual_supported in P4.7.  Both backends boot a CONTROL+MAIN
+    wire chain; the rust path uses ``Chain.from_v17_chain`` (which couples
+    UART rings between K20 CONTROL and a full-silicon V2.3 MAIN core) and
+    captures MAIN's TX via ``tx_record_since_last_capture()`` after
+    ``run_until_connected`` reaches the Volume screen.  CONTROL reaching
+    the Volume screen on rust requires having consumed MAIN's UART
+    replies, so ``is_connected and not is_waiting`` is the
+    backend-uniform proxy for both ``main_rx_activity`` and
+    ``control_rx_activity`` from the gpsim API.
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v17_chain(str(stock_control_hex_v14))
+        c.mark_tx_capture_point()
+        used = c.run_until_connected(limit=140)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain never reached DISPLAY: lcd={c.lcd_lines()!r} "
+            f"used_chunks={used}"
+        )
+        raw = c.tx_record_since_last_capture()
+        assert _scan_for_frame(raw, 0xBF, 0x03, 0x01) >= 0, (
+            f"[rust] MAIN0 never emitted BF/03/01; last 30 bytes: "
+            f"{[hex(b) for b in raw[-30:]]}"
+        )
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        chain = _new_stock_wire_chain(stock_control_hex_v14, stock_main_hex)
+        try:
+            assert not chain.mains[0].uses_adc_boot_wait_hook
+
+            last = chain.run_until_main_reply(limit=45, main_index=0)
+            assert last is not None, "[gpsim] wire chain never produced a step result"
+            assert chain.main_rx_activity(0), "[gpsim] MAIN0 never showed native RX activity from CONTROL"
+            assert chain.control_rx_activity(), "[gpsim] CONTROL never consumed UART data from MAIN0"
+
+            frames = chain.main_tx_frames(0)
+            assert frames, "[gpsim] MAIN0 never emitted a UART reply over the wire bridge"
+            assert any((f.route, f.cmd, f.data) == (0xBF, 0x03, 0x01) for f in frames), frames[-10:]
+        finally:
+            chain.close()
 
 
 @pytest.mark.gpsim
