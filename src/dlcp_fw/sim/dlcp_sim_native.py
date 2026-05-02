@@ -647,6 +647,33 @@ class Chain:
         """
         self._inner.force_reset_main_mssp()
 
+    def set_main_an0_sample(self, unit: int, value: int) -> None:
+        """Set the AN0 (rail-sense ADC ch 0) sample for one MAIN.
+
+        ``unit`` selects which MAIN core: ``0`` for MAIN0, ``1``
+        for MAIN1.  Other values raise ``ValueError``.  On
+        MAIN-only / single-MAIN chain topologies (where i_main0
+        == i_main1) both unit indices target the same core.
+
+        ``value`` is a 12-bit ADC sample in ``[0x0000, 0x0FFF]``;
+        higher bits are silently masked.
+
+        V3.x's ``adc_boot_gate`` (`asm:4041`) busy-waits until
+        AN0 crosses ``>= 0x0236`` (runtime hysteresis
+        ``0x0229/0x0228``).  Default factory seed is ``0x0300``
+        (well above threshold) for both MAINs.
+
+        Bug #45 H1 use case: after a healthy boot to DISPLAY
+        and a parser-driven STDBY, set MAIN1's AN0 to a value
+        below ``0x0236`` (e.g. ``0x0000``) just before injecting
+        the wake frame -- MAIN1 enters ``adc_boot_gate`` but
+        its rail-sense never crosses threshold, so the CPU
+        stays in the polling loop indefinitely.  See
+        ``docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md``
+        §H1 + §A5.
+        """
+        self._inner.set_main_an0_sample(int(unit), int(value) & 0x0FFF)
+
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
         CONTROL's RX ring buffer.  Mirror of

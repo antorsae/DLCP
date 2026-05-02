@@ -3758,6 +3758,549 @@ fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
     );
 }
 
+/// Baseline / control for #82 — same 3-core V1.71+V3.2+V3.2 chain,
+/// same parser-driven STDBY then WAKE, but NO RailCoupler manipulation
+/// of AN0 and NO explicit fault. Both MAINs keep AN0 = 0x0300 the whole
+/// time. The intent is to confirm that a healthy WAKE broadcast in the
+/// rust simulator DOES flip MAIN1 to db ≥ 1 — i.e. the chain forwarding
+/// + UART RX + parser dispatch + standby_event_dispatch path on MAIN1
+/// is functional in the absence of any fault.
+///
+/// If this test ever starts failing (MAIN1 stays at db=0 with no fault),
+/// it would invalidate the #82 RailCoupler test's claim that the droop
+/// is what keeps MAIN1 stuck — the asymmetric outcome would then be a
+/// pre-existing sim fidelity gap unrelated to the rail-coupling
+/// hypothesis. Conversely, while THIS baseline passes, the #82 test's
+/// asymmetric outcome can be attributed to the RailCoupler model rather
+/// than to a generic chain-forwarding gap.
+#[test]
+fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF);
+
+    let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
+        const RING_BASE: u16 = 0x0200;
+        const RING_SIZE: u16 = 0xC0;
+        const RX_WR: u16 = 0x0C7;
+        let mem = &mut c.cores[i_main0].memory;
+        let mut wr = (mem.read_raw(Address::from_raw(RX_WR)) as u16) % RING_SIZE;
+        for &byte in &[route, cmd, data] {
+            mem.write_raw(Address::from_raw(RING_BASE + wr), byte);
+            wr = (wr + 1) % RING_SIZE;
+        }
+        mem.write_raw(Address::from_raw(RX_WR), wr as u8);
+    };
+
+    // Cold boot to DISPLAY.
+    chain.run_until(10_000_000, 8_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
+    });
+    assert!(chain.current_tick < 8_000_000_000, "boot did not converge");
+
+    // STDBY broadcast.
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x00);
+    chain.run_until(1_000_000, 4_000_000_000, |c| {
+        let s0 = c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7));
+        let s1 = c.cores[i_main1].memory.read_raw(Address::from_raw(0x2E7));
+        s0 >= 1 && s1 >= 1
+    });
+    let s0 = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E7));
+    let s1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0x2E7));
+    assert!(s0 >= 1, "STDBY: MAIN0 diag_s should increment, got {}", s0);
+    assert!(s1 >= 1, "STDBY: MAIN1 diag_s should increment, got {}", s1);
+
+    chain.step_ticks(15_000_000 * 12);
+
+    // WAKE broadcast — both MAINs keep AN0 = 0x0300 (no fault, no droop).
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x01);
+
+    // Run until BOTH MAINs have db >= 1 OR safety ceiling.
+    chain.run_until(1_000_000, 8_000_000_000, |c| {
+        let db0 = c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E8));
+        let db1 = c.cores[i_main1].memory.read_raw(Address::from_raw(0x2E8));
+        db0 >= 1 && db1 >= 1
+    });
+
+    let af0 = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let db0 = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E8));
+    let af1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let db1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0x2E8));
+
+    eprintln!(
+        "wake_baseline final: MAIN0 af=0x{:02X} db={} | MAIN1 af=0x{:02X} db={}",
+        af0, db0, af1, db1,
+    );
+
+    assert!(
+        db0 >= 1,
+        "BASELINE: MAIN0 should reach db >= 1 after WAKE; got {}",
+        db0
+    );
+    assert!(
+        db1 >= 1,
+        "BASELINE: MAIN1 should reach db >= 1 after WAKE (chain forwarding \
+         delivers wake bytes; parser dispatches; bring-up branch \
+         increments db). MAIN1 staying at db=0 here would invalidate the \
+         #82 RailCoupler test's mechanism claim. got {}",
+        db1
+    );
+    assert_eq!(
+        af0 & 0x08,
+        0x08,
+        "BASELINE: MAIN0 active_flags.bit3 should be SET after WAKE; got 0x{:02X}",
+        af0
+    );
+    assert_eq!(
+        af1 & 0x08,
+        0x08,
+        "BASELINE: MAIN1 active_flags.bit3 should be SET after WAKE; got 0x{:02X}",
+        af1
+    );
+}
+
+/// Bug #45 H1 SPONTANEOUS reproduction (task #82) — shared-rail
+/// asymmetric coupling, no explicit fault injection.
+///
+/// This is the spec-aligned ("RailCoupler") complement to the
+/// `*_main1_held_during_wake_transition` MCLR-fault test (#80) and
+/// the `*_forwarder_drops_wake_triplet` per-coupling-drop test (#81):
+/// neither MCLR-hold nor UART-drop is used. The only stimulus is
+/// AN0 sample manipulation modelling the audio-rail node that both
+/// MAINs sense via RA0/AN0 (`docs/analysis/PIN_SEMANTICS.md:76`).
+///
+/// **Mechanism modelled** (per H1 in
+/// `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`):
+///
+/// 1. Cold boot to DISPLAY (both MAINs HEALTHY, AN0 = 0x0300).
+/// 2. STDBY broadcast (`B0/03/00`) settles. Audio rail collapses;
+///    both MAINs see depressed AN0.
+/// 3. Test floors both MAINs' AN0 to `0x0100` to model post-STDBY
+///    rail-collapsed state. NO MCLR-hold, NO UART drop.
+/// 4. WAKE broadcast (`B0/03/01`). MAIN0 receives synthetically;
+///    MAIN1 receives via chain forwarding (~46k tick UART delay
+///    for 3 bytes at 31250 baud, much larger than MAIN0's
+///    wake-handler entry path).
+/// 5. **RailCoupler closure runs each chunk**:
+///    - Reads MAIN0's `LATA` (0xF89) and `LATB` (0xF8A).
+///    - Compares against pre-wake mask to detect any new HIGH bits
+///      on `LATB.bit3`, `LATB.bit4`, or `LATA.bit6` (the V3.2 amp-
+///      enable transitions raised in the wake path at asm:4084,
+///      asm:4098, asm:4101 respectively).
+///    - Pre-amp: rail rises from 0x0100 toward 0x0300; both MAINs'
+///      AN0 mirror the rail.
+///    - Post-amp-engage: MAIN0's AN0 stays at the recovered rail
+///      (modelled as "MAIN0's local sense node is closer to the
+///      supply"); MAIN1's AN0 droops to `0x01F0` (below the
+///      `0x0236` adc_boot_gate threshold) and stays there for as
+///      long as MAIN0's amp-enable pins remain HIGH.
+/// 6. **Asymmetric outcome (no fault injection)**: MAIN0 polls
+///    AN0 above threshold first (chain forwarding gives MAIN0 a
+///    head start through the wake path); exits `adc_boot_gate`
+///    (asm:4041); progresses through wake init; raises amp pins.
+///    MAIN1's wake-handler entry is delayed by chain forwarding;
+///    by the time MAIN1's `adc_boot_gate` polls, the rail is in
+///    sustained droop (MAIN1's AN0 below threshold). MAIN1 polls
+///    forever.
+///
+/// **Why this matters**: the existing #80/#81 tests prove the
+/// SYMPTOM (MAIN0 wakes, MAIN1 stuck) is reachable from injected
+/// faults. This test proves the symptom is reachable from a
+/// PURELY-PHYSICAL coupling model — no MCLR-pin assertion, no wire
+/// drop, just two MAINs seeing different AN0 values because the
+/// shared audio rail asymmetrically loads MAIN1's sense node when
+/// MAIN0's amps engage. That is the H1 hypothesis stated in
+/// firmware-mechanism terms, and reproducing it without a synthetic
+/// fault is direct evidence for H1 over H2/H3.
+///
+/// **Caveats / known approximations**:
+/// - The chunked simulator can't update AN0 sub-instruction; the
+///   test relies on the chain-forwarding delay (~46k ticks for the
+///   wake triplet) being much larger than the chunk size, so when
+///   the RailCoupler droops MAIN1's AN0 the chunk after MAIN0
+///   raises its first amp pin, MAIN1 is still in pre-gate transit.
+/// - The "MAIN0 sees recovered rail, MAIN1 sees droop" asymmetry
+///   is not derived from a PCB netlist (open question per
+///   `docs/analysis/PIN_SEMANTICS.md:105-107`); the model encodes
+///   the H1 *claim* and lets the firmware execute against it.
+///   Falsification via this test is meaningful (firmware-level
+///   asymmetry can in principle reach the symptom); confirmation
+///   on real hardware still requires the scope traces enumerated
+///   in `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md` §B1.
+/// - `MAIN1_DROOP_HELD = 0x01F0` is below the `0x0236` boot gate
+///   AND below the `0x0228` runtime hysteresis. If MAIN1 ever exits
+///   the gate it would re-enter via the runtime check; the test
+///   gates assertion strictly on the absence of `active_flags.bit3`
+///   transition and `diag_b == 0`, so it is robust to either
+///   "stayed in boot gate" or "entered runtime then re-entered
+///   gate" — the symptom is the same.
+#[test]
+fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF);
+
+    let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
+        const RING_BASE: u16 = 0x0200;
+        const RING_SIZE: u16 = 0xC0;
+        const RX_WR: u16 = 0x0C7;
+        let mem = &mut c.cores[i_main0].memory;
+        let mut wr = (mem.read_raw(Address::from_raw(RX_WR)) as u16) % RING_SIZE;
+        for &byte in &[route, cmd, data] {
+            mem.write_raw(Address::from_raw(RING_BASE + wr), byte);
+            wr = (wr + 1) % RING_SIZE;
+        }
+        mem.write_raw(Address::from_raw(RX_WR), wr as u8);
+    };
+
+    // ----- Step 1: cold boot to DISPLAY -----
+    chain.run_until(10_000_000, 8_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
+    });
+    assert!(
+        chain.current_tick < 8_000_000_000,
+        "task#82 boot did not converge: lcd line1={:?} line2={:?}",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2(),
+    );
+
+    // ----- Step 2: STDBY broadcast (parser-driven) -----
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x00);
+    chain.run_until(1_000_000, 4_000_000_000, |c| {
+        let s0 = c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7));
+        let s1 = c.cores[i_main1].memory.read_raw(Address::from_raw(0x2E7));
+        s0 >= 1 && s1 >= 1
+    });
+    let af0_post_stdby = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let af1_post_stdby = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    assert_eq!(
+        af0_post_stdby & 0x08,
+        0,
+        "STDBY broadcast: MAIN0 active_flags.bit3 must clear; got 0x{:02X}",
+        af0_post_stdby,
+    );
+    assert_eq!(
+        af1_post_stdby & 0x08,
+        0,
+        "STDBY broadcast: MAIN1 active_flags.bit3 must clear; got 0x{:02X}",
+        af1_post_stdby,
+    );
+
+    // ----- Step 3: settle past STDBY shutdown (matches #80 cadence) -----
+    chain.step_ticks(15_000_000 * 12);
+
+    // ----- Step 4: model post-STDBY rail collapse -----
+    // Both MAINs see depressed AN0 (audio rail off). NO fault.
+    chain.cores[i_main0]
+        .peripherals
+        .adc
+        .set_an0_sample(0x0100);
+    chain.cores[i_main1]
+        .peripherals
+        .adc
+        .set_an0_sample(0x0100);
+
+    // Capture pre-wake amp-enable mask so the RailCoupler can detect
+    // *new* HIGH bits raised by the wake path (asm:4084, :4098, :4101).
+    let pre_wake_lata = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0xF89));
+    let pre_wake_latb = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0xF8A));
+    let pre_wake_amp_b = pre_wake_latb & 0x18; // LATB.bit3 | LATB.bit4
+    let pre_wake_amp_a = pre_wake_lata & 0x40; // LATA.bit6
+    eprintln!(
+        "task#82 pre-wake LATA=0x{:02X} LATB=0x{:02X} (amp_a=0x{:02X} amp_b=0x{:02X})",
+        pre_wake_lata, pre_wake_latb, pre_wake_amp_a, pre_wake_amp_b,
+    );
+
+    // ----- Step 5: WAKE broadcast (parser-driven, no fault) -----
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x01);
+
+    // ----- Step 6: RailCoupler loop with shared-rail asymmetric model -----
+    //
+    // chunk_ticks = 1000: small enough that the chain-forwarding delay
+    // (~46k universal ticks for 3 wake bytes at 31250 baud) spans many
+    // chunks, so the RailCoupler can detect MAIN0's amp pin transition
+    // and droop MAIN1's AN0 *before* MAIN1's wake-handler reaches its
+    // first adc_boot_gate poll.
+    //
+    // Rail rise rate (0x10/chunk = 16 LSB per 1000 ticks ≈ 83 MAIN-Tcy)
+    // is slow enough that adc_boot_gate stays in its polling loop
+    // (rail < 0x0236) for ~20 chunks before crossing threshold; this
+    // gives MAIN0's wake init time to advance and MAIN1's wake bytes
+    // time to arrive over the chain.
+    //
+    // Asymmetric coupling encoded post-amp-engage:
+    //   MAIN0.AN0 = rail_value (recovered)
+    //   MAIN1.AN0 = MAIN1_DROOP_HELD (sustained below threshold)
+    const CHUNK_TICKS: u64 = 1_000;
+    const MAX_CHUNKS: usize = 800_000; // 800 M-tick ceiling (~67 s sim time)
+    const RAIL_INITIAL: u16 = 0x0100;
+    const RAIL_RISE_RATE: u16 = 0x10;
+    const RAIL_TARGET: u16 = 0x0300;
+    const MAIN1_DROOP_HELD: u16 = 0x01F0; // below 0x0236 threshold, sustained
+
+    let mut rail_value: u16 = RAIL_INITIAL;
+    let mut amp_engaged_ever = false;
+    let mut amp_first_chunk: Option<usize> = None;
+    let mut last_log_chunk: usize = 0;
+
+    for chunk in 0..MAX_CHUNKS {
+        chain.step_ticks(CHUNK_TICKS);
+
+        let lata = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0xF89));
+        let latb = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0xF8A));
+        let new_amp_b_bits = (latb & 0x18) & !pre_wake_amp_b;
+        let new_amp_a_bit = (lata & 0x40) & !pre_wake_amp_a;
+        let amp_engaged = new_amp_b_bits != 0 || new_amp_a_bit != 0;
+        if amp_engaged && !amp_engaged_ever {
+            amp_engaged_ever = true;
+            amp_first_chunk = Some(chunk);
+            eprintln!(
+                "task#82 amp first engaged at chunk={} rail=0x{:04X} \
+                 LATA=0x{:02X} LATB=0x{:02X} (new_a=0x{:02X} new_b=0x{:02X})",
+                chunk, rail_value, lata, latb, new_amp_a_bit, new_amp_b_bits,
+            );
+        }
+
+        if rail_value < RAIL_TARGET {
+            rail_value = rail_value.saturating_add(RAIL_RISE_RATE).min(RAIL_TARGET);
+        }
+
+        chain.cores[i_main0]
+            .peripherals
+            .adc
+            .set_an0_sample(rail_value);
+        let main1_an0 = if amp_engaged_ever {
+            MAIN1_DROOP_HELD
+        } else {
+            rail_value
+        };
+        chain.cores[i_main1]
+            .peripherals
+            .adc
+            .set_an0_sample(main1_an0);
+
+        // Periodic diagnostic trace (not assertion-relevant).
+        if chunk == last_log_chunk + 5_000 {
+            let af0 = chain.cores[i_main0]
+                .memory
+                .read_raw(Address::from_raw(0x05E));
+            let db0 = chain.cores[i_main0]
+                .memory
+                .read_raw(Address::from_raw(0x2E8));
+            let af1 = chain.cores[i_main1]
+                .memory
+                .read_raw(Address::from_raw(0x05E));
+            let db1 = chain.cores[i_main1]
+                .memory
+                .read_raw(Address::from_raw(0x2E8));
+            eprintln!(
+                "task#82 chunk={} rail=0x{:04X} MAIN0 af=0x{:02X} db={} | \
+                 MAIN1 af=0x{:02X} db={} an0=0x{:04X} amp_ever={}",
+                chunk, rail_value, af0, db0, af1, db1, main1_an0, amp_engaged_ever,
+            );
+            last_log_chunk = chunk;
+        }
+
+        // Early-exit: MAIN0 woke, amp engaged, run long enough past the
+        // amp transition for MAIN1 to have polled at least once.
+        let af0 = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0x05E));
+        let diag_b0 = chain.cores[i_main0]
+            .memory
+            .read_raw(Address::from_raw(0x2E8));
+        if (af0 & 0x08) == 0x08 && diag_b0 >= 1 && amp_engaged_ever {
+            if let Some(f) = amp_first_chunk {
+                if chunk >= f + 50_000 {
+                    eprintln!(
+                        "task#82 early-exit at chunk={} (amp_first={}, chunks_post_amp={})",
+                        chunk,
+                        f,
+                        chunk - f,
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // ----- Step 7: assert asymmetric outcome -----
+    let af0 = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let diag_b0 = chain.cores[i_main0]
+        .memory
+        .read_raw(Address::from_raw(0x2E8));
+    let af1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0x05E));
+    let diag_b1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0x2E8));
+    let lata1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0xF89));
+    let latb1 = chain.cores[i_main1]
+        .memory
+        .read_raw(Address::from_raw(0xF8A));
+
+    eprintln!(
+        "task#82 final: rail=0x{:04X} amp_first={:?} | \
+         MAIN0 af=0x{:02X} db={} | MAIN1 af=0x{:02X} db={} latA=0x{:02X} latB=0x{:02X}",
+        rail_value, amp_first_chunk, af0, diag_b0, af1, diag_b1, lata1, latb1,
+    );
+
+    assert!(
+        amp_engaged_ever,
+        "RailCoupler: MAIN0 should have raised at least one new amp-enable \
+         bit (LATB.bit3, LATB.bit4, or LATA.bit6) during its wake path. \
+         Without an amp transition the test cannot model the rail droop \
+         that distinguishes this from a no-coupling baseline.",
+    );
+    assert_eq!(
+        af0 & 0x08,
+        0x08,
+        "WAKE: MAIN0 active_flags.bit3 must be SET (own wake completed); \
+         got af=0x{:02X}",
+        af0,
+    );
+    assert!(
+        diag_b0 >= 1,
+        "WAKE: MAIN0 diag_b must increment (bring-up branch dispatched); \
+         got 0x{:02X}",
+        diag_b0,
+    );
+    assert_eq!(
+        af1 & 0x08,
+        0,
+        "RailCoupler asymmetric outcome: MAIN1 active_flags.bit3 must STAY \
+         CLEAR (sustained AN0 droop below adc_boot_gate threshold prevents \
+         wake-init progression). NO fault was injected -- this is the \
+         shared-rail-coupling H1 hypothesis manifesting from AN0 dynamics \
+         alone. got af=0x{:02X}",
+        af1,
+    );
+    assert_eq!(
+        diag_b1, 0,
+        "RailCoupler asymmetric outcome: MAIN1 diag_b must STAY 0 (no bring-up \
+         dispatch reached while AN0 is depressed). got 0x{:02X}",
+        diag_b1,
+    );
+
+    eprintln!(
+        "task#82 OK (Bug #45 H1 SPONTANEOUS reproduction): \
+         healthy boot -> STDBY broadcast (both MAINs s=1) -> rail collapse \
+         model (no fault) -> WAKE -> MAIN0 wakes + raises amp; RailCoupler \
+         droops MAIN1 AN0 below threshold; MAIN1 stuck (af bit3 clear, db=0). \
+         Symptom matches hardware 2026-04-27, achieved with no MCLR-hold and \
+         no UART drop -- only AN0 dynamics modelling shared-rail coupling.",
+    );
+}
+
 /// P3.8b (symptom-equivalent, not bit-exact) — RIGHT MAIN held in
 /// reset → CONTROL stuck in `Waiting for DLCP`.
 ///

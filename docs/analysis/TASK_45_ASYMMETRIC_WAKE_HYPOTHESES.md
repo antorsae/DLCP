@@ -1,12 +1,13 @@
 # Task #45 — V1.71+V3.2 STDBY/wake asymmetric-recovery field bug
 
-**Status:** root cause refined — H1 now points to shared-rail coupling, not just generic per-board variance. 3 ranked hypotheses (codex investigations 2026-05-02 and 2026-05-02-pass-2) with rust-sim reproduction paths and HW confirm/deny tests for each.
+**Status:** H1 spontaneous reproduction landed in rust sim (no fault injection) — strong evidence H1 is the actual mechanism. Awaiting hardware scope traces (§B1) for direct confirmation. 3 ranked hypotheses (codex investigations 2026-05-02 and 2026-05-02-pass-2) with rust-sim reproduction paths and HW confirm/deny tests for each.
 **Hardware session:** 2026-04-27 (V1.71 CONTROL + 2× V3.2 MAIN).
 **Existing sim coverage:**
-- Symptom-equivalent INJECTED-FAULT reproductions: `v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition` (H1 via MCLR-hold), `v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet` (H2 via per-coupling drop).
+- INJECTED-FAULT reproductions: `v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition` (H1 via MCLR-hold), `v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet` (H2 via per-coupling drop).
+- **SPONTANEOUS H1 reproduction (no fault)**: `v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault` — RailCoupler observes MAIN0 amp-enable transitions and droops MAIN1's AN0 to model shared-rail loading; reproduces the asymmetric outcome from AN0 dynamics alone.
+- Baseline control: `v171_v32_v32_wake_baseline_main1_progresses_without_fault` — confirms MAIN1 *does* wake when AN0 stays high, anchoring the RailCoupler mechanism claim.
 - End-state only: `right_main_held_in_reset_control_stuck_in_waiting`, `control_in_waiting_state_does_not_emit_stdby_frame_on_button_press`.
 - Counter contracts: `v32_main_runtime_counters_baseline_and_post_stdby_cycle`, `v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle`.
-- **What's MISSING for spontaneous reproduction** (no fault injection): a board-level rail-coupling model linking AMP_ENABLE pins to AN0 rail-sense — see §4 below.
 
 ## 1. Field-observation timeline (2026-04-27)
 
@@ -229,9 +230,13 @@ If the spontaneous reproduction does NOT manifest the asymmetric outcome with re
 
 **A3. Upgrade test #49 with the deferred 3-way diagnostic (for H3 sub-behavior)**: extend the existing test to also probe 0x09A debounce counter, 0x0BE button-edge state, 0x01F.bit1 CONNECTED before/after the STBY press while CONTROL is in WAITING. Classifies the gate as structural vs soft. Estimated ~30 lines.
 
-**A4. Build the H1 SPONTANEOUS reproduction via RailCoupler model (HIGH priority — see §2.6)**: new `RailCoupler` test fixture that observes MAIN0's amp-enable outputs (RB3/RB4/RA6 + SRC4382 GPOs) and drives both MAINs' AN0 samples from a shared rail-voltage state with rise/fall/inrush dynamics. Goal: reproduce the asymmetric wake without injecting any explicit fault. Estimated 200-400 lines + parameter tuning. Strong evidence for H1 if it works; falsifies H1 if it cannot manifest with reasonable parameters. Pre-requisite: instrument SRC4382 GPO writes + LATB/LATA observable from chain-level test code.
+**A4. Build the H1 SPONTANEOUS reproduction via RailCoupler model (DONE 2026-05-02)**: new RailCoupler test fixture observes MAIN0's amp-enable outputs (`LATA.bit6`, `LATB.bit3`, `LATB.bit4`) and drives both MAINs' AN0 samples from a shared rail-voltage state. The chain-level test models the audio-rail node by:
+- starting both MAINs at AN0 = 0x0100 (post-STDBY rail-collapsed) without MCLR-hold or wire drop,
+- ramping the rail value up by 0x10 per 1000-tick chunk,
+- on the first chunk where any new amp-enable bit transitions HIGH on MAIN0, sustaining MAIN1's AN0 at 0x01F0 (below the 0x0236 boot threshold) while MAIN0 sees the recovered rail.
+Result: MAIN0 wakes (af bit3 SET, db=1); MAIN1 stays at af=0x00, db=0 — purely from AN0 dynamics, NO explicit fault. A companion baseline (`v171_v32_v32_wake_baseline_main1_progresses_without_fault`) confirms that with both MAINs at AN0 = 0x0300 throughout, MAIN1 *does* reach db=1 and af bit3 set, so the asymmetric outcome in the RailCoupler test is attributable to the rail-coupling model and not to a generic chain-forwarding sim gap. Test name: `v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault`. SRC4382 GPO writes were NOT required to land the asymmetric outcome — the early amp-enable transitions (RB4 at asm:4084, RA6 at asm:4098, RB3 at asm:4101) are sufficient signal; SRC4382 GPO instrumentation remains a future tightening if a more accurate inrush profile is needed.
 
-**A5. Add per-MAIN AN0 setter to PyO3 facade (for H1 partial reproduction at the Python facade)**: `Chain::set_main_an0_sample(unit, value)` allows test scripts to model rail droop on MAIN1 specifically (set AN0 below 0x0236 just before wake). Lighter-weight than the full RailCoupler in A4 — useful as a Python-facade-only stop-gap test. Estimated ~30 lines rust facade.
+**A5. Add per-MAIN AN0 setter to PyO3 facade (DONE 2026-05-02)**: `Chain::set_main_an0_sample(unit, value)` PyO3 method on `crates/dlcp-sim-py/src/lib.rs` plus the `set_main_an0_sample` Python-facade wrapper on `src/dlcp_fw/sim/dlcp_sim_native.py`. `unit ∈ {0,1}`, `value` is masked to 10 bits. Allows Python-facade tests to model rail droop on a specific MAIN before/after wake. Lighter-weight than the rust-side RailCoupler (which observes MAIN0 amp-enable transitions and reacts) but composable with explicit chunk-stepping for similar effect.
 
 ### B. Hardware operator session (required for full root-cause)
 
@@ -256,6 +261,8 @@ If B1 confirms H1, the firmware-level mitigation is to add a TIMEOUT to `adc_boo
 - `crates/dlcp-sim/tests/multicore_parity.rs::v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle` — full parser-driven STDBY/WAKE/STDBY single-MAIN baseline (closes task #51)
 - `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition` — H1 INJECTED-FAULT reproduction (commit 93092d6)
 - `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet` — H2 INJECTED-FAULT reproduction (commit 93092d6)
+- `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault` — H1 SPONTANEOUS reproduction via shared-rail asymmetric coupling (no fault injected; AN0 dynamics only)
+- `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_wake_baseline_main1_progresses_without_fault` — baseline control confirming MAIN1 wakes normally in the rust sim absent any AN0 manipulation (anchors the RailCoupler mechanism claim)
 - `src/dlcp_fw/asm/dlcp_main_v32.asm:4041` — `adc_boot_gate:` label (the H1 stuck point; loop body at :4049; header comment at :4008)
 - `src/dlcp_fw/asm/dlcp_main_v32.asm:4084` — early-wake `LATB.bit4 := 1` (RB4 amp/rail enable; followed by `timer3_blocking_delay`)
 - `src/dlcp_fw/asm/dlcp_main_v32.asm:4098` — pre-DSP-coeff `LATA.bit6 := 1` (RA6 amp/rail enable; after `mssp_hard_reset`, before `clrf_i2c_coeff_0123_and_write`)

@@ -1461,6 +1461,55 @@ impl Chain {
         );
     }
 
+    /// Set the AN0 (rail-sense ADC channel 0) sample for a
+    /// specific MAIN core by unit index.  V3.x's
+    /// `adc_boot_gate` (`src/dlcp_fw/asm/dlcp_main_v32.asm:4041`)
+    /// busy-waits until the AN0 sample crosses `>= 0x0236`;
+    /// runtime hysteresis is `0x0229/0x0228`.  The default
+    /// seed for both MAINs is `0x0300` (well above threshold)
+    /// per `build_v171_v32_chain` at lines 472/474.
+    ///
+    /// `unit` selects which MAIN core: `0` for MAIN0, `1` for
+    /// MAIN1.  Other values raise `ValueError`.  On
+    /// MAIN-only / single-MAIN chain topologies (where
+    /// `i_main0 == i_main1`), both unit indices target the
+    /// same physical core.
+    ///
+    /// `value` is the 12-bit ADC sample in the range
+    /// `[0x0000, 0x0FFF]`.  Higher bits are silently masked.
+    ///
+    /// **Bug #45 H1 use case** (per
+    /// `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`):
+    /// after a healthy boot to DISPLAY and a parser-driven
+    /// STDBY, set MAIN1's AN0 to a value below `0x0236` (e.g.
+    /// `0x0000`) just before injecting the wake frame --
+    /// MAIN1 enters `adc_boot_gate` but its rail-sense never
+    /// crosses threshold, so the CPU stays in the polling
+    /// loop indefinitely.  This is a STATIC seeded approximation
+    /// of the dynamic shared-rail-coupling mechanism that the
+    /// RailCoupler model in `multicore_parity.rs::v171_v32_v32_*_railcoupler*`
+    /// reproduces more faithfully.
+    fn set_main_an0_sample(
+        &mut self,
+        unit: u8,
+        value: u16,
+    ) -> PyResult<()> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "set_main_an0_sample: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        self.inner.cores[i_main]
+            .peripherals
+            .adc
+            .set_an0_sample(value & 0x0FFF);
+        Ok(())
+    }
+
     /// Write a single byte to CONTROL's EEPROM peripheral
     /// at the given 8-bit address (CONTROL EEPROM is 256
     /// bytes per PIC18F25K20 datasheet).  Mirror of
