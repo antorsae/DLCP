@@ -539,9 +539,83 @@ def test_dsp_path_recovers_after_mssp_stop_fault_cleared(
 # ===================================================================
 
 
+def _bf08_frames_from_bytes(raw: list[int]) -> list[int]:
+    """Scan a flat TX byte stream for 3-byte BF/08/<data> frames and
+    return their data bytes in order.  Frame boundaries are a strict
+    BF/08 start-of-frame search; non-frame bytes are skipped without
+    interrupting subsequent frame detection."""
+    out: list[int] = []
+    i = 0
+    n = len(raw)
+    while i + 2 < n:
+        if raw[i] == 0xBF and raw[i + 1] == 0x08:
+            out.append(raw[i + 2] & 0xFF)
+            i += 3
+        else:
+            i += 1
+    return out
+
+
+def _run_bf08_payload_test_gpsim(main_hex: Path) -> tuple[list[int], list[int]]:
+    """Return (bf08_during_nacks, bf08_after_clear) data-byte lists
+    for the gpsim path."""
+    harness = _new_main_harness(main_hex)
+    try:
+        _boot_and_activate(harness)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        harness.set_i2c_fault("dsp34", address_nack_count=60000)
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+        for _ in range(30):
+            harness.step()
+        decoder = harness.decoder
+        nack_frames = [
+            t.data for t in decoder.tx_frames
+            if t.route == 0xBF and t.cmd == 0x08
+        ]
+        last_cycle = decoder.tx_frames[-1].cycle if decoder.tx_frames else 0
+        harness.clear_i2c_faults("dsp34")
+        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+        for _ in range(30):
+            harness.step()
+        post_frames = [
+            t.data for t in decoder.tx_frames
+            if t.route == 0xBF and t.cmd == 0x08 and t.cycle > last_cycle
+        ]
+        return nack_frames, post_frames
+    finally:
+        harness.close()
+
+
+def _run_bf08_payload_test_rust(main_hex: Path) -> tuple[list[int], list[int]]:
+    chain = RustChain.from_v3x_main_only(str(main_hex))
+    chain.step_tcy(4_000_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    assert chain.read_reg(_STATUS_5E) & 0x08, "MAIN not active"
+    chain.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    chain.mark_tx_capture_point()
+    chain.set_i2c_fault("dsp34", address_nack_count=60000)
+    chain.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
+    chain.step_tcy(6_000_000)
+    nack_bytes = chain.tx_record_since_last_capture()
+    nack_frames = _bf08_frames_from_bytes(nack_bytes)
+
+    chain.mark_tx_capture_point()
+    chain.clear_i2c_faults("dsp34")
+    chain.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+    chain.step_tcy(6_000_000)
+    post_bytes = chain.tx_record_since_last_capture()
+    post_frames = _bf08_frames_from_bytes(post_bytes)
+    return nack_frames, post_frames
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_bf08_payload_bytes_on_dsp_fault() -> None:
+def test_bf08_payload_bytes_on_dsp_fault(dlcp_sim_backend: str) -> None:
     """Verify MAIN sends correct BF/08/<status> triplet on DSP fault.
 
     The send_dsp_fault_status function sends a 3-byte frame:
@@ -553,64 +627,38 @@ def test_bf08_payload_bytes_on_dsp_fault() -> None:
 
     Addresses review gap: test 3 checks CONTROL flag only, not payload.
     """
-    _require_gpsim()
     _skip_missing(V31_MAIN_HEX)
-
-    harness = _new_main_harness(V31_MAIN_HEX)
-    try:
-        _boot_and_activate(harness)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-
-        # Inject persistent NACKs — trigger exhausted path
-        harness.set_i2c_fault("dsp34", address_nack_count=60000)
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-
-        # Check MAIN TX log for BF/08 frames
-        decoder = harness.decoder
-        bf08_frames = [
-            t for t in decoder.tx_frames
-            if t.route == 0xBF and t.cmd == 0x08
-        ]
-        assert len(bf08_frames) > 0, (
-            "No BF/08 frames found in MAIN TX — send_dsp_fault_status "
-            "may not have executed"
+    backends: list[str] = []
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        backends.append("rust")
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        backends.append("gpsim")
+    for backend in backends:
+        runner = (
+            _run_bf08_payload_test_rust
+            if backend == "rust"
+            else _run_bf08_payload_test_gpsim
         )
-
-        # The last BF/08 frame during NACKs should have fault bits set
-        last_fault_frame = bf08_frames[-1]
-        fault_byte = last_fault_frame.data
-        has_dsp_fault = bool(fault_byte & 0x40)  # bit 6
+        nack_frames, post_frames = runner(V31_MAIN_HEX)
+        assert len(nack_frames) > 0, (
+            f"[{backend}] No BF/08 frames found in MAIN TX during NACKs — "
+            f"send_dsp_fault_status may not have executed"
+        )
+        last_fault_byte = nack_frames[-1]
+        has_dsp_fault = bool(last_fault_byte & 0x40)
         assert has_dsp_fault, (
-            f"BF/08 fault byte 0x{fault_byte:02X} missing bit 6 "
-            f"(DSP ping fault) — dsp_ping may not have run or "
+            f"[{backend}] BF/08 fault byte 0x{last_fault_byte:02X} missing "
+            f"bit 6 (DSP ping fault) — dsp_ping may not have run or "
             f"send_dsp_fault_status has wrong payload"
         )
-
-        # Clear NACKs and send successful volume
-        harness.clear_i2c_faults("dsp34")
-        harness.inject_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-        for _ in range(30):
-            harness.step()
-
-        # After success: new BF/08 frame should have fault byte = 0x00
-        bf08_post = [
-            t for t in decoder.tx_frames
-            if t.route == 0xBF and t.cmd == 0x08
-            and t.cycle > last_fault_frame.cycle
-        ]
-        if bf08_post:
-            clear_byte = bf08_post[-1].data
+        if post_frames:
+            clear_byte = post_frames[-1]
             assert clear_byte == 0x00, (
-                f"BF/08 clear frame has data=0x{clear_byte:02X}, "
+                f"[{backend}] BF/08 clear frame has data=0x{clear_byte:02X}, "
                 f"expected 0x00 (all faults cleared)"
             )
-
-    finally:
-        harness.close()
 
 
 # ===================================================================
