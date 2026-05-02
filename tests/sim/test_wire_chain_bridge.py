@@ -4,6 +4,11 @@ These tests don't need gpsim — the bridge is a file-based mapper that
 translates sender-cycle/edge pairs into receiver-cycle/edge pairs. They
 cover the batch-shift accounting, warning threshold, drop/extra-cycles
 fault knobs, and the monotonic-cycle guarantee on the receiver side.
+
+Marked dual_supported in P4.7: the bridge is a pure-Python component
+with no simulator interaction; the tests pass identically under any
+DLCP_SIM_BACKEND mode.  When P4.9 deletes the gpsim wire-chain
+infrastructure, the bridge and these tests get removed together.
 """
 
 from __future__ import annotations
@@ -14,6 +19,9 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.sim.wire_chain_gpsim import _StreamingUartBridge
+
+
+pytestmark = pytest.mark.dual_supported
 
 
 def _make_bridge(
