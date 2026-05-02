@@ -535,6 +535,15 @@ struct Chain {
     /// `tx_record_since_last_capture` for the mirror-of-gpsim
     /// semantics.
     tx_capture_main0: usize,
+    /// CONTROL-side TX-record capture point.  Symmetric to
+    /// `tx_capture_main0` but filters entries whose
+    /// `src_core == i_ctl`.  Used by tests that need to bound
+    /// TX observation to a specific firmware-PC window (e.g.
+    /// "frames emitted between the IR injection and the next
+    /// function_028 entry") via
+    /// `mark_ctl_tx_capture_point` + `ctl_tx_record_since_last_
+    /// capture` + `step_until_ctl_pc`.
+    tx_capture_ctl: usize,
     /// When true, `step()` applies the per-step "force
     /// CONNECTED" hook to CONTROL: ORs bits 1+3 into 0x01F
     /// (CONNECTED + event-exit) and resets the idle timer at
@@ -757,6 +766,7 @@ impl Chain {
             i_main1: handle.i_main1,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_ctl: 0,
             force_connected: false,
         })
     }
@@ -810,6 +820,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_ctl: 0,
             force_connected: false,
         })
     }
@@ -863,6 +874,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_ctl: 0,
             force_connected: false,
         })
     }
@@ -929,6 +941,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_ctl: 0,
             force_connected: false,
         })
     }
@@ -968,6 +981,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_ctl: 0,
             force_connected: false,
         })
     }
@@ -1566,6 +1580,119 @@ impl Chain {
             .iter()
             .filter(|r| r.src_core == main0)
             .count();
+    }
+
+    /// CONTROL-side equivalent of `mark_tx_capture_point`.
+    /// Records the count of `uart_tx_history` entries whose
+    /// `src_core == i_ctl` so the next call to
+    /// `ctl_tx_record_since_last_capture` only returns bytes
+    /// pushed AFTER this point.  Used by tests that need to
+    /// bound CONTROL-TX observation to a specific firmware-PC
+    /// window (mark before injecting an IR event, capture
+    /// after stepping until the next periodic full-sync hook
+    /// entry).
+    fn mark_ctl_tx_capture_point(&mut self) {
+        let ctl = self.i_ctl;
+        self.tx_capture_ctl = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == ctl)
+            .count();
+    }
+
+    /// CONTROL-side equivalent of `tx_record_since_last_
+    /// capture`.  Returns CONTROL's TX bytes recorded since
+    /// the last `mark_ctl_tx_capture_point()` call (or since
+    /// chain construction if never marked), then advances the
+    /// capture pointer to the current end.  Bytes are returned
+    /// as a flat list of u8s; alignment to 3-byte chain frames
+    /// is the caller's responsibility.
+    fn ctl_tx_record_since_last_capture(&mut self) -> Vec<u8> {
+        let ctl = self.i_ctl;
+        let ctl_records: Vec<u8> = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == ctl)
+            .map(|r| r.byte)
+            .collect();
+        let result = ctl_records[self.tx_capture_ctl..].to_vec();
+        self.tx_capture_ctl = ctl_records.len();
+        result
+    }
+
+    /// CONTROL core's current PC (firmware program counter).
+    /// Direct passthrough to `Core::pc()`.  Word-aligned and
+    /// masked to 21 bits.  Mirror of gpsim's `pc()` register
+    /// readable via `_issue("pc")`, used by tests that need
+    /// to know the firmware's instruction-stream position
+    /// (e.g. to detect when a periodic loop-head is reached).
+    fn current_ctl_pc(&self) -> u32 {
+        self.inner.cores[self.i_ctl].pc()
+    }
+
+    /// MAIN0 core's current PC (firmware program counter).
+    /// Direct passthrough to `Core::pc()`.  Word-aligned and
+    /// masked to 21 bits.  For symmetry with `current_ctl_pc`.
+    fn current_main_pc(&self) -> u32 {
+        self.inner.cores[self.i_main0].pc()
+    }
+
+    /// Step CONTROL until its PC enters the [`pc_lo`, `pc_hi`]
+    /// range, or `max_tcy` Tcy elapse.  Returns the actual
+    /// PC observed at exit (which may be outside the range if
+    /// the budget was exhausted).  Quantization: stepping
+    /// happens in `chunk_tcy = 100` Tcy chunks, so the
+    /// firmware may step a few instructions past the target PC
+    /// before the loop notices.  Use this to align observation
+    /// windows to firmware-loop-head events (e.g. function_028
+    /// entry on V1.6b CONTROL is at 0x0B36; pass `(0x0B36,
+    /// 0x0B38)` to step until the firmware is at the entry).
+    /// Mirror of gpsim's `break e <addr>` + `run` primitive
+    /// for the K20 / 2455 cores.
+    ///
+    /// `core_idx` selects the core to inspect: 0 = i_ctl,
+    /// 1 = i_main0.  Other values raise PyValueError.
+    #[pyo3(signature = (core_idx, pc_lo, pc_hi, max_tcy=1_000_000))]
+    fn step_until_pc_hit(
+        &mut self,
+        core_idx: usize,
+        pc_lo: u32,
+        pc_hi: u32,
+        max_tcy: u64,
+    ) -> PyResult<u32> {
+        let target_idx = match core_idx {
+            0 => self.i_ctl,
+            1 => self.i_main0,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "core_idx must be 0 (CONTROL) or 1 (MAIN0); got {}",
+                    other,
+                )));
+            }
+        };
+        if pc_hi < pc_lo {
+            return Err(PyValueError::new_err(format!(
+                "pc_hi (0x{:06X}) must be >= pc_lo (0x{:06X})",
+                pc_hi, pc_lo,
+            )));
+        }
+        const CHUNK_TCY: u64 = 100;
+        let factor = self.tcy_factor();
+        let mut remaining = max_tcy;
+        loop {
+            let pc = self.inner.cores[target_idx].pc();
+            if pc >= pc_lo && pc <= pc_hi {
+                return Ok(pc);
+            }
+            if remaining == 0 {
+                return Ok(pc);
+            }
+            let advance = CHUNK_TCY.min(remaining);
+            self.inner.step_ticks(advance * factor);
+            remaining -= advance;
+        }
     }
 
     /// Advance simulation until MAIN0 stops emitting TX
