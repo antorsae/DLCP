@@ -4,33 +4,6 @@ These tests keep the gpsim mailbox harness focused on observables it proves
 reliably today: parser progress, echoed reply bytes, mailbox counters, and
 broadcast routing. Bank-selection semantics are covered separately in
 ``test_main_model_banking.py``.
-
-NOT marked dual_supported (P4.7 follow-up note, 2026-05-02): every
-assertion in this file targets the gpsim mailbox-overlay (`run_main_
-mailbox_gpsim`) round-trip, not native-USART firmware behaviour.
-The "echoed reply bytes" the original tests assert come from the
-overlay's instrumentation hooks at flash addresses
-(`main_serial_mailbox_hooks_for_main_hex`), which intercept
-firmware TX writes and copy them to a known mailbox-region of RAM
-(0x780+/0x7C3).  V2.3 stock CONTROL firmware HAS NO `cmd 0x20`
-preset-select handler -- that command was added by the V2.4+ A/B
-preset patches.  On a native USART path (rust `Chain.from_v3x_main_
-only`, or gpsim with `transport_mode="native_ring"`), V2.3 ignores
-cmd 0x20 entirely and emits no echo -- the original tests pass on
-gpsim mailbox-overlay only because the overlay copies the
-discarded TX-write into the mailbox before the firmware drops it.
-This is a gpsim artifact, not silicon-truthful behaviour.
-
-Migration to dual_supported requires either:
-  (a) Replace the test with V2.4+ `patched_main_hex` cases that
-      genuinely exercise the firmware preset-select handler (then
-      assert TX echo via `tx_record_since_last_capture` -- but
-      bank-selection is already covered by
-      `test_main_model_banking.py`, so this would be redundant).
-  (b) Delete the file as testing-the-tool-not-the-firmware.
-
-Tracked as a P4.7 follow-up sub-task; for now the file stays
-gpsim-only.
 """
 
 from __future__ import annotations
