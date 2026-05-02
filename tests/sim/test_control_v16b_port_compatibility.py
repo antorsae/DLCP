@@ -548,20 +548,32 @@ def test_ir_actions_match_stock_v16b_dispatch_behavior(
 #
 # Mirror of the V1.5b/V1.51b analysis (codex disasm trace on
 # 2026-05-01; see test_control_v15b_port_compatibility.py for
-# the full PC walk and `function_028` redirect details):
+# the full PC walk and `function_028` redirect details).  The
+# V1.6b/V1.61b mirror was confirmed by reading the V1.61b
+# patch builder directly (commit 6e776d5 follow-up):
 #
 # * The power IR-command body in V1.6b/V1.61b is byte-identical
-#   between stock and patched -- the V1.6b/V1.61b binary patch
-#   doesn't touch the power-IR dispatch path; both versions do
+#   between stock and patched -- the V1.61b binary patch in
+#   `src/dlcp_fw/patch/build_control_presets_ab_v16b.py` doesn't
+#   touch the power-IR dispatch path; both versions do
 #   `btg 0x01F, 1` (toggle CONNECTED) on a power press.
 #
 # * V1.61b binary-overlays the stock periodic full-sync hook
-#   with the same edge-triggered reconnect/retry stub the
-#   V1.51b patch adds.  Without gpsim's force_connected mask,
-#   the stub fires when the power-IR `btg` transitions
-#   `0x01F.bit1` 1→0, emitting the 4-frame full-sync burst
-#   `(B0 07 vol) (B0 06 src) (B0 03 mute) (B0 03 connected)`
-#   in V1.61b but not in V1.6b stock.
+#   at `org 0x0B36` (V1.6b's analog of V1.51b's `0x0B2C`)
+#   with `goto full_sync_entry_stub`, where the stub:
+#     - gates on `0x01F.bit1` via `btfsc 0x01F, 1`
+#       (build_control_presets_ab_v16b.py:182);
+#     - uses `0x70`/`0x71` BANKED as retry budget / shadow --
+#       the same RAM cells V1.51b uses (line 191-203);
+#     - calls `send_preset_frame_txonly` when the retry
+#       budget is non-zero (line 201) -- analogous to V1.51b's
+#       `call 0x7250`;
+#     - falls through to V1.6b stock's `function_031` at
+#       `0x0C40` then jumps back to `0x0B3A` (line 206-207),
+#       which emits the same 4-frame full-sync tail
+#       `(B0 07 vol) (B0 06 src) (B0 03 mute) (B0 03 connected)`.
+#   Without gpsim's force_connected mask, the stub fires on the
+#   `btg 0x01F, 1` 1→0 edge in V1.61b but not in V1.6b stock.
 #
 # * Under gpsim's legacy `heartbeat_force_connected=True`,
 #   0x01F.bit1 is pinned high every step regardless of the
