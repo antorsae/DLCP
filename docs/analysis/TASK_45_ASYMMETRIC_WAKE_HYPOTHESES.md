@@ -70,7 +70,7 @@ MAIN1 only sees the wake if MAIN0 forwards the broadcast bytes while in its own 
 - MAIN1 not enumerating USB IS the same observable for both H1 and H2; need scope traces to disambiguate.
 
 **Source citations**:
-- 3-coupling silicon-correct ring at `crates/dlcp-sim-py/src/lib.rs:481-483` (build_v171_v32_chain impl at :462; PyO3 method at :759)
+- 3-coupling silicon-correct ring at `crates/dlcp-sim-py/src/lib.rs:481-483` (build_v171_v32_chain impl at :462; PyO3 method at :776)
 - MAIN forward path: `uart_service` entry label at `src/dlcp_fw/asm/dlcp_main_v32.asm:1786` (header comment block at :1767)
 - Parser forwarding at `src/dlcp_fw/asm/dlcp_main_v32.asm:1836`
 - CONTROL broadcast emitter: `standby_wake_broadcast:` label at `src/dlcp_fw/asm/dlcp_control_v171.asm:2716` (header comment block at :2702)
