@@ -542,7 +542,7 @@ struct Chain {
     /// "frames emitted between the IR injection and the next
     /// function_028 entry") via
     /// `mark_ctl_tx_capture_point` + `ctl_tx_record_since_last_
-    /// capture` + `step_until_ctl_pc`.
+    /// capture` + `step_until_pc_hit(core_idx=0, ...)`.
     tx_capture_ctl: usize,
     /// When true, `step()` applies the per-step "force
     /// CONNECTED" hook to CONTROL: ORs bits 1+3 into 0x01F
@@ -1639,21 +1639,26 @@ impl Chain {
         self.inner.cores[self.i_main0].pc()
     }
 
-    /// Step CONTROL until its PC enters the [`pc_lo`, `pc_hi`]
-    /// range, or `max_tcy` Tcy elapse.  Returns the actual
-    /// PC observed at exit (which may be outside the range if
-    /// the budget was exhausted).  Quantization: stepping
+    /// Step the chain until the selected core's PC enters
+    /// [`pc_lo`, `pc_hi`] (inclusive), or `max_tcy` Tcy
+    /// elapse.  Returns the actual PC observed at exit (which
+    /// may be outside the range if the budget was exhausted --
+    /// callers can detect "didn't hit" by comparing the return
+    /// value against the range).  Quantization: stepping
     /// happens in `chunk_tcy = 100` Tcy chunks, so the
     /// firmware may step a few instructions past the target PC
     /// before the loop notices.  Use this to align observation
     /// windows to firmware-loop-head events (e.g. function_028
-    /// entry on V1.6b CONTROL is at 0x0B36; pass `(0x0B36,
-    /// 0x0B38)` to step until the firmware is at the entry).
-    /// Mirror of gpsim's `break e <addr>` + `run` primitive
-    /// for the K20 / 2455 cores.
+    /// entry on V1.6b CONTROL is at 0x0B36; pass
+    /// `core_idx=0, pc_lo=0x0B36, pc_hi=0x0B38` to step until
+    /// CONTROL is at the entry).  Mirror of gpsim's
+    /// `break e <addr>` + `run` primitive for the K20 / 2455
+    /// cores.
     ///
-    /// `core_idx` selects the core to inspect: 0 = i_ctl,
-    /// 1 = i_main0.  Other values raise PyValueError.
+    /// `core_idx` selects the core to inspect:
+    ///   * 0 -> CONTROL (`i_ctl`)
+    ///   * 1 -> MAIN0 (`i_main0`)
+    /// Other values raise `PyValueError`.
     #[pyo3(signature = (core_idx, pc_lo, pc_hi, max_tcy=1_000_000))]
     fn step_until_pc_hit(
         &mut self,
