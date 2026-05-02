@@ -39,8 +39,8 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import (
-    PATCHED_MAIN_HEX,
     PATCHED_MAIN_HEX_V24,
+    PATCHED_MAIN_HEX_V25,
     PATCHED_MAIN_HEX_V26,
     STOCK_MAIN_HEX,
     V31_MAIN_HEX,
@@ -176,7 +176,7 @@ def _dsp34_diff(
 _MAIN_VERSIONS = [
     pytest.param(STOCK_MAIN_HEX, id="main_v23_stock"),
     pytest.param(PATCHED_MAIN_HEX_V24, id="main_v24"),
-    pytest.param(PATCHED_MAIN_HEX, id="main_v25"),
+    pytest.param(PATCHED_MAIN_HEX_V25, id="main_v25"),
     pytest.param(V31_MAIN_HEX, id="main_v31"),
 ]
 
