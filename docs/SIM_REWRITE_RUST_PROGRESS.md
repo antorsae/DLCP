@@ -339,7 +339,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [in_progress] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
   - artifact: ledger update; full sim gate green under dual-run.
-  - status (2026-05-02 checkpoint): **463 of 800 still-skipped tests unblocked under DLCP_SIM_BACKEND=rust** (~58% complete); **337 tests remain skipped across 55 files**.  Latest collection: `pytest tests/sim --co -m "not dual_supported"` -> 337/1093.  Almost all remaining are tied to `chain_gpsim` / `wire_chain_gpsim` / `control_gpsim` runtime harnesses and require actual rust-side adapter migration, not marker batching.
+  - status (2026-05-04 checkpoint): **486 of 800 still-skipped tests unblocked under DLCP_SIM_BACKEND=rust** (~61% complete); **314 tests remain skipped across ~55 files**.  Latest collection: `pytest tests/sim --co -m "not dual_supported"` -> 314/1093.  +23 tests migrated 2026-05-03..04 across 7 files: test_main_dsp_deafness_chain (6 instances), test_main_gpsim_command_compatibility (2), test_main_stdby_pin_io local-mode + OERR-scan (2 of 11), test_v31_review_findings::test_bf08_payload_bytes_on_dsp_fault (1), test_wire_chain_bridge module-level (10 pure-Python bridge tests), test_robustness_waiting::test_stock_control_v14_without_main_shows_waiting (1), test_v32_layer5_diag_counters::test_v32_diag_counters_isolated_per_hook (1).  Almost all remaining are tied to `chain_gpsim` / `wire_chain_gpsim` / `control_gpsim` runtime harnesses and require actual rust-side adapter migration, not marker batching.
   - sub-task [done] batch-1 (commit 5f67aab): 11 files, 213 tests -- pure static analysis (hex byte comparisons, source-pattern regex matchers, semantic-guard checks, flash-tool CLI plumbing).
   - sub-task [done] batch-2 (commit 47411c6 + 4e1cfcd): 23 files, 137 tests -- Python-level behavioral models (`MainUnitModel`, `ControlUISim`, `CurrentLoopBus`, `scenarios`), plus pure-Python flash/HID/regex tooling.  11 of these files lacked a top-level `import pytest`; the bootstrap import was inserted in PEP-8 position.
   - sub-task [done] test_main_gpsim_command_edges.py (commit 77e74f2): full dual_supported rewrite, 25 stock-vs-patched edge cases.  Replaced legacy `run_main_mailbox_gpsim` mailbox-overlay injection with the production native RX ring path on both backends (gpsim via `MainChainHarness(transport_mode="native_ring")`, rust via `Chain.from_v3x_main_only` + `inject_main_frames_fifo`).  Dropped the gpsim-mailbox-only assertions (parser_break_hit, 0x7C0..0x7C3 ring-state, tx_bytes equality) since they have no rust equivalent and were always empty for these RAM-only commands; kept the per-cmd register subset equality (the actual semantic test of stock-vs-patched firmware equivalence).
@@ -377,6 +377,29 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   Migration template established: see `test_main_gpsim_command_edges.py` (commit 77e74f2), `test_main_gpsim_command_matrix.py` (commits 463c064 + 1cc305b), `test_main_gpsim_preset_banks.py` (commit 4fb7d5c), `test_main_gpsim_usb_engine.py` (commit 73a2603) for the established patterns.  The duck-typed `_GpsimBackend` / `_RustBackend` adapter trio in usb_engine is the cleanest reusable shape for tests with multi-step boot+inject+read sequences.
 
   Next concrete pickup: `test_main_dsp_deafness_chain.py` -- 6 instances; rust facade has all the pieces (`read_dsp_address_nack_count_remaining` from 573a332, `set_dsp_i2c_fault`, `clear_dsp_i2c_faults`, `read_dsp_reg`).  Pattern: copy the duck-typed adapter from usb_engine, add `dsp_snapshot()` / `dsp_diff()` / `read_nack_remaining()` methods.  4-way parametrize over MAIN versions × 1 deafness-chain test + 2 immune-version tests (V2.6, V3.1).
+
+  ### P4.7 resume notes (2026-05-04)
+
+  Findings from 23-test migration burst (commits 716dbfc..775e1e4):
+
+  - **V2.7 DSP-ping rust fidelity gap** (task #76): `test_main_dsp_ping_latches_fault_on_persistent_nack` for V2.7 fails on rust (`0x07F=0x04` instead of expected `0x40+`).  V2.7's bus-clear bitbang + DSP-ping path doesn't converge to `0x07F.bit6` latched on rust within 60M Tcy.  V3.1 dsp-ping in `test_v31_v163b_robustness` works on rust (because V3.1 restored stock waits) -- it's specifically the V2.7 `volume_dsp_write_v26` + bus-clear + ping sequence that's broken on rust.  Investigation deferred to P5; relevant to user's broader V3.2 diag investigation if the same MSSP/TAS3108 path is at fault.
+  - **RC2 strap divergence between gpsim and rust** (task #75 LOW): rust `chain.write_reg(0xF82, 0xFB)` is one-shot; gpsim drives RC2 low for the entire run via `_MainCurrentLoopPinModel`.  No current functional impact (V3.x firmware does early `clrf PORTC` which preserves the low bit), but a held-pin-level primitive is needed before any future firmware that writes RC2 high.
+  - **Mislabel fix on test_main_dsp_deafness_chain.py** (codex MEDIUM, 73f8601): pre-existing alias confusion since d1f5cd6 -- `main_v25` parametrize entry actually pointed at PATCHED_MAIN_HEX (= V2.7) instead of V2.5.  Caught by codex on the migration commit; switched to `PATCHED_MAIN_HEX_V25`.
+  - **V3.2 diag-counter isolation on rust** (775e1e4): confirmed cmd 0x21 query is observational -- doesn't bump any of the 7 diag counters at 0x2E5..0x2EB.  This rules out the diag-query-feedback hypothesis for the user's reported "counters at 7..15+ within seconds" field bug.  The rust path uses `Chain.from_v3x_main_only(v32_hex)` + `inject_main_frames_fifo([[0xB1, 0x21, 0x00]])`; same shape as `test_v32_main_runtime_counters_baseline`.
+
+  Migration shape additions:
+
+  - `_bf08_frames_from_bytes` scanner (1fcb081): walks `tx_record_since_last_capture()` flat-byte output looking for adjacent `BF/08/<data>` 3-byte triplets; resilient to mid-stream non-prefix bytes.  Reusable by other route+cmd-payload tests where firmware emits a known-route burst and we want to assert on the payload.
+  - Module-level `pytestmark = pytest.mark.dual_supported` (8fdbde8): for files where every test is backend-agnostic (e.g. `test_wire_chain_bridge.py` testing pure-Python bridge logic).  These will be deleted in P4.9 alongside `wire_chain_gpsim.py`.
+
+  Next concrete pickups (Category A, mechanical):
+
+  - `test_main_gpsim_i2c_regfile.py` (7) -- gpsim CLI breakpoints + custom I2C device NACK/stuck primitives; Category D-blocked (rust would need executor breakpoints).
+  - `test_chain_gpsim_v141_v24_v25_recovery.py` (2) -- single-MAIN+CONTROL chain harness; Category B-blocked.
+  - `test_chain_gpsim_v25*` family (~12) -- same Category B blocker.
+  - `test_v171_sentinel_reconnect.py` (1 remaining) -- Category C documented pre-existing failure (missing `RECONNECT_WAIT_DONE` marker substring).
+
+  Recommended next major investment: build `Chain.from_two_main_wire_chain(...)` rust factory.  This would unblock ~80 tests across `test_wire_chain_gpsim*` (5 files), `test_v28_wire_delayed_switch_repros`, `test_v171_v32_layer5_diag_chain`, `test_chain_gpsim_v161b_v24_v25_i2c_faults`.  Estimated 2-3 sessions for the factory + first proof migration.
 
 - [pending] P4.8 Switch default backend to Rust; gpsim now opt-in only
   - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
