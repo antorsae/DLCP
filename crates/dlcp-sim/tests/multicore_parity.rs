@@ -3307,13 +3307,36 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 /// RIGHT MAIN never came back; CONTROL sat in `Waiting for DLCP`
 /// indefinitely until a hard mains-side power cycle recovered both.
 ///
-/// This test models the *transition* (boot to DISPLAY -> STDBY broadcast
-/// -> WAKE attempt with MAIN1 reset-held -> stuck-in-WAITING), not the
-/// hardware *cause* (rail/MCLR/inrush is out of scope; modelled by
-/// `hold_core_in_reset(MAIN1)` injected mid-cycle).  The complementary
-/// static end-state model is `right_main_held_in_reset_control_stuck_in_waiting`
-/// (#48), which holds MAIN1 from cold boot rather than dynamically
-/// dropping it during the wake transition.
+/// **Symptom-equivalent, NOT bit-exact reproduction**: real hardware
+/// does NOT have an "explicit fault" -- the asymmetric wake happens
+/// deterministically on certain power cycles because of inherent
+/// per-board PSU/MCLR/AN0/inrush conditions.  Rust's POR clears RAM
+/// to known values, models all cores identically, and has no
+/// PSU/inrush/wake-pin-skew model -- so the simulator CANNOT
+/// spontaneously reproduce the asymmetric outcome.  This test
+/// **injects** the failure mode (`hold_core_in_reset(MAIN1)`) to
+/// MODEL what we hypothesize the field-bug condition looks like at
+/// the chain-protocol level.  The test's value is twofold:
+///
+///   1. **Regression gate**: a future firmware mitigation (e.g.
+///      `adc_boot_gate` timeout per `docs/V32_MAIN_HANG_HARDENING_PLAN.md`)
+///      should change this test's assertions -- with the fix, MAIN1
+///      should at least *attempt* dispatch (even if eventually
+///      reverting to standby) rather than stay frozen in active=0x30
+///      forever.  Without the fix, the held-condition produces the
+///      asymmetric outcome documented here.
+///   2. **Hypothesis check**: if HW operator captures during the
+///      next field reproduction show wake bytes arriving cleanly at
+///      MAIN1's UART RX but MAIN1's CPU not advancing (MCLR/rail
+///      issue), this test's chain-level outcome should match what
+///      operator observes (CONTROL transitions, MAIN0 USB-visible,
+///      MAIN1 USB-absent).  Mismatch would shift weight toward H2 or
+///      H3 hypotheses.
+///
+/// The complementary static end-state model is
+/// `right_main_held_in_reset_control_stuck_in_waiting` (#48), which
+/// holds MAIN1 from cold boot rather than dynamically dropping it
+/// during the wake transition.
 ///
 /// Bug #45 H1 SIM REPRODUCTION (HIGH-confidence root-cause hypothesis):
 ///
@@ -3476,12 +3499,14 @@ fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
     // Models the hardware-observed condition where the second STDBY
     // press triggers a wake broadcast but MAIN1's local MCLR/PSU/AN0
     // prevents its CPU from advancing.  After this line MAIN1's CPU
-    // freezes at its current state (with active_flags.bit3 still
-    // CLEAR from step 2, diag_b still 0).  Wake bytes arriving at
-    // MAIN1's RX are still received by EUSART (gate is on per
-    // chain.rs:621-625's MCLR-held-low gate which checks dst before
-    // RCREG write -- they will be dropped at delivery), but no
-    // firmware dispatch fires because the CPU isn't running.
+    // freezes at its current state (active_flags.bit3 CLEAR from
+    // step 2, diag_b still 0).  Wake bytes arriving at MAIN1's pin
+    // are dropped at delivery: `Chain::deliver_uart_byte` records the
+    // wire attempt in `uart_tx_history` for parity, then the
+    // MCLR-held gate (chain.rs `if self.cores[coupling.dst_core].mclr_held
+    // { return; }`) prevents the byte from reaching MAIN1's RCREG.
+    // No firmware dispatch fires because (a) the CPU isn't running
+    // and (b) RCREG never sees the byte.
     chain.hold_core_in_reset(i_main1);
 
     // ----- Step 4: inject parser-driven WAKE -----
@@ -3549,11 +3574,32 @@ fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
 /// Distinguishes itself from H1 by exercising the new
 /// `Chain::set_uart_coupling_drop` per-coupling drop primitive (mirror
 /// of gpsim's `set_link_fault(name, drop=True)`) -- the M0->M1 UART
-/// coupling drops the next 3 bytes (the wake triplet B0/03/01) while
-/// the rest of the chain delivers normally.  MAIN1 receives nothing on
-/// its RX during the wake window, so no parser dispatch fires; the
-/// firmware itself is healthy (MAIN1's CPU IS running and would handle
-/// any subsequent wake byte that arrived).
+/// coupling drops the next N bytes while the rest of the chain
+/// delivers normally.  MAIN1 receives nothing on its RX during the
+/// wake window, so no parser dispatch fires; the firmware itself is
+/// healthy (MAIN1's CPU IS running and would handle any subsequent
+/// wake byte that arrived).
+///
+/// **Symptom-equivalent caveat (same as the H1 test)**: real hardware
+/// does not have an explicit per-link drop fault; the M0->M1 forwarder
+/// failure on real silicon would be a transient per-link condition
+/// (EUSART quiesce, baud glitch, optocoupler dropout, etc.), not a
+/// scripted byte-counter drop.  The test injects an explicit drop
+/// counter to MODEL what the chain looks like under the hypothesized
+/// condition.
+///
+/// **Drop-count rationale**: armed at `drop_count = 256` to cover the
+/// wake triplet (3 bytes) plus any incidental traffic MAIN0 emits
+/// during the bounded wake-dispatch window before the assertion
+/// gate (`MAIN0 diag_b >= 1`) fires.  The current run measures show
+/// the wake triplet alone is enough to reach `diag_b=1`, but a
+/// future change that makes MAIN0 emit status-burst frames inside
+/// the wake-dispatch window could push the drop budget higher.  The
+/// 256 ceiling is well past anything observed on this code path; if
+/// it ever becomes insufficient the test will fail at the MAIN1
+/// assertion (`diag_b == 0`) because the post-256-byte traffic would
+/// reach MAIN1 and dispatch wake there.  Re-arming inside the
+/// `run_until` gate is a future tightening if this becomes an issue.
 #[test]
 fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
     use dlcp_sim::memory::Address;
