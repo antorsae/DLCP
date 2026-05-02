@@ -3108,6 +3108,168 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
     );
 }
 
+/// P3.8a-parser-driven (closes task #51) — full UART-frame-driven
+/// STDBY/wake cycle through the parser.
+///
+/// The original P3.8a test seeds the post-handler state directly
+/// (`event_flags.bit2 = 1` + chosen `active_flags.bit3` value) because
+/// at the time of writing the parser-driven path appeared not to work
+/// in the single-MAIN harness: synthetic feeder injection of `B0/03/00`
+/// reached the parser (cmd byte saved correctly to `ram_0x0A2`) but
+/// `standby_request_handler` did not appear to update
+/// `active_flags.bit3` / `event_flags.bit2` before the rx_ring drained.
+/// Filed as task #51 follow-up.
+///
+/// Investigation (2026-05-02): the parser-driven path works fine; the
+/// gap was wake-settle time.  After `wake_request_handler` calls
+/// `adc_boot_gate` (`asm:5081+`) for the rail-rise blocking wait, the
+/// CPU stays in that loop for ~10 M Tcy before returning to the main
+/// service loop.  An STDBY frame injected before the wake settles will
+/// sit in the rx_ring (rd stays 0, wr advances) because the parser
+/// service routine isn't running.  Once wake completes, the parser
+/// drains the ring and dispatches normally.
+///
+/// Bisected boundary: STDBY frame injected
+///   - 5 M Tcy after wake -> never processed (rx ring stuck)
+///   - 9.5 M Tcy after wake -> never processed
+///   - 10 M Tcy after wake -> processed within 0.5 M Tcy (gate closes,
+///     diag_s increments, event_flags.bit2 cleared)
+///
+/// The boundary is sharp (not gradual) which is consistent with a
+/// specific firmware completion gate at ~10 M Tcy.
+///
+/// **Bug #45 relevance**: this closes a sim-fidelity question that was
+/// blocking parser-driven STDBY/wake reproduction in rust.  With
+/// parser-driven STDBY working, future investigations of the
+/// hardware-observed asymmetric-wake field bug (#45) can model the
+/// FULL CONTROL→MAIN STDBY cycle (CONTROL emits the panel-button-
+/// triggered B0/03/00 frame over UART → MAIN parser dispatches),
+/// rather than seeding post-handler state directly.
+#[test]
+fn v32_main_parser_driven_stdby_cycle_after_wake_settle() {
+    use dlcp_sim::memory::Address;
+
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_main0 = chain.push_core(main0);
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0]);
+
+    // Boot until DSP ack threshold so periodic main-service loop is
+    // running.  Less aggressive than the P3.8a test's GIE+ack double
+    // gate; the main loop is up well before GIE on the rust scheduler.
+    chain.run_until(
+        10_000_000,
+        2_000_000_000,
+        |c| c.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
+    );
+    assert!(
+        chain.current_tick < 2_000_000_000,
+        "boot did not converge before 2 B-tick safety ceiling"
+    );
+
+    // RAM map (per `src/dlcp_fw/asm/dlcp_main_ram.inc`):
+    //   0x05E = active_flags        (bit3 = gate open)
+    //   0x07E = event_flags         (bit2 = standby/wake event pending)
+    //   0x2E5 = diag_i               (I -- I2C transport faults)
+    //   0x2E7 = diag_s               (standby dispatches)
+    //   0x2E8 = diag_b               (bring-up / wake dispatches)
+    //   0x0C6 = rx_ring_rd
+    //   0x0C7 = rx_ring_wr
+    let read_u8 = |c: &Chain, addr: u16| -> u8 {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
+    };
+    let inject_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
+        // Mirror of `Chain::inject_main_frames_fifo` via direct ring
+        // write (no Python facade in rust crate tests).
+        const RING_BASE: u16 = 0x0200;
+        const RING_SIZE: u16 = 0xC0;
+        const RX_WR: u16 = 0x0C7;
+        let mem = &mut c.cores[i_main0].memory;
+        let mut wr = (mem.read_raw(Address::from_raw(RX_WR)) as u16) % RING_SIZE;
+        for &byte in &[route, cmd, data] {
+            mem.write_raw(Address::from_raw(RING_BASE + wr), byte);
+            wr = (wr + 1) % RING_SIZE;
+        }
+        mem.write_raw(Address::from_raw(RX_WR), wr as u8);
+    };
+
+    // ----- Phase 1: wake via B0/03/01 -----
+    inject_frame(&mut chain, 0xB0, 0x03, 0x01);
+    chain.run_until(1_000_000, 2_000_000_000, |c| {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(0x05E)) & 0x08 != 0
+    });
+    assert_eq!(
+        read_u8(&chain, 0x05E) & 0x08,
+        0x08,
+        "wake frame B0/03/01 must set active_flags.bit3"
+    );
+
+    // ----- Phase 2: wake-settle window -----
+    // Empirically bisected: STDBY frame injected before ~10 M Tcy
+    // after wake stays in rx_ring (parser is in adc_boot_gate's
+    // rail-rise wait); after ~10 M Tcy the parser drains and
+    // dispatches normally.  Using 15 M Tcy for safety margin.
+    chain.step_ticks(15_000_000 * 12); // 15 M Tcy * 12 ticks/Tcy
+
+    // ----- Phase 3: STDBY via B0/03/00 -----
+    let af_pre_stdby = read_u8(&chain, 0x05E);
+    let ef_pre_stdby = read_u8(&chain, 0x07E);
+    let diag_s_pre_stdby = read_u8(&chain, 0x2E7);
+    eprintln!(
+        "P3.8a-parser pre-STDBY: af=0x{af_pre_stdby:02X} ef=0x{ef_pre_stdby:02X} \
+         diag_s=0x{diag_s_pre_stdby:02X}"
+    );
+    inject_frame(&mut chain, 0xB0, 0x03, 0x00);
+
+    // Run until the gate closes (active_flags.bit3 cleared).
+    chain.run_until(500_000, 2_000_000_000, |c| {
+        let af = c.cores[i_main0].memory.read_raw(Address::from_raw(0x05E));
+        af & 0x08 == 0
+    });
+
+    let af_post_stdby = read_u8(&chain, 0x05E);
+    let ef_post_stdby = read_u8(&chain, 0x07E);
+    let diag_s_post_stdby = read_u8(&chain, 0x2E7);
+    let diag_b_post_stdby = read_u8(&chain, 0x2E8);
+    eprintln!(
+        "P3.8a-parser post-STDBY: af=0x{af_post_stdby:02X} ef=0x{ef_post_stdby:02X} \
+         diag_s=0x{diag_s_post_stdby:02X} diag_b=0x{diag_b_post_stdby:02X}"
+    );
+    assert_eq!(
+        af_post_stdby & 0x08,
+        0,
+        "STDBY frame B0/03/00 (parser-driven) must clear active_flags.bit3; \
+         got af=0x{af_post_stdby:02X}"
+    );
+    assert_eq!(
+        diag_s_post_stdby, 1,
+        "STDBY dispatch must increment diag_s (0x2E7) to 1; \
+         got 0x{diag_s_post_stdby:02X}"
+    );
+    assert_eq!(
+        ef_post_stdby & 0x04,
+        0,
+        "STDBY dispatch must consume event_flags.bit2; \
+         got ef=0x{ef_post_stdby:02X}"
+    );
+
+    eprintln!(
+        "P3.8a-parser OK (closes task #51): wake-settle=15 M Tcy then \
+         B0/03/00 dispatches via parser path, diag_s->1, gate closed."
+    );
+}
+
 /// P3.8b (symptom-equivalent, not bit-exact) — RIGHT MAIN held in
 /// reset → CONTROL stuck in `Waiting for DLCP`.
 ///
