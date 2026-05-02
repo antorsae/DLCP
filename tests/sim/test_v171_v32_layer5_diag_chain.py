@@ -58,6 +58,22 @@ try:
 except Exception:  # pragma: no cover
     _IMPORT_OK = False
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Constants pinned by the Layer 5 design (kept duplicated from Phase A/B
@@ -356,10 +372,13 @@ def _wait_for_pb_present(
 # ===========================================================================
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
-def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(v171_hex: Path, v32_hex: Path) -> None:
+def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """At boot, neither PB has replied, so CONTROL's diag cache and
     present mask must be zero across the chain warmup.
 
@@ -368,27 +387,59 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(v171_hex: Path, v32_hex:
     real MAINs on the chain (which exercise the BF/05/07/03/06/1D
     steady-state status burst — none of which should leak into the
     diag cache).
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    Migrated to dual_supported in P4.7: the V1.71+V3.2+V3.2 chain
+    now reaches DISPLAY mode on rust after the codex hypothesis #1
+    fix to ``build_v171_v32_chain`` (PORTA/PORTC seeded to 0xFF
+    after POR so V1.71 doesn't read the wiped 0x00 PORT bits as
+    "STBY-stuck-pressed" -> Zzz).  Rust path uses the canonical
+    V1.71 + V3.2 release hexes from the binary's path resolution,
+    not the test's freshly-built ``v32_hex`` tmp fixture (which
+    is identical for unmodified source).
+    """
+    _require_v32_hex(v32_hex)
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        # Pre-Diagnostics sanity: cache stays zero.
-        present = _diag_present(chain)
-        assert present == 0, f"present mask non-zero at boot: 0x{present:02X}"
-        for pb in (0, 1):
-            cache = _diag_pb_cache(chain, pb)
+        present = c.read_reg(V171_DIAG_PRESENT_PHYS)
+        assert present == 0, (
+            f"[rust] present mask non-zero at boot: 0x{present:02X}"
+        )
+        for pb_base, pb_label in (
+            (V171_DIAG_PB1_BASE_PHYS, "PB1"),
+            (V171_DIAG_PB2_BASE_PHYS, "PB2"),
+        ):
+            cache = tuple(c.read_reg(pb_base + i) for i in range(7))
             assert all(v == 0 for v in cache), (
-                f"PB{pb+1} cache non-zero at boot: {[hex(v) for v in cache]}"
+                f"[rust] {pb_label} cache non-zero at boot: "
+                f"{[hex(v) for v in cache]}"
             )
-    finally:
-        chain.close()
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+            )
+            # Pre-Diagnostics sanity: cache stays zero.
+            present = _diag_present(chain)
+            assert present == 0, (
+                f"[gpsim] present mask non-zero at boot: 0x{present:02X}"
+            )
+            for pb in (0, 1):
+                cache = _diag_pb_cache(chain, pb)
+                assert all(v == 0 for v in cache), (
+                    f"[gpsim] PB{pb+1} cache non-zero at boot: "
+                    f"{[hex(v) for v in cache]}"
+                )
+        finally:
+            chain.close()
 
 
 @pytest.mark.gpsim

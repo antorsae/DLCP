@@ -497,6 +497,23 @@ fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0, 0]);
 
+    // Seed CONTROL buttons-released (active-low) AFTER POR.
+    // POR wipes SFRs to 0x00 which V1.71 firmware interprets as
+    // "every button stuck pressed" -- including STBY -- causing
+    // CONTROL to enter standby screen (Zzz...) before the chain
+    // can boot to DISPLAY mode.  Mirror of the seeding in
+    // build_v17_chain_single_main (lines ~254-259) and
+    // build_v17_control_only_chain (lines ~316-321).  Codex
+    // hypothesis #1 from the V1.71+V3.2+V3.2 Zzz investigation
+    // (2026-05-02): PortA/PortC=0x00 reads as buttons-pressed,
+    // V1.71 sees STBY held -> renders Zzz instead of Volume.
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+
     Ok(V171V32ChainHandle {
         chain,
         i_ctl,
