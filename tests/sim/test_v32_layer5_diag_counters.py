@@ -1053,9 +1053,52 @@ def test_v32_diag_counters_stay_zero_during_extended_idle(
             h.close()
 
 
+_DIAG_SEED = (1, 2, 3, 4, 5, 6, 7)
+
+
+def _run_diag_isolation_test_gpsim(v32_hex: Path) -> tuple[int, ...]:
+    from dlcp_fw.sim.chain_gpsim import MainChainHarness
+    from dlcp_fw.sim.control_gpsim import _read_reg
+
+    h = MainChainHarness(
+        v32_hex,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        for _ in range(20):
+            h.step()
+        for offset, value in enumerate(_DIAG_SEED):
+            h._issue(f"reg(0x{0x2E5 + offset:03X})=0x{value:02X}", 5.0)
+        h.inject_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
+        for _ in range(60):
+            h.step()
+        return tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(7))
+    finally:
+        h.close()
+
+
+def _run_diag_isolation_test_rust(v32_hex: Path) -> tuple[int, ...]:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+
+    chain = RustChain.from_v3x_main_only(str(v32_hex))
+    chain.step_tcy(4_000_000)
+    for offset, value in enumerate(_DIAG_SEED):
+        chain.write_reg(0x2E5 + offset, value)
+    chain.inject_main_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
+    chain.step_tcy(12_000_000)
+    return tuple(chain.read_reg(0x2E5 + i) for i in range(7))
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_diag_counters_isolated_per_hook(v32_hex: Path) -> None:
+def test_v32_diag_counters_isolated_per_hook(
+    v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """REGRESSION: each diag counter must increment ONLY when its
     specific event class fires.  If, say, cmd 0x21 traffic causes
     `diag_s` (standby) or `diag_r` (recovery) to bump, the counter
@@ -1069,59 +1112,40 @@ def test_v32_diag_counters_isolated_per_hook(v32_hex: Path) -> None:
     MUST be unchanged from the seed pattern (cmd 0x21 is observational
     only — it must not increment any counter).
 
-    Marked xfail-on-skip because the chain_gpsim harness needs an
-    "inject cmd 0x21 from CONTROL side" helper; the simpler probe
-    `test_v32_diag_counters_stay_zero_during_extended_idle` covers
-    the no-spurious-bump case without needing chain injection.
+    Migrated to dual_supported in P4.7: rust path uses
+    Chain.from_v3x_main_only + write_reg + inject_main_frames_fifo +
+    read_reg.  No CONTROL peer is needed — the test only injects the
+    cmd 0x21 query frame and checks the diag block is unchanged.
     """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
-
-    seed = (1, 2, 3, 4, 5, 6, 7)
-
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
-    try:
-        # Warmup so cold init finishes.
-        for _ in range(20):
-            h.step()
-        # Force seed pattern.
-        for offset, value in enumerate(seed):
-            h._issue(f"reg(0x{0x2E5 + offset:03X})=0x{value:02X}", 5.0)
-        # Inject a single cmd 0x21 query frame from CONTROL.
+    if dlcp_sim_backend in {"rust", "dual"}:
         try:
-            h.inject_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
-        except (AttributeError, NotImplementedError) as exc:
-            pytest.skip(
-                f"chain harness does not expose inject_frames_fifo "
-                f"in this configuration ({exc}); the no-bump invariant "
-                f"is partially covered by stay_zero_during_extended_idle"
+            from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain  # noqa: F401
+        except Exception as exc:  # pragma: no cover
+            pytest.fail(
+                f"rust dlcp_sim_native facade not importable -- {exc!r}"
             )
-        # Wait for the 7-frame reply burst to complete.
-        for _ in range(60):
-            h.step()
-        # Re-read counters.
-        post = tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(7))
-        assert post == seed, (
-            f"cmd 0x21 query bumped one or more counters!  Seed was {seed}, "
-            f"post-query {post}.  cmd 0x21 must be observational — if it "
-            f"causes ANY counter to increment, the diag-page cadence will "
-            f"feed back into MAIN-side state changes, which is the cascade "
-            f"the operator saw on the rig."
+        post = _run_diag_isolation_test_rust(v32_hex)
+        assert post == _DIAG_SEED, (
+            f"[rust] cmd 0x21 query bumped one or more counters!  Seed "
+            f"was {_DIAG_SEED}, post-query {post}.  cmd 0x21 must be "
+            f"observational."
         )
-    finally:
-        h.close()
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        if not gpsim_available():
+            pytest.skip("gpsim not installed")
+        try:
+            from dlcp_fw.sim.chain_gpsim import MainChainHarness  # noqa: F401
+            from dlcp_fw.sim.control_gpsim import _read_reg  # noqa: F401
+        except Exception:
+            pytest.skip("gpsim harness not importable")
+        post = _run_diag_isolation_test_gpsim(v32_hex)
+        assert post == _DIAG_SEED, (
+            f"[gpsim] cmd 0x21 query bumped one or more counters!  Seed "
+            f"was {_DIAG_SEED}, post-query {post}.  cmd 0x21 must be "
+            f"observational — if it causes ANY counter to increment, "
+            f"the diag-page cadence will feed back into MAIN-side state "
+            f"changes, which is the cascade the operator saw on the rig."
+        )
 
 
 @pytest.mark.dual_supported
