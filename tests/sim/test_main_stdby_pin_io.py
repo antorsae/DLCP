@@ -37,6 +37,22 @@ from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
 # PIC18F2455 SFR addresses
 _LATA = 0xF89
 _LATB = 0xF8A
@@ -194,51 +210,80 @@ def test_stdby_pin_io(main_hex: Path, control_hex: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_stdby_pin_io_local_mode() -> None:
-    """In local mode (RC2 low), RB2 is driven low during standby."""
-    _require_gpsim()
-    _skip_missing(STOCK_MAIN_HEX)
-
+def _run_local_mode_stdby_gpsim() -> dict[int, int]:
     harness = MainChainHarness(
         STOCK_MAIN_HEX,
         chunk_cycles=200_000,
         standby_mode="hold",
         rc2_mode="low",
         bypass_i2c=False,
-        transport_mode="mailbox",
+        transport_mode="native_ring",
     )
     try:
-        # Boot and stabilize
         for _ in range(20):
             harness.step()
-
-        # Inject standby command directly: route=0xB0, cmd=0x03, data=0x00
+        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
         harness.inject_frames_fifo([[0xB0, 0x03, 0x00]], fifo_limit=47)
-
-        # Run enough steps for standby handler to complete
         for _ in range(40):
             harness.step()
-
-        # RB2 should be low in local mode
-        latb = _read_reg(harness._issue, _LATB)
-        assert not (latb & 0x04), f"RB2 not low in local mode; LATB=0x{latb:02X}"
-
-        # All other outputs same as chain mode
-        lata = _read_reg(harness._issue, _LATA)
-        assert not (lata & 0x08), f"RA3 not low; LATA=0x{lata:02X}"
-        assert not (lata & 0x10), f"RA4 not low; LATA=0x{lata:02X}"
-        assert not (lata & 0x20), f"RA5 not low; LATA=0x{lata:02X}"
-        assert not (lata & 0x40), f"RA6 not low; LATA=0x{lata:02X}"
-        assert not (latb & 0x10), f"RB4 not low; LATB=0x{latb:02X}"
-        assert not (latb & 0x08), f"RB3 not low; LATB=0x{latb:02X}"
-
-        sleep_flag = _read_reg(harness._issue, _SLEEP_FLAG)
-        assert sleep_flag == 0x01, f"sleep flag not 0x01; 0x095=0x{sleep_flag:02X}"
-
+        return {
+            _LATA: _read_reg(harness._issue, _LATA),
+            _LATB: _read_reg(harness._issue, _LATB),
+            _SLEEP_FLAG: _read_reg(harness._issue, _SLEEP_FLAG),
+        }
     finally:
         harness.close()
+
+
+def _run_local_mode_stdby_rust() -> dict[int, int]:
+    chain = RustChain.from_v3x_main_only(str(STOCK_MAIN_HEX))
+    # rc2_mode="low": clear RC2 (bit 2) on PORTC (0xF82) for local-mode
+    # chain strap. Mirrors gpsim MainChainHarness(rc2_mode="low").
+    chain.write_reg(0xF82, 0xFB)
+    chain.step_tcy(4_000_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x00]], fifo_limit=47)
+    chain.step_tcy(8_000_000)
+    return {
+        _LATA: chain.read_reg(_LATA),
+        _LATB: chain.read_reg(_LATB),
+        _SLEEP_FLAG: chain.read_reg(_SLEEP_FLAG),
+    }
+
+
+@pytest.mark.dual_supported
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_stdby_pin_io_local_mode(dlcp_sim_backend: str) -> None:
+    """In local mode (RC2 low), RB2 is driven low during standby."""
+    _skip_missing(STOCK_MAIN_HEX)
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        regs = _run_local_mode_stdby_rust()
+        _assert_local_mode_pins(regs, backend="rust")
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        regs = _run_local_mode_stdby_gpsim()
+        _assert_local_mode_pins(regs, backend="gpsim")
+
+
+def _assert_local_mode_pins(regs: dict[int, int], *, backend: str) -> None:
+    lata = regs[_LATA]
+    latb = regs[_LATB]
+    sleep_flag = regs[_SLEEP_FLAG]
+    assert not (latb & 0x04), f"[{backend}] RB2 not low in local mode; LATB=0x{latb:02X}"
+    assert not (lata & 0x08), f"[{backend}] RA3 not low; LATA=0x{lata:02X}"
+    assert not (lata & 0x10), f"[{backend}] RA4 not low; LATA=0x{lata:02X}"
+    assert not (lata & 0x20), f"[{backend}] RA5 not low; LATA=0x{lata:02X}"
+    assert not (lata & 0x40), f"[{backend}] RA6 not low; LATA=0x{lata:02X}"
+    assert not (latb & 0x10), f"[{backend}] RB4 not low; LATB=0x{latb:02X}"
+    assert not (latb & 0x08), f"[{backend}] RB3 not low; LATB=0x{latb:02X}"
+    assert sleep_flag == 0x01, (
+        f"[{backend}] sleep flag not 0x01; 0x095=0x{sleep_flag:02X}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +311,13 @@ def _find_bcf_pie1_txie_in_patch_stubs(hex_path: Path) -> list[int]:
     return hits
 
 
+@pytest.mark.dual_supported
 def test_v162b_oerr_recovery_must_not_kill_txie() -> None:
-    """V1.62b control_uart_soft_recover must NOT contain 'bcf PIE1, TXIE'."""
+    """V1.62b control_uart_soft_recover must NOT contain 'bcf PIE1, TXIE'.
+
+    Pure binary scan over the patched HEX -- backend-agnostic, so it
+    runs identically under gpsim, rust, and dual modes.
+    """
     _skip_missing(PATCHED_CONTROL_HEX_V162B)
 
     hits = _find_bcf_pie1_txie_in_patch_stubs(PATCHED_CONTROL_HEX_V162B)
