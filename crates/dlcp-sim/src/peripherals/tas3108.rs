@@ -178,6 +178,17 @@ impl Tas3108 {
         self.address_nack_count_remaining = count;
     }
 
+    /// Read the remaining address-NACK injections.  Mirror of
+    /// gpsim's `read_i2c_attribute("dsp34", "Address_Nack_Count")`
+    /// which returns the gpsim regfile module's current
+    /// remaining count.  Used by deafness-chain regression
+    /// tests that assert NACKs were CONSUMED by firmware-driven
+    /// I²C bursts (i.e. the count went down between
+    /// `set_address_nack_count(N)` and the post-burst read).
+    pub fn address_nack_count_remaining(&self) -> u32 {
+        self.address_nack_count_remaining
+    }
+
     /// Clear all fault-injection counters back to their
     /// default (no-fault) state.  Mirror of
     /// `MainChainHarness.clear_i2c_faults` (chain_gpsim.py:526),

@@ -1366,6 +1366,21 @@ impl Chain {
         Ok(())
     }
 
+    /// Remaining address-NACK count on the TAS3108 slave coupled
+    /// to MAIN0.  Mirror of gpsim's
+    /// `MainChainHarness.read_i2c_attribute("dsp34",
+    /// "Address_Nack_Count")` (`chain_gpsim.py` reader for the
+    /// gpsim i2c-regfile attribute).  Used by deafness-chain
+    /// regression tests that assert NACKs were consumed by
+    /// firmware-driven I²C bursts: after
+    /// `set_dsp_i2c_fault(address_nack_count=N)`, the firmware
+    /// volume cmd should consume some of the budget, and the
+    /// returned value will be `< N`.
+    fn read_dsp_address_nack_count_remaining(&self) -> PyResult<u32> {
+        let i_dsp = self.dsp_slave_index()?;
+        Ok(self.inner.tas3108_slaves[i_dsp].address_nack_count_remaining())
+    }
+
     /// Program the MSSP STOP-fault knobs on MAIN0's MSSP
     /// peripheral.  While `stop_busy_count != 0` and the
     /// firmware schedules a PEN-driven STOP, the
