@@ -37,6 +37,22 @@ from dlcp_fw.sim.control_gpsim import _read_reg
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
 _STATUS_5E = 0x05E
 
 
@@ -59,9 +75,14 @@ def _dsp34_diff(
 # Semantic guard: reconnect_wait_done must contain call function_034
 # ---------------------------------------------------------------------------
 
+@pytest.mark.dual_supported
 def test_v162b_reconnect_exit_contains_wake_call() -> None:
     """V1.62b reconnect_wait_done must call function_034 (0x0C98) after
-    setting bit1 (DISPLAY)."""
+    setting bit1 (DISPLAY).
+
+    Pure binary scan over the patched HEX -- backend-agnostic, runs
+    identically under gpsim, rust, and dual modes.
+    """
     if not PATCHED_CONTROL_HEX_V162B.exists():
         pytest.skip(f"missing: {PATCHED_CONTROL_HEX_V162B.name}")
 
@@ -86,10 +107,131 @@ def test_v162b_reconnect_exit_contains_wake_call() -> None:
 # Runtime: DSP I2C behavioral proof of the active gate
 # ---------------------------------------------------------------------------
 
+def _run_standby_gate_test_gpsim(patched_main_hex: Path) -> None:
+    harness = MainChainHarness(
+        patched_main_hex,
+        chunk_cycles=200_000,
+        standby_mode="hold",
+        rc2_mode="low",
+        bypass_i2c=False,
+        transport_mode="native_ring",
+    )
+    try:
+        for _ in range(20):
+            harness.step()
+        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        assert _read_reg(harness._issue, _STATUS_5E) & 0x08, (
+            "[gpsim] MAIN not active"
+        )
+
+        snap_a = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x06, 0x50]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        diff_open = _dsp34_diff(snap_a, _dsp34_snapshot(harness))
+        assert len(diff_open) > 0, (
+            "[gpsim] volume command did not change any DSP register with "
+            "gate open -- test baseline broken"
+        )
+
+        harness.inject_frames_fifo([[0xB0, 0x03, 0x00]], fifo_limit=47)
+        for _ in range(40):
+            harness.step()
+        assert not (_read_reg(harness._issue, _STATUS_5E) & 0x08), (
+            "[gpsim] active flag not cleared after standby"
+        )
+
+        snap_b = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x06, 0x30]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        diff_closed = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
+        assert len(diff_closed) == 0, (
+            f"[gpsim] volume command changed {len(diff_closed)} DSP register(s) "
+            f"despite closed gate -- gate is not blocking"
+        )
+
+        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        assert _read_reg(harness._issue, _STATUS_5E) & 0x08, (
+            "[gpsim] active flag not restored by wake frame"
+        )
+
+        snap_c = _dsp34_snapshot(harness)
+        harness.inject_frames_fifo([[0xB0, 0x06, 0x40]], fifo_limit=47)
+        for _ in range(20):
+            harness.step()
+        diff_woken = _dsp34_diff(snap_c, _dsp34_snapshot(harness))
+        assert len(diff_woken) > 0, (
+            "[gpsim] volume command did not change any DSP register after "
+            "wake -- gate did not reopen"
+        )
+    finally:
+        harness.close()
+
+
+def _run_standby_gate_test_rust(patched_main_hex: Path) -> None:
+    chain = RustChain.from_v3x_main_only(str(patched_main_hex))
+
+    def dsp_snapshot() -> dict[int, int]:
+        return {r: chain.read_dsp_reg(r) for r in range(256)}
+
+    def dsp_diff(before: dict[int, int]) -> list:
+        after = dsp_snapshot()
+        return [(r, before[r], after[r]) for r in range(256) if before[r] != after[r]]
+
+    chain.step_tcy(4_000_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    assert chain.read_reg(_STATUS_5E) & 0x08, "[rust] MAIN not active"
+
+    snap_a = dsp_snapshot()
+    chain.inject_main_frames_fifo([[0xB0, 0x06, 0x50]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    assert len(dsp_diff(snap_a)) > 0, (
+        "[rust] volume command did not change any DSP register with "
+        "gate open -- test baseline broken"
+    )
+
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x00]], fifo_limit=47)
+    chain.step_tcy(8_000_000)
+    assert not (chain.read_reg(_STATUS_5E) & 0x08), (
+        "[rust] active flag not cleared after standby"
+    )
+
+    snap_b = dsp_snapshot()
+    chain.inject_main_frames_fifo([[0xB0, 0x06, 0x30]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    diff_closed = dsp_diff(snap_b)
+    assert len(diff_closed) == 0, (
+        f"[rust] volume command changed {len(diff_closed)} DSP register(s) "
+        f"despite closed gate -- gate is not blocking"
+    )
+
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    assert chain.read_reg(_STATUS_5E) & 0x08, (
+        "[rust] active flag not restored by wake frame"
+    )
+
+    snap_c = dsp_snapshot()
+    chain.inject_main_frames_fifo([[0xB0, 0x06, 0x40]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    assert len(dsp_diff(snap_c)) > 0, (
+        "[rust] volume command did not change any DSP register after "
+        "wake -- gate did not reopen"
+    )
+
+
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_main_standby_gate_blocks_dsp_writes(
     patched_main_hex: Path,
+    dlcp_sim_backend: str,
 ) -> None:
     """Volume commands must reach the DSP only when the active gate is open.
 
@@ -104,80 +246,14 @@ def test_main_standby_gate_blocks_dsp_writes(
     Prior to the fix, phase 3 never happens on real hardware because
     reconnect_wait_done does not call function_034.
     """
-    _require_gpsim()
     if not patched_main_hex.exists():
         pytest.skip(f"missing: {patched_main_hex.name}")
-
-    harness = MainChainHarness(
-        patched_main_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
-    try:
-        # Boot and activate MAIN via wake frame.
-        for _ in range(20):
-            harness.step()
-        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        assert _read_reg(harness._issue, _STATUS_5E) & 0x08, "MAIN not active"
-
-        # ---- Phase 1: gate OPEN, volume command reaches DSP ----
-        snap_a = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x06, 0x50]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff_open = _dsp34_diff(snap_a, _dsp34_snapshot(harness))
-        assert len(diff_open) > 0, (
-            "volume command did not change any DSP register with gate open "
-            "-- test baseline broken"
-        )
-
-        # ---- Phase 2: enter standby (close gate) ----
-        harness.inject_frames_fifo([[0xB0, 0x03, 0x00]], fifo_limit=47)
-        for _ in range(40):
-            harness.step()
-        assert not (_read_reg(harness._issue, _STATUS_5E) & 0x08), (
-            "active flag not cleared after standby"
-        )
-
-        # Volume command with gate closed -> DSP must NOT change.
-        # This is the field bug: CONTROL reconnects, sends commands,
-        # but every one is silently dropped at function_005 label_144.
-        snap_b = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x06, 0x30]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff_closed = _dsp34_diff(snap_b, _dsp34_snapshot(harness))
-        assert len(diff_closed) == 0, (
-            f"volume command changed {len(diff_closed)} DSP register(s) "
-            f"despite closed gate -- gate is not blocking"
-        )
-
-        # ---- Phase 3: wake frame reopens the gate (the fix) ----
-        harness.inject_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        assert _read_reg(harness._issue, _STATUS_5E) & 0x08, (
-            "active flag not restored by wake frame"
-        )
-
-        # Volume command after wake -> DSP must change again.
-        snap_c = _dsp34_snapshot(harness)
-        harness.inject_frames_fifo([[0xB0, 0x06, 0x40]], fifo_limit=47)
-        for _ in range(20):
-            harness.step()
-        diff_woken = _dsp34_diff(snap_c, _dsp34_snapshot(harness))
-        assert len(diff_woken) > 0, (
-            "volume command did not change any DSP register after wake "
-            "-- gate did not reopen"
-        )
-
-    finally:
-        harness.close()
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        _run_standby_gate_test_rust(patched_main_hex)
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _run_standby_gate_test_gpsim(patched_main_hex)
 
 
 # ---------------------------------------------------------------------------
