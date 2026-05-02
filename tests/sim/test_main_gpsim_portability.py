@@ -1,3 +1,25 @@
+"""Portability tests for gpsim-side Python helpers.
+
+These tests verify the IMPLEMENTATION DETAILS of utility
+functions in `dlcp_fw.sim.main_gpsim`, `dlcp_fw.sim.chain_gpsim`,
+`dlcp_fw.sim.main_gpsim_timer3`, and `dlcp_fw.sim.manifests` --
+symbol-table loaders, address-resolution fallbacks, mailbox-hook
+selection.  All test bodies monkey-patch around the actual gpsim
+binary dependency and exercise pure-Python helper logic.
+
+Backend-agnostic by construction: no firmware runs, no native
+sim runs.  Module-level `dual_supported` marker so
+DLCP_SIM_BACKEND={rust,dual} doesn't auto-skip them.
+
+NOTE: These tests will be DELETED in P4.9 alongside
+`chain_gpsim.py` / `main_gpsim.py` / `main_gpsim_timer3.py` etc.
+when the gpsim Python wrapper layer is excised.  Until then they
+remain as regression coverage for the gpsim helper code that
+P4.7 migrations rely on (e.g. `MainChainHarness(transport_mode=
+"native_ring")` is what the migrated tests use to drive gpsim
+in dual-mode).
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,6 +33,9 @@ from dlcp_fw.sim import main_gpsim_timer3 as mgt3
 from dlcp_fw.sim import manifests as mf
 from dlcp_fw.sim import v30_symbols as vs
 from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
+
+
+pytestmark = pytest.mark.dual_supported
 
 
 @pytest.fixture(autouse=True)
