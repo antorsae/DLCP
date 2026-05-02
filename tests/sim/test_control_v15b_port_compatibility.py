@@ -113,11 +113,22 @@ def _boot_rust_harness(control_hex: Path):
 
     `pause_heartbeat()` is a no-op on the rust facade (provided
     for duck-typing parity); the real V2.3 MAIN keeps emitting
-    BF replies, but at a cadence that allows V1.51b's reconnect
-    stub at 0x70BC to observe the `btg 0x01F, 1` edge (verified
-    empirically -- the retry burst fires on rust without any
-    pause).  The post-warmup 40-step drain still happens so
-    the captured TX baseline matches gpsim.
+    BF replies on the UART throughout warmup AND drain, with no
+    way to suppress them at the source.  The post-warmup 40-step
+    drain still runs so the rust caller sees the same
+    "post-warmup TX has been read" baseline as gpsim's caller --
+    BUT the asymmetry is real: gpsim's drain runs against
+    PAUSED synthetic injection while rust's drain runs against
+    ACTIVE V2.3 MAIN, so the per-firmware TX traffic during the
+    drain differs between backends (codex MEDIUM from review of
+    293f5b8).  This is not a problem for the 10-case
+    `test_ir_actions_match_stock_v15b_dispatch_behavior`
+    parametrize (vol/input/mute don't toggle 0x01F.bit1, so
+    neither V1.5b nor V1.51b's full-sync hooks fire during the
+    drain on either backend).  It IS the underlying obstacle to
+    a uniform-dual_supported migration of the power cases (see
+    `test_ir_power_actions_match_stock_v15b_under_legacy_gpsim_
+    mask` and the comment block above it).
     """
     _require_rust()
     c = RustChain.from_v17_chain(str(control_hex))
@@ -389,8 +400,8 @@ def test_ir_actions_match_stock_v15b_dispatch_behavior(
     V1.51b's reconnect/full-sync retry stub at 0x70BC by toggling
     0x01F.bit1 via `btg 0x01F, 1` at dispatch (firmware PC
     0x0E50), which V1.5b doesn't have.  See
-    test_ir_power_command_triggers_v151b_reconnect_retry below
-    for the documented divergence.
+    test_ir_power_actions_match_stock_v15b_under_legacy_gpsim_mask
+    below for the documented divergence.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
