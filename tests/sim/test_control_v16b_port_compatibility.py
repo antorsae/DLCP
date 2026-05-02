@@ -445,17 +445,17 @@ def test_cmd18_reset_behavior_matches_v16b(patched_control_hex_v161b: Path) -> N
 @pytest.mark.parametrize(
     ("profile_name", "decoded_addr", "decoded_cmd"),
     [
-        # Profile 1 (address 0x10): 0x33,0x34,0x35,0x36,0x37 (power
-        # 0x32 split out into test_ir_power_actions_match_stock_
-        # v16b_under_legacy_gpsim_mask below).
+        # Profile 1 (address 0x10): 0x32..0x37 (power IR INCLUDED;
+        # see docstring re-inclusion rationale).
+        pytest.param("profile1_hypex", 0x10, 0x32, id="p1_power_0x32"),
         pytest.param("profile1_hypex", 0x10, 0x33, id="p1_vol_up_0x33"),
         pytest.param("profile1_hypex", 0x10, 0x34, id="p1_vol_down_0x34"),
         pytest.param("profile1_hypex", 0x10, 0x35, id="p1_mute_0x35"),
         pytest.param("profile1_hypex", 0x10, 0x36, id="p1_input_up_0x36"),
         pytest.param("profile1_hypex", 0x10, 0x37, id="p1_input_down_0x37"),
-        # Profile 2 (address 0x00): 0x10,0x11,0x20,0x21,0x0D (power
-        # 0x0C split out into test_ir_power_actions_match_stock_
-        # v16b_under_legacy_gpsim_mask below).
+        # Profile 2 (address 0x00): 0x0C,0x10,0x11,0x20,0x21,0x0D
+        # (power IR INCLUDED; see docstring re-inclusion rationale).
+        pytest.param("profile2_standard", 0x00, 0x0C, id="p2_power_0x0c"),
         pytest.param("profile2_standard", 0x00, 0x10, id="p2_vol_up_0x10"),
         pytest.param("profile2_standard", 0x00, 0x11, id="p2_vol_down_0x11"),
         pytest.param("profile2_standard", 0x00, 0x20, id="p2_input_up_0x20"),
@@ -471,21 +471,46 @@ def test_ir_actions_match_stock_v16b_dispatch_behavior(
     dlcp_sim_backend: str,
 ) -> None:
     """Decoded IR events must preserve stock V1.6b emission +
-    state deltas across the volume / input / mute commands.
+    state deltas across the full IR command set, including the
+    power IR.
 
     Dual-mode (P4.7): both backends use the natural-state path
     (gpsim with `force_connected=False, heartbeat_rx_mode="full"`
     + post-warmup `pause_heartbeat()` + 40-step drain;
     rust with `from_v17_chain` paired against a real V2.3 MAIN).
-    Stock-vs-patched equivalence is asserted per-backend.
+    Stock-vs-patched equivalence is asserted PER-BACKEND.
 
-    Power IR commands (p1_power_0x32, p2_power_0x0c) are
-    DELIBERATELY excluded from this parametrize -- they trigger
-    V1.61b's reconnect/full-sync retry stub by toggling
-    0x01F.bit1 via `btg 0x01F, 1` at dispatch.  See
-    test_ir_power_actions_match_stock_v16b_under_legacy_gpsim_mask
-    below for the documented divergence (mirror of the V1.5b
-    /V1.51b mechanism analysed by codex on 2026-05-01).
+    Power-IR re-inclusion rationale (cycle-aligned-probe verify
+    on 2026-05-02 after the rust facade gained `current_ctl_pc`,
+    `step_until_pc_hit`, `mark_ctl_tx_capture_point`,
+    `ctl_tx_record_since_last_capture` in commit ceeea7c):
+
+      * On rust within the IR_STEPS=3 (600K K20-Tcy) window
+        after a power-IR injection, BOTH V1.6b stock and
+        V1.61b patched emit the same 4-frame full-sync burst
+        `(B0 07 vol) (B0 06 src) (B0 03 mute) (B0 03 connected)`.
+        V1.6b stock has its own periodic full-sync code path
+        (the same 4-frame body that V1.61b's stub at 0x70BC
+        also calls -- the patched stub adds an EDGE-triggered
+        shortcut, but the body is shared).
+      * On gpsim natural-state (force_connected=False +
+        pause_heartbeat post-warmup), BOTH V1.6b stock and
+        V1.61b patched emit nothing within the same window
+        (the paused heartbeat lets the firmware's state evolve
+        slower, so neither version's emission window aligns
+        with the IR_STEPS chunk).
+      * In both cases, the per-backend equivalence
+        `patched_frames == stock_frames` HOLDS.  The cross-
+        backend behaviors differ (rust burst vs gpsim empty),
+        but the test asserts per-backend not cross-backend.
+
+    Compare with the V1.5b/V1.51b case
+    (`test_ir_power_actions_match_stock_v15b_under_legacy_
+    gpsim_mask` in the sister file): there the per-backend
+    behaviors actually diverge (V1.5b stock=[] vs V1.51b=burst
+    on rust; V1.5b stock=burst vs V1.51b=[] on gpsim natural-
+    state), so per-backend equivalence does NOT hold and the
+    power cases stay gpsim-only.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -537,103 +562,6 @@ def test_ir_actions_match_stock_v16b_dispatch_behavior(
             f"[gpsim] delta mismatch: patched={patched_delta!r} "
             f"stock={stock_delta!r}"
         )
-
-
-# Power IR commands (p1_power_0x32, p2_power_0x0c) are
-# DELIBERATELY excluded from `test_ir_actions_match_stock_v16b_
-# dispatch_behavior`'s parametrize and from the dual_supported
-# migration -- they trigger a real firmware-state divergence
-# between V1.6b stock and V1.61b patched that gpsim's legacy
-# `heartbeat_force_connected=True` mask hides.
-#
-# Mirror of the V1.5b/V1.51b analysis (codex disasm trace on
-# 2026-05-01; see test_control_v15b_port_compatibility.py for
-# the full PC walk and `function_028` redirect details).  The
-# V1.6b/V1.61b mirror was confirmed by reading the V1.61b
-# patch builder directly (commit 6e776d5 follow-up):
-#
-# * The power IR-command body in V1.6b/V1.61b is byte-identical
-#   between stock and patched -- the V1.61b binary patch in
-#   `src/dlcp_fw/patch/build_control_presets_ab_v16b.py` doesn't
-#   touch the power-IR dispatch path; both versions do
-#   `btg 0x01F, 1` (toggle CONNECTED) on a power press.
-#
-# * V1.61b binary-overlays the stock periodic full-sync hook
-#   at `org 0x0B36` (V1.6b's analog of V1.51b's `0x0B2C`)
-#   with `goto full_sync_entry_stub`, where the stub:
-#     - gates on `0x01F.bit1` via `btfsc 0x01F, 1`
-#       (build_control_presets_ab_v16b.py:182);
-#     - uses `0x70`/`0x71` BANKED as retry budget / shadow --
-#       the same RAM cells V1.51b uses (line 191-203);
-#     - calls `send_preset_frame_txonly` when the retry
-#       budget is non-zero (line 201) -- analogous to V1.51b's
-#       `call 0x7250`;
-#     - falls through to V1.6b stock's `function_031` at
-#       `0x0C40` then jumps back to `0x0B3A` (line 206-207),
-#       which emits the same 4-frame full-sync tail
-#       `(B0 07 vol) (B0 06 src) (B0 03 mute) (B0 03 connected)`.
-#   Without gpsim's force_connected mask, the stub fires on the
-#   `btg 0x01F, 1` 1→0 edge in V1.61b but not in V1.6b stock.
-#
-# * Under gpsim's legacy `heartbeat_force_connected=True`,
-#   0x01F.bit1 is pinned high every step regardless of the
-#   firmware's `btg`, so V1.61b's stub never sees a 1→0 edge
-#   and emits nothing -- matching V1.6b's quiescent behavior.
-#
-# * Encoding the natural-state divergence dual_supported
-#   requires either cycle-aligned probes or an alternate
-#   assertion; same blocker as documented in
-#   test_control_v15b_port_compatibility.py.
-#
-# For now the power cases stay gpsim-only via the legacy
-# `_boot_harness(force_connected=True)` path, asserting only
-# the legacy-mask equivalence.
-
-
-@pytest.mark.gpsim
-@pytest.mark.slow
-@pytest.mark.parametrize(
-    ("profile_name", "decoded_addr", "decoded_cmd"),
-    [
-        pytest.param("profile1_hypex", 0x10, 0x32, id="p1_power_0x32"),
-        pytest.param("profile2_standard", 0x00, 0x0C, id="p2_power_0x0c"),
-    ],
-)
-def test_ir_power_actions_match_stock_v16b_under_legacy_gpsim_mask(
-    patched_control_hex_v161b: Path,
-    profile_name: str,
-    decoded_addr: int,
-    decoded_cmd: int,
-) -> None:
-    """V1.6b stock and V1.61b patched produce identical TX +
-    RAM-state on power IR -- but only under gpsim's legacy
-    `heartbeat_force_connected=True` mask.
-
-    See the comment block above for the underlying firmware-
-    state divergence (mirror of V1.5b/V1.51b codex disasm
-    trace 2026-05-01) and why this test stays gpsim-only.  The
-    uniform-dual_supported follow-up is documented as a
-    v15b/v16b runtime-facade pending sub-task.
-    """
-    _require_gpsim()
-    stock_frames, stock_delta = _run_ir_case(
-        STOCK_CONTROL_HEX_V16B,
-        profile_name=profile_name,
-        decoded_cmd=decoded_cmd,
-        decoded_addr=decoded_addr,
-        backend="gpsim",
-        force_connected=True,
-    )
-    patched_frames, patched_delta = _run_ir_case(
-        patched_control_hex_v161b,
-        profile_name=profile_name,
-        decoded_cmd=decoded_cmd,
-        decoded_addr=decoded_addr,
-        backend="gpsim",
-        force_connected=True,
-    )
-    assert patched_frames == stock_frames
-    assert patched_delta == stock_delta
 
 
 @pytest.mark.gpsim
