@@ -655,8 +655,12 @@ class Chain:
         MAIN-only / single-MAIN chain topologies (where i_main0
         == i_main1) both unit indices target the same core.
 
-        ``value`` is a 12-bit ADC sample in ``[0x0000, 0x0FFF]``;
-        higher bits are silently masked.
+        ``value`` is a 10-bit ADC sample in ``[0x0000, 0x03FF]``
+        (the PIC18F2455 ADC is 10-bit per DS39632E §21).  Values
+        outside that range raise ``ValueError`` rather than
+        silently masking, so a caller that passes a "12-bit-
+        looking" word like ``0x0500`` gets a clear error instead
+        of an unexpected sub-threshold sample.
 
         V3.x's ``adc_boot_gate`` (`asm:4041`) busy-waits until
         AN0 crosses ``>= 0x0236`` (runtime hysteresis
@@ -672,7 +676,14 @@ class Chain:
         ``docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md``
         §H1 + §A5.
         """
-        self._inner.set_main_an0_sample(int(unit), int(value) & 0x0FFF)
+        v = int(value)
+        if not (0 <= v <= 0x3FF):
+            raise ValueError(
+                "set_main_an0_sample: value must fit in 10 bits "
+                f"(0x0000..=0x03FF); got 0x{v:04X}. "
+                "The PIC18F2455 ADC is 10-bit per DS39632E §21."
+            )
+        self._inner.set_main_an0_sample(int(unit), v)
 
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into

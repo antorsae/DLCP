@@ -1475,8 +1475,18 @@ impl Chain {
     /// `i_main0 == i_main1`), both unit indices target the
     /// same physical core.
     ///
-    /// `value` is the 12-bit ADC sample in the range
-    /// `[0x0000, 0x0FFF]`.  Higher bits are silently masked.
+    /// `value` is the 10-bit ADC sample in the range
+    /// `[0x0000, 0x03FF]` -- the PIC18F2455 ADC is 10-bit
+    /// (datasheet DS39632E §21).  The underlying
+    /// `Adc::set_an0_sample` masks with `0x3FF`, so passing a
+    /// value with bit 10 or higher set silently drops those
+    /// bits.  Callers MUST pass a 10-bit value: e.g. the
+    /// firmware's `adc_boot_gate` threshold word `0x0236` is
+    /// stored as a 10-bit value and is what callers should pass
+    /// when modelling the threshold.  Passing a "12-bit-looking"
+    /// value like `0x0500` will not produce the expected high-
+    /// rail observable: the mask reduces it to `0x0100`, which
+    /// is BELOW the boot gate threshold.
     ///
     /// **Bug #45 H1 use case** (per
     /// `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`):
@@ -1494,6 +1504,12 @@ impl Chain {
         unit: u8,
         value: u16,
     ) -> PyResult<()> {
+        if value > 0x3FF {
+            return Err(PyValueError::new_err(format!(
+                "set_main_an0_sample: value must fit in 10 bits (0x0000..=0x03FF); \
+                 got 0x{value:04X}. The PIC18F2455 ADC is 10-bit per DS39632E §21."
+            )));
+        }
         let i_main = match unit {
             0 => self.i_main0,
             1 => self.i_main1,
@@ -1506,7 +1522,7 @@ impl Chain {
         self.inner.cores[i_main]
             .peripherals
             .adc
-            .set_an0_sample(value & 0x0FFF);
+            .set_an0_sample(value);
         Ok(())
     }
 
