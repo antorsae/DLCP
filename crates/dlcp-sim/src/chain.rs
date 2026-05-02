@@ -167,6 +167,31 @@ pub struct Chain {
     /// the residual is bounded).  Toggle via
     /// `set_uart_blackout`.
     pub uart_blackout: bool,
+
+    /// Per-coupling drop counter, parallel to `pinnet.uart`.
+    /// While non-zero for a given coupling index, the next
+    /// `deliver_uart_byte` call on that index decrements the
+    /// counter and returns WITHOUT recording the byte in
+    /// `uart_tx_history` AND without delivering it to the
+    /// destination's RX path -- modelling a per-link wire
+    /// fault (a single corrupted/dropped byte on a specific
+    /// chain segment).  Mirror of gpsim's
+    /// `wire_chain_gpsim::set_link_fault(name, drop=True)`
+    /// per-bridge drop semantic.
+    ///
+    /// The whole-chain `uart_blackout` (above) is a stronger
+    /// blanket fault: all couplings drop bytes for as long as
+    /// the flag is set.  This per-coupling counter is finer:
+    /// drop the next N bytes on a SPECIFIC coupling while
+    /// other couplings deliver normally.  Used to model
+    /// asymmetric-wake / forwarder-glitch field-bug scenarios
+    /// (see `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`
+    /// §H2 for the bug-#45 reproduction use case).
+    ///
+    /// Set via `set_uart_coupling_drop`.  The counter is
+    /// initialized to 0 (no drop) for every coupling on
+    /// creation in `couple_uart`.
+    pub uart_coupling_drop_remaining: Vec<u32>,
 }
 
 /// One UART byte delivered between two cores.  See
@@ -213,6 +238,7 @@ impl Chain {
             lcd_slaves: Vec::new(),
             lcd_couplings: Vec::new(),
             uart_blackout: false,
+            uart_coupling_drop_remaining: Vec::new(),
         }
     }
 
@@ -347,6 +373,48 @@ impl Chain {
     ) {
         self.pinnet
             .couple_uart(src_core, src_tx_pin, dst_core, dst_rx_pin);
+        // Keep `uart_coupling_drop_remaining` parallel to
+        // `pinnet.uart`: every new coupling starts with no
+        // drop fault programmed.
+        self.uart_coupling_drop_remaining.push(0);
+    }
+
+    /// Program a per-coupling wire-drop fault.  While the
+    /// counter for `coupling_idx` is non-zero, every byte
+    /// `deliver_uart_byte` would have routed across that
+    /// coupling is silently dropped (decrementing the
+    /// counter) -- not recorded in `uart_tx_history` AND not
+    /// delivered to the destination's RX path.  Mirror of
+    /// gpsim's
+    /// `wire_chain_gpsim.py::WireMultiMainChainHarness::set_link_fault(name, drop=True)`
+    /// per-bridge drop fault.
+    ///
+    /// `coupling_idx` indexes `pinnet.uart` (in insertion
+    /// order from `couple_uart` calls).  `drop_count == 0`
+    /// clears the fault.  Setting a count larger than
+    /// `u32::MAX` would have to be saturated by the caller --
+    /// `u32` is sufficient for the wire-chain test scenarios
+    /// (a few-byte wake frame plus margin).
+    ///
+    /// Used to model asymmetric-wake / forwarder-glitch field-
+    /// bug scenarios where a specific chain segment drops
+    /// bytes while other segments deliver normally.  See
+    /// `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`
+    /// §H2 for the bug-#45 reproduction use case.
+    pub fn set_uart_coupling_drop(
+        &mut self,
+        coupling_idx: usize,
+        drop_count: u32,
+    ) {
+        assert!(
+            coupling_idx < self.uart_coupling_drop_remaining.len(),
+            "set_uart_coupling_drop: coupling_idx {} out of range \
+             (uart_coupling_drop_remaining.len()={}); did you call \
+             couple_uart enough times?",
+            coupling_idx,
+            self.uart_coupling_drop_remaining.len(),
+        );
+        self.uart_coupling_drop_remaining[coupling_idx] = drop_count;
     }
 
     /// Wire a general-purpose source-core pin to a
@@ -591,6 +659,23 @@ impl Chain {
             Some(c) => c.clone(),
             None => return,
         };
+        // Per-coupling wire-drop fault gate
+        // (`set_uart_coupling_drop`): if the per-coupling drop
+        // counter is non-zero, this byte is dropped on the
+        // wire BEFORE recording in history -- a specific
+        // chain segment is broken but the rest of the chain
+        // delivers normally.  Mirror of gpsim's per-bridge
+        // `set_link_fault(name, drop=True)` behavior.  The
+        // byte vanishes entirely from this coupling's
+        // observability surface.
+        if let Some(remaining) =
+            self.uart_coupling_drop_remaining.get_mut(uart_coupling_idx)
+        {
+            if *remaining > 0 {
+                *remaining -= 1;
+                return;
+            }
+        }
         // Record the delivery in tx_history BEFORE the
         // destination-side write so the history reflects
         // wire-time ordering even if a future change adds

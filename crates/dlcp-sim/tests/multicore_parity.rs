@@ -3294,6 +3294,409 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     );
 }
 
+/// Bug #45 H1 reproduction (task #80) — dynamic asymmetric-wake field
+/// bug: 3-core chain boots healthy, drives parser-driven STDBY through
+/// the chain, then the WAKE injection succeeds for MAIN0 but MAIN1 is
+/// held in reset (modelling the hardware-observed condition where one
+/// MAIN's MCLR/PSU/AN0 prevents wake-path completion on that MAIN).
+///
+/// Mirrors the field-bug timeline observed 2026-04-27 (filed as
+/// task #45; see `docs/analysis/HW_2026-04-27_DIAG_AND_STDBY_FINDINGS.md`
+/// §6 + `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md` §H1):
+/// after a panel STDBY/wake cycle, only LEFT MAIN re-enumerated;
+/// RIGHT MAIN never came back; CONTROL sat in `Waiting for DLCP`
+/// indefinitely until a hard mains-side power cycle recovered both.
+///
+/// This test models the *transition* (boot to DISPLAY -> STDBY broadcast
+/// -> WAKE attempt with MAIN1 reset-held -> stuck-in-WAITING), not the
+/// hardware *cause* (rail/MCLR/inrush is out of scope; modelled by
+/// `hold_core_in_reset(MAIN1)` injected mid-cycle).  The complementary
+/// static end-state model is `right_main_held_in_reset_control_stuck_in_waiting`
+/// (#48), which holds MAIN1 from cold boot rather than dynamically
+/// dropping it during the wake transition.
+///
+/// Bug #45 H1 SIM REPRODUCTION (HIGH-confidence root-cause hypothesis):
+///
+/// Step 1: Boot 3-core chain (V1.71+V3.2+V3.2) to DISPLAY.  Both MAINs
+///         healthy; LCD shows `Volume:-17.0dB A`.
+/// Step 2: Drive parser-driven STDBY broadcast.  Inject B0/03/00 into
+///         MAIN0's RX ring.  MAIN0 dispatches standby_request_handler;
+///         MAIN0's TX retransmits the broadcast bytes; MAIN1 receives
+///         the forwarded bytes and ALSO dispatches standby.  Verify
+///         BOTH MAINs `diag_s>=1` and `active_flags.bit3` cleared.
+/// Step 3: Hold MAIN1 in reset BEFORE WAKE injection.  Models the
+///         hardware-observed condition where MAIN1's MCLR is held LOW
+///         (or, equivalently, AN0 rail-sense never crosses
+///         `adc_boot_gate`'s 0x0236 threshold).  After this point
+///         MAIN1's CPU does not advance instructions, so any wake byte
+///         arriving at its RX is silently buffered with no firmware
+///         handling.
+/// Step 4: Inject parser-driven WAKE (B0/03/01) into MAIN0's RX ring.
+///         MAIN0 dispatches wake_request_handler -> diag_b=1, gate
+///         re-opens.  MAIN0's TX retransmits to MAIN1, but MAIN1 is
+///         held -- no dispatch, diag_b stays 0, gate stays closed.
+/// Step 5: Wait for the asymmetric outcome to settle.  Verify:
+///           - MAIN0 active_flags.bit3 SET, diag_b=1
+///           - MAIN1 active_flags.bit3 CLEAR, diag_b=0
+///         The test does NOT extend to the CONTROL `Waiting for DLCP`
+///         transition (that's covered by #48 with an end-state model).
+#[test]
+fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    // Silicon-correct 3-coupling ring.
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    // Seed CONTROL buttons released (active-low).
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF);
+
+    // Helpers (clones the addresses below since `i_main0`/`i_main1` are
+    // captured as closure environment).
+    let read_main0 = |c: &Chain, addr: u16| -> u8 {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
+    };
+    let read_main1 = |c: &Chain, addr: u16| -> u8 {
+        c.cores[i_main1].memory.read_raw(Address::from_raw(addr))
+    };
+    let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
+        const RING_BASE: u16 = 0x0200;
+        const RING_SIZE: u16 = 0xC0;
+        const RX_WR: u16 = 0x0C7;
+        let mem = &mut c.cores[i_main0].memory;
+        let mut wr = (mem.read_raw(Address::from_raw(RX_WR)) as u16) % RING_SIZE;
+        for &byte in &[route, cmd, data] {
+            mem.write_raw(Address::from_raw(RING_BASE + wr), byte);
+            wr = (wr + 1) % RING_SIZE;
+        }
+        mem.write_raw(Address::from_raw(RX_WR), wr as u8);
+    };
+
+    // ----- Step 1: boot 3-core chain to DISPLAY -----
+    chain.run_until(
+        10_000_000,
+        8_000_000_000,
+        |c| {
+            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+                && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
+        },
+    );
+    assert!(
+        chain.current_tick < 8_000_000_000,
+        "3-core boot to Volume display did not converge before 8 B-tick \
+         safety ceiling; lcd line1={:?}, line2={:?}, MAIN0 DSP acks={}, \
+         MAIN1 DSP acks={}",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2(),
+        chain.tas3108_slaves[i_dsp0].bytes_acked,
+        chain.tas3108_slaves[i_dsp1].bytes_acked,
+    );
+    eprintln!(
+        "task#80 boot: lcd line1={:?}, line2={:?}",
+        chain.lcd_slaves[i_lcd].line1(),
+        chain.lcd_slaves[i_lcd].line2()
+    );
+
+    // Sanity: cold init has both MAINs gates open.
+    assert_eq!(read_main0(&chain, 0x05E) & 0x08, 0x08);
+    assert_eq!(read_main1(&chain, 0x05E) & 0x08, 0x08);
+
+    // ----- Step 2: drive parser-driven STDBY broadcast -----
+    // Inject B0/03/00 into MAIN0's RX ring.  Per V3.2's parser, MAIN0's
+    // standby_request_handler dispatches AND its UART TX retransmits the
+    // broadcast bytes onto the wire.  MAIN1 receives the forwarded
+    // broadcast and dispatches the same handler.  After full settle,
+    // BOTH MAINs should have diag_s=1 and active_flags.bit3 cleared.
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x00);
+    chain.run_until(1_000_000, 4_000_000_000, |c| {
+        let s0 = c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7));
+        let s1 = c.cores[i_main1].memory.read_raw(Address::from_raw(0x2E7));
+        s0 >= 1 && s1 >= 1
+    });
+    eprintln!(
+        "task#80 post-STDBY: MAIN0 af=0x{:02X} diag_s=0x{:02X}, MAIN1 af=0x{:02X} diag_s=0x{:02X}",
+        read_main0(&chain, 0x05E),
+        read_main0(&chain, 0x2E7),
+        read_main1(&chain, 0x05E),
+        read_main1(&chain, 0x2E7),
+    );
+    assert_eq!(
+        read_main0(&chain, 0x05E) & 0x08,
+        0,
+        "STDBY broadcast: MAIN0 active_flags.bit3 must clear; got af=0x{:02X}",
+        read_main0(&chain, 0x05E)
+    );
+    assert_eq!(read_main0(&chain, 0x2E7), 1, "MAIN0 diag_s must be 1");
+    assert_eq!(
+        read_main1(&chain, 0x05E) & 0x08,
+        0,
+        "STDBY broadcast: MAIN1 active_flags.bit3 must clear (forwarded \
+         from MAIN0); got af=0x{:02X}",
+        read_main1(&chain, 0x05E)
+    );
+    assert_eq!(read_main1(&chain, 0x2E7), 1, "MAIN1 diag_s must be 1");
+
+    // ----- Step 3: hold MAIN1 in reset BEFORE WAKE -----
+    // Models the hardware-observed condition where the second STDBY
+    // press triggers a wake broadcast but MAIN1's local MCLR/PSU/AN0
+    // prevents its CPU from advancing.  After this line MAIN1's CPU
+    // freezes at its current state (with active_flags.bit3 still
+    // CLEAR from step 2, diag_b still 0).  Wake bytes arriving at
+    // MAIN1's RX are still received by EUSART (gate is on per
+    // chain.rs:621-625's MCLR-held-low gate which checks dst before
+    // RCREG write -- they will be dropped at delivery), but no
+    // firmware dispatch fires because the CPU isn't running.
+    chain.hold_core_in_reset(i_main1);
+
+    // ----- Step 4: inject parser-driven WAKE -----
+    // MAIN0 should process B0/03/01 normally (diag_b->1), but MAIN1
+    // should NOT (diag_b stays 0).
+    chain.step_ticks(15_000_000 * 12); // 15 M Tcy MAIN-side wake-settle past STDBY shutdown
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x01);
+    chain.run_until(1_000_000, 4_000_000_000, |c| {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E8)) >= 1
+    });
+    eprintln!(
+        "task#80 post-WAKE: MAIN0 af=0x{:02X} diag_b=0x{:02X}, MAIN1 af=0x{:02X} diag_b=0x{:02X}",
+        read_main0(&chain, 0x05E),
+        read_main0(&chain, 0x2E8),
+        read_main1(&chain, 0x05E),
+        read_main1(&chain, 0x2E8),
+    );
+
+    // ----- Step 5: assert asymmetric outcome -----
+    assert_eq!(
+        read_main0(&chain, 0x05E) & 0x08,
+        0x08,
+        "WAKE: MAIN0 active_flags.bit3 must be SET; got af=0x{:02X}",
+        read_main0(&chain, 0x05E)
+    );
+    assert_eq!(
+        read_main0(&chain, 0x2E8),
+        1,
+        "WAKE: MAIN0 diag_b must be 1 (bring-up branch dispatched); got 0x{:02X}",
+        read_main0(&chain, 0x2E8)
+    );
+    assert_eq!(
+        read_main1(&chain, 0x05E) & 0x08,
+        0,
+        "WAKE asymmetric: MAIN1 active_flags.bit3 must STAY CLEAR \
+         (held in reset, CPU not advancing); got af=0x{:02X}",
+        read_main1(&chain, 0x05E)
+    );
+    assert_eq!(
+        read_main1(&chain, 0x2E8),
+        0,
+        "WAKE asymmetric: MAIN1 diag_b must STAY 0 (no bring-up dispatch \
+         while held in reset); got 0x{:02X}",
+        read_main1(&chain, 0x2E8)
+    );
+
+    eprintln!(
+        "task#80 OK (Bug #45 H1 dynamic reproduction): \
+         healthy boot -> STDBY broadcast (both MAINs s=1) -> hold MAIN1 \
+         in reset -> WAKE -> MAIN0 b=1 + gate-open, MAIN1 stuck (b=0, \
+         gate-closed).  Symptom: 'asymmetric wake' as observed on \
+         hardware 2026-04-27."
+    );
+}
+
+/// Bug #45 H2 reproduction (task #81) — chain forwarder drops the
+/// wake byte triplet between MAIN0 and MAIN1.
+///
+/// Models the hypothesis that MAIN0 received and dispatched the wake
+/// broadcast, but its UART retransmit to MAIN1 was dropped or
+/// corrupted (a per-link wire fault on the M0->M1 segment).  Result:
+/// MAIN0 wakes, MAIN1 stays in standby, observable as the same
+/// asymmetric-wake symptom as H1 but with a different root cause.
+///
+/// Distinguishes itself from H1 by exercising the new
+/// `Chain::set_uart_coupling_drop` per-coupling drop primitive (mirror
+/// of gpsim's `set_link_fault(name, drop=True)`) -- the M0->M1 UART
+/// coupling drops the next 3 bytes (the wake triplet B0/03/01) while
+/// the rest of the chain delivers normally.  MAIN1 receives nothing on
+/// its RX during the wake window, so no parser dispatch fires; the
+/// firmware itself is healthy (MAIN1's CPU IS running and would handle
+/// any subsequent wake byte that arrived).
+#[test]
+fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
+    use dlcp_sim::memory::Address;
+
+    let v171 = HexImage::from_hex_path(v171_control_hex_path())
+        .expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path())
+        .expect("V3.2 hex parses");
+    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
+        .expect("V2.3 combined hex parses");
+
+    let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
+    let mut main0 = build_seeded_main_core(&v32, &v23_combined);
+    main0.peripherals.adc.set_an0_sample(0x0300);
+    let mut main1 = build_seeded_main_core(&v32, &v23_combined);
+    main1.peripherals.adc.set_an0_sample(0x0300);
+
+    let mut chain = Chain::new();
+    let i_ctl = chain.push_core(control);
+    let i_main0 = chain.push_core(main0);
+    let i_main1 = chain.push_core(main1);
+
+    // Coupling indices are insertion order: 0 = CTL->M0, 1 = M0->M1,
+    // 2 = M1->CTL.  The test drops on coupling 1 specifically.
+    chain.couple_uart(i_ctl, default_tx_pin(), i_main0, default_rx_pin());
+    let coupling_m0_to_m1 = 1usize; // pinnet.uart entry that we'll drop on
+    chain.couple_uart(i_main0, default_tx_pin(), i_main1, default_rx_pin());
+    chain.couple_uart(i_main1, default_tx_pin(), i_ctl, default_rx_pin());
+
+    let i_dsp0 = chain.push_tas3108(Tas3108::default());
+    let i_dsp1 = chain.push_tas3108(Tas3108::default());
+    chain.couple_tas3108(i_main0, i_dsp0);
+    chain.couple_tas3108(i_main1, i_dsp1);
+
+    let i_lcd = chain.push_lcd(Hd44780::new());
+    chain.couple_lcd(i_ctl, i_lcd);
+
+    chain.apply_reset_all(ResetSource::PowerOn);
+    chain.schedule_initial_steps(&[0, 0, 0]);
+
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF80), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(0xF82), 0xFF);
+
+    let read_main0 = |c: &Chain, addr: u16| -> u8 {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
+    };
+    let read_main1 = |c: &Chain, addr: u16| -> u8 {
+        c.cores[i_main1].memory.read_raw(Address::from_raw(addr))
+    };
+    let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
+        const RING_BASE: u16 = 0x0200;
+        const RING_SIZE: u16 = 0xC0;
+        const RX_WR: u16 = 0x0C7;
+        let mem = &mut c.cores[i_main0].memory;
+        let mut wr = (mem.read_raw(Address::from_raw(RX_WR)) as u16) % RING_SIZE;
+        for &byte in &[route, cmd, data] {
+            mem.write_raw(Address::from_raw(RING_BASE + wr), byte);
+            wr = (wr + 1) % RING_SIZE;
+        }
+        mem.write_raw(Address::from_raw(RX_WR), wr as u8);
+    };
+
+    // ----- Boot 3-core chain to DISPLAY -----
+    chain.run_until(
+        10_000_000,
+        8_000_000_000,
+        |c| {
+            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+                && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
+        },
+    );
+    assert!(chain.current_tick < 8_000_000_000, "boot did not reach DISPLAY");
+    eprintln!(
+        "task#81 boot: lcd line1={:?}",
+        chain.lcd_slaves[i_lcd].line1()
+    );
+
+    // ----- STDBY broadcast (no fault yet) -----
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x00);
+    chain.run_until(1_000_000, 4_000_000_000, |c| {
+        let s0 = c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7));
+        let s1 = c.cores[i_main1].memory.read_raw(Address::from_raw(0x2E7));
+        s0 >= 1 && s1 >= 1
+    });
+    assert_eq!(read_main0(&chain, 0x2E7), 1, "MAIN0 STDBY dispatched");
+    assert_eq!(read_main1(&chain, 0x2E7), 1, "MAIN1 STDBY dispatched (forward worked)");
+
+    // ----- Arm the M0->M1 wire fault BEFORE wake -----
+    // Drop a generous count to cover MAIN0's full retransmit during
+    // the wake window (the firmware path may emit more than just the
+    // 3 wake-triplet bytes -- e.g. status frames or the sentinel
+    // burst between handler calls).  256 is well past anything MAIN0
+    // could re-emit during the bounded wake-dispatch window.  The
+    // alternative is a gpsim-style "blackout for N source-Tcy" model
+    // which would be a different primitive shape.
+    chain.set_uart_coupling_drop(coupling_m0_to_m1, 256);
+
+    // ----- Inject WAKE -----
+    chain.step_ticks(15_000_000 * 12); // 15 M Tcy MAIN-side wake-settle
+    inject_main0_frame(&mut chain, 0xB0, 0x03, 0x01);
+    chain.run_until(1_000_000, 4_000_000_000, |c| {
+        c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E8)) >= 1
+    });
+    eprintln!(
+        "task#81 post-WAKE: MAIN0 af=0x{:02X} diag_b=0x{:02X}, MAIN1 af=0x{:02X} diag_b=0x{:02X}",
+        read_main0(&chain, 0x05E),
+        read_main0(&chain, 0x2E8),
+        read_main1(&chain, 0x05E),
+        read_main1(&chain, 0x2E8),
+    );
+
+    // ----- Asymmetric outcome -----
+    assert_eq!(
+        read_main0(&chain, 0x05E) & 0x08,
+        0x08,
+        "MAIN0 must wake (gate open)"
+    );
+    assert_eq!(read_main0(&chain, 0x2E8), 1, "MAIN0 diag_b=1");
+    assert_eq!(
+        read_main1(&chain, 0x05E) & 0x08,
+        0,
+        "MAIN1 wake byte was dropped on M0->M1 wire; gate stays closed"
+    );
+    assert_eq!(
+        read_main1(&chain, 0x2E8),
+        0,
+        "MAIN1 diag_b must stay 0 (no wake-dispatch -- bytes never arrived)"
+    );
+
+    eprintln!(
+        "task#81 OK (Bug #45 H2 reproduction via per-coupling drop): \
+         healthy boot -> STDBY broadcast (both MAINs s=1) -> arm M0->M1 \
+         drop -> WAKE -> MAIN0 b=1 + gate-open, MAIN1 stuck (no bytes \
+         delivered).  Wire-level fault model -- MAIN1 firmware is \
+         healthy but receives nothing on RX during wake window."
+    );
+}
+
 /// P3.8b (symptom-equivalent, not bit-exact) — RIGHT MAIN held in
 /// reset → CONTROL stuck in `Waiting for DLCP`.
 ///
