@@ -661,10 +661,13 @@ def test_v171_v32_layer5_chain_lcd_renders_saturation_plus(v171_hex: Path, v32_h
         chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
-def test_v171_v32_layer5_chain_no_query_off_diag_page(v171_hex: Path, v32_hex: Path) -> None:
+def test_v171_v32_layer5_chain_no_query_off_diag_page(
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """Without entering the Diagnostics page, neither PB should ever
     receive a cmd 0x21 query.  We assert this indirectly: after enough
     chain warmup for the steady-state status burst to cycle several
@@ -675,28 +678,44 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(v171_hex: Path, v32_hex: P
     Diagnostics page" requirement without needing to scrape the TX
     stream for absence of B1/0x21 frames.
     """
-    _require_gpsim()
     _require_v32_hex(v32_hex)
-
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        # Stay on Volume (state 0) — the default after run_until_connected.
-        # Step a generous window for any spurious diag chatter to fire.
+        # Step 50M Tcy (matches gpsim's 50 chunks * 1M Tcy chunk size).
         for _ in range(50):
-            chain.step()
-        present = _diag_present(chain)
+            c.step_tcy(1_000_000)
+        present = c.read_reg(V171_DIAG_PRESENT_PHYS)
+        pb1 = [c.read_reg(V171_DIAG_PB1_BASE_PHYS + i) for i in range(7)]
+        pb2 = [c.read_reg(V171_DIAG_PB2_BASE_PHYS + i) for i in range(7)]
         assert present == 0, (
-            f"diag_present non-zero without entering Diagnostics page: "
-            f"0x{present:02X}; PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
-            f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
+            f"[rust] diag_present non-zero without entering Diagnostics: "
+            f"0x{present:02X}; PB1 cache={[hex(v) for v in pb1]}; "
+            f"PB2 cache={[hex(v) for v in pb2]}"
         )
-    finally:
-        chain.close()
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+            )
+            for _ in range(50):
+                chain.step()
+            present = _diag_present(chain)
+            assert present == 0, (
+                f"[gpsim] diag_present non-zero without entering Diagnostics: "
+                f"0x{present:02X}; PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
+                f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
+            )
+        finally:
+            chain.close()
 
 
 # ===========================================================================
@@ -1091,7 +1110,7 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
 @pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
-    v171_hex: Path, v32_hex: Path
+    v171_hex: Path, v32_hex: Path,
 ) -> None:
     """REGRESSION: on real HW the operator could not navigate away
     from a hung Diag page -- LEFT presses were ignored.  Even WITHOUT
