@@ -27,11 +27,11 @@ Source: `docs/analysis/HW_2026-04-27_DIAG_AND_STDBY_FINDINGS.md` §6.
 
 **Refined hypothesis (2026-05-02 codex pass-2)**: not a generic "per-board variance" issue — a SPECIFIC chain-protocol mechanism that should be **deterministic** given the chain ordering. The bug is not random; it's an emergent property of the silicon-correct ring topology + shared analog rail + amp-enable sequencing.
 
-**Pin map** (V3.2 MAIN, codex investigation 2026-05-02-pass-2):
-- **RB3 / LATB.bit3** — primary final amp gate. Driven LOW during STDBY shutdown; driven HIGH late in wake (after DSP mute / coeff-write completes). Cite: `src/dlcp_fw/asm/dlcp_main_v32.asm:4029,4101,6144,8847`.
-- **RB4 / LATB.bit4** — companion amp/rail enable. Raised early in wake BEFORE a 1500 ms settle. Cite: `src/dlcp_fw/asm/dlcp_main_v32.asm:4022-4025,4076-4098`; `docs/NO_POP_FIRMWARE_FLASH.md:80-83`.
-- **RA6 / LATA.bit6** — companion amp/rail enable. Raised before DSP coefficient work. Cite: `src/dlcp_fw/asm/dlcp_main_v32.asm:6118-6119,184-193`.
-- **SRC4382 (cfg71 at I²C 0x71) GPOs `0x1B/0x1C/0x1D`** — rail-control GPOs driving external amp-standby circuits. Cite: `crates/dlcp-sim/src/peripherals/src4382.rs:23-27`; `src/dlcp_fw/asm/dlcp_main_v32.asm:6078-6089`.
+**Pin map** (V3.2 MAIN, codex investigation 2026-05-02-pass-2; citation lines verified pass-3):
+- **RB3 / LATB.bit3** — final amp gate. Driven LOW early in shutdown at `src/dlcp_fw/asm/dlcp_main_v32.asm:4078` (cleared as the FIRST step of the bring-up sequence, alongside MSSP/TRIS reconfig); driven HIGH late in wake at `src/dlcp_fw/asm/dlcp_main_v32.asm:4101` (after DSP mute / coeff-write call to `main_core_service_4574`).
+- **RB4 / LATB.bit4** — companion amp/rail enable. Raised at `src/dlcp_fw/asm/dlcp_main_v32.asm:4084` between two `timer3_blocking_delay` calls (effectively a settle window); see also `docs/NO_POP_FIRMWARE_FLASH.md:80-83`.
+- **RA6 / LATA.bit6** — companion amp/rail enable. Raised at `src/dlcp_fw/asm/dlcp_main_v32.asm:4098` (after MSSP hard-reset, before `clrf_i2c_coeff_0123_and_write`).
+- **SRC4382 (cfg71 at I²C 0x71) GPOs `0x1B/0x1C/0x1D`** — rail-control GPOs driving external amp-standby circuits. The `0x1B` write happens late in the wake sequence at `src/dlcp_fw/asm/dlcp_main_v32.asm:4117-4118` (`movlw 0x1B; call i2c_secondary_dev_write`); `0x1C/0x1D` writes occur via `main_i2c_service_32f8` callouts later in the same path. SRC4382 register-file model: `crates/dlcp-sim/src/peripherals/src4382.rs:23-27`.
 - **RA0 / AN0** — rail-sense ADC input. `adc_boot_gate` (`asm:4041`) busy-waits until sample `>= 0x0236`; runtime hysteresis `0x0229/0x0228`. Cite: `docs/analysis/PIN_SEMANTICS.md:76`; `docs/analysis/MAIN_AN0_STANDBY_TRACE.md:9-23,54-66`.
 - **PCB-level coupling**: `docs/analysis/PIN_SEMANTICS.md:105-107` notes that exact PCB/netlist continuity from `RA6/RB3/RB4` to connector pins is "still required" — i.e. NOT proven in repo. The shared-rail-coupling claim below is INFERRED from firmware behavior + board-doc references, not from the schematic directly.
 
@@ -40,8 +40,12 @@ Source: `docs/analysis/HW_2026-04-27_DIAG_AND_STDBY_FINDINGS.md` §6.
 1. Operator presses panel STBY again. CONTROL emits broadcast `B0/03/01` via `standby_wake_broadcast` (`src/dlcp_fw/asm/dlcp_control_v171.asm:2716`).
 2. Silicon-correct ring delivery: MAIN0 receives the wake byte triplet first via `CTL.tx -> M0.rx`. MAIN1 receives the SAME triplet a few UART bytes later via `M0.tx -> M1.rx` forwarding (MAIN0's parser retransmits on its TX while it dispatches the wake).
 3. Both MAINs enter `wake_request_handler` (asm:1881) → set `active_flags.bit3` + `event_flags.bit2` → `standby_event_dispatch` (asm:8386) → bring-up branch → `diag_b` increments → `adc_boot_gate` (asm:4041) for rail-rise wait.
-4. **Asymmetric exit ordering**: MAIN0's `adc_boot_gate` exits FIRST because MAIN0 entered the loop FIRST (received wake byte first). MAIN0's wake path then drives its amp-enable outputs in sequence: SRC4382 GPO writes (`asm:6078-6089`) → `LATB4` HIGH → 1500 ms settle (`asm:4076-4098`) → `LATA6` HIGH → DSP coeff-write → `LATB3` HIGH (`asm:8847`).
-5. **Shared-rail loading**: when MAIN0 asserts its amp-enable outputs, the audio amplifier rail begins to draw current. If MAIN1's AN0 sense is connected to the SAME rail node (board-level coupling — TBD per `PIN_SEMANTICS.md:105-107`), MAIN0's inrush transiently depresses that rail, dropping MAIN1's AN0 sample below the `0x0236` threshold.
+4. **Asymmetric exit ordering** (REQUIRES the rail model to bias the result): MAIN0 entered `adc_boot_gate` earlier than MAIN1 by some delta (a few UART-byte times — the wake-frame propagation through the M0->M1 forwarder). Earlier ENTRY does NOT by itself guarantee earlier EXIT, since the loop exits on `AN0 >= 0x0236`. Earlier exit follows ONLY under a dynamic rail model where the rail is BELOW threshold initially and rising. In that scenario MAIN0's polling phase begins earlier, so its first sample-above-threshold occurs earlier; MAIN1 starts polling slightly later. Once MAIN0 exits, its wake path then asserts its amp-enable outputs in this firmware-pinned order (verified at the asm citations under "Pin map" above, NOT at the earlier shutdown-comment block I previously cited):
+   - `LATB.bit4 := 1` (asm:4084), then a 1500 ms blocking delay
+   - `LATA.bit6 := 1` (asm:4098)
+   - `LATB.bit3 := 1` (asm:4101) (final amp gate)
+   - SRC4382 `0x1B` write (asm:4117-4118), with `0x1C/0x1D` follow-up via `main_i2c_service_32f8` later
+5. **Shared-rail loading**: when MAIN0 asserts the early-wake outputs (`LATB4`, `LATA6`, then `LATB3`), the audio amplifier rail begins to draw current. If MAIN1's AN0 sense is connected to the SAME rail node (board-level coupling — TBD per `PIN_SEMANTICS.md:105-107`, NOT proven in repo), MAIN0's inrush transiently depresses that rail, dropping MAIN1's AN0 sample below the `0x0236` threshold.
 6. **`adc_boot_gate` has NO timeout** — MAIN1 re-samples AN0, sees the depressed value, stays in the polling loop. If the depression persists long enough (or oscillates near threshold for long enough), MAIN1 never exits.
 7. **Symptom**: MAIN0 finishes wake, brings up USB enumeration, accepts cmd 0x44, returns `S1 B1`. MAIN1 stays in `adc_boot_gate` forever — CPU runs but doesn't return to main loop, USB never rearms (cmd 0x44 absent), MAIN1.TX → CONTROL.RX edge stays silent (no chain heartbeat). CONTROL's reconnect-wait loop times out → LCD shows `Waiting for DLCP`.
 8. **Recovery**: hard mains-side power cycle interrupts the rail entirely → both MAINs cold-boot → both `adc_boot_gate` instances see the rail rise simultaneously from 0V → both exit at the same time → both wake symmetrically.
@@ -164,7 +168,7 @@ Rust models all cores identically: same clock domain, same boot epoch, same ADC 
 
 User asked: "Why does rust POR clear RAM to known values? is it equivalent to the PIC datasheet spec?"
 
-**Answer**: rust POR does `memory.clear()` in `crates/dlcp-sim/src/reset.rs:177-193` which wipes RAM to all zeros. The PIC18F2455 datasheet (DS39632E §3.4 "Power-on Reset (POR)") specifies that on POR the GPRs and most SFRs have **"Unknown"** initial state — i.e. silicon does NOT guarantee any particular value. Most SFRs are "u-uuu uuuu" or "xxxx xxxx" per Table 4-3.
+**Answer**: rust POR uses an explicit `for byte in core.memory.as_mut_slice() { *byte = 0; }` loop in `crates/dlcp-sim/src/reset.rs:177-183` (within the `ResetSource::PowerOn` arm) which wipes ALL data memory to zero, then writes RCON's POR-reset value back at `:184-191`, then applies SFR POR defaults via `apply_por_sfr_defaults` at `:193`. The PIC18F2455 datasheet (DS39632E) covers POR in §4.3 "Power-on Reset (POR)" with reset-state tables in §4.6; specifically §5.3.4 documents that GPRs (general-purpose RAM) have **non-initialized** state on POR — i.e. silicon does NOT guarantee any particular value (Table 4-3 entries are "u-uuu uuuu" / "xxxx xxxx" indicating unknown bits).
 
 Rust's choice to clear to zero is a **deterministic-simulation simplification**, matching gpsim's default behavior. It does NOT match real silicon's "unknown" state — but for bug #45 specifically, it is **NOT the masking factor**, because:
 
@@ -252,14 +256,15 @@ If B1 confirms H1, the firmware-level mitigation is to add a TIMEOUT to `adc_boo
 - `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition` — H1 INJECTED-FAULT reproduction (commit 93092d6)
 - `crates/dlcp-sim/tests/multicore_parity.rs::v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet` — H2 INJECTED-FAULT reproduction (commit 93092d6)
 - `src/dlcp_fw/asm/dlcp_main_v32.asm:4041` — `adc_boot_gate:` label (the H1 stuck point; loop body at :4049; header comment at :4008)
-- `src/dlcp_fw/asm/dlcp_main_v32.asm:4022-4025` — early-wake LATB.bit4 raise (RB4 amp/rail enable) + 1500 ms settle
-- `src/dlcp_fw/asm/dlcp_main_v32.asm:6118-6119` — pre-DSP-coeff LATA.bit6 raise (RA6 amp/rail enable)
-- `src/dlcp_fw/asm/dlcp_main_v32.asm:8847` — late-wake LATB.bit3 raise (RB3 final amp gate)
-- `src/dlcp_fw/asm/dlcp_main_v32.asm:6078-6089` — SRC4382 GPO writes (`0x1B/0x1C/0x1D` rail control)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4084` — early-wake `LATB.bit4 := 1` (RB4 amp/rail enable; followed by `timer3_blocking_delay`)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4098` — pre-DSP-coeff `LATA.bit6 := 1` (RA6 amp/rail enable; after `mssp_hard_reset`, before `clrf_i2c_coeff_0123_and_write`)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4101` — late-wake `LATB.bit3 := 1` (RB3 final amp gate; after `main_core_service_4574` returns)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4117-4118` — SRC4382 register `0x1B` write (`movlw 0x1B; call i2c_secondary_dev_write`); `0x1C/0x1D` writes occur via `main_i2c_service_32f8` callouts later in the same path
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:4078` — early-shutdown `LATB.bit3 := 0` (final amp gate cleared at the FIRST step of bring-up before MSSP/TRIS reconfig)
 - `src/dlcp_fw/asm/dlcp_control_v171.asm:5018` — V1.71 reconnect_wait_loop button gate (the H3-confirmed STBY-ignored mechanism)
 - `crates/dlcp-sim-py/src/lib.rs:472,474` — STATIC `set_an0_sample(0x0300)` seed (the sim fidelity gap that prevents spontaneous H1 reproduction)
 - `crates/dlcp-sim/src/peripherals/src4382.rs:46-52` — SRC4382 register-only model (no rail-state side effects)
-- `crates/dlcp-sim/src/reset.rs:177-193` — POR `memory.clear()` zeros RAM; PIC18F2455 datasheet DS39632E §3.4 specifies POR RAM as "unknown" so this is a deterministic-simulation simplification (NOT silicon-faithful, but lower-priority for #45 because firmware overwrites the relevant cells during cold init)
+- `crates/dlcp-sim/src/reset.rs:177-183` — POR explicit `for byte in core.memory.as_mut_slice() { *byte = 0; }` loop zeros RAM (followed by RCON-write at `:184-191` and `apply_por_sfr_defaults` at `:193`); PIC18F2455 datasheet DS39632E §4.3 (POR) + §4.6 (reset-state tables) + §5.3.4 (GPR non-initialization) document silicon's POR RAM as "unknown" — so rust's behavior is a deterministic-simulation simplification, NOT silicon-faithful, but lower-priority for #45 because firmware overwrites the relevant cells during cold init
 - `docs/analysis/PIN_SEMANTICS.md:76` — RA0/AN0 standby/rail-sense semantics
 - `docs/analysis/PIN_SEMANTICS.md:105-107` — OPEN QUESTION: PCB netlist continuity from RA6/RB3/RB4 to connector pins (NOT proven in repo; the shared-rail-coupling claim in §H1 is INFERRED, not directly verified)
 - `docs/analysis/MAIN_AN0_STANDBY_TRACE.md:9-23,54-66` — AN0 threshold/hysteresis values (`>= 0x0236` boot, `0x0229/0x0228` runtime hysteresis)
