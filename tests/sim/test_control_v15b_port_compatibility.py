@@ -363,16 +363,16 @@ def test_cmd18_reset_behavior_matches_v15b_not_v14(patched_control_hex_v151b: Pa
     ("profile_name", "decoded_addr", "decoded_cmd"),
     [
         # Profile 1 (address 0x10): 0x33,0x34,0x35,0x36,0x37 (power
-        # 0x32 split out into test_ir_power_command_triggers_v151b_
-        # reconnect_retry below).
+        # 0x32 split out into test_ir_power_actions_match_stock_
+        # v15b_under_legacy_gpsim_mask below).
         pytest.param("profile1_hypex", 0x10, 0x33, id="p1_vol_up_0x33"),
         pytest.param("profile1_hypex", 0x10, 0x34, id="p1_vol_down_0x34"),
         pytest.param("profile1_hypex", 0x10, 0x35, id="p1_mute_0x35"),
         pytest.param("profile1_hypex", 0x10, 0x36, id="p1_input_up_0x36"),
         pytest.param("profile1_hypex", 0x10, 0x37, id="p1_input_down_0x37"),
         # Profile 2 (address 0x00): 0x10,0x11,0x20,0x21,0x0D (power
-        # 0x0C split out into test_ir_power_command_triggers_v151b_
-        # reconnect_retry below).
+        # 0x0C split out into test_ir_power_actions_match_stock_
+        # v15b_under_legacy_gpsim_mask below).
         pytest.param("profile2_standard", 0x00, 0x10, id="p2_vol_up_0x10"),
         pytest.param("profile2_standard", 0x00, 0x11, id="p2_vol_down_0x11"),
         pytest.param("profile2_standard", 0x00, 0x20, id="p2_input_up_0x20"),
