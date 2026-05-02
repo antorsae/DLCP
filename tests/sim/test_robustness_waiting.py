@@ -7,10 +7,26 @@ import pytest
 from dlcp_fw.sim.control_gpsim import GpsimControlHarness
 from dlcp_fw.sim.gpsim import gpsim_available
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
 
 def _require_gpsim() -> None:
     if not gpsim_available():
         pytest.skip("gpsim not installed")
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
 
 
 def _lcd_contains_waiting(h: GpsimControlHarness) -> bool:
@@ -35,12 +51,19 @@ def _wait_for_connected_clear(h: GpsimControlHarness, *, limit: int) -> bool:
     return False
 
 
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_stock_control_v14_without_main_shows_waiting_on_lcd(
-    stock_control_hex_v14: Path,
-) -> None:
-    _require_gpsim()
+def _lcd_text_lower(lines) -> str:
+    return (lines[0] + " " + lines[1]).lower()
+
+
+def _wait_for_waiting_rust(c, *, limit: int, chunk_tcy: int) -> bool:
+    for _ in range(limit):
+        c.step_tcy(chunk_tcy)
+        if "waiting for dlcp" in _lcd_text_lower(c.lcd_lines()):
+            return True
+    return False
+
+
+def _run_v14_no_main_test_gpsim(stock_control_hex_v14: Path) -> tuple[bool, list[str]]:
     h = GpsimControlHarness(
         stock_control_hex_v14,
         fast_boot=False,
@@ -52,13 +75,41 @@ def test_stock_control_v14_without_main_shows_waiting_on_lcd(
         disable_standby_check=False,
     )
     try:
-        assert _wait_for_waiting(h, limit=120), f"lcd never reached WAITING state: {h.lcd_lines()!r}"
-
+        if not _wait_for_waiting(h, limit=120):
+            return False, list(h.lcd_lines())
         for _ in range(24):
             h.step()
-        assert _lcd_contains_waiting(h), f"lcd did not stay on WAITING without MAIN: {h.lcd_lines()!r}"
+        return _lcd_contains_waiting(h), list(h.lcd_lines())
     finally:
         h.close()
+
+
+def _run_v14_no_main_test_rust(stock_control_hex_v14: Path) -> tuple[bool, list[str]]:
+    c = RustChain.from_v17_control_only(str(stock_control_hex_v14))
+    if not _wait_for_waiting_rust(c, limit=120, chunk_tcy=300_000):
+        return False, list(c.lcd_lines())
+    # Hold for ~24 chunks worth of cycles to confirm it stays.
+    c.step_tcy(24 * 300_000)
+    text = _lcd_text_lower(c.lcd_lines())
+    return ("waiting for dlcp" in text), list(c.lcd_lines())
+
+
+@pytest.mark.dual_supported
+@pytest.mark.gpsim
+@pytest.mark.slow
+def test_stock_control_v14_without_main_shows_waiting_on_lcd(
+    stock_control_hex_v14: Path,
+    dlcp_sim_backend: str,
+) -> None:
+    """V1.4 stock CONTROL without MAIN: LCD reaches and stays on WAITING."""
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        ok, final_lcd = _run_v14_no_main_test_rust(stock_control_hex_v14)
+        assert ok, f"[rust] lcd never stuck on WAITING without MAIN: {final_lcd!r}"
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        ok, final_lcd = _run_v14_no_main_test_gpsim(stock_control_hex_v14)
+        assert ok, f"[gpsim] lcd never stuck on WAITING without MAIN: {final_lcd!r}"
 
 
 @pytest.mark.gpsim
