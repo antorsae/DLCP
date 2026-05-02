@@ -30,9 +30,9 @@ Source: `docs/analysis/HW_2026-04-27_DIAG_AND_STDBY_FINDINGS.md` §6.
 - Hard mains-side power cycle resets the MAIN's wake-state machine entirely → both rails come up cleanly → both MAINs boot.
 
 **Source citations**:
-- `wake_request_handler` at `src/dlcp_fw/asm/dlcp_main_v32.asm:1881`
-- `standby_request_handler` at `src/dlcp_fw/asm/dlcp_main_v32.asm:1906`
-- `adc_boot_gate` at `src/dlcp_fw/asm/dlcp_main_v32.asm:4008` (rail-rise sample loop)
+- `wake_request_handler:` label at `src/dlcp_fw/asm/dlcp_main_v32.asm:1881`
+- `standby_request_handler:` label at `src/dlcp_fw/asm/dlcp_main_v32.asm:1906`
+- `adc_boot_gate:` label at `src/dlcp_fw/asm/dlcp_main_v32.asm:4041` (rail-rise sample loop body starts at :4049; header comment block at :4008)
 - `standby_event_dispatch` increment paths at `src/dlcp_fw/asm/dlcp_main_v32.asm:8386`
 
 **Rust sim reproduction**:
@@ -70,10 +70,10 @@ MAIN1 only sees the wake if MAIN0 forwards the broadcast bytes while in its own 
 - MAIN1 not enumerating USB IS the same observable for both H1 and H2; need scope traces to disambiguate.
 
 **Source citations**:
-- 3-coupling silicon-correct ring at `crates/dlcp-sim-py/src/lib.rs:481` (build_v171_v32_chain)
-- MAIN forward path at `src/dlcp_fw/asm/dlcp_main_v32.asm:1767` (uart_service entry)
+- 3-coupling silicon-correct ring at `crates/dlcp-sim-py/src/lib.rs:481-483` (build_v171_v32_chain impl at :462; PyO3 method at :759)
+- MAIN forward path: `uart_service` entry label at `src/dlcp_fw/asm/dlcp_main_v32.asm:1786` (header comment block at :1767)
 - Parser forwarding at `src/dlcp_fw/asm/dlcp_main_v32.asm:1836`
-- CONTROL broadcast emitter at `src/dlcp_fw/asm/dlcp_control_v171.asm:2702` (standby_wake_broadcast)
+- CONTROL broadcast emitter: `standby_wake_broadcast:` label at `src/dlcp_fw/asm/dlcp_control_v171.asm:2716` (header comment block at :2702)
 
 **Rust sim reproduction**:
 Build from `right_main_held_in_reset_control_stuck_in_waiting`, but make it dynamic. Boot healthy chain. Drive STDBY broadcast. Then inject/drop ONLY the MAIN0→MAIN1 wake forwarding segment.
