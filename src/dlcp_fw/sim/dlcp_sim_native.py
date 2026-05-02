@@ -744,6 +744,102 @@ class Chain:
         """
         self._inner.mark_tx_capture_point()
 
+    def mark_ctl_tx_capture_point(self) -> None:
+        """CONTROL-side analog of :meth:`mark_tx_capture_point`.
+        Snapshots CONTROL TX history count for use with
+        :meth:`ctl_tx_record_since_last_capture`.  Mirror of
+        the rust facade's `Chain.mark_ctl_tx_capture_point`.
+        """
+        self._inner.mark_ctl_tx_capture_point()
+
+    def ctl_tx_record_since_last_capture(self) -> list[int]:
+        """Return CONTROL's TX bytes pushed since the last
+        :meth:`mark_ctl_tx_capture_point` call (or chain
+        construction).  Bytes are returned as a flat list of
+        u8s; the caller chunks into 3-byte ``(route, cmd,
+        data)`` frames.  Mirror of the rust facade's
+        `Chain.ctl_tx_record_since_last_capture`.
+        """
+        return list(self._inner.ctl_tx_record_since_last_capture())
+
+    def current_ctl_pc(self) -> int:
+        """CONTROL core's current PC (firmware program counter,
+        word-aligned, masked to 21 bits).  Mirror of gpsim's
+        ``pc()`` register read.  Used by tests that align
+        observation windows to firmware-loop-head events.
+        """
+        return int(self._inner.current_ctl_pc())
+
+    def current_main_pc(self) -> int:
+        """MAIN0 core's current PC.  See :meth:`current_ctl_pc`."""
+        return int(self._inner.current_main_pc())
+
+    def step_until_pc_hit(
+        self,
+        core_idx: int,
+        pc_lo: int,
+        pc_hi: int,
+        max_tcy: int = 1_000_000,
+    ) -> int:
+        """Step the chain until ``core_idx``'s PC enters
+        ``[pc_lo, pc_hi]`` (inclusive) or ``max_tcy`` Tcy
+        elapse.  Returns the actual PC at exit (which may be
+        outside the range if the budget was exhausted).
+        ``core_idx``: 0=CONTROL, 1=MAIN0.  Mirror of gpsim's
+        ``break e <addr>`` + ``run`` primitive.
+        """
+        return int(self._inner.step_until_pc_hit(
+            int(core_idx),
+            int(pc_lo) & 0x001F_FFFF,
+            int(pc_hi) & 0x001F_FFFF,
+            int(max_tcy),
+        ))
+
+    def read_dsp_address_nack_count_remaining(self) -> int:
+        """Remaining address-NACK injection budget on the
+        TAS3108 slave coupled to MAIN0.  Mirror of gpsim's
+        ``MainChainHarness.read_i2c_attribute("dsp34",
+        "Address_Nack_Count")``.  Used by deafness-chain
+        regression tests to prove firmware-driven I²C bursts
+        consumed part of the budget set by
+        :meth:`set_i2c_fault`.
+        """
+        return int(self._inner.read_dsp_address_nack_count_remaining())
+
+    def enable_force_connected(self) -> None:
+        """Enable the per-step "force CONNECTED" hook on
+        CONTROL.  After this call, every subsequent
+        :meth:`step` ORs 0x0A into 0x01F (CONNECTED + event-
+        exit) and resets the idle timer at 0x09D/0x09E.
+        Mirror of gpsim's
+        ``GpsimControlHarness(heartbeat_force_connected=True)``.
+        Idempotent.
+        """
+        self._inner.enable_force_connected()
+
+    def inject_control_rx_bytes(self, bytes_: list[int] | bytes) -> bool:
+        """Inject 3-byte chain frames into CONTROL's RX ring at
+        base 0x066 (depth 48 bytes; rd at 0x098, wr at 0x099).
+        Returns False if the ring is too full (>= 0x2C bytes
+        pending).  Mirror of gpsim's
+        ``_CliSession::_inject_rx_bytes``.
+        """
+        return bool(self._inner.inject_control_rx_bytes(list(bytes_)))
+
+    def warmup_force_connected(self, cycles: int) -> None:
+        """Run a CONTROL-only chain through cold-boot ->
+        WAITING -> DISPLAY transition by feeding synthetic
+        BF status replies until the firmware reaches DISPLAY
+        mode, then continues stepping with the force-connected
+        hook applied each chunk.  Implicitly enables
+        :meth:`enable_force_connected` so post-warmup
+        :meth:`step` keeps the hook active.  Mirror of
+        ``GpsimControlHarness.warmup`` with
+        ``heartbeat_rx_mode="full"`` +
+        ``heartbeat_force_connected=True``.
+        """
+        self._inner.warmup_force_connected(int(cycles))
+
     def step_until_tx_quiescent(
         self,
         *,
