@@ -13,6 +13,22 @@ from dlcp_fw.sim.control_gpsim import GpsimControlHarness, TxTriplet
 from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.hexio import write_intel_hex
 
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    _RUST_CHAIN_IMPORT_OK = True
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    _RUST_CHAIN_IMPORT_OK = False
+    _RUST_CHAIN_IMPORT_ERROR = exc
+
+
+def _require_rust() -> None:
+    if not _RUST_CHAIN_IMPORT_OK:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
 
 WARMUP_CYCLES = 25_000_000
 IR_STEPS = 3
@@ -46,36 +62,108 @@ def _require_gpsim() -> None:
         pytest.skip("gpsim not installed")
 
 
-def _boot_harness(control_hex: Path, *, eeprom_file: Path | None = None) -> GpsimControlHarness:
+def _boot_harness(
+    control_hex: Path, *, eeprom_file: Path | None = None,
+    force_connected: bool = True,
+) -> GpsimControlHarness:
+    """gpsim CONTROL-only harness.
+
+    `force_connected=True` (default): mirrors the legacy
+    `heartbeat_force_connected=True` mask that pins 0x01F.bit1
+    high every step.  Used by the gpsim-only tests
+    (test_v161b_clamps_stale_setup_index_from_eeprom,
+    cmd18_reset, ir_wrong_address, ir_unknown_command,
+    key_action) that depend on the CONNECTED state being stable
+    across power-toggling / state-screen sequences.
+
+    `force_connected=False`: warms CONTROL to DISPLAY mode with
+    the synthetic full BF status burst, then PAUSES the
+    heartbeat (mirror of `test_v171_ir_endpoints::_warmup_and_
+    quiesce`) so subsequent IR events run without external
+    state intervention.  This lets V1.61b's reconnect/full-sync
+    retry stub observe the firmware's own `0x01F.bit1`
+    transitions instead of having them masked by continuous
+    BF/03/01 injection.  Matches the rust `from_v17_chain`
+    topology -- a real V2.3 MAIN drives BF replies during boot,
+    then the IR event window sees stable natural state.  40
+    post-pause `step()` calls drain any pending TX from the
+    warmup so it doesn't pollute the per-test frame counts.
+    """
     h = GpsimControlHarness(
         control_hex,
         fast_boot=True,
         eeprom_file=eeprom_file,
         chunk_cycles=200_000,
         hold_cycles=120_000,
-        heartbeat_rx_mode="none",
-        heartbeat_force_connected=True,
+        heartbeat_rx_mode="none" if force_connected else "full",
+        heartbeat_force_connected=force_connected,
     )
     h.warmup(WARMUP_CYCLES)
+    if not force_connected:
+        h.pause_heartbeat()
+        for _ in range(40):
+            h.step()
     return h
 
 
-def _configure_profile(h: GpsimControlHarness, profile_name: str) -> None:
+def _boot_rust_harness(control_hex: Path):
+    """Rust analog of `_boot_harness(force_connected=False)`.
+
+    Pairs CONTROL with a real V2.3 MAIN core (the
+    `from_v17_chain` factory defaults the `main_hex_path`
+    argument to V2.3-combined).  MAIN drives natural BF/03/01
+    replies on the UART, so CONTROL reaches DISPLAY mode via
+    its real handshake -- 0x01F.bit1 transitions are firmware-
+    owned, not externally pinned.
+
+    `pause_heartbeat()` is a no-op on the rust facade (provided
+    for duck-typing parity); the real V2.3 MAIN keeps emitting
+    BF replies on the UART throughout warmup AND drain, with no
+    way to suppress them at the source.  The post-warmup 40-step
+    drain still runs so the rust caller sees the same
+    "post-warmup TX has been read" baseline as gpsim's caller --
+    BUT the asymmetry is real: gpsim's drain runs against
+    PAUSED synthetic injection while rust's drain runs against
+    ACTIVE V2.3 MAIN, so the per-firmware TX traffic during the
+    drain differs between backends (mirror of v15b helper).
+    Safe for the 10-case dual_supported migration (vol/input/
+    mute don't toggle 0x01F.bit1).  See
+    `test_ir_power_actions_match_stock_v16b_under_legacy_gpsim_
+    mask` for the deferred power cases where the asymmetry
+    matters.
+    """
+    _require_rust()
+    c = RustChain.from_v17_chain(str(control_hex))
+    c.warmup(WARMUP_CYCLES)
+    c.pause_heartbeat()
+    for _ in range(40):
+        c.step()
+    return c
+
+
+def _configure_profile(h, profile_name: str) -> None:
     for addr, value in PROFILE_REGS[profile_name].items():
-        h._issue(f"reg(0x{addr:03X})=0x{value:02X}", 5.0)
+        if hasattr(h, "_issue"):
+            h._issue(f"reg(0x{addr:03X})=0x{value:02X}", 5.0)
+        else:
+            h.write_reg(addr, value)
 
 
-def _prime_state(h: GpsimControlHarness) -> None:
+def _prime_state(h) -> None:
     # Deterministic baseline so per-command deltas are comparable.
-    h._issue("reg(0x0B9)=0x33", 5.0)  # volume midpoint
-    h._issue("reg(0x0B7)=0x03", 5.0)  # input index midpoint
-    # Normalize low flag bits that affect power/mute behavior:
-    # - clear bit1 and bit4/bit5 toggles used by firmware variants.
-    flags = h.read_reg(0x01F) & ~0x32
-    h._issue(f"reg(0x01F)=0x{flags:02X}", 5.0)
+    if hasattr(h, "_issue"):
+        h._issue("reg(0x0B9)=0x33", 5.0)
+        h._issue("reg(0x0B7)=0x03", 5.0)
+        flags = h.read_reg(0x01F) & ~0x32
+        h._issue(f"reg(0x01F)=0x{flags:02X}", 5.0)
+    else:
+        h.write_reg(0x0B9, 0x33)
+        h.write_reg(0x0B7, 0x03)
+        flags = h.read_reg(0x01F) & ~0x32
+        h.write_reg(0x01F, flags)
 
 
-def _snapshot_state(h: GpsimControlHarness) -> dict[str, int]:
+def _snapshot_state(h) -> dict[str, int]:
     flags = h.read_reg(0x01F)
     mute = (flags >> 4) & 0x01
     if mute == 0:
@@ -100,13 +188,44 @@ def _state_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int
     }
 
 
-def _relevant_frames(frames: list[TxTriplet]) -> list[tuple[int, int, int]]:
-    # Focus on legacy behavioral emissions driven by IR actions.
-    return [
-        (f.route, f.cmd, f.data)
-        for f in frames
-        if f.route == 0xB0 and f.cmd in (0x03, 0x06, 0x07)
-    ]
+def _relevant_frames(frames) -> list[tuple[int, int, int]]:
+    """Focus on legacy behavioral emissions driven by IR actions.
+    Accepts gpsim's `list[TxTriplet]` or rust's `list[(route,
+    cmd, data)]` tuples."""
+    out: list[tuple[int, int, int]] = []
+    for f in frames:
+        if isinstance(f, TxTriplet):
+            r, c, d = f.route, f.cmd, f.data
+        else:
+            r, c, d = f[0], f[1], f[2]
+        if r == 0xB0 and c in (0x03, 0x06, 0x07):
+            out.append((r, c, d))
+    return out
+
+
+def _ir_event_with_steps(
+    h, *, addr: int, cmd: int, steps: int, clear_debounce: bool,
+):
+    """Backend-uniform IR-event-with-steps: inject a decoded
+    IR event, advance ``steps`` chunks, return the TX frames
+    captured during that window.  gpsim's `inject_decoded_ir_
+    event(steps=)` already bundles poke + step + capture; rust's
+    facade-level method only pokes RAM, so we step + slice
+    `tx_frames()` here."""
+    if hasattr(h, "_decoder"):
+        return h.inject_decoded_ir_event(
+            cmd=cmd, addr=addr, steps=steps, clear_debounce=clear_debounce,
+        )
+    before = len(h.tx_frames())
+    h.inject_decoded_ir_event(addr=addr, cmd=cmd, clear_debounce=clear_debounce)
+    for _ in range(steps):
+        h.step()
+    return h.tx_frames()[before:]
+
+
+def _close(h) -> None:
+    if hasattr(h, "close"):
+        h.close()
 
 
 def _run_ir_case(
@@ -115,22 +234,36 @@ def _run_ir_case(
     profile_name: str,
     decoded_cmd: int,
     decoded_addr: int,
+    backend: str = "gpsim",
+    force_connected: bool = True,
 ) -> tuple[list[tuple[int, int, int]], dict[str, int]]:
-    h = _boot_harness(control_hex)
+    """Boot the chosen backend, configure the IR profile, prime
+    state, inject an IR event, and return (relevant_frames,
+    state_delta).
+
+    `backend` selects gpsim vs rust.
+
+    `force_connected` is gpsim-only: True -> legacy
+    `heartbeat_force_connected=True` mask; False -> natural-
+    state path (mirror of rust's `from_v17_chain` topology).
+    Ignored on rust (which is always natural-state).
+    """
+    if backend == "rust":
+        h = _boot_rust_harness(control_hex)
+    else:
+        h = _boot_harness(control_hex, force_connected=force_connected)
     try:
         _configure_profile(h, profile_name)
         _prime_state(h)
         before = _snapshot_state(h)
-        frames = h.inject_decoded_ir_event(
-            cmd=decoded_cmd,
-            addr=decoded_addr,
-            steps=IR_STEPS,
-            clear_debounce=True,
+        frames = _ir_event_with_steps(
+            h, addr=decoded_addr, cmd=decoded_cmd,
+            steps=IR_STEPS, clear_debounce=True,
         )
         after = _snapshot_state(h)
         return _relevant_frames(frames), _state_delta(before, after)
     finally:
-        h.close()
+        _close(h)
 
 
 def _run_cmd18_reset_case(control_hex: Path) -> tuple[bool, set[int]]:
@@ -306,20 +439,23 @@ def test_cmd18_reset_behavior_matches_v16b(patched_control_hex_v161b: Path) -> N
     assert v161_states == v16_states
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("profile_name", "decoded_addr", "decoded_cmd"),
     [
-        # Profile 1 (address 0x10): 0x32..0x37
-        pytest.param("profile1_hypex", 0x10, 0x32, id="p1_power_0x32"),
+        # Profile 1 (address 0x10): 0x33,0x34,0x35,0x36,0x37 (power
+        # 0x32 split out into test_ir_power_actions_match_stock_
+        # v16b_under_legacy_gpsim_mask below).
         pytest.param("profile1_hypex", 0x10, 0x33, id="p1_vol_up_0x33"),
         pytest.param("profile1_hypex", 0x10, 0x34, id="p1_vol_down_0x34"),
         pytest.param("profile1_hypex", 0x10, 0x35, id="p1_mute_0x35"),
         pytest.param("profile1_hypex", 0x10, 0x36, id="p1_input_up_0x36"),
         pytest.param("profile1_hypex", 0x10, 0x37, id="p1_input_down_0x37"),
-        # Profile 2 (address 0x00): 0x0C,0x10,0x11,0x20,0x21,0x0D
-        pytest.param("profile2_standard", 0x00, 0x0C, id="p2_power_0x0c"),
+        # Profile 2 (address 0x00): 0x10,0x11,0x20,0x21,0x0D (power
+        # 0x0C split out into test_ir_power_actions_match_stock_
+        # v16b_under_legacy_gpsim_mask below).
         pytest.param("profile2_standard", 0x00, 0x10, id="p2_vol_up_0x10"),
         pytest.param("profile2_standard", 0x00, 0x11, id="p2_vol_down_0x11"),
         pytest.param("profile2_standard", 0x00, 0x20, id="p2_input_up_0x20"),
@@ -332,22 +468,158 @@ def test_ir_actions_match_stock_v16b_dispatch_behavior(
     profile_name: str,
     decoded_addr: int,
     decoded_cmd: int,
+    dlcp_sim_backend: str,
 ) -> None:
-    """Decoded IR events must preserve stock V1.6b emission + state deltas."""
+    """Decoded IR events must preserve stock V1.6b emission +
+    state deltas across the volume / input / mute commands.
+
+    Dual-mode (P4.7): both backends use the natural-state path
+    (gpsim with `force_connected=False, heartbeat_rx_mode="full"`
+    + post-warmup `pause_heartbeat()` + 40-step drain;
+    rust with `from_v17_chain` paired against a real V2.3 MAIN).
+    Stock-vs-patched equivalence is asserted per-backend.
+
+    Power IR commands (p1_power_0x32, p2_power_0x0c) are
+    DELIBERATELY excluded from this parametrize -- they trigger
+    V1.61b's reconnect/full-sync retry stub by toggling
+    0x01F.bit1 via `btg 0x01F, 1` at dispatch.  See
+    test_ir_power_actions_match_stock_v16b_under_legacy_gpsim_mask
+    below for the documented divergence (mirror of the V1.5b
+    /V1.51b mechanism analysed by codex on 2026-05-01).
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        stock_frames, stock_delta = _run_ir_case(
+            STOCK_CONTROL_HEX_V16B,
+            profile_name=profile_name,
+            decoded_cmd=decoded_cmd,
+            decoded_addr=decoded_addr,
+            backend="rust",
+        )
+        patched_frames, patched_delta = _run_ir_case(
+            patched_control_hex_v161b,
+            profile_name=profile_name,
+            decoded_cmd=decoded_cmd,
+            decoded_addr=decoded_addr,
+            backend="rust",
+        )
+        assert patched_frames == stock_frames, (
+            f"[rust] frame mismatch: patched={patched_frames!r} "
+            f"stock={stock_frames!r}"
+        )
+        assert patched_delta == stock_delta, (
+            f"[rust] delta mismatch: patched={patched_delta!r} "
+            f"stock={stock_delta!r}"
+        )
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        stock_frames, stock_delta = _run_ir_case(
+            STOCK_CONTROL_HEX_V16B,
+            profile_name=profile_name,
+            decoded_cmd=decoded_cmd,
+            decoded_addr=decoded_addr,
+            backend="gpsim",
+            force_connected=False,
+        )
+        patched_frames, patched_delta = _run_ir_case(
+            patched_control_hex_v161b,
+            profile_name=profile_name,
+            decoded_cmd=decoded_cmd,
+            decoded_addr=decoded_addr,
+            backend="gpsim",
+            force_connected=False,
+        )
+        assert patched_frames == stock_frames, (
+            f"[gpsim] frame mismatch: patched={patched_frames!r} "
+            f"stock={stock_frames!r}"
+        )
+        assert patched_delta == stock_delta, (
+            f"[gpsim] delta mismatch: patched={patched_delta!r} "
+            f"stock={stock_delta!r}"
+        )
+
+
+# Power IR commands (p1_power_0x32, p2_power_0x0c) are
+# DELIBERATELY excluded from `test_ir_actions_match_stock_v16b_
+# dispatch_behavior`'s parametrize and from the dual_supported
+# migration -- they trigger a real firmware-state divergence
+# between V1.6b stock and V1.61b patched that gpsim's legacy
+# `heartbeat_force_connected=True` mask hides.
+#
+# Mirror of the V1.5b/V1.51b analysis (codex disasm trace on
+# 2026-05-01; see test_control_v15b_port_compatibility.py for
+# the full PC walk and `function_028` redirect details):
+#
+# * The power IR-command body in V1.6b/V1.61b is byte-identical
+#   between stock and patched -- the V1.6b/V1.61b binary patch
+#   doesn't touch the power-IR dispatch path; both versions do
+#   `btg 0x01F, 1` (toggle CONNECTED) on a power press.
+#
+# * V1.61b binary-overlays the stock periodic full-sync hook
+#   with the same edge-triggered reconnect/retry stub the
+#   V1.51b patch adds.  Without gpsim's force_connected mask,
+#   the stub fires when the power-IR `btg` transitions
+#   `0x01F.bit1` 1→0, emitting the 4-frame full-sync burst
+#   `(B0 07 vol) (B0 06 src) (B0 03 mute) (B0 03 connected)`
+#   in V1.61b but not in V1.6b stock.
+#
+# * Under gpsim's legacy `heartbeat_force_connected=True`,
+#   0x01F.bit1 is pinned high every step regardless of the
+#   firmware's `btg`, so V1.61b's stub never sees a 1→0 edge
+#   and emits nothing -- matching V1.6b's quiescent behavior.
+#
+# * Encoding the natural-state divergence dual_supported
+#   requires either cycle-aligned probes or an alternate
+#   assertion; same blocker as documented in
+#   test_control_v15b_port_compatibility.py.
+#
+# For now the power cases stay gpsim-only via the legacy
+# `_boot_harness(force_connected=True)` path, asserting only
+# the legacy-mask equivalence.
+
+
+@pytest.mark.gpsim
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("profile_name", "decoded_addr", "decoded_cmd"),
+    [
+        pytest.param("profile1_hypex", 0x10, 0x32, id="p1_power_0x32"),
+        pytest.param("profile2_standard", 0x00, 0x0C, id="p2_power_0x0c"),
+    ],
+)
+def test_ir_power_actions_match_stock_v16b_under_legacy_gpsim_mask(
+    patched_control_hex_v161b: Path,
+    profile_name: str,
+    decoded_addr: int,
+    decoded_cmd: int,
+) -> None:
+    """V1.6b stock and V1.61b patched produce identical TX +
+    RAM-state on power IR -- but only under gpsim's legacy
+    `heartbeat_force_connected=True` mask.
+
+    See the comment block above for the underlying firmware-
+    state divergence (mirror of V1.5b/V1.51b codex disasm
+    trace 2026-05-01) and why this test stays gpsim-only.  The
+    uniform-dual_supported follow-up is documented as a
+    v15b/v16b runtime-facade pending sub-task.
+    """
     _require_gpsim()
     stock_frames, stock_delta = _run_ir_case(
         STOCK_CONTROL_HEX_V16B,
         profile_name=profile_name,
         decoded_cmd=decoded_cmd,
         decoded_addr=decoded_addr,
+        backend="gpsim",
+        force_connected=True,
     )
     patched_frames, patched_delta = _run_ir_case(
         patched_control_hex_v161b,
         profile_name=profile_name,
         decoded_cmd=decoded_cmd,
         decoded_addr=decoded_addr,
+        backend="gpsim",
+        force_connected=True,
     )
-
     assert patched_frames == stock_frames
     assert patched_delta == stock_delta
 
