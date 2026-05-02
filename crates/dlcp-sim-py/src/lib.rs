@@ -1477,28 +1477,29 @@ impl Chain {
     ///
     /// `value` is the 10-bit ADC sample in the range
     /// `[0x0000, 0x03FF]` -- the PIC18F2455 ADC is 10-bit
-    /// (datasheet DS39632E §21).  The underlying
-    /// `Adc::set_an0_sample` masks with `0x3FF`, so passing a
-    /// value with bit 10 or higher set silently drops those
-    /// bits.  Callers MUST pass a 10-bit value: e.g. the
-    /// firmware's `adc_boot_gate` threshold word `0x0236` is
-    /// stored as a 10-bit value and is what callers should pass
-    /// when modelling the threshold.  Passing a "12-bit-looking"
-    /// value like `0x0500` will not produce the expected high-
-    /// rail observable: the mask reduces it to `0x0100`, which
-    /// is BELOW the boot gate threshold.
+    /// (datasheet DS39632E §21).  Values outside that range
+    /// raise `ValueError` rather than silently masking, so a
+    /// caller that passes a "12-bit-looking" word like `0x0500`
+    /// gets a clear error instead of a sub-threshold sample.
     ///
     /// **Bug #45 H1 use case** (per
     /// `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`):
-    /// after a healthy boot to DISPLAY and a parser-driven
-    /// STDBY, set MAIN1's AN0 to a value below `0x0236` (e.g.
-    /// `0x0000`) just before injecting the wake frame --
-    /// MAIN1 enters `adc_boot_gate` but its rail-sense never
-    /// crosses threshold, so the CPU stays in the polling
-    /// loop indefinitely.  This is a STATIC seeded approximation
-    /// of the dynamic shared-rail-coupling mechanism that the
-    /// RailCoupler model in `multicore_parity.rs::v171_v32_v32_*_railcoupler*`
-    /// reproduces more faithfully.
+    /// the H1 firmware-OBSERVABLE reproduction needs MAIN1 to
+    /// run `wake_request_handler` (asm:1894 sets
+    /// `active_flags.bit3`) BEFORE the AN0 droop applies; setting
+    /// MAIN1's AN0 below threshold while MAIN1 is still in the
+    /// post-STDBY standby loop prevents wake-byte dispatch in the
+    /// rust sim and produces the H2 observable from #81 instead.
+    /// Use AT or AFTER the wake byte's parser dispatch is
+    /// observable: trigger on `MAIN1.active_flags.bit3 == 1` (RAM
+    /// 0x05E bit 3) and then drop AN0 to `0x0100` -- the path
+    /// from `wake_request_handler` exit through the main loop and
+    /// `standby_event_dispatch` to the gate's first ADC
+    /// conversion (asm:4048) traverses many MAIN-Tcy, leaving
+    /// ample slack for the droop to land before the conversion
+    /// latch.  See the rust-side test
+    /// `multicore_parity.rs::v171_v32_v32_*_railcoupler*` for the
+    /// fully-worked example.
     fn set_main_an0_sample(
         &mut self,
         unit: u8,

@@ -667,14 +667,22 @@ class Chain:
         ``0x0229/0x0228``).  Default factory seed is ``0x0300``
         (well above threshold) for both MAINs.
 
-        Bug #45 H1 use case: after a healthy boot to DISPLAY
-        and a parser-driven STDBY, set MAIN1's AN0 to a value
-        below ``0x0236`` (e.g. ``0x0000``) just before injecting
-        the wake frame -- MAIN1 enters ``adc_boot_gate`` but
-        its rail-sense never crosses threshold, so the CPU
-        stays in the polling loop indefinitely.  See
-        ``docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md``
-        §H1 + §A5.
+        Bug #45 H1 use case: the H1 firmware-OBSERVABLE
+        reproduction needs MAIN1 to run wake_request_handler
+        (asm:1894 sets ``active_flags.bit3``) BEFORE the AN0
+        droop applies.  Setting MAIN1's AN0 below threshold
+        while MAIN1 is still in the post-STDBY standby loop
+        prevents wake-byte dispatch in the rust sim and
+        produces the H2 observable from #81 instead.  Use AT
+        or AFTER the wake byte's parser dispatch is observable:
+        trigger on ``MAIN1.active_flags.bit3 == 1`` (RAM 0x05E
+        bit 3) and then drop AN0 to ``0x0100`` -- the path from
+        wake_request_handler exit through the main loop and
+        standby_event_dispatch to the gate's first ADC
+        conversion (asm:4048) traverses many MAIN-Tcy, leaving
+        ample slack for the droop to land before the conversion
+        latch.  See ``crates/dlcp-sim/tests/multicore_parity.rs``
+        for the fully-worked example.
         """
         v = int(value)
         if not (0 <= v <= 0x3FF):
