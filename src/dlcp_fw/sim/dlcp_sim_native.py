@@ -746,9 +746,12 @@ class Chain:
 
     def mark_ctl_tx_capture_point(self) -> None:
         """CONTROL-side analog of :meth:`mark_tx_capture_point`.
-        Snapshots CONTROL TX history count for use with
-        :meth:`ctl_tx_record_since_last_capture`.  Mirror of
-        the rust facade's `Chain.mark_ctl_tx_capture_point`.
+        Snapshots the count of CONTROL TX records for use with
+        :meth:`ctl_tx_record_since_last_capture`.  Equivalent
+        to gpsim's
+        ``len(GpsimControlHarness.tx_frames())`` snapshot before
+        injecting a stimulus that the test wants to bound the
+        TX observation around.
         """
         self._inner.mark_ctl_tx_capture_point()
 
@@ -757,8 +760,9 @@ class Chain:
         :meth:`mark_ctl_tx_capture_point` call (or chain
         construction).  Bytes are returned as a flat list of
         u8s; the caller chunks into 3-byte ``(route, cmd,
-        data)`` frames.  Mirror of the rust facade's
-        `Chain.ctl_tx_record_since_last_capture`.
+        data)`` frames.  Equivalent to slicing
+        ``GpsimControlHarness.tx_frames()[before:]`` after the
+        baseline mark.
         """
         return list(self._inner.ctl_tx_record_since_last_capture())
 
