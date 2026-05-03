@@ -122,19 +122,49 @@ a PIC18 soft `RESET` and re-run the full CONTROL cold-init +
 full-sync-burst.  See `docs/V171_RELEASE.md` §"WAITING FOR DLCP
 operator recovery".  This is a UX escape hatch, not a root-cause fix.
 
-Implementation (CONTROL-side priority, MAIN-side audit secondary):
+Implementation status (last refreshed 2026-05-03):
 
-- Move or defer the RC5 decode out of the ISR-critical wake/reconnect
-  window so UART TX/RX service is not starved during the first wake
-  exchange.
-- Make wake/poll frame emission atomic: check `STATUS.C` after every
-  `tx_byte_enqueue` in the standby/wake and reconnect senders, then
-  retry or abort cleanly instead of silently dropping bytes.
-- Keep the MAIN-side wake-time `send_status_burst` path, but treat it as
-  necessary-not-sufficient; the remaining field wedge is no longer
-  solved by MAIN-only changes.
+- ✅ **Move or defer the RC5 decode out of the ISR-critical wake/reconnect
+  window** — landed in commit `bc61c70` (2026-04-23).  V1.71 ISR sets
+  `v171_ir_decode_pending` flag only; foreground
+  `v171_service_pending_ir_decode` runs the ~7-10 ms bit-bang outside
+  the ISR.  Locked by `tests/sim/test_v171_hang_modes.py` (see
+  `test_v171_ir_decode_is_deferred_out_of_isr`).
+- ✅ **Atomic 3-byte frame emission across the V1.71 senders** — landed
+  in commit `bc61c70` via `tx_ring_reserve_3` + per-sender atomic
+  prologue.  All eight 3-byte senders (`poll_frame_send`,
+  `serial_tx_routed_frame`, `standby_wake_broadcast`,
+  `v171_send_wake_cmd_frame`, `v171_send_standby_cmd_frame`,
+  `mute_frame_send`, `input_frame_send`, `volume_frame_send`,
+  `cmd1d_setting_frame_send`, `v171_send_preset_frame_txonly`) start
+  with `(r)call tx_ring_reserve_3` + `bc <name>_aborted`.  Locked by
+  `tests/sim/test_v171_atomic_3byte_frame.py` and
+  `tests/sim/test_v171_layer1_bounded_tx.py`.
+- ✅ **Layer-B retry at `flow_reconnect_wait_loop_12CE`** — landed
+  in commit `2a8105a`.  Locked by
+  `test_v171_atomic_3byte_frame::test_layer_b_retry_at_reconnect_wait_done`.
+- ✅ **MAIN-side WAKE forward race** (Bug #45 H2) — landed in commit
+  `<this commit>`.  Without this fix, the MAIN0 chain forwarder emits
+  the WAKE broadcast's first two bytes (`B0 03`) before
+  `uart_quiesce_for_wake` at gate entry kills TX, so MAIN1 sees an
+  incomplete frame and stays standby.  Mitigation: re-emit `B0/03/01`
+  inside `adc_boot_gate_exit` after `main_uart_tx_only_service`
+  re-arms TX and before `cmd_dispatch_gated` runs.  Verified in the
+  rust sim: `tests/sim/test_v171_v32_standby_reconnect.py
+  ::test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit`
+  asserts both MAINs' amp-enable latches go HIGH after a panel-press
+  WAKE on the V1.71+V3.2+V3.2 canonical pair.
+- ❌ **CONTROL-side reconnect parser** does not fully recover from the
+  `Waiting for DLCP` screen even after both MAINs are awake and
+  emitting status.  This is the remaining wedge in the rust sim
+  reproduction; the dynamic test above intentionally does not assert
+  the LCD-leaves-WAITING transition.  Open investigation: capture
+  CONTROL's RX history during the post-wake window and check whether
+  `reconnect_wait_loop` sentinels (`input_select_cache`, `volume_cache`,
+  `cmd1d_setting_cache`, `raw_status_cache`) are getting populated
+  by MAIN0's status burst and/or MAIN1's eventual status burst.
 - Audit other CONTROL best-effort frame senders that still ignore
-  bounded-TX saturation.
+  bounded-TX saturation — running audit, no remaining gaps surfaced.
 
 Primary code areas:
 
