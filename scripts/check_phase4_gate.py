@@ -129,23 +129,29 @@ def main() -> int:
     if fast_rc != 0:
         _classify_pytest_failure(fast_rc, "fast")
         return 1
-    fast_timing_ok = fast_elapsed <= WALL_CLOCK_BUDGET_SEC
+    if fast_elapsed > WALL_CLOCK_BUDGET_SEC:
+        # Fail-fast on timing regression: don't wait through the
+        # multi-minute slow subset just to surface this.  The slow
+        # subset's green-tests check is independently valuable but
+        # CI/dev iteration cares about timing more.
+        print(
+            f"P4.gate TIMING REGRESSION: fast-subset wall-clock "
+            f"{fast_elapsed:.1f} s exceeds budget {WALL_CLOCK_BUDGET_SEC:.0f} s. "
+            "Skipping the slow subset since the timing assertion already "
+            "failed; rerun without modifications to also see slow-subset "
+            "green-tests state.",
+            file=sys.stderr,
+        )
+        return 2
 
-    # Slow subset, no timing budget.  Run AFTER the fast subset.
+    # Slow subset, no timing budget.  Only reached if the fast
+    # subset is both green and under budget.
     slow_rc, _ = _run_pytest(label="slow", marker="slow", time_it=False)
     print()
     print(f"P4.gate slow-subset pytest exit: {slow_rc}")
     if slow_rc != 0:
         _classify_pytest_failure(slow_rc, "slow")
         return 1
-
-    if not fast_timing_ok:
-        print(
-            f"P4.gate TIMING REGRESSION: fast-subset wall-clock "
-            f"{fast_elapsed:.1f} s exceeds budget {WALL_CLOCK_BUDGET_SEC:.0f} s.",
-            file=sys.stderr,
-        )
-        return 2
 
     print("P4.gate OK: both subsets green AND fast-subset under wall-clock budget.")
     return 0
