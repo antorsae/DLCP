@@ -56,7 +56,7 @@ PYTEST_EXIT_CODES: dict[int, str] = {
     2: "test execution interrupted by the user (Ctrl-C)",
     3: "internal error inside pytest itself",
     4: "pytest CLI usage error",
-    5: "no tests were collected (likely a collection-time import error)",
+    5: "no tests were collected",
 }
 
 
