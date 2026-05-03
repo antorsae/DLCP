@@ -1,36 +1,39 @@
 #!/usr/bin/env python3
 """P4.gate -- final Phase-4 gate verifier.
 
-Per `docs/SIM_REWRITE_RUST_PROGRESS.md` P4.gate:
+Per `docs/SIM_REWRITE_RUST_PROGRESS.md` P4.gate (and PF.2 in
+`docs/SIM_REWRITE_RUST_SPEC.md`), the original written gate is:
 
-    asserts `DLCP_SIM_BACKEND=rust pytest tests/sim` is green
-    AND wall-clock < 60 s.
+    `DLCP_SIM_BACKEND=rust pytest tests/sim` green AND wall-clock < 60 s.
 
-The "green" predicate as enforced here is `pytest exit == 0`.
-That covers failed tests and errors but does NOT inspect for
-unexpected-pass xfails (XPASS): the repo does not set
-`xfail_strict` globally and has explicit non-strict xfails, so
-an XPASS does not propagate to a non-zero pytest exit. Skipped
-tests (still on the P4.5/4.6/4.7 migration backlog) and expected
-xfails (documented firmware bugs) do NOT fail the gate.
+**Implementation note (this script applies a PROPOSED RELAXATION
+to the original gate)**: the unified-suite 60 s target is
+infeasible with the current corpus -- the slowest individual test
+in the slow subset takes ~47 s by itself (e.g.
+`test_v171_layer2_emits_all_six_step_frame_types_after_warmup`,
+which warms up 80 M-Tcy + steps 160 times).  Even with -n 16
+parallelism the slow tests dominate aggregate wall-clock at
+~3 minutes.
 
-The wall-clock budget applies to the FAST subset of the suite
-(`-m "not slow"`) -- 622 tests collected, ~6 s wall-clock with
--n 16.  The slow tests (471 collected, marked `@pytest.mark.slow`)
-are NOT part of the gate's wall-clock budget per pytest convention:
-they include long-running soak / convergence runs (e.g. 80 M-Tcy
-warmup followed by 160 step iterations) that individually exceed
-60 s and would dominate any aggregate wall-clock measure.  The
-slow subset MUST still pass green when run separately
-(`pytest tests/sim -m slow`) -- the gate enforces that on the
-overall suite by FIRST running the slow subset (no timing
-budget) and THEN running the fast subset (timed against the
-budget).  If either subset shows failed tests, the gate fails
-with exit 1.
+The proposed relaxation: split the suite by the existing
+`@pytest.mark.slow` marker (registered in `pytest.ini`) into:
 
-Wall-clock budget: 60 seconds end-to-end FAST-subset pytest
-invocation. This includes pytest's own collection / fixture /
-xdist startup overhead.
+  * **Fast subset** (`-m "not slow"`, 622 tests as of 2026-05-03):
+    timed against the 60 s budget.  Currently ~6 s.
+  * **Slow subset** (`-m slow`, 471 tests): green-tests check
+    only, no timing budget.
+
+Both subsets must pass green; only the fast subset is timed.
+The fast subset runs FIRST so a developer / CI runner sees fast
+regressions and timing failures before the multi-minute slow
+subset.
+
+This is a *real* relaxation of the original spec wording; it
+needs user sign-off before P4.gate can be considered closed.
+The progress ledger marks P4.gate `in_progress (timing relaxation
+proposed)` until that sign-off lands.  The `green` predicate is
+the same `pytest exit == 0` (no XPASS detection: the repo doesn't
+set `xfail_strict` globally and has explicit non-strict xfails).
 
 Exit codes:
     0 -- gate green (both subsets) AND fast-subset wall-clock under 60 s
@@ -42,8 +45,7 @@ Exit codes:
 Implementation notes:
     * Forces `DLCP_SIM_BACKEND=rust` to make the gate result
       independent of the caller's environment.
-    * Uses `-n 16` per the P4.x verify pattern (matches the rest
-      of the ledger).
+    * Uses `-n 16` per the P4.x verify pattern.
     * Reports the pytest exit code symbolically when nonzero so a
       CI runner can quickly tell test-failure (1) from no-tests-
       collected (5) or usage-error (4) without re-reading the
@@ -112,15 +114,9 @@ def main() -> int:
         print(f"ERROR: python interpreter not found at {PYTHON}", file=sys.stderr)
         return 1
 
-    # Slow subset first, no timing budget.
-    slow_rc, _ = _run_pytest(label="slow", marker="slow", time_it=False)
-    print()
-    print(f"P4.gate slow-subset pytest exit: {slow_rc}")
-    if slow_rc != 0:
-        _classify_pytest_failure(slow_rc, "slow")
-        return 1
-
-    # Fast subset, timed.
+    # Fast subset FIRST: timed.  Run order is fast-then-slow so a
+    # developer / CI runner sees fast regressions and the timing
+    # budget result before the multi-minute slow subset starts.
     fast_rc, fast_elapsed = _run_pytest(
         label="fast", marker="not slow", time_it=True
     )
@@ -130,15 +126,23 @@ def main() -> int:
         f"(budget: {WALL_CLOCK_BUDGET_SEC:.0f} s)"
     )
     print(f"P4.gate fast-subset pytest exit: {fast_rc}")
-
     if fast_rc != 0:
         _classify_pytest_failure(fast_rc, "fast")
         return 1
+    fast_timing_ok = fast_elapsed <= WALL_CLOCK_BUDGET_SEC
 
-    if fast_elapsed > WALL_CLOCK_BUDGET_SEC:
+    # Slow subset, no timing budget.  Run AFTER the fast subset.
+    slow_rc, _ = _run_pytest(label="slow", marker="slow", time_it=False)
+    print()
+    print(f"P4.gate slow-subset pytest exit: {slow_rc}")
+    if slow_rc != 0:
+        _classify_pytest_failure(slow_rc, "slow")
+        return 1
+
+    if not fast_timing_ok:
         print(
-            f"P4.gate TIMING REGRESSION: fast-subset wall-clock {fast_elapsed:.1f} s "
-            f"exceeds budget {WALL_CLOCK_BUDGET_SEC:.0f} s.",
+            f"P4.gate TIMING REGRESSION: fast-subset wall-clock "
+            f"{fast_elapsed:.1f} s exceeds budget {WALL_CLOCK_BUDGET_SEC:.0f} s.",
             file=sys.stderr,
         )
         return 2

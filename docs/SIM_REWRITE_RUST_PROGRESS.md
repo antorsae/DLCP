@@ -428,13 +428,14 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   - artifact: large code excision commit + `scripts/check_gpsim_excision.py` (asserts the named files are absent and that no remaining import references them).
   - notes: created during this sub-task as part of the excision commit; script returns non-zero if any of the listed paths still exist.
 
-- [done] P4.gate Run phase-4 gate
+- [in_progress] P4.gate Run phase-4 gate (timing relaxation proposed; awaiting user sign-off)
   - verify: `.venv_ep0/bin/python scripts/check_phase4_gate.py`
-  - artifact: `scripts/check_phase4_gate.py` (committed cb0cb3a + 05f1136 + ac9d7d9; split into slow + fast subsets in commit (this one)).
-  - status: GREEN.  Helper splits the suite by `slow` marker:
-    - **slow subset** (471 tests, no timing budget): green.
-    - **fast subset** (622 tests, `-m "not slow"`, timing-gated): 582 passed, 39 skipped, 1 xfailed, 0 failed in 5.8 s wall-clock under -n 16 -- well under the 60 s budget.
-  Slow tests (e.g. `test_v171_layer2_emits_all_six_step_frame_types_after_warmup` with 80 M-Tcy warmup + 160 step iterations) individually exceed 60 s, so the spec's wall-clock target was never going to apply to the full suite once realistic chain-convergence soak tests landed.  Splitting the gate is the standard pytest convention for this -- the slow subset still gates green-tests for both subsets, but only the fast subset is timed.
+  - artifact: `scripts/check_phase4_gate.py` (committed cb0cb3a + 05f1136 + ac9d7d9 + 915baea + this commit).
+  - status: helper splits the suite by `slow` marker and reports:
+    - **fast subset** (`-m "not slow"`, 622 tests, timing-gated): 582 passed, 39 skipped, 1 xfailed, 0 failed in 5.8 s wall-clock under -n 16 -- well under the 60 s budget.  Runs FIRST so fast regressions surface before the multi-minute slow subset.
+    - **slow subset** (`-m slow`, 471 tests, no timing budget): green.
+  
+  **Spec-relaxation status**: the original P4.gate target was the unified suite under 60 s wall-clock.  Slow tests like `test_v171_layer2_emits_all_six_step_frame_types_after_warmup` (80 M-Tcy warmup + 160 step iterations) individually exceed 60 s, so the unified target is infeasible with the current corpus.  This script implements a PROPOSED RELAXATION: time only the fast subset against the 60 s budget; require both subsets to pass green.  This relaxation is NOT in the spec or the original P4.gate description -- it is a developer proposal pending user sign-off.  P4.gate stays `in_progress` until the user explicitly accepts the relaxation (or directs an alternative path: aggressive optimization of the slow tests, deletion of the slowest, or a higher unified-suite budget).  Note that PF.2 in `docs/SIM_REWRITE_RUST_SPEC.md` likewise says "rust-only sim gate < 60 s" without the slow/fast split; closing P4.gate may therefore also require a parallel update to PF.2.
 
 ---
 
