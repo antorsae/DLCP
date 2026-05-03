@@ -467,6 +467,35 @@ class Chain:
         """
         self._inner.write_reg(int(addr) & 0xFFF, int(value) & 0xFF)
 
+    def read_main_reg(self, unit: int, addr: int) -> int:
+        """Read a single byte of one MAIN's data memory at
+        the given physical address.
+
+        ``unit`` selects which MAIN core: ``0`` for MAIN0, ``1``
+        for MAIN1.  Other values raise ``ValueError``.  On
+        MAIN-only / single-MAIN chain topologies (where i_main0
+        == i_main1) both unit indices target the same core.
+
+        Mirror of gpsim's per-MAIN register read in the
+        wire-chain harnesses (used by V1.71+V3.2 layer-5
+        diag-chain tests, V2.8 wire-chain delayed-switch
+        repros, etc.).
+        """
+        return int(self._inner.read_main_reg(int(unit), int(addr) & 0xFFF))
+
+    def write_main_reg(self, unit: int, addr: int, value: int) -> None:
+        """Write a single byte of one MAIN's data memory at
+        the given physical address.
+
+        ``unit`` selects which MAIN core: ``0`` for MAIN0, ``1``
+        for MAIN1.  Other values raise ``ValueError``.  Mirror
+        of gpsim's per-MAIN register poke (used to seed diag
+        counters, force standby state, etc.).
+        """
+        self._inner.write_main_reg(
+            int(unit), int(addr) & 0xFFF, int(value) & 0xFF
+        )
+
     @property
     def current_cycle(self) -> int:
         """CONTROL's K20-Tcy cycle counter (mirror of

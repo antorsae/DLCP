@@ -76,6 +76,42 @@ def _require_rust() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Rust-side mirrors of the gpsim navigation / readback helpers.  Kept
+# next to the gpsim helpers so the dual-supported tests don't have to
+# branch on `dlcp_sim_backend` for every line -- each backend reads its
+# own helper, both produce the same firmware-observable invariant.
+# ---------------------------------------------------------------------------
+
+
+def _rust_navigate_to_diagnostics(rust_chain) -> None:  # type: ignore[no-untyped-def]
+    """Mirror of `_navigate_to_diagnostics` for the rust facade.
+
+    Drives CONTROL to PB1 Diag(4) by pressing RIGHT four times with
+    8 intermediate steps to settle each press.  Identical key cadence
+    to the gpsim helper above; both target the same V1.71 menu state
+    machine, which doesn't change behavior across simulators.
+    """
+    for _ in range(4):
+        rust_chain.press("RIGHT")
+        for _ in range(8):
+            rust_chain.step()
+
+
+def _rust_main_diag_block(rust_chain, main_idx: int) -> tuple[int, ...]:  # type: ignore[no-untyped-def]
+    """Mirror of `_main_diag_block` for the rust facade.
+
+    Reads MAIN's 7 diag-counter bytes (diag_i..diag_p at
+    0x2E5..0x2EB) via the per-MAIN register read primitive
+    (`Chain.read_main_reg(unit, addr)`).
+    """
+    return tuple(
+        rust_chain.read_main_reg(main_idx, addr)
+        for addr in (DIAG_I_PHYS, DIAG_D_PHYS, DIAG_S_PHYS,
+                     DIAG_B_PHYS, DIAG_R_PHYS, DIAG_A_PHYS, DIAG_P_PHYS)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Constants pinned by the Layer 5 design (kept duplicated from Phase A/B
 # files so a wire-chain test failure can be diagnosed locally without
 # cross-file lookups).
@@ -937,11 +973,12 @@ def _navigate_back_to_volume(chain: WireMultiMainChainHarness) -> None:
             chain.step()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
-    v171_hex: Path, v32_hex: Path
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
 ) -> None:
     """REGRESSION: real-HW operator report 2026-04-20 — V1.71 CONTROL
     hung completely after a few seconds on the Diagnostics page.  LCD
@@ -971,50 +1008,85 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
         loops indefinitely under continued chain traffic.
       * CONTROL's button-poll path (v171_diag_check_buttons) loses
         the LEFT press because it's starved by the parser ISR.
+
+    Migrated to dual_supported in P4.7: the firmware-correctness
+    invariant (CONTROL stays out of WAITING during the sustained
+    cadence; LEFT/LEFT/LEFT/LEFT lands back on Volume) is
+    backend-independent.  Both gpsim and rust must show the same
+    responsiveness behavior because hang-vs-responsive is a
+    firmware property of v171_diag_loop / v171_diag_check_buttons,
+    not a property of either simulator's UART byte timing.
     """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
-
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        _navigate_to_diagnostics(chain)
-        # Sustained cadence — at default chunk_cycles=1_000_000 each
-        # chain step is ~83 ms wallclock, so 200 steps ≈ 16.6 s sim
-        # time.  V171_DIAG_POLL_RELOAD = 0x80 ticks ≈ 1 s, so this
-        # window covers ~16 cadence cycles = ~16 PB1 queries + ~16
-        # PB2 queries.  More than enough to hit the cascade if it's
-        # going to happen.
+        _rust_navigate_to_diagnostics(c)
         for _ in range(200):
-            chain.step()
-            assert not chain.is_waiting(), (
-                "CONTROL fell into WAITING during sustained Diag-page "
-                "cadence — chain heartbeat lost.  This is the cascade-"
-                "induced reconnect storm the real-HW hang surfaced."
+            c.step()
+            assert not c.is_waiting(), (
+                "[rust] CONTROL fell into WAITING during sustained "
+                "Diag-page cadence — cascade reconnect storm."
             )
-        # Page should still be responsive.  Walk LEFT back to Volume.
-        _navigate_back_to_volume(chain)
-        # Verify we landed back on Volume.
-        line0, line1 = chain.lcd_lines()
+        # Walk LEFT back to Volume (4 LEFTs through Tier-1 menu order).
+        for _ in range(4):
+            c.press("LEFT")
+            for _ in range(8):
+                c.step()
+        line0, line1 = c.lcd_lines()
         assert line0.startswith("Volume:"), (
-            f"LEFT/LEFT did not exit Diag page; LCD={(line0, line1)!r}.  "
-            f"CONTROL is wedged on the Diag page — button-poll path "
-            f"isn't picking up the LEFT press, or v171_diag_loop "
-            f"is deadlocked inside display_loop_iteration."
+            f"[rust] LEFT*4 did not return to Volume; LCD={(line0, line1)!r}"
         )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+            )
+            _navigate_to_diagnostics(chain)
+            # Sustained cadence — at default chunk_cycles=1_000_000 each
+            # chain step is ~83 ms wallclock, so 200 steps ≈ 16.6 s sim
+            # time.  V171_DIAG_POLL_RELOAD = 0x80 ticks ≈ 1 s, so this
+            # window covers ~16 cadence cycles = ~16 PB1 queries + ~16
+            # PB2 queries.  More than enough to hit the cascade if it's
+            # going to happen.
+            for _ in range(200):
+                chain.step()
+                assert not chain.is_waiting(), (
+                    "[gpsim] CONTROL fell into WAITING during sustained "
+                    "Diag-page cadence — chain heartbeat lost.  This is "
+                    "the cascade-induced reconnect storm the real-HW hang "
+                    "surfaced."
+                )
+            # Page should still be responsive.  Walk LEFT back to Volume.
+            _navigate_back_to_volume(chain)
+            # Verify we landed back on Volume.
+            line0, line1 = chain.lcd_lines()
+            assert line0.startswith("Volume:"), (
+                f"[gpsim] LEFT/LEFT did not exit Diag page; "
+                f"LCD={(line0, line1)!r}.  CONTROL is wedged on the Diag "
+                f"page — button-poll path isn't picking up the LEFT "
+                f"press, or v171_diag_loop is deadlocked inside "
+                f"display_loop_iteration."
+            )
+        finally:
+            chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
-    v171_hex: Path, v32_hex: Path
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
 ) -> None:
     """REGRESSION: on real HW, sustained Diag-page cadence caused PB2's
     ``diag_s`` and ``diag_r`` to saturate to '+' (15+ events) within
@@ -1022,9 +1094,10 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
     triggering MAIN-side standby/wake or recovery events, which in turn
     cascaded into chain instability.
 
-    Invariant: serving cmd 0x21 queries is purely observational.  The
-    handler reads diag_X cells and emits 7 BF/2N frames over UART; it
-    must not provoke standby_event_dispatch (diag_s, diag_b) or
+    Invariant (firmware-correctness, backend-independent): serving
+    cmd 0x21 queries is purely observational.  The handler reads
+    diag_X cells and emits 7 BF/2N frames over UART; it must not
+    provoke standby_event_dispatch (diag_s, diag_b) or
     volume_dsp_write retry escalation (diag_r).  If it does, the
     cmd-21-reply path is racing with the standby/recovery state
     machines and needs a guard (an "armed" check or a higher cadence-
@@ -1045,81 +1118,116 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
         retry-escalation -> diag_r++.
       * Wake-after-spurious-standby -> adc_boot_gate -> diag_b++.
 
-    PB1 only — PB2 is currently behind the Group A xfail (Task #22)
-    so its replies don't surface.  But the MAIN1 (PB2) hardware still
-    serves the cmd 0x21 queries, so we ALSO check MAIN1's counter
-    deltas to surface cascade on the PB2 MAIN.
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
+    Both MAINs are checked: PB1's replies surface in CONTROL today
+    while PB2's are quarantined behind Group A xfail (Task #22), but
+    the MAIN1 hardware still SERVES the cmd 0x21 queries either way.
+    Counter cascade on the MAIN1 (PB2) hardware is a real firmware
+    bug regardless of whether the reply makes it back to CONTROL.
 
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    Migrated to dual_supported in P4.7: cascade-detection is a
+    firmware-correctness invariant on the MAIN side; rust path uses
+    `read_main_reg(unit, addr)` to read the diag block on each MAIN.
+    """
+    # Counter-cascade thresholds (shared across backends).  Index map:
+    # 0=I, 1=D, 2=S, 3=B, 4=R, 5=A, 6=P.  Cascade-sensitive counters
+    # are S/B/R (state machines) plus I/D (I2C/DSP fault counters).
+    cascade_idx = (("S", 2), ("B", 3), ("R", 4), ("I", 0), ("D", 1))
+    threshold = 4
+
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
 
-        baseline_pb1 = _main_diag_block(chain, 0)
-        baseline_pb2 = _main_diag_block(chain, 1)
+        baseline_pb1 = _rust_main_diag_block(c, 0)
+        baseline_pb2 = _rust_main_diag_block(c, 1)
 
-        _navigate_to_diagnostics(chain)
+        _rust_navigate_to_diagnostics(c)
         for _ in range(200):
-            chain.step()
+            c.step()
 
-        post_pb1 = _main_diag_block(chain, 0)
-        post_pb2 = _main_diag_block(chain, 1)
+        post_pb1 = _rust_main_diag_block(c, 0)
+        post_pb2 = _rust_main_diag_block(c, 1)
 
-        # Index map: 0=I, 1=D, 2=S, 3=B, 4=R, 5=A, 6=P
-        names = ("I", "D", "S", "B", "R", "A", "P")
-        # Cascade-sensitive counters: S (standby), B (bring-up), R (recovery)
-        # I (i2c) and D (DSP fault) can also bump from cmd 0x21 race
-        # with the i2c bus.  P (RA1) and A (AN0) are independent of
-        # the cmd 0x21 path, so we don't gate on them.
-        cascade_idx = (("S", 2), ("B", 3), ("R", 4), ("I", 0), ("D", 1))
-        # Threshold: 4 events across 200 chain steps (~16 cadence
-        # cycles) is generous.  Real hangs saturated at 15+ in roughly
-        # the same window.
-        threshold = 4
         for label, idx in cascade_idx:
-            for pb_idx, baseline, post, tag in (
-                (0, baseline_pb1, post_pb1, "PB1"),
-                (1, baseline_pb2, post_pb2, "PB2"),
+            for baseline, post, tag in (
+                (baseline_pb1, post_pb1, "PB1"),
+                (baseline_pb2, post_pb2, "PB2"),
             ):
                 delta = post[idx] - baseline[idx]
-                # Saturation arithmetic: if post hit 0x0F (saturated)
-                # and baseline was below, delta is at least the
-                # difference; if both saturated, delta is 0 but the
-                # post value is still high.
                 assert delta < threshold and post[idx] < threshold, (
-                    f"cascade detected: {tag}.diag_{label} went from "
-                    f"{baseline[idx]} to {post[idx]} (delta={delta}) "
-                    f"during sustained Diag-page cadence.  Serving "
-                    f"cmd 0x21 queries should be observational — if "
-                    f"the handler triggers standby/wake/recovery "
-                    f"events, the chain enters a cascade and CONTROL "
-                    f"hangs.  Full snapshot: baseline={baseline}, "
+                    f"[rust] cascade detected: {tag}.diag_{label} went "
+                    f"from {baseline[idx]} to {post[idx]} "
+                    f"(delta={delta}) during sustained Diag-page "
+                    f"cadence.  Full snapshot: baseline={baseline}, "
                     f"post={post}."
                 )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: "
+                f"lcd={chain.lcd_lines()!r}"
+            )
+
+            baseline_pb1 = _main_diag_block(chain, 0)
+            baseline_pb2 = _main_diag_block(chain, 1)
+
+            _navigate_to_diagnostics(chain)
+            for _ in range(200):
+                chain.step()
+
+            post_pb1 = _main_diag_block(chain, 0)
+            post_pb2 = _main_diag_block(chain, 1)
+
+            for label, idx in cascade_idx:
+                for baseline, post, tag in (
+                    (baseline_pb1, post_pb1, "PB1"),
+                    (baseline_pb2, post_pb2, "PB2"),
+                ):
+                    delta = post[idx] - baseline[idx]
+                    # Saturation arithmetic: if post hit 0x0F (saturated)
+                    # and baseline was below, delta is at least the
+                    # difference; if both saturated, delta is 0 but the
+                    # post value is still high.
+                    assert delta < threshold and post[idx] < threshold, (
+                        f"[gpsim] cascade detected: {tag}.diag_{label} "
+                        f"went from {baseline[idx]} to {post[idx]} "
+                        f"(delta={delta}) during sustained Diag-page "
+                        f"cadence.  Serving cmd 0x21 queries should be "
+                        f"observational — if the handler triggers "
+                        f"standby/wake/recovery events, the chain enters "
+                        f"a cascade and CONTROL hangs.  Full snapshot: "
+                        f"baseline={baseline}, post={post}."
+                    )
+        finally:
+            chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
-    v171_hex: Path, v32_hex: Path,
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
 ) -> None:
     """REGRESSION: on real HW the operator could not navigate away
     from a hung Diag page -- LEFT presses were ignored.  Even WITHOUT
     a full hang, a slow button-poll on the Diag page would make the
     UI feel unresponsive.
 
-    Invariant: pressing LEFT on the Diag page must take CONTROL OFF
-    the Diag page within a small number of chain steps (the same
-    responsiveness budget the other menu screens give).
+    Invariant (firmware-correctness, backend-independent): pressing
+    LEFT on the Diag page must take CONTROL OFF the Diag page within
+    a small number of chain steps (the same responsiveness budget the
+    other menu screens give).
 
     V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diag from
     state 2 (between Preset and Input) to states 4-5 (after Setup),
@@ -1144,46 +1252,81 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
       5. Verify LCD no longer shows the Diag layout (any non-Diag
          screen is acceptable; Setup(3) is the expected post-LEFT
          landing under the Tier-1 menu order).
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        _navigate_to_diagnostics(chain)
-        # Warm-up window — let cadence fire a couple of times.
+    Migrated to dual_supported in P4.7: rust path uses the same
+    button-press cadence + LCD inspection.  The firmware's button-
+    poll responsiveness is a property of v171_diag_check_buttons,
+    not of either simulator's UART byte timing -- both backends
+    must show the same exit-within-12-steps behavior.
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+        )
+        _rust_navigate_to_diagnostics(c)
         for _ in range(40):
-            chain.step()
-        # Confirm we ARE on the Diag page (sanity check before testing exit).
-        # Phase 3.4: PB1 Diag state renders row 0 as "PB1" + 13 spaces (idle)
-        # OR "PB1: X# ..." (one-or-more non-zero counters).  Either way the
-        # row starts with "PB1".
-        line0_diag, _ = chain.lcd_lines()
+            c.step()
+        line0_diag, _ = c.lcd_lines()
         assert line0_diag.startswith("PB1"), (
-            f"chain did not reach PB1 Diag page after navigation; "
+            f"[rust] chain did not reach PB1 Diag page after navigation; "
             f"LCD={line0_diag!r}"
         )
-        # Single LEFT press, bounded settle window.
-        # Match "PB1" AND "PB2" to treat a LEFT→RIGHT misdecode (which
-        # would land on PB2 Diag instead of exiting the page) as NOT
-        # exit-seen — otherwise the test would false-pass.
-        chain.press("LEFT")
+        c.press("LEFT")
         exit_seen = False
-        for step in range(12):
-            chain.step()
-            line0, _ = chain.lcd_lines()
+        for _ in range(12):
+            c.step()
+            line0, _ = c.lcd_lines()
             if not line0.startswith(("PB1", "PB2")):
                 exit_seen = True
                 break
         assert exit_seen, (
-            "LEFT press did not exit Diag page within 12 chain steps; "
-            "v171_diag_check_buttons isn't acting on the press promptly. "
-            f"Final LCD: {chain.lcd_lines()!r}"
+            "[rust] LEFT press did not exit Diag page within 12 chain "
+            "steps; v171_diag_check_buttons isn't acting on the press "
+            f"promptly.  Final LCD: {c.lcd_lines()!r}"
         )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            _navigate_to_diagnostics(chain)
+            # Warm-up window — let cadence fire a couple of times.
+            for _ in range(40):
+                chain.step()
+            # Confirm we ARE on the Diag page (sanity check before testing exit).
+            # Phase 3.4: PB1 Diag state renders row 0 as "PB1" + 13 spaces (idle)
+            # OR "PB1: X# ..." (one-or-more non-zero counters).  Either way the
+            # row starts with "PB1".
+            line0_diag, _ = chain.lcd_lines()
+            assert line0_diag.startswith("PB1"), (
+                f"[gpsim] chain did not reach PB1 Diag page after navigation; "
+                f"LCD={line0_diag!r}"
+            )
+            # Single LEFT press, bounded settle window.
+            # Match "PB1" AND "PB2" to treat a LEFT→RIGHT misdecode (which
+            # would land on PB2 Diag instead of exiting the page) as NOT
+            # exit-seen — otherwise the test would false-pass.
+            chain.press("LEFT")
+            exit_seen = False
+            for step in range(12):
+                chain.step()
+                line0, _ = chain.lcd_lines()
+                if not line0.startswith(("PB1", "PB2")):
+                    exit_seen = True
+                    break
+            assert exit_seen, (
+                "[gpsim] LEFT press did not exit Diag page within 12 chain "
+                "steps; v171_diag_check_buttons isn't acting on the press "
+                f"promptly.  Final LCD: {chain.lcd_lines()!r}"
+            )
+        finally:
+            chain.close()
 
 
 @pytest.mark.gpsim

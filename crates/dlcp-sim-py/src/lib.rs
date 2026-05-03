@@ -1239,6 +1239,56 @@ impl Chain {
             .write_raw(dlcp_sim::memory::Address::from_raw(addr), value);
     }
 
+    /// Read a single byte of one MAIN's data memory at the
+    /// given physical address.  `unit` selects which MAIN core
+    /// (`0` for MAIN0, `1` for MAIN1).  Other values raise
+    /// `ValueError`.  On MAIN-only / single-MAIN chain
+    /// topologies (where `i_main0 == i_main1`) both unit
+    /// indices target the same physical core.
+    ///
+    /// Mirror of gpsim's per-MAIN register read in the wire-
+    /// chain harnesses (`WireMultiMainChainHarness.main_reg`
+    /// / `_main_reg`).  Used by Layer 5 wire-chain tests that
+    /// inspect per-MAIN diag counters (`0x2E5..0x2EB`),
+    /// per-MAIN state flags (`0x05E active_flags`), or
+    /// per-MAIN preset / mute caches.
+    fn read_main_reg(&self, unit: u8, addr: u16) -> PyResult<u8> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "read_main_reg: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        Ok(self.inner.cores[i_main]
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(addr)))
+    }
+
+    /// Write a single byte of one MAIN's data memory at the
+    /// given physical address.  `unit` selects which MAIN core
+    /// (`0` for MAIN0, `1` for MAIN1).  Other values raise
+    /// `ValueError`.  Mirror of gpsim's per-MAIN register
+    /// poke (used to seed diag counters, force standby state,
+    /// etc.).
+    fn write_main_reg(&mut self, unit: u8, addr: u16, value: u8) -> PyResult<()> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "write_main_reg: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        self.inner.cores[i_main]
+            .memory
+            .write_raw(dlcp_sim::memory::Address::from_raw(addr), value);
+        Ok(())
+    }
+
     /// CONTROL's K20-Tcy cycle counter at the current
     /// universal-clock tick.  Mirror of
     /// `control_gpsim.py::GpsimControlHarness.current_cycle`
