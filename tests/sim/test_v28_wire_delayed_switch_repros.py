@@ -708,6 +708,7 @@ def _wait_all_mains_muted(
     )
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @_V171_LAYER2_RAPID_TOGGLE_XFAIL
@@ -735,6 +736,7 @@ def test_v32_wire_two_main_rapid_ir_f1_f2_preserves_followup_mute() -> None:
         chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @_V171_LAYER2_RAPID_TOGGLE_XFAIL
@@ -876,6 +878,7 @@ def test_v32_wire_two_main_stop_fault_during_delayed_switch_recovers() -> None:
         chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 @_V171_LAYER2_RAPID_TOGGLE_XFAIL

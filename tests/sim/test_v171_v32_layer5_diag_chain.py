@@ -111,6 +111,56 @@ def _rust_main_diag_block(rust_chain, main_idx: int) -> tuple[int, ...]:  # type
     )
 
 
+def _rust_set_main_diag_block(  # type: ignore[no-untyped-def]
+    rust_chain,
+    main_idx: int,
+    *,
+    diag_i: int = 0, diag_d: int = 0, diag_s: int = 0,
+    diag_b: int = 0, diag_r: int = 0, diag_a: int = 0,
+    diag_p: int = 0,
+) -> None:
+    """Mirror of `_set_main_diag_block` for the rust facade.
+
+    Writes each diag-counter cell on MAIN via the per-MAIN write
+    primitive (`Chain.write_main_reg(unit, addr, value)`).  Same
+    low-nibble masking as the gpsim helper.
+    """
+    for value, addr in (
+        (diag_i, DIAG_I_PHYS), (diag_d, DIAG_D_PHYS),
+        (diag_s, DIAG_S_PHYS), (diag_b, DIAG_B_PHYS),
+        (diag_r, DIAG_R_PHYS), (diag_a, DIAG_A_PHYS),
+        (diag_p, DIAG_P_PHYS),
+    ):
+        rust_chain.write_main_reg(main_idx, addr, value & 0x0F)
+
+
+def _rust_diag_present(rust_chain) -> int:  # type: ignore[no-untyped-def]
+    """CONTROL's `v171_diag_present` byte at PHYS 0x197."""
+    return rust_chain.read_reg(V171_DIAG_PRESENT_PHYS)
+
+
+def _rust_diag_pb_cache(rust_chain, pb_idx: int) -> tuple[int, ...]:  # type: ignore[no-untyped-def]
+    """Mirror of `_diag_pb_cache` for the rust facade.  Reads the
+    7-byte cache (I, D, S, B, R, A, P) for PB1 (idx=0) or PB2 (idx=1).
+    """
+    base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
+    return tuple(rust_chain.read_reg(base + i) for i in range(7))
+
+
+def _rust_wait_for_pb_present(  # type: ignore[no-untyped-def]
+    rust_chain, *, pb_mask: int, limit: int = 250,
+) -> bool:
+    """Mirror of `_wait_for_pb_present`.  Steps the chain until
+    `v171_diag_present` has the requested PB bits set, or `limit`
+    chain steps elapse.  Returns True on success.
+    """
+    for _ in range(limit):
+        if (_rust_diag_present(rust_chain) & pb_mask) == pb_mask:
+            return True
+        rust_chain.step()
+    return (_rust_diag_present(rust_chain) & pb_mask) == pb_mask
+
+
 # ---------------------------------------------------------------------------
 # Hex source skew caveat (post codex review of 16fa3ee, 2026-05-03)
 # ---------------------------------------------------------------------------
@@ -503,11 +553,14 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
             chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(v171_hex: Path, v32_hex: Path) -> None:
+def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """Navigating to Diagnostics drives CONTROL's poll loop, which
     alternates queries between PB1 and PB2.  After enough chain steps
     for the cadence to fire twice (once per PB), both ``v171_diag_present``
@@ -521,38 +574,66 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(v171_hex: Path, v32_h
        through PB1's forwarder, and CONTROL parses into the PB2 cache.
 
     This is the protocol-contract end-to-end gate.
+
+    XFailed on BOTH backends per the shared PB2 sim fidelity gap
+    (see file-level docstring §"UPDATE 2026-04-27"): real hardware
+    serves both PB convergences; both gpsim's bridge-mirror harness
+    and rust's silicon-correct ring saturate `v171_diag_present` at
+    0x01 (PB1 only).  Marker-only migration to `dual_supported`
+    keeps both backends running the same xfail.
     """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
-
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        _navigate_to_diagnostics(chain)
-        # Two cadence cycles is enough for both PBs to reply at least
-        # once.  V171_DIAG_POLL_RELOAD is 0x80 ticks ≈ 1 s; at the
-        # 60 K cycle chunk the chain step is ~15 ms, so 0x80 ticks ≈
-        # 6 chain steps.  Step ~80 to be generous.
-        ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200,
-                                  context="both PBs reply")
+        _rust_navigate_to_diagnostics(c)
+        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
         assert ok, (
-            f"diag_present never reached 0x03; got 0x{_diag_present(chain):02X}; "
-            f"PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
-            f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
+            f"[rust] diag_present never reached 0x03; got "
+            f"0x{_rust_diag_present(c):02X}; "
+            f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}; "
+            f"PB2 cache={[hex(v) for v in _rust_diag_pb_cache(c, 1)]}"
         )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: "
+                f"lcd={chain.lcd_lines()!r}"
+            )
+            _navigate_to_diagnostics(chain)
+            # Two cadence cycles is enough for both PBs to reply at
+            # least once.  V171_DIAG_POLL_RELOAD is 0x80 ticks ≈ 1 s;
+            # at the 60 K cycle chunk the chain step is ~15 ms, so
+            # 0x80 ticks ≈ 6 chain steps.  Step ~80 to be generous.
+            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200,
+                                      context="both PBs reply")
+            assert ok, (
+                f"[gpsim] diag_present never reached 0x03; got "
+                f"0x{_diag_present(chain):02X}; "
+                f"PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
+                f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
+            )
+        finally:
+            chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_pb_cache_isolation(v171_hex: Path, v32_hex: Path) -> None:
+def test_v171_v32_layer5_chain_pb_cache_isolation(
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """Forcing distinct counter values into PB1 vs PB2's diag block must
     surface as distinct CONTROL cache slots after the next poll.
 
@@ -561,131 +642,233 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(v171_hex: Path, v32_hex: Path)
     high nibble of *_id, and PB2 cache must show 0xC_.  Cross-talk
     between cache slots would mean the parser is indexing the wrong
     PB on reply arrival.
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    XFailed on BOTH backends per the shared PB2 sim fidelity gap
+    (the PB2 reply never lands in CONTROL's parser).  Marker-only
+    migration to `dual_supported`.
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        # Set distinct diag_i values BEFORE entering Diagnostics.
-        _set_main_diag_block(chain, 0, diag_i=0x5, diag_d=0x1)
-        _set_main_diag_block(chain, 1, diag_i=0xC, diag_d=0x2)
-        _navigate_to_diagnostics(chain)
-        ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
-        assert ok, "both PBs never replied"
-        pb1_cache = _diag_pb_cache(chain, 0)
-        pb2_cache = _diag_pb_cache(chain, 1)
-        # 7-byte cache layout: (I, D, S, B, R, A, P), one counter per cell.
-        # PB1: diag_i=0x5 → cache[0]; diag_d=0x1 → cache[1]; rest unset.
+        _rust_set_main_diag_block(c, 0, diag_i=0x5, diag_d=0x1)
+        _rust_set_main_diag_block(c, 1, diag_i=0xC, diag_d=0x2)
+        _rust_navigate_to_diagnostics(c)
+        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        assert ok, "[rust] both PBs never replied"
+        pb1_cache = _rust_diag_pb_cache(c, 0)
+        pb2_cache = _rust_diag_pb_cache(c, 1)
         assert pb1_cache[0] == 0x5, (
-            f"PB1 cache[0] (diag_i) expected 0x5; got 0x{pb1_cache[0]:X}; "
-            f"full PB1 cache={[hex(v) for v in pb1_cache]}"
+            f"[rust] PB1 cache[0] (diag_i) expected 0x5; got "
+            f"0x{pb1_cache[0]:X}; full={[hex(v) for v in pb1_cache]}"
         )
         assert pb1_cache[1] == 0x1, (
-            f"PB1 cache[1] (diag_d) expected 0x1; got 0x{pb1_cache[1]:X}"
+            f"[rust] PB1 cache[1] (diag_d) expected 0x1; got "
+            f"0x{pb1_cache[1]:X}"
         )
-        # PB2: diag_i=0xC → cache[0]; diag_d=0x2 → cache[1]; rest unset.
-        # NOTE: diag_i=0xC produces low-nibble data 0xC < 0x80, so chain
-        # forwarding is safe — this is the regression that the 7-frame
-        # protocol was introduced to fix.
         assert pb2_cache[0] == 0xC, (
-            f"PB2 cache[0] (diag_i) expected 0xC; got 0x{pb2_cache[0]:X}; "
-            f"full PB2 cache={[hex(v) for v in pb2_cache]}"
+            f"[rust] PB2 cache[0] (diag_i) expected 0xC; got "
+            f"0x{pb2_cache[0]:X}; full={[hex(v) for v in pb2_cache]}"
         )
         assert pb2_cache[1] == 0x2, (
-            f"PB2 cache[1] (diag_d) expected 0x2; got 0x{pb2_cache[1]:X}"
+            f"[rust] PB2 cache[1] (diag_d) expected 0x2; got "
+            f"0x{pb2_cache[1]:X}"
         )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: "
+                f"lcd={chain.lcd_lines()!r}"
+            )
+            # Set distinct diag_i values BEFORE entering Diagnostics.
+            _set_main_diag_block(chain, 0, diag_i=0x5, diag_d=0x1)
+            _set_main_diag_block(chain, 1, diag_i=0xC, diag_d=0x2)
+            _navigate_to_diagnostics(chain)
+            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
+            assert ok, "[gpsim] both PBs never replied"
+            pb1_cache = _diag_pb_cache(chain, 0)
+            pb2_cache = _diag_pb_cache(chain, 1)
+            # 7-byte cache layout: (I, D, S, B, R, A, P), one counter per cell.
+            # PB1: diag_i=0x5 → cache[0]; diag_d=0x1 → cache[1]; rest unset.
+            assert pb1_cache[0] == 0x5, (
+                f"[gpsim] PB1 cache[0] (diag_i) expected 0x5; "
+                f"got 0x{pb1_cache[0]:X}; "
+                f"full PB1 cache={[hex(v) for v in pb1_cache]}"
+            )
+            assert pb1_cache[1] == 0x1, (
+                f"[gpsim] PB1 cache[1] (diag_d) expected 0x1; "
+                f"got 0x{pb1_cache[1]:X}"
+            )
+            # PB2: diag_i=0xC → cache[0]; diag_d=0x2 → cache[1]; rest unset.
+            # NOTE: diag_i=0xC produces low-nibble data 0xC < 0x80, so chain
+            # forwarding is safe — this is the regression that the 7-frame
+            # protocol was introduced to fix.
+            assert pb2_cache[0] == 0xC, (
+                f"[gpsim] PB2 cache[0] (diag_i) expected 0xC; "
+                f"got 0x{pb2_cache[0]:X}; "
+                f"full PB2 cache={[hex(v) for v in pb2_cache]}"
+            )
+            assert pb2_cache[1] == 0x2, (
+                f"[gpsim] PB2 cache[1] (diag_d) expected 0x2; "
+                f"got 0x{pb2_cache[1]:X}"
+            )
+        finally:
+            chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_lcd_renders_zero_idle(v171_hex: Path, v32_hex: Path) -> None:
+def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """Idle Diagnostics page (counters all zero) renders the spec layout
     "1:I D S B R A P" / "2:I D S B R A P" — every nibble char is a
     space, so the row reads as letter-space-letter-space etc.
 
     Per spec §"LCD Examples" — All clear case.
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    XFailed on BOTH backends per the shared PB2 sim fidelity gap
+    (PB2 reply doesn't surface in CONTROL's parser).  Note: the
+    expected LCD strings here are from the PRE-Tier-1 spec; under
+    V1.71 Tier-1 + Phase 3.4 (Option-D layout) the actual rendering
+    is per-PB ("PB1" / "OK..." / "PB1: X#...").  Both effects keep
+    the test xfailing; marker-only migration to `dual_supported`.
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        _navigate_to_diagnostics(chain)
-        ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
-        assert ok, "both PBs never replied"
-        # After both PBs replied with all-zero counters, the screen
-        # redraws via v171_diag_check_redraw.  Step a few more times
-        # to let the redraw complete.
+        _rust_navigate_to_diagnostics(c)
+        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        assert ok, "[rust] both PBs never replied"
         for _ in range(8):
-            chain.step()
-        line0, line1 = chain.lcd_lines()
-        # Spec layout: "1:I D S B R A P " (16 chars, trailing space
-        # because diag_p=0 renders as space).
+            c.step()
+        line0, line1 = c.lcd_lines()
         expected = "1:I D S B R A P "
         assert line0 == expected, (
-            f"row 0 mismatch: expected {expected!r}, got {line0!r}"
+            f"[rust] row 0 mismatch: expected {expected!r}, got {line0!r}"
         )
         expected2 = "2:I D S B R A P "
         assert line1 == expected2, (
-            f"row 1 mismatch: expected {expected2!r}, got {line1!r}"
+            f"[rust] row 1 mismatch: expected {expected2!r}, got {line1!r}"
         )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: "
+                f"lcd={chain.lcd_lines()!r}"
+            )
+            _navigate_to_diagnostics(chain)
+            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
+            assert ok, "[gpsim] both PBs never replied"
+            # After both PBs replied with all-zero counters, the screen
+            # redraws via v171_diag_check_redraw.  Step a few more times
+            # to let the redraw complete.
+            for _ in range(8):
+                chain.step()
+            line0, line1 = chain.lcd_lines()
+            # Spec layout: "1:I D S B R A P " (16 chars, trailing space
+            # because diag_p=0 renders as space).
+            expected = "1:I D S B R A P "
+            assert line0 == expected, (
+                f"[gpsim] row 0 mismatch: expected {expected!r}, got {line0!r}"
+            )
+            expected2 = "2:I D S B R A P "
+            assert line1 == expected2, (
+                f"[gpsim] row 1 mismatch: expected {expected2!r}, got {line1!r}"
+            )
+        finally:
+            chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
-def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(v171_hex: Path, v32_hex: Path) -> None:
+def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
+    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+) -> None:
     """Spec §"LCD Examples" — Some-activity case.
 
     PB1: diag_i=2, diag_b=1, diag_r=1
     PB2: diag_s=1, diag_b=1, diag_a=3
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
 
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    XFailed on BOTH backends per the shared PB2 sim fidelity gap.
+    Marker-only migration to `dual_supported`.
+    """
+    if dlcp_sim_backend in {"rust", "dual"}:
+        _require_rust()
+        c = RustChain.from_v171_v32()
+        c.run_until_connected(limit=200)
+        assert c.is_connected() and not c.is_waiting(), (
+            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
-        _set_main_diag_block(chain, 0, diag_i=2, diag_b=1, diag_r=1)
-        _set_main_diag_block(chain, 1, diag_s=1, diag_b=1, diag_a=3)
-        _navigate_to_diagnostics(chain)
-        ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
-        assert ok, "both PBs never replied"
+        _rust_set_main_diag_block(c, 0, diag_i=2, diag_b=1, diag_r=1)
+        _rust_set_main_diag_block(c, 1, diag_s=1, diag_b=1, diag_a=3)
+        _rust_navigate_to_diagnostics(c)
+        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        assert ok, "[rust] both PBs never replied"
         for _ in range(8):
-            chain.step()
-        line0, line1 = chain.lcd_lines()
-        # PB1: I2 D' ' S' ' B1 R1 A' ' P' '  → "1:I2D S B1R1A P "
+            c.step()
+        line0, line1 = c.lcd_lines()
         assert line0 == "1:I2D S B1R1A P ", (
-            f"row 0 mismatch for PB1 mixed counters: got {line0!r}"
+            f"[rust] row 0 mismatch for PB1 mixed counters: got {line0!r}"
         )
-        # PB2: I' ' D' ' S1 B1 R' ' A3 P' '  → "2:I D S1B1R A3P "
         assert line1 == "2:I D S1B1R A3P ", (
-            f"row 1 mismatch for PB2 mixed counters: got {line1!r}"
+            f"[rust] row 1 mismatch for PB2 mixed counters: got {line1!r}"
         )
-    finally:
-        chain.close()
+
+    if dlcp_sim_backend in {"gpsim", "dual"}:
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
+        chain = _new_chain(v171_hex, v32_hex)
+        try:
+            last = chain.run_until_connected(limit=200)
+            assert last is not None, "[gpsim] chain never reached DISPLAY"
+            assert chain.is_connected() and not chain.is_waiting(), (
+                f"[gpsim] chain stuck in WAITING/Zzz: "
+                f"lcd={chain.lcd_lines()!r}"
+            )
+            _set_main_diag_block(chain, 0, diag_i=2, diag_b=1, diag_r=1)
+            _set_main_diag_block(chain, 1, diag_s=1, diag_b=1, diag_a=3)
+            _navigate_to_diagnostics(chain)
+            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
+            assert ok, "[gpsim] both PBs never replied"
+            for _ in range(8):
+                chain.step()
+            line0, line1 = chain.lcd_lines()
+            # PB1: I2 D' ' S' ' B1 R1 A' ' P' '  → "1:I2D S B1R1A P "
+            assert line0 == "1:I2D S B1R1A P ", (
+                f"[gpsim] row 0 mismatch for PB1 mixed counters: got {line0!r}"
+            )
+            # PB2: I' ' D' ' S1 B1 R' ' A3 P' '  → "2:I D S1B1R A3P "
+            assert line1 == "2:I D S1B1R A3P ", (
+                f"[gpsim] row 1 mismatch for PB2 mixed counters: got {line1!r}"
+            )
+        finally:
+            chain.close()
 
 
 @pytest.mark.gpsim
@@ -1354,6 +1537,7 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
             chain.close()
 
 
+@pytest.mark.dual_supported
 @pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
