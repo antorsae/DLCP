@@ -125,12 +125,14 @@ def _rust_main_diag_block(rust_chain, main_idx: int) -> tuple[int, ...]:  # type
 # `scripts/build_v171_release.py`) would silently make the rust path
 # test stale binaries while the gpsim path tests current source.
 #
-# Tracking: ledger task #77 -- "Add hex-path overrides to
-# `Chain.from_v171_v32` to avoid stale-canonical skew".  Until that
-# lands, dual-mode failures that diverge between the two backends
-# should first verify both backends are loading the SAME firmware
-# revision (compare the EEPROM revision byte at MAIN[0x82] and the
-# control_release_metadata at CONTROL[0x0B]).
+# Tracking: pending sim-rewrite progress-ledger entry "Add hex-path
+# overrides to `Chain.from_v171_v32` to avoid stale-canonical skew".
+# Until that lands, dual-mode failures that diverge between the two
+# backends should first verify both backends are loading the SAME
+# firmware revision -- compare the EEPROM revision byte at MAIN
+# `eeprom_data[0x82]` (per `scripts/build_v32_release.py`) and the
+# `control_release_metadata[11]` byte at CONTROL flash byte 0x77BB
+# (per `scripts/build_v171_release.py`).
 # ---------------------------------------------------------------------------
 
 
