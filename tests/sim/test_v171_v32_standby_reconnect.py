@@ -106,9 +106,12 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     # are anchored to instruction lines (`^\s+<mnemonic>`) so a stray
     # `; movlw 0xB0` inside a comment block cannot false-match the pair.
     pair_pattern = _re.compile(
-        r"^[ \t]+movlw\s+0x([0-9A-Fa-f]{2})[ \t]*(?:;[^\n]*)?\n"
+        # Each instruction must live entirely on one line: use `[ \t]+`
+        # (horizontal whitespace) inside the mnemonic-operand pair, not
+        # `\s+` which would consume newlines and let `movlw\n0xB0` match.
+        r"^[ \t]+movlw[ \t]+0x([0-9A-Fa-f]{2})[ \t]*(?:;[^\n]*)?\n"
         r"(?:^[ \t]*(?:;[^\n]*)?\n)*"
-        r"^[ \t]+call\s+uart_tx_byte_blocking\s*,\s*0x0",
+        r"^[ \t]+call[ \t]+uart_tx_byte_blocking[ \t]*,[ \t]*0x0",
         _re.MULTILINE,
     )
     pairs = pair_pattern.findall(rebroadcast)
