@@ -117,6 +117,28 @@ def test_stock_control_v14_without_main_shows_waiting_on_lcd(
 def test_stock_control_v14_runtime_response_blackout_falls_back_to_waiting(
     stock_control_hex_v14: Path,
 ) -> None:
+    """V1.4 stock CONTROL: after a synthetic-MAIN warmup, pausing
+    the heartbeat must drop CONTROL back to WAITING within a
+    bounded window.
+
+    Stays gpsim-only.  Two rust paths were tried:
+      - `Chain.from_v17_control_only` + `enable_force_connected`
+        + `pause_heartbeat`: rust's `pause_heartbeat` is a no-op,
+        and `enable_force_connected` keeps applying the
+        CONNECTED+DISPLAY hook each chunk indefinitely (no
+        `disable_force_connected` primitive exists), so CONTROL
+        never sees the absence-of-heartbeat condition.
+      - `Chain.from_v17_chain` (real V1.4+V2.3 chain) +
+        `set_blackout(True)`: dropping all UART byte traffic
+        does NOT clear CONNECTED on rust within a 600-step
+        budget (~40 s sim time).  V1.4 stock's no-heartbeat
+        timeout under blackout doesn't fire on rust within the
+        test budget.
+    Migrating this requires either a `disable_force_connected`
+    rust facade primitive (Category B-class) or a deeper probe
+    of why V1.4's no-heartbeat timeout doesn't fire on rust
+    under chain blackout.  Tracked for a future session.
+    """
     _require_gpsim()
     h = GpsimControlHarness(
         stock_control_hex_v14,
