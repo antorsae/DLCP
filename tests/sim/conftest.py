@@ -113,22 +113,28 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sim-rewrite Phase 4: DLCP_SIM_BACKEND={gpsim,dual,rust} plugin (P4.3).
-# Picks which simulation engine each test runs against:
+# Sim-rewrite Phase 4: DLCP_SIM_BACKEND={gpsim,dual,rust} plugin (P4.3,
+# default flipped to `rust` in P4.8).  Picks which simulation engine
+# each test runs against:
 #
-#   gpsim (DEFAULT, also if env var unset)
-#       Run against the legacy gpsim PTY harnesses
-#       (`chain_gpsim.py`, `wire_chain_gpsim.py`).  This is
-#       the pre-Phase-4 behaviour and stays the safe default
-#       until Phase 4 is fully migrated.
-#
-#   rust
+#   rust (DEFAULT, also if env var unset, since P4.8)
 #       Run only against the Rust `dlcp-sim` engine via
 #       the PyO3 facade (`src/dlcp_fw/sim/dlcp_sim_native.py`).
 #       Tests must opt in via `@pytest.mark.dual_supported`.
 #       Tests without the marker are skipped with a clear
 #       "not yet migrated to rust backend" message so the
 #       pytest summary surfaces the migration backlog.
+#
+#   gpsim (opt-in via DLCP_SIM_BACKEND=gpsim)
+#       Run against the legacy gpsim PTY harnesses
+#       (`chain_gpsim.py`, `wire_chain_gpsim.py`).  Pre-P4.8
+#       this was the default; post-P4.8 it remains available
+#       for ground-truth capture / replay (see
+#       `scripts/capture_gpsim_ground_truth.py` and
+#       `scripts/replay_ground_truth.py`, both of which
+#       force `DLCP_SIM_BACKEND=gpsim` regardless of caller env).
+#       Will be removed in P4.9 once the gpsim wrappers themselves
+#       are excised.
 #
 #   dual
 #       Run every dual-supported test TWICE -- once with
@@ -143,18 +149,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 #       rust mode.
 #
 # Spec reference: docs/SIM_REWRITE_RUST_SPEC.md §3 "Migration
-# protocol" / docs/SIM_REWRITE_RUST_PROGRESS.md P4.3.
+# protocol" / docs/SIM_REWRITE_RUST_PROGRESS.md P4.3 + P4.8.
 #
-# Migration status: P4.3 lands ONLY the plugin
-# infrastructure (env-var detection, marker registration,
-# auto-skip).  Subsequent sub-tasks (P4.4 test_v17_*,
-# P4.5 test_v171_*, P4.6 test_v31_*/v32_*, P4.7
-# remainder) add `@pytest.mark.dual_supported` plus the
-# rust-side adapter glue per test.  No tests have the
-# marker today; running under DLCP_SIM_BACKEND=dual or
-# rust therefore reports "all tests skipped" -- that's
-# the expected initial state and is what P4.3's verify
-# command checks.
+# Migration status (P4.5/4.6/4.7 in_progress, P4.8 done): the
+# rust backend gate is green (782 passed, 310 skipped, 1 xfailed,
+# 0 failed).  Skipped tests are blocked on the multi-MAIN
+# wire-chain factory, executor breakpoint primitives, dynamic
+# standby overlay, and 4 files with pre-existing failures on
+# main.  See P4.5/4.6/4.7 sub-task lists for the full backlog.
 # ---------------------------------------------------------------------------
 
 DLCP_SIM_BACKEND_ENV = "DLCP_SIM_BACKEND"
@@ -291,7 +293,7 @@ def dlcp_sim_backend(pytestconfig: pytest.Config) -> str:
     plugin's auto-skip decisions.
     """
     return getattr(
-        pytestconfig, "_dlcp_sim_backend", DLCP_SIM_BACKEND_GPSIM
+        pytestconfig, "_dlcp_sim_backend", DLCP_SIM_BACKEND_RUST
     )
 
 

@@ -80,6 +80,11 @@ def main(argv: list[str]) -> int:
 
     print(f"+ {' '.join(cmd)}", flush=True)
     env = os.environ.copy()
+    # Force gpsim backend: this script captures GPSIM ground-truth
+    # fixtures.  Post-P4.8 the default backend is rust; without
+    # this override the capture would silently re-run against the
+    # rust engine and the resulting fixture would be mislabelled.
+    env["DLCP_SIM_BACKEND"] = "gpsim"
     cp = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
     return cp.returncode
 

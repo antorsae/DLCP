@@ -265,6 +265,12 @@ def _replay_one(blessed: Path, python: Path, *, verbose: bool) -> tuple[list[str
         # Hash randomization could in principle affect dict iteration
         # order in Python; pin it for replay reproducibility.
         env["PYTHONHASHSEED"] = "0"
+        # Force gpsim backend: ground-truth fixtures were captured
+        # against gpsim, so the replay must run against gpsim too.
+        # Post-P4.8 the default backend is rust; without this
+        # override the replay would silently re-run against the
+        # rust engine and divergences would be misattributed.
+        env["DLCP_SIM_BACKEND"] = "gpsim"
         cmd = [
             str(python),
             "-m", "pytest",

@@ -87,7 +87,12 @@ def run_capture(python: Path, *, workers: int, log_fp) -> int:
     ]
     _shell_log(log_fp, "capture", f"+ {' '.join(cmd)}")
     started = time.monotonic()
-    cp = subprocess.run(cmd, cwd=str(REPO_ROOT))
+    # Force gpsim backend: this script captures GPSIM ground-truth.
+    # Post-P4.8 the default backend is rust; without this override
+    # the capture would silently re-run against the rust engine.
+    env = os.environ.copy()
+    env["DLCP_SIM_BACKEND"] = "gpsim"
+    cp = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
     duration = time.monotonic() - started
     _shell_log(log_fp, "capture",
                f"pytest exit={cp.returncode}, wall_clock={duration:.0f}s")
