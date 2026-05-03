@@ -5047,15 +5047,16 @@ v171_reconnect_past_grace_done:
         ; below.  CLRF on PIC18 always sets STATUS.Z = 1, so the
         ; subsequent `btfss STATUS, Z` ALWAYS skipped the `movlw 0x01`,
         ; leaving WREG = 0 from the clrf.  ram_0x018 was therefore set
-        ; to 0 unconditionally, the bnz exit at line 5073 below NEVER
-        ; fired, and CONTROL stayed parked on `Waiting for DLCP`
-        ; indefinitely after a STDBY/WAKE cycle even though all four
-        ; sentinels had been cleared by MAIN's status burst.  The
-        ; cold-boot WAITING loop (`v171_waiting_cold_past_grace_done`
-        ; at asm:4747) does NOT have the spurious clrf and works
-        ; correctly -- this fix matches its proven pattern.  Removing
-        ; the four `clrf WREG, A` instructions saves 8 bytes total in
-        ; the V1.71 release; downstream addresses shift accordingly.
+        ; to 0 unconditionally, the `bnz v171_reconnect_wait_done`
+        ; below NEVER fired, and CONTROL stayed parked on `Waiting
+        ; for DLCP` indefinitely after a STDBY/WAKE cycle even though
+        ; all four sentinels had been cleared by MAIN's status burst.
+        ; The cold-boot WAITING loop (`v171_waiting_cold_past_grace_done`
+        ; at asm:4747; AND-reduce body at asm:4754-4773) does NOT have
+        ; the spurious clrf and works correctly -- this fix matches
+        ; its proven pattern.  Removing the four `clrf WREG, A`
+        ; instructions saves 8 bytes total in the V1.71 release;
+        ; downstream addresses shift accordingly.
         movlw   0x80
         subwf   input_select_cache, W, B                     ; 0xB8
         btfss   STATUS, Z, A

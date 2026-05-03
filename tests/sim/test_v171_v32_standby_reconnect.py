@@ -148,13 +148,16 @@ def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit(
         before byte 3 hit the wire) gets a complete frame and dispatches
         `wake_request_handler`.
 
-      * CONTROL-side reconnect AND-reduce (V1.71, asm:5044-5070): the
-        original sentinel-AND-reduce had a spurious `clrf WREG, A`
-        between the `subwf` and the immediate `btfss STATUS, Z, A`
-        in each of the four sentinel-test blocks.  CLRF on PIC18
-        always sets STATUS.Z = 1, so the btfss test always skipped
-        the `movlw 0x01`.  ram_0x018 was therefore always 0 and the
-        `bnz v171_reconnect_wait_done` exit (asm:5073) NEVER fired
+      * CONTROL-side reconnect AND-reduce (V1.71, the four
+        `clrf WREG, A` instructions formerly inside reconnect_wait_loop's
+        sentinel-AND-reduce; current source has the working pattern at
+        asm:5060-5083 with the `bnz v171_reconnect_wait_done` exit at
+        asm:5084).  The original sentinel-AND-reduce had a spurious
+        `clrf WREG, A` between the `subwf` and the immediate
+        `btfss STATUS, Z, A` in each of the four sentinel-test blocks.
+        CLRF on PIC18 always sets STATUS.Z = 1, so the btfss test
+        always skipped the `movlw 0x01`.  ram_0x018 was therefore
+        always 0 and the `bnz v171_reconnect_wait_done` NEVER fired
         post-STDBY/WAKE, even after MAIN's status burst had cleared
         all four sentinel cells (raw_status_cache 0xA1, cmd1d_cache
         0xA7, input_select_cache 0xB8, volume_cache 0xB9).  Removing

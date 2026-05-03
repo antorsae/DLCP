@@ -157,23 +157,25 @@ Implementation status (last refreshed 2026-05-03):
 - ✅ **CONTROL-side reconnect AND-reduce** (V1.71 firmware bug).  Post
   silicon-fidelity merge investigation (2026-05-03) localized the
   STDBY/WAKE WAITING-stick to a real V1.71 source bug: the
-  reconnect_wait_loop's sentinel-AND-reduce at
-  `dlcp_control_v171.asm:5044-5070` had a spurious `clrf WREG, A`
-  inserted between the `subwf` and the immediate `btfss STATUS, Z, A`
-  test in EACH of the four sentinel-test blocks (`input_select_cache`
-  0xB8, `volume_cache` 0xB9, `cmd1d_setting_cache` 0xA7,
-  `raw_status_cache` 0xA1).  PIC18 `CLRF f, a` always sets `STATUS.Z =
-  1`, so the `btfss` always skipped the `movlw 0x01`, leaving WREG = 0
-  from the clrf.  `ram_0x018` was therefore set to 0 unconditionally,
-  the `bnz v171_reconnect_wait_done` exit at asm:5073 NEVER fired
-  post-STDBY/WAKE, and CONTROL stayed parked on `Waiting for DLCP`
-  indefinitely even after MAIN's status burst had cleared all four
-  sentinels.  The cold-boot WAITING loop
-  (`v171_waiting_cold_past_grace_done` at asm:4747-4773) had the same
+  reconnect_wait_loop's sentinel-AND-reduce had a spurious
+  `clrf WREG, A` inserted between the `subwf` and the immediate
+  `btfss STATUS, Z, A` test in EACH of the four sentinel-test blocks
+  (`input_select_cache` 0xB8, `volume_cache` 0xB9,
+  `cmd1d_setting_cache` 0xA7, `raw_status_cache` 0xA1).  PIC18
+  `CLRF f, a` always sets `STATUS.Z = 1`, so the `btfss` always
+  skipped the `movlw 0x01`, leaving WREG = 0 from the clrf.
+  `ram_0x018` was therefore set to 0 unconditionally, the
+  `bnz v171_reconnect_wait_done` exit NEVER fired post-STDBY/WAKE,
+  and CONTROL stayed parked on `Waiting for DLCP` indefinitely even
+  after MAIN's status burst had cleared all four sentinels.  The
+  cold-boot WAITING loop (`v171_waiting_cold_past_grace_done` at
+  asm:4747; AND-reduce body at asm:4754-4773) had the same
   AND-reduce structure WITHOUT the spurious clrf and worked correctly
-  -- the fix matches its proven pattern.  Removing the four
-  `clrf WREG, A` instructions saves 8 bytes total in the V1.71
-  release.  Verified in the rust sim: post-fix
+  -- the fix matches its proven pattern.  Current source has the
+  fixed reconnect-loop AND-reduce at asm:5060-5083 with the
+  bnz-exit at asm:5084.  Removing the four `clrf WREG, A`
+  instructions saves 8 bytes total in the V1.71 release.  Verified
+  in the rust sim: post-fix
   `tests/sim/test_v171_v32_standby_reconnect.py
   ::test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit`
   now asserts CONTROL LCD returns to `Volume:...` within ~13 s sim
