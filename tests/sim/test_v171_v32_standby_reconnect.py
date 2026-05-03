@@ -101,10 +101,13 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     rebroadcast = body[rearm_match.start():dispatch_match.start()]
 
     # Pair each movlw with its uart_tx_byte_blocking call, in order.
-    # Whitespace-tolerant per `\s+`; comment lines may appear between
-    # successive (movlw, call) pairs.  Both the `movlw` and the `call`
-    # are anchored to instruction lines (`^\s+<mnemonic>`) so a stray
-    # `; movlw 0xB0` inside a comment block cannot false-match the pair.
+    # Inner separators use `[ \t]+` / `[ \t]*` (horizontal whitespace
+    # only, not `\s+`) so each instruction is forced to live entirely
+    # on a single line.  Both the `movlw` and the `call` are anchored
+    # to instruction lines (`^[ \t]+<mnemonic>` under re.MULTILINE) so
+    # a stray `; movlw 0xB0` inside a comment block cannot false-match
+    # the pair.  Comment lines are tolerated between successive pairs
+    # via the optional `(?:^[ \t]*(?:;[^\n]*)?\n)*` clause.
     pair_pattern = _re.compile(
         # Each instruction must live entirely on one line: use `[ \t]+`
         # (horizontal whitespace) inside the mnemonic-operand pair, not
