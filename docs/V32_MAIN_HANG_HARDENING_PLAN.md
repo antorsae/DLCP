@@ -132,7 +132,7 @@ Implementation status (last refreshed 2026-05-03):
   `test_v171_ir_decode_is_deferred_out_of_isr`).
 - ✅ **Atomic 3-byte frame emission across the V1.71 senders** — landed
   in commit `bc61c70` via `tx_ring_reserve_3` + per-sender atomic
-  prologue.  All eight 3-byte senders (`poll_frame_send`,
+  prologue.  All ten 3-byte senders (`poll_frame_send`,
   `serial_tx_routed_frame`, `standby_wake_broadcast`,
   `v171_send_wake_cmd_frame`, `v171_send_standby_cmd_frame`,
   `mute_frame_send`, `input_frame_send`, `volume_frame_send`,
@@ -144,7 +144,7 @@ Implementation status (last refreshed 2026-05-03):
   in commit `2a8105a`.  Locked by
   `test_v171_atomic_3byte_frame::test_layer_b_retry_at_reconnect_wait_done`.
 - ✅ **MAIN-side WAKE forward race** (Bug #45 H2) — landed in commit
-  `<this commit>`.  Without this fix, the MAIN0 chain forwarder emits
+  `f547885`.  Without this fix, the MAIN0 chain forwarder emits
   the WAKE broadcast's first two bytes (`B0 03`) before
   `uart_quiesce_for_wake` at gate entry kills TX, so MAIN1 sees an
   incomplete frame and stays standby.  Mitigation: re-emit `B0/03/01`

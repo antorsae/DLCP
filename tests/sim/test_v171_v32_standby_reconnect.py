@@ -79,35 +79,41 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     only received the truncated `B0/03` from this MAIN's pre-gate
     forward (because uart_quiesce_for_wake at gate entry killed the TX
     path before byte 3 hit the wire) never sees the complete WAKE
-    broadcast and stays standby."""
+    broadcast and stays standby.
+
+    The regex below pairs each `movlw N` with its `call uart_tx_byte_blocking`
+    structurally (so a malformed body like three movlw's followed by
+    three calls fails the test) AND accepts arbitrary whitespace/tabs
+    between operand and mnemonic so harmless asm formatting churn
+    (gpasm rewrap, tab/space conversion) does not flake the gate.
+    """
+    import re as _re
+
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     exit_start = text.find("adc_boot_gate_exit:")
     exit_end = text.find("flash_write:", exit_start)
     assert exit_start != -1 and exit_end > exit_start, "adc_boot_gate_exit body not found"
     body = text[exit_start:exit_end]
-    rearm_idx = body.index("call        main_uart_tx_only_service, 0x0")
-    dispatch_idx = body.index("call        cmd_dispatch_gated, 0x0")
-    rebroadcast = body[rearm_idx:dispatch_idx]
-    # Three uart_tx_byte_blocking calls in sequence carrying B0, 03, 01.
-    for token in (
-        "movlw       0xB0",
-        "movlw       0x03",
-        "movlw       0x01",
-        "call        uart_tx_byte_blocking, 0x0",
-    ):
-        assert token in rebroadcast, (
-            f"post-gate WAKE re-emit missing {token!r}; required between "
-            f"main_uart_tx_only_service and cmd_dispatch_gated"
-        )
-    assert rebroadcast.index("movlw       0xB0") < rebroadcast.index("movlw       0x03"), (
-        "Bug #45 H2 re-emit must order route-byte 0xB0 before cmd-byte 0x03"
+    rearm_match = _re.search(r"call\s+main_uart_tx_only_service\s*,\s*0x0", body)
+    dispatch_match = _re.search(r"call\s+cmd_dispatch_gated\s*,\s*0x0", body)
+    assert rearm_match is not None, "missing call to main_uart_tx_only_service in adc_boot_gate_exit"
+    assert dispatch_match is not None, "missing call to cmd_dispatch_gated in adc_boot_gate_exit"
+    rebroadcast = body[rearm_match.start():dispatch_match.start()]
+
+    # Pair each movlw with its uart_tx_byte_blocking call, in order.
+    # Whitespace-tolerant per `\s+`; comment lines may appear between
+    # successive (movlw, call) pairs.
+    pair_pattern = _re.compile(
+        r"movlw\s+0x([0-9A-Fa-f]{2})\s*\n"
+        r"(?:\s*(?:;[^\n]*)?\n)*"
+        r"\s+call\s+uart_tx_byte_blocking\s*,\s*0x0",
+        _re.MULTILINE,
     )
-    assert rebroadcast.index("movlw       0x03") < rebroadcast.index("movlw       0x01"), (
-        "Bug #45 H2 re-emit must order cmd-byte 0x03 before data-byte 0x01"
-    )
-    assert rebroadcast.count("call        uart_tx_byte_blocking, 0x0") >= 3, (
-        "Bug #45 H2 re-emit must call uart_tx_byte_blocking three times "
-        "(once per byte); each call is the bounded TRMT-wait + TXREG store"
+    pairs = pair_pattern.findall(rebroadcast)
+    assert [b.upper() for b in pairs[:3]] == ["B0", "03", "01"], (
+        "Bug #45 H2 re-emit: expected three (movlw, call uart_tx_byte_blocking) "
+        f"pairs in order B0/03/01 between main_uart_tx_only_service and "
+        f"cmd_dispatch_gated; got {pairs!r}"
     )
 
 
