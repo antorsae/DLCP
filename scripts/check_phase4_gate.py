@@ -6,17 +6,21 @@ Per `docs/SIM_REWRITE_RUST_PROGRESS.md` P4.gate:
     asserts `DLCP_SIM_BACKEND=rust pytest tests/sim` is green
     AND wall-clock < 60 s.
 
-The "green" predicate is interpreted as: zero failed tests, zero
-errors, zero unexpected-pass xfails. Skipped tests (still on the
-P4.5/4.6/4.7 migration backlog) and expected xfails (documented
-firmware bugs) do NOT fail the gate.
+The "green" predicate as enforced here is `pytest exit == 0`.
+That covers failed tests and errors but does NOT inspect for
+unexpected-pass xfails (XPASS): the repo does not set
+`xfail_strict` globally and has explicit non-strict xfails, so
+an XPASS does not propagate to a non-zero pytest exit. Skipped
+tests (still on the P4.5/4.6/4.7 migration backlog) and expected
+xfails (documented firmware bugs) do NOT fail the gate.
 
 Wall-clock budget: 60 seconds end-to-end pytest invocation. This
 includes pytest's own collection / fixture / xdist startup overhead.
 
 Exit codes:
     0 -- gate green AND wall-clock under 60 s
-    1 -- gate failed (non-zero exit OR failed tests OR errors)
+    1 -- gate failed (non-zero pytest exit; see PYTEST_EXIT_CODES
+         in the report text for which sub-class)
     2 -- gate green BUT wall-clock over 60 s (timing regression)
 
 Implementation notes:
@@ -24,8 +28,10 @@ Implementation notes:
       independent of the caller's environment.
     * Uses `-n 16` per the P4.x verify pattern (matches the rest
       of the ledger).
-    * Captures the full pytest output for the timing-fail report
-      so a CI runner can see which tests dominated.
+    * Reports the pytest exit code symbolically when nonzero so a
+      CI runner can quickly tell test-failure (1) from no-tests-
+      collected (5) or usage-error (4) without re-reading the
+      pytest log.
 """
 
 from __future__ import annotations
@@ -40,6 +46,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PYTHON = REPO_ROOT / ".venv_ep0" / "bin" / "python"
 
 WALL_CLOCK_BUDGET_SEC = 60.0
+
+# Symbolic names for nonzero pytest exit codes per pytest docs.
+# We surface these in the failure report so a CI runner can
+# distinguish a test-suite regression (1) from harness-level
+# breakage (4 / 5 / >=128) without re-reading the pytest log.
+PYTEST_EXIT_CODES: dict[int, str] = {
+    1: "tests collected but at least one failed",
+    2: "test execution interrupted by the user (Ctrl-C)",
+    3: "internal error inside pytest itself",
+    4: "pytest CLI usage error",
+    5: "no tests were collected (likely a collection-time import error)",
+}
 
 
 def main() -> int:
@@ -61,8 +79,14 @@ def main() -> int:
     print(f"P4.gate pytest exit: {cp.returncode}")
 
     if cp.returncode != 0:
-        print("P4.gate FAIL: pytest exited non-zero (failed tests / errors).",
-              file=sys.stderr)
+        meaning = PYTEST_EXIT_CODES.get(
+            cp.returncode,
+            f"unknown pytest exit code {cp.returncode}",
+        )
+        print(
+            f"P4.gate FAIL: pytest exited {cp.returncode} ({meaning}).",
+            file=sys.stderr,
+        )
         return 1
 
     if elapsed > WALL_CLOCK_BUDGET_SEC:
