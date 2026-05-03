@@ -418,19 +418,25 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   2. **Investigate V1.4x/V1.5x/V1.6x + V2.4/V2.5 WAITING-stuck convergence gap** -- unblocks ~20 tests in test_chain_gpsim_v25*.py + test_wire_chain_gpsim.py.
   3. **Add per-link fault injection** (`Chain.set_link_fault(coupling_idx_or_name, drop=True/extra_ticks=N)`) -- unblocks ~25 wire-chain fault-injection tests.
 
-- [pending] P4.8 Switch default backend to Rust; gpsim now opt-in only
+- [done] P4.8 Switch default backend to Rust; gpsim now opt-in only
   - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
-  - artifact: `tests/sim/conftest.py` default flip + `pytest.ini` update.
-  - notes: with no env var, the default backend should be `rust` and the full sim gate must be green.
+  - artifact: `tests/sim/conftest.py` default flip + `src/dlcp_fw/sim/dlcp_sim_native.py` self-bootstrap of the .so import path so plain `pytest tests/sim` works without `PYTHONPATH=src` (commit fecb757).  Plus explicit `DLCP_SIM_BACKEND=gpsim` overrides on the 3 ground-truth scripts (`scripts/{capture_gpsim_ground_truth,run_phase0_blessing,replay_ground_truth}.py`) and prefix on the 5 Phase-0 ledger verify commands so post-flip the gpsim ground-truth path is preserved (commits 698e4c5 + 77d62b4).
+  - notes: gate green with no env var: 782 passed, 310 skipped, 1 xfailed, 0 failed in 204.69s.  pytest.ini is unchanged -- the conftest default flip in `_resolve_dlcp_sim_backend()` plus the matching defensive-fallback flip in the `dlcp_sim_backend` fixture is sufficient.  The 310 skipped tests are still on the P4.5/4.6/4.7 migration backlog; skipped tests don't fail the gate.  Subsequent P4.9 will excise the gpsim wrappers (which will require either migrating or deleting those 310 still-skipped tests since they import from chain_gpsim/wire_chain_gpsim).
 
 - [pending] P4.9 Delete `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py`, `.stc` script generators
   - verify: `.venv_ep0/bin/python scripts/check_gpsim_excision.py`
   - artifact: large code excision commit + `scripts/check_gpsim_excision.py` (asserts the named files are absent and that no remaining import references them).
   - notes: created during this sub-task as part of the excision commit; script returns non-zero if any of the listed paths still exist.
 
-- [pending] P4.gate Run phase-4 gate
+- [in_progress] P4.gate Run phase-4 gate
   - verify: `.venv_ep0/bin/python scripts/check_phase4_gate.py`
   - artifact: timing comparison report committed to `docs/SIM_REWRITE_RUST_PROGRESS.md`; helper script asserts `DLCP_SIM_BACKEND=rust pytest tests/sim` is green AND wall-clock < 60 s.
+  - status: gate is GREEN (782 passed, 310 skipped, 1 xfailed, 0 failed under default rust backend).  Helper script `scripts/check_phase4_gate.py` landed.  Wall-clock TIMING REGRESSION outstanding: current wall-clock 174-205 s (varies run-to-run) versus the 60 s spec target.  The slowest 20 tests (by `--durations=20`) sum to ~600 s of CPU time:
+    - `test_v171_layer2_full_sync_step::test_v171_layer2_emits_all_six_step_frame_types_after_warmup` -- 47 s
+    - `test_v171_v32_layer5_diag_chain::test_v171_v32_layer5_chain_no_query_off_diag_page` -- 46 s
+    - `test_v17_shifted_full_parity::test_parity_volume_*` (3 instances) -- 30-45 s each
+    - `test_control_v1{5,6}b_port_compatibility::test_ir_actions_*` (~10 IR cases) -- 25-30 s each
+    All of these are dual_supported and would survive P4.9 deletion, so the timing gap is not closed by simply finishing the migration.  Closing the gap requires test-level optimization: tighter convergence predicates, lower MAX_TCY budgets on rust, or refactoring the slow tests to use shorter chunks with early-exit gates.  Estimated 1-2 sessions of dedicated optimization work, deferred until the user signals priority for the wall-clock target vs other P4.7/P4.9 work.  In the meantime the gate enforces only the green-tests assertion (`pytest exit == 0`); the timing assertion exits with code 2 (timing regression), distinct from code 1 (gate failure), so a CI runner can choose to soft-fail on timing and hard-fail on regressions.
 
 ---
 
