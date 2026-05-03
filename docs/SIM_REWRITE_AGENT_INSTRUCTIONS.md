@@ -3,7 +3,10 @@
 You are picking up the `feature/sim-rewrite-rust` branch.  This document
 is the **operational playbook** an autonomous agent follows.  The
 **design** is in `docs/SIM_REWRITE_RUST_SPEC.md`; the **task list** is
-in `docs/SIM_REWRITE_RUST_PROGRESS.md`.  Read both before acting.
+in `docs/SIM_REWRITE_RUST_PROGRESS.md`.  For the PIC18 silicon-fidelity
+closure campaign, use
+`docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` as the implementation plan.
+Read the relevant documents before acting.
 
 ---
 
@@ -114,9 +117,7 @@ Inside the crate:
 Datasheets:
 
 - 2455: `firmware/reference/39632e.md` (DS39632E)
-- K20: not in repo.  When you need K20 register layout, fetch
-  `https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/41303G.pdf`
-  via WebFetch.
+- K20: `firmware/reference/40001303h.md` (DS40001303H)
 
 The gate is `cargo test -p dlcp-sim --test isa_parity` matching ground
 truth bit-exactly.

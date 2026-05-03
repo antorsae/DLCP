@@ -1,6 +1,6 @@
 # DLCP Simulator Rewrite — Rust Cycle-Perfect Engine (`dlcp-sim`)
 
-Last updated: 2026-04-25
+Last updated: 2026-05-03
 Branch: `feature/sim-rewrite-rust`
 Status: **Phase 0 — pending**
 
@@ -494,6 +494,102 @@ at 0xF98.
 - Phase 4 dual-run: no BAUDCON-specific gpsim oracle exceptions
   needed.
 
+### §11c — PIC18 silicon-fidelity gap closure spec
+
+**Status:** Added 2026-05-03 after direct audit of `crates/dlcp-sim/`
+against the local datasheet companions:
+
+- MAIN PIC18F2455: `firmware/reference/39632e.pdf` authoritative,
+  `firmware/reference/39632e.md` line-stable citation companion.
+- CONTROL PIC18F25K20: `firmware/reference/40001303h.pdf`
+  authoritative, `firmware/reference/40001303h.md` line-stable citation
+  companion.
+
+This section is the canonical place to track **Rust simulator silicon
+fidelity gaps** that are broader than one current test migration.  Do not
+bury these in source comments only: each item below is a spec obligation.
+Implementation may stay DLCP-scoped, but any deliberate deviation from
+the Microchip datasheets must be named here and defended.
+
+Detailed implementation order, focused gates, and the regression
+investigation template live in
+`docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md`.
+
+#### Closure rule for every item
+
+Each fidelity item closes only when all of the following are true:
+
+1. A focused Rust test exists for the item.  Prefer the narrowest
+   relevant test file:
+   - ISA/core/memory: `crates/dlcp-sim/tests/isa_parity.rs`
+   - EUSART: `crates/dlcp-sim/tests/peripheral_eusart_parity.rs`
+   - MSSP/I2C/SPI: `crates/dlcp-sim/tests/peripheral_mssp_parity.rs`
+   - Timers: `crates/dlcp-sim/tests/peripheral_timers_parity.rs`
+   - ADC: `crates/dlcp-sim/tests/peripheral_adc_parity.rs`
+   - EEPROM/flash/config writes: `crates/dlcp-sim/tests/peripheral_eeprom_parity.rs`
+   - IRQ/reset/power: `crates/dlcp-sim/tests/peripheral_irq_parity.rs`
+     or a new focused reset/power test when IRQ is not the right scope.
+   - USB-SIE/HID: `crates/dlcp-sim/tests/peripheral_usbsie_parity.rs`
+   - GPIO/pin network: `crates/dlcp-sim/tests/peripheral_gpio_parity.rs`
+   - Whole-chain timing/electrical effects: `crates/dlcp-sim/tests/multicore_parity.rs`
+2. The focused test cites the relevant datasheet line or local spec
+   section in its test name, assertion message, or nearby comment.
+3. The existing DLCP regression gate is run after the focused test:
+   `cargo test -p dlcp-sim --release` and the relevant migrated pytest
+   subset under the current backend policy.
+4. If any current DLCP test breaks, the failure is investigated before
+   the fidelity item is marked complete.  The resolution must classify
+   the break as one of:
+   - **sim bug**: Rust behavior still violates the datasheet or the
+     DLCP-local contract; fix the simulator.
+   - **DLCP test bug**: the test encoded an old simulator shortcut or
+     gpsim artifact; update the test and explain the previous
+     assumption.
+   - **intentional divergence**: the simulator is deliberately
+     DLCP-scoped rather than full-silicon; document the deviation here
+     and ensure the test asserts the chosen contract.
+   - **firmware behavior change exposed**: the simulator is more
+     faithful and exposes a real firmware edge; file or update the
+     relevant firmware spec/plan before changing assertions.
+5. Any compatibility shim or xfail added during investigation must name
+   its removal condition.
+
+#### Open fidelity items
+
+| ID | Area | Required contract | Focused gate |
+|----|------|-------------------|--------------|
+| FID-01 | PIC18F2455 USB-SIE/HID | Implement the DLCP-used 2455 USB path: UCON/UCFG/UADDR/USTAT/UIR/UIE/UEPn-visible behavior, BDT ownership enough for HID SETUP/OUT/IN, USB reset/suspend/resume flags, endpoint interrupt flow, and DLCP HID commands `0x20`, `0x21`, `0x43`, `0x44` plus filename A/B upload routing. Full host enumeration remains out of scope unless a DLCP tool needs it. | `cargo test -p dlcp-sim --release --test peripheral_usbsie_parity` plus migrated USB/HID pytest subset. |
+| FID-02 | WDT + Sleep/Idle | Add WDT state driven by CONFIG2H.WDTEN/WDTPS and WDTCON.SWDTEN. `CLRWDT` clears counter/postscaler; running-mode timeout resets; Sleep/Idle timeout wakes; `SLEEP` halts CPU execution according to OSCCON.IDLEN while allowed peripherals continue. | Focused reset/power test, then `cargo test -p dlcp-sim --release --test peripheral_irq_parity` if IRQ wake is involved. |
+| FID-03 | Flash/config/user-ID self-programming | Complete `TBLWT` + EECON1 long-write commit for program flash, config bytes, and user ID. Respect EEPGD/CFGS/FREE/WREN/WR/RD, holding-register block size, reset-to-0xFF holding bytes, 0->1 programming limits, erase behavior, write-protect bits when modeled, and data EEPROM separation. | `cargo test -p dlcp-sim --release --test peripheral_eeprom_parity` plus a focused flash/config-write test if that file becomes too broad. |
+| FID-04 | CONFIG loading and consumers | All core builders that load a `HexImage` must populate `core.config` and `core.user_id` from the image unless a test explicitly overrides them. Reset, oscillator, WDT, BOR, MCLRE, PBADEN, CCP2MX, STVREN, LVP, DEBUG, VREGEN, and XINST consumers must either implement or loudly reject unsupported settings. | `cargo test -p dlcp-sim --release full_hex_loader_populates_config_and_user_id`; follow with `cargo test -p dlcp-sim --release config::tests`, `hex::tests`, and `reset::tests`. |
+| FID-05 | XINST | If CONFIG4L.XINST=1, either implement the 8 extended instructions and Indexed Literal Offset mode or stop execution with a clear unsupported-XINST error before running firmware. Silent legacy decoding under XINST=1 is forbidden. | `cargo test -p dlcp-sim --release --test isa_parity xinst_unsupported_config_fails_loudly` or equivalent. |
+| FID-06 | PIC18F2455 program-memory bound | Enforce the 2455 24 KiB program-memory limit for fetch and table-read gap behavior. The K20 remains 32 KiB. Any DLCP bootloader seed that uses a 32 KiB host buffer must still expose 2455 silicon semantics above 0x5FFF. | `cargo test -p dlcp-sim --release --test isa_parity pic2455_top_8k_is_not_executable` or equivalent. |
+| FID-07 | Reset/SFR tables | Complete variant-specific POR/BOR/MCLR/WDT/RESET/stack reset SFR effects for both chips. Remove GPSIM-pinned reset defaults where the datasheet is unambiguous, or document the intentional exception. CONFIG-dependent TRIS/ANSEL/MCLRE/PBADEN values must be resolved from loaded config. | `cargo test -p dlcp-sim --release reset::tests` plus focused 2455 reset-table coverage. |
+| FID-08 | Oscillator/clock state | Replace fixed clock stubs with config-driven FOSC/CPUDIV/PLLDIV/USBDIV behavior, OSCCON/OSCTUNE/SCS switching, HFINTOSC IOFS/OSTS transitions, PLL ready delay, FCMEN/IESO effects where DLCP-visible, and correct wake/startup delays. | `cargo test -p dlcp-sim --release --test peripheral_osc_parity` plus affected timing regressions. |
+| FID-09 | Timers | Add Timer1 and Timer2 where firmware or tests can observe them. Complete Timer0/Timer3 external clock sources, 16-bit read/write latches, Timer1 oscillator, special-event resets from CCP/ECCP when those peripherals land, and sleep/idle behavior. | `cargo test -p dlcp-sim --release --test peripheral_timers_parity`. |
+| FID-10 | MSSP breadth | Current I2C-master model is DLCP-tailored. Add or explicitly reject SPI mode, I2C slave mode, 10-bit addressing, General Call, bus collision, clock stretching/arbitration, and pin-level SDA/SCL behavior. DLCP TAS3108/SRC4382 virtual slaves must remain covered. | `cargo test -p dlcp-sim --release --test peripheral_mssp_parity` plus relevant chain test if pin-level behavior changes. |
+| FID-11 | EUSART breadth/timing | Complete or explicitly reject synchronous mode, auto-baud/ABDEN/ABDOVF, WUE wake-up, SENDB/break, FERR generation, full 9-bit TX/RX semantics, and documented TXIF-valid delay. The 31,250 baud current-loop path must keep existing DLCP behavior green. | `cargo test -p dlcp-sim --release --test peripheral_eusart_parity` plus UART chain tests. |
+| FID-12 | ADC breadth/timing | Replace fixed 12-Tcy AN0-only conversion with ADCON2.ACQT/ADCS-derived timing, channel mux, Vref/FVR handling, analog pin configuration, abort behavior, sleep/FRC conversion behavior, and per-variant channel availability. DLCP AN0 injection may remain as a test convenience layered above the silicon model. | `cargo test -p dlcp-sim --release --test peripheral_adc_parity`. |
+| FID-13 | Interrupt priority/latency | Tighten interrupt latency, nested priority behavior, and RETFIE GIEH/GIEL restoration so high-vs-low ISR state is tracked rather than approximated. Ensure newly modeled peripheral flags participate in pending logic. | `cargo test -p dlcp-sim --release --test peripheral_irq_parity` plus focused nested-priority test. |
+| FID-14 | GPIO/pin/electrical model | Implement PORT/TRIS/LAT read/write electrical semantics, analog-vs-digital mux effects, interrupt-on-change, INT0/1/2 edges, MCLR pin behavior, RA0 wake lines, RC4/RC5 USB sharing, and general `couple_pin` propagation. | `cargo test -p dlcp-sim --release --test peripheral_gpio_parity` plus affected multicore tests. |
+| FID-15 | Missing peripheral stubs | Track unimplemented CCP/ECCP/PWM, comparators/CVREF, HLVD, PSP/SPP, FVR, and any variant-specific SFRs not owned by another row. Each may be implemented, explicitly stubbed as read-as-zero/no-op with tests, or documented out of DLCP scope. | New or existing focused peripheral test; do not rely on broad chain tests alone. |
+| FID-16 | DEVID/config/code-protect reads | Wire real per-variant DEVID values and decide how code-protect/write-protect/external-table-read config bits affect table reads/writes. Until then, tests that probe silicon identity must not assume zero. | Focused TBLRD test in `isa_parity.rs` or a memory/config test. |
+
+#### Regression investigation record
+
+When a fidelity item breaks existing DLCP tests, add a short note to the
+relevant progress-ledger task or follow-up analysis doc with:
+
+- focused test command,
+- failing DLCP command,
+- root-cause classification from the closure rule,
+- final code/test/doc change,
+- remaining xfail or skip removal condition.
+
+This record is mandatory even when the fix is "update the old test";
+otherwise future agents will re-litigate the same simulator-versus-test
+question.
+
 ---
 
 ## 12. Out-of-Scope (For This Effort)
@@ -531,8 +627,9 @@ at 0xF98.
 - gpsim 2455 port: `vendor/gpsim-0.32.1-xtc/src/p18x.cc`
 - Existing chain harness: `src/dlcp_fw/sim/chain_gpsim.py`, `wire_chain_gpsim.py`
 - Existing fidelity doc: `docs/SIMULATION_FIDELITY.md`
+- Rust silicon-fidelity implementation plan: `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md`
 - Datasheet (MAIN): `firmware/reference/39632e.md` (DS39632E PIC18F2455/2550/4455/4550)
-- Datasheet (CONTROL): Microchip DS41303 (PIC18F25K20) — fetch when needed; not in repo
+- Datasheet (CONTROL): `firmware/reference/40001303h.md` (DS40001303H PIC18F25K20 family)
 - Clock derivation: `docs/analysis/MAIN_CLOCK_TIMING.md`
 - **Note**: The CONTROL source header at `src/dlcp_fw/asm/dlcp_control_v171.asm:4` says "PIC18F25K20 @ ~16 MHz (4 MIPS)" — this comment is stale. Empirical proof CONTROL is **12 MHz** (3 MIPS): SPBRG=0x05 with BRGH=0/BRG16=0 (`v171.asm:773`) yields BAUD = Fosc / (64 × 6) = 31,250 only at Fosc=12 MHz; at 16 MHz it would be 41,667. The harness override at `src/dlcp_fw/sim/control_gpsim.py:51` also tells gpsim CONTROL is 12 MHz. The stale header comment is not in scope for this rewrite to fix.
 - AN0 boot detail: `docs/analysis/MAIN_AN0_STANDBY_TRACE.md`

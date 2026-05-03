@@ -33,6 +33,7 @@ analysis/
 │   ├── R_L_ROUTING.md
 │   ├── SIMULATION.md
 │   ├── TEST_SIMULATOR.md
+│   ├── IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md
 │   └── analysis/
 ├── firmware/
 │   ├── stock/
@@ -157,8 +158,9 @@ Regenerate after any semantic map update: `python3 scripts/annotate_disasm.py`
 ### Dumps and references
 
 - Dumps: `firmware/dumps/{firmware.bin,code_only.bin,eeprom.bin,dlcp_flash_0800_7fff.bin,dlcp_probe_1000.bin}`
-- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,dlcp.md,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md}`
+- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,dlcp.md,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md,40001303h.pdf,40001303h.md}`
   - For the PIC18F2455 datasheet, `39632e.pdf` is authoritative. Use `39632e.md` as the line-stable converted companion for repo citations.
+  - For the PIC18F25K20 datasheet, `40001303h.pdf` is authoritative. Use `40001303h.md` as the line-stable converted companion for repo citations.
   - For the TAS3108 datasheet, `tas3108.pdf` is authoritative. Use `tas3108.md` as the line-stable converted companion when repo citations are needed.
 
 ## Source Code Map (`src/dlcp_fw`)
@@ -413,6 +415,8 @@ Top-level docs:
 - `docs/DLCP_LINK_V2_SPEC.md` (lean robust replacement for the legacy 3-byte CONTROL<->MAIN current-loop protocol)
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
+- `docs/SIM_REWRITE_RUST_SPEC.md` (Rust single-process PIC18 simulator rewrite specification)
+- `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` (implementation plan for Rust PIC18 silicon-fidelity gap closure)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)
 - `docs/V28_DELAYED_SWITCH_REMEDIATION_PLAN.md` (wire-chain delayed preset desynchronization analysis and source-level remediation plan)
 - `docs/V31_RELEASE.md` (`V3.1` MAIN deployment workflow with baked preset A/B captures)
@@ -628,6 +632,8 @@ disappears mechanically.
 
 - Spec: `docs/SIM_REWRITE_RUST_SPEC.md` (complete design; 6 phases + final
   acceptance + risk register + glossary)
+- Implementation plan: `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md`
+  (PIC18 silicon-fidelity gap closure for spec section 11c)
 - Progress ledger (machine-readable): `docs/SIM_REWRITE_RUST_PROGRESS.md`
 - Automation entry: `scripts/sim_rewrite_next.py`
   - `python3 scripts/sim_rewrite_next.py status` — current phase + next pending sub-task
