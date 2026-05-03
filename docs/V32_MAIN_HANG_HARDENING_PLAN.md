@@ -154,15 +154,30 @@ Implementation status (last refreshed 2026-05-03):
   ::test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit`
   asserts both MAINs' amp-enable latches go HIGH after a panel-press
   WAKE on the V1.71+V3.2+V3.2 canonical pair.
-- ❌ **CONTROL-side reconnect parser** does not fully recover from the
-  `Waiting for DLCP` screen even after both MAINs are awake and
-  emitting status.  This is the remaining wedge in the rust sim
-  reproduction; the dynamic test above intentionally does not assert
-  the LCD-leaves-WAITING transition.  Open investigation: capture
-  CONTROL's RX history during the post-wake window and check whether
-  `reconnect_wait_loop` sentinels (`input_select_cache`, `volume_cache`,
-  `cmd1d_setting_cache`, `raw_status_cache`) are getting populated
-  by MAIN0's status burst and/or MAIN1's eventual status burst.
+- ✅ **CONTROL-side reconnect AND-reduce** (V1.71 firmware bug).  Post
+  silicon-fidelity merge investigation (2026-05-03) localized the
+  STDBY/WAKE WAITING-stick to a real V1.71 source bug: the
+  reconnect_wait_loop's sentinel-AND-reduce at
+  `dlcp_control_v171.asm:5044-5070` had a spurious `clrf WREG, A`
+  inserted between the `subwf` and the immediate `btfss STATUS, Z, A`
+  test in EACH of the four sentinel-test blocks (`input_select_cache`
+  0xB8, `volume_cache` 0xB9, `cmd1d_setting_cache` 0xA7,
+  `raw_status_cache` 0xA1).  PIC18 `CLRF f, a` always sets `STATUS.Z =
+  1`, so the `btfss` always skipped the `movlw 0x01`, leaving WREG = 0
+  from the clrf.  `ram_0x018` was therefore set to 0 unconditionally,
+  the `bnz v171_reconnect_wait_done` exit at asm:5073 NEVER fired
+  post-STDBY/WAKE, and CONTROL stayed parked on `Waiting for DLCP`
+  indefinitely even after MAIN's status burst had cleared all four
+  sentinels.  The cold-boot WAITING loop
+  (`v171_waiting_cold_past_grace_done` at asm:4747-4773) had the same
+  AND-reduce structure WITHOUT the spurious clrf and worked correctly
+  -- the fix matches its proven pattern.  Removing the four
+  `clrf WREG, A` instructions saves 8 bytes total in the V1.71
+  release.  Verified in the rust sim: post-fix
+  `tests/sim/test_v171_v32_standby_reconnect.py
+  ::test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit`
+  now asserts CONTROL LCD returns to `Volume:...` within ~13 s sim
+  time after a panel-press STDBY/WAKE round-trip.
 - Audit other CONTROL best-effort frame senders that still ignore
   bounded-TX saturation — running audit, no remaining gaps surfaced.
 

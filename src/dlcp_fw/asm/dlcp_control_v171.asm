@@ -5041,30 +5041,41 @@ v171_reconnect_past_grace_done:
         ; Accumulate sentinel-cleared bits into ram_0x018.
         ; Each block: if sentinel != 0x80 → set ram_0x018 to 1, else
         ; AND 1 (first test initializes, subsequent tests AND-reduce).
+        ; Bug #45 CONTROL-side fix (2026-05-03): the original V1.71
+        ; AND-reduce had a spurious `clrf WREG, A` between the `subwf`
+        ; and the `btfss STATUS, Z, A` test in each of the four blocks
+        ; below.  CLRF on PIC18 always sets STATUS.Z = 1, so the
+        ; subsequent `btfss STATUS, Z` ALWAYS skipped the `movlw 0x01`,
+        ; leaving WREG = 0 from the clrf.  ram_0x018 was therefore set
+        ; to 0 unconditionally, the bnz exit at line 5073 below NEVER
+        ; fired, and CONTROL stayed parked on `Waiting for DLCP`
+        ; indefinitely after a STDBY/WAKE cycle even though all four
+        ; sentinels had been cleared by MAIN's status burst.  The
+        ; cold-boot WAITING loop (`v171_waiting_cold_past_grace_done`
+        ; at asm:4747) does NOT have the spurious clrf and works
+        ; correctly -- this fix matches its proven pattern.  Removing
+        ; the four `clrf WREG, A` instructions saves 8 bytes total in
+        ; the V1.71 release; downstream addresses shift accordingly.
         movlw   0x80
         subwf   input_select_cache, W, B                     ; 0xB8
-        clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; ram_0x018
 
         movlw   0x80
         subwf   volume_cache, W, B                           ; 0xB9
-        clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
 
         movlw   0x80
         subwf   cmd1d_setting_cache, W, B                    ; 0xA7
-        clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
 
         movlw   0x80
         subwf   raw_status_cache, W, B                       ; 0xA1
-        clrf    WREG, A
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
@@ -6191,7 +6202,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x0B                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x0C                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
