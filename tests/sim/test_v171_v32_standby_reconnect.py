@@ -106,8 +106,10 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     # on a single line.  Both the `movlw` and the `call` are anchored
     # to instruction lines (`^[ \t]+<mnemonic>` under re.MULTILINE) so
     # a stray `; movlw 0xB0` inside a comment block cannot false-match
-    # the pair.  Comment lines are tolerated between successive pairs
-    # via the optional `(?:^[ \t]*(?:;[^\n]*)?\n)*` clause.
+    # the pair.  The `(?:^[ \t]*(?:;[^\n]*)?\n)*` clause sits between
+    # the `movlw` line and the `call` line, so it tolerates blank or
+    # comment lines INSIDE a single (movlw, call) pair.  Lines between
+    # separate pairs are skipped by `findall`'s normal search behavior.
     pair_pattern = _re.compile(
         # Each instruction must live entirely on one line: use `[ \t]+`
         # (horizontal whitespace) inside the mnemonic-operand pair, not
