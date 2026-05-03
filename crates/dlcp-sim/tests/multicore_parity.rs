@@ -619,18 +619,29 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
         "MAIN1 did not advance under chain dispatch"
     );
 
-    // Both MAINs ran past V3.2 boot init into application
-    // code (PC > 0x4000); same threshold the V3.1 2-core
-    // smoke test uses.
+    // Both MAINs ran past V3.2 bootloader (0x0000-0x0FFF) and
+    // are sampling somewhere inside the app code at convergence
+    // tick.  The original threshold was copy-pasted from the V3.1
+    // 2-core smoke test (PC > 0x4000), but V3.2's main-loop
+    // oscillates between the USB service (~0x2Bxx, e.g.
+    // `flow_main_usb_service_2f4e_*`) and deeper app code
+    // (~0x4xxx onwards) every iteration -- whichever sub-region
+    // each MAIN happens to be in at convergence sample is firmware
+    // -timing-sensitive (Bug #45 §C/H2 firmware shifts moved
+    // MAIN1 from 0x4xxx into 0x2Bxx at sample time, but both
+    // are valid post-boot main-loop PCs).  Use `> 0x1000`
+    // (post-bootloader) -- still rejects "stuck before app entry"
+    // regressions and is invariant to V3.x main-loop layout
+    // churn.
     let main0_pc = chain.cores[i_main0].pc();
     let main1_pc = chain.cores[i_main1].pc();
     assert!(
-        main0_pc > 0x4000,
-        "MAIN0 PC must have progressed deep into V3.2 app code (> 0x4000); got 0x{main0_pc:04X}"
+        main0_pc > 0x1000,
+        "MAIN0 PC must have progressed past the V3.2 bootloader (> 0x1000); got 0x{main0_pc:04X}"
     );
     assert!(
-        main1_pc > 0x4000,
-        "MAIN1 PC must have progressed deep into V3.2 app code (> 0x4000); got 0x{main1_pc:04X}"
+        main1_pc > 0x1000,
+        "MAIN1 PC must have progressed past the V3.2 bootloader (> 0x1000); got 0x{main1_pc:04X}"
     );
 
     // CONTROL has left the bootloader window and is back
@@ -5590,25 +5601,36 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
          = 0x{main0_diag_i:02X} (seed was 0x0F)"
     );
 
-    // Step 7: also verify the seeded values are still in
-    // CONTROL's RAM (writes weren't clobbered by the cadence
-    // loop's queries -- in our sim they aren't, because the
-    // BF/2N reply-cache update path is the open P3.6b gap).
+    // Step 7: log final cache cell values for diagnostic
+    // visibility.  The original test asserted strict
+    // seed-preservation here, on the premise that the BF/2N
+    // reply-cache update path was the open P3.6b gap and would
+    // therefore not fire -- so seeded cells would survive to
+    // end-of-test.  With the PIC18 silicon-fidelity closure
+    // (commit 6485f1d) shipping the proper EUSART error paths,
+    // timer/IRQ models, and oscillator state, the BF/2N cadence
+    // now actually fires during the test window, and the cadence
+    // legitimately overwrites cache cells with their currently
+    // -reported values.  That is P3.6b convergence success, not
+    // a regression -- the test's own assertion message anticipated
+    // this exact case.  The load-bearing decoupling contract
+    // (LCD reflects seeded cache, not MAIN RAM) is still proven
+    // by Step 5's LCD content checks above, which sampled at the
+    // redraw moment.  Step 7 is now diagnostic-only.
     for (i, &v) in pb1_seed.iter().enumerate() {
         let actual = chain.cores[i_ctl]
             .memory
             .read_raw(Address::from_raw(V171_DIAG_PB1_BASE_PHYS + i as u16));
-        assert_eq!(
+        eprintln!(
+            "P3.8d-strong info: CONTROL PB1 cell 0x{:03X} = 0x{:02X} (seeded 0x{:02X}{}",
+            V171_DIAG_PB1_BASE_PHYS + i as u16,
             actual,
             v,
-            "CONTROL PB1 cache cell at 0x{:03X} must hold seeded 0x{:02X} \
-             after the redraw cycle; got 0x{:02X}.  If this fails the \
-             cadence loop's BF/2N path must be overwriting cache \
-             cells -- which would be a P3.6b convergence success and \
-             conflicts with the test's premise; re-baseline the test.",
-            V171_DIAG_PB1_BASE_PHYS + i as u16,
-            v,
-            actual
+            if actual == v {
+                "; preserved)"
+            } else {
+                "; cadence-overwritten -- P3.6b convergence)"
+            }
         );
     }
 
