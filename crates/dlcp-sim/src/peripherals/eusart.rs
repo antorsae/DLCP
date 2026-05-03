@@ -91,11 +91,14 @@ pub const PIR1_ADDR: u16 = 0xF9E;
 
 const TXSTA_TXEN: u8 = 1 << 5;
 const TXSTA_SYNC: u8 = 1 << 4;
+const TXSTA_SENDB: u8 = 1 << 3;
 const TXSTA_TX9: u8 = 1 << 6;
 const TXSTA_BRGH: u8 = 1 << 2;
 const TXSTA_TRMT: u8 = 1 << 1;
 const RCSTA_SPEN: u8 = 1 << 7;
+const RCSTA_RX9: u8 = 1 << 6;
 const BAUDCON_BRG16: u8 = 1 << 3;
+const BAUDCON_WUE: u8 = 1 << 1;
 const PIR1_TXIF: u8 = 1 << 4;
 const PIR1_RCIF: u8 = 1 << 5;
 
@@ -106,12 +109,21 @@ const RCSTA_CREN: u8 = 1 << 4;
 /// firmware writing CREN=0 or by software-resetting the
 /// EUSART.
 const RCSTA_OERR: u8 = 1 << 1;
+const RCSTA_FERR: u8 = 1 << 2;
+const RCSTA_RX9D: u8 = 1 << 0;
 
 /// Depth of the silicon RX FIFO behind RCREG.  Per DS39632E
 /// §20.0 the EUSART has a "two character deep FIFO".  Our
 /// model uses a small fixed array so the per-byte path
 /// stays heap-free.
 const RX_FIFO_DEPTH: usize = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RxEntry {
+    byte: u8,
+    ferr: bool,
+    rx9d: bool,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Eusart {
@@ -126,11 +138,18 @@ pub struct Eusart {
     /// firmware-emitted byte can be propagated to the peer
     /// core's EUSART RX via the pin network.
     tsr_byte: Option<u8>,
+    tsr_send_break: bool,
     /// Byte queued in TXREG while TSR was busy (PIC18 EUSART
     /// has a 1-deep TX FIFO: TXREG holds the next byte while
     /// TSR shifts the current one).  `None` means TXREG is
     /// empty and TXIF should be asserted (assuming TXEN=1).
     txreg_holding: Option<u8>,
+    txreg_holding_send_break: bool,
+    /// TXIF is not valid until the second instruction cycle
+    /// after TXREG transfers into TSR (datasheet EUSART TXIF
+    /// note).  While non-zero, PIR1.TXIF is forced low even
+    /// if TXREG is empty.
+    txif_delay_tcy: u8,
     /// FIFO of bytes that have completed TX and are waiting
     /// to be drained by the chain dispatcher (Phase-3.5
     /// `Chain::execute_core_step` pulls them via
@@ -150,7 +169,7 @@ pub struct Eusart {
     /// turning intact `B1 04 00` frames into phase-shifted
     /// debris -- the cmd/data bytes are lost before the
     /// firmware reads them.  Task #30.
-    rx_fifo: VecDeque<u8>,
+    rx_fifo: VecDeque<RxEntry>,
 }
 
 impl Eusart {
@@ -166,7 +185,10 @@ impl Eusart {
     pub fn reset_state(&mut self) {
         self.tsr_busy_tcy = None;
         self.tsr_byte = None;
+        self.tsr_send_break = false;
         self.txreg_holding = None;
+        self.txreg_holding_send_break = false;
+        self.txif_delay_tcy = 0;
         self.completed_tx_bytes.clear();
         self.rx_fifo.clear();
     }
@@ -220,10 +242,25 @@ impl Eusart {
     /// that against gpsim's bit-level RX timing if needed.
     /// Disabled (SPEN=0 or CREN=0) RX silently drops the
     /// byte.  Task #30.
-    pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) {
+    pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) -> bool {
+        self.deliver_rx_frame(byte, false, false, mem)
+    }
+
+    pub fn deliver_rx_frame(
+        &mut self,
+        byte: u8,
+        framing_error: bool,
+        ninth_bit: bool,
+        mem: &mut Memory,
+    ) -> bool {
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
         if (rcsta & RCSTA_SPEN) == 0 || (rcsta & RCSTA_CREN) == 0 {
-            return;
+            return false;
+        }
+        let baudcon = mem.read_raw(Address::from_raw(BAUDCON_ADDR));
+        let wake = (baudcon & BAUDCON_WUE) != 0;
+        if wake {
+            mem.write_raw(Address::from_raw(BAUDCON_ADDR), baudcon & !BAUDCON_WUE);
         }
         // OERR latched -> reception blocked until firmware
         // clears OERR (via CREN=0).  Codex review of 4f7deb5
@@ -232,7 +269,7 @@ impl Eusart {
         // masking firmware that forgets the CREN-toggle
         // recovery dance.
         if (rcsta & RCSTA_OERR) != 0 {
-            return;
+            return wake;
         }
         if self.rx_fifo.len() >= RX_FIFO_DEPTH {
             // FIFO full: latch OERR, drop the byte.  Per DS
@@ -242,20 +279,43 @@ impl Eusart {
                 Address::from_raw(RCSTA_ADDR),
                 rcsta | RCSTA_OERR,
             );
-            return;
+            return wake;
         }
-        self.rx_fifo.push_back(byte);
-        // RCREG memory always reflects the OLDEST FIFO byte
-        // (the next read returns it).  RCIF stays asserted
-        // while FIFO is non-empty.
-        if let Some(&front) = self.rx_fifo.front() {
-            mem.write_raw(Address::from_raw(RCREG_ADDR), front);
-        }
+        let rx9_enabled = (rcsta & RCSTA_RX9) != 0;
+        self.rx_fifo.push_back(RxEntry {
+            byte,
+            ferr: framing_error,
+            rx9d: rx9_enabled && ninth_bit,
+        });
+        self.update_rx_front_sfrs(mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         mem.write_raw(
             Address::from_raw(PIR1_ADDR),
             pir1 | PIR1_RCIF,
         );
+        wake
+    }
+
+    fn update_rx_front_sfrs(&self, mem: &mut Memory) {
+        if let Some(front) = self.rx_fifo.front().copied() {
+            mem.write_raw(Address::from_raw(RCREG_ADDR), front.byte);
+            let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+            let mut new_rcsta = rcsta & !(RCSTA_FERR | RCSTA_RX9D);
+            if front.ferr {
+                new_rcsta |= RCSTA_FERR;
+            }
+            if front.rx9d {
+                new_rcsta |= RCSTA_RX9D;
+            }
+            mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
+        } else {
+            mem.write_raw(Address::from_raw(RCREG_ADDR), 0);
+            let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
+            mem.write_raw(
+                Address::from_raw(RCSTA_ADDR),
+                rcsta & !(RCSTA_FERR | RCSTA_RX9D),
+            );
+        }
     }
 
     /// React to a SW-driven SFR read at `addr`.  Today the
@@ -282,8 +342,7 @@ impl Eusart {
             // read returns the next FIFO byte (or 0 if the
             // FIFO drains).
             self.rx_fifo.pop_front();
-            let next = self.rx_fifo.front().copied().unwrap_or(0);
-            mem.write_raw(Address::from_raw(RCREG_ADDR), next);
+            self.update_rx_front_sfrs(mem);
             // RCIF tracks "FIFO non-empty".  Clear it only
             // when the FIFO is now empty.
             if self.rx_fifo.is_empty() {
@@ -364,7 +423,7 @@ impl Eusart {
             let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
             mem.write_raw(
                 Address::from_raw(RCSTA_ADDR),
-                rcsta & !RCSTA_OERR,
+                rcsta & !(RCSTA_OERR | RCSTA_FERR | RCSTA_RX9D),
             );
             mem.write_raw(Address::from_raw(RCREG_ADDR), 0);
             let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
@@ -374,7 +433,10 @@ impl Eusart {
             );
             self.tsr_busy_tcy = None;
             self.tsr_byte = None;
+            self.tsr_send_break = false;
             self.txreg_holding = None;
+            self.txreg_holding_send_break = false;
+            self.txif_delay_tcy = 0;
             self.completed_tx_bytes.clear();
             // TSR idle -> TXSTA.TRMT = 1.  Without this,
             // an in-flight frame's TRMT=0 state would
@@ -419,10 +481,18 @@ impl Eusart {
         // Held byte transfers from TXREG to TSR.  TXREG empty
         // -> TXIF asserts via the caller's recompute_txif.
         // TSR busy -> TRMT clears.
-        self.tsr_busy_tcy = Some(current_frame_tcy(mem));
-        self.tsr_byte = Some(byte);
+        self.start_tsr_frame(byte, self.txreg_holding_send_break, mem);
         self.txreg_holding = None;
+        self.txreg_holding_send_break = false;
         set_txsta_trmt(mem, false);
+    }
+
+    fn start_tsr_frame(&mut self, byte: u8, send_break: bool, mem: &mut Memory) {
+        self.tsr_busy_tcy = Some(current_frame_tcy(mem, send_break));
+        self.tsr_byte = Some(byte);
+        self.tsr_send_break = send_break;
+        self.txif_delay_tcy = 2;
+        set_pir1_txif(mem, false);
     }
 
     /// Advance the EUSART by `n` Tcy, updating TXSTA.TRMT and
@@ -435,6 +505,7 @@ impl Eusart {
     /// bytes in TX order (the held byte chains in immediately
     /// after the prior frame drains).
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
+        self.advance_txif_delay(n, mem);
         let mut remaining_tick = n;
         while remaining_tick > 0 {
             let Some(busy) = self.tsr_busy_tcy else {
@@ -454,12 +525,19 @@ impl Eusart {
             if let Some(byte) = self.tsr_byte.take() {
                 self.completed_tx_bytes.push_back(byte);
             }
+            if self.tsr_send_break {
+                let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
+                mem.write_raw(Address::from_raw(TXSTA_ADDR), txsta & !TXSTA_SENDB);
+                self.tsr_send_break = false;
+            }
             if let Some(byte) = self.txreg_holding.take() {
                 // Held byte chains into TSR; a new frame
                 // begins.  TXREG empty -> TXIF asserts;
                 // TSR busy -> TRMT stays 0.
-                self.tsr_busy_tcy = Some(current_frame_tcy(mem));
-                self.tsr_byte = Some(byte);
+                let send_break = self.txreg_holding_send_break;
+                self.txreg_holding_send_break = false;
+                self.start_tsr_frame(byte, send_break, mem);
+                self.advance_txif_delay(remaining_tick, mem);
                 self.recompute_txif(mem);
                 // Loop continues -- the remaining_tick budget
                 // may still cross this new frame's deadline,
@@ -477,6 +555,7 @@ impl Eusart {
     }
 
     fn handle_txreg_write(&mut self, byte: u8, mem: &mut Memory) {
+        let send_break = (mem.read_raw(Address::from_raw(TXSTA_ADDR)) & TXSTA_SENDB) != 0;
         // The transmitter must be enabled for the frame to
         // start shifting.  If disabled, the byte still loads
         // into TXREG (datasheet behaviour: TXREG is just a
@@ -489,6 +568,7 @@ impl Eusart {
             // not yet transferred).  But the gate is also
             // off, so the recompute keeps TXIF cleared.
             self.txreg_holding = Some(byte);
+            self.txreg_holding_send_break = send_break;
             self.recompute_txif(mem);
             return;
         }
@@ -497,15 +577,16 @@ impl Eusart {
             // TSR idle: immediate TXREG -> TSR transfer.
             // TXREG is empty; TXIF asserts (gate is on).
             // TSR is busy; TRMT clears.
-            self.tsr_busy_tcy = Some(current_frame_tcy(mem));
-            self.tsr_byte = Some(byte);
+            self.start_tsr_frame(byte, send_break, mem);
             self.txreg_holding = None;
+            self.txreg_holding_send_break = false;
             set_txsta_trmt(mem, false);
             self.recompute_txif(mem);
         } else {
             // TSR busy: hold byte in TXREG, wait for TSR
             // drain.  TXIF clears (TXREG holds data).
             self.txreg_holding = Some(byte);
+            self.txreg_holding_send_break = send_break;
             set_txsta_trmt(mem, false);
             self.recompute_txif(mem);
         }
@@ -519,20 +600,55 @@ impl Eusart {
     /// the firmware idiom (poll TXIF in a tight loop) is not
     /// sensitive to.  Phase 4 dual-run will surface any
     /// firmware that depends on the 1-Tcy delay.
-    fn recompute_txif(&self, mem: &mut Memory) {
+    fn recompute_txif(&mut self, mem: &mut Memory) {
         let txreg_empty = self.txreg_holding.is_none();
         let txif_should_be = is_async_tx_enabled(mem) && txreg_empty;
-        set_pir1_txif(mem, txif_should_be);
+        if txif_should_be {
+            if self.txif_delay_tcy == 0
+                && (mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF) == 0
+            {
+                self.txif_delay_tcy = 2;
+            }
+            if self.txif_delay_tcy == 0 {
+                set_pir1_txif(mem, true);
+            } else {
+                set_pir1_txif(mem, false);
+            }
+        } else {
+            self.txif_delay_tcy = 0;
+            set_pir1_txif(mem, false);
+        }
+    }
+
+    fn advance_txif_delay(&mut self, n: u32, mem: &mut Memory) {
+        if self.txif_delay_tcy == 0 {
+            return;
+        }
+        let n = n.min(u8::MAX as u32) as u8;
+        if n < self.txif_delay_tcy {
+            self.txif_delay_tcy -= n;
+            return;
+        }
+        self.txif_delay_tcy = 0;
+        if is_async_tx_enabled(mem) && self.txreg_holding.is_none() {
+            set_pir1_txif(mem, true);
+        }
     }
 }
 
 /// Current frame width in Tcy, given the live SFR state
 /// (TX9 selects the 9-bit data path, adding one bit to the
 /// 10-bit start+8+stop total).
-fn current_frame_tcy(mem: &Memory) -> u32 {
+fn current_frame_tcy(mem: &Memory, send_break: bool) -> u32 {
     let period = current_baud_bit_period_tcy(mem);
     let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
-    let frame_bits = if (txsta & TXSTA_TX9) != 0 { 11u32 } else { 10u32 };
+    let frame_bits = if send_break {
+        13u32
+    } else if (txsta & TXSTA_TX9) != 0 {
+        11u32
+    } else {
+        10u32
+    };
     period.saturating_mul(frame_bits)
 }
 
@@ -672,18 +788,22 @@ mod tests {
         enable_async_tx(&mut mem);
 
         // TXREG write into idle TSR -- TXREG transfers
-        // immediately, so TXREG becomes empty and TXIF=1.
+        // immediately, so TXREG becomes empty; TXIF becomes
+        // valid two Tcy later.
         eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT must clear once TSR loads");
+        assert_eq!(pir1 & PIR1_TXIF, 0, "TXIF delay starts low");
+        eusart.tick_tcy(2, &mut mem);
+        let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
             pir1 & PIR1_TXIF, PIR1_TXIF,
-            "TXIF must stay 1 (TXREG empty after immediate transfer)"
+            "TXIF asserts on the second Tcy after TXREG -> TSR"
         );
 
         // Mid-frame: TRMT still 0.
-        eusart.tick_tcy(500, &mut mem);
+        eusart.tick_tcy(498, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         assert_eq!(txsta & TXSTA_TRMT, 0, "TRMT must stay 0 mid-frame");
 
@@ -715,7 +835,10 @@ mod tests {
         enable_async_tx(&mut mem);
 
         eusart.on_sfr_write(TXREG_ADDR, 0xAA, &mut mem);
-        // TXREG empty after immediate transfer -> TXIF=1.
+        // TXREG empty after immediate transfer -> TXIF after
+        // the documented two-Tcy validity delay.
+        assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF, 0);
+        eusart.tick_tcy(2, &mut mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(pir1 & PIR1_TXIF, PIR1_TXIF);
 
@@ -784,9 +907,12 @@ mod tests {
         assert_eq!(pir1 & PIR1_TXIF, 0);
 
         // Firmware writes TXSTA to enable TXEN.  The peripheral
-        // observes that change and recomputes TXIF.
+        // observes that change and starts the two-Tcy TXIF
+        // validity delay.
         mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_TRMT);
         eusart.on_sfr_write(TXSTA_ADDR, TXSTA_TXEN | TXSTA_TRMT, &mut mem);
+        assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF, 0);
+        eusart.tick_tcy(2, &mut mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
             pir1 & PIR1_TXIF, PIR1_TXIF,
@@ -871,7 +997,8 @@ mod tests {
         assert!(eusart.tsr_busy_tcy.is_none());
 
         // Now firmware enables TXEN.  Held byte should
-        // transfer to TSR; TRMT clears; TXIF asserts.
+        // transfer to TSR; TRMT clears; TXIF asserts after
+        // the documented two-Tcy validity delay.
         let new_txsta = TXSTA_TXEN | TXSTA_TRMT;
         mem.write_raw(Address::from_raw(TXSTA_ADDR), new_txsta);
         eusart.on_sfr_write(TXSTA_ADDR, new_txsta, &mut mem);
@@ -886,13 +1013,16 @@ mod tests {
             txsta & TXSTA_TRMT, 0,
             "TRMT must clear once TSR loads (TXSTA=0x{txsta:02X})"
         );
+        assert_eq!(pir1 & PIR1_TXIF, 0, "TXIF delay starts low");
+        eusart.tick_tcy(2, &mut mem);
         assert_eq!(
-            pir1 & PIR1_TXIF, PIR1_TXIF,
-            "TXIF must assert -- TXREG empty after transfer"
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF,
+            PIR1_TXIF,
+            "TXIF must assert two Tcy after transfer"
         );
 
         // After 960 Tcy the frame drains -> TRMT reasserts.
-        eusart.tick_tcy(960, &mut mem);
+        eusart.tick_tcy(958, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         assert_eq!(txsta & TXSTA_TRMT, TXSTA_TRMT);
     }

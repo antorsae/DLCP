@@ -26,9 +26,11 @@
 pub mod adc;
 pub mod eeprom;
 pub mod eusart;
+pub mod gpio;
 pub mod irq;
 pub mod mssp;
 pub mod osc;
+pub mod stubs;
 pub mod src4382;
 pub mod tas3108;
 pub mod timer;
@@ -48,7 +50,9 @@ pub struct Peripherals {
     pub timers: timer::Timers,
     pub adc: adc::Adc,
     pub eeprom: eeprom::Eeprom,
+    pub gpio: gpio::Gpio,
     pub irq: irq::Irq,
+    pub stubs: stubs::PeripheralStubs,
     pub usb: usb::Usb,
     pub osc: osc::Osc,
 }
@@ -65,7 +69,9 @@ impl Peripherals {
             timers: timer::Timers::new(variant),
             adc: adc::Adc::new(variant),
             eeprom: eeprom::Eeprom::new(variant),
+            gpio: gpio::Gpio::new(variant),
             irq: irq::Irq::new(variant),
+            stubs: stubs::PeripheralStubs::new(variant),
             usb: usb::Usb::new(variant),
             osc: osc::Osc::new(variant),
         }
@@ -83,7 +89,9 @@ impl Peripherals {
         self.timers.on_sfr_write(addr, value, mem);
         self.adc.on_sfr_write(addr, value, mem);
         self.eeprom.on_sfr_write(addr, value, mem);
+        self.gpio.on_sfr_write(addr, value, mem);
         self.irq.on_sfr_write(addr, value, mem);
+        self.stubs.on_sfr_write(addr, value, mem);
         self.usb.on_sfr_write(addr, value, mem);
         self.osc.on_sfr_write(addr, value, mem);
     }
@@ -102,6 +110,7 @@ impl Peripherals {
     /// RCIF never cleared.
     pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
         self.eusart.on_sfr_read(addr, mem);
+        self.timers.on_sfr_read(addr, mem);
     }
 
     /// Advance every peripheral's internal time by `n` Tcy.
@@ -119,6 +128,10 @@ impl Peripherals {
         self.osc.tick_tcy(n, mem);
     }
 
+    pub fn tick_sleep_tcy(&mut self, n: u32, mem: &mut Memory) {
+        self.adc.tick_sleep_tcy(n, mem);
+    }
+
     /// Throw away each peripheral's in-flight state machine.
     /// Called from `apply_reset` BEFORE the SFR-side reset
     /// runs, so an in-flight TX frame / I²C transfer /
@@ -133,7 +146,9 @@ impl Peripherals {
         self.timers.reset_state();
         self.adc.reset_state();
         self.eeprom.reset_state();
+        self.gpio.reset_state();
         self.irq.reset_state();
+        self.stubs.reset_state();
         self.usb.reset_state();
         self.osc.reset_state();
     }
@@ -146,7 +161,7 @@ impl Peripherals {
     /// reflects the correct mix of "wiped to 0" (POR/BOR)
     /// versus "preserved" (MCLR/WDT/RESET) without the
     /// peripheral having to know which reset source fired.
-    pub fn sync_from_memory(&mut self, mem: &Memory) {
+    pub fn sync_from_memory(&mut self, mem: &mut Memory) {
         self.timers.sync_from_memory(mem);
     }
 }

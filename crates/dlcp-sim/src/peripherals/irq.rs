@@ -32,7 +32,7 @@
 //! | 0xF9E | PIR1    | PSPIF/ADIF/RCIF/TXIF/SSPIF/CCP1IF/TMR2IF/TMR1IF |
 //! | 0xF9D | PIE1    | PSPIE/ADIE/RCIE/TXIE/SSPIE/CCP1IE/TMR2IE/TMR1IE |
 
-use crate::core::Core;
+use crate::core::{Core, IrqContext};
 use crate::memory::{Address, Memory, Variant};
 use crate::stack::Stack;
 
@@ -210,6 +210,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
             return Some(2);
         }
         core.save_fast_regs();
+        core.push_irq_context(IrqContext::Compatibility);
         // Clear GIE.
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_GIE_GIEH;
@@ -247,6 +248,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
             return Some(2);
         }
         core.save_fast_regs();
+        core.push_irq_context(IrqContext::High);
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_GIE_GIEH;
         mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
@@ -270,6 +272,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
             return Some(2);
         }
         core.save_fast_regs();
+        core.push_irq_context(IrqContext::Low);
         let mem = &mut core.memory;
         let new_intcon = intcon & !INTCON_PEIE_GIEL;
         mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
@@ -289,14 +292,19 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
 /// (if IPEN=1) GIEL.  In IPEN=0 mode GIEL/PEIE is
 /// untouched -- it serves a different role
 /// (peripheral-master-enable).
-pub fn restore_gie_on_retfie(mem: &mut Memory) {
+pub fn restore_gie_on_retfie(mem: &mut Memory, context: Option<IrqContext>) {
     let rcon = mem.read_raw(Address::from_raw(RCON_ADDR));
     let ipen = (rcon & RCON_IPEN) != 0;
     let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
-    let mut new_intcon = intcon | INTCON_GIE_GIEH;
-    if ipen {
-        new_intcon |= INTCON_PEIE_GIEL;
-    }
+    let new_intcon = if !ipen {
+        intcon | INTCON_GIE_GIEH
+    } else {
+        match context {
+            Some(IrqContext::Low) => intcon | INTCON_PEIE_GIEL,
+            Some(IrqContext::High) => intcon | INTCON_GIE_GIEH,
+            Some(IrqContext::Compatibility) | None => intcon | INTCON_GIE_GIEH | INTCON_PEIE_GIEL,
+        }
+    };
     mem.write_raw(Address::from_raw(INTCON_ADDR), new_intcon);
 }
 
@@ -856,7 +864,7 @@ mod tests {
         // IPEN=0 (RCON.bit7 clear), GIE clear, PEIE clear.
         mem.write_raw(Address::from_raw(RCON_ADDR), 0);
         mem.write_raw(Address::from_raw(INTCON_ADDR), 0);
-        restore_gie_on_retfie(&mut mem);
+        restore_gie_on_retfie(&mut mem, Some(IrqContext::Compatibility));
         let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
         assert_eq!(intcon & INTCON_GIE_GIEH, INTCON_GIE_GIEH);
         assert_eq!(intcon & INTCON_PEIE_GIEL, 0);
@@ -871,7 +879,7 @@ mod tests {
         let mut mem = fresh_mem();
         mem.write_raw(Address::from_raw(RCON_ADDR), RCON_IPEN);
         mem.write_raw(Address::from_raw(INTCON_ADDR), 0);
-        restore_gie_on_retfie(&mut mem);
+        restore_gie_on_retfie(&mut mem, None);
         let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
         assert_eq!(intcon & INTCON_GIE_GIEH, INTCON_GIE_GIEH);
         assert_eq!(intcon & INTCON_PEIE_GIEL, INTCON_PEIE_GIEL);

@@ -21,28 +21,15 @@
 //!   K20=16, 2455=12.  See `peripherals/osc.rs`.
 
 use crate::clock::ClockDomain;
-use crate::core::Core;
+use crate::core::{Core, RunState};
 use crate::exec::step;
 use crate::lcd::Hd44780;
 use crate::memory::Address;
+use crate::peripherals::gpio;
 use crate::peripherals::mssp::{I2cBusEvent, Mssp};
-use crate::peripherals::osc;
 use crate::peripherals::src4382::Src4382;
 use crate::peripherals::tas3108::Tas3108;
 use crate::pinnet::{PinId, PinNet, PortLetter};
-
-/// PORTx SFR base address (PIC18F25K20 + PIC18F2455 share
-/// the layout).  Used by `Chain::set_pin_high/low` for
-/// minimum-viable input-pin injection (task #35).
-fn port_addr(port: PortLetter) -> u16 {
-    match port {
-        PortLetter::A => 0xF80,
-        PortLetter::B => 0xF81,
-        PortLetter::C => 0xF82,
-        PortLetter::D => 0xF83,
-        PortLetter::E => 0xF84,
-    }
-}
 use crate::reset::{ResetSource, apply_reset};
 use crate::scheduler::{Event, EventKind, EventQueue};
 use crate::stack::Stack;
@@ -86,6 +73,11 @@ pub struct Chain {
     /// Phase-3.5 dispatches byte propagation across these
     /// on event firing.
     pub pinnet: PinNet,
+    /// Last propagated logic level for each `pinnet.pin`
+    /// coupling.  `None` means "not sampled yet"; after the
+    /// first sample the chain only applies destination pin
+    /// injections when the source level changes.
+    pub pin_coupling_last: Vec<Option<bool>>,
     /// Time-stamped UART byte deliveries between cores.
     /// Appended to every time `deliver_uart_byte` runs --
     /// captures the (tick, src_core, dst_core, byte) tuple.
@@ -230,6 +222,7 @@ impl Chain {
             current_tick: 0,
             events: EventQueue::new(),
             pinnet: PinNet::new(),
+            pin_coupling_last: Vec::new(),
             uart_tx_history: Vec::new(),
             tas3108_slaves: Vec::new(),
             tas3108_couplings: Vec::new(),
@@ -299,11 +292,7 @@ impl Chain {
     /// routed to this slave.  A single slave may be
     /// coupled to multiple masters (multi-master bus); a
     /// single master may have multiple slaves coupled.
-    pub fn couple_tas3108(
-        &mut self,
-        master_core_idx: usize,
-        slave_idx: usize,
-    ) {
+    pub fn couple_tas3108(&mut self, master_core_idx: usize, slave_idx: usize) {
         assert!(
             master_core_idx < self.cores.len(),
             "master_core_idx {} out of range ({} cores)",
@@ -340,11 +329,7 @@ impl Chain {
     /// SRC4382 slaves coexist on the same bus -- a TxByte's
     /// ACKSTAT-override fires if ANY coupled slave (either
     /// type) ACKs.
-    pub fn couple_src4382(
-        &mut self,
-        master_core_idx: usize,
-        slave_idx: usize,
-    ) {
+    pub fn couple_src4382(&mut self, master_core_idx: usize, slave_idx: usize) {
         assert!(
             master_core_idx < self.cores.len(),
             "master_core_idx {} out of range ({} cores)",
@@ -401,11 +386,7 @@ impl Chain {
     /// bytes while other segments deliver normally.  See
     /// `docs/analysis/TASK_45_ASYMMETRIC_WAKE_HYPOTHESES.md`
     /// §H2 for the bug-#45 reproduction use case.
-    pub fn set_uart_coupling_drop(
-        &mut self,
-        coupling_idx: usize,
-        drop_count: u32,
-    ) {
+    pub fn set_uart_coupling_drop(&mut self, coupling_idx: usize, drop_count: u32) {
         assert!(
             coupling_idx < self.uart_coupling_drop_remaining.len(),
             "set_uart_coupling_drop: coupling_idx {} out of range \
@@ -420,57 +401,43 @@ impl Chain {
     /// Wire a general-purpose source-core pin to a
     /// destination-core pin.  Used for MCLR/RA0 wakeup,
     /// LCD strobes, button-matrix rows, etc.
-    pub fn couple_pin(
-        &mut self,
-        src_core: usize,
-        src_pin: PinId,
-        dst_core: usize,
-        dst_pin: PinId,
-    ) {
-        self.pinnet
-            .couple_pin(src_core, src_pin, dst_core, dst_pin);
+    pub fn couple_pin(&mut self, src_core: usize, src_pin: PinId, dst_core: usize, dst_pin: PinId) {
+        self.pinnet.couple_pin(src_core, src_pin, dst_core, dst_pin);
+        self.pin_coupling_last.push(None);
     }
 
     /// Set an input pin's PORT bit to logic-high (released
-    /// for active-low buttons).  Minimum-viable
-    /// pin-injection for task #35: directly manipulates the
-    /// PORTx memory cell at `0xF80 + port_offset`, preserving
-    /// other bits.  Works for input pins where firmware reads
-    /// via `btfss/btfsc PORTx, n` (no R-M-W) -- which V1.71
-    /// CONTROL's button reads do.  Does NOT model TRIS
-    /// gating; for output pins firmware should still read
-    /// LATx, not PORTx.
-    ///
-    /// Caller convention:
-    ///   in: core_idx, port (A/B/C), bit (0..=7)
-    ///   side: writes the PORTx memory cell directly; does
-    ///         not call `peripherals.on_sfr_write`.
+    /// for active-low buttons).  The GPIO peripheral applies
+    /// TRIS direction, analog-input gating, interrupt-on-change
+    /// / INTx edge flags, and RA0 sleep/idle wake side effects.
     pub fn set_pin_high(&mut self, core_idx: usize, port: PortLetter, bit: u8) {
-        let addr = port_addr(port);
-        let cur = self.cores[core_idx]
-            .memory
-            .read_raw(crate::memory::Address::from_raw(addr));
-        self.cores[core_idx]
-            .memory
-            .write_raw(
-                crate::memory::Address::from_raw(addr),
-                cur | (1 << bit),
-            );
+        if self.set_pin_level(core_idx, port, bit, true) {
+            self.dispatch_gpio_pin_couplings(core_idx);
+        }
     }
 
     /// Set an input pin's PORT bit to logic-low (pressed for
     /// active-low buttons).  Sibling of `set_pin_high`.
     pub fn set_pin_low(&mut self, core_idx: usize, port: PortLetter, bit: u8) {
-        let addr = port_addr(port);
-        let cur = self.cores[core_idx]
-            .memory
-            .read_raw(crate::memory::Address::from_raw(addr));
-        self.cores[core_idx]
-            .memory
-            .write_raw(
-                crate::memory::Address::from_raw(addr),
-                cur & !(1 << bit),
-            );
+        if self.set_pin_level(core_idx, port, bit, false) {
+            self.dispatch_gpio_pin_couplings(core_idx);
+        }
+    }
+
+    fn set_pin_level(&mut self, core_idx: usize, port: PortLetter, bit: u8, high: bool) -> bool {
+        let changed = {
+            let core = &mut self.cores[core_idx];
+            core.peripherals
+                .gpio
+                .drive_external_pin(port, bit, high, &mut core.memory)
+        };
+        if changed && port == PortLetter::A && bit == 0 {
+            if self.cores[core_idx].run_state != RunState::Running {
+                self.cores[core_idx].run_state = RunState::Running;
+                self.schedule_next_core_step(core_idx);
+            }
+        }
+        changed
     }
 
     /// Wire a master-mode I²C bus on `master_core` to a
@@ -499,11 +466,7 @@ impl Chain {
     /// Add a core with an explicit `ClockDomain` (e.g. for
     /// tests that exercise drift).  Returns the core's
     /// index.
-    pub fn push_core_with_clock(
-        &mut self,
-        core: Core,
-        clock: ClockDomain,
-    ) -> usize {
+    pub fn push_core_with_clock(&mut self, core: Core, clock: ClockDomain) -> usize {
         let idx = self.cores.len();
         self.cores.push(core);
         self.stacks.push(Stack::new());
@@ -516,7 +479,7 @@ impl Chain {
     /// Wraps `peripherals::osc::ticks_per_tcy` for
     /// convenience.
     pub fn ticks_per_tcy(&self, core_idx: usize) -> u32 {
-        osc::ticks_per_tcy(self.cores[core_idx].variant())
+        self.cores[core_idx].ticks_per_tcy()
     }
 
     /// Advance the universal clock by `n_ticks`, draining
@@ -668,9 +631,7 @@ impl Chain {
         // `set_link_fault(name, drop=True)` behavior.  The
         // byte vanishes entirely from this coupling's
         // observability surface.
-        if let Some(remaining) =
-            self.uart_coupling_drop_remaining.get_mut(uart_coupling_idx)
-        {
+        if let Some(remaining) = self.uart_coupling_drop_remaining.get_mut(uart_coupling_idx) {
             if *remaining > 0 {
                 *remaining -= 1;
                 return;
@@ -712,10 +673,16 @@ impl Chain {
         // destination, then split-borrow `peripherals` and
         // `memory` -- they're disjoint pub fields so the
         // compiler accepts the simultaneous &mut on each.
-        let dst_core = &mut self.cores[coupling.dst_core];
-        let memory = &mut dst_core.memory;
-        let eusart = &mut dst_core.peripherals.eusart;
-        eusart.deliver_rx_byte(byte, memory);
+        let wake = {
+            let dst_core = &mut self.cores[coupling.dst_core];
+            let memory = &mut dst_core.memory;
+            let eusart = &mut dst_core.peripherals.eusart;
+            eusart.deliver_rx_byte(byte, memory)
+        };
+        if wake && self.cores[coupling.dst_core].run_state != RunState::Running {
+            self.cores[coupling.dst_core].run_state = RunState::Running;
+            self.schedule_next_core_step(coupling.dst_core);
+        }
     }
 
     /// Execute one instruction on `core_idx`, deliver any
@@ -742,6 +709,9 @@ impl Chain {
         // `Core::cycles` then calling `schedule_next_core_step`
         // explicitly).  Task #47.
         if self.cores[core_idx].mclr_held {
+            return;
+        }
+        if self.cores[core_idx].run_state != RunState::Running {
             return;
         }
         // P3.6b research step 2 (task #62): the PC-range hit
@@ -821,8 +791,7 @@ impl Chain {
                         if let Some(t) = w.trigger.as_mut() {
                             if new_val >= t.match_min && new_val <= t.match_max {
                                 t.fire_count += 1;
-                                pending_trigger_writes
-                                    .push((t.target_addr, t.target_value));
+                                pending_trigger_writes.push((t.target_addr, t.target_value));
                             }
                         }
                     }
@@ -841,12 +810,14 @@ impl Chain {
         self.drain_completed_tx_bytes(core_idx);
         self.dispatch_i2c_to_coupled_slaves(core_idx);
         self.dispatch_lcd_pins_to_coupled_slaves(core_idx);
+        self.dispatch_gpio_pin_couplings(core_idx);
         self.schedule_next_core_step(core_idx);
     }
 
     /// Hold a core's MCLR pin LOW: the core's CPU stops
-    /// stepping until released, but the rest of the chain
-    /// continues running.  Used to model the
+    /// stepping until released, after first applying the
+    /// MCLR reset-vector and SFR reset state.  The rest of
+    /// the chain continues running.  Used to model the
     /// "MAIN1 never wakes from STDBY" symptom observed on
     /// real hardware (task #45) without faking it through a
     /// debug pause hook.  See `Core::mclr_held`.
@@ -879,11 +850,11 @@ impl Chain {
     /// WDTCON, datasheet anchor, and constant duplication).
     pub fn hold_core_in_reset(&mut self, core_idx: usize) {
         use crate::memory::Address;
-        use crate::peripherals::eusart::{
-            PIR1_ADDR, RCREG_ADDR, RCSTA_ADDR, TXSTA_ADDR,
-        };
+        use crate::peripherals::eusart::{PIR1_ADDR, RCREG_ADDR, RCSTA_ADDR, TXSTA_ADDR};
         use crate::peripherals::irq::{PIE1_ADDR, PIE2_ADDR, PIR2_ADDR};
         const WDTCON_ADDR: u16 = 0xFD1;
+        apply_reset(&mut self.cores[core_idx], &mut self.stacks[core_idx], ResetSource::Mclr);
+        self.cores[core_idx].reset_cycles_for_test();
         self.cores[core_idx].mclr_held = true;
         self.cores[core_idx].peripherals.eusart.reset_state();
         let memory = &mut self.cores[core_idx].memory;
@@ -938,7 +909,13 @@ impl Chain {
         let coupled: Vec<usize> = self
             .lcd_couplings
             .iter()
-            .filter_map(|&(c, l)| if c == controller_core_idx { Some(l) } else { None })
+            .filter_map(|&(c, l)| {
+                if c == controller_core_idx {
+                    Some(l)
+                } else {
+                    None
+                }
+            })
             .collect();
         if coupled.is_empty() {
             return;
@@ -957,6 +934,49 @@ impl Chain {
         let nibble = portb & 0x0F;
         for slave_idx in coupled {
             self.lcd_slaves[slave_idx].observe_pins(rs, e, nibble);
+        }
+    }
+
+    /// Propagate general-purpose pin couplings sourced by
+    /// `source_core_idx`.  The source level is sampled from PORTx,
+    /// which already reflects TRIS/LAT/analog/USB effects via the
+    /// GPIO peripheral.  Destination writes go through
+    /// `set_pin_level`, so INTx/RBIF and RA0 wake side effects are
+    /// preserved.
+    fn dispatch_gpio_pin_couplings(&mut self, source_core_idx: usize) {
+        let matching: Vec<(usize, crate::pinnet::PinCoupling)> = self
+            .pinnet
+            .pin
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, coupling)| {
+                if coupling.src_core == source_core_idx {
+                    Some((idx, coupling.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if matching.is_empty() {
+            return;
+        }
+        for (idx, coupling) in matching {
+            let level = {
+                let mem = &self.cores[coupling.src_core].memory;
+                gpio::read_pin_level(mem, coupling.src_pin.port, coupling.src_pin.bit)
+            };
+            if self.pin_coupling_last.get(idx).copied().flatten() == Some(level) {
+                continue;
+            }
+            if let Some(slot) = self.pin_coupling_last.get_mut(idx) {
+                *slot = Some(level);
+            }
+            self.set_pin_level(
+                coupling.dst_core,
+                coupling.dst_pin.port,
+                coupling.dst_pin.bit,
+                level,
+            );
         }
     }
 
@@ -988,12 +1008,24 @@ impl Chain {
         let coupled_tas3108_indices: Vec<usize> = self
             .tas3108_couplings
             .iter()
-            .filter_map(|&(mc, si)| if mc == master_core_idx { Some(si) } else { None })
+            .filter_map(|&(mc, si)| {
+                if mc == master_core_idx {
+                    Some(si)
+                } else {
+                    None
+                }
+            })
             .collect();
         let coupled_src4382_indices: Vec<usize> = self
             .src4382_couplings
             .iter()
-            .filter_map(|&(mc, si)| if mc == master_core_idx { Some(si) } else { None })
+            .filter_map(|&(mc, si)| {
+                if mc == master_core_idx {
+                    Some(si)
+                } else {
+                    None
+                }
+            })
             .collect();
         // Drive each coupled slave's I²C state machine.
         // For TxByte, also override ACKSTAT if any slave
@@ -1203,7 +1235,7 @@ impl Chain {
     /// scheduling semantic intact.
     pub fn schedule_next_core_step(&mut self, core_idx: usize) {
         let tcy = self.cores[core_idx].cycles();
-        let factor = self.clocks[core_idx].nominal_ticks_per_tcy as u64;
+        let factor = self.cores[core_idx].ticks_per_tcy() as u64;
         let nominal_tick = tcy.saturating_mul(factor);
         let drifted_tick = self.clocks[core_idx].apply_drift(nominal_tick);
         let epoch = self.boot_epochs[core_idx];
@@ -1228,6 +1260,9 @@ impl Chain {
         // independent so a future `apply_reset_all`-only
         // path stays consistent.
         self.uart_tx_history.clear();
+        for level in &mut self.pin_coupling_last {
+            *level = None;
+        }
     }
 
     /// Bootstrap each core's first `CoreInstructionComplete`
@@ -1478,10 +1513,7 @@ mod tests {
         let event = chain.events.peek().unwrap();
         // K20 ticks_per_tcy = 16; 100 Tcy * 16 = 1600 ticks.
         assert_eq!(event.tick, 1600);
-        assert_eq!(
-            event.kind,
-            EventKind::CoreInstructionComplete(idx),
-        );
+        assert_eq!(event.kind, EventKind::CoreInstructionComplete(idx),);
     }
 
     /// Drift-aware scheduling: a core with +20 000 ppm
@@ -1638,17 +1670,17 @@ mod tests {
         // instructions + a 960-Tcy frame on the source.
         let mut flash_src = vec![0u8; 32 * 1024];
         let prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x05, 0x0E]),       // MOVLW 0x05
-            (0x0002, [0xAF, 0x6E]),       // MOVWF SPBRG (a=0)
-            (0x0004, [0x20, 0x0E]),       // MOVLW 0x20 (TXEN)
-            (0x0006, [0xAC, 0x6E]),       // MOVWF TXSTA
-            (0x0008, [0x80, 0x0E]),       // MOVLW 0x80 (SPEN)
-            (0x000A, [0xAB, 0x6E]),       // MOVWF RCSTA
-            (0x000C, [0x40, 0x0E]),       // MOVLW 0x40
-            (0x000E, [0xB8, 0x6E]),       // MOVWF BAUDCON
-            (0x0010, [0x55, 0x0E]),       // MOVLW 0x55
-            (0x0012, [0xAD, 0x6E]),       // MOVWF TXREG
-            (0x0014, [0xFF, 0xD7]),       // BRA -1
+            (0x0000, [0x05, 0x0E]), // MOVLW 0x05
+            (0x0002, [0xAF, 0x6E]), // MOVWF SPBRG (a=0)
+            (0x0004, [0x20, 0x0E]), // MOVLW 0x20 (TXEN)
+            (0x0006, [0xAC, 0x6E]), // MOVWF TXSTA
+            (0x0008, [0x80, 0x0E]), // MOVLW 0x80 (SPEN)
+            (0x000A, [0xAB, 0x6E]), // MOVWF RCSTA
+            (0x000C, [0x40, 0x0E]), // MOVLW 0x40
+            (0x000E, [0xB8, 0x6E]), // MOVWF BAUDCON
+            (0x0010, [0x55, 0x0E]), // MOVLW 0x55
+            (0x0012, [0xAD, 0x6E]), // MOVWF TXREG
+            (0x0014, [0xFF, 0xD7]), // BRA -1
         ];
         for (a, bytes) in prog {
             flash_src[*a as usize] = bytes[0];
@@ -1658,9 +1690,9 @@ mod tests {
         // BRA loop.
         let mut flash_dst = vec![0u8; 32 * 1024];
         let dst_prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x90, 0x0E]),       // MOVLW 0x90 (SPEN|CREN)
-            (0x0002, [0xAB, 0x6E]),       // MOVWF RCSTA
-            (0x0004, [0xFF, 0xD7]),       // BRA -1
+            (0x0000, [0x90, 0x0E]), // MOVLW 0x90 (SPEN|CREN)
+            (0x0002, [0xAB, 0x6E]), // MOVWF RCSTA
+            (0x0004, [0xFF, 0xD7]), // BRA -1
         ];
         for (a, bytes) in dst_prog {
             flash_dst[*a as usize] = bytes[0];
@@ -1690,14 +1722,17 @@ mod tests {
         chain.step_ticks(30_000);
 
         // Destination's RCREG should hold 0x55.
-        let rcreg = chain.cores[i_dst].memory.read_raw(
-            crate::memory::Address::from_raw(0xFAE),
+        let rcreg = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFAE));
+        assert_eq!(
+            rcreg, 0x55,
+            "destination RCREG must hold the propagated byte"
         );
-        assert_eq!(rcreg, 0x55, "destination RCREG must hold the propagated byte");
         // PIR1.RCIF (bit 5) must be set.
-        let pir1 = chain.cores[i_dst].memory.read_raw(
-            crate::memory::Address::from_raw(0xF9E),
-        );
+        let pir1 = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xF9E));
         assert_eq!(pir1 & (1 << 5), 1 << 5, "destination RCIF must assert");
     }
 
@@ -1735,10 +1770,8 @@ mod tests {
         // executor stepping is required for this test --
         // we exercise the chain-level drain path in
         // isolation.
-        dst.memory.write_raw(
-            crate::memory::Address::from_raw(0xFAB),
-            0x90,
-        );
+        dst.memory
+            .write_raw(crate::memory::Address::from_raw(0xFAB), 0x90);
         let i_dst = chain.push_core(dst);
         chain.couple_uart(
             i_src,
@@ -1773,14 +1806,21 @@ mod tests {
 
         // (a) byte committed to destination RCREG (0xFAE)
         // and PIR1.RCIF asserted (0xF9E bit 5).
-        let rcreg = chain.cores[i_dst].memory.read_raw(
-            crate::memory::Address::from_raw(0xFAE),
+        let rcreg = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFAE));
+        assert_eq!(
+            rcreg, 0xDE,
+            "destination RCREG must hold the byte after drain"
         );
-        assert_eq!(rcreg, 0xDE, "destination RCREG must hold the byte after drain");
-        let pir1 = chain.cores[i_dst].memory.read_raw(
-            crate::memory::Address::from_raw(0xF9E),
+        let pir1 = chain.cores[i_dst]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xF9E));
+        assert_eq!(
+            pir1 & (1 << 5),
+            1 << 5,
+            "destination RCIF must assert after drain"
         );
-        assert_eq!(pir1 & (1 << 5), 1 << 5, "destination RCIF must assert after drain");
 
         // (b) NO `UartByteDelivery` event was enqueued by
         // the drain.  Locks in the synchronous-delivery
@@ -1841,7 +1881,10 @@ mod tests {
 
         // Engage blackout, then drain.
         chain.set_uart_blackout(true);
-        assert!(chain.uart_blackout, "set_uart_blackout(true) must flip the flag");
+        assert!(
+            chain.uart_blackout,
+            "set_uart_blackout(true) must flip the flag"
+        );
         chain.drain_completed_tx_bytes(i_src);
 
         // Destination RCREG unchanged (byte dropped, not delivered).
@@ -2100,10 +2143,8 @@ mod tests {
         let mut dst = Core::new(Variant::Pic18F25K20);
         // RCSTA = 0xFAB; SPEN | CREN = 0x90 -- enable RX so
         // `deliver_rx_byte` accepts the byte.
-        dst.memory.write_raw(
-            crate::memory::Address::from_raw(0xFAB),
-            0x90,
-        );
+        dst.memory
+            .write_raw(crate::memory::Address::from_raw(0xFAB), 0x90);
         let i_dst = chain.push_core(dst);
         chain.couple_uart(
             i_src,
@@ -2113,10 +2154,7 @@ mod tests {
         );
 
         chain.current_tick = 4242;
-        assert!(
-            chain.uart_tx_history.is_empty(),
-            "history starts empty"
-        );
+        assert!(chain.uart_tx_history.is_empty(), "history starts empty");
         chain.deliver_uart_byte(0, 0xC3);
         chain.current_tick = 4243;
         chain.deliver_uart_byte(0, 0xA5);
@@ -2227,13 +2265,13 @@ mod tests {
         //   0x0C  BRA -1              -> 0xD7FF -> [0xFF, 0xD7]
         let mut flash = vec![0u8; 32 * 1024];
         let prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x28, 0x0E]),       // MOVLW 0x28 (SSPEN | SSPM=I2C master)
-            (0x0002, [0xC6, 0x6E]),       // MOVWF SSPCON1
-            (0x0004, [0x01, 0x0E]),       // MOVLW 0x01 (SSPADD: 2-Tcy bit period)
-            (0x0006, [0xC8, 0x6E]),       // MOVWF SSPADD
-            (0x0008, [0x68, 0x0E]),       // MOVLW 0x68 (TAS3108 write addr)
-            (0x000A, [0xC9, 0x6E]),       // MOVWF SSPBUF
-            (0x000C, [0xFF, 0xD7]),       // BRA -1 (loop forever)
+            (0x0000, [0x28, 0x0E]), // MOVLW 0x28 (SSPEN | SSPM=I2C master)
+            (0x0002, [0xC6, 0x6E]), // MOVWF SSPCON1
+            (0x0004, [0x01, 0x0E]), // MOVLW 0x01 (SSPADD: 2-Tcy bit period)
+            (0x0006, [0xC8, 0x6E]), // MOVWF SSPADD
+            (0x0008, [0x68, 0x0E]), // MOVLW 0x68 (TAS3108 write addr)
+            (0x000A, [0xC9, 0x6E]), // MOVWF SSPBUF
+            (0x000C, [0xFF, 0xD7]), // BRA -1 (loop forever)
         ];
         for (a, bytes) in prog {
             flash[*a as usize] = bytes[0];
@@ -2267,9 +2305,9 @@ mod tests {
         // (cleared by chain dispatch's `Mssp::override_acked`)
         // -- without the coupling the default
         // `complete_tx_byte` would have left it at 1.
-        let con2 = chain.cores[i_master].memory.read_raw(
-            crate::memory::Address::from_raw(0xFC5),
-        );
+        let con2 = chain.cores[i_master]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFC5));
         assert_eq!(
             con2 & (1 << 6),
             0,
@@ -2326,31 +2364,31 @@ mod tests {
         //   BRA -1:         0xD7FF -> [0xFF, 0xD7]
         let mut flash = vec![0u8; 32 * 1024];
         let prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x28, 0x0E]),       // MOVLW 0x28 (SSPEN | I2C master)
-            (0x0002, [0xC6, 0x6E]),       // MOVWF SSPCON1
-            (0x0004, [0x01, 0x0E]),       // MOVLW 0x01 (SSPADD)
-            (0x0006, [0xC8, 0x6E]),       // MOVWF SSPADD
-            (0x0008, [0xC5, 0x80]),       // BSF SSPCON2, 0 (SEN = start)
-            (0x000A, [0xC5, 0xB0]),       // BTFSC SSPCON2, 0 (poll until SEN clears)
-            (0x000C, [0xFE, 0xD7]),       // BRA -2 (back to BTFSC)
-            (0x000E, [0x68, 0x0E]),       // MOVLW 0x68
-            (0x0010, [0xC9, 0x6E]),       // MOVWF SSPBUF
-            (0x0012, [0xC7, 0xB0]),       // BTFSC SSPSTAT, 0 (poll BF)
-            (0x0014, [0xFE, 0xD7]),       // BRA -2 (back to BTFSC)
-            (0x0016, [0x30, 0x0E]),       // MOVLW 0x30
-            (0x0018, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x0000, [0x28, 0x0E]), // MOVLW 0x28 (SSPEN | I2C master)
+            (0x0002, [0xC6, 0x6E]), // MOVWF SSPCON1
+            (0x0004, [0x01, 0x0E]), // MOVLW 0x01 (SSPADD)
+            (0x0006, [0xC8, 0x6E]), // MOVWF SSPADD
+            (0x0008, [0xC5, 0x80]), // BSF SSPCON2, 0 (SEN = start)
+            (0x000A, [0xC5, 0xB0]), // BTFSC SSPCON2, 0 (poll until SEN clears)
+            (0x000C, [0xFE, 0xD7]), // BRA -2 (back to BTFSC)
+            (0x000E, [0x68, 0x0E]), // MOVLW 0x68
+            (0x0010, [0xC9, 0x6E]), // MOVWF SSPBUF
+            (0x0012, [0xC7, 0xB0]), // BTFSC SSPSTAT, 0 (poll BF)
+            (0x0014, [0xFE, 0xD7]), // BRA -2 (back to BTFSC)
+            (0x0016, [0x30, 0x0E]), // MOVLW 0x30
+            (0x0018, [0xC9, 0x6E]), // MOVWF SSPBUF
             (0x001A, [0xC7, 0xB0]),
-            (0x001C, [0xFE, 0xD7]),       // BRA -2
-            (0x001E, [0xDE, 0x0E]),       // MOVLW 0xDE
-            (0x0020, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x001C, [0xFE, 0xD7]), // BRA -2
+            (0x001E, [0xDE, 0x0E]), // MOVLW 0xDE
+            (0x0020, [0xC9, 0x6E]), // MOVWF SSPBUF
             (0x0022, [0xC7, 0xB0]),
-            (0x0024, [0xFE, 0xD7]),       // BRA -2
-            (0x0026, [0xAD, 0x0E]),       // MOVLW 0xAD
-            (0x0028, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x0024, [0xFE, 0xD7]), // BRA -2
+            (0x0026, [0xAD, 0x0E]), // MOVLW 0xAD
+            (0x0028, [0xC9, 0x6E]), // MOVWF SSPBUF
             (0x002A, [0xC7, 0xB0]),
-            (0x002C, [0xFE, 0xD7]),       // BRA -2
-            (0x002E, [0xC5, 0x84]),       // BSF SSPCON2, 2 (PEN = stop)
-            (0x0030, [0xFF, 0xD7]),       // BRA -1 (done)
+            (0x002C, [0xFE, 0xD7]), // BRA -2
+            (0x002E, [0xC5, 0x84]), // BSF SSPCON2, 2 (PEN = stop)
+            (0x0030, [0xFF, 0xD7]), // BRA -1 (done)
         ];
         for (a, bytes) in prog {
             flash[*a as usize] = bytes[0];
@@ -2401,23 +2439,23 @@ mod tests {
         // re-awaken on the 0x6A data byte.
         let mut flash = vec![0u8; 32 * 1024];
         let prog: &[(u32, [u8; 2])] = &[
-            (0x0000, [0x28, 0x0E]),       // MOVLW 0x28
-            (0x0002, [0xC6, 0x6E]),       // MOVWF SSPCON1
+            (0x0000, [0x28, 0x0E]), // MOVLW 0x28
+            (0x0002, [0xC6, 0x6E]), // MOVWF SSPCON1
             (0x0004, [0x01, 0x0E]),
-            (0x0006, [0xC8, 0x6E]),       // MOVWF SSPADD
-            (0x0008, [0xC5, 0x80]),       // BSF SSPCON2, 0 (SEN)
-            (0x000A, [0xC5, 0xB0]),       // BTFSC SSPCON2, 0
-            (0x000C, [0xFE, 0xD7]),       // BRA -2 (back to BTFSC)
-            (0x000E, [0x68, 0x0E]),       // MOVLW 0x68 (slave A)
-            (0x0010, [0xC9, 0x6E]),       // MOVWF SSPBUF
-            (0x0012, [0xC7, 0xB0]),       // BTFSC SSPSTAT, 0
-            (0x0014, [0xFE, 0xD7]),       // BRA -2
-            (0x0016, [0x6A, 0x0E]),       // MOVLW 0x6A (slave B's addr as data)
-            (0x0018, [0xC9, 0x6E]),       // MOVWF SSPBUF
+            (0x0006, [0xC8, 0x6E]), // MOVWF SSPADD
+            (0x0008, [0xC5, 0x80]), // BSF SSPCON2, 0 (SEN)
+            (0x000A, [0xC5, 0xB0]), // BTFSC SSPCON2, 0
+            (0x000C, [0xFE, 0xD7]), // BRA -2 (back to BTFSC)
+            (0x000E, [0x68, 0x0E]), // MOVLW 0x68 (slave A)
+            (0x0010, [0xC9, 0x6E]), // MOVWF SSPBUF
+            (0x0012, [0xC7, 0xB0]), // BTFSC SSPSTAT, 0
+            (0x0014, [0xFE, 0xD7]), // BRA -2
+            (0x0016, [0x6A, 0x0E]), // MOVLW 0x6A (slave B's addr as data)
+            (0x0018, [0xC9, 0x6E]), // MOVWF SSPBUF
             (0x001A, [0xC7, 0xB0]),
-            (0x001C, [0xFE, 0xD7]),       // BRA -2
-            (0x001E, [0xC5, 0x84]),       // BSF SSPCON2, 2 (PEN)
-            (0x0020, [0xFF, 0xD7]),       // BRA -1 (done)
+            (0x001C, [0xFE, 0xD7]), // BRA -2
+            (0x001E, [0xC5, 0x84]), // BSF SSPCON2, 2 (PEN)
+            (0x0020, [0xFF, 0xD7]), // BRA -1 (done)
         ];
         for (a, bytes) in prog {
             flash[*a as usize] = bytes[0];
@@ -2429,7 +2467,7 @@ mod tests {
         master.flash_mut().copy_from_slice(&flash);
         let i_master = chain.push_core(master);
         let i_a = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::new(false)); // 0x68
-        let i_b = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::new(true));  // 0x6A
+        let i_b = chain.push_tas3108(crate::peripherals::tas3108::Tas3108::new(true)); // 0x6A
         chain.couple_tas3108(i_master, i_a);
         chain.couple_tas3108(i_master, i_b);
         chain.apply_reset_all(ResetSource::PowerOn);
@@ -2485,9 +2523,9 @@ mod tests {
         chain.schedule_initial_steps(&[0]);
         chain.step_ticks(500);
 
-        let con2 = chain.cores[i_master].memory.read_raw(
-            crate::memory::Address::from_raw(0xFC5),
-        );
+        let con2 = chain.cores[i_master]
+            .memory
+            .read_raw(crate::memory::Address::from_raw(0xFC5));
         assert_eq!(
             con2 & (1 << 6),
             1 << 6,

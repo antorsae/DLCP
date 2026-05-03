@@ -1,6 +1,6 @@
 # `dlcp-sim` Rust Rewrite — Progress Ledger
 
-Last updated: 2026-04-28
+Last updated: 2026-05-03
 Branch: `feature/sim-rewrite-rust`
 
 This file is **machine-readable**.  Sub-tasks have a fixed shape:
@@ -421,7 +421,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [done] P4.8 Switch default backend to Rust; gpsim now opt-in only
   - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
   - artifact: `tests/sim/conftest.py` default flip + `src/dlcp_fw/sim/dlcp_sim_native.py` self-bootstrap of the .so import path so plain `pytest tests/sim` works without `PYTHONPATH=src` (commit fecb757).  Plus explicit `DLCP_SIM_BACKEND=gpsim` overrides on the 3 ground-truth scripts (`scripts/{capture_gpsim_ground_truth,run_phase0_blessing,replay_ground_truth}.py`) and prefix on the 5 Phase-0 ledger verify commands so post-flip the gpsim ground-truth path is preserved (commits 698e4c5 + 77d62b4).
-  - notes: gate green with no env var: 782 passed, 310 skipped, 1 xfailed, 0 failed in 204.69s.  pytest.ini is unchanged -- the conftest default flip in `_resolve_dlcp_sim_backend()` plus the matching defensive-fallback flip in the `dlcp_sim_backend` fixture is sufficient.  The 310 skipped tests are still on the P4.5/4.6/4.7 migration backlog; skipped tests don't fail the gate.  Subsequent P4.9 will excise the gpsim wrappers (which will require either migrating or deleting those 310 still-skipped tests since they import from chain_gpsim/wire_chain_gpsim).
+  - notes: original gate green with no env var: 782 passed, 310 skipped, 1 xfailed, 0 failed in 204.69s.  Current post-FID-closure split gate is recorded under P4.gate below.  pytest.ini is unchanged -- the conftest default flip in `_resolve_dlcp_sim_backend()` plus the matching defensive-fallback flip in the `dlcp_sim_backend` fixture is sufficient.  The remaining skipped tests are still on the P4.5/4.6/4.7 migration backlog; skipped tests don't fail the gate.  Subsequent P4.9 will excise the gpsim wrappers (which will require either migrating or deleting the still-skipped tests since they import from chain_gpsim/wire_chain_gpsim).
 
 - [pending] P4.9 Delete `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py`, `.stc` script generators
   - verify: `.venv_ep0/bin/python scripts/check_gpsim_excision.py`
@@ -431,9 +431,14 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [in_progress] P4.gate Run phase-4 gate (timing relaxation proposed; awaiting user sign-off)
   - verify: `.venv_ep0/bin/python scripts/check_phase4_gate.py`
   - artifact: `scripts/check_phase4_gate.py` (committed cb0cb3a + 05f1136 + ac9d7d9 + 915baea + this commit).
-  - status: helper splits the suite by `slow` marker and reports:
-    - **fast subset** (`-m "not slow"`, 622 tests, timing-gated): 582 passed, 39 skipped, 1 xfailed, 0 failed in 5.8 s wall-clock under -n 16 -- well under the 60 s budget.  Runs FIRST so fast regressions surface before the multi-minute slow subset.
-    - **slow subset** (`-m slow`, 471 tests, no timing budget): green.
+  - status: helper splits the suite by `slow` marker.  Latest verification
+    in linked worktree `analysis-sim-rust-fidelity` used the shared
+    interpreter at `analysis/.venv_ep0/bin/python` because the helper is
+    hardcoded to `<worktree>/.venv_ep0`:
+    - **fast subset** (`DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"`): 582 passed, 39 skipped, 1 xfailed, 0 failed in 8.80 s wall-clock -- well under the 60 s budget.  Runs FIRST so fast regressions surface before the multi-minute slow subset.
+    - **slow subset** (`DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m slow`): 204 passed, 260 skipped, 7 xfailed, 0 failed in 259.72 s.
+  - silicon-fidelity closure note (2026-05-03): `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` FID-01..FID-16 are complete.  Final integrated Rust gate: `cargo test -p dlcp-sim --release` -> 591 lib tests passed + all integration/doc tests passed with the existing ignored tests only.  PyO3 rebuilt with `cargo build --release -p dlcp-sim-py && bash crates/dlcp-sim-py/build.sh`.
+  - regression classification from FID-14: the GPIO electrical model exposed old raw `PORTA`/`PORTC` button seeding in multicore tests and PyO3 factories.  Classification: DLCP test/facade harness bug.  Resolution: keep external pin level separate from PORT readback and seed released CONTROL buttons via `set_pin_high` on RA1/RA2/RA3/RA4/RC0/RC5.  No new skip/xfail/shim added.
   
   **Spec-relaxation status**: the original P4.gate target was the unified suite under 60 s wall-clock.  Slow tests like `test_v171_layer2_emits_all_six_step_frame_types_after_warmup` (80 M-Tcy warmup + 160 step iterations, ~47 s wall-clock individually) plus aggregate slow-subset wall-clock of ~3 minutes makes the unified-suite 60 s target infeasible with the current corpus.  This script implements a PROPOSED RELAXATION: time only the fast subset against the 60 s budget; require both subsets to pass green.  This relaxation is NOT in the spec or the original P4.gate description -- it is a developer proposal pending user sign-off.  P4.gate stays `in_progress` until the user explicitly accepts the relaxation (or directs an alternative path: aggressive optimization of the slow tests, deletion of the slowest, or a higher unified-suite budget).  Note that PF.2 in `docs/SIM_REWRITE_RUST_SPEC.md` likewise says "rust-only sim gate < 60 s" without the slow/fast split; closing P4.gate may therefore also require a parallel update to PF.2.
 

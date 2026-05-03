@@ -47,6 +47,7 @@ pub const EECON1_ADDR: u16 = 0xFA6;
 pub const PIR2_ADDR: u16 = 0xFA1;
 
 const EECON1_EEPGD: u8 = 1 << 7;
+const EECON1_CFGS: u8 = 1 << 6;
 const EECON1_FREE: u8 = 1 << 4;
 const EECON1_WRERR: u8 = 1 << 3;
 const EECON1_WREN: u8 = 1 << 2;
@@ -166,16 +167,10 @@ impl Eeprom {
         self.storage[self.pending_addr as usize] = self.pending_data;
         // Clear EECON1.WR.
         let con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
-        mem.write_raw(
-            Address::from_raw(EECON1_ADDR),
-            con1 & !EECON1_WR,
-        );
+        mem.write_raw(Address::from_raw(EECON1_ADDR), con1 & !EECON1_WR);
         // Assert PIR2.EEIF.
         let pir2 = mem.read_raw(Address::from_raw(PIR2_ADDR));
-        mem.write_raw(
-            Address::from_raw(PIR2_ADDR),
-            pir2 | PIR2_EEIF,
-        );
+        mem.write_raw(Address::from_raw(PIR2_ADDR), pir2 | PIR2_EEIF);
     }
 
     fn handle_eecon2_write(&mut self, value: u8) {
@@ -202,17 +197,11 @@ impl Eeprom {
             let byte = self.storage[eeadr as usize];
             mem.write_raw(Address::from_raw(EEDATA_ADDR), byte);
             let cur = mem.read_raw(Address::from_raw(EECON1_ADDR));
-            mem.write_raw(
-                Address::from_raw(EECON1_ADDR),
-                cur & !EECON1_RD,
-            );
+            mem.write_raw(Address::from_raw(EECON1_ADDR), cur & !EECON1_RD);
         }
         // WR path: EEPGD=0 + WREN=1 + WR=1 + unlock armed.
         // The unlock sequencer resets after consuming.
-        if (value & EECON1_WR) != 0
-            && (value & EECON1_EEPGD) == 0
-            && (value & EECON1_WREN) != 0
-        {
+        if (value & EECON1_WR) != 0 && (value & EECON1_EEPGD) == 0 && (value & EECON1_WREN) != 0 {
             if self.unlock == UnlockPhase::Armed && self.pending_tcy.is_none() {
                 self.pending_addr = mem.read_raw(Address::from_raw(EEADR_ADDR));
                 self.pending_data = mem.read_raw(Address::from_raw(EEDATA_ADDR));
@@ -226,12 +215,42 @@ impl Eeprom {
                 // firmware-intended `value`, so bit 5 stays
                 // 0.
                 let cur = mem.read_raw(Address::from_raw(EECON1_ADDR));
-                mem.write_raw(
-                    Address::from_raw(EECON1_ADDR),
-                    cur | EECON1_WRERR,
-                );
+                mem.write_raw(Address::from_raw(EECON1_ADDR), cur | EECON1_WRERR);
             }
         }
+    }
+
+    /// Consume the same EECON2 unlock sequencer for program-
+    /// memory/config/user-ID writes.  The actual non-volatile
+    /// storage lives on [`crate::core::Core`], so the executor
+    /// calls this after the SFR write lands; `true` means the
+    /// caller may commit the TBLWT holding buffer.  Bad unlocks
+    /// set WRERR just like the data-EEPROM path.
+    pub fn consume_program_write_unlock(&mut self, value: u8, mem: &mut Memory) -> bool {
+        if (value & EECON1_WR) == 0 || (value & EECON1_EEPGD) == 0 || (value & EECON1_WREN) == 0 {
+            return false;
+        }
+
+        if self.unlock == UnlockPhase::Armed {
+            self.unlock = UnlockPhase::Idle;
+            true
+        } else {
+            let cur = mem.read_raw(Address::from_raw(EECON1_ADDR));
+            mem.write_raw(Address::from_raw(EECON1_ADDR), cur | EECON1_WRERR);
+            false
+        }
+    }
+
+    pub const fn eecon1_cfgs_bit() -> u8 {
+        EECON1_CFGS
+    }
+
+    pub const fn eecon1_free_bit() -> u8 {
+        EECON1_FREE
+    }
+
+    pub const fn eecon1_wr_bit() -> u8 {
+        EECON1_WR
     }
 }
 
@@ -337,15 +356,9 @@ mod tests {
         let con1 = EECON1_RD;
         mem.write_raw(Address::from_raw(EECON1_ADDR), con1);
         ee.handle_eecon1_write(con1, &mut mem);
-        assert_eq!(
-            mem.read_raw(Address::from_raw(EEDATA_ADDR)),
-            0x99,
-        );
+        assert_eq!(mem.read_raw(Address::from_raw(EEDATA_ADDR)), 0x99,);
         // RD self-cleared.
-        assert_eq!(
-            mem.read_raw(Address::from_raw(EECON1_ADDR)) & EECON1_RD,
-            0,
-        );
+        assert_eq!(mem.read_raw(Address::from_raw(EECON1_ADDR)) & EECON1_RD, 0,);
     }
 
     /// Regression: the EEPROM hook's RD-self-clear and

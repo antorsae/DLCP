@@ -152,8 +152,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # protocol" / docs/SIM_REWRITE_RUST_PROGRESS.md P4.3 + P4.8.
 #
 # Migration status (P4.5/4.6/4.7 in_progress, P4.8 done): the
-# rust backend gate is green (782 passed, 310 skipped, 1 xfailed,
-# 0 failed).  Skipped tests are blocked on the multi-MAIN
+# rust backend gate is green.  Latest split verification
+# (2026-05-03): fast subset 582 passed / 39 skipped / 1 xfailed,
+# slow subset 204 passed / 260 skipped / 7 xfailed, 0 failed.
+# Skipped tests are blocked on the multi-MAIN
 # wire-chain factory, executor breakpoint primitives, dynamic
 # standby overlay, and 4 files with pre-existing failures on
 # main.  See P4.5/4.6/4.7 sub-task lists for the full backlog.

@@ -1,16 +1,13 @@
-//! Timer0 + Timer3 peripheral models — Phase-2 minimum.
+//! Timer0/1/2/3 peripheral models.
 //!
 //! ## Scope
 //!
-//! Only Timer0 and Timer3 are wired here.  V1.71 CONTROL
-//! uses Timer0 for the idle-timer countdown; V3.2 MAIN
-//! uses Timer3 for the delayed-switch hold + Layer-5
-//! diag counters (per
-//! `docs/V163B_DIAGNOSTICS_MENU_SPEC.md`).  Timer1 / Timer2
-//! exist on both chips but neither firmware family
-//! exercises them in Phase-2 boot scope (Timer2 is mainly a
-//! PWM period source for the ECCP1 module which we don't
-//! model in Phase 2).
+//! V1.71 CONTROL uses Timer0 for the idle-timer countdown;
+//! V3.2 MAIN uses Timer3 for the delayed-switch hold +
+//! Layer-5 diag counters (per
+//! `docs/V163B_DIAGNOSTICS_MENU_SPEC.md`).  Timer1/Timer2
+//! are modeled to the DLCP-observable level required by
+//! `docs/SIM_REWRITE_RUST_SPEC.md` §11c FID-09.
 //!
 //! ## SFR addresses (DS40001303H Tbl 5-1)
 //!
@@ -19,6 +16,12 @@
 //! | 0xFD7 | TMR0H   | Timer0 high byte (latched on TMR0L read) |
 //! | 0xFD6 | TMR0L   | Timer0 low byte                     |
 //! | 0xFD5 | T0CON   | TMR0ON, T08BIT, T0CS, T0SE, PSA, T0PS<2:0> |
+//! | 0xFCF | TMR1H   | Timer1 high byte / buffer           |
+//! | 0xFCE | TMR1L   | Timer1 low byte                     |
+//! | 0xFCD | T1CON   | RD16, T1RUN, T1CKPS<1:0>, TMR1CS, TMR1ON |
+//! | 0xFCC | TMR2    | Timer2 counter                      |
+//! | 0xFCB | PR2     | Timer2 period                       |
+//! | 0xFCA | T2CON   | T2OUTPS<3:0>, TMR2ON, T2CKPS<1:0>  |
 //! | 0xFB3 | TMR3H   | Timer3 high byte (latched on TMR3L read) |
 //! | 0xFB2 | TMR3L   | Timer3 low byte                     |
 //! | 0xFB1 | T3CON   | RD16, T3CCP2, T3CKPS<1:0>, T3CCP1, T3SYNC, TMR3CS, TMR3ON |
@@ -26,40 +29,50 @@
 //! Interrupt flags:
 //!
 //! - INTCON.TMR0IF (bit 2) -- Timer0 overflow
+//! - PIR1.TMR1IF (bit 0) -- Timer1 overflow
+//! - PIR1.TMR2IF (bit 1) -- Timer2 period/postscale match
 //! - PIR2.TMR3IF (bit 1) -- Timer3 overflow
 //!
 //! ## Phase-2 timing model
 //!
-//! Both timers run in their internal-clock-source mode
-//! (T0CS=0 for Timer0; TMR3CS=0 for Timer3) with a
-//! per-Tcy increment scaled by the prescaler.  External-
-//! pin sources (T0CKI, T1OSC) are Phase-3 pin-network
-//! work.
+//! Timers run in their internal-clock-source mode with a
+//! per-Tcy increment scaled by the prescaler.  External
+//! sources are modeled as explicit edge-injection hooks; the
+//! pin-network that calls those hooks is FID-14 work.
 //!
 //! Timer0 prescaler: T0CON.PSA=0 enables the prescaler;
 //! T0PS<2:0> selects 1:2..1:256.  At the prescaled rate
 //! TMR0 increments by 1 per Tcy / prescaler-divisor.
 //!
 //! Timer3 prescaler: T3CON.T3CKPS<1:0> selects 1:1..1:8.
+//! Timer2 prescaler: T2CON.T2CKPS<1:0> selects 1:1, 1:4,
+//! then 1:16 for both `10` and `11`; T2OUTPS selects 1:1
+//! through 1:16 interrupt postscaling.
 //!
 //! ## Read-modify-write semantics
 //!
-//! TMR0H / TMR3H are latched-buffer registers in 16-bit
-//! mode (T08BIT=0 / RD16=1): a read of TMR0L copies the
-//! current high byte into a hidden buffer that the next
-//! TMR0H read returns.  The Phase-2 model defers this to
-//! P2.7 (when a real test exercises 16-bit Timer reads);
-//! for now both halves are independent SFR bytes.
+//! TMR0H / TMR1H / TMR3H are latched-buffer registers in
+//! 16-bit mode (T08BIT=0 / RD16=1): a read of TMRxL copies
+//! the current high byte into a buffer that the next TMRxH
+//! read returns; high-byte writes are staged until the low
+//! byte write commits the 16-bit reload.
 
 use crate::memory::{Address, Memory, Variant};
 
 pub const TMR0H_ADDR: u16 = 0xFD7;
 pub const TMR0L_ADDR: u16 = 0xFD6;
 pub const T0CON_ADDR: u16 = 0xFD5;
+pub const TMR1H_ADDR: u16 = 0xFCF;
+pub const TMR1L_ADDR: u16 = 0xFCE;
+pub const T1CON_ADDR: u16 = 0xFCD;
+pub const TMR2_ADDR: u16 = 0xFCC;
+pub const PR2_ADDR: u16 = 0xFCB;
+pub const T2CON_ADDR: u16 = 0xFCA;
 pub const TMR3H_ADDR: u16 = 0xFB3;
 pub const TMR3L_ADDR: u16 = 0xFB2;
 pub const T3CON_ADDR: u16 = 0xFB1;
 pub const INTCON_ADDR: u16 = 0xFF2;
+pub const PIR1_ADDR: u16 = 0xF9E;
 pub const PIR2_ADDR: u16 = 0xFA1;
 
 const T0CON_TMR0ON: u8 = 1 << 7;
@@ -68,6 +81,17 @@ const T0CON_T0CS: u8 = 1 << 5;
 const T0CON_PSA: u8 = 1 << 3;
 const T0CON_T0PS_MASK: u8 = 0x07;
 
+const T1CON_RD16: u8 = 1 << 7;
+const T1CON_T1CKPS_MASK: u8 = 0x30;
+const T1CON_T1CKPS_SHIFT: u32 = 4;
+const T1CON_TMR1CS: u8 = 1 << 1;
+const T1CON_TMR1ON: u8 = 1 << 0;
+
+const T2CON_T2OUTPS_MASK: u8 = 0x78;
+const T2CON_T2OUTPS_SHIFT: u32 = 3;
+const T2CON_TMR2ON: u8 = 1 << 2;
+const T2CON_T2CKPS_MASK: u8 = 0x03;
+
 const T3CON_RD16: u8 = 1 << 7;
 const T3CON_TMR3CS: u8 = 1 << 1;
 const T3CON_TMR3ON: u8 = 1 << 0;
@@ -75,6 +99,8 @@ const T3CON_T3CKPS_MASK: u8 = 0x30;
 const T3CON_T3CKPS_SHIFT: u32 = 4;
 
 const INTCON_TMR0IF: u8 = 1 << 2;
+const PIR1_TMR1IF: u8 = 1 << 0;
+const PIR1_TMR2IF: u8 = 1 << 1;
 const PIR2_TMR3IF: u8 = 1 << 1;
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +111,15 @@ pub struct Timers {
     timer0_prescaler_tcy: u32,
     /// Tcy accumulator for Timer3's prescaler.
     timer3_prescaler_tcy: u32,
+    timer1_prescaler_tcy: u32,
+    timer2_prescaler_tcy: u32,
+    timer2_postscaler_matches: u8,
+    tmr0h_live: u8,
+    tmr0h_buffer: u8,
+    last_t0con_16bit: bool,
+    tmr1h_live: u8,
+    tmr1h_buffer: u8,
+    last_t1con_rd16: bool,
     /// Live Timer3 high byte counter.  Decoupled from the
     /// SFR byte at `TMR3H_ADDR` because, when RD16=1, the
     /// firmware-visible TMR3H is a buffer (per DS §13.4),
@@ -130,6 +165,9 @@ impl Timers {
     pub fn reset_state(&mut self) {
         self.timer0_prescaler_tcy = 0;
         self.timer3_prescaler_tcy = 0;
+        self.timer1_prescaler_tcy = 0;
+        self.timer2_prescaler_tcy = 0;
+        self.timer2_postscaler_matches = 0;
     }
 
     /// Test-only: read the current Timer3 live high byte
@@ -173,11 +211,46 @@ impl Timers {
         // 0->1 transition.
         let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
         self.last_t3con_rd16 = (t3con & T3CON_RD16) != 0;
+
+        self.tmr0h_live = mem.read_raw(Address::from_raw(TMR0H_ADDR));
+        self.tmr0h_buffer = self.tmr0h_live;
+        let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
+        self.last_t0con_16bit = (t0con & T0CON_T08BIT) == 0;
+
+        self.tmr1h_live = mem.read_raw(Address::from_raw(TMR1H_ADDR));
+        self.tmr1h_buffer = self.tmr1h_live;
+        let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+        self.last_t1con_rd16 = (t1con & T1CON_RD16) != 0;
     }
 
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
         match addr {
-            T0CON_ADDR => self.timer0_prescaler_tcy = 0,
+            T0CON_ADDR => {
+                let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
+                let new_16bit = (t0con & T0CON_T08BIT) == 0;
+                if new_16bit && !self.last_t0con_16bit {
+                    self.tmr0h_buffer = self.tmr0h_live;
+                } else if !new_16bit {
+                    mem.write_raw(Address::from_raw(TMR0H_ADDR), self.tmr0h_live);
+                }
+                self.last_t0con_16bit = new_16bit;
+                self.timer0_prescaler_tcy = 0;
+            }
+            T1CON_ADDR => {
+                let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+                let new_rd16 = (t1con & T1CON_RD16) != 0;
+                if new_rd16 && !self.last_t1con_rd16 {
+                    self.tmr1h_buffer = self.tmr1h_live;
+                } else if !new_rd16 {
+                    mem.write_raw(Address::from_raw(TMR1H_ADDR), self.tmr1h_live);
+                }
+                self.last_t1con_rd16 = new_rd16;
+                self.timer1_prescaler_tcy = 0;
+            }
+            T2CON_ADDR | TMR2_ADDR => {
+                self.timer2_prescaler_tcy = 0;
+                self.timer2_postscaler_matches = 0;
+            }
             T3CON_ADDR => {
                 // T3CON write -- handle the post-write
                 // RD16 state with one-way sync (live ->
@@ -228,9 +301,41 @@ impl Timers {
                 self.timer3_prescaler_tcy = 0;
             }
             // TMR0H / TMR0L writes also reset the prescaler
-            // per DS §10.2.  16-bit-mode TMR0H buffer is a
-            // documented LOW-finding deferral.
-            TMR0L_ADDR | TMR0H_ADDR => self.timer0_prescaler_tcy = 0,
+            // per DS §10.2.
+            TMR0L_ADDR => {
+                let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
+                if (t0con & T0CON_T08BIT) == 0 {
+                    self.tmr0h_live = self.tmr0h_buffer;
+                    mem.write_raw(Address::from_raw(TMR0H_ADDR), self.tmr0h_buffer);
+                }
+                self.timer0_prescaler_tcy = 0;
+            }
+            TMR0H_ADDR => {
+                let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
+                if (t0con & T0CON_T08BIT) == 0 {
+                    self.tmr0h_buffer = value;
+                } else {
+                    self.tmr0h_live = value;
+                    self.timer0_prescaler_tcy = 0;
+                }
+            }
+            TMR1L_ADDR => {
+                let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+                if (t1con & T1CON_RD16) != 0 {
+                    self.tmr1h_live = self.tmr1h_buffer;
+                    mem.write_raw(Address::from_raw(TMR1H_ADDR), self.tmr1h_buffer);
+                }
+                self.timer1_prescaler_tcy = 0;
+            }
+            TMR1H_ADDR => {
+                let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+                if (t1con & T1CON_RD16) != 0 {
+                    self.tmr1h_buffer = value;
+                } else {
+                    self.tmr1h_live = value;
+                    self.timer1_prescaler_tcy = 0;
+                }
+            }
             TMR3L_ADDR => {
                 // RD16=1: atomic 16-bit reload.  buffer ->
                 // live TMR3H AND mirror to SFR memory; the
@@ -277,9 +382,83 @@ impl Timers {
         }
     }
 
+    pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
+        match addr {
+            TMR0L_ADDR => {
+                let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
+                if (t0con & T0CON_T08BIT) == 0 {
+                    self.tmr0h_buffer = self.tmr0h_live;
+                    mem.write_raw(Address::from_raw(TMR0H_ADDR), self.tmr0h_buffer);
+                }
+            }
+            TMR1L_ADDR => {
+                let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+                if (t1con & T1CON_RD16) != 0 {
+                    self.tmr1h_buffer = self.tmr1h_live;
+                    mem.write_raw(Address::from_raw(TMR1H_ADDR), self.tmr1h_buffer);
+                }
+            }
+            TMR3L_ADDR => {
+                let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
+                if (t3con & T3CON_RD16) != 0 {
+                    mem.write_raw(Address::from_raw(TMR3H_ADDR), self.tmr3h_live);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
         self.tick_timer0(n, mem);
+        self.tick_timer1(n, mem);
+        self.tick_timer2(n, mem);
         self.tick_timer3(n, mem);
+    }
+
+    pub fn inject_t0cki_rising_edge(&mut self, mem: &mut Memory) {
+        let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
+        if (t0con & T0CON_TMR0ON) != 0 && (t0con & T0CON_T0CS) != 0 {
+            self.advance_timer0_increments(1, mem);
+        }
+    }
+
+    pub fn inject_t1osc_t13cki_rising_edge(&mut self, mem: &mut Memory) {
+        let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+        if (t1con & T1CON_TMR1ON) != 0 && (t1con & T1CON_TMR1CS) != 0 {
+            self.timer1_prescaler_tcy += 1;
+            let prescaler = timer1_prescaler_divisor(t1con);
+            let increments = self.timer1_prescaler_tcy / prescaler;
+            self.timer1_prescaler_tcy %= prescaler;
+            if increments > 0 {
+                self.advance_timer1_increments(increments, mem);
+            }
+        }
+        let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
+        if (t3con & T3CON_TMR3ON) != 0 && (t3con & T3CON_TMR3CS) != 0 {
+            self.timer3_prescaler_tcy += 1;
+            let prescaler = timer3_prescaler_divisor(t3con);
+            let increments = self.timer3_prescaler_tcy / prescaler;
+            self.timer3_prescaler_tcy %= prescaler;
+            if increments > 0 {
+                self.advance_timer3_increments(increments, mem);
+            }
+        }
+    }
+
+    pub fn reset_timer1_for_special_event(&mut self, mem: &mut Memory) {
+        self.tmr1h_live = 0;
+        self.tmr1h_buffer = 0;
+        self.timer1_prescaler_tcy = 0;
+        mem.write_raw(Address::from_raw(TMR1L_ADDR), 0);
+        mem.write_raw(Address::from_raw(TMR1H_ADDR), 0);
+    }
+
+    pub fn reset_timer3_for_special_event(&mut self, mem: &mut Memory) {
+        self.tmr3h_live = 0;
+        self.tmr3h_buffer = 0;
+        self.timer3_prescaler_tcy = 0;
+        mem.write_raw(Address::from_raw(TMR3L_ADDR), 0);
+        mem.write_raw(Address::from_raw(TMR3H_ADDR), 0);
     }
 
     fn tick_timer0(&mut self, n: u32, mem: &mut Memory) {
@@ -299,6 +478,11 @@ impl Timers {
         if increments == 0 {
             return;
         }
+        self.advance_timer0_increments(increments, mem);
+    }
+
+    fn advance_timer0_increments(&mut self, increments: u32, mem: &mut Memory) {
+        let t0con = mem.read_raw(Address::from_raw(T0CON_ADDR));
         if t0con & T0CON_T08BIT != 0 {
             // 8-bit mode: TMR0L is the counter; TMR0H is
             // not used.  Overflow at 0xFF -> 0x00.
@@ -310,15 +494,92 @@ impl Timers {
                 INTCON_TMR0IF,
             );
         } else {
-            // 16-bit mode: TMR0H:TMR0L is the counter.
-            advance_16bit_counter(
-                mem,
-                TMR0L_ADDR,
-                TMR0H_ADDR,
-                increments,
-                INTCON_ADDR,
-                INTCON_TMR0IF,
+            let lo = mem.read_raw(Address::from_raw(TMR0L_ADDR)) as u32;
+            let hi = self.tmr0h_live as u32;
+            let cur = (hi << 8) | lo;
+            let new_total = cur + increments;
+            let new_value = (new_total & 0xFFFF) as u16;
+            let wraps = new_total >> 16;
+            mem.write_raw(
+                Address::from_raw(TMR0L_ADDR),
+                (new_value & 0xFF) as u8,
             );
+            self.tmr0h_live = (new_value >> 8) as u8;
+            if wraps > 0 {
+                let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
+                mem.write_raw(Address::from_raw(INTCON_ADDR), intcon | INTCON_TMR0IF);
+            }
+        }
+    }
+
+    fn tick_timer1(&mut self, n: u32, mem: &mut Memory) {
+        let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+        if t1con & T1CON_TMR1ON == 0 {
+            return;
+        }
+        if t1con & T1CON_TMR1CS != 0 {
+            return;
+        }
+        let prescaler = timer1_prescaler_divisor(t1con);
+        self.timer1_prescaler_tcy += n;
+        let increments = self.timer1_prescaler_tcy / prescaler;
+        self.timer1_prescaler_tcy %= prescaler;
+        if increments > 0 {
+            self.advance_timer1_increments(increments, mem);
+        }
+    }
+
+    fn advance_timer1_increments(&mut self, increments: u32, mem: &mut Memory) {
+        let t1con = mem.read_raw(Address::from_raw(T1CON_ADDR));
+        let lo = mem.read_raw(Address::from_raw(TMR1L_ADDR)) as u32;
+        let hi = self.tmr1h_live as u32;
+        let cur = (hi << 8) | lo;
+        let new_total = cur + increments;
+        let new_value = (new_total & 0xFFFF) as u16;
+        let wraps = new_total >> 16;
+        mem.write_raw(
+            Address::from_raw(TMR1L_ADDR),
+            (new_value & 0xFF) as u8,
+        );
+        self.tmr1h_live = (new_value >> 8) as u8;
+        if (t1con & T1CON_RD16) == 0 {
+            mem.write_raw(Address::from_raw(TMR1H_ADDR), self.tmr1h_live);
+        }
+        if wraps > 0 {
+            let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+            mem.write_raw(Address::from_raw(PIR1_ADDR), pir1 | PIR1_TMR1IF);
+        }
+    }
+
+    fn tick_timer2(&mut self, n: u32, mem: &mut Memory) {
+        let t2con = mem.read_raw(Address::from_raw(T2CON_ADDR));
+        if t2con & T2CON_TMR2ON == 0 {
+            return;
+        }
+        let prescaler = timer2_prescaler_divisor(t2con);
+        self.timer2_prescaler_tcy += n;
+        let increments = self.timer2_prescaler_tcy / prescaler;
+        self.timer2_prescaler_tcy %= prescaler;
+        for _ in 0..increments {
+            self.advance_timer2_one(mem, t2con);
+        }
+    }
+
+    fn advance_timer2_one(&mut self, mem: &mut Memory, t2con: u8) {
+        let tmr2 = mem.read_raw(Address::from_raw(TMR2_ADDR));
+        let pr2 = mem.read_raw(Address::from_raw(PR2_ADDR));
+        let next = tmr2.wrapping_add(1);
+        if next > pr2 || tmr2 == pr2 {
+            mem.write_raw(Address::from_raw(TMR2_ADDR), 0);
+            self.timer2_postscaler_matches = self.timer2_postscaler_matches.wrapping_add(1);
+            let divisor = timer2_postscaler_divisor(t2con);
+            if self.timer2_postscaler_matches >= divisor {
+                self.timer2_postscaler_matches = 0;
+                let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
+                mem.write_raw(Address::from_raw(PIR1_ADDR), pir1 | PIR1_TMR2IF);
+            }
+        } else {
+            mem.write_raw(Address::from_raw(TMR2_ADDR), next);
         }
     }
 
@@ -338,6 +599,11 @@ impl Timers {
         if increments == 0 {
             return;
         }
+        self.advance_timer3_increments(increments, mem);
+    }
+
+    fn advance_timer3_increments(&mut self, increments: u32, mem: &mut Memory) {
+        let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
         // Use the live shadow for the high byte (decoupled
         // from SFR memory in RD16=1 mode -- see field
         // docstring).  Low byte stays in SFR memory directly:
@@ -379,6 +645,23 @@ fn timer0_prescaler_divisor(t0con: u8) -> u32 {
     1u32 << (ps + 1)
 }
 
+fn timer1_prescaler_divisor(t1con: u8) -> u32 {
+    let ps = ((t1con & T1CON_T1CKPS_MASK) >> T1CON_T1CKPS_SHIFT) as u32;
+    1u32 << ps
+}
+
+fn timer2_prescaler_divisor(t2con: u8) -> u32 {
+    match t2con & T2CON_T2CKPS_MASK {
+        0 => 1,
+        1 => 4,
+        _ => 16,
+    }
+}
+
+fn timer2_postscaler_divisor(t2con: u8) -> u8 {
+    ((t2con & T2CON_T2OUTPS_MASK) >> T2CON_T2OUTPS_SHIFT) + 1
+}
+
 /// Compute Timer3's prescaler divisor in Tcy.  Per DS Tbl
 /// 13-1: T3CKPS<1:0> -> 1:1, 1:2, 1:4, 1:8.
 fn timer3_prescaler_divisor(t3con: u8) -> u32 {
@@ -400,31 +683,6 @@ fn advance_8bit_counter(
     let new_lo = (new_total & 0xFF) as u8;
     let wraps = new_total >> 8;
     mem.write_raw(Address::from_raw(lo_addr), new_lo);
-    if wraps > 0 {
-        let pir = mem.read_raw(Address::from_raw(pir_addr));
-        mem.write_raw(Address::from_raw(pir_addr), pir | pir_bit);
-    }
-}
-
-/// Advance a 16-bit counter at (`hi_addr`<<8|`lo_addr`) by
-/// `n`, asserting the IRQ flag at `pir_addr`.`pir_bit` on
-/// each wrap from 0xFFFF -> 0x0000.
-fn advance_16bit_counter(
-    mem: &mut Memory,
-    lo_addr: u16,
-    hi_addr: u16,
-    n: u32,
-    pir_addr: u16,
-    pir_bit: u8,
-) {
-    let lo = mem.read_raw(Address::from_raw(lo_addr)) as u32;
-    let hi = mem.read_raw(Address::from_raw(hi_addr)) as u32;
-    let cur = (hi << 8) | lo;
-    let new_total = cur + n;
-    let new_value = (new_total & 0xFFFF) as u16;
-    let wraps = new_total >> 16;
-    mem.write_raw(Address::from_raw(lo_addr), (new_value & 0xFF) as u8);
-    mem.write_raw(Address::from_raw(hi_addr), (new_value >> 8) as u8);
     if wraps > 0 {
         let pir = mem.read_raw(Address::from_raw(pir_addr));
         mem.write_raw(Address::from_raw(pir_addr), pir | pir_bit);
@@ -500,9 +758,11 @@ mod tests {
             Address::from_raw(T0CON_ADDR),
             T0CON_TMR0ON | T0CON_PSA,
         );
-        // Tick 0x0100 = 256 -> TMR0H = 0x01, TMR0L = 0x00.
+        // Tick 0x0100 = 256 -> live TMR0H = 0x01, TMR0L = 0x00.
+        // In 16-bit mode, reading TMR0L latches live high into TMR0H.
         t.tick_tcy(0x100, &mut mem);
         assert_eq!(mem.read_raw(Address::from_raw(TMR0L_ADDR)), 0);
+        t.on_sfr_read(TMR0L_ADDR, &mut mem);
         assert_eq!(mem.read_raw(Address::from_raw(TMR0H_ADDR)), 1);
         let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
         assert_eq!(intcon & INTCON_TMR0IF, 0, "16-bit doesn't wrap at 256");

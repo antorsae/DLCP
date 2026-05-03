@@ -24,7 +24,7 @@ pub mod scheduler;
 pub mod stack;
 
 pub use crate::config::{BorenMode, Config, FoscMode};
-pub use crate::core::Core;
+pub use crate::core::{Core, CoreLoadOptions, RunState, core_from_hex_image};
 pub use crate::exec::{ExecError, step};
 pub use crate::hex::{HexImage, HexLoadError};
 pub use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};

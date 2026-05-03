@@ -1,7 +1,7 @@
 # Rust PIC18 Silicon Fidelity Closure - Implementation Plan
 
 Date: 2026-05-03
-Status: draft implementation plan
+Status: complete; verified 2026-05-03
 Parent spec: `docs/SIM_REWRITE_RUST_SPEC.md` section 11c
 Target crates: `crates/dlcp-sim/`, `crates/dlcp-sim-py/`
 
@@ -83,9 +83,28 @@ When you want these scheduled by the existing automation, copy the
 selected entries into `docs/SIM_REWRITE_RUST_PROGRESS.md` with the same
 fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
+Completion note (2026-05-03): all section-11c fidelity items FID-01
+through FID-16 are closed by focused Rust tests with datasheet/spec
+citations.  Integrated gates passed with `cargo test -p dlcp-sim
+--release`, `cargo build --release -p dlcp-sim-py && bash
+crates/dlcp-sim-py/build.sh`, and the current Rust-backend pytest split
+gate:
+
+- `DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"` -> `582 passed, 39 skipped, 1 xfailed` in `8.80s`
+- `DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m slow` -> `204 passed, 260 skipped, 7 xfailed` in `259.72s`
+
+Regression classification: FID-14 initially broke multicore and
+PyO3-facade chain tests by exposing an old simulator shortcut where
+tests/factories raw-wrote `PORTA`/`PORTC` to mean "buttons released".
+Classification: `DLCP test bug` / facade-harness bug.  Resolution:
+the GPIO model now keeps external pin level separate from PORT readback,
+and tests/factories use `set_pin_high` on the six active-low CONTROL
+button pins so released levels survive TRIS/ANSEL refreshes.  No new
+skips, xfails, or compatibility shims were added.
+
 ### Wave A - Core Foundations
 
-- [pending] FIDA.1 Centralize full HEX image loading into `Core`
+- [done] FIDA.1 Centralize full HEX image loading into `Core`
   - covers: FID-04
   - verify: `cargo test -p dlcp-sim --release full_hex_loader_populates_config_and_user_id`
   - follow-up verify: `cargo test -p dlcp-sim --release config::tests`
@@ -94,21 +113,21 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
   - notes: all full-firmware constructors must populate flash, EEPROM,
     CONFIG, and USER_ID in one code path.
 
-- [pending] FIDA.2 Fail loudly when XINST is enabled
+- [done] FIDA.2 Fail loudly when XINST is enabled
   - covers: FID-05
   - verify: `cargo test -p dlcp-sim --release --test isa_parity xinst_unsupported_config_fails_loudly`
   - artifact: executor/config error path plus focused test
   - notes: product firmware uses XINST=0; silent legacy execution under
     XINST=1 is the bug.
 
-- [pending] FIDA.3 Enforce PIC18F2455 24 KiB implemented flash semantics
+- [done] FIDA.3 Enforce PIC18F2455 24 KiB implemented flash semantics
   - covers: FID-06
   - verify: `cargo test -p dlcp-sim --release --test isa_parity pic2455_top_8k_uses_unimplemented_memory_semantics`
   - artifact: variant-aware flash fetch/table-read bounds
   - notes: host buffers may stay 32 KiB, but 2455 silicon must not
     execute or table-read seeded bytes above 0x5FFF.
 
-- [pending] FIDA.4 Wire DEVID reads and protection-bit policy
+- [done] FIDA.4 Wire DEVID reads and protection-bit policy
   - covers: FID-16
   - verify: `cargo test -p dlcp-sim --release --test isa_parity tblrd_devid_and_protection_policy`
   - artifact: per-variant DEVID constants plus documented
@@ -118,7 +137,7 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
 ### Wave B - Reset, Power, and Clock
 
-- [pending] FIDB.1 Complete variant reset SFR tables
+- [done] FIDB.1 Complete variant reset SFR tables
   - covers: FID-07
   - verify: `cargo test -p dlcp-sim --release reset::tests`
   - artifact: variant-specific POR/BOR/MCLR/WDT/RESET/stack reset tables
@@ -126,20 +145,20 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
     unambiguous, or document an intentional exception in parent spec
     section 11c.
 
-- [pending] FIDB.2 Add WDT counter and running-mode timeout reset
+- [done] FIDB.2 Add WDT counter and running-mode timeout reset
   - covers: FID-02
   - verify: `cargo test -p dlcp-sim --release wdt_running_timeout_resets_and_clrwdt_clears`
   - artifact: WDT peripheral state and reset integration
   - notes: driven by CONFIG2H.WDTEN/WDTPS and WDTCON.SWDTEN.
 
-- [pending] FIDB.3 Implement Sleep/Idle CPU halt and wake behavior
+- [done] FIDB.3 Implement Sleep/Idle CPU halt and wake behavior
   - covers: FID-02, FID-13
   - verify: `cargo test -p dlcp-sim --release sleep_idle_wake_tests`
   - artifact: core run-state plus scheduler support for sleeping cores
   - notes: sleeping CPU does not fetch instructions; allowed
     peripherals and WDT may continue according to mode.
 
-- [pending] FIDB.4 Replace fixed oscillator stub with config-driven clock state
+- [done] FIDB.4 Replace fixed oscillator stub with config-driven clock state
   - covers: FID-08
   - verify: `cargo test -p dlcp-sim --release --test peripheral_osc_parity`
   - artifact: oscillator state machine consumed by scheduler and
@@ -150,7 +169,7 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
 ### Wave C - Nonvolatile Memory Writes
 
-- [pending] FIDC.1 Commit TBLWT holding registers through EECON1.WR
+- [done] FIDC.1 Commit TBLWT holding registers through EECON1.WR
   - covers: FID-03
   - verify: `cargo test -p dlcp-sim --release --test peripheral_eeprom_parity flash_config_user_id_long_write`
   - artifact: flash/config/user-id write support, separate from data EEPROM
@@ -159,20 +178,20 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
 ### Wave D - Peripheral Breadth
 
-- [pending] FIDD.1 Complete timer model
+- [done] FIDD.1 Complete timer model
   - covers: FID-09
   - verify: `cargo test -p dlcp-sim --release --test peripheral_timers_parity`
   - artifact: Timer1, Timer2, Timer0/3 latches, external clock hooks
   - notes: keep DLCP Timer0/Timer3 paths green before broadening.
 
-- [pending] FIDD.2 Complete ADC timing and channel model
+- [done] FIDD.2 Complete ADC timing and channel model
   - covers: FID-12
   - verify: `cargo test -p dlcp-sim --release --test peripheral_adc_parity`
   - artifact: ACQT/ADCS timing, channel mux, Vref/FVR, sleep/FRC path
   - notes: `set_an0_sample` may remain as test injection above the
     silicon model.
 
-- [pending] FIDD.3 Tighten EUSART timing and error paths
+- [done] FIDD.3 Tighten EUSART timing and error paths
   - covers: FID-11
   - verify: `cargo test -p dlcp-sim --release --test peripheral_eusart_parity`
   - artifact: TXIF delay, FERR, WUE, SENDB/break, 9-bit semantics,
@@ -180,7 +199,7 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
   - notes: current 31,250 baud current-loop behavior is the regression
     guard.
 
-- [pending] FIDD.4 Define MSSP unsupported modes and add pin-level I2C gaps
+- [done] FIDD.4 Define MSSP unsupported modes and add pin-level I2C gaps
   - covers: FID-10
   - verify: `cargo test -p dlcp-sim --release --test peripheral_mssp_parity`
   - artifact: SPI/slave/10-bit/general-call policy or implementation,
@@ -189,7 +208,7 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
 ### Wave E - Pins and Peripheral Stubs
 
-- [pending] FIDE.1 Implement GPIO electrical semantics and general pin propagation
+- [done] FIDE.1 Implement GPIO electrical semantics and general pin propagation
   - covers: FID-14
   - verify: `cargo test -p dlcp-sim --release --test peripheral_gpio_parity`
   - artifact: PORT/TRIS/LAT semantics, analog mux effects, INTx/KBI,
@@ -197,7 +216,7 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
   - notes: this is likely to expose old tests that wrote PORT/LAT as
     pure memory; triage before changing assertions.
 
-- [pending] FIDE.2 Audit missing peripheral SFRs and add explicit stub policies
+- [done] FIDE.2 Audit missing peripheral SFRs and add explicit stub policies
   - covers: FID-15
   - verify: `cargo test -p dlcp-sim --release missing_peripheral_stub_policy`
   - artifact: CCP/ECCP/PWM, comparators/CVREF, HLVD, PSP/SPP, FVR policy
@@ -206,14 +225,14 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
 ### Wave F - USB-SIE and HID
 
-- [pending] FIDF.1 Implement USB-SIE SFRs and BDT ownership model
+- [done] FIDF.1 Implement USB-SIE SFRs and BDT ownership model
   - covers: FID-01
   - verify: `cargo test -p dlcp-sim --release --test peripheral_usbsie_parity usb_sfr_bdt_state_machine`
   - artifact: 2455-only USB state for UCON/UCFG/UADDR/USTAT/UIR/UIE/UEPn
   - notes: do this before HID command dispatch so endpoint semantics are
     testable in isolation.
 
-- [pending] FIDF.2 Implement DLCP HID command path
+- [done] FIDF.2 Implement DLCP HID command path
   - covers: FID-01
   - verify: `cargo test -p dlcp-sim --release --test peripheral_usbsie_parity dlcp_hid_commands`
   - artifact: cmd 0x20, 0x21, 0x43, 0x44, filename A/B upload routing
@@ -222,7 +241,7 @@ fixed shape, then let `scripts/sim_rewrite_next.py` own status changes.
 
 ### Wave G - Campaign Gate
 
-- [pending] FIDG.1 Run integrated silicon-fidelity regression gate
+- [done] FIDG.1 Run integrated silicon-fidelity regression gate
   - covers: FID-01 through FID-16
   - verify: `cargo test -p dlcp-sim --release && .venv_ep0/bin/python -m pytest tests/sim -q`
   - artifact: regression note in the relevant ledger/progress doc
