@@ -102,11 +102,13 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
 
     # Pair each movlw with its uart_tx_byte_blocking call, in order.
     # Whitespace-tolerant per `\s+`; comment lines may appear between
-    # successive (movlw, call) pairs.
+    # successive (movlw, call) pairs.  Both the `movlw` and the `call`
+    # are anchored to instruction lines (`^\s+<mnemonic>`) so a stray
+    # `; movlw 0xB0` inside a comment block cannot false-match the pair.
     pair_pattern = _re.compile(
-        r"movlw\s+0x([0-9A-Fa-f]{2})\s*\n"
-        r"(?:\s*(?:;[^\n]*)?\n)*"
-        r"\s+call\s+uart_tx_byte_blocking\s*,\s*0x0",
+        r"^[ \t]+movlw\s+0x([0-9A-Fa-f]{2})[ \t]*(?:;[^\n]*)?\n"
+        r"(?:^[ \t]*(?:;[^\n]*)?\n)*"
+        r"^[ \t]+call\s+uart_tx_byte_blocking\s*,\s*0x0",
         _re.MULTILINE,
     )
     pairs = pair_pattern.findall(rebroadcast)
