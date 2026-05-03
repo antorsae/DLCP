@@ -172,14 +172,14 @@ def _resolve_dlcp_sim_backend() -> str:
     """Read and validate the DLCP_SIM_BACKEND env var.
 
     Returns the lowercased backend name.  Defaults to
-    `gpsim` (preserving pre-Phase-4 behaviour) when the
-    env var is unset or empty.  Raises pytest's
+    `rust` (per P4.8: rust is the default; gpsim is opt-in
+    only via `DLCP_SIM_BACKEND=gpsim`).  Raises pytest's
     `UsageError` for invalid values so the failure is
     surfaced clearly at the start of pytest collection
     rather than as a confusing per-test skip later.
     """
-    raw = os.environ.get(DLCP_SIM_BACKEND_ENV, DLCP_SIM_BACKEND_GPSIM)
-    backend = raw.strip().lower() or DLCP_SIM_BACKEND_GPSIM
+    raw = os.environ.get(DLCP_SIM_BACKEND_ENV, DLCP_SIM_BACKEND_RUST)
+    backend = raw.strip().lower() or DLCP_SIM_BACKEND_RUST
     if backend not in DLCP_SIM_BACKEND_VALID:
         valid = ", ".join(sorted(DLCP_SIM_BACKEND_VALID))
         raise pytest.UsageError(
@@ -261,7 +261,7 @@ def pytest_collection_modifyitems(
     fixture-resolution time).
     """
     backend: str = getattr(
-        config, "_dlcp_sim_backend", DLCP_SIM_BACKEND_GPSIM
+        config, "_dlcp_sim_backend", DLCP_SIM_BACKEND_RUST
     )
     if backend == DLCP_SIM_BACKEND_GPSIM:
         return

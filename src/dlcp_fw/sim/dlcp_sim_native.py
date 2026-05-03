@@ -49,6 +49,31 @@ from __future__ import annotations
 # layer additional Python-side ergonomics (validation,
 # parity adapters, etc.) on top of the raw bindings as
 # the migration sub-tasks require it.
+#
+# Bootstrap (P4.8 prep): the .so symlink lives at
+# `<repo>/src/dlcp_sim_native.so` (and at
+# `<repo>/crates/dlcp-sim-py/dlcp_sim_native.so`) per
+# `crates/dlcp-sim-py/build.sh`.  Test invocations that don't
+# pre-set `PYTHONPATH=src` (e.g. `pytest tests/sim` from the
+# repo root, post-P4.8 default-rust flip) would otherwise fail
+# at the import below with `ModuleNotFoundError`.  Add the two
+# candidate locations to `sys.path` if they exist; this is a
+# no-op when `PYTHONPATH=src` already covered it because Python
+# de-dupes path entries on import resolution.
+import sys as _sys
+from pathlib import Path as _Path
+
+_THIS_FILE = _Path(__file__).resolve()
+# src/dlcp_fw/sim/dlcp_sim_native.py -> repo root is parents[3]
+_REPO_ROOT = _THIS_FILE.parents[3]
+for _candidate in (
+    _REPO_ROOT / "src",
+    _REPO_ROOT / "crates" / "dlcp-sim-py",
+):
+    _candidate_str = str(_candidate)
+    if _candidate.exists() and _candidate_str not in _sys.path:
+        _sys.path.insert(0, _candidate_str)
+
 import dlcp_sim_native as _native
 
 #: Workspace version of the underlying Rust ``dlcp-sim`` /
