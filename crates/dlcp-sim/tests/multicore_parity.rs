@@ -3938,15 +3938,16 @@ fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
 ///    stayed LOW — i.e. the wake bring-up never reached the
 ///    post-gate latch raises.
 /// 4. MAIN1 emitted ZERO UART TX bytes after the droop engaged.
-///    `uart_quiesce_for_wake` (asm:4043) is the very first call
-///    inside `adc_boot_gate`; it clears RCSTA.SPEN, RCSTA.CREN,
-///    and TXSTA.TXEN, killing the EUSART until the post-gate
-///    re-init at asm:4128. So a MAIN1 truly stuck inside
-///    `[adc_boot_gate (asm:4042), adc_boot_gate post-gate UART
-///    re-init (asm:4128))` emits zero UART. Combined with the
-///    latch-low postcondition (which proves MAIN1 also didn't
-///    reach asm:4084), this pins MAIN1 to that window — i.e.
-///    MAIN1 IS inside the gate body or its post-exit prologue.
+///    `uart_quiesce_for_wake` (asm:4043 -> asm:7804-7812 clears
+///    CREN, TXEN, SPEN) is the very first call inside
+///    `adc_boot_gate`; the EUSART is dead until the post-gate
+///    `main_uart_tx_only_service` call at asm:4105 (which
+///    re-arms baud / SPEN / TXEN). asm:4105 is past the first
+///    amp-enable bsf at asm:4084, so a MAIN1 with latches=0
+///    AND TX=0 is somewhere inside `[adc_boot_gate (asm:4042),
+///    first amp-enable bsf (asm:4084))`. The latch-low alone
+///    implies that range; the TX=0 observation is a more
+///    direct UART-level corroboration.
 ///
 /// **What this test does NOT prove**:
 ///
@@ -4286,24 +4287,32 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
         }
     }
 
-    // Snapshot MAIN1's TX byte count post-droop, filtering by the
-    // ABSOLUTE chain tick captured at the moment droop fired (the
+    // Snapshot MAIN1's TX byte count strictly AFTER the droop tick
+    // (corrected post codex reviews of 087c2b5 and ff0845c).  The
     // RailCoupler loop's chunk index is loop-relative; multiplying
     // it by CHUNK_TICKS compares against pre-boot ticks and silently
-    // counts pre-droop traffic -- corrected post codex review of
-    // 087c2b5).  Inside adc_boot_gate the very first call (asm:4043)
-    // is uart_quiesce_for_wake which clears RCSTA.SPEN, RCSTA.CREN,
-    // and TXSTA.TXEN -- the EUSART is dead until the post-gate
-    // re-init at asm:4128.  So a MAIN1 truly stuck in adc_boot_gate
-    // (or its prologue between asm:4042 and asm:4128) emits ZERO
-    // UART bytes.  Any non-zero count would mean MAIN1 reached at
-    // least asm:4128 -- past the latch raises -- contradicting the
-    // latch-low observable.
+    // counts pre-droop traffic.  Capture chain.current_tick at the
+    // exact moment droop fires and use a strict `>` filter so a
+    // record exactly at the droop boundary (which by ordering is
+    // pre-droop) is not double-counted.
+    //
+    // What zero TX bytes implies: inside adc_boot_gate the very
+    // first call (asm:4043) is uart_quiesce_for_wake (asm:7804-
+    // 7812 clears CREN, TXEN, SPEN -- EUSART fully off).  The
+    // FIRST place TX comes back is the call to
+    // main_uart_tx_only_service at asm:4105, which calls
+    // uart_config (re-arms baud / SPEN / TXEN) and then clears
+    // only CREN.  asm:4105 is post asm:4084 (the first amp-enable
+    // bsf) -- so a MAIN1 with latches=0 AND TX=0 is somewhere in
+    // [adc_boot_gate (asm:4042), first amp-enable bsf (asm:4084)).
+    // The latch-low postcondition alone implies the same range
+    // (raises at asm:4084/4098/4101 NEVER fired); the TX=0
+    // observation is a more direct UART-level corroboration.
     let main1_tx_post_droop = if let Some(t) = droop_first_tick {
         chain
             .uart_tx_history
             .iter()
-            .filter(|rec| rec.src_core == i_main1 && rec.tick >= t)
+            .filter(|rec| rec.src_core == i_main1 && rec.tick > t)
             .count()
     } else {
         0
@@ -4311,20 +4320,26 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
 
     // ----- Step 6: assert H1 firmware-OBSERVABLE state on MAIN1 -----
     //
-    // The H1 firmware-OBSERVABLE form (refined post codex review of
-    // acd45fb and 087c2b5) requires:
+    // The H1 firmware-OBSERVABLE form (refined post codex reviews of
+    // acd45fb, 087c2b5, and ff0845c) requires:
     //   - MAIN1.active_flags.bit3 == 1  (set in wake_request_handler asm:1894)
     //   - MAIN1.diag_b >= 1             (incremented in standby_event_dispatch asm:8392)
     //   - MAIN1.LATB.bit3 == LATB.bit4 == LATA.bit6 == 0
     //                                   (post-gate amp-enable raises at
     //                                    asm:4084/4098/4101 NEVER fired)
+    //   - MAIN1 emitted ZERO UART TX bytes after the droop tick
+    //                                   (uart_quiesce_for_wake at
+    //                                    asm:4043 disabled CREN/TXEN/SPEN;
+    //                                    asm:4105 main_uart_tx_only_service
+    //                                    is the FIRST place TX comes
+    //                                    back, and asm:4105 is past the
+    //                                    bsf at asm:4084)
     //
     // We do NOT require PC inside [adc_boot_gate, adc_boot_gate_exit).
-    // The chunked-simulator granularity + the wake-init firmware path's
-    // mid-flight stall surface (I2C writes / DSP coeff bursts after
-    // the gate exit) prevent a clean PC pin; the latch-low postcondition
-    // alone captures the externally-visible H1 symptom (amplifier
-    // doesn't turn on).
+    // Latch-low and TX=0 together pin MAIN1 to
+    // [adc_boot_gate (asm:4042), first amp-enable bsf (asm:4084)).
+    // Latch-low is the strict observable; TX=0 is a more direct
+    // UART-level corroboration.
     let af0 = chain.cores[i_main0]
         .memory
         .read_raw(Address::from_raw(0x05E));
@@ -4386,30 +4401,22 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
          got 0x{:02X}",
         diag_b0,
     );
-    // **Scope of the postcondition** (refined post codex review of
-    // acd45fb): the assertions below capture the asymmetric WAKE
-    // OBSERVABLE — MAIN1 received and dispatched wake but never
-    // raised its amp-enable latches — without claiming that MAIN1's
-    // PC is strictly inside the adc_boot_gate polling loop. The
-    // simpler claim is sufficient evidence FOR H1 over H2:
+    // **Scope of the postcondition** (refined post codex reviews of
+    // acd45fb, 087c2b5, and ff0845c): the assertions below capture
+    // the asymmetric WAKE OBSERVABLE -- MAIN1 received and
+    // dispatched wake but never raised its amp-enable latches AND
+    // never re-armed its EUSART -- without claiming MAIN1's PC is
+    // strictly inside the adc_boot_gate polling loop. The two
+    // observables together pin MAIN1 to
+    // [adc_boot_gate (asm:4042), first amp-enable bsf (asm:4084)):
     //
-    //   - H2 observable: MAIN1 af.bit3 == 0 (wake byte never
-    //     delivered) -- this run rules that out (af1.bit3 == 1).
-    //   - H1 observable: MAIN1 received wake but its amp-enable
-    //     pins (LATB.bit3, LATB.bit4, LATA.bit6) never come up,
-    //     meaning audio output stays muted after the wake event.
-    //     This run confirms that observable.
-    //
-    // What we do NOT prove here: the exact PC location MAIN1 is
-    // stuck at. The chunked simulator's per-Tcy granularity, the
-    // ADC conversion latch timing, and the wake-init firmware path
-    // (which includes I2C writes / preset apply / DSP coefficient
-    // bursts after asm:4084 that can themselves stall under low-AN0
-    // conditions) collectively prevent a clean PC-range pin to
-    // [adc_boot_gate, adc_boot_gate_exit). The task #82 docstring
-    // describes the H1 *claim* (MAIN1 in the rail-wait); the
-    // assertions below verify the firmware *observable* (no amp
-    // pins raised) which is what hardware sees externally.
+    //   - H2 observable (RULED OUT by af.bit3 == 1): MAIN1 never
+    //     got the wake byte -- that's the H2 path modelled by #81.
+    //   - H1 observable (CONFIRMED here): MAIN1 received wake but
+    //     its amp-enable pins (LATB.bit3, LATB.bit4, LATA.bit6)
+    //     never come up AND its EUSART stays dead, meaning audio
+    //     output stays muted after wake AND CONTROL never sees
+    //     MAIN1's heartbeat back on the chain.
     assert_eq!(
         af1 & 0x08,
         0x08,
@@ -4450,12 +4457,14 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     assert_eq!(
         main1_tx_post_droop, 0,
         "Asymmetric WAKE observable: MAIN1 should emit ZERO UART TX \
-         bytes after the droop engaged. uart_quiesce_for_wake (asm:4043) \
-         disables EUSART RX/TX/SPEN at the very start of adc_boot_gate; \
-         the EUSART is dead until the post-gate re-init at asm:4128 \
-         (which itself is well past the LATB.bit4 raise at asm:4084). \
-         A non-zero count would mean MAIN1 reached at least asm:4128, \
-         contradicting the latch-low observable above. got {} bytes",
+         bytes after the droop engaged. uart_quiesce_for_wake \
+         (asm:4043 -> asm:7804-7812 clears CREN/TXEN/SPEN) disables \
+         EUSART at the very start of adc_boot_gate; TX comes back \
+         when adc_boot_gate's post-exit code calls \
+         main_uart_tx_only_service at asm:4105 (which is past the \
+         first amp-enable bsf at asm:4084). A non-zero count would \
+         mean MAIN1 reached at least asm:4105, contradicting the \
+         latch-low observable above. got {} bytes",
         main1_tx_post_droop,
     );
 
@@ -4468,10 +4477,11 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
          MAIN1 dispatches wake but its amp-enable latches NEVER raise \
          and its EUSART stays dead (latches=0, post-droop TX=0 after \
          {} chunks ~= 1.25 s sim time post-droop). Combined: MAIN1 \
-         is somewhere inside [adc_boot_gate, post-gate UART re-init \
-         at asm:4128) -- a tight window that is the H1 firmware \
-         OBSERVABLE form (amplifier silent, MCU not visibly alive on \
-         the chain). NO MCLR-hold, NO UART drop -- only per-MAIN AN0 \
+         is somewhere inside [adc_boot_gate (asm:4042), first \
+         amp-enable bsf (asm:4084)) -- a tight window that is the \
+         H1 firmware OBSERVABLE form (amplifier silent, MCU not \
+         visibly alive on the chain). NO MCLR-hold, NO UART drop \
+         -- only per-MAIN AN0 \
          manipulation modelling the asymmetric shared-rail coupling \
          claim of H1.",
         POST_DROOP_WAIT_CHUNKS,
