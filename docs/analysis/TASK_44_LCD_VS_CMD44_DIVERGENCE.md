@@ -1,8 +1,20 @@
 # Task #44 — V1.71+V3.2 LCD vs cmd 0x44 cell-value divergence
 
-**Status:** root cause identified, simulator reproduction landed, fix proposed (not implemented).
+**Status:** root cause identified, simulator reproduction landed, **fix landed
+2026-05-04 on `feature/sim-rewrite-rust`** (this commit).  Awaiting real-HW
+operator retest per §5 step 5.
 **Hardware session:** 2026-04-27 (V1.71 CONTROL + 2× V3.2 MAIN).
 **Simulator reproduction commits:** `b367528` (rust internal test) + `8d547fe` (Python facade unblock).
+**Fix implementation note:** the recommended Fix #1 placement (inside
+`app_cold_init`, immediately before the `goto flow_ccs_0FA0_103C` exit) was
+NOT possible without breaking the byte-identical vector block contract --
+adding code in `app_cold_init` body shifts `isr_entry` past 0x0003a6, which
+breaks `test_v171_phase_a_vector_block_byte_identical`.  Instead, the fix
+landed at the cold-init exit *target* `flow_ccs_0FA0_103C` (byte 0x103C,
+far past the vector block region), as a loop-form (10 instructions, +20
+bytes) rather than the 25-instruction unrolled form recommended in §4
+below.  Source-contract gate: `tests/sim/test_v171_baseline.py
+::test_v171_zeros_diag_cache_at_cold_init`.
 
 ## 1. Field observation
 

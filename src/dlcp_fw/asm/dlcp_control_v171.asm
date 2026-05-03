@@ -4476,6 +4476,38 @@ menu_title_table:                                                  ; address: 0x
 
 flow_ccs_0FA0_103C:                                                  ; address: 0x00103c
 
+        ; ---------------------------------------------------------------
+        ; Bug #44 fix: zero V1.71 Tier-1 diag cache cells once at POR.
+        ; ---------------------------------------------------------------
+        ; Without this, the cache cells at 0x180..0x195 (PB1+PB2 diag
+        ; values), 0x196..0x197 (target/present), and 0x19D
+        ; (reset_seen) start at random POR RAM.  If a BF/2N reply burst
+        ; from MAIN drops some frames (the parser-stall watchdog
+        ; v171_service_rx_frame_gap can fire mid-frame on tight bursts),
+        ; the cells for dropped frames keep their POR garbage and the
+        ; LCD renders values that disagree with cmd 0x44's direct read
+        ; of MAIN's BANK 2 (cmd 0x44 reads MAIN's BANK 2 directly via
+        ; USB HID, never crossing the BF/2N path).  See
+        ; docs/analysis/TASK_44_LCD_VS_CMD44_DIVERGENCE.md.
+        ;
+        ; Loop form: 24 contiguous cells (0x180..0x197) cleared via
+        ; FSR0 + POSTINC0; reset_seen at 0x19D cleared separately.
+        ; +20 bytes total; runs once at POR / cold-init exit (NOT in
+        ; app_cold_init body proper, because adding code there shifts
+        ; isr_entry past 0x0003a6 and breaks the byte-identical vector
+        ; block contract gated by test_v171_layer1_vector_block_byte_identical).
+        lfsr    0x0, 0x180                                  ; FSR0 -> first cache cell
+        movlw   0x18                                        ; 24 cells (0x180..0x197 inclusive)
+        movwf   (Common_RAM + 15), A                        ; transient loop counter
+flow_v171_diag_cache_zero:
+        clrf    POSTINC0, A                                 ; *FSR0++ = 0
+        decfsz  (Common_RAM + 15), F, A
+        bra     flow_v171_diag_cache_zero
+        movlb   0x01                                        ; reset_seen lives in bank 1
+        clrf    v171_diag_reset_seen, BANKED                ; physical 0x19D
+        movlb   0x00                                        ; restore default bank
+        ; --- end Bug #44 fix ---
+
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bcf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
         movlw   0x0a
@@ -6203,7 +6235,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x0C                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x0E                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

@@ -161,6 +161,60 @@ def test_v171_boot_runtime_identity_does_not_downgrade_minor_byte() -> None:
     assert "movlw   0x06                                        ; CMD input_select" not in block
 
 
+def test_v171_zeros_diag_cache_at_cold_init() -> None:
+    """Bug #44 source-contract: V1.71 must zero the Tier-1 diag cache
+    cells (0x180..0x195 PB1+PB2 values, 0x196 target, 0x197 present,
+    0x19D reset_seen) once during cold-init.
+
+    Without this, the cache cells start at random POR RAM and any
+    subsequent BF/2N reply burst that drops some frames (parser-stall
+    watchdog can fire mid-frame on tight bursts) leaves the LCD
+    rendering POR garbage that disagrees with cmd 0x44's direct read
+    of MAIN's BANK 2.  Field observation 2026-04-27: LCD rendered
+    `PB1: I+ D1 SE B4 / RA A3 O8 V6 W+..` while cmd 0x44 reported
+    all-zero counters from the same MAIN.  See
+    `docs/analysis/TASK_44_LCD_VS_CMD44_DIVERGENCE.md`.
+
+    The fix lives at the cold-init exit target `flow_ccs_0FA0_103C`
+    (NOT inside `app_cold_init` body proper, because adding code
+    there shifts `isr_entry` past 0x0003a6 and breaks the
+    byte-identical vector block contract gated by
+    `test_v171_phase_a_vector_block_byte_identical` above).
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    start = text.find("flow_ccs_0FA0_103C:")
+    end = text.find("flow_ccs_0FA0_106E:", start)
+    assert start >= 0 and end > start, (
+        "flow_ccs_0FA0_103C body not found; cold-init exit anchor moved"
+    )
+    body = text[start:end]
+    # The fix's loop form: lfsr -> movlw 0x18 -> movwf scratch -> loop label
+    # -> clrf POSTINC0 -> decfsz scratch -> bra loop -> movlb 0x01 ->
+    # clrf v171_diag_reset_seen, BANKED -> movlb 0x00.
+    for token in (
+        "lfsr    0x0, 0x180",                                    # FSR0 = first cache cell
+        "movlw   0x18",                                          # 24 contiguous cells
+        "clrf    POSTINC0, A",                                   # cleared via POSTINC0
+        "movlb   0x01",                                          # bank-1 entry for reset_seen
+        "clrf    v171_diag_reset_seen, BANKED",                  # the non-contiguous cell at 0x19D
+    ):
+        assert token in body, (
+            f"flow_ccs_0FA0_103C body must contain {token!r} as part of "
+            f"the Bug #44 diag-cache zero-init."
+        )
+    # Order check: the lfsr must precede the clrf POSTINC0 loop, which
+    # must precede the bank-1 clrf for reset_seen.
+    assert body.index("lfsr    0x0, 0x180") < body.index("clrf    POSTINC0, A"), (
+        "Bug #44 fix: lfsr 0x0, 0x180 must precede the clrf POSTINC0 loop"
+    )
+    assert body.index("clrf    POSTINC0, A") < body.index(
+        "clrf    v171_diag_reset_seen, BANKED"
+    ), (
+        "Bug #44 fix: the contiguous-cell loop must precede the "
+        "standalone clrf for v171_diag_reset_seen"
+    )
+
+
 def test_v171_app_code_has_grown_past_stock(v171_hex: Path) -> None:
     """Once Phase B features inline, the V1.71 app code tail exceeds stock V1.6b.
 
