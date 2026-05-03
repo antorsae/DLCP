@@ -472,9 +472,11 @@ class Chain:
         the given physical address.
 
         ``unit`` selects which MAIN core: ``0`` for MAIN0, ``1``
-        for MAIN1.  Other values raise ``ValueError``.  On
-        MAIN-only / single-MAIN chain topologies (where i_main0
-        == i_main1) both unit indices target the same core.
+        for MAIN1.  Values 2..=255 raise ``ValueError``;
+        negatives and values >255 raise ``OverflowError`` from
+        the underlying PyO3 ``u8`` conversion.  On MAIN-only /
+        single-MAIN chain topologies (where i_main0 == i_main1)
+        both unit indices target the same core.
 
         Mirror of gpsim's per-MAIN register read in the
         wire-chain harnesses (used by V1.71+V3.2 layer-5
@@ -488,8 +490,10 @@ class Chain:
         the given physical address.
 
         ``unit`` selects which MAIN core: ``0`` for MAIN0, ``1``
-        for MAIN1.  Other values raise ``ValueError``.  Mirror
-        of gpsim's per-MAIN register poke (used to seed diag
+        for MAIN1.  Values 2..=255 raise ``ValueError``;
+        negatives and values >255 raise ``OverflowError`` from
+        the underlying PyO3 ``u8`` conversion.  Mirror of
+        gpsim's per-MAIN register poke (used to seed diag
         counters, force standby state, etc.).
         """
         self._inner.write_main_reg(

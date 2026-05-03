@@ -112,6 +112,29 @@ def _rust_main_diag_block(rust_chain, main_idx: int) -> tuple[int, ...]:  # type
 
 
 # ---------------------------------------------------------------------------
+# Hex source skew caveat (post codex review of 16fa3ee, 2026-05-03)
+# ---------------------------------------------------------------------------
+# The rust path uses `Chain.from_v171_v32()` which loads CANONICAL
+# release hexes from `firmware/patched/releases/{DLCP_Control_V1.71,
+# DLCP_Firmware_V3.2}.hex`.  The gpsim path uses the `v171_hex` and
+# `v32_hex` fixtures which build from the CURRENT source via
+# `assemble_v17(V171_CONTROL_ASM, ...)` and `assemble_v30(V32_MAIN_ASM,
+# ...)`.  For unmodified source the two binaries are byte-identical;
+# however a Phase A/B source change landing BEFORE a canonical
+# release rebuild (`scripts/build_v32_release.py` /
+# `scripts/build_v171_release.py`) would silently make the rust path
+# test stale binaries while the gpsim path tests current source.
+#
+# Tracking: ledger task #77 -- "Add hex-path overrides to
+# `Chain.from_v171_v32` to avoid stale-canonical skew".  Until that
+# lands, dual-mode failures that diverge between the two backends
+# should first verify both backends are loading the SAME firmware
+# revision (compare the EEPROM revision byte at MAIN[0x82] and the
+# control_release_metadata at CONTROL[0x0B]).
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Constants pinned by the Layer 5 design (kept duplicated from Phase A/B
 # files so a wire-chain test failure can be diagnosed locally without
 # cross-file lookups).

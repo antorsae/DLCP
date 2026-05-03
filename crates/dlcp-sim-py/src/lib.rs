@@ -1241,10 +1241,13 @@ impl Chain {
 
     /// Read a single byte of one MAIN's data memory at the
     /// given physical address.  `unit` selects which MAIN core
-    /// (`0` for MAIN0, `1` for MAIN1).  Other values raise
-    /// `ValueError`.  On MAIN-only / single-MAIN chain
-    /// topologies (where `i_main0 == i_main1`) both unit
-    /// indices target the same physical core.
+    /// (`0` for MAIN0, `1` for MAIN1); values 2..=255 raise
+    /// `ValueError`.  Negative integers and values >255 are
+    /// rejected by PyO3's u8 conversion before reaching the
+    /// explicit branch below (with `OverflowError`).  On
+    /// MAIN-only / single-MAIN chain topologies (where
+    /// `i_main0 == i_main1`) both unit indices target the same
+    /// physical core.
     ///
     /// Mirror of gpsim's per-MAIN register read in the wire-
     /// chain harnesses (`WireMultiMainChainHarness.main_reg`
@@ -1269,10 +1272,12 @@ impl Chain {
 
     /// Write a single byte of one MAIN's data memory at the
     /// given physical address.  `unit` selects which MAIN core
-    /// (`0` for MAIN0, `1` for MAIN1).  Other values raise
-    /// `ValueError`.  Mirror of gpsim's per-MAIN register
-    /// poke (used to seed diag counters, force standby state,
-    /// etc.).
+    /// (`0` for MAIN0, `1` for MAIN1); values 2..=255 raise
+    /// `ValueError`.  Negative integers and values >255 are
+    /// rejected by PyO3's u8 conversion before reaching the
+    /// explicit branch below (with `OverflowError`).  Mirror
+    /// of gpsim's per-MAIN register poke (used to seed diag
+    /// counters, force standby state, etc.).
     fn write_main_reg(&mut self, unit: u8, addr: u16, value: u8) -> PyResult<()> {
         let i_main = match unit {
             0 => self.i_main0,
