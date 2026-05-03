@@ -26,18 +26,18 @@
 //! `apply_reset_all`, etc.) and grow this module
 //! incrementally.
 
-use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
 use std::path::PathBuf;
 
 use dlcp_sim::chain::Chain as RustChain;
-use dlcp_sim::core::Core;
+use dlcp_sim::core::{Core, CoreLoadOptions, core_from_hex_image};
 use dlcp_sim::hex::HexImage;
 use dlcp_sim::lcd::Hd44780;
 use dlcp_sim::memory::Variant;
 use dlcp_sim::peripherals::src4382::Src4382;
 use dlcp_sim::peripherals::tas3108::Tas3108;
-use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin, PortLetter};
+use dlcp_sim::pinnet::{PortLetter, default_rx_pin, default_tx_pin};
 use dlcp_sim::reset::ResetSource;
 
 /// Path to the project root (the `analysis-sim-rewrite-rust`
@@ -110,7 +110,7 @@ fn build_seeded_main_flash(
 /// merged onto a V2.3-combined seed.  Mirror of
 /// `multicore_parity.rs:166::build_seeded_main_core`.
 fn build_seeded_main_core(v3_app: &HexImage, v23_seed: &HexImage) -> Core {
-    let mut core = Core::new(Variant::Pic18F2455);
+    let mut core = core_from_hex_image(Variant::Pic18F2455, v3_app, CoreLoadOptions::default());
     core.flash_mut()
         .copy_from_slice(&*build_seeded_main_flash(v3_app, v23_seed));
     for (addr, &byte) in v23_seed.eeprom.iter().enumerate() {
@@ -121,22 +121,12 @@ fn build_seeded_main_core(v3_app: &HexImage, v23_seed: &HexImage) -> Core {
 
 /// Build a CONTROL (K20) core from a V1.71 hex.  Mirror
 /// of `multicore_parity.rs:227::build_core_from_hex` for
-/// the K20 path: copy flash, seed EEPROM byte-for-byte
+/// the K20 path: copy flash, EEPROM, CONFIG, and USER_ID byte-for-byte
 /// (including 0xFF "erased" bytes -- firmware
 /// distinguishes 0xFF-erased from 0x00-default at runtime
-/// via "uninitialized" sentinel checks).  Config / user_id
-/// stay at their `Core::new` defaults (all-zero CONFIG, all-
-/// 0xFF user_id) -- matching what the existing test
-/// harness does and what the deployed DLCP firmware
-/// expects (CONFIG4L=0x80, see `core.rs:99-107` for
-/// rationale).
+/// via "uninitialized" sentinel checks).
 fn build_v171_control_core(v171: &HexImage) -> Core {
-    let mut core = Core::new(Variant::Pic18F25K20);
-    core.flash_mut().copy_from_slice(&*v171.flash);
-    for (addr, &byte) in v171.eeprom.iter().enumerate() {
-        core.peripherals.eeprom.set_byte(addr as u8, byte);
-    }
-    core
+    core_from_hex_image(Variant::Pic18F25K20, v171, CoreLoadOptions::default())
 }
 
 /// Build a stock V2.3 MAIN core from V2.3-combined.  Unlike
@@ -144,12 +134,11 @@ fn build_v171_control_core(v171: &HexImage) -> Core {
 /// block + V2.3 app + EEPROM + preset tables) -- no merge
 /// or `bake_goto` trampolines needed.
 fn build_stock_v23_main_core(v23_combined: &HexImage) -> Core {
-    let mut core = Core::new(Variant::Pic18F2455);
-    core.flash_mut().copy_from_slice(&*v23_combined.flash);
-    for (addr, &byte) in v23_combined.eeprom.iter().enumerate() {
-        core.peripherals.eeprom.set_byte(addr as u8, byte);
-    }
-    core
+    core_from_hex_image(
+        Variant::Pic18F2455,
+        v23_combined,
+        CoreLoadOptions::default(),
+    )
 }
 
 /// Top-level helper: build a 3-core ring (V1.71 CONTROL +
@@ -185,11 +174,25 @@ struct V17SingleMainHandle {
     i_dsp: usize,
 }
 
+fn release_control_buttons(chain: &mut RustChain, control_idx: usize) {
+    for (port, bit) in [
+        (PortLetter::A, 1),
+        (PortLetter::A, 2),
+        (PortLetter::A, 3),
+        (PortLetter::A, 4),
+        (PortLetter::C, 0),
+        (PortLetter::C, 5),
+    ] {
+        chain.set_pin_high(control_idx, port, bit);
+    }
+}
+
 /// Build a 2-core chain (1 CONTROL/K20 + 1 MAIN/2455) with
 /// bidirectional UART, TAS3108 DSP slave on MAIN, HD44780
 /// LCD slave on CONTROL.  POR-reset, initial steps scheduled
-/// at tick 0.  PORTA/PORTC seeded to 0xFF (buttons released);
-/// AN0 ADC sample seeded to 0x0300 (mid-rail mains-detect).
+/// at tick 0.  CONTROL button pins are externally released
+/// through the GPIO injection API; AN0 ADC sample seeded to
+/// 0x0300 (mid-rail mains-detect).
 ///
 /// `control_hex_path` accepts any K20 hex (V1.6b stock,
 /// V1.7 byte-identical rebuild, V1.7 shifted, V1.71, etc.).
@@ -249,14 +252,10 @@ fn build_v17_chain_single_main(
 
     // Seed buttons-released AFTER POR (which wipes SFRs).
     // Mirrors `multicore_parity.rs::chain_v16b_v23_stock_
-    // reaches_volume_screen` (lines ~5092-5097) and the
-    // V1.71+V3.1 LCD parity test seed (ibid lines ~4992-4997).
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+    // reaches_volume_screen` and the V1.71+V3.1 LCD parity
+    // test seed.  Use the GPIO API rather than raw PORT writes
+    // so the external level survives TRIS/ANSEL refreshes.
+    release_control_buttons(&mut chain, i_ctl);
 
     Ok(V17SingleMainHandle {
         chain,
@@ -291,9 +290,7 @@ fn build_v17_chain_single_main(
 /// to `uart_tx_history` with `src_core == dst_core == i_ctl`,
 /// so `tx_frames()` reports CONTROL's USART output even
 /// without a peer (matching MAIN-only chain semantics).
-fn build_v17_control_only_chain(
-    control_hex_path: PathBuf,
-) -> Result<V17SingleMainHandle, String> {
+fn build_v17_control_only_chain(control_hex_path: PathBuf) -> Result<V17SingleMainHandle, String> {
     let control_hex = HexImage::from_hex_path(&control_hex_path)
         .map_err(|e| format!("control hex parse ({:?}): {e:?}", control_hex_path))?;
 
@@ -313,12 +310,7 @@ fn build_v17_control_only_chain(
     // `build_v17_chain_single_main` so a V1.7 boot under
     // `disable_standby_check=False` does not interpret the
     // wiped PORTA/PORTC as "buttons stuck pressed".
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_ctl);
 
     Ok(V17SingleMainHandle {
         chain,
@@ -443,12 +435,7 @@ fn build_v17_v3x_chain_single_main(
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0]);
 
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_ctl);
 
     Ok(V17SingleMainHandle {
         chain,
@@ -505,14 +492,11 @@ fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
     // build_v17_chain_single_main (lines ~254-259) and
     // build_v17_control_only_chain (lines ~316-321).  Codex
     // hypothesis #1 from the V1.71+V3.2+V3.2 Zzz investigation
-    // (2026-05-02): PortA/PortC=0x00 reads as buttons-pressed,
+    // (2026-05-02): PORTA/PORTC=0x00 reads as buttons-pressed,
     // V1.71 sees STBY held -> renders Zzz instead of Volume.
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+    // Use the GPIO API rather than raw PORT writes so the
+    // external released level survives TRIS/ANSEL refreshes.
+    release_control_buttons(&mut chain, i_ctl);
 
     Ok(V171V32ChainHandle {
         chain,
@@ -723,10 +707,7 @@ impl Chain {
     fn apply_force_connected_hook(&mut self) {
         let mem = &mut self.inner.cores[self.i_ctl].memory;
         let cur = mem.read_raw(dlcp_sim::memory::Address::from_raw(0x01F));
-        mem.write_raw(
-            dlcp_sim::memory::Address::from_raw(0x01F),
-            cur | 0x0A,
-        );
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01F), cur | 0x0A);
         mem.write_raw(dlcp_sim::memory::Address::from_raw(0x09D), 0xFF);
         mem.write_raw(dlcp_sim::memory::Address::from_raw(0x09E), 0xFF);
     }
@@ -742,10 +723,8 @@ impl Chain {
         const RX_RD: u16 = 0x098;
         const RX_WR: u16 = 0x099;
         let mem = &mut self.inner.cores[self.i_ctl].memory;
-        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RD)) as u16
-            % RX_DEPTH;
-        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_WR)) as u16
-            % RX_DEPTH;
+        let rd = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RD)) as u16 % RX_DEPTH;
+        let mut wr = mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_WR)) as u16 % RX_DEPTH;
         let used = (wr + RX_DEPTH - rd) % RX_DEPTH;
         if used > 0x2C {
             return false;
@@ -795,10 +774,7 @@ impl Chain {
     /// `tests/sim/test_v17_chain.py::test_v17_stock_v16b_chain_reaches_display`.
     #[staticmethod]
     fn from_v16b_v23() -> PyResult<Self> {
-        Self::from_v17_chain(
-            v16b_control_hex_path().to_string_lossy().into_owned(),
-            None,
-        )
+        Self::from_v17_chain(v16b_control_hex_path().to_string_lossy().into_owned(), None)
     }
 
     /// Generic V1.7-family + V3.x single-MAIN factory.
@@ -879,11 +855,8 @@ impl Chain {
         let v23_seed = v23_seed_hex_path
             .map(PathBuf::from)
             .unwrap_or_else(v23_main_combined_hex_path);
-        let handle = build_v3x_main_only_chain(
-            PathBuf::from(v3x_main_hex_path),
-            v23_seed,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("from_v3x_main_only: {e}")))?;
+        let handle = build_v3x_main_only_chain(PathBuf::from(v3x_main_hex_path), v23_seed)
+            .map_err(|e| PyRuntimeError::new_err(format!("from_v3x_main_only: {e}")))?;
         Ok(Self {
             inner: handle.chain,
             i_ctl: handle.i_ctl,
@@ -900,20 +873,14 @@ impl Chain {
     /// release hex + V2.3-combined seed).
     #[staticmethod]
     fn from_v31_main_only() -> PyResult<Self> {
-        Self::from_v3x_main_only(
-            v31_main_hex_path().to_string_lossy().into_owned(),
-            None,
-        )
+        Self::from_v3x_main_only(v31_main_hex_path().to_string_lossy().into_owned(), None)
     }
 
     /// Convenience: V3.2 MAIN-only chain (canonical V3.2
     /// release hex + V2.3-combined seed).
     #[staticmethod]
     fn from_v32_main_only() -> PyResult<Self> {
-        Self::from_v3x_main_only(
-            v32_main_hex_path().to_string_lossy().into_owned(),
-            None,
-        )
+        Self::from_v3x_main_only(v32_main_hex_path().to_string_lossy().into_owned(), None)
     }
 
     /// Generic V1.7-family single-MAIN factory.  Accepts
@@ -936,18 +903,12 @@ impl Chain {
     /// chain-construction prelude.
     #[staticmethod]
     #[pyo3(signature = (control_hex_path, main_hex_path=None))]
-    fn from_v17_chain(
-        control_hex_path: String,
-        main_hex_path: Option<String>,
-    ) -> PyResult<Self> {
+    fn from_v17_chain(control_hex_path: String, main_hex_path: Option<String>) -> PyResult<Self> {
         let main_path = main_hex_path
             .map(PathBuf::from)
             .unwrap_or_else(v23_main_combined_hex_path);
-        let handle = build_v17_chain_single_main(
-            PathBuf::from(control_hex_path),
-            main_path,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("from_v17_chain: {e}")))?;
+        let handle = build_v17_chain_single_main(PathBuf::from(control_hex_path), main_path)
+            .map_err(|e| PyRuntimeError::new_err(format!("from_v17_chain: {e}")))?;
         Ok(Self {
             inner: handle.chain,
             i_ctl: handle.i_ctl,
@@ -1204,8 +1165,7 @@ impl Chain {
     /// any other key.  See `panel_button_pin` for the
     /// PORTx mapping rationale.
     fn press(&mut self, key: &str) -> PyResult<()> {
-        let (port, bit) = panel_button_pin(key)
-            .map_err(PyValueError::new_err)?;
+        let (port, bit) = panel_button_pin(key).map_err(PyValueError::new_err)?;
         self.inner.set_pin_low(self.i_ctl, port, bit);
         self.inner.step_ticks(BUTTON_HOLD_TICKS);
         self.inner.set_pin_high(self.i_ctl, port, bit);
@@ -1464,11 +1424,7 @@ impl Chain {
     /// (chain_gpsim.py:451) used by V3.1 robustness tests
     /// to pin the firmware in i2c_wait_bus_idle while PEN
     /// appears stuck.
-    fn set_mssp_stop_fault(
-        &mut self,
-        stop_busy_cycles: u32,
-        stop_busy_count: i64,
-    ) {
+    fn set_mssp_stop_fault(&mut self, stop_busy_cycles: u32, stop_busy_count: i64) {
         self.inner.cores[self.i_main0]
             .peripherals
             .mssp
@@ -1509,9 +1465,7 @@ impl Chain {
         let core = &mut self.inner.cores[self.i_main0];
         core.peripherals.mssp.reset_state();
         core.memory.write_raw(
-            dlcp_sim::memory::Address::from_raw(
-                dlcp_sim::peripherals::mssp::SSPCON2_ADDR,
-            ),
+            dlcp_sim::memory::Address::from_raw(dlcp_sim::peripherals::mssp::SSPCON2_ADDR),
             0,
         );
     }
@@ -1555,11 +1509,7 @@ impl Chain {
     /// latch.  See the rust-side test
     /// `multicore_parity.rs::v171_v32_v32_*_railcoupler*` for the
     /// fully-worked example.
-    fn set_main_an0_sample(
-        &mut self,
-        unit: u8,
-        value: u16,
-    ) -> PyResult<()> {
+    fn set_main_an0_sample(&mut self, unit: u8, value: u16) -> PyResult<()> {
         if value > 0x3FF {
             return Err(PyValueError::new_err(format!(
                 "set_main_an0_sample: value must fit in 10 bits (0x0000..=0x03FF); \
@@ -1643,12 +1593,7 @@ impl Chain {
     /// targets.  Caller is responsible for stepping
     /// afterwards to let the dispatch fire.
     #[pyo3(signature = (addr, cmd, clear_debounce=true))]
-    fn inject_decoded_ir_event(
-        &mut self,
-        addr: u8,
-        cmd: u8,
-        clear_debounce: bool,
-    ) {
+    fn inject_decoded_ir_event(&mut self, addr: u8, cmd: u8, clear_debounce: bool) {
         let mem = &mut self.inner.cores[self.i_ctl].memory;
         if clear_debounce {
             mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01B), 0x00);
@@ -1658,10 +1603,7 @@ impl Chain {
         mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01E), addr);
         // Clear control_flags.IR_ARMED (bit 0 of 0x01F).
         let flags = mem.read_raw(dlcp_sim::memory::Address::from_raw(0x01F));
-        mem.write_raw(
-            dlcp_sim::memory::Address::from_raw(0x01F),
-            flags & !0x01,
-        );
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(0x01F), flags & !0x01);
     }
 
     /// Snapshot CONTROL's TX byte history as a list of
@@ -1683,10 +1625,7 @@ impl Chain {
             .filter(|r| r.src_core == self.i_ctl)
             .map(|r| r.byte)
             .collect();
-        bytes
-            .chunks_exact(3)
-            .map(|c| (c[0], c[1], c[2]))
-            .collect()
+        bytes.chunks_exact(3).map(|c| (c[0], c[1], c[2])).collect()
     }
 
     /// Return MAIN0's TX bytes recorded since the last call
@@ -2126,10 +2065,10 @@ impl Chain {
         const RX_RING_DEPTH: u16 = 48;
 
         let mem = &mut self.inner.cores[self.i_ctl].memory;
-        let rd = (mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD)) as u16)
-            % RX_RING_DEPTH;
-        let mut wr = (mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR)) as u16)
-            % RX_RING_DEPTH;
+        let rd =
+            (mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_RD)) as u16) % RX_RING_DEPTH;
+        let mut wr =
+            (mem.read_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR)) as u16) % RX_RING_DEPTH;
         let used = (wr + RX_RING_DEPTH - rd) % RX_RING_DEPTH;
         let free = (RX_RING_DEPTH - 1).saturating_sub(used);
         if (bytes.len() as u16) > free {
@@ -2140,10 +2079,7 @@ impl Chain {
             mem.write_raw(dlcp_sim::memory::Address::from_raw(addr), byte);
             wr = (wr + 1) % RX_RING_DEPTH;
         }
-        mem.write_raw(
-            dlcp_sim::memory::Address::from_raw(RX_RING_WR),
-            wr as u8,
-        );
+        mem.write_raw(dlcp_sim::memory::Address::from_raw(RX_RING_WR), wr as u8);
         true
     }
 }

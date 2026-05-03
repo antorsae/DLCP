@@ -39,15 +39,16 @@
 //! Table 26-2) and DS41303G §25 (PIC18F25K20 instruction set —
 //! byte-for-byte identical for every opcode this firmware uses).
 
-#![allow(dead_code, reason = "P1.8b executor; consumed by P1.8c/d/e parity tests")]
+#![allow(
+    dead_code,
+    reason = "P1.8b executor; consumed by P1.8c/d/e parity tests"
+)]
 
-use crate::core::Core;
+use crate::core::{Core, RunState};
 use crate::isa::fsr::{FsrAccessMode, classify_fsr_indirect, fsr_high_addr, fsr_low_addr};
 use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 use crate::memory::Address;
-use crate::reset::{
-    RCON_ADDR, RCON_PD, RCON_TO, ResetSource, apply_reset,
-};
+use crate::reset::{RCON_ADDR, RCON_PD, RCON_TO, ResetSource, apply_reset};
 use crate::stack::Stack;
 
 // ---- Key SFR addresses consulted by the executor ----------------
@@ -161,13 +162,8 @@ fn add_byte(a: u8, b: u8, carry_in: bool) -> (u8, bool, bool, bool) {
 /// flag set, writes the result to W or back to f per `d`
 /// (preserving the §5.3.6 STATUS-skip), then commits any pending
 /// FSR mutation -- exactly once per instruction.
-fn execute_arith_with_dest<F>(
-    core: &mut Core,
-    d: Dest,
-    a: Access,
-    f: u8,
-    compute: F,
-) where
+fn execute_arith_with_dest<F>(core: &mut Core, d: Dest, a: Access, f: u8, compute: F)
+where
     F: FnOnce(u8) -> (u8, bool, bool, bool),
 {
     execute_op_with_dest(core, d, a, f, |core, fv| {
@@ -183,13 +179,8 @@ fn execute_arith_with_dest<F>(
 /// commit contract as `execute_arith_with_dest`, but uses
 /// `set_status_zn` instead of the full arith-flag set so C, DC,
 /// OV survive untouched.
-fn execute_logical_with_dest<F>(
-    core: &mut Core,
-    d: Dest,
-    a: Access,
-    f: u8,
-    compute: F,
-) where
+fn execute_logical_with_dest<F>(core: &mut Core, d: Dest, a: Access, f: u8, compute: F)
+where
     F: FnOnce(u8) -> u8,
 {
     execute_op_with_dest(core, d, a, f, |core, fv| {
@@ -204,11 +195,7 @@ fn execute_logical_with_dest<F>(
 /// the branch instruction post-fetch).  Returns the Tcy cost
 /// (2 if taken, 1 if not) and bumps the cycle counter so the
 /// dispatch can directly tail-return its `Ok(...)` value.
-fn execute_conditional_branch(
-    core: &mut Core,
-    n: i8,
-    taken: bool,
-) -> Result<u8, ExecError> {
+fn execute_conditional_branch(core: &mut Core, n: i8, taken: bool) -> Result<u8, ExecError> {
     let cycles = if taken {
         let offset = (n as i32).wrapping_mul(2);
         let new_pc = (core.pc() as i32).wrapping_add(offset) as u32;
@@ -290,6 +277,17 @@ fn tblptr_auto_dec(value: u32) -> u32 {
     preserved | modifiable
 }
 
+fn read_program_byte_for_fetch(core: &Core, addr: usize) -> Option<u8> {
+    let flash = core.flash();
+    if addr >= flash.len() {
+        return None;
+    }
+    if addr >= core.variant().implemented_program_memory_bytes() {
+        return Some(0);
+    }
+    Some(flash[addr])
+}
+
 /// Read a byte from program-memory space at TBLPTR address
 /// `addr`.  TBLRD with TBLPTR pointing into any of the four
 /// PIC18 program-memory windows is handled here; gap regions
@@ -300,22 +298,22 @@ fn tblptr_auto_dec(value: u32) -> u32 {
 /// zero).
 ///
 /// Windows (DS39632E §5.1 / DS40001303H §5.1):
-///   * `0x000000..0x008000` -- program flash (per-variant
-///     limit enforced at fetch-time, not here).
+///   * `0x000000..0x008000` -- program flash host window;
+///     per-variant silicon limits are enforced here too, so
+///     PIC18F2455 `0x6000..0x7FFF` reads as unimplemented gap.
 ///   * `0x200000..0x200008` -- 8-byte User ID.  Task #17
 ///     wired this through `core.user_id`.
 ///   * `0x300000..0x30000E` -- 14-byte CONFIG.  Read via
 ///     `core.config.raw()` so TBLRD reflects the same bytes
 ///     the hex loader stored in the parsed CONFIG region.
 ///   * `0x3FFFFE..0x400000` -- silicon DEVID (read-only).
-///     Reported as `0` until per-variant DEVID values are
-///     wired in -- gpsim reports the actual silicon DEVID,
-///     but reading 0 from the gap is a strict subset of
-///     "Read '0'" silicon behaviour, so firmware that does
-///     a TBLRD on DEVID without programming sees the same
-///     bytes regardless.  Codex review of 1bd913b LOW:
-///     keep the fallback consistent with the gap-region
-///     `0` until a test demands the real DEVID values.
+///     Reported via [`crate::memory::Variant::devid_bytes`].
+///
+/// CONFIG5..CONFIG7 code-protect / write-protect /
+/// table-read-protect bits are parsed but not enforced in this
+/// DLCP-scoped simulator.  Firmware verification tests therefore
+/// still see unprotected TBLRD/TBLWT behaviour even if those bits
+/// are programmed; §11c FID-16 pins that explicit policy.
 ///
 /// EEPROM read-back is NOT a TBLRD path -- firmware reads
 /// EEPROM via EECON1.EEPGD=0 + EECON1.RD which goes through
@@ -323,7 +321,7 @@ fn tblptr_auto_dec(value: u32) -> u32 {
 /// TBLPTR address space.
 fn read_flash_byte(core: &Core, addr: u32) -> u8 {
     let flash = core.flash();
-    if (addr as usize) < flash.len() {
+    if (addr as usize) < core.variant().implemented_program_memory_bytes() {
         return flash[addr as usize];
     }
     if (crate::hex::USER_ID_BASE..crate::hex::USER_ID_BASE + crate::hex::USER_ID_BYTES as u32)
@@ -336,16 +334,78 @@ fn read_flash_byte(core: &Core, addr: u32) -> u8 {
     {
         return core.config.raw()[(addr - crate::hex::CONFIG_BASE) as usize];
     }
-    // DEVID window: silicon-only data.  Until per-variant
-    // DEVID values are wired in, treat as "Read '0'" (same
-    // as the program-memory gaps).
     if (crate::hex::DEVID_BASE..crate::hex::DEVID_BASE + 2).contains(&addr) {
-        return 0;
+        return core.variant().devid_bytes()[(addr - crate::hex::DEVID_BASE) as usize];
     }
     // Every other address -- the unimplemented program-memory
     // gaps between flash, User ID, CONFIG, and DEVID -- reads
     // as zero per the silicon memory-map figures.
     0
+}
+
+fn commit_tblwt_long_write(core: &mut Core, eecon1_value: u8) {
+    if !core
+        .peripherals
+        .eeprom
+        .consume_program_write_unlock(eecon1_value, &mut core.memory)
+    {
+        return;
+    }
+
+    let tblptr = read_tblptr(core);
+    let cfgs = (eecon1_value & crate::peripherals::eeprom::Eeprom::eecon1_cfgs_bit()) != 0;
+    let free = (eecon1_value & crate::peripherals::eeprom::Eeprom::eecon1_free_bit()) != 0;
+
+    if !cfgs {
+        let block_size = core.tblwt_block_size();
+        let base = (tblptr as usize) & !(block_size - 1);
+        if free {
+            let limit = core.variant().implemented_program_memory_bytes();
+            for addr in base..(base + block_size).min(limit) {
+                core.flash_mut()[addr] = 0xFF;
+            }
+        } else {
+            let holding = core.tblwt_holding;
+            let limit = core.variant().implemented_program_memory_bytes();
+            for (slot, &byte) in holding.iter().take(block_size).enumerate() {
+                let addr = base + slot;
+                if addr < limit {
+                    core.flash_mut()[addr] &= byte; // flash programming is 1->0 only
+                }
+            }
+        }
+    } else if (crate::hex::USER_ID_BASE
+        ..crate::hex::USER_ID_BASE + crate::hex::USER_ID_BYTES as u32)
+        .contains(&tblptr)
+    {
+        let slot = (tblptr as usize) & (core.tblwt_block_size() - 1);
+        core.user_id[(tblptr - crate::hex::USER_ID_BASE) as usize] &= core.tblwt_holding[slot];
+    } else if (crate::hex::CONFIG_BASE..crate::hex::CONFIG_BASE + crate::hex::CONFIG_BYTES as u32)
+        .contains(&tblptr)
+    {
+        let slot = (tblptr as usize) & (core.tblwt_block_size() - 1);
+        let mut config = *core.config.raw();
+        config[(tblptr - crate::hex::CONFIG_BASE) as usize] &= core.tblwt_holding[slot];
+        core.config = crate::config::Config::from_bytes(config);
+        core.peripherals.osc.configure_from_config(&core.config);
+    }
+
+    core.tblwt_holding.fill(0xFF);
+
+    let con1 = core
+        .memory
+        .read_raw(Address::from_raw(crate::peripherals::eeprom::EECON1_ADDR));
+    core.memory.write_raw(
+        Address::from_raw(crate::peripherals::eeprom::EECON1_ADDR),
+        con1 & !crate::peripherals::eeprom::Eeprom::eecon1_wr_bit(),
+    );
+    let pir2 = core
+        .memory
+        .read_raw(Address::from_raw(crate::peripherals::eeprom::PIR2_ADDR));
+    core.memory.write_raw(
+        Address::from_raw(crate::peripherals::eeprom::PIR2_ADDR),
+        pir2 | 0x10,
+    );
 }
 
 /// Skip the next instruction by advancing PC past it and
@@ -364,11 +424,13 @@ fn read_flash_byte(core: &Core, addr: u32) -> u8 {
 fn skip_next_instruction(core: &mut Core) -> u8 {
     let pc = core.pc();
     let pc_idx = pc as usize;
-    let flash = core.flash();
-    if pc_idx + 1 >= flash.len() {
+    let Some(byte0) = read_program_byte_for_fetch(core, pc_idx) else {
         return 2;
-    }
-    let word1 = u16::from_le_bytes([flash[pc_idx], flash[pc_idx + 1]]);
+    };
+    let Some(byte1) = read_program_byte_for_fetch(core, pc_idx + 1) else {
+        return 2;
+    };
+    let word1 = u16::from_le_bytes([byte0, byte1]);
     if opcode_needs_word2(word1) {
         core.set_pc(pc.wrapping_add(4));
         3
@@ -387,13 +449,7 @@ fn skip_next_instruction(core: &mut Core) -> u8 {
 /// doesn't apply -- a hypothetical `INCFSZ STATUS, F` lands
 /// the increment in STATUS).  Returns the post-write byte so
 /// the caller can decide whether to skip.
-fn execute_rmw_with_dest_no_status<F>(
-    core: &mut Core,
-    d: Dest,
-    a: Access,
-    f: u8,
-    compute: F,
-) -> u8
+fn execute_rmw_with_dest_no_status<F>(core: &mut Core, d: Dest, a: Access, f: u8, compute: F) -> u8
 where
     F: FnOnce(u8) -> u8,
 {
@@ -443,13 +499,8 @@ where
 /// skip), then commits any pending FSR mutation exactly once
 /// per instruction (the RMW / once-per-instruction contract
 /// established earlier in P1.8b for MOVF d=F).
-fn execute_op_with_dest<F>(
-    core: &mut Core,
-    d: Dest,
-    a: Access,
-    f: u8,
-    compute_and_status: F,
-) where
+fn execute_op_with_dest<F>(core: &mut Core, d: Dest, a: Access, f: u8, compute_and_status: F)
+where
     F: FnOnce(&mut Core, u8) -> u8,
 {
     let operand_addr = resolve_f(core, f, a);
@@ -559,10 +610,7 @@ type PendingFsrUpdate = (FsrIndex, u16);
 /// used in the operation" per DS39632E §5.5.4).  PreIncrement's
 /// FSR write is therefore committed inline here, and the
 /// returned target reflects the post-increment FSR value.
-fn resolve_target_no_commit(
-    core: &mut Core,
-    addr: Address,
-) -> (Address, Option<PendingFsrUpdate>) {
+fn resolve_target_no_commit(core: &mut Core, addr: Address) -> (Address, Option<PendingFsrUpdate>) {
     let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) else {
         return (addr, None);
     };
@@ -740,6 +788,9 @@ fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     core.memory.write_raw(target, new_value);
     core.peripherals
         .on_sfr_write(target.as_u16(), value, &mut core.memory);
+    if target.as_u16() == crate::peripherals::eeprom::EECON1_ADDR {
+        commit_tblwt_long_write(core, value);
+    }
 }
 
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
@@ -791,13 +842,7 @@ fn write_dest(core: &mut Core, d: Dest, f: u8, a: Access, value: u8) {
 /// the result is *not* written -- the flag update from the
 /// op's STATUS-bit math is the sole STATUS change that lands.
 /// Otherwise the write would clobber the just-set bits.
-fn write_dest_preserve_status_flags(
-    core: &mut Core,
-    d: Dest,
-    f: u8,
-    a: Access,
-    value: u8,
-) {
+fn write_dest_preserve_status_flags(core: &mut Core, d: Dest, f: u8, a: Access, value: u8) {
     let target = match d {
         Dest::W => Address::from_raw(WREG_ADDR),
         Dest::F => resolve_f(core, f, a),
@@ -834,6 +879,11 @@ pub enum ExecError {
     /// (or future instruction-set extensions like XINST=1) have
     /// a slot to fill.
     Unimplemented(Instruction),
+    /// A CONFIG setting selects silicon behavior this executor
+    /// does not implement.  The simulator must fail before any
+    /// instruction state mutates rather than silently executing
+    /// under the wrong instruction-set or peripheral contract.
+    UnsupportedConfig(&'static str),
 }
 
 /// `true` if `word1` is the first half of one of the four
@@ -884,12 +934,23 @@ const fn opcode_needs_word2(word1: u16) -> bool {
 /// display_loop_iteration cycle audit).  Default-off path is
 /// one `Option` discriminant check per call.
 pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
+    if core.run_state != RunState::Running {
+        if crate::peripherals::irq::is_irq_pending(&core.memory) {
+            core.run_state = RunState::Running;
+        } else {
+            return Ok(0);
+        }
+    }
+
     let probe_pre = if core.cycle_probe.is_some() {
         Some(((core.pc() & 0xFFFF) as u16, core.cycles()))
     } else {
         None
     };
     let result = step_inner(core, stack);
+    if result.is_ok() && core.take_wdt_timeout_pending() {
+        apply_reset(core, stack, ResetSource::Wdt);
+    }
     if let Some((pre_pc, pre_cycles)) = probe_pre {
         let post_cycles = core.cycles();
         if let Some(probe) = core.cycle_probe.as_mut() {
@@ -910,6 +971,12 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
 /// return path without each return having to repeat the
 /// post-step probe logic.
 fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
+    if core.config.xinst() {
+        return Err(ExecError::UnsupportedConfig(
+            "XINST=1 extended instruction set is unsupported",
+        ));
+    }
+
     // Check for pending interrupts before fetching the next
     // instruction.  Per DS39632E §9.3, IRQ vectoring happens
     // at instruction boundaries with GIE / GIEH / GIEL / IPEN
@@ -944,13 +1011,15 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
 
     let pc = core.pc();
     let pc_idx = pc as usize;
-    let flash = core.flash();
 
     // PC must have at least one full word ahead.
-    if pc_idx + 1 >= flash.len() {
+    let Some(byte0) = read_program_byte_for_fetch(core, pc_idx) else {
         return Err(ExecError::PcOutOfBounds(pc));
-    }
-    let word1 = u16::from_le_bytes([flash[pc_idx], flash[pc_idx + 1]]);
+    };
+    let Some(byte1) = read_program_byte_for_fetch(core, pc_idx + 1) else {
+        return Err(ExecError::PcOutOfBounds(pc));
+    };
+    let word1 = u16::from_le_bytes([byte0, byte1]);
 
     // The decoder also wants `word2`.  If it can't be read --
     // we're at the very last word of flash -- and word1 is the
@@ -961,12 +1030,15 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     // We use a word1-only predicate because LFSR with an
     // invalid word2 sentinel decodes as Reserved + byte_count=2,
     // so a post-decode `byte_count == 4` check would miss it.
-    let word2_available = pc_idx + 3 < flash.len();
+    let word2_available = read_program_byte_for_fetch(core, pc_idx + 3).is_some();
     if !word2_available && opcode_needs_word2(word1) {
         return Err(ExecError::PcOutOfBounds(pc));
     }
     let word2 = if word2_available {
-        u16::from_le_bytes([flash[pc_idx + 2], flash[pc_idx + 3]])
+        u16::from_le_bytes([
+            read_program_byte_for_fetch(core, pc_idx + 2).expect("word2 low byte available"),
+            read_program_byte_for_fetch(core, pc_idx + 3).expect("word2 high byte available"),
+        ])
     } else {
         0xFFFF
     };
@@ -1280,7 +1352,11 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             //   result = (f << 1) | C_in
             //   C_out = bit 7 of f (the bit shifted out).
             // STATUS C, Z, N.  DC and OV survive untouched.
-            let cin = if read_status(core) & STATUS_C != 0 { 1 } else { 0 };
+            let cin = if read_status(core) & STATUS_C != 0 {
+                1
+            } else {
+                0
+            };
             execute_op_with_dest(core, d, a, f, |core, fv| {
                 let result = (fv << 1) | cin;
                 set_status_bits(core, STATUS_C, fv & 0x80 != 0);
@@ -1303,7 +1379,11 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             //   result = (f >> 1) | (C_in << 7)
             //   C_out = bit 0 of f.
             // STATUS C, Z, N.
-            let cin = if read_status(core) & STATUS_C != 0 { 0x80 } else { 0 };
+            let cin = if read_status(core) & STATUS_C != 0 {
+                0x80
+            } else {
+                0
+            };
             execute_op_with_dest(core, d, a, f, |core, fv| {
                 let result = (fv >> 1) | cin;
                 set_status_bits(core, STATUS_C, fv & 0x01 != 0);
@@ -1353,15 +1433,9 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // MEDIUM.
             let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if pushed
-                && stack.depth() as usize == crate::stack::STACK_DEPTH
-                && core.config.stvren()
+            if pushed && stack.depth() as usize == crate::stack::STACK_DEPTH && core.config.stvren()
             {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackFull,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackFull);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
@@ -1383,15 +1457,9 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // the fast shadow.
             let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if pushed
-                && stack.depth() as usize == crate::stack::STACK_DEPTH
-                && core.config.stvren()
+            if pushed && stack.depth() as usize == crate::stack::STACK_DEPTH && core.config.stvren()
             {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackFull,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackFull);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
@@ -1406,11 +1474,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
             if popped.is_none() && core.config.stvren() {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackUnderflow,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackUnderflow);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
@@ -1434,11 +1498,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
             if popped.is_none() && core.config.stvren() {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackUnderflow,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackUnderflow);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
@@ -1452,11 +1512,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
             if popped.is_none() && core.config.stvren() {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackUnderflow,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackUnderflow);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(2);
                 return Ok(2);
@@ -1470,7 +1526,8 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // 1-deep shadow stack of W/STATUS/BSR.  V3.1's
             // ISR uses RETFIE 1 to undo the shadow push
             // from `CALL FAST main_isr_dispatch`.  Task #15.
-            crate::peripherals::irq::restore_gie_on_retfie(&mut core.memory);
+            let irq_context = core.pop_irq_context();
+            crate::peripherals::irq::restore_gie_on_retfie(&mut core.memory, irq_context);
             if fast {
                 core.restore_fast_regs();
             }
@@ -1480,15 +1537,9 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Push => {
             let pushed = stack.push(core.pc());
             stack.mirror_to_sfrs(&mut core.memory);
-            if pushed
-                && stack.depth() as usize == crate::stack::STACK_DEPTH
-                && core.config.stvren()
+            if pushed && stack.depth() as usize == crate::stack::STACK_DEPTH && core.config.stvren()
             {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackFull,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackFull);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(1);
                 return Ok(1);
@@ -1500,11 +1551,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let popped = stack.pop();
             stack.mirror_to_sfrs(&mut core.memory);
             if popped.is_none() && core.config.stvren() {
-                crate::reset::apply_reset(
-                    core,
-                    stack,
-                    crate::reset::ResetSource::StackUnderflow,
-                );
+                crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackUnderflow);
                 stack.mirror_to_sfrs(&mut core.memory);
                 core.advance_cycles(1);
                 return Ok(1);
@@ -1519,14 +1566,30 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         // post-fetch advance becomes "PC += 2*n".  Both
         // conditional and unconditional branches use the same
         // arithmetic; only the gating flag differs.
-        Instruction::Bz { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_Z != 0),
-        Instruction::Bnz { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_Z == 0),
-        Instruction::Bc { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_C != 0),
-        Instruction::Bnc { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_C == 0),
-        Instruction::Bov { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_OV != 0),
-        Instruction::Bnov { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_OV == 0),
-        Instruction::Bn { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_N != 0),
-        Instruction::Bnn { n } => execute_conditional_branch(core, n, read_status(core) & STATUS_N == 0),
+        Instruction::Bz { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_Z != 0)
+        }
+        Instruction::Bnz { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_Z == 0)
+        }
+        Instruction::Bc { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_C != 0)
+        }
+        Instruction::Bnc { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_C == 0)
+        }
+        Instruction::Bov { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_OV != 0)
+        }
+        Instruction::Bnov { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_OV == 0)
+        }
+        Instruction::Bn { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_N != 0)
+        }
+        Instruction::Bnn { n } => {
+            execute_conditional_branch(core, n, read_status(core) & STATUS_N == 0)
+        }
         Instruction::Bra { n } => {
             // BRA: unconditional 11-bit signed offset; 2 Tcy.
             let offset = (n as i32).wrapping_mul(2);
@@ -1566,8 +1629,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             }
             let target = read_tblptr(core);
             let byte = read_flash_byte(core, target);
-            core.memory
-                .write_raw(Address::from_raw(TABLAT_ADDR), byte);
+            core.memory.write_raw(Address::from_raw(TABLAT_ADDR), byte);
             match mode {
                 TableMode::PostIncrement => {
                     let new_ptr = tblptr_auto_inc(read_tblptr(core));
@@ -1630,24 +1692,28 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::Sleep => {
             // SLEEP: per DS39632E §26 SLEEP, RCON.PD ← 0,
             // RCON.TO ← 1 (TO indicates the WDT did NOT time
-            // out; PD indicates we entered sleep).  The actual
-            // "halt CPU until interrupt" behaviour is deferred
-            // to the chain scheduler in P3 -- here we just
-            // update RCON so firmware that polls these bits
-            // post-wake sees the right values.
+            // out; PD indicates we entered sleep), WDT/postscaler
+            // clear, and the CPU enters Sleep or Idle depending
+            // on OSCCON.IDLEN.
             let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
             let new_rcon = (rcon & !RCON_PD) | RCON_TO;
             core.memory.write_raw(
                 Address::from_raw(RCON_ADDR),
                 new_rcon & sfr_write_mask(RCON_ADDR),
             );
+            let osccon = core.memory.read_raw(Address::from_raw(0xFD3));
             core.advance_cycles(1);
+            core.clear_wdt();
+            core.run_state = if (osccon & 0x80) != 0 {
+                RunState::Idle
+            } else {
+                RunState::Sleep
+            };
             Ok(1)
         }
         Instruction::Clrwdt => {
             // CLRWDT: clear the Watchdog Timer.  RCON.PD ← 1,
-            // RCON.TO ← 1.  Actual WDT counter clear is a P2
-            // peripheral concern; here we just update RCON.
+            // RCON.TO ← 1 and clear WDT/postscaler.
             let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
             let new_rcon = rcon | RCON_PD | RCON_TO;
             core.memory.write_raw(
@@ -1655,6 +1721,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                 new_rcon & sfr_write_mask(RCON_ADDR),
             );
             core.advance_cycles(1);
+            core.clear_wdt();
             Ok(1)
         }
         Instruction::Daw => {
@@ -1715,7 +1782,11 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         Instruction::CpfsEq { a, f } => {
             let value = read_f(core, f, a);
             let w = read_w(core);
-            let cycles = if value == w { skip_next_instruction(core) } else { 1 };
+            let cycles = if value == w {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
@@ -1723,7 +1794,11 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // Skip if f > W (unsigned).
             let value = read_f(core, f, a);
             let w = read_w(core);
-            let cycles = if value > w { skip_next_instruction(core) } else { 1 };
+            let cycles = if value > w {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
@@ -1731,14 +1806,22 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // Skip if f < W (unsigned).
             let value = read_f(core, f, a);
             let w = read_w(core);
-            let cycles = if value < w { skip_next_instruction(core) } else { 1 };
+            let cycles = if value < w {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
         Instruction::TstfSz { a, f } => {
             // Skip if f == 0.  Per DS39632E §26 TSTFSZ.
             let value = read_f(core, f, a);
-            let cycles = if value == 0 { skip_next_instruction(core) } else { 1 };
+            let cycles = if value == 0 {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
@@ -1751,26 +1834,42 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         // explicitly don't).
         Instruction::IncfSz { d, a, f } => {
             let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_add(1));
-            let cycles = if result == 0 { skip_next_instruction(core) } else { 1 };
+            let cycles = if result == 0 {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
         Instruction::InfSnz { d, a, f } => {
             // Skip if result != 0 (NOT zero).
             let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_add(1));
-            let cycles = if result != 0 { skip_next_instruction(core) } else { 1 };
+            let cycles = if result != 0 {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
         Instruction::DecfSz { d, a, f } => {
             let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_sub(1));
-            let cycles = if result == 0 { skip_next_instruction(core) } else { 1 };
+            let cycles = if result == 0 {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
         Instruction::DcfSnz { d, a, f } => {
             let result = execute_rmw_with_dest_no_status(core, d, a, f, |fv| fv.wrapping_sub(1));
-            let cycles = if result != 0 { skip_next_instruction(core) } else { 1 };
+            let cycles = if result != 0 {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
@@ -1804,7 +1903,11 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             //   - bit clear, next is 2-word          → 3 Tcy
             let value = read_f(core, f, a);
             let bit_clear = value & (1u8 << b) == 0;
-            let cycles = if bit_clear { skip_next_instruction(core) } else { 1 };
+            let cycles = if bit_clear {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
@@ -1812,7 +1915,11 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // BTFSS f, b, a: skip if bit b of f is SET.
             let value = read_f(core, f, a);
             let bit_set = value & (1u8 << b) != 0;
-            let cycles = if bit_set { skip_next_instruction(core) } else { 1 };
+            let cycles = if bit_set {
+                skip_next_instruction(core)
+            } else {
+                1
+            };
             core.advance_cycles(cycles as u32);
             Ok(cycles)
         }
@@ -1898,9 +2005,8 @@ mod tests {
         // off); the trigger is the filling push, not a
         // later overflow attempt.
         let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
-        core.config = crate::config::Config::from_bytes(
-            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
-        );
+        core.config =
+            crate::config::Config::from_bytes([0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0]);
         let mut stack = Stack::new();
         for _ in 0..30 {
             stack.push(0x0042);
@@ -1938,7 +2044,10 @@ mod tests {
         assert_eq!(cycles, 2);
         // No reset: PC continued to call target (0x0010).
         assert_eq!(core.pc(), 0x0010, "STVREN=0 lets CALL set PC normally");
-        assert!(stack.overflow(), "STKFUL latched on filling push regardless of STVREN");
+        assert!(
+            stack.overflow(),
+            "STKFUL latched on filling push regardless of STVREN"
+        );
         assert_eq!(stack.depth(), 31);
     }
 
@@ -1952,9 +2061,8 @@ mod tests {
     #[test]
     fn stvren_one_push_at_full_does_not_double_reset() {
         let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
-        core.config = crate::config::Config::from_bytes(
-            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
-        );
+        core.config =
+            crate::config::Config::from_bytes([0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0]);
         let mut stack = Stack::new();
         for _ in 0..31 {
             stack.push(0x0042);
@@ -1979,9 +2087,8 @@ mod tests {
         // RETURN s=0: opcode 0x0012, bytes [0x12, 0x00].
         let mut core = k20_core_with_flash(&[0x12, 0x00]);
         // CONFIG4L is byte 6; STVREN = bit 0.
-        core.config = crate::config::Config::from_bytes(
-            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
-        );
+        core.config =
+            crate::config::Config::from_bytes([0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0]);
         let mut stack = Stack::new();
         // Empty stack -> RETURN underflows.
         let cycles = step(&mut core, &mut stack).unwrap();
@@ -2004,9 +2111,8 @@ mod tests {
     #[test]
     fn stvren_one_call_with_pre_latched_stkful_still_resets_on_fill() {
         let mut core = k20_core_with_flash(&[0x08, 0xEC, 0x00, 0xF0]);
-        core.config = crate::config::Config::from_bytes(
-            [0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0],
-        );
+        core.config =
+            crate::config::Config::from_bytes([0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0]);
         let mut stack = Stack::new();
         // Pre-fill to depth=30 and force STKFUL latched (via
         // the "fill to 31, pop one" path -- STKFUL is sticky
@@ -2047,10 +2153,8 @@ mod tests {
         // direct memory write -- the executor read path
         // doesn't depend on the byte being delivered via
         // `deliver_rx_byte`.
-        core.memory
-            .write_raw(Address::from_raw(0xFAE), 0x42);
-        core.memory
-            .write_raw(Address::from_raw(0xF9E), 0x20); // PIR1.RCIF
+        core.memory.write_raw(Address::from_raw(0xFAE), 0x42);
+        core.memory.write_raw(Address::from_raw(0xF9E), 0x20); // PIR1.RCIF
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         // WREG = 0x42 (the byte read).  PIR1.RCIF cleared.
@@ -2107,7 +2211,7 @@ mod tests {
     fn tblrd_config_window_reads_core_config_bytes() {
         let mut core = k20_core_with_flash(&[0x08, 0x00]); // TBLRD*: 0x0008
         let mut cfg = [0u8; 14];
-        cfg[6] = 0x55; // CONFIG4L sentinel
+        cfg[6] = 0x15; // CONFIG4L sentinel with XINST=0
         cfg[8] = 0xA5; // CONFIG5L sentinel
         core.config = crate::config::Config::from_bytes(cfg);
         // Set TBLPTR = 0x300006 (CONFIG4L).
@@ -2118,7 +2222,7 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         assert_eq!(
             core.memory.read_raw(Address::from_raw(TABLAT_ADDR)),
-            0x55,
+            0x15,
             "TBLRD must surface config[6] (CONFIG4L)"
         );
     }
@@ -2212,8 +2316,7 @@ mod tests {
             let mut core = Core::new(variant);
             let prog = [0x0C, 0x00]; // TBLWT*
             core.flash_mut()[..prog.len()].copy_from_slice(&prog);
-            core.memory
-                .write_raw(Address::from_raw(TABLAT_ADDR), 0x77);
+            core.memory.write_raw(Address::from_raw(TABLAT_ADDR), 0x77);
             core.memory.write_raw(Address::from_raw(0xFF6), 0x10);
             core.memory.write_raw(Address::from_raw(0xFF7), 0x40);
             core.memory.write_raw(Address::from_raw(0xFF8), 0x00);
@@ -2444,7 +2547,7 @@ mod tests {
         let mut core = k20_core_with_flash(&[
             0x04, 0xEF, 0x00, 0xF0, // GOTO 0x0004
             0x00, 0x00, 0x00, 0x00, // skipped fill
-            0x08, 0x00,             // TBLRD* (= 0x0008)
+            0x08, 0x00, // TBLRD* (= 0x0008)
         ]);
         // Set TBLPTR = 0x0000; flash[0] = 0x04.
         write_tblptr(&mut core, 0x0000);
@@ -2559,7 +2662,8 @@ mod tests {
         let mut core = k20_core_with_flash(&[0x30, 0x50]);
         core.memory.write_raw(Address::from_raw(0x030), 0x42);
         // Pre-set Z + N so we can confirm they get cleared.
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z | STATUS_N);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z | STATUS_N);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_w(&core), 0x42);
@@ -2636,7 +2740,8 @@ mod tests {
         let mut core = k20_core_with_flash(&[0xD8, 0x6A]);
         // Pre-set every implemented STATUS bit; CLRF should
         // leave C/DC/OV/N alone and Z stays set (was already 1).
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         // C, DC, OV, N must survive; Z stays set.
@@ -2806,7 +2911,8 @@ mod tests {
         let mut core = k20_core_with_flash(&[0x10, 0x20]);
         write_w(&mut core, 0x05);
         core.memory.write_raw(Address::from_raw(0x010), 0x03);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_w(&core), 0x09);
@@ -2860,7 +2966,8 @@ mod tests {
         let mut core = k20_core_with_flash(&[0x10, 0x54]);
         write_w(&mut core, 0x10);
         core.memory.write_raw(Address::from_raw(0x010), 0x05);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_w(&core), 0x0B);
@@ -2941,7 +3048,8 @@ mod tests {
         write_w(&mut core, 0xFF);
         core.memory.write_raw(Address::from_raw(0x010), 0xFF);
         // Pre-set STATUS Z so we can confirm MULWF doesn't touch flags.
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(PRODL_ADDR)), 0x01);
@@ -3143,7 +3251,8 @@ mod tests {
         // fetch PC = 0x0002.  Branch taken (Z=1) → PC =
         // 0x0002 + 2*5 = 0x000C.  Cost: 2 Tcy.
         let mut core = k20_core_with_flash(&[0x05, 0xE0]);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
         let mut stack = Stack::new();
         let cycles = step(&mut core, &mut stack).unwrap();
         assert_eq!(cycles, 2);
@@ -3182,7 +3291,8 @@ mod tests {
         core.flash_mut()[0x10] = 0xFE;
         core.flash_mut()[0x11] = 0xE2;
         core.set_pc(0x0010);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
         let mut stack = Stack::new();
         let cycles = step(&mut core, &mut stack).unwrap();
         assert_eq!(cycles, 2);
@@ -3201,7 +3311,8 @@ mod tests {
     #[test]
     fn bov_taken_when_overflow_set() {
         let mut core = k20_core_with_flash(&[0x02, 0xE4]);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_OV);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_OV);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x0006);
@@ -3219,7 +3330,8 @@ mod tests {
     #[test]
     fn bn_taken_when_negative_set() {
         let mut core = k20_core_with_flash(&[0x01, 0xE6]);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_N);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_N);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.pc(), 0x0004);
@@ -3457,7 +3569,8 @@ mod tests {
         // correction); pre-set DC=1.  Low nibble +6 = 0x0F.
         let mut core = k20_core_with_flash(&[0x07, 0x00]);
         write_w(&mut core, 0x09);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_DC);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_DC);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_w(&core), 0x0F);
@@ -3558,7 +3671,8 @@ mod tests {
         let mut core = k20_core_with_flash(&[0x10, 0x3E, 0x00, 0x00]);
         core.memory.write_raw(Address::from_raw(0x010), 0xFF);
         // Pre-set STATUS bits to confirm INCFSZ doesn't touch them.
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x00);
@@ -3653,7 +3767,8 @@ mod tests {
         // because BCF doesn't have flag-update side effects --
         // it directly manipulates the bit.  So C must clear.
         let mut core = k20_core_with_flash(&[0xD8, 0x90]);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_status(&core), STATUS_VALID_MASK & !STATUS_C);
@@ -3739,7 +3854,8 @@ mod tests {
         write_w(&mut core, 0xF0);
         core.memory.write_raw(Address::from_raw(0x010), 0xCC);
         // Pre-set Z to confirm it gets cleared.
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_Z);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(read_w(&core), 0xC0);
@@ -3789,7 +3905,8 @@ mod tests {
         // C_out = bit 7 of 0x80 = 1.
         let mut core = k20_core_with_flash(&[0x10, 0x36]);
         core.memory.write_raw(Address::from_raw(0x010), 0x80);
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_C);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0x01);
@@ -3845,7 +3962,8 @@ mod tests {
         core.memory.write_raw(Address::from_raw(0x010), 0xAB);
         // Pre-set every implemented STATUS bit; SWAPF must not
         // touch any of them.
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_VALID_MASK);
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(0x010)), 0xBA);
@@ -4143,7 +4261,8 @@ mod tests {
         // When d=W, the result write goes to W (not STATUS), so
         // the flag update + the W load both happen.
         let mut core = k20_core_with_flash(&[0xD8, 0x50]); // MOVF 0xD8, W, ACCESS
-        core.memory.write_raw(Address::from_raw(STATUS_ADDR), STATUS_C); // C set
+        core.memory
+            .write_raw(Address::from_raw(STATUS_ADDR), STATUS_C); // C set
         let mut stack = Stack::new();
         step(&mut core, &mut stack).unwrap();
         // W picks up the original STATUS byte (only C set).

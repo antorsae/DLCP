@@ -14,19 +14,29 @@
 //! directly, to make sure the Core ↔ Peripherals plumbing is
 //! correctly wired.
 
-use dlcp_sim::core::Core;
+use dlcp_sim::core::{Core, RunState};
 use dlcp_sim::exec::step;
 use dlcp_sim::memory::{Address, Variant};
 use dlcp_sim::peripherals::eusart::{
-    BAUDCON_ADDR, PIR1_ADDR, RCSTA_ADDR, SPBRG_ADDR, TXSTA_ADDR,
+    BAUDCON_ADDR, PIR1_ADDR, RCSTA_ADDR, RCREG_ADDR, SPBRG_ADDR, TXREG_ADDR, TXSTA_ADDR,
 };
 use dlcp_sim::reset::{ResetSource, apply_reset};
 use dlcp_sim::stack::Stack;
 
 const TXSTA_TRMT: u8 = 1 << 1;
 const TXSTA_TXEN: u8 = 1 << 5;
+const TXSTA_SYNC: u8 = 1 << 4;
+const TXSTA_SENDB: u8 = 1 << 3;
 const PIR1_TXIF: u8 = 1 << 4;
+const PIR1_RCIF: u8 = 1 << 5;
 const RCSTA_SPEN: u8 = 1 << 7;
+const RCSTA_RX9: u8 = 1 << 6;
+const RCSTA_CREN: u8 = 1 << 4;
+const RCSTA_FERR: u8 = 1 << 2;
+const RCSTA_RX9D: u8 = 1 << 0;
+const BAUDCON_ABDOVF: u8 = 1 << 7;
+const BAUDCON_WUE: u8 = 1 << 1;
+const BAUDCON_ABDEN: u8 = 1 << 0;
 
 /// Encode a `MOVLW k` instruction (opcode `0x0E kk`).
 fn encode_movlw(k: u8) -> [u8; 2] {
@@ -202,5 +212,146 @@ fn pre_txreg_write_sfr_state_matches_firmware_setup() {
         core.memory.read_raw(Address::from_raw(BAUDCON_ADDR)),
         0x40,
         "BAUDCON should match V1.71 setup (RCIDL=1)"
+    );
+}
+
+#[test]
+fn txif_delay_and_sync_policy_cover_fid11() {
+    // §11c FID-11: TXIF is documented as valid on the
+    // second instruction cycle after TXREG transfers to TSR;
+    // synchronous mode is outside DLCP scope and must not look
+    // like async TX by accidentally emitting a frame.
+    let mut core = Core::new(Variant::Pic18F25K20);
+    core.memory.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+    core.memory
+        .write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_TRMT);
+    core.peripherals.eusart.on_sfr_write(
+        TXSTA_ADDR,
+        TXSTA_TXEN | TXSTA_TRMT,
+        &mut core.memory,
+    );
+    core.memory.write_raw(Address::from_raw(TXREG_ADDR), 0x66);
+    core.peripherals
+        .eusart
+        .on_sfr_write(TXREG_ADDR, 0x66, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF,
+        0,
+        "TXIF is not valid immediately after TXREG -> TSR"
+    );
+    core.peripherals.tick_tcy(1, &mut core.memory);
+    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF, 0);
+    core.peripherals.tick_tcy(1, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF,
+        PIR1_TXIF,
+        "TXIF asserts on the second Tcy"
+    );
+
+    let mut sync_core = Core::new(Variant::Pic18F25K20);
+    sync_core
+        .memory
+        .write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+    sync_core.memory.write_raw(
+        Address::from_raw(TXSTA_ADDR),
+        TXSTA_TXEN | TXSTA_SYNC | TXSTA_TRMT,
+    );
+    sync_core
+        .memory
+        .write_raw(Address::from_raw(TXREG_ADDR), 0x77);
+    sync_core.peripherals.eusart.on_sfr_write(
+        TXREG_ADDR,
+        0x77,
+        &mut sync_core.memory,
+    );
+    sync_core.peripherals.tick_tcy(10_000, &mut sync_core.memory);
+    assert_eq!(
+        sync_core.memory.read_raw(Address::from_raw(TXSTA_ADDR)) & TXSTA_TRMT,
+        TXSTA_TRMT,
+        "sync mode is inert in the DLCP model; no async TSR frame starts"
+    );
+    assert_eq!(sync_core.peripherals.eusart.take_completed_tx_byte(), None);
+}
+
+#[test]
+fn rx_ferr_wue_send_break_and_autobaud_policy_cover_fid11() {
+    // §11c FID-11: FERR, RX9D, WUE, SENDB/break, and
+    // auto-baud policy are all firmware-visible EUSART
+    // semantics in DS39632E/DS40001303H.  Auto-baud remains
+    // explicitly inert for DLCP because neither firmware uses
+    // ABDEN as a behavior trigger.
+    let mut core = Core::new(Variant::Pic18F25K20);
+    core.run_state = RunState::Sleep;
+    core.memory.write_raw(
+        Address::from_raw(RCSTA_ADDR),
+        RCSTA_SPEN | RCSTA_CREN | RCSTA_RX9,
+    );
+    core.memory
+        .write_raw(Address::from_raw(BAUDCON_ADDR), BAUDCON_WUE);
+    let wake = core
+        .peripherals
+        .eusart
+        .deliver_rx_frame(0x5A, true, true, &mut core.memory);
+    if wake {
+        core.run_state = RunState::Running;
+    }
+    assert_eq!(core.run_state, RunState::Running);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(BAUDCON_ADDR)) & BAUDCON_WUE,
+        0,
+        "WUE clears after the wake-on-start-bit event"
+    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(RCREG_ADDR)), 0x5A);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(RCSTA_ADDR)) & (RCSTA_FERR | RCSTA_RX9D),
+        RCSTA_FERR | RCSTA_RX9D,
+        "front FIFO entry exposes FERR and RX9D"
+    );
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+        PIR1_RCIF
+    );
+    core.peripherals
+        .eusart
+        .on_sfr_read(RCREG_ADDR, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(RCSTA_ADDR)) & (RCSTA_FERR | RCSTA_RX9D),
+        0,
+        "FERR/RX9D clear when the errored front byte is drained"
+    );
+
+    core.memory.write_raw(Address::from_raw(SPBRG_ADDR), 5);
+    core.memory.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
+    core.memory.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+    core.memory.write_raw(
+        Address::from_raw(TXSTA_ADDR),
+        TXSTA_TXEN | TXSTA_TRMT | TXSTA_SENDB,
+    );
+    core.memory.write_raw(Address::from_raw(TXREG_ADDR), 0x00);
+    core.peripherals
+        .eusart
+        .on_sfr_write(TXREG_ADDR, 0x00, &mut core.memory);
+    core.peripherals.tick_tcy(11 * 96, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(TXSTA_ADDR)) & TXSTA_SENDB,
+        TXSTA_SENDB,
+        "send-break frame is longer than a 9-bit data frame"
+    );
+    core.peripherals.tick_tcy(2 * 96, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(TXSTA_ADDR)) & TXSTA_SENDB,
+        0,
+        "SENDB auto-clears when the break frame completes"
+    );
+
+    core.memory.write_raw(
+        Address::from_raw(BAUDCON_ADDR),
+        BAUDCON_ABDEN,
+    );
+    core.peripherals.tick_tcy(10_000, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(BAUDCON_ADDR)) & (BAUDCON_ABDEN | BAUDCON_ABDOVF),
+        BAUDCON_ABDEN,
+        "auto-baud bits are SFR state only; no ABDOVF is synthesized"
     );
 }

@@ -50,13 +50,26 @@
 use std::path::{Path, PathBuf};
 
 use dlcp_sim::chain::Chain;
-use dlcp_sim::core::{Core, CycleProbe};
+use dlcp_sim::core::{Core, CoreLoadOptions, CycleProbe, core_from_hex_image};
 use dlcp_sim::hex::HexImage;
 use dlcp_sim::lcd::Hd44780;
 use dlcp_sim::memory::Variant;
 use dlcp_sim::peripherals::tas3108::Tas3108;
-use dlcp_sim::pinnet::{default_rx_pin, default_tx_pin};
+use dlcp_sim::pinnet::{PortLetter, default_rx_pin, default_tx_pin};
 use dlcp_sim::reset::ResetSource;
+
+fn release_control_buttons(chain: &mut Chain, control_idx: usize) {
+    for (port, bit) in [
+        (PortLetter::A, 1),
+        (PortLetter::A, 2),
+        (PortLetter::A, 3),
+        (PortLetter::A, 4),
+        (PortLetter::C, 0),
+        (PortLetter::C, 5),
+    ] {
+        chain.set_pin_high(control_idx, port, bit);
+    }
+}
 
 /// Find the repo root by walking up from CARGO_MANIFEST_DIR
 /// (`crates/dlcp-sim`) two levels.  Mirrors `isa_parity.rs`'s
@@ -154,7 +167,10 @@ const MAIN_APP_PATCH_LIMIT: usize = 0x5600;
 /// init naturally jumps to the V3.x app at 0x1000; the
 /// V2.3 high-IRQ vector at 0x0008 already trampolines to
 /// 0x1008 (V3.x's user IRQ handler).  Task #36.
-fn build_seeded_main_flash(v3_app: &HexImage, v23_seed: &HexImage) -> Box<[u8; dlcp_sim::hex::FLASH_BYTES]> {
+fn build_seeded_main_flash(
+    v3_app: &HexImage,
+    v23_seed: &HexImage,
+) -> Box<[u8; dlcp_sim::hex::FLASH_BYTES]> {
     let mut flash = v23_seed.flash.clone();
     let app_end = MAIN_APP_PATCH_LIMIT.min(v3_app.flash.len());
     for addr in MAIN_APP_PATCH_START..app_end {
@@ -178,8 +194,9 @@ fn build_seeded_main_flash(v3_app: &HexImage, v23_seed: &HexImage) -> Box<[u8; d
 /// real reset/IRQ vectors at 0x0000/0x0008 land in the
 /// merged flash.  Task #36.
 fn build_seeded_main_core(v3_app: &HexImage, v23_seed: &HexImage) -> Core {
-    let mut core = Core::new(Variant::Pic18F2455);
-    core.flash_mut().copy_from_slice(&*build_seeded_main_flash(v3_app, v23_seed));
+    let mut core = core_from_hex_image(Variant::Pic18F2455, v3_app, CoreLoadOptions::default());
+    core.flash_mut()
+        .copy_from_slice(&*build_seeded_main_flash(v3_app, v23_seed));
     // EEPROM seed from V2.3 (task #33).  Without this,
     // BF/07 / BF/06 status-burst data bytes diverge from
     // gpsim ground truth.
@@ -189,38 +206,11 @@ fn build_seeded_main_core(v3_app: &HexImage, v23_seed: &HexImage) -> Core {
     core
 }
 
-/// Bake a PIC18 `GOTO target_byte_addr` instruction at
-/// `flash[at]`.  4 bytes long; both addresses must be even.
-/// Encoding per DS39632E §26 / DS41303 §25:
-///   word1 = `1110 1111 k<7:0>`     (high byte 0xEF)
-///   word2 = `1111 k<19:16> k<15:8>` (high byte = 0xF0 | k<19:16>)
-/// where `k` is the WORD address (target_byte_addr / 2);
-/// PCL bit 0 is hard-wired to 0 on PIC18, so target
-/// addresses are always even.
-fn bake_goto(flash: &mut [u8], at: usize, target_byte_addr: u32) {
-    assert!(
-        target_byte_addr & 1 == 0,
-        "GOTO target byte address must be even, got 0x{target_byte_addr:X}"
-    );
-    assert!(
-        at % 2 == 0,
-        "GOTO bake address must be even, got 0x{at:X}"
-    );
-    let k_word = target_byte_addr >> 1;
-    assert!(
-        k_word <= 0x000F_FFFF,
-        "GOTO target out of 21-bit PC range: 0x{target_byte_addr:X}"
-    );
-    flash[at] = (k_word & 0xFF) as u8;
-    flash[at + 1] = 0xEFu8;
-    flash[at + 2] = ((k_word >> 8) & 0xFF) as u8;
-    flash[at + 3] = 0xF0u8 | (((k_word >> 16) & 0x0F) as u8);
-}
-
 /// Load a hex file into a fresh core of the given variant.
 /// Mirrors `isa_parity.rs::run_to_cycle`'s setup minus the
-/// step loop: copies flash, initialises EEPROM contents from
-/// the hex image, applies POR.
+/// step loop: copies flash, initialises EEPROM/CONFIG/USER_ID
+/// contents from the hex image, and applies optional bootloader
+/// GOTO trampolines.
 ///
 /// The 2455 V3.x main image leaves the bootloader window
 /// (`flash[0..0x1000]`) erased.  On real silicon the
@@ -244,30 +234,15 @@ fn build_core_from_hex(
     bake_goto_app_entry: Option<u32>,
     bake_goto_irq_vector: Option<u32>,
 ) -> Core {
-    let mut core = Core::new(variant);
-    core.flash_mut().copy_from_slice(&*image.flash);
-
-    if let Some(target) = bake_goto_app_entry {
-        bake_goto(core.flash_mut(), 0x0000, target);
-    }
-    if let Some(target) = bake_goto_irq_vector {
-        bake_goto(core.flash_mut(), 0x0008, target);
-    }
-
-    // Seed EEPROM bytes from the hex image.  The EEPROM
-    // peripheral's `Default` initialises storage to 0x00
-    // (not 0xFF), so we must copy EVERY byte -- including
-    // 0xFF "erased" bytes -- to faithfully reflect the
-    // hex's contents on the simulator side.  This matters
-    // because firmware reads of erased EEPROM cells
-    // expect 0xFF, not 0x00, and the data-init logic on
-    // V1.71/V3.x treats 0xFF as the "uninitialized" sentinel.
-    for (addr, &byte) in image.eeprom.iter().enumerate() {
-        core.peripherals
-            .eeprom
-            .set_byte(addr as u8, byte);
-    }
-    core
+    core_from_hex_image(
+        variant,
+        image,
+        CoreLoadOptions {
+            bake_goto_app_entry,
+            bake_goto_irq_vector,
+            preserve_default_config: false,
+        },
+    )
 }
 
 #[test]
@@ -323,10 +298,8 @@ fn chain_loads_v171_and_v31_hex() {
 
 #[test]
 fn chain_with_v171_and_v31_steps_without_panic() {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v31 = HexImage::from_hex_path(v31_main_hex_path())
-        .expect("V3.1 hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path()).expect("V3.1 hex parses");
 
     // CONTROL has its own reset vector at 0x0000; no need to
     // bake an entry-point GOTO.  MAIN's hex leaves
@@ -339,12 +312,7 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // FSR2 + CALL FAST main_isr_dispatch); the bootloader
     // would normally trampoline 0x0008 → 0x1008 but isn't
     // loaded, so we bake the trampoline here.  Task #30 fix.
-    let mut main = build_core_from_hex(
-        Variant::Pic18F2455,
-        &v31,
-        Some(0x1000),
-        Some(0x1008),
-    );
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000), Some(0x1008));
     // V3.x MAIN early-boot reads AN0 in `adc_boot_gate` to
     // decide "is the unit plugged in?".  Without an injected
     // sample the ADC peripheral returns 0x0000 and MAIN parks
@@ -413,10 +381,7 @@ fn chain_with_v171_and_v31_steps_without_panic() {
         control_cycles > 0,
         "CONTROL did not advance under chain dispatch"
     );
-    assert!(
-        main_cycles > 0,
-        "MAIN did not advance under chain dispatch"
-    );
+    assert!(main_cycles > 0, "MAIN did not advance under chain dispatch");
 
     // MAIN ran past BOTH trampolines (the baked GOTO 0x1000
     // and the shipped GOTO 0x1014 at flash[0x1000..0x1004])
@@ -515,12 +480,10 @@ fn chain_with_v171_and_v31_steps_without_panic() {
 /// init threshold, no panics.
 #[test]
 fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // Both MAINs use the silicon-correct V2.3 boot-block
@@ -578,13 +541,23 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     {
         let coupling = &chain.pinnet.uart[idx];
         assert_eq!(
-            (coupling.src_core, coupling.src_tx_pin, coupling.dst_core, coupling.dst_rx_pin),
+            (
+                coupling.src_core,
+                coupling.src_tx_pin,
+                coupling.dst_core,
+                coupling.dst_rx_pin
+            ),
             (exp_src, exp_src_pin, exp_dst, exp_dst_pin),
             "ring edge {idx} mismatch: got src={}.{:?}->dst={}.{:?}, \
              expected src={}.{:?}->dst={}.{:?}",
-            coupling.src_core, coupling.src_tx_pin,
-            coupling.dst_core, coupling.dst_rx_pin,
-            exp_src, exp_src_pin, exp_dst, exp_dst_pin,
+            coupling.src_core,
+            coupling.src_tx_pin,
+            coupling.dst_core,
+            coupling.dst_rx_pin,
+            exp_src,
+            exp_src_pin,
+            exp_dst,
+            exp_dst_pin,
         );
     }
 
@@ -633,9 +606,18 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     let ctl_cycles = chain.cores[i_ctl].cycles();
     let main0_cycles = chain.cores[i_main0].cycles();
     let main1_cycles = chain.cores[i_main1].cycles();
-    assert!(ctl_cycles > 0, "CONTROL did not advance under chain dispatch");
-    assert!(main0_cycles > 0, "MAIN0 did not advance under chain dispatch");
-    assert!(main1_cycles > 0, "MAIN1 did not advance under chain dispatch");
+    assert!(
+        ctl_cycles > 0,
+        "CONTROL did not advance under chain dispatch"
+    );
+    assert!(
+        main0_cycles > 0,
+        "MAIN0 did not advance under chain dispatch"
+    );
+    assert!(
+        main1_cycles > 0,
+        "MAIN1 did not advance under chain dispatch"
+    );
 
     // Both MAINs ran past V3.2 boot init into application
     // code (PC > 0x4000); same threshold the V3.1 2-core
@@ -726,9 +708,8 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
     // injection.
     for record in &chain.uart_tx_history {
         let edge = (record.src_core, record.dst_core);
-        let is_ring_edge = edge == (i_ctl, i_main0)
-            || edge == (i_main0, i_main1)
-            || edge == (i_main1, i_ctl);
+        let is_ring_edge =
+            edge == (i_ctl, i_main0) || edge == (i_main0, i_main1) || edge == (i_main1, i_ctl);
         assert!(
             is_ring_edge,
             "uart_tx_history record routes on a non-ring edge {edge:?} \
@@ -954,12 +935,10 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     const DIAG_PB2_BASE_RAM: u16 = 0x18B;
     const DIAG_PB_CACHE_LEN: u16 = 11;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -985,15 +964,11 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     chain.schedule_initial_steps(&[0, 0, 0]);
 
     // Stage 1: boot to first UART so CONTROL is in main loop.
-    chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| {
-            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
-                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
-                && !c.uart_tx_history.is_empty()
-        },
-    );
+    chain.run_until(10_000_000, 5_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && !c.uart_tx_history.is_empty()
+    });
     let stage1_tick = chain.current_tick;
     let stage1_history_len = chain.uart_tx_history.len();
 
@@ -1031,20 +1006,11 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // That's deep in post-handshake init, before
     // display_loop_iteration is reachable.  Step more until
     // PC is in the post_connect range (~0x11D8+).
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
-    chain.run_until(
-        50_000_000,
-        2_000_000_000,
-        |c| {
-            let pc = c.cores[i_ctl].pc();
-            pc >= 0x0CB2 && pc < 0x2000
-        },
-    );
+    release_control_buttons(&mut chain, i_ctl);
+    chain.run_until(50_000_000, 2_000_000_000, |c| {
+        let pc = c.cores[i_ctl].pc();
+        pc >= 0x0CB2 && pc < 0x2000
+    });
     let ctl_pc_stage1_5 = chain.cores[i_ctl].pc();
     eprintln!(
         "Stage 1.5 exit: CONTROL PC=0x{ctl_pc_stage1_5:04X} \
@@ -1062,15 +1028,9 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // Button mapping (V1.71): RIGHT=RA4, LEFT=RC5,
     // SELECT=RA3, DOWN=RC0, STBY=RA2, UP=RA1.  Active-low.
     //
-    // Baseline: PORTA = PORTC = 0xFF (all buttons released)
-    // so spurious presses don't trigger STBY etc.
-    use dlcp_sim::pinnet::PortLetter;
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+    // Baseline: all active-low buttons released so spurious
+    // presses don't trigger STBY etc.
+    release_control_buttons(&mut chain, i_ctl);
 
     // Run a few M ticks first so the released-button
     // state is observed by the firmware's debounce logic
@@ -1084,23 +1044,15 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // for release debounce + state increment + LCD redraw.
     for press in 0..4 {
         chain.set_pin_low(i_ctl, PortLetter::A, 4); // RIGHT pressed
-        let porta_after_press = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xF80));
+        let porta_after_press = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xF80));
         eprintln!(
             "press #{press_n}: PORTA after pin_low = 0x{porta_after_press:02X}",
             press_n = press + 1
         );
         chain.step_ticks(5_000_000);
-        let porta_held = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xF80));
-        let cached_btn_0xbc = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x0BC));
-        let debounce_0xbb = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x0BB));
+        let porta_held = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xF80));
+        let cached_btn_0xbc = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0BC));
+        let debounce_0xbb = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0BB));
         eprintln!(
             "press #{press_n}: after 5M ticks: PORTA=0x{porta_held:02X}, \
              btn_cache(0xBC)=0x{cached_btn_0xbc:02X}, debounce(0xBB)={debounce_0xbb}",
@@ -1201,18 +1153,10 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     //   0x19C  v171_diag_flags           (every flag-bit edit)
     //   0x19D  v171_diag_reset_seen      (every BF/2B reset_seen OR-in)
     {
-        let initial_parsed_cmd = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x02F));
-        let initial_target = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x196));
-        let initial_present = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x197));
-        let initial_flags = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x19C));
+        let initial_parsed_cmd = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F));
+        let initial_target = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196));
+        let initial_present = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x197));
+        let initial_flags = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19C));
         let mut probe = CycleProbe::new();
         probe.add_pc_range(0x0518, 0x051A, "data-byte path entry (04F8) ENTRY");
         probe.add_pc_range(0x05F0, 0x05F2, "cmd 0x1D check ENTRY (05D0)");
@@ -1254,7 +1198,11 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // re-execution counts must be inferred from the
         // body's individual instructions.  Codex MEDIUM
         // from 82f29c5.
-        probe.add_pc_range(0x12CC, 0x12CE, "v171_diag_pb_screen ENTRY (re-entries only)");
+        probe.add_pc_range(
+            0x12CC,
+            0x12CE,
+            "v171_diag_pb_screen ENTRY (re-entries only)",
+        );
         probe.add_pc_range(0x0E1A, 0x0E1C, "display_loop_iteration ENTRY");
         probe.add_pc_range(0x1D0C, 0x1D0E, "main_event_loop ENTRY (re-entries only)");
         // P3.6b research step 6 (task #67): display_loop_iteration
@@ -1263,11 +1211,27 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // cycle costs, avg = body Tcy per instruction.  Compare
         // body Tcy against a cadence design budget of ~31 250 Tcy
         // (1 sec @ 4 MIPS / 128 cadence ticks per sec).
-        probe.add_pc_range(0x0E1A, 0x0F40, "display_loop_iteration FULL BODY (294 bytes)");
+        probe.add_pc_range(
+            0x0E1A,
+            0x0F40,
+            "display_loop_iteration FULL BODY (294 bytes)",
+        );
         probe.add_pc_range(0x0994, 0x0A28, "button_scan_debounce FULL BODY (148 bytes)");
-        probe.add_pc_range(0x0D92, 0x0DB2, "v171_service_pending_ir_decode FULL BODY (32 bytes)");
-        probe.add_pc_range(0x0458, 0x060C, "rx_parser_entry FULL BODY (436 bytes -- includes dispatch)");
-        probe.add_pc_range(0x0DB2, 0x0DE0, "v171_service_rx_frame_gap FULL BODY (46 bytes -- watchdog)");
+        probe.add_pc_range(
+            0x0D92,
+            0x0DB2,
+            "v171_service_pending_ir_decode FULL BODY (32 bytes)",
+        );
+        probe.add_pc_range(
+            0x0458,
+            0x060C,
+            "rx_parser_entry FULL BODY (436 bytes -- includes dispatch)",
+        );
+        probe.add_pc_range(
+            0x0DB2,
+            0x0DE0,
+            "v171_service_rx_frame_gap FULL BODY (46 bytes -- watchdog)",
+        );
         // Codex MEDIUM from 1067b66: the original bounds for these
         // three FULL BODY ranges ended at the first `flow_*` sub-
         // label, which is INSIDE the same function body (e.g. the
@@ -1278,8 +1242,16 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // function (per scripts/find_body_extents.py-style heuristic
         // that treats `flow_<func>_*`, `flow_ccs_<addr>_*`, and
         // `v171_fs_*` as same-body sub-labels).
-        probe.add_pc_range(0x0A78, 0x0B2E, "control_core_service_0990 FULL BODY (182 bytes)");
-        probe.add_pc_range(0x0F40, 0x10DE, "control_core_service_0DCE FULL BODY (414 bytes)");
+        probe.add_pc_range(
+            0x0A78,
+            0x0B2E,
+            "control_core_service_0990 FULL BODY (182 bytes)",
+        );
+        probe.add_pc_range(
+            0x0F40,
+            0x10DE,
+            "control_core_service_0DCE FULL BODY (414 bytes)",
+        );
         probe.add_pc_range(0x0C24, 0x0C62, "full_sync_burst FULL BODY (62 bytes)");
         // P3.6b research step 7 (task #68): single-instruction
         // probes for each `call button_scan_debounce` site in
@@ -1302,13 +1274,33 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // entered while menu_state == 4 holds).  Each `call`
         // is a 2-word PIC18 instruction; the [start, start+2)
         // range counts exactly one hit per call invocation.
-        probe.add_pc_range(0x0E1C, 0x0E1E, "call button_scan @ 0x0E1C (display_loop_iteration)");
+        probe.add_pc_range(
+            0x0E1C,
+            0x0E1E,
+            "call button_scan @ 0x0E1C (display_loop_iteration)",
+        );
         probe.add_pc_range(0x1880, 0x1882, "call button_scan @ 0x1880 (cold WAITING)");
-        probe.add_pc_range(0x1986, 0x1988, "call button_scan @ 0x1986 (display_state_entry)");
-        probe.add_pc_range(0x1A08, 0x1A0A, "call button_scan @ 0x1A08 (reconnect WAITING)");
-        probe.add_pc_range(0x1D6A, 0x1D6C, "call button_scan @ 0x1D6A (main_event_loop body)");
+        probe.add_pc_range(
+            0x1986,
+            0x1988,
+            "call button_scan @ 0x1986 (display_state_entry)",
+        );
+        probe.add_pc_range(
+            0x1A08,
+            0x1A0A,
+            "call button_scan @ 0x1A08 (reconnect WAITING)",
+        );
+        probe.add_pc_range(
+            0x1D6A,
+            0x1D6C,
+            "call button_scan @ 0x1D6A (main_event_loop body)",
+        );
         probe.add_pc_range(0x1FE0, 0x1FE2, "call button_scan @ 0x1FE0 (unknown #1)");
-        probe.add_pc_range(0x1FE6, 0x1FE8, "call button_scan @ 0x1FE6 (control_core_service_17E8)");
+        probe.add_pc_range(
+            0x1FE6,
+            0x1FE8,
+            "call button_scan @ 0x1FE6 (control_core_service_17E8)",
+        );
         probe.add_pc_range(0x21AE, 0x21B0, "call button_scan @ 0x21AE (unknown #2)");
         probe.add_pc_range(0x21DC, 0x21DE, "call button_scan @ 0x21DC (unknown #3)");
         // P3.6b research step 8a: count actual loop exits by
@@ -1323,31 +1315,17 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // average iterations-per-exit = loop-check-entries /
         // loop-exits.
         probe.add_pc_range(0x0EEC, 0x0EEE, "loop CHECK ENTRY (flow_..._0D7A)");
-        let initial_parsed_data = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x030));
-        let initial_frame_pos = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x0A6));
-        let initial_rcsta = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xFAB));
-        let initial_ring_rd = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x098));
-        let initial_ring_wr = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x099));
+        let initial_parsed_data = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030));
+        let initial_frame_pos = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6));
+        let initial_rcsta = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAB));
+        let initial_ring_rd = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x098));
+        let initial_ring_wr = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x099));
         // P3.6b research step 3 (task #63): also watch the parser-
         // stall watchdog state and the diag_reset_seen mask -- the
         // two RAM cells that, with the new BF/2B body PC ranges,
         // close the "4 entries but no flag clear" contradiction.
-        let initial_gap_timeout = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x0AC));
-        let initial_reset_seen = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x19D));
+        let initial_gap_timeout = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0AC));
+        let initial_reset_seen = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19D));
         // P3.6b research step 4 (task #65): intervention
         // experiment per codex on edb77b4.  Watch
         // rx_parsed_cmd AND attach a trigger -- when cmd
@@ -1364,10 +1342,10 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             0x02F,
             "rx_parsed_cmd",
             initial_parsed_cmd,
-            0x21,    // match_min
-            0x2B,    // match_max (covers BF/21..BF/2B inclusive)
-            0x0AC,   // target_addr = v171_rx_frame_gap_timeout
-            0x01,    // target_value = 1 (255 increments to expire)
+            0x21,  // match_min
+            0x2B,  // match_max (covers BF/21..BF/2B inclusive)
+            0x0AC, // target_addr = v171_rx_frame_gap_timeout
+            0x01,  // target_value = 1 (255 increments to expire)
         );
         probe.add_watched_ram(0x030, "rx_parsed_data", initial_parsed_data);
         probe.add_watched_ram(0x0A6, "rx_frame_position", initial_frame_pos);
@@ -1375,12 +1353,8 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         probe.add_watched_ram(0x098, "rx_ring_rd", initial_ring_rd);
         probe.add_watched_ram(0x099, "rx_ring_wr", initial_ring_wr);
         probe.add_watched_ram(0x0AC, "v171_rx_frame_gap_timeout", initial_gap_timeout);
-        let initial_poll_lo = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x198));
-        let initial_poll_hi = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x199));
+        let initial_poll_lo = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x198));
+        let initial_poll_hi = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x199));
         // P3.6b research step 8a (task #69): the
         // display_loop_iteration busy-loop at
         // flow_display_loop_iteration_0D7A (asm:2885-2897)
@@ -1394,15 +1368,9 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // 0x01F (control_flags) so bit-3 transitions are
         // visible alongside other flag edits (bit 0 ir_armed,
         // bit 1 connected, bit 2 rx_route_seen, bit 3 ?).
-        let initial_event_byte_b0 = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x09A));
-        let initial_event_byte_b1 = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x19A));
-        let initial_control_flags = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x01F));
+        let initial_event_byte_b0 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x09A));
+        let initial_event_byte_b1 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19A));
+        let initial_control_flags = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x01F));
         // BSR is at PIC18 SFR 0xFE0.  Watching it lets the
         // probe see how often BSR transitions to/from BANK 1
         // during the run.  Frequent BSR=1 transitions support
@@ -1414,13 +1382,27 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // need a per-PC-hit BSR snapshot at PC=0x0EEC, which
         // CycleProbe doesnt support and is out of scope for
         // research closure.
-        let initial_bsr = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xFE0));
-        probe.add_watched_ram(0x01F, "control_flags (bit3 = busy-loop exit predicate)", initial_control_flags);
-        probe.add_watched_ram(0x09A, "0x09A BANK0 (busy-loop predicate when BSR=0; RIGHT event byte)", initial_event_byte_b0);
-        probe.add_watched_ram(0x19A, "0x19A BANK1 (v171_diag_present_snap; busy-loop predicate when BSR=1)", initial_event_byte_b1);
-        probe.add_watched_ram(0xFE0, "BSR (bank-select; if leaks to 1 mid-loop, check reads 0x19A not 0x09A)", initial_bsr);
+        let initial_bsr = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFE0));
+        probe.add_watched_ram(
+            0x01F,
+            "control_flags (bit3 = busy-loop exit predicate)",
+            initial_control_flags,
+        );
+        probe.add_watched_ram(
+            0x09A,
+            "0x09A BANK0 (busy-loop predicate when BSR=0; RIGHT event byte)",
+            initial_event_byte_b0,
+        );
+        probe.add_watched_ram(
+            0x19A,
+            "0x19A BANK1 (v171_diag_present_snap; busy-loop predicate when BSR=1)",
+            initial_event_byte_b1,
+        );
+        probe.add_watched_ram(
+            0xFE0,
+            "BSR (bank-select; if leaks to 1 mid-loop, check reads 0x19A not 0x09A)",
+            initial_bsr,
+        );
         probe.add_watched_ram(0x196, "v171_diag_target", initial_target);
         probe.add_watched_ram(0x197, "v171_diag_present", initial_present);
         probe.add_watched_ram(0x198, "v171_diag_poll_lo", initial_poll_lo);
@@ -1505,8 +1487,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     //   0xFAE = RCREG
     //   0xF9D = PIE1   (bit 5 RCIE)
     //   0xF9E = PIR1   (bit 5 RCIF)
-    let mut pc_histogram: std::collections::HashMap<u16, u32> =
-        std::collections::HashMap::new();
+    let mut pc_histogram: std::collections::HashMap<u16, u32> = std::collections::HashMap::new();
     let mut menu_state_histogram: std::collections::HashMap<u8, u32> =
         std::collections::HashMap::new();
     let mut bit5_set_count: u32 = 0;
@@ -1518,9 +1499,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     target_changes.push(last_target);
     let mut bf2x_dispatch_hits: u32 = 0; // PC in 0x0630..0x0696
     // P3.6b research: EUSART RX state tracking.
-    let mut last_rcsta: u8 = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0xFAB));
+    let mut last_rcsta: u8 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAB));
     let mut oerr_rising_edges: u32 = 0;
     let mut cren_falling_edges: u32 = 0; // 1 -> 0 = CREN-toggle recovery start
     let mut max_rx_fifo_depth: usize = 0;
@@ -1581,9 +1560,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         if pc >= 0x0630 && pc < 0x0696 {
             bf2x_dispatch_hits += 1;
         }
-        let target_now = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x196));
+        let target_now = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x196));
         if target_now != last_target {
             target_changes.push(target_now);
             last_target = target_now;
@@ -1592,15 +1569,11 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             .memory
             .read_raw(Address::from_raw(MENU_STATE_RAM));
         *menu_state_histogram.entry(mstate).or_insert(0) += 1;
-        let cache_9a = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x09A));
+        let cache_9a = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x09A));
         if cache_9a & 0x20 != 0 {
             bit5_set_count += 1;
         }
-        let poll_lo = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x198));
+        let poll_lo = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x198));
         if poll_lo < diag_poll_lo_min {
             diag_poll_lo_min = poll_lo;
         }
@@ -1608,9 +1581,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             diag_poll_lo_max = poll_lo;
         }
         // P3.6b research: EUSART RX state.
-        let rcsta = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xFAB));
+        let rcsta = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAB));
         // OERR rising edge: bit 1 went 0 -> 1.
         if (rcsta & 0x02) != 0 && (last_rcsta & 0x02) == 0 {
             oerr_rising_edges += 1;
@@ -1621,9 +1592,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         }
         last_rcsta = rcsta;
         // PIR1.RCIF (bit 5): asserted while FIFO non-empty.
-        let pir1 = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0xF9E));
+        let pir1 = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xF9E));
         if (pir1 & 0x20) != 0 {
             rcif_set_chunks += 1;
         } else {
@@ -1647,12 +1616,8 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         // depth value.
         const RING_SIZE: u8 = 48;
         const RING_OOR_SENTINEL: u8 = 0xFF;
-        let ring_rd = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x098)); // rx_ring_rd
-        let ring_wr = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x099)); // rx_ring_wr
+        let ring_rd = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x098)); // rx_ring_rd
+        let ring_wr = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x099)); // rx_ring_wr
         let ring_depth = if ring_rd < RING_SIZE && ring_wr < RING_SIZE {
             (ring_wr + RING_SIZE - ring_rd) % RING_SIZE
         } else {
@@ -1663,15 +1628,9 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             max_ring_depth = ring_depth;
         }
         // P3.6b research: parser latch transitions.
-        let frame_pos = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x0A6)); // rx_frame_position
-        let cmd_byte = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x02F)); // rx_parsed_cmd
-        let data_byte = chain.cores[i_ctl]
-            .memory
-            .read_raw(Address::from_raw(0x030)); // rx_parsed_data
+        let frame_pos = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6)); // rx_frame_position
+        let cmd_byte = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F)); // rx_parsed_cmd
+        let data_byte = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030)); // rx_parsed_data
         let latch_now = (frame_pos, cmd_byte, data_byte, ring_rd, ring_wr);
         if latch_now != last_parser_latch {
             parser_latch_log.push((
@@ -1685,15 +1644,9 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             last_parser_latch = latch_now;
         }
     }
-    let diag_flags = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0x19C));
-    let diag_reset_seen = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0x19D));
-    let diag_present_snap = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0x19A));
+    let diag_flags = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19C));
+    let diag_reset_seen = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19D));
+    let diag_present_snap = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x19A));
     eprintln!("\n=== Stage 3 sampler ({samples} samples @ {chunk_ticks} ticks each) ===");
     let mut pc_buckets: Vec<_> = pc_histogram.iter().collect();
     pc_buckets.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
@@ -1767,9 +1720,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030)), // rx_parsed_data
     );
     let post_stage3_tick = chain.current_tick;
-    eprintln!(
-        "\n=== P3.6b research: diag-state snapshot delta (pre vs post sampler) ==="
-    );
+    eprintln!("\n=== P3.6b research: diag-state snapshot delta (pre vs post sampler) ===");
     eprintln!(
         "tick: pre={pre_stage3_tick}, post={post_stage3_tick}, \
          delta={}",
@@ -1829,10 +1780,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     );
     let head = parser_latch_log.iter().take(8);
     let tail_start = parser_latch_log.len().saturating_sub(8);
-    eprintln!(
-        "parser-latch first 8: {:#?}",
-        head.collect::<Vec<_>>()
-    );
+    eprintln!("parser-latch first 8: {:#?}", head.collect::<Vec<_>>());
     if parser_latch_log.len() > 8 {
         eprintln!(
             "parser-latch last 8:  {:#?}",
@@ -1942,9 +1890,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
         ctl_rx_arrivals.len()
     );
     for (tick, src, byte) in ctl_rx_arrivals.iter().take(stream_n) {
-        eprintln!(
-            "    tick={tick:>12} src=core[{src}] byte=0x{byte:02X}"
-        );
+        eprintln!("    tick={tick:>12} src=core[{src}] byte=0x{byte:02X}");
     }
     if ctl_rx_arrivals.len() > stream_n {
         eprintln!(
@@ -1986,7 +1932,12 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     chain.run_until(
         50_000_000, // 50 M = ~350 ms wall per chunk
         8_000_000_000,
-        |c| c.cores[i_ctl].memory.read_raw(Address::from_raw(DIAG_PRESENT_RAM)) == 0x03,
+        |c| {
+            c.cores[i_ctl]
+                .memory
+                .read_raw(Address::from_raw(DIAG_PRESENT_RAM))
+                == 0x03
+        },
     );
 
     let diag_present = chain.cores[i_ctl]
@@ -2041,56 +1992,85 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     let m0_tx_s3 = extract(i_main0);
     let m1_tx_s3 = extract(i_main1);
     eprintln!("Stage 3 byte streams (post-navigation):");
-    eprintln!("  CTL.TX  ({} bytes): {:02X?}", ctl_tx_s3.len(), &ctl_tx_s3[..ctl_tx_s3.len().min(60)]);
-    eprintln!("  MAIN0.TX ({} bytes): {:02X?}", m0_tx_s3.len(), &m0_tx_s3[..m0_tx_s3.len().min(60)]);
-    eprintln!("  MAIN1.TX ({} bytes): {:02X?}", m1_tx_s3.len(), &m1_tx_s3[..m1_tx_s3.len().min(60)]);
+    eprintln!(
+        "  CTL.TX  ({} bytes): {:02X?}",
+        ctl_tx_s3.len(),
+        &ctl_tx_s3[..ctl_tx_s3.len().min(60)]
+    );
+    eprintln!(
+        "  MAIN0.TX ({} bytes): {:02X?}",
+        m0_tx_s3.len(),
+        &m0_tx_s3[..m0_tx_s3.len().min(60)]
+    );
+    eprintln!(
+        "  MAIN1.TX ({} bytes): {:02X?}",
+        m1_tx_s3.len(),
+        &m1_tx_s3[..m1_tx_s3.len().min(60)]
+    );
     // Search for diag-query frames anywhere in CTL.TX.
-    let ctl_b1_22 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB1, 0x22, 0x00]).count();
-    let ctl_b1_21 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB1, 0x21, 0x00]).count();
-    let ctl_b2_22 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB2, 0x22, 0x00]).count();
-    let ctl_b2_21 = ctl_tx_s3.windows(3).filter(|w| *w == [0xB2, 0x21, 0x00]).count();
-    eprintln!("CTL diag query counts: B1/22/00={ctl_b1_22}, B1/21/00={ctl_b1_21}, B2/22/00={ctl_b2_22}, B2/21/00={ctl_b2_21}");
+    let ctl_b1_22 = ctl_tx_s3
+        .windows(3)
+        .filter(|w| *w == [0xB1, 0x22, 0x00])
+        .count();
+    let ctl_b1_21 = ctl_tx_s3
+        .windows(3)
+        .filter(|w| *w == [0xB1, 0x21, 0x00])
+        .count();
+    let ctl_b2_22 = ctl_tx_s3
+        .windows(3)
+        .filter(|w| *w == [0xB2, 0x22, 0x00])
+        .count();
+    let ctl_b2_21 = ctl_tx_s3
+        .windows(3)
+        .filter(|w| *w == [0xB2, 0x21, 0x00])
+        .count();
+    eprintln!(
+        "CTL diag query counts: B1/22/00={ctl_b1_22}, B1/21/00={ctl_b1_21}, B2/22/00={ctl_b2_22}, B2/21/00={ctl_b2_21}"
+    );
     let m0_bf21 = m0_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x21]).count();
     let m1_bf21 = m1_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x21]).count();
     let m0_bf27 = m0_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x27]).count();
     let m1_bf27 = m1_tx_s3.windows(2).filter(|w| *w == [0xBF, 0x27]).count();
-    eprintln!("MAIN BF/2N reply markers: MAIN0 BF/21={m0_bf21} BF/27={m0_bf27}, MAIN1 BF/21={m1_bf21} BF/27={m1_bf27}");
+    eprintln!(
+        "MAIN BF/2N reply markers: MAIN0 BF/21={m0_bf21} BF/27={m0_bf27}, MAIN1 BF/21={m1_bf21} BF/27={m1_bf27}"
+    );
 
     // Count BF byte totals on MAIN1.TX (forwarded reply burst).
     let m0_bf_total = m0_tx_s3.iter().filter(|&&b| b == 0xBF).count();
     let m1_bf_total = m1_tx_s3.iter().filter(|&&b| b == 0xBF).count();
-    eprintln!("BF byte totals: MAIN0 = {m0_bf_total}, MAIN1 = {m1_bf_total} (full 7-frame cmd 21 burst = 7 BF, plus 4 BF for cmd 22 = 11 BF)");
+    eprintln!(
+        "BF byte totals: MAIN0 = {m0_bf_total}, MAIN1 = {m1_bf_total} (full 7-frame cmd 21 burst = 7 BF, plus 4 BF for cmd 22 = 11 BF)"
+    );
 
     // Print a window AROUND each BF/27 in MAIN1.TX (10 bytes before + 5 after).
     for (i, w) in m1_tx_s3.windows(3).enumerate() {
         if w[0] == 0xBF && w[1] == 0x27 {
             let start = i.saturating_sub(10);
             let end = (i + 5).min(m1_tx_s3.len());
-            eprintln!("MAIN1.TX BF/27 frame at offset {i}: bytes [{}..{}] = {:02X?}", start, end, &m1_tx_s3[start..end]);
+            eprintln!(
+                "MAIN1.TX BF/27 frame at offset {i}: bytes [{}..{}] = {:02X?}",
+                start,
+                end,
+                &m1_tx_s3[start..end]
+            );
         }
     }
 
     // Check CONTROL's RX state: RCSTA, OERR latch, RCREG, frame_pos
-    let ctl_rcsta = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0xFAB));
-    let ctl_rcreg = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0xFAE));
-    let ctl_frame_pos = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0x0A6));
-    let ctl_parsed_cmd = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0x02F));
-    let ctl_parsed_data = chain.cores[i_ctl]
-        .memory
-        .read_raw(Address::from_raw(0x030));
+    let ctl_rcsta = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAB));
+    let ctl_rcreg = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0xFAE));
+    let ctl_frame_pos = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x0A6));
+    let ctl_parsed_cmd = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x02F));
+    let ctl_parsed_data = chain.cores[i_ctl].memory.read_raw(Address::from_raw(0x030));
     eprintln!(
         "CTL RX state: RCSTA=0x{ctl_rcsta:02X} (OERR bit 1={}), RCREG=0x{ctl_rcreg:02X}, \
          frame_pos(0xA6)=0x{ctl_frame_pos:02X}, parsed_cmd(0x2F)=0x{ctl_parsed_cmd:02X}, \
          parsed_data(0x30)=0x{ctl_parsed_data:02X}",
-        if ctl_rcsta & 0x02 != 0 { "1 (OERR LATCHED -- bytes dropped)" } else { "0" }
+        if ctl_rcsta & 0x02 != 0 {
+            "1 (OERR LATCHED -- bytes dropped)"
+        } else {
+            "0"
+        }
     );
 
     // P3.6b research step 2 (task #62): dump cycle-level
@@ -2101,9 +2081,7 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
     // (no instruction with PC in range was ever stepped).
     if let Some(probe) = chain.cores[i_ctl].cycle_probe.as_ref() {
         eprintln!("\n=== P3.6b research step 2: cycle-level probe summary ===");
-        eprintln!(
-            "PC-range hit counts + total Tcy (per-instruction, NOT boundary-sampled):"
-        );
+        eprintln!("PC-range hit counts + total Tcy (per-instruction, NOT boundary-sampled):");
         for r in &probe.pc_ranges {
             // Average Tcy per hit -- gives a useful "instructions
             // average X cycles each" view that helps spot
@@ -2166,11 +2144,8 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
             .iter()
             .find(|w| w.addr == 0x02F)
             .expect("rx_parsed_cmd watch was attached");
-        let mut distinct_cmds: Vec<u8> = parsed_cmd_log
-            .transitions
-            .iter()
-            .map(|(_, v)| *v)
-            .collect();
+        let mut distinct_cmds: Vec<u8> =
+            parsed_cmd_log.transitions.iter().map(|(_, v)| *v).collect();
         distinct_cmds.sort_unstable();
         distinct_cmds.dedup();
         eprintln!("Distinct rx_parsed_cmd values observed: {distinct_cmds:02X?}");
@@ -2228,9 +2203,8 @@ fn three_core_ring_v171_v32_v32_diag_page_polls_pb1_and_pb2() {
              firmware-driven echo-loop check failed during diag poll: {record:?}"
         );
         let edge = (record.src_core, record.dst_core);
-        let is_ring_edge = edge == (i_ctl, i_main0)
-            || edge == (i_main0, i_main1)
-            || edge == (i_main1, i_ctl);
+        let is_ring_edge =
+            edge == (i_ctl, i_main0) || edge == (i_main0, i_main1) || edge == (i_main1, i_ctl);
         assert!(
             is_ring_edge,
             "uart_tx_history record routes on a non-ring edge {edge:?} \
@@ -2294,12 +2268,10 @@ fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
     const DIAG_PRESENT_RAM: u16 = 0x197;
     const MENU_STATE_PB1_DIAG: u8 = 4;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -2336,23 +2308,14 @@ fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
     // LCD parity test applies (task #34); here it gates
     // whether the cadence loop iterates long enough to
     // actually fire a PB2 query.
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_ctl);
 
     // Stage 1: boot to first UART so CONTROL is in main loop.
-    chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| {
-            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
-                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
-                && !c.uart_tx_history.is_empty()
-        },
-    );
+    chain.run_until(10_000_000, 5_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && !c.uart_tx_history.is_empty()
+    });
     let stage1_history_len = chain.uart_tx_history.len();
     let stage1_tick = chain.current_tick;
 
@@ -2362,11 +2325,12 @@ fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
         .write_raw(Address::from_raw(MENU_STATE_RAM), MENU_STATE_PB1_DIAG);
 
     // Stage 3: run for the bounded budget OR until diag_present == 0x03.
-    chain.run_until(
-        50_000_000,
-        2_000_000_000,
-        |c| c.cores[i_ctl].memory.read_raw(Address::from_raw(DIAG_PRESENT_RAM)) == 0x03,
-    );
+    chain.run_until(50_000_000, 2_000_000_000, |c| {
+        c.cores[i_ctl]
+            .memory
+            .read_raw(Address::from_raw(DIAG_PRESENT_RAM))
+            == 0x03
+    });
 
     // Slice off the diag-poll window (post-stage1 records).
     let diag_records: Vec<_> = chain
@@ -2423,7 +2387,9 @@ fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
     eprintln!("  0xB2 frames forwarded: {m0_b2_count} (should be 0 -- only PB1+ chain would emit)");
     eprintln!("  0xBF frames emitted: {m0_bf_count} (PB1 reply prefixes)");
     if ctl_b2_count > 0 && m0_b1_count == 0 {
-        eprintln!("  ** MAIN0 received PB2 queries but never forwarded 0xB1 to MAIN1. Hop 2 broken. **");
+        eprintln!(
+            "  ** MAIN0 received PB2 queries but never forwarded 0xB1 to MAIN1. Hop 2 broken. **"
+        );
     }
 
     // Step 4 check: did MAIN1 emit any reply traffic?
@@ -2431,16 +2397,14 @@ fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
     eprintln!("MAIN1.TX byte count: {}", m1_tx.len());
     eprintln!("  0xBF frames emitted: {m1_bf_count} (reply prefixes)");
     if m0_b1_count > 0 && m1_bf_count == 0 {
-        eprintln!("  ** MAIN0 forwarded queries to MAIN1 but MAIN1 never replied. Hop 4 broken. **");
+        eprintln!(
+            "  ** MAIN0 forwarded queries to MAIN1 but MAIN1 never replied. Hop 4 broken. **"
+        );
     }
 
     // Slice the first ~80 bytes of each edge for human inspection.
     let dump = |label: &str, bytes: &[u8]| {
-        let head: Vec<String> = bytes
-            .iter()
-            .take(80)
-            .map(|b| format!("{b:02X}"))
-            .collect();
+        let head: Vec<String> = bytes.iter().take(80).map(|b| format!("{b:02X}")).collect();
         eprintln!("{label} (first {} bytes): {}", head.len(), head.join(" "));
     };
     eprintln!();
@@ -2504,10 +2468,9 @@ fn three_core_ring_v171_v32_v32_diag_poll_byte_trace() {
 fn three_core_synthetic_pb2_injection_decrement_and_forward() {
     use dlcp_sim::memory::Address;
 
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     // Feeder: K20 core with a tight self-loop (`BRA -1`) at
     // flash[0..2] so the executor doesn't walk PC out of bounds
@@ -2518,9 +2481,7 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
     let mut feeder = Core::new(Variant::Pic18F25K20);
     feeder.flash_mut()[0] = 0xFF;
     feeder.flash_mut()[1] = 0xD7; // BRA -1 self-loop
-    feeder
-        .memory
-        .write_raw(Address::from_raw(0xFAB), 0x90);
+    feeder.memory.write_raw(Address::from_raw(0xFAB), 0x90);
 
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
     main0.peripherals.adc.set_an0_sample(0x0300);
@@ -2550,23 +2511,13 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
     // 0x0200.  Without this the parser never sees bytes we
     // inject.  This is a stricter predicate than DSP-init
     // bytes_acked, which fires before GIE in V3.2's boot order.
-    chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| {
-            let gie0 = c.cores[i_main0]
-                .memory
-                .read_raw(Address::from_raw(0xFF2))
-                & 0x80;
-            let gie1 = c.cores[i_main1]
-                .memory
-                .read_raw(Address::from_raw(0xFF2))
-                & 0x80;
-            let acks0 = c.tas3108_slaves[i_dsp0].bytes_acked;
-            let acks1 = c.tas3108_slaves[i_dsp1].bytes_acked;
-            gie0 != 0 && gie1 != 0 && acks0 >= 1000 && acks1 >= 1000
-        },
-    );
+    chain.run_until(10_000_000, 5_000_000_000, |c| {
+        let gie0 = c.cores[i_main0].memory.read_raw(Address::from_raw(0xFF2)) & 0x80;
+        let gie1 = c.cores[i_main1].memory.read_raw(Address::from_raw(0xFF2)) & 0x80;
+        let acks0 = c.tas3108_slaves[i_dsp0].bytes_acked;
+        let acks1 = c.tas3108_slaves[i_dsp1].bytes_acked;
+        gie0 != 0 && gie1 != 0 && acks0 >= 1000 && acks1 >= 1000
+    });
     assert!(
         chain.tas3108_slaves[i_dsp0].bytes_acked >= 1000
             && chain.tas3108_slaves[i_dsp1].bytes_acked >= 1000,
@@ -2624,10 +2575,7 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
     chain.cores[i_main1]
         .memory
         .write_raw(Address::from_raw(0xFAB), 0x90); // SPEN|CREN
-    chain.cores[i_main1]
-        .peripherals
-        .eusart
-        .reset_state();
+    chain.cores[i_main1].peripherals.eusart.reset_state();
 
     // Inject `B2 21 00` from feeder, one byte at a time, with
     // ~10 M ticks between each (much wider than one wire-byte
@@ -2775,9 +2723,7 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
     // downstream).  The window may also contain unrelated MAIN0
     // TX traffic (status pings, etc.), so we search for the
     // specific 3-byte sequence rather than asserting position 0.
-    let m0_b1_seq_pos = m0_tx
-        .windows(3)
-        .position(|w| w == [0xB1, 0x21, 0x00]);
+    let m0_b1_seq_pos = m0_tx.windows(3).position(|w| w == [0xB1, 0x21, 0x00]);
     assert!(
         m0_b1_seq_pos.is_some(),
         "MAIN0.TX must contain the forwarded sequence `B1 21 00` \
@@ -2893,10 +2839,9 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
 fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
     use dlcp_sim::memory::Address;
 
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
     main0.peripherals.adc.set_an0_sample(0x0300);
@@ -2917,17 +2862,10 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
 
     // Boot until GIE is set + DSP init crosses the convergence
     // threshold, so the periodic main-service loop is running.
-    chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| {
-            let gie = c.cores[i_main0]
-                .memory
-                .read_raw(Address::from_raw(0xFF2))
-                & 0x80;
-            gie != 0 && c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
-        },
-    );
+    chain.run_until(10_000_000, 5_000_000_000, |c| {
+        let gie = c.cores[i_main0].memory.read_raw(Address::from_raw(0xFF2)) & 0x80;
+        gie != 0 && c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+    });
     assert!(
         chain.current_tick < 5_000_000_000,
         "boot did not converge before 5 B-tick safety ceiling"
@@ -3159,10 +3097,9 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
 fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     use dlcp_sim::memory::Address;
 
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
     main0.peripherals.adc.set_an0_sample(0x0300);
@@ -3180,9 +3117,8 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     //   0x07E = event_flags         (bit2 = standby/wake event pending)
     //   0x2E7 = diag_s               (standby dispatches)
     //   0x2E8 = diag_b               (bring-up / wake dispatches)
-    let read_u8 = |c: &Chain, addr: u16| -> u8 {
-        c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
-    };
+    let read_u8 =
+        |c: &Chain, addr: u16| -> u8 { c.cores[i_main0].memory.read_raw(Address::from_raw(addr)) };
     let inject_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
         const RING_BASE: u16 = 0x0200;
         const RING_SIZE: u16 = 0xC0;
@@ -3197,11 +3133,9 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     };
 
     // ----- Phase 1: cold boot to DSP ACK threshold -----
-    chain.run_until(
-        10_000_000,
-        2_000_000_000,
-        |c| c.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
-    );
+    chain.run_until(10_000_000, 2_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+    });
     assert!(
         chain.current_tick < 2_000_000_000,
         "boot did not converge before 2 B-tick safety ceiling"
@@ -3240,12 +3174,14 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     let diag_s1 = read_u8(&chain, 0x2E7);
     eprintln!("P3.8a-parser post-STDBY1: af=0x{af1:02X} ef=0x{ef1:02X} diag_s=0x{diag_s1:02X}");
     assert_eq!(
-        af1 & 0x08, 0,
+        af1 & 0x08,
+        0,
         "STDBY1: active_flags.bit3 must be CLEAR; got af=0x{af1:02X}"
     );
     assert_eq!(diag_s1, 1, "STDBY1: diag_s must be 1; got 0x{diag_s1:02X}");
     assert_eq!(
-        ef1 & 0x04, 0,
+        ef1 & 0x04,
+        0,
         "STDBY1: event_flags.bit2 must be CLEAR (dispatch consumed); got ef=0x{ef1:02X}"
     );
 
@@ -3280,7 +3216,8 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     let diag_s3 = read_u8(&chain, 0x2E7);
     eprintln!("P3.8a-parser post-STDBY2: af=0x{af3:02X} diag_s=0x{diag_s3:02X}");
     assert_eq!(
-        af3 & 0x08, 0,
+        af3 & 0x08,
+        0,
         "STDBY2: active_flags.bit3 must be CLEAR; got af=0x{af3:02X}"
     );
     assert_eq!(
@@ -3376,12 +3313,10 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
     use dlcp_sim::memory::Address;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -3411,21 +3346,14 @@ fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
     chain.schedule_initial_steps(&[0, 0, 0]);
 
     // Seed CONTROL buttons released (active-low).
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+    release_control_buttons(&mut chain, i_ctl);
 
     // Helpers (clones the addresses below since `i_main0`/`i_main1` are
     // captured as closure environment).
-    let read_main0 = |c: &Chain, addr: u16| -> u8 {
-        c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
-    };
-    let read_main1 = |c: &Chain, addr: u16| -> u8 {
-        c.cores[i_main1].memory.read_raw(Address::from_raw(addr))
-    };
+    let read_main0 =
+        |c: &Chain, addr: u16| -> u8 { c.cores[i_main0].memory.read_raw(Address::from_raw(addr)) };
+    let read_main1 =
+        |c: &Chain, addr: u16| -> u8 { c.cores[i_main1].memory.read_raw(Address::from_raw(addr)) };
     let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
         const RING_BASE: u16 = 0x0200;
         const RING_SIZE: u16 = 0xC0;
@@ -3440,15 +3368,11 @@ fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
     };
 
     // ----- Step 1: boot 3-core chain to DISPLAY -----
-    chain.run_until(
-        10_000_000,
-        8_000_000_000,
-        |c| {
-            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
-                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
-                && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
-        },
-    );
+    chain.run_until(10_000_000, 8_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
+    });
     assert!(
         chain.current_tick < 8_000_000_000,
         "3-core boot to Volume display did not converge before 8 B-tick \
@@ -3613,12 +3537,10 @@ fn v171_v32_v32_asymmetric_wake_main1_held_during_wake_transition() {
 fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
     use dlcp_sim::memory::Address;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -3649,19 +3571,12 @@ fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0, 0]);
 
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+    release_control_buttons(&mut chain, i_ctl);
 
-    let read_main0 = |c: &Chain, addr: u16| -> u8 {
-        c.cores[i_main0].memory.read_raw(Address::from_raw(addr))
-    };
-    let read_main1 = |c: &Chain, addr: u16| -> u8 {
-        c.cores[i_main1].memory.read_raw(Address::from_raw(addr))
-    };
+    let read_main0 =
+        |c: &Chain, addr: u16| -> u8 { c.cores[i_main0].memory.read_raw(Address::from_raw(addr)) };
+    let read_main1 =
+        |c: &Chain, addr: u16| -> u8 { c.cores[i_main1].memory.read_raw(Address::from_raw(addr)) };
     let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
         const RING_BASE: u16 = 0x0200;
         const RING_SIZE: u16 = 0xC0;
@@ -3676,16 +3591,15 @@ fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
     };
 
     // ----- Boot 3-core chain to DISPLAY -----
-    chain.run_until(
-        10_000_000,
-        8_000_000_000,
-        |c| {
-            c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
-                && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
-                && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
-        },
+    chain.run_until(10_000_000, 8_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+            && c.tas3108_slaves[i_dsp1].bytes_acked >= 1000
+            && c.lcd_slaves[i_lcd].line1().starts_with("Volume:")
+    });
+    assert!(
+        chain.current_tick < 8_000_000_000,
+        "boot did not reach DISPLAY"
     );
-    assert!(chain.current_tick < 8_000_000_000, "boot did not reach DISPLAY");
     eprintln!(
         "task#81 boot: lcd line1={:?}",
         chain.lcd_slaves[i_lcd].line1()
@@ -3699,7 +3613,11 @@ fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
         s0 >= 1 && s1 >= 1
     });
     assert_eq!(read_main0(&chain, 0x2E7), 1, "MAIN0 STDBY dispatched");
-    assert_eq!(read_main1(&chain, 0x2E7), 1, "MAIN1 STDBY dispatched (forward worked)");
+    assert_eq!(
+        read_main1(&chain, 0x2E7),
+        1,
+        "MAIN1 STDBY dispatched (forward worked)"
+    );
 
     // ----- Arm the M0->M1 wire fault BEFORE wake -----
     // Drop a generous count to keep the M0->M1 segment "broken" for
@@ -3777,12 +3695,10 @@ fn v171_v32_v32_asymmetric_wake_main0_to_main1_forwarder_drops_wake_triplet() {
 fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
     use dlcp_sim::memory::Address;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -3810,12 +3726,7 @@ fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0, 0]);
 
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+    release_control_buttons(&mut chain, i_ctl);
 
     let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
         const RING_BASE: u16 = 0x0200;
@@ -3995,12 +3906,10 @@ fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
 fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     use dlcp_sim::memory::Address;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -4028,12 +3937,7 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0, 0]);
 
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+    release_control_buttons(&mut chain, i_ctl);
 
     let inject_main0_frame = |c: &mut Chain, route: u8, cmd: u8, data: u8| {
         const RING_BASE: u16 = 0x0200;
@@ -4345,9 +4249,18 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
         "task#82 final: amp_first={:?} droop_first={:?} m1_latb4_first={:?} | \
          MAIN0 af=0x{:02X} db={} | MAIN1 af=0x{:02X} db={} pc=0x{:06X} \
          latA=0x{:02X} latB=0x{:02X} (gate body=[0x{:06X}, 0x{:06X}))",
-        amp_first_chunk, droop_first_chunk, main1_latb4_first_chunk,
-        af0, diag_b0, af1, diag_b1, pc1, lata1, latb1,
-        ADC_BOOT_GATE_BEGIN, ADC_BOOT_GATE_END,
+        amp_first_chunk,
+        droop_first_chunk,
+        main1_latb4_first_chunk,
+        af0,
+        diag_b0,
+        af1,
+        diag_b1,
+        pc1,
+        lata1,
+        latb1,
+        ADC_BOOT_GATE_BEGIN,
+        ADC_BOOT_GATE_END,
     );
 
     assert!(
@@ -4427,7 +4340,9 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
         "§C timeout-exit: MAIN1 PC must be OUTSIDE the adc_boot_gate \
          body [0x{:06X}, 0x{:06X}) at sample time -- the timeout \
          must have moved the CPU past the polling loop. got pc=0x{:06X}",
-        ADC_BOOT_GATE_BEGIN, ADC_BOOT_GATE_END, pc1,
+        ADC_BOOT_GATE_BEGIN,
+        ADC_BOOT_GATE_END,
+        pc1,
     );
 
     eprintln!(
@@ -4461,14 +4376,10 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
 /// the ring is broken and CONTROL falls into the WAITING state.
 #[test]
 fn right_main_held_in_reset_control_stuck_in_waiting() {
-    use dlcp_sim::memory::Address;
-
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -4513,12 +4424,7 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     // (UP/LEFT).  Default PORTA/PORTC = 0 reads "all buttons
     // pressed" -> STBY screen.  Seed 0xFF so the operator's
     // "no button held" state is the default.
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_ctl);
 
     const EXPECTED_LINE1: &str = "Waiting for DLCP";
 
@@ -4580,9 +4486,7 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
             lcd.line1(),
             lcd.line2(),
         );
-        if main0_dsp_booted_at_chunk.is_none()
-            && dsp_acks >= MAIN0_DSP_BOOT_ACK_THRESHOLD
-        {
+        if main0_dsp_booted_at_chunk.is_none() && dsp_acks >= MAIN0_DSP_BOOT_ACK_THRESHOLD {
             main0_dsp_booted_at_chunk = Some(chunk);
         }
         // Only honour a WAITING match AFTER MAIN0's DSP has
@@ -4657,8 +4561,7 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
     // monotonic, authoritative "MAIN0 ran past startup banner"
     // anchor that PC-range checks can't provide reliably.
     assert!(
-        chain.tas3108_slaves[i_dsp0].bytes_acked
-            >= MAIN0_DSP_BOOT_ACK_THRESHOLD,
+        chain.tas3108_slaves[i_dsp0].bytes_acked >= MAIN0_DSP_BOOT_ACK_THRESHOLD,
         "MAIN0 DSP bytes_acked must remain >= {} at final \
          assertion; got {}",
         MAIN0_DSP_BOOT_ACK_THRESHOLD,
@@ -4751,14 +4654,10 @@ fn right_main_held_in_reset_control_stuck_in_waiting() {
 /// reconnect_wait_loop).
 #[test]
 fn test_main1_late_boot_recovery() {
-    use dlcp_sim::memory::Address;
-
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -4795,12 +4694,7 @@ fn test_main1_late_boot_recovery() {
     const LATE_OFFSET: u64 = 72_000_000;
     chain.schedule_initial_steps(&[0, 0, LATE_OFFSET]);
 
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA = all buttons released
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_ctl);
 
     // ----- Phase 0: prove the late-boot offset was actually
     // honored.  Step LATE_OFFSET / 2 ticks (i.e. 36 M ticks --
@@ -4818,7 +4712,8 @@ fn test_main1_late_boot_recovery() {
     chain.step_ticks(LATE_OFFSET / 2);
     let main1_cycles_before_offset = chain.cores[i_main1].cycles();
     assert_eq!(
-        main1_cycles_before_offset, 0,
+        main1_cycles_before_offset,
+        0,
         "MAIN1 must NOT have started stepping at tick={} \
          (LATE_OFFSET/2 = {}, well below the {LATE_OFFSET}-tick \
          delay).  Got cycles={}; boot-offset wiring regression \
@@ -4972,14 +4867,10 @@ fn test_main1_late_boot_recovery() {
 /// gate's nature explicitly.
 #[test]
 fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
-    use dlcp_sim::memory::Address;
-
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -5009,12 +4900,7 @@ fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
     chain.schedule_initial_steps(&[0, 0, 0]);
 
     // Seed CONTROL PORTA/PORTC = 0xFF (all buttons released).
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_ctl);
 
     const EXPECTED_LINE1: &str = "Waiting for DLCP";
 
@@ -5032,14 +4918,10 @@ fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
     for chunk in 0..32 {
         chain.step_ticks(250_000_000);
         let dsp_acks = chain.tas3108_slaves[i_dsp0].bytes_acked;
-        if !main0_dsp_booted
-            && dsp_acks >= MAIN0_DSP_BOOT_ACK_THRESHOLD
-        {
+        if !main0_dsp_booted && dsp_acks >= MAIN0_DSP_BOOT_ACK_THRESHOLD {
             main0_dsp_booted = true;
         }
-        if main0_dsp_booted
-            && chain.lcd_slaves[i_lcd].line1() == EXPECTED_LINE1
-        {
+        if main0_dsp_booted && chain.lcd_slaves[i_lcd].line1() == EXPECTED_LINE1 {
             eprintln!(
                 "P3.8c reached WAITING at chunk {chunk} \
                  (DSP acks={dsp_acks})"
@@ -5095,9 +4977,9 @@ fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
         .collect();
     eprintln!("P3.8c post-press CONTROL.TX bytes: {post_press:02X?}");
 
-    let stdby_frame_pos = post_press.windows(3).position(|w| {
-        w[0] == 0xB0 && w[1] == 0x03 && (w[2] == 0x00 || w[2] == 0x01)
-    });
+    let stdby_frame_pos = post_press
+        .windows(3)
+        .position(|w| w[0] == 0xB0 && w[1] == 0x03 && (w[2] == 0x00 || w[2] == 0x01));
     assert!(
         stdby_frame_pos.is_none(),
         "CONTROL emitted a panel STDBY broadcast frame `B0/03/0x` while in \
@@ -5152,12 +5034,10 @@ fn control_in_waiting_state_does_not_emit_stdby_frame_on_button_press() {
 fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
     use dlcp_sim::memory::Address;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -5179,23 +5059,16 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0, 0]);
 
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+    release_control_buttons(&mut chain, i_ctl);
 
     // Boot until DSP-init complete -- ensures MAIN0 reaches
     // its periodic main-service loop and would have populated
     // its BANK 2 diag block had any standby/wake transitions
     // occurred (none have, so cells stay zero on the runtime
     // axis).
-    chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| c.tas3108_slaves[i_dsp0].bytes_acked >= 1000,
-    );
+    chain.run_until(10_000_000, 5_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= 1000
+    });
 
     // V1.71 CONTROL diag cache cells (BANK 1, physical 0x180+
     // per `dlcp_control_ram.inc:239-258`).  Layout:
@@ -5289,9 +5162,12 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
             .memory
             .read_raw(Address::from_raw(PB1_CACHE_BASE + i as u16));
         assert_eq!(
-            actual, v,
+            actual,
+            v,
             "CONTROL PB1 cache cell at 0x{:03X} must hold seeded 0x{:02X}; got 0x{:02X}",
-            PB1_CACHE_BASE + i as u16, v, actual
+            PB1_CACHE_BASE + i as u16,
+            v,
+            actual
         );
     }
     for (i, &v) in pb2_seed.iter().enumerate() {
@@ -5299,9 +5175,12 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
             .memory
             .read_raw(Address::from_raw(PB2_CACHE_BASE + i as u16));
         assert_eq!(
-            actual, v,
+            actual,
+            v,
             "CONTROL PB2 cache cell at 0x{:03X} must hold seeded 0x{:02X}; got 0x{:02X}",
-            PB2_CACHE_BASE + i as u16, v, actual
+            PB2_CACHE_BASE + i as u16,
+            v,
+            actual
         );
     }
 
@@ -5365,12 +5244,10 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     use dlcp_sim::memory::Address;
     use dlcp_sim::pinnet::PortLetter;
 
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .expect("V3.2 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v32 = HexImage::from_hex_path(v32_main_hex_path()).expect("V3.2 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     let mut main0 = build_seeded_main_core(&v32, &v23_combined);
@@ -5397,12 +5274,7 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
 
     // PORTA/PORTC = 0xFF (all buttons released) so V1.71's
     // button scanner doesn't see phantom presses.
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF80), 0xFF);
-    chain.cores[i_ctl]
-        .memory
-        .write_raw(Address::from_raw(0xF82), 0xFF);
+    release_control_buttons(&mut chain, i_ctl);
 
     // Boot until DSP init has converged AND CONTROL has cleared
     // its `Waiting for DLCP` startup-handshake screen.  The
@@ -5416,14 +5288,10 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     // parity test demonstrates this happens within ~5 B ticks
     // on a healthy 2-core chain.
     const MAIN0_DSP_BOOT_ACK_THRESHOLD: u64 = 1000;
-    chain.run_until(
-        10_000_000,
-        8_000_000_000,
-        |c| {
-            c.tas3108_slaves[i_dsp0].bytes_acked >= MAIN0_DSP_BOOT_ACK_THRESHOLD
-                && !c.lcd_slaves[i_lcd].line1().starts_with("Waiting")
-        },
-    );
+    chain.run_until(10_000_000, 8_000_000_000, |c| {
+        c.tas3108_slaves[i_dsp0].bytes_acked >= MAIN0_DSP_BOOT_ACK_THRESHOLD
+            && !c.lcd_slaves[i_lcd].line1().starts_with("Waiting")
+    });
     assert!(
         chain.current_tick < 8_000_000_000,
         "CONTROL boot did not clear WAITING within 8 B-tick safety \
@@ -5504,7 +5372,8 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
         lcd_pre_seed_line0.starts_with("PB1"),
         "After 4 RIGHT presses, LCD line 0 must start with `PB1` \
          (Diag screen entered); got line0={:?}, line1={:?}",
-        lcd_pre_seed_line0, lcd_pre_seed_line1
+        lcd_pre_seed_line0,
+        lcd_pre_seed_line1
     );
 
     // Step 3: seed CONTROL's diag cache with non-zero V1.71
@@ -5542,8 +5411,7 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     eprintln!(
         "P3.8d-strong post-seed RAM readback: \
          pb1_i(0x{:03X})=0x{:02X}, present(0x{:03X})=0x{:02X}",
-        V171_DIAG_PB1_BASE_PHYS, pb1_i_after_seed,
-        V171_DIAG_PRESENT_PHYS, present_after_seed,
+        V171_DIAG_PB1_BASE_PHYS, pb1_i_after_seed, V171_DIAG_PRESENT_PHYS, present_after_seed,
     );
 
     // Step 4: let the cadence loop redraw the LCD with the
@@ -5696,13 +5564,16 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
             .memory
             .read_raw(Address::from_raw(0x2E5 + offset));
         assert_eq!(
-            cell, 0,
+            cell,
+            0,
             "MAIN0 BANK 2 {} (0x{:03X}) must remain 0x00 after seeding \
              CONTROL cache (decoupling contract -- this counter only \
              fires on event triggers we never inject); got 0x{:02X}.  \
              If non-zero, MAIN0 saw an unexpected event OR our seed \
              leaked into MAIN's RAM -- aliasing regression.",
-            name, 0x2E5 + offset, cell
+            name,
+            0x2E5 + offset,
+            cell
         );
     }
     // Log diag_i (I2C transport-fault counter) for visibility --
@@ -5728,13 +5599,16 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
             .memory
             .read_raw(Address::from_raw(V171_DIAG_PB1_BASE_PHYS + i as u16));
         assert_eq!(
-            actual, v,
+            actual,
+            v,
             "CONTROL PB1 cache cell at 0x{:03X} must hold seeded 0x{:02X} \
              after the redraw cycle; got 0x{:02X}.  If this fails the \
              cadence loop's BF/2N path must be overwriting cache \
              cells -- which would be a P3.6b convergence success and \
              conflicts with the test's premise; re-baseline the test.",
-            V171_DIAG_PB1_BASE_PHYS + i as u16, v, actual
+            V171_DIAG_PB1_BASE_PHYS + i as u16,
+            v,
+            actual
         );
     }
 
@@ -5767,22 +5641,15 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
 /// locally.  600 M-tick safety ceiling gives ~2x headroom.
 #[test]
 fn chain_v171_v31_reaches_first_uart_tx() {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v31 = HexImage::from_hex_path(v31_main_hex_path())
-        .expect("V3.1 hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path()).expect("V3.1 hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
     // FSR2 + CALL FAST main_isr_dispatch); the bootloader
     // would normally trampoline 0x0008 → 0x1008 but isn't
     // loaded, so we bake the trampoline here.  Task #30 fix.
-    let mut main = build_core_from_hex(
-        Variant::Pic18F2455,
-        &v31,
-        Some(0x1000),
-        Some(0x1008),
-    );
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000), Some(0x1008));
     main.peripherals.adc.set_an0_sample(0x0300);
 
     let mut chain = Chain::new();
@@ -5799,11 +5666,7 @@ fn chain_v171_v31_reaches_first_uart_tx() {
     // -- 2x the observed 2.7 s convergence budget gives
     // headroom for clock drift / scheduler overhead).  10 M-
     // tick chunks keep polling cadence at ~70 ms wall.
-    let advanced = chain.run_until(
-        10_000_000,
-        600_000_000,
-        |c| !c.uart_tx_history.is_empty(),
-    );
+    let advanced = chain.run_until(10_000_000, 600_000_000, |c| !c.uart_tx_history.is_empty());
 
     let tx_count = chain.uart_tx_history.len();
     let dsp_acked = chain.tas3108_slaves[i_tas3108].bytes_acked;
@@ -5822,7 +5685,11 @@ fn chain_v171_v31_reaches_first_uart_tx() {
          tx_count={}, dsp_acked={}, main_pc=0x{:04X}, ctrl_pc=0x{:04X}.  \
          Either the IRQ dispatcher regressed (task #28) or another \
          peripheral fidelity gap pushed convergence past 600 M ticks.",
-        advanced, tx_count, dsp_acked, main_pc, control_pc,
+        advanced,
+        tx_count,
+        dsp_acked,
+        main_pc,
+        control_pc,
     );
 }
 
@@ -5841,23 +5708,16 @@ fn chain_v171_v31_reaches_first_uart_tx() {
 #[test]
 #[ignore = "P3.5 part-10b probe; wall-clock TBD until V3.1 emits all 7 frames"]
 fn chain_v171_v31_emits_full_handshake_burst() {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v31 = HexImage::from_hex_path(v31_main_hex_path())
-        .expect("V3.1 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path()).expect("V3.1 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
     // FSR2 + CALL FAST main_isr_dispatch); the bootloader
     // would normally trampoline 0x0008 → 0x1008 but isn't
     // loaded, so we bake the trampoline here.  Task #30 fix.
-    let mut main = build_core_from_hex(
-        Variant::Pic18F2455,
-        &v31,
-        Some(0x1000),
-        Some(0x1008),
-    );
+    let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000), Some(0x1008));
     // Task #33: override MAIN's EEPROM with the V2.3-
     // combined seed so BF/07 (computed_volume+0x60) and
     // BF/06 (input_select) match gpsim ground truth.
@@ -5882,12 +5742,20 @@ fn chain_v171_v31_emits_full_handshake_burst() {
     chain.schedule_initial_steps(&[0, 0]);
     {
         let m = &chain.cores[i_main];
-        let rcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
-        let txsta = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAC));
+        let rcon = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
+        let txsta = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFAC));
         eprintln!(
             "  POR-MAIN: rcon=0x{:02X} (RI={}, TO={}, PD={}) txsta=0x{:02X} (TRMT={})",
-            rcon, (rcon >> 4) & 1, (rcon >> 3) & 1, (rcon >> 2) & 1,
-            txsta, (txsta >> 1) & 1,
+            rcon,
+            (rcon >> 4) & 1,
+            (rcon >> 3) & 1,
+            (rcon >> 2) & 1,
+            txsta,
+            (txsta >> 1) & 1,
         );
     }
 
@@ -5912,17 +5780,31 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         advanced += chunk_advance;
         let m = &chain.cores[i_main];
         let pc = m.pc();
-        let pie1 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
-        let pir1 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
-        let intcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
+        let pie1 = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
+        let pir1 = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
+        let intcon = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
         // V3.1 ring buffer pointers (banked):
         // - rx_ring_wr: 0x0C7 (bank 0)
         // - rx_ring_rd: 0x0C6 (bank 0)
         // - delay counter ram_0x003/0x004: 0x003/0x004 (Access)
-        let rx_wr = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x0C7));
-        let rx_rd = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x0C6));
-        let ram3 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x003));
-        let ram4 = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0x004));
+        let rx_wr = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0x0C7));
+        let rx_rd = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0x0C6));
+        let ram3 = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0x003));
+        let ram4 = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0x004));
         let main_rx: usize = chain
             .uart_tx_history
             .iter()
@@ -5933,8 +5815,12 @@ fn chain_v171_v31_emits_full_handshake_burst() {
             .iter()
             .filter(|r| r.src_core == i_main)
             .count();
-        let rcon = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
-        let stkptr = m.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFFC));
+        let rcon = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
+        let stkptr = m
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFFC));
         eprintln!(
             "  CHUNK {chunk}: cycles={} pc=0x{:04X} pie1=0x{:02X}(RCIE={}) \
              pir1=0x{:02X}(RCIF={}) intcon=0x{:02X}(GIE={}) \
@@ -5942,12 +5828,21 @@ fn chain_v171_v31_emits_full_handshake_burst() {
              rx_wr=0x{:02X} rx_rd=0x{:02X} ram003={:02X}{:02X} \
              rx={} tx={}",
             m.cycles(),
-            pc, pie1, (pie1 >> 5) & 1,
-            pir1, (pir1 >> 5) & 1,
-            intcon, (intcon >> 7) & 1,
-            stkptr, rcon,
-            rx_wr, rx_rd, ram4, ram3,
-            main_rx, main_tx,
+            pc,
+            pie1,
+            (pie1 >> 5) & 1,
+            pir1,
+            (pir1 >> 5) & 1,
+            intcon,
+            (intcon >> 7) & 1,
+            stkptr,
+            rcon,
+            rx_wr,
+            rx_rd,
+            ram4,
+            ram3,
+            main_rx,
+            main_tx,
         );
     }
 
@@ -5976,13 +5871,21 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         ctrl_to_main.len(),
         ctrl_to_main
     );
-    eprintln!("  CTRL→MAIN frames ({}): {:?}", ctrl_frames.len(), ctrl_frames);
+    eprintln!(
+        "  CTRL→MAIN frames ({}): {:?}",
+        ctrl_frames.len(),
+        ctrl_frames
+    );
     eprintln!(
         "  MAIN→CTRL bytes ({}): {:02X?}",
         main_to_ctrl.len(),
         main_to_ctrl
     );
-    eprintln!("  MAIN→CTRL frames ({}): {:?}", main_frames.len(), main_frames);
+    eprintln!(
+        "  MAIN→CTRL frames ({}): {:?}",
+        main_frames.len(),
+        main_frames
+    );
 
     // Investigate why MAIN is silent (task #30 probe).  Dump
     // MAIN's RX/IRQ state at convergence so we can see
@@ -5991,38 +5894,72 @@ fn chain_v171_v31_emits_full_handshake_burst() {
     // PIE1.RCIE is enabled (firmware asked for the IRQ),
     // (d) GIE/IPEN gate the IRQ in.
     let main = &chain.cores[i_main];
-    let rcsta = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAB));
-    let rcreg = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAE));
-    let pir1 = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
-    let pie1 = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
-    let intcon = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
-    let rcon = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
-    let txsta = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFAC));
+    let rcsta = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFAB));
+    let rcreg = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFAE));
+    let pir1 = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xF9E));
+    let pie1 = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xF9D));
+    let intcon = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFF2));
+    let rcon = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFD0));
+    let txsta = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFAC));
     eprintln!(
         "  MAIN state: pc=0x{:04X} rcsta=0x{:02X} (SPEN={}, CREN={}) rcreg=0x{:02X} \
          pir1=0x{:02X} (RCIF={}) pie1=0x{:02X} (RCIE={}) txsta=0x{:02X} (TXEN={}) \
          intcon=0x{:02X} (GIE={}, PEIE={}) rcon=0x{:02X} (IPEN={})",
         main.pc(),
-        rcsta, (rcsta >> 7) & 1, (rcsta >> 4) & 1,
+        rcsta,
+        (rcsta >> 7) & 1,
+        (rcsta >> 4) & 1,
         rcreg,
-        pir1, (pir1 >> 5) & 1,
-        pie1, (pie1 >> 5) & 1,
-        txsta, (txsta >> 5) & 1,
-        intcon, (intcon >> 7) & 1, (intcon >> 6) & 1,
-        rcon, (rcon >> 7) & 1,
+        pir1,
+        (pir1 >> 5) & 1,
+        pie1,
+        (pie1 >> 5) & 1,
+        txsta,
+        (txsta >> 5) & 1,
+        intcon,
+        (intcon >> 7) & 1,
+        (intcon >> 6) & 1,
+        rcon,
+        (rcon >> 7) & 1,
     );
     // Task #30: PC=0x428C is V3.1's flow_timer3_blocking_delay_449e
     // (`btfss PIR2, 1` polling TMR3IF).  Dump Timer3 state.
-    let t3con = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFB1));
-    let tmr3h = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFB3));
-    let tmr3l = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFB2));
-    let pir2 = main.memory.read_raw(dlcp_sim::memory::Address::from_raw(0xFA1));
+    let t3con = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFB1));
+    let tmr3h = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFB3));
+    let tmr3l = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFB2));
+    let pir2 = main
+        .memory
+        .read_raw(dlcp_sim::memory::Address::from_raw(0xFA1));
     eprintln!(
         "  MAIN TMR3: t3con=0x{:02X} (TMR3ON={}, RD16={}) tmr3h=0x{:02X} \
          tmr3l=0x{:02X} pir2=0x{:02X} (TMR3IF={}) cycles={}",
-        t3con, t3con & 0x01, (t3con >> 7) & 1,
-        tmr3h, tmr3l,
-        pir2, (pir2 >> 1) & 1,
+        t3con,
+        t3con & 0x01,
+        (t3con >> 7) & 1,
+        tmr3h,
+        tmr3l,
+        pir2,
+        (pir2 >> 1) & 1,
         main.cycles(),
     );
 
@@ -6104,7 +6041,11 @@ fn parse_chain_frames(bytes: &[u8]) -> Vec<ChainFrame> {
     }
     bytes
         .chunks_exact(3)
-        .map(|c| ChainFrame { route: c[0], cmd: c[1], data: c[2] })
+        .map(|c| ChainFrame {
+            route: c[0],
+            cmd: c[1],
+            data: c[2],
+        })
         .collect()
 }
 
@@ -6120,8 +6061,8 @@ fn parse_chain_frames(bytes: &[u8]) -> Vec<ChainFrame> {
 /// malformed lines so caller can panic with a useful
 /// message.
 fn load_ground_truth_frames(path: &Path) -> Result<Vec<ChainFrame>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let mut frames = Vec::new();
     for (idx, raw_line) in text.lines().enumerate() {
         let line = raw_line.trim();
@@ -6171,8 +6112,7 @@ fn find_subsequence<T: PartialEq>(haystack: &[T], needle: &[T]) -> Option<usize>
     if haystack.len() < needle.len() {
         return None;
     }
-    (0..=haystack.len() - needle.len())
-        .find(|&i| haystack[i..i + needle.len()] == *needle)
+    (0..=haystack.len() - needle.len()).find(|&i| haystack[i..i + needle.len()] == *needle)
 }
 
 /// P3.5 part-10 bit-exact parity gate: V3.1 + V1.71 chain
@@ -6199,12 +6139,10 @@ fn find_subsequence<T: PartialEq>(haystack: &[T], needle: &[T]) -> Option<usize>
 ///     this BF/07 and BF/06 data bytes don't match.
 #[test]
 fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v31 = HexImage::from_hex_path(v31_main_hex_path())
-        .expect("V3.1 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path()).expect("V3.1 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // Task #36: silicon-correct boot via V2.3-combined
     // merge.  Replaces the prior bake-trampoline approach
@@ -6229,17 +6167,13 @@ fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
     // Universal-tick budget sized to ~2 s sim time at 16
     // ticks/Tcy / 4 MIPS, then increase by 50% safety
     // margin.
-    let _advanced = chain.run_until(
-        10_000_000,
-        2_000_000_000,
-        |c| {
-            c.uart_tx_history
-                .iter()
-                .filter(|r| r.src_core == i_main && r.dst_core == i_control)
-                .count()
-                >= 21
-        },
-    );
+    let _advanced = chain.run_until(10_000_000, 2_000_000_000, |c| {
+        c.uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == i_main && r.dst_core == i_control)
+            .count()
+            >= 21
+    });
 
     let main_to_ctrl: Vec<u8> = chain
         .uart_tx_history
@@ -6261,17 +6195,45 @@ fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
     let aligned_len = (main_to_ctrl.len() / 3) * 3;
     let main_frames: Vec<ChainFrame> = main_to_ctrl[..aligned_len]
         .chunks_exact(3)
-        .map(|c| ChainFrame { route: c[0], cmd: c[1], data: c[2] })
+        .map(|c| ChainFrame {
+            route: c[0],
+            cmd: c[1],
+            data: c[2],
+        })
         .collect();
 
     // gpsim's expected 6-frame response burst.
     const GPSIM_BURST: &[ChainFrame] = &[
-        ChainFrame { route: 0xBF, cmd: 0x08, data: 0x00 },
-        ChainFrame { route: 0xBF, cmd: 0x05, data: 0x03 },
-        ChainFrame { route: 0xBF, cmd: 0x07, data: 0x4F },
-        ChainFrame { route: 0xBF, cmd: 0x03, data: 0x01 },
-        ChainFrame { route: 0xBF, cmd: 0x06, data: 0x00 },
-        ChainFrame { route: 0xBF, cmd: 0x1D, data: 0x04 },
+        ChainFrame {
+            route: 0xBF,
+            cmd: 0x08,
+            data: 0x00,
+        },
+        ChainFrame {
+            route: 0xBF,
+            cmd: 0x05,
+            data: 0x03,
+        },
+        ChainFrame {
+            route: 0xBF,
+            cmd: 0x07,
+            data: 0x4F,
+        },
+        ChainFrame {
+            route: 0xBF,
+            cmd: 0x03,
+            data: 0x01,
+        },
+        ChainFrame {
+            route: 0xBF,
+            cmd: 0x06,
+            data: 0x00,
+        },
+        ChainFrame {
+            route: 0xBF,
+            cmd: 0x1D,
+            data: 0x04,
+        },
     ];
 
     find_subsequence(&main_frames, GPSIM_BURST).unwrap_or_else(|| {
@@ -6304,12 +6266,10 @@ fn chain_v171_v31_main_emits_gpsim_response_burst_bit_exact() {
 /// + chain coupling).
 #[test]
 fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .expect("V1.71 hex parses");
-    let v31 = HexImage::from_hex_path(v31_main_hex_path())
-        .expect("V3.1 hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v171 = HexImage::from_hex_path(v171_control_hex_path()).expect("V1.71 hex parses");
+    let v31 = HexImage::from_hex_path(v31_main_hex_path()).expect("V3.1 hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // Task #36: silicon-correct boot via V2.3-combined merge.
     let mut main = build_seeded_main_core(&v31, &v23_combined);
@@ -6341,12 +6301,7 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
     // `apply_reset_all` because POR wipes the SFR window.
     // Mirrors `_setup_button_stimuli` in
     // `src/dlcp_fw/sim/control_gpsim.py:494`.  Task #34.
-    chain.cores[i_control]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_control]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_control);
 
     // Expected LCD content from gpsim's
     // `lcd_control.txt` ground truth.  Both lines are
@@ -6360,14 +6315,10 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
     // `chain.lcd_slaves[i_lcd]`; `run_until` re-checks it
     // every chunk.  Budget sized to ~5 s sim time at
     // 16 ticks/Tcy (4 MIPS for K20).
-    let _advanced = chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| {
-            let l = &c.lcd_slaves[i_lcd];
-            l.line1() == EXPECTED_LINE1 && l.line2() == EXPECTED_LINE2
-        },
-    );
+    let _advanced = chain.run_until(10_000_000, 5_000_000_000, |c| {
+        let l = &c.lcd_slaves[i_lcd];
+        l.line1() == EXPECTED_LINE1 && l.line2() == EXPECTED_LINE2
+    });
 
     let lcd = &chain.lcd_slaves[i_lcd];
     assert_eq!(
@@ -6429,10 +6380,9 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
 /// local hardware is ~2.6 s wall, well under the budget.
 #[test]
 fn chain_v16b_v23_stock_reaches_volume_screen() {
-    let v16b = HexImage::from_hex_path(v16b_control_hex_path())
-        .expect("V1.6b CONTROL hex parses");
-    let v23_combined = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .expect("V2.3 combined hex parses");
+    let v16b = HexImage::from_hex_path(v16b_control_hex_path()).expect("V1.6b CONTROL hex parses");
+    let v23_combined =
+        HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v16b, None, None);
     // V2.3-combined ships the full silicon image (boot block
@@ -6469,12 +6419,7 @@ fn chain_v16b_v23_stock_reaches_volume_screen() {
     // Done AFTER `apply_reset_all` because POR wipes the SFR
     // window.  Mirrors the V1.71+V3.1 LCD parity test seed
     // (line 4992-4997).
-    chain.cores[i_control]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF80), 0xFF); // PORTA
-    chain.cores[i_control]
-        .memory
-        .write_raw(dlcp_sim::memory::Address::from_raw(0xF82), 0xFF); // PORTC
+    release_control_buttons(&mut chain, i_control);
 
     // Run until LCD line 1 contains "Volume:" or budget
     // ceiling.  Substring containment matches the gpsim
@@ -6482,11 +6427,9 @@ fn chain_v16b_v23_stock_reaches_volume_screen() {
     // Per-chunk diagnostic dump is intentionally scoped
     // OUTSIDE the closure (closures can't borrow `c` for
     // stderr output without lifetime gymnastics).
-    let _advanced = chain.run_until(
-        10_000_000,
-        5_000_000_000,
-        |c| c.lcd_slaves[i_lcd].line1().contains("Volume:"),
-    );
+    let _advanced = chain.run_until(10_000_000, 5_000_000_000, |c| {
+        c.lcd_slaves[i_lcd].line1().contains("Volume:")
+    });
 
     let lcd = &chain.lcd_slaves[i_lcd];
     let main_pc = chain.cores[i_main].pc();
@@ -6495,7 +6438,11 @@ fn chain_v16b_v23_stock_reaches_volume_screen() {
     eprintln!(
         "P4.4-prereq end state: ctrl_pc=0x{:04X}, main_pc=0x{:04X}, \
          dsp_acks={}, lcd_line1={:?}, lcd_line2={:?}",
-        ctrl_pc, main_pc, dsp_acks, lcd.line1(), lcd.line2(),
+        ctrl_pc,
+        main_pc,
+        dsp_acks,
+        lcd.line1(),
+        lcd.line2(),
     );
 
     assert!(
@@ -6508,8 +6455,11 @@ fn chain_v16b_v23_stock_reaches_volume_screen() {
          DSP I²C init faulted -- expect dsp_acks ≥ 100 in a \
          working V2.3 boot; (c) CONTROL parked on `Waiting for \
          DLCP` -- chain-ring regression or budget exhausted.",
-        lcd.line1(), lcd.line2(),
-        ctrl_pc, main_pc, dsp_acks,
+        lcd.line1(),
+        lcd.line2(),
+        ctrl_pc,
+        main_pc,
+        dsp_acks,
     );
 }
 
@@ -6522,8 +6472,22 @@ mod ground_truth_tests {
         let bytes = vec![0xBF, 0x08, 0x00, 0xBF, 0x05, 0x03];
         let frames = parse_chain_frames(&bytes);
         assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0], ChainFrame { route: 0xBF, cmd: 0x08, data: 0x00 });
-        assert_eq!(frames[1], ChainFrame { route: 0xBF, cmd: 0x05, data: 0x03 });
+        assert_eq!(
+            frames[0],
+            ChainFrame {
+                route: 0xBF,
+                cmd: 0x08,
+                data: 0x00
+            }
+        );
+        assert_eq!(
+            frames[1],
+            ChainFrame {
+                route: 0xBF,
+                cmd: 0x05,
+                data: 0x03
+            }
+        );
     }
 
     #[test]
@@ -6575,22 +6539,50 @@ mod ground_truth_tests {
         }
         let ctrl_frames = load_ground_truth_frames(&dir.join("uart_tx_control.jsonl"))
             .expect("CONTROL frames parse");
-        let main_frames = load_ground_truth_frames(&dir.join("uart_tx_main_0.jsonl"))
-            .expect("MAIN frames parse");
+        let main_frames =
+            load_ground_truth_frames(&dir.join("uart_tx_main_0.jsonl")).expect("MAIN frames parse");
         assert_eq!(
             ctrl_frames,
-            vec![ChainFrame { route: 0xB1, cmd: 4, data: 0 }],
+            vec![ChainFrame {
+                route: 0xB1,
+                cmd: 4,
+                data: 0
+            }],
             "CONTROL→MAIN ground truth shape"
         );
         assert_eq!(
             main_frames,
             vec![
-                ChainFrame { route: 0xBF, cmd: 8, data: 0 },
-                ChainFrame { route: 0xBF, cmd: 5, data: 3 },
-                ChainFrame { route: 0xBF, cmd: 7, data: 79 },
-                ChainFrame { route: 0xBF, cmd: 3, data: 1 },
-                ChainFrame { route: 0xBF, cmd: 6, data: 0 },
-                ChainFrame { route: 0xBF, cmd: 29, data: 4 },
+                ChainFrame {
+                    route: 0xBF,
+                    cmd: 8,
+                    data: 0
+                },
+                ChainFrame {
+                    route: 0xBF,
+                    cmd: 5,
+                    data: 3
+                },
+                ChainFrame {
+                    route: 0xBF,
+                    cmd: 7,
+                    data: 79
+                },
+                ChainFrame {
+                    route: 0xBF,
+                    cmd: 3,
+                    data: 1
+                },
+                ChainFrame {
+                    route: 0xBF,
+                    cmd: 6,
+                    data: 0
+                },
+                ChainFrame {
+                    route: 0xBF,
+                    cmd: 29,
+                    data: 4
+                },
             ],
             "MAIN→CONTROL ground truth shape"
         );

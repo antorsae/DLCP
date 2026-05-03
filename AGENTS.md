@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-04-25
+Last updated: 2026-05-03
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -645,6 +645,16 @@ disappears mechanically.
 - PyO3 wrapper crate (created during P4.1): `crates/dlcp-sim-py/`
 - Ground truth fixtures: `artifacts/ground_truth/<test_id>/`
 - Divergence reports: `artifacts/sim_rewrite_divergences/<task_id>__<ts>.log`
+
+**Latest Rust simulator verification (2026-05-03):**
+
+- `cargo test -p dlcp-sim --release` -> passed (existing ignored tests only)
+- `cargo build --release -p dlcp-sim-py && bash crates/dlcp-sim-py/build.sh` -> passed
+- `DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"` -> `582 passed, 39 skipped, 1 xfailed`
+- `DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m slow` -> `204 passed, 260 skipped, 7 xfailed`
+
+The linked worktree may not contain `.venv_ep0`; use the shared tools
+checkout interpreter from `$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.venv_ep0/bin/python`.
 
 **Workflow (minimal user intervention):**
 

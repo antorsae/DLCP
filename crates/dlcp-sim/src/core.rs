@@ -31,8 +31,9 @@
 #![allow(dead_code, reason = "P1.1 skeleton; behaviour wired in P1.2+")]
 
 use crate::config::Config;
-use crate::memory::{Memory, Variant};
-use crate::peripherals::Peripherals;
+use crate::hex::HexImage;
+use crate::memory::{Address, Memory, Variant};
+use crate::peripherals::{irq, Peripherals};
 
 /// Default reset vector for both supported PIC18 variants.
 /// Confirmed to be 0x0000 in DS39632E §5.2 and DS41303G §5.2
@@ -54,6 +55,31 @@ pub struct FastRegs {
     pub status: u8,
     pub bsr: u8,
 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RunState {
+    Running,
+    Sleep,
+    Idle,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IrqContext {
+    Compatibility,
+    High,
+    Low,
+}
+
+/// Deterministic nominal WDT base period in instruction cycles.
+/// Datasheet anchor: DS40001303H §23.2 and DS39632E §25.2
+/// define a nominal 4 ms WDT period before CONFIG2H.WDTPS.
+/// The simulator uses the MAIN 4 MIPS scale (`4 ms = 16000 Tcy`)
+/// as the variant-independent nominal base; WDTPS applies as
+/// `1 << WDTPS`.
+pub const WDT_BASE_TCY: u64 = 16_000;
+const WDTCON_ADDR: u16 = 0xFD1;
+const RCON_ADDR: u16 = 0xFD0;
+const RCON_TO: u8 = 1 << 3;
 
 /// One PIC18 core: program memory + data memory + cycle counter
 /// + peripheral state machines.  P1.1 only allocates storage.
@@ -148,6 +174,11 @@ pub struct Core {
     /// `pause_core` debug hook.  Default `false` (core runs).
     /// Task #47 (P3.8b-prereq).
     pub mclr_held: bool,
+    pub run_state: RunState,
+    irq_context_stack: [Option<IrqContext>; 8],
+    irq_context_depth: usize,
+    wdt_counter_tcy: u64,
+    wdt_timeout_pending: bool,
     /// Optional cycle-level probe used by research scaffolding
     /// (e.g. P3.6b research step 2, task #62) to count exact
     /// per-instruction PC entries to a labelled flash range AND
@@ -293,12 +324,7 @@ impl CycleProbe {
     /// core's memory at attach time so the first real
     /// transition produces a clean `(tick, new_value)` log
     /// entry instead of a spurious "0 -> initial".
-    pub fn add_watched_ram(
-        &mut self,
-        addr: u16,
-        label: &'static str,
-        initial_value: u8,
-    ) {
+    pub fn add_watched_ram(&mut self, addr: u16, label: &'static str, initial_value: u8) {
         self.watched_ram.push(WatchedRamProbe {
             addr,
             label,
@@ -355,6 +381,79 @@ pub const TBLWT_BLOCK_SIZE_2455: usize = 32;
 /// variants.)
 pub const TBLWT_BLOCK_SIZE_K20: usize = 32;
 
+/// Options for loading a full Intel HEX image into a fresh
+/// [`Core`].  The two optional GOTO bakes model the DLCP MAIN
+/// bootloader trampoline in tests that load an app-only V3.x
+/// image without the USB boot block.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct CoreLoadOptions {
+    pub bake_goto_app_entry: Option<u32>,
+    pub bake_goto_irq_vector: Option<u32>,
+    /// Preserve `Core::new`'s default all-zero CONFIG.  This is
+    /// only for tests that intentionally exercise constructor
+    /// defaults; firmware builders should leave this `false` so
+    /// CONFIG comes from the HEX image as required by §11c FID-04.
+    pub preserve_default_config: bool,
+}
+
+/// Build a fresh core from all memory windows in a parsed HEX
+/// image: flash, data EEPROM, CONFIG, and USER_ID.  This is the
+/// canonical loader for firmware-backed tests and PyO3 chain
+/// builders.  Datasheet anchors: CONFIG lives at
+/// `0x300000..0x30000D` (DS39632E §25 / DS40001303H §23);
+/// USER_ID lives at `0x200000..0x200007` (DS39632E §6.7 /
+/// DS40001303H §3.1).  Campaign contract: §11c FID-04 in
+/// `docs/SIM_REWRITE_RUST_SPEC.md`.
+pub fn core_from_hex_image(variant: Variant, image: &HexImage, options: CoreLoadOptions) -> Core {
+    let mut core = Core::new(variant);
+    let copy_len = core.flash_mut().len().min(image.flash.len());
+    core.flash_mut()[..copy_len].copy_from_slice(&image.flash[..copy_len]);
+
+    for (addr, &byte) in image.eeprom.iter().enumerate() {
+        core.peripherals.eeprom.set_byte(addr as u8, byte);
+    }
+
+    if !options.preserve_default_config {
+        core.config = Config::from_bytes(image.config);
+        core.peripherals.osc.configure_from_config(&core.config);
+    }
+    core.user_id = image.user_id;
+
+    if let Some(target) = options.bake_goto_app_entry {
+        bake_goto(core.flash_mut(), 0x0000, target);
+    }
+    if let Some(target) = options.bake_goto_irq_vector {
+        bake_goto(core.flash_mut(), 0x0008, target);
+    }
+
+    core
+}
+
+fn bake_goto(flash: &mut [u8], at: usize, target_byte_addr: u32) {
+    assert!(
+        target_byte_addr & 1 == 0,
+        "GOTO target byte address must be even, got 0x{target_byte_addr:X}"
+    );
+    assert!(at % 2 == 0, "GOTO bake address must be even, got 0x{at:X}");
+    let k_word = target_byte_addr >> 1;
+    assert!(
+        k_word <= 0x000F_FFFF,
+        "PIC18 GOTO target word address out of 20-bit range: 0x{k_word:X}"
+    );
+    let word1 = 0xEF00u16 | ((k_word as u16) & 0x00FF);
+    let word2 = 0xF000u16 | (((k_word >> 8) as u16) & 0x0FFF);
+    let end = at + 4;
+    assert!(
+        end <= flash.len(),
+        "GOTO bake range 0x{at:X}..0x{end:X} exceeds flash length 0x{:X}",
+        flash.len()
+    );
+    flash[at] = (word1 & 0x00FF) as u8;
+    flash[at + 1] = (word1 >> 8) as u8;
+    flash[at + 2] = (word2 & 0x00FF) as u8;
+    flash[at + 3] = (word2 >> 8) as u8;
+}
+
 impl Core {
     /// Construct an empty core with `flash` and `memory` zero-
     /// filled.  The caller (P1.7's hex loader and P1.6's reset
@@ -377,6 +476,11 @@ impl Core {
             user_id: [0xFF; 8],
             tblwt_holding: [0xFF; TBLWT_HOLDING_SIZE],
             mclr_held: false,
+            run_state: RunState::Running,
+            irq_context_stack: [None; 8],
+            irq_context_depth: 0,
+            wdt_counter_tcy: 0,
+            wdt_timeout_pending: false,
             cycle_probe: None,
         }
     }
@@ -402,9 +506,15 @@ impl Core {
     /// IRQ does so at its own peril; V3.1 doesn't).
     pub fn save_fast_regs(&mut self) {
         self.fast_shadow = FastRegs {
-            wreg: self.memory.read_raw(crate::memory::Address::from_raw(0xFE8)),
-            status: self.memory.read_raw(crate::memory::Address::from_raw(0xFD8)),
-            bsr: self.memory.read_raw(crate::memory::Address::from_raw(0xFE0)),
+            wreg: self
+                .memory
+                .read_raw(crate::memory::Address::from_raw(0xFE8)),
+            status: self
+                .memory
+                .read_raw(crate::memory::Address::from_raw(0xFD8)),
+            bsr: self
+                .memory
+                .read_raw(crate::memory::Address::from_raw(0xFE0)),
         };
     }
 
@@ -432,6 +542,26 @@ impl Core {
             .write_raw(crate::memory::Address::from_raw(0xFD8), snap.status & 0x1F);
         self.memory
             .write_raw(crate::memory::Address::from_raw(0xFE0), snap.bsr & 0x0F);
+    }
+
+    pub fn push_irq_context(&mut self, context: IrqContext) {
+        if self.irq_context_depth < self.irq_context_stack.len() {
+            self.irq_context_stack[self.irq_context_depth] = Some(context);
+            self.irq_context_depth += 1;
+        }
+    }
+
+    pub fn pop_irq_context(&mut self) -> Option<IrqContext> {
+        if self.irq_context_depth == 0 {
+            return None;
+        }
+        self.irq_context_depth -= 1;
+        self.irq_context_stack[self.irq_context_depth].take()
+    }
+
+    pub fn clear_irq_context(&mut self) {
+        self.irq_context_stack = [None; 8];
+        self.irq_context_depth = 0;
     }
 
     /// Variant this core was constructed for.
@@ -477,6 +607,10 @@ impl Core {
         self.cycles
     }
 
+    pub const fn ticks_per_tcy(&self) -> u32 {
+        self.peripherals.osc.ticks_per_tcy()
+    }
+
     /// Reset the cycle counter to 0.  Phase-3.5's
     /// `Chain::schedule_initial_steps` uses this to make
     /// re-bootstrap (e.g. mid-run MCLR) safe -- the
@@ -498,6 +632,43 @@ impl Core {
         self.cycles = 0;
     }
 
+    pub const fn wdt_counter_tcy(&self) -> u64 {
+        self.wdt_counter_tcy
+    }
+
+    pub const fn wdt_timeout_tcy(&self) -> u64 {
+        WDT_BASE_TCY << self.config.wdtps()
+    }
+
+    pub fn clear_wdt(&mut self) {
+        self.wdt_counter_tcy = 0;
+        self.wdt_timeout_pending = false;
+    }
+
+    pub fn reset_power_state(&mut self) {
+        self.run_state = RunState::Running;
+        self.clear_irq_context();
+        self.clear_wdt();
+    }
+
+    pub fn take_wdt_timeout_pending(&mut self) -> bool {
+        let pending = self.wdt_timeout_pending;
+        self.wdt_timeout_pending = false;
+        pending
+    }
+
+    pub fn advance_halted_cycles(&mut self, n: u32) {
+        if self.run_state == RunState::Idle {
+            self.peripherals.tick_tcy(n, &mut self.memory);
+        } else if self.run_state == RunState::Sleep {
+            self.peripherals.tick_sleep_tcy(n, &mut self.memory);
+            if irq::is_irq_pending(&self.memory) {
+                self.run_state = RunState::Running;
+            }
+        }
+        self.tick_wdt(n);
+    }
+
     /// Advance the cycle counter by `n` Tcy.  Called by the
     /// instruction interpreter (P1.2) once per instruction.
     /// Also ticks every peripheral by the same Tcy budget so
@@ -507,6 +678,31 @@ impl Core {
     pub fn advance_cycles(&mut self, n: u32) {
         self.cycles = self.cycles.saturating_add(n as u64);
         self.peripherals.tick_tcy(n, &mut self.memory);
+        self.tick_wdt(n);
+    }
+
+    fn wdt_enabled(&self) -> bool {
+        self.config.wdten() || (self.memory.read_raw(Address::from_raw(WDTCON_ADDR)) & 0x01) != 0
+    }
+
+    fn tick_wdt(&mut self, n: u32) {
+        if !self.wdt_enabled() {
+            self.wdt_counter_tcy = 0;
+            return;
+        }
+        self.wdt_counter_tcy = self.wdt_counter_tcy.saturating_add(n as u64);
+        if self.wdt_counter_tcy < self.wdt_timeout_tcy() {
+            return;
+        }
+        self.wdt_counter_tcy = 0;
+        if self.run_state == RunState::Running {
+            self.wdt_timeout_pending = true;
+        } else {
+            self.run_state = RunState::Running;
+            let rcon = self.memory.read_raw(Address::from_raw(RCON_ADDR));
+            self.memory
+                .write_raw(Address::from_raw(RCON_ADDR), rcon & !RCON_TO);
+        }
     }
 }
 
@@ -533,7 +729,10 @@ mod tests {
 
     #[test]
     fn data_memory_size_matches_variant() {
-        assert_eq!(Core::new(Variant::Pic18F25K20).memory.as_slice().len(), 4096);
+        assert_eq!(
+            Core::new(Variant::Pic18F25K20).memory.as_slice().len(),
+            4096
+        );
         assert_eq!(Core::new(Variant::Pic18F2455).memory.as_slice().len(), 4096);
     }
 

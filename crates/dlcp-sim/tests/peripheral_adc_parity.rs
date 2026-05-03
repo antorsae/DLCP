@@ -11,17 +11,24 @@
 //! (per `tests/sim/test_main_gpsim_an0_boot.py`).  The
 //! integration test below pins those.
 
-use dlcp_sim::core::Core;
+use dlcp_sim::core::{Core, RunState};
 use dlcp_sim::exec::step;
 use dlcp_sim::memory::{Address, Variant};
-use dlcp_sim::peripherals::adc::{ADCON0_ADDR, ADCON2_ADDR, ADRESH_ADDR, ADRESL_ADDR, PIR1_ADDR};
+use dlcp_sim::peripherals::adc::{
+    ADCON0_ADDR, ADCON1_ADDR, ADCON2_ADDR, ADRESH_ADDR, ADRESL_ADDR, ANSEL_ADDR, PIR1_ADDR,
+};
+use dlcp_sim::peripherals::irq::{INTCON_ADDR, PIE1_ADDR};
 use dlcp_sim::reset::{ResetSource, apply_reset};
 use dlcp_sim::stack::Stack;
 
 const ADCON0_GODONE: u8 = 1 << 1;
 const ADCON0_ADON: u8 = 1 << 0;
 const ADCON2_ADFM: u8 = 1 << 7;
+const ADCON2_ACQT_SHIFT: u8 = 3;
 const PIR1_ADIF: u8 = 1 << 6;
+const PIE1_ADIE: u8 = 1 << 6;
+const INTCON_GIE: u8 = 1 << 7;
+const INTCON_PEIE: u8 = 1 << 6;
 
 fn encode_movlw(k: u8) -> [u8; 2] {
     [k, 0x0E]
@@ -125,4 +132,110 @@ fn adif_low_until_conversion_completes() {
     let core = run_adc_demo(0x0100, 8);
     let pir1 = core.memory.read_raw(Address::from_raw(PIR1_ADDR));
     assert_eq!(pir1 & PIR1_ADIF, 0);
+}
+
+#[test]
+fn adc_channel_mux_ansel_and_vref_policy_cover_fid12() {
+    // §11c FID-12: ADCON0 channel select and analog-vs-digital
+    // configuration must participate in the conversion result.
+    // DS40001303H uses ANSEL/ANSELH for K20 analog selection.
+    // Injected samples are normalized to the active Vref source,
+    // so ADCON1 VCFG changes do not rescale the test value.
+    let mut core = Core::new(Variant::Pic18F25K20);
+    core.memory
+        .write_raw(Address::from_raw(ADCON2_ADDR), ADCON2_ADFM);
+    core.memory.write_raw(Address::from_raw(ANSEL_ADDR), 0b0000_0011);
+    core.peripherals.adc.set_channel_sample(0, 0x0111);
+    core.peripherals.adc.set_channel_sample(1, 0x0222);
+
+    let ch0 = ADCON0_ADON | ADCON0_GODONE;
+    core.memory.write_raw(Address::from_raw(ADCON0_ADDR), ch0);
+    core.peripherals
+        .adc
+        .on_sfr_write(ADCON0_ADDR, ch0, &mut core.memory);
+    core.peripherals.tick_tcy(12, &mut core.memory);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESH_ADDR)), 0x01);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESL_ADDR)), 0x11);
+
+    core.memory.write_raw(Address::from_raw(PIR1_ADDR), 0);
+    core.memory.write_raw(Address::from_raw(ADCON1_ADDR), 0x30);
+    let ch1 = ADCON0_ADON | ADCON0_GODONE | (1 << 2);
+    core.memory.write_raw(Address::from_raw(ADCON0_ADDR), ch1);
+    core.peripherals
+        .adc
+        .on_sfr_write(ADCON0_ADDR, ch1, &mut core.memory);
+    core.peripherals.tick_tcy(12, &mut core.memory);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESH_ADDR)), 0x02);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(ADRESL_ADDR)),
+        0x22,
+        "Vref bits select the reference for the normalized injected sample"
+    );
+
+    core.memory.write_raw(Address::from_raw(ANSEL_ADDR), 0b0000_0001);
+    core.memory.write_raw(Address::from_raw(ADCON0_ADDR), ch1);
+    core.peripherals
+        .adc
+        .on_sfr_write(ADCON0_ADDR, ch1, &mut core.memory);
+    core.peripherals.tick_tcy(12, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(ADRESH_ADDR)),
+        0,
+        "digital-selected channel returns zero in the ADC model"
+    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESL_ADDR)), 0);
+}
+
+#[test]
+fn adc_acqt_adcs_and_sleep_frc_cover_fid12() {
+    // §11c FID-12: ADCON2.ACQT/ADCS controls conversion
+    // completion timing, and FRC-clocked conversions can
+    // progress during Sleep and wake the core through ADIF
+    // when the AD interrupt is enabled.
+    let mut core = Core::new(Variant::Pic18F2455);
+    core.peripherals.adc.set_channel_sample(0, 0x03A5);
+    let adcon2 = ADCON2_ADFM | (5 << ADCON2_ACQT_SHIFT) | 0b101;
+    core.memory.write_raw(Address::from_raw(ADCON2_ADDR), adcon2);
+    let start = ADCON0_ADON | ADCON0_GODONE;
+    core.memory.write_raw(Address::from_raw(ADCON0_ADDR), start);
+    core.peripherals
+        .adc
+        .on_sfr_write(ADCON0_ADDR, start, &mut core.memory);
+    core.peripherals.tick_tcy(95, &mut core.memory);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(ADCON0_ADDR)) & ADCON0_GODONE,
+        ADCON0_GODONE,
+        "ACQT=12 Tad and ADCS=Fosc/16 hold GO/DONE until 96 Tcy"
+    );
+    core.peripherals.tick_tcy(1, &mut core.memory);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADCON0_ADDR)) & ADCON0_GODONE, 0);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESH_ADDR)), 0x03);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESL_ADDR)), 0xA5);
+
+    let mut sleeper = Core::new(Variant::Pic18F2455);
+    sleeper.peripherals.adc.set_channel_sample(0, 0x0123);
+    sleeper
+        .memory
+        .write_raw(Address::from_raw(ADCON2_ADDR), ADCON2_ADFM | 0b111);
+    sleeper
+        .memory
+        .write_raw(Address::from_raw(PIE1_ADDR), PIE1_ADIE);
+    sleeper
+        .memory
+        .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE | INTCON_PEIE);
+    sleeper
+        .memory
+        .write_raw(Address::from_raw(ADCON0_ADDR), start);
+    sleeper
+        .peripherals
+        .adc
+        .on_sfr_write(ADCON0_ADDR, start, &mut sleeper.memory);
+    sleeper.run_state = RunState::Sleep;
+    sleeper.advance_halted_cycles(12 * 12);
+    assert_eq!(sleeper.run_state, RunState::Running);
+    assert_eq!(
+        sleeper.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_ADIF,
+        PIR1_ADIF,
+        "FRC conversion asserts ADIF during Sleep"
+    );
 }

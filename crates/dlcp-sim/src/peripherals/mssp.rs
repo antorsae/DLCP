@@ -29,9 +29,12 @@
 //!     Phase-2 model just tracks state-machine transitions
 //!     and the BF/SSPIF flags so firmware that polls them
 //!     advances correctly.
-//!   * Bus-collision detection (BCLIE / BCLIF) -- needs the
-//!     pin network.
-//!   * The 10-bit-address mode and General Call address path.
+//!   * SPI/slave/10-bit/general-call transfers are explicit
+//!     inert modes in this DLCP model: SFR bytes persist, but
+//!     no I²C-master state, SSPIF, or bus event is produced.
+//!   * Pin-network-driven arbitration is out of scope; tests
+//!     use explicit `inject_bus_collision` / clock-stretch
+//!     hooks to exercise the firmware-visible flags.
 //!
 //! ## Master-mode trigger semantics (DS §17.4)
 //!
@@ -94,6 +97,7 @@ pub const SSPCON1_ADDR: u16 = 0xFC6;
 pub const SSPCON2_ADDR: u16 = 0xFC5;
 pub const SSPMSK_ADDR: u16 = 0xF77;
 pub const PIR1_ADDR: u16 = 0xF9E;
+pub const PIR2_ADDR: u16 = 0xFA1;
 
 const SSPSTAT_BF: u8 = 1 << 0;
 const SSPCON1_WCOL: u8 = 1 << 7;
@@ -108,6 +112,7 @@ const SSPCON2_ACKSTAT: u8 = 1 << 6;
 const SSPCON2_ALL_TRIGGERS: u8 =
     SSPCON2_SEN | SSPCON2_RSEN | SSPCON2_PEN | SSPCON2_RCEN | SSPCON2_ACKEN;
 const PIR1_SSPIF: u8 = 1 << 3;
+const PIR2_BCLIF: u8 = 1 << 3;
 
 /// I²C master-mode SSPCON1<3:0> SSPM encoding.  Per DS Tbl
 /// 17-1 only `1000` selects "I²C Master mode, clock = Fosc /
@@ -165,6 +170,21 @@ pub enum I2cBusEvent {
     RxByte,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct I2cLines {
+    pub scl_high: bool,
+    pub sda_high: bool,
+}
+
+impl Default for I2cLines {
+    fn default() -> Self {
+        I2cLines {
+            scl_high: true,
+            sda_high: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Mssp {
     state: I2cState,
@@ -208,6 +228,13 @@ pub struct Mssp {
     /// Mirror of gpsim's `stop_busy_count` knob.  Defaults
     /// to 0 (no fault).
     stop_busy_count: i64,
+    /// DLCP-scoped explicit clock-stretch hook.  Adds extra
+    /// Tcy to the next I²C-master sequence deadline so SEN/
+    /// PEN/RCEN/ACKEN/SSPIF timing can be tested without a
+    /// full SDA/SCL pin-network peer.
+    clock_stretch_cycles: u32,
+    clock_stretch_count: i64,
+    lines: I2cLines,
 }
 
 impl Mssp {
@@ -219,6 +246,9 @@ impl Mssp {
         self.state = I2cState::Idle;
         self.last_accepted_sspbuf_byte = 0;
         self.last_bus_event = None;
+        self.clock_stretch_cycles = 0;
+        self.clock_stretch_count = 0;
+        self.lines = I2cLines::default();
     }
 
     /// Program the STOP-fault knobs.  While `count != 0` and
@@ -242,6 +272,35 @@ impl Mssp {
     pub fn clear_stop_faults(&mut self) {
         self.stop_busy_cycles = 0;
         self.stop_busy_count = 0;
+    }
+
+    pub fn set_clock_stretch(&mut self, cycles: u32, count: i64) {
+        self.clock_stretch_cycles = cycles;
+        self.clock_stretch_count = count;
+    }
+
+    pub fn clear_clock_stretch(&mut self) {
+        self.clock_stretch_cycles = 0;
+        self.clock_stretch_count = 0;
+    }
+
+    pub const fn lines(&self) -> I2cLines {
+        self.lines
+    }
+
+    pub fn inject_bus_collision(&mut self, mem: &mut Memory) {
+        self.state = I2cState::Idle;
+        let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
+        mem.write_raw(
+            crate::memory::Address::from_raw(SSPCON2_ADDR),
+            con2 & !SSPCON2_ALL_TRIGGERS,
+        );
+        let pir2 = mem.read_raw(crate::memory::Address::from_raw(PIR2_ADDR));
+        mem.write_raw(
+            crate::memory::Address::from_raw(PIR2_ADDR),
+            pir2 | PIR2_BCLIF,
+        );
+        self.lines = I2cLines::default();
     }
 
     /// Drain the most-recently-completed bus event for the
@@ -322,6 +381,11 @@ impl Mssp {
     /// ACKEN reflecting the natural transfer-flow order.
     fn handle_sspcon2_write(&mut self, value: u8, mem: &mut Memory) {
         if !is_i2c_master_enabled(mem) {
+            let con2 = mem.read_raw(crate::memory::Address::from_raw(SSPCON2_ADDR));
+            mem.write_raw(
+                crate::memory::Address::from_raw(SSPCON2_ADDR),
+                con2 & !SSPCON2_ALL_TRIGGERS,
+            );
             return;
         }
         if !matches!(self.state, I2cState::Idle) {
@@ -347,9 +411,10 @@ impl Mssp {
         // SCL period as the schedule budget for Phase-2
         // approximation.
         if (value & SSPCON2_SEN) != 0 {
-            self.state = I2cState::Start(period);
+            self.state = I2cState::Start(period.saturating_add(self.take_clock_stretch_extra()));
         } else if (value & SSPCON2_RSEN) != 0 {
-            self.state = I2cState::RepeatedStart(period);
+            self.state =
+                I2cState::RepeatedStart(period.saturating_add(self.take_clock_stretch_extra()));
         } else if (value & SSPCON2_PEN) != 0 {
             // Fault-injection: extend STOP deadline by
             // `stop_busy_cycles` while `stop_busy_count != 0`.
@@ -365,7 +430,8 @@ impl Mssp {
             } else {
                 0
             };
-            self.state = I2cState::Stop(period.saturating_add(extra));
+            self.state =
+                I2cState::Stop(period.saturating_add(extra).saturating_add(self.take_clock_stretch_extra()));
         } else if (value & SSPCON2_RCEN) != 0 {
             // Master receive: 8 SCL periods of data shift
             // (per DS §17.4.6: "RCEN must be set after each
@@ -373,9 +439,12 @@ impl Mssp {
             // bit is a SEPARATE ACKEN sequence that
             // firmware schedules after RCEN clears -- not
             // part of RCEN's window.
-            self.state = I2cState::RxByte(8 * period);
+            self.state = I2cState::RxByte(
+                (8 * period).saturating_add(self.take_clock_stretch_extra()),
+            );
         } else if (value & SSPCON2_ACKEN) != 0 {
-            self.state = I2cState::AckPulse(period);
+            self.state =
+                I2cState::AckPulse(period.saturating_add(self.take_clock_stretch_extra()));
         }
     }
 
@@ -433,24 +502,35 @@ impl Mssp {
             s | SSPSTAT_BF,
         );
         let period = scl_period_tcy(mem);
-        self.state = I2cState::TxByte(9 * period);
+        self.state = I2cState::TxByte(
+            (9 * period).saturating_add(self.take_clock_stretch_extra()),
+        );
     }
 
     fn complete_start(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_SEN);
         assert_sspif(mem);
+        self.lines = I2cLines {
+            scl_high: true,
+            sda_high: false,
+        };
         self.last_bus_event = Some(I2cBusEvent::Start);
     }
 
     fn complete_repeated_start(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_RSEN);
         assert_sspif(mem);
+        self.lines = I2cLines {
+            scl_high: true,
+            sda_high: false,
+        };
         self.last_bus_event = Some(I2cBusEvent::RepeatedStart);
     }
 
     fn complete_stop(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_PEN);
         assert_sspif(mem);
+        self.lines = I2cLines::default();
         self.last_bus_event = Some(I2cBusEvent::Stop);
     }
 
@@ -470,6 +550,7 @@ impl Mssp {
             con2 | SSPCON2_ACKSTAT,
         );
         assert_sspif(mem);
+        self.lines.scl_high = true;
         self.last_bus_event = Some(I2cBusEvent::TxByte(self.last_accepted_sspbuf_byte));
     }
 
@@ -485,12 +566,24 @@ impl Mssp {
             s | SSPSTAT_BF,
         );
         assert_sspif(mem);
+        self.lines.scl_high = true;
         self.last_bus_event = Some(I2cBusEvent::RxByte);
     }
 
     fn complete_ack_pulse(&mut self, mem: &mut Memory) {
         clear_sspcon2_bit(mem, SSPCON2_ACKEN);
         assert_sspif(mem);
+        self.lines.scl_high = true;
+    }
+
+    fn take_clock_stretch_extra(&mut self) -> u32 {
+        if self.clock_stretch_count == 0 {
+            return 0;
+        }
+        if self.clock_stretch_count > 0 {
+            self.clock_stretch_count -= 1;
+        }
+        self.clock_stretch_cycles
     }
 }
 

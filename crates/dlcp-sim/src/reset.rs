@@ -55,6 +55,7 @@
 //! (P1.8e); 2455 stack-fault has its own targeted
 //! `apply_2455_mclr_irq_sfrs` (task #31).
 
+use crate::config::{Config, FoscMode};
 use crate::core::Core;
 use crate::memory::{Address, Variant};
 use crate::stack::Stack;
@@ -134,6 +135,8 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
     // "Reset events vector all PIC18 devices back to address
     // 0000h, where execution restarts."
     core.set_pc(0);
+    core.tblwt_holding.fill(0xFF);
+    core.reset_power_state();
 
     // Drop every peripheral's internal state.  Has to happen
     // *before* the SFR rewrite below: if a peripheral's
@@ -147,13 +150,9 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
     let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
     let rcon = match source {
         // POR: RI=1, TO=1, PD=1, POR=0, BOR=0.
-        ResetSource::PowerOn => {
-            (rcon & !(RCON_POR | RCON_BOR)) | RCON_RI | RCON_TO | RCON_PD
-        }
+        ResetSource::PowerOn => (rcon & !(RCON_POR | RCON_BOR)) | RCON_RI | RCON_TO | RCON_PD,
         // BOR: RI=1, TO=1, PD=1, POR=u, BOR=0.
-        ResetSource::BrownOut => {
-            (rcon & !RCON_BOR) | RCON_RI | RCON_TO | RCON_PD
-        }
+        ResetSource::BrownOut => (rcon & !RCON_BOR) | RCON_RI | RCON_TO | RCON_PD,
         // MCLR: RI=u, TO=1, PD=u, POR=u, BOR=u.
         ResetSource::Mclr => rcon | RCON_TO,
         // WDT: TO=0, others u.  (This is the WDT-while-running
@@ -185,10 +184,8 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // back: clearing the slice above blew away the
             // bits we just composed.  Re-write RCON to the
             // post-POR state so RI/TO/PD/POR/BOR are correct.
-            core.memory.write_raw(
-                Address::from_raw(RCON_ADDR),
-                RCON_RI | RCON_TO | RCON_PD,
-            );
+            core.memory
+                .write_raw(Address::from_raw(RCON_ADDR), RCON_RI | RCON_TO | RCON_PD);
             // SFR POR initialisation table (variant-specific).
             apply_por_sfr_defaults(core);
         }
@@ -224,12 +221,9 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // re-write the composed RCON value back so
             // RI/TO/PD/POR/BOR are consistent.  (POR's
             // memory-wipe path does the same dance.)
-            core.memory
-                .write_raw(Address::from_raw(RCON_ADDR), rcon);
+            core.memory.write_raw(Address::from_raw(RCON_ADDR), rcon);
         }
-        ResetSource::Mclr
-        | ResetSource::Wdt
-        | ResetSource::ResetInstruction => {
+        ResetSource::Mclr | ResetSource::Wdt | ResetSource::ResetInstruction => {
             // DS39632E §5.4 + Table 4-1: STKPTR depth → 0;
             // sticky flags + slot data preserved.  A previous
             // CALL/RCALL push remains in slot[depth_pre-1] and
@@ -258,9 +252,15 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
             // timers, ADRES, CCPR, FSR{0..2}L, WREG, PRODL/H,
             // SSPBUF, PORTC, LATA-C) are MCLR no-ops and don't
             // need an entry in either pass.
-            if core.variant() == Variant::Pic18F25K20 {
-                apply_k20_mclr_zero_sfrs(core);
-                apply_k20_mclr_rmw_sfrs(core);
+            match core.variant() {
+                Variant::Pic18F25K20 => {
+                    apply_k20_mclr_zero_sfrs(core);
+                    apply_k20_mclr_rmw_sfrs(core);
+                }
+                Variant::Pic18F2455 => {
+                    apply_2455_mclr_zero_sfrs(core);
+                    apply_2455_mclr_rmw_sfrs(core);
+                }
             }
             apply_por_sfr_defaults(core);
         }
@@ -291,7 +291,7 @@ pub fn apply_reset(core: &mut Core, stack: &mut Stack, source: ResetSource) {
     // SFR memory.  Stack resets now also touch SFR memory
     // (per Tbl 4-4 column 6), so they sync alongside the
     // MCLR-style group.
-    core.peripherals.sync_from_memory(&core.memory);
+    core.peripherals.sync_from_memory(&mut core.memory);
 }
 
 /// Zero every byte in the SFR window 0xF60..0xFFF without
@@ -362,11 +362,10 @@ fn apply_por_sfr_defaults(core: &mut Core) {
 /// this seeding, our SFR wipe leaves TRMT=0 and the wait
 /// times out, the firmware hits `hard_reset` (RESET
 /// instruction), and reboots in an infinite loop, never
-/// reaching the chain protocol parser.  T0CON / PR2 /
-/// BAUDCON / IPR1 / IPR2 rounded out for symmetry with
-/// the K20 table; the remaining peripheral SFR defaults
-/// (OSCCON / HLVDCON / TRISx / CCP / SPP / USB / etc.)
-/// stay deferred.
+/// reaching the chain protocol parser.  FID-07 broadened this
+/// table to cover the previously deferred 2455 OSCCON/HLVDCON,
+/// TRIS, comparator, and USB reset-default rows that are visible
+/// before the MAIN firmware touches those peripherals.
 fn apply_2455_por_sfr_defaults(core: &mut Core) {
     const POR_2455: &[(u16, u8, &str)] = &[
         // INTCON2: RBPU=1, INTEDG0/1/2=1, TMR0IP=1, RBIP=1.
@@ -377,6 +376,11 @@ fn apply_2455_por_sfr_defaults(core: &mut Core) {
         (0xFF0, 0xC0, "INTCON3"),
         // T0CON: all 1s at POR (timer disabled, max prescaler).
         (0xFD5, 0xFF, "T0CON"),
+        // OSCCON: 0100 q000; q status/SCS bits use deterministic
+        // zero until the oscillator peripheral changes them.
+        (0xFD3, 0x40, "OSCCON"),
+        // HLVDCON: HLVDL<3:0>=0101, bit 6 unimplemented.
+        (0xFD2, 0x05, "HLVDCON"),
         // PR2: Timer2 period match value = 0xFF.  Address
         // 0xFCB per DS39632E Tbl 5-1 (NOT 0xFAB -- that's
         // RCSTA, whose POR value is `0000 000x` and stays
@@ -390,16 +394,47 @@ fn apply_2455_por_sfr_defaults(core: &mut Core) {
         (0xFAC, 0x02, "TXSTA"),
         // BAUDCON: RCIDL=1 (receiver idle).  Bit 2 unimpl.
         (0xFB8, 0x40, "BAUDCON"),
+        // CMCON: comparator module POR value 0000 0111.
+        (0xFB4, 0x07, "CMCON"),
         // IPR1: all peripheral interrupt priorities high.
         // PIC18F2455 (28-pin) has SPPIP (bit 7) unimplemented
         // per DS Tbl 4-4 second row + footnote 3 -> 0x7F.
         (0xF9F, 0x7F, "IPR1"),
         // IPR2: all bits 1.
         (0xFA2, 0xFF, "IPR2"),
+        // TRISC: 11-- -111; RC5/RC4 are USB pins, bit 3 is
+        // unimplemented on 28-pin 2455.
+        (0xF94, 0xC7, "TRISC"),
+        // TRISB: all input.
+        (0xF93, 0xFF, "TRISB"),
     ];
     for &(addr, value, _name) in POR_2455 {
         core.memory.write_raw(Address::from_raw(addr), value);
     }
+    core.memory.write_raw(
+        Address::from_raw(0xF92),
+        trisa_por_value_2455(&core.config),
+    );
+}
+
+fn trisa_por_value_k20(config: &Config) -> u8 {
+    if fosc_exposes_ra6_as_port(config.fosc()) {
+        0x7F
+    } else {
+        0x3F
+    }
+}
+
+fn trisa_por_value_2455(config: &Config) -> u8 {
+    let mut value = 0x3F;
+    if fosc_exposes_ra6_as_port(config.fosc()) {
+        value |= 0x40;
+    }
+    value
+}
+
+fn fosc_exposes_ra6_as_port(fosc: FoscMode) -> bool {
+    matches!(fosc, FoscMode::ECIO | FoscMode::ECPIO | FoscMode::INTIO)
 }
 
 /// Apply the Tbl 4-4 column-6 SFR reset for stack-fault
@@ -410,15 +445,8 @@ fn apply_2455_por_sfr_defaults(core: &mut Core) {
 /// machinery -- zero SFRs, RMW SFRs, POR fixed defaults,
 /// covering INTCON / PIE1 / PIR1 / PIE2 / PIR2 etc.
 ///
-/// On 2455 the full MCLR machinery is not yet ported (the
-/// V2.3 MAIN parity gate will land the broader 2455 MCLR-
-/// zero / RMW / POR-defaults tables).  This helper covers
-/// the IRQ-related Tbl 4-4 column-6 entries -- the subset
-/// that, if left stale, would let a still-pending IRQ
-/// re-vector immediately after the stack-fault reset.
-/// Task #31 broadened this from the prior INTCON-only
-/// clear after codex review of 5a315b3 / 98a0762 flagged
-/// the 2455 gap.
+/// On 2455 this now uses the FID-07 MCLR/WDT/RESET table
+/// too; earlier revisions only cleared the IRQ subset.
 fn apply_stack_fault_sfr_reset(core: &mut Core) {
     match core.variant() {
         Variant::Pic18F25K20 => {
@@ -427,96 +455,87 @@ fn apply_stack_fault_sfr_reset(core: &mut Core) {
             apply_por_sfr_defaults(core);
         }
         Variant::Pic18F2455 => {
-            apply_2455_mclr_irq_sfrs(core);
+            apply_2455_mclr_zero_sfrs(core);
+            apply_2455_mclr_rmw_sfrs(core);
+            apply_por_sfr_defaults(core);
         }
     }
 }
 
-/// 2455 IRQ-related SFRs that DS39632E Tbl 4-4 column 6
-/// ("MCLR Resets, WDT Reset, RESET Instruction, Stack
-/// Resets") forces to fixed values on a stack-fault reset.
-///
-/// SFR addresses sourced from DS39632E Tbl 5-1 (Special
-/// Function Register Map, p.61) -- 2455 shares the PIC18-
-/// architectural high-SFR layout with the K20
-/// (DS40001303H Tbl 5-1, p.81) for every register touched
-/// here.  The K20 reset machinery already uses these
-/// addresses across its three passes:
-///   * `K20_MCLR_ZERO_SFRS` covers PIE1 / PIR1 / PIE2 /
-///     PIR2 / WDTCON.
-///   * `K20_MCLR_RMW` covers INTCON (RBIF preserve mask).
-///   * `apply_k20_por_sfr_defaults` re-applies the fixed
-///     non-zero defaults for INTCON2 / INTCON3 / IPR1 /
-///     IPR2 (their MCLR-column values match the POR-column
-///     values per DS Tbl 4-4).
-/// We re-list inline rather than delegating to
-/// `apply_k20_mclr_zero_sfrs` because the K20 helper also
-/// touches K20-specific registers (CM1CON0 at 0xF7B, IOCB
-/// at 0xF7D, ANSEL at 0xF7E, etc.) at addresses that on
-/// the 2455 belong to USB / SPP peripherals or are
-/// unimplemented -- a blanket K20 reset would clobber
-/// unrelated 2455 state.
-///
-/// Coverage scope (task #31): every SFR that gates an
-/// interrupt source -- INTCON / INTCON2 / INTCON3 / PIE1 /
-/// PIR1 / IPR1 / PIE2 / PIR2 / IPR2 -- plus WDTCON since a
-/// stale WDT enable carried across a stack-fault reset
-/// could resume timing the wrong reset.  The remaining Tbl
-/// 4-4 col 6 entries (T0CON, PR2, TRISx, TXSTA, BAUDCON,
-/// CMCON, peripheral CCP/ECCP/SSP/ADC defaults, USB / SPP
-/// defaults, etc.) are deferred to the 2455 MCLR-table
-/// port that the V2.3 MAIN parity gate will land.  Until
-/// then those SFRs retain whatever value the firmware
-/// (or POR-zero default) left them at across the stack-
-/// fault reset -- silicon-incorrect for any test that
-/// asserts MCLR-style post-reset state on 2455, but no
-/// such test exists yet.
-fn apply_2455_mclr_irq_sfrs(core: &mut Core) {
-    // ----- Zero (full byte forced to 0) -----
-    // Addresses verified against DS39632E Tbl 5-1 p.61.
-    const PIE1_ADDR: u16 = 0xF9D;
-    const PIR1_ADDR: u16 = 0xF9E;
-    const PIE2_ADDR: u16 = 0xFA0;
-    const PIR2_ADDR: u16 = 0xFA1;
-    const WDTCON_ADDR: u16 = 0xFD1;
-    for addr in [PIE1_ADDR, PIR1_ADDR, PIE2_ADDR, PIR2_ADDR, WDTCON_ADDR] {
+fn apply_2455_mclr_zero_sfrs(core: &mut Core) {
+    const ZERO_SFRS: &[u16] = &[
+        0xFEA, // FSR0H
+        0xFE2, // FSR1H
+        0xFDA, // FSR2H
+        0xFE0, // BSR
+        0xFD7, // TMR0H
+        0xFD1, // WDTCON
+        0xFCC, // TMR2
+        0xFCA, // T2CON
+        0xFC8, // SSPADD
+        0xFC7, // SSPSTAT
+        0xFC6, // SSPCON1
+        0xFC5, // SSPCON2
+        0xFC2, // ADCON0
+        0xFC1, // ADCON1
+        0xFC0, // ADCON2
+        0xFBA, // CCP2CON
+        0xFB6, // ECCP1DEL
+        0xFB5, // ECCP1AS
+        0xFB3, // T3CON
+        0xFB0, // SPBRGH
+        0xFAF, // SPBRG
+        0xFAE, // RCREG
+        0xFAD, // TXREG
+        0xFAB, // RCSTA
+        0xFA9, // EEADR
+        0xFA8, // EEDATA
+        0xFA6, // EECON1
+        0xFA0, // PIE2
+        0xFA1, // PIR2
+        0xF9D, // PIE1
+        0xF9E, // PIR1
+        0xF9B, // OSCTUNE
+        0xFF9, // PCL
+        0xFFA, // PCLATH
+        0xFFB, // PCLATU
+        0xFF6, // TBLPTRL
+        0xFF7, // TBLPTRH
+        0xFF8, // TBLPTRU
+        0xFF5, // TABLAT
+    ];
+    for &addr in ZERO_SFRS {
         core.memory.write_raw(Address::from_raw(addr), 0);
     }
+    // USB-SIE reset rows (DS39632E Tbl 4-4): UEP0..15, UCFG,
+    // UADDR, UCON, USTAT, UEIE, UEIR, UIE, UIR, UFRMH, UFRML
+    // all reset to zero under MCLR/WDT/RESET/stack resets.
+    for addr in 0xF66u16..=0xF7F {
+        core.memory.write_raw(Address::from_raw(addr), 0);
+    }
+}
 
-    // ----- Fixed non-zero -----
-    // INTCON2 `1111 -1-1` -> 0xF5 (RBPU/INTEDG0/1/2/TMR0IP
-    // /RBIP all 1; bits 3 and 1 unimplemented = 0).
-    core.memory
-        .write_raw(Address::from_raw(0xFF1), 0xF5);
-    // INTCON3 `11-0 0-00` -> 0xC0 (INT2IP/INT1IP=1; bits 5
-    // and 2 unimplemented = 0; INT2IE/INT1IE/INT2IF/INT1IF
-    // = 0).
-    core.memory
-        .write_raw(Address::from_raw(0xFF0), 0xC0);
-    // IPR1 `1111 1111` -> on PIC18F2455 (28-pin) SPPIP
-    // (Streaming Parallel Port Interrupt Priority, bit 7)
-    // is unimplemented and reads as 0 per DS39632E Tbl
-    // 4-4 second row + footnote 3 ("SPP not present on
-    // 28-pin"), so the effective post-reset byte is 0x7F.
-    // The K20 has the same bit pattern but names it PSPIP
-    // (Parallel Slave Port -- different peripheral, same
-    // unimplemented-on-28-pin contract; see
-    // `apply_k20_por_sfr_defaults`).  Address 0xF9F per
-    // Tbl 5-1.
-    core.memory
-        .write_raw(Address::from_raw(0xF9F), 0x7F);
-    // IPR2 `1111 1111` -> 0xFF.  Address 0xFA2 per Tbl 5-1.
-    core.memory
-        .write_raw(Address::from_raw(0xFA2), 0xFF);
-
-    // ----- INTCON: RMW (clear bits 7..1; preserve RBIF=bit 0) -----
-    // Done last so any (hypothetical) prior bit twiddle
-    // doesn't leak a higher INTCON bit into the preserved
-    // RBIF read.
-    const INTCON_ADDR: u16 = 0xFF2;
-    let cur = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
-    core.memory
-        .write_raw(Address::from_raw(INTCON_ADDR), cur & 0x01);
+fn apply_2455_mclr_rmw_sfrs(core: &mut Core) {
+    const RMW: &[(u16, u8, u8)] = &[
+        // INTCON: bits 7..1 reset, RBIF bit 0 preserved.
+        (0xFF2, 0x00, 0xFE),
+        // T1CON: T1RUN bit 6 resets; other bits preserved.
+        (0xFCD, 0x00, 0x40),
+        // EECON1: EEPGD/CFGS/FREE/WRERR/WREN/WR/RD reset,
+        // unimplemented bit 5 remains 0; only x/u bits outside
+        // reset_mask would be preserved.
+        (0xFA6, 0x00, 0xDF),
+        // PORTA: preserve RA6 and RA4 latch/read bits; clear
+        // RA7 (unimplemented on 28-pin 2455), RA5, and RA3..RA0.
+        (0xF80, 0x00, 0xAF),
+        // PORTE: preserve RE3, clear RE2..RE0.
+        (0xF84, 0x00, 0x07),
+    ];
+    for &(addr, target, reset_mask) in RMW {
+        let cur = core.memory.read_raw(Address::from_raw(addr));
+        let next = (cur & !reset_mask) | (target & reset_mask);
+        core.memory.write_raw(Address::from_raw(addr), next);
+    }
 }
 
 /// PIC18F25K20 POR/BOR SFR initial values.
@@ -581,22 +600,6 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
         (0xF9F, 0x7F),
         // IPR2: all bits 1.
         (0xFA2, 0xFF),
-        // TRISA: Tbl 4-4 base = `1111 1111` = 0xFF, but Note 5
-        // says RA6/RA7 are oscillator pins in modes that use
-        // OSC1/OSC2 -- "When not enabled as PORTA pins, they
-        // are disabled and read 0".  The actual POR-effective
-        // value is therefore CONFIG-dependent (FOSC<3:0> field
-        // of CONFIG1H).  This Phase-1 table currently stores
-        // 0x7F so the cycle-10 V1.71 parity gate matches gpsim
-        // -- gpsim's K20 model only disables RA7 (not RA6) for
-        // V1.71's FOSC=XT (CONFIG1H=0x01), which is itself a
-        // gpsim modeling gap (Tbl 4-4 Note 5 mandates BOTH bits
-        // 6 and 7 be 0 in XT mode -> spec-correct value would
-        // be 0x3F).  P2 will plumb CONFIG into the reset path
-        // and resolve TRISA per-mode; until then this stays
-        // pinned to "what gpsim reports for V1.71" and the
-        // discrepancy lives in the codex review trail.
-        (0xF92, 0x7F),
         // TRISB: all-input.
         (0xF93, 0xFF),
         // TRISC: all-input.
@@ -609,19 +612,6 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
         // footnote and brings ANSEL up at 0xFF; the parity test
         // exempts the resulting (rust=0x1F, gpsim=0xFF) cell.
         (0xF7E, 0x1F),
-        // ANSELH: ANS<12:8> implemented; Note 6 says all bits
-        // initialise to 0 if PBADEN=0 (CONFIG3H bit 1).  V1.71
-        // has CONFIG3H=0x00 -> PBADEN=0, so the spec-correct
-        // POR is 0x00.  This table stores 0x1F so the cycle-10
-        // parity gate matches gpsim, whose K20 model brings
-        // ANSELH up at 0x1F regardless of CONFIG3H (gpsim's
-        // P18F25K20::set_config3h is supposed to honour Note
-        // 6 -- p18fk.cc:245 -- but the CONFIG3H value reaches
-        // it after the SFR has already POR'd, so the override
-        // never lands at the cycle-10 observation point).  Like
-        // TRISA above, P2 will resolve this CONFIG-conditional
-        // value properly; for now we track gpsim.
-        (0xF7F, 0x1F),
         // WPUB: weak pull-ups enabled.
         (0xF7C, 0xFF),
         // SLRCON: slew-rate control = normal (1) for SLRA/B/C.
@@ -632,9 +622,21 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
     ];
 
     for (addr, value) in K20_POR {
-        core.memory
-            .write_raw(Address::from_raw(*addr), *value);
+        core.memory.write_raw(Address::from_raw(*addr), *value);
     }
+    // CONFIG-dependent `q` rows from DS40001303H Table 4-4 /
+    // Table 5-2 footnotes.  FID-07 intentionally moves these out
+    // of the gpsim-compat static table: V1.71's FOSC=XT disables
+    // RA6/RA7 as PORTA pins (TRISA=0x3F), and PBADEN=0 makes
+    // ANSELH reset to zero.
+    core.memory.write_raw(
+        Address::from_raw(0xF92),
+        trisa_por_value_k20(&core.config),
+    );
+    core.memory.write_raw(
+        Address::from_raw(0xF7F),
+        if core.config.pbaden() { 0x1F } else { 0x00 },
+    );
 }
 
 /// SFRs that reset to a fully-zero byte on every K20 reset
@@ -759,12 +761,9 @@ fn apply_k20_mclr_rmw_sfrs(core: &mut Core) {
         (0xF84, 0x00, 0x07),
     ];
     for (addr, target, reset_mask) in K20_MCLR_RMW {
-        let old = core
-            .memory
-            .read_raw(Address::from_raw(*addr));
+        let old = core.memory.read_raw(Address::from_raw(*addr));
         let new_value = (old & !reset_mask) | (target & reset_mask);
-        core.memory
-            .write_raw(Address::from_raw(*addr), new_value);
+        core.memory.write_raw(Address::from_raw(*addr), new_value);
     }
 }
 
@@ -790,10 +789,7 @@ mod tests {
         apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
         assert_eq!(core.pc(), 0);
         // RI=1, TO=1, PD=1, POR=0, BOR=0
-        assert_eq!(
-            rcon_byte(&core),
-            RCON_RI | RCON_TO | RCON_PD,
-        );
+        assert_eq!(rcon_byte(&core), RCON_RI | RCON_TO | RCON_PD,);
     }
 
     #[test]
@@ -820,7 +816,8 @@ mod tests {
         let (mut core, mut stack) = fresh_core_and_stack();
         // Pre-BOR RCON has POR=1 (set by software after a prior POR
         // — typical firmware idiom).
-        core.memory.write_raw(Address::from_raw(RCON_ADDR), RCON_POR);
+        core.memory
+            .write_raw(Address::from_raw(RCON_ADDR), RCON_POR);
         apply_reset(&mut core, &mut stack, ResetSource::BrownOut);
         let rcon = rcon_byte(&core);
         // RI=1, TO=1, PD=1, BOR=0; POR preserved.
@@ -858,12 +855,12 @@ mod tests {
         // leave behind (TXIF set, PIE1 enables, baud divisor).
         for (addr, value) in [
             (0xF9Eu16, 0xFFu8), // PIR1
-            (0xF9D, 0x55),       // PIE1
-            (0xFA1, 0xAA),       // PIR2
-            (0xFA0, 0x33),       // PIE2
-            (0xFAD, 0x99),       // TXREG
-            (0xFAF, 0x05),       // SPBRG
-            (0xF9B, 0x42),       // OSCTUNE
+            (0xF9D, 0x55),      // PIE1
+            (0xFA1, 0xAA),      // PIR2
+            (0xFA0, 0x33),      // PIE2
+            (0xFAD, 0x99),      // TXREG
+            (0xFAF, 0x05),      // SPBRG
+            (0xF9B, 0x42),      // OSCTUNE
         ] {
             core.memory.write_raw(Address::from_raw(addr), value);
         }
@@ -896,12 +893,12 @@ mod tests {
         let mut stack = Stack::new();
         for (addr, value) in [
             (0xFF5u16, 0xAA), // TABLAT
-            (0xFF6, 0x12), // TBLPTRL
-            (0xFF7, 0x34), // TBLPTRH
-            (0xFF8, 0x05), // TBLPTRU (only bits 5..0 implemented)
-            (0xFF9, 0x42), // PCL
-            (0xFFA, 0x10), // PCLATH
-            (0xFFB, 0x01), // PCLATU
+            (0xFF6, 0x12),    // TBLPTRL
+            (0xFF7, 0x34),    // TBLPTRH
+            (0xFF8, 0x05),    // TBLPTRU (only bits 5..0 implemented)
+            (0xFF9, 0x42),    // PCL
+            (0xFFA, 0x10),    // PCLATH
+            (0xFFB, 0x01),    // PCLATU
         ] {
             core.memory.write_raw(Address::from_raw(addr), value);
         }
@@ -926,11 +923,13 @@ mod tests {
         apply_reset(&mut core, &mut stack, ResetSource::Mclr);
         let intcon = core.memory.read_raw(Address::from_raw(0xFF2));
         assert_eq!(
-            intcon & 0xFE, 0,
+            intcon & 0xFE,
+            0,
             "INTCON bits 7..1 must reset on MCLR (got 0x{intcon:02X})"
         );
         assert_eq!(
-            intcon & 0x01, 0x01,
+            intcon & 0x01,
+            0x01,
             "INTCON bit 0 (RBIF) must be preserved on MCLR"
         );
     }
@@ -970,10 +969,10 @@ mod tests {
         let mut stack = Stack::new();
         for (addr, junk) in [
             (0xFA6u16, 0xFFu8), // EECON1
-            (0xFAB, 0xFF),       // RCSTA
-            (0xFB1, 0xFF),       // T3CON
-            (0xFCD, 0xFF),       // T1CON
-            (0xFD8, 0xFF),       // STATUS (writes the 5 implemented bits)
+            (0xFAB, 0xFF),      // RCSTA
+            (0xFB1, 0xFF),      // T3CON
+            (0xFCD, 0xFF),      // T1CON
+            (0xFD8, 0xFF),      // STATUS (writes the 5 implemented bits)
         ] {
             core.memory.write_raw(Address::from_raw(addr), junk);
         }
@@ -1000,11 +999,13 @@ mod tests {
         apply_reset(&mut core, &mut stack, ResetSource::Mclr);
         let t1con = core.memory.read_raw(Address::from_raw(0xFCD));
         assert_eq!(
-            t1con & 0x40, 0,
+            t1con & 0x40,
+            0,
             "T1CON bit 6 (T1RUN) must clear on MCLR (got 0x{t1con:02X})"
         );
         assert_eq!(
-            t1con & !0x40, 0xBF,
+            t1con & !0x40,
+            0xBF,
             "T1CON bits 7, 5..0 must be preserved (got 0x{t1con:02X})"
         );
     }
@@ -1036,8 +1037,8 @@ mod tests {
         // POR/BOR.  Any address NOT in this list must end at
         // 0 after the BOR wipe.  Build the lookup once.
         let k20_por_addrs: std::collections::HashSet<u16> = [
-            0xFF1u16, 0xFF0, 0xFD5, 0xFD3, 0xFD2, 0xFCB, 0xFAC, 0xFB9, 0xFB8,
-            0xF9F, 0xFA2, 0xF92, 0xF93, 0xF94, 0xF7E, 0xF7F, 0xF7C, 0xF78, 0xF77,
+            0xFF1u16, 0xFF0, 0xFD5, 0xFD3, 0xFD2, 0xFCB, 0xFAC, 0xFB9, 0xFB8, 0xF9F, 0xFA2, 0xF92,
+            0xF93, 0xF94, 0xF7E, 0xF7F, 0xF7C, 0xF78, 0xF77,
             // RCON is also expected to be the composed BOR
             // value, not 0 -- exclude it from the "must be 0"
             // assertion.
@@ -1071,7 +1072,11 @@ mod tests {
         }
         // K20_POR non-zero entries are re-established.
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFCB)), 0xFF, "PR2");
-        assert_eq!(core.memory.read_raw(Address::from_raw(0xFD5)), 0xFF, "T0CON");
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFD5)),
+            0xFF,
+            "T0CON"
+        );
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xFAC)),
             0x02,
@@ -1455,6 +1460,83 @@ mod tests {
             0xFF,
             "IPR2 = 0xFF"
         );
+    }
+
+    /// FID-07: K20 reset q-rows must be CONFIG-derived, not
+    /// gpsim-pinned.  DS40001303H Table 5-2 note 5 gates RA6/RA7
+    /// PORTA availability on oscillator mode; note 6 gates ANSELH
+    /// on PBADEN.
+    #[test]
+    fn k20_por_resolves_trisa_and_anselh_from_config() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        let mut cfg = [0u8; 14];
+        cfg[1] = 0x01; // FOSC=XT: RA6/RA7 are oscillator pins.
+        cfg[5] = 0x00; // PBADEN=0.
+        core.config = Config::from_bytes(cfg);
+        let mut stack = Stack::new();
+        apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF92)), 0x3F);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF7F)), 0x00);
+
+        let mut ec_core = Core::new(Variant::Pic18F25K20);
+        cfg[1] = 0x04; // FOSC=ECIO: RA6 is a PORTA pin.
+        cfg[5] = 0x02; // PBADEN=1.
+        ec_core.config = Config::from_bytes(cfg);
+        apply_reset(&mut ec_core, &mut Stack::new(), ResetSource::PowerOn);
+        assert_eq!(ec_core.memory.read_raw(Address::from_raw(0xF92)), 0x7F);
+        assert_eq!(ec_core.memory.read_raw(Address::from_raw(0xF7F)), 0x1F);
+    }
+
+    /// FID-07: 2455 POR/BOR now covers the OSCCON/TRIS/USB rows
+    /// that were previously left at zero.  DS39632E Table 4-4
+    /// gives OSCCON=0100 q000, TRISC=11-- -111, UEPx/UCFG/UCON
+    /// reset-zero; Table 5-2 note 5 makes TRISA<6> depend on
+    /// CONFIG1H.FOSC.
+    #[test]
+    fn pic2455_por_seeds_osc_tris_and_usb_sfr_rows() {
+        let mut core = Core::new(Variant::Pic18F2455);
+        core.config = Config::from_bytes([
+            0x3A, 0x46, 0x3E, 0x1E, 0xFF, 0x00, 0x80, 0xFF, 0x0F, 0xC0, 0x0F, 0xA0, 0x0F,
+            0x40,
+        ]);
+        let mut stack = Stack::new();
+        apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFD3)), 0x40);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFD2)), 0x05);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF92)), 0x7F);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF94)), 0xC7);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFB4)), 0x07);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF70)), 0x00); // UEP0
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF7F)), 0x00); // UEP15
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF6F)), 0x00); // UCFG
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF6D)), 0x00); // UCON
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF68)), 0x00); // UIR
+    }
+
+    /// FID-07: 2455 MCLR/WDT/RESET/stack resets use their own
+    /// DS39632E table, not the K20 table and not a preserve-all
+    /// shortcut.  This representative WDT reset checks fixed,
+    /// RMW-preserved, and USB-reset rows in one pass.
+    #[test]
+    fn pic2455_non_por_reset_uses_variant_table() {
+        let mut core = Core::new(Variant::Pic18F2455);
+        let mut stack = Stack::new();
+        for addr in [0xF70, 0xF7F, 0xF6F, 0xF6D, 0xF68, 0xFD3, 0xF94] {
+            core.memory.write_raw(Address::from_raw(addr), 0xAA);
+        }
+        core.memory.write_raw(Address::from_raw(0xFF2), 0xFF); // INTCON, RBIF preserved.
+        core.memory.write_raw(Address::from_raw(0xF80), 0xFF); // PORTA preserves RA6/RA4.
+        apply_reset(&mut core, &mut stack, ResetSource::Wdt);
+
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF70)), 0x00);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF7F)), 0x00);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF6F)), 0x00);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF6D)), 0x00);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF68)), 0x00);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFD3)), 0x40);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF94)), 0xC7);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFF2)), 0x01);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xF80)), 0x50);
     }
 
     #[test]

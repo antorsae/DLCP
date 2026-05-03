@@ -70,17 +70,42 @@ impl Variant {
         }
     }
 
-    /// Program (flash) memory size in bytes.  K20 = 32 KiB,
-    /// 2455 = 24 KiB but the bootloader window pushes the user
-    /// flash up to the full 24 KiB on this product.  P1 stores
-    /// the program memory at full-32-KiB capacity for both
-    /// variants and lets the config-bit parser (P1.7) bound the
-    /// usable region; this avoids special-casing the variant
-    /// during instruction fetch.
+    /// Host backing-buffer size in bytes.  Kept at 32 KiB for
+    /// both variants so bootloader-seed merge code can reuse one
+    /// storage shape; silicon fetch/TBLRD visibility is bounded by
+    /// [`Self::implemented_program_memory_bytes`].
     pub const fn program_memory_bytes(self) -> usize {
         match self {
             Variant::Pic18F25K20 => 32 * 1024,
             Variant::Pic18F2455 => 32 * 1024,
+        }
+    }
+
+    /// Implemented on-die program memory in bytes.  DS39632E
+    /// lists PIC18F2455 as 24 KiB (`0x0000..0x5FFF`); DS40001303H
+    /// lists PIC18F25K20 as 32 KiB (`0x0000..0x7FFF`).  Addresses
+    /// above this limit may exist in the simulator's host buffer
+    /// but must read as unimplemented program-memory gap for the
+    /// corresponding silicon variant.
+    pub const fn implemented_program_memory_bytes(self) -> usize {
+        match self {
+            Variant::Pic18F25K20 => 32 * 1024,
+            Variant::Pic18F2455 => 24 * 1024,
+        }
+    }
+
+    /// DEVID1/DEVID2 bytes returned at `0x3FFFFE..0x3FFFFF`.
+    /// The DEV bits are fixed by the datasheets; REV bits are
+    /// silicon-revision-specific, so the simulator reports revision
+    /// `0` deterministically.  Anchors:
+    /// DS39632E Register 25-14 lists PIC18F2455 as
+    /// `DEVID2=0001_0010`, `DEVID1.DEV<2:0>=011`;
+    /// DS40001303H Registers 23-12/23-13 list PIC18F25K20 as
+    /// `DEVID2=0010_0000`, `DEVID1.DEV<2:0>=011`.
+    pub const fn devid_bytes(self) -> [u8; 2] {
+        match self {
+            Variant::Pic18F25K20 => [0x60, 0x20],
+            Variant::Pic18F2455 => [0x60, 0x12],
         }
     }
 

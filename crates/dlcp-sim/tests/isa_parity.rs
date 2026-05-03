@@ -8,8 +8,8 @@
 //! `scripts/capture_v171_early_boot_parity.py`.
 
 use dlcp_sim::{
-    Core, HexImage, Instruction, ResetSource, Stack, TableMode, Variant, apply_reset, decode,
-    step,
+    Core, CoreLoadOptions, ExecError, HexImage, Instruction, ResetSource, Stack, TableMode,
+    Variant, apply_reset, core_from_hex_image, decode, step,
 };
 use std::collections::HashMap;
 use std::mem::Discriminant;
@@ -201,6 +201,205 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn release_hex(name: &str) -> PathBuf {
+    repo_root().join("firmware/patched/releases").join(name)
+}
+
+fn tblrd_byte(mut core: Core, addr: u32) -> u8 {
+    use dlcp_sim::memory::Address;
+
+    core.flash_mut()[0..2].copy_from_slice(&[0x08, 0x00]); // TBLRD*
+    core.set_pc(0);
+    core.memory
+        .write_raw(Address::from_raw(0xFF6), (addr & 0xFF) as u8);
+    core.memory
+        .write_raw(Address::from_raw(0xFF7), ((addr >> 8) & 0xFF) as u8);
+    core.memory
+        .write_raw(Address::from_raw(0xFF8), ((addr >> 16) & 0xFF) as u8);
+
+    let mut stack = Stack::new();
+    step(&mut core, &mut stack).expect("TBLRD* executes");
+    core.memory.read_raw(Address::from_raw(0xFF5)) // TABLAT
+}
+
+#[test]
+fn full_hex_loader_populates_config_and_user_id() {
+    // §11c FID-04: every firmware HEX-backed Core builder must
+    // load CONFIG and USER_ID, not only flash/EEPROM.  TBLRD
+    // visibility is the silicon-facing check: DS39632E §6.7 /
+    // DS40001303H §3.1 define USER_ID at 0x200000..0x200007;
+    // DS39632E §25 / DS40001303H §23 define CONFIG bytes at
+    // 0x300000..0x30000D.
+    for (variant, image_name) in [
+        (Variant::Pic18F25K20, "DLCP_Control_V1.71.hex"),
+        (Variant::Pic18F2455, "DLCP_Firmware_V3.2.hex"),
+    ] {
+        let image =
+            HexImage::from_hex_path(release_hex(image_name)).expect("canonical release hex parses");
+        let core = core_from_hex_image(variant, &image, CoreLoadOptions::default());
+
+        assert_eq!(
+            core.config.raw(),
+            &image.config,
+            "{image_name}: core CONFIG must match parsed HEX"
+        );
+        assert_eq!(
+            core.user_id, image.user_id,
+            "{image_name}: core USER_ID must match parsed HEX"
+        );
+        for addr in [0x00u8, 0x74, 0x82, 0xFF] {
+            assert_eq!(
+                core.peripherals.eeprom.get_byte(addr),
+                image.eeprom[addr as usize],
+                "{image_name}: EEPROM byte 0x{addr:02X} must match parsed HEX"
+            );
+        }
+
+        assert_eq!(
+            tblrd_byte(core.clone(), dlcp_sim::hex::CONFIG_BASE),
+            image.config[0],
+            "{image_name}: TBLRD CONFIG byte 0 must surface loaded CONFIG"
+        );
+        assert_eq!(
+            tblrd_byte(core.clone(), dlcp_sim::hex::CONFIG_BASE + 13),
+            image.config[13],
+            "{image_name}: TBLRD CONFIG byte 13 must surface loaded CONFIG"
+        );
+        assert_eq!(
+            tblrd_byte(core.clone(), dlcp_sim::hex::USER_ID_BASE),
+            image.user_id[0],
+            "{image_name}: TBLRD USER_ID byte 0 must surface loaded USER_ID"
+        );
+        assert_eq!(
+            tblrd_byte(core, dlcp_sim::hex::USER_ID_BASE + 7),
+            image.user_id[7],
+            "{image_name}: TBLRD USER_ID byte 7 must surface loaded USER_ID"
+        );
+    }
+}
+
+#[test]
+fn xinst_unsupported_config_fails_loudly() {
+    // §11c FID-05: CONFIG4L.XINST=1 selects the PIC18 extended
+    // instruction set and Indexed Literal Offset mode
+    // (DS39632E §25.1 / Register 25-7).  This executor only
+    // implements the legacy 75-instruction set, so it must stop
+    // before fetching or mutating state instead of silently using
+    // legacy decoding under XINST=1.
+    let mut core = Core::new(Variant::Pic18F2455);
+    core.flash_mut()[0..2].copy_from_slice(&[0x42, 0x0E]); // MOVLW 0x42
+    let mut config = [0u8; dlcp_sim::config::CONFIG_BYTES];
+    config[6] = 1 << 6; // CONFIG4L.XINST
+    core.config = dlcp_sim::Config::from_bytes(config);
+
+    let mut stack = Stack::new();
+    let err = step(&mut core, &mut stack).expect_err("XINST=1 must fail before execution");
+    assert_eq!(
+        err,
+        ExecError::UnsupportedConfig("XINST=1 extended instruction set is unsupported")
+    );
+    assert_eq!(core.pc(), 0, "PC must not advance when XINST is rejected");
+    assert_eq!(
+        core.cycles(),
+        0,
+        "cycles must not advance when XINST is rejected"
+    );
+    assert_eq!(
+        core.memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFE8)),
+        0,
+        "MOVLW must not execute before the unsupported-XINST error"
+    );
+}
+
+#[test]
+fn pic2455_top_8k_uses_unimplemented_memory_semantics() {
+    // §11c FID-06: PIC18F2455 implements 24 KiB program memory
+    // (`0x0000..0x5FFF`, DS39632E program-memory map).  The
+    // simulator may keep a 32 KiB host buffer for DLCP seed
+    // merges, but fetch and TBLRD above 0x5FFF must see the
+    // unimplemented gap.  PIC18F25K20 remains a 32 KiB device.
+    let mut main = Core::new(Variant::Pic18F2455);
+    let mut control = Core::new(Variant::Pic18F25K20);
+    for core in [&mut main, &mut control] {
+        core.flash_mut()[0x6000..0x6002].copy_from_slice(&[0x42, 0x0E]); // MOVLW 0x42
+        core.set_pc(0x6000);
+    }
+
+    let mut stack = Stack::new();
+    let main_cycles = step(&mut main, &mut stack).expect("2455 gap fetch executes as NOP");
+    assert_eq!(main_cycles, 1);
+    assert_eq!(main.pc(), 0x6002);
+    assert_eq!(
+        main.memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFE8)),
+        0,
+        "2455 must not execute seeded host-buffer opcode above 0x5FFF"
+    );
+    assert_eq!(
+        tblrd_byte(main.clone(), 0x6000),
+        0,
+        "2455 TBLRD above implemented flash must read the gap value"
+    );
+
+    let mut stack = Stack::new();
+    let control_cycles =
+        step(&mut control, &mut stack).expect("K20 0x6000 remains executable flash");
+    assert_eq!(control_cycles, 1);
+    assert_eq!(control.pc(), 0x6002);
+    assert_eq!(
+        control
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(0xFE8)),
+        0x42,
+        "K20 must execute the seeded opcode at 0x6000"
+    );
+    assert_eq!(
+        tblrd_byte(control, 0x6000),
+        0x42,
+        "K20 TBLRD at 0x6000 must read implemented flash"
+    );
+}
+
+#[test]
+fn tblrd_devid_and_protection_policy() {
+    // §11c FID-16: DEVID table reads must return non-zero,
+    // variant-specific silicon identity bytes.  DS39632E
+    // Table 25-1 + Registers 25-13/25-14 put DEVID at
+    // 0x3FFFFE/0x3FFFFF and list PIC18F2455 as DEVID2=0x12,
+    // DEV<2:0>=0b011.  DS40001303H Table 23-1 + Registers
+    // 23-12/23-13 list PIC18F25K20 as DEVID2=0x20,
+    // DEV<2:0>=0b011.  Revision bits are silicon-revision
+    // specific; the simulator reports revision 0.
+    for (variant, expected) in [
+        (Variant::Pic18F2455, [0x60, 0x12]),
+        (Variant::Pic18F25K20, [0x60, 0x20]),
+    ] {
+        let core = Core::new(variant);
+        assert_eq!(
+            tblrd_byte(core.clone(), dlcp_sim::hex::DEVID_BASE),
+            expected[0]
+        );
+        assert_eq!(tblrd_byte(core, dlcp_sim::hex::DEVID_BASE + 1), expected[1]);
+    }
+
+    // CONFIG5..CONFIG7 protection bits are parsed but not
+    // enforced in this DLCP-scoped simulator.  Pin that policy
+    // explicitly so a future protection model changes this test
+    // and the §11c row together.
+    let mut protected = Core::new(Variant::Pic18F2455);
+    let mut cfg = [0xFF; dlcp_sim::config::CONFIG_BYTES];
+    cfg[6] &= !(1 << 6); // keep legacy instruction set enabled for the TBLRD probe
+    cfg[8..14].fill(0x00); // active-low code/write/table-read protect fields
+    protected.config = dlcp_sim::Config::from_bytes(cfg);
+    protected.flash_mut()[0x1234] = 0xA5;
+    assert_eq!(
+        tblrd_byte(protected, 0x1234),
+        0xA5,
+        "protection bits are currently parsed but not enforced for TBLRD"
+    );
+}
+
 /// Pick the cycle target from the captured meta.json so the
 /// Rust executor runs for the same number of cycles the gpsim
 /// capture stopped at.  Looks for files matching
@@ -236,19 +435,15 @@ fn pick_cycle_target(snapshot_dir: &std::path::Path) -> u64 {
     let stem = format!("early_boot_v171_{}", chosen);
     let meta_path = snapshot_dir.join(format!("{stem}.meta.json"));
     if meta_path.exists() {
-        let text = std::fs::read_to_string(&meta_path)
-            .expect("meta.json exists but could not be read");
+        let text =
+            std::fs::read_to_string(&meta_path).expect("meta.json exists but could not be read");
         let cycle_in_text = text
             .lines()
             .find_map(|line| {
                 let trimmed = line.trim();
                 let after_key = trimmed.strip_prefix("\"cycle\"")?;
                 let after_colon = after_key.trim_start().strip_prefix(':')?;
-                after_colon
-                    .trim()
-                    .trim_end_matches(',')
-                    .parse::<u64>()
-                    .ok()
+                after_colon.trim().trim_end_matches(',').parse::<u64>().ok()
             })
             .unwrap_or_else(|| {
                 panic!(
@@ -306,8 +501,7 @@ fn dlcp_sim_addr(raw: u16) -> dlcp_sim::memory::Address {
 /// Run the Rust executor from POR for `cycle_target` Tcy and
 /// return its final state.
 fn run_to_cycle(image: &HexImage, cycle_target: u64) -> (Core, Stack) {
-    let mut core = Core::new(Variant::Pic18F25K20);
-    core.flash_mut().copy_from_slice(&*image.flash);
+    let mut core = core_from_hex_image(Variant::Pic18F25K20, image, CoreLoadOptions::default());
     let mut stack = Stack::new();
     apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
 
@@ -317,8 +511,8 @@ fn run_to_cycle(image: &HexImage, cycle_target: u64) -> (Core, Stack) {
     // state past N.  Match that by running until total > target.
     let mut total: u64 = 0;
     while total <= cycle_target {
-        let cycles = step(&mut core, &mut stack)
-            .expect("Phase-1 executor must not error during V1.71 boot");
+        let cycles =
+            step(&mut core, &mut stack).expect("Phase-1 executor must not error during V1.71 boot");
         total += cycles as u64;
     }
     (core, stack)
@@ -340,11 +534,12 @@ fn run_to_cycle(image: &HexImage, cycle_target: u64) -> (Core, Stack) {
 /// fabricate state the silicon doesn't expose.
 fn mirror_pc_and_stack_to_sfrs(core: &mut Core, stack: &Stack) {
     let pc = core.pc();
-    core.memory.write_raw(dlcp_sim_addr(0xFF9), pc as u8);          // PCL
-    core.memory.write_raw(dlcp_sim_addr(0xFFC), stack.stkptr());     // STKPTR
+    core.memory.write_raw(dlcp_sim_addr(0xFF9), pc as u8); // PCL
+    core.memory.write_raw(dlcp_sim_addr(0xFFC), stack.stkptr()); // STKPTR
     let tos = stack.top();
-    core.memory.write_raw(dlcp_sim_addr(0xFFD), tos as u8);          // TOSL
-    core.memory.write_raw(dlcp_sim_addr(0xFFE), (tos >> 8) as u8);    // TOSH
+    core.memory.write_raw(dlcp_sim_addr(0xFFD), tos as u8); // TOSL
+    core.memory
+        .write_raw(dlcp_sim_addr(0xFFE), (tos >> 8) as u8); // TOSH
     core.memory
         .write_raw(dlcp_sim_addr(0xFFF), ((tos >> 16) as u8) & 0x1F); // TOSU
 }
@@ -365,11 +560,12 @@ fn mirror_pc_and_stack_to_sfrs(core: &mut Core, stack: &Stack) {
 ///   scripts/capture_v171_early_boot_parity.py --cycles 10
 /// ```
 ///
-/// Seven SFR cells are exempted because gpsim's K20 model is the
+/// Nine SFR cells are exempted because gpsim's K20 model is the
 /// deviant party there (ANSEL Tbl 5-2 footnote 2 missed; missing
 /// POR for IPR1/IPR2/BAUDCON/PSTRCON/HLVDCON; OSCCON shipped at
 /// gpsim's base-class initial value 0x40 instead of the K20
-/// datasheet POR 0x30).  See `GPSIM_K20_DEVIATIONS` inside this
+/// datasheet POR 0x30; CONFIG-dependent TRISA/ANSELH q-rows
+/// applied later/incorrectly in gpsim).  See `GPSIM_K20_DEVIATIONS` inside this
 /// test for the per-cell rationale and references to the gpsim
 /// source + DS40001303H tables that justify each exemption.
 #[test]
@@ -387,8 +583,8 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     let cycle_target: u64 = pick_cycle_target(&snapshot_dir);
     let stem = format!("early_boot_v171_{}", cycle_target);
 
-    let ram_expected = std::fs::read(snapshot_dir.join(format!("{stem}.ram.bin")))
-        .expect("read ram snapshot");
+    let ram_expected =
+        std::fs::read(snapshot_dir.join(format!("{stem}.ram.bin"))).expect("read ram snapshot");
     assert_eq!(ram_expected.len(), 256);
 
     let sfr_text = std::fs::read_to_string(snapshot_dir.join(format!("{stem}.sfr.json")))
@@ -443,13 +639,60 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     //   - DS40001303H Table 5-2 footnote 2 for the 28-pin /
     //     ANSEL bit-implementation rule
     const GPSIM_K20_DEVIATIONS: &[(u16, u8, u8, &str)] = &[
-        (0xF7E, 0x1F, 0xFF, "ANSEL: rust honours Tbl 5-2 footnote 2 (ANS5/6/7 unimpl on 28-pin K20 -> 0x1F); gpsim's K20 model misses the footnote and brings ANSEL up at 0xFF"),
-        (0xF9F, 0x7F, 0x00, "IPR1: gpsim K20 omits POR init; DS Tbl 4-4 = 0x7F (28-pin)"),
-        (0xFA2, 0xFF, 0x00, "IPR2: gpsim K20 omits POR init; DS Tbl 4-4 = 0xFF"),
-        (0xFB8, 0x40, 0x00, "BAUDCON: gpsim init uses porv=0x00; DS Tbl 4-4 = 0x40 (RCIDL=1)"),
-        (0xFB9, 0x01, 0x00, "PSTRCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x01 (STRA=1)"),
-        (0xFD2, 0x05, 0x00, "HLVDCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x05 (HLVDL=0101)"),
-        (0xFD3, 0x30, 0x40, "OSCCON: rust uses DS Tbl 4-4 POR `0011 qq00` = 0x30; gpsim ships its base-class initial value 0x40 (16bit-processors.cc:560) and never overrides it on the K20 subclass.  Phase 3's chain scheduler will model the OSCCON HFINTOSC settle / IOFS transition state machine on the universal clock; until then this is a single-cell static deviation."),
+        (
+            0xF7F,
+            0x00,
+            0x1F,
+            "ANSELH: V1.71 has PBADEN=0, so DS40001303H Table 5-2 note 6 resets ANSELH to 0x00; gpsim leaves its default 0x1F at the cycle-10 snapshot",
+        ),
+        (
+            0xF7E,
+            0x1F,
+            0xFF,
+            "ANSEL: rust honours Tbl 5-2 footnote 2 (ANS5/6/7 unimpl on 28-pin K20 -> 0x1F); gpsim's K20 model misses the footnote and brings ANSEL up at 0xFF",
+        ),
+        (
+            0xF9F,
+            0x7F,
+            0x00,
+            "IPR1: gpsim K20 omits POR init; DS Tbl 4-4 = 0x7F (28-pin)",
+        ),
+        (
+            0xFA2,
+            0xFF,
+            0x00,
+            "IPR2: gpsim K20 omits POR init; DS Tbl 4-4 = 0xFF",
+        ),
+        (
+            0xFB8,
+            0x40,
+            0x00,
+            "BAUDCON: gpsim init uses porv=0x00; DS Tbl 4-4 = 0x40 (RCIDL=1)",
+        ),
+        (
+            0xFB9,
+            0x01,
+            0x00,
+            "PSTRCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x01 (STRA=1)",
+        ),
+        (
+            0xFD2,
+            0x05,
+            0x00,
+            "HLVDCON: gpsim K20 omits POR init; DS Tbl 4-4 = 0x05 (HLVDL=0101)",
+        ),
+        (
+            0xFD3,
+            0x30,
+            0x40,
+            "OSCCON: rust uses DS Tbl 4-4 POR `0011 qq00` = 0x30; gpsim ships its base-class initial value 0x40 (16bit-processors.cc:560) and never overrides it on the K20 subclass.  Phase 3's chain scheduler will model the OSCCON HFINTOSC settle / IOFS transition state machine on the universal clock; until then this is a single-cell static deviation.",
+        ),
+        (
+            0xF92,
+            0x3F,
+            0x7F,
+            "TRISA: V1.71 FOSC=XT uses RA6/RA7 as oscillator pins, so DS40001303H Table 5-2 note 5 disables both; gpsim only disables RA7",
+        ),
     ];
 
     let mut sfr_diffs: Vec<(u16, u8, u8)> = Vec::new();
