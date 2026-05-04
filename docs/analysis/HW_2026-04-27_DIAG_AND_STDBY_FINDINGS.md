@@ -474,11 +474,24 @@ spec note. Tracked as a doc-fixup in Section 7.2.A.
 P3.6b. P3.6b stays the `v171_diag_present == 0x03` open issue.  Task
 #94 was opened 2026-05-04 to investigate a candidate rust-specific
 surface, briefly closed as duplicate, then RE-OPENED the same day
-after user pushback: real HW shows diag values after just 4 RIGHT
-presses (chain comm chatter is timer-driven, independent of IR), but
-rust chain goes silent post-nav -- probes v15-v18 show zero TX from
-any core for 10M ticks (~208ms wall).  Most likely cause:
-Timer3/Timer1 ISR vector dispatch on rust failing to drive periodic
-interrupts that real silicon produces continuously.  Separate scope
-from the P3.8 sub-tasks.  Section 7.4 carries the
+after user pushback ("real HW shows diag values after just 4 RIGHT").
+Probes v15-v18 measured rust chain going silent post-nav (zero TX
+from any core for 10M ticks ≈ 208ms wall) and the working hypothesis
+became "Timer3/Timer1 ISR vector dispatch fidelity bug on rust".
+**FINAL CLOSURE 2026-05-04** after operator HW retest with
+V3.2 rev 0x3F + V1.71 rev 0x0F: real HW ALSO shows "PB1/PB2 n/a"
+after only 4 RIGHT presses; multiple LEFT/RIGHT navigation cycles
+are required for HW to converge.  Probe v21 in rust converges in 7
+cycles (mixed LEFT/RIGHT) with `present=0x03`.  The 2026-04-27
+write-up "shows diag values after navigation" must have involved
+unstated subsequent navigation; the timer-dispatch-bug hypothesis
+was retracted (Timer3 IRQ unit tests + V1.71 firmware reading T3CON=0
+both falsified it).  Task #94 CLOSED.  HW retest also surfaced a
+NEW divergence candidate (filed as task #95): pressing STBY from the
+Diag page on real HW only dims the CONTROL LCD (Zzz... dimmed) — the
+MAINs keep playing music, i.e. CONTROL does not broadcast the panel
+`B0/03/00` STDBY frame from this state.  Whether rust matches has not
+yet been verified at the CONTROL.TX byte-stream level; the visible
+`Zzz...` LCD raster alone is NOT evidence of divergence.  Separate
+scope from the P3.8 sub-tasks.  Section 7.4 carries the
 "symptom-equivalent" qualifier explicitly.

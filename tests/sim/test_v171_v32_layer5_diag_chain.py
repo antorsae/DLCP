@@ -841,16 +841,21 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     PB1: diag_i=2, diag_b=1, diag_r=1
     PB2: diag_s=1, diag_b=1, diag_a=3
 
-    XFailed on BOTH backends.  On gpsim: shared P3.6b sim
-    behavior with PB1-only saturation (per the 2026-04-28
-    research closure).  On rust: the chain goes silent
-    post-navigation -- no MAIN/CONTROL TX traffic for 10M ticks
-    after the 4 RIGHT presses complete, so V1.71's foreground
-    busy-loop never re-fires the cmd 0x21 cadence.  Tracked
-    as task #94 (open: rust fidelity bug, likely Timer3/Timer1
-    ISR vector dispatch on rust failing to drive periodic
-    interrupts that real silicon produces continuously).
-    Marker-only migration to `dual_supported`.
+    XFailed on BOTH backends as of 2026-05-04.  Root cause is the
+    same on both: V1.71 firmware's foreground busy-loop in
+    `display_loop_iteration` (asm:2885-2897) only exits on user-driven
+    events (button press, mute toggle, IR remote).  This test injects
+    only 4 RIGHT presses to reach the diag page and then no further
+    input, so the loop iterates ~93 K times per cadence call and the
+    BF/2N reply burst never fully converges within the gpsim oracle
+    budget.  Operator HW retest 2026-05-04 (V3.2 rev 0x3F + V1.71
+    rev 0x0F) confirmed real silicon ALSO shows "PB1/PB2 n/a" after
+    just 4 RIGHT presses — multiple LEFT/RIGHT navigation cycles are
+    required for HW to converge as well (probe v21 in rust converges
+    in 7 cycles).  Tracked as task #94 (CLOSED 2026-05-04 — rust
+    matches HW; the prior "rust-fidelity-bug / Timer3 dispatch" framing
+    was withdrawn after HW retest).  Marker-only migration to
+    `dual_supported`.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
