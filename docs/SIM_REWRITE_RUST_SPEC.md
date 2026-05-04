@@ -23,7 +23,7 @@ Status: **Phase 0 — pending**
 - Not a general-purpose PIC18 simulator. We model only what the DLCP firmware uses: K20 + 2455 + the specific peripheral subset listed in §6.
 - Not preserving gpsim's CLI, `.stc` scripts, `.lst` parsing, or interactive PTY interface. *Per user direction: no legacy compatibility.*
 - Not modeling the TAS3108 DSP audio path. Only the I²C-slave side (already covered by today's `i2c_regfile` module) is in scope.
-- Not modeling USB enumeration end-to-end. Only the PIC18F2455 USB-SIE HID dispatch path that the firmware actually exercises (cmd 0x20/0x21/0x43/0x44 etc.).
+- Not modeling USB enumeration end-to-end. Only the PIC18F2455 USB-SIE HID dispatch path that the firmware actually exercises (HID-only commands `0x43` flash/EEPROM memread, `0x44` Tier-1 diag snapshot, plus filename A/B upload routing). Note: `0x20`/`0x21`/`0x22` are BF chain UART commands decoded by `flow_main_uart_service`, not HID — see `IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` FIDF.2.
 
 ---
 
@@ -224,7 +224,7 @@ cargo test -p dlcp-sim --test isa_parity --release
 | EEPROM     | ✓   | ✓    | 256 B; **realistic 2–5 ms post-write completion** (gpsim does this in nanoseconds — known fidelity gap). |
 | Port pins  | ✓   | ✓    | RA/RB/RC + LATA/B/C + TRISA/B/C; pin-coupling primitive for UART current loop, button matrix, LCD strobes. |
 | IRQ ctrl   | ✓   | ✓    | INTCON, INTCON2, INTCON3, IPEN priority + GIE/GIEH/GIEL, PIE1/PIR1, PIE2/PIR2 (+ PIE3/PIR3 on K20). |
-| USB-SIE    | —   | ✓    | HID endpoint dispatch only: cmd 0x20 (preset switch), 0x21 (diag query), 0x43 (memread), 0x44 (Tier-1 diag snapshot), filename A/B routing. NOT full enumeration. |
+| USB-SIE    | —   | ✓    | HID endpoint dispatch only: HID-only commands cmd 0x43 (flash/EEPROM memread), 0x44 (Tier-1 diag snapshot), plus filename A/B upload routing. NOT full enumeration. (cmd 0x20/0x21/0x22 are BF chain UART, not HID — covered by chain regression tests.) |
 | Oscillator | ✓   | ✓    | OSCCON, OSCCON2, OSCTUNE, PLL ENABLE/READY. K20: HSPLL @ 12 MHz crystal → 12 MHz Fosc / 3 MHz Tcy. 2455: ECPIO / HSPLL → 16 MHz Fosc / 4 MHz Tcy. |
 | WDT        | ✓   | ✓    | If firmware enables it. Currently disabled by config in both V1.71 + V3.2 — verify and stub if so. |
 
@@ -562,7 +562,7 @@ the canonical contract and regression map for future changes.
 
 | ID | Area | Required contract | Focused gate |
 |----|------|-------------------|--------------|
-| FID-01 | PIC18F2455 USB-SIE/HID | Implement the DLCP-used 2455 USB path: UCON/UCFG/UADDR/USTAT/UIR/UIE/UEPn-visible behavior, BDT ownership enough for HID SETUP/OUT/IN, USB reset/suspend/resume flags, endpoint interrupt flow, and DLCP HID commands `0x20`, `0x21`, `0x43`, `0x44` plus filename A/B upload routing. Full host enumeration remains out of scope unless a DLCP tool needs it. | `cargo test -p dlcp-sim --release --test peripheral_usbsie_parity`. |
+| FID-01 | PIC18F2455 USB-SIE/HID | Implement the DLCP-used 2455 USB path: UCON/UCFG/UADDR/USTAT/UIR/UIE/UEPn-visible behavior, BDT ownership enough for HID SETUP/OUT/IN, USB reset/suspend/resume flags, endpoint interrupt flow, and the HID-only DLCP commands `0x43` (flash/EEPROM memread) and `0x44` (Tier-1 diag snapshot) plus filename A/B upload routing during DSP coefficient transfer. Note: `cmd 0x20`/`0x21`/`0x22` are BF chain UART frames decoded by `flow_main_uart_service` — they are NOT HID commands and are out of FID-01 scope (covered by chain regression tests). Full host enumeration remains out of scope unless a DLCP tool needs it. | `cargo test -p dlcp-sim --release --test peripheral_usbsie_parity`. |
 | FID-02 | WDT + Sleep/Idle | Add WDT state driven by CONFIG2H.WDTEN/WDTPS and WDTCON.SWDTEN. `CLRWDT` clears counter/postscaler; running-mode timeout resets; Sleep/Idle timeout wakes; `SLEEP` halts CPU execution according to OSCCON.IDLEN while allowed peripherals continue. | Focused reset/power test, then `cargo test -p dlcp-sim --release --test peripheral_irq_parity` if IRQ wake is involved. |
 | FID-03 | Flash/config/user-ID self-programming | Complete `TBLWT` + EECON1 long-write commit for program flash, config bytes, and user ID. Respect EEPGD/CFGS/FREE/WREN/WR/RD, holding-register block size, reset-to-0xFF holding bytes, 0->1 programming limits, erase behavior, write-protect bits when modeled, and data EEPROM separation. | `cargo test -p dlcp-sim --release --test peripheral_eeprom_parity` plus a focused flash/config-write test if that file becomes too broad. |
 | FID-04 | CONFIG loading and consumers | All core builders that load a `HexImage` must populate `core.config` and `core.user_id` from the image unless a test explicitly overrides them. Reset, oscillator, WDT, BOR, MCLRE, PBADEN, CCP2MX, STVREN, LVP, DEBUG, VREGEN, and XINST consumers must either implement or loudly reject unsupported settings. | `cargo test -p dlcp-sim --release full_hex_loader_populates_config_and_user_id`; follow with `cargo test -p dlcp-sim --release config::tests`, `hex::tests`, and `reset::tests`. |
