@@ -418,6 +418,40 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   2. **Investigate V1.4x/V1.5x/V1.6x + V2.4/V2.5 WAITING-stuck convergence gap** -- unblocks ~20 tests in test_chain_gpsim_v25*.py + test_wire_chain_gpsim.py.
   3. **Add per-link fault injection** (`Chain.set_link_fault(coupling_idx_or_name, drop=True/extra_ticks=N)`) -- unblocks ~25 wire-chain fault-injection tests.
 
+  ### P4.7 wire-chain convergence gap CLOSED (2026-05-04)
+
+  Re-probe of `Chain.from_v171_v32()` after the silicon-fidelity merge
+  (ce2ce5b) + Bug #45 firmware fixes (5e43ca1, a057f86) + Bug #44
+  firmware fix (ed4fd16) + wake-clamp + boot_epoch fixes (3fa6f4b,
+  a2c0382): **the V1.71+V3.2+V3.2 chain now converges to Volume
+  display in rust within 96 chunks of 200K Tcy (~19M Tcy)**, matching
+  the gpsim convergence cadence on the same chain.  Probe:
+
+  ```python
+  chain = Chain.from_v171_v32()
+  for i in range(200):
+      chain.step_ticks(200_000 * 16)  # K20 factor=16
+      lines = chain.lcd_lines()
+      if any('Volume' in line for line in lines):
+          break
+  # Result: 'Volume:-17.0dB A' / 'Auto Detect     ' at chunk 96.
+  ```
+
+  Confirmed in `tests/sim/test_v171_v32_layer5_diag_chain.py` rust
+  run: 6 dual_supported tests pass (idle_caches_zero, no_query, plus
+  4 already-passing); 4 xfailed pre-existing on the separate
+  Task #22 PB2-bridge gap (NOT the convergence gap); 3 still
+  gpsim-only awaiting their per-test rust adapters
+  (`_set_main_diag_block` RAM poke, `_diag_canary_run` hop-edge
+  counter, `_navigate_to_diagnostics` button sequence).  The
+  convergence-gap entry above (item 1 in the list) is now
+  superseded by these per-test adapter sub-tasks; the next session
+  can pick them off individually.
+
+  Item 2 (V1.4x/V1.5x/V1.6x + V2.4/V2.5 WAITING-stuck) has NOT been
+  re-probed and remains open.  Item 3 (per-link fault injection)
+  remains a pending primitive on the rust facade.
+
 - [done] P4.8 Switch default backend to Rust; gpsim now opt-in only
   - verify: `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
   - artifact: `tests/sim/conftest.py` default flip + `src/dlcp_fw/sim/dlcp_sim_native.py` self-bootstrap of the .so import path so plain `pytest tests/sim` works without `PYTHONPATH=src` (commit fecb757).  Plus explicit `DLCP_SIM_BACKEND=gpsim` overrides on the 3 ground-truth scripts (`scripts/{capture_gpsim_ground_truth,run_phase0_blessing,replay_ground_truth}.py`) and prefix on the 5 Phase-0 ledger verify commands so post-flip the gpsim ground-truth path is preserved (commits 698e4c5 + 77d62b4).
