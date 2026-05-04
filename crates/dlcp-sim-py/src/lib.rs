@@ -1305,6 +1305,114 @@ impl Chain {
         Ok(())
     }
 
+    /// Read a contiguous byte range from a core's program flash.
+    /// Mirror of gpsim's `print mem 0xNN..0xMM` for code memory.
+    /// Used to verify overlay-manifest preconditions before
+    /// patching, and to confirm postconditions after.
+    ///
+    /// `core_idx` matches the `set_core_pc` / `step_until_pc_hit`
+    /// mapping: 0=CONTROL, 1=MAIN0, 2=MAIN1.  `addr` is the
+    /// silicon's byte-addressed program flash address; `length`
+    /// is bytes (typical overlay sizes are 2-8 bytes).
+    ///
+    /// Spec / ledger ref: P4-followup E
+    /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
+    /// tracker", task #103) — building block for the rust
+    /// standby-bypass overlay primitive that
+    /// `test_v17_relocation::test_shifted_gpsim_with_dynamic_
+    /// standby_overlay` migration needs.
+    fn read_core_flash(
+        &self,
+        core_idx: usize,
+        addr: u32,
+        length: usize,
+    ) -> PyResult<Vec<u8>> {
+        let target_idx = match core_idx {
+            0 => self.i_ctl,
+            1 => self.i_main0,
+            2 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "core_idx must be 0 (CONTROL), 1 (MAIN0), or 2 (MAIN1); got {}",
+                    other,
+                )));
+            }
+        };
+        let flash = self.inner.cores[target_idx].flash();
+        let start = addr as usize;
+        let end = start.checked_add(length).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "addr (0x{addr:X}) + length ({length}) overflows usize"
+            ))
+        })?;
+        if end > flash.len() {
+            return Err(PyValueError::new_err(format!(
+                "read_core_flash: addr=0x{addr:X} length={length} extends past \
+                 flash end (flash_len=0x{flash_len:X})",
+                flash_len = flash.len()
+            )));
+        }
+        Ok(flash[start..end].to_vec())
+    }
+
+    /// Patch a contiguous byte range in a core's program flash.
+    /// Mirror of gpsim's overlay-manifest mechanism: writes the
+    /// supplied bytes into the loaded core image AFTER chain
+    /// construction (so the firmware boots from a patched
+    /// image without re-assembling the hex).
+    ///
+    /// Used by the rust-side standby-bypass overlay helper:
+    /// to NOP the standby goto at `post_connect_init+2`, the
+    /// caller passes `addr=post_connect_init_addr+2,
+    /// bytes=b"\x00\x00\x00\x00"`.  Generic enough that future
+    /// overlay-manifest equivalents (fast_boot, dsp_warmup_skip,
+    /// etc.) can layer on the same primitive.
+    ///
+    /// `core_idx` is the same {0=CTL, 1=M0, 2=M1} mapping.
+    /// Errors:
+    ///   * `PyValueError` for unknown core_idx, or if addr +
+    ///     bytes.len() extends past the flash end.
+    ///
+    /// Spec / ledger ref: P4-followup E
+    /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
+    /// tracker", task #103).
+    fn patch_core_flash(
+        &mut self,
+        core_idx: usize,
+        addr: u32,
+        bytes: &[u8],
+    ) -> PyResult<()> {
+        let target_idx = match core_idx {
+            0 => self.i_ctl,
+            1 => self.i_main0,
+            2 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "core_idx must be 0 (CONTROL), 1 (MAIN0), or 2 (MAIN1); got {}",
+                    other,
+                )));
+            }
+        };
+        let flash = self.inner.cores[target_idx].flash_mut();
+        let start = addr as usize;
+        let end = start.checked_add(bytes.len()).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "addr (0x{addr:X}) + bytes.len ({len}) overflows usize",
+                len = bytes.len()
+            ))
+        })?;
+        if end > flash.len() {
+            return Err(PyValueError::new_err(format!(
+                "patch_core_flash: addr=0x{addr:X} bytes.len={len} extends past \
+                 flash end (flash_len=0x{flash_len:X})",
+                len = bytes.len(),
+                flash_len = flash.len()
+            )));
+        }
+        flash[start..end].copy_from_slice(bytes);
+        Ok(())
+    }
+
     /// CONTROL's K20-Tcy cycle counter at the current
     /// universal-clock tick.  Mirror of
     /// `control_gpsim.py::GpsimControlHarness.current_cycle`

@@ -500,6 +500,57 @@ class Chain:
             int(unit), int(addr) & 0xFFF, int(value) & 0xFF
         )
 
+    def read_core_flash(
+        self, core_idx: int, addr: int, length: int
+    ) -> bytes:
+        """Read a contiguous byte range from a core's program
+        flash.  Mirror of gpsim's ``print mem`` for code memory.
+
+        ``core_idx``: 0=CONTROL, 1=MAIN0, 2=MAIN1.
+        ``addr``: byte-addressed program flash address.
+        ``length``: number of bytes to read.
+
+        Raises ``ValueError`` for unknown ``core_idx`` or if
+        ``addr + length`` extends past the flash end.
+
+        Spec / ledger ref: P4-followup E
+        (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
+        tracker", task #103) — used by the overlay helpers
+        (e.g. :func:`apply_standby_bypass_overlay`) to verify
+        manifest preconditions before patching and the
+        analogous postconditions afterwards.
+        """
+        return bytes(
+            self._inner.read_core_flash(int(core_idx), int(addr), int(length))
+        )
+
+    def patch_core_flash(
+        self, core_idx: int, addr: int, payload: bytes
+    ) -> None:
+        """Patch a contiguous byte range in a core's program
+        flash.  Mirror of gpsim's overlay-manifest mechanism:
+        applies the patch AFTER chain construction so the
+        firmware boots from the patched image without
+        re-assembling the hex.
+
+        ``core_idx``: 0=CONTROL, 1=MAIN0, 2=MAIN1.
+        ``addr``: byte-addressed program flash address.
+        ``payload``: bytes to write.
+
+        Raises ``ValueError`` for unknown ``core_idx`` or if
+        ``addr + len(payload)`` extends past the flash end.
+
+        Spec / ledger ref: P4-followup E
+        (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
+        tracker", task #103).  Higher-level helper
+        :func:`apply_standby_bypass_overlay` layers the
+        gpsim ``control_disable_standby_check_dynamic``
+        manifest on top of this primitive.
+        """
+        self._inner.patch_core_flash(
+            int(core_idx), int(addr), bytes(payload)
+        )
+
     @property
     def current_cycle(self) -> int:
         """CONTROL's K20-Tcy cycle counter (mirror of
@@ -1201,4 +1252,94 @@ class Chain:
         self._inner.step_tcy(int(tcy))
 
 
-__all__ = ["Chain", "__version__"]
+def apply_standby_bypass_overlay(
+    chain: Chain,
+    *,
+    control_core_idx: int,
+    control_hex_path: "str | Path",
+) -> int:
+    """Patch CONTROL's program flash to NOP the standby-check
+    goto at ``post_connect_init+2``, mirroring gpsim's
+    ``control_disable_standby_check_dynamic`` overlay manifest.
+
+    Spec / ledger ref: P4-followup E
+    (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup tracker",
+    task #103) — unblocks the rust path of
+    ``test_v17_relocation::test_shifted_gpsim_with_dynamic_standby_overlay``
+    plus any other rust tests that need the
+    ``GpsimControlHarness(disable_standby_check=True)`` shape.
+
+    The overlay resolves the patch site dynamically from the
+    sibling ``.lst`` file (gpasm listing) of ``control_hex_path``
+    via the ``post_connect_init`` symbol.  This works for both
+    the byte-identical V1.7 rebuild and the 0x222-shifted V1.7,
+    just like gpsim's
+    :func:`dlcp_fw.sim.manifests.control_disable_standby_check_dynamic`.
+
+    Parameters
+    ----------
+    chain
+        The :class:`Chain` carrying the loaded CONTROL core.
+    control_core_idx
+        Core index within the chain: ``0`` for the canonical
+        CONTROL slot in :meth:`Chain.from_v17_chain` /
+        :meth:`Chain.from_v17_control_only` etc.
+    control_hex_path
+        Path to the CONTROL hex used to build the chain.  The
+        sibling ``.lst`` (same basename, ``.lst`` extension) is
+        read for ``post_connect_init`` symbol lookup.
+
+    Returns
+    -------
+    int
+        The byte-addressed flash address of the patched goto
+        (``post_connect_init+2``), so the caller can record it
+        for diagnostics or verify the postcondition with
+        :meth:`Chain.read_core_flash`.
+
+    Raises
+    ------
+    KeyError
+        If the sibling ``.lst`` is missing or doesn't expose
+        ``post_connect_init``.  This mirrors gpsim's failure
+        mode for the same overlay -- byte-signature fallback
+        (``control_disable_standby_check_for_hex`` lines
+        213-227) is not migrated, since the dynamic-symbol
+        path covers V1.7+ which is the only build the
+        targeted test exercises.
+    AssertionError
+        If the precondition fails (the 4 bytes at the patch
+        site don't have the documented goto opcode shape).
+        Mirror of gpsim's manifest-precondition assertion.
+    """
+    from pathlib import Path
+    # Local import to avoid a top-of-file cycle: this module is
+    # imported from dlcp_fw/sim/__init__.py at import time, but
+    # v30_symbols imports paths.py which is fine.
+    from .v30_symbols import load_gpasm_symbols_for_hex
+
+    hex_path = Path(control_hex_path)
+    symbols = load_gpasm_symbols_for_hex(hex_path)
+    if symbols is None or "post_connect_init" not in symbols:
+        raise KeyError(
+            f"apply_standby_bypass_overlay: cannot resolve "
+            f"`post_connect_init` from {hex_path}'s sibling .lst.  "
+            f"Either the .lst is missing or this CONTROL build is "
+            f"pre-V1.7 (byte-signature path is gpsim-only)."
+        )
+    base = symbols["post_connect_init"]
+    jump_addr = base + 2
+    # Precondition check: the goto opcode bytes per the gpsim
+    # manifest at manifests.py:174-176.  Byte 1 = 0xEF (high
+    # byte of `goto`), byte 3 = 0xF0 (continuation opcode).
+    pre = chain.read_core_flash(control_core_idx, jump_addr, 4)
+    assert pre[1] == 0xEF and pre[3] == 0xF0, (
+        f"apply_standby_bypass_overlay: precondition failed at "
+        f"0x{jump_addr:04X}; expected goto opcode bytes "
+        f"(? 0xEF ? 0xF0), got {pre.hex(' ')}"
+    )
+    chain.patch_core_flash(control_core_idx, jump_addr, b"\x00\x00\x00\x00")
+    return jump_addr
+
+
+__all__ = ["Chain", "__version__", "apply_standby_bypass_overlay"]
