@@ -186,14 +186,30 @@ def _rust_diag_canary_run(  # type: ignore[no-untyped-def]
     has a distinct payload, identical to the gpsim helper at
     line 1079.
 
+    **Topology divergence from gpsim** (codex MEDIUM from
+    48a862d): the rust 3-core chain wires a TRUE ring
+    (CONTROL -> MAIN0 -> MAIN1 -> CONTROL), so it has THREE
+    UART couplings rather than gpsim's four.  Hop names match
+    the rust topology:
+       * ``ctl_to_m0`` -- CONTROL TX -> MAIN0 RX
+       * ``m0_to_m1``  -- MAIN0 TX  -> MAIN1 RX
+       * ``m1_to_ctl`` -- MAIN1 TX  -> CONTROL RX  (rust ring's
+                          upstream return; gpsim's equivalent
+                          role is ``m0_to_ctl`` plus
+                          ``m1_to_m0`` together)
+    The gpsim mirror returns four hops (``ctl_to_m0``,
+    ``m0_to_m1``, ``m1_to_m0``, ``m0_to_ctl``).  Tests that
+    iterate the dict keys MUST handle either topology -- e.g.
+    ``all(v > 0 for v in deltas.values())`` works on both.
+    Tests that hard-code gpsim's four label set will fail on
+    rust.
+
     Per-hop counts are byte-level (rust silicon ring delivers
     whole bytes), not bit-level (gpsim's batched-edge model).
     For the canary's "> 0" assertion both shapes are
-    interchangeable -- both are nonzero iff traffic flowed
-    through the bridge.  See the
-    `Chain.bridge_byte_stats` docstring in
-    `src/dlcp_fw/sim/dlcp_sim_native.py` for the gpsim-parity
-    rationale.
+    interchangeable -- both are nonzero iff traffic flowed.
+    See the ``Chain.bridge_byte_stats`` docstring in
+    ``src/dlcp_fw/sim/dlcp_sim_native.py``.
     """
     rust_chain.run_until_connected(limit=200)
     if not rust_chain.is_connected() or rust_chain.is_waiting():
@@ -208,10 +224,14 @@ def _rust_diag_canary_run(  # type: ignore[no-untyped-def]
         if (_rust_diag_present(rust_chain) & 0x02) == 0x02:
             break
     post_stats = rust_chain.bridge_byte_stats()
+    # Compute deltas across EVERY hop the chain reports (3 on
+    # rust, 4 on gpsim if this helper were ever reused there).
+    # Iterating post_stats's keys -- not a hard-coded list --
+    # makes the helper topology-agnostic.
     deltas = {
-        link: post_stats.get(link, {}).get("total_edges", 0)
+        link: post_stats[link].get("total_edges", 0)
               - pre_stats.get(link, {}).get("total_edges", 0)
-        for link in ("ctl_to_m0", "m0_to_m1", "m1_to_m0", "m0_to_ctl")
+        for link in post_stats
     }
     return deltas, _rust_diag_present(rust_chain), _rust_diag_pb_cache(rust_chain, 1)
 

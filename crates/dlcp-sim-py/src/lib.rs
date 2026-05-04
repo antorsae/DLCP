@@ -1918,46 +1918,81 @@ impl Chain {
             .collect()
     }
 
-    /// Per-link byte-count snapshot for the four canonical
-    /// 3-core ring bridges.  Mirror of
-    /// `WireMultiMainChainHarness::bridge_shift_stats` (the
-    /// gpsim wire harness) so dual-backend canary tests can
-    /// snapshot pre/post deltas with the same dict shape on
-    /// either backend.  Per-link names match gpsim's:
+    /// Per-link byte-count snapshot for every UART coupling
+    /// actually wired in the chain.  Mirror-of-shape (NOT
+    /// mirror-of-name) of gpsim's
+    /// `WireMultiMainChainHarness::bridge_shift_stats`: returns
+    /// `dict[link_name, dict[counter_name, value]]` so a
+    /// dual-backend canary test can call
+    /// `pre_stats = chain.bridge_byte_stats()` and compute
+    /// per-link deltas with identical Python code on either
+    /// backend.
+    ///
+    /// **Topology divergence vs gpsim** (codex MEDIUM from
+    /// 48a862d): the rust 3-core chain in `from_v171_v32` wires
+    /// a TRUE ring -- `CONTROL -> MAIN0 -> MAIN1 -> CONTROL`
+    /// (3 unidirectional UART couplings).  gpsim's wire-chain
+    /// bus model exposes 4 named hops
+    /// (`ctl_to_m0`, `m0_to_m1`, `m1_to_m0`, `m0_to_ctl`)
+    /// because both directions of the M0-M1 link AND a
+    /// MAIN0->CONTROL forwarder are simulated as separate
+    /// bridges to model bit-level current-loop bus arbitration.
+    /// Rather than hard-coding gpsim's four labels (and
+    /// reporting two of them as always-0 -- which would
+    /// mis-attribute a real future PB2 reply through the
+    /// `m1_to_ctl` ring leg), this method enumerates the
+    /// chain's actual `pinnet.uart` couplings and labels them
+    /// by core role.  Concrete output for `from_v171_v32`:
     ///
     ///   * `ctl_to_m0`  -- CONTROL TX -> MAIN0 RX
     ///   * `m0_to_m1`   -- MAIN0 TX  -> MAIN1 RX
-    ///   * `m1_to_m0`   -- MAIN1 TX  -> MAIN0 RX
-    ///   * `m0_to_ctl`  -- MAIN0 TX  -> CONTROL RX
+    ///   * `m1_to_ctl`  -- MAIN1 TX  -> CONTROL RX (rust ring's
+    ///                     upstream return, equivalent role to
+    ///                     gpsim's `m0_to_ctl` but routed
+    ///                     directly per silicon)
     ///
-    /// gpsim returns four counters per link
-    /// (`total_edges` / `shift_events` / `total_shift_cycles` /
-    /// `max_shift_cycles`) because its bridge model batches
-    /// bit-edges per shift.  The rust silicon ring delivers
-    /// whole bytes -- we only have one meaningful counter,
-    /// `total_edges` (= number of bytes that crossed the
-    /// link).  The other three keys are populated as `0` for
-    /// dict-shape parity (so dual-supported tests don't have
-    /// to branch on backend just to read the dict).  Tests
-    /// that assert on `total_edges > 0` -- like the
-    /// `test_v171_v32_layer5_chain_bridges_all_carry_traffic`
-    /// canary -- behave identically across backends.
+    /// For unrecognised core roles (single-MAIN chains, etc.)
+    /// the label format is `c{src_core}_to_c{dst_core}` so the
+    /// caller can still observe traffic on every coupling.
+    ///
+    /// Counter shape: returns `total_edges` (byte count) plus
+    /// gpsim-parity placeholders `shift_events`,
+    /// `total_shift_cycles`, `max_shift_cycles` (all 0 -- rust
+    /// silicon ring delivers whole bytes; bit-level batching
+    /// is a gpsim-only concept).  Callers asserting on
+    /// `total_edges > 0` get identical-shape pre/post deltas
+    /// across backends; callers reading the bit-level keys
+    /// must know they are gpsim-only.
+    ///
+    /// Cost: O(N) where N is the full
+    /// `Chain::uart_tx_history`.  Acceptable for canary tests
+    /// snapshotting pre/post around a sub-second window;
+    /// long-running tests should call sparingly.
     ///
     /// Spec / ledger ref: P4-followup A
     /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
-    /// tracker", task #99) -- the missing `_diag_canary_run`
-    /// rust adapter for `test_v171_v32_layer5_diag_chain.py`
-    /// is now unblocked.
+    /// tracker", task #99).
     fn bridge_byte_stats(&self) -> std::collections::HashMap<String, std::collections::HashMap<String, u64>> {
         let mut out: std::collections::HashMap<String, std::collections::HashMap<String, u64>> =
-            std::collections::HashMap::with_capacity(4);
-        let links = [
-            ("ctl_to_m0", self.i_ctl, self.i_main0),
-            ("m0_to_m1", self.i_main0, self.i_main1),
-            ("m1_to_m0", self.i_main1, self.i_main0),
-            ("m0_to_ctl", self.i_main0, self.i_ctl),
-        ];
-        for (name, src, dst) in links {
+            std::collections::HashMap::with_capacity(self.inner.pinnet.uart.len());
+        // Build a lookup from core_idx -> short role name so
+        // the produced labels (`ctl_to_m0`, `m0_to_m1`, etc.)
+        // match gpsim's hop names where the topology overlaps.
+        let role_of = |core_idx: usize| -> String {
+            if core_idx == self.i_ctl {
+                "ctl".to_string()
+            } else if core_idx == self.i_main0 {
+                "m0".to_string()
+            } else if core_idx == self.i_main1 {
+                "m1".to_string()
+            } else {
+                format!("c{core_idx}")
+            }
+        };
+        for coupling in &self.inner.pinnet.uart {
+            let src = coupling.src_core;
+            let dst = coupling.dst_core;
+            let name = format!("{}_to_{}", role_of(src), role_of(dst));
             let count = self
                 .inner
                 .uart_tx_history
@@ -1972,7 +2007,7 @@ impl Chain {
             sub.insert("shift_events".to_string(), 0);
             sub.insert("total_shift_cycles".to_string(), 0);
             sub.insert("max_shift_cycles".to_string(), 0);
-            out.insert(name.to_string(), sub);
+            out.insert(name, sub);
         }
         out
     }

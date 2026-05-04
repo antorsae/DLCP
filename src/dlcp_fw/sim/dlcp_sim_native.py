@@ -943,29 +943,41 @@ class Chain:
         return list(self._inner.uart_rx_records_full())
 
     def bridge_byte_stats(self) -> dict[str, dict[str, int]]:
-        """Per-link byte-count snapshot for the four canonical
-        3-core ring bridges.  Mirror of
-        ``WireMultiMainChainHarness.bridge_shift_stats`` (the
-        gpsim wire harness) so dual-backend canary tests can
-        snapshot pre/post deltas with the SAME dict shape on
-        either backend.
+        """Per-link byte-count snapshot for every UART coupling
+        actually wired in the chain.  Mirror-of-shape (NOT
+        mirror-of-name) of
+        ``WireMultiMainChainHarness.bridge_shift_stats``.
 
-        Keys: ``ctl_to_m0``, ``m0_to_m1``, ``m1_to_m0``,
-        ``m0_to_ctl``.  Each value has
+        Each top-level key is a link name; each value has
         ``{'total_edges': int, 'shift_events': int,
         'total_shift_cycles': int, 'max_shift_cycles': int}``.
-        For the rust silicon ring, only ``total_edges`` is
-        meaningful (number of bytes that crossed the link);
-        the bit-level counters stay 0 -- gpsim parity
-        placeholders so callers don't have to branch on
-        backend just to read the dict.
+        Only ``total_edges`` is meaningful for the rust
+        silicon ring (number of bytes that crossed the link);
+        bit-level counters stay 0 -- gpsim parity placeholders
+        so callers don't have to branch on backend just to
+        read the dict shape.
+
+        **Topology divergence from gpsim** (codex MEDIUM from
+        48a862d): the rust 3-core chain wires a TRUE ring
+        (CONTROL -> MAIN0 -> MAIN1 -> CONTROL), so
+        ``from_v171_v32`` exposes THREE hops:
+
+           * ``ctl_to_m0``  -- CONTROL TX -> MAIN0 RX
+           * ``m0_to_m1``   -- MAIN0 TX  -> MAIN1 RX
+           * ``m1_to_ctl``  -- MAIN1 TX  -> CONTROL RX
+
+        gpsim's wire-chain harness reports FOUR hops
+        (``ctl_to_m0``, ``m0_to_m1``, ``m1_to_m0``,
+        ``m0_to_ctl``) because its bus model simulates both
+        directions of the M0-M1 link plus a MAIN0->CONTROL
+        forwarder as separate bridges.  Dual-backend tests
+        that iterate ``deltas.values()`` work on both shapes;
+        tests that hard-code gpsim's four labels will fail on
+        rust.
 
         Spec / ledger: P4-followup A
         (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
-        tracker", task #99) -- the missing
-        ``_diag_canary_run`` rust adapter for
-        ``test_v171_v32_layer5_diag_chain.py`` is unblocked
-        by exposing this counter view.
+        tracker", task #99).
         """
         return {
             link: dict(stats)
