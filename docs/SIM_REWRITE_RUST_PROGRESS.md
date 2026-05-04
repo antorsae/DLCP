@@ -647,9 +647,10 @@ the scaffold remains landed.
   - verify: `.venv_ep0/bin/python scripts/check_phase5_gate.py`
   - artifact: `scripts/check_phase5_gate.py` (wraps the spec's two-line gate: `cargo test --test snapshot_property --release` + `pytest tests/sim/soak -n 16 -q`; see the script docstring for the exit-code contract).
 
-- [blocked] P5b.1 (stretch) `cargo fuzz` target on IR command stream + boot-offset RNG
+- [done] P5b.1 (stretch) `cargo fuzz` target on IR command stream + boot-offset RNG
   - verify: `cd crates/dlcp-sim && cargo fuzz run ir_stream -- -max_total_time=300`
   - artifact: `crates/dlcp-sim/fuzz/`.
+  - notes: operator installed rustup nightly + cargo-fuzz 2026-05-04 and ran the verify command externally (output: `Done 28121 runs in 301 second(s); cov: 2015 ft: 4450 corp: 89/1441b`, no panics).  The script's `advance` path can't drive a [blocked] task and re-running the 300-s fuzz from `advance` would just duplicate the operator's already-passed run, so the [done] flip is a hand-edit with the evidence captured here.
 
 ---
 
