@@ -1139,11 +1139,19 @@ def test_v171_v32_layer5_chain_bridges_all_carry_traffic(
     reason=(
         "Hop-attribution canary: bytes flow through every bridge "
         "(transport canary above passes) but CONTROL never sets "
-        "v171_diag_present bit 1.  Suspected gpsim two-MAIN echo loop "
-        "(MAIN0 TX replicated into both downstream + upstream paths) "
-        "interferes with target-tracking parser state.  Tracked as "
-        "Task #22; runs every cycle so the hop-attribution report is "
-        "fresh and we notice immediately when the underlying fix lands."
+        "v171_diag_present bit 1 within the canary budget.  Shared "
+        "firmware-design root cause as of 2026-05-04: V1.71's "
+        "foreground busy-loop in `display_loop_iteration` "
+        "(asm:2885-2897) only exits on user-driven events, and this "
+        "canary injects only the 4 RIGHT-press navigation, so the "
+        "cmd 0x21/0x22 cadence never re-fires often enough to land "
+        "PB2's reply.  Operator HW retest 2026-05-04 (V3.2 rev 0x3F "
+        "+ V1.71 rev 0x0F) confirmed real silicon also needs multiple "
+        "LEFT/RIGHT navigation cycles to converge; task #94 CLOSED.  "
+        "The historical Task #22 gpsim two-MAIN bridge-echo framing "
+        "applies to architectural fan-out (retired by the rust silicon "
+        "ring per P3.6a) and does not dispose of this xfail.  Runs "
+        "every cycle so the hop-attribution report is fresh."
     ),
     strict=False,
     run=True,
@@ -1297,9 +1305,13 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
       1. Reach DISPLAY (Volume).
       2. Navigate to Diagnostics.
       3. Step the chain for 200 chain steps (multiple cadence cycles
-         + many cmd 0x21 query/reply round-trips on PB1 — PB2 path is
-         currently quarantined under Task #22 but the cadence still
-         issues PB2 queries which fail silently).
+         + many cmd 0x21 query/reply round-trips on PB1 — PB2 path
+         currently does not converge in the no-user-events test
+         scenario because V1.71's foreground busy-loop in
+         `display_loop_iteration` (asm:2885-2897) only exits on
+         user-driven events; cadence still issues PB2 queries that
+         fail to land within the test budget; same shape as the
+         four `_V171_V32_PB2_BRIDGE_XFAIL` tests).
       4. Press LEFT four times -> exit page -> land back on Volume.
          (Tier-1 menu rework moved Diag from state 2 to states 4-5;
          exit now requires four LEFT presses to walk back to Volume(0).)
@@ -1422,11 +1434,13 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
         retry-escalation -> diag_r++.
       * Wake-after-spurious-standby -> adc_boot_gate -> diag_b++.
 
-    Both MAINs are checked: PB1's replies surface in CONTROL today
-    while PB2's are quarantined behind Group A xfail (Task #22), but
-    the MAIN1 hardware still SERVES the cmd 0x21 queries either way.
-    Counter cascade on the MAIN1 (PB2) hardware is a real firmware
-    bug regardless of whether the reply makes it back to CONTROL.
+    Both MAINs are checked: PB1's replies tend to surface in CONTROL
+    sooner than PB2's in the no-user-events test scenario (the
+    `_V171_V32_PB2_BRIDGE_XFAIL` shared-busy-loop convergence root
+    cause; see file-level docstring), but the MAIN1 hardware still
+    SERVES the cmd 0x21 queries either way.  Counter cascade on the
+    MAIN1 (PB2) hardware is a real firmware bug regardless of
+    whether the reply makes it back to CONTROL.
 
     Migrated to dual_supported in P4.7: cascade-detection is a
     firmware-correctness invariant on the MAIN side; rust path uses

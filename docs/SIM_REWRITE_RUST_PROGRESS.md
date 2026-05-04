@@ -447,12 +447,16 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
   Confirmed in `tests/sim/test_v171_v32_layer5_diag_chain.py` rust
   run: 6 dual_supported tests pass (idle_caches_zero, no_query, plus
-  4 already-passing); 4 xfailed pre-existing on the separate
-  Task #22 PB2-bridge gap (NOT the convergence gap); 3 still
-  gpsim-only awaiting their per-test rust adapters
-  (`_set_main_diag_block` RAM poke, `_diag_canary_run` hop-edge
-  counter, `_navigate_to_diagnostics` button sequence).  The
-  convergence-gap entry above (item 1 in the list) is now
+  4 already-passing); 4 xfailed pre-existing on the shared
+  firmware-design non-convergence gap (V1.71 foreground busy-loop in
+  `display_loop_iteration` asm:2885-2897 only exits on user-driven
+  events; 4 RIGHT presses + no further input is insufficient on
+  either backend; matches HW behavior per operator retest 2026-05-04;
+  see the updated `_V171_V32_PB2_BRIDGE_XFAIL` reason and file-level
+  docstring); 3 still gpsim-only awaiting their per-test rust
+  adapters (`_set_main_diag_block` RAM poke, `_diag_canary_run`
+  hop-edge counter, `_navigate_to_diagnostics` button sequence).
+  The convergence-gap entry above (item 1 in the list) is now
   superseded by these per-test adapter sub-tasks; the next session
   can pick them off individually.
 
