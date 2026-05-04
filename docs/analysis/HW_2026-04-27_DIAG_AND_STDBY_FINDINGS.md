@@ -513,9 +513,11 @@ was retracted (Timer3 IRQ unit tests + V1.71 firmware reading T3CON=0
 both falsified it).  Task #94 CLOSED.  HW retest also surfaced a
 NEW divergence candidate (filed as task #95): pressing STBY from the
 Diag page on real HW only dims the CONTROL LCD (Zzz... dimmed) — the
-MAINs keep playing music, i.e. CONTROL does not broadcast the panel
-`B0/03/00` STDBY frame from this state.  Whether rust matches has not
-yet been verified at the CONTROL.TX byte-stream level; the visible
+MAINs keep playing music, apparently because CONTROL does not
+broadcast the panel `B0/03/00` STDBY frame from this state (inferred
+from the audible-music observation alone; no scope/wire capture has
+been taken on the bus to confirm).  Whether rust matches has not yet
+been verified at the CONTROL.TX byte-stream level; the visible
 `Zzz...` LCD raster alone is NOT evidence of divergence.  Separate
 scope from the P3.8 sub-tasks.  Section 7.4 carries the
 "symptom-equivalent" qualifier explicitly.

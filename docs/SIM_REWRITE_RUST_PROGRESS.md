@@ -303,7 +303,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [in_progress] P4.5 Migrate `test_v171_*` tests
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -k v171 -n 16 -q`
   - artifact: ledger update.
-  - status: 14 of 16 v171 files migrated to dual-mode (142 of ~176 tests covered + 3 cleanly skipped as gpsim-only breakpoint tests in `test_v171_layer1_bounded_tx.py`).  2 v171 files NOT migrated: (a) `test_v171_hang_modes.py` -- intentionally NOT marked `dual_supported` because 4 of its 14 tests are pre-existing failures on main documenting in-progress V1.71 hardening work (per `docs/V32_MAIN_HANG_HARDENING_PLAN.md`); will get the marker once the hardening lands and all 14 tests pass.  (b) `test_v171_v32_layer5_diag_chain.py` -- 13 wire-chain tests, 5 of which are pre-existing xfailed (4 `_V171_V32_PB2_BRIDGE_XFAIL` + 1 separate `pytest.mark.xfail` canary) for the known Task #22 wire-chain-harness bug; full migration requires per-MAIN `read_main_reg(main_idx, addr)` / `write_main_reg(main_idx, addr, value)` rust facade methods plus multi-MAIN navigation helpers; deferred as a P4.5 follow-up sub-task.
+  - status: 14 of 16 v171 files migrated to dual-mode (142 of ~176 tests covered + 3 cleanly skipped as gpsim-only breakpoint tests in `test_v171_layer1_bounded_tx.py`).  2 v171 files NOT migrated: (a) `test_v171_hang_modes.py` -- intentionally NOT marked `dual_supported` because 4 of its 14 tests are pre-existing failures on main documenting in-progress V1.71 hardening work (per `docs/V32_MAIN_HANG_HARDENING_PLAN.md`); will get the marker once the hardening lands and all 14 tests pass.  (b) `test_v171_v32_layer5_diag_chain.py` -- 13 wire-chain tests, 5 of which are pre-existing xfailed (4 `_V171_V32_PB2_BRIDGE_XFAIL` + 1 separate `pytest.mark.xfail` canary).  The 5 xfails share a firmware-design root cause: V1.71's foreground busy-loop in `display_loop_iteration` (asm:2885-2897) only exits on user-driven events, and these tests inject only 4 RIGHT presses + no further input, so the cmd 0x21/0x22 diag-poll cadence never re-fires often enough to converge `v171_diag_present` to 0x03 within the test budget on either backend.  Real HW behaves the same (operator retest 2026-05-04, V3.2 rev 0x3F + V1.71 rev 0x0F).  The historical Task #22 "gpsim two-MAIN bridge-echo" framing is retired by the rust silicon ring (P3.6a) and is no longer the dispositive issue.  Full migration requires per-MAIN `read_main_reg(main_idx, addr)` / `write_main_reg(main_idx, addr, value)` rust facade methods plus multi-MAIN navigation helpers; deferred as a P4.5 follow-up sub-task.
   - sub-task [done] structural baseline (3 files, 37 tests): test_v171_atomic_3byte_frame.py, test_v171_baseline.py, test_v171_v32_standby_reconnect.py.
   - sub-task [done] V1.71 + V3.1 single-MAIN chain (1 file, 2 tests): test_v171_v31_chain.py.  Added `Chain.from_v17_v3x_chain` + `from_v171_v31` factories with V3.x-app-on-V2.3-seed merge.
   - sub-task [done] write_reg / current_cycle / pause_heartbeat (2 files, 5 tests): test_v171_preset_menu.py + test_v171_full_sync_retry.py.
@@ -479,8 +479,11 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   retest also uncovered a NEW divergence candidate: pressing
   STBY from the PB1/PB2 Diag page on real HW only dims the
   CONTROL LCD (showing `Zzz...` dimmed) but the MAINs keep
-  playing music — i.e. CONTROL does not broadcast the panel
-  `B0/03/00` STDBY frame to MAINs from this state.  Filed as
+  playing music — apparent inference is that CONTROL does not
+  broadcast the panel `B0/03/00` STDBY frame to MAINs from this
+  state, but the inference is from the audible-music observation
+  alone (no scope/wire capture has been taken on the bus to
+  confirm).  Filed as
   task #95 (rust behavior in this scenario still needs probing
   to determine whether rust CONTROL emits the STDBY frame; the
   visible `Zzz...` LCD raster alone is NOT evidence of a

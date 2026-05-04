@@ -28,11 +28,25 @@ test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /
 AN0 / RA1) are added incrementally as the per-counter fault-injection
 hooks become available.
 
-Four tests are xfailed pending the wire-chain-harness fix in Task #22
-(PB2 reply path through the m1_to_m0 → m0_to_ctl bridge does not
-deliver the BF/2N reply back to CONTROL).  PB1 reply path is verified
-working; the firmware works correctly on real hardware where the chain
-is a true current loop rather than a bidirectional bridge pair.
+Four tests share `_V171_V32_PB2_BRIDGE_XFAIL` and are xfailed on BOTH
+backends (gpsim wire-chain harness AND rust silicon-correct ring) as
+of 2026-05-04.  Root cause is firmware-design, not harness-specific:
+V1.71's foreground busy-loop in `display_loop_iteration`
+(asm:2885-2897) only exits on user-driven events (button press, mute,
+IR remote).  These tests inject 4 RIGHT presses to reach the diag
+page and then no further input, so CONTROL's cmd 0x21 / cmd 0x22
+diag-poll cadence never re-fires often enough to converge
+`v171_diag_present` to 0x03 within the test budget on either backend.
+Operator HW retest 2026-05-04 (V3.2 rev 0x3F + V1.71 rev 0x0F) showed
+real silicon ALSO shows "PB1/PB2 n/a" after just 4 RIGHT presses;
+multiple LEFT/RIGHT navigation cycles are required to converge HW.
+Probe v21 in rust converges in 7 mixed-nav cycles, matching HW.
+
+The original Task #22 framing (gpsim two-MAIN topology echoes MAIN0's
+TX into both downstream and upstream paths) is the architectural half
+of the issue and is retired by the rust silicon-correct ring (P3.6a in
+`docs/SIM_REWRITE_RUST_PROGRESS.md`); it does NOT explain the
+no-convergence on either backend in the no-user-events test scenario.
 """
 
 from __future__ import annotations
@@ -364,12 +378,19 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # been probed, so divergence is candidate-only.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
-        "Bytes flow through every wire-chain bridge (verified by canary "
-        "below), but CONTROL never sets v171_diag_present bit 1 for "
-        "PB2.  Suspected root cause: gpsim two-MAIN topology echoes "
-        "MAIN0's TX into BOTH downstream and upstream paths, creating "
-        "a feedback loop that interferes with target-tracking parser "
-        "state.  Tracked in Task #22 for targeted probing."
+        "Shared firmware-design non-convergence on both backends as of "
+        "2026-05-04: V1.71's foreground busy-loop in "
+        "`display_loop_iteration` (asm:2885-2897) only exits on "
+        "user-driven events; these tests inject 4 RIGHT presses + no "
+        "further input, so the cmd 0x21/0x22 diag-poll cadence never "
+        "re-fires often enough to set v171_diag_present bit 1 within "
+        "the test budget on gpsim or rust.  Operator HW retest "
+        "2026-05-04 confirmed real silicon also needs multiple "
+        "LEFT/RIGHT navigation cycles to converge.  Task #94 CLOSED "
+        "(rust matches HW).  The original Task #22 gpsim two-MAIN "
+        "bridge-echo framing applies to architectural fan-out (retired "
+        "by the rust silicon ring per P3.6a), not to this no-input "
+        "convergence path."
     ),
     strict=False,
     run=False,
@@ -1033,10 +1054,17 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
 #
 # (2) Hop-attribution canary — same probe but also asserts CONTROL
 #     parses PB2's reply.  Currently expected to fail at hop (e) with
-#     ALL bridges flowing (137k+ edges each); the failure message
-#     points at the parser-vs-echo issue tracked in Task #22.  Marked
-#     xfail run=True so the hop-attribution report fires every CI run
-#     and we notice immediately when the underlying issue is fixed.
+#     ALL bridges flowing (137k+ edges each); the failure manifests
+#     because in the no-user-events test scenario CONTROL's
+#     foreground busy-loop in `display_loop_iteration`
+#     (asm:2885-2897) never re-fires the cmd 0x21/0x22 cadence often
+#     enough to land PB2's reply within the canary budget.  Same
+#     root cause as the four `_V171_V32_PB2_BRIDGE_XFAIL` tests
+#     above (verified on real HW 2026-05-04).  The historical Task
+#     #22 "gpsim bridge echo" framing applies to architectural
+#     fan-out (retired by the rust silicon ring) and would not
+#     dispose of this xfail.  Marked run=True so the hop-attribution
+#     report still fires every CI run.
 # ===========================================================================
 
 
@@ -1136,11 +1164,18 @@ def test_v171_v32_layer5_chain_pb2_bridge_canary(
         f. ``v171_diag_pb2_p`` == 0x07  — BF/27 payload landed in cache
 
     Currently expected to fail at hop (e) with hops (a)..(d) all
-    showing 137k+ edges of traffic.  When the underlying parser-vs-
-    echo issue (Task #22) is fixed, this XPASSes and the 4 Group-A
-    tests at ``_V171_V32_PB2_BRIDGE_XFAIL`` should also start XPASS'ing
-    — at which point all five xfail markers in this file can be
-    removed and Task #22 closed.
+    showing 137k+ edges of traffic.  Root cause as of 2026-05-04 is
+    shared with the four ``_V171_V32_PB2_BRIDGE_XFAIL`` tests:
+    V1.71's foreground busy-loop in ``display_loop_iteration``
+    (asm:2885-2897) only exits on user-driven events, and these
+    canary runs inject only the 4 RIGHT-press navigation, so the
+    cmd 0x21/0x22 cadence never re-fires often enough to land PB2's
+    reply within the canary budget.  Operator HW retest 2026-05-04
+    confirmed real silicon also needs multiple LEFT/RIGHT cycles to
+    converge.  When this canary XPASSes, the 4 Group-A tests at
+    ``_V171_V32_PB2_BRIDGE_XFAIL`` should XPASS too.  The historical
+    Task #22 "gpsim bridge echo" framing is retired by the rust
+    silicon ring (P3.6a) and is not the cause of this xfail.
     """
     _require_gpsim()
     _require_v32_hex(v32_hex)
