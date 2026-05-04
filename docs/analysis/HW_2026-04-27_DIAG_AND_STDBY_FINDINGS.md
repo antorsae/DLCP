@@ -471,13 +471,14 @@ spec note. Tracked as a doc-fixup in Section 7.2.A.
 
 **Ledger guidance.** Codex emphasised: name P3.8a/b/c/d as
 **"symptom-equivalent (not bit-exact)"** and do NOT use them to retire
-P3.6b. P3.6b stays the `v171_diag_present == 0x03` open issue, now
-understood as a test-scenario artifact (V1.71 foreground busy-loop
-exits after first BF/2N dispatch without continuous user events --
-per the 2026-04-28 P3.6b research closure).  Task #94 was opened
-2026-05-04 to investigate a candidate rust-zero-replies surface but
-closed the same day as duplicate of the 2026-04-28 closure (probes
-v10/v11 with new uart_rx_history primitives confirmed rust accepts
-all bytes and dispatches BF/2N just like gpsim).  Separate scope
+P3.6b. P3.6b stays the `v171_diag_present == 0x03` open issue.  Task
+#94 was opened 2026-05-04 to investigate a candidate rust-specific
+surface, briefly closed as duplicate, then RE-OPENED the same day
+after user pushback: real HW shows diag values after just 4 RIGHT
+presses (chain comm chatter is timer-driven, independent of IR), but
+rust chain goes silent post-nav -- probes v15-v18 show zero TX from
+any core for 10M ticks (~208ms wall).  Most likely cause:
+Timer3/Timer1 ISR vector dispatch on rust failing to drive periodic
+interrupts that real silicon produces continuously.  Separate scope
 from the P3.8 sub-tasks.  Section 7.4 carries the
 "symptom-equivalent" qualifier explicitly.
