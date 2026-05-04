@@ -927,6 +927,21 @@ class Chain:
         """MAIN1 mirror of :meth:`ctl_rx_record_since_last_capture`."""
         return list(self._inner.main1_rx_record_since_last_capture())
 
+    def uart_tx_records_full(self) -> list[tuple[int, int, int, int]]:
+        """Snapshot the FULL `uart_tx_history` as
+        `(tick, src_core, dst_core, byte)` tuples.  No drainage,
+        no filter -- caller filters by src/dst and slices by
+        tick range.  Used by frame-level timeline probes."""
+        return list(self._inner.uart_tx_records_full())
+
+    def uart_rx_records_full(self) -> list[tuple[int, int, int, int]]:
+        """Snapshot the FULL `uart_rx_history` (FIFO-accepted
+        bytes) as `(tick, src_core, dst_core, byte)` tuples.
+        Distinct from `uart_tx_records_full`: only bytes the
+        destination's silicon FIFO accepted (passed SPEN+CREN,
+        not blocked by OERR, FIFO had room)."""
+        return list(self._inner.uart_rx_records_full())
+
     def current_ctl_pc(self) -> int:
         """CONTROL core's current PC (firmware program counter,
         word-aligned, masked to 21 bits).  Mirror of gpsim's

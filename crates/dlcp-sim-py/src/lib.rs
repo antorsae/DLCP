@@ -1899,6 +1899,41 @@ impl Chain {
         result
     }
 
+    /// Snapshot the FULL `uart_tx_history` as a list of
+    /// `(tick, src_core, dst_core, byte)` tuples (every wire-
+    /// attempt byte from chain construction onward, no
+    /// drainage, no filter).  Caller is responsible for
+    /// filtering by src/dst and slicing by tick range.  Used
+    /// by frame-level timeline probes that need byte-by-byte
+    /// timestamps to compute inter-frame gaps and per-phase
+    /// throughput.  Cost: O(N) Vec clone where N is the full
+    /// history length; for steady-state probes prefer to
+    /// `apply_reset_all` (clears history) at probe-start and
+    /// dump only the post-reset records.
+    fn uart_tx_records_full(&self) -> Vec<(u64, usize, usize, u8)> {
+        self.inner
+            .uart_tx_history
+            .iter()
+            .map(|r| (r.tick, r.src_core, r.dst_core, r.byte))
+            .collect()
+    }
+
+    /// Snapshot the FULL `uart_rx_history` (FIFO-accepted
+    /// bytes) as `(tick, src_core, dst_core, byte)` tuples.
+    /// Distinct from `uart_tx_records_full`: this records
+    /// only bytes the destination's silicon FIFO accepted
+    /// (passed SPEN+CREN, not blocked by OERR, FIFO had
+    /// room).  Comparing the two streams localizes byte
+    /// loss between wire and parser.  Same cost caveat as
+    /// `uart_tx_records_full`.
+    fn uart_rx_records_full(&self) -> Vec<(u64, usize, usize, u8)> {
+        self.inner
+            .uart_rx_history
+            .iter()
+            .map(|r| (r.tick, r.src_core, r.dst_core, r.byte))
+            .collect()
+    }
+
     /// CONTROL core's current PC (firmware program counter).
     /// Direct passthrough to `Core::pc()`.  Word-aligned and
     /// masked to 21 bits.  Mirror of gpsim's `pc()` register
