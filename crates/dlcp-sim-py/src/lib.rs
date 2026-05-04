@@ -1918,6 +1918,65 @@ impl Chain {
             .collect()
     }
 
+    /// Per-link byte-count snapshot for the four canonical
+    /// 3-core ring bridges.  Mirror of
+    /// `WireMultiMainChainHarness::bridge_shift_stats` (the
+    /// gpsim wire harness) so dual-backend canary tests can
+    /// snapshot pre/post deltas with the same dict shape on
+    /// either backend.  Per-link names match gpsim's:
+    ///
+    ///   * `ctl_to_m0`  -- CONTROL TX -> MAIN0 RX
+    ///   * `m0_to_m1`   -- MAIN0 TX  -> MAIN1 RX
+    ///   * `m1_to_m0`   -- MAIN1 TX  -> MAIN0 RX
+    ///   * `m0_to_ctl`  -- MAIN0 TX  -> CONTROL RX
+    ///
+    /// gpsim returns four counters per link
+    /// (`total_edges` / `shift_events` / `total_shift_cycles` /
+    /// `max_shift_cycles`) because its bridge model batches
+    /// bit-edges per shift.  The rust silicon ring delivers
+    /// whole bytes -- we only have one meaningful counter,
+    /// `total_edges` (= number of bytes that crossed the
+    /// link).  The other three keys are populated as `0` for
+    /// dict-shape parity (so dual-supported tests don't have
+    /// to branch on backend just to read the dict).  Tests
+    /// that assert on `total_edges > 0` -- like the
+    /// `test_v171_v32_layer5_chain_bridges_all_carry_traffic`
+    /// canary -- behave identically across backends.
+    ///
+    /// Spec / ledger ref: P4-followup A
+    /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
+    /// tracker", task #99) -- the missing `_diag_canary_run`
+    /// rust adapter for `test_v171_v32_layer5_diag_chain.py`
+    /// is now unblocked.
+    fn bridge_byte_stats(&self) -> std::collections::HashMap<String, std::collections::HashMap<String, u64>> {
+        let mut out: std::collections::HashMap<String, std::collections::HashMap<String, u64>> =
+            std::collections::HashMap::with_capacity(4);
+        let links = [
+            ("ctl_to_m0", self.i_ctl, self.i_main0),
+            ("m0_to_m1", self.i_main0, self.i_main1),
+            ("m1_to_m0", self.i_main1, self.i_main0),
+            ("m0_to_ctl", self.i_main0, self.i_ctl),
+        ];
+        for (name, src, dst) in links {
+            let count = self
+                .inner
+                .uart_tx_history
+                .iter()
+                .filter(|r| r.src_core == src && r.dst_core == dst)
+                .count() as u64;
+            let mut sub: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::with_capacity(4);
+            sub.insert("total_edges".to_string(), count);
+            // gpsim parity placeholders -- rust silicon ring
+            // doesn't track bit-level edges, so these stay 0.
+            sub.insert("shift_events".to_string(), 0);
+            sub.insert("total_shift_cycles".to_string(), 0);
+            sub.insert("max_shift_cycles".to_string(), 0);
+            out.insert(name.to_string(), sub);
+        }
+        out
+    }
+
     /// Snapshot the FULL `uart_rx_history` (FIFO-accepted
     /// bytes) as `(tick, src_core, dst_core, byte)` tuples.
     /// Distinct from `uart_tx_records_full`: this records

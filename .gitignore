@@ -78,3 +78,12 @@ firmware/reference/*.txt
 # (records the last HEAD hash that triggered a codex review reminder so the
 # hook doesn't re-fire on amends or unrelated git invocations).
 .claude/.codex-last-reviewed-head
+
+# cargo-fuzz auto-generated state (P5b.1 fuzz target).  The fuzz target
+# itself is committed at `crates/dlcp-sim/fuzz/{Cargo.toml,
+# fuzz_targets/}`, but the corpus / artifacts / Cargo.lock are
+# operator-local (corpus = libFuzzer's accumulated input dictionary,
+# artifacts = crash repros, Cargo.lock = pinned-by-nightly).
+crates/dlcp-sim/fuzz/Cargo.lock
+crates/dlcp-sim/fuzz/corpus/
+crates/dlcp-sim/fuzz/artifacts/

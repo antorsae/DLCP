@@ -942,6 +942,36 @@ class Chain:
         not blocked by OERR, FIFO had room)."""
         return list(self._inner.uart_rx_records_full())
 
+    def bridge_byte_stats(self) -> dict[str, dict[str, int]]:
+        """Per-link byte-count snapshot for the four canonical
+        3-core ring bridges.  Mirror of
+        ``WireMultiMainChainHarness.bridge_shift_stats`` (the
+        gpsim wire harness) so dual-backend canary tests can
+        snapshot pre/post deltas with the SAME dict shape on
+        either backend.
+
+        Keys: ``ctl_to_m0``, ``m0_to_m1``, ``m1_to_m0``,
+        ``m0_to_ctl``.  Each value has
+        ``{'total_edges': int, 'shift_events': int,
+        'total_shift_cycles': int, 'max_shift_cycles': int}``.
+        For the rust silicon ring, only ``total_edges`` is
+        meaningful (number of bytes that crossed the link);
+        the bit-level counters stay 0 -- gpsim parity
+        placeholders so callers don't have to branch on
+        backend just to read the dict.
+
+        Spec / ledger: P4-followup A
+        (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
+        tracker", task #99) -- the missing
+        ``_diag_canary_run`` rust adapter for
+        ``test_v171_v32_layer5_diag_chain.py`` is unblocked
+        by exposing this counter view.
+        """
+        return {
+            link: dict(stats)
+            for link, stats in self._inner.bridge_byte_stats().items()
+        }
+
     def current_ctl_pc(self) -> int:
         """CONTROL core's current PC (firmware program counter,
         word-aligned, masked to 21 bits).  Mirror of gpsim's
