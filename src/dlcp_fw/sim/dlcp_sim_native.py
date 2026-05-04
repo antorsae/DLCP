@@ -947,7 +947,7 @@ class Chain:
         link_name: str,
         *,
         drop: bool | None = None,
-        extra_ticks: int | None = None,
+        extra_cycles: int | None = None,
     ) -> None:
         """Per-link fault primitive.  Mirror of gpsim's
         ``WireMultiMainChainHarness.set_link_fault(link_name, *,
@@ -960,7 +960,10 @@ class Chain:
         ``m0_to_m1``, ``m1_to_ctl`` for the rust 3-core ring.
         Tests that hard-code gpsim's bus-model labels (e.g.
         ``m0_to_ctl``, which doesn't exist on the rust ring)
-        will raise ``ValueError`` listing the known links.
+        raise :class:`KeyError` listing the known links --
+        the same exception type as gpsim's analog.  (Codex
+        LOW from 4307acc: prior implementation used
+        ``ValueError``.)
 
         ``drop``: ``True`` activates the wire-drop fault;
         every subsequent byte the source TXs is silently
@@ -968,17 +971,19 @@ class Chain:
         fault.  ``None`` leaves the drop state unchanged
         (matches gpsim's three-state semantics).
 
-        ``extra_ticks`` (gpsim's ``extra_cycles`` analog):
-        NOT supported on the rust silicon ring (no bridge-
-        delay model).  Calling with ``extra_ticks != None``
-        raises :class:`RuntimeError`; tests that need
+        ``extra_cycles``: NOT supported on the rust silicon
+        ring (no bridge-delay model).  Calling with
+        ``extra_cycles != None`` raises
+        :class:`NotImplementedError`; tests that need
         propagation-delay semantics must be marked
-        ``gpsim``-only.
+        ``gpsim``-only.  Keyword name matches gpsim's; the
+        prior internal name ``extra_ticks`` was renamed for
+        gpsim-shape parity (codex LOW from 4307acc).
         """
         self._inner.set_link_fault(
             link_name,
             drop=drop,
-            extra_ticks=extra_ticks,
+            extra_cycles=extra_cycles,
         )
 
     def bridge_byte_stats(self) -> dict[str, dict[str, int]]:
