@@ -148,9 +148,14 @@ assert_eq!(encode(&restored), bytes);   // byte-stable round-trip
 These are rust-side functions today; the Python facade does not yet
 expose `Chain.snapshot()` / `Chain.restore()` directly.  Python tests
 that want snapshot/replay round-trip should drive the
-`./target/release/dlcp-sim replay` CLI via `subprocess` (its case JSON
-schema is the same shape `encode/decode` consume), or invoke the rust
-`cargo test --test snapshot_property` suite.
+`./target/release/dlcp-sim replay` CLI via `subprocess` -- the CLI
+case JSON (an `initial_factory` or `initial_snapshot_hex`, a stimulus
+list, and an optional `expect_final_snapshot_hex`) is parsed by the
+CLI and handed to `dlcp_sim::snapshot::encode/decode` internally;
+the JSON envelope is NOT the same shape as the bincode bytes those
+functions consume directly.  Alternatively, run
+`cargo test --release -p dlcp-sim --test snapshot_property` for the
+proptest property suite.
 
 The 5-test soak harness at `crates/dlcp-sim/tests/snapshot_soak.rs` runs
 10⁴ scenarios per test (50,000 total) asserting byte-stable round-trip,
@@ -274,12 +279,17 @@ These files are still imported by 70 test files in `tests/`
 (per the 2026-05-04 inventory at `docs/SIM_REWRITE_RUST_PROGRESS.md`
 P4.9 entry) -- some of which also have `@pytest.mark.dual_supported`
 markers but conditionally branch into the gpsim path on
-`DLCP_SIM_BACKEND=gpsim`.  Of those, 33 files are pure gpsim-only
-(no `dual_supported` marker, auto-skipped under rust) and account
-for the 299 still-skipped tests in the PF.1 measurement; the
-remaining ~37 are dual-supported but still need the gpsim wrappers
-present at import time for their backend branch.  All 70 are
-preserved as the regression oracle through one release cycle per
+`DLCP_SIM_BACKEND=gpsim`, while others are pure gpsim-only (no
+marker -- auto-skipped under rust).  The auto-skipped count under
+rust is the authoritative measurement; the latest PF.1 verification
+(see ledger `docs/SIM_REWRITE_RUST_PROGRESS.md` PF.1 notes) is the
+single source of truth for "how many tests are still skipped" --
+the relationship between the 70 import-sites count and the
+skipped-test count is not a 1:1 mapping (a single import-site file
+can contribute zero or many skipped tests).
+
+All 70 import-site files are preserved as the regression oracle
+through one release cycle per
 `docs/SIM_REWRITE_RUST_SPEC.md` §11.  PF.4's coordinated excision
 will:
 
