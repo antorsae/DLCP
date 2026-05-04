@@ -1233,6 +1233,22 @@ impl Chain {
     /// effectively collapsing the boot delay.  Tracking
     /// the per-core epoch keeps the relative-to-boot
     /// scheduling semantic intact.
+    ///
+    /// Tick monotonicity (Sleep/Idle wake): when a halted
+    /// core resumes via `deliver_uart_byte` or `set_pin_level`
+    /// (RA0 wake), its `cycles()` did NOT advance during
+    /// halt while the universal clock kept moving forward.
+    /// `epoch + drifted_tick` therefore reflects when the
+    /// next instruction WOULD have fired had the core never
+    /// halted, which can be in the past relative to
+    /// `current_tick`.  Pushing such a stale tick lets
+    /// `step_ticks` pop it later and run
+    /// `self.current_tick = event.tick`, moving the universal
+    /// clock backwards.  Clamp to `current_tick` so wake-
+    /// from-halt events fire at-or-after now (effectively
+    /// modelling silicon's "no retroactive replay of missed
+    /// Tcy slots" -- the CPU just resumes at the next
+    /// universal tick boundary).
     pub fn schedule_next_core_step(&mut self, core_idx: usize) {
         let tcy = self.cores[core_idx].cycles();
         let factor = self.cores[core_idx].ticks_per_tcy() as u64;
@@ -1240,8 +1256,9 @@ impl Chain {
         let drifted_tick = self.clocks[core_idx].apply_drift(nominal_tick);
         let epoch = self.boot_epochs[core_idx];
         let absolute_tick = epoch.saturating_add(drifted_tick);
+        let scheduled_tick = absolute_tick.max(self.current_tick);
         self.events
-            .push(absolute_tick, EventKind::CoreInstructionComplete(core_idx));
+            .push(scheduled_tick, EventKind::CoreInstructionComplete(core_idx));
     }
 
     /// Apply POR to every core in the chain.  Helper for
@@ -1449,6 +1466,74 @@ mod tests {
         chain.step_ticks(60);
         assert_eq!(chain.current_tick, 110);
         assert_eq!(chain.events.len(), 0);
+    }
+
+    /// Sleep/Idle wake stale-tick regression (codex MEDIUM on
+    /// merge `ce2ce5b`).  When a halted core wakes via
+    /// `deliver_uart_byte` or `set_pin_level` (RA0), the chain
+    /// calls `schedule_next_core_step`.  The core's `cycles()`
+    /// did NOT advance during halt, so `epoch + cycles * factor`
+    /// reflects when the next instruction WOULD have fired had
+    /// the core never halted -- which can be in the past
+    /// relative to `current_tick` (the universal clock kept
+    /// moving forward via other events while this core slept).
+    /// Without the clamp in `schedule_next_core_step`, the
+    /// stale tick would later be popped by `step_ticks` and
+    /// `self.current_tick = event.tick` (chain.rs:503) would
+    /// move the universal clock BACKWARDS, breaking
+    /// monotonicity for every other event still in the queue.
+    ///
+    /// The fix clamps the scheduled tick to
+    /// `max(absolute_tick, current_tick)`.  This regression
+    /// test reproduces the wake-from-halt scenario directly
+    /// (without relying on a specific firmware sleep path) by
+    /// driving `current_tick` forward via a dummy event, then
+    /// scheduling a wake event for a core whose `cycles()` is
+    /// still 0.  Pre-fix, the wake event's tick would be 0;
+    /// post-fix, it must be >= `current_tick`.
+    #[test]
+    fn schedule_next_core_step_clamps_to_current_tick_on_wake() {
+        let mut chain = Chain::new();
+        chain.push_core(Core::new(Variant::Pic18F25K20));
+
+        // Advance the universal clock past where a freshly-
+        // halted core's next-instruction tick would land
+        // (`epoch + 0 * factor = 0`).  Use a dummy event so
+        // `step_ticks` actually moves `current_tick`.
+        chain.events.push(5_000, EventKind::PinPropagation(0));
+        chain.step_ticks(5_000);
+        assert_eq!(chain.current_tick, 5_000);
+        // The dummy event drained -- only any newly-scheduled
+        // events should remain.
+        let pre_len = chain.events.len();
+
+        // Simulate a wake-from-halt: core's cycles() is still
+        // 0 (never advanced), boot_epoch is 0, but the chain
+        // is at tick 5_000.  Pre-fix, this would push tick=0;
+        // post-fix, it must clamp to current_tick=5_000.
+        assert_eq!(chain.cores[0].cycles(), 0);
+        chain.schedule_next_core_step(0);
+
+        // The just-pushed event is the only new one.
+        assert_eq!(chain.events.len(), pre_len + 1);
+        let next = chain.events.peek().expect("event queued");
+        assert!(
+            next.tick >= chain.current_tick,
+            "wake-from-halt scheduled stale tick: event.tick={} < current_tick={}",
+            next.tick,
+            chain.current_tick
+        );
+
+        // Stronger guarantee: drain that event via step_ticks
+        // and confirm current_tick did NOT regress.
+        let pre_step_tick = chain.current_tick;
+        chain.step_ticks(0);
+        assert!(
+            chain.current_tick >= pre_step_tick,
+            "step_ticks moved current_tick backwards from {} to {}",
+            pre_step_tick,
+            chain.current_tick
+        );
     }
 
     /// Coupling-API smoke: each `couple_*` call records
