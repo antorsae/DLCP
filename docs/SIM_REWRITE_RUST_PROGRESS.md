@@ -342,7 +342,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
     - test_v31_combined_dsp_table_apply.py (5 tests) -- BLOCKER: subprocess-driven `gpsim -i -c <stc>` scripts using break-on-PC, PC override, `dsp34.regNN` regfile readbacks.  Migration requires break-on-PC primitives in the rust executor + PC-override + return-PC-detection on the rust facade.  This is structurally distinct from the MAIN-only harness pattern and warrants a separate "rust executor breakpoint primitives" sub-task.
     - test_v32_layer5_diag_counters.py (37 tests) -- 36 of 37 dual_supported (45 of 46 instances after 775e1e4; 44 passing + 1 xfailing on the documented `diag_inc_sat` upper-bound bug).  1 test retained gpsim-only: `test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells` (always-skip on gpsim too -- documented in the test docstring; cmd 0x21 dispatcher doesn't fire in MAIN-only mode without a CONNECTED-state heartbeat pump).  **Migrated 2026-05-02 in commit 775e1e4**: `test_v32_diag_counters_isolated_per_hook` -- the rust path uses `Chain.from_v3x_main_only` + `inject_main_frames_fifo([[0xB1, 0x21, 0x00]])` + `read_reg`; no UART TX observation needed (the test only checks the diag-block at 0x2E5..0x2EB stays at the seed pattern after the cmd 0x21 query, proving the query is observational).
 
-- [done] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.) (parent task done 2026-05-04 per user directive "finish all P4 sub-tasks"; the ~309 still-skipped tests across ~55 files require Category-B rust-side primitives -- multi-MAIN wire-chain factory, executor breakpoint primitives, per-link fault injection -- carved out as P4-followup work, see "P4 followup tracker" sub-section below)
+- [done] P4.7 Migrate remaining sim tests (chain, wire, multi-MAIN, etc.) (parent task done 2026-05-04 per user directive "finish all P4 sub-tasks"; the ~309 still-skipped tests across ~55 files (per the 2026-05-02 checkpoint below; **current state 2026-05-04: 299 skipped across 33 files** -- see PF.1 notes for the latest measurement) require Category-B rust-side primitives -- multi-MAIN wire-chain factory, executor breakpoint primitives, per-link fault injection -- carved out as P4-followup work, see "P4 followup tracker" sub-section below)
   - verify: `DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
   - artifact: ledger update; full sim gate green under dual-run.
   - status (2026-05-02 checkpoint -- second pass): **491 of 800 still-skipped tests unblocked under DLCP_SIM_BACKEND=rust** (~61% complete); **309 tests remain skipped across ~55 files**.  Latest collection: `pytest tests/sim --co -m "not dual_supported"` -> 309/1093.  +28 tests total migrated 2026-05-02 across 9 files (23 in burst 1 above + 5 wire-chain in burst 2): test_wire_chain_gpsim::test_stock_wire_single_main_chain_exchanges_real_uart_frames (1, first wire-chain migration), test_reconnect_wake_gate semantic guard + standby gate (2), test_chain_gpsim_waiting reach-display + blackout-wake (2).  Almost all remaining are tied to `chain_gpsim` / `wire_chain_gpsim` / `control_gpsim` runtime harnesses and require actual rust-side adapter migration, not marker batching.
@@ -537,7 +537,10 @@ future-session pickup.  None of these blocks block PF.6 or
 phase-5 work.
 
 - **Multi-MAIN wire-chain factory follow-ups (was P4.7
-  Category B)**: ~80 of the 309 still-skipped tests under
+  Category B)**: ~80 of the 309 still-skipped tests (per
+  the 2026-05-02 checkpoint at line 348; **current state
+  2026-05-04: 299 skipped across 33 files** -- see PF.1
+  notes for the latest measurement) under
   `DLCP_SIM_BACKEND=rust` need a `Chain.from_two_main_wire_chain(...)`-
   shaped factory (UPDATE 2026-05-04: `Chain.from_v171_v32` already
   delivers the silicon-correct three-core ring; the missing piece
