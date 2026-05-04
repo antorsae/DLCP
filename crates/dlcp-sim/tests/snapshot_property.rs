@@ -16,9 +16,11 @@
 //! For every fuzzed stream we assert
 //! `encode(decode(encode(c))?)? == encode(c)` (byte-stable
 //! round-trip), `encode(a) == encode(b)` for two chains given
-//! identical streams (replay determinism), and
+//! identical streams (cross-instance replay determinism --
+//! catches HashMap/HashSet iteration-order leaks), and
 //! `encode(c) == encode(c)` for the same chain encoded twice
-//! (encode determinism, catches HashMap iteration-order leaks).
+//! (same-instance encode determinism -- catches encoder paths
+//! that capture clock / RNG / env state at encode time).
 //!
 //! The tests do NOT construct random `Chain` graphs from scratch
 //! because `Chain` has many cross-field invariants (event-queue
@@ -33,7 +35,8 @@ use dlcp_sim::clock::ClockDomain;
 use dlcp_sim::core::{CoreLoadOptions, core_from_hex_image};
 use dlcp_sim::hex::HexImage;
 use dlcp_sim::memory::Variant;
-use dlcp_sim::reset::ResetSource;
+use dlcp_sim::memory::Address;
+use dlcp_sim::reset::{RCON_ADDR, RCON_POR, RCON_RI, ResetSource};
 use dlcp_sim::snapshot::{decode, encode};
 use proptest::prelude::*;
 
@@ -92,13 +95,23 @@ fn build_v171_control_chain() -> Chain {
     // the V1.71 property exercises a physically-reachable boot
     // chain, not an all-zero-SFR phantom state.
     chain.apply_reset_all(ResetSource::PowerOn);
+    // Anchor the POR landing: post-POR RCON has RI=1 (set by the
+    // formula in `crate::reset::apply_reset`) and POR=0 (cleared
+    // by POR).  A future edit that skips `apply_reset_all` would
+    // leave RCON=0 (Memory::new zero-fill) and this assertion
+    // would fire.  Byte-stable snapshot round-trip alone would
+    // not catch that ordering regression.
+    let rcon = chain.cores[0]
+        .memory
+        .read_raw(Address::from_raw(RCON_ADDR));
+    debug_assert!(
+        rcon & RCON_RI != 0 && rcon & RCON_POR == 0,
+        "post-POR RCON expected RI=1 + POR=0; got 0x{rcon:02X}"
+    );
     chain.schedule_initial_steps(&[0]);
-    // Anchor the POR-then-schedule invariant: a future edit that
-    // skips `apply_reset_all` would leave SFRs zero (POR sets
-    // RCON to a known non-zero value) AND `schedule_initial_steps`
-    // pushes one CoreInstructionComplete event per core.  Both
-    // checks catch ordering-regression that byte-stable snapshot
-    // round-trip alone would silently accept.
+    // Anchor the schedule landing: schedule_initial_steps pushes
+    // one CoreInstructionComplete event per core.  An edit that
+    // removes the call would leave events empty.
     debug_assert!(
         chain.events.len() >= 1,
         "schedule_initial_steps must seed >= 1 event"
