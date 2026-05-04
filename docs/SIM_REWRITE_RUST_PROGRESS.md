@@ -578,14 +578,12 @@ phase-5 work.
 
 - **Stock V1.4/V1.5b/V1.6b standby-bypass byte-signature fallback** (deferral from the standby-overlay close above).  When stock-CONTROL-hex tests come up that need `disable_standby_check=True` on builds without a sibling `.lst`, layer the three byte-signature address candidates from `src/dlcp_fw/sim/manifests.py:213-234` (V1.4 at 0x1228, V1.5b at 0x121A, V1.6b at 0x11DA) on top of the existing `Chain.patch_core_flash` primitive.  No new executor work required; pure Python helper extension.  Estimated <1 hour.
 
-- **Pre-existing-failure follow-ups** (was P4.6/P4.7 docs):
-  4 files have pre-existing failures on `main` and were not
-  marked dual_supported (would gate the full sim suite green
-  under `DLCP_SIM_BACKEND=rust` if tagged): `test_disasm_to_source.py`
-  (5/5 fail), `test_v31_diag_memread_usb_safe.py` (1/3 fail),
-  `test_v31_patch_builders.py` (2/5 fail), `test_v171_hang_modes.py`
-  (4/14 fail; awaiting V1.71 hardening per
-  `docs/V32_MAIN_HANG_HARDENING_PLAN.md`).
+- **Pre-existing-failure follow-ups** (was P4.6/P4.7 docs) — **gating DONE 2026-05-04** (commit 9cca525 + codex-fix follow-up).  4 files had pre-existing failures on `main`; each failing test now carries an xfail/skipif with a concrete deferral reason and an actionable fix-shape pointer (codex LOW from 9cca525: switched to `strict=True` so the xfail decorator surfaces XPASS as a real failure when the fix lands -- forcing the decorator to be removed in the same commit and preventing stale gates).  Follow-up work items, each with its own fix-shape:
+
+  1. `test_disasm_to_source.py` (5 tests, currently `pytest.mark.skipif`-gated on missing generated file) -- run `python3 scripts/annotate_disasm.py` once to populate `firmware/disasm/main/gpdasm_output.annotated.asm` (gitignored).  Tests pass on operators who run the generator; default fresh-checkout skips with a clear pointer at the regenerator command.  No CI integration needed; if the operator wants this in CI, add a `make annotate` target that runs the script before pytest.
+  2. `test_v171_hang_modes.py` (4 tests, currently `@_V171_HARDENING_PENDING_XFAIL`) -- land the V1.71 firmware hardening per `docs/V32_MAIN_HANG_HARDENING_PLAN.md` (each `call tx_byte_enqueue` in routed/poll/input/volume/cmd1d/standby/wake helpers immediately reads STATUS.C and `bc <abort-label>`).  When the fix lands, removing the decorator block at the top of the file flips all 4 tests back to required-passing.
+  3. `test_v31_patch_builders.py` (2 tests, currently `@_V31_BUILDER_NON_IDEMPOTENT_XFAIL`) -- re-anchor the V3.1 cmd07-guard / diag-coeff builders' `_RESEED_OLD` block to the current `src/dlcp_fw/asm/dlcp_main_v31.asm`.  Low-priority cleanup since V3.2 is the canonical MAIN release; keep deferred until a V3.1-flashing rig actually needs the diagnostic builder.
+  4. `test_v31_diag_memread_usb_safe.py` (1 test, currently `@pytest.mark.xfail`) -- regenerate `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex` against current V3.1 source via `python3 -m dlcp_fw.patch.build_v31_diag_memread_usb_safe`.  Same low-priority framing as #3.
 
 ---
 

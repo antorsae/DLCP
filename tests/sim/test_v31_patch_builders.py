@@ -46,14 +46,15 @@ _V31_BUILDER_NON_IDEMPOTENT_XFAIL = pytest.mark.xfail(
         "and raise RuntimeError(\"failed to locate V3.1 cmd<N> reseed "
         "block\").  These are diagnostic builders for the legacy V3.1 "
         "branch, kept around because flashing rigs may still serve "
-        "older firmware revs.  Tracked as P4-followup #104; the "
-        "builders are not on the canonical V3.2 release path so "
-        "fixing them is a low-priority cleanup.  Decorator form "
-        "(strict=False, run=True) keeps the suite green under "
-        "DLCP_SIM_BACKEND={rust,gpsim} until / unless the V3.1 path "
-        "is revived."
+        "older firmware revs.  Tracked as P4-followup #104 + the "
+        "ledger \"Pre-existing-failure follow-ups\" entry in "
+        "docs/SIM_REWRITE_RUST_PROGRESS.md.  Strict so XPASS surfaces "
+        "as a real failure: if/when the V3.1 builders are re-anchored "
+        "to current source, this decorator must be removed in the "
+        "same commit (codex LOW from 9cca525 -- non-strict xfail "
+        "would silently green-light a stale gate)."
     ),
-    strict=False,
+    strict=True,
     run=True,
 )
 

@@ -63,11 +63,15 @@ def test_canonical_v31_release_listing_contains_memread_dispatch_and_handler() -
         "regenerated artifact would need a fresh `python3 -m "
         "dlcp_fw.patch.build_v31_diag_memread_usb_safe` run to land in "
         "lock-step with the current V3.1 source.  Tracked as "
-        "P4-followup #104; not on the canonical V3.2 release path so "
-        "fixing is low-priority cleanup.  Decorator form keeps the "
-        "suite green under DLCP_SIM_BACKEND={rust,gpsim}."
+        "P4-followup #104 + the ledger \"Pre-existing-failure follow-"
+        "ups\" entry in docs/SIM_REWRITE_RUST_PROGRESS.md; not on the "
+        "canonical V3.2 release path so fixing is low-priority "
+        "cleanup.  Strict so XPASS surfaces as a real failure: "
+        "when the artifact is regenerated against current V3.1 "
+        "source, this decorator must be removed in the same commit "
+        "(codex LOW from 9cca525)."
     ),
-    strict=False,
+    strict=True,
     run=True,
 )
 def test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps() -> None:
