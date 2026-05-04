@@ -277,10 +277,16 @@ def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
 #
 # Per `docs/SIM_REWRITE_RUST_PROGRESS.md` task P3.6b, the Rust simulator
 # rewrite has structurally retired the gpsim PTY-bridge mirror echo
-# (P3.6a) but reproduces the same `v171_diag_present` PB2 saturation
-# the Python xfails describe.  No real-hardware test currently
-# distinguishes "V1.71 firmware fails PB2 reply on real silicon too"
-# from "both simulators have a shared timing/electrical fidelity gap".
+# (P3.6a).  As of 2026-05-04 the rust sim is empirically WORSE than
+# the gpsim PB2-saturation gap the Python xfails describe -- rust
+# yields ZERO replies (PB1+PB2 both miss; v171_diag_present stays
+# 0x00); see task #94.  The earlier prediction that rust would
+# reproduce the same PB1-only saturation came from xfailed tests
+# that actually use `run=False` so they never executed empirically.
+# No real-hardware test currently distinguishes "V1.71 firmware fails
+# PB2 reply on real silicon too" from "both simulators have a shared
+# timing/electrical fidelity gap" (gpsim) or a distinct query
+# emission/parser gap (rust, task #94).
 #
 # The two strict gates below answer that question.  Both gates assert
 # the operator-navigated PB Diag page (state 4 = PB1, state 5 = PB2)
@@ -529,11 +535,13 @@ def test_live_diagnostics_pb1_data_lands_on_real_silicon(tmp_path: Path) -> None
     `DLCP_HW_LAYER5_REQUIRE_PB2_DATA=1`.  Combined results fill in
     the PB1 x PB2 decision matrix in the section header above.
 
-    Both sims show PB1 reply convergence works (`v171_diag_present`
-    bit 0 sets reliably).  This gate's role is the BASELINE
-    confirmation that real silicon agrees.  If this fails AND the
-    PB2 sibling fails, the rig itself is broken (not the firmware /
-    sim question we're trying to answer).
+    gpsim shows PB1 reply convergence works (`v171_diag_present`
+    bit 0 sets reliably).  Rust does NOT (task #94, 2026-05-04
+    empirical: zero replies).  This gate's role is the BASELINE
+    confirmation that real silicon agrees with the gpsim PB1-works
+    side.  If this fails AND the PB2 sibling fails, the rig itself
+    is broken (not the firmware / sim question we're trying to
+    answer).
     """
     _assert_pb_diag_page_converged(
         pb_num=1,

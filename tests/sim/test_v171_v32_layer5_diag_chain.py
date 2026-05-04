@@ -310,13 +310,25 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # half the story.  The Rust simulator rewrite uses a silicon-correct
 # directional ring (CONTROL.TX -> MAIN0.RX -> MAIN1.RX -> CONTROL.RX,
 # 3 directional edges, no fan-out, no self-loops) which is
-# *structurally* incapable of reproducing the bridge mirror.  Yet
-# the same `v171_diag_present` PB2 saturation occurs in the Rust
-# sim too: synthetic + firmware-driven probes show CONTROL emits
-# both queries, MAIN0 emits the full 7-frame reply burst, MAIN1
-# forwards the BF/27/00 frame to CONTROL.RX cleanly (no OERR), but
-# CONTROL never successfully processes BF/27 through the BF/2N
-# last-frame path.
+# *structurally* incapable of reproducing the bridge mirror.  The
+# 2026-04-27 working assumption was that rust would land the same
+# PB1-only saturation as gpsim ("synthetic + firmware-driven probes
+# show CONTROL emits both queries, MAIN0 emits the full 7-frame
+# reply burst, MAIN1 forwards the BF/27/00 frame to CONTROL.RX
+# cleanly (no OERR), but CONTROL never successfully processes BF/27
+# through the BF/2N last-frame path").
+#
+# UPDATE (2026-05-04, task #94): empirically retested rust on the
+# `_rust_navigate_to_diagnostics` -> wait-for-PB-present path.
+# Rust does NOT saturate at PB1 -- it shows ZERO replies
+# (v171_diag_present stays 0x00 across 2000 step() chunks ~= 400M
+# Tcy).  The 2026-04-27 prediction was assumed-based, not
+# empirical: the four xfailed tests below use `run=False`, so they
+# never actually executed on rust to verify the PB1-saturation
+# claim.  The actual rust gap is a separate Diag-page query
+# emission / parser issue distinct from the gpsim bridge-mirror
+# saturation -- track in task #94 (re-probe the cmd 0x21 emission
+# path on V1.71 CONTROL + the BF/21..27 reply path on V3.2 MAIN).
 #
 # HARDWARE RESULT (2026-04-27): Path 1 hardware probe ran on the
 # real DLCP rig (V1.71 CONTROL + V3.2 MAIN0 + V3.2 MAIN1, both MAINs
@@ -575,12 +587,18 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
 
     This is the protocol-contract end-to-end gate.
 
-    XFailed on BOTH backends per the shared PB2 sim fidelity gap
-    (see file-level docstring §"UPDATE 2026-04-27"): real hardware
-    serves both PB convergences; both gpsim's bridge-mirror harness
-    and rust's silicon-correct ring saturate `v171_diag_present` at
-    0x01 (PB1 only).  Marker-only migration to `dual_supported`
-    keeps both backends running the same xfail.
+    XFailed on BOTH backends, but for distinct underlying gaps:
+      * gpsim: shared PB2 sim fidelity gap -- saturates
+        `v171_diag_present` at 0x01 (PB1 reply works, PB2 reply lost).
+      * rust: separate Diag-page query gap (task #94) -- ZERO
+        replies on rust (`v171_diag_present` stays 0x00); the prior
+        2026-04-27 claim that rust also saturates at PB1 was
+        assumption-based since `_V171_V32_PB2_BRIDGE_XFAIL` uses
+        `run=False` (the body never executed empirically).
+    Real hardware serves both PB convergences (verified 2026-04-27,
+    see file-level UPDATE).  Marker-only migration to
+    `dual_supported` keeps both backends running the same xfail
+    while their distinct gaps stay open.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
