@@ -2164,6 +2164,11 @@ impl Chain {
     /// `core_idx` selects the core to inspect:
     ///   * 0 -> CONTROL (`i_ctl`)
     ///   * 1 -> MAIN0 (`i_main0`)
+    ///   * 2 -> MAIN1 (`i_main1`) — extended 2026-05-04
+    ///     for ledger task #100 (executor breakpoint
+    ///     primitives), unblocking the
+    ///     `test_v31_combined_dsp_table_apply.py` family
+    ///     and other 2-MAIN gpsim probes.
     /// Other values raise `PyValueError`.
     #[pyo3(signature = (core_idx, pc_lo, pc_hi, max_tcy=1_000_000))]
     fn step_until_pc_hit(
@@ -2176,9 +2181,10 @@ impl Chain {
         let target_idx = match core_idx {
             0 => self.i_ctl,
             1 => self.i_main0,
+            2 => self.i_main1,
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "core_idx must be 0 (CONTROL) or 1 (MAIN0); got {}",
+                    "core_idx must be 0 (CONTROL), 1 (MAIN0), or 2 (MAIN1); got {}",
                     other,
                 )));
             }
@@ -2204,6 +2210,46 @@ impl Chain {
             self.inner.step_ticks(advance * factor);
             remaining -= advance;
         }
+    }
+
+    /// Override a core's program counter mid-run.  Mirror of
+    /// gpsim's `pc=0x...` CLI primitive.  Spec / ledger:
+    /// P4-followup B (`docs/SIM_REWRITE_RUST_PROGRESS.md`
+    /// "P4 followup tracker", task #100) — together with
+    /// `step_until_pc_hit` this gives Python tests the
+    /// `pc=X ; break e Y ; run` pattern that
+    /// `test_v31_combined_dsp_table_apply.py` (5 tests),
+    /// `test_v30_gpsim_equivalence.py` (10 tests), and
+    /// parts of `test_v30_relocation.py` use to drive
+    /// PIC18 helper routines from arbitrary entry points.
+    ///
+    /// `core_idx` matches `step_until_pc_hit`'s mapping:
+    ///   * 0 -> CONTROL (`i_ctl`)
+    ///   * 1 -> MAIN0 (`i_main0`)
+    ///   * 2 -> MAIN1 (`i_main1`)
+    ///
+    /// `pc` is the silicon's word-addressed PC in the
+    /// `[0, 0x001F_FFFF]` range; per
+    /// `Core::set_pc`'s contract, bit 0 is masked to 0
+    /// (PC is instruction-aligned, not byte-aligned, on
+    /// PIC18).  Returns the masked PC actually written so
+    /// the caller can detect the bit-0 strip without a
+    /// follow-up read.
+    #[pyo3(signature = (core_idx, pc))]
+    fn set_core_pc(&mut self, core_idx: usize, pc: u32) -> PyResult<u32> {
+        let target_idx = match core_idx {
+            0 => self.i_ctl,
+            1 => self.i_main0,
+            2 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "core_idx must be 0 (CONTROL), 1 (MAIN0), or 2 (MAIN1); got {}",
+                    other,
+                )));
+            }
+        };
+        self.inner.cores[target_idx].set_pc(pc);
+        Ok(self.inner.cores[target_idx].pc())
     }
 
     /// Advance simulation until MAIN0 stops emitting TX

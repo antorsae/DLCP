@@ -1051,14 +1051,39 @@ class Chain:
         ``[pc_lo, pc_hi]`` (inclusive) or ``max_tcy`` Tcy
         elapse.  Returns the actual PC at exit (which may be
         outside the range if the budget was exhausted).
-        ``core_idx``: 0=CONTROL, 1=MAIN0.  Mirror of gpsim's
-        ``break e <addr>`` + ``run`` primitive.
+        ``core_idx``: 0=CONTROL, 1=MAIN0, 2=MAIN1.  Mirror of
+        gpsim's ``break e <addr>`` + ``run`` primitive.
+        (MAIN1 added 2026-05-04 as part of P4-followup B,
+        ledger task #100, for 2-MAIN gpsim probe migration.)
         """
         return int(self._inner.step_until_pc_hit(
             int(core_idx),
             int(pc_lo) & 0x001F_FFFF,
             int(pc_hi) & 0x001F_FFFF,
             int(max_tcy),
+        ))
+
+    def set_core_pc(self, core_idx: int, pc: int) -> int:
+        """Override a core's program counter.  Mirror of
+        gpsim's ``pc=0x...`` CLI primitive.  Spec / ledger:
+        P4-followup B (``docs/SIM_REWRITE_RUST_PROGRESS.md``
+        "P4 followup tracker", task #100) — together with
+        :meth:`step_until_pc_hit` this gives Python tests the
+        ``pc=X ; break e Y ; run`` pattern that
+        ``test_v31_combined_dsp_table_apply.py``,
+        ``test_v30_gpsim_equivalence.py``, and parts of
+        ``test_v30_relocation.py`` use to drive PIC18 helper
+        routines from arbitrary entry points.
+
+        ``core_idx``: 0=CONTROL, 1=MAIN0, 2=MAIN1.
+        ``pc``: silicon's word-addressed PC; bit 0 is masked
+        to 0 (instruction-aligned).  Returns the masked PC
+        actually written so callers can detect the bit-0
+        strip without a follow-up read.
+        """
+        return int(self._inner.set_core_pc(
+            int(core_idx),
+            int(pc) & 0x001F_FFFF,
         ))
 
     def read_dsp_address_nack_count_remaining(self) -> int:
