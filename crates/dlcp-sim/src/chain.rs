@@ -1244,11 +1244,21 @@ impl Chain {
     /// `current_tick`.  Pushing such a stale tick lets
     /// `step_ticks` pop it later and run
     /// `self.current_tick = event.tick`, moving the universal
-    /// clock backwards.  Clamp to `current_tick` so wake-
-    /// from-halt events fire at-or-after now (effectively
-    /// modelling silicon's "no retroactive replay of missed
-    /// Tcy slots" -- the CPU just resumes at the next
-    /// universal tick boundary).
+    /// clock backwards.  Two-step repair:
+    ///   1. Schedule the immediate wake event at
+    ///      `current_tick` (instead of the stale absolute
+    ///      tick), preserving monotonicity.
+    ///   2. Bump `boot_epochs[core_idx]` to
+    ///      `current_tick - drifted_tick` so EVERY subsequent
+    ///      reschedule paces from `current_tick` (next event
+    ///      at `current_tick + factor`, modulo drift) rather
+    ///      than re-clamping for ~`current_tick / factor`
+    ///      iterations until `cycles * factor` catches up.
+    /// Together these model silicon's "no retroactive replay
+    /// of missed Tcy slots": the CPU resumes at the next
+    /// universal tick boundary and runs at normal Tcy pacing
+    /// from there -- it does not burn through a backlog of
+    /// missed cycles at the same wall-clock instant.
     pub fn schedule_next_core_step(&mut self, core_idx: usize) {
         let tcy = self.cores[core_idx].cycles();
         let factor = self.cores[core_idx].ticks_per_tcy() as u64;
@@ -1256,7 +1266,26 @@ impl Chain {
         let drifted_tick = self.clocks[core_idx].apply_drift(nominal_tick);
         let epoch = self.boot_epochs[core_idx];
         let absolute_tick = epoch.saturating_add(drifted_tick);
-        let scheduled_tick = absolute_tick.max(self.current_tick);
+        let scheduled_tick = if absolute_tick < self.current_tick {
+            // Wake-from-halt repair: not just clamp the FIRST event,
+            // but also fast-forward `boot_epochs[core_idx]` so every
+            // subsequent reschedule paces from `current_tick` rather
+            // than catching up.  Without the epoch bump, every
+            // reschedule until `cycles * factor` overtakes
+            // `current_tick` would re-clamp to `current_tick` and
+            // produce a same-tick burst of ~`current_tick / factor`
+            // instructions -- silicon-incorrect (CPU does not run a
+            // burst on wake) and would block other cores from
+            // advancing while the woken core drains its backlog.
+            // After the bump, `epoch + drifted_tick == current_tick`
+            // for the present `cycles()`, so the next reschedule
+            // (cycles+1) fires at `current_tick + factor` (modulo
+            // drift) -- normal Tcy pacing resumes immediately.
+            self.boot_epochs[core_idx] = self.current_tick.saturating_sub(drifted_tick);
+            self.current_tick
+        } else {
+            absolute_tick
+        };
         self.events
             .push(scheduled_tick, EventKind::CoreInstructionComplete(core_idx));
     }
@@ -1477,24 +1506,41 @@ mod tests {
     /// the core never halted -- which can be in the past
     /// relative to `current_tick` (the universal clock kept
     /// moving forward via other events while this core slept).
-    /// Without the clamp in `schedule_next_core_step`, the
+    /// Without the repair in `schedule_next_core_step`, the
     /// stale tick would later be popped by `step_ticks` and
-    /// `self.current_tick = event.tick` (chain.rs:503) would
-    /// move the universal clock BACKWARDS, breaking
-    /// monotonicity for every other event still in the queue.
+    /// `self.current_tick = event.tick` would move the
+    /// universal clock BACKWARDS, breaking monotonicity for
+    /// every other event still in the queue.
     ///
-    /// The fix clamps the scheduled tick to
-    /// `max(absolute_tick, current_tick)`.  This regression
-    /// test reproduces the wake-from-halt scenario directly
-    /// (without relying on a specific firmware sleep path) by
-    /// driving `current_tick` forward via a dummy event, then
-    /// scheduling a wake event for a core whose `cycles()` is
-    /// still 0.  Pre-fix, the wake event's tick would be 0;
-    /// post-fix, it must be >= `current_tick`.
+    /// The fix is two-pronged:
+    ///   1. Schedule the IMMEDIATE wake event at
+    ///      `current_tick` (clamping past `absolute_tick`).
+    ///   2. Bump `boot_epochs[core_idx]` to
+    ///      `current_tick - drifted_tick` so SUBSEQUENT
+    ///      reschedules pace from `current_tick` rather than
+    ///      re-clamping for ~`current_tick / factor`
+    ///      iterations until `cycles * factor` catches up.
+    ///
+    /// This test exercises both prongs:
+    ///   * Prong 1: after `schedule_next_core_step`, the head
+    ///     event's tick is `>= current_tick` (and equals
+    ///     `current_tick` since `epoch == 0` and
+    ///     `cycles() == 0`).
+    ///   * Prong 2: after draining ONE wake event via
+    ///     `step_ticks(0)` (which executes one instruction --
+    ///     a NOP since flash is zero), the NEXT scheduled
+    ///     event is at `current_tick + factor` (one Tcy
+    ///     ahead, modulo zero drift), NOT another
+    ///     `current_tick`-clamped event.  Pre-prong-2 this
+    ///     assertion would fail: the post-execute reschedule
+    ///     sees `cycles=1`, `drifted_tick=16`,
+    ///     `absolute_tick=16 < 5000`, and re-clamps to
+    ///     `current_tick=5000`.
     #[test]
     fn schedule_next_core_step_clamps_to_current_tick_on_wake() {
         let mut chain = Chain::new();
         chain.push_core(Core::new(Variant::Pic18F25K20));
+        let factor = chain.ticks_per_tcy(0) as u64;
 
         // Advance the universal clock past where a freshly-
         // halted core's next-instruction tick would land
@@ -1510,29 +1556,64 @@ mod tests {
         // Simulate a wake-from-halt: core's cycles() is still
         // 0 (never advanced), boot_epoch is 0, but the chain
         // is at tick 5_000.  Pre-fix, this would push tick=0;
-        // post-fix, it must clamp to current_tick=5_000.
+        // post-fix, the immediate wake event must clamp to
+        // current_tick=5_000.
         assert_eq!(chain.cores[0].cycles(), 0);
+        assert_eq!(chain.boot_epochs[0], 0);
         chain.schedule_next_core_step(0);
 
-        // The just-pushed event is the only new one.
+        // Prong 1: the just-pushed event is the only new one
+        // and clamps to current_tick.
         assert_eq!(chain.events.len(), pre_len + 1);
-        let next = chain.events.peek().expect("event queued");
-        assert!(
-            next.tick >= chain.current_tick,
-            "wake-from-halt scheduled stale tick: event.tick={} < current_tick={}",
-            next.tick,
-            chain.current_tick
+        let head_tick = chain.events.peek().expect("event queued").tick;
+        assert_eq!(
+            head_tick, 5_000,
+            "wake-from-halt event must clamp to current_tick (got {head_tick})"
+        );
+        // The boot_epoch bump from prong-2 fires at scheduling
+        // time even when only prong-1 is observed: epoch is
+        // current_tick - drifted_tick(0) = 5000 - 0 = 5000.
+        assert_eq!(
+            chain.boot_epochs[0], 5_000,
+            "boot_epoch bump didn't fire on stale-tick detection"
         );
 
-        // Stronger guarantee: drain that event via step_ticks
-        // and confirm current_tick did NOT regress.
+        // Drain the immediate wake event (executes one
+        // instruction -- NOP at flash[0] since flash is
+        // zero-init).  current_tick stays at 5_000 and one
+        // new event was rescheduled.
         let pre_step_tick = chain.current_tick;
+        let pre_cycles = chain.cores[0].cycles();
         chain.step_ticks(0);
         assert!(
             chain.current_tick >= pre_step_tick,
             "step_ticks moved current_tick backwards from {} to {}",
             pre_step_tick,
             chain.current_tick
+        );
+        assert_eq!(
+            chain.cores[0].cycles(),
+            pre_cycles + 1,
+            "expected exactly 1 instruction post-wake, got delta={} \
+             (clamp-only fallback would burn ~current_tick/factor instructions \
+              all at the same tick before peek > target breaks the loop)",
+            chain.cores[0].cycles() - pre_cycles
+        );
+
+        // Prong 2: the NEXT event is exactly `factor` ticks
+        // past current_tick (silicon-correct Tcy pacing
+        // resumes after wake), NOT another current_tick-clamp.
+        // Pre-fix (clamp-only) the next event would still be
+        // at 5_000, producing a same-tick burst until cycles
+        // catches up.
+        let next_tick = chain.events.peek().expect("reschedule queued").tick;
+        assert_eq!(
+            next_tick,
+            chain.current_tick + factor,
+            "post-wake reschedule didn't pace by 1 Tcy: \
+             expected current_tick+factor={}, got {}",
+            chain.current_tick + factor,
+            next_tick
         );
     }
 
