@@ -86,7 +86,16 @@ Phase A and Phase B both show identical CONTROL behavior in rust:
 | Phase | Pre-press LCD | Post-press LCD | B0/03/* frames on CTL.tx |
 |---|---|---|---|
 | A: Volume screen | `Volume:-17.0dB A` / `Auto Detect` | `Zzz...` | 8 |
-| B: PB1 Diag page | `PB1` / `n/a` | `Zzz...` | 8 |
+| B: PB1 Diag page | `PB1` / `OK` | `Zzz...` | 8 |
+
+(Phase B's pre-press LCD reads `PB1` / `OK` rather than `PB1` /
+`n/a` because the probe's 4-RIGHT navigation -- which steps the
+chain by 80 chunks per press to let each press settle -- already
+gives the cmd 0x21 cadence enough cycles to fire BF/27 and set
+`v171_diag_present.bit_0`, flipping the Tier-1 layout from Absent
+to Healthy.  The convergence is incidental to this probe; the STBY
+broadcast question is independent of which layout PB1 currently
+displays.)
 
 The CTL.tx byte streams are byte-for-byte equivalent in their
 B0/03/* dispatches; they differ only in the leading nav-context
@@ -103,9 +112,11 @@ CONTROL is still polling the PB1 cache when STBY is pressed).
   window starting `(0xB0, 0x03)` -- intentionally not requiring
   strict 3-byte alignment so a partial-frame leak would still
   be visible.
-- Steps the chain ~2 sec sim wall-time after each press to let
-  any TX burst complete (the V1.71 standby busy-loop emits
-  multiple `B0/03/*` frames during this window).
+- Steps the chain ~18 sec sim wall-time after each press
+  (`step_many(240)` chunks ≈ 868M universal ticks) to let any
+  TX burst complete and to capture multiple iterations of the
+  V1.71 standby/wake busy-loop, which re-broadcasts B0/03/*
+  every ~45M ticks (~940 ms) until something wakes it.
 
 ## Implications + recommended next steps
 

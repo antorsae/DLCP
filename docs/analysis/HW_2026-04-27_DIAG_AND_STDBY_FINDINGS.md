@@ -528,8 +528,18 @@ Diag page on real HW only dims the CONTROL LCD (Zzz... dimmed) — the
 MAINs keep playing music, apparently because CONTROL does not
 broadcast the panel `B0/03/00` STDBY frame from this state (inferred
 from the audible-music observation alone; no scope/wire capture has
-been taken on the bus to confirm).  Whether rust matches has not yet
-been verified at the CONTROL.TX byte-stream level; the visible
-`Zzz...` LCD raster alone is NOT evidence of divergence.  Separate
-scope from the P3.8 sub-tasks.  Section 7.4 carries the
+been taken on the bus to confirm).
+
+**Probe v23 update (2026-05-04, see
+`docs/analysis/V171_STBY_FROM_DIAG_PROBE_2026-05-04.md`):**
+measured rust CONTROL.TX after pressing STBY on PB1 Diag.  Rust
+DOES emit 8 `B0/03/*` frames -- byte-stream-equivalent to the
+STBY-from-Volume positive control, and matching what the V1.71
+asm prescribes (the STBY-edge handler at PC 0x0DB0 has no
+menu-state guard).  So rust is firmware-faithful; the HW
+divergence is therefore not a rust-side bug.  Reconciling the
+"MAINs keep playing music" HW report with the V1.71 asm flow
+needs scope-on-wire data we don't yet have.
+
+Separate scope from the P3.8 sub-tasks.  Section 7.4 carries the
 "symptom-equivalent" qualifier explicitly.

@@ -487,12 +487,15 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   broadcast the panel `B0/03/00` STDBY frame to MAINs from this
   state, but the inference is from the audible-music observation
   alone (no scope/wire capture has been taken on the bus to
-  confirm).  Filed as
-  task #95 (rust behavior in this scenario still needs probing
-  to determine whether rust CONTROL emits the STDBY frame; the
-  visible `Zzz...` LCD raster alone is NOT evidence of a
-  divergence — only a mismatch on the CONTROL.TX byte stream
-  would be).  The
+  confirm).  Filed as task #95.  Probe v23 (2026-05-04, see
+  `docs/analysis/V171_STBY_FROM_DIAG_PROBE_2026-05-04.md`)
+  measured rust CONTROL.TX after pressing STBY on PB1 Diag:
+  rust DOES emit 8 `B0/03/*` frames, byte-stream-equivalent to
+  the STBY-from-Volume positive control.  The V1.71 asm
+  STBY-edge handler at PC 0x0DB0 has no menu-state guard, so
+  rust is firmware-faithful to V1.71.  Real HW divergence
+  remains unresolved without scope-on-wire data; reconciling
+  hypotheses listed in the probe v23 analysis.  The
   `uart_rx_history` + per-destination RX capture primitives
   from commit 6fd3f30 + the Timer3 IRQ-dispatch unit tests
   from f826b85 remain useful infrastructure.
