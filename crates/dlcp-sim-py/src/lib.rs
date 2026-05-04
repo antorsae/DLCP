@@ -536,6 +536,16 @@ struct Chain {
     /// `tx_record_since_last_capture` for the mirror-of-gpsim
     /// semantics.
     tx_capture_main0: usize,
+    /// MAIN1-side TX-record capture point.  Symmetric to
+    /// `tx_capture_main0` but filters entries whose
+    /// `src_core == i_main1`.  Used by 3-core wire-chain probes
+    /// (CTL.tx -> MAIN0.rx -> MAIN1.rx -> CTL.rx) that need to
+    /// distinguish "MAIN1 forwarded" from "CONTROL RX accepted"
+    /// when localizing where bytes drop on the upstream return
+    /// path.  Single-MAIN chains alias `i_main1 == i_main0`, so
+    /// this capture coincides with `tx_capture_main0` and offers
+    /// no new information there.  See task #94 probe.
+    tx_capture_main1: usize,
     /// CONTROL-side TX-record capture point.  Symmetric to
     /// `tx_capture_main0` but filters entries whose
     /// `src_core == i_ctl`.  Used by tests that need to bound
@@ -762,6 +772,7 @@ impl Chain {
             i_main1: handle.i_main1,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -813,6 +824,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -864,6 +876,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -919,6 +932,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -959,6 +973,7 @@ impl Chain {
             i_main1: handle.i_main,
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
+            tx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -1672,6 +1687,49 @@ impl Chain {
             .iter()
             .filter(|r| r.src_core == main0)
             .count();
+    }
+
+    /// MAIN1 mirror of `mark_tx_capture_point` for 3-core
+    /// wire-chain probes that need to localize byte loss
+    /// between MAIN1 TX and CONTROL RX.  In the V1.71+V3.2+V3.2
+    /// ring topology (CTL.tx -> MAIN0.rx -> MAIN1.rx -> CTL.rx),
+    /// MAIN0's BF/2N reply burst flows through MAIN1's
+    /// forwarder before reaching CONTROL.  Comparing
+    /// MAIN0 TX, MAIN1 TX, and CONTROL RX accept counts
+    /// localizes which hop drops bytes.  Single-MAIN chains
+    /// alias `i_main1 == i_main0`, so this returns the same
+    /// stream as `mark_tx_capture_point` and offers no new
+    /// information.  See task #94.
+    fn mark_main1_tx_capture_point(&mut self) {
+        let main1 = self.i_main1;
+        self.tx_capture_main1 = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == main1)
+            .count();
+    }
+
+    /// MAIN1 mirror of `tx_record_since_last_capture`.
+    /// Returns MAIN1's TX bytes recorded since the last
+    /// `mark_main1_tx_capture_point()` call (or since chain
+    /// construction if never marked), then advances the
+    /// capture pointer to the current end.  Bytes are
+    /// returned as a flat list of u8s; alignment to 3-byte
+    /// chain frames is the caller's responsibility.  See
+    /// task #94.
+    fn main1_tx_record_since_last_capture(&mut self) -> Vec<u8> {
+        let main1 = self.i_main1;
+        let main1_records: Vec<u8> = self
+            .inner
+            .uart_tx_history
+            .iter()
+            .filter(|r| r.src_core == main1)
+            .map(|r| r.byte)
+            .collect();
+        let result = main1_records[self.tx_capture_main1..].to_vec();
+        self.tx_capture_main1 = main1_records.len();
+        result
     }
 
     /// CONTROL-side equivalent of `mark_tx_capture_point`.

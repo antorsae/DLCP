@@ -870,6 +870,29 @@ class Chain:
         """
         return list(self._inner.ctl_tx_record_since_last_capture())
 
+    def mark_main1_tx_capture_point(self) -> None:
+        """MAIN1 mirror of :meth:`mark_tx_capture_point` for
+        3-core wire-chain probes.  In the V1.71+V3.2+V3.2 ring
+        topology (CTL.tx -> MAIN0.rx -> MAIN1.rx -> CTL.rx),
+        MAIN0's BF/2N reply burst flows through MAIN1's
+        forwarder before reaching CONTROL.  Comparing MAIN0 TX,
+        MAIN1 TX, and CONTROL RX accept counts localizes which
+        hop drops bytes.  Single-MAIN chains alias
+        ``i_main1 == i_main0``, so this returns the same stream
+        as :meth:`mark_tx_capture_point` and offers no new
+        information.  See task #94.
+        """
+        self._inner.mark_main1_tx_capture_point()
+
+    def main1_tx_record_since_last_capture(self) -> list[int]:
+        """MAIN1 mirror of :meth:`tx_record_since_last_capture`.
+        Returns MAIN1's TX bytes recorded since the last
+        :meth:`mark_main1_tx_capture_point` call (or chain
+        construction).  Bytes are returned as a flat list of
+        u8s.  See task #94.
+        """
+        return list(self._inner.main1_tx_record_since_last_capture())
+
     def current_ctl_pc(self) -> int:
         """CONTROL core's current PC (firmware program counter,
         word-aligned, masked to 21 bits).  Mirror of gpsim's
