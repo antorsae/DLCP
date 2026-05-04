@@ -422,7 +422,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 
   1. **Investigate V1.71+V3.2+V3.2 Zzz convergence gap** -- highest user-priority because it relates to field bugs #44/#45 and unblocks ~24 tests in test_v171_v32_layer5_diag_chain.py + test_v28_wire_delayed_switch_repros.py.
   2. **Investigate V1.4x/V1.5x/V1.6x + V2.4/V2.5 WAITING-stuck convergence gap** -- unblocks ~20 tests in test_chain_gpsim_v25*.py + test_wire_chain_gpsim.py.
-  3. **Add per-link fault injection** (`Chain.set_link_fault(coupling_idx_or_name, drop=True/extra_ticks=N)`) -- unblocks ~25 wire-chain fault-injection tests.
+  3. **Add per-link fault injection** (`Chain.set_link_fault(coupling_idx_or_name, drop=True/extra_cycles=N)`) -- unblocks ~25 wire-chain fault-injection tests.
 
   ### P4.7 wire-chain convergence gap CLOSED (2026-05-04)
 
@@ -557,7 +557,7 @@ phase-5 work.
   `test_main_gpsim_cmd03_instruction_path.py` (10).
 
 - **Per-link fault-injection primitive (was P4.7 follow-up)**:
-  `Chain.set_link_fault(coupling_idx_or_name, drop=True/extra_ticks=N)`.
+  `Chain.set_link_fault(coupling_idx_or_name, drop=True/extra_cycles=N)`.
   Unblocks ~25 wire-chain fault-injection tests.
 
 - **gpsim wrapper excision (was P4.9)**: deferred to PF.4
