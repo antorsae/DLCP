@@ -996,7 +996,7 @@ health (per `dlcp_control_v171.asm:3484+,3603+`):
 | Layout | Row 0 | Row 1 |
 |---|---|---|
 | Absent (PB has never replied) | `PBn` (+ 13 spaces) | `n/a` (+ 13 spaces) |
-| Healthy (all 11 cells == 0) | `PBn` (+ 13 spaces) | `OK` (+ 14 spaces) |
+| Healthy (all 7 runtime counters + abnormal reset flags V/W/X == 0; the POR `O` reset-cause flag may be 1 on normal cold boot) | `PBn` (+ 13 spaces) | `OK` (+ 14 spaces) |
 | Degraded (1..9 non-zero cells) | `PBn:` + up to 4 cell entries | up to 5 cell entries |
 | Overflow (10..11 non-zero cells) | `PBn:` + 4 cell entries (full) | 5 cell entries + `..` overflow indicator |
 
