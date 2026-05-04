@@ -536,10 +536,14 @@ measured rust CONTROL.TX after pressing STBY on PB1 Diag.  Rust
 DOES emit 8 `B0/03/*` frames -- byte-stream-equivalent to the
 STBY-from-Volume positive control, and matching what the V1.71
 asm prescribes (the STBY-edge handler at PC 0x0DB0 has no
-menu-state guard).  So rust is firmware-faithful; the HW
-divergence is therefore not a rust-side bug.  Reconciling the
-"MAINs keep playing music" HW report with the V1.71 asm flow
-needs scope-on-wire data we don't yet have.
+menu-state guard).  So rust is firmware-faithful to the V1.71
+asm as written.  Whether rust matches real silicon's actual
+behavior remains open: the analysis lists three reconciling
+hypotheses -- (1) an asm-vs-silicon gate the V1.71 source does
+not encode but real silicon honors (rust would then be missing
+that gate too), (2) a MAIN-side gate, or (3) an
+operator-interpretation transient.  Resolving which hypothesis
+holds needs scope-on-wire data we don't yet have.
 
 Separate scope from the P3.8 sub-tasks.  Section 7.4 carries the
 "symptom-equivalent" qualifier explicitly.
