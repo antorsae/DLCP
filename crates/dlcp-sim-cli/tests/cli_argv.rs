@@ -36,10 +36,16 @@ const CASE_JSON_V1: &str = r#"{
 /// `tempdir()` returned a bare `PathBuf` and never deleted the
 /// directory, despite the comment claiming Drop cleanup; that
 /// leaked five unique dirs per test run under
-/// `std::env::temp_dir()`.  This struct removes the directory
-/// (best-effort -- ignore I/O errors so a failing test
-/// doesn't double-fail on cleanup) when the test's
-/// `TempDir` binding goes out of scope.
+/// `std::env::temp_dir()`.
+///
+/// The Drop impl is panic-aware: on a normal test exit it
+/// best-effort-removes the dir, but if the test is unwinding
+/// from a failed assertion (`std::thread::panicking()` is
+/// true) it LEAVES the directory in place and prints its path
+/// to stderr so the operator can inspect the case.json /
+/// trace files cargo's `--show-output` would otherwise have
+/// pointed at.  (Codex LOW from 5b15006: previous Drop
+/// always wiped, even on panic unwind.)
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -50,7 +56,14 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if std::thread::panicking() {
+            eprintln!(
+                "TempDir leaked for triage (test panicked): {}",
+                self.0.display()
+            );
+        } else {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
 

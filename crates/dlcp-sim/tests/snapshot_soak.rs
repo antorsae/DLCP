@@ -507,6 +507,20 @@ fn step_split_soak() {
     }
 }
 
+/// Auto-cleanup wrapper for the synthetic dump file written by
+/// `dump_replay_case_is_replay_v1_shape`.  Removes the file on
+/// drop -- including panic unwinding -- so a failing assertion
+/// doesn't leave a stray synthetic dump in
+/// `artifacts/sim_soak_failures/` that an operator might mistake
+/// for a real soak failure (codex LOW from 5b15006).
+struct DumpArtifact(PathBuf);
+
+impl Drop for DumpArtifact {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Self-test for `dump_replay_case`: a dump must round-trip
 /// through `serde_json` as a `dlcp-sim-replay-v1` case
 /// (`format`, `initial_factory`, `stimuli` all present and
@@ -528,13 +542,17 @@ fn dump_replay_case_is_replay_v1_shape() {
         Stimulus::StepTicks(1234),
         Stimulus::SetUartBlackout(true),
     ];
-    // Use a unique scenario_idx so this test doesn't collide
-    // with a real soak failure.  The number is far above
-    // SOAK_SCENARIOS so it's clearly synthetic.
+    // Use a PID-derived synthetic scenario_idx so two
+    // concurrent cargo-test runs don't share the same dump
+    // file path (codex LOW from 5b15006: deterministic path
+    // collision risk).  Stays well above SOAK_SCENARIOS so
+    // it's obviously synthetic.
+    let synthetic_idx: u64 = u64::from(std::process::id())
+        .wrapping_add(SOAK_SCENARIOS * 100);
     let _suffix = dump_replay_case(
         "dump_replay_case_is_replay_v1_shape",
         0xDEAD,
-        99_999,
+        synthetic_idx,
         "v171_control",
         &stims,
         "self-test",
@@ -544,10 +562,15 @@ fn dump_replay_case_is_replay_v1_shape() {
         .parent()
         .and_then(|p| p.parent())
         .expect("crate dir has 2 ancestors")
-        .join(
+        .join(format!(
             "artifacts/sim_soak_failures/\
-             dump_replay_case_is_replay_v1_shape_seed_99999_selftest.json",
-        );
+             dump_replay_case_is_replay_v1_shape_seed_{synthetic_idx:05}_selftest.json"
+        ));
+    // Wrap the dump path in DumpArtifact BEFORE the
+    // assertions so the file is cleaned up even if an
+    // assertion panics.  (Codex LOW from 5b15006: previous
+    // version only removed the file on the success path.)
+    let _cleanup = DumpArtifact(dump_path.clone());
     let body = std::fs::read_to_string(&dump_path)
         .expect("self-test dump exists");
     let v: serde_json::Value =
@@ -566,20 +589,31 @@ fn dump_replay_case_is_replay_v1_shape() {
         v["stimuli"][1]["set_uart_blackout"], true,
         "second stim must be set_uart_blackout(true)"
     );
+    // `serde_json::Value` indexing returns `Value::Null` for
+    // a MISSING key as well as for a key whose value is null.
+    // To prove the field is actually present (not just
+    // missing-and-defaulted-to-null), pin both the
+    // `as_object().contains_key(...)` flag and the value
+    // (codex LOW from 5b15006: prior assertion would pass
+    // even if the writer dropped the field entirely).
+    let obj = v.as_object().expect("dump root must be an object");
+    assert!(
+        obj.contains_key("expect_final_snapshot_hex"),
+        "expect_final_snapshot_hex key must be PRESENT in dump"
+    );
     assert!(
         v["expect_final_snapshot_hex"].is_null(),
-        "expect_final_snapshot_hex must be present and null \
-         (CLI accepts that shape)"
+        "expect_final_snapshot_hex value must be null"
     );
 
     // Triage context lives under `_meta` (CLI ignores
     // unknown keys, so this is OK).
     assert_eq!(v["_meta"]["test"], "dump_replay_case_is_replay_v1_shape");
     assert_eq!(v["_meta"]["seed"], 0xDEAD);
-    assert_eq!(v["_meta"]["scenario_idx"], 99_999);
+    assert_eq!(v["_meta"]["scenario_idx"], synthetic_idx);
     assert_eq!(v["_meta"]["note"], "self-test");
 
-    // Clean up the self-test artifact so we don't leave it
-    // sitting around in the operator's failure-triage tree.
-    let _ = std::fs::remove_file(&dump_path);
+    // _cleanup drops here, removing the synthetic artifact.
+    // (Drop fires on panic unwinding too, so a failed
+    // assertion above still cleans up.)
 }

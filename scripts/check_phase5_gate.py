@@ -103,23 +103,55 @@ def _check_harness(python: str) -> int:
         )
         return 4
     # Probe the resolved Python: must import pytest (P5.4
-    # uses pytest) AND xdist (P5.4 invokes `-n 16`).  We do
-    # both in a single subprocess so the failure message
-    # names whichever module is missing.
-    cp = subprocess.run(
-        [
-            python,
-            "-c",
-            "import pytest, xdist  # noqa: F401",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    # uses pytest) AND xdist (P5.4 invokes `-n 16`).  We
+    # also run `pytest --co --no-header -n 1 -q tests/sim/soak`
+    # so an autoload-disabled or shadowed-xdist environment
+    # surfaces here as harness exit 4 instead of pytest's
+    # usage-error exit 4 being mis-classified as soak failure.
+    # (Codex LOW from 5b15006: import-only probe missed the
+    # case where xdist is importable but `-n` is not
+    # registered as a pytest option.)
+    probe_cmd = [
+        python,
+        "-c",
+        "import pytest, xdist  # noqa: F401",
+    ]
+    cp = subprocess.run(probe_cmd, capture_output=True, text=True)
     if cp.returncode != 0:
         print(
             f"P5.gate FAIL [harness]: {python!r} cannot import pytest + "
             "pytest-xdist (needed for `pytest tests/sim/soak -n 16`).  "
             f"stderr: {cp.stderr.strip()!r}",
+            file=sys.stderr,
+        )
+        return 4
+    # Second probe: actually invoke pytest --collect-only
+    # with -n 1 against the soak dir.  If xdist isn't
+    # registered as a plugin, pytest exits 4 (usage error)
+    # here, and we surface that as harness exit 4 instead
+    # of letting it pollute the P5.4 sub-check.
+    collect_cmd = [
+        python,
+        "-m",
+        "pytest",
+        "tests/sim/soak",
+        "-n",
+        "1",
+        "-q",
+        "--collect-only",
+    ]
+    cp = subprocess.run(
+        collect_cmd,
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if cp.returncode != 0:
+        print(
+            f"P5.gate FAIL [harness]: pytest --collect-only with -n 1 "
+            f"failed (exit {cp.returncode}); pytest-xdist not registered "
+            f"as a plugin?  stdout tail: "
+            f"{cp.stdout.splitlines()[-3:]!r}",
             file=sys.stderr,
         )
         return 4
