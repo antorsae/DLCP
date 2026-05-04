@@ -422,6 +422,44 @@ impl Chain {
         self.uart_coupling_drop_remaining[coupling_idx] = drop_count;
     }
 
+    /// Push a single byte directly onto a core's silicon UART
+    /// RX FIFO (`Eusart::deliver_rx_byte`), bypassing the wire-
+    /// coupling layer.  Returns true iff the byte was accepted
+    /// by the silicon (SPEN+CREN both set, no OERR latched,
+    /// FIFO had room); false means the byte was dropped at the
+    /// silicon gate -- still useful as a no-op for fuzz/soak
+    /// stimuli, since "what does firmware do if RX is gated"
+    /// is a real coverage axis.
+    ///
+    /// Spec ref: `docs/SIM_REWRITE_RUST_SPEC.md` §9 P5b.1.
+    /// The fuzz target uses this to inject IR-command-style
+    /// byte streams into V1.71 CONTROL's UART parser without
+    /// needing a coupled source core; codex's MEDIUM finding
+    /// from the review of b3d42a8 ("scaffold does not actually
+    /// fuzz an IR command stream") is closed by exposing this
+    /// hardware-level inject path.
+    ///
+    /// Distinct from `Chain::deliver_uart_byte` (private,
+    /// internal coupling delivery) and the PyO3 facade's
+    /// `inject_control_rx_bytes_inner` (which writes V1.71-
+    /// specific software RAM ring at 0x066-0x098 -- a
+    /// firmware-image-specific shortcut that this method
+    /// avoids).
+    pub fn inject_uart_rx_byte(&mut self, core_idx: usize, byte: u8) -> bool {
+        assert!(
+            core_idx < self.cores.len(),
+            "inject_uart_rx_byte: core_idx {} out of range (cores.len()={})",
+            core_idx,
+            self.cores.len(),
+        );
+        let core = &mut self.cores[core_idx];
+        let delivery = core
+            .peripherals
+            .eusart
+            .deliver_rx_byte(byte, &mut core.memory);
+        delivery.accepted
+    }
+
     /// Wire a general-purpose source-core pin to a
     /// destination-core pin.  Used for MCLR/RA0 wakeup,
     /// LCD strobes, button-matrix rows, etc.
@@ -1419,6 +1457,49 @@ mod tests {
         assert_eq!(chain.current_tick, 1000);
         chain.step_ticks(500);
         assert_eq!(chain.current_tick, 1500);
+    }
+
+    #[test]
+    fn inject_uart_rx_byte_returns_false_when_silicon_gates_closed() {
+        // Default: SPEN=0 / CREN=0 after Memory::new (no
+        // peripheral init).  Silicon must reject the byte.
+        let core = crate::core::Core::new(Variant::Pic18F25K20);
+        let clock = crate::clock::ClockDomain::new(Variant::Pic18F25K20);
+        let mut chain = Chain::new();
+        chain.push_core_with_clock(core, clock);
+        let accepted = chain.inject_uart_rx_byte(0, 0xAA);
+        assert!(
+            !accepted,
+            "deliver_rx_byte must drop bytes with SPEN=0 / CREN=0"
+        );
+    }
+
+    #[test]
+    fn inject_uart_rx_byte_returns_true_when_silicon_open() {
+        // Open the silicon gates (SPEN + CREN both set), no
+        // OERR latched.  The byte should be accepted into the
+        // FIFO and surface in RCREG on the next read path.
+        use crate::peripherals::eusart::RCSTA_ADDR;
+        let core = crate::core::Core::new(Variant::Pic18F25K20);
+        let clock = crate::clock::ClockDomain::new(Variant::Pic18F25K20);
+        let mut chain = Chain::new();
+        chain.push_core_with_clock(core, clock);
+        // SPEN | CREN  = bit7 | bit4 = 0x90.
+        chain.cores[0]
+            .memory
+            .write_raw(Address::from_raw(RCSTA_ADDR), 0x90);
+        let accepted = chain.inject_uart_rx_byte(0, 0xC3);
+        assert!(
+            accepted,
+            "deliver_rx_byte must accept bytes when SPEN+CREN both set"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "core_idx 5 out of range")]
+    fn inject_uart_rx_byte_panics_on_out_of_range_core() {
+        let mut chain = Chain::new();
+        let _ = chain.inject_uart_rx_byte(5, 0xAA);
     }
 
     #[test]

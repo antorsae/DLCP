@@ -25,15 +25,25 @@
 //!     `Chain::schedule_initial_steps(&[byte0 as u64])`.
 //!     Range 0..=255 ticks is enough to cross several event
 //!     boundaries without dominating the iteration budget.
-//!   * **Byte 1** — stimulus-count `n`, capped at 8 (so the
-//!     iteration finishes in a few hundred microseconds).
+//!   * **Byte 1** — stimulus-count `n`, *saturating* at 8 (so
+//!     the iteration finishes in a few hundred microseconds).
+//!     Saturating, not modulo: byte values 9..=255 all decode
+//!     as 8 stimuli.  (Codex LOW from b3d42a8: prior
+//!     implementation used `byte % 9` which mapped byte 9 to
+//!     0 stimuli, contradicting the "capped at 8" docs.)
 //!   * **Bytes 2..2+n*5** — packed stimulus records.  Each
 //!     record is 5 bytes:
-//!       * byte[0]: stimulus tag (0=StepTicks, 1=SetUartBlackout,
-//!         else=skip).
+//!       * byte[0]: stimulus tag.  0=StepTicks,
+//!         1=SetUartBlackout, 2=InjectUartRxByte
+//!         (the IR-command-style byte stream stimulus codex
+//!         flagged the prior commit was missing -- the byte
+//!         lands on V1.71 CONTROL's silicon EUSART RX FIFO
+//!         via `Chain::inject_uart_rx_byte`).
+//!         Other tag values: skip the record.
 //!       * bytes[1..5]: u32 LE payload — interpreted as
 //!         `step_ticks` clamped to ≤ 200_000 for `StepTicks`,
-//!         `(payload & 1) == 1` for `SetUartBlackout`.
+//!         `(payload & 1) == 1` for `SetUartBlackout`,
+//!         `(payload & 0xFF) as u8` for `InjectUartRxByte`.
 //!
 //! Truncated input is OK; we stop decoding when fewer than 5
 //! bytes remain.  An empty `data` means "no stimuli" and the
@@ -73,7 +83,9 @@
 //!   * rustup + nightly toolchain (cargo-fuzz needs `-Z` flags).
 //!   * `cargo install cargo-fuzz`.
 //!
-//! See `crates/dlcp-sim/fuzz/README.md` for full setup.
+//! Full prereq list lives in `crates/dlcp-sim/fuzz/Cargo.toml`'s
+//! header comment (codex LOW from b3d42a8: prior wording pointed
+//! at a non-existent README.md).
 
 #![no_main]
 
@@ -92,11 +104,17 @@ use std::sync::OnceLock;
 
 const MAX_STIMULI: usize = 8;
 const MAX_STEP_TICKS: u32 = 200_000;
+/// Core index that receives `InjectUartRxByte` bytes.  V1.71
+/// is the only core in this fuzz chain (single-CONTROL build),
+/// so the index is hard-coded.  Future multi-core fuzz could
+/// take it from the byte stream.
+const IR_INJECT_CORE_IDX: usize = 0;
 
 #[derive(Debug, Clone, Copy)]
 enum Stimulus {
     StepTicks(u64),
     SetUartBlackout(bool),
+    InjectUartRxByte(u8),
 }
 
 fn decode_stream(data: &[u8]) -> (u64, Vec<Stimulus>) {
@@ -105,7 +123,14 @@ fn decode_stream(data: &[u8]) -> (u64, Vec<Stimulus>) {
     }
     let boot_offset = u64::from(data[0]);
     let mut stims = Vec::with_capacity(MAX_STIMULI);
-    let n = data.get(1).map(|b| usize::from(*b) % (MAX_STIMULI + 1)).unwrap_or(0);
+    // Saturating cap (NOT modulo): byte values 0..=8 produce
+    // 0..=8 stimuli; values 9..=255 produce 8 stimuli.  Codex
+    // LOW from b3d42a8 flagged the prior `% (MAX_STIMULI + 1)`
+    // mapping as contradicting the documented "capped at 8".
+    let n = data
+        .get(1)
+        .map(|b| (usize::from(*b)).min(MAX_STIMULI))
+        .unwrap_or(0);
     let body = data.get(2..).unwrap_or(&[]);
     for record in body.chunks_exact(5).take(n) {
         let tag = record[0];
@@ -115,6 +140,7 @@ fn decode_stream(data: &[u8]) -> (u64, Vec<Stimulus>) {
                 u64::from(payload.min(MAX_STEP_TICKS)),
             )),
             1 => stims.push(Stimulus::SetUartBlackout((payload & 1) == 1)),
+            2 => stims.push(Stimulus::InjectUartRxByte((payload & 0xFF) as u8)),
             _ => { /* skip unknown tag — leaves room for future stimuli */ }
         }
     }
@@ -155,6 +181,13 @@ fn apply(chain: &mut Chain, stim: &Stimulus) {
     match stim {
         Stimulus::StepTicks(n) => chain.step_ticks(*n),
         Stimulus::SetUartBlackout(b) => chain.set_uart_blackout(*b),
+        Stimulus::InjectUartRxByte(byte) => {
+            // We don't care whether the byte was accepted by
+            // silicon (SPEN/CREN may be closed); both branches
+            // are valid coverage points.  The return is `let _`
+            // intentionally.
+            let _ = chain.inject_uart_rx_byte(IR_INJECT_CORE_IDX, *byte);
+        }
     }
 }
 

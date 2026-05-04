@@ -21,7 +21,11 @@
 #         cd crates/dlcp-sim
 #         cargo +nightly fuzz run ir_stream -- -max_total_time=300
 #
-# See README.md in this directory for the full operator runbook.
+# The fuzz target's module-level docstring at
+# `fuzz_targets/ir_stream.rs` carries the full input-grammar +
+# invariant documentation; this Cargo.toml header is the
+# operator-prerequisite reference.  (Codex LOW from b3d42a8:
+# prior wording pointed at a README.md that doesn't exist.)
 
 [package]
 name = "dlcp-sim-fuzz"
