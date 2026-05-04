@@ -421,11 +421,13 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   ### P4.7 wire-chain convergence gap CLOSED (2026-05-04)
 
   Re-probe of `Chain.from_v171_v32()` after the silicon-fidelity merge
-  (ce2ce5b) + Bug #45 firmware fixes (5e43ca1, a057f86) + Bug #44
-  firmware fix (ed4fd16) + wake-clamp + boot_epoch fixes (3fa6f4b,
-  a2c0382): **the V1.71+V3.2+V3.2 chain now converges to Volume
-  display in rust within 96 chunks of 200K Tcy (~19M Tcy)**, matching
-  the gpsim convergence cadence on the same chain.  Probe:
+  (ce2ce5b) + Bug #45 CONTROL-side firmware fix (5e43ca1; LOW
+  follow-up a057f86) + Bug #44 firmware fix (ed4fd16) + wake-clamp +
+  boot_epoch fixes (3fa6f4b, a2c0382), plus the earlier V3.2 §C
+  `adc_boot_gate` MAIN-side firmware fix (task #84): **the
+  V1.71+V3.2+V3.2 chain now converges to Volume display in rust
+  within 96 chunks of 200K Tcy (~19M Tcy)**, matching the gpsim
+  convergence cadence on the same chain.  Probe:
 
   ```python
   chain = Chain.from_v171_v32()
