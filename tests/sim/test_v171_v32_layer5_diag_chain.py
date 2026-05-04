@@ -1220,9 +1220,16 @@ def test_v171_v32_layer5_chain_bridges_all_carry_traffic(
         "The historical Task #22 gpsim two-MAIN bridge-echo framing "
         "applies to architectural fan-out (retired by the rust silicon "
         "ring per P3.6a) and does not dispose of this xfail.  Runs "
-        "every cycle so the hop-attribution report is fresh."
+        "every cycle so the hop-attribution report is fresh.  Strict "
+        "so XPASS surfaces as a real failure: when the PB2 reply "
+        "convergence path is fixed (firmware redesign of the "
+        "display_loop_iteration busy-loop, or a test-harness change "
+        "that injects the additional LEFT/RIGHT cycles real silicon "
+        "needs), this decorator must be removed in the same commit "
+        "(codex LOW from 59068fd -- non-strict xfail would silently "
+        "green-light a stale gate)."
     ),
-    strict=False,
+    strict=True,
     run=True,
 )
 def test_v171_v32_layer5_chain_pb2_bridge_canary(
