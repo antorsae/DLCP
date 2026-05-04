@@ -56,7 +56,11 @@ The conftest uses `rust` when the variable is unset.
 
 ```bash
 cargo build --release -p dlcp-sim-cli
-./target/release/dlcp-sim replay tests/sim/cases/case.json \
+# Generate a starter case JSON (initial_factory=empty, 4 stimuli):
+./target/release/dlcp-sim emit-template empty > /tmp/case.json
+# Replay it; the --final-snapshot binary is the post-stimulus
+# bincode blob, the --trace text file is the action-level log.
+./target/release/dlcp-sim replay /tmp/case.json \
     --final-snapshot /tmp/final.bin \
     --trace /tmp/trace.txt
 ```
@@ -131,7 +135,7 @@ The rust engine is exposed in three layers:
 
 ### Determinism + replay (Phase 5)
 
-Every chain state is serializable via `bincode`:
+Every chain state is serializable via `bincode` from the rust crate:
 
 ```rust
 use dlcp_sim::snapshot::{encode, decode};
@@ -141,7 +145,13 @@ let restored: Chain = decode(&bytes)?;
 assert_eq!(encode(&restored), bytes);   // byte-stable round-trip
 ```
 
-The Python facade exposes `Chain.snapshot()` and `Chain.restore(bytes)`.
+These are rust-side functions today; the Python facade does not yet
+expose `Chain.snapshot()` / `Chain.restore()` directly.  Python tests
+that want snapshot/replay round-trip should drive the
+`./target/release/dlcp-sim replay` CLI via `subprocess` (its case JSON
+schema is the same shape `encode/decode` consume), or invoke the rust
+`cargo test --test snapshot_property` suite.
+
 The 5-test soak harness at `crates/dlcp-sim/tests/snapshot_soak.rs` runs
 10⁴ scenarios per test (50,000 total) asserting byte-stable round-trip,
 two-chain replay determinism, and step-split idempotence
@@ -180,10 +190,16 @@ for the full surface.
 |--------------------------------|----------|
 | `press(key)`                   | Inject panel button (`UP/DOWN/LEFT/RIGHT/SELECT/STBY/...`) |
 | `set_blackout(enabled)`        | Toggle chain-wide UART blackout |
-| `set_main_an0(unit, sample)`   | Override MAIN's AN0 ADC sample |
+| `set_main_an0_sample(unit, value)` | Override MAIN's AN0 ADC sample |
 | `set_link_fault(name, *, drop=None, extra_cycles=None)` | gpsim `set_link_fault` analog (P4-followup #101) |
-| `inject_uart_rx_byte(core_idx, byte)` | Push byte directly to a core's silicon RX FIFO |
-| `inject_control_rx_bytes(bytes)` | V1.71-specific software RX ring push |
+| `inject_control_rx_bytes(bytes)` | V1.71-specific software RX ring push (writes RAM at 0x066-0x098) |
+
+The rust `Chain` also exposes `inject_uart_rx_byte(core_idx, byte)` (a
+generic hardware-level UART RX-FIFO inject; see
+`crates/dlcp-sim/src/chain.rs`) used by the cargo-fuzz target at
+`crates/dlcp-sim/fuzz/`.  No Python wrapper is exposed yet; if you need
+silicon-level RX injection from a Python test, raise it as a
+P4-followup ticket and add the PyO3 wrapper.
 
 ### Read-back / introspection
 
@@ -254,10 +270,18 @@ for the full surface.
 | `src/dlcp_fw/sim/gpsim.py`                 | Low-level gpsim CLI session driver |
 | `scripts/gpsim-xtc`                        | Wrapper that exports `GPSIM_MODULE_PATH` and invokes the local build |
 
-These files are still imported by ~70 still-skipped tests under
-`tests/sim/` (those without `@pytest.mark.dual_supported`).  They are
+These files are still imported by 70 test files in `tests/`
+(per the 2026-05-04 inventory at `docs/SIM_REWRITE_RUST_PROGRESS.md`
+P4.9 entry) -- some of which also have `@pytest.mark.dual_supported`
+markers but conditionally branch into the gpsim path on
+`DLCP_SIM_BACKEND=gpsim`.  Of those, 33 files are pure gpsim-only
+(no `dual_supported` marker, auto-skipped under rust) and account
+for the 299 still-skipped tests in the PF.1 measurement; the
+remaining ~37 are dual-supported but still need the gpsim wrappers
+present at import time for their backend branch.  All 70 are
 preserved as the regression oracle through one release cycle per
-`docs/SIM_REWRITE_RUST_SPEC.md` §11.  PF.4's coordinated excision will:
+`docs/SIM_REWRITE_RUST_SPEC.md` §11.  PF.4's coordinated excision
+will:
 
 1. Delete `vendor/gpsim-0.32.1-xtc/` and `artifacts/tools/gpsim-xtc/`.
 2. Delete the 6 wrapper Python files above.
