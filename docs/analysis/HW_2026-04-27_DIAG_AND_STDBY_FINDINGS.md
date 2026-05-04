@@ -345,10 +345,16 @@ sequenced before `P3.gate`.
 Each sub-task should explicitly carry the qualifier
 **"symptom-equivalent (not bit-exact)"** in its title so the ledger does
 not let them retire P3.6b on completion. P3.6b stays the
-`v171_diag_present == 0x03` open sim gap (now split into Task #22
-gpsim-PB2-only saturation + task #94 rust-zero-replies after the
-2026-05-04 empirical correction; previously framed as one shared
-gap), separate scope.
+`v171_diag_present == 0x03` open issue, now understood as a
+test-scenario artifact (V1.71 foreground busy-loop exits after one
+BF/2N dispatch without continuous user events) rather than a sim
+fidelity bug.  Task #22 (gpsim-PB2-only saturation) remains
+representative.  Task #94 was filed 2026-05-04 to investigate a
+candidate rust-zero-replies surface but closed the same day as
+duplicate of the 2026-04-28 P3.6b closure (probes v10/v11 confirmed
+rust accepts all bytes at silicon and dispatches BF/2N just like
+gpsim; "zero replies" was a short-window artifact).  Separate scope
+from the P3.8 sub-tasks.
 
 ## 8. Questions for codex review
 
@@ -463,8 +469,13 @@ spec note. Tracked as a doc-fixup in Section 7.2.A.
 
 **Ledger guidance.** Codex emphasised: name P3.8a/b/c/d as
 **"symptom-equivalent (not bit-exact)"** and do NOT use them to retire
-P3.6b. P3.6b stays the `v171_diag_present == 0x03` open sim gap (split
-2026-05-04 into Task #22 gpsim-PB2-only saturation + task #94
-rust-zero-replies; previously framed as one shared gap), with
-timing/electrical hypotheses, separate scope. Section 7.4 now
-carries that qualifier explicitly.
+P3.6b. P3.6b stays the `v171_diag_present == 0x03` open issue, now
+understood as a test-scenario artifact (V1.71 foreground busy-loop
+exits after first BF/2N dispatch without continuous user events --
+per the 2026-04-28 P3.6b research closure).  Task #94 was opened
+2026-05-04 to investigate a candidate rust-zero-replies surface but
+closed the same day as duplicate of the 2026-04-28 closure (probes
+v10/v11 with new uart_rx_history primitives confirmed rust accepts
+all bytes and dispatches BF/2N just like gpsim).  Separate scope
+from the P3.8 sub-tasks.  Section 7.4 carries the
+"symptom-equivalent" qualifier explicitly.
