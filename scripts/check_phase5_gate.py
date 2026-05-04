@@ -147,11 +147,20 @@ def _check_harness(python: str) -> int:
         text=True,
     )
     if cp.returncode != 0:
+        # pytest emits usage / configuration errors (including
+        # "unrecognized arguments: -n" when xdist isn't
+        # registered as a plugin) to STDERR, not stdout.
+        # Codex LOW from e86a5d6: the prior wording surfaced
+        # only `stdout tail`, so the actionable error message
+        # was silently dropped.  Include both -- the operator
+        # gets the real pytest diagnostic.
+        stdout_tail = cp.stdout.splitlines()[-3:]
+        stderr_tail = cp.stderr.splitlines()[-5:]
         print(
             f"P5.gate FAIL [harness]: pytest --collect-only with -n 1 "
             f"failed (exit {cp.returncode}); pytest-xdist not registered "
-            f"as a plugin?  stdout tail: "
-            f"{cp.stdout.splitlines()[-3:]!r}",
+            f"as a plugin?\n  stdout tail: {stdout_tail!r}\n"
+            f"  stderr tail: {stderr_tail!r}",
             file=sys.stderr,
         )
         return 4
