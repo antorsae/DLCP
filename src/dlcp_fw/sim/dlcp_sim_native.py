@@ -942,6 +942,45 @@ class Chain:
         not blocked by OERR, FIFO had room)."""
         return list(self._inner.uart_rx_records_full())
 
+    def set_link_fault(
+        self,
+        link_name: str,
+        *,
+        drop: bool | None = None,
+        extra_ticks: int | None = None,
+    ) -> None:
+        """Per-link fault primitive.  Mirror of gpsim's
+        ``WireMultiMainChainHarness.set_link_fault(link_name, *,
+        drop, extra_cycles)``.  Spec / ledger: P4-followup C
+        (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
+        tracker", task #101).
+
+        ``link_name`` follows the same role-based naming as
+        :meth:`bridge_byte_stats` -- e.g. ``ctl_to_m0``,
+        ``m0_to_m1``, ``m1_to_ctl`` for the rust 3-core ring.
+        Tests that hard-code gpsim's bus-model labels (e.g.
+        ``m0_to_ctl``, which doesn't exist on the rust ring)
+        will raise ``ValueError`` listing the known links.
+
+        ``drop``: ``True`` activates the wire-drop fault;
+        every subsequent byte the source TXs is silently
+        dropped at the wire layer.  ``False`` clears the
+        fault.  ``None`` leaves the drop state unchanged
+        (matches gpsim's three-state semantics).
+
+        ``extra_ticks`` (gpsim's ``extra_cycles`` analog):
+        NOT supported on the rust silicon ring (no bridge-
+        delay model).  Calling with ``extra_ticks != None``
+        raises :class:`RuntimeError`; tests that need
+        propagation-delay semantics must be marked
+        ``gpsim``-only.
+        """
+        self._inner.set_link_fault(
+            link_name,
+            drop=drop,
+            extra_ticks=extra_ticks,
+        )
+
     def bridge_byte_stats(self) -> dict[str, dict[str, int]]:
         """Per-link byte-count snapshot for every UART coupling
         actually wired in the chain.  Mirror-of-shape (NOT

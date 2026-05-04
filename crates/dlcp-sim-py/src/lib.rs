@@ -1972,6 +1972,100 @@ impl Chain {
     /// Spec / ledger ref: P4-followup A
     /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
     /// tracker", task #99).
+    /// Per-link fault primitive.  Rust mirror of gpsim's
+    /// `WireMultiMainChainHarness::set_link_fault(link_name, *,
+    /// drop, extra_cycles)`.  Spec / ledger: P4-followup C
+    /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup tracker",
+    /// task #101) — unblocks the wire-chain fault-injection
+    /// tests (`test_wire_chain_gpsim*.py`,
+    /// `test_reconnect_wake_gate.py`, etc.) on the rust backend.
+    ///
+    /// `link_name` follows the same role-based naming as
+    /// `bridge_byte_stats()` -- e.g. `ctl_to_m0`, `m0_to_m1`,
+    /// `m1_to_ctl` for the rust 3-core ring topology.  Tests
+    /// that hard-code gpsim's bus-model labels (e.g.
+    /// `m0_to_ctl`, which doesn't exist on the rust ring) will
+    /// fail with `KeyError` -- the same shape as gpsim's own
+    /// "unknown wire link" failure.
+    ///
+    /// `drop`: `True` activates the wire-drop fault on this
+    /// coupling (every subsequent byte the source TXs is
+    /// silently dropped at the wire layer; the destination
+    /// never sees it).  `False` clears the fault (counter
+    /// returns to 0).  `None` leaves the drop state unchanged
+    /// (matches gpsim's three-state semantics).  Internally
+    /// the drop activation sets the underlying counter to
+    /// `u32::MAX` so the fault persists indefinitely until
+    /// the next `set_link_fault(..., drop=False)`.
+    ///
+    /// `extra_ticks` (gpsim's `extra_cycles` analog): NOT
+    /// implemented on the rust silicon ring.  The rust chain
+    /// delivers UART bytes immediately when the source's TX
+    /// shift register completes (silicon-correct -- the bus
+    /// is current-loop with no buffering middleware), so
+    /// "extra delay between source TX and destination RX" is
+    /// not a meaningful quantity here.  Calling with
+    /// `extra_ticks != None` raises `NotImplementedError`.
+    /// Tests that need bridge propagation-delay semantics
+    /// must be marked gpsim-only.
+    #[pyo3(signature = (link_name, *, drop=None, extra_ticks=None))]
+    fn set_link_fault(
+        &mut self,
+        link_name: &str,
+        drop: Option<bool>,
+        extra_ticks: Option<u64>,
+    ) -> PyResult<()> {
+        if extra_ticks.is_some() {
+            return Err(PyRuntimeError::new_err(
+                "Chain.set_link_fault(extra_ticks=...) is not supported on the \
+                 rust silicon ring (no bridge-delay model; mark this test \
+                 gpsim-only).  Spec ref: docs/SIM_REWRITE_RUST_PROGRESS.md \
+                 'P4 followup tracker' task #101.",
+            ));
+        }
+        let coupling_idx = self.uart_coupling_idx_for_link(link_name)?;
+        if let Some(drop) = drop {
+            let drop_count = if drop { u32::MAX } else { 0 };
+            self.inner.set_uart_coupling_drop(coupling_idx, drop_count);
+        }
+        Ok(())
+    }
+
+    /// Helper for `set_link_fault` and `bridge_byte_stats`:
+    /// resolve a role-based link name to an index into
+    /// `self.inner.pinnet.uart`.  Returns a `KeyError`-shaped
+    /// `PyValueError` listing the known links if the name
+    /// doesn't match any wired coupling.
+    fn uart_coupling_idx_for_link(&self, link_name: &str) -> PyResult<usize> {
+        let mut known: Vec<String> = Vec::with_capacity(self.inner.pinnet.uart.len());
+        let role_of = |core_idx: usize| -> String {
+            if core_idx == self.i_ctl {
+                "ctl".to_string()
+            } else if core_idx == self.i_main0 {
+                "m0".to_string()
+            } else if core_idx == self.i_main1 {
+                "m1".to_string()
+            } else {
+                format!("c{core_idx}")
+            }
+        };
+        for (idx, coupling) in self.inner.pinnet.uart.iter().enumerate() {
+            let name = format!(
+                "{}_to_{}",
+                role_of(coupling.src_core),
+                role_of(coupling.dst_core),
+            );
+            if name == link_name {
+                return Ok(idx);
+            }
+            known.push(name);
+        }
+        Err(PyValueError::new_err(format!(
+            "unknown wire link {link_name:?}; known links on this rust chain: {}",
+            known.join(", ")
+        )))
+    }
+
     fn bridge_byte_stats(&self) -> std::collections::HashMap<String, std::collections::HashMap<String, u64>> {
         let mut out: std::collections::HashMap<String, std::collections::HashMap<String, u64>> =
             std::collections::HashMap::with_capacity(self.inner.pinnet.uart.len());
