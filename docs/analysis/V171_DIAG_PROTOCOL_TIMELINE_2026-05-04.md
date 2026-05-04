@@ -3,8 +3,10 @@
 ## TL;DR
 
 The diag page's poor responsiveness is **not** protocol saturation
-or RXIF starvation — it is V1.71 firmware spending ~80% of CONTROL
-CPU time in two foreground loops gated on user-driven events.  Probe
+or RXIF starvation — it is V1.71 firmware spending 77-90% of
+CONTROL CPU time in three foreground bins gated on user-driven
+events: `display_loop_iteration` (40-50%), `button_scan_debounce`
+(27-33%), and `control_core_service_*` (5-10%).  Probe
 v22 quantifies this on the rust silicon-correct ring (V1.71 CONTROL
 + V3.2 MAIN0 + V3.2 MAIN1) by capturing every UART byte with
 universal-tick timestamps + sampling CONTROL's PC across 14 phases
@@ -148,9 +150,9 @@ happens).
   P3.6b research closure).  This is V1.71 by design — it relies
   on user-driven events to exit the loop and let the cmd 0x21
   cadence + BF parser dispatch run.
-- **`button_scan_debounce` (~27-32%)** is the panel-button
+- **`button_scan_debounce` (27-33%)** is the panel-button
   polling+debounce path, gated on the foreground loop.
-- **`control_core_service_*` (~6-10%)** is a separate set of
+- **`control_core_service_*` (5-10%)** is a separate set of
   bins covering the per-channel frame-emit routines
   (`serial_tx_routed_frame`, `full_sync_burst`,
   `poll_frame_send`, `volume_frame_send`, etc.) that share the
