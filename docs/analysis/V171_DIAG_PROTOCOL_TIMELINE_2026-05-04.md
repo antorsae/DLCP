@@ -29,7 +29,9 @@ steady-state).  Output: `artifacts/probes/v22_run4.txt`.
   loaded dynamically from `src/dlcp_fw/asm/dlcp_control_v171.lst`.
 - Conversion: 1 universal tick = 20.833 ns (48 MHz universal
   clock); 1 ms = 48,000 ticks; 1 chain frame (3 bytes @ 31250
-  baud) = 50,688 ticks.
+  baud, 8N1 → 10 bits/byte → 30 bits) = 960 µs = 46,080 ticks.
+  The probe's observed minimum inter-frame gap is ~46,100 ticks,
+  consistent with this floor.
 
 ### Operator workflow simulated
 
@@ -67,16 +69,19 @@ matching the V1.71/V3.2 BF/04 design cadence.  CTL.rx accepts all
 33 bytes — zero FIFO drops.  Median inter-frame gap on every
 edge ≈ 54M ticks ≈ 1.13 sec.
 
-### Phase 6 — `pb1_diag_steady_initial` (PB1 Diag, no nav, 13 sec)
+### Phase 6 — `pb1_diag_steady_initial` (PB1 Diag, no nav, 26.7 sec)
 
 | Link | bytes | frames | bytes/sec | wire utilization |
 |---|---|---|---|---|
-| CTL.tx → MAIN0.rx | 21 | 7 | 1 | 0.04% |
-| MAIN0.tx → MAIN1.rx | 21 | 7 | 1 | 0.04% |
-| MAIN1.tx → CTL.rx | 21 | 7 | 1 | 0.04% |
+| CTL.tx → MAIN0.rx | 72 | 24 | 3 | 0.07% |
+| MAIN0.tx → MAIN1.rx | 72 | 24 | 3 | 0.07% |
+| MAIN1.tx → CTL.rx | 90 | 30 | 4 | 0.10% |
 
-Steady-state on PB1 Diag is *quieter* than post-boot — only ~0.5
-frames/sec.  This rules out heartbeat-flood explanations entirely.
+Steady-state on PB1 Diag matches the post-boot heartbeat cadence
+(~0.9-1.1 frames/sec per ring edge); the upstream MAIN1→CTL edge
+carries 6 extra frames (BF/2N replies that PB2 forwarded back) but
+total wire utilization stays ~0.1%.  This rules out heartbeat-flood
+explanations entirely.
 
 ### During RIGHT-press windows (e.g. nav_RIGHT_2)
 
@@ -103,18 +108,27 @@ over 6 sec, with bursts at 31250 baud during the actual reply.
 PC histogram, sampled at every `step_many(1)` chunk
 (~12K Tcy = ~1 ms intervals).  Numbers are percent of samples
 in each function (binned automatically from .lst-derived label
-addresses).  Other regions (BF parser body, diag query emit,
-diag render) are below the 200-400 sample resolution per phase.
+addresses; bin name is the nearest preceding non-`flow_*` label).
+Sub-label bins like `control_core_service_0DCE` are kept distinct
+from their parent (`button_scan_debounce`) when the .lst declares
+them as separate user-named labels.
 
-| Phase | display_loop_iteration | button_scan_debounce | rx_parser_entry | eeprom_write_byte |
-|---|---|---|---|---|
-| post_boot_idle | 50% | 31% | 5% | 0% |
-| nav_RIGHT_1 | 49% | 33% | 3% | 4% |
-| nav_RIGHT_4 | 49% | 28% | 5% | 4% |
-| pb1_diag_steady_initial | 48% | 31% | 4% | 0% |
-| cycle_4 (PB1 converges!) | 40% | 30% | 8% | 5% |
-| cycle_7 | 47% | 27% | 7% | 5% |
-| pb1_diag_steady_post_cycles | 47% | 31% | 5% | 0% |
+| Phase | display_loop | button_scan | control_core_service | rx_parser | service_rx_frame_gap | service_pending_ir | eeprom_write |
+|---|---|---|---|---|---|---|---|
+| post_boot_idle | 50% | 32% | 6% | 5% | 4% | 4% | 0% |
+| nav_RIGHT_2 | 46% | 31% | 9% | 5% | 2% | 2% | 4% |
+| nav_RIGHT_4 | 49% | 28% | 9% | 5% | 1% | 2% | 4% |
+| pb1_diag_steady_initial | 48% | 31% | 8% | 4% | 5% | 4% | 0% |
+| cycle_4 (PB1 converges!) | 40% | 30% | 10% | 8% | 3% | 3% | 5% |
+| cycle_7 | 47% | 27% | ~10% | 7% | ~3% | ~3% | 5% |
+| pb1_diag_steady_post_cycles | 47% | 31% | 8% | 5% | ~5% | ~3% | 0% |
+
+Across all 14 phases, `display_loop_iteration` ranges from
+**40% to 58%** and `button_scan_debounce + control_core_service`
+adds another **35% to 41%**, leaving 3-8% for `rx_parser_entry`
+(which is where the actual BF/2N parse-and-dispatch happens).
+The combined "foreground loop" (display + button + service)
+share is ~**78-90%** of CONTROL CPU time on every phase.
 
 ### Interpretation
 
@@ -127,13 +141,14 @@ diag render) are below the 200-400 sample resolution per phase.
   on user-driven events to exit the loop and let the cmd 0x21
   cadence + BF parser dispatch run.
 - **`button_scan_debounce` (~27-32%)** is the panel-button
-  polling+debounce path, also gated on the foreground loop.  The
-  binning here also covers `control_core_service_*`,
-  `serial_tx_routed_frame`, `full_sync_burst`, and the
-  per-channel frame-emit routines (`poll_frame_send`,
-  `volume_frame_send`, etc.) that live in the same address
-  block (0x0994..0x0DB2 in V1.71 r0x0F).  Together with the
-  busy-loop they account for ~80% of CPU time.
+  polling+debounce path, gated on the foreground loop.
+- **`control_core_service_*` (~6-10%)** is a separate set of
+  bins covering the per-channel frame-emit routines
+  (`serial_tx_routed_frame`, `full_sync_burst`,
+  `poll_frame_send`, `volume_frame_send`, etc.) that share the
+  0x0994..0x0DB2 address block.  Together with `display_loop_iteration`
+  and `button_scan_debounce` they account for ~78-90% of CPU
+  time.
 - **`rx_parser_entry` (~3-8%)** is the actual byte-arrival
   parser.  Even during the diag-page reply burst, only 5-8% of
   CTL CPU time goes here — RXIF dispatch is fine, but it has
@@ -218,11 +233,16 @@ cadence would naturally converge faster.  Concrete options:
    (`0x9A` and `control_flags.bit3`).  This would convert the
    loop from "wait for user" to "wait for any of {user, cadence
    tick}".
-3. **Skip the busy-loop entirely when the diag page is active**.
-   The renderer already has its own per-frame service in
-   `v171_diag_loop`; gating the foreground loop on the menu
-   state would let the diag cadence run at its design rate
-   (~1 cmd 0x21 per second per PB).
+3. **Add a parallel cadence-trigger path that runs alongside
+   `display_loop_iteration` rather than waiting for it to exit**.
+   The current `v171_diag_loop` (the per-frame diag-page renderer)
+   actually CALLS `display_loop_iteration` in its body
+   (`dlcp_control_v171.lst:5152+`) before decrementing the cadence
+   counter, so the two are coupled — the diag page does NOT
+   bypass the busy-loop today.  A revised structure would have
+   the cadence decrement happen in the call chain BEFORE the
+   busy-loop body, so the cmd 0x21 query fires regardless of
+   whether the user-event predicates evaluate true.
 
 Any of (1)-(3) would also benefit the operator on real HW: PB1
 + PB2 would converge after entering the page, instead of needing
