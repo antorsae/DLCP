@@ -288,11 +288,11 @@ fn rx_ferr_wue_send_break_and_autobaud_policy_cover_fid11() {
     );
     core.memory
         .write_raw(Address::from_raw(BAUDCON_ADDR), BAUDCON_WUE);
-    let wake = core
+    let delivery = core
         .peripherals
         .eusart
         .deliver_rx_frame(0x5A, true, true, &mut core.memory);
-    if wake {
+    if delivery.wake {
         core.run_state = RunState::Running;
     }
     assert_eq!(core.run_state, RunState::Running);

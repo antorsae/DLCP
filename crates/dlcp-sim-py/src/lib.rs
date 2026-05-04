@@ -546,6 +546,27 @@ struct Chain {
     /// this capture coincides with `tx_capture_main0` and offers
     /// no new information there.  See task #94 probe.
     tx_capture_main1: usize,
+    /// CONTROL-side RX capture point.  Symmetric to
+    /// `tx_capture_ctl` but indexes the new
+    /// `Chain::uart_rx_history` (FIFO-accepted bytes) filtered
+    /// by `r.dst_core == self.i_ctl`.  Used by task #94 probes
+    /// to compare wire-attempts (`uart_tx_history`) vs
+    /// silicon-accepted bytes (`uart_rx_history`) and localize
+    /// byte loss between MAIN1's TX and CONTROL's silicon RX
+    /// FIFO.  See `mark_ctl_rx_capture_point` /
+    /// `ctl_rx_record_since_last_capture`.
+    rx_capture_ctl: usize,
+    /// MAIN0-side RX capture point.  Same shape as
+    /// `rx_capture_ctl` but filters by
+    /// `r.dst_core == self.i_main0`.  Useful for verifying
+    /// MAIN0's RX accepts the bytes CONTROL sends downstream.
+    rx_capture_main0: usize,
+    /// MAIN1-side RX capture point.  Same shape but filters
+    /// by `r.dst_core == self.i_main1`.  Useful for verifying
+    /// MAIN1's RX accepts the bytes MAIN0 forwards (and any
+    /// CONTROL bytes that hop through MAIN0's parser
+    /// decrement-and-forward path).
+    rx_capture_main1: usize,
     /// CONTROL-side TX-record capture point.  Symmetric to
     /// `tx_capture_main0` but filters entries whose
     /// `src_core == i_ctl`.  Used by tests that need to bound
@@ -773,6 +794,9 @@ impl Chain {
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
             tx_capture_main1: 0,
+            rx_capture_ctl: 0,
+            rx_capture_main0: 0,
+            rx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -825,6 +849,9 @@ impl Chain {
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
             tx_capture_main1: 0,
+            rx_capture_ctl: 0,
+            rx_capture_main0: 0,
+            rx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -877,6 +904,9 @@ impl Chain {
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
             tx_capture_main1: 0,
+            rx_capture_ctl: 0,
+            rx_capture_main0: 0,
+            rx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -933,6 +963,9 @@ impl Chain {
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
             tx_capture_main1: 0,
+            rx_capture_ctl: 0,
+            rx_capture_main0: 0,
+            rx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -974,6 +1007,9 @@ impl Chain {
             i_lcd: handle.i_lcd,
             tx_capture_main0: 0,
             tx_capture_main1: 0,
+            rx_capture_ctl: 0,
+            rx_capture_main0: 0,
+            rx_capture_main1: 0,
             tx_capture_ctl: 0,
             force_connected: false,
         })
@@ -1729,6 +1765,97 @@ impl Chain {
             .collect();
         let result = main1_records[self.tx_capture_main1..].to_vec();
         self.tx_capture_main1 = main1_records.len();
+        result
+    }
+
+    /// Reset the CTL-side RX capture pointer to the current
+    /// end of `Chain::uart_rx_history` filtered by
+    /// `dst_core == i_ctl`.  Mirror of
+    /// `mark_ctl_tx_capture_point` but on the destination
+    /// side: only bytes the destination's silicon FIFO
+    /// ACCEPTED (passed SPEN+CREN, not blocked by OERR, FIFO
+    /// had room).  Subsequent `ctl_rx_record_since_last_capture`
+    /// calls return only bytes pushed AFTER this point.
+    /// See task #94.
+    fn mark_ctl_rx_capture_point(&mut self) {
+        let ctl = self.i_ctl;
+        self.rx_capture_ctl = self
+            .inner
+            .uart_rx_history
+            .iter()
+            .filter(|r| r.dst_core == ctl)
+            .count();
+    }
+
+    /// Return CONTROL's RX-accepted bytes since the last
+    /// `mark_ctl_rx_capture_point()` call.  Distinct from
+    /// `ctl_tx_record_since_last_capture` (CONTROL's outgoing
+    /// bytes) and from filtering `uart_tx_history` by
+    /// `dst_core == i_ctl` (which records wire-attempts
+    /// pre-acceptance).  See task #94.
+    fn ctl_rx_record_since_last_capture(&mut self) -> Vec<u8> {
+        let ctl = self.i_ctl;
+        let ctl_records: Vec<u8> = self
+            .inner
+            .uart_rx_history
+            .iter()
+            .filter(|r| r.dst_core == ctl)
+            .map(|r| r.byte)
+            .collect();
+        let result = ctl_records[self.rx_capture_ctl..].to_vec();
+        self.rx_capture_ctl = ctl_records.len();
+        result
+    }
+
+    /// MAIN0 mirror of `mark_ctl_rx_capture_point`.
+    fn mark_main0_rx_capture_point(&mut self) {
+        let main0 = self.i_main0;
+        self.rx_capture_main0 = self
+            .inner
+            .uart_rx_history
+            .iter()
+            .filter(|r| r.dst_core == main0)
+            .count();
+    }
+
+    /// MAIN0 mirror of `ctl_rx_record_since_last_capture`.
+    fn main0_rx_record_since_last_capture(&mut self) -> Vec<u8> {
+        let main0 = self.i_main0;
+        let main0_records: Vec<u8> = self
+            .inner
+            .uart_rx_history
+            .iter()
+            .filter(|r| r.dst_core == main0)
+            .map(|r| r.byte)
+            .collect();
+        let result = main0_records[self.rx_capture_main0..].to_vec();
+        self.rx_capture_main0 = main0_records.len();
+        result
+    }
+
+    /// MAIN1 mirror of `mark_ctl_rx_capture_point`.
+    fn mark_main1_rx_capture_point(&mut self) {
+        let main1 = self.i_main1;
+        self.rx_capture_main1 = self
+            .inner
+            .uart_rx_history
+            .iter()
+            .filter(|r| r.dst_core == main1)
+            .count();
+    }
+
+    /// MAIN1 mirror of `ctl_rx_record_since_last_capture`.
+    fn main1_rx_record_since_last_capture(&mut self) -> Vec<u8> {
+        let main1 = self.i_main1;
+        let main1_records: Vec<u8> = self
+            .inner
+            .uart_rx_history
+            .iter()
+            .filter(|r| r.dst_core == main1)
+            .map(|r| r.byte)
+            .collect();
+        let result = main1_records[self.rx_capture_main1..].to_vec();
+        self.rx_capture_main1 = main1_records.len();
         result
     }
 

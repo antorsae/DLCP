@@ -125,6 +125,26 @@ struct RxEntry {
     rx9d: bool,
 }
 
+/// Result of `Eusart::deliver_rx_byte` / `deliver_rx_frame`.
+/// Splits the existing single-bool wake hint into the wake
+/// hint AND a separate `accepted` flag so the chain's UART
+/// dispatch can record FIFO-accepted bytes (`uart_rx_history`)
+/// distinct from wire-attempts (`uart_tx_history`).  Task #94.
+///
+/// `accepted == true` iff the byte was pushed into the silicon
+/// FIFO behind RCREG (SPEN+CREN gate passed AND no OERR latched
+/// AND FIFO had room).  `accepted == false` covers the three
+/// drop paths: SPEN/CREN clear, OERR sticky, FIFO full (which
+/// also latches OERR as a side-effect).  `wake` retains the
+/// existing semantic: BAUDCON.WUE-driven wake hint that the
+/// chain dispatcher uses to bring halted destination cores
+/// back to `RunState::Running`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct RxDelivery {
+    pub wake: bool,
+    pub accepted: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Eusart {
     /// Tcy remaining until the in-flight TX shift register
@@ -242,7 +262,19 @@ impl Eusart {
     /// that against gpsim's bit-level RX timing if needed.
     /// Disabled (SPEN=0 or CREN=0) RX silently drops the
     /// byte.  Task #30.
-    pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) -> bool {
+    ///
+    /// Returns `RxDelivery { wake, accepted }`:
+    ///   * `wake`: BAUDCON.WUE-driven wake hint for halted
+    ///     cores (existing semantic; SLEEP/Idle wake on RX
+    ///     edge).
+    ///   * `accepted`: true iff the byte was pushed into the
+    ///     silicon FIFO (i.e. SPEN+CREN gate passed AND no
+    ///     OERR latched AND FIFO had room).  Used by the
+    ///     chain's `uart_rx_history` recorder to log only
+    ///     bytes the destination's silicon accepted.
+    ///     Distinct from `uart_tx_history` which records
+    ///     wire-attempts pre-acceptance.  See task #94.
+    pub fn deliver_rx_byte(&mut self, byte: u8, mem: &mut Memory) -> RxDelivery {
         self.deliver_rx_frame(byte, false, false, mem)
     }
 
@@ -252,10 +284,10 @@ impl Eusart {
         framing_error: bool,
         ninth_bit: bool,
         mem: &mut Memory,
-    ) -> bool {
+    ) -> RxDelivery {
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
         if (rcsta & RCSTA_SPEN) == 0 || (rcsta & RCSTA_CREN) == 0 {
-            return false;
+            return RxDelivery { wake: false, accepted: false };
         }
         let baudcon = mem.read_raw(Address::from_raw(BAUDCON_ADDR));
         let wake = (baudcon & BAUDCON_WUE) != 0;
@@ -269,7 +301,7 @@ impl Eusart {
         // masking firmware that forgets the CREN-toggle
         // recovery dance.
         if (rcsta & RCSTA_OERR) != 0 {
-            return wake;
+            return RxDelivery { wake, accepted: false };
         }
         if self.rx_fifo.len() >= RX_FIFO_DEPTH {
             // FIFO full: latch OERR, drop the byte.  Per DS
@@ -279,7 +311,7 @@ impl Eusart {
                 Address::from_raw(RCSTA_ADDR),
                 rcsta | RCSTA_OERR,
             );
-            return wake;
+            return RxDelivery { wake, accepted: false };
         }
         let rx9_enabled = (rcsta & RCSTA_RX9) != 0;
         self.rx_fifo.push_back(RxEntry {
@@ -293,7 +325,7 @@ impl Eusart {
             Address::from_raw(PIR1_ADDR),
             pir1 | PIR1_RCIF,
         );
-        wake
+        RxDelivery { wake, accepted: true }
     }
 
     fn update_rx_front_sfrs(&self, mem: &mut Memory) {

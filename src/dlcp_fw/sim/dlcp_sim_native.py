@@ -893,6 +893,40 @@ class Chain:
         """
         return list(self._inner.main1_tx_record_since_last_capture())
 
+    def mark_ctl_rx_capture_point(self) -> None:
+        """Reset the CTL-side RX capture pointer.  Distinct
+        from :meth:`mark_ctl_tx_capture_point` (CONTROL's
+        outgoing bytes) and from filtering wire-attempts by
+        ``dst_core``: this captures only bytes that the
+        destination silicon's FIFO ACCEPTED (passed SPEN+CREN,
+        not blocked by OERR, FIFO had room).  See task #94.
+        """
+        self._inner.mark_ctl_rx_capture_point()
+
+    def ctl_rx_record_since_last_capture(self) -> list[int]:
+        """Return CONTROL's RX-accepted bytes since the last
+        :meth:`mark_ctl_rx_capture_point` call.  Distinct from
+        wire-attempt filtering: this is the byte stream the
+        firmware actually saw via RCREG reads.  See task #94.
+        """
+        return list(self._inner.ctl_rx_record_since_last_capture())
+
+    def mark_main0_rx_capture_point(self) -> None:
+        """MAIN0 mirror of :meth:`mark_ctl_rx_capture_point`."""
+        self._inner.mark_main0_rx_capture_point()
+
+    def main0_rx_record_since_last_capture(self) -> list[int]:
+        """MAIN0 mirror of :meth:`ctl_rx_record_since_last_capture`."""
+        return list(self._inner.main0_rx_record_since_last_capture())
+
+    def mark_main1_rx_capture_point(self) -> None:
+        """MAIN1 mirror of :meth:`mark_ctl_rx_capture_point`."""
+        self._inner.mark_main1_rx_capture_point()
+
+    def main1_rx_record_since_last_capture(self) -> list[int]:
+        """MAIN1 mirror of :meth:`ctl_rx_record_since_last_capture`."""
+        return list(self._inner.main1_rx_record_since_last_capture())
+
     def current_ctl_pc(self) -> int:
         """CONTROL core's current PC (firmware program counter,
         word-aligned, masked to 21 bits).  Mirror of gpsim's

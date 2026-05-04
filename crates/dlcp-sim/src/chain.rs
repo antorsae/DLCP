@@ -25,6 +25,7 @@ use crate::core::{Core, RunState};
 use crate::exec::step;
 use crate::lcd::Hd44780;
 use crate::memory::Address;
+use crate::peripherals::eusart::RxDelivery;
 use crate::peripherals::gpio;
 use crate::peripherals::mssp::{I2cBusEvent, Mssp};
 use crate::peripherals::src4382::Src4382;
@@ -90,6 +91,26 @@ pub struct Chain {
     /// convergence.  Cleared by `apply_reset_all` so a
     /// re-bootstrap doesn't carry pre-reset history forward.
     pub uart_tx_history: Vec<UartByteRecord>,
+    /// FIFO-accepted RX byte recorder, distinct from
+    /// `uart_tx_history`.  `uart_tx_history` records every
+    /// wire-attempt at the source-side `deliver_uart_byte`
+    /// entry (gpsim trace semantics: bits on the wire,
+    /// regardless of destination acceptance).  This recorder
+    /// only captures bytes that the destination's silicon
+    /// FIFO actually accepted -- i.e. SPEN+CREN gate passed,
+    /// no OERR latched, and FIFO had room.  Dropped bytes
+    /// (SPEN/CREN clear, OERR sticky, FIFO overflow) are
+    /// excluded.
+    ///
+    /// Used by task #94 probes to localize byte-loss in
+    /// multi-MAIN forwarding chains: comparing
+    /// `uart_tx_history` (wire) vs `uart_rx_history`
+    /// (accepted) for a given destination distinguishes
+    /// "byte never reached the wire" from "byte reached the
+    /// wire but the silicon dropped it".  Cleared by
+    /// `apply_reset_all` so a re-bootstrap doesn't carry
+    /// pre-reset history forward.
+    pub uart_rx_history: Vec<UartByteRecord>,
     /// TAS3108 audio-DSP I²C slaves connected to one or
     /// more master cores via `couple_tas3108`.  Phase-3.5
     /// uses these to ACK V3.1 MAIN's `dsp_ping` and
@@ -224,6 +245,7 @@ impl Chain {
             pinnet: PinNet::new(),
             pin_coupling_last: Vec::new(),
             uart_tx_history: Vec::new(),
+            uart_rx_history: Vec::new(),
             tas3108_slaves: Vec::new(),
             tas3108_couplings: Vec::new(),
             src4382_slaves: Vec::new(),
@@ -673,12 +695,30 @@ impl Chain {
         // destination, then split-borrow `peripherals` and
         // `memory` -- they're disjoint pub fields so the
         // compiler accepts the simultaneous &mut on each.
-        let wake = {
+        let RxDelivery { wake, accepted } = {
             let dst_core = &mut self.cores[coupling.dst_core];
             let memory = &mut dst_core.memory;
             let eusart = &mut dst_core.peripherals.eusart;
             eusart.deliver_rx_byte(byte, memory)
         };
+        // Task #94: record FIFO-accepted bytes in
+        // `uart_rx_history`, distinct from `uart_tx_history`
+        // which captures wire-attempts pre-acceptance above.
+        // Only push when `accepted == true` (SPEN/CREN passed,
+        // no OERR, FIFO had room) -- the recorder is the
+        // source of truth for "what bytes the destination's
+        // silicon actually saw and the firmware can read out
+        // of its RCREG FIFO".  Comparing tx_history vs
+        // rx_history localizes byte-loss to the destination's
+        // accept gate (vs upstream couplings).
+        if accepted {
+            self.uart_rx_history.push(UartByteRecord {
+                tick: self.current_tick,
+                src_core: coupling.src_core,
+                dst_core: coupling.dst_core,
+                byte,
+            });
+        }
         if wake && self.cores[coupling.dst_core].run_state != RunState::Running {
             self.cores[coupling.dst_core].run_state = RunState::Running;
             self.schedule_next_core_step(coupling.dst_core);
@@ -1306,6 +1346,7 @@ impl Chain {
         // independent so a future `apply_reset_all`-only
         // path stays consistent.
         self.uart_tx_history.clear();
+        self.uart_rx_history.clear();
         for level in &mut self.pin_coupling_last {
             *level = None;
         }
