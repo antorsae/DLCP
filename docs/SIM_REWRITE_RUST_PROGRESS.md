@@ -450,6 +450,20 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   superseded by these per-test adapter sub-tasks; the next session
   can pick them off individually.
 
+  However, a **NEW rust-specific fidelity gap was uncovered when
+  attempting to migrate `test_v171_v32_layer5_chain_lcd_renders_
+  saturation_plus`**:  the V1.71 Diagnostics page is entered
+  correctly (LCD shows "PB1 / n/a" after `_rust_navigate_to_
+  diagnostics`), but neither PB1 nor PB2 ever replies -- v171_diag_
+  present at RAM 0x197 stays 0x00 even after 2000 step() chunks
+  (~400M Tcy).  The 4 currently-xfailed PB-cache tests use
+  `run=False` so their xfail message ("rust saturates at PB1 only")
+  is descriptive, not empirical -- the actual rust behavior is
+  ZERO replies, not PB1-only.  Tracked as task #94; needs a
+  targeted probe of the cmd 0x21 query emission path on CONTROL +
+  the BF/21..27 reply path on V3.2 MAIN.  saturation_plus
+  migration deferred until task #94 is closed.
+
   Item 2 (V1.4x/V1.5x/V1.6x + V2.4/V2.5 WAITING-stuck) has NOT been
   re-probed and remains open.  Item 3 (per-link fault injection)
   remains a pending primitive on the rust facade.
