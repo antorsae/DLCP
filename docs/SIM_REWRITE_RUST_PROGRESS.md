@@ -647,7 +647,7 @@ the scaffold remains landed.
   - verify: `.venv_ep0/bin/python scripts/check_phase5_gate.py`
   - artifact: `scripts/check_phase5_gate.py` (wraps the spec's two-line gate: `cargo test --test snapshot_property --release` + `pytest tests/sim/soak -n 16 -q`; see the script docstring for the exit-code contract).
 
-- [pending] P5b.1 (stretch) `cargo fuzz` target on IR command stream + boot-offset RNG
+- [blocked] P5b.1 (stretch) `cargo fuzz` target on IR command stream + boot-offset RNG
   - verify: `cd crates/dlcp-sim && cargo fuzz run ir_stream -- -max_total_time=300`
   - artifact: `crates/dlcp-sim/fuzz/`.
 

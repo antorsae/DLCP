@@ -1,0 +1,50 @@
+# cargo-fuzz target crate for the dlcp-sim Rust simulator.
+#
+# Spec ref: docs/SIM_REWRITE_RUST_SPEC.md §9 P5b.1 (stretch).
+# Progress ledger: docs/SIM_REWRITE_RUST_PROGRESS.md P5b.1.
+#
+# This crate is INTENTIONALLY NOT a workspace member.  cargo-fuzz's
+# libfuzzer-sys dependency requires nightly Rust + LLVM libfuzzer
+# bindings; including it in the parent workspace would make
+# `cargo build` / `cargo check` fail under the stable Rust toolchain
+# the rest of this project uses.  The exclude entry in the root
+# `Cargo.toml` (workspace.exclude) keeps cargo from auto-discovering
+# this directory as a workspace crate.
+#
+# Prereqs to actually run the fuzz target:
+#   1.  Install rustup + a nightly toolchain:
+#         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+#         rustup install nightly
+#   2.  Install cargo-fuzz:
+#         cargo install cargo-fuzz
+#   3.  From the repo root, run:
+#         cd crates/dlcp-sim
+#         cargo +nightly fuzz run ir_stream -- -max_total_time=300
+#
+# See README.md in this directory for the full operator runbook.
+
+[package]
+name = "dlcp-sim-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dlcp-sim = { path = ".." }
+
+# Prevent this crate from being picked up by the parent
+# workspace.  cargo-fuzz's libfuzzer-sys 0.4 needs nightly +
+# the `-Z' compiler flags and would break stable workspace
+# `cargo build`s.
+[workspace]
+
+[[bin]]
+name = "ir_stream"
+path = "fuzz_targets/ir_stream.rs"
+test = false
+doc = false
+bench = false

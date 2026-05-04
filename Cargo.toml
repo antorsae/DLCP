@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
 members = ["crates/dlcp-sim", "crates/dlcp-sim-py", "crates/dlcp-sim-cli"]
+# `crates/dlcp-sim/fuzz/` is the cargo-fuzz target crate (see
+# `docs/SIM_REWRITE_RUST_SPEC.md` §9 P5b.1).  Its libfuzzer-sys
+# dependency requires nightly Rust + LLVM libfuzzer bindings, so
+# pulling it into the workspace would break stable `cargo build`
+# (and would make `cargo test --workspace` fail on stable).  The
+# fuzz crate has its own minimal `[workspace]` table to opt out
+# of auto-discovery; this `exclude` belt-and-braces ensures
+# we never accidentally re-include it.
+exclude = ["crates/dlcp-sim/fuzz"]
 
 [workspace.package]
 version = "0.0.0"
