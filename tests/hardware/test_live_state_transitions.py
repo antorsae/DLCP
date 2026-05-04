@@ -552,9 +552,9 @@ def test_live_diagnostics_pb1_data_lands_on_real_silicon(tmp_path: Path) -> None
            5=PB2Diag (per `dlcp_control_v171.asm:4805+`), so RIGHT
            must be pressed FOUR times from the Volume default to
            reach PB1 Diag.
-        2. Cycle LEFT (back to Preset) then RIGHT (back to PB1
-           Diag) 5-10 times.  V1.71's foreground busy-loop in
-           `display_loop_iteration` (asm:2885-2897) only exits on
+        2. Cycle LEFT (PB1 Diag(4) → Setup(3)) then RIGHT (back
+           to PB1 Diag(4)) 5-10 times.  V1.71's foreground busy-loop
+           in `display_loop_iteration` (asm:2885-2897) only exits on
            user-driven events, so each navigation event lets the
            cmd 0x21/0x22 cadence re-fire and progressively populates
            the BF/2N reply cache.  Waiting on the page without

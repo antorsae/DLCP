@@ -57,10 +57,13 @@ adds three new layers on top:
   entries `PB1 Diag(4)` and `PB2 Diag(5)` after the existing Setup(3)
   state, giving a 6-state Tier-1 ring
   (`Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4) → PB2 Diag(5) → Volume(0)`).
-  When entered, CONTROL polls the corresponding PB with `cmd 0x21`
-  on a ~1 s cadence and renders the seven returned counter values
-  in one of four 16x2 layouts (Absent/Healthy/Degraded/Overflow).
-  See [`docs/V32_DIAG_TIER1_SPEC.md`](V32_DIAG_TIER1_SPEC.md) for
+  When a PB Diag page is active, CONTROL polls the corresponding PB
+  with `cmd 0x21` (7 runtime counters) and `cmd 0x22` (4 reset-cause
+  flags) on a ~1 s alternating cadence; the BF/2N reply burst
+  populates 11 cache cells per PB.  CONTROL renders the cache in
+  one of four 16x2 layouts (Absent/Healthy/Degraded/Overflow) per
+  the cache health.  See
+  [`docs/V32_DIAG_TIER1_SPEC.md`](V32_DIAG_TIER1_SPEC.md) for
   the Tier-1 layout dispatch and
   [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](V163B_DIAGNOSTICS_MENU_SPEC.md)
   for the original (pre-Tier-1) layout.

@@ -953,15 +953,21 @@ control on the unit and isn't part of the routine 2-cycle gate.
 Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
 
 > **Updated 2026-05-04 (operator HW retest).**  Pre-2026-05-04 versions
-> of this runbook described the Diagnostics page as a "Task #22
-> discriminator" (gpsim two-MAIN echo-loop) and expected both rows to
-> render counter values within ~2 seconds.  That framing has been
-> retracted: real HW also shows `1:n/a` / `2:n/a` after only the
-> initial 4-RIGHT navigation, and converging both rows to live
-> counter values requires multiple LEFT/RIGHT navigation cycles.
-> The shared firmware-design root cause is V1.71's foreground
-> busy-loop in `display_loop_iteration` (asm:2885-2897) which only
-> exits on user-driven events.  This is not a Task #22 reproduction.
+> of this runbook described the Diagnostics page as a single
+> two-row Diagnostics(2) screen (`1:I D S B R A P` / `2:I D S B R A P`),
+> framed it as a "Task #22 discriminator" (gpsim two-MAIN echo-loop),
+> and expected both rows to render counter values within ~2 seconds.
+> Both framings have been retracted.  V1.71 Tier-1 (per
+> `docs/V32_DIAG_TIER1_SPEC.md` and `dlcp_control_v171.asm:4805+`)
+> split that single-screen layout into per-PB pages at states 4
+> (PB1) and 5 (PB2), each rendering one of four `PBn` / `n/a` /
+> `OK` / `PBn:` layouts.  Real HW also shows `PBn` / `n/a` after only
+> the initial 4-RIGHT navigation; converging the row to counter
+> values requires multiple LEFT/RIGHT navigation cycles around the
+> active PB-Diag state.  The shared firmware-design root cause is
+> V1.71's foreground busy-loop in `display_loop_iteration`
+> (asm:2885-2897) which only exits on user-driven events.  This
+> is not a Task #22 reproduction.
 
 ### Prerequisites
 
@@ -1010,13 +1016,13 @@ Walk-through:
    the BF/2N reply burst has not had a chance to populate the
    cache yet.  Convergence requires multiple LEFT/RIGHT navigation
    cycles (see step 4).
-4. To converge PB1's row to counter values (or stable `OK`):
-   press IR `LEFT` once (back to Setup(3)), then `RIGHT` once
-   (back to PB1 Diag(4)).  Repeat the `LEFT → RIGHT` cycle 5–10
-   times.  Each navigation event exits V1.71's
+4. To converge PB1's page to counter values (or stable `OK`):
+   press IR `LEFT` once (PB1 Diag(4) → Setup(3)), then `RIGHT`
+   once (back to PB1 Diag(4)).  Repeat the `LEFT → RIGHT` cycle
+   5–10 times.  Each navigation event exits V1.71's
    `display_loop_iteration` foreground busy-loop and lets the
-   cmd 0x21 cadence re-fire, eventually flipping the layout to
-   `PB1` / `OK` (all-zero counters) or `PB1:` + cell entries
+   cmd 0x21/0x22 cadence re-fire, eventually flipping the layout
+   to `PB1` / `OK` (all-zero counters) or `PB1:` + cell entries
    (some non-zero counters) on PB1's page.
 5. To check PB2: press IR `RIGHT` once more (PB1 Diag → PB2 Diag,
    state 4 → 5).  PB2's page renders the same `PBn` / `n/a` /
@@ -1079,16 +1085,18 @@ harness to bump and aren't part of the basic operator walk-through.
 This walk-through validates that V1.71 CONTROL is correctly parsing
 the V3.2 BF/2N diag-reply burst once the foreground busy-loop has
 exited often enough to deliver multiple cmd 0x21/0x22 query cycles.
-Initial `1:n/a` / `2:n/a` rendering after the first 4-RIGHT
-navigation is the firmware-by-design state, not a Task #22 sim
-reproduction (see Updated 2026-05-04 note at the top of this
-section).
+Initial `PB1` / `n/a` (or `PB2` / `n/a`) rendering after the first
+4-RIGHT (or 5-RIGHT) navigation is the firmware-by-design state, not
+a Task #22 sim reproduction (see Updated 2026-05-04 note at the top
+of this section).
 
-If both rows converge to counter chars (or stable `n/a`) after 5–10
-LEFT/RIGHT navigation cycles, V1.71 + V3.2 are operating
-correctly.  If `2:n/a` is stuck even after extensive navigation
-cycling while `1:` shows live counters, that points at a real V3.2
-PB2 reply-path or V1.71 parser-target-toggle bug.
+If both per-PB pages converge to `OK` / `PB1:`+cells / `PB2:`+cells
+(or stable `PBn` / `n/a` for a genuinely silent PB) after 5–10
+LEFT/RIGHT navigation cycles around the corresponding state, V1.71
++ V3.2 are operating correctly.  If `PB2` / `n/a` is stuck on the
+PB2 page (state 5) even after extensive navigation cycling while
+the PB1 page (state 4) converges, that points at a real V3.2 PB2
+reply-path or V1.71 parser-target-toggle bug.
 
 ## WAITING FOR DLCP recovery (V1.71 operator reset, 2026-04-21)
 
