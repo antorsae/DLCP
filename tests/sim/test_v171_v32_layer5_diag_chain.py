@@ -304,6 +304,14 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # but never 0x03 (PB1 + PB2).  Bytes ARE flowing through every hop;
 # the problem is upstream of the parser-cache write.
 #
+# [HISTORICAL — superseded by the UPDATE 2026-04-27 and UPDATE
+#  2026-05-04 blocks below; preserved as audit trail of the
+#  pre-rust-rewrite working hypothesis.  Do not treat as current
+#  state; the operator HW retest 2026-05-04 retracted both the
+#  "PB1-saturation" rust prediction and the "rust fidelity bug /
+#  Timer3 dispatch" hypothesis, and the new shared-firmware-design
+#  framing supersedes the parser-vs-echo guess below.]
+#
 # Working hypothesis (needs probe — Task #22): in the multi-MAIN
 # gpsim topology, MAIN0's TX is replicated to BOTH m0_to_m1 (downstream)
 # and m0_to_ctl (upstream), unlike a real current loop where the

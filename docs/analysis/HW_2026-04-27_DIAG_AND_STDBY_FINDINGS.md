@@ -369,18 +369,24 @@ RE-OPENED, then RE-CLOSED 2026-05-04) is closed; the working hypothesis
 from f826b85, plus probe v19 showing V1.71 firmware never enables
 Timer3 / T3CON=0).  Audit-trail prose follows.
 
-P3.6b stays the `v171_diag_present == 0x03` open issue.  Task #22
-(gpsim-PB2-only saturation) remains representative.  Task #94 was
-filed 2026-05-04 to investigate a rust-specific surface; briefly
-closed as duplicate but RE-OPENED the same day after user
-pushback.  Probes v15-v18 confirmed: real HW shows diag values
-after just 4 RIGHT presses (no further input), but rust chain
-goes silent post-nav -- zero TX from any core for 10M ticks
-(~208ms wall) -- so V1.71's foreground busy-loop never re-fires
-the cmd 0x21 cadence.  Most likely cause: Timer3/Timer1 ISR
-vector dispatch on rust failing to drive periodic interrupts.
-Separate scope from the P3.8 sub-tasks; task #94 is the active
-investigation.
+[OBSOLETE — superseded by the Update 2026-05-04 paragraph above; the
+text below is preserved as audit trail of an earlier interpretation
+that has been retracted in full.  Do not act on the prose below; it
+contradicts the FINAL CLOSURE 2026-05-04 in §9 and the FINAL CLOSURE
+subsection in `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b entry.]
+
+> P3.6b stays the `v171_diag_present == 0x03` open issue.  Task #22
+> (gpsim-PB2-only saturation) remains representative.  Task #94 was
+> filed 2026-05-04 to investigate a rust-specific surface; briefly
+> closed as duplicate but RE-OPENED the same day after user
+> pushback.  Probes v15-v18 confirmed: real HW shows diag values
+> after just 4 RIGHT presses (no further input), but rust chain
+> goes silent post-nav -- zero TX from any core for 10M ticks
+> (~208ms wall) -- so V1.71's foreground busy-loop never re-fires
+> the cmd 0x21 cadence.  Most likely cause: Timer3/Timer1 ISR
+> vector dispatch on rust failing to drive periodic interrupts.
+> Separate scope from the P3.8 sub-tasks; task #94 is the active
+> investigation.
 
 ## 8. Questions for codex review
 

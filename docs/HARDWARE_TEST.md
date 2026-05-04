@@ -951,9 +951,17 @@ control on the unit and isn't part of the routine 2-cycle gate.
 ## Diagnostics page (V1.71 + V3.2 Layer 5)
 
 Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
-This is the live-rig confirmation that distinguishes a true firmware
-issue from the gpsim harness's two-MAIN echo-loop modeling limit
-(currently quarantined under Task #22).
+
+> **Updated 2026-05-04 (operator HW retest).**  Pre-2026-05-04 versions
+> of this runbook described the Diagnostics page as a "Task #22
+> discriminator" (gpsim two-MAIN echo-loop) and expected both rows to
+> render counter values within ~2 seconds.  That framing has been
+> retracted: real HW also shows `1:n/a` / `2:n/a` after only the
+> initial 4-RIGHT navigation, and converging both rows to live
+> counter values requires multiple LEFT/RIGHT navigation cycles.
+> The shared firmware-design root cause is V1.71's foreground
+> busy-loop in `display_loop_iteration` (asm:2885-2897) which only
+> exits on user-driven events.  This is not a Task #22 reproduction.
 
 ### Prerequisites
 
@@ -977,9 +985,17 @@ issue from the gpsim harness's two-MAIN echo-loop modeling limit
    1:I D S B R A P
    2:I D S B R A P
    ```
-   (counter chars are spaces when the counter is zero)
-4. Wait ~2 seconds.  Both rows should refresh — `1:` and `2:` rows
-   show the live counter values polled from each PB.
+   (counter chars are spaces when the counter is zero).  Initial
+   render may instead show `1:n/a` / `2:n/a` — that is normal on a
+   clean rig and does NOT indicate a fault.  Convergence to live
+   counter values requires multiple LEFT/RIGHT navigation cycles
+   (see step 4).
+4. To converge the rows: press IR `LEFT` once (back to Preset(1)),
+   then `RIGHT` once (back to Diagnostics(2)).  Repeat the
+   `LEFT → RIGHT` cycle 5–10 times.  Each navigation event exits
+   the foreground busy-loop and lets the cmd 0x21/0x22 cadence
+   re-fire, eventually populating both rows with live counter
+   values (or stable `n/a` if a counter is genuinely empty).
 5. Press the IR `LEFT` key twice to return to Volume.  CONTROL's
    diag query path is page-local, so leaving the page stops all
    diag traffic.
@@ -989,8 +1005,8 @@ issue from the gpsim harness's two-MAIN echo-loop modeling limit
 | What | Expected | Failure attribution |
 |---|---|---|
 | Both rows render `1:` and `2:` prefix | yes | If only `1:` appears: V1.71 CONTROL not flashed correctly |
-| `1:` shows counter chars or `n/a` | yes | If `1:n/a` permanently: PB1 MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) |
-| `2:` shows counter chars or `n/a` | yes | If `2:n/a` permanently: PB2 MAIN doesn't recognize cmd 0x21, OR Task #22 reproduces on hardware |
+| `1:` shows counter chars or stable `n/a` after 5–10 LEFT/RIGHT cycles | yes | If `1:n/a` even after navigation cycling: PB1 MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) |
+| `2:` shows counter chars or stable `n/a` after 5–10 LEFT/RIGHT cycles | yes | If `2:n/a` even after navigation cycling: PB2 MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) |
 | LEFT exits the page cleanly | yes | If CONTROL hangs: violates Layer 1 bounded-TX guarantee |
 | No effect on Volume/Preset/Input/Setup operation | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
 
@@ -1029,19 +1045,21 @@ Some counters are easy to bump on the rig:
 The remaining counters (`I`, `D`, `R`, `P`) need a fault-injection
 harness to bump and aren't part of the basic operator walk-through.
 
-### Resolves which Task #22 question
+### What this validates (post 2026-05-04 retest)
 
-If the operator walk-through shows `2:I D S B R A P` (or the same
-counter values as PB1 with PB2-specific values) within ~2 seconds
-of entering the page, the Task #22 quarantined sim failures are
-**gpsim-only** — no firmware bug.  Lifting the 4 xfail markers in
-`tests/sim/test_v171_v32_layer5_diag_chain.py` should be paired with
-a harness-level investigation rather than a firmware change.
+This walk-through validates that V1.71 CONTROL is correctly parsing
+the V3.2 BF/2N diag-reply burst once the foreground busy-loop has
+exited often enough to deliver multiple cmd 0x21/0x22 query cycles.
+Initial `1:n/a` / `2:n/a` rendering after the first 4-RIGHT
+navigation is the firmware-by-design state, not a Task #22 sim
+reproduction (see Updated 2026-05-04 note at the top of this
+section).
 
-If the operator walk-through shows `2:n/a` permanently while `1:` shows
-live counters, the Task #22 sim failures **reproduce on hardware** —
-the V1.71 parser or the V3.2 reply path has a real bug that needs a
-firmware fix.
+If both rows converge to counter chars (or stable `n/a`) after 5–10
+LEFT/RIGHT navigation cycles, V1.71 + V3.2 are operating
+correctly.  If `2:n/a` is stuck even after extensive navigation
+cycling while `1:` shows live counters, that points at a real V3.2
+PB2 reply-path or V1.71 parser-target-toggle bug.
 
 ## WAITING FOR DLCP recovery (V1.71 operator reset, 2026-04-21)
 
