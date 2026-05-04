@@ -639,11 +639,11 @@ the scaffold remains landed.
   - verify: `.venv_ep0/bin/python scripts/check_replay_round_trip.py`
   - artifact: `crates/dlcp-sim-cli/src/main.rs` + `scripts/sim_replay.py` wrapper + `scripts/check_replay_round_trip.py` (asserts a synthetic divergence file replays to bit-exact reproduction).
 
-- [pending] P5.4 Soak suite under `tests/sim/soak/` — 10⁴+ scenarios per soak test
+- [done] P5.4 Soak suite under `tests/sim/soak/` — 10⁴+ scenarios per soak test
   - verify: `.venv_ep0/bin/python -m pytest tests/sim/soak -n 16 -q`
   - artifact: `tests/sim/soak/test_*.py`.
 
-- [pending] P5.gate Run phase-5 gate
+- [done] P5.gate Run phase-5 gate
   - verify: `.venv_ep0/bin/python scripts/check_phase5_gate.py`
   - artifact: `scripts/check_phase5_gate.py` (wraps the spec's two-line gate: `cargo test --test snapshot_property --release` + `pytest tests/sim/soak -n 16 -q`; see the script docstring for the exit-code contract).
 
