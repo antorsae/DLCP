@@ -606,13 +606,15 @@ modules in `crates/dlcp-sim/src/` produced 93 compile errors that
 identified the substantive deltas a successful P5.1 needs:
 
   1. `serde_big_array` workspace dep + `#[serde(with =
-     "serde_big_array::BigArray")]` annotations on the 5
+     "serde_big_array::BigArray")]` annotations on the 7
      known large-array fields: `HexImage.flash` and
-     `HexImage.flash_present` (32K entries each in
-     `hex.rs`); `Eeprom.storage` (256 entries in
-     `eeprom.rs`); `Tas3108.regs` and `Src4382.regs`
-     (256 each in `peripherals/tas3108.rs` and
-     `peripherals/src4382.rs`).
+     `HexImage.flash_present` (FLASH_BYTES = 32K entries
+     each in `hex.rs`); `HexImage.eeprom` (EEPROM_BYTES =
+     256 in `hex.rs`); `Eeprom.storage` (256 in
+     `peripherals/eeprom.rs`); `Tas3108.regs` and
+     `Src4382.regs` (256 each in `peripherals/tas3108.rs`
+     and `peripherals/src4382.rs`); `Hd44780.ddram`
+     (DDRAM_SIZE = 128 in `lcd.rs`).
   2. `#[serde(skip)]` on transient `&'static str` fields in
      the `core::PcRangeProbe.label` and
      `core::WatchedRamProbe.label` probe types (which
