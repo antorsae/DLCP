@@ -340,14 +340,18 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # Both pages have the `PBn:` colon prefix -> per V1.71 Tier-1 layout
 # spec `v171_diag_present.bit_n = 1` on real silicon -> BOTH BF/2N
 # reply convergences work on real hardware.  V1.71 firmware is
-# therefore CORRECT; the residual PB2 saturation in BOTH simulators
-# (gpsim Python harness AND Rust silicon-correct ring) is a SHARED
-# sim fidelity gap, most likely timing/electrical/clock-domain.
-# This XFAIL marker stays in place until the sim gap is closed --
-# see `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b for open hypotheses
-# (clock-domain skew, UART RX bit-timing margin, transient OERR in
-# sim that silicon does not exhibit, BANK 2 RAM aliasing, RXIF
-# latency model).
+# therefore CORRECT; the gpsim Python harness shows residual PB2
+# saturation (PB1 reply lands, PB2 reply lost), which the
+# 2026-04-27 working assumption framed as a "shared timing /
+# electrical / clock-domain" gap that rust would also reproduce.
+# 2026-05-04 empirical update (task #94): rust does NOT reproduce
+# the same gap -- it yields ZERO replies (neither PB1 nor PB2),
+# i.e., the Diag-page cmd 0x21 query/reply path doesn't fire at
+# all on rust.  So the gap is gpsim-specific (PB2-only saturation,
+# tracked via Task #22 hypotheses listed in
+# `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b) AND rust has its own
+# distinct gap (task #94, query never triggers PB1 reply).  The
+# XFAIL marker stays until both close.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
         "Bytes flow through every wire-chain bridge (verified by canary "
