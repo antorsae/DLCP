@@ -592,8 +592,10 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
     This is the protocol-contract end-to-end gate.
 
     XFailed on BOTH backends, but for distinct underlying gaps:
-      * gpsim: shared PB2 sim fidelity gap -- saturates
-        `v171_diag_present` at 0x01 (PB1 reply works, PB2 reply lost).
+      * gpsim: PB2-only saturation (Task #22) -- saturates
+        `v171_diag_present` at 0x01 (PB1 reply works, PB2 reply
+        lost; timing/electrical hypothesis stack documented in
+        SIM_REWRITE_RUST_PROGRESS.md P3.6b research closure).
       * rust: separate Diag-page query gap (task #94) -- ZERO
         replies on rust (`v171_diag_present` stays 0x00); the prior
         2026-04-27 claim that rust also saturates at PB1 was
@@ -665,9 +667,10 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     between cache slots would mean the parser is indexing the wrong
     PB on reply arrival.
 
-    XFailed on BOTH backends per the shared PB2 sim fidelity gap
-    (the PB2 reply never lands in CONTROL's parser).  Marker-only
-    migration to `dual_supported`.
+    XFailed on BOTH backends but for distinct gaps: gpsim's PB2
+    reply never lands in CONTROL's parser (Task #22); rust yields
+    ZERO replies (task #94, PB1 also missing -- not a shared gap).
+    Marker-only migration to `dual_supported`.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -761,8 +764,9 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
 
     Per spec §"LCD Examples" — All clear case.
 
-    XFailed on BOTH backends per the shared PB2 sim fidelity gap
-    (PB2 reply doesn't surface in CONTROL's parser).  Note: the
+    XFailed on BOTH backends but for distinct gaps: gpsim's PB2
+    reply doesn't surface in CONTROL's parser (Task #22); rust
+    yields ZERO replies (task #94).  Note: the
     expected LCD strings here are from the PRE-Tier-1 spec; under
     V1.71 Tier-1 + Phase 3.4 (Option-D layout) the actual rendering
     is per-PB ("PB1" / "OK..." / "PB1: X#...").  Both effects keep
@@ -837,8 +841,9 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     PB1: diag_i=2, diag_b=1, diag_r=1
     PB2: diag_s=1, diag_b=1, diag_a=3
 
-    XFailed on BOTH backends per the shared PB2 sim fidelity gap.
-    Marker-only migration to `dual_supported`.
+    XFailed on BOTH backends but for distinct gaps: gpsim
+    saturates at PB1 only (Task #22); rust yields ZERO replies
+    (task #94).  Marker-only migration to `dual_supported`.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()

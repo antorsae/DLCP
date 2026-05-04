@@ -345,7 +345,10 @@ sequenced before `P3.gate`.
 Each sub-task should explicitly carry the qualifier
 **"symptom-equivalent (not bit-exact)"** in its title so the ledger does
 not let them retire P3.6b on completion. P3.6b stays the
-`v171_diag_present == 0x03` shared sim fidelity gap, separate scope.
+`v171_diag_present == 0x03` open sim gap (now split into Task #22
+gpsim-PB2-only saturation + task #94 rust-zero-replies after the
+2026-05-04 empirical correction; previously framed as one shared
+gap), separate scope.
 
 ## 8. Questions for codex review
 
@@ -460,6 +463,8 @@ spec note. Tracked as a doc-fixup in Section 7.2.A.
 
 **Ledger guidance.** Codex emphasised: name P3.8a/b/c/d as
 **"symptom-equivalent (not bit-exact)"** and do NOT use them to retire
-P3.6b. P3.6b stays the `v171_diag_present == 0x03` shared sim fidelity
-gap, with timing/electrical hypotheses, separate scope. Section 7.4 now
+P3.6b. P3.6b stays the `v171_diag_present == 0x03` open sim gap (split
+2026-05-04 into Task #22 gpsim-PB2-only saturation + task #94
+rust-zero-replies; previously framed as one shared gap), with
+timing/electrical hypotheses, separate scope. Section 7.4 now
 carries that qualifier explicitly.
