@@ -149,11 +149,12 @@ These are rust-side functions today; the Python facade does not yet
 expose `Chain.snapshot()` / `Chain.restore()` directly.  Python tests
 that want snapshot/replay round-trip should drive the
 `./target/release/dlcp-sim replay` CLI via `subprocess` -- the CLI
-case JSON (an `initial_factory` or `initial_snapshot_hex`, a stimulus
-list, and an optional `expect_final_snapshot_hex`) is parsed by the
-CLI and handed to `dlcp_sim::snapshot::encode/decode` internally;
-the JSON envelope is NOT the same shape as the bincode bytes those
-functions consume directly.  Alternatively, run
+case JSON (a required `format: "dlcp-sim-replay-v1"` discriminator,
+an `initial_factory` or `initial_snapshot_hex`, a stimulus list, and
+an optional `expect_final_snapshot_hex`) is parsed by the CLI and
+handed to `dlcp_sim::snapshot::encode/decode` internally; the JSON
+envelope is NOT the same shape as the bincode bytes those functions
+consume directly.  Alternatively, run
 `cargo test --release -p dlcp-sim --test snapshot_property` for the
 proptest property suite.
 
