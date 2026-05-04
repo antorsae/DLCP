@@ -841,15 +841,16 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     PB1: diag_i=2, diag_b=1, diag_r=1
     PB2: diag_s=1, diag_b=1, diag_a=3
 
-    XFailed on BOTH backends because the V1.71 foreground
-    busy-loop in `display_loop_iteration` exits after the first
-    BF/2N dispatch and the cadence loop doesn't re-fire without
-    continuous user-input events (per the 2026-04-28 P3.6b
-    research closure; task #94 was opened 2026-05-04 to chase a
-    rust-specific manifestation but closed the same day as
-    duplicate after probes v10/v11 confirmed rust accepts all
-    bytes and dispatches BF/2N just like gpsim).  Marker-only
-    migration to `dual_supported`.
+    XFailed on BOTH backends.  On gpsim: shared P3.6b sim
+    behavior with PB1-only saturation (per the 2026-04-28
+    research closure).  On rust: the chain goes silent
+    post-navigation -- no MAIN/CONTROL TX traffic for 10M ticks
+    after the 4 RIGHT presses complete, so V1.71's foreground
+    busy-loop never re-fires the cmd 0x21 cadence.  Tracked
+    as task #94 (open: rust fidelity bug, likely Timer3/Timer1
+    ISR vector dispatch on rust failing to drive periodic
+    interrupts that real silicon produces continuously).
+    Marker-only migration to `dual_supported`.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()

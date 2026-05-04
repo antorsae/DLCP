@@ -345,16 +345,18 @@ sequenced before `P3.gate`.
 Each sub-task should explicitly carry the qualifier
 **"symptom-equivalent (not bit-exact)"** in its title so the ledger does
 not let them retire P3.6b on completion. P3.6b stays the
-`v171_diag_present == 0x03` open issue, now understood as a
-test-scenario artifact (V1.71 foreground busy-loop exits after one
-BF/2N dispatch without continuous user events) rather than a sim
-fidelity bug.  Task #22 (gpsim-PB2-only saturation) remains
-representative.  Task #94 was filed 2026-05-04 to investigate a
-candidate rust-zero-replies surface but closed the same day as
-duplicate of the 2026-04-28 P3.6b closure (probes v10/v11 confirmed
-rust accepts all bytes at silicon and dispatches BF/2N just like
-gpsim; "zero replies" was a short-window artifact).  Separate scope
-from the P3.8 sub-tasks.
+`v171_diag_present == 0x03` open issue.  Task #22
+(gpsim-PB2-only saturation) remains representative.  Task #94 was
+filed 2026-05-04 to investigate a rust-specific surface; briefly
+closed as duplicate but RE-OPENED the same day after user
+pushback.  Probes v15-v18 confirmed: real HW shows diag values
+after just 4 RIGHT presses (no further input), but rust chain
+goes silent post-nav -- zero TX from any core for 10M ticks
+(~208ms wall) -- so V1.71's foreground busy-loop never re-fires
+the cmd 0x21 cadence.  Most likely cause: Timer3/Timer1 ISR
+vector dispatch on rust failing to drive periodic interrupts.
+Separate scope from the P3.8 sub-tasks; task #94 is the active
+investigation.
 
 ## 8. Questions for codex review
 

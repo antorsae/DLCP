@@ -454,24 +454,25 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   superseded by these per-test adapter sub-tasks; the next session
   can pick them off individually.
 
-  However, a candidate rust-specific fidelity gap was initially
-  identified when attempting to migrate `test_v171_v32_layer5_
-  chain_lcd_renders_saturation_plus`: the V1.71 Diagnostics page
-  is entered correctly (LCD shows "PB1 / n/a" after
-  `_rust_navigate_to_diagnostics`), but a short post-nav window
-  showed neither PB1 nor PB2 reply landing.  Tracked as task #94.
-  **Subsequently CLOSED 2026-05-04 as duplicate of the 2026-04-28
-  P3.6b research closure** after probes v10/v11 (with new
-  `uart_rx_history` + per-destination RX captures from commit
-  6fd3f30) showed: rust accepts ALL bytes at the silicon FIFO
-  (zero loss vs MAIN1.TX, 87 bytes intact) AND dispatches at
-  least one BF/2N frame just like gpsim.  The "ZERO replies"
-  framing was an artifact of the short post-nav window; the
-  underlying issue is the V1.71 foreground busy-loop exiting
-  after one BF/2N dispatch, identical to the 2026-04-28
-  conclusion.  saturation_plus migration is therefore blocked
-  by the same test-scenario design feature, not by a rust
-  fidelity bug.
+  However, a rust-specific fidelity gap was identified when
+  attempting to migrate `test_v171_v32_layer5_chain_lcd_renders_
+  saturation_plus`: the V1.71 Diagnostics page is entered
+  correctly (LCD shows "PB1 / n/a" after
+  `_rust_navigate_to_diagnostics`), but a post-nav window shows
+  the chain going SILENT (no CTL TX, no MAIN0/1 TX).  Tracked
+  as task #94.  **Initially closed 2026-05-04 as duplicate of
+  the 2026-04-28 P3.6b closure, then RE-OPENED later that day**
+  after user pushback: real HW operator presses 4 RIGHT and
+  HW shows diag values regardless of subsequent input, because
+  chain comm chatter is timer-driven.  Rust does not match HW
+  on this; probes v15-v18 show ZERO TX from any core for 10M
+  ticks post-nav, so cmd 0x21 cadence never re-fires.  The
+  `uart_rx_history` + per-destination RX capture primitives from
+  commit 6fd3f30 remain useful for cross-stage probing; the
+  prior "duplicate" closure framing was wrong.  saturation_plus
+  migration stays blocked by the same rust fidelity bug; closure
+  awaits Timer3/Timer1 + IRQ vector probing on the rust
+  simulator.
 
   Item 2 (V1.4x/V1.5x/V1.6x + V2.4/V2.5 WAITING-stuck) has NOT been
   re-probed and remains open.  Item 3 (per-link fault injection)
