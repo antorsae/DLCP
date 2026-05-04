@@ -1,26 +1,38 @@
 //! Phase 5 (P5.2) property-based tests for the snapshot/restore
 //! round-trip in `dlcp_sim::snapshot`.
 //!
-//! Strategy: generate a stimulus stream (ticks + reset injections)
-//! against a fresh `Chain`, then assert
-//! `restore(snapshot(c)) == c` byte-stably for every reachable
-//! state.  We don't construct random `Chain` graphs from scratch
-//! because the chain has many cross-field invariants (event-queue
+//! Strategy: generate stimulus streams (StepTicks ticks, SetBlackout
+//! UART-blackout toggles) and replay them against either:
+//!
+//!   * an empty `Chain::new()` (smoke test for scalar fields:
+//!     `current_tick`, `uart_blackout`, etc.); OR
+//!   * a non-trivial `Chain` carrying a real V1.71 CONTROL core
+//!     loaded from
+//!     `firmware/patched/releases/DLCP_Control_V1.71.hex`, with
+//!     a clock domain and a scheduled boot epoch (exercises
+//!     `Core` / `Memory` / `Stack` / `HexImage` / `EventQueue`
+//!     / `ClockDomain` serde).
+//!
+//! For every fuzzed stream we assert
+//! `encode(decode(encode(c))?)? == encode(c)` (byte-stable
+//! round-trip), `encode(a) == encode(b)` for two chains given
+//! identical streams (replay determinism), and
+//! `encode(c) == encode(c)` for the same chain encoded twice
+//! (encode determinism, catches HashMap iteration-order leaks).
+//!
+//! The tests do NOT construct random `Chain` graphs from scratch
+//! because `Chain` has many cross-field invariants (event-queue
 //! ordering, pin-coupling indices, etc.) that proptest's blind
 //! struct-generation can't preserve; reaching states by stimulus
 //! is closer to how the simulator is exercised in practice.
 //!
-//! For an empty single-CPU-state chain, the byte-stable round-trip
-//! gate boils down to: every `Vec<...>` field round-trips with the
-//! same length+contents, every `Option<...>` round-trips with the
-//! same Some/None, every `BinaryHeap` round-trips with the same
-//! internal layout (serde serializes in iteration order; std's
-//! `BinaryHeap::from(Vec)` re-heapifies, but a heap-ordered Vec
-//! re-serializes identically without re-sift).
-//!
 //! Spec reference: `docs/SIM_REWRITE_RUST_SPEC.md` §9 P5.2.
 
 use dlcp_sim::chain::Chain;
+use dlcp_sim::clock::ClockDomain;
+use dlcp_sim::core::{CoreLoadOptions, core_from_hex_image};
+use dlcp_sim::hex::HexImage;
+use dlcp_sim::memory::Variant;
 use dlcp_sim::snapshot::{decode, encode};
 use proptest::prelude::*;
 
@@ -51,16 +63,43 @@ fn apply(chain: &mut Chain, stim: &Stimulus) {
     }
 }
 
+/// Build a non-trivial 1-core chain: V1.71 CONTROL hex loaded into a
+/// K20 core, K20 ClockDomain, scheduled boot epoch.  Exercises every
+/// serde derive on the chain's reachable state surface (Core,
+/// Memory, Stack, HexImage, EventQueue, ClockDomain, Peripherals,
+/// PinNet, Hd44780 if attached -- not in this minimal builder).
+fn build_v171_control_chain() -> Chain {
+    let hex_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crate dir has 2 ancestors")
+        .join("firmware/patched/releases/DLCP_Control_V1.71.hex");
+    let image =
+        HexImage::from_hex_path(&hex_path).expect("V1.71 hex parses");
+    let core = core_from_hex_image(
+        Variant::Pic18F25K20,
+        &image,
+        CoreLoadOptions::default(),
+    );
+    let clock = ClockDomain::new(Variant::Pic18F25K20);
+    let mut chain = Chain::new();
+    chain.push_core_with_clock(core, clock);
+    chain.schedule_initial_steps(&[0]);
+    chain
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 64,
         ..ProptestConfig::default()
     })]
 
-    /// For every fuzzed stimulus stream applied to a fresh empty
-    /// chain, `restore(snapshot(c))` must byte-equal `snapshot(c)`.
+    /// Empty-chain smoke test: byte-stable round-trip after
+    /// `StepTicks` + `SetBlackout` stimulus on `Chain::new()`.
+    /// Covers scalar fields (`current_tick`, `uart_blackout`)
+    /// only -- empty `cores`, `events`, etc.
     #[test]
-    fn snapshot_round_trip_byte_stable_under_stimulus(
+    fn empty_chain_round_trip_byte_stable(
         stims in stimulus_seq_strategy()
     ) {
         let mut chain = Chain::new();
@@ -69,35 +108,68 @@ proptest! {
         }
         let bytes = encode(&chain);
         let restored = decode(&bytes).expect("decode succeeds");
-        let bytes2 = encode(&restored);
-        prop_assert_eq!(bytes, bytes2);
+        prop_assert_eq!(encode(&restored), bytes);
     }
 
-    /// Snapshots must be deterministic: encoding the same chain
-    /// twice produces identical bytes.  Catches non-determinism
-    /// from stray HashMap/HashSet iteration order if any sneaks
-    /// into the chain's reachable graph in the future.
+    /// Empty-chain encode determinism: encoding the same chain
+    /// twice produces identical bytes.  Catches stray HashMap /
+    /// HashSet iteration-order non-determinism.
     #[test]
-    fn snapshot_is_deterministic(stims in stimulus_seq_strategy()) {
+    fn empty_chain_encode_is_deterministic(
+        stims in stimulus_seq_strategy()
+    ) {
         let mut chain = Chain::new();
         for s in &stims {
             apply(&mut chain, s);
         }
-        let a = encode(&chain);
-        let b = encode(&chain);
-        prop_assert_eq!(a, b);
+        prop_assert_eq!(encode(&chain), encode(&chain));
     }
 
-    /// Two chains that received identical stimulus streams snapshot
-    /// to identical bytes.  Catches "spooky non-determinism" --
-    /// i.e. a hidden dependency on something that's not in the
-    /// stimulus stream (system clock, ProcessId, etc.).
+    /// Empty-chain replay determinism: two empty chains given
+    /// identical stimulus streams snapshot to identical bytes.
+    /// Catches "spooky" hidden dependencies (system clock, PID,
+    /// etc.) that aren't in the stimulus stream.
     #[test]
-    fn replay_two_chains_produce_equal_snapshots(
+    fn empty_chain_replay_two_chains_equal(
         stims in stimulus_seq_strategy()
     ) {
         let mut a = Chain::new();
         let mut b = Chain::new();
+        for s in &stims {
+            apply(&mut a, s);
+            apply(&mut b, s);
+        }
+        prop_assert_eq!(encode(&a), encode(&b));
+    }
+
+    /// Non-trivial chain: V1.71 CONTROL core loaded from
+    /// canonical hex, scheduled boot epoch, K20 clock.  Exercises
+    /// `Core` / `Memory` (banked RAM + Access Bank + SFR) /
+    /// `Stack` / `HexImage` / `EventQueue` / `ClockDomain` /
+    /// `Peripherals` (oscillator, EUSART, MSSP, GPIO, EEPROM, ADC,
+    /// USB, IRQ, timers) serde paths under `StepTicks` actually
+    /// running PIC18 instructions.
+    #[test]
+    fn v171_chain_round_trip_byte_stable(
+        stims in stimulus_seq_strategy()
+    ) {
+        let mut chain = build_v171_control_chain();
+        for s in &stims {
+            apply(&mut chain, s);
+        }
+        let bytes = encode(&chain);
+        let restored = decode(&bytes).expect("decode succeeds");
+        prop_assert_eq!(encode(&restored), bytes);
+    }
+
+    /// V1.71 chain replay determinism: two V1.71 chains given
+    /// identical stimulus streams snapshot to identical bytes.
+    #[test]
+    fn v171_chain_replay_two_chains_equal(
+        stims in stimulus_seq_strategy()
+    ) {
+        let mut a = build_v171_control_chain();
+        let mut b = build_v171_control_chain();
         for s in &stims {
             apply(&mut a, s);
             apply(&mut b, s);
