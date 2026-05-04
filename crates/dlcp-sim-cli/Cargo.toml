@@ -1,0 +1,20 @@
+[package]
+name = "dlcp-sim-cli"
+description = "Replay CLI for the dlcp-sim cycle-accurate PIC18 simulator (Phase 5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dlcp-sim = { path = "../dlcp-sim" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+
+[[bin]]
+name = "dlcp-sim"
+path = "src/main.rs"
