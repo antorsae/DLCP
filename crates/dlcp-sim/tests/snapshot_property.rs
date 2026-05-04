@@ -93,6 +93,16 @@ fn build_v171_control_chain() -> Chain {
     // chain, not an all-zero-SFR phantom state.
     chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0]);
+    // Anchor the POR-then-schedule invariant: a future edit that
+    // skips `apply_reset_all` would leave SFRs zero (POR sets
+    // RCON to a known non-zero value) AND `schedule_initial_steps`
+    // pushes one CoreInstructionComplete event per core.  Both
+    // checks catch ordering-regression that byte-stable snapshot
+    // round-trip alone would silently accept.
+    debug_assert!(
+        chain.events.len() >= 1,
+        "schedule_initial_steps must seed >= 1 event"
+    );
     chain
 }
 
@@ -187,8 +197,13 @@ proptest! {
 
     /// V1.71 chain encode determinism: encoding the same
     /// non-trivial chain twice produces identical bytes.
-    /// Catches HashMap/HashSet iteration-order non-determinism
-    /// that an empty-chain encode wouldn't expose.
+    /// Catches non-deterministic encoder paths within a single
+    /// chain instance (e.g. a future serde impl that captures
+    /// elapsed time, RNG state, or environment state at encode
+    /// time).  The "spooky" cross-chain HashMap iteration-order
+    /// case is covered by `v171_chain_replay_two_chains_equal`
+    /// above -- this property's value is catching SAME-instance
+    /// encoder non-determinism, not cross-instance.
     #[test]
     fn v171_chain_encode_is_deterministic(
         stims in stimulus_seq_strategy()
