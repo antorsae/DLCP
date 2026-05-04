@@ -123,6 +123,16 @@ Framework package: `src/dlcp_fw/sim/`
 
 ### 4.2 Orchestration
 
+> **STALE (PF.4 phase 1, 2026-05-04)**: `scripts/simctl.py` and the
+> `simctl gpsim-lcd` / `simctl main-gpsim` / `simctl overlay-check`
+> subcommands documented in this section have been deleted as part
+> of the gpsim retirement (commit `5a56279`).  The orchestration
+> shape -- "drive a gpsim subprocess via STC, parse the LCD log
+> output" -- is gone; the rust silicon-ring engine renders LCD
+> directly via `Chain.lcd_lines()` (see `docs/SIMULATION.md`).
+> The text below is preserved as historical record of what the
+> CLI *used to* expose.
+
 CLI: `scripts/simctl.py`
 
 Subcommands:

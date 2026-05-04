@@ -174,7 +174,20 @@ def report_phase2_inventory() -> None:
     grand_total: set[Path] = set()
     grand_dual: set[Path] = set()
     for wrapper in PHASE_2_WRAPPERS:
-        pattern = rf"from dlcp_fw\.sim\.{re.escape(wrapper)}\b"
+        # Two import shapes both keep the wrapper module loaded
+        # at collection time:
+        #   * `from dlcp_fw.sim.{wrapper} import ...` (submodule
+        #     form -- the common case)
+        #   * `from dlcp_fw.sim import {wrapper} ...` (package
+        #     re-export form via src/dlcp_fw/sim/__init__.py;
+        #     codex MEDIUM from 5a56279 caught
+        #     test_main_gpsim_portability.py using this shape)
+        # Match either with one alternation pattern.
+        pattern = (
+            rf"(from\s+dlcp_fw\.sim\.{re.escape(wrapper)}\b"
+            rf"|from\s+dlcp_fw\.sim\s+import\s+(?:[\w,\s]*\b)?"
+            rf"{re.escape(wrapper)}\b)"
+        )
         cp = subprocess.run(
             ["grep", "-rEl", pattern, "tests", "scripts", "src"],
             cwd=str(REPO_ROOT),

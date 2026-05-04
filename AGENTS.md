@@ -268,7 +268,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (~84 test files, ~1072 tests collected after PF.4 phase 1 deletions; the headline "86 / 1049" figures below predate the rust-only sim rewrite).
+Current suite (~86 test files, ~909 tests collected after PF.4 phase 1 deletions per `pytest tests/sim --collect-only`; the headline "86 / 1049" figures below predate the rust-only sim rewrite).
 
 Pytest markers:
 
