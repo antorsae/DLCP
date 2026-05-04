@@ -44,7 +44,19 @@ Both rows 0 begin with `PBn:` colon prefix. Per V1.71 Tier-1 layout spec
 BF/2N reply burst from MAIN0 was processed by CONTROL through the
 `v171_bf2x_case_check` parser path.
 
-### Conclusion (P3.6b)
+### Conclusion (P3.6b) — SUPERSEDED 2026-05-04
+
+> **Update 2026-05-04.** The "shared sim fidelity gap, P3.6b stays open
+> as sim-side investigation" framing below has been retracted after an
+> operator HW retest with V3.2 rev 0x3F + V1.71 rev 0x0F.  Real silicon
+> ALSO shows "PB1/PB2 n/a" after just 4 RIGHT presses; converging
+> `v171_diag_present` to 0x03 requires multiple LEFT/RIGHT navigation
+> cycles on HW, which probe v21 in rust matches in 7 cycles.  The
+> 2026-04-27 hardware-probe write-up "shows diag values without further
+> input" must have involved unstated subsequent navigation.  P3.6b is
+> closed (V1.71 firmware-design feature, not a sim fidelity bug); task
+> #94 is closed (rust matches HW); the timing/electrical hypothesis
+> bullets below are obsolete.  Audit-trail prose follows.
 
 **V1.71 firmware is NOT broken on real silicon** — both PB1 and PB2 BF/2N
 reply convergences work. The sim-side saturation that occurs in BOTH gpsim
@@ -344,8 +356,20 @@ sequenced before `P3.gate`.
 
 Each sub-task should explicitly carry the qualifier
 **"symptom-equivalent (not bit-exact)"** in its title so the ledger does
-not let them retire P3.6b on completion. P3.6b stays the
-`v171_diag_present == 0x03` open issue.  Task #22
+not let them retire P3.6b on completion.
+
+**Update 2026-05-04 (supersedes the rest of this paragraph).**  P3.6b
+was closed by the operator HW retest with V3.2 rev 0x3F + V1.71 rev
+0x0F: real HW also shows "PB1/PB2 n/a" after only 4 RIGHT presses;
+multiple LEFT/RIGHT navigation cycles are required to converge HW, and
+probe v21 in rust matches in 7 cycles.  Task #94 (briefly opened, then
+RE-OPENED, then RE-CLOSED 2026-05-04) is closed; the working hypothesis
+"Timer3/Timer1 ISR vector dispatch fidelity bug on rust" was retracted
+(falsified by `peripheral_timers_parity.rs` IRQ-dispatch unit tests
+from f826b85, plus probe v19 showing V1.71 firmware never enables
+Timer3 / T3CON=0).  Audit-trail prose follows.
+
+P3.6b stays the `v171_diag_present == 0x03` open issue.  Task #22
 (gpsim-PB2-only saturation) remains representative.  Task #94 was
 filed 2026-05-04 to investigate a rust-specific surface; briefly
 closed as duplicate but RE-OPENED the same day after user

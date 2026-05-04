@@ -322,36 +322,46 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # `_rust_navigate_to_diagnostics` -> wait-for-PB-present path.
 # Rust does NOT saturate at PB1 -- it shows ZERO replies
 # (v171_diag_present stays 0x00 across 2000 step() chunks ~= 400M
-# Tcy).  The 2026-04-27 prediction was assumed-based, not
-# empirical: the four xfailed tests below use `run=False`, so they
-# never actually executed on rust to verify the PB1-saturation
-# claim.  The actual rust gap is a separate Diag-page query
-# emission / parser issue distinct from the gpsim bridge-mirror
-# saturation -- track in task #94 (re-probe the cmd 0x21 emission
-# path on V1.71 CONTROL + the BF/21..27 reply path on V3.2 MAIN).
+# Tcy) when only 4 RIGHT presses are injected.  The 2026-04-27
+# prediction was assumed-based, not empirical: the four xfailed
+# tests below use `run=False`, so they never actually executed on
+# rust to verify the PB1-saturation claim.
 #
-# HARDWARE RESULT (2026-04-27): Path 1 hardware probe ran on the
-# real DLCP rig (V1.71 CONTROL + V3.2 MAIN0 + V3.2 MAIN1, both MAINs
-# healthy via cmd 0x44 USB diag).  Operator navigated CONTROL to
-# PB1 Diag (state 4) and PB2 Diag (state 5); LCD camera captures
-# show:
+# HARDWARE RESULT (2026-04-27, INTERPRETATION SUPERSEDED 2026-05-04):
+# Path 1 hardware probe ran on the real DLCP rig (V1.71 CONTROL +
+# V3.2 MAIN0 + V3.2 MAIN1, both MAINs healthy via cmd 0x44 USB
+# diag).  Operator navigated CONTROL to PB1 Diag (state 4) and PB2
+# Diag (state 5); LCD camera captures show:
 #   PB1: I+ D1 SE B4 / RA A3 O8 V6 W+..   (Overflow layout, cells)
 #   PB2: I+ D  S+ B  / R+ A9  P  OB W9..  (Overflow layout, cells)
 # Both pages have the `PBn:` colon prefix -> per V1.71 Tier-1 layout
 # spec `v171_diag_present.bit_n = 1` on real silicon -> BOTH BF/2N
 # reply convergences work on real hardware.  V1.71 firmware is
-# therefore CORRECT; the gpsim Python harness shows residual PB2
-# saturation (PB1 reply lands, PB2 reply lost), which the
-# 2026-04-27 working assumption framed as a "shared timing /
-# electrical / clock-domain" gap that rust would also reproduce.
-# 2026-05-04 empirical update (task #94): rust does NOT reproduce
-# the same gap -- it yields ZERO replies (neither PB1 nor PB2),
-# i.e., the Diag-page cmd 0x21 query/reply path doesn't fire at
-# all on rust.  So the gap is gpsim-specific (PB2-only saturation,
-# tracked via Task #22 hypotheses listed in
-# `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b) AND rust has its own
-# distinct gap (task #94, query never triggers PB1 reply).  The
-# XFAIL marker stays until both close.
+# therefore CORRECT.  The 2026-04-27 working assumption that
+# "real HW converges with no further input after 4 RIGHT" was the
+# basis for re-scoping P3.6b as a shared sim fidelity gap and
+# (briefly) opening task #94 as a rust-specific Timer3/Timer1
+# ISR-dispatch fidelity bug.
+#
+# UPDATE (2026-05-04, supersedes the framing immediately above):
+# operator HW retest with V3.2 rev 0x3F + V1.71 rev 0x0F
+# resolved this definitively.  Real HW ALSO shows "PB1/PB2 n/a"
+# after just 4 RIGHT presses; converging `v171_diag_present` to
+# 0x03 requires multiple LEFT/RIGHT navigation cycles on HW, which
+# probe v21 in rust matches in 7 cycles.  The Timer3/Timer1
+# ISR-dispatch hypothesis was falsified (peripheral_timers_parity
+# IRQ unit tests pass; probe v19 showed V1.71 never enables
+# Timer3, T3CON=0).  Task #94 CLOSED 2026-05-04 -- rust matches
+# HW on the diag-page convergence path.  The four
+# `_V171_V32_PB2_BRIDGE_XFAIL` markers stay because the
+# no-user-events test gate is non-converging by V1.71 firmware
+# design (foreground busy-loop in `display_loop_iteration`
+# asm:2885-2897 only exits on user-driven events).  P3.6b is
+# closed.  HW retest also surfaced a NEW divergence candidate
+# (task #95): pressing STBY from a Diag page on real HW only dims
+# the CONTROL LCD (Zzz... dimmed) but MAINs keep playing music --
+# rust behavior at the CONTROL.TX byte-stream level has not yet
+# been probed, so divergence is candidate-only.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
         "Bytes flow through every wire-chain bridge (verified by canary "
@@ -591,20 +601,21 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
 
     This is the protocol-contract end-to-end gate.
 
-    XFailed on BOTH backends, but for distinct underlying gaps:
-      * gpsim: PB2-only saturation (Task #22) -- saturates
-        `v171_diag_present` at 0x01 (PB1 reply works, PB2 reply
-        lost; timing/electrical hypothesis stack documented in
-        SIM_REWRITE_RUST_PROGRESS.md P3.6b research closure).
-      * rust: separate Diag-page query gap (task #94) -- ZERO
-        replies on rust (`v171_diag_present` stays 0x00); the prior
-        2026-04-27 claim that rust also saturates at PB1 was
-        assumption-based since `_V171_V32_PB2_BRIDGE_XFAIL` uses
-        `run=False` (the body never executed empirically).
-    Real hardware serves both PB convergences (verified 2026-04-27,
-    see file-level UPDATE).  Marker-only migration to
-    `dual_supported` keeps both backends running the same xfail
-    while their distinct gaps stay open.
+    XFailed on BOTH backends as of 2026-05-04.  Root cause is the
+    same on both: V1.71 firmware's foreground busy-loop in
+    `display_loop_iteration` (asm:2885-2897) only exits on user-driven
+    events.  This test injects only 4 RIGHT presses, then no further
+    input, so neither backend converges `v171_diag_present` to 0x03
+    within the test budget.  Operator HW retest 2026-05-04 (V3.2
+    rev 0x3F + V1.71 rev 0x0F) confirmed real HW also shows "PB1/PB2
+    n/a" after just 4 RIGHT presses; multiple LEFT/RIGHT navigation
+    cycles are required for HW to converge (probe v21 in rust
+    converges in 7 cycles).  Task #94 (briefly framed as a
+    rust-specific Timer3/Timer1 ISR-dispatch fidelity bug) CLOSED
+    2026-05-04 -- rust matches HW on this path.  Marker-only
+    migration to `dual_supported` keeps both backends running the
+    same xfail; closing the xfail would require driving navigation
+    events from inside the test.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -667,9 +678,14 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     between cache slots would mean the parser is indexing the wrong
     PB on reply arrival.
 
-    XFailed on BOTH backends but for distinct gaps: gpsim's PB2
-    reply never lands in CONTROL's parser (Task #22); rust yields
-    ZERO replies (task #94, PB1 also missing -- not a shared gap).
+    XFailed on BOTH backends as of 2026-05-04.  Root cause shared:
+    V1.71's foreground busy-loop in `display_loop_iteration`
+    (asm:2885-2897) only exits on user-driven events; this test
+    injects only the 4 RIGHT navigation presses, no further input,
+    so `v171_diag_present` does not converge within the test budget
+    on either backend.  Operator HW retest 2026-05-04 confirmed
+    real HW behaves the same (multiple LEFT/RIGHT cycles required
+    to converge); task #94 (briefly framed as rust-specific) CLOSED.
     Marker-only migration to `dual_supported`.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
@@ -764,13 +780,19 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
 
     Per spec §"LCD Examples" — All clear case.
 
-    XFailed on BOTH backends but for distinct gaps: gpsim's PB2
-    reply doesn't surface in CONTROL's parser (Task #22); rust
-    yields ZERO replies (task #94).  Note: the
-    expected LCD strings here are from the PRE-Tier-1 spec; under
-    V1.71 Tier-1 + Phase 3.4 (Option-D layout) the actual rendering
-    is per-PB ("PB1" / "OK..." / "PB1: X#...").  Both effects keep
-    the test xfailing; marker-only migration to `dual_supported`.
+    XFailed on BOTH backends as of 2026-05-04.  Root cause shared:
+    V1.71's foreground busy-loop in `display_loop_iteration`
+    (asm:2885-2897) only exits on user-driven events; this test
+    injects only 4 RIGHT presses (no further input), so
+    `v171_diag_present` does not converge on either backend.  Note:
+    the expected LCD strings here are from the PRE-Tier-1 spec;
+    under V1.71 Tier-1 + Phase 3.4 (Option-D layout) the actual
+    rendering is per-PB ("PB1" / "OK..." / "PB1: X#...").  The
+    busy-loop non-convergence + the layout mismatch each
+    independently keep the test xfailing.  Operator HW retest
+    2026-05-04 confirmed real HW also needs multiple LEFT/RIGHT
+    nav cycles to converge.  Task #94 CLOSED.  Marker-only
+    migration to `dual_supported`.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
