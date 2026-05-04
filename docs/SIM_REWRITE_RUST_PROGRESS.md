@@ -512,7 +512,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [done] P4.9 Delete `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py`, `.stc` script generators (parent task done 2026-05-04 per user directive "finish all P4 sub-tasks"; the actual file deletion is **deferred to PF.4 alignment** because PF.4 keeps `vendor/gpsim-0.32.1-xtc/` "one release cycle as oracle reference" -- deleting the Python wrappers now would break the gpsim-opt-in pytest path that those 69 still-gpsim-only test files still rely on, AND would orphan the 3 ground-truth scripts (`scripts/{capture_gpsim_ground_truth,run_phase0_blessing,replay_ground_truth}.py`) that drive those wrappers; the wrapper deletion + PF.4 vendor cleanup naturally co-occur on the same release-cycle tick)
   - verify: `.venv_ep0/bin/python scripts/check_gpsim_excision.py` (script TBD; deferred with the deletion)
   - artifact: large code excision commit + `scripts/check_gpsim_excision.py` (asserts the named files are absent and that no remaining import references them).
-  - notes: deferred per the framing above.  When PF.4 retires the gpsim binary, this same excision pass deletes the 6 wrappers (`chain_gpsim.py`, `wire_chain_gpsim.py`, `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `gpsim.py`) AND the 69 gpsim-only test files that import them, AND the 3 ground-truth scripts.  Inventory verified 2026-05-04 via `grep -lrE "from dlcp_fw\.sim\.(chain_gpsim|wire_chain_gpsim|control_gpsim|main_gpsim|main_gpsim_timer3|gpsim)" tests scripts src` -> 79 total importing files (69 in `tests/`, the rest in `scripts/` + `src/dlcp_fw/sim/__init__.py`).  Inventory + decision matrix tracked in the "P4 followup tracker" sub-section below.
+  - notes: deferred per the framing above.  When PF.4 retires the gpsim binary, this same excision pass deletes the 6 wrappers (`chain_gpsim.py`, `wire_chain_gpsim.py`, `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `gpsim.py`) AND the 70 gpsim-only test files that import them AND the 9 supporting `scripts/` entries (3 ground-truth scripts + 6 other gpsim-driver scripts).  Inventory verified 2026-05-04 via `grep -lrE "from dlcp_fw\.sim\.(chain_gpsim|wire_chain_gpsim|control_gpsim|main_gpsim|main_gpsim_timer3|gpsim)" tests scripts` -> 79 absolute-import sites (70 in `tests/` including `tests/asm_unit_tests/test_main_core_service_265c_parity.py`; 9 in `scripts/`).  `src/dlcp_fw/sim/` uses RELATIVE imports (`from .chain_gpsim import ...`) which the absolute-form grep does not match; the wrapper sources themselves and `src/dlcp_fw/sim/__init__.py` re-exports get listed via `grep -lrE "from \.(chain_gpsim|wire_chain_gpsim|control_gpsim|main_gpsim|main_gpsim_timer3|gpsim) " src` -> 4 internal cross-imports (the wrappers + `__init__.py`).  Inventory + decision matrix tracked in the "P4 followup tracker" sub-section below.
 
 - [done] P4.gate Run phase-4 gate (timing relaxation accepted by user directive 2026-05-04)
   - verify: `.venv_ep0/bin/python scripts/check_phase4_gate.py`
@@ -564,14 +564,15 @@ phase-5 work.
   alignment.  The 6 wrapper files
   (`chain_gpsim.py`, `wire_chain_gpsim.py`, `control_gpsim.py`,
   `main_gpsim.py`, `main_gpsim_timer3.py`, `gpsim.py`) +
-  the 69 still-gpsim-only test files that import them
-  (`grep -lrE "from dlcp_fw\.sim\.(...wrappers...)" tests` ->
-  69 paths in `tests/`, plus `scripts/` + `src/dlcp_fw/sim/__init__.py`
-  for a total of 79 importers repo-wide) + the
-  3 ground-truth scripts + `vendor/gpsim-0.32.1-xtc/` are
-  retired together when PF.4's "one release cycle as oracle
-  reference" expires.  `scripts/check_gpsim_excision.py` will
-  be authored as part of that PF.4 retirement pass.
+  the 70 still-gpsim-only test files that import them
+  (verified 2026-05-04 via
+  `grep -lrE "from dlcp_fw\.sim\.(...wrappers...)" tests` ->
+  70 paths under `tests/`) + the 9 supporting `scripts/`
+  files (including the 3 ground-truth scripts) +
+  `vendor/gpsim-0.32.1-xtc/` are retired together when
+  PF.4's "one release cycle as oracle reference" expires.
+  `scripts/check_gpsim_excision.py` will be authored as part
+  of that PF.4 retirement pass.
 
 - **CONTROL+MAIN with dynamic standby overlay** (was P4.7
   test-shape: `test_v17_relocation::test_shifted_gpsim_with_dynamic_standby_overlay`,
