@@ -1,6 +1,6 @@
 # `dlcp-sim` Rust Rewrite — Progress Ledger
 
-Last updated: 2026-05-03
+Last updated: 2026-05-04
 Branch: `feature/sim-rewrite-rust`
 
 This file is **machine-readable**.  Sub-tasks have a fixed shape:
@@ -627,15 +627,15 @@ identified the substantive deltas a successful P5.1 needs:
 The batch attempt itself was reverted to the working tree; only
 the scaffold remains landed.
 
-- [pending] P5.1 Snapshot/restore round-trip on `Chain` (serde)
+- [done] P5.1 Snapshot/restore round-trip on `Chain` (serde)
   - verify: `cd crates/dlcp-sim && cargo test --release snapshot::tests`
   - artifact: `crates/dlcp-sim/src/snapshot.rs`.
 
-- [pending] P5.2 Property test: `restore(snapshot(c)) == c` for fuzzed states
+- [done] P5.2 Property test: `restore(snapshot(c)) == c` for fuzzed states
   - verify: `cd crates/dlcp-sim && cargo test --release --test snapshot_property`
   - artifact: `crates/dlcp-sim/tests/snapshot_property.rs`.
 
-- [pending] P5.3 Replay tool: `dlcp-sim replay <case.json>`
+- [done] P5.3 Replay tool: `dlcp-sim replay <case.json>`
   - verify: `.venv_ep0/bin/python scripts/check_replay_round_trip.py`
   - artifact: `crates/dlcp-sim-cli/src/main.rs` + `scripts/sim_replay.py` wrapper + `scripts/check_replay_round_trip.py` (asserts a synthetic divergence file replays to bit-exact reproduction).
 
@@ -644,7 +644,8 @@ the scaffold remains landed.
   - artifact: `tests/sim/soak/test_*.py`.
 
 - [pending] P5.gate Run phase-5 gate
-  - verify: `cargo test -p dlcp-sim --release --test snapshot_property && .venv_ep0/bin/python -m pytest tests/sim/soak -n 16 -q`
+  - verify: `.venv_ep0/bin/python scripts/check_phase5_gate.py`
+  - artifact: `scripts/check_phase5_gate.py` (wraps the spec's two-line gate: `cargo test --test snapshot_property --release` + `pytest tests/sim/soak -n 16 -q`; see the script docstring for the exit-code contract).
 
 - [pending] P5b.1 (stretch) `cargo fuzz` target on IR command stream + boot-offset RNG
   - verify: `cd crates/dlcp-sim && cargo fuzz run ir_stream -- -max_total_time=300`
