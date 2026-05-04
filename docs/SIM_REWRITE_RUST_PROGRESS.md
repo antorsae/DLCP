@@ -591,6 +591,35 @@ phase-5 work.
 
 ## Phase 5 — Determinism + Snapshot/Replay + Soak
 
+**Phase 5 scaffold landed 2026-05-04** (commit 4e6d5be):
+workspace-level dependency declarations (`serde` with derive,
+`bincode` 2 with `serde + std`, `serde_json`, `proptest`); new
+workspace member `crates/dlcp-sim-cli` with a stub `dlcp-sim` binary
+that exits 2 with a "P5.3 stub" notice.  Substantive P5.x work
+(serde derives + snapshot/restore body + property test + CLI body
++ soak harness) carved out as the sub-tasks below; these are
+multi-commit work-blocks each estimated at 5-10 commits given the
+per-commit codex-review workflow.
+
+A 2026-05-04 batch attempt at P5.1 derive additions across all 28
+modules in `crates/dlcp-sim/src/` produced 93 compile errors that
+identified the substantive deltas a successful P5.1 needs:
+
+  1. `serde_big_array` workspace dep + `#[serde(with =
+     "serde_big_array::BigArray")]` annotations on the 4
+     known large-array fields (`flash`/`flash_present` 32K
+     entries each in `hex.rs`; `eeprom.storage` 256 in
+     `eeprom.rs`; `tas3108.regs` / `src4382.regs` 256 each).
+  2. `#[serde(skip)]` on transient `&'static str` fields in
+     `core::CycleProbe` (and likely a few peer probe types).
+  3. Validation pass on the cascading errors from a few
+     core types (`Variant`, `Memory`, `Instruction`,
+     `Config`); these already have derives, but compilation
+     of dependent types depends on (1) and (2) landing first.
+
+The batch attempt itself was reverted to the working tree; only
+the scaffold remains landed.
+
 - [pending] P5.1 Snapshot/restore round-trip on `Chain` (serde)
   - verify: `cd crates/dlcp-sim && cargo test --release snapshot::tests`
   - artifact: `crates/dlcp-sim/src/snapshot.rs`.
