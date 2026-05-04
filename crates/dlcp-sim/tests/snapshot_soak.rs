@@ -161,40 +161,67 @@ fn v171_template_bytes() -> &'static [u8] {
     CELL.get_or_init(|| encode(&build_v171_control_chain()))
 }
 
+/// Triage fields embedded under `_meta` inside the dumped
+/// case.json so a future operator can correlate the file with
+/// the panic line without grepping the whole soak corpus.  The
+/// CLI's `Case` struct does not set
+/// `#[serde(deny_unknown_fields)]` (see
+/// `crates/dlcp-sim-cli/src/main.rs::Case`) so the extra key is
+/// silently ignored at replay time -- the file remains a
+/// fully-valid `dlcp-sim-replay-v1` case.
 #[derive(Serialize)]
-struct FailureDump<'a> {
+struct DumpMeta<'a> {
     test: &'a str,
     seed: u64,
     scenario_idx: u64,
-    stimuli: Vec<Stimulus>,
     note: &'a str,
 }
 
-/// Write a failure-triage JSON to `artifacts/sim_soak_failures/`.
-/// Stays infallible -- if the artifacts dir can't be created we
-/// just append the error to the panic message instead of masking
-/// the test failure.
-fn dump_failure(
+/// Write a `dlcp-sim-replay-v1`-shaped case.json under
+/// `artifacts/sim_soak_failures/` so the operator can replay
+/// the failing scenario directly with
+/// `target/release/dlcp-sim replay <path>`.  `factory` is
+/// `"empty"` or `"v171_control"`; both are accepted by the CLI's
+/// `build_initial_chain` (see `crates/dlcp-sim-cli/src/main.rs`).
+/// `kind`, when present, is appended to the filename so a
+/// step-split failure dumps both legs of the comparison without
+/// collision (`<test>_seed_<idx>_whole.json` vs
+/// `<test>_seed_<idx>_split.json`).
+///
+/// Stays infallible -- if the dump dir or write fails we just
+/// append the I/O error to the returned suffix instead of
+/// masking the soak panic.
+fn dump_replay_case(
     test: &str,
     seed: u64,
     scenario_idx: u64,
+    factory: &str,
     stimuli: &[Stimulus],
     note: &str,
+    kind: Option<&str>,
 ) -> String {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
         .expect("crate dir has 2 ancestors")
         .join("artifacts/sim_soak_failures");
-    let path = dir.join(format!("{test}_seed_{scenario_idx:05}.json"));
-    let dump = FailureDump {
-        test,
-        seed,
-        scenario_idx,
-        stimuli: stimuli.to_vec(),
-        note,
-    };
-    let body = serde_json::to_string_pretty(&dump)
+    let kind_part = kind.map(|k| format!("_{k}")).unwrap_or_default();
+    let path = dir.join(format!(
+        "{test}_seed_{scenario_idx:05}{kind_part}.json"
+    ));
+    let case = serde_json::json!({
+        "format": "dlcp-sim-replay-v1",
+        "initial_factory": factory,
+        "stimuli": stimuli,
+        "expect_final_snapshot_hex": null,
+        "_meta": DumpMeta {
+            test,
+            seed,
+            scenario_idx,
+            note,
+        },
+    });
+    let body = serde_json::to_string_pretty(&case)
         .unwrap_or_else(|e| format!("<dump-serialize-failed: {e}>"));
     let mut suffix = String::new();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -224,12 +251,14 @@ fn empty_chain_round_trip_soak() {
         let restored = match decode(&bytes) {
             Ok(c) => c,
             Err(e) => {
-                let suffix = dump_failure(
+                let suffix = dump_replay_case(
                     "empty_chain_round_trip_soak",
                     seed,
                     scenario_idx,
+                    "empty",
                     &stims,
                     &format!("decode failed: {e}"),
+                    None,
                 );
                 panic!(
                     "soak scenario {scenario_idx} (seed {seed:#018x}) decode \
@@ -239,16 +268,18 @@ fn empty_chain_round_trip_soak() {
         };
         let bytes2 = encode(&restored);
         if bytes != bytes2 {
-            let suffix = dump_failure(
+            let suffix = dump_replay_case(
                 "empty_chain_round_trip_soak",
                 seed,
                 scenario_idx,
+                "empty",
                 &stims,
                 &format!(
                     "round-trip not byte-stable: {} vs {} bytes",
                     bytes.len(),
                     bytes2.len()
                 ),
+                None,
             );
             panic!(
                 "soak scenario {scenario_idx} (seed {seed:#018x}) byte-stable \
@@ -279,16 +310,18 @@ fn empty_chain_replay_determinism_soak() {
         let ba = encode(&a);
         let bb = encode(&b);
         if ba != bb {
-            let suffix = dump_failure(
+            let suffix = dump_replay_case(
                 "empty_chain_replay_determinism_soak",
                 seed,
                 scenario_idx,
+                "empty",
                 &stims,
                 &format!(
                     "replay-determinism: a={} b={} bytes",
                     ba.len(),
                     bb.len()
                 ),
+                None,
             );
             panic!(
                 "soak scenario {scenario_idx} (seed {seed:#018x}) \
@@ -320,12 +353,14 @@ fn v171_chain_round_trip_soak() {
         let restored = match decode(&bytes) {
             Ok(c) => c,
             Err(e) => {
-                let suffix = dump_failure(
+                let suffix = dump_replay_case(
                     "v171_chain_round_trip_soak",
                     seed,
                     scenario_idx,
+                    "v171_control",
                     &stims,
                     &format!("decode failed: {e}"),
+                    None,
                 );
                 panic!(
                     "soak scenario {scenario_idx} (seed {seed:#018x}) \
@@ -335,16 +370,18 @@ fn v171_chain_round_trip_soak() {
         };
         let bytes2 = encode(&restored);
         if bytes != bytes2 {
-            let suffix = dump_failure(
+            let suffix = dump_replay_case(
                 "v171_chain_round_trip_soak",
                 seed,
                 scenario_idx,
+                "v171_control",
                 &stims,
                 &format!(
                     "round-trip not byte-stable: {} vs {} bytes",
                     bytes.len(),
                     bytes2.len()
                 ),
+                None,
             );
             panic!(
                 "soak scenario {scenario_idx} (seed {seed:#018x}) v171 \
@@ -377,16 +414,18 @@ fn v171_chain_replay_determinism_soak() {
         let ba = encode(&a);
         let bb = encode(&b);
         if ba != bb {
-            let suffix = dump_failure(
+            let suffix = dump_replay_case(
                 "v171_chain_replay_determinism_soak",
                 seed,
                 scenario_idx,
+                "v171_control",
                 &stims,
                 &format!(
                     "v171 replay-determinism: a={} b={} bytes",
                     ba.len(),
                     bb.len()
                 ),
+                None,
             );
             panic!(
                 "soak scenario {scenario_idx} (seed {seed:#018x}) v171 \
@@ -428,27 +467,119 @@ fn step_split_soak() {
         let bytes_split = encode(&split);
 
         if bytes_whole != bytes_split {
-            let suffix = dump_failure(
+            // Step-split divergence is a comparison of two
+            // separate executions, not a single stimulus stream.
+            // Dump both legs as fully-valid replay cases so the
+            // operator can `dlcp-sim replay` each one and diff
+            // the resulting `--final-snapshot` outputs (the
+            // soak panic message names both files).
+            let note = format!(
+                "step-split divergence at N={n} a={a}: whole={} split={}",
+                bytes_whole.len(),
+                bytes_split.len()
+            );
+            let suffix_whole = dump_replay_case(
                 "step_split_soak",
                 seed,
                 scenario_idx,
-                &[
-                    Stimulus::StepTicks(n),
-                    Stimulus::StepTicks(a),
-                    Stimulus::StepTicks(n - a),
-                ],
-                &format!(
-                    "step-split divergence at N={n} a={a}: whole={} split={}",
-                    bytes_whole.len(),
-                    bytes_split.len()
-                ),
+                "v171_control",
+                &[Stimulus::StepTicks(n)],
+                &note,
+                Some("whole"),
+            );
+            let suffix_split = dump_replay_case(
+                "step_split_soak",
+                seed,
+                scenario_idx,
+                "v171_control",
+                &[Stimulus::StepTicks(a), Stimulus::StepTicks(n - a)],
+                &note,
+                Some("split"),
             );
             panic!(
                 "soak scenario {scenario_idx} (seed {seed:#018x}) step-split \
-                 failed at N={n} a={a}: whole={} bytes vs split={} bytes{suffix}",
+                 failed at N={n} a={a}: whole={} bytes vs split={} \
+                 bytes{suffix_whole}{suffix_split}",
                 bytes_whole.len(),
                 bytes_split.len()
             );
         }
     }
+}
+
+/// Self-test for `dump_replay_case`: a dump must round-trip
+/// through `serde_json` as a `dlcp-sim-replay-v1` case
+/// (`format`, `initial_factory`, `stimuli` all present and
+/// well-typed) and the embedded `_meta` must carry the
+/// triage context.  Locks codex's MEDIUM finding from
+/// the review of 661d78b -- failure dumps must be
+/// `dlcp-sim replay`-compatible, not just diagnostic blobs.
+///
+/// This test deliberately does NOT touch
+/// `artifacts/sim_soak_failures/` -- it inspects the
+/// serialized JSON shape directly.  We avoid invoking the
+/// `dlcp-sim` CLI binary because the soak test crate
+/// belongs to `dlcp-sim` (the library), not `dlcp-sim-cli`,
+/// and we don't want the soak crate to depend on the CLI
+/// binary build artifact.
+#[test]
+fn dump_replay_case_is_replay_v1_shape() {
+    let stims = vec![
+        Stimulus::StepTicks(1234),
+        Stimulus::SetUartBlackout(true),
+    ];
+    // Use a unique scenario_idx so this test doesn't collide
+    // with a real soak failure.  The number is far above
+    // SOAK_SCENARIOS so it's clearly synthetic.
+    let _suffix = dump_replay_case(
+        "dump_replay_case_is_replay_v1_shape",
+        0xDEAD,
+        99_999,
+        "v171_control",
+        &stims,
+        "self-test",
+        Some("selftest"),
+    );
+    let dump_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crate dir has 2 ancestors")
+        .join(
+            "artifacts/sim_soak_failures/\
+             dump_replay_case_is_replay_v1_shape_seed_99999_selftest.json",
+        );
+    let body = std::fs::read_to_string(&dump_path)
+        .expect("self-test dump exists");
+    let v: serde_json::Value =
+        serde_json::from_str(&body).expect("dump parses as JSON");
+
+    // case.json v1 contract:
+    assert_eq!(v["format"], "dlcp-sim-replay-v1");
+    assert_eq!(v["initial_factory"], "v171_control");
+    assert!(v["stimuli"].is_array(), "stimuli must be an array");
+    assert_eq!(v["stimuli"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        v["stimuli"][0]["step_ticks"], 1234,
+        "first stim must be step_ticks(1234)"
+    );
+    assert_eq!(
+        v["stimuli"][1]["set_uart_blackout"], true,
+        "second stim must be set_uart_blackout(true)"
+    );
+    assert!(
+        v["expect_final_snapshot_hex"].is_null(),
+        "expect_final_snapshot_hex must be present and null \
+         (CLI accepts that shape)"
+    );
+
+    // Triage context lives under `_meta` (CLI ignores
+    // unknown keys, so this is OK).
+    assert_eq!(v["_meta"]["test"], "dump_replay_case_is_replay_v1_shape");
+    assert_eq!(v["_meta"]["seed"], 0xDEAD);
+    assert_eq!(v["_meta"]["scenario_idx"], 99_999);
+    assert_eq!(v["_meta"]["note"], "self-test");
+
+    // Clean up the self-test artifact so we don't leave it
+    // sitting around in the operator's failure-triage tree.
+    let _ = std::fs::remove_file(&dump_path);
 }

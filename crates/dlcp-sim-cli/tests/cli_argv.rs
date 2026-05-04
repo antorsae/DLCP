@@ -31,6 +31,29 @@ const CASE_JSON_V1: &str = r#"{
   "expect_final_snapshot_hex": null
 }"#;
 
+/// Auto-cleanup wrapper for a per-test scratch directory.
+/// Codex review of 661d78b correctly flagged that the prior
+/// `tempdir()` returned a bare `PathBuf` and never deleted the
+/// directory, despite the comment claiming Drop cleanup; that
+/// leaked five unique dirs per test run under
+/// `std::env::temp_dir()`.  This struct removes the directory
+/// (best-effort -- ignore I/O errors so a failing test
+/// doesn't double-fail on cleanup) when the test's
+/// `TempDir` binding goes out of scope.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn path(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn cli_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_dlcp-sim"))
 }
@@ -56,7 +79,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
 #[test]
 fn trace_missing_operand_exits_1() {
     let dir = tempdir();
-    let case = write_case(&dir, "case.json");
+    let case = write_case(dir.path(), "case.json");
     let (code, _stdout, stderr) =
         run(&["replay", case.to_str().unwrap(), "--trace"]);
     assert_eq!(code, 1, "expected exit 1, got {code} (stderr: {stderr})");
@@ -72,8 +95,8 @@ fn trace_missing_operand_exits_1() {
 #[test]
 fn final_snapshot_followed_by_trace_flag_exits_1() {
     let dir = tempdir();
-    let case = write_case(&dir, "case.json");
-    let trace = dir.join("trace.txt");
+    let case = write_case(dir.path(), "case.json");
+    let trace = dir.path().join("trace.txt");
     let (code, _stdout, stderr) = run(&[
         "replay",
         case.to_str().unwrap(),
@@ -92,9 +115,9 @@ fn final_snapshot_followed_by_trace_flag_exits_1() {
 #[test]
 fn duplicate_trace_flag_exits_1() {
     let dir = tempdir();
-    let case = write_case(&dir, "case.json");
-    let a = dir.join("a.txt");
-    let b = dir.join("b.txt");
+    let case = write_case(dir.path(), "case.json");
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
     let (code, _stdout, stderr) = run(&[
         "replay",
         case.to_str().unwrap(),
@@ -117,9 +140,9 @@ fn duplicate_trace_flag_exits_1() {
 #[test]
 fn duplicate_final_snapshot_flag_exits_1() {
     let dir = tempdir();
-    let case = write_case(&dir, "case.json");
-    let a = dir.join("a.bin");
-    let b = dir.join("b.bin");
+    let case = write_case(dir.path(), "case.json");
+    let a = dir.path().join("a.bin");
+    let b = dir.path().join("b.bin");
     let (code, _stdout, stderr) = run(&[
         "replay",
         case.to_str().unwrap(),
@@ -141,8 +164,8 @@ fn duplicate_final_snapshot_flag_exits_1() {
 #[test]
 fn valid_replay_exits_0_and_writes_trace() {
     let dir = tempdir();
-    let case = write_case(&dir, "case.json");
-    let trace = dir.join("trace.txt");
+    let case = write_case(dir.path(), "case.json");
+    let trace = dir.path().join("trace.txt");
     let (code, _stdout, stderr) = run(&[
         "replay",
         case.to_str().unwrap(),
@@ -157,9 +180,12 @@ fn valid_replay_exits_0_and_writes_trace() {
     );
 }
 
-/// Tempdir helper: per-test unique dir under
-/// `std::env::temp_dir()`, deleted on Drop via `RemoveOnDrop`.
-fn tempdir() -> std::path::PathBuf {
+/// Per-test unique scratch directory under `std::env::temp_dir()`.
+/// Returns a `TempDir` whose `Drop` impl removes the directory
+/// (best-effort).  Codex review of 661d78b: the prior helper
+/// returned a bare `PathBuf` and never cleaned up despite the
+/// "deleted on Drop" comment.
+fn tempdir() -> TempDir {
     let base = std::env::temp_dir().join(format!(
         "dlcp_sim_cli_argv_{}_{}",
         std::process::id(),
@@ -169,5 +195,5 @@ fn tempdir() -> std::path::PathBuf {
             .as_nanos()
     ));
     std::fs::create_dir_all(&base).expect("mk tempdir");
-    base
+    TempDir(base)
 }

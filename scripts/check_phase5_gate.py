@@ -88,11 +88,38 @@ def _resolve_python() -> str:
     return sys.executable
 
 
-def _check_harness() -> int:
+def _check_harness(python: str) -> int:
+    """Validate the local environment can run both sub-checks
+    BEFORE we burn 2 minutes on the soak.  A pytest / xdist
+    failure must surface as harness-error (exit 4), not as a
+    false soak failure (exit 2) -- otherwise the wrapper's
+    exit-code contract is meaningless.
+    """
     if shutil.which("cargo") is None:
         print(
             "P5.gate FAIL [harness]: cargo is not on PATH; install Rust "
             "or `source $HOME/.cargo/env` before re-running",
+            file=sys.stderr,
+        )
+        return 4
+    # Probe the resolved Python: must import pytest (P5.4
+    # uses pytest) AND xdist (P5.4 invokes `-n 16`).  We do
+    # both in a single subprocess so the failure message
+    # names whichever module is missing.
+    cp = subprocess.run(
+        [
+            python,
+            "-c",
+            "import pytest, xdist  # noqa: F401",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if cp.returncode != 0:
+        print(
+            f"P5.gate FAIL [harness]: {python!r} cannot import pytest + "
+            "pytest-xdist (needed for `pytest tests/sim/soak -n 16`).  "
+            f"stderr: {cp.stderr.strip()!r}",
             file=sys.stderr,
         )
         return 4
@@ -156,10 +183,10 @@ def _run_soak_suite(python: str) -> int:
 
 
 def main() -> int:
-    rc = _check_harness()
+    python = _resolve_python()
+    rc = _check_harness(python)
     if rc != 0:
         return rc
-    python = _resolve_python()
 
     rc1 = _run_property_tests()
     rc2 = _run_soak_suite(python)
