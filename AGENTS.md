@@ -238,9 +238,8 @@ Contains migrated analysis scripts and utilities including:
 
 ### Canonical (new)
 
-- `scripts/gpsim-xtc`
-- `scripts/gpsim`
-- `scripts/simctl.py`
+- `scripts/gpsim-xtc` *(legacy gpsim wrapper; gpsim binary still vendored, scheduled for full retirement under PF.4 phase 2)*
+- `scripts/gpsim` *(same)*
 - `scripts/hardware_flipper_ir.py`
 - `scripts/hardware_lcd_probe.py`
 - `scripts/hardware_state_test.py`
@@ -253,29 +252,33 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/dlcp_v31_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
 - `scripts/dlcp_ep0_flash_probe.py`
-- `scripts/gpsim_tui_simulator.py`
-- `scripts/gpsim_menu_command_audit.py`
-- `scripts/gpsim_lcd_capture_decode.py`
-- `scripts/gpsim_headless_chain_diagnose.py`
 - `scripts/sim_presets_ab.py`
 - `scripts/sim_link_control_main_presets_ab.py`
 - `scripts/sim_control_ui_presets.py`
 - `scripts/flash_control_safe.sh`
 - `scripts/bake_preset_capture.py`
-- `scripts/test_full_boot.py`, `scripts/test_button_inject.py`
 - `scripts/word_dump_to_ihex.py`
 - `scripts/annotate_disasm.py`
+- `scripts/check_phase4_gate.py` *(rust fast-vs-slow timing gate)*
+- `scripts/check_phase5_gate.py` *(rust property + soak gate)*
+- `scripts/check_replay_round_trip.py` *(P5.3 verifier)*
+- `scripts/sim_rewrite_next.py` *(progress-ledger automation)*
+
+**Removed in PF.4 phase 1 (commit-pending)**: 14 gpsim-only operator scripts have been deleted now that the rust silicon-ring engine is the default backend (`scripts/gpsim_tui_simulator.py`, `scripts/gpsim_menu_command_audit.py`, `scripts/gpsim_lcd_capture_decode.py`, `scripts/gpsim_headless_chain_diagnose.py`, `scripts/test_full_boot.py`, `scripts/test_button_inject.py`, `scripts/simctl.py`, `scripts/probe_baudcon_mapping.py`, `scripts/probe_v171_layer2_chain.py`, `scripts/capture_v171_early_boot_parity.py`, `scripts/capture_gpsim_ground_truth.py`, `scripts/run_phase0_blessing.py`, `scripts/replay_ground_truth.py`, `scripts/check_ground_truth_capture.py`).  PF.4 phase 2 will follow up with the 6 wrapper modules + `vendor/gpsim-0.32.1-xtc/` + `artifacts/tools/gpsim-xtc/` retirement once the 40 still-`@pytest.mark.dual_supported` test files have had their gpsim conditional branches surgically removed (tracked under `docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup tracker").
 
 ## Tests (`tests`)
 
-Current suite (86 test files, 1049 tests collected):
+Current suite (~84 test files, ~1072 tests collected after PF.4 phase 1 deletions; the headline "86 / 1049" figures below predate the rust-only sim rewrite).
 
 Pytest markers:
 
 - `slow`: long-running simulation test
-- `gpsim`: requires gpsim binary
+- `gpsim`: requires gpsim binary (still relevant for the 40 still-`@pytest.mark.dual_supported` tests that retain a gpsim conditional branch; the gpsim binary itself is scheduled for retirement under PF.4 phase 2)
 - `wire`: gpsim current-loop / wire-chain test
 - `hardware`: live hardware test; skipped by default unless `--run-hardware` is passed
+- `dual_supported`: test has been migrated to the rust dlcp-sim engine; the conftest auto-skip rule for `DLCP_SIM_BACKEND={rust,dual}` only schedules tests that carry this marker
+
+**Removed in PF.4 phase 1 (commit-pending)**: 30 gpsim-only test files have been deleted now that rust is the default backend.  The bullet-list entries below that name `test_chain_gpsim_v25_recovery`, `test_chain_gpsim_v25_v162b_recovery`, `test_chain_gpsim_v141_v24_v25_recovery`, `test_chain_gpsim_v161b_v24_v25_i2c_faults`, `test_main_v25_timeout_recovery`, `test_wire_chain_gpsim_stock_faults`, `test_wire_chain_gpsim_i2c_faults`, `test_wire_chain_gpsim_internal_faults`, `test_main_gpsim_an0_boot`, `test_main_gpsim_cmd03_instruction_path`, `test_main_gpsim_fault_injection`, `test_main_gpsim_filename_ab`, `test_main_gpsim_i2c_regfile`, `test_main_gpsim_mailbox`, `test_main_gpsim_timer3_compare`, `test_gpsim_control_presets`, `test_gpsim_control_lcd`, `test_control_gpsim_command_emission_legacy`, `test_control_gpsim_full_config_persistence`, `test_control_gpsim_host_command_injection`, `test_control_gpsim_ir_compatibility`, `test_control_gpsim_ir_preset_switch`, `test_control_gpsim_preset_eeprom_diff`, `test_control_gpsim_response_parser`, `test_control_main_powercycle_sync`, `test_control_v164b_ir_endpoints`, `test_v27_v163b_robustness`, `test_v30_gpsim_equivalence`, `test_v31_combined_dsp_table_apply`, plus `tests/asm_unit_tests/test_main_core_service_265c_parity.py` are STALE -- those tests no longer exist in the working tree.  Inline references kept as historical record; consult `git log` for the deletion commit if you need the previous test-coverage shape.
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
