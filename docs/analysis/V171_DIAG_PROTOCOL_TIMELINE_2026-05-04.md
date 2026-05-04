@@ -16,7 +16,7 @@ steady-state).  Output: `artifacts/probes/v22_run4.txt`.
 | Link saturation | <0.5% wire utilization at peak | REJECTED |
 | RXIF FIFO starvation | CTL.rx accepted byte count == MAIN1.tx wire byte count, every phase | REJECTED |
 | Heartbeat traffic interfering with diag dispatch | Heartbeat is ~1 frame/sec; diag bursts inject 7 reply frames at full link speed (46k tick gaps = back-to-back) | REJECTED |
-| V1.71 foreground busy-loop dominating | 47-58% PC time in `display_loop_iteration`; 27-32% in `button_scan_debounce`; only 3-8% in `rx_parser_entry` (where BF/2N dispatch lives) | CONFIRMED |
+| V1.71 foreground busy-loop dominating | 40-50% PC time in `display_loop_iteration`; 27-33% in `button_scan_debounce`; 5-10% in `control_core_service_*` (per-channel frame-emit family); only 3-8% in `rx_parser_entry` (where BF/2N dispatch lives) | CONFIRMED |
 
 ## Probe details
 
@@ -115,24 +115,32 @@ them as separate user-named labels.
 
 | Phase | display_loop | button_scan | control_core_service | rx_parser | service_rx_frame_gap | service_pending_ir | eeprom_write |
 |---|---|---|---|---|---|---|---|
-| post_boot_idle | 50% | 32% | 6% | 5% | 4% | 4% | 0% |
-| nav_RIGHT_2 | 46% | 31% | 9% | 5% | 2% | 2% | 4% |
-| nav_RIGHT_4 | 49% | 28% | 9% | 5% | 1% | 2% | 4% |
-| pb1_diag_steady_initial | 48% | 31% | 8% | 4% | 5% | 4% | 0% |
-| cycle_4 (PB1 converges!) | 40% | 30% | 10% | 8% | 3% | 3% | 5% |
-| cycle_7 | 47% | 27% | ~10% | 7% | ~3% | ~3% | 5% |
-| pb1_diag_steady_post_cycles | 47% | 31% | 8% | 5% | ~5% | ~3% | 0% |
+| post_boot_idle | 50.0% | 31.5% | 8.0% | 5.0% | 1.5% | 2.5% | 0% |
+| nav_RIGHT_1 | 48.8% | 32.5% | 7.5% | 2.5% | 2.5% | 1.2% | 3.8% |
+| nav_RIGHT_2 | 46.2% | 31.2% | 8.8% | 5.0% | 1.2% | 2.5% | 3.8% |
+| nav_RIGHT_3 | 48.8% | 30.0% | 8.8% | 5.0% | 2.5% | 1.2% | 3.8% |
+| nav_RIGHT_4 | 48.8% | 27.5% | 7.5% | 5.0% | 1.2% | 2.5% | 3.8% |
+| pb1_diag_steady_initial | 47.8% | 31.5% | 7.8% | 4.2% | 2.5% | 3.5% | 0% |
+| cycle_1 | 41.7% | 28.3% | 8.3% | 5.0% | 5.0% | 5.0% | 5.0% |
+| cycle_2 | 45.0% | 31.7% | 5.0% | 5.0% | 1.7% | 1.7% | 5.0% |
+| cycle_3 | 41.7% | 28.3% | 6.7% | 3.3% | 6.7% | 5.0% | 5.0% |
+| **cycle_4** (PB1 converges) | **40.0%** | 30.0% | 10.0% | 8.3% | 1.7% | 3.3% | 5.0% |
+| cycle_5 | 48.3% | 26.7% | 5.0% | 5.0% | 1.7% | 3.3% | 5.0% |
+| cycle_6 | 48.3% | 30.0% | 6.7% | 3.3% | 1.7% | — | 5.0% |
+| cycle_7 | 46.7% | 26.7% | 6.7% | 6.7% | 5.0% | 3.3% | 5.0% |
+| pb1_diag_steady_post_cycles | 46.5% | 31.5% | 9.0% | 5.0% | 2.5% | 3.0% | 0% |
 
 Across all 14 phases, `display_loop_iteration` ranges from
-**40% to 58%** and `button_scan_debounce + control_core_service`
-adds another **35% to 41%**, leaving 3-8% for `rx_parser_entry`
-(which is where the actual BF/2N parse-and-dispatch happens).
-The combined "foreground loop" (display + button + service)
-share is ~**78-90%** of CONTROL CPU time on every phase.
+**40.0%** (cycle_4) to **50.0%** (post_boot_idle).  The
+foreground trio (`display_loop_iteration + button_scan_debounce
++ control_core_service`) totals between **76.7%** (cycle_3) and
+**89.5%** (post_boot_idle) of CONTROL CPU time, leaving 3-8%
+for `rx_parser_entry` (where the actual BF/2N parse-and-dispatch
+happens).
 
 ### Interpretation
 
-- **`display_loop_iteration` (~47-58%)** is V1.71's foreground
+- **`display_loop_iteration` (~40-50%)** is V1.71's foreground
   busy-loop body (`asm:2885-2897`).  It branches back to itself
   when `0x9A == 0 && control_flags.bit3 == 0`.  Both predicates
   are zero in the no-IR/no-mute test scenario, so the loop
@@ -147,7 +155,7 @@ share is ~**78-90%** of CONTROL CPU time on every phase.
   (`serial_tx_routed_frame`, `full_sync_burst`,
   `poll_frame_send`, `volume_frame_send`, etc.) that share the
   0x0994..0x0DB2 address block.  Together with `display_loop_iteration`
-  and `button_scan_debounce` they account for ~78-90% of CPU
+  and `button_scan_debounce` they account for ~77-90% of CPU
   time.
 - **`rx_parser_entry` (~3-8%)** is the actual byte-arrival
   parser.  Even during the diag-page reply burst, only 5-8% of
