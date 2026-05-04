@@ -1,468 +1,322 @@
-# DLCP Co-Simulation Guide
+# DLCP Simulation Guide
 
-gpsim-backed co-simulation for the DLCP stock pair and later patched/source
-variants. The stock `V1.4 <-> V2.3` pair remains the baseline example in this
-guide, but the same harness family also covers patched `V2.4`–`V2.7`,
-source-assembled `V3.0` / `V3.1`, and CONTROL `V1.41`–`V1.64b` as documented in
-`AGENTS.md`.
+The DLCP simulation harness is a single-process cycle-accurate Rust engine
+(`crates/dlcp-sim/`) that runs the V1.71 CONTROL (PIC18F25K20) and V3.2 MAIN
+(PIC18F2455) firmware images in a universal-clock topology with native
+multi-core ring routing for the current-loop bus.  It replaces the legacy
+three-process gpsim harness; gpsim is retained one release cycle as a
+regression oracle and is scheduled for retirement under
+`docs/SIM_REWRITE_RUST_SPEC.md` PF.4.
 
-MAIN now runs on the physical `p18f2455` model. CONTROL now runs on the
-physical `p18f25k20` model via the repo-local `gpsim-xtc` fork in
-`vendor/gpsim-0.32.1-xtc/`, built under `artifacts/tools/gpsim-xtc/`.
-Runs unmodified firmware images with minimal binary overlays for reset-vector
-redirection, optional UART mailbox hooks for low-fidelity tests, and optional
-Timer3 shim logic.
+The full architecture, phase plan, and silicon-fidelity corner-case
+inventory live in:
 
-For MAIN, app-only HEX inputs such as `DLCP Firmware V2.3.hex`,
-`DLCP_Firmware_V2.4.hex`, and `DLCP_Firmware_V2.5.hex` are now seeded onto the
-dump-based `DLCP Firmware V2.3-combined.hex` recovery image before gpsim-only
-overlays are applied. That preserves the recovered boot block, config words,
-EEPROM, User ID, and preset-table region by default while still testing the
-requested app image.
+- `docs/SIM_REWRITE_RUST_SPEC.md` — design + 6-phase plan + risk register.
+- `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` — silicon-fidelity gap
+  closure tracking.
+- `docs/SIM_REWRITE_RUST_PROGRESS.md` — machine-readable progress ledger
+  (driven by `scripts/sim_rewrite_next.py`).
+
+This document is the day-to-day operator's guide: how to build, how to run
+tests, what the public Python and CLI surfaces look like, and where the
+gpsim oracle still matters until PF.4.
 
 ## Quick Start
 
-### TUI (interactive)
+### Test gate (rust backend)
 
 ```bash
-# Single MAIN unit, fast boot, active standby:
-python scripts/gpsim_tui_simulator.py \
-    firmware/stock/control/'DLCP Control Firmware V1.4.hex' \
-    --main-hex 'firmware/stock/main/DLCP Firmware V2.3.hex' \
-    --single-main --fast-boot --main-ra0 0x0228
+# Full sim suite (default backend = rust):
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 
-# Two MAIN units (full daisy chain):
-python scripts/gpsim_tui_simulator.py \
-    firmware/stock/control/'DLCP Control Firmware V1.4.hex' \
-    --main-hex 'firmware/stock/main/DLCP Firmware V2.3.hex' \
-    --main-ra0 0x0228
+# Phase-5 exit gate (snapshot/replay/soak):
+python3 scripts/check_phase5_gate.py
 
-# Full boot (no fast_boot, shows "Firmware V1.4" splash):
-python scripts/gpsim_tui_simulator.py \
-    firmware/stock/control/'DLCP Control Firmware V1.4.hex' \
-    --main-hex 'firmware/stock/main/DLCP Firmware V2.3.hex' \
-    --single-main --main-ra0 0x0228
+# Fast subset only (-m "not slow"):
+DLCP_SIM_BACKEND=rust .venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"
 ```
 
-### Headless regression tests
+### Backend selection
+
+Tests pick the backend via the `DLCP_SIM_BACKEND` env var, decoded by
+`tests/sim/conftest.py`:
+
+| Value     | Behaviour                                                 |
+|-----------|-----------------------------------------------------------|
+| `rust`    | (default) Run the rust silicon-ring engine.  Tests under  |
+|           | `tests/sim/` that LACK `@pytest.mark.dual_supported` are  |
+|           | auto-skipped.                                             |
+| `gpsim`   | Run the legacy gpsim oracle.  All tests run; no auto-skip.|
+| `dual`    | Run both backends and assert byte-identical UART/LCD/RAM  |
+|           | traces.  The migration safety net.                        |
+
+The conftest uses `rust` when the variable is unset.
+
+### Replay a snapshot/case (P5.3)
 
 ```bash
-# Full boot sequence (48M cycles, ~4s simulated):
-python scripts/test_full_boot.py
+cargo build --release -p dlcp-sim-cli
+./target/release/dlcp-sim replay tests/sim/cases/case.json \
+    --final-snapshot /tmp/final.bin \
+    --trace /tmp/trace.txt
+```
 
-# Button press smoke test (SELECT, UP, DOWN):
-python scripts/test_button_inject.py
+The case JSON schema is documented in
+`crates/dlcp-sim-cli/src/main.rs` under the module docstring.  The replay
+tool exits 0 on success, 1 on usage error, 2 on stimulus failure, 3 on
+`expect_final_snapshot_hex` mismatch.
+
+### Use the Python facade
+
+```python
+from dlcp_fw.sim.dlcp_sim_native import Chain
+
+chain = Chain.from_v171_v32()        # V1.71 CONTROL + 2 V3.2 MAINs
+chain.run_until_connected(limit=200) # advance until DISPLAY mode
+chain.press("RIGHT")                 # inject panel button event
+for _ in range(8):
+    chain.step()
+print(chain.lcd_lines())             # ('Volume         ', '<level bar>')
 ```
 
 ## Architecture
 
-```
- +-----------+     LinkPipe      +--------+     LinkPipe      +--------+
- | CONTROL   |  CTL->M0 (960Tcy) |  MAIN  |  M0->M1 (960Tcy) |  MAIN  |
- | gpsim     | <--------------->  |   #0   | <--------------->  |   #1   |
- | session   |  M0->CTL (960Tcy) | gpsim  |  M1->M0 (960Tcy) | gpsim  |
- +-----------+                    +--------+                    +--------+
-       |                               |                            |
-   LCD decode                     Timer3 shim                  Terminated
-   (HD44780 log)                  Mailbox hooks                (--single-main
-   Button stimuli                 AN0 ADC model                 omits this)
-   Heartbeat model                RC2 strap model
-```
+### Universal-clock single-process engine
 
-Each unit runs in its own gpsim process. The default `chain_gpsim` harness
-still steps them round-robin and pumps serial frames between steps via
-`LinkPipe`.
-
-## High-Fidelity UART Direction
-
-The repo now also has a supported live wire harness,
-`src/dlcp_fw/sim/wire_chain_gpsim.py`, that keeps each PIC in its own gpsim
-process and bridges the physical UART pins with gpsim's `FileRecorder` and
-streaming `FileStimulus` modules. That path exercises the simulated EUSART
-receive state machines, timing, `RCREG` FIFO, and `OERR` behavior without
-injecting bytes into firmware RAM.
-
-The ideal end-state is still a single gpsim process containing `ctl`, `m0`,
-`m1`, etc., with one node per physical hop:
-
-- `ctl.portc6 -> m0.portc7`
-- `m0.portc6 -> ctl.portc7`
-- `m0.portc6 -> m1.portc7`
-- `m1.portc6 -> m0.portc7`
-
-That matches the real daisy-chain topology better than the current per-process
-transport, and it lets gpsim's existing EUSART model provide the timing:
-
-- BRG timing from `SPBRGH:SPBRG`, `BRGH`, and `BRG16`
-- three-sample RX majority detect
-- `TXREG` to `TSR` transfer timing and `TXIF`/`TRMT` behavior
-- `RCREG` FIFO and `OERR` behavior
-
-The repo-local gpsim build now supports the required topology groundwork for
-that mode: one process can load labeled `ctl`, `m0`, and `m1` processors and
-attach qualified `RC6`/`RC7` pins between them. The regression for that
-capability is `tests/sim/test_gpsim_multi_processor_uart_topology.py`.
-
-However, gpsim still executes only the active CPU in a one-process run, so the
-current high-fidelity transport uses one process per PIC and a live pin bridge
-instead of shared-node execution.
-
-### Key components
-
-| Component | File | Role |
-|-----------|------|------|
-| `GpsimControlSession` | `scripts/gpsim_tui_simulator.py` | CONTROL gpsim wrapper; LCD decode, button stimuli, RX ring injection |
-| `GpsimControlHarness` | `src/dlcp_fw/sim/control_gpsim.py` | Non-interactive CONTROL gpsim harness for automated tests; EEPROM SFR read/write |
-| `MainGpsimSession` | `scripts/gpsim_tui_simulator.py` | MAIN gpsim wrapper; mailbox hooks, Timer3 model, AN0/RC2 pin models |
-| `LinkPipe` | `scripts/gpsim_tui_simulator.py` | Byte-paced serial transport; wire-rate spacing at 31,250 baud 8N1 |
-| `WireMultiMainChainHarness` | `src/dlcp_fw/sim/wire_chain_gpsim.py` | Live multi-process UART bridge using real RC6/RC7 pin transitions |
-| `LiveLogDecoder` | `scripts/gpsim_tui_simulator.py` | Parses gpsim log writes to extract LCD commands and TX frames |
-| `LcdState` | `src/dlcp_fw/sim/lcd.py` | HD44780 protocol state machine |
-| `apply_overlays` | `src/dlcp_fw/sim/overlay.py` | Binary patching engine for HEX files |
-| Manifests | `src/dlcp_fw/sim/manifests.py` | Overlay definitions: reset redirect, boot wait bypass, standby check bypass, UART hooks |
-
-MAIN gpsim harnesses materialize a seeded full-device temp HEX before overlays:
-
-- input app bytes `0x1000..0x55FF` come from the requested MAIN HEX
-- boot block, config, EEPROM, User ID, and `0x5600..0x5FFF` preset-table space
-  come from `firmware/stock/main/DLCP Firmware V2.3-combined.hex`
-- if the requested MAIN HEX already contains a programmed boot block, it is
-  treated as a full-device image and used verbatim
-
-When `bypass_i2c=False`, the chain harnesses also attach a default external
-I2C bus model to MAIN: pullups on `RB0/RB1` plus generic `i2c_regfile` slaves
-named `cfg71` (`0x71`) and `dsp34` (`0x34`).
-
-The generic `i2c_regfile` module now exposes fault knobs that can be driven
-from gpsim tests without patching MAIN firmware:
-
-- `Address_Nack_Count`: NACK the next `N` address phases, then resume ACK
-- `Address_Stretch_SCL_Cycles`: hold `SCL` low for `N` cycles after each
-  address match
-- `Address_Stretch_Count`: apply that address-phase SCL stretch to only the
-  next `N` matching address phases (`-1` means every match)
-- `Data_Nack_Count`: NACK the next `N` data-phase bytes, then resume ACK
-- `Data_Stuck_SDA_Cycles`: hold `SDA` low for `N` cycles after each data-phase
-  byte; this can corrupt an in-flight stock write without patching firmware
-- `Data_Stuck_SDA_Count`: apply that data-triggered SDA-low fault to only the
-  next `N` data bytes (`-1` means every byte)
-- `Stretch_SCL_Cycles`: immediately hold `SCL` low for `N` cycles, then release
-
-The chain harness currently exposes the safe runtime subset:
-`Address_Nack_Count`, `Address_Stretch_SCL_Cycles`, `Address_Stretch_Count`,
-`Data_Nack_Count`, `Data_Stuck_SDA_Cycles`, `Data_Stuck_SDA_Count`, and
-`Stretch_SCL_Cycles`.
-
-The repo-local gpsim fork now also exposes processor-scoped internal MAIN fault
-knobs that can be armed from the chain harnesses without patching firmware:
-
-- `usart_trmt_busy_cycles` / `usart_trmt_busy_count`
-  - hold the EUSART transmit side busy before the next selected `TXREG -> TSR`
-    start, which keeps `TXSTA.TRMT` low
-- `ssp_stop_busy_cycles` / `ssp_stop_busy_count`
-  - hold the MSSP stop/idle path busy before the next selected stop phase
-
-### Serial transport model (LinkPipe)
-
-Each serial link is modelled as a byte-paced queue matching the PIC18 EUSART
-used by both DLCP MCUs at 31,250 baud, 8N1. CONTROL simulation now uses the
-physical `p18f25k20` target from the local `gpsim-xtc` build:
-
-- **Wire time**:
-  - CONTROL: 960 instruction cycles per byte (320 us at 3 MIPS, `Fosc=12 MHz`)
-  - MAIN: 1280 instruction cycles per byte (320 us at 4 MIPS, `Fosc=16 MHz`)
-- **Frame size**:
-  - CONTROL transmitter: 2,880 Tcy per 3-byte frame
-  - MAIN transmitter: 3,840 Tcy per 3-byte frame
-- **FIFO depth**: CONTROL ring = 47 usable slots; MAIN mailbox = 63 slots
-- **Overrun**: frames that arrive when the sink's ring/mailbox is full are
-  silently dropped (models OERR on real silicon)
-
-Frames are injected atomically (all 3 bytes or none) to preserve parser
-framing.  This is a slight simplification — real EUSART delivers bytes
-individually — but preserves protocol correctness.
-
-### Serial transport model (Wire Harness)
-
-`WireMultiMainChainHarness` replaces `LinkPipe` with real pin activity:
-
-- sender RC6 transitions are captured by gpsim `FileRecorder`
-- a host bridge rescales cycle timestamps between 3 MIPS CONTROL and 4 MIPS
-  MAIN instruction clocks
-- each forwarded batch is rebased into the receiver's future before the next
-  receiver step, so separate gpsim processes do not lose pin edges whose
-  natural sender-relative timestamp is already in the receiver's past
-- receiver RC7 is driven by a streaming gpsim `FileStimulus`
-- each MCU's native EUSART performs the actual start-bit detect, majority
-  sampling, `RCREG` buffering, and overrun behavior
-
-Current scope:
-
-- proven for no-fault single-main UI connection on stock `V1.4 <-> V2.3`,
-  patched `V1.61b <-> V2.4`, patched `V1.62b <-> V2.5`, and patched
-  `V1.62b <-> V3.1`
-- supports `[CONTROL <-> MAIN0] <-> [MAIN1] ...` topology wiring in the harness
-- supports per-link transport faults at the bridge layer:
-  - one-direction frame blackout by dropping sender RC6 transitions before they
-    reach the receiver RC7 stimulus
-  - extra receiver-cycle delay on a specific hop without falling back to
-    mailbox/native-ring RAM injection
-- current bounded wake-fault characterization does not yet show a clean
-  MAIN-only separation:
-  - with `V1.61b`, bounded `MAIN -> CONTROL` reply drop/delay wake faults can
-    strand both `V2.4` and `V2.5`
-  - with `V1.62b`, lighter bounded wake delays clear and both `V2.4` and
-    `V2.5` reconnect
-  - with shared one-shot wake-time `cfg71` I2C faults, the same pattern still
-    holds:
-    - `V1.61b + V2.4` and `V1.61b + V2.5` both stay stranded in `WAITING FOR DLCP`
-    - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect once the one-shot
-      external fault expires
-  - the newer one-shot internal peripheral faults still show the same
-    CONTROL-side split:
-    - `V1.61b + V2.4` and `V1.61b + V2.5` both strand under one-shot
-      `TRMT`-busy and MSSP stop-busy wake faults
-    - `V1.62b + V2.4` and `V1.62b + V2.5` both reconnect after those same
-      one-shot internal faults expire
-
-### Heartbeat model
-
-CONTROL's inner event loop (function_042, 0x0D24) blocks until a button
-event (`0x9A != 0`) or serial data flag (`flags.bit3 != 0`).  In real
-hardware, CONTROL toggles RC1 (heartbeat) and MAIN responds with status
-frames that set bit3.  The simulator does not model this feedback loop,
-so a synthetic heartbeat is injected:
-
-1. **bit3 injection**: before each CONTROL step, `flags.bit3` is set via
-   `reg(0x01F)` so function_042 can exit.
-
-2. **BF/03/01 injection**: every 5 steps, a synthetic `BF/03/01` frame
-   is enqueued into the M0->CTL link (with queue-depth guard) to maintain
-   `flags.bit1 = 1` and prevent fallback to STANDBY.
-
-3. **Activation**: the heartbeat activates after the WAITING-loop sentinel
-   variables (0xB8, 0xB9, 0xA7, 0xA1) transition through 0x80 (entered)
-   and then change (exit), using two-phase detection to avoid false
-   positives from uninitialised RAM.
-
-### Button simulation
-
-gpsim `asynchronous_stimulus` objects permanently drive all six button
-pins HIGH (unpressed).  This is necessary because `btg PORTC, RC1`
-(heartbeat toggle in function_042) corrupts input pins on PORTC via
-read-modify-write.
-
-Since stimulus state cannot be toggled at runtime, button presses are
-injected into function_023's debounce state machine:
-
-- `RAM[0x0BE]` (accepted scan) = desired scan pattern
-- `RAM[0x0BB]` (debounce counter) = 0
-
-This triggers edge detection (`0x0BE != 0x0BD`) inside function_023,
-which sets `0x9A = scan_pattern`.  function_042 exits on `0x9A != 0`,
-and the DISPLAY handler (function_046) processes the button event.
-
-Only rising edges (newly-pressed keys) are injected; held keys produce
-no repeat events, matching real hardware.
-
-**gpsim stimulus creation note**: `period 0` creates a dead stimulus
-(`Vth=0V`).  The correct syntax is:
-```
-stimulus asynchronous_stimulus initial_state 1 start_cycle 0 { 1, 1 } name X end
+```text
+                          Chain (rust)
+                          single process
+                       universal-clock tick
+                       at 48 MHz / 20.833 ns
+   +--------------+   /                            \
+   | CONTROL core |--+                              +--+ MAIN0 core
+   | PIC18F25K20  |   |  Event queue (per-tick      |  | PIC18F2455
+   +--------------+   |  scheduler):                |  +-------------+
+          ^           |   - CoreInstructionComplete |       |
+          |           |   - UartByteDelivery        |       |
+          |           |   - PinPropagation          |       |
+          |           |   - PeripheralDeadline      |       v
+          |           |                             |  +-------------+
+          |   UART    +-----------------------------+  | MAIN1 core  |
+          |   ring                                     | PIC18F2455  |
+          +-----------------------------------------> +-------------+
+                CONTROL <- MAIN1 <- MAIN0 <- CONTROL ring
 ```
 
-## TUI Keyboard Controls
+Each `Chain` owns a flat `Vec<Core>` plus a `pinnet` describing the UART
+couplings and other inter-core wires (LCD, MCLR, RC2 standby strap).
+`Chain::step_ticks(N)` advances all cores in lockstep at the universal-clock
+granularity and dispatches events from the priority queue as they fire.
 
-| Key | Action |
-|-----|--------|
-| `w` | UP (volume up) |
-| `x` or `c` | DOWN (volume down) |
-| `a` | LEFT |
-| `d` | RIGHT |
-| `s` | SELECT (mute toggle / menu enter) |
-| `f` | STANDBY |
-| `0` | Force MAIN AN0 ADC = 0x0000 (both units) |
-| `1` | Force MAIN AN0 ADC = 0x0228 (both units) |
-| `2` | Force MAIN AN0 ADC = 0x0FFF (both units) |
-| `h` | Toggle help/notes overlay |
-| `q` or ESC | Quit |
+The ring topology — `CONTROL → MAIN0 → MAIN1 → CONTROL` — matches the
+DLCP current-loop bus exactly: bytes from CONTROL fan out to MAIN0; MAIN0
+forwards to MAIN1; MAIN1 returns to CONTROL.  Three unidirectional UART
+couplings, no per-process bridge.
 
-Arrow keys also work for UP/DOWN/LEFT/RIGHT.
+### Public surfaces
 
-## TUI Display Panels
+The rust engine is exposed in three layers:
 
-- **LCD**: 2x16 character display decoded from CONTROL firmware's
-  HD44780 bus writes (PORTB data, LATA control lines).
-- **CTL RAM**: flags (0x1F), input_sel (0xB8), volume (0xB9),
-  menu_state (0xBF), PORTC/TRISC/LATC for RC1 bus state.
-- **Keys**: visual press feedback with highlighted key labels.
-- **DLCP #0 / #1**: MAIN firmware RAM state — volume current/target,
-  input, link register, channel config, ADC values, mailbox pointers.
-- **Reconnect Diagnostics**: bit1 state, bit1 event history,
-  reconnect hit count, wake lifecycle counters, mailbox occupancy.
-- **Trace**: scrolling log of TX frames and key presses.
-- **Status bar**: cycle counters, queue depths, delivery counts,
-  overrun totals, diagnostic reason codes.
+1. **Native rust crate** (`crates/dlcp-sim/`) — used by Rust unit /
+   integration tests in `crates/dlcp-sim/tests/` and by the workspace's
+   binary crates.
+2. **PyO3 facade** (`crates/dlcp-sim-py/src/lib.rs`,
+   `src/dlcp_fw/sim/dlcp_sim_native.py`) — the Python `Chain` class
+   used by `tests/sim/`.  The PyO3 module compiles to
+   `target/release/libdlcp_sim_native.dylib` (macOS) /
+   `libdlcp_sim_native.so` (Linux); `bash crates/dlcp-sim-py/build.sh`
+   symlinks it as `dlcp_sim_native.so` for `import` resolution.
+3. **CLI** (`crates/dlcp-sim-cli/src/main.rs`) — the `dlcp-sim` binary
+   with `replay`, `emit-template`, and `encode-hex` subcommands.
 
-## Command-Line Options
+### Determinism + replay (Phase 5)
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `hex` (positional) | — | CONTROL firmware HEX path |
-| `--main-hex` | (required) | MAIN firmware HEX; app-only inputs are seeded onto `V2.3-combined` before gpsim-only overlays; pass once for both units or twice for #0/#1 |
-| `--single-main` | false | Run with one MAIN unit (terminated chain) |
-| `--fast-boot` | false | Bypass one startup delay call in CONTROL firmware |
-| `--gpasm` | `gpasm` | gpasm executable for hook assembly |
-| `--chunk-cycles` | 300000 | CONTROL cycles per simulation step |
-| `--main-chunk-cycles` | 300000 | MAIN cycles per simulation step |
-| `--sim-quantum-cycles` | 0 | If >0, force shared small quantum for CONTROL and MAIN |
-| `--hold-cycles` | 240000 | Key hold pulse width in cycles |
-| `--initial-cycles` | 20000000 | Warm-up cycles at startup (before interactive loop) |
-| `--poll-s` | 0.15 | UI refresh interval in seconds |
-| `--main-ra0` | 0x0000 | Force MAIN AN0 ADC sample (both units); hotkeys 0/1/2 |
-| `--main0-standby` | hold | MAIN #0 standby model: hold/release/control/auto |
-| `--main1-standby` | hold | MAIN #1 standby model: hold/release/control/auto |
-| `--main0-rc2` | high | MAIN #0 RC2 strap: high (local), low (chain), keep |
-| `--main1-rc2` | low | MAIN #1 RC2 strap: high (local), low (chain), keep |
-| `--main-timer3` | shim | Timer3 mode: shim (firmware patched) or harness (external) |
-| `--rx-fifo-limit` | 47 | Max bytes in RX mailbox before overrun |
+Every chain state is serializable via `bincode`:
 
-### Standby models
+```rust
+use dlcp_sim::snapshot::{encode, decode};
 
-- **hold**: AN0 ADC held HIGH (above active threshold 0x0228) — MAIN stays active.
-- **release**: AN0 ADC driven LOW — MAIN enters standby sensing.
-- **control** / **auto**: AN0 follows CONTROL RC1 bus state (heartbeat-driven).
+let bytes = encode(&chain);
+let restored: Chain = decode(&bytes)?;
+assert_eq!(encode(&restored), bytes);   // byte-stable round-trip
+```
 
-In the higher-fidelity native-ring chain harness, MAIN boot now uses a real
-gpsim analog stimulus on `p18f2455.porta0` to clear the stock `function_024`
-AN0 gate. The default chain path now also leaves the existing `hold` standby
-model active after boot instead of forcing `main_ra0_adc=0x0000`; that forced
-low setting made MAIN's first `BF 03` status report standby and only appeared
-to work before because `main_adc_boot_wait_hook` left a stale high ADC sample
-in place.
+The Python facade exposes `Chain.snapshot()` and `Chain.restore(bytes)`.
+The 5-test soak harness at `crates/dlcp-sim/tests/snapshot_soak.rs` runs
+10⁴ scenarios per test (50,000 total) asserting byte-stable round-trip,
+two-chain replay determinism, and step-split idempotence
+(`step_ticks(N) ≡ step_ticks(a) + step_ticks(N-a)`).
 
-### RC2 strap models
+## Public Python `Chain` API
 
-- **high**: RC2 = 1 — MAIN operates as primary/local unit (SPBRG=0x3F, SCS1 set).
-- **low**: RC2 = 0 — MAIN operates as downstream/chain unit (SPBRG=0x7F).
-- **keep**: leave RC2 at gpsim/firmware default.
+Highlights — see the docstrings in `src/dlcp_fw/sim/dlcp_sim_native.py`
+for the full surface.
 
-### Timer3 modes
+### Construction
 
-- **shim**: function_079 in MAIN firmware is patched to return immediately.
-  Faster execution; Timer3 overflow effects are approximated.
-- **harness**: Timer3 overflow is modelled externally by the harness,
-  setting TMR3IF at computed intervals.  Higher fidelity, slower.
+| Method                      | Returns chain shape |
+|-----------------------------|---------------------|
+| `Chain.from_v171_v32()`     | V1.71 CONTROL + 2 V3.2 MAINs (3-core ring) |
+| `Chain.from_v171_v31()`     | V1.71 CONTROL + 1 V3.1 MAIN |
+| `Chain.from_v32_main_only()`| 1 V3.2 MAIN only (no CONTROL) |
+| `Chain.from_v17_chain(...)` | V1.7 CONTROL + 1 MAIN, configurable hexes |
+| `Chain.from_v17_control_only(...)` | V1.7 CONTROL alone |
 
-## Firmware Overlay Summary
+### Stepping the simulator
 
-All overlays are minimal binary patches applied to the HEX before loading.
-The firmware executes natively in gpsim — no behavioural stubs replace
-firmware logic.
+| Method                         | Semantic |
+|--------------------------------|----------|
+| `step_ticks(n)`                | Advance N universal-clock ticks (1 K20-Tcy = 16 ticks) |
+| `step_tcy(tcy)`                | Advance N CONTROL Tcy |
+| `step()`                       | Advance one default 200 K-Tcy chunk |
+| `step_many(n_chunks)`          | Advance N default chunks |
+| `run_until_connected(limit)`   | Step until CONTROL marks itself connected, or `limit` chunks |
+| `run_until_waiting(limit)`     | Step until CONTROL transitions to WAITING (Zzz) |
+| `step_until_pc_hit(core_idx, pc_lo, pc_hi, max_tcy)` | gpsim `break e <addr>` analog |
 
-### CONTROL overlays
+### Stimulus injection
 
-| Overlay | Effect |
-|---------|--------|
-| `control_reset_to_appstart` | Redirect reset vector from bootloader (0x7800) to app entry (0x0040) |
-| `control_disable_boot_wait` | NOP a startup delay call (fast_boot mode only) |
-| `control_disable_standby_check` | NOP the standby-handler jump at 0x1228 so firmware stays in DISPLAY mode without live MAIN heartbeat |
+| Method                         | Semantic |
+|--------------------------------|----------|
+| `press(key)`                   | Inject panel button (`UP/DOWN/LEFT/RIGHT/SELECT/STBY/...`) |
+| `set_blackout(enabled)`        | Toggle chain-wide UART blackout |
+| `set_main_an0(unit, sample)`   | Override MAIN's AN0 ADC sample |
+| `set_link_fault(name, *, drop=None, extra_cycles=None)` | gpsim `set_link_fault` analog (P4-followup #101) |
+| `inject_uart_rx_byte(core_idx, byte)` | Push byte directly to a core's silicon RX FIFO |
+| `inject_control_rx_bytes(bytes)` | V1.71-specific software RX ring push |
 
-### MAIN overlays
+### Read-back / introspection
 
-| Overlay | Effect |
-|---------|--------|
-| `main_reset_to_appstart` | Redirect reset vector to app entry (0x1000) |
-| `main_serial_mailbox_hooks` | Replace UART ISR with mailbox-backed RX/TX for harness injection |
-| `main_adc_boot_wait_hook` | Legacy hook for harness paths that still patch through `function_024` (for example the UART-only Timer3 compare harness) |
-| `main_external_i2c_bypass` | Bypass only external MSSP/I2C wait loops when no external bus model is attached |
-| `main_internal_eeprom_bypass` | Legacy compatibility hook for internal `EECON1.WR` polling; avoid in fidelity tests |
-| `main_i2c_bypass` | Legacy combined alias of the two overlays above |
+| Method                         | Semantic |
+|--------------------------------|----------|
+| `lcd_lines()`                  | `(line1, line2)` snapshot of HD44780 DDRAM |
+| `is_connected()`               | CONTROL's "connected" flag |
+| `is_waiting()`                 | CONTROL's WAITING-screen flag |
+| `read_reg(addr)`               | CONTROL data RAM byte |
+| `read_main_reg(unit, addr)`    | MAIN data RAM byte (0=MAIN0, 1=MAIN1) |
+| `read_core_flash(core_idx, addr, length)` | Program flash slice |
+| `current_ctl_pc()`             | CONTROL program counter |
+| `current_main_pc()`            | MAIN0 program counter |
+| `bridge_byte_stats()`          | Per-link byte-count snapshot (P4-followup #99) |
+| `uart_tx_records_full()`       | Full `(tick, src, dst, byte)` TX history |
+| `uart_rx_records_full()`       | Full `(tick, src, dst, byte)` RX-accepted history |
 
-## Known Limitations
+### Mutation (overlay primitives, P4-followup #103)
 
-1. **No RC1-to-MAIN feedback loop**.  The heartbeat (CONTROL toggling RC1,
-   MAIN detecting via ADC, responding with BF/03/01) is replaced by
-   synthetic bit3 and BF/03/01 injection.  This means the exact heartbeat
-   timing and the MAIN-side ADC threshold behaviour are not exercised in the
-   standalone CONTROL harness.  The live wire harness now proves the no-fault
-   CONTROL UI path with real UART timing, but it still does not model the full
-   RC1/AN0 heartbeat physics.
-
-2. **Button presses bypass pin-level simulation**.  Because gpsim stimuli
-   cannot be toggled at runtime, buttons are injected at the RAM level
-   (debounce state machine).  The pin-read and XOR-inversion path in
-   function_023 is not exercised for pressed buttons.
-
-3. **External I2C device semantics are still partial**.  gpsim now runs
-   MAIN's internal PIC EEPROM path natively and can attach real RB0/RB1
-   pullups plus generic `i2c_regfile` slaves for bus-level MSSP timing.
-   The higher-level chain harnesses use that generic bus model by default when
-   `bypass_i2c=False`.
-   That is enough to exercise stock `function_067`, `function_093`,
-   `function_072`, and `function_081` without any firmware bypass.
-   However the TAS3108 itself is still only represented as a generic
-   register-file slave, so audio/DSP algorithm behavior is not simulated.
-
-4. **Single-byte vs. frame-atomic injection**.  Real EUSART delivers bytes
-   individually; the simulator injects 3-byte frames atomically.  This is
-   correct for protocol framing but slightly simplifies byte-level timing.
-
-5. **Timer3 shim approximation**.  In shim mode, function_079 is NOPed and
-   Timer3 overflow is not precisely timed.  Harness mode is more accurate
-   but slower.
-
-6. **No USB / bootloader path**.  The bootloader at 0x7800 is bypassed.
-   USB enumeration and firmware-update paths are not exercised.
-
-7. **Wall-clock speed**.  The simulation runs ~10-50x slower than real time
-   depending on chunk size and number of MAIN units.  A 20M-cycle warmup
-   (1.67s simulated) takes ~0.8s wall clock; interactive steps at 300K
-   cycles are fast enough for responsive UI at 0.15s poll rate.
+| Method                         | Semantic |
+|--------------------------------|----------|
+| `patch_core_flash(core_idx, addr, payload)` | Generic flash overlay |
+| `set_core_pc(core_idx, pc)`    | gpsim `pc=0x...` analog |
+| `apply_standby_bypass_overlay(chain, *, control_hex_path)` | Module-level helper; mirror of gpsim's `control_disable_standby_check_dynamic` manifest |
 
 ## File Map
 
 ### Simulation engine
 
-```
-scripts/gpsim_tui_simulator.py  — TUI and co-simulation core
-src/dlcp_fw/sim/control_gpsim.py       — non-interactive CONTROL gpsim harness (tests)
-src/dlcp_fw/sim/main_gpsim.py          — MAIN gpsim harness (mailbox injection)
-                                       — includes AN0 bootstrap + external I2C regfile STC helpers
-src/dlcp_fw/sim/chain_gpsim.py         — one-MAIN gpsim co-simulation chain harness
-src/dlcp_fw/sim/wire_chain_gpsim.py    — live wire UART chain harness
-src/dlcp_fw/sim/manifests.py           — overlay definitions
-src/dlcp_fw/sim/main_gpsim_timer3.py   — gpsim register helpers, Timer3 model
-src/dlcp_fw/sim/v30_symbols.py         — gpasm listing symbol parser, shifted ASM builder, assembly helper
-src/dlcp_fw/sim/lcd.py                 — HD44780 LCD state machine
-src/dlcp_fw/sim/overlay.py             — HEX binary patching
-src/dlcp_fw/sim/hexio.py               — Intel HEX parse/write/checksum
-src/dlcp_fw/sim/protocol.py            — serial frame constants
-src/dlcp_fw/sim/paths.py               — sim-specific path utilities
-```
+| Path                                         | Role |
+|----------------------------------------------|------|
+| `crates/dlcp-sim/`                           | Rust silicon-ring engine (lib + integration tests) |
+| `crates/dlcp-sim/src/chain.rs`               | `Chain` core, event queue, UART/pin coupling |
+| `crates/dlcp-sim/src/core.rs`                | PIC18 core (PC, RAM, flash, peripherals) |
+| `crates/dlcp-sim/src/exec.rs`                | PIC18 instruction decoder + executor |
+| `crates/dlcp-sim/src/peripherals/`           | EUSART, GPIO, MSSP, IRQ, ADC, oscillator, EEPROM, USB SIE, timers, SRC4382, TAS3108 |
+| `crates/dlcp-sim/src/snapshot.rs`            | bincode encode/decode (P5.1) |
+| `crates/dlcp-sim/tests/snapshot_property.rs` | P5.2 property tests (proptest) |
+| `crates/dlcp-sim/tests/snapshot_soak.rs`     | P5.4 soak tests (10⁴ scenarios per test) |
+| `crates/dlcp-sim/fuzz/`                      | P5b.1 cargo-fuzz target (operator runs `cargo +nightly fuzz`) |
+| `crates/dlcp-sim-py/`                        | PyO3 wrapper crate |
+| `crates/dlcp-sim-cli/`                       | `dlcp-sim replay` CLI |
 
-### Test scripts
+### Python harness
 
-```
-scripts/test_full_boot.py       — full boot regression (48M cycles)
-scripts/test_button_inject.py   — button press regression (SELECT/UP/DOWN)
-```
+| Path                                         | Role |
+|----------------------------------------------|------|
+| `src/dlcp_fw/sim/dlcp_sim_native.py`         | Python facade for the rust engine; the modern entry point |
+| `tests/sim/conftest.py`                      | Backend selector + auto-skip plugin for `DLCP_SIM_BACKEND={rust,dual,gpsim}` |
+| `tests/sim/soak/`                            | Pytest wrapper that runs the rust soak suite |
 
-### Firmware
+### Operator runbooks
 
-```
-firmware/stock/control/DLCP Control Firmware V1.4.hex  — CONTROL binary
-firmware/stock/main/DLCP Firmware V2.3.hex             — app-only MAIN binary (gpsim seeds onto V2.3-combined)
-firmware/disasm/control/v1.4_disasm.asm                — CONTROL disassembly
-firmware/disasm/main/gpdasm_output.asm                 — MAIN disassembly
-```
+| Path                                       | Role |
+|--------------------------------------------|------|
+| `scripts/check_phase5_gate.py`             | P5 exit gate (property + soak) |
+| `scripts/check_phase4_gate.py`             | P4 fast-vs-slow timing gate |
+| `scripts/check_replay_round_trip.py`       | P5.3 verifier |
+| `scripts/sim_rewrite_next.py`              | Progress-ledger automation |
 
-### Related documentation
+### Legacy oracle (retained one release cycle, scheduled for PF.4 retirement)
 
-```
-AB_PRESETS.md                       — A/B preset patch documentation
-SIMULATION_STDBY_WAIT_DIAGNOSIS.md  — diagnosis log for the standby/reconnect bug
-TEST_SIMULATOR.md                   — preset test framework documentation
-PIN_SEMANTICS.md                    — pin-level semantics reference
-CONTROL_UNIT_ANALYSIS.md            — CONTROL firmware reverse-engineering notes
-```
+| Path                                       | Role |
+|--------------------------------------------|------|
+| `vendor/gpsim-0.32.1-xtc/`                 | Vendored gpsim fork; built under `artifacts/tools/gpsim-xtc/` |
+| `src/dlcp_fw/sim/{chain,wire_chain,control,main}_gpsim.py` | Python wrappers for the gpsim subprocess pipeline |
+| `src/dlcp_fw/sim/main_gpsim_timer3.py`     | Timer3 shim for legacy harnesses |
+| `src/dlcp_fw/sim/gpsim.py`                 | Low-level gpsim CLI session driver |
+| `scripts/gpsim-xtc`                        | Wrapper that exports `GPSIM_MODULE_PATH` and invokes the local build |
+
+These files are still imported by ~70 still-skipped tests under
+`tests/sim/` (those without `@pytest.mark.dual_supported`).  They are
+preserved as the regression oracle through one release cycle per
+`docs/SIM_REWRITE_RUST_SPEC.md` §11.  PF.4's coordinated excision will:
+
+1. Delete `vendor/gpsim-0.32.1-xtc/` and `artifacts/tools/gpsim-xtc/`.
+2. Delete the 6 wrapper Python files above.
+3. Delete the still-gpsim-only test files that import them.
+4. Delete the 9 supporting `scripts/` entries (3 ground-truth scripts +
+   6 other gpsim-driver scripts).
+5. Author `scripts/check_gpsim_excision.py` to assert that no remaining
+   import references the deleted modules.
+
+The deletion is co-scheduled with PF.6 (the PR opening) so a single
+release cycle bounds the gpsim retention.
+
+## Migration Notes
+
+If you came from the gpsim-era guide:
+
+- The three-process `chain_gpsim` / `wire_chain_gpsim` pipeline is gone.
+  A single `Chain.from_v171_v32()` call gives you the equivalent
+  three-core silicon ring.
+- gpsim STC scripts (`break e <addr>`, `pc=<addr>`, `run`) map to
+  `chain.step_until_pc_hit(...)`, `chain.set_core_pc(...)`, and
+  `chain.step_ticks(...)`.
+- gpsim CLI register reads (`reg(0x...)`) map to `chain.read_reg(addr)`
+  and `chain.read_main_reg(unit, addr)`.
+- gpsim per-bridge faults (`set_link_fault("ctl_to_m0", drop=True)`)
+  use the same name on rust, with the topology divergence documented
+  under `Chain.bridge_byte_stats` (rust ring exposes `m1_to_ctl` not
+  `m0_to_ctl`).
+- gpsim overlay manifests (`control_disable_standby_check_dynamic`)
+  layer on top of `Chain.patch_core_flash` via
+  `apply_standby_bypass_overlay`.
+- gpsim's `chunk_cycles` config is gone — the rust scheduler runs both
+  cores in lockstep at instruction-level granularity.
+
+## Known Limitations
+
+- The rust executor does not model bit-level UART timing.  TX bytes
+  deliver immediately when the source's TXSR completes shifting; idle-
+  line transitions are not simulated.  Tests that asserted on bit-level
+  edge counts via gpsim's `bridge_shift_stats` should switch to byte
+  counts via `Chain.bridge_byte_stats`.
+- `Chain.set_link_fault(extra_cycles=N)` raises
+  `NotImplementedError` — the rust silicon ring has no bridge-delay
+  model.  Tests that need propagation-delay semantics must stay
+  `@pytest.mark.gpsim`-only.
+- 299 tests across 33 files are still `@pytest.mark.gpsim`-only and
+  auto-skip under `DLCP_SIM_BACKEND=rust`.  Migration is tracked under
+  the "P4 followup tracker" in `docs/SIM_REWRITE_RUST_PROGRESS.md`.
+
+## Related Documentation
+
+- `docs/SIM_REWRITE_RUST_SPEC.md` — full design + phase plan + risk register.
+- `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` — silicon-fidelity gap
+  closure plan (PIC18 ISA edge cases, peripheral fidelity, multi-core
+  scheduler invariants).
+- `docs/SIM_REWRITE_RUST_PROGRESS.md` — machine-readable progress
+  ledger.
+- `docs/SIMULATION_FIDELITY.md` — running list of intentional fidelity
+  exceedances vs gpsim (e.g. EEPROM write-completion timing).
+- `docs/TEST_SIMULATOR.md` — pytest commands, marker map, harness fixtures.
+- `AGENTS.md` (= `CLAUDE.md`) — repository-wide canonical paths,
+  release ceremonies, and per-commit codex review.
