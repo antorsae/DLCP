@@ -1255,7 +1255,6 @@ class Chain:
 def apply_standby_bypass_overlay(
     chain: Chain,
     *,
-    control_core_idx: int,
     control_hex_path: "str | Path",
 ) -> int:
     """Patch CONTROL's program flash to NOP the standby-check
@@ -1276,14 +1275,18 @@ def apply_standby_bypass_overlay(
     just like gpsim's
     :func:`dlcp_fw.sim.manifests.control_disable_standby_check_dynamic`.
 
+    The CONTROL core is auto-discovered via :meth:`Chain.ctl`
+    (which returns the chain's ``i_ctl`` slot index).  This
+    closes a footgun codex flagged on commit 8283fe9 -- the
+    prior signature accepted a ``control_core_idx`` parameter
+    so a caller could mistakenly patch MAIN's flash instead
+    of CONTROL's if the loose 4-byte opcode precondition
+    happened to match there too.
+
     Parameters
     ----------
     chain
         The :class:`Chain` carrying the loaded CONTROL core.
-    control_core_idx
-        Core index within the chain: ``0`` for the canonical
-        CONTROL slot in :meth:`Chain.from_v17_chain` /
-        :meth:`Chain.from_v17_control_only` etc.
     control_hex_path
         Path to the CONTROL hex used to build the chain.  The
         sibling ``.lst`` (same basename, ``.lst`` extension) is
@@ -1302,11 +1305,22 @@ def apply_standby_bypass_overlay(
     KeyError
         If the sibling ``.lst`` is missing or doesn't expose
         ``post_connect_init``.  This mirrors gpsim's failure
-        mode for the same overlay -- byte-signature fallback
+        mode for the same overlay.
+
+        **Stock V1.4/V1.5b/V1.6b byte-signature fallback NOT
+        migrated** -- the gpsim analog
         (``control_disable_standby_check_for_hex`` lines
-        213-227) is not migrated, since the dynamic-symbol
-        path covers V1.7+ which is the only build the
-        targeted test exercises.
+        213-227) walks four hard-coded byte signatures at
+        addresses 0x1228 / 0x121A / 0x11DA to locate the
+        goto site on stock builds.  The targeted test
+        (``test_v17_relocation::
+        test_shifted_gpsim_with_dynamic_standby_overlay``)
+        only exercises V1.7+ which uses the symbol-lookup
+        path.  Migrating the byte-signature path is tracked
+        as a future P4-followup deferral; the
+        :func:`Chain.patch_core_flash` primitive is generic
+        enough that the fallback can be layered on top
+        without further executor changes.
     AssertionError
         If the precondition fails (the 4 bytes at the patch
         site don't have the documented goto opcode shape).
@@ -1325,18 +1339,23 @@ def apply_standby_bypass_overlay(
             f"apply_standby_bypass_overlay: cannot resolve "
             f"`post_connect_init` from {hex_path}'s sibling .lst.  "
             f"Either the .lst is missing or this CONTROL build is "
-            f"pre-V1.7 (byte-signature path is gpsim-only)."
+            f"pre-V1.7 (byte-signature path is gpsim-only -- "
+            f"see this helper's docstring for the migration deferral)."
         )
     base = symbols["post_connect_init"]
     jump_addr = base + 2
+    # Chain.ctl is a property (the Python wrapper), not a
+    # method, so no parens.
+    control_core_idx = chain.ctl
     # Precondition check: the goto opcode bytes per the gpsim
     # manifest at manifests.py:174-176.  Byte 1 = 0xEF (high
     # byte of `goto`), byte 3 = 0xF0 (continuation opcode).
     pre = chain.read_core_flash(control_core_idx, jump_addr, 4)
     assert pre[1] == 0xEF and pre[3] == 0xF0, (
         f"apply_standby_bypass_overlay: precondition failed at "
-        f"0x{jump_addr:04X}; expected goto opcode bytes "
-        f"(? 0xEF ? 0xF0), got {pre.hex(' ')}"
+        f"0x{jump_addr:04X} on CONTROL core {control_core_idx}; "
+        f"expected goto opcode bytes (? 0xEF ? 0xF0), "
+        f"got {pre.hex(' ')}"
     )
     chain.patch_core_flash(control_core_idx, jump_addr, b"\x00\x00\x00\x00")
     return jump_addr
