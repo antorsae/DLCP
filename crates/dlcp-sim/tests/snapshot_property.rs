@@ -104,7 +104,12 @@ fn build_v171_control_chain() -> Chain {
     let rcon = chain.cores[0]
         .memory
         .read_raw(Address::from_raw(RCON_ADDR));
-    debug_assert!(
+    // Use `assert!` (not `debug_assert!`) because the verify gate
+    // runs `cargo test --release` and the workspace doesn't
+    // override release debug-asserts -- a debug_assert here would
+    // silently disappear in the verification mode this test is
+    // designed to lock.
+    assert!(
         rcon & RCON_RI != 0 && rcon & RCON_POR == 0,
         "post-POR RCON expected RI=1 + POR=0; got 0x{rcon:02X}"
     );
@@ -112,7 +117,7 @@ fn build_v171_control_chain() -> Chain {
     // Anchor the schedule landing: schedule_initial_steps pushes
     // one CoreInstructionComplete event per core.  An edit that
     // removes the call would leave events empty.
-    debug_assert!(
+    assert!(
         chain.events.len() >= 1,
         "schedule_initial_steps must seed >= 1 event"
     );
@@ -143,8 +148,11 @@ proptest! {
     }
 
     /// Empty-chain encode determinism: encoding the same chain
-    /// twice produces identical bytes.  Catches stray HashMap /
-    /// HashSet iteration-order non-determinism.
+    /// twice produces identical bytes.  Catches encoder paths
+    /// that capture clock / RNG / env state at encode time.
+    /// (HashMap iteration-order leaks are caught by
+    /// `empty_chain_replay_two_chains_equal` -- same-instance
+    /// encoding cannot expose those.)
     #[test]
     fn empty_chain_encode_is_deterministic(
         stims in stimulus_seq_strategy()
