@@ -235,9 +235,17 @@ skips, xfails, or compatibility shims were added.
 - [done] FIDF.2 Implement DLCP HID command path
   - covers: FID-01
   - verify: `cargo test -p dlcp-sim --release --test peripheral_usbsie_parity dlcp_hid_commands`
-  - artifact: cmd 0x20, 0x21, 0x43, 0x44, filename A/B upload routing
-  - notes: full enumeration stays out of scope unless a DLCP tool needs
-    it; provide a host-injection helper for tests.
+  - artifact: HID-only commands `cmd 0x43` (flash/EEPROM memread) and
+    `cmd 0x44` (V3.2 Tier-1 diag snapshot), plus filename A/B upload
+    routing during DSP coefficient transfer.  Dispatched from
+    `flow_hid_command_dispatch_*` (e.g. `dlcp_main_v32.asm:911-918`,
+    `9701-9794`).
+  - notes: BF chain UART commands (`cmd 0x20`/`0x21`/`0x22`, decoded
+    in `flow_main_uart_service` at `dlcp_main_v32.asm:2225-2233`) are
+    a different command space and are covered by the existing chain
+    regression tests, NOT by FIDF.2.  Full HID enumeration stays out
+    of scope unless a DLCP tool needs it; provide a host-injection
+    helper for tests.
 
 ### Wave G - Campaign Gate
 
@@ -675,12 +683,19 @@ Implementation order:
    ```
 4. Implement endpoint 0 control transfers enough for DLCP firmware's
    existing handlers.
-5. Implement DLCP HID command injection for:
-   - `0x20` preset switch,
-   - `0x21` diagnostic query,
+5. Implement DLCP HID command injection for the HID-only command
+   space dispatched from `flow_hid_command_dispatch_*`:
    - `0x43` flash/EEPROM memory read,
    - `0x44` Tier-1 diagnostic snapshot,
-   - filename A/B routing during DSP upload.
+   - filename A/B routing during DSP coefficient upload.
+
+   Note: `cmd 0x20` (preset switch), `cmd 0x21` (diagnostic counter
+   query), and `cmd 0x22` (reset-cause flags query) are NOT HID
+   commands -- they are BF chain frames decoded by
+   `flow_main_uart_service` over the 31,250 baud current-loop link
+   (see `dlcp_main_v32.asm:2225-2233`).  FIDF.2 must not target
+   them; their fidelity is covered by the existing chain
+   regression tests (chain_gpsim / multicore_parity).
 6. USB reset and suspend/resume must set flags and UADDR behavior per
    datasheet.
 
