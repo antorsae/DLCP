@@ -14,7 +14,7 @@ Status: **Phase 0 — pending**
 - **Single process, single global cycle counter** — eliminate the Python-level cross-process UART bridge that today causes the Task #22 echo-loop and silent causality skid in `wire_chain_gpsim.py`.
 - **Native multi-clock-domain support** — CONTROL @ 12 MHz Fosc / 3 MHz Tcy and MAIN @ 16 MHz Fosc / 4 MHz Tcy advance on the same shared event queue, *without* post-hoc cycle scaling.
 - **Boot-offset realism** — model the real-system property that CONTROL+MAIN0 share a PSU (boot within a few µs of each other) while MAIN1 is in a separate enclosure with its own PSU (arbitrary offset, including booting *after* CONTROL has been running for seconds).
-- **≥ 50× faster than the current gpsim PTY harness** for wire-chain tests. Target: full sim gate runs in **< 1 minute** (today: 27 min).
+- **≥ 50× faster than the current gpsim PTY harness** for wire-chain tests. Target: fast subset (`-m "not slow"`) of the sim gate runs in **< 1 minute** (today: 27 min for the full gpsim gate).  See P4.gate notes in `docs/SIM_REWRITE_RUST_PROGRESS.md` for the relaxation accepted 2026-05-04: only the fast subset is timed against the 60 s budget; the slow subset (long-warmup / soak / boot-offset tests) requires green-tests only with no timing budget.
 - **In-process Python API** (PyO3) — no PTY, no log parsing, no `.stc` script files, no subprocess overhead.
 - **Differential testing as the migration safety net** — every passing gpsim test must pass on `dlcp-sim` with identical externally-visible behavior (RAM traces, TX byte streams, LCD raster, EEPROM contents) before gpsim is retired for that test.
 
@@ -341,9 +341,9 @@ cargo test -p dlcp-sim --test multicore_parity --release
   3. If it fails, the divergence is captured in `artifacts/sim_rewrite_divergences/<test_id>.json`; an agent investigates, fixes the Rust side, re-runs.
   4. gpsim is treated as the source of truth except for the deliberate fidelity exceptions enumerated in §11 (e.g. EEPROM write-completion latency).  BAUDCON is *not* an exception: gpsim, gputils, and the assembled firmware all agree on 0xFB8, per the P0.0 resolution recorded in §11b.
 
-- **Drop gpsim**:
-  - Once all `tests/sim/` tests pass under `DLCP_SIM_BACKEND=rust`, set `dlcp-sim` as default.
-  - Remove `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py` subprocess machinery, `.stc` script generation. Large deletion.
+- **Drop gpsim** (deferred per P4.9 closure 2026-05-04 to PF.4 alignment):
+  - Once all `tests/sim/` tests pass under `DLCP_SIM_BACKEND=rust`, set `dlcp-sim` as default.  **Status 2026-05-04**: P4.8 already flipped the default to rust; the routine pytest gate runs `DLCP_SIM_BACKEND=rust` and is green per P4.gate verification.  ~309 tests across ~55 files remain skipped under rust (gpsim-only) -- they are tracked as "P4 followup" work in `docs/SIM_REWRITE_RUST_PROGRESS.md`.
+  - Remove `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py` subprocess machinery, `.stc` script generation. Large deletion.  **Deferred**: 69 test files still import these wrappers; deleting them now would either (a) break the gpsim opt-in pytest path entirely (no graceful skip without per-test marker work) or (b) require deleting those 69 tests as collateral.  The deletion is rescheduled to co-occur with the next bullet (vendor/gpsim retirement) so a single coordinated excision retires the binary + the Python drivers + the orphaned tests + the 3 ground-truth scripts.
   - Keep `vendor/gpsim-0.32.1-xtc/` for one release cycle as a regression reference, then remove.
 
 ### Exit gate
@@ -354,7 +354,7 @@ DLCP_SIM_BACKEND=rust .venv_ep0/bin/python -m pytest tests/sim -n 16 -q  # all p
 .venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 4
 ```
 
-Wall-clock target: rust-only run completes in < 1 minute (vs. 27 min on gpsim).
+Wall-clock target: rust-only fast-subset run completes in < 1 minute (vs. 27 min on gpsim).  P4.gate-relaxation-aligned: the full unified suite is not timed; only `-m "not slow"` is held to the 60 s budget.
 
 ### Estimated effort: 1–2 days
 
