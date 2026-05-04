@@ -976,37 +976,66 @@ Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
 
 ### Operator walk-through (5 minutes)
 
+V1.71 Tier-1 (per `docs/V32_DIAG_TIER1_SPEC.md` and
+`dlcp_control_v171.asm:4805+`) splits the diagnostics page into a
+6-state menu ring with one PB per page:
+
+```
+Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4) → PB2 Diag(5) → Volume(0)
+```
+
+Each PB Diag page is its own 16x2 LCD screen.  Layout dispatches by
+health (per `dlcp_control_v171.asm:3484+,3603+`):
+
+| Layout | Row 0 | Row 1 |
+|---|---|---|
+| Absent (PB has never replied) | `PBn` (+ 13 spaces) | `n/a` (+ 13 spaces) |
+| Healthy (all 11 cells == 0) | `PBn` (+ 13 spaces) | `OK` (+ 14 spaces) |
+| Degraded (1..9 non-zero cells) | `PBn:` + up to 4 cell entries | up to 5 cell entries |
+| Overflow (10..11 non-zero cells) | `PBn:` + 4 cell entries (full) | 5 cell entries + `..` overflow indicator |
+
+Walk-through:
+
 1. Power-cycle both MAINs and CONTROL.  Wait for CONTROL to reach
    the Volume screen.
-2. From Volume, press the IR `RIGHT` key twice to navigate
-   `Volume(0) → Preset(1) → Diagnostics(2)`.
-3. Observe the LCD.  Expected initial render with no fault history:
+2. From Volume, press the IR `RIGHT` key FOUR times to navigate
+   `Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4)`.
+3. Observe the LCD.  Initial render after the 4-RIGHT navigation
+   may show:
    ```
-   1:I D S B R A P
-   2:I D S B R A P
+   PB1
+   n/a
    ```
-   (counter chars are spaces when the counter is zero).  Initial
-   render may instead show `1:n/a` / `2:n/a` — that is normal on a
-   clean rig and does NOT indicate a fault.  Convergence to live
-   counter values requires multiple LEFT/RIGHT navigation cycles
-   (see step 4).
-4. To converge the rows: press IR `LEFT` once (back to Preset(1)),
-   then `RIGHT` once (back to Diagnostics(2)).  Repeat the
-   `LEFT → RIGHT` cycle 5–10 times.  Each navigation event exits
-   the foreground busy-loop and lets the cmd 0x21/0x22 cadence
-   re-fire, eventually populating both rows with live counter
-   values (or stable `n/a` if a counter is genuinely empty).
-5. Press the IR `LEFT` key twice to return to Volume.  CONTROL's
-   diag query path is page-local, so leaving the page stops all
-   diag traffic.
+   That is normal on a clean rig and does NOT indicate a fault —
+   the BF/2N reply burst has not had a chance to populate the
+   cache yet.  Convergence requires multiple LEFT/RIGHT navigation
+   cycles (see step 4).
+4. To converge PB1's row to counter values (or stable `OK`):
+   press IR `LEFT` once (back to Setup(3)), then `RIGHT` once
+   (back to PB1 Diag(4)).  Repeat the `LEFT → RIGHT` cycle 5–10
+   times.  Each navigation event exits V1.71's
+   `display_loop_iteration` foreground busy-loop and lets the
+   cmd 0x21 cadence re-fire, eventually flipping the layout to
+   `PB1` / `OK` (all-zero counters) or `PB1:` + cell entries
+   (some non-zero counters) on PB1's page.
+5. To check PB2: press IR `RIGHT` once more (PB1 Diag → PB2 Diag,
+   state 4 → 5).  PB2's page renders the same `PBn` / `n/a` /
+   `OK` / `PBn:` layouts independently.  Cycle LEFT/RIGHT 5–10
+   times around state 5 to converge.
+6. Press the IR `LEFT` key repeatedly to return to Volume.
+   CONTROL's diag query path is page-local, so leaving the page
+   stops all diag traffic.
 
 ### Pass criteria
 
+Operator runs the walk-through twice (once for PB1 at state 4,
+once for PB2 at state 5):
+
 | What | Expected | Failure attribution |
 |---|---|---|
-| Both rows render `1:` and `2:` prefix | yes | If only `1:` appears: V1.71 CONTROL not flashed correctly |
-| `1:` shows counter chars or stable `n/a` after 5–10 LEFT/RIGHT cycles | yes | If `1:n/a` even after navigation cycling: PB1 MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) |
-| `2:` shows counter chars or stable `n/a` after 5–10 LEFT/RIGHT cycles | yes | If `2:n/a` even after navigation cycling: PB2 MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) |
+| Row 0 renders `PB1` (PB1 page) or `PB2` (PB2 page) prefix | yes | If wrong literal appears: V1.71 CONTROL not flashed correctly, or operator did not navigate to the correct state (4 or 5) |
+| Row 1 shows `n/a` initially, converges to `OK` or cell entries after 5–10 LEFT/RIGHT cycles | yes | If row 1 stays `n/a` even after navigation cycling: that PB's MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) or has a real reply-path bug |
+| Row 0 flips to `PBn:` + cell entries when at least 1 counter is non-zero | yes | If row 0 stays bare `PBn` literal with non-zero counter activity expected: V1.71 layout dispatch broken |
 | LEFT exits the page cleanly | yes | If CONTROL hangs: violates Layer 1 bounded-TX guarantee |
 | No effect on Volume/Preset/Input/Setup operation | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
 

@@ -196,16 +196,19 @@ def test_live_reconnect_responsiveness_soak_passes_for_configured_iterations() -
 # intentionally does not include menu-navigation actions).  This test
 # therefore requires the operator to manually navigate before running:
 #
-#   1. From Volume, press RIGHT physical button on CONTROL → Preset(1)
-#   2. Press RIGHT again → Diagnostics(2)
-#   3. Set DLCP_HW_LAYER5_AT_DIAG=1 in the environment
-#   4. Run this test
+#   1. From Volume, press the RIGHT physical button on CONTROL FOUR
+#      times to walk Volume(0) → Preset(1) → Input(2) → Setup(3) →
+#      PB1Diag(4).  V1.71 Tier-1 menu ring is documented at
+#      `dlcp_control_v171.asm:4805+` -- 6 states with PB1 Diag at
+#      state 4 (a separate page from PB2 Diag at state 5).
+#   2. Set DLCP_HW_LAYER5_AT_DIAG=1 in the environment
+#   3. Run this test
 #
 # See docs/HARDWARE_TEST.md §"Diagnostics page" for the full operator
 # walk-through (post 2026-05-04 retest, the section's "Task #22
 # discriminator" framing has been retracted; the diag page on real
-# HW also shows PB1/PB2 `n/a` after only the initial 4 RIGHT
-# navigation, and converging both rows requires 5-10 LEFT/RIGHT
+# HW also shows PBn `n/a` after only the initial navigation, and
+# converging the row to counter values requires 5-10 LEFT/RIGHT
 # navigation cycles -- shared firmware-design root cause is V1.71's
 # foreground busy-loop in `display_loop_iteration` asm:2885-2897
 # which only exits on user-driven events).
@@ -213,32 +216,40 @@ def test_live_reconnect_responsiveness_soak_passes_for_configured_iterations() -
 
 
 @pytest.mark.hardware
-def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
-    """Layer 5 live-rig validation: confirm CONTROL's Diagnostics page
-    renders the spec'd ``1:...`` / ``2:...`` two-row layout when the
-    operator has manually navigated to the page.
+def test_live_diagnostics_page_renders_pb1_layout(tmp_path: Path) -> None:
+    """Layer 5 live-rig validation: confirm CONTROL's PB1 Diag page
+    (V1.71 Tier-1 menu state 4) renders the spec'd ``PB1`` /
+    ``n/a|OK|PB1:...`` layout when the operator has navigated to it.
 
-    This validates that V1.71 CONTROL renders the two-row PB layout
-    (``PB1`` on row 0, ``PB2`` on row 1's `2:` analogue, etc.) on
-    real silicon.  Initial render after the 4 RIGHT navigation
-    presses may show `n/a` on either row; converging both rows to
-    counter values requires 5-10 LEFT/RIGHT navigation cycles per
-    docs/HARDWARE_TEST.md §"Diagnostics page" walk-through.  This
-    test only checks the prefix presence (``1:`` / ``2:``), not the
-    counter content, so it does not depend on convergence -- it
-    fails only if the layout itself is broken.  Pre-2026-05-04
-    versions of this docstring framed it as a "Task #22 sim
-    quarantine harness-only" discriminator; that framing has been
-    retracted (task #94 closed; both rust and HW share the V1.71
-    foreground-busy-loop root cause for non-convergence under the
-    no-user-events test scenario, which is firmware-design).
+    This validates that V1.71 CONTROL's Tier-1 per-PB Diag layout
+    renders correctly on real silicon: row 0 begins with the literal
+    ``PB1`` prefix per `dlcp_control_v171.asm:3603+`, regardless of
+    whether the BF/2N reply burst has converged the cache yet.
+    Initial render after the 4-RIGHT navigation may show ``PB1`` /
+    ``n/a``; converging the row to counter values requires 5-10
+    LEFT/RIGHT navigation cycles per docs/HARDWARE_TEST.md
+    §"Diagnostics page" walk-through.  This test checks layout
+    rendering only (the `PB1` prefix), not counter convergence, so
+    it does not depend on navigation cycling -- it fails only if
+    V1.71 Tier-1 layout rendering is broken or the operator did
+    not navigate to state 4.
+
+    Pre-2026-05-04 (and pre-Tier-1) versions of this test asserted
+    ``line1.startswith("1:")`` / ``line2.startswith("2:")`` against
+    the legacy Diagnostics(2) layout.  V1.71 Tier-1 (state 4 PB1 +
+    state 5 PB2 split-page model per
+    `dlcp_control_v171.asm:3484+,4805+`) replaced that two-row
+    single-page layout, so the legacy assertions have been removed.
+    Task #94 (briefly framed as a rust-specific Timer3/Timer1
+    fidelity bug) closed 2026-05-04 -- rust matches HW.
     """
     if os.environ.get("DLCP_HW_LAYER5_AT_DIAG") != "1":
         pytest.skip(
             "set DLCP_HW_LAYER5_AT_DIAG=1 once operator has manually "
-            "navigated CONTROL to the Diagnostics screen via physical "
-            "RIGHT, RIGHT button presses; see docs/HARDWARE_TEST.md "
-            "§Diagnostics page for the full walk-through"
+            "navigated CONTROL to PB1 Diag (V1.71 Tier-1 state 4) via "
+            "FOUR physical RIGHT button presses from Volume; see "
+            "docs/HARDWARE_TEST.md §Diagnostics page for the full "
+            "walk-through"
         )
     _require_live_rig_accessible()
 
@@ -268,25 +279,17 @@ def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
     assert summaries, f"no LCD summary written under {runs_dir}"
     summary = json.loads(summaries[-1].read_text(encoding="utf-8"))
     line1 = (summary.get("consensus", {}).get("line1") or "").strip()
-    line2 = (summary.get("consensus", {}).get("line2") or "").strip()
 
-    # Pass criteria: row 0 starts with "1:" and row 1 starts with "2:".
-    # The counter chars (or `n/a` for a silent / unsupported PB) follow.
-    # We do NOT assert the exact counter content here — that varies by
-    # rig state and depends on whether the operator performed enough
-    # LEFT/RIGHT navigation cycles to converge the BF/2N reply burst;
-    # basic two-row presence is sufficient to confirm V1.71 layout
-    # rendering is intact on real silicon.
-    assert line1.startswith("1:"), (
-        f"line1 must start with '1:' on the Diagnostics page; got {line1!r}.  "
-        f"Either the operator did not navigate to Diagnostics before "
-        f"setting DLCP_HW_LAYER5_AT_DIAG=1, or V1.71 CONTROL is not flashed."
-    )
-    assert line2.startswith("2:"), (
-        f"line2 must start with '2:' on the Diagnostics page; got {line2!r}.  "
-        f"V1.71 CONTROL renders both rows even when PB2 is silent (as `2:n/a`); "
-        f"absence of the '2:' prefix means CONTROL exited the page or the "
-        f"render path is broken."
+    # Pass criterion: row 0 starts with "PB1" per V1.71 Tier-1 layout
+    # (`dlcp_control_v171.asm:3603+` writes 'P','B','1' at row 0
+    # cols 0..2).  Counter content (or `n/a`/`OK`) varies with
+    # convergence state and is not asserted here.
+    assert line1.startswith("PB1"), (
+        f"line1 must start with 'PB1' on the PB1 Diag page; got "
+        f"{line1!r}.  Either the operator did not navigate to PB1 Diag "
+        f"(state 4 -- press RIGHT FOUR times from Volume) before "
+        f"setting DLCP_HW_LAYER5_AT_DIAG=1, or V1.71 CONTROL is not "
+        f"flashed correctly."
     )
 
 

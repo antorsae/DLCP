@@ -915,11 +915,17 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 ///
 /// We chose (b) per codex recommendation on 367a381
 /// (research closure preferred over synthetic-stimulus).
-/// The tracked progress-ledger entry for P3.6b stays
-/// `[blocked]` -- not because the research is incomplete
-/// but because the verify-phase command is non-converging
-/// by design.  The ledger description is updated to
-/// reflect the closure conclusion.
+/// The tracked progress-ledger entry for P3.6b is
+/// `[done]` (closed 2026-05-04 after operator HW retest
+/// with V3.2 rev 0x3F + V1.71 rev 0x0F confirmed real
+/// silicon also needs multiple LEFT/RIGHT navigation
+/// cycles to converge `v171_diag_present` to 0x03 -- task
+/// #94 closed; rust matches HW).  The verify-phase
+/// command remains non-converging by V1.71 firmware
+/// design (foreground busy-loop in `display_loop_iteration`
+/// asm:2885-2897 only exits on user-driven events), but
+/// that is the documented design feature, not a sim
+/// fidelity gap.
 ///
 /// Related ledger entries:
 ///   - tasks #60..#69: per-step research milestones
@@ -5249,7 +5255,11 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 /// #44) follows from CONTROL's render-from-cache architecture:
 /// the LCD shows what the cache holds, which can desync from
 /// MAIN's actual runtime counters when the BF/2N reply path
-/// fails to update the cache (P3.6b shared sim fidelity gap).
+/// has not yet populated the cache (V1.71 firmware-design
+/// foreground busy-loop in `display_loop_iteration` exits only
+/// on user-driven events; convergence requires LEFT/RIGHT
+/// navigation cycling per docs/HARDWARE_TEST.md §"Diagnostics
+/// page", confirmed on real HW 2026-05-04).
 #[test]
 fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     use dlcp_sim::memory::Address;

@@ -270,7 +270,7 @@ gh pr create --title "..." --body "$(cat <<'EOF'
 ## Summary
 - Replaces gpsim-PTY-bridged-three-process simulator with single-process cycle-perfect Rust engine
 - Wall-clock: <60 s vs. 27 min on gpsim
-- Task #22 echo-loop dissolved; 5 XFAILs flipped to PASS
+- Task #22 architectural echo-loop dissolved by the rust silicon-correct ring (P3.6a); the 5 `_V171_V32_PB2_BRIDGE_XFAIL` markers stay because the test scenario (4 RIGHT presses + no further input) is non-converging by V1.71 firmware design (foreground busy-loop in `display_loop_iteration` asm:2885-2897, confirmed on real HW 2026-05-04 -- both rust and HW share the root cause; task #94 closed)
 - All sim tests green under `DLCP_SIM_BACKEND=rust`
 
 ## Test plan

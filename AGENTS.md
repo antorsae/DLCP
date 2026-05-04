@@ -338,7 +338,7 @@ Hardware-loop tooling:
 - `test_hardware_flipper_ir.py`, `test_hardware_loop.py`, `test_hardware_state_test.py`
 
 Live hardware (optional):
-- `tests/hardware/test_live_state_transitions.py` (preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, reconnect responsiveness soak, and the V1.71+V3.2 Layer 5 Diagnostics-page rendering test on the real DLCP rig — the diag-page test gates on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to Diagnostics via physical RIGHT/RIGHT button presses; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
+- `tests/hardware/test_live_state_transitions.py` (preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, reconnect responsiveness soak, and the V1.71+V3.2 Layer 5 PB1 Diag-page rendering test on the real DLCP rig — the diag-page test gates on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to PB1 Diag (V1.71 Tier-1 menu state 4) via FOUR physical RIGHT button presses from Volume; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
 
 V2.7 + V1.63b:
 - `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)

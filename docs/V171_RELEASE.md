@@ -53,12 +53,17 @@ adds three new layers on top:
   This reduces TX-ring pressure under reconnect/full-sync churn and
   prevents the V3.x legacy preset apply from coinciding with multiple
   frames in the same TX window.
-- **Layer 5 (Diagnostics page)** — adds a top-level menu entry
-  `Diagnostics(2)` between `Preset(1)` and `Input(3)`.  When entered,
-  CONTROL polls each PB with `cmd 0x21` on a ~1 s cadence and renders
-  the seven returned counter values per PB on a compact 16x2 LCD
-  layout.  See
-  [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](V163B_DIAGNOSTICS_MENU_SPEC.md).
+- **Layer 5 (Diagnostics pages, Tier-1)** — adds two deepest-menu
+  entries `PB1 Diag(4)` and `PB2 Diag(5)` after the existing Setup(3)
+  state, giving a 6-state Tier-1 ring
+  (`Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4) → PB2 Diag(5) → Volume(0)`).
+  When entered, CONTROL polls the corresponding PB with `cmd 0x21`
+  on a ~1 s cadence and renders the seven returned counter values
+  in one of four 16x2 layouts (Absent/Healthy/Degraded/Overflow).
+  See [`docs/V32_DIAG_TIER1_SPEC.md`](V32_DIAG_TIER1_SPEC.md) for
+  the Tier-1 layout dispatch and
+  [`docs/V163B_DIAGNOSTICS_MENU_SPEC.md`](V163B_DIAGNOSTICS_MENU_SPEC.md)
+  for the original (pre-Tier-1) layout.
 - **WAITING FOR DLCP operator recovery (2026-04-21)** — the stock
   V1.6b/V1.7x WAITING loops had no button poll and no timeout; if
   MAIN failed to emit the sentinel-clearing boot handshake
@@ -162,9 +167,13 @@ back to the host, so device-versus-hex compare is not available yet.
 Read the CONTROL's reported version label after flashing. The visible
 label remains `V1.71`; the monotonic release revision is a build-time
 metadata field reported by the flash preflight, not a front-panel
-string. Walk Volume → RIGHT → RIGHT and confirm the LCD shows
-`1:Ix...P` / `2:Ix...P` (or
-`1:n/a` / `2:n/a` if no MAIN supports cmd 0x21).
+string. Walk Volume → RIGHT four times to reach PB1 Diag (V1.71
+Tier-1 menu state 4), then cycle LEFT → RIGHT 5–10 times to converge,
+and confirm the LCD ends on a `PB1` / `OK` (all-zero counters) or
+`PB1:` + cell entries (non-zero counters) layout (an initial render
+of `PB1` / `n/a` is normal before the cmd 0x21 cadence has populated
+the cache).  Press RIGHT once more to reach PB2 Diag (state 5) and
+repeat the LEFT/RIGHT convergence cycling for the PB2 page.
 
 For the full Diagnostics page operator walk-through see
 [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page".
