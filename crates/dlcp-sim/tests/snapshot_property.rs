@@ -33,6 +33,7 @@ use dlcp_sim::clock::ClockDomain;
 use dlcp_sim::core::{CoreLoadOptions, core_from_hex_image};
 use dlcp_sim::hex::HexImage;
 use dlcp_sim::memory::Variant;
+use dlcp_sim::reset::ResetSource;
 use dlcp_sim::snapshot::{decode, encode};
 use proptest::prelude::*;
 
@@ -84,6 +85,13 @@ fn build_v171_control_chain() -> Chain {
     let clock = ClockDomain::new(Variant::Pic18F25K20);
     let mut chain = Chain::new();
     chain.push_core_with_clock(core, clock);
+    // POR/MCLR reset BEFORE scheduling: `Core::new` /
+    // `Memory::new` leave SFRs zero, but real K20 boot starts
+    // from POR.  Mirror what the multicore_parity fixtures do
+    // (see `tests/multicore_parity.rs::three_core_ring_*`) so
+    // the V1.71 property exercises a physically-reachable boot
+    // chain, not an all-zero-SFR phantom state.
+    chain.apply_reset_all(ResetSource::PowerOn);
     chain.schedule_initial_steps(&[0]);
     chain
 }
@@ -175,5 +183,20 @@ proptest! {
             apply(&mut b, s);
         }
         prop_assert_eq!(encode(&a), encode(&b));
+    }
+
+    /// V1.71 chain encode determinism: encoding the same
+    /// non-trivial chain twice produces identical bytes.
+    /// Catches HashMap/HashSet iteration-order non-determinism
+    /// that an empty-chain encode wouldn't expose.
+    #[test]
+    fn v171_chain_encode_is_deterministic(
+        stims in stimulus_seq_strategy()
+    ) {
+        let mut chain = build_v171_control_chain();
+        for s in &stims {
+            apply(&mut chain, s);
+        }
+        prop_assert_eq!(encode(&chain), encode(&chain));
     }
 }
