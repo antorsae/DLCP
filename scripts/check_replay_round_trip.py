@@ -15,8 +15,9 @@ exit code 3, and once with the actual hex to assert exit code 0.
 Exit codes:
     0 — all assertions passed.
     1 — script-level failure (missing binary, file IO, etc.).
-    2 — replay tool produced a non-deterministic snapshot or trace.
-    3 — mismatch-detection path didn't return nonzero as expected.
+    2 — replay tool produced a non-deterministic snapshot or trace,
+        or the mismatch-detection / expect-match path returned the
+        wrong exit code.
 
 Run:
     .venv_ep0/bin/python scripts/check_replay_round_trip.py
@@ -44,10 +45,17 @@ def ensure_cli_built() -> int | None:
     if CLI_BINARY.exists():
         return None
     print("dlcp-sim binary missing; building release...", file=sys.stderr)
-    cp = subprocess.run(
-        ["cargo", "build", "--release", "-p", "dlcp-sim-cli"],
-        cwd=str(REPO_ROOT),
-    )
+    try:
+        cp = subprocess.run(
+            ["cargo", "build", "--release", "-p", "dlcp-sim-cli"],
+            cwd=str(REPO_ROOT),
+        )
+    except FileNotFoundError:
+        return fail(
+            1,
+            "cargo not found on PATH; install Rust or add it to PATH "
+            "(e.g. source $HOME/.cargo/env) before re-running",
+        )
     if cp.returncode != 0 or not CLI_BINARY.exists():
         return fail(1, "cargo build -p dlcp-sim-cli failed")
     return None

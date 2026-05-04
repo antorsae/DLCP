@@ -183,13 +183,29 @@ fn cmd_replay(args: &[String]) -> Result<(), (String, u8)> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--final-snapshot" => {
+            flag @ ("--final-snapshot" | "--trace") => {
                 i += 1;
-                final_snapshot_path = args.get(i).map(|s| s.as_str());
-            }
-            "--trace" => {
-                i += 1;
-                trace_path = args.get(i).map(|s| s.as_str());
+                let operand = args.get(i).ok_or_else(|| {
+                    (format!("{flag} requires a path operand"), 1u8)
+                })?;
+                if operand.starts_with("--") {
+                    return Err((
+                        format!(
+                            "{flag} requires a path operand, got flag-like \
+                             {operand:?}"
+                        ),
+                        1,
+                    ));
+                }
+                let slot = if flag == "--final-snapshot" {
+                    &mut final_snapshot_path
+                } else {
+                    &mut trace_path
+                };
+                if slot.is_some() {
+                    return Err((format!("{flag} specified twice"), 1));
+                }
+                *slot = Some(operand.as_str());
             }
             other if !other.starts_with("--") && case_path.is_none() => {
                 case_path = Some(other);
