@@ -439,6 +439,24 @@ impl Chain {
     /// fuzz an IR command stream") is closed by exposing this
     /// hardware-level inject path.
     ///
+    /// Critically, this method MIRRORS the wake-from-halt and
+    /// MCLR-held-low semantics of `Chain::deliver_uart_byte`:
+    ///
+    ///   * If the destination's `mclr_held` is set, the byte
+    ///     is dropped silently (real silicon: EUSART block in
+    ///     reset).  Returns false.
+    ///   * If `RxDelivery.wake` is true (BAUDCON.WUE-driven
+    ///     SLEEP/Idle wake), the destination core's run-state
+    ///     is moved back to `Running` and a fresh
+    ///     CoreInstructionComplete event is scheduled, just
+    ///     like the wire-coupling path does.
+    ///   * Accepted bytes are recorded in `uart_rx_history`
+    ///     (with `src_core == core_idx`, since the synthetic
+    ///     "source" is the test harness writing directly).
+    ///     Codex MEDIUM from 2c15bda flagged the prior bare-
+    ///     `deliver_rx_byte` call as silently breaking these
+    ///     semantics; this docstring + body now lock them.
+    ///
     /// Distinct from `Chain::deliver_uart_byte` (private,
     /// internal coupling delivery) and the PyO3 facade's
     /// `inject_control_rx_bytes_inner` (which writes V1.71-
@@ -452,12 +470,36 @@ impl Chain {
             core_idx,
             self.cores.len(),
         );
-        let core = &mut self.cores[core_idx];
-        let delivery = core
-            .peripherals
-            .eusart
-            .deliver_rx_byte(byte, &mut core.memory);
-        delivery.accepted
+        // MCLR-held-low gate: real silicon's EUSART block is
+        // in reset while MCLR is held LOW.  Mirror of
+        // `deliver_uart_byte`'s gate at the same site.
+        if self.cores[core_idx].mclr_held {
+            return false;
+        }
+        let RxDelivery { wake, accepted } = {
+            let core = &mut self.cores[core_idx];
+            core.peripherals.eusart.deliver_rx_byte(byte, &mut core.memory)
+        };
+        // Record accepted bytes for `uart_rx_history` parity
+        // with `deliver_uart_byte`.  The synthetic injection
+        // has no upstream source, so `src_core` reuses the
+        // destination index (the harness IS the source).
+        if accepted {
+            self.uart_rx_history.push(UartByteRecord {
+                tick: self.current_tick,
+                src_core: core_idx,
+                dst_core: core_idx,
+                byte,
+            });
+        }
+        // Wake-from-halt: BAUDCON.WUE-driven SLEEP/Idle wake
+        // on RX edge.  Without this, an RX during SLEEP would
+        // set RCREG/RCIF but leave the core halted/unscheduled.
+        if wake && self.cores[core_idx].run_state != RunState::Running {
+            self.cores[core_idx].run_state = RunState::Running;
+            self.schedule_next_core_step(core_idx);
+        }
+        accepted
     }
 
     /// Wire a general-purpose source-core pin to a
@@ -1500,6 +1542,93 @@ mod tests {
     fn inject_uart_rx_byte_panics_on_out_of_range_core() {
         let mut chain = Chain::new();
         let _ = chain.inject_uart_rx_byte(5, 0xAA);
+    }
+
+    #[test]
+    fn inject_uart_rx_byte_drops_when_mclr_held() {
+        // Real silicon: MCLR LOW puts the EUSART block in
+        // reset.  inject_uart_rx_byte must mirror
+        // deliver_uart_byte's behaviour and drop the byte.
+        // (Codex MEDIUM from 2c15bda: prior version skipped
+        // the MCLR gate.)
+        use crate::peripherals::eusart::RCSTA_ADDR;
+        let core = crate::core::Core::new(Variant::Pic18F25K20);
+        let clock = crate::clock::ClockDomain::new(Variant::Pic18F25K20);
+        let mut chain = Chain::new();
+        chain.push_core_with_clock(core, clock);
+        // Open silicon gates first (so the only thing that
+        // could reject is the MCLR gate).
+        chain.cores[0]
+            .memory
+            .write_raw(Address::from_raw(RCSTA_ADDR), 0x90);
+        chain.cores[0].mclr_held = true;
+        let accepted = chain.inject_uart_rx_byte(0, 0xAA);
+        assert!(
+            !accepted,
+            "MCLR-held core must drop bytes (silicon EUSART in reset)"
+        );
+    }
+
+    #[test]
+    fn inject_uart_rx_byte_wakes_halted_core_when_baudcon_wue_set() {
+        // BAUDCON.WUE-driven wake: SLEEP/Idle core gets RX
+        // edge, silicon transitions to Running, the chain
+        // schedules its next instruction step.  Codex MEDIUM
+        // from 2c15bda: prior version called deliver_rx_byte
+        // directly and lost the wake hint, leaving the core
+        // halted/unscheduled.
+        use crate::peripherals::eusart::{BAUDCON_ADDR, RCSTA_ADDR};
+        let core = crate::core::Core::new(Variant::Pic18F25K20);
+        let clock = crate::clock::ClockDomain::new(Variant::Pic18F25K20);
+        let mut chain = Chain::new();
+        chain.push_core_with_clock(core, clock);
+        // SPEN | CREN.
+        chain.cores[0]
+            .memory
+            .write_raw(Address::from_raw(RCSTA_ADDR), 0x90);
+        // BAUDCON.WUE = bit 1.
+        chain.cores[0]
+            .memory
+            .write_raw(Address::from_raw(BAUDCON_ADDR), 1 << 1);
+        // Halt the core so we can verify wake.  Direct
+        // run_state mutation (test-only path; production
+        // halts come from SLEEP/Idle execution).  RunState
+        // variants are {Running, Sleep, Idle}; Sleep is the
+        // canonical halt for the BAUDCON.WUE wake path.
+        chain.cores[0].run_state = crate::core::RunState::Sleep;
+        let pre_events = chain.events.len();
+        let accepted = chain.inject_uart_rx_byte(0, 0xC3);
+        assert!(accepted, "open-gate inject should be accepted");
+        assert_eq!(
+            chain.cores[0].run_state,
+            crate::core::RunState::Running,
+            "wake hint must transition Sleep -> Running"
+        );
+        assert!(
+            chain.events.len() > pre_events,
+            "wake must schedule a fresh CoreInstructionComplete"
+        );
+    }
+
+    #[test]
+    fn inject_uart_rx_byte_records_in_uart_rx_history_when_accepted() {
+        use crate::peripherals::eusart::RCSTA_ADDR;
+        let core = crate::core::Core::new(Variant::Pic18F25K20);
+        let clock = crate::clock::ClockDomain::new(Variant::Pic18F25K20);
+        let mut chain = Chain::new();
+        chain.push_core_with_clock(core, clock);
+        chain.cores[0]
+            .memory
+            .write_raw(Address::from_raw(RCSTA_ADDR), 0x90);
+        let pre = chain.uart_rx_history.len();
+        assert!(chain.inject_uart_rx_byte(0, 0x42));
+        assert_eq!(chain.uart_rx_history.len(), pre + 1);
+        let rec = chain.uart_rx_history.last().expect("recorded");
+        assert_eq!(rec.byte, 0x42);
+        assert_eq!(rec.dst_core, 0);
+        // Synthetic injection has no upstream source; record
+        // pins src_core to dst for triage clarity.
+        assert_eq!(rec.src_core, 0);
     }
 
     #[test]
