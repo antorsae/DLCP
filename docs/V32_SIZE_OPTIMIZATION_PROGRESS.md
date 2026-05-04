@@ -141,7 +141,7 @@ DLCP_GPSIM_BIN=/path/to/built/scripts/gpsim-xtc \
 | --- | --- | --- |
 | app entry block | `high-risk / do not touch` | Preserves `0x1000` boot entry, ISR dispatch setup, flash-service jump topology |
 | USB descriptors and related tables | `high-risk / do not touch` | External USB identity surface |
-| HID dispatch and update-relay logic | `high-risk / do not touch` | Includes V3.2 new commands 0x21/0x22/0x44 |
+| HID dispatch and update-relay logic | `high-risk / do not touch` | Includes V3.2 new HID command 0x44 (Tier-1 diag snapshot). cmd 0x21/0x22 are NOT HID — they are BF chain UART frames decoded by `flow_main_uart_service`; the chain dispatcher is a separate "do not touch" surface tracked under the UART/I2C row below. |
 | UART/I2C/flash/preset/EEPROM/recovery helpers | `mixed` | Inherited from V3.1, mostly `keep` post W08; any new V3.2 helpers reviewed below |
 | V3.2 async preset job state machine (`preset_job_*`) | `optimize locally` | New in V3.2, ~300 lines, multiple small inner-labels and state transitions. Primary W01 target area. |
 | V3.2 Layer 5 diagnostics (`diag_*`, `cmd 0x21`/`cmd 0x22`/`cmd 0x44`, `diag_send_burst_xx`) | `optimize locally` | New in V3.2, Tier-1 rev 0x37 surface |
