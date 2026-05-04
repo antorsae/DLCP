@@ -89,6 +89,7 @@
 //! run will replay gpsim's exact timing.
 
 use crate::memory::{Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 pub const SSPBUF_ADDR: u16 = 0xFC9;
 pub const SSPADD_ADDR: u16 = 0xFC8;
@@ -125,7 +126,7 @@ const SSPM_I2C_MASTER: u8 = 0b1000;
 /// On reaching 0 the state-machine fan-out clears the
 /// triggering bit (SEN/RSEN/PEN/RCEN/ACKEN/SSPBUF) and
 /// asserts SSPIF.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum I2cState {
     Idle,
     /// SEN-driven start condition in flight.
@@ -151,7 +152,7 @@ impl Default for I2cState {
 /// One completed bus-level I²C event that the chain
 /// dispatcher can route to coupled slaves.  Drained from
 /// `Mssp::take_last_bus_event` once per tick.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum I2cBusEvent {
     /// Master-issued Start condition completed.
     Start,
@@ -170,7 +171,7 @@ pub enum I2cBusEvent {
     RxByte,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 pub struct I2cLines {
     pub scl_high: bool,
     pub sda_high: bool,
@@ -185,7 +186,7 @@ impl Default for I2cLines {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Mssp {
     state: I2cState,
     /// Mirror of the byte the last accepted SSPBUF write

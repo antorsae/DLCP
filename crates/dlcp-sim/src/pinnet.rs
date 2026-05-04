@@ -31,10 +31,11 @@
 //! parity tests in P3.5+.
 
 use crate::peripherals::eusart;
+use serde::{Deserialize, Serialize};
 
 /// One UART coupling.  Source TSR -> destination RCREG
 /// via the chain's event queue.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct UartCoupling {
     pub src_core: usize,
     pub src_tx_pin: PinId,
@@ -43,7 +44,7 @@ pub struct UartCoupling {
 }
 
 /// One general-purpose pin-to-pin coupling.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PinCoupling {
     pub src_core: usize,
     pub src_pin: PinId,
@@ -54,7 +55,7 @@ pub struct PinCoupling {
 /// One I²C master/slave coupling.  Phase-3.2 stores the
 /// slave by an opaque ID; P3.5 dispatches to a slave
 /// trait implementation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct I2cCoupling {
     pub master_core: usize,
     pub master_sda: PinId,
@@ -65,13 +66,13 @@ pub struct I2cCoupling {
 /// Pin identifier (port-letter + bit).  Phase-3.2 uses a
 /// flat enum; future expansion (peripheral-output muxes,
 /// open-drain etc.) can grow attributes here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PinId {
     pub port: PortLetter,
     pub bit: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PortLetter {
     A,
     B,
@@ -81,7 +82,7 @@ pub enum PortLetter {
 }
 
 /// Network of cross-core couplings owned by the chain.
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct PinNet {
     pub uart: Vec<UartCoupling>,
     pub pin: Vec<PinCoupling>,

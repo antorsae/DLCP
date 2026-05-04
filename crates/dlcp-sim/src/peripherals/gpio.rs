@@ -9,6 +9,7 @@
 
 use crate::memory::{Address, Memory, Variant};
 use crate::pinnet::PortLetter;
+use serde::{Deserialize, Serialize};
 
 pub const PORTA_ADDR: u16 = 0xF80;
 pub const PORTB_ADDR: u16 = 0xF81;
@@ -42,7 +43,7 @@ const INTCON_INT0IF: u8 = 1 << 1;
 const INTCON3_INT1IF: u8 = 1 << 0;
 const INTCON3_INT2IF: u8 = 1 << 1;
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Gpio {
     variant: Variant,
     external_port: [u8; 5],

@@ -23,6 +23,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use serde::{Deserialize, Serialize};
 
 /// What an event's owner is.  Phase-3 distinguishes by
 /// callback target rather than by core id directly --
@@ -32,7 +33,7 @@ use std::collections::BinaryHeap;
 /// variant index then on the payloads (lexicographic for
 /// fields), so `EventKind`-based tie-breaking in
 /// `Event::cmp` is consistent with `Eq`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EventKind {
     /// A core's next instruction completes at the
     /// scheduled tick.  Carries the core's index in the
@@ -62,7 +63,7 @@ pub enum EventKind {
 }
 
 /// One scheduled event in the global queue.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Event {
     /// Absolute universal-clock tick at which this event
     /// fires.
@@ -103,7 +104,7 @@ impl PartialOrd for Event {
 
 /// Global event queue.  Owns a monotonically-increasing
 /// `next_seq` counter for tie-breaking.
-#[derive(Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Debug)]
 pub struct EventQueue {
     heap: BinaryHeap<Event>,
     next_seq: u64,

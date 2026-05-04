@@ -59,6 +59,7 @@ use crate::config::{Config, FoscMode};
 use crate::core::Core;
 use crate::memory::{Address, Variant};
 use crate::stack::Stack;
+use serde::{Deserialize, Serialize};
 
 /// `RCON` SFR address on both PIC18 variants.
 pub const RCON_ADDR: u16 = 0xFD0;
@@ -87,7 +88,7 @@ pub const RCON_BOR: u8 = 0x01;
 
 /// What initiated this reset.  Drives the RCON / STKPTR bit
 /// transitions per DS39632E Table 4-1.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum ResetSource {
     /// Power-On Reset.  Applies the strictest POR state: clears
     /// RCON.POR and RCON.BOR, sets RI/TO/PD high, clears the

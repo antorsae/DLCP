@@ -29,9 +29,11 @@
 
 #![allow(dead_code, reason = "P1.2 decoder; executor consumes these in P1.3+")]
 
+use serde::{Deserialize, Serialize};
+
 /// Destination of byte-oriented arithmetic ops: store the result
 /// back into W (`d=0`) or into `f` (`d=1`).
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum Dest {
     /// `d = 0` — write the result into WREG, leaving the file
     /// register `f` untouched.
@@ -49,7 +51,7 @@ impl Dest {
 
 /// File-addressing mode for instructions that take an `f` operand.
 /// `a = 0` means Access Bank semantics; `a = 1` means BSR-selected.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum Access {
     /// `a = 0` — Access Bank: low half (`f < 0x60`) is bank 0,
     /// high half (`f >= 0x60`) is the SFR window in bank 15.
@@ -67,7 +69,7 @@ impl Access {
 
 /// FSR register selector for [`Instruction::Lfsr`].  Three FSRs
 /// on PIC18 (`FSR0`, `FSR1`, `FSR2`); LFSR's `f` field is 2 bits.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum FsrIndex {
     Fsr0,
     Fsr1,
@@ -94,7 +96,7 @@ impl FsrIndex {
 /// Variant of the 8 TBLRD / TBLWT ops.  All four read modes share
 /// the same TBLPTR semantics; only the post/pre-modify behaviour
 /// differs.  Ditto for the four write modes.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum TableMode {
     /// `*`  — no change to TBLPTR.
     NoModify,
@@ -133,7 +135,7 @@ impl TableMode {
 /// Decoding an unknown / reserved opcode yields [`Instruction::Reserved`]
 /// with the original word so the caller can log + error rather
 /// than silently treating it as a NOP.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Instruction {
     // ------------------------------------------------------------------
     // Byte-oriented (31 ops; all have `f` and `a`; most have `d`).

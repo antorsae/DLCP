@@ -21,6 +21,8 @@ pub mod peripherals;
 pub mod pinnet;
 pub mod reset;
 pub mod scheduler;
+pub mod serde_helpers;
+pub mod snapshot;
 pub mod stack;
 
 pub use crate::config::{BorenMode, Config, FoscMode};

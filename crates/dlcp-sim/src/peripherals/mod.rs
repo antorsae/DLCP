@@ -37,13 +37,14 @@ pub mod timer;
 pub mod usb;
 
 use crate::memory::{Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 /// Bag-of-peripherals owned by [`crate::core::Core`].  Each
 /// field is a peripheral's state machine.  Peripherals that
 /// only exist on one variant (USB-SIE on 2455, EEADRH on
 /// PIC18F26K20) carry their own variant-gated logic; the
 /// container is variant-agnostic.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peripherals {
     pub eusart: eusart::Eusart,
     pub mssp: mssp::Mssp,

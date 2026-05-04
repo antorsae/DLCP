@@ -17,6 +17,7 @@
 
 use crate::config::{Config, FoscMode};
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 const UNIVERSAL_CLOCK_HZ: u64 = 48_000_000;
 const DLCP_EXTERNAL_OSC_HZ: u32 = 12_000_000;
@@ -53,14 +54,14 @@ pub const HFINTOSC_READY_DELAY_TCY: u32 = 1024;
 /// configs start from an already-ready primary clock.
 pub const PLL_READY_DELAY_TCY: u32 = 8_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClockSource {
     Primary,
     Secondary,
     Internal,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 struct PendingSwitch {
     source: ClockSource,
     ticks_per_tcy: u32,
@@ -68,7 +69,7 @@ struct PendingSwitch {
     set_iofs: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Osc {
     variant: Variant,
     primary_ticks_per_tcy: u32,

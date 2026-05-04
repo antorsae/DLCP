@@ -43,6 +43,8 @@
 
 #![allow(dead_code, reason = "P1.1 skeleton; behaviour wired in P1.2+")]
 
+use serde::{Deserialize, Serialize};
+
 /// Which PIC18 variant this core is modelling.  The variant
 /// determines:
 ///
@@ -53,7 +55,7 @@
 ///
 /// The two variants share the PIC18 ISA byte-for-byte; a single
 /// instruction decoder (P1.2) handles both.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum Variant {
     /// CONTROL MCU.  Datasheet: Microchip DS41303G.
     Pic18F25K20,
@@ -126,7 +128,7 @@ impl Variant {
 /// on.  Constructed via [`Address::from_raw`] which panics on out-
 /// of-range input (intentional: a value > 0x0FFF can only be a
 /// caller bug, never untrusted firmware input).
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd)]
 pub struct Address(u16);
 
 impl Address {
@@ -171,7 +173,7 @@ impl Address {
 /// addressing arithmetic.  Per-variant SFR side effects are wired
 /// in via the peripheral modules (P2); this struct is just the
 /// raw bytes.
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Memory {
     variant: Variant,
     bytes: Box<[u8]>,

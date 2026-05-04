@@ -58,6 +58,7 @@
 //! byte write commits the 16-bit reload.
 
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 pub const TMR0H_ADDR: u16 = 0xFD7;
 pub const TMR0L_ADDR: u16 = 0xFD6;
@@ -103,7 +104,7 @@ const PIR1_TMR1IF: u8 = 1 << 0;
 const PIR1_TMR2IF: u8 = 1 << 1;
 const PIR2_TMR3IF: u8 = 1 << 1;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Timers {
     /// Tcy accumulator for Timer0's prescaler.  Increments
     /// once per Tcy when the timer is on; rolls over when

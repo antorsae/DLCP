@@ -34,6 +34,16 @@ use crate::config::Config;
 use crate::hex::HexImage;
 use crate::memory::{Address, Memory, Variant};
 use crate::peripherals::{irq, Peripherals};
+use serde::{Deserialize, Serialize};
+
+/// Default for `&'static str` probe-label fields skipped during
+/// snapshot/restore (`#[serde(skip, default = "empty_static_str")]`).
+/// The label is debug-only (printed in probe summaries); after a
+/// snapshot round-trip it reverts to `""`.  Probe semantics
+/// (PC range, hit counts, transitions) round-trip exactly.
+fn empty_static_str() -> &'static str {
+    ""
+}
 
 /// Default reset vector for both supported PIC18 variants.
 /// Confirmed to be 0x0000 in DS39632E §5.2 and DS41303G §5.2
@@ -49,21 +59,21 @@ pub const RESET_VECTOR: u32 = 0x0000;
 /// shadow to save W/STATUS/BSR around an explicit `CALL
 /// FAST main_isr_dispatch` even with IPEN=0 -- this is V3.1's
 /// idiom).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct FastRegs {
     pub wreg: u8,
     pub status: u8,
     pub bsr: u8,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RunState {
     Running,
     Sleep,
     Idle,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IrqContext {
     Compatibility,
     High,
@@ -86,7 +96,7 @@ const RCON_TO: u8 = 1 << 3;
 /// Reset, instruction fetch, decode, and execute come online in
 /// subsequent sub-tasks; P2 hangs peripheral state off this
 /// struct via the `peripherals` field.
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Core {
     variant: Variant,
     /// Program memory (flash).  Byte-addressed; PIC18 instructions
@@ -208,7 +218,7 @@ pub struct Core {
 /// Construct via `CycleProbe::new()` then `add_pc_range(..)`
 /// / `add_watched_ram(..)` to register the things you want
 /// monitored before attaching to `Core::cycle_probe`.
-#[derive(Clone, Default, Debug)]
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct CycleProbe {
     /// PC ranges to count instruction entries to.  Each entry
     /// is `(start_inclusive, end_exclusive, label, hit_count)`.
@@ -218,7 +228,7 @@ pub struct CycleProbe {
     pub watched_ram: Vec<WatchedRamProbe>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PcRangeProbe {
     /// Inclusive start of the flash byte range (PC values).
     pub start: u16,
@@ -226,6 +236,7 @@ pub struct PcRangeProbe {
     pub end: u16,
     /// Human-readable label printed in probe summaries
     /// (e.g. `"v171_bf2x_case_check"`).
+    #[serde(skip, default = "empty_static_str")]
     pub label: &'static str,
     /// Count of instructions ACTUALLY EXECUTED whose
     /// pre-fetch PC fell in `[start, end)`.  Incremented
@@ -248,11 +259,12 @@ pub struct PcRangeProbe {
     pub total_cycles: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WatchedRamProbe {
     /// Physical RAM address (bank-flattened) to watch.
     pub addr: u16,
     /// Human-readable label.
+    #[serde(skip, default = "empty_static_str")]
     pub label: &'static str,
     /// Last observed value.  Initialized to whatever was in
     /// the RAM cell at the moment the probe was attached.
@@ -283,7 +295,7 @@ pub struct WatchedRamProbe {
 /// `target_addr` and increments `fire_count`.  Static fields
 /// (no closures / function pointers) so the struct stays
 /// `Clone + Debug` and probes remain easy to inspect.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RamTransitionTrigger {
     /// Inclusive lower bound for the new value to match.
     pub match_min: u8,
@@ -385,7 +397,7 @@ pub const TBLWT_BLOCK_SIZE_K20: usize = 32;
 /// [`Core`].  The two optional GOTO bakes model the DLCP MAIN
 /// bootloader trampoline in tests that load an app-only V3.x
 /// image without the USB boot block.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct CoreLoadOptions {
     pub bake_goto_app_entry: Option<u32>,
     pub bake_goto_irq_vector: Option<u32>,

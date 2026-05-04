@@ -71,6 +71,7 @@
 use std::collections::VecDeque;
 
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 /// Address of the TXSTA SFR on both supported variants.
 pub const TXSTA_ADDR: u16 = 0xFAC;
@@ -118,7 +119,7 @@ const RCSTA_RX9D: u8 = 1 << 0;
 /// stays heap-free.
 const RX_FIFO_DEPTH: usize = 2;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct RxEntry {
     byte: u8,
     ferr: bool,
@@ -139,13 +140,13 @@ struct RxEntry {
 /// existing semantic: BAUDCON.WUE-driven wake hint that the
 /// chain dispatcher uses to bring halted destination cores
 /// back to `RunState::Running`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct RxDelivery {
     pub wake: bool,
     pub accepted: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Eusart {
     /// Tcy remaining until the in-flight TX shift register
     /// (TSR) finishes shifting out the current byte.  Drops

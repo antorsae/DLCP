@@ -34,8 +34,10 @@ use crate::pinnet::{PinId, PinNet, PortLetter};
 use crate::reset::{ResetSource, apply_reset};
 use crate::scheduler::{Event, EventKind, EventQueue};
 use crate::stack::Stack;
+use serde::{Deserialize, Serialize};
 
 /// Multi-core chain on a single universal-clock timeline.
+#[derive(Serialize, Deserialize)]
 pub struct Chain {
     /// Cores in firmware-deterministic order.  Index into
     /// this vec is the `core_idx` carried in event kinds.
@@ -209,7 +211,7 @@ pub struct Chain {
 
 /// One UART byte delivered between two cores.  See
 /// `Chain::uart_tx_history`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 pub struct UartByteRecord {
     /// Universal-clock tick at the moment the byte was
     /// emitted from the source core's TX path -- i.e. the

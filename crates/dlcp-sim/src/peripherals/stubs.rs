@@ -7,8 +7,9 @@
 //! settling, or PSP/SPP transfers are implemented.
 
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Eq, PartialEq)]
 pub enum StubBehavior {
     /// Register is present and readable/writable through the listed mask, but
     /// no waveform, analog, voltage-trip, or interrupt side effects are
@@ -19,7 +20,7 @@ pub enum StubBehavior {
     NotPresentOnDlcpPackage,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Eq, PartialEq)]
 pub struct StubPolicy {
     pub variant: Variant,
     pub peripheral: &'static str,
@@ -180,7 +181,7 @@ const PIC2455_POLICIES: &[StubPolicy] = &[
     },
 ];
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PeripheralStubs {
     variant: Variant,
 }

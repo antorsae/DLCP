@@ -41,9 +41,10 @@
 #![allow(dead_code, reason = "P1.4 classifier; consumed by P1.5+ interpreter")]
 
 use crate::isa::decode::FsrIndex;
+use serde::{Deserialize, Serialize};
 
 /// Indirect-access mode encoded in the file-register address.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum FsrAccessMode {
     /// `INDFn` — read/write `*FSRn`; FSR is left untouched.
     Indirect,

@@ -28,6 +28,7 @@
 
 use std::fmt;
 use std::path::Path;
+use serde::{Deserialize, Serialize};
 
 /// Maximum on-die program memory across the two variants
 /// this simulator targets — 32 KiB on the K20 and 24 KiB on
@@ -63,12 +64,15 @@ pub const EEPROM_BASE: u32 = 0x00F0_0000;
 /// merge policies like gpsim's `build_seeded_main_sim_hex`
 /// (`src/dlcp_fw/sim/main_gpsim.py:321`) that must preserve
 /// seed bytes in app-range holes of an app-only V3.x HEX.
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct HexImage {
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
     pub flash: Box<[u8; FLASH_BYTES]>,
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
     pub flash_present: Box<[bool; FLASH_BYTES]>,
     pub user_id: [u8; USER_ID_BYTES],
     pub config: [u8; CONFIG_BYTES],
+    #[serde(with = "serde_big_array::BigArray")]
     pub eeprom: [u8; EEPROM_BYTES],
 }
 
@@ -386,7 +390,7 @@ impl fmt::Display for HexLoadError {
 
 impl std::error::Error for HexLoadError {}
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ParsedRecord {
     kind: u8,
     address: u16,

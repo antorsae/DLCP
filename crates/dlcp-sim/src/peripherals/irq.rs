@@ -35,6 +35,7 @@
 use crate::core::{Core, IrqContext};
 use crate::memory::{Address, Memory, Variant};
 use crate::stack::Stack;
+use serde::{Deserialize, Serialize};
 
 pub const INTCON_ADDR: u16 = 0xFF2;
 pub const INTCON2_ADDR: u16 = 0xFF1;
@@ -51,7 +52,7 @@ const INTCON_GIE_GIEH: u8 = 1 << 7;
 const INTCON_PEIE_GIEL: u8 = 1 << 6;
 const RCON_IPEN: u8 = 1 << 7;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Irq;
 
 impl Irq {

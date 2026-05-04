@@ -39,6 +39,7 @@
 //! "EEPROM image after write" parity.
 
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 pub const EEDATA_ADDR: u16 = 0xFA8;
 pub const EEADR_ADDR: u16 = 0xFA9;
@@ -69,7 +70,7 @@ const POST_WRITE_TCY: u32 = 12_000;
 /// the wrong byte resets the sequence, but a delayed WR
 /// after the 0xAA still triggers.  Tracked as a known
 /// LOW fidelity gap.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 enum UnlockPhase {
     #[default]
     Idle,
@@ -77,7 +78,7 @@ enum UnlockPhase {
     Armed,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Eeprom {
     /// 256-byte backing storage.  Reset behaviour: POR
     /// preserves the previous EEPROM contents (silicon
@@ -85,6 +86,7 @@ pub struct Eeprom {
     /// storing the bytes inside the struct (separate
     /// from data RAM) and never wiping them across
     /// resets.
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
     storage: Box<[u8; 256]>,
     /// Tcy remaining until the in-flight write completes.
     /// `None` means no write in flight.

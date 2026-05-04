@@ -51,6 +51,8 @@
 
 #![allow(dead_code, reason = "Phase-3.5 scaffold; chain wiring lands in a follow-up commit")]
 
+use serde::{Deserialize, Serialize};
+
 /// One-byte broadcast address (datasheet line 585).
 const BROADCAST_ADDR: u8 = 0x00;
 
@@ -59,7 +61,7 @@ const BROADCAST_ADDR: u8 = 0x00;
 const SUBADDR_COUNT: usize = 256;
 
 /// I²C transaction phase.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 enum Phase {
     /// No transaction in progress.  The next byte from the
     /// master is interpreted as the slave-address byte.
@@ -99,7 +101,7 @@ impl Default for Phase {
 }
 
 /// TAS3108 audio-DSP I²C slave.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Tas3108 {
     /// Hardware-pin chip-select.  Selects between
     /// 0x68/0x69 (CS0 = false) and 0x6A/0x6B (CS0 = true)
@@ -108,6 +110,7 @@ pub struct Tas3108 {
     cs0: bool,
     /// 256-byte register file indexed by subaddress.  Reads
     /// of unwritten subaddresses return 0.
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
     regs: Box<[u8; SUBADDR_COUNT]>,
     /// Most-recently-latched subaddress (post-`AwaitingSubaddress`).
     /// Persists across STOPs so a write followed by a

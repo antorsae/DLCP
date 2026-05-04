@@ -24,13 +24,14 @@
 
 use crate::memory::Variant;
 use crate::peripherals::osc;
+use serde::{Deserialize, Serialize};
 
 /// Maximum |drift_ppm| accepted at construction.  10 %
 /// covers any realistic HFINTOSC tolerance plus a safety
 /// margin for Phase-4 fuzz tests.
 pub const MAX_DRIFT_PPM: i32 = 100_000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClockDomain {
     /// Universal-clock ticks per Tcy (instruction cycle).
     /// Set from `osc::ticks_per_tcy(variant)` at

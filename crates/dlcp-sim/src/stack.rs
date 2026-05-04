@@ -28,6 +28,7 @@
 
 use crate::core::Core;
 use crate::memory::{Address, Memory};
+use serde::{Deserialize, Serialize};
 
 /// Maximum number of return addresses the PIC18 hardware stack
 /// can hold.
@@ -66,7 +67,7 @@ pub const STKPTR_STKFUL: u8 = 0x80;
 /// corrupt the slot.  Bit 0 of the stored value is masked off
 /// the same way [`Core::set_pc`] enforces (PCL[0] is hard-
 /// wired to 0).
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Default, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Default, Hash)]
 pub struct StackEntry(u32);
 
 impl StackEntry {
@@ -85,7 +86,7 @@ impl StackEntry {
 /// `Default` initialises the stack to its POR state: all 31
 /// slots zeroed, STKPTR=0 (empty), no overflow / underflow
 /// flagged.
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Stack {
     /// Backing array.  Index `i` (0..=30) is the slot loaded
     /// when the pointer reaches `i+1`.

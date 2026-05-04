@@ -40,6 +40,8 @@
 
 #![allow(dead_code, reason = "P1.7 parser; consumed by P1.6 reset path + P2 oscillator/peripheral models")]
 
+use serde::{Deserialize, Serialize};
+
 /// Number of configuration bytes parsed by this module.  PIC18
 /// has 7 16-bit CONFIG words = 14 bytes, sized identically
 /// across the 2455 and K20.
@@ -54,7 +56,7 @@ pub const CONFIG_BYTES: usize = 14;
 pub const CONFIG_BASE: u32 = 0x0030_0000;
 
 /// Brown-out enable encoding (CONFIG2L bits 2..1).
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum BorenMode {
     /// `00` — BOR disabled in hardware AND software.
     Disabled,
@@ -86,7 +88,7 @@ impl BorenMode {
 /// pattern.  Note that for four of the modes (XT, XTPLL, HS,
 /// HSPLL) the low bit is "don't care" so two consecutive
 /// encodings collapse onto the same mode.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum FoscMode {
     /// `000x` — XT crystal/resonator.
     XT,
@@ -140,7 +142,7 @@ impl FoscMode {
 }
 
 /// Parsed view of the 14 CONFIG bytes.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Config {
     raw: [u8; CONFIG_BYTES],
 }

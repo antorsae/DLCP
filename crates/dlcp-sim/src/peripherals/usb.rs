@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 
 use crate::core::Core;
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 pub const UFRML_ADDR: u16 = 0xF66;
 pub const UFRMH_ADDR: u16 = 0xF67;
@@ -64,7 +65,7 @@ pub const FILENAME_LEN: usize = 0x1E;
 
 const USB_ENDPOINTS: usize = 16;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, Eq, PartialEq)]
 pub struct BdtEntry {
     pub stat: u8,
     pub count: u8,
@@ -72,7 +73,7 @@ pub struct BdtEntry {
     pub buffer: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 struct HidState {
     active_preset: u8,
     filename_a: [u8; FILENAME_LEN],
@@ -89,7 +90,7 @@ impl Default for HidState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Usb {
     is_2455: bool,
     enabled: bool,

@@ -73,6 +73,8 @@
 
 #![allow(dead_code, reason = "Phase-4 scaffold; extended use lands in follow-up commits")]
 
+use serde::{Deserialize, Serialize};
+
 /// Number of subaddresses the slave's register file covers.
 /// 8-bit subaddress space -- 256 entries.
 const SUBADDR_COUNT: usize = 256;
@@ -82,7 +84,7 @@ const SUBADDR_COUNT: usize = 256;
 /// byte format `11100 0 1 R/W` -> write `0xE2`, read `0xE3`.
 /// Other strappings are exposed for future flexibility but
 /// the DLCP is hardcoded.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StrapAddr {
     pub a1: bool,
     pub a0: bool,
@@ -109,7 +111,7 @@ impl StrapAddr {
 /// I²C transaction phase.  Same shape as Tas3108's Phase --
 /// I²C protocol semantics are device-agnostic at the byte
 /// level.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 enum Phase {
     /// No transaction in progress.  The next byte from the
     /// master is interpreted as the slave-address byte.
@@ -138,7 +140,7 @@ impl Default for Phase {
 }
 
 /// SRC4382 I²C slave model.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Src4382 {
     /// Hardware strap state.  Determines the slave-address
     /// byte the master must use (`write_address()` /
@@ -148,6 +150,7 @@ pub struct Src4382 {
     strap: StrapAddr,
     /// 256-byte register file indexed by subaddress.  Reads
     /// of unwritten subaddresses return 0.
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
     regs: Box<[u8; SUBADDR_COUNT]>,
     /// Most-recently-latched subaddress (post-
     /// `AwaitingSubaddress`).  Persists across STOPs so a

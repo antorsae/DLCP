@@ -34,6 +34,7 @@
 //! `lcd_char_write` calls fire.  Task #34.
 
 use core::fmt::{self, Debug, Formatter};
+use serde::{Deserialize, Serialize};
 
 /// Length of the LCD's 16x2 character lines (bytes per
 /// line).  HD44780 line widths can vary; the DLCP unit is a
@@ -54,10 +55,11 @@ const DDRAM_SIZE: usize = 128;
 /// Virtual HD44780 character LCD.  Owned by `Chain` as a
 /// Vec entry alongside the TAS3108 slaves; coupled to a
 /// controller core via `Chain::couple_lcd`.
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Hd44780 {
     /// Display Data RAM.  16 bytes per line; line 1 starts
     /// at 0x00, line 2 at 0x40.
+    #[serde(with = "serde_big_array::BigArray")]
     ddram: [u8; DDRAM_SIZE],
     /// Current write cursor (DDRAM address counter).
     cursor: u8,

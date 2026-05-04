@@ -26,7 +26,8 @@
 //! soak tests can iterate the seed to enumerate the
 //! offset space deterministically.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootOffsetSpec {
     /// Exact universal-tick offset.  0 means the core
     /// starts at tick 0 (alongside any other Fixed-0

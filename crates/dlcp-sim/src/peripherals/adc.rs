@@ -27,6 +27,7 @@
 //!   audio-source pin.
 
 use crate::memory::{Address, Memory, Variant};
+use serde::{Deserialize, Serialize};
 
 pub const ADCON0_ADDR: u16 = 0xFC2;
 pub const ADCON1_ADDR: u16 = 0xFC1;
@@ -45,7 +46,7 @@ const ADCON2_ACQT_SHIFT: u32 = 3;
 const ADCON2_ADCS_MASK: u8 = 0x07;
 const PIR1_ADIF: u8 = 1 << 6;
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Adc {
     variant: Variant,
     /// Per-channel input sample values (10-bit).  Defaults to 0;

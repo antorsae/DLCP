@@ -50,6 +50,7 @@ use crate::isa::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 use crate::memory::Address;
 use crate::reset::{RCON_ADDR, RCON_PD, RCON_TO, ResetSource, apply_reset};
 use crate::stack::Stack;
+use serde::{Deserialize, Serialize};
 
 // ---- Key SFR addresses consulted by the executor ----------------
 //
@@ -859,7 +860,7 @@ fn write_dest_preserve_status_flags(core: &mut Core, d: Dest, f: u8, a: Access, 
 /// Fatal executor error.  Non-fatal conditions (skip-not-taken,
 /// overflow flags, etc.) are signalled through STATUS / RCON
 /// inside the model — only the cases below tear the run down.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ExecError {
     /// PC is past the end of the variant's program memory and
     /// has nothing to fetch.  Real silicon wraps; the executor
