@@ -202,7 +202,13 @@ def test_live_reconnect_responsiveness_soak_passes_for_configured_iterations() -
 #   4. Run this test
 #
 # See docs/HARDWARE_TEST.md §"Diagnostics page" for the full operator
-# walk-through and resolves-which-Task #22-question matrix.
+# walk-through (post 2026-05-04 retest, the section's "Task #22
+# discriminator" framing has been retracted; the diag page on real
+# HW also shows PB1/PB2 `n/a` after only the initial 4 RIGHT
+# navigation, and converging both rows requires 5-10 LEFT/RIGHT
+# navigation cycles -- shared firmware-design root cause is V1.71's
+# foreground busy-loop in `display_loop_iteration` asm:2885-2897
+# which only exits on user-driven events).
 # ---------------------------------------------------------------------------
 
 
@@ -212,10 +218,20 @@ def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
     renders the spec'd ``1:...`` / ``2:...`` two-row layout when the
     operator has manually navigated to the page.
 
-    This is the test that distinguishes Task #22 (gpsim two-MAIN echo
-    loop, currently quarantined under ``_V171_V32_PB2_BRIDGE_XFAIL``)
-    from a real V1.71 / V3.2 firmware bug.  If both rows render here,
-    the sim quarantine is harness-only and the firmware is sound.
+    This validates that V1.71 CONTROL renders the two-row PB layout
+    (``PB1`` on row 0, ``PB2`` on row 1's `2:` analogue, etc.) on
+    real silicon.  Initial render after the 4 RIGHT navigation
+    presses may show `n/a` on either row; converging both rows to
+    counter values requires 5-10 LEFT/RIGHT navigation cycles per
+    docs/HARDWARE_TEST.md §"Diagnostics page" walk-through.  This
+    test only checks the prefix presence (``1:`` / ``2:``), not the
+    counter content, so it does not depend on convergence -- it
+    fails only if the layout itself is broken.  Pre-2026-05-04
+    versions of this docstring framed it as a "Task #22 sim
+    quarantine harness-only" discriminator; that framing has been
+    retracted (task #94 closed; both rust and HW share the V1.71
+    foreground-busy-loop root cause for non-convergence under the
+    no-user-events test scenario, which is firmware-design).
     """
     if os.environ.get("DLCP_HW_LAYER5_AT_DIAG") != "1":
         pytest.skip(
@@ -257,8 +273,10 @@ def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
     # Pass criteria: row 0 starts with "1:" and row 1 starts with "2:".
     # The counter chars (or `n/a` for a silent / unsupported PB) follow.
     # We do NOT assert the exact counter content here — that varies by
-    # rig state; basic two-row presence is sufficient to disprove the
-    # gpsim Task #22 quarantine hypothesis on real hardware.
+    # rig state and depends on whether the operator performed enough
+    # LEFT/RIGHT navigation cycles to converge the BF/2N reply burst;
+    # basic two-row presence is sufficient to confirm V1.71 layout
+    # rendering is intact on real silicon.
     assert line1.startswith("1:"), (
         f"line1 must start with '1:' on the Diagnostics page; got {line1!r}.  "
         f"Either the operator did not navigate to Diagnostics before "
@@ -277,57 +295,62 @@ def test_live_diagnostics_page_renders_two_pb_rows(tmp_path: Path) -> None:
 #
 # Per `docs/SIM_REWRITE_RUST_PROGRESS.md` task P3.6b, the Rust simulator
 # rewrite has structurally retired the gpsim PTY-bridge mirror echo
-# (P3.6a).  As of 2026-05-04 the rust sim is empirically WORSE than
-# the gpsim PB2-saturation gap the Python xfails describe -- rust
-# yields ZERO replies (PB1+PB2 both miss; v171_diag_present stays
-# 0x00); see task #94.  The earlier prediction that rust would
-# reproduce the same PB1-only saturation came from xfailed tests
-# that actually use `run=False` so they never executed empirically.
-# No real-hardware test currently distinguishes "V1.71 firmware fails
-# PB2 reply on real silicon too" from "both simulators have a shared
-# timing/electrical fidelity gap" (gpsim) or a distinct query
-# emission/parser gap (rust, task #94).
+# (P3.6a).  Operator HW retest 2026-05-04 with V3.2 rev 0x3F + V1.71
+# rev 0x0F definitively closed the rust-vs-HW question for the
+# diag-page convergence path: real HW also shows `PB1/PB2 n/a` after
+# only the initial 4 RIGHT navigation; converging both rows requires
+# 5-10 LEFT/RIGHT navigation cycles per docs/HARDWARE_TEST.md
+# §"Diagnostics page".  Probe v21 in rust converges in 7 mixed-nav
+# cycles, matching HW.  Task #94 closed.  The shared root cause is
+# firmware-design (V1.71 foreground busy-loop in
+# `display_loop_iteration` asm:2885-2897 only exits on user-driven
+# events), not a sim fidelity gap.
 #
-# The two strict gates below answer that question.  Both gates assert
+# The two gates below remain useful as live-rig sanity checks that
 # the operator-navigated PB Diag page (state 4 = PB1, state 5 = PB2)
-# is in a layout that proves the corresponding PB has replied:
+# converges to a layout that proves the corresponding PB has replied
+# AFTER sufficient navigation cycling:
 #   * Degraded / Overflow (`PBn:` colon at row 0 col 3) -> PASS,
 #     PB has non-zero counter activity.
 #   * Healthy short (row 0 = "PBn", row 1 = "OK") -> PASS, PB
 #     replied with all-zero counters.
-#   * Absent short (row 0 = "PBn", row 1 = "n/a") -> FAIL, PB has
-#     never replied.
+#   * Absent short (row 0 = "PBn", row 1 = "n/a") -> FAIL only if
+#     it persists after 5-10 LEFT/RIGHT navigation cycles; an `n/a`
+#     immediately after the initial 4 RIGHT navigation is the
+#     firmware-by-design state.
 #
 # Operator runs BOTH gates -- one after navigating to the PB1 Diag
-# page, then one after navigating to the PB2 Diag page -- to fill
-# in the full PB1 x PB2 decision matrix (per the commit message
-# 437a7dd → b581548 lineage):
+# page (with sufficient LEFT/RIGHT cycles to drive convergence),
+# then one after navigating to the PB2 Diag page -- to fill in the
+# full PB1 x PB2 decision matrix:
 #
-#   PB1 PASS, PB2 PASS  -> Both reply paths work on hardware; both
-#                          gpsim and Rust sim have a SHARED
-#                          fidelity gap.  P3.6b stays open as
-#                          sim-side investigation; do NOT remove
-#                          the `_V171_V32_PB2_BRIDGE_XFAIL` markers.
-#   PB1 PASS, PB2 FAIL  -> Asymmetric saturation reproduces on
-#                          hardware; V1.71 firmware itself fails
-#                          PB2 reply.  Close Task #22 as documented
-#                          firmware limitation; remove the four
-#                          `_V171_V32_PB2_BRIDGE_XFAIL` markers
-#                          with a comment referencing this test
-#                          run; close P3.6b.
-#   PB1 FAIL, PB2 PASS  -> Inverted from sim symptom (very
-#                          unexpected).  Hardware/wiring issue
-#                          most likely; investigate the rig before
-#                          drawing conclusions.
+#   PB1 PASS, PB2 PASS  -> Both reply paths work on hardware as
+#                          expected; matches rust + gpsim behavior
+#                          when the test scenario includes
+#                          navigation cycling.  No firmware bug.
+#                          Keep the `_V171_V32_PB2_BRIDGE_XFAIL`
+#                          markers because the corresponding sim
+#                          tests inject only the 4 RIGHT navigation
+#                          and no further events, so they
+#                          structurally cannot converge under V1.71's
+#                          foreground busy-loop design.
+#   PB1 PASS, PB2 FAIL  -> Persistent asymmetric `n/a` after extensive
+#                          LEFT/RIGHT cycling: V1.71 parser-target-
+#                          toggle bug or V3.2 PB2 reply-path bug.
+#                          Investigate at the firmware level.
+#   PB1 FAIL, PB2 PASS  -> Inverted from the typical PB1-first
+#                          convergence ordering -- very unexpected.
+#                          Hardware/wiring issue most likely;
+#                          investigate the rig before drawing
+#                          conclusions.
 #   PB1 FAIL, PB2 FAIL  -> Whole chain broken; rerun pre-flight
 #                          (`scripts/dlcp_diag.py --list`) and
-#                          retry.  Does NOT answer the original
-#                          sim-vs-firmware question.
+#                          retry.  Likely bad flash or rig wiring.
 #
 # Both gates share the same body via `_assert_pb_diag_page_converged`
 # below.  Each is OPT-IN behind `DLCP_HW_LAYER5_REQUIRE_PB{1,2}_DATA=1`
-# so the routine hardware suite stays green on rigs that saturate at
-# PB1 only.
+# so the routine hardware suite stays green when an operator hasn't
+# performed enough navigation cycling to converge the rows.
 # ---------------------------------------------------------------------------
 
 
@@ -368,8 +391,10 @@ def _assert_pb_diag_page_converged(
         pytest.skip(
             f"this test is opt-in (set {opt_in_env_var}=1).  Path 1 "
             f"strict gate per docs/SIM_REWRITE_RUST_PROGRESS.md P3.6b "
-            f"-- only run when explicitly resolving the sim-vs-firmware "
-            f"question for Task #22's PB reply convergence"
+            f"-- only run after the operator has performed enough "
+            f"LEFT/RIGHT navigation cycling on the {pb_label} Diag "
+            f"page (5-10 cycles per docs/HARDWARE_TEST.md) for the "
+            f"BF/2N reply burst to converge"
         )
     _require_live_rig_accessible()
 
@@ -524,24 +549,31 @@ def test_live_diagnostics_pb1_data_lands_on_real_silicon(tmp_path: Path) -> None
            5=PB2Diag (per `dlcp_control_v171.asm:4805+`), so RIGHT
            must be pressed FOUR times from the Volume default to
            reach PB1 Diag.
-        2. Wait >= 10 s on the page so the cadence loop fires
-           alternating cmd 0x21 + cmd 0x22 queries against both PBs.
+        2. Cycle LEFT (back to Preset) then RIGHT (back to PB1
+           Diag) 5-10 times.  V1.71's foreground busy-loop in
+           `display_loop_iteration` (asm:2885-2897) only exits on
+           user-driven events, so each navigation event lets the
+           cmd 0x21/0x22 cadence re-fire and progressively populates
+           the BF/2N reply cache.  Waiting on the page without
+           navigation does NOT converge the rows on real HW
+           (operator retest 2026-05-04, V3.2 rev 0x3F + V1.71
+           rev 0x0F).
         3. Set DLCP_HW_LAYER5_AT_DIAG=1 and
            DLCP_HW_LAYER5_REQUIRE_PB1_DATA=1.
         4. Run this test.
 
-    Then operator navigates to PB2 Diag page (one more RIGHT) and
+    Then operator navigates to PB2 Diag page (one more RIGHT, plus
+    additional LEFT/RIGHT cycles to converge PB2 separately) and
     runs `test_live_diagnostics_pb2_data_lands_on_real_silicon` with
     `DLCP_HW_LAYER5_REQUIRE_PB2_DATA=1`.  Combined results fill in
     the PB1 x PB2 decision matrix in the section header above.
 
-    gpsim shows PB1 reply convergence works (`v171_diag_present`
-    bit 0 sets reliably).  Rust does NOT (task #94, 2026-05-04
-    empirical: zero replies).  This gate's role is the BASELINE
-    confirmation that real silicon agrees with the gpsim PB1-works
-    side.  If this fails AND the PB2 sibling fails, the rig itself
-    is broken (not the firmware / sim question we're trying to
-    answer).
+    Real HW shows PB1 convergence after sufficient LEFT/RIGHT
+    cycling (operator retest 2026-05-04 confirmed both PBs
+    eventually converge); rust matches in probe v21 (7 cycles).
+    This gate's role is the BASELINE confirmation that the rig is
+    operating correctly.  If this fails AND the PB2 sibling fails,
+    the rig itself is broken (not a firmware question).
     """
     _assert_pb_diag_page_converged(
         pb_num=1,
@@ -552,8 +584,9 @@ def test_live_diagnostics_pb1_data_lands_on_real_silicon(tmp_path: Path) -> None
 
 @pytest.mark.hardware
 def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None:
-    """Path 1 strict gate (PB2 leg) -- the leg whose hardware
-    behavior decides Task #22's sim-vs-firmware question.
+    """Path 1 strict gate (PB2 leg) -- live-rig confirmation that
+    the PB2 reply-convergence path lands on real silicon after
+    sufficient navigation cycling.
 
     Operator workflow:
         1. Manually navigate CONTROL from the Volume screen to the
@@ -562,9 +595,13 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
            5=PB2Diag (per `dlcp_control_v171.asm:4805+`), so RIGHT
            must be pressed FIVE times from the Volume default to
            reach PB2 Diag.
-        2. Wait >= 10 s on the page so the cadence loop fires
-           alternating cmd 0x21 + cmd 0x22 queries against both PBs
-           (~1 s per cycle, target toggles per BF/27 reception).
+        2. Cycle LEFT (back to PB1 Diag) then RIGHT (forward to
+           PB2 Diag) 5-10 times so V1.71's foreground busy-loop
+           exits often enough to drive the cmd 0x21/0x22 cadence
+           and let the BF/2N reply burst populate the cache.
+           Waiting on the page without navigation does NOT
+           converge the rows on real HW (operator retest 2026-05-04,
+           V3.2 rev 0x3F + V1.71 rev 0x0F).
         3. (Optional) Run `scripts/dlcp_diag.py` to record per-MAIN
            cmd 0x44 snapshots.
         4. Set DLCP_HW_LAYER5_AT_DIAG=1 and

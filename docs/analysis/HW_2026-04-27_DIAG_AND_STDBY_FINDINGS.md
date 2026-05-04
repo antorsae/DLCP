@@ -58,27 +58,33 @@ BF/2N reply burst from MAIN0 was processed by CONTROL through the
 > #94 is closed (rust matches HW); the timing/electrical hypothesis
 > bullets below are obsolete.  Audit-trail prose follows.
 
-**V1.71 firmware is NOT broken on real silicon** — both PB1 and PB2 BF/2N
-reply convergences work. The sim-side saturation that occurs in BOTH gpsim
-Python harness AND Rust silicon-correct ring is therefore a **shared sim
-fidelity gap**, not a firmware bug.
+[OBSOLETE — superseded by the Update 2026-05-04 blockquote above; the
+prose below is preserved as audit trail of an earlier interpretation
+that has been retracted in full.  Do not act on the prose below; it
+contradicts the FINAL CLOSURE 2026-05-04 in §9 and the FINAL CLOSURE
+subsection in `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b entry.]
 
-The four `_V171_V32_PB2_BRIDGE_XFAIL` markers in
-`tests/sim/test_v171_v32_layer5_diag_chain.py` stay in place. P3.6b stays open
-as sim-side investigation; the open hypotheses are now timing/electrical
-(not parser-state):
-
-- Clock-domain skew between three cores during the BF/21..BF/27 burst
-- UART RX bit-timing margin tighter in sim than silicon
-- Transient OERR in sim that real silicon does not exhibit
-- BANK 2 RAM aliasing assumption in sim
-- RXIF ISR latency model too pessimistic
-
-This conclusion has been propagated to:
-
-- `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b entry
-- `docs/SIM_REWRITE_RUST_SPEC.md` §7 + §13
-- `tests/sim/test_v171_v32_layer5_diag_chain.py` UPDATE block
+> **V1.71 firmware is NOT broken on real silicon** — both PB1 and PB2 BF/2N
+> reply convergences work. The sim-side saturation that occurs in BOTH gpsim
+> Python harness AND Rust silicon-correct ring is therefore a **shared sim
+> fidelity gap**, not a firmware bug.
+>
+> The four `_V171_V32_PB2_BRIDGE_XFAIL` markers in
+> `tests/sim/test_v171_v32_layer5_diag_chain.py` stay in place. P3.6b stays open
+> as sim-side investigation; the open hypotheses are now timing/electrical
+> (not parser-state):
+>
+> - Clock-domain skew between three cores during the BF/21..BF/27 burst
+> - UART RX bit-timing margin tighter in sim than silicon
+> - Transient OERR in sim that real silicon does not exhibit
+> - BANK 2 RAM aliasing assumption in sim
+> - RXIF ISR latency model too pessimistic
+>
+> This conclusion has been propagated to:
+>
+> - `docs/SIM_REWRITE_RUST_PROGRESS.md` P3.6b entry
+> - `docs/SIM_REWRITE_RUST_SPEC.md` §7 + §13
+> - `tests/sim/test_v171_v32_layer5_diag_chain.py` UPDATE block
 
 ## 4. Side finding — cmd 0x44 vs LCD cell mismatch (filed task #44)
 
