@@ -606,12 +606,17 @@ modules in `crates/dlcp-sim/src/` produced 93 compile errors that
 identified the substantive deltas a successful P5.1 needs:
 
   1. `serde_big_array` workspace dep + `#[serde(with =
-     "serde_big_array::BigArray")]` annotations on the 4
-     known large-array fields (`flash`/`flash_present` 32K
-     entries each in `hex.rs`; `eeprom.storage` 256 in
-     `eeprom.rs`; `tas3108.regs` / `src4382.regs` 256 each).
+     "serde_big_array::BigArray")]` annotations on the 5
+     known large-array fields: `HexImage.flash` and
+     `HexImage.flash_present` (32K entries each in
+     `hex.rs`); `Eeprom.storage` (256 entries in
+     `eeprom.rs`); `Tas3108.regs` and `Src4382.regs`
+     (256 each in `peripherals/tas3108.rs` and
+     `peripherals/src4382.rs`).
   2. `#[serde(skip)]` on transient `&'static str` fields in
-     `core::CycleProbe` (and likely a few peer probe types).
+     the `core::PcRangeProbe.label` and
+     `core::WatchedRamProbe.label` probe types (which
+     `core::CycleProbe` aggregates as `Vec<...>`).
   3. Validation pass on the cascading errors from a few
      core types (`Variant`, `Memory`, `Instruction`,
      `Config`); these already have derives, but compilation
