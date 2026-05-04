@@ -362,7 +362,6 @@ fn timer_latches_external_edges_and_idle_behavior_cover_fid09() {
 // ---------------------------------------------------------------------------
 
 const PIE2_ADDR: u16 = 0xFA0;
-const PIR2_ADDR_TIMER: u16 = 0xFA1;  // alias to avoid shadowing PIR2_ADDR import
 const RCON_ADDR: u16 = 0xFD0;
 const PIE2_TMR3IE: u8 = 1 << 1;
 const INTCON_GIE: u8 = 1 << 7;
@@ -384,13 +383,17 @@ fn timer3_overflow_asserts_tmr3if_and_stays_sticky() {
 
     // Step further (without firmware clearing TMR3IF).  TMR3IF must
     // stay asserted -- silicon TMR3IF is a sticky flag cleared only
-    // by firmware writing 0 to PIR2.TMR3IF.
+    // by firmware writing 0 to PIR2.TMR3IF.  130_000 Tcy total is past
+    // the first 65_536-count wrap but does NOT cover a second full wrap
+    // (would need >= 131_072); the assertion is "TMR3IF still set well
+    // past the first wrap with no firmware clear", proving stickiness
+    // rather than re-trigger on a second wrap.
     let core2 = run_demo(build_timer3_demo_flash(), 130_000);
     let pir2_b = core2.memory.read_raw(Address::from_raw(PIR2_ADDR));
     assert_eq!(
         pir2_b & PIR2_TMR3IF,
         PIR2_TMR3IF,
-        "TMR3IF must remain asserted after second wrap (sticky)"
+        "TMR3IF must remain asserted past first wrap without firmware clear (sticky)"
     );
 }
 
@@ -431,75 +434,75 @@ fn timer3_pending_with_pie2_tmr3ie_and_gie_marks_irq_pending_compat_mode() {
 
 /// End-to-end: Timer3 free-running with PIE2.TMR3IE + GIE+PEIE causes
 /// the executor to vector to the high-priority IRQ vector at 0x0008
-/// after the first TMR3 overflow.  Stack TOS holds the pre-vector PC
-/// so RETFIE can resume the foreground loop.
+/// after the first TMR3 overflow.  Real PIC18 firmware reserves
+/// 0x0008 / 0x0018 as the IRQ vectors; setup code lives at 0x0020+
+/// reached via a reset-vector branch.  This test mirrors that layout
+/// so PC=0x0008 happens ONLY via IRQ dispatch (NOT during natural
+/// setup execution -- codex HIGH on prior commit caught the original
+/// flat layout where MOVLW T3CON at 0x0008 falsely tripped the assert).
 #[test]
 fn timer3_overflow_dispatches_to_high_vector_via_executor() {
-    // Build a flash that:
-    //   1. Sets PIE2 = TMR3IE.
-    //   2. Sets INTCON = GIE | PEIE (compat mode IPEN=0).
-    //   3. Sets T3CON = TMR3ON (1:1 prescaler, internal clock).
-    //   4. Loops on BRA -1.
-    //
-    // After ~65_536 Tcy of looping, TMR3 wraps, TMR3IF asserts, and
-    // the next instruction-boundary IRQ check vectors to 0x0008.
     let mut flash = vec![0u8; 32 * 1024];
-    let prog: &[(u32, [u8; 2])] = &[
-        (0x0000, encode_movlw(PIE2_TMR3IE)),
-        (0x0002, encode_movwf(0xA0)),                                      // PIE2 @ 0xFA0
-        (0x0004, encode_movlw(INTCON_GIE | INTCON_PEIE)),
-        (0x0006, encode_movwf(0xF2)),                                      // INTCON @ 0xFF2
-        (0x0008, encode_movlw(T3CON_TMR3ON)),
-        (0x000A, encode_movwf(0xB1)),                                      // T3CON @ 0xFB1
-        (0x000C, [0xFF, 0xD7]),                                            // BRA -1 self-loop
+    // Reset vector at 0x0000: BRA to setup at 0x0020.
+    // BRA n: PC = (PC+2) + 2*n.  At PC=0x0000, n must be (0x0020 - 0x0002) / 2 = 15 = 0x000F.
+    // Word format 1101 nnnnnnnnnnn: 0xD000 | 0x000F = 0xD00F.  Bytes: [0x0F, 0xD0].
+    flash[0x0000] = 0x0F;
+    flash[0x0000 + 1] = 0xD0;
+    // 0x0002..0x000F: zero-filled NOPs (won't execute -- BRA jumps over).
+    // 0x0008 / 0x0018 IRQ vectors: zero-filled NOPs.  When the IRQ
+    // dispatcher vectors there, it executes NOP, NOP, ..., eventually
+    // wraps back to PC=0x0020+ via NOP-progression and BRA self-loop.
+    // Setup at 0x0020: PIE2=TMR3IE; INTCON=GIE|PEIE; T3CON=TMR3ON; BRA -1.
+    let setup: &[(u32, [u8; 2])] = &[
+        (0x0020, encode_movlw(PIE2_TMR3IE)),
+        (0x0022, encode_movwf(0xA0)),                                      // PIE2 @ 0xFA0
+        (0x0024, encode_movlw(INTCON_GIE | INTCON_PEIE)),
+        (0x0026, encode_movwf(0xF2)),                                      // INTCON @ 0xFF2
+        (0x0028, encode_movlw(T3CON_TMR3ON)),
+        (0x002A, encode_movwf(0xB1)),                                      // T3CON @ 0xFB1
+        (0x002C, [0xFF, 0xD7]),                                            // BRA -1 self-loop @ 0x002C
     ];
-    for (addr, bytes) in prog {
+    for (addr, bytes) in setup {
         flash[*addr as usize] = bytes[0];
         flash[*addr as usize + 1] = bytes[1];
     }
-    // Also clear RCON.IPEN so peripheral_pending takes the compat
-    // (IPEN=0) path.  K20 POR sets RCON.IPEN=0, so this is a no-op
-    // for fresh boots, but we add a CLRF RCON, ACCESS just for
-    // explicitness (RCON @ 0xFD0 is in the access bank shadow).
-    // (Skipped here -- K20 POR has IPEN=0 by default per reset.rs.)
 
     let mut core = Core::new(Variant::Pic18F25K20);
     core.flash_mut().copy_from_slice(&flash);
     let mut stack = Stack::new();
     apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
 
-    // Step until total Tcy clearly past 65_536 OR PC enters the
-    // high-priority vector at 0x0008.  Cap iterations to avoid
-    // hangs on a regression.
+    // Step until either:
+    //   (a) PC enters the high-priority IRQ vector range 0x0008..0x0018
+    //       AFTER Timer3 has had time to overflow (>= 65_536 Tcy elapsed
+    //       since T3CON enable at 0x002A), with depth >= 1 (i.e., real
+    //       IRQ dispatch pushed return PC), OR
+    //   (b) total Tcy budget exhausted (regression hang).
+    //
+    // The min-Tcy + depth check is what blocks the false-positive that
+    // codex's HIGH review caught: PC may visit 0x0008..0x0018 via NOP
+    // execution after dispatch, but ONLY a real dispatch pushes the
+    // stack, and pre-overflow nothing should push.  Depth >= 1 captures
+    // "stack has return-from-IRQ frame".
     let mut total: u64 = 0;
-    let mut vector_seen = false;
-    while total < 200_000 {
+    let mut vector_seen_with_push = false;
+    while total < 300_000 {
         let cycles = step(&mut core, &mut stack)
             .expect("timer3 IRQ demo executes cleanly");
         total += cycles as u64;
         let pc = core.pc();
-        if pc == 0x0008 {
-            vector_seen = true;
+        let in_high_vector_range = (0x0008..0x0018).contains(&pc);
+        if total >= 65_536 && in_high_vector_range && stack.depth() >= 1 {
+            vector_seen_with_push = true;
             break;
         }
     }
     assert!(
-        vector_seen,
-        "executor must vector to 0x0008 after Timer3 overflow with TMR3IE+GIE; \
-         total Tcy = {total}, final PC = 0x{:04X}",
-        core.pc()
+        vector_seen_with_push,
+        "executor must vector to 0x0008..0x0018 with a stack push after \
+         Timer3 overflow with TMR3IE+GIE; total Tcy = {total}, \
+         final PC = 0x{:04X}, stack depth = {}",
+        core.pc(),
+        stack.depth()
     );
-
-    // Note: this test does NOT assert stack depth >= 1 at the
-    // moment of vector observation.  The flash region 0x0008..0x000B
-    // is empty (NOPs), so after the vector entry the executor
-    // immediately exits the "ISR" without RETFIE and runs into the
-    // self-loop again with TMR3IF still asserted.  The dispatcher
-    // re-fires on every instruction boundary, the stack fills up,
-    // and STVREN-driven stack-overflow reset clears the stack.
-    // The test's contract is just that the vector dispatch path
-    // FIRES at all -- a tighter ISR-stack-state test would need a
-    // proper ISR body (BCF PIR2, TMR3IF + RETFIE) to prevent the
-    // dispatch storm.  The `vector_seen` boolean above is the
-    // sufficient pin for the Timer3 → IRQ dispatch contract.
 }
