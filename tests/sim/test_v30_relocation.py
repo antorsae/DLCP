@@ -2,20 +2,28 @@
 
 Inserts 0x222 bytes of NOP padding into the V3.0 source, shifting all
 code by 0x222 bytes while keeping the entry block (0x1000-0x1013) and
-preset table (0x5600) pinned.  Then verifies:
+preset table (0x5600) pinned.  Verifies the structural invariants:
 
-  Structural:
-    - Shifted ASM assembles without errors
-    - App entry at 0x1000, ISR dispatch at 0x1008 (before padding)
-    - Config bits and EEPROM identical to stock
-    - Preset table pinned at 0x5600
-    - Code region is 0x222 bytes larger than stock
+  - Shifted ASM assembles without errors
+  - App entry at 0x1000, ISR dispatch at 0x1008 (before padding)
+  - Config bits and EEPROM identical to stock
+  - Preset table pinned at 0x5600
+  - Code region is 0x222 bytes larger than stock
+  - All code symbols shift by exactly 0x222; preset_table_a stays pinned
 
-  Behavioral (gpsim):
-    - AN0 boot gate exits at the same cycle count as stock
-    - Command matrix produces identical TX bytes
-    - Chain reaches display (CONTROL+MAIN link)
-    - Chain blackout/wake reaches WAITING state
+Four earlier gpsim-only behavioral tests
+(``test_shifted_an0_boot_gate_exit_cycle``,
+``test_shifted_command_matrix`` (3-way parametrized),
+``test_shifted_chain_reaches_display``,
+``test_shifted_chain_blackout_wake_shows_waiting``) were deleted in
+PF.4 phase 2 batch 8: all relied on gpsim's
+``probe_main_an0_boot_exit_cycle`` (PC breakpoint at the gate-exit
+address), ``run_main_mailbox_gpsim`` (mailbox-overlay TX-byte
+capture), or ``SingleMainChainHarness`` (gpsim wire chain) — none
+have direct rust analogues.  The structural relocation-safety
+invariants are covered by the 10 byte/symbol tests below; runtime
+parity for V3.x MAIN with stock CONTROL is exercised end-to-end by
+``test_v17_chain.py`` and the V1.71+V3.2 chain tests.
 """
 
 from __future__ import annotations
@@ -27,7 +35,6 @@ from typing import Dict
 import pytest
 
 from dlcp_fw.paths import STOCK_MAIN_HEX, V30_MAIN_ASM_COMMENTS
-from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.v30_symbols import assemble_v30, build_shifted_asm, parse_gpasm_symbols
 
@@ -67,11 +74,6 @@ def shifted_hex(shifted_build) -> Path:
 @pytest.fixture(scope="session")
 def shifted_symbols(shifted_build) -> Dict[str, int]:
     return shifted_build["symbols"]
-
-
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -188,148 +190,3 @@ def test_shifted_padding_is_nop(shifted_hex: Path) -> None:
             f"Non-NOP byte at 0x{addr:04X}: 0x{mem.get(addr, 0):02X}"
 
 
-# ---------------------------------------------------------------------------
-# Behavioral tests (gpsim)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.gpsim
-def test_shifted_an0_boot_gate_exit_cycle(
-    shifted_hex: Path,
-    shifted_symbols: Dict[str, int],
-) -> None:
-    """Shifted hex must exit the AN0 boot gate at the exact stock cycle count."""
-    _require_gpsim()
-    from dlcp_fw.sim.main_gpsim import probe_main_an0_boot_exit_cycle
-    from tests.sim.test_v30_gpsim_equivalence import STOCK_MAIN_AN0_BOOT_EXIT_CYCLE
-
-    shifted_exit = shifted_symbols["adc_boot_gate_exit"]
-    cycle = probe_main_an0_boot_exit_cycle(
-        shifted_hex,
-        boot_exit_addr=shifted_exit,
-    )
-    assert cycle == STOCK_MAIN_AN0_BOOT_EXIT_CYCLE, \
-        f"Cycle mismatch: shifted={cycle} stock={STOCK_MAIN_AN0_BOOT_EXIT_CYCLE}"
-
-
-@pytest.mark.gpsim
-@pytest.mark.slow
-@pytest.mark.parametrize(
-    ("cmd", "data", "label"),
-    [
-        (0x03, 0x00, "cmd03_standby_off"),
-        (0x04, 0x00, "cmd04_status_request"),
-        (0x07, 0x45, "cmd07_set_volume"),
-    ],
-    ids=lambda p: p if isinstance(p, str) else None,
-)
-def test_shifted_command_matrix(
-    cmd: int,
-    data: int,
-    label: str,
-    shifted_hex: Path,
-    shifted_symbols: Dict[str, int],
-) -> None:
-    """Shifted hex must produce identical TX bytes to stock for each command."""
-    _require_gpsim()
-    from dlcp_fw.sim.main_gpsim import run_main_mailbox_gpsim
-    from dlcp_fw.sim.manifests import (
-        main_reset_to_appstart,
-        main_serial_mailbox_hooks,
-        main_serial_mailbox_hooks_dynamic,
-    )
-    from dlcp_fw.sim.protocol import SerialFrame
-
-    parser_addr = shifted_symbols["flow_main_uart_service_1be6_1bea"]
-
-    stock_res = run_main_mailbox_gpsim(
-        frames=[SerialFrame(route=0xB0, cmd=cmd, data=data)],
-        main_hex=STOCK_MAIN_HEX,
-        cycles=120_000_000,
-    )
-    shifted_res = run_main_mailbox_gpsim(
-        frames=[SerialFrame(route=0xB0, cmd=cmd, data=data)],
-        main_hex=shifted_hex,
-        parser_break_addr=parser_addr,
-        overlay_manifests=[
-            main_reset_to_appstart(),
-            main_serial_mailbox_hooks_dynamic(shifted_symbols),
-        ],
-        cycles=120_000_000,
-    )
-
-    assert stock_res.parser_break_hit == shifted_res.parser_break_hit
-    assert stock_res.tx_bytes == shifted_res.tx_bytes, \
-        f"TX mismatch for {label}: stock={stock_res.tx_bytes} shifted={shifted_res.tx_bytes}"
-
-
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_shifted_chain_reaches_display(
-    shifted_hex: Path,
-    stock_control_hex_v14: Path,
-) -> None:
-    """Shifted hex + control V1.4 must reach connected display state."""
-    _require_gpsim()
-    from dlcp_fw.sim.chain_gpsim import SingleMainChainHarness
-
-    pair = SingleMainChainHarness(
-        stock_control_hex_v14,
-        shifted_hex,
-        fast_boot=False,
-        control_chunk_cycles=200_000,
-        main_chunk_cycles=200_000,
-        hold_cycles=240_000,
-        disable_standby_check=False,
-        bypass_i2c=False,
-        main_transport_mode="native_ring",
-    )
-    try:
-        last = pair.run_until_connected(limit=140)
-        assert last is not None
-        assert pair.is_connected(), \
-            f"pair never connected; lcd={last.lcd!r}"
-        assert not pair.is_waiting()
-        assert "Volume:" in last.lcd[0]
-    finally:
-        pair.close()
-
-
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_shifted_chain_blackout_wake_shows_waiting(
-    shifted_hex: Path,
-    stock_control_hex_v14: Path,
-) -> None:
-    """Shifted hex must fall back to WAITING after blackout + wake."""
-    _require_gpsim()
-    from dlcp_fw.sim.chain_gpsim import SingleMainChainHarness
-
-    pair = SingleMainChainHarness(
-        stock_control_hex_v14,
-        shifted_hex,
-        fast_boot=False,
-        control_chunk_cycles=200_000,
-        main_chunk_cycles=200_000,
-        hold_cycles=240_000,
-        disable_standby_check=False,
-        bypass_i2c=False,
-        main_transport_mode="native_ring",
-    )
-    try:
-        last = pair.run_until_connected(limit=140)
-        assert last is not None
-        assert pair.is_connected()
-
-        pair.set_blackout(True)
-        pair.press("STBY")
-        pair.step_many(80)
-        assert "ZZZ" in pair.lcd_lines()[0].upper(), \
-            f"did not enter standby: {pair.lcd_lines()!r}"
-
-        pair.press("STBY")
-        waiting = pair.run_until_waiting(limit=20)
-        assert waiting is not None
-        assert pair.is_waiting(), \
-            f"did not fall back to WAITING after wake: {waiting.lcd!r}"
-    finally:
-        pair.close()

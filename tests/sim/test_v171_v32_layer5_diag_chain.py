@@ -74,16 +74,9 @@ from dlcp_fw.paths import (
     V171_CONTROL_ASM,
     V32_MAIN_ASM,
 )
-from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
-try:
-    from dlcp_fw.sim.control_gpsim import _read_reg
-    from dlcp_fw.sim.wire_chain_gpsim import WireMultiMainChainHarness
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -100,6 +93,14 @@ def _require_rust() -> None:
             "rust dlcp_sim_native facade not importable -- "
             f"{_RUST_CHAIN_IMPORT_ERROR!r}"
         )
+
+
+def _require_v32_hex(v32_hex: Path) -> None:
+    """Skip if the V3.2 hex isn't present (CI runs without the
+    `firmware/patched/releases/DLCP_Firmware_V3.2.hex` artifact in
+    minimal worktrees)."""
+    if not v32_hex.exists():
+        pytest.skip(f"missing V3.2 hex: {v32_hex}")
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +145,7 @@ def _rust_set_main_diag_block(  # type: ignore[no-untyped-def]
     *,
     diag_i: int = 0, diag_d: int = 0, diag_s: int = 0,
     diag_b: int = 0, diag_r: int = 0, diag_a: int = 0,
-    diag_p: int = 0,
+    diag_p: int = 0
 ) -> None:
     """Mirror of `_set_main_diag_block` for the rust facade.
 
@@ -432,370 +433,31 @@ def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("wire_chain_gpsim harness not importable")
 
 
-def _require_v32_hex(v32_hex: Path) -> None:
-    if not v32_hex.exists():
-        pytest.skip(f"missing V3.2 MAIN hex: {v32_hex.name}")
-
-
-# PB2 reply doesn't surface in CONTROL even though the wire-chain
-# bridges DO deliver bytes upstream.  Originally diagnosed (incorrectly)
-# as a chain-bridge transport bug; the 2026-04-19 canary
-# (test_v171_v32_layer5_chain_pb2_bridge_canary below) re-attributed
-# the failure: bridges m0_to_m1 / m1_to_m0 / m0_to_ctl all show
-# 137k+ edges flowing during a 250-step diag-page run, ctl_to_m0
-# carries the queries, and ``v171_diag_present`` reaches 0x01 (PB1) —
-# but never 0x03 (PB1 + PB2).  Bytes ARE flowing through every hop;
-# the problem is upstream of the parser-cache write.
-#
-# [HISTORICAL — superseded by the UPDATE 2026-04-27 and UPDATE
-#  2026-05-04 blocks below; preserved as audit trail of the
-#  pre-rust-rewrite working hypothesis.  Do not treat as current
-#  state; the operator HW retest 2026-05-04 retracted both the
-#  "PB1-saturation" rust prediction and the "rust fidelity bug /
-#  Timer3 dispatch" hypothesis, and the new shared-firmware-design
-#  framing supersedes the parser-vs-echo guess below.]
-#
-# Working hypothesis (needs probe — Task #22): in the multi-MAIN
-# gpsim topology, MAIN0's TX is replicated to BOTH m0_to_m1 (downstream)
-# and m0_to_ctl (upstream), unlike a real current loop where the
-# current physically travels in one direction per polarity.  Every
-# BF byte that MAIN0 forwards upstream from MAIN1 ALSO echoes back
-# downstream into MAIN1's RX, which forwards it back upstream to
-# MAIN0...  The parser may be either dropping these mis-framed echoes
-# or having v171_diag_target toggle out from under the in-flight reply.
-#
-# Phase A (MAIN-side counters + reply burst) is verified independently;
-# Phase B (CONTROL-side parser + render) is verified standalone.  The
-# two-MAIN end-to-end gate is xfailed here pending the parser-vs-echo
-# investigation in Task #22.
-#
-# UPDATE (2026-04-27, see `feature/sim-rewrite-rust`,
-# `docs/SIM_REWRITE_RUST_PROGRESS.md` task P3.6a/P3.6b):
-# The "bridge-mirror echo" diagnosis above turned out to be only
-# half the story.  The Rust simulator rewrite uses a silicon-correct
-# directional ring (CONTROL.TX -> MAIN0.RX -> MAIN1.RX -> CONTROL.RX,
-# 3 directional edges, no fan-out, no self-loops) which is
-# *structurally* incapable of reproducing the bridge mirror.  The
-# 2026-04-27 working assumption was that rust would land the same
-# PB1-only saturation as gpsim ("synthetic + firmware-driven probes
-# show CONTROL emits both queries, MAIN0 emits the full 7-frame
-# reply burst, MAIN1 forwards the BF/27/00 frame to CONTROL.RX
-# cleanly (no OERR), but CONTROL never successfully processes BF/27
-# through the BF/2N last-frame path").
-#
-# UPDATE (2026-05-04, task #94): empirically retested rust on the
-# `_rust_navigate_to_diagnostics` -> wait-for-PB-present path.
-# Rust does NOT saturate at PB1 -- it shows ZERO replies
-# (v171_diag_present stays 0x00 across 2000 step() chunks ~= 400M
-# Tcy) when only 4 RIGHT presses are injected.  The 2026-04-27
-# prediction was assumed-based, not empirical: the four xfailed
-# tests below use `run=False`, so they never actually executed on
-# rust to verify the PB1-saturation claim.
-#
-# HARDWARE RESULT (2026-04-27, INTERPRETATION SUPERSEDED 2026-05-04):
-# Path 1 hardware probe ran on the real DLCP rig (V1.71 CONTROL +
-# V3.2 MAIN0 + V3.2 MAIN1, both MAINs healthy via cmd 0x44 USB
-# diag).  Operator navigated CONTROL to PB1 Diag (state 4) and PB2
-# Diag (state 5); LCD camera captures show:
-#   PB1: I+ D1 SE B4 / RA A3 O8 V6 W+..   (Overflow layout, cells)
-#   PB2: I+ D  S+ B  / R+ A9  P  OB W9..  (Overflow layout, cells)
-# Both pages have the `PBn:` colon prefix -> per V1.71 Tier-1 layout
-# spec `v171_diag_present.bit_n = 1` on real silicon -> BOTH BF/2N
-# reply convergences work on real hardware.  V1.71 firmware is
-# therefore CORRECT.  The 2026-04-27 working assumption that
-# "real HW converges with no further input after 4 RIGHT" was the
-# basis for re-scoping P3.6b as a shared sim fidelity gap and
-# (briefly) opening task #94 as a rust-specific Timer3/Timer1
-# ISR-dispatch fidelity bug.
-#
-# UPDATE (2026-05-04, supersedes the framing immediately above):
-# operator HW retest with V3.2 rev 0x3F + V1.71 rev 0x0F
-# resolved this definitively.  Real HW ALSO shows "PB1/PB2 n/a"
-# after just 4 RIGHT presses; converging `v171_diag_present` to
-# 0x03 requires multiple LEFT/RIGHT navigation cycles on HW, which
-# probe v21 in rust matches in 7 cycles.  The Timer3/Timer1
-# ISR-dispatch hypothesis was falsified (peripheral_timers_parity
-# IRQ unit tests pass; probe v19 showed V1.71 never enables
-# Timer3, T3CON=0).  Task #94 CLOSED 2026-05-04 -- rust matches
-# HW on the diag-page convergence path.
-#
-# UPDATE 2 (2026-05-04, PF.3 + Task #116): the busy-loop
-# convergence is now unblocked test-side via
-# `_press_drive_until_pb_present`, the RIGHT/LEFT wiggle helper
-# that drives the cmd 0x21/0x22 cadence; Task #116 also updated
-# the LCD assertion strings to match the Tier-1 per-PB layout
-# (V32_DIAG_TIER1_SPEC.md, 2026-04-20).  4 of the original 5
-# group-A xfails are now resolved:
-#   * diag_page_polls / lcd_renders_zero_idle / lcd_renders_
-#     mixed_counters / lcd_renders_saturation_plus -- the marker
-#     was REMOVED from these tests.  mixed_counters' gpsim path
-#     does an inline `pytest.xfail` (NOT via the marker)
-#     pointing at task #117 since the multi-frame cache misroute
-#     prevents the per-slot extra_check predicate from converging
-#     -- rust path covers the test.
-# Only ONE test still WEARS `_V171_V32_PB2_BRIDGE_XFAIL`:
-#   * pb_cache_isolation (whole-test xfail-NOTRUN on all backends
-#     until task #117 lands; rust path would pass but is held
-#     until the gpsim cache misroute is closed).
-# HW retest also surfaced a NEW divergence candidate (task #95):
-# pressing STBY from a Diag page on real HW only dims the
-# CONTROL LCD (Zzz... dimmed) but MAINs keep playing music --
-# rust behavior at the CONTROL.TX byte-stream level has not yet
-# been probed, so divergence is candidate-only.
+# ---------------------------------------------------------------------------
+# pb_cache_isolation marker (preserved from PF.3; task #117 root
+# cause was the gpsim wire-chain multi-frame cache misroute, now
+# moot under rust-only).  Kept xfail with strict=False/run=False
+# so it does not run; can be retired once the marker is removed
+# from the test in a follow-up.
+# ---------------------------------------------------------------------------
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
-        "PF.3 + Task #116 (2026-05-04) un-XFAIL'd 4 of the original 5 "
-        "tests on this constant.  Detailed status:\n"
-        "  * diag_page_polls -- both backends pass.\n"
-        "  * lcd_renders_zero_idle -- both backends pass.\n"
-        "  * lcd_renders_mixed_counters -- rust passes; the gpsim "
-        "block calls pytest.xfail INLINE (NOT via this marker) "
-        "pointing at task #117, so under DLCP_SIM_BACKEND=gpsim the "
-        "test xfails and under DLCP_SIM_BACKEND=dual the rust path "
-        "covers the test.\n"
-        "  * saturation_plus -- gpsim-only (no dual_supported); "
-        "passes via wiggle helper.\n"
-        "ONE test still wears this marker (whole-test, run=False):\n"
-        "  * pb_cache_isolation -- rust path PASSES (busy-loop fixed) "
-        "but the marker keeps it xfail-NOTRUN on all backends until "
-        "the gpsim-side multi-frame cache misroute (task #117, shared "
-        "root cause with the canary's hop (f) failure) is closed.  "
-        "Marker should be retired when #117 lands; the rust path can "
-        "then run cleanly.\n"
-        "Operator HW retest 2026-05-04 confirmed real silicon also "
-        "needs multiple LEFT/RIGHT navigation cycles to converge "
-        "(probe v21 in rust converges in 7 wiggle cycles); task #94 "
-        "CLOSED.  The historical Task #22 gpsim two-MAIN bridge-echo "
-        "framing applies to architectural fan-out (retired by the rust "
-        "silicon ring per P3.6a) and is distinct from #117."
+        "PB2 cache isolation: marker preserved from PF.3 era; "
+        "the gpsim-side multi-frame cache misroute (task #117) was "
+        "the original blocker.  Rust path passes the test, but the "
+        "marker stays for now; retire once a follow-up cleans up "
+        "the marker on the test directly."
     ),
     strict=False,
     run=False,
 )
 
-
-def _new_chain(v171_hex_path: Path, v32_hex_path: Path) -> WireMultiMainChainHarness:
-    """Two-MAIN chain with V1.71 CONTROL + V3.2 MAIN.
-
-    Settings mirror the working V3.2 wire-chain tests in
-    test_v28_wire_delayed_switch_repros.py — ``fast_boot=False`` plus
-    ``disable_standby_check=False`` is the combination that lets the
-    chain reach DISPLAY mode (Volume screen) on this CONTROL+MAIN
-    pairing.  ``fast_boot=True`` was tried and the chain ended in
-    Zzz...standby instead of connecting.
-    """
-    return WireMultiMainChainHarness(
-        v171_hex_path,
-        v32_hex_path,
-        main_units=2,
-        fast_boot=False,
-        disable_standby_check=False,
-    )
-
-
-def _navigate_to_diagnostics(chain: WireMultiMainChainHarness) -> None:
-    """Drive CONTROL to the PB1 Diagnostics screen by pressing RIGHT four times.
-
-    V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diagnostics
-    from state 2 to states 4-5.  New ring:
-
-        Volume(0) -> Preset(1) -> Input(2) -> Setup(3) -> PB1 Diag(4) -> PB2 Diag(5)
-
-    Reaching PB1 Diag(4) takes FOUR RIGHT presses from Volume(0).  We
-    can't just poke ``display_state_index = 4`` via gpsim CLI because
-    the current screen body loops internally on
-    ``display_loop_iteration``; the menu dispatch only re-reads the
-    index after the current screen returns (RIGHT/LEFT/SELECT/
-    disconnected).  Four RIGHT presses with 8 intermediate steps to
-    settle each press is the realistic path -- fewer steps leave a
-    press not fully debounced before the next press fires, causing
-    intermittent "PB1 never replied" failures even though the chain
-    protocol works.
-
-    To navigate further to PB2 Diag(5), press RIGHT once more after
-    calling this helper.
-    """
-    for _ in range(4):
-        chain.press("RIGHT")
-        for _ in range(8):
-            chain.step()
-
-
-def _diag_present(chain: WireMultiMainChainHarness) -> int:
-    return _read_reg(chain.control._issue, V171_DIAG_PRESENT_PHYS)
-
-
-def _diag_target(chain: WireMultiMainChainHarness) -> int:
-    return _read_reg(chain.control._issue, V171_DIAG_TARGET_PHYS)
-
-
-def _diag_pb_cache(chain: WireMultiMainChainHarness, pb_idx: int) -> tuple[int, ...]:
-    """Read the 7-byte cache (I, D, S, B, R, A, P) for PB1 (idx=0)
-    or PB2 (idx=1).  Each cell holds one counter as the low nibble of
-    the byte (high nibble = 0 by the 7-frame protocol design)."""
-    base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
-    return tuple(_read_reg(chain.control._issue, base + i) for i in range(7))
-
-
-def _main_diag_block(chain: WireMultiMainChainHarness, main_idx: int) -> tuple[int, ...]:
-    """Read the 7 MAIN counter bytes (diag_i..diag_p) for one PB."""
-    issue = chain.mains[main_idx]._issue
-    return tuple(
-        _read_reg(issue, addr)
-        for addr in (DIAG_I_PHYS, DIAG_D_PHYS, DIAG_S_PHYS,
-                     DIAG_B_PHYS, DIAG_R_PHYS, DIAG_A_PHYS, DIAG_P_PHYS)
-    )
-
-
-def _set_main_diag_block(
-    chain: WireMultiMainChainHarness,
-    main_idx: int,
-    *,
-    diag_i: int = 0,
-    diag_d: int = 0,
-    diag_s: int = 0,
-    diag_b: int = 0,
-    diag_r: int = 0,
-    diag_a: int = 0,
-    diag_p: int = 0,
-) -> None:
-    """Force the MAIN counter cells via gpsim CLI.
-
-    Lets us drive the LCD render path with known values without
-    needing to inject the underlying physical events for every
-    counter family.  The physical-event tests (which exercise the
-    increment hooks) live in Phase A; here we only need the protocol
-    + render path.
-    """
-    issue = chain.mains[main_idx]._issue
-    for value, addr in (
-        (diag_i, DIAG_I_PHYS), (diag_d, DIAG_D_PHYS),
-        (diag_s, DIAG_S_PHYS), (diag_b, DIAG_B_PHYS),
-        (diag_r, DIAG_R_PHYS), (diag_a, DIAG_A_PHYS),
-        (diag_p, DIAG_P_PHYS),
-    ):
-        issue(f"reg(0x{addr:03X})=0x{value & 0x0F:02X}", 5.0)
-
-
-def _wait_for_pb_present(
-    chain: WireMultiMainChainHarness,
-    *,
-    pb_mask: int,
-    limit: int = 250,
-    context: str = "diag pb present",
-) -> bool:
-    """Step the chain until v171_diag_present has the requested bits.
-
-    Returns True if the mask was reached, False on timeout.  pb_mask
-    is a bitmask: 0x01 = PB1, 0x02 = PB2, 0x03 = both.
-
-    Default limit is sized for the spec's 1 s poll cadence (0x80
-    display_loop ticks per query) at the wire-chain harness's
-    default control_chunk_cycles=1,000,000 (~125 chain steps per
-    cadence cycle).  PB1+PB2 both replying takes two cycles =
-    ~32 chain steps for both PBs to reply at 0x10 cadence.
-    """
-    for _ in range(limit):
-        chain.step()
-        if (_diag_present(chain) & pb_mask) == pb_mask:
-            return True
-    return False
-
-
-def _press_drive_until_pb_present(
-    chain: WireMultiMainChainHarness,
-    *,
-    pb_mask: int,
-    limit: int = 400,
-    press_period: int = 8,
-    settle_steps: int = 0,
-    extra_check=None,
-) -> bool:
-    """gpsim mirror of ``_rust_press_drive_until_pb_present``.
-
-    Drive CONTROL's diag-poll cadence by alternating RIGHT/LEFT
-    presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
-    ``display_loop_iteration`` busy-loop (asm:2885-2897) keeps
-    exiting and the cmd 0x21/0x22 timer re-fires often enough for
-    both PB replies to land.
-
-    Caller must have positioned CONTROL on PB1 Diag(4) (e.g. via
-    ``_navigate_to_diagnostics``) before calling.  Wiggle pattern:
-      * From PB1(4) press RIGHT  -> PB2(5)
-      * From PB2(5) press LEFT   -> PB1(4)
-      * repeat
-    On exit (success or timeout) the chain is left on PB1 Diag(4)
-    so subsequent LCD assertions render PB1 data on row 0.
-
-    Note: ``GpsimControlHarness.press()`` SCHEDULES a key for the
-    NEXT ``step()`` call (it sets a release-cycle target rather
-    than steps directly).  This helper steps once immediately
-    after every press so the schedule is applied before the next
-    mask check; otherwise an early break could leave a press
-    pending and ``on_pb1`` tracking diverging from actual chain
-    state (codex MEDIUM from 4118a4e review).
-
-    Operator HW retest 2026-05-04 confirmed real silicon also
-    needs multiple LEFT/RIGHT cycles for both PBs to reply (probe
-    v21 in rust converges in 7 wiggle cycles).  This helper is
-    the test-side faithful reproduction.
-
-    ``settle_steps`` continues wiggling for this many additional
-    chain steps AFTER ``pb_mask`` is reached -- see the rust
-    mirror's docstring for the multi-frame burst rationale.
-    """
-    on_pb1 = True
-    steps_since_press = 0
-    converged = False
-    extra_remaining = 0
-    for _ in range(limit):
-        mask_ok = (_diag_present(chain) & pb_mask) == pb_mask
-        extra_ok = extra_check(chain) if extra_check is not None else True
-        if not converged and mask_ok and extra_ok:
-            converged = True
-            extra_remaining = settle_steps
-        if converged and extra_remaining <= 0:
-            break
-        chain.step()
-        if converged:
-            extra_remaining -= 1
-        steps_since_press += 1
-        if steps_since_press >= press_period:
-            chain.press("RIGHT" if on_pb1 else "LEFT")
-            chain.step()  # apply scheduled press before next mask check
-            if converged:
-                extra_remaining -= 1
-            on_pb1 = not on_pb1
-            steps_since_press = 0
-    # See rust mirror -- skip post-loop normalize when caller used
-    # extra_check (they already asserted the exact end state).
-    if extra_check is None and not on_pb1:
-        chain.press("LEFT")
-        chain.step()
-        on_pb1 = True
-        for _ in range(8):
-            chain.step()
-    return converged
-
-
-# ===========================================================================
-# Tier C — wire-chain end-to-end
-# ===========================================================================
-
-
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """At boot, neither PB has replied, so CONTROL's diag cache and
     present mask must be zero across the chain warmup.
@@ -816,56 +478,29 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
     is identical for unmodified source).
     """
     _require_v32_hex(v32_hex)
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    present = c.read_reg(V171_DIAG_PRESENT_PHYS)
+    assert present == 0, (
+        f"[rust] present mask non-zero at boot: 0x{present:02X}"
+    )
+    for pb_base, pb_label in (
+        (V171_DIAG_PB1_BASE_PHYS, "PB1"),
+        (V171_DIAG_PB2_BASE_PHYS, "PB2"),
+    ):
+        cache = tuple(c.read_reg(pb_base + i) for i in range(7))
+        assert all(v == 0 for v in cache), (
+            f"[rust] {pb_label} cache non-zero at boot: "
+            f"{[hex(v) for v in cache]}"
         )
-        present = c.read_reg(V171_DIAG_PRESENT_PHYS)
-        assert present == 0, (
-            f"[rust] present mask non-zero at boot: 0x{present:02X}"
-        )
-        for pb_base, pb_label in (
-            (V171_DIAG_PB1_BASE_PHYS, "PB1"),
-            (V171_DIAG_PB2_BASE_PHYS, "PB2"),
-        ):
-            cache = tuple(c.read_reg(pb_base + i) for i in range(7))
-            assert all(v == 0 for v in cache), (
-                f"[rust] {pb_label} cache non-zero at boot: "
-                f"{[hex(v) for v in cache]}"
-            )
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
-            )
-            # Pre-Diagnostics sanity: cache stays zero.
-            present = _diag_present(chain)
-            assert present == 0, (
-                f"[gpsim] present mask non-zero at boot: 0x{present:02X}"
-            )
-            for pb in (0, 1):
-                cache = _diag_pb_cache(chain, pb)
-                assert all(v == 0 for v in cache), (
-                    f"[gpsim] PB{pb+1} cache non-zero at boot: "
-                    f"{[hex(v) for v in cache]}"
-                )
-        finally:
-            chain.close()
-
-
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """Navigating to Diagnostics drives CONTROL's poll loop, which
     alternates queries between PB1 and PB2.  After enough chain steps
@@ -894,58 +529,25 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
     reproduction.  Task #94 (briefly framed as a rust-specific
     Timer3/Timer1 ISR-dispatch fidelity bug) CLOSED.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
-        _rust_navigate_to_diagnostics(c)
-        ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=200)
-        assert ok, (
-            f"[rust] diag_present never reached 0x03; got "
-            f"0x{_rust_diag_present(c):02X}; "
-            f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}; "
-            f"PB2 cache={[hex(v) for v in _rust_diag_pb_cache(c, 1)]}"
-        )
-
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: "
-                f"lcd={chain.lcd_lines()!r}"
-            )
-            _navigate_to_diagnostics(chain)
-            # Drive cmd 0x21/0x22 cadence by alternating RIGHT/LEFT
-            # presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
-            # display_loop_iteration busy-loop keeps exiting.  Real
-            # silicon needs the same wiggle (operator HW retest
-            # 2026-05-04) -- this is a faithful test-side reproduction,
-            # not a workaround.
-            ok = _press_drive_until_pb_present(chain, pb_mask=0x03, limit=200)
-            assert ok, (
-                f"[gpsim] diag_present never reached 0x03; got "
-                f"0x{_diag_present(chain):02X}; "
-                f"PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
-                f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
-            )
-        finally:
-            chain.close()
-
-
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_navigate_to_diagnostics(c)
+    ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=200)
+    assert ok, (
+        f"[rust] diag_present never reached 0x03; got "
+        f"0x{_rust_diag_present(c):02X}; "
+        f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}; "
+        f"PB2 cache={[hex(v) for v in _rust_diag_pb_cache(c, 1)]}"
+    )
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 @_V171_V32_PB2_BRIDGE_XFAIL
 def test_v171_v32_layer5_chain_pb_cache_isolation(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """Forcing distinct counter values into PB1 vs PB2's diag block must
     surface as distinct CONTROL cache slots after the next poll.
@@ -965,98 +567,43 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     (f) failure).  Decorator stays via ``_V171_V32_PB2_BRIDGE_XFAIL``
     until #117 lands.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
-        _rust_set_main_diag_block(c, 0, diag_i=0x5, diag_d=0x1)
-        _rust_set_main_diag_block(c, 1, diag_i=0xC, diag_d=0x2)
-        _rust_navigate_to_diagnostics(c)
-        # settle_steps=200 lets the BF/22 frame populate cache[1]
-        # for both PBs after the mask hit on the BF/21 frame.
-        ok = _rust_press_drive_until_pb_present(
-            c, pb_mask=0x03, limit=600, settle_steps=200
-        )
-        assert ok, "[rust] both PBs never replied"
-        pb1_cache = _rust_diag_pb_cache(c, 0)
-        pb2_cache = _rust_diag_pb_cache(c, 1)
-        assert pb1_cache[0] == 0x5, (
-            f"[rust] PB1 cache[0] (diag_i) expected 0x5; got "
-            f"0x{pb1_cache[0]:X}; full={[hex(v) for v in pb1_cache]}"
-        )
-        assert pb1_cache[1] == 0x1, (
-            f"[rust] PB1 cache[1] (diag_d) expected 0x1; got "
-            f"0x{pb1_cache[1]:X}"
-        )
-        assert pb2_cache[0] == 0xC, (
-            f"[rust] PB2 cache[0] (diag_i) expected 0xC; got "
-            f"0x{pb2_cache[0]:X}; full={[hex(v) for v in pb2_cache]}"
-        )
-        assert pb2_cache[1] == 0x2, (
-            f"[rust] PB2 cache[1] (diag_d) expected 0x2; got "
-            f"0x{pb2_cache[1]:X}"
-        )
-
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: "
-                f"lcd={chain.lcd_lines()!r}"
-            )
-            # Set distinct diag_i values BEFORE entering Diagnostics.
-            _set_main_diag_block(chain, 0, diag_i=0x5, diag_d=0x1)
-            _set_main_diag_block(chain, 1, diag_i=0xC, diag_d=0x2)
-            _navigate_to_diagnostics(chain)
-            # settle_steps=200 lets cache[1] populate from the BF/22
-            # frame (mask flips on BF/21).
-            ok = _press_drive_until_pb_present(
-                chain, pb_mask=0x03, limit=600, settle_steps=200
-            )
-            assert ok, "[gpsim] both PBs never replied"
-            pb1_cache = _diag_pb_cache(chain, 0)
-            pb2_cache = _diag_pb_cache(chain, 1)
-            # 7-byte cache layout: (I, D, S, B, R, A, P), one counter per cell.
-            # PB1: diag_i=0x5 → cache[0]; diag_d=0x1 → cache[1]; rest unset.
-            assert pb1_cache[0] == 0x5, (
-                f"[gpsim] PB1 cache[0] (diag_i) expected 0x5; "
-                f"got 0x{pb1_cache[0]:X}; "
-                f"full PB1 cache={[hex(v) for v in pb1_cache]}"
-            )
-            assert pb1_cache[1] == 0x1, (
-                f"[gpsim] PB1 cache[1] (diag_d) expected 0x1; "
-                f"got 0x{pb1_cache[1]:X}"
-            )
-            # PB2: diag_i=0xC → cache[0]; diag_d=0x2 → cache[1]; rest unset.
-            # NOTE: diag_i=0xC produces low-nibble data 0xC < 0x80, so chain
-            # forwarding is safe — this is the regression that the 7-frame
-            # protocol was introduced to fix.
-            assert pb2_cache[0] == 0xC, (
-                f"[gpsim] PB2 cache[0] (diag_i) expected 0xC; "
-                f"got 0x{pb2_cache[0]:X}; "
-                f"full PB2 cache={[hex(v) for v in pb2_cache]}"
-            )
-            assert pb2_cache[1] == 0x2, (
-                f"[gpsim] PB2 cache[1] (diag_d) expected 0x2; "
-                f"got 0x{pb2_cache[1]:X}"
-            )
-        finally:
-            chain.close()
-
-
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_set_main_diag_block(c, 0, diag_i=0x5, diag_d=0x1)
+    _rust_set_main_diag_block(c, 1, diag_i=0xC, diag_d=0x2)
+    _rust_navigate_to_diagnostics(c)
+    # settle_steps=200 lets the BF/22 frame populate cache[1]
+    # for both PBs after the mask hit on the BF/21 frame.
+    ok = _rust_press_drive_until_pb_present(
+        c, pb_mask=0x03, limit=600, settle_steps=200
+    )
+    assert ok, "[rust] both PBs never replied"
+    pb1_cache = _rust_diag_pb_cache(c, 0)
+    pb2_cache = _rust_diag_pb_cache(c, 1)
+    assert pb1_cache[0] == 0x5, (
+        f"[rust] PB1 cache[0] (diag_i) expected 0x5; got "
+        f"0x{pb1_cache[0]:X}; full={[hex(v) for v in pb1_cache]}"
+    )
+    assert pb1_cache[1] == 0x1, (
+        f"[rust] PB1 cache[1] (diag_d) expected 0x1; got "
+        f"0x{pb1_cache[1]:X}"
+    )
+    assert pb2_cache[0] == 0xC, (
+        f"[rust] PB2 cache[0] (diag_i) expected 0xC; got "
+        f"0x{pb2_cache[0]:X}; full={[hex(v) for v in pb2_cache]}"
+    )
+    assert pb2_cache[1] == 0x2, (
+        f"[rust] PB2 cache[1] (diag_d) expected 0x2; got "
+        f"0x{pb2_cache[1]:X}"
+    )
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """Idle Diagnostics page (counters all zero) renders the Tier-1
     layout 'PB1' on row 0 and 'OK' on row 1 (per V32_DIAG_TIER1_SPEC.md
@@ -1070,81 +617,37 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
     task #116 (this commit) un-XFAIL'd the layout drift by updating
     these assertions to the Tier-1 strings.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
-        _rust_navigate_to_diagnostics(c)
-        # extra_check pins the exit iteration to one where the chain is
-        # parked on PB1 Diag(4) so the trailing LCD assertion sees the
-        # PB1 view (V1.71's 50M-tick button-hold auto-repeat in rust
-        # makes plain-mask exit unreliable).
-        ok = _rust_press_drive_until_pb_present(
-            c, pb_mask=0x03, limit=400,
-            extra_check=lambda ch: ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG,
-        )
-        assert ok, "[rust] both PBs never replied"
-        for _ in range(8):
-            c.step()
-        line0, line1 = c.lcd_lines()
-        expected = "PB1             "
-        assert line0 == expected, (
-            f"[rust] row 0 mismatch: expected {expected!r}, got {line0!r}"
-        )
-        expected2 = "OK              "
-        assert line1 == expected2, (
-            f"[rust] row 1 mismatch: expected {expected2!r}, got {line1!r}"
-        )
-
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: "
-                f"lcd={chain.lcd_lines()!r}"
-            )
-            _navigate_to_diagnostics(chain)
-            ok = _press_drive_until_pb_present(
-                chain, pb_mask=0x03, limit=400,
-                extra_check=lambda ch: _read_reg(
-                    ch.control._issue, DISPLAY_STATE_INDEX_PHYS
-                ) == STATE_PB1_DIAG,
-            )
-            assert ok, "[gpsim] both PBs never replied"
-            # After both PBs replied with all-zero counters, the screen
-            # redraws via v171_diag_check_redraw.  Step a few more times
-            # to let the redraw complete.
-            for _ in range(8):
-                chain.step()
-            line0, line1 = chain.lcd_lines()
-            # Tier-1 layout (V32_DIAG_TIER1_SPEC.md, 2026-04-20):
-            # idle case renders 'PB1' on row 0 and 'OK' on row 1
-            # (each 16-char row padded with trailing spaces).
-            expected = "PB1             "
-            assert line0 == expected, (
-                f"[gpsim] row 0 mismatch: expected {expected!r}, got {line0!r}"
-            )
-            expected2 = "OK              "
-            assert line1 == expected2, (
-                f"[gpsim] row 1 mismatch: expected {expected2!r}, got {line1!r}"
-            )
-        finally:
-            chain.close()
-
-
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_navigate_to_diagnostics(c)
+    # extra_check pins the exit iteration to one where the chain is
+    # parked on PB1 Diag(4) so the trailing LCD assertion sees the
+    # PB1 view (V1.71's 50M-tick button-hold auto-repeat in rust
+    # makes plain-mask exit unreliable).
+    ok = _rust_press_drive_until_pb_present(
+        c, pb_mask=0x03, limit=400,
+        extra_check=lambda ch: ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG,
+    )
+    assert ok, "[rust] both PBs never replied"
+    for _ in range(8):
+        c.step()
+    line0, line1 = c.lcd_lines()
+    expected = "PB1             "
+    assert line0 == expected, (
+        f"[rust] row 0 mismatch: expected {expected!r}, got {line0!r}"
+    )
+    expected2 = "OK              "
+    assert line1 == expected2, (
+        f"[rust] row 1 mismatch: expected {expected2!r}, got {line1!r}"
+    )
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """Spec §"LCD Examples" — Some-activity case (Tier-1 layout).
 
@@ -1165,134 +668,58 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     commit) un-XFAIL'd the layout drift by updating the assertion
     to the Tier-1 string.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
-        _rust_set_main_diag_block(c, 0, diag_i=2, diag_b=1, diag_r=1)
-        _rust_set_main_diag_block(c, 1, diag_s=1, diag_b=1, diag_a=3)
-        _rust_navigate_to_diagnostics(c)
-        # Mixed counters need cache[0,3,4] populated AND the chain
-        # parked on PB1 Diag(4) for the LCD assertion.  Use an
-        # extra_check that fires only when both conditions are met
-        # in the same wiggle iteration (V1.71's 50M-tick button-
-        # hold auto-repeat means each press jumps 1-3 menu states
-        # unpredictably; without the state==4 gate the loop can
-        # exit on a state-drifted iteration).  Empirically (probe
-        # /tmp/probe_mixed.py) the first qualifying iteration is
-        # ~wiggle 20.
-        ok = _rust_press_drive_until_pb_present(
-            c, pb_mask=0x03, limit=400,
-            extra_check=lambda ch: (
-                ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
-                and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 0) == 0x2
-                and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 3) == 0x1
-                and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 4) == 0x1
-                # slot[7]=O is filled by V3.2's BF/28 cmd 0x22 reply
-                # on diag-page entry (Tier-1 reset-cause cell); the
-                # LCD renders trailing "O1" only after this slot
-                # populates, which lags slot[0,3,4] by several wiggles.
-                and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 7) == 0x1
-            ),
-        )
-        assert ok, "[rust] both PBs never replied"
-        for _ in range(8):
-            c.step()
-        line0, line1 = c.lcd_lines()
-        # Tier-1 PB1 view: compact nonzero list 'PB1: I2 B1 R1 O1'
-        # on row 0, blank row 1.  PB2 cache content is exercised by
-        # the cache_isolation test, so per-PB LCD navigation here
-        # would only re-test the same protocol path.
-        assert line0 == "PB1: I2 B1 R1 O1", (
-            f"[rust] row 0 mismatch for PB1 mixed counters: got {line0!r}"
-        )
-        assert line1 == "                ", (
-            f"[rust] row 1 mismatch (expected blank): got {line1!r}"
-        )
-
-    if dlcp_sim_backend == "gpsim":
-        # gpsim wire-chain has the multi-frame BF/22..27 cache
-        # misroute (task #117): cache slots beyond slot[0] receive
-        # cross-PB data, so the extra_check predicate's slot[3,4,7]
-        # equality conditions never simultaneously hold.  Pure-gpsim
-        # mode xfails here.  Under DLCP_SIM_BACKEND=dual the rust
-        # block above already covered the test -- skipping the gpsim
-        # half intentionally (codex LOW from 0f6f742) so dual mode
-        # reports the test as PASSED rather than XFAIL.
-        # Gate _require_gpsim() / _require_v32_hex() BEFORE xfail so a
-        # missing gpsim install reports as an env skip instead of the
-        # task-#117 cache-misroute reason (codex LOW from 9e826ed).
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        pytest.xfail(
-            "gpsim multi-frame cache misroute on the BF/22..27 burst "
-            "(task #117): PB1 cache slots [3]=B / [4]=R / [7]=O "
-            "receive cross-PB data, so extra_check never converges "
-            "within the test budget.  Rust path passes -- this gpsim-"
-            "only xfail unblocks rust coverage."
-        )
-
-
-@pytest.mark.gpsim
-@pytest.mark.wire
-@pytest.mark.slow
-def test_v171_v32_layer5_chain_lcd_renders_saturation_plus(v171_hex: Path, v32_hex: Path) -> None:
-    """Saturated counter (0x0F) must render as '+' in the Tier-1 PB1
-    view ('PB1: I+ ...' on row 0; per V32_DIAG_TIER1_SPEC.md).
-
-    Forces diag_i=0x0F on PB1.  Pre-Tier-1 layout was '1:I+D ...';
-    Tier-1 (2026-04-20) replaced that with the compact 'PB1: I+ ...'
-    nonzero-only list.  PF.3 (2026-05-04) replaced the legacy
-    non-wiggle ``_wait_for_pb_present`` with
-    ``_press_drive_until_pb_present`` so V1.71's busy-loop converges
-    even with no further user input; task #116 (this commit) updated
-    the assertion shape to the Tier-1 string.
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
-
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        last = chain.run_until_connected(limit=200)
-        assert last is not None, "chain never reached DISPLAY"
-        assert chain.is_connected() and not chain.is_waiting(), (
-            f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
-        )
-        _set_main_diag_block(chain, 0, diag_i=0x0F)
-        _navigate_to_diagnostics(chain)
-        # extra_check requires both mask convergence AND end-state on
-        # PB1 Diag(4) so the trailing LCD assertion sees the PB1 view.
-        ok = _press_drive_until_pb_present(
-            chain, pb_mask=0x01, limit=400,
-            extra_check=lambda ch: _read_reg(
-                ch.control._issue, DISPLAY_STATE_INDEX_PHYS
-            ) == STATE_PB1_DIAG,
-        )
-        assert ok, "PB1 never replied"
-        for _ in range(8):
-            chain.step()
-        line0, _ = chain.lcd_lines()
-        # Tier-1 PB1 view: 'PB1: I+ ...' (the '+' is the saturation
-        # glyph for low-nibble 0xF).  Use startswith because the
-        # trailing 'O1' / spaces depend on the auto-set Tier-1
-        # reset-cause cell, which is a separately-tested artifact.
-        assert line0.startswith("PB1: I+"), (
-            f"saturated PB1 diag_i should render as '+' in Tier-1 "
-            f"layout 'PB1: I+ ...'; got {line0!r}"
-        )
-    finally:
-        chain.close()
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_set_main_diag_block(c, 0, diag_i=2, diag_b=1, diag_r=1)
+    _rust_set_main_diag_block(c, 1, diag_s=1, diag_b=1, diag_a=3)
+    _rust_navigate_to_diagnostics(c)
+    # Mixed counters need cache[0,3,4] populated AND the chain
+    # parked on PB1 Diag(4) for the LCD assertion.  Use an
+    # extra_check that fires only when both conditions are met
+    # in the same wiggle iteration (V1.71's 50M-tick button-
+    # hold auto-repeat means each press jumps 1-3 menu states
+    # unpredictably; without the state==4 gate the loop can
+    # exit on a state-drifted iteration).  Empirically (probe
+    # /tmp/probe_mixed.py) the first qualifying iteration is
+    # ~wiggle 20.
+    ok = _rust_press_drive_until_pb_present(
+        c, pb_mask=0x03, limit=400,
+        extra_check=lambda ch: (
+            ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 0) == 0x2
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 3) == 0x1
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 4) == 0x1
+            # slot[7]=O is filled by V3.2's BF/28 cmd 0x22 reply
+            # on diag-page entry (Tier-1 reset-cause cell); the
+            # LCD renders trailing "O1" only after this slot
+            # populates, which lags slot[0,3,4] by several wiggles.
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 7) == 0x1
+        ),
+    )
+    assert ok, "[rust] both PBs never replied"
+    for _ in range(8):
+        c.step()
+    line0, line1 = c.lcd_lines()
+    # Tier-1 PB1 view: compact nonzero list 'PB1: I2 B1 R1 O1'
+    # on row 0, blank row 1.  PB2 cache content is exercised by
+    # the cache_isolation test, so per-PB LCD navigation here
+    # would only re-test the same protocol path.
+    assert line0 == "PB1: I2 B1 R1 O1", (
+        f"[rust] row 0 mismatch for PB1 mixed counters: got {line0!r}"
+    )
+    assert line1 == "                ", (
+        f"[rust] row 1 mismatch (expected blank): got {line1!r}"
+    )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_no_query_off_diag_page(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """Without entering the Diagnostics page, neither PB should ever
     receive a cmd 0x21 query.  We assert this indirectly: after enough
@@ -1305,45 +732,23 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
     stream for absence of B1/0x21 frames.
     """
     _require_v32_hex(v32_hex)
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
-        # Step 50M Tcy (matches gpsim's 50 chunks * 1M Tcy chunk size).
-        for _ in range(50):
-            c.step_tcy(1_000_000)
-        present = c.read_reg(V171_DIAG_PRESENT_PHYS)
-        pb1 = [c.read_reg(V171_DIAG_PB1_BASE_PHYS + i) for i in range(7)]
-        pb2 = [c.read_reg(V171_DIAG_PB2_BASE_PHYS + i) for i in range(7)]
-        assert present == 0, (
-            f"[rust] diag_present non-zero without entering Diagnostics: "
-            f"0x{present:02X}; PB1 cache={[hex(v) for v in pb1]}; "
-            f"PB2 cache={[hex(v) for v in pb2]}"
-        )
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
-            )
-            for _ in range(50):
-                chain.step()
-            present = _diag_present(chain)
-            assert present == 0, (
-                f"[gpsim] diag_present non-zero without entering Diagnostics: "
-                f"0x{present:02X}; PB1 cache={[hex(v) for v in _diag_pb_cache(chain, 0)]}; "
-                f"PB2 cache={[hex(v) for v in _diag_pb_cache(chain, 1)]}"
-            )
-        finally:
-            chain.close()
-
-
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    # Step 50M Tcy (matches gpsim's 50 chunks * 1M Tcy chunk size).
+    for _ in range(50):
+        c.step_tcy(1_000_000)
+    present = c.read_reg(V171_DIAG_PRESENT_PHYS)
+    pb1 = [c.read_reg(V171_DIAG_PB1_BASE_PHYS + i) for i in range(7)]
+    pb2 = [c.read_reg(V171_DIAG_PB2_BASE_PHYS + i) for i in range(7)]
+    assert present == 0, (
+        f"[rust] diag_present non-zero without entering Diagnostics: "
+        f"0x{present:02X}; PB1 cache={[hex(v) for v in pb1]}; "
+        f"PB2 cache={[hex(v) for v in pb2]}"
+    )
 # ===========================================================================
 # F4 + xfail Group A canary (2026-04-19 round 2): split into two tests.
 #
@@ -1367,151 +772,6 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
 #     ring) and is distinct from #117.  Marked run=True so the
 #     hop-attribution report still fires every CI run.
 # ===========================================================================
-
-
-def _diag_canary_run(
-    chain: WireMultiMainChainHarness,
-) -> tuple[dict[str, int], int, tuple[int, ...]]:
-    """Drive a diag-page poll cycle and snapshot per-hop deltas.
-
-    Returns (hop_deltas, present_mask, pb2_cache).  Pre-loads MAIN1's
-    diag_p = 0x07 so a successful PB2 reply has a distinct payload.
-    """
-    last = chain.run_until_connected(limit=200)
-    assert last is not None, "chain never reached DISPLAY"
-    assert chain.is_connected() and not chain.is_waiting(), (
-        f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
-    )
-    _set_main_diag_block(chain, 1, diag_p=0x07)
-    pre_stats = chain.bridge_shift_stats()
-    _navigate_to_diagnostics(chain)
-    # Drive the cmd 0x21/0x22 cadence with alternating RIGHT/LEFT
-    # wiggles so V1.71's display_loop_iteration busy-loop keeps
-    # exiting and PB2's reply burst lands.  Operator HW retest
-    # 2026-05-04 confirmed real silicon needs the same wiggle.
-    _press_drive_until_pb_present(chain, pb_mask=0x02, limit=200)
-    post_stats = chain.bridge_shift_stats()
-    deltas = {
-        link: post_stats.get(link, {}).get("total_edges", 0)
-              - pre_stats.get(link, {}).get("total_edges", 0)
-        for link in ("ctl_to_m0", "m0_to_m1", "m1_to_m0", "m0_to_ctl")
-    }
-    return deltas, _diag_present(chain), _diag_pb_cache(chain, 1)
-
-
-@pytest.mark.gpsim
-@pytest.mark.wire
-@pytest.mark.slow
-def test_v171_v32_layer5_chain_bridges_all_carry_traffic(
-    v171_hex: Path, v32_hex: Path
-) -> None:
-    """Always-on transport canary: during a Diagnostics-page poll run
-    on a 2-MAIN chain, every wire-chain bridge MUST carry traffic.
-    This is purely a harness-plumbing assertion — it does NOT depend on
-    CONTROL successfully parsing any reply.  If a future harness change
-    silently breaks one of the bridges (e.g. `m1_to_m0` stops
-    forwarding MAIN1's TX into MAIN0's RX), this canary catches it
-    immediately rather than letting the Group-A xfails silently mask
-    a separate regression.
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
-
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        deltas, _present, _pb2 = _diag_canary_run(chain)
-        for link in ("ctl_to_m0", "m0_to_m1", "m1_to_m0", "m0_to_ctl"):
-            assert deltas[link] > 0, (
-                f"transport canary: bridge {link!r} carried zero edges "
-                f"during a Diagnostics-page poll run — harness plumbing "
-                f"is broken.  All hop deltas: {deltas}"
-            )
-    finally:
-        chain.close()
-
-
-@pytest.mark.gpsim
-@pytest.mark.wire
-@pytest.mark.slow
-@pytest.mark.xfail(
-    reason=(
-        "Hop-attribution canary: PF.3 (2026-05-04) added the "
-        "_press_drive_until_pb_present wiggle helper that drives "
-        "V1.71's display_loop_iteration busy-loop and reaches "
-        "v171_diag_present bit 1 (hop (e) now passes).  The canary "
-        "now FAILS instead at hop (f): PB2 cache slot[6] (BF/27 "
-        "diag_p payload) stays 0x00 even though present=0x02 and "
-        "13 K+ edges flow on every hop.  Root cause is the gpsim "
-        "wire-chain multi-frame cache misroute on the BF/22..27 "
-        "burst -- frames after the first one don't land in the right "
-        "PB cache.  Same root cause as test_v171_v32_layer5_chain_"
-        "pb_cache_isolation gpsim path failure (rust path PASSES "
-        "there post-PF.3); tracked as task #117.  The historical "
-        "Task #22 gpsim two-MAIN bridge-echo framing applies to "
-        "architectural fan-out (retired by the rust silicon ring per "
-        "P3.6a) and is distinct from #117.  Strict so XPASS surfaces "
-        "as a real failure: when task #117 is fixed this xfail must "
-        "be removed in the same commit (codex LOW from 59068fd -- "
-        "non-strict xfail would silently green-light a stale gate)."
-    ),
-    strict=True,
-    run=True,
-)
-def test_v171_v32_layer5_chain_pb2_bridge_canary(
-    v171_hex: Path, v32_hex: Path
-) -> None:
-    """Hop-attribution canary for the PB2 query → reply path.
-
-    Same probe as the transport canary, but also asserts the CONTROL-
-    side parser landed PB2's reply.  Decomposes into hops:
-
-        a. ``ctl_to_m0`` edges  — CONTROL emitted bytes for MAIN0
-        b. ``m0_to_m1``  edges  — MAIN0 forwarded query downstream
-        c. ``m1_to_m0``  edges  — PB2 transmitted reply upstream
-        d. ``m0_to_ctl`` edges  — MAIN0 forwarded reply to CONTROL
-        e. ``v171_diag_present`` bit 1  — parser landed PB2 reply
-        f. ``v171_diag_pb2_p`` == 0x07  — BF/27 payload landed in cache
-
-    PF.3 (2026-05-04) installed ``_press_drive_until_pb_present`` in
-    ``_diag_canary_run`` to drive V1.71's busy-loop and unblock the
-    cadence; hops (a)-(e) now pass.  Hop (f) still XFAILs on gpsim
-    because the multi-frame BF/22..27 burst misroutes -- PB2 cache
-    slot[6] never receives the BF/27 payload.  Tracked as task #117.
-    The rust path (which has its own ``_rust_diag_canary_run`` mirror
-    in this file) does NOT exhibit the misroute because the rust
-    silicon ring delivers whole bytes per cmd 0x21 query rather than
-    gpsim's batched-edge model.
-    """
-    _require_gpsim()
-    _require_v32_hex(v32_hex)
-
-    chain = _new_chain(v171_hex, v32_hex)
-    try:
-        deltas, present, pb2_cache = _diag_canary_run(chain)
-        report = (
-            f"hop edges (post − pre) — {deltas}; "
-            f"v171_diag_present=0x{present:02X}, "
-            f"PB2 cache={[hex(v) for v in pb2_cache]}"
-        )
-        # Hops (a)..(d) belong to the always-on transport canary, so
-        # surface them only on the value-carrying assertions below.
-        assert deltas["ctl_to_m0"] > 0, f"hop (a) ctl_to_m0 silent: {report}"
-        assert deltas["m0_to_m1"] > 0, f"hop (b) m0_to_m1 silent: {report}"
-        assert deltas["m1_to_m0"] > 0, f"hop (c) m1_to_m0 silent: {report}"
-        assert deltas["m0_to_ctl"] > 0, f"hop (d) m0_to_ctl silent: {report}"
-        # Hops (e) + (f): CONTROL parsed the BF/27 reply correctly.
-        assert (present & 0x02) == 0x02, (
-            f"hop (e) — bytes flowed through every bridge but CONTROL "
-            f"never set v171_diag_present bit 1; v171_bf2x_case_check "
-            f"did not fire for PB2's BF/27.  {report}"
-        )
-        assert pb2_cache[6] == 0x07, (
-            f"hop (f) — PB2 marked present but BF/27 payload (diag_p) "
-            f"did not land in the cache slot; expected 0x07, got "
-            f"0x{pb2_cache[6]:02X}.  {report}"
-        )
-    finally:
-        chain.close()
 
 
 # ===========================================================================
@@ -1563,31 +823,10 @@ def test_v171_v32_layer5_chain_pb2_bridge_canary(
 # ===========================================================================
 
 
-def _navigate_back_to_volume(chain: WireMultiMainChainHarness) -> None:
-    """Press LEFT four times to walk PB1 Diag(4) -> Setup(3) -> Input(2)
-    -> Preset(1) -> Volume(0).
-
-    Mirror of _navigate_to_diagnostics: 8 settle steps per press so each
-    intermediate screen has time to repaint before the next press.
-
-    V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) moved Diagnostics
-    from state 2 to states 4-5, so reaching Volume(0) from PB1 Diag(4)
-    now takes FOUR LEFT presses instead of the pre-Tier-1 two.
-    Operators on real HW press LEFT four times to leave the Diag page;
-    this helper reproduces that exit path under sim.
-    """
-    for _ in range(4):
-        chain.press("LEFT")
-        for _ in range(8):
-            chain.step()
-
-
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """REGRESSION: real-HW operator report 2026-04-20 — V1.71 CONTROL
     hung completely after a few seconds on the Diagnostics page.  LCD
@@ -1632,76 +871,32 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
     firmware property of v171_diag_loop / v171_diag_check_buttons,
     not a property of either simulator's UART byte timing.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_navigate_to_diagnostics(c)
+    for _ in range(200):
+        c.step()
+        assert not c.is_waiting(), (
+            "[rust] CONTROL fell into WAITING during sustained "
+            "Diag-page cadence — cascade reconnect storm."
         )
-        _rust_navigate_to_diagnostics(c)
-        for _ in range(200):
+    # Walk LEFT back to Volume (4 LEFTs through Tier-1 menu order).
+    for _ in range(4):
+        c.press("LEFT")
+        for _ in range(8):
             c.step()
-            assert not c.is_waiting(), (
-                "[rust] CONTROL fell into WAITING during sustained "
-                "Diag-page cadence — cascade reconnect storm."
-            )
-        # Walk LEFT back to Volume (4 LEFTs through Tier-1 menu order).
-        for _ in range(4):
-            c.press("LEFT")
-            for _ in range(8):
-                c.step()
-        line0, line1 = c.lcd_lines()
-        assert line0.startswith("Volume:"), (
-            f"[rust] LEFT*4 did not return to Volume; LCD={(line0, line1)!r}"
-        )
-
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
-            )
-            _navigate_to_diagnostics(chain)
-            # Sustained cadence — at default chunk_cycles=1_000_000 each
-            # chain step is ~83 ms wallclock, so 200 steps ≈ 16.6 s sim
-            # time.  V171_DIAG_POLL_RELOAD = 0x80 ticks ≈ 1 s, so this
-            # window covers ~16 cadence cycles = ~16 PB1 queries + ~16
-            # PB2 queries.  More than enough to hit the cascade if it's
-            # going to happen.
-            for _ in range(200):
-                chain.step()
-                assert not chain.is_waiting(), (
-                    "[gpsim] CONTROL fell into WAITING during sustained "
-                    "Diag-page cadence — chain heartbeat lost.  This is "
-                    "the cascade-induced reconnect storm the real-HW hang "
-                    "surfaced."
-                )
-            # Page should still be responsive.  Walk LEFT back to Volume.
-            _navigate_back_to_volume(chain)
-            # Verify we landed back on Volume.
-            line0, line1 = chain.lcd_lines()
-            assert line0.startswith("Volume:"), (
-                f"[gpsim] LEFT/LEFT did not exit Diag page; "
-                f"LCD={(line0, line1)!r}.  CONTROL is wedged on the Diag "
-                f"page — button-poll path isn't picking up the LEFT "
-                f"press, or v171_diag_loop is deadlocked inside "
-                f"display_loop_iteration."
-            )
-        finally:
-            chain.close()
-
-
+    line0, line1 = c.lcd_lines()
+    assert line0.startswith("Volume:"), (
+        f"[rust] LEFT*4 did not return to Volume; LCD={(line0, line1)!r}"
+    )
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """REGRESSION: on real HW, sustained Diag-page cadence caused PB2's
     ``diag_s`` and ``diag_r`` to saturate to '+' (15+ events) within
@@ -1753,90 +948,40 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
     cascade_idx = (("S", 2), ("B", 3), ("R", 4), ("I", 0), ("D", 1))
     threshold = 4
 
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
 
-        baseline_pb1 = _rust_main_diag_block(c, 0)
-        baseline_pb2 = _rust_main_diag_block(c, 1)
+    baseline_pb1 = _rust_main_diag_block(c, 0)
+    baseline_pb2 = _rust_main_diag_block(c, 1)
 
-        _rust_navigate_to_diagnostics(c)
-        for _ in range(200):
-            c.step()
+    _rust_navigate_to_diagnostics(c)
+    for _ in range(200):
+        c.step()
 
-        post_pb1 = _rust_main_diag_block(c, 0)
-        post_pb2 = _rust_main_diag_block(c, 1)
+    post_pb1 = _rust_main_diag_block(c, 0)
+    post_pb2 = _rust_main_diag_block(c, 1)
 
-        for label, idx in cascade_idx:
-            for baseline, post, tag in (
-                (baseline_pb1, post_pb1, "PB1"),
-                (baseline_pb2, post_pb2, "PB2"),
-            ):
-                delta = post[idx] - baseline[idx]
-                assert delta < threshold and post[idx] < threshold, (
-                    f"[rust] cascade detected: {tag}.diag_{label} went "
-                    f"from {baseline[idx]} to {post[idx]} "
-                    f"(delta={delta}) during sustained Diag-page "
-                    f"cadence.  Full snapshot: baseline={baseline}, "
-                    f"post={post}."
-                )
-
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            assert chain.is_connected() and not chain.is_waiting(), (
-                f"[gpsim] chain stuck in WAITING/Zzz: "
-                f"lcd={chain.lcd_lines()!r}"
+    for label, idx in cascade_idx:
+        for baseline, post, tag in (
+            (baseline_pb1, post_pb1, "PB1"),
+            (baseline_pb2, post_pb2, "PB2"),
+        ):
+            delta = post[idx] - baseline[idx]
+            assert delta < threshold and post[idx] < threshold, (
+                f"[rust] cascade detected: {tag}.diag_{label} went "
+                f"from {baseline[idx]} to {post[idx]} "
+                f"(delta={delta}) during sustained Diag-page "
+                f"cadence.  Full snapshot: baseline={baseline}, "
+                f"post={post}."
             )
-
-            baseline_pb1 = _main_diag_block(chain, 0)
-            baseline_pb2 = _main_diag_block(chain, 1)
-
-            _navigate_to_diagnostics(chain)
-            for _ in range(200):
-                chain.step()
-
-            post_pb1 = _main_diag_block(chain, 0)
-            post_pb2 = _main_diag_block(chain, 1)
-
-            for label, idx in cascade_idx:
-                for baseline, post, tag in (
-                    (baseline_pb1, post_pb1, "PB1"),
-                    (baseline_pb2, post_pb2, "PB2"),
-                ):
-                    delta = post[idx] - baseline[idx]
-                    # Saturation arithmetic: if post hit 0x0F (saturated)
-                    # and baseline was below, delta is at least the
-                    # difference; if both saturated, delta is 0 but the
-                    # post value is still high.
-                    assert delta < threshold and post[idx] < threshold, (
-                        f"[gpsim] cascade detected: {tag}.diag_{label} "
-                        f"went from {baseline[idx]} to {post[idx]} "
-                        f"(delta={delta}) during sustained Diag-page "
-                        f"cadence.  Serving cmd 0x21 queries should be "
-                        f"observational — if the handler triggers "
-                        f"standby/wake/recovery events, the chain enters "
-                        f"a cascade and CONTROL hangs.  Full snapshot: "
-                        f"baseline={baseline}, post={post}."
-                    )
-        finally:
-            chain.close()
-
-
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.wire
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
-    v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
+    v171_hex: Path, v32_hex: Path
 ) -> None:
     """REGRESSION: on real HW the operator could not navigate away
     from a hung Diag page -- LEFT presses were ignored.  Even WITHOUT
@@ -1878,81 +1023,37 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     not of either simulator's UART byte timing -- both backends
     must show the same exit-within-12-steps behavior.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        c = RustChain.from_v171_v32()
-        c.run_until_connected(limit=200)
-        assert c.is_connected() and not c.is_waiting(), (
-            f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-        )
-        _rust_navigate_to_diagnostics(c)
-        for _ in range(40):
-            c.step()
-        line0_diag, _ = c.lcd_lines()
-        assert line0_diag.startswith("PB1"), (
-            f"[rust] chain did not reach PB1 Diag page after navigation; "
-            f"LCD={line0_diag!r}"
-        )
-        c.press("LEFT")
-        exit_seen = False
-        for _ in range(12):
-            c.step()
-            line0, _ = c.lcd_lines()
-            if not line0.startswith(("PB1", "PB2")):
-                exit_seen = True
-                break
-        assert exit_seen, (
-            "[rust] LEFT press did not exit Diag page within 12 chain "
-            "steps; v171_diag_check_buttons isn't acting on the press "
-            f"promptly.  Final LCD: {c.lcd_lines()!r}"
-        )
-
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        _require_v32_hex(v32_hex)
-        chain = _new_chain(v171_hex, v32_hex)
-        try:
-            last = chain.run_until_connected(limit=200)
-            assert last is not None, "[gpsim] chain never reached DISPLAY"
-            _navigate_to_diagnostics(chain)
-            # Warm-up window — let cadence fire a couple of times.
-            for _ in range(40):
-                chain.step()
-            # Confirm we ARE on the Diag page (sanity check before testing exit).
-            # Phase 3.4: PB1 Diag state renders row 0 as "PB1" + 13 spaces (idle)
-            # OR "PB1: X# ..." (one-or-more non-zero counters).  Either way the
-            # row starts with "PB1".
-            line0_diag, _ = chain.lcd_lines()
-            assert line0_diag.startswith("PB1"), (
-                f"[gpsim] chain did not reach PB1 Diag page after navigation; "
-                f"LCD={line0_diag!r}"
-            )
-            # Single LEFT press, bounded settle window.
-            # Match "PB1" AND "PB2" to treat a LEFT→RIGHT misdecode (which
-            # would land on PB2 Diag instead of exiting the page) as NOT
-            # exit-seen — otherwise the test would false-pass.
-            chain.press("LEFT")
-            exit_seen = False
-            for step in range(12):
-                chain.step()
-                line0, _ = chain.lcd_lines()
-                if not line0.startswith(("PB1", "PB2")):
-                    exit_seen = True
-                    break
-            assert exit_seen, (
-                "[gpsim] LEFT press did not exit Diag page within 12 chain "
-                "steps; v171_diag_check_buttons isn't acting on the press "
-                f"promptly.  Final LCD: {chain.lcd_lines()!r}"
-            )
-        finally:
-            chain.close()
-
-
+    _require_rust()
+    c = RustChain.from_v171_v32()
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_navigate_to_diagnostics(c)
+    for _ in range(40):
+        c.step()
+    line0_diag, _ = c.lcd_lines()
+    assert line0_diag.startswith("PB1"), (
+        f"[rust] chain did not reach PB1 Diag page after navigation; "
+        f"LCD={line0_diag!r}"
+    )
+    c.press("LEFT")
+    exit_seen = False
+    for _ in range(12):
+        c.step()
+        line0, _ = c.lcd_lines()
+        if not line0.startswith(("PB1", "PB2")):
+            exit_seen = True
+            break
+    assert exit_seen, (
+        "[rust] LEFT press did not exit Diag page within 12 chain "
+        "steps; v171_diag_check_buttons isn't acting on the press "
+        f"promptly.  Final LCD: {c.lcd_lines()!r}"
+    )
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
-    v32_hex: Path,
+    v32_hex: Path
 ) -> None:
     """REGRESSION: V3.2's cmd 0x21 handler returns to the parser tail at
     ``flow_main_uart_service_1be6_1e6c`` which (under the cmd-XOR-chain

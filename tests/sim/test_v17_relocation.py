@@ -30,12 +30,6 @@ from dlcp_fw.paths import (
 from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.v17_symbols import assemble_v17, build_shifted_asm, parse_v17_symbols
 
-try:  # gpsim harness imports its own dependency at module scope
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-    _GPSIM_IMPORT_OK = True
-except Exception:  # pragma: no cover - only fails when the harness is unavailable
-    _GPSIM_IMPORT_OK = False
-
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
     _RUST_CHAIN_IMPORT_OK = True
@@ -209,152 +203,62 @@ def v17_smoke_images(tmp_path_factory: pytest.TempPathFactory) -> dict:
     return {"v17": hex_v17, "shifted": hex_shifted}
 
 
-def _run_gpsim_smoke(hex_path, steps: int):
-    """Boot *hex_path*, step *steps* times, return (cycle_count, tx_frames)."""
-    if not _GPSIM_IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable in this env")
-    # disable_standby_check=False keeps the reset overlay minimal so the
-    # shifted hex can boot without hitting a hardcoded-site precondition.
-    h = GpsimControlHarness(hex_path, fast_boot=False, disable_standby_check=False)
-    try:
-        for _ in range(steps):
-            h.step()
-        return h.current_cycle, list(h.tx_frames())
-    finally:
-        h.close()
-
-
-# 20 gpsim chunks × 600_000 K20-Tcy = 12 M K20-Tcy.  Rust uses the
-# same total Tcy in a single `step_tcy(12_000_000)` call -- the
-# rust universal-clock scheduler doesn't need gpsim's chunk
-# granularity.
+# 20 chunks × 600_000 K20-Tcy = 12 M K20-Tcy.  Rust uses the
+# total Tcy in a single ``step_tcy(12_000_000)`` call.
 _RUST_SMOKE_TCY = _GPSIM_SMOKE_STEPS * 600_000
 
 
-def _run_rust_smoke(hex_path) -> tuple[int, list]:
+def _run_smoke(hex_path) -> tuple[int, list]:
     """Boot *hex_path* on the rust CONTROL-only chain and return
-    (cycle_count, tx_frames) at +12M K20-Tcy.  Mirror of
-    :func:`_run_gpsim_smoke` for the rust backend."""
+    (cycle_count, tx_frames) at +12M K20-Tcy."""
     _require_rust()
     c = RustChain.from_v17_control_only(str(hex_path))
     c.step_tcy(_RUST_SMOKE_TCY)
     return c.current_cycle, c.tx_frames()
 
 
-def _run_smoke(hex_path, backend: str) -> tuple[int, list]:
-    if backend == "rust":
-        return _run_rust_smoke(hex_path)
-    return _run_gpsim_smoke(hex_path, _GPSIM_SMOKE_STEPS)
-
-
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
-def test_shifted_gpsim_boot_parity_with_stock_and_v17(
-    v17_smoke_images, dlcp_sim_backend: str,
-) -> None:
+def test_shifted_boot_parity_with_stock_and_v17(v17_smoke_images) -> None:
     """Stock V1.6b, V1.7, and V1.7 shifted advance identically.
 
     Boots each image with a CONTROL-only chain (no MAIN heartbeats),
     advances ~12M K20-Tcy, and compares the final cycle count and
     captured UART TX byte sequence.  The three images must agree
-    exactly on each backend; the cross-backend comparison is not
-    asserted (the gpsim Tcy counter and rust Tcy counter measure the
-    same physical quantity but their reset semantics around POR can
-    differ by a constant offset).
+    exactly.
 
-    Migrated to dual_supported in P4.7: the rust backend uses
-    `Chain.from_v17_control_only(hex)` (commit adding the factory)
-    + `step_tcy(12M)` + `tx_frames()`.  Without a UART coupling,
-    `Chain::drain_completed_tx_bytes` falls through to the loopback-
-    sentinel branch and records each CONTROL TX byte to
-    `uart_tx_history`, so `tx_frames()` returns the K20's USART
-    output even with no peer.
+    Without a UART coupling, ``Chain::drain_completed_tx_bytes``
+    falls through to the loopback-sentinel branch and records each
+    CONTROL TX byte to ``uart_tx_history``, so ``tx_frames()``
+    returns the K20's USART output even with no peer.
+
+    A previous gpsim-only sister test
+    (``test_shifted_gpsim_with_dynamic_standby_overlay``) was deleted
+    in PF.4 phase 2 batch 8: it exercised gpsim's
+    ``control_disable_standby_check_dynamic`` overlay (resolve patch
+    site from sibling ``.lst`` via ``post_connect_init`` symbol
+    lookup) which has no rust analogue — the rust facade boots
+    silicon-correct without a runtime byte-patch.  The relocation-
+    safety invariant the deleted test guarded is covered by the
+    structural symbol-shift tests above and by the cycle/TX parity
+    assertion below.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        stock_cycle, stock_tx = _run_smoke(STOCK_CONTROL_HEX_V16B, "rust")
-        v17_cycle, v17_tx = _run_smoke(v17_smoke_images["v17"], "rust")
-        shifted_cycle, shifted_tx = _run_smoke(v17_smoke_images["shifted"], "rust")
-        assert stock_cycle == v17_cycle, (
-            f"[rust] V1.7 cycle count diverges from stock: "
-            f"stock={stock_cycle} v17={v17_cycle}"
-        )
-        assert stock_cycle == shifted_cycle, (
-            f"[rust] V1.7 shifted cycle count diverges from stock: "
-            f"stock={stock_cycle} shifted={shifted_cycle}"
-        )
-        assert stock_tx == v17_tx, (
-            f"[rust] V1.7 TX frames diverge from stock: "
-            f"stock={stock_tx[:3]!r} v17={v17_tx[:3]!r}"
-        )
-        assert stock_tx == shifted_tx, (
-            f"[rust] V1.7 shifted TX frames diverge from stock: "
-            f"stock={stock_tx[:3]!r} shifted={shifted_tx[:3]!r}"
-        )
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        if not _GPSIM_IMPORT_OK:
-            pytest.skip("control_gpsim harness not importable in this env")
-        stock_cycle, stock_tx = _run_smoke(STOCK_CONTROL_HEX_V16B, "gpsim")
-        v17_cycle, v17_tx = _run_smoke(v17_smoke_images["v17"], "gpsim")
-        shifted_cycle, shifted_tx = _run_smoke(
-            v17_smoke_images["shifted"], "gpsim",
-        )
-        assert stock_cycle == v17_cycle, (
-            f"[gpsim] V1.7 cycle count diverges from stock: "
-            f"stock={stock_cycle} v17={v17_cycle}"
-        )
-        assert stock_cycle == shifted_cycle, (
-            f"[gpsim] V1.7 shifted cycle count diverges from stock: "
-            f"stock={stock_cycle} shifted={shifted_cycle}"
-        )
-        assert stock_tx == v17_tx, (
-            f"[gpsim] V1.7 TX frames diverge from stock: "
-            f"stock={stock_tx[:3]!r} v17={v17_tx[:3]!r}"
-        )
-        assert stock_tx == shifted_tx, (
-            f"[gpsim] V1.7 shifted TX frames diverge from stock: "
-            f"stock={stock_tx[:3]!r} shifted={shifted_tx[:3]!r}"
-        )
-
-
-def _run_gpsim_smoke_with_standby_bypass(hex_path, steps: int):
-    """Boot *hex_path* with the full overlay stack (incl. standby bypass)."""
-    if not _GPSIM_IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable in this env")
-    h = GpsimControlHarness(hex_path, fast_boot=False, disable_standby_check=True)
-    try:
-        for _ in range(steps):
-            h.step()
-        return h.current_cycle, list(h.tx_frames())
-    finally:
-        h.close()
-
-
-@pytest.mark.gpsim
-def test_shifted_gpsim_with_dynamic_standby_overlay(v17_smoke_images) -> None:
-    """Dynamic standby-bypass overlay works for the shifted hex.
-
-    This test exercises ``control_disable_standby_check_dynamic`` through
-    :func:`control_disable_standby_check_for_hex`.  The shifted hex has
-    no byte-signature match at the stock V1.6b site 0x11DA — the overlay
-    must resolve the patch site from the sibling ``.lst`` file via
-    ``post_connect_init`` symbol lookup.  If the symbol path is broken
-    the harness initializer raises; if the overlay patches the wrong
-    bytes, the firmware crashes and the cycle count diverges.
-    """
-    stock_cycle, stock_tx = _run_gpsim_smoke_with_standby_bypass(
-        STOCK_CONTROL_HEX_V16B, _GPSIM_SMOKE_STEPS
+    stock_cycle, stock_tx = _run_smoke(STOCK_CONTROL_HEX_V16B)
+    v17_cycle, v17_tx = _run_smoke(v17_smoke_images["v17"])
+    shifted_cycle, shifted_tx = _run_smoke(v17_smoke_images["shifted"])
+    assert stock_cycle == v17_cycle, (
+        f"V1.7 cycle count diverges from stock: "
+        f"stock={stock_cycle} v17={v17_cycle}"
     )
-    shifted_cycle, shifted_tx = _run_gpsim_smoke_with_standby_bypass(
-        v17_smoke_images["shifted"], _GPSIM_SMOKE_STEPS
-    )
-
     assert stock_cycle == shifted_cycle, (
-        f"shifted hex diverges under dynamic standby overlay: "
+        f"V1.7 shifted cycle count diverges from stock: "
         f"stock={stock_cycle} shifted={shifted_cycle}"
     )
+    assert stock_tx == v17_tx, (
+        f"V1.7 TX frames diverge from stock: "
+        f"stock={stock_tx[:3]!r} v17={v17_tx[:3]!r}"
+    )
     assert stock_tx == shifted_tx, (
-        f"shifted TX frames diverge under dynamic standby overlay: "
+        f"V1.7 shifted TX frames diverge from stock: "
         f"stock={stock_tx[:3]!r} shifted={shifted_tx[:3]!r}"
     )
 
