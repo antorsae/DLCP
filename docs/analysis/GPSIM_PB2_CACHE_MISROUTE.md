@@ -62,9 +62,15 @@ iter 40: PB1 slot[1] = 0x1     (MAIN0's BF/22 again, this time in PB1)
 iter 45: present = 0x03        (PB1 bit set -- on the second BF/22)
 ```
 
-PB2 cache slot[0] never receives MAIN1's diag_i=0xC.  PB2 cache
-slot[1..6] never receive MAIN1's data at all.  All "PB2" cache
-content is actually PB1 data.
+PB2 cache slot[0] is empty (this probe seeded MAIN1 diag_i=0xC,
+expected 0xC there, observed 0x0).  PB2 cache slot[1] is wrong
+(this probe seeded MAIN1 diag_d=0x2, expected 0x2 there, observed
+0x1 -- which is MAIN0's diag_d, the cross-PB misroute).  Slots
+[2..5] are zero on both MAINs in this run, so they are
+experimentally indistinguishable -- see the Caveats section.
+The canary test separately seeds MAIN1 diag_p=0x07 and observes
+PB2 slot[6]=0x0 at convergence, so the misroute extends through
+slot[6] (BF/27 frame) at minimum.
 
 ## Root cause: skip-on-silent target toggle race
 
@@ -86,27 +92,43 @@ issues the next query.  This guard exists to avoid polling a silent
 PB forever; the cost is that a slow-but-not-silent PB's tail
 frames get re-routed.
 
-Sequence on gpsim:
+Sequence on gpsim (most-likely reconstruction; the probe captures
+end-state, not per-frame timestamps):
 
   1. CONTROL sends `B1/0x21` (query PB1).  `target = PB1`,
      `RUNTIME_PENDING = 1`.
   2. MAIN0 starts the 7-frame BF/21..27 burst.
-  3. CONTROL receives BF/21, writes to PB1 cache slot[0]
-     (correct).  Continues receiving subsequent frames in PB1
-     slot[1..6].
-  4. ~1 sec later, cadence fires.  `RUNTIME_PENDING` is STILL set
-     (BF/27 hasn't arrived yet because gpsim's PTY-bridged UART is
-     slow).  Skip-on-silent fires: `btg target` → `target = PB2`.
-     `B2/0x21` query goes out.
-  5. MAIN0's tail frames (BF/22..27 from the original burst) now
-     arrive at CONTROL with `target = PB2`.  They land in PB2
-     cache slot[1..6].  When BF/27 finally arrives, the parser
-     sets `present` bit for the live target (PB2) -- which is why
-     `present = 0x02` flips at iter 35 in the probe even though
-     PB2 cache holds PB1 data on slots that landed.
-  6. MAIN1 has not yet started replying within the test budget,
-     so PB2 slot[0] (which would carry MAIN1's actual BF/21
-     payload) stays 0x0.
+  3. BF/21 arrives quickly; parser writes to PB1 cache slot[0]
+     under live `target = PB1` (this matches the probe's iter 10
+     observation: PB1 slot[0] = 0x5).
+  4. The remaining frames BF/22..27 take longer to reach CONTROL
+     under gpsim's PTY-bridged UART (steady-state heartbeat
+     traffic competes for the wire; m1_to_m0 + m0_to_ctl deltas
+     in the bridge stats are 67-68k edges).  Cadence expires
+     before BF/27 arrives, so `RUNTIME_PENDING` is still set.
+  5. Skip-on-silent gate fires: `btg v171_diag_target, 0` ->
+     `target = PB2`, then `B2/0x21` query goes out.
+  6. MAIN0's tail frames (BF/22..27 from the original burst)
+     finally arrive at CONTROL with `target = PB2`; they land in
+     PB2 cache slot[1..6].  When BF/27 lands, it both sets the
+     `present` bit for PB2 AND toggles `v171_diag_target` again
+     (per the BF/27 reception path at
+     `dlcp_control_v171.asm:1283`), which is why `present` flips
+     to 0x02 at iter 35 in the probe.
+  7. The pattern then repeats with MAIN0's NEXT burst (each
+     B1/0x21 query triggers a fresh 7-frame burst); the second
+     burst's BF/22 arrives while target has cycled back to PB1,
+     landing the diag_d=0x1 in PB1 slot[1] at iter 40 -- the
+     "second BF/22" annotation in the timeline above.
+  8. MAIN1's cmd 0x21 reply, if it arrived at all within the
+     test budget, would land in whichever cache `target` happened
+     to be pointing at when its frames showed up.  Bridge stats
+     (m1_to_m0 = 68504 edges) confirm MAIN1 IS transmitting on
+     the wire, but we cannot tell from end-state alone whether
+     those edges are cmd 0x21 reply payload or steady-state
+     status traffic (heartbeat BF/05/07 etc.).  PB2 slot[0]
+     staying 0x0 is consistent with "MAIN1 cmd 0x21 reply never
+     completed in this window".
 
 The misroute is jointly produced by the firmware's
 implicit-ordering assumption AND gpsim's slow UART -- not solely
