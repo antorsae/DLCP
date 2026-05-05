@@ -1,6 +1,8 @@
-"""Happy-path tests for V3.1 — must also pass on V2.3, V2.4, V2.5, V2.6.
+"""Happy-path tests for V3.1 — must also pass on V2.3, V2.4, V2.6.
 
-These exercise the normal boot-to-audio flow:
+These exercise the normal boot-to-audio flow on stock V2.3, patched
+V2.4 / V2.6, and source-rebuilt V3.1:
+
   1. Boot completes and DSP preset registers are loaded (I²C path)
   2. EEPROM-init populates volume RAM at boot
   3. Two different volume commands produce different computed_volume
@@ -15,8 +17,9 @@ were gpsim-only by design: they relied on gpsim's slower scheduler
 keeping the preset-table I²C burst in flight when the post-volume
 snapshot was taken.  The rust engine finishes preset loading earlier,
 so the snapshot diff would be empty on the rust path.  Volume-cmd →
-DSP-register-change observable coverage is therefore left to
-`test_v31_dsp_boot_equivalence.py` (full 256-reg snapshot vs stock).
+DSP-register-change observable coverage on the rust backend has no
+direct successor today; it is left for a future task if the
+volume-to-DSP I²C path needs a dedicated regression gate.
 """
 from __future__ import annotations
 
