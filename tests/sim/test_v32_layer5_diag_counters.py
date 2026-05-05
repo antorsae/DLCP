@@ -19,9 +19,9 @@ Three tiers as in Layer 1/2:
   wiring.  Catches accidental drops on rebase.
 * **Tier B — build verification**: v32 assembles cleanly with the new
   hooks; all new symbols resolve.
-* **Tier C — behavioral via gpsim**: healthy boot leaves all counters
-  at zero; cmd 0x21 reply burst is observable in TX; AN0 / RA1 triggers
-  bump their respective counters.
+* **Tier C — behavioral via the rust facade**: healthy boot leaves
+  all counters at zero; cmd 0x21 reply burst is observable in TX;
+  AN0 / RA1 triggers bump their respective counters.
 """
 
 from __future__ import annotations
