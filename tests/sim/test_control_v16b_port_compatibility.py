@@ -312,12 +312,21 @@ def test_ir_actions_match_stock_v16b_dispatch_behavior(
 # ---------------------------------------------------------------------------
 # Coverage revived from PF.4 phase 2 batch 7 deletion (codex task #131).
 # These tests cover natural-state-friendly invariants on the V1.6b/V1.61b
-# pair: IR with wrong address / unknown command, front-panel key-action
-# frame parity, and cmd 0x18 host-command reset behaviour.  The
-# EEPROM-clamp test (test_v161b_clamps_stale_setup_index_from_eeprom)
-# stays deferred -- it requires Setup-screen navigation that depends on
-# RIGHT-press advancing display_state_index, which is the same V1.5b/
-# V1.6b silicon-fidelity gap that blocks the cmd18 test below.
+# pair: IR with wrong address / unknown command, and front-panel
+# key-action frame parity.  Two further tests stay deferred:
+#
+#   * test_cmd18_reset_behavior_matches_v16b: the v15b sister file
+#     adds a skipped scaffold for the cmd18 case; the same skip
+#     applies on V1.6b.  The shared blocker is the V1.5b/V1.6b
+#     silicon-fidelity gap where ``press("RIGHT")`` doesn't advance
+#     display_state_index from 0 on stock CONTROL under the rust
+#     facade.
+#   * test_v161b_clamps_stale_setup_index_from_eeprom: requires
+#     Setup-screen navigation (same silicon-fidelity blocker).  A
+#     reduced variant -- seed EEPROM 0x01=1, warm up, assert
+#     V1.61b clamps RAM 0x0BA to 0 while stock keeps 1 -- could
+#     run without navigation but would not prove the EEPROM
+#     scrub side-effect (would need a facade dump primitive).
 # ---------------------------------------------------------------------------
 
 
