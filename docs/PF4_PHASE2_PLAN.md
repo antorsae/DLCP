@@ -139,7 +139,7 @@ Action: `Edit` to drop the single import line.
 
 ### C. "dual-path test bodies with `if dlcp_sim_backend == "gpsim":`"
 
-The bulk: 32 of 41 files.  Each has the standard dual_supported
+The bulk: 33 of 41 files.  Each has the standard dual_supported
 shape:
 
 ```python
@@ -216,41 +216,50 @@ Verify per file:
 
   Expected: identical pass/skip/xfail counts to current rust mode.
 
-### D. "gpsim-only tests inside an otherwise-dual_supported file"
+### D. "doesn't fit C" — module-scope gpsim imports, gpsim-only test bodies, OR a mixture
 
-Some files mix dual-path tests with standalone gpsim-only tests.
-The gpsim-only tests typically:
-  * carry `@pytest.mark.gpsim` (no `dual_supported`)
-  * lazily import wrappers INSIDE the test body
-  * don't take a `dlcp_sim_backend` fixture
-
-Each such test needs an individual decision:
-  (a) port the test body to use the rust facade (preferred when the
-      assertion is genuinely backend-agnostic, e.g., bytes-on-the-
-      wire equivalence), or
-  (b) delete the test (when it asserts gpsim-internal mechanics
-      that don't apply to the rust ring).
-
-Files in this category:
+This is the catch-all for the 3 files that don't follow the clean
+category-C `dlcp_sim_backend`-fixture pattern.  Each file is its own
+shape and needs per-file triage; there is NO uniform mechanical
+recipe for this category.  Per-file specifics:
 
   * `tests/sim/test_v30_relocation.py` -- Tier-A structural tests
-    are dual_supported (rust path lives there); the Tier-B gpsim
-    behavioral parity tests at lines 195+, 214+, 265+, 297+ all
-    `@pytest.mark.gpsim` and lazy-import `main_gpsim` /
-    `chain_gpsim` inside their bodies.
-  * `tests/sim/test_v28_wire_delayed_switch_repros.py` -- file
-    docstring is dual_supported but the wire-chain repros at
-    line 265+ are gpsim-only.
-  * `tests/sim/test_v17_relocation.py` -- mostly dual_supported,
-    but line 251+ and 333+ are gpsim-only.  (The earlier "Category
-    B utility-import" claim in the prior version of this plan was
-    wrong -- the file imports `GpsimControlHarness` and runs gpsim
-    bodies, NOT just `_read_reg` as a utility.)
+    are dual_supported with a backend fixture (rust path lives
+    there); the Tier-B gpsim behavioral parity tests at lines 195,
+    214, 265, 297 all `@pytest.mark.gpsim`-only and lazily import
+    `main_gpsim` / `chain_gpsim` INSIDE their bodies (no
+    `dlcp_sim_backend` fixture).  The lazy-import pattern means
+    deleting the wrapper at the wrong moment surfaces an
+    `ImportError` at test-body execution rather than collection.
+
+  * `tests/sim/test_v28_wire_delayed_switch_repros.py` -- module-
+    scope imports of `_read_reg`, `gpsim_available`, and
+    `WireMultiMainChainHarness` at lines 13-15 (NOT lazy).  Mix of
+    pure-gpsim tests (line 265, 292, 317, 342, 398, 781, 811 --
+    `@pytest.mark.gpsim` only, no `dlcp_sim_backend` fixture) AND
+    pseudo-dual_supported tests at line 711, 739, 881 that wear the
+    `@pytest.mark.dual_supported` marker but immediately call
+    `_require_gpsim()` and run a gpsim-only body.  The dual_supported
+    marker here is decorative -- the body is single-backend.  These
+    "decorative dual_supported" tests need either a real rust path
+    grafted on or the marker dropped.
+
+  * `tests/sim/test_v17_relocation.py` -- mostly dual_supported with
+    a real backend fixture (line 251+, 333+ have gpsim-only tests
+    too).  The earlier "category B utility-import" claim in this
+    plan's first version was wrong -- the file imports
+    `GpsimControlHarness` and runs gpsim bodies, NOT just `_read_reg`
+    as a utility.
 
 Action per file: enumerate the gpsim-only tests, decide port-vs-
-delete per test, then apply the category-C recipe to the dual-path
-remainder.  Inventory the rust-side coverage first to confirm "port
-or delete" doesn't lose tested behavior.
+delete per test (port preferred when assertion is bytes-on-the-wire
+equivalence; delete when asserting gpsim-internal mechanics).  Then
+apply the category-C recipe to the dual-path remainder.  Inventory
+the rust-side coverage first to confirm "port or delete" doesn't
+lose tested behavior.  Also drop the cosmetic
+`@pytest.mark.dual_supported` from any test whose body remains
+gpsim-only after the audit (lest the rust auto-skip rule mis-include
+it post-PF.4).
 
 ### Special case: `test_v171_v32_layer5_diag_chain.py`
 
@@ -306,15 +315,22 @@ After all 41 files are surgically migrated and tests are green:
 
 ## Effort estimate
 
-Corrected category counts post codex review of a049114:
+Corrected category counts post codex review of abf5db6
+(supersedes the earlier a049114 reconciliation, which was off by one):
   * A (delete-with-wrapper): 2 files
   * B (utility-import only): 1 file (`test_patch_compatibility.py`)
   * B' (unused import): 1 file (`test_v31_usb_preset_ab.py`)
-  * C (dual-path bodies): 32 files
-  * D (mixed dual-path + gpsim-only inside file): 3 files
+  * C (dual-path bodies, full `dlcp_sim_backend` plumbing): 33 files
+  * D (file does not fit C: gpsim-only tests inside an
+       otherwise-`dual_supported` file, OR module-scope wrapper
+       imports + per-test `_require_gpsim()` instead of a backend
+       fixture, OR a mixture): 3 files
+       (`test_v17_relocation.py`, `test_v30_relocation.py`,
+        `test_v28_wire_delayed_switch_repros.py`)
   * Special case (PF.3 partially-migrated): 1 file
-  * Plus 1 file (`test_v17_relocation.py`) that's a category-D
-    instance counted under D's 3 above.
+       (`test_v171_v32_layer5_diag_chain.py`)
+  * Total: 2 + 1 + 1 + 33 + 3 + 1 = 41 (matches the AST walker
+    inventory).
 
   * Category C surgery (32 files): ~5-15 min per file × 32 = 3-8 hours
     of focused per-file editing.
