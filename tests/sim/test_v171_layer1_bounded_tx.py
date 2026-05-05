@@ -456,12 +456,15 @@ _CTL_CORE_IDX = 0
 
 
 def _stage_saturated_direct_send(c) -> None:  # type: ignore[no-untyped-def]
-    """Park the TX ring two slots from collision, zero the saturation
-    counter, stage 0x55/0x44 sentinels at full_sync_{lo,hi}, and disable
-    interrupts so the consumer-side ISR can't drain mid-test.
+    """Park the TX ring with fewer than 3 free slots so the V1.71
+    ``tx_ring_reserve_3`` atomic guard fires.  Zero the saturation
+    counter, stage 0x55/0x44 sentinels at full_sync_{lo,hi} (legacy
+    observation point, no longer asserted -- see test docstring),
+    and disable interrupts so the consumer-side ISR can't drain
+    mid-test.
     """
     c.write_reg(_TX_RING_RD, 0x00)
-    c.write_reg(_TX_RING_WR, 0x2D)  # 45 -- two free slots in 48-deep ring
+    c.write_reg(_TX_RING_WR, 0x2D)  # 45 -- 2 free slots in 48-deep ring
     c.write_reg(V171_TX_SAT_COUNT_PHYS, 0x00)
     c.write_reg(_FULL_SYNC_LO, 0x55)
     c.write_reg(_FULL_SYNC_HI, 0x44)
@@ -500,7 +503,7 @@ def _stage_saturated_direct_send(c) -> None:  # type: ignore[no-untyped-def]
         ),
     ],
 )
-def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
+def test_v171_layer1_saturated_direct_helper_aborts_via_atomic_reserve(
     v171_hex: Path,
     helper_label: str,
     abort_label: str,
@@ -514,33 +517,44 @@ def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
     Probes the helper directly via the rust facade's PC primitive:
 
     1. Boot CONTROL+V2.3 MAIN to a stable DISPLAY-mode state.
-    2. Park the TX ring two slots from collision (rd=0, wr=0x2D),
-       zero the saturation counter, stage 0x55/0x44 sentinels at
-       full_sync_{lo,hi}, and disable interrupts.
+    2. Park the TX ring with fewer than 3 free slots
+       (rd=0, wr=0x2D leaves 2 free in the 48-deep ring), zero
+       the saturation counter, and disable interrupts so the
+       consumer-side ISR can't drain mid-test.
     3. Pre-load the helper's payload register (volume / input /
        cmd1d setting).
     4. ``c.set_core_pc(0, helper_pc)`` to jump CONTROL to the
        helper entry, then step a bounded Tcy budget so the
-       helper's full body executes (including the abort branch
-       on saturation).
+       helper body's atomic-reserve check fires.
 
     Asserts the abort branch ran by checking that
-    ``v171_tx_saturate_count`` was bumped (0 -> 1).  The
-    increment lives only on the saturation path -- a bump
-    proves the helper took the abort branch when the third
-    enqueue hit a full ring.
+    ``v171_tx_saturate_count`` was bumped (0 -> 1).  V1.71
+    direct helpers lead with ``tx_ring_reserve_3`` (the atomic
+    3-byte frame guard at asm:1431) which checks free-slot
+    count up-front and branches to ``tx_ring_reserve_3_saturated``
+    if the ring can't hold all 3 bytes.  The saturated branch
+    is the only one that bumps ``v171_tx_saturate_count``, so a
+    bump proves the helper took the abort branch.
 
-    The deleted gpsim version also asserted ``tx_ring_wr=0x2F``
-    (committed two bytes) and ``full_sync_{lo,hi}=0x55/0x44``
-    (success-only clrf path NOT taken).  On the rust facade
-    the post-helper RETURN pops a stale call-stack entry
-    (the manual PC override bypassed the CALL that would have
-    pushed a return address), so control flow bounces into
-    arbitrary code after ~hundreds of Tcy and can advance
-    tx_ring_wr or clobber the full_sync sentinels.  Limiting
-    the post-set-pc step to 100 Tcy keeps the helper body's
-    work observable while staying under the bounce-drift
-    threshold; the saturation counter is the definitive gate.
+    Why the deleted gpsim version's auxiliary assertions are
+    dropped:
+
+    * ``tx_ring_wr=0x2F`` (committed two bytes): obsolete.  The
+      current atomic-reserve design refuses to commit any bytes
+      when the reserve fails -- ``tx_ring_wr`` stays at the
+      staged 0x2D, not 0x2F.
+    * ``full_sync_{lo,hi}=0x55/0x44`` (success-only clrf path
+      NOT taken): observable in principle but flaky on rust.
+      The post-helper RETURN pops a stale call-stack entry
+      (the manual PC override bypassed the CALL that would
+      have pushed a return address), so control flow bounces
+      into arbitrary code after ~hundreds of Tcy and can
+      clobber the sentinels.
+
+    Limiting the post-set-pc step to 100 Tcy keeps the helper
+    body's atomic-reserve work observable while staying under
+    the bounce-drift threshold; the saturation counter is the
+    definitive gate.
     """
     _require_rust()
     from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
@@ -567,15 +581,16 @@ def test_v171_layer1_saturated_direct_helper_aborts_after_two_byte_commits(
 
     c.set_core_pc(_CTL_CORE_IDX, helper_pc)
     # 100 Tcy: tight upper bound on the helper body's
-    # observed work for the saturation path (slot-full check is
-    # immediate; the abort branch + sat-counter incfsz/setf
-    # finish in under ~50 Tcy).  Stays well below the
-    # post-RETURN PC-bounce drift window (>= ~500 Tcy before
-    # we see arbitrary writes to nearby RAM).
+    # observed work for the atomic-reserve saturation path
+    # (free-slot check + tx_ring_reserve_3_saturated body's
+    # incfsz/setf clamp finish in under ~50 Tcy).  Stays well
+    # below the post-RETURN PC-bounce drift window (>= ~500
+    # Tcy before we see arbitrary writes to nearby RAM).
     c.step_tcy(100)
 
     sat = c.read_reg(V171_TX_SAT_COUNT_PHYS)
     assert sat == 0x01, (
         f"{label} helper should bump v171_tx_saturate_count exactly "
-        f"once via the abort branch; got 0x{sat:02X}"
+        f"once via the tx_ring_reserve_3_saturated branch; got "
+        f"0x{sat:02X}"
     )
