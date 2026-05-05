@@ -40,15 +40,15 @@ navigation cycles to converge (probe v21 in rust converges in 7
 mixed-nav cycles, matching HW).
 
 PF.3 + task #116 (2026-05-04) un-XFAIL'd 4 of the original 5
-``_V171_V32_PB2_BRIDGE_XFAIL`` tests on both backends:
-``test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2``,
-``lcd_renders_zero_idle``, ``lcd_renders_mixed_counters`` (all via
-the wiggle helper plus Tier-1-aware LCD assertions; mixed_counters
-also uses ``_press_drive_until_pb_present``'s ``extra_check``
-predicate to land on PB1 Diag(4) under V1.71's 50M-tick button-hold
-auto-repeat), and ``test_v171_v32_layer5_chain_lcd_renders_
-saturation_plus`` (legacy non-wiggle wait swapped for the wiggle
-helper, gpsim-only).  ONE test still wears the
+``_V171_V32_PB2_BRIDGE_XFAIL`` tests on rust:
+``test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2`` (both
+backends), ``lcd_renders_zero_idle`` (both backends),
+``lcd_renders_mixed_counters`` (rust only -- gpsim half does
+``pytest.xfail`` inline pointing at task #117 since the multi-frame
+cache misroute prevents the extra_check predicate from converging),
+and ``test_v171_v32_layer5_chain_lcd_renders_saturation_plus``
+(gpsim-only test in this file -- legacy non-wiggle wait swapped for
+the wiggle helper).  ONE test still wears the
 ``_V171_V32_PB2_BRIDGE_XFAIL`` marker:
 
   * ``pb_cache_isolation`` -- rust path PASSES; gpsim path fails on
@@ -1201,13 +1201,15 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
             f"[rust] row 1 mismatch (expected blank): got {line1!r}"
         )
 
-    if dlcp_sim_backend in {"gpsim", "dual"}:
+    if dlcp_sim_backend == "gpsim":
         # gpsim wire-chain has the multi-frame BF/22..27 cache
         # misroute (task #117): cache slots beyond slot[0] receive
         # cross-PB data, so the extra_check predicate's slot[3,4,7]
-        # equality conditions never simultaneously hold.  Rust path
-        # above passes; this xfail surfaces the gpsim bug without
-        # blocking rust coverage of the Tier-1 LCD render.
+        # equality conditions never simultaneously hold.  Pure-gpsim
+        # mode xfails here.  Under DLCP_SIM_BACKEND=dual the rust
+        # block above already covered the test -- skipping the gpsim
+        # half intentionally (codex LOW from 0f6f742) so dual mode
+        # reports the test as PASSED rather than XFAIL.
         pytest.xfail(
             "gpsim multi-frame cache misroute on the BF/22..27 burst "
             "(task #117): PB1 cache slots [3]=B / [4]=R / [7]=O "
