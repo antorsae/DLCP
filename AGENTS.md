@@ -476,7 +476,6 @@ Generated/ephemeral (ignored):
 - `artifacts/LX521.4/...`
 - `artifacts/sim/current/...`
 - `artifacts/probes/...`
-- `artifacts/tools/gpsim-xtc/...`
 - `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `.venv*`, etc.
 
 ## Common Commands
@@ -522,26 +521,7 @@ Combine stock V2.3 main export fragments:
 python3 scripts/word_dump_to_ihex.py combine-v23-main-exports
 ```
 
-Configure/build local gpsim fork:
-
-```bash
-mkdir -p artifacts/tools/gpsim-xtc/build
-cd artifacts/tools/gpsim-xtc/build
-env CPPFLAGS=-I/opt/homebrew/include LDFLAGS=-L/opt/homebrew/lib \
-  ../../../../vendor/gpsim-0.32.1-xtc/configure --disable-gui
-make -C src -j4 libgpsim.la
-make -C modules -j4 libgpsim_modules.la
-make -C gpsim gpsim
-```
-
-Run local gpsim fork checks:
-
-```bash
-scripts/gpsim-xtc --version
-make -C vendor/gpsim-0.32.1-xtc/regression/p18f25k20 sim
-```
-
-Run full test gate (gpsim-inclusive, parallel):
+Run full test gate (parallel):
 
 ```bash
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
@@ -577,28 +557,15 @@ export DLCP_WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
 export DLCP_TOOLS_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 
 export DLCP_PYTHON="$DLCP_TOOLS_ROOT/.venv_ep0/bin/python"
-export DLCP_GPSIM_BIN="$DLCP_TOOLS_ROOT/scripts/gpsim-xtc"
 export PATH="$DLCP_WORKTREE_ROOT/scripts:$PATH"
 ```
 
 Notes:
 
 - `DLCP_WORKTREE_ROOT` is the active checkout/worktree you are editing.
-- `DLCP_TOOLS_ROOT` is the checkout that owns the shared `.venv_ep0` and compiled local `gpsim`. In the main checkout it resolves to the same directory as `DLCP_WORKTREE_ROOT`; in linked worktrees it resolves to the shared/base checkout.
+- `DLCP_TOOLS_ROOT` is the checkout that owns the shared `.venv_ep0`. In the main checkout it resolves to the same directory as `DLCP_WORKTREE_ROOT`; in linked worktrees it resolves to the shared/base checkout.
 - New worktrees should expose `artifacts/LX521.4` as a symlink to `"$DLCP_TOOLS_ROOT/artifacts/LX521.4"` so they reuse the base checkout artifact tree.
 - Prefer `"$DLCP_PYTHON"` over guessing whether `.venv_ep0` exists inside the current worktree.
-- `src/dlcp_fw/sim/gpsim.py` resolves gpsim in this order:
-  - `DLCP_GPSIM_BIN`
-  - `GPSIM_BIN`
-  - repo wrapper `scripts/gpsim-xtc`
-  - `gpsim-xtc` / `gpsim` on `PATH`
-- Prefer the shared wrapper `"$DLCP_GPSIM_BIN"` over the system `gpsim`.
-- `"$DLCP_GPSIM_BIN"` points to `scripts/gpsim-xtc`, which automatically exports `GPSIM_MODULE_PATH` to the matching `artifacts/tools/gpsim-xtc/build/modules/.libs`.
-- If you bypass the wrapper and invoke the built binary directly, export:
-
-```bash
-export GPSIM_MODULE_PATH="$DLCP_TOOLS_ROOT/artifacts/tools/gpsim-xtc/build/modules/.libs${GPSIM_MODULE_PATH:+:$GPSIM_MODULE_PATH}"
-```
 
 Safe control flash preflight/live:
 
@@ -676,17 +643,12 @@ checkout interpreter from `$(dirname "$(git rev-parse --path-format=absolute --g
   by hand-editing the markdown — always go through `sim_rewrite_next.py`.
 - Every sub-task that lands a code change must include the verify command
   in its commit message, so the per-commit codex review sees the gate.
-- Do not delete `vendor/gpsim-0.32.1-xtc/` or `chain_gpsim.py` /
-  `wire_chain_gpsim.py` until Phase 4.9 fires — gpsim is the ground-truth
-  oracle through Phase 4.
 - All new code lives under `crates/dlcp-sim*/` (Rust) and
-  `src/dlcp_fw/sim/dlcp_sim_native.py` (Python facade).  Existing
-  `src/dlcp_fw/sim/*.py` files stay intact until their migration sub-task
-  fires.
-- Differential testing: `DLCP_SIM_BACKEND=dual pytest tests/sim` runs both
-  engines and asserts identical externally-visible behaviour (UART byte
-  streams, LCD raster, EEPROM image, RAM snapshots).  This is the
-  migration safety net — never bypass it.
+  `src/dlcp_fw/sim/dlcp_sim_native.py` (Python facade).  The old gpsim
+  wrappers (`chain_gpsim.py`, `wire_chain_gpsim.py`,
+  `vendor/gpsim-0.32.1-xtc/`, etc.) were retired in PF.4 phase 2;
+  `scripts/check_gpsim_excision.py` is the regression gate against
+  re-introducing them.
 
 ## Maintenance Rules
 
