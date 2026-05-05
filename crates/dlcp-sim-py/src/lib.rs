@@ -858,9 +858,7 @@ impl Chain {
     }
 
     /// Convenience: V1.71 CONTROL + V3.1 MAIN single-MAIN
-    /// chain.  Mirror of
-    /// `tests/sim/test_v171_v31_chain.py::_new_pair`.
-    /// Uses the canonical V3.1 release hex (app-only)
+    /// chain.  Uses the canonical V3.1 release hex (app-only)
     /// merged onto V2.3-combined.
     #[staticmethod]
     fn from_v171_v31() -> PyResult<Self> {

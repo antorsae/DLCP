@@ -24,9 +24,11 @@ the now-retired gpsim harness against real hardware for the
 preset-apply / IR / button race classes that Phase C needs and
 found byte timing within 20 % of hardware.  The rust engine has
 not been re-measured to that depth directly, but P3.5 part-10
-gated bit-exact TX-stream and LCD-raster parity against the
-gpsim ground-truth fixtures captured at that fidelity, which
-keeps the gpsim measurement load-bearing for the rust path.
+gates the rust chain bit-for-bit against gpsim ground-truth
+fixtures captured at that fidelity (task #29 -- 6-frame MAIN→CTRL
+response burst on MAIN's TX stream; task #34 -- bit-exact LCD
+raster), which keeps the gpsim measurement load-bearing for the
+rust path.
 
 Phase C v1 covers the protocol-contract subset of the spec's 15-case
 test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /
