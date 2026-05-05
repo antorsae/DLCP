@@ -56,13 +56,11 @@ analysis/
 │   ├── analysis/
 │   └── cli/
 ├── scripts/
-├── vendor/
-│   └── gpsim-0.32.1-xtc/
+├── vendor/                 # third-party source forks (currently empty)
 ├── artifacts/
 │   ├── LX521.4/
 │   ├── sim/current/
 │   ├── reanalysis/
-│   ├── tools/gpsim-xtc/
 │   └── probes/
 └── dlcp_fw/            # namespace bootstrap package
 ```
@@ -182,7 +180,7 @@ Canonical constants used across scripts/tests:
   - `V171_CONTROL_HEX` is the canonical V1.71 release artifact at `firmware/patched/releases/DLCP_Control_V1.71.hex`
 - Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`, `PATCHED_CONTROL_HEX_V164B`
 - Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
-- Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`, `GPSIM_XTC_SOURCE_DIR`, `GPSIM_XTC_ARTIFACTS_DIR`, `GPSIM_XTC_BUILD_DIR`, `GPSIM_XTC_BIN_DIR`, `GPSIM_XTC_BINARY`, `GPSIM_XTC_COMPAT_BINARY`, `GPSIM_XTC_BUILD_BINARY`, `GPSIM_XTC_MODULE_DIR`
+- Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`
 - Docs: `SEMANTIC_FUNCTION_MAP`
 
 Always prefer these constants over hardcoded paths.
@@ -190,7 +188,8 @@ Always prefer these constants over hardcoded paths.
 ### Simulation package (`src/dlcp_fw/sim`)
 
 - Core: `bus.py`, `protocol.py`, `scenarios.py`, `main_model.py`, `control_ui.py`
-- gpsim harness: `control_gpsim.py`, `main_gpsim.py`, `main_gpsim_timer3.py`, `chain_gpsim.py`, `wire_chain_gpsim.py`, `gpsim.py`
+- Rust facade: `dlcp_sim_native.py` (PyO3 wrapper into the rust `dlcp-sim` crate; the universal-clock simulator that replaced gpsim in PF.4)
+- Seeded MAIN-image utility: `main_seed.py` (`build_seeded_main_sim_hex`)
 - V3.0 tooling: `v30_symbols.py` (gpasm listing symbol parser, shifted ASM builder, assembly helper)
 - V1.7 CONTROL tooling: `v17_symbols.py` (K20 assembly helper, CONTROL shifted-source builder, `parse_v17_symbols`)
 - support: `hexio.py`, `lcd.py`, `overlay.py`, `manifests.py`, `paths.py`
@@ -238,8 +237,6 @@ Contains migrated analysis scripts and utilities including:
 
 ### Canonical (new)
 
-- `scripts/gpsim-xtc` *(legacy gpsim wrapper; gpsim binary still vendored, scheduled for full retirement under PF.4 phase 2)*
-- `scripts/gpsim` *(same)*
 - `scripts/hardware_flipper_ir.py`
 - `scripts/hardware_lcd_probe.py`
 - `scripts/hardware_state_test.py`
@@ -264,7 +261,10 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/check_replay_round_trip.py` *(P5.3 verifier)*
 - `scripts/sim_rewrite_next.py` *(progress-ledger automation)*
 
-**Removed in PF.4 phase 1 (commit 5a56279)**: 14 gpsim-only operator scripts have been deleted now that the rust silicon-ring engine is the default backend (`scripts/gpsim_tui_simulator.py`, `scripts/gpsim_menu_command_audit.py`, `scripts/gpsim_lcd_capture_decode.py`, `scripts/gpsim_headless_chain_diagnose.py`, `scripts/test_full_boot.py`, `scripts/test_button_inject.py`, `scripts/simctl.py`, `scripts/probe_baudcon_mapping.py`, `scripts/probe_v171_layer2_chain.py`, `scripts/capture_v171_early_boot_parity.py`, `scripts/capture_gpsim_ground_truth.py`, `scripts/run_phase0_blessing.py`, `scripts/replay_ground_truth.py`, `scripts/check_ground_truth_capture.py`).  PF.4 phase 2 will follow up with the 6 wrapper modules + `vendor/gpsim-0.32.1-xtc/` + `artifacts/tools/gpsim-xtc/` retirement once the 41 still-`@pytest.mark.dual_supported` test files have had their gpsim conditional branches surgically removed (per-file plan in `docs/PF4_PHASE2_PLAN.md`; tracked under `docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup tracker").
+**gpsim retirement complete (PF.4 phases 1+2)**:
+
+* Phase 1 (commit 5a56279): deleted 14 gpsim-only operator scripts plus 30 gpsim-only test files now that the rust silicon-ring engine is the default backend (`scripts/gpsim_tui_simulator.py`, `scripts/gpsim_menu_command_audit.py`, `scripts/gpsim_lcd_capture_decode.py`, `scripts/gpsim_headless_chain_diagnose.py`, `scripts/test_full_boot.py`, `scripts/test_button_inject.py`, `scripts/simctl.py`, `scripts/probe_baudcon_mapping.py`, `scripts/probe_v171_layer2_chain.py`, `scripts/capture_v171_early_boot_parity.py`, `scripts/capture_gpsim_ground_truth.py`, `scripts/run_phase0_blessing.py`, `scripts/replay_ground_truth.py`, `scripts/check_ground_truth_capture.py`).
+* Phase 2 (per-file surgery + commits e023c01/edefea4): excised the gpsim conditional branches from 31 dual-supported test files, deleted the 6 gpsim wrapper modules under `src/dlcp_fw/sim/`, dropped the `scripts/gpsim` and `scripts/gpsim-xtc` wrappers, retired the `vendor/gpsim-0.32.1-xtc/` source fork, removed the `GPSIM_XTC_*` path constants, and converted `scripts/check_gpsim_excision.py` from inventory printer to regression gate.  Per-file batching in `docs/PF4_PHASE2_PLAN.md`; ledger in `docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup tracker".
 
 ## Tests (`tests`)
 
@@ -273,8 +273,7 @@ Current suite (~86 test files, ~909 tests collected after PF.4 phase 1 deletions
 Pytest markers:
 
 - `slow`: long-running simulation test
-- `gpsim`: requires gpsim binary (still relevant for the 41 still-`@pytest.mark.dual_supported` tests that retain a gpsim conditional branch; the gpsim binary itself is scheduled for retirement under PF.4 phase 2)
-- `wire`: gpsim current-loop / wire-chain test
+- `wire`: legacy current-loop / wire-chain test marker (inert post-PF.4)
 - `hardware`: live hardware test; skipped by default unless `--run-hardware` is passed
 - `dual_supported`: test has been migrated to the rust dlcp-sim engine; the conftest auto-skip rule for `DLCP_SIM_BACKEND={rust,dual}` only schedules tests that carry this marker
 

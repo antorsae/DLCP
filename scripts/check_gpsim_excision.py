@@ -104,20 +104,54 @@ def _iter_python_files(root: Path):
 
 
 def _scan_imports(files) -> list[tuple[Path, int, str]]:
-    """Find imports of deleted wrapper modules."""
-    pat = re.compile(
-        r"\b(?:from|import)\s+dlcp_fw\.sim\.(?P<mod>%s)\b"
-        % "|".join(DELETED_WRAPPER_MODULES)
+    """Find imports of deleted wrapper modules.
+
+    Catches both shapes:
+      from dlcp_fw.sim.<wrapper> import ...
+      import dlcp_fw.sim.<wrapper>
+      from dlcp_fw.sim import <wrapper>            (single)
+      from dlcp_fw.sim import (..., <wrapper>, ...)  (parenthesized list)
+    """
+    wrappers = "|".join(DELETED_WRAPPER_MODULES)
+    # Form A: dotted-path import.
+    pat_dotted = re.compile(
+        rf"\b(?:from|import)\s+dlcp_fw\.sim\.({wrappers})\b"
     )
+    # Form B: package re-export import.  Matches the wrapper name as a
+    # bare identifier inside a `from dlcp_fw.sim import ...` clause,
+    # whether single-line or parenthesized.  We track being inside a
+    # `from dlcp_fw.sim import (` block via simple state.
+    pat_from_import_open = re.compile(r"\bfrom\s+dlcp_fw\.sim\s+import\s+(.*)$")
+    pat_wrapper_name = re.compile(rf"\b({wrappers})\b")
     hits: list[tuple[Path, int, str]] = []
     for path in files:
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        in_paren_block = False
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if pat.search(line):
+            if pat_dotted.search(line):
                 hits.append((path, lineno, line.rstrip()))
+                continue
+            m = pat_from_import_open.search(line)
+            if m:
+                tail = m.group(1).strip()
+                # Open-paren multi-line import.
+                if tail.startswith("("):
+                    in_paren_block = True
+                    if pat_wrapper_name.search(tail):
+                        hits.append((path, lineno, line.rstrip()))
+                else:
+                    in_paren_block = False
+                    if pat_wrapper_name.search(tail):
+                        hits.append((path, lineno, line.rstrip()))
+                continue
+            if in_paren_block:
+                if pat_wrapper_name.search(line):
+                    hits.append((path, lineno, line.rstrip()))
+                if ")" in line:
+                    in_paren_block = False
     return hits
 
 

@@ -232,16 +232,15 @@ def ground_truth_dir(request: pytest.FixtureRequest) -> Path | None:
 @pytest.fixture(autouse=True)
 def _ground_truth_capture(request: pytest.FixtureRequest):
     """Open a `GroundTruthContext` for the duration of every test when
-    `--capture-ground-truth` is set.  Tests don't see this fixture
-    directly; the chain harnesses in `dlcp_fw.sim.{chain,wire_chain,
-    control}_gpsim` look up the active context via a module-level
-    `ContextVar` and call `record_event(...)` + `snapshot_after_event(...)`
-    on every mutator.  The conftest itself takes no init snapshot
-    because the chain harnesses don't exist yet at fixture-enter
-    time; instead, the first per-event snapshot effectively serves
-    as the init snapshot for that harness, and the validator's
-    "≥ 1 snapshot per captured test" rule is satisfied as long as
-    a test actually drives a chain.
+    `--capture-ground-truth` is set.
+
+    Originally fed by ``record_event(...)`` /
+    ``snapshot_after_event(...)`` calls inside the gpsim chain
+    harnesses (``dlcp_fw.sim.{chain,wire_chain,control}_gpsim``).
+    Those harnesses were retired in PF.4 phase 2; the fixture now
+    runs as a no-op snapshot scaffold preserved for any external
+    runner that opts into ``--capture-ground-truth``.  No live
+    consumer exists in-tree.
     """
     if not _capture_enabled(request.config):
         yield
