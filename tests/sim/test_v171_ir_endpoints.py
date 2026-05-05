@@ -14,14 +14,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -37,13 +30,6 @@ STANDBY_FRAME = (0xB0, 0x03, 0x00)
 WAKE_FRAME = (0xB0, 0x03, 0x01)
 
 
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
-
-
 def _require_rust() -> None:
     if not _RUST_CHAIN_IMPORT_OK:
         pytest.fail(
@@ -53,10 +39,7 @@ def _require_rust() -> None:
 
 
 def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
-    """Normalise a TX frame into a (route, cmd, data) tuple.
-    gpsim's `tx_frames()` returns TxTriplet dataclass instances
-    (with .route/.cmd/.data attrs); rust returns plain tuples.
-    """
+    """Normalise a TX frame into a (route, cmd, data) tuple."""
     if isinstance(f, tuple):
         return f
     return (f.route, f.cmd, f.data)
@@ -73,53 +56,25 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _boot(hex_path: Path) -> GpsimControlHarness:
-    """Boot with heartbeat disabled post-warmup so TX capture is deterministic.
+def _warmup_and_quiesce(h) -> None:  # type: ignore[no-untyped-def]
+    """Bring CONTROL through boot, then pause heartbeat + drain pending TX.
 
     The stock full-sync / poll burst emits ``[B0, 03, 01]`` as part of
-    its wake status broadcast; if the heartbeat keeps firing those,
-    the IR-endpoint parity assertions can't distinguish "IR endpoint
-    emitted the frame" from "heartbeat emitted the frame".  Warmup
-    happens with heartbeat on (to complete the boot-handshake), then
-    we pause the heartbeat immediately before injecting IR.
+    its wake status broadcast; pausing heartbeat post-warmup keeps the
+    IR-endpoint parity assertions able to distinguish "IR endpoint
+    emitted the frame" from "heartbeat emitted the frame".
     """
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        heartbeat_rx_mode="full",
-    )
-
-
-def _warmup_and_quiesce(h: GpsimControlHarness) -> None:
-    """Bring CONTROL through boot, then pause heartbeat + drain pending TX."""
     h.warmup(25_000_000)
     h.pause_heartbeat()
-    # Let any full-sync burst already in flight finish before measuring.
     for _ in range(40):
         h.step()
 
 
-def _run_in_backends(
-    backend: str,
-    hex_path: Path,
-    body,  # Callable[[harness], None]
-) -> None:
-    """Dispatch a duck-typed scenario body to gpsim, rust, or both
-    per the `dlcp_sim_backend` fixture.  Rust runs first in dual
-    mode so a missing native binding fails fast.
-    """
-    if backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(hex_path))
-        body(chain)
-    if backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        h = _boot(hex_path)
-        try:
-            body(h)
-        finally:
-            h.close()
+def _run_with_rust(hex_path: Path, body) -> None:
+    """Run scenario body against the rust facade chain."""
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(hex_path))
+    body(chain)
 
 
 def _run_ir_emits_frame(cmd: int, expected: tuple[int, int, int], label: str):
@@ -140,36 +95,29 @@ def _run_ir_emits_frame(cmd: int, expected: tuple[int, int, int], label: str):
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x3a_emits_standby_frame(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """RC5 0x3A on menu address → [B0, 03, 00]."""
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex,
-        _run_ir_emits_frame(0x3A, STANDBY_FRAME, "IR 0x3A"),
+    _run_with_rust(v171_hex, _run_ir_emits_frame(0x3A, STANDBY_FRAME, "IR 0x3A"),
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x3b_emits_wake_frame(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """RC5 0x3B on menu address → [B0, 03, 01]."""
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex,
-        _run_ir_emits_frame(0x3B, WAKE_FRAME, "IR 0x3B"),
+    _run_with_rust(v171_hex, _run_ir_emits_frame(0x3B, WAKE_FRAME, "IR 0x3B"),
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_endpoints_emit_expected_order(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """The IR-triggered frame appears as the FIRST new frame after injection.
 
@@ -206,14 +154,13 @@ def test_v171_ir_endpoints_emit_expected_order(
         assert new_frames_b[0] == WAKE_FRAME, (
             f"0x3B first new frame != wake; got {new_frames_b[0]}"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_unknown_code_does_not_prepend_v171_frame(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """Unmapped RC5 code: the first new frame (if any) must not be V1.71's.
 
@@ -239,4 +186,4 @@ def test_v171_ir_unknown_code_does_not_prepend_v171_frame(
         assert first != WAKE_FRAME, (
             f"unmapped IR 0x40 emitted wake frame first; got {new_frames}"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)

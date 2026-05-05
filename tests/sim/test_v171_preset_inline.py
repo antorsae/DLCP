@@ -24,14 +24,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -47,13 +40,6 @@ PRESET_FRAME_ROUTE = 0xB0
 PRESET_FRAME_CMD = 0x20
 CONTROL_FLAGS_ADDR = 0x01F
 PRESET_BIT = 6
-
-
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
 
 
 def _require_rust() -> None:
@@ -95,45 +81,18 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _new_harness(
-    hex_path: Path,
-    *,
-    chunk_cycles: int = 600_000,
-    hold_cycles: int = 300_000,
-) -> GpsimControlHarness:
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=chunk_cycles,
-        hold_cycles=hold_cycles,
-        heartbeat_rx_mode="full",
-    )
-
-
 def _set_preset_bit(h, value: bool) -> None:  # type: ignore[no-untyped-def]
-    """Force-set or -clear the PRESET_BIT before injecting an IR shortcut.
-
-    Backend-agnostic: rust harness exposes `write_reg`; gpsim only
-    has the lower-level `_issue` register-poke command.
-    """
+    """Force-set or -clear the PRESET_BIT before injecting an IR shortcut."""
     flags = h.read_reg(CONTROL_FLAGS_ADDR)
     mask = 1 << PRESET_BIT
     if value:
         flags |= mask
     else:
         flags &= ~mask
-    if hasattr(h, "write_reg"):
-        h.write_reg(CONTROL_FLAGS_ADDR, flags)
-    else:
-        h._issue(f"reg(0x{CONTROL_FLAGS_ADDR:03X})=0x{flags:02X}", 5.0)
+    h.write_reg(CONTROL_FLAGS_ADDR, flags)
 
 
-def _warm_and_dispatch_ir(
-    h: GpsimControlHarness,
-    cmd: int,
-    *,
-    steps: int = 24,
-) -> None:
+def _warm_and_dispatch_ir(h, cmd: int, *, steps: int = 24) -> None:  # type: ignore[no-untyped-def]
     h.warmup(25_000_000)
     h.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=cmd)
     for _ in range(steps):
@@ -144,65 +103,22 @@ def _preset_frame(data: int) -> tuple[int, int, int]:
     return (PRESET_FRAME_ROUTE, PRESET_FRAME_CMD, data)
 
 
-def _run_in_backends(
-    backend: str,
+def _run_with_rust(
     hex_path: Path,
     body,  # Callable[[harness], None]
     *,
-    chunk_cycles: int = 600_000,
-    hold_cycles: int = 300_000,
     eeprom_init: dict[int, int] | None = None,
 ) -> None:
-    """Dispatch a duck-typed body to gpsim / rust / both per backend.
-    Rust runs first in dual mode so a missing native binding fails
-    fast.  `eeprom_init` is a dict of {addr: value} bytes to seed
-    into CONTROL's EEPROM before warmup -- gpsim path writes a HEX
-    file and passes `eeprom_file=`; rust path calls
-    `chain.write_control_eeprom_byte` per entry.
+    """Run scenario body against the rust facade chain.  `eeprom_init`
+    is a dict of {addr: value} bytes seeded via
+    `chain.write_control_eeprom_byte` before the body runs.
     """
-    if backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(hex_path))
-        if eeprom_init:
-            for addr, value in eeprom_init.items():
-                chain.write_control_eeprom_byte(addr, value)
-        body(chain)
-    if backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        eeprom_kwargs = {}
-        if eeprom_init:
-            # gpsim consumes EEPROM via `eeprom_file=` HEX path.
-            # Build a single-record HEX file with the seeded bytes
-            # (only the lowest-addr entry is a single byte; for
-            # non-contiguous seeds, callers should write one HEX
-            # file per dict entry -- the V1.71 preset tests only
-            # seed one byte at 0x74).
-            import tempfile
-            tmp_dir = tempfile.mkdtemp(prefix="rust_eeprom_seed_")
-            ee_path = Path(tmp_dir) / "seed.hex"
-            # For the preset tests we only seed one byte; emit a
-            # single record per entry, then the EOF.
-            lines: list[str] = []
-            for addr, value in eeprom_init.items():
-                ll = 1
-                total = ll + ((addr >> 8) & 0xFF) + (addr & 0xFF) + value
-                cc = (~total + 1) & 0xFF
-                lines.append(f":{ll:02X}{addr:04X}00{value:02X}{cc:02X}")
-            lines.append(":00000001FF")
-            ee_path.write_text("\n".join(lines) + "\n", encoding="ascii")
-            eeprom_kwargs["eeprom_file"] = ee_path
-        h = GpsimControlHarness(
-            hex_path,
-            fast_boot=False,
-            chunk_cycles=chunk_cycles,
-            hold_cycles=hold_cycles,
-            heartbeat_rx_mode="full",
-            **eeprom_kwargs,
-        )
-        try:
-            body(h)
-        finally:
-            h.close()
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(hex_path))
+    if eeprom_init:
+        for addr, value in eeprom_init.items():
+            chain.write_control_eeprom_byte(addr, value)
+    body(chain)
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +126,9 @@ def _run_in_backends(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x39_sets_preset_b_and_emits_frame(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """Starting from preset A, RC5 0x39 flips to B and emits [B0, 20, 01]."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -232,14 +147,13 @@ def test_v171_ir_0x39_sets_preset_b_and_emits_frame(
         assert flags & (1 << PRESET_BIT), (
             f"PRESET_BIT not set after IR 0x39 (flags=0x{flags:02X})"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x38_sets_preset_a_and_emits_frame(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """Starting from preset B, RC5 0x38 flips to A and emits [B0, 20, 00]."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -258,7 +172,7 @@ def test_v171_ir_0x38_sets_preset_a_and_emits_frame(
         assert not (flags & (1 << PRESET_BIT)), (
             f"PRESET_BIT not cleared after IR 0x38 (flags=0x{flags:02X})"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -266,10 +180,9 @@ def test_v171_ir_0x38_sets_preset_a_and_emits_frame(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x39_twice_emits_once(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """Second RC5 0x39 when already in B is a no-op.
 
@@ -302,17 +215,13 @@ def test_v171_ir_0x39_twice_emits_once(
         assert h.read_reg(CONTROL_FLAGS_ADDR) & (1 << PRESET_BIT), (
             "PRESET_BIT should remain set after repeat IR 0x39"
         )
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex, _do,
-        chunk_cycles=10_000, hold_cycles=5_000,
-    )
+    _run_with_rust(v171_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_ir_0x38_twice_emits_once(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """Second RC5 0x38 when already in A is a no-op.
 
@@ -339,10 +248,7 @@ def test_v171_ir_0x38_twice_emits_once(
         assert not (h.read_reg(CONTROL_FLAGS_ADDR) & (1 << PRESET_BIT)), (
             "PRESET_BIT should remain clear after repeat IR 0x38"
         )
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex, _do,
-        chunk_cycles=10_000, hold_cycles=5_000,
-    )
+    _run_with_rust(v171_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +256,9 @@ def test_v171_ir_0x38_twice_emits_once(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_preset_ab_toggle_sequence(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """0x39, 0x38, 0x39 yields [B, A, B] frame sequence and flag toggle."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -372,7 +277,7 @@ def test_v171_preset_ab_toggle_sequence(
             )
         # Final flag state should match last shortcut (0x39 → B).
         assert h.read_reg(CONTROL_FLAGS_ADDR) & (1 << PRESET_BIT)
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -380,10 +285,9 @@ def test_v171_preset_ab_toggle_sequence(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_non_preset_ir_first_frame_is_not_preset(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """A menu-configured RC5 (0x10 = volume up): the IR-triggered frame
     is NOT a preset frame.
@@ -414,7 +318,7 @@ def test_v171_non_preset_ir_first_frame_is_not_preset(
         assert first != _preset_frame(0x01), (
             f"volume-up IR emitted preset B frame first; got {new_frames}"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -438,10 +342,9 @@ def _write_preset_eeprom_image(path: Path, preset_byte: int) -> None:
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_preset_boot_init_byte_01_sets_preset_bit(
-    v171_hex: Path, tmp_path: Path, dlcp_sim_backend: str
+    v171_hex: Path, tmp_path: Path
 ) -> None:
     """EEPROM[0x74] = 0x01 → PRESET_BIT set after settings_load_eeprom runs."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -451,17 +354,15 @@ def test_v171_preset_boot_init_byte_01_sets_preset_bit(
             f"PRESET_BIT not set after boot with EEPROM[0x74]=0x01 "
             f"(flags=0x{flags:02X})"
         )
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex, _do,
+    _run_with_rust(v171_hex, _do,
         eeprom_init={0x74: 0x01},
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_preset_boot_init_byte_00_clears_preset_bit(
-    v171_hex: Path, tmp_path: Path, dlcp_sim_backend: str
+    v171_hex: Path, tmp_path: Path
 ) -> None:
     """EEPROM[0x74] = 0x00 → PRESET_BIT clear after boot."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -471,17 +372,15 @@ def test_v171_preset_boot_init_byte_00_clears_preset_bit(
             f"PRESET_BIT unexpectedly set after boot with EEPROM[0x74]=0x00 "
             f"(flags=0x{flags:02X})"
         )
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex, _do,
+    _run_with_rust(v171_hex, _do,
         eeprom_init={0x74: 0x00},
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_preset_boot_init_any_nonzero_nonone_defaults_to_a(
-    v171_hex: Path, tmp_path: Path, dlcp_sim_backend: str
+    v171_hex: Path, tmp_path: Path
 ) -> None:
     """EEPROM[0x74] = 0xFF (erased) → PRESET_BIT clear (defaults to A)."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -491,7 +390,6 @@ def test_v171_preset_boot_init_any_nonzero_nonone_defaults_to_a(
             f"PRESET_BIT not clear on erased EEPROM[0x74]=0xFF "
             f"(flags=0x{flags:02X})"
         )
-    _run_in_backends(
-        dlcp_sim_backend, v171_hex, _do,
+    _run_with_rust(v171_hex, _do,
         eeprom_init={0x74: 0xFF},
     )

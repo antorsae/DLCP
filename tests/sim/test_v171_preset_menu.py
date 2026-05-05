@@ -25,14 +25,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -47,13 +40,6 @@ CONTROL_FLAGS_ADDR = 0x01F
 PRESET_BIT = 6
 DISPLAY_STATE_INDEX_ADDR = 0x0BF
 BUTTON_SCAN_ADDR = 0x09A  # bit 1 = UP, bit 2 = DOWN, bit 4 = LEFT, bit 5 = RIGHT, bit 3 = SELECT
-
-
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
 
 
 def _require_rust() -> None:
@@ -75,25 +61,14 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _boot(hex_path: Path) -> GpsimControlHarness:
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        heartbeat_rx_mode="full",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Menu dispatch: state 1 exists and calls preset screen
 # ---------------------------------------------------------------------------
 
 def _run_menu_state_index_check(h) -> None:  # type: ignore[no-untyped-def]
-    """Backend-agnostic body shared by both gpsim and rust paths."""
     h.warmup(25_000_000)
     for target in (0x01, 0x02, 0x03, 0x00):
-        h.write_reg(DISPLAY_STATE_INDEX_ADDR, target) if hasattr(h, "write_reg") else \
-            h._issue(f"reg(0x{DISPLAY_STATE_INDEX_ADDR:03X})=0x{target:02X}", 5.0)
+        h.write_reg(DISPLAY_STATE_INDEX_ADDR, target)
         for _ in range(4):
             h.step()
         current = h.read_reg(DISPLAY_STATE_INDEX_ADDR)
@@ -103,10 +78,9 @@ def _run_menu_state_index_check(h) -> None:  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_menu_state_index_reaches_1_and_2_and_3(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path,
 ) -> None:
     """Writing display_state_index directly to 1/2/3 does not crash.
 
@@ -114,20 +88,11 @@ def test_v171_menu_state_index_reaches_1_and_2_and_3(
     four indices (0..3) without a wedged register read or infinite
     loop.  Pressing SELECT from the harness is flakey at the edge
     between boot-handshake and display-loop states, so this test
-    sets the index directly via gpsim's reg() override or the
-    rust facade's `write_reg`.
+    sets the index directly via the rust facade's `write_reg`.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(v171_hex))
-        _run_menu_state_index_check(chain)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        h = _boot(v171_hex)
-        try:
-            _run_menu_state_index_check(h)
-        finally:
-            h.close()
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(v171_hex))
+    _run_menu_state_index_check(chain)
 
 
 # ---------------------------------------------------------------------------

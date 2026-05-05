@@ -22,14 +22,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness, RxTriplet
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -47,13 +40,6 @@ FULL_SYNC_LO_ADDR = 0x09F
 FULL_SYNC_HI_ADDR = 0x0A0
 
 
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
-
-
 def _require_rust() -> None:
     if not _RUST_CHAIN_IMPORT_OK:
         pytest.fail(
@@ -62,21 +48,11 @@ def _require_rust() -> None:
         )
 
 
-def _run_in_backends(
-    backend: str, hex_path: Path, body  # Callable[[harness], None]
-) -> None:
-    """Dispatch a duck-typed scenario body to gpsim, rust, or both."""
-    if backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(hex_path))
-        body(chain)
-    if backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        h = _boot(hex_path)
-        try:
-            body(h)
-        finally:
-            h.close()
+def _run_with_rust(hex_path: Path, body) -> None:
+    """Run scenario body against the rust facade chain."""
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(hex_path))
+    body(chain)
 
 
 @pytest.fixture(scope="module")
@@ -90,28 +66,16 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _boot(hex_path: Path) -> GpsimControlHarness:
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        heartbeat_rx_mode="full",
-    )
-
-
 def _inject_bf08(h, payload: int) -> None:  # type: ignore[no-untyped-def]
     """Inject a single BF/08/payload routed frame and give parser time to run.
 
-    Backend-agnostic: gpsim's `inject_triplet` accepts an `RxTriplet`
-    object; rust's `inject_triplet` is duck-typed to accept either an
-    object with .route/.cmd/.data attrs OR positional ints.
-
-    The heartbeat keeps injecting BF/03/06/07/1D frames between our
-    test injections, so the RX ring fills quickly and the parser can
-    take a while to reach our BF/08 bytes.  40 chunks (~24M cycles
-    / ~6ms) is sufficient to drain a bursty ring.
+    Uses rust facade's positional inject_triplet shape.  The
+    heartbeat keeps injecting BF/03/06/07/1D frames between our test
+    injections, so the RX ring fills quickly and the parser can take
+    a while to reach our BF/08 bytes.  40 chunks (~24M cycles / ~6ms)
+    is sufficient to drain a bursty ring.
     """
-    h.inject_triplet(RxTriplet(route=0xBF, cmd=0x08, data=payload & 0xFF))
+    h.inject_triplet(0xBF, 0x08, payload & 0xFF)
     for _ in range(40):
         h.step()
 
@@ -121,10 +85,9 @@ def _inject_bf08(h, payload: int) -> None:  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_bf08_nonzero_sets_dsp_fault_bit(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """BF/08/0x42 sets DSP_FAULT_BIT and stores 0x42 at bf08_fault_byte."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -138,14 +101,13 @@ def test_v171_bf08_nonzero_sets_dsp_fault_bit(
         assert fault_byte == 0x42, (
             f"bf08_fault_byte != 0x42 after BF/08/0x42 (got 0x{fault_byte:02X})"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_bf08_second_code_updates_byte(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """A follow-up BF/08 with a different code updates bf08_fault_byte.
 
@@ -167,7 +129,7 @@ def test_v171_bf08_second_code_updates_byte(
             f"got 0x{h.read_reg(BF08_FAULT_BYTE_ADDR):02X}"
         )
         assert h.read_reg(CONTROL_FLAGS_ADDR) & (1 << DSP_FAULT_BIT)
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -175,10 +137,9 @@ def test_v171_bf08_second_code_updates_byte(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_bf08_zero_clears_dsp_fault_bit(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """After a set-then-clear sequence, DSP_FAULT_BIT is 0."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -190,14 +151,13 @@ def test_v171_bf08_zero_clears_dsp_fault_bit(
         assert not (flags & (1 << DSP_FAULT_BIT)), (
             f"DSP_FAULT_BIT still set after BF/08/0x00 (flags=0x{flags:02X})"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_bf08_set_then_clear_flag_transition(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """Fault-set then fault-clear toggles DSP_FAULT_BIT correctly.
 
@@ -226,14 +186,13 @@ def test_v171_bf08_set_then_clear_flag_transition(
                 "DSP_FAULT_BIT did not clear after 3 BF/08/0x00 attempts; "
                 f"final flags=0x{h.read_reg(CONTROL_FLAGS_ADDR):02X}"
             )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_bf08_zero_when_already_clear_is_noop(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """BF/08/0x00 when DSP_FAULT_BIT already clear doesn't touch counter.
 
@@ -250,4 +209,4 @@ def test_v171_bf08_zero_when_already_clear_is_noop(
         flags = h.read_reg(CONTROL_FLAGS_ADDR)
         assert not (flags & (1 << DSP_FAULT_BIT))
         assert h.read_reg(BF08_FAULT_BYTE_ADDR) == 0x00
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)

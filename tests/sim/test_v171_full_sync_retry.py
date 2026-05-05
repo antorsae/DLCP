@@ -26,14 +26,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -48,13 +41,6 @@ CONTROL_FLAGS_ADDR = 0x01F
 PRESET_BIT = 6
 PRESET_FRAME_A = (0xB0, 0x20, 0x00)
 PRESET_FRAME_B = (0xB0, 0x20, 0x01)
-
-
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
 
 
 def _require_rust() -> None:
@@ -76,29 +62,16 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _boot(hex_path: Path) -> GpsimControlHarness:
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        heartbeat_rx_mode="full",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Behavioral: preset frame appears in TX during the periodic full-sync cycle
 # ---------------------------------------------------------------------------
 
 def _run_full_sync_preset_check(h) -> None:  # type: ignore[no-untyped-def]
-    """Backend-agnostic body shared by both gpsim and rust paths."""
     h.warmup(80_000_000)
     for _ in range(160):
         h.step()
-    tx_iter = h.tx_frames()
-    # gpsim returns TxTriplet objects with .route/.cmd/.data; rust
-    # returns plain (route, cmd, data) tuples.  Normalize.
     tx: set[tuple[int, int, int]] = set()
-    for f in tx_iter:
+    for f in h.tx_frames():
         if isinstance(f, tuple):
             tx.add(f)
         else:
@@ -109,10 +82,9 @@ def _run_full_sync_preset_check(h) -> None:  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_full_sync_emits_preset_frame_after_connect(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path,
 ) -> None:
     """After warmup the TX stream contains at least one preset frame.
 
@@ -126,14 +98,6 @@ def test_v171_full_sync_emits_preset_frame_after_connect(
     Warmup is generous (≥80M cycles) to make sure step 6 has cycled
     around at least once even if the trigger period varies.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(v171_hex))
-        _run_full_sync_preset_check(chain)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        h = _boot(v171_hex)
-        try:
-            _run_full_sync_preset_check(h)
-        finally:
-            h.close()
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(v171_hex))
+    _run_full_sync_preset_check(chain)
