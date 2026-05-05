@@ -23,10 +23,10 @@ Phase C exercises the *protocol contract* end-to-end:
 the now-retired gpsim harness against real hardware for the
 preset-apply / IR / button race classes that Phase C needs and
 found byte timing within 20 % of hardware.  The rust engine has
-not been re-measured to that depth; treat the Phase C convergence
-expectations below as load-bearing only insofar as the silicon-ring
-executor preserves the gpsim TAS3108/UART byte cadences (verified
-by parity gates in P3.5 / P5).
+not been re-measured to that depth directly, but P3.5 part-10
+gated bit-exact TX-stream and LCD-raster parity against the
+gpsim ground-truth fixtures captured at that fidelity, which
+keeps the gpsim measurement load-bearing for the rust path.
 
 Phase C v1 covers the protocol-contract subset of the spec's 15-case
 test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /

@@ -56,8 +56,7 @@ def _require_rust() -> None:
 
 def _new_rust_chain(control_hex: Path) -> "RustChain":
     """Build a V1.71-or-V1.7-shifted CONTROL + V3.1 MAIN
-    single-MAIN chain on the rust engine.  Mirror of
-    `_new_pair` but on the rust facade -- uses
+    single-MAIN chain on the rust engine.  Uses
     `Chain.from_v17_v3x_chain` so any K20 CONTROL hex
     (V1.71, V1.7-shifted) can be paired with V3.1 MAIN
     (app-only, merged onto V2.3-combined for silicon-
