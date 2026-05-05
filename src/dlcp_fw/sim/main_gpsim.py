@@ -10,10 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence
 
-from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
-
 from .gpsim import require_gpsim_binary
-from .hexio import parse_intel_hex, write_intel_hex
 from .main_seed import (
     MAIN_APP_PATCH_LIMIT,
     MAIN_APP_PATCH_START,
