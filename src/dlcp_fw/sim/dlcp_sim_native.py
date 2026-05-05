@@ -1015,7 +1015,7 @@ class Chain:
 
     def current_ctl_pc(self) -> int:
         """CONTROL core's current PC (firmware program counter,
-        word-aligned, masked to 21 bits).Used by tests that align
+        word-aligned, masked to 21 bits).  Used by tests that align
         observation windows to firmware-loop-head events.
         """
         return int(self._inner.current_ctl_pc())
@@ -1072,7 +1072,7 @@ class Chain:
 
     def read_dsp_address_nack_count_remaining(self) -> int:
         """Remaining address-NACK injection budget on the
-        TAS3108 slave coupled to MAIN0.Used by deafness-chain
+        TAS3108 slave coupled to MAIN0.  Used by deafness-chain
         regression tests to prove firmware-driven I²C bursts
         consumed part of the budget set by
         :meth:`set_i2c_fault`.
@@ -1145,17 +1145,17 @@ class Chain:
 
     def step(self) -> None:
         """Step a single 200K-Tcy / 3.2 M-tick chunk.
- Used by the
 
-        ``test_v17_shifted_full_parity`` scenario helpers.
+        Used by the ``test_v17_shifted_full_parity`` scenario
+        helpers.
         """
         self._inner.step()
 
     def warmup(self, cycles: int) -> None:
         """Step ``cycles`` K20-Tcy worth of universal
-        ticks (each Tcy = 16 universal ticks). Used by the parity-test helpers to advance past
-        the cold-boot handshake before driving the
-        scenario.
+        ticks (each Tcy = 16 universal ticks).  Used by the
+        parity-test helpers to advance past the cold-boot
+        handshake before driving the scenario.
         """
         self._inner.warmup(int(cycles))
 
