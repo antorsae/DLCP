@@ -50,14 +50,13 @@ PF.3 + task #116 (2026-05-04) un-XFAIL'd 4 of the original 5
 ``_V171_V32_PB2_BRIDGE_XFAIL`` tests:
 ``test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2``,
 ``lcd_renders_zero_idle``, ``lcd_renders_mixed_counters``, and
-``test_v171_v32_layer5_chain_lcd_renders_saturation_plus``.  ONE
-test still wears the ``_V171_V32_PB2_BRIDGE_XFAIL`` marker:
-
-  * ``pb_cache_isolation`` -- passes on rust; the marker stays from
-    the PF.3 era as a pure decorator-cleanup follow-up (the
-    underlying multi-frame BF/22..27 cache misroute, originally
-    tracked as task #117, was a gpsim-side bug that closed when
-    gpsim was retired in PF.4 phase 2).
+``test_v171_v32_layer5_chain_lcd_renders_saturation_plus``.  PF.3
+closeout (2026-05-05) retired the last marker on
+``pb_cache_isolation`` -- the underlying multi-frame BF/22..27
+cache misroute (task #117) was a gpsim-side bug that closed when
+gpsim was retired in PF.4 phase 2; the rust path converges via
+``_press_drive_until_pb_present`` and the decorator constant
+``_V171_V32_PB2_BRIDGE_XFAIL`` was deleted.
 
 The original Task #22 framing (gpsim two-MAIN topology echoes MAIN0's
 TX into both downstream and upstream paths) is the architectural half
@@ -405,25 +404,6 @@ def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 
-# ---------------------------------------------------------------------------
-# pb_cache_isolation marker (preserved from PF.3; task #117 root
-# cause was the gpsim wire-chain multi-frame cache misroute, now
-# moot under rust-only).  Kept xfail with strict=False/run=False
-# so it does not run; can be retired once the marker is removed
-# from the test in a follow-up.
-# ---------------------------------------------------------------------------
-_V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
-    reason=(
-        "PB2 cache isolation: marker preserved from PF.3 era; "
-        "the gpsim-side multi-frame cache misroute (task #117) was "
-        "the original blocker.  Rust path passes the test, but the "
-        "marker stays for now; retire once a follow-up cleans up "
-        "the marker on the test directly."
-    ),
-    strict=False,
-    run=False,
-)
-
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
@@ -522,7 +502,6 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
     )
 @pytest.mark.dual_supported
 @pytest.mark.slow
-@_V171_V32_PB2_BRIDGE_XFAIL
 def test_v171_v32_layer5_chain_pb_cache_isolation(
     v171_hex: Path, v32_hex: Path
 ) -> None:
@@ -535,12 +514,11 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     between cache slots would mean the parser is indexing the wrong
     PB on reply arrival.
 
-    Post-PF.3 (2026-05-04): test PASSES via the
-    ``_press_drive_until_pb_present`` wiggle helper (busy-loop
-    convergence resolved).  Decorator stays via
-    ``_V171_V32_PB2_BRIDGE_XFAIL`` from the PF.3 era; retire once a
-    follow-up cleans up the marker on the test directly (task #117
-    on the gpsim side closed when gpsim was retired in PF.4 phase 2).
+    PF.3 closeout (2026-05-05): the stale ``_V171_V32_PB2_BRIDGE_XFAIL``
+    decorator was retired here -- the underlying gpsim-side multi-
+    frame BF/22..27 cache misroute (task #117) closed when gpsim was
+    retired in PF.4 phase 2, and the rust path converges via
+    ``_press_drive_until_pb_present``.
     """
     _require_rust()
     c = RustChain.from_v171_v32(
