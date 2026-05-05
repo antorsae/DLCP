@@ -19,7 +19,6 @@ from dlcp_fw.paths import (
     V31_MAIN_ASM,
     V31_MAIN_HEX,
 )
-from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.main_model import MainUnitModel
 
 

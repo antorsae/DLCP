@@ -14,6 +14,11 @@ from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
 
 from .gpsim import require_gpsim_binary
 from .hexio import parse_intel_hex, write_intel_hex
+from .main_seed import (
+    MAIN_APP_PATCH_LIMIT,
+    MAIN_APP_PATCH_START,
+    build_seeded_main_sim_hex,
+)
 from .manifests import main_reset_to_appstart, main_serial_mailbox_hooks_for_main_hex
 from .overlay import apply_overlays
 from .paths import MAIN_HEX_PATCHED, SIM_ARTIFACTS_DIR
@@ -36,8 +41,8 @@ MAIN_MAILBOX_TX_BASE = 0x740
 MAIN_MAILBOX_TX_SIZE = 0x40
 MAIN_ADC_VREF_VOLTS = 5.0
 MAIN_AN0_BOOT_ADC = 0x0237
-MAIN_APP_PATCH_START = 0x1000
-MAIN_APP_PATCH_LIMIT = 0x5600
+# MAIN_APP_PATCH_START / MAIN_APP_PATCH_LIMIT live in main_seed.py;
+# re-exported above for legacy callers that import them from here.
 _MAIN_EXEC_BREAK_RE = re.compile(r"Execution at .*?\(0x([0-9A-Fa-f]+)\)")
 _MAIN_CYCLE_LINE_RE = re.compile(r"^\s*0x([0-9A-Fa-f]+)\s+p18f[0-9A-Za-z]+", re.MULTILINE)
 _MAIN_AN0_BOOT_CYCLE_CACHE: dict[str, int] = {}
@@ -316,47 +321,6 @@ def _resolve_main_cmd03_dispatch_addrs(
         return_addr & 0xFFFF,
         dispatch_addr & 0xFFFF,
     )
-
-
-def build_seeded_main_sim_hex(
-    main_hex: Path,
-    output_hex: Path,
-    *,
-    seed_hex: Path = STOCK_MAIN_COMBINED_HEX,
-) -> Path:
-    """
-    Materialize a full-device MAIN image for gpsim from an app-only input HEX.
-
-    The stock/patched MAIN release HEX files are application-only images.  For
-    gpsim we want recovered-device context by default, so app-only inputs are
-    merged onto the dump-based V2.3 combined seed:
-    - preserve boot block, config bytes, EEPROM, and User ID from the seed
-    - preserve recovered preset/DSP table space at 0x5600..0x5FFF
-    - replace app code/data at 0x1000..0x55FF from the input HEX
-
-    If the input HEX already carries a programmed boot block, it is treated as
-    a full-device image and copied verbatim.
-    """
-
-    source_hex = Path(main_hex)
-    seed_source = Path(seed_hex)
-    source_mem = parse_intel_hex(source_hex)
-    has_boot_block = any(
-        0x0000 <= addr < MAIN_APP_PATCH_START and value != 0xFF
-        for addr, value in source_mem.items()
-    )
-
-    output_hex.parent.mkdir(parents=True, exist_ok=True)
-    if has_boot_block:
-        output_hex.write_bytes(source_hex.read_bytes())
-        return output_hex
-
-    merged = dict(parse_intel_hex(seed_source))
-    for addr, value in source_mem.items():
-        if MAIN_APP_PATCH_START <= addr < MAIN_APP_PATCH_LIMIT:
-            merged[addr] = value & 0xFF
-    write_intel_hex(output_hex, merged)
-    return output_hex
 
 
 def probe_main_an0_boot_exit_cycle(

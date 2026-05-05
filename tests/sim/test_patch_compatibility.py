@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX, STOCK_MAIN_HEX
 from dlcp_fw.sim.hexio import parse_intel_hex
-from dlcp_fw.sim.main_gpsim import build_seeded_main_sim_hex
+from dlcp_fw.sim.main_seed import build_seeded_main_sim_hex
 from dlcp_fw.sim.manifests import main_v25_timeout_test_hooks
 from dlcp_fw.sim.overlay import apply_overlay
 from dlcp_fw.sim.scenarios import verify_patch_compat
