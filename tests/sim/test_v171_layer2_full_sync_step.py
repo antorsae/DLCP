@@ -19,12 +19,12 @@ Three tiers, each independently runnable:
 * **Tier B — build verification**: v171 still assembles, vector and
   bootloader byte-identity gates hold, all Layer 2 labels resolve.
 
-* **Tier C — behavioral via gpsim**: after enough warmup for the
-  full-sync trigger to fire repeatedly, every step (1..6) emits its
-  intended frame; in particular the preset frame appears in the TX
-  stream from the periodic broadcast (proving Layer 2 closes the
-  preset desync without needing the V1.61b retry queue or any MAIN
-  reply path).
+* **Tier C — behavioral via the rust facade**: after enough warmup
+  for the full-sync trigger to fire repeatedly, every step (1..6)
+  emits its intended frame; in particular the preset frame appears
+  in the TX stream from the periodic broadcast (proving Layer 2
+  closes the preset desync without needing the V1.61b retry queue
+  or any MAIN reply path).
 """
 
 from __future__ import annotations
@@ -39,15 +39,8 @@ from dlcp_fw.paths import (
     V17_CONTROL_RAM_INC,
     V171_CONTROL_ASM,
 )
-from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.hexio import parse_intel_hex
 from dlcp_fw.sim.v17_symbols import assemble_v17
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness, _read_reg
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -60,7 +53,7 @@ except Exception as exc:  # pragma: no cover
 
 # All tests in this file are dual-mode-supported.  Tier A / Tier B
 # tests are pure source/hex integrity gates (no sim backend); Tier C
-# tests dispatch through `_run_in_backends` with a duck-typed body.
+# tests dispatch through `_run_with_rust` with a duck-typed body.
 pytestmark = pytest.mark.dual_supported
 
 
@@ -69,7 +62,7 @@ pytestmark = pytest.mark.dual_supported
 # ---------------------------------------------------------------------------
 
 V171_FULL_SYNC_STEP_EQU = 0x070      # 8-bit BANKED-form operand in firmware (asserted in ram.inc)
-V171_FULL_SYNC_STEP_PHYS = 0x170     # physical address (BSR=1 << 8 | 0x70); use this for gpsim reg() reads
+V171_FULL_SYNC_STEP_PHYS = 0x170     # physical address (BSR=1 << 8 | 0x70); use this for register reads
 
 ROUTE_BROADCAST = 0xB0
 CMD_VOLUME = 0x07              # step 1
@@ -103,13 +96,6 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
-
-
 def _require_rust() -> None:
     if not _RUST_CHAIN_IMPORT_OK:
         pytest.fail(
@@ -125,27 +111,15 @@ def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
 
 
 def _read_full_sync_step(h) -> int:  # type: ignore[no-untyped-def]
-    """Read v171_full_sync_step (BANKED phys 0x170) regardless of backend."""
-    if hasattr(h, "read_reg"):
-        return h.read_reg(V171_FULL_SYNC_STEP_PHYS)
-    return _read_reg(h._issue, V171_FULL_SYNC_STEP_PHYS)
+    """Read v171_full_sync_step (BANKED phys 0x170) via the rust facade."""
+    return h.read_reg(V171_FULL_SYNC_STEP_PHYS)
 
 
-def _run_in_backends(
-    backend: str, hex_path: Path, body  # Callable[[harness], None]
-) -> None:
-    """Dispatch a duck-typed body to gpsim / rust / both."""
-    if backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(hex_path))
-        body(chain)
-    if backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        h = _boot(hex_path)
-        try:
-            body(h)
-        finally:
-            h.close()
+def _run_with_rust(hex_path: Path, body) -> None:
+    """Run scenario body against the rust facade chain."""
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(hex_path))
+    body(chain)
 
 
 def _equ_address(text: str, name: str) -> int | None:
@@ -389,23 +363,13 @@ def test_v171_layer2_dispatch_labels_resolve(v171_hex: Path) -> None:
 
 
 # ===========================================================================
-# Tier C — behavioral via gpsim
+# Tier C — behavioral via the rust facade
 # ===========================================================================
 
 
-def _boot(hex_path: Path) -> "GpsimControlHarness":
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        heartbeat_rx_mode="full",
-    )
-
-
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer2_step_advances_through_full_cycle(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path,
 ) -> None:
     """After enough warmup for the periodic full-sync trigger to fire
     several times, ``v171_full_sync_step`` should land in the 1..6
@@ -421,13 +385,12 @@ def test_v171_layer2_step_advances_through_full_cycle(
             f"(expected 1..6, value 0 means trigger never fired, value > 6 "
             f"means wrap is broken)"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path,
 ) -> None:
     """After enough trigger cycles for every step to fire at least once,
     all six step destinations must appear in the TX stream.
@@ -462,13 +425,12 @@ def test_v171_layer2_emits_all_six_step_frame_types_after_warmup(
             f"step 3 (mute_frame_send) did not fire — cmd 0x03 stream "
             f"contains no mute data byte; observed cmd03 data={sorted(hex(d) for d in cmd03_data)}"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer2_preset_frame_appears_without_v161b_retry_arm(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path,
 ) -> None:
     """The Layer-2 design replaces the V1.61b reconnect-edge retry queue
     (0x70/0x71) with periodic value-bearing emit.  This test verifies
@@ -489,13 +451,12 @@ def test_v171_layer2_preset_frame_appears_without_v161b_retry_arm(
             f"0x070 holds 0x{step:02X}, outside the Layer-2 step range — "
             f"is the V1.61b retry counter still alive?"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)
 
 
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer2_no_dual_preset_frames_per_trigger(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path,
 ) -> None:
     """Sanity check: each full-sync trigger emits AT MOST one preset
     frame.  If both the legacy V1.61b retry block and the Layer-2 step
@@ -517,4 +478,4 @@ def test_v171_layer2_no_dual_preset_frames_per_trigger(
             f"too many preset frames in a single 60-step window ({delta}); "
             f"suspect the V1.61b retry block is still active alongside Layer 2"
         )
-    _run_in_backends(dlcp_sim_backend, v171_hex, _do)
+    _run_with_rust(v171_hex, _do)

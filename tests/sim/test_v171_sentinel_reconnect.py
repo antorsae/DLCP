@@ -27,14 +27,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -51,13 +44,6 @@ INPUT_SELECT_CACHE_ADDR = 0x0B8
 VOLUME_CACHE_ADDR = 0x0B9
 CMD1D_SETTING_CACHE_ADDR = 0x0A7
 RAW_STATUS_CACHE_ADDR = 0x0A1
-
-
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
 
 
 def _require_rust() -> None:
@@ -77,15 +63,6 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     hex_out = tmp / "dlcp_control_v171.hex"
     assemble_v17(asm, hex_out)
     return hex_out
-
-
-def _boot(hex_path: Path) -> GpsimControlHarness:
-    return GpsimControlHarness(
-        hex_path,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        heartbeat_rx_mode="full",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +187,6 @@ def test_v171_source_emits_wake_and_reseeds_idle_timer_on_loop_exit() -> None:
 # ---------------------------------------------------------------------------
 
 def _run_sentinel_loop_exit_check(h) -> None:  # type: ignore[no-untyped-def]
-    """Backend-agnostic body shared by both gpsim and rust paths."""
     h.warmup(25_000_000)
     flags = h.read_reg(CONTROL_FLAGS_ADDR)
     assert flags & (1 << CONNECTED_BIT), (
@@ -230,14 +206,13 @@ def _run_sentinel_loop_exit_check(h) -> None:  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_sentinel_loop_exits_when_heartbeat_fills_sentinels(
-    v171_hex: Path, dlcp_sim_backend: str
+    v171_hex: Path
 ) -> None:
     """After warmup, all 4 sentinels are non-0x80 and CONNECTED is set.
 
-    Heartbeat "full" (gpsim) / real V2.3-combined MAIN (rust) injects
+    The rust 3-core ring's V2.3-combined MAIN injects
     BF/06, BF/07, BF/1D, BF/03 periodically.  Each frame's parser
     dispatch writes its respective sentinel slot (non-0x80 values
     from the stored volume / input / cmd1d / raw status).  Once
@@ -245,14 +220,6 @@ def test_v171_sentinel_loop_exits_when_heartbeat_fills_sentinels(
     frame, and sets CONNECTED.  Warmup of 25M cycles is 8+
     heartbeat rounds — plenty.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(v171_hex))
-        _run_sentinel_loop_exit_check(chain)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        h = _boot(v171_hex)
-        try:
-            _run_sentinel_loop_exit_check(h)
-        finally:
-            h.close()
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(v171_hex))
+    _run_sentinel_loop_exit_check(chain)

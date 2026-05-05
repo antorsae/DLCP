@@ -29,10 +29,11 @@ Three tiers, mirroring the Layer 1 / Layer 2 / Phase A test layout:
 * **Tier B — build verification**: V1.71 source assembles cleanly and
   every new symbol resolves at the expected addresses.
 
-* **Tier C — behavioral via gpsim**: at boot the diagnostics cache is
-  zero and the present mask is zero (no PB has replied yet); when the
-  display state index is forced to 2, ``v171_diag_screen`` runs and
-  enqueues the cmd 0x21 query bytes alternating PB1/PB2.
+* **Tier C — behavioral via the rust facade**: at boot the
+  diagnostics cache is zero and the present mask is zero (no PB has
+  replied yet); when the display state index is forced to 2,
+  ``v171_diag_screen`` runs and enqueues the cmd 0x21 query bytes
+  alternating PB1/PB2.
 """
 
 from __future__ import annotations
@@ -43,7 +44,6 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 
 try:
@@ -59,7 +59,7 @@ except Exception as exc:  # pragma: no cover
 # source/hex structural gates (no sim backend); 2 sim tests
 # (test_v171_layer5_diag_block_zero_at_boot,
 # test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup)
-# dispatch through `_run_in_backends` with duck-typed bodies.
+# dispatch through `_run_with_rust` with duck-typed bodies.
 pytestmark = pytest.mark.dual_supported
 
 
@@ -106,7 +106,7 @@ V171_DIAG_PRESENT_EQU = 0x097
 V171_DIAG_POLL_LO_EQU = 0x098
 V171_DIAG_POLL_HI_EQU = 0x099
 
-# Physical addresses for gpsim CLI reads (BSR=1 << 8 | offset).
+# Physical addresses for register reads (BSR=1 << 8 | offset).
 V171_DIAG_PB1_I_PHYS = 0x180
 V171_DIAG_PB2_I_PHYS = 0x18B
 V171_DIAG_TARGET_PHYS = 0x196
@@ -224,7 +224,7 @@ def test_ram_inc_diag_block_pins_at_expected_addresses() -> None:
 
     The block lives at 0x80..0x8B in BANK 1 — physical 0x180..0x18B.
     EQU values are 8-bit BANKED-form operands (firmware sets BSR=1
-    before access).  gpsim CLI reads via the PHYSICAL address.
+    before access).  Tests read via the PHYSICAL address.
     """
     text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
     for name, expected_addr in ALL_DIAG_CACHE_EQUS:
@@ -722,51 +722,25 @@ def test_v171_layer5_symbols_resolve(v171_hex: tuple[Path, dict[str, int]]) -> N
 
 
 # ===========================================================================
-# Tier C — behavioral via gpsim
+# Tier C — behavioral via the rust facade
 # ===========================================================================
 
 
 def _read_diag_phys(h, phys: int) -> int:  # type: ignore[no-untyped-def]
-    """Backend-agnostic read of a CONTROL physical-address register byte."""
-    if hasattr(h, "_issue"):
-        from dlcp_fw.sim.control_gpsim import _read_reg as _gpsim_read_reg
-        return _gpsim_read_reg(h._issue, phys)
+    """Read a CONTROL physical-address register byte via the rust facade."""
     return h.read_reg(phys)
 
 
-def _run_diag_in_backends(
-    backend: str,
-    hex_path: Path,
-    body,  # Callable[[harness], None]
-    *,
-    heartbeat_force_connected: bool = False,
-) -> None:
-    if backend in {"rust", "dual"}:
-        _require_rust()
-        chain = RustChain.from_v17_chain(str(hex_path))
-        body(chain)
-    if backend in {"gpsim", "dual"}:
-        if not gpsim_available():
-            pytest.skip("gpsim not installed")
-        try:
-            from dlcp_fw.sim.control_gpsim import GpsimControlHarness
-        except Exception:
-            pytest.skip("control_gpsim harness not importable")
-        kwargs = {}
-        if heartbeat_force_connected:
-            kwargs["heartbeat_force_connected"] = True
-        h = GpsimControlHarness(hex_path, **kwargs)
-        try:
-            body(h)
-        finally:
-            h.close()
+def _run_with_rust(hex_path: Path, body) -> None:
+    """Run scenario body against the rust facade chain."""
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(hex_path))
+    body(chain)
 
 
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer5_diag_block_zero_at_boot(
     v171_hex: tuple[Path, dict[str, int]],
-    dlcp_sim_backend: str,
 ) -> None:
     """Healthy boot must leave the diag cache and present mask at 0.
 
@@ -785,19 +759,17 @@ def test_v171_layer5_diag_block_zero_at_boot(
                 f"healthy boot left {name} (phys 0x{phys:03X}) at 0x{value:02X}; "
                 f"expected 0 — cold-init must clear the diag cache"
             )
-    _run_diag_in_backends(dlcp_sim_backend, hex_path, _do)
+    _run_with_rust(hex_path, _do)
 
 
-@pytest.mark.gpsim
 @pytest.mark.slow
 def test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup(
     v171_hex: tuple[Path, dict[str, int]],
-    dlcp_sim_backend: str,
 ) -> None:
-    """Across a long warmup with the harness's heartbeat injection
-    (which drives CONTROL into DISPLAY mode and exercises the volume /
-    input / preset frame-send paths), the diagnostics block must stay
-    at zero — the cmd 0x21 query path is page-local and never fires
+    """Across a long warmup with the rust 3-core ring (which drives
+    CONTROL into DISPLAY mode and exercises the volume / input /
+    preset frame-send paths), the diagnostics block must stay at
+    zero — the cmd 0x21 query path is page-local and never fires
     outside the Diagnostics screen, so no spurious increments must
     leak into the diag cache from the steady-state command path.
 
@@ -817,10 +789,7 @@ def test_v171_layer5_diag_block_holds_zero_through_boot_and_warmup(
                 f"warmup leaked into {name} (phys 0x{phys:03X}) at 0x{value:02X}; "
                 f"diag block must stay zero outside the Diagnostics page"
             )
-    _run_diag_in_backends(
-        dlcp_sim_backend, hex_path, _do,
-        heartbeat_force_connected=True,
-    )
+    _run_with_rust(hex_path, _do)
 
 
 # ===========================================================================
