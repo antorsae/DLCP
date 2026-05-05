@@ -2913,6 +2913,90 @@ mod tests {
         );
     }
 
+    /// Codex LOW from review of feb091e: the serde
+    /// snapshot path must round-trip `VecDeque`-backed
+    /// histories AND the new monotonic per-core counters.
+    /// Push some records, snapshot via bincode, restore,
+    /// and verify history contents + absolute counters
+    /// match.  (The replay determinism + property-test
+    /// suites cover larger fuzzy round-trips, but they
+    /// don't directly exercise the new
+    /// `uart_tx_total_by_src` / `uart_rx_total_by_dst`
+    /// fields with non-zero values.)
+    #[test]
+    fn uart_history_serde_round_trip_preserves_state() {
+        let mut chain = Chain::new();
+        let i_src = chain.push_core(Core::new(Variant::Pic18F25K20));
+        let mut dst = Core::new(Variant::Pic18F25K20);
+        dst.memory
+            .write_raw(crate::memory::Address::from_raw(0xFAB), 0x90);
+        let i_dst = chain.push_core(dst);
+        chain.couple_uart(
+            i_src,
+            crate::pinnet::default_tx_pin(),
+            i_dst,
+            crate::pinnet::default_rx_pin(),
+        );
+        for n in 0u64..5 {
+            chain.record_uart_tx(UartByteRecord {
+                tick: 1000 + n,
+                src_core: i_src,
+                dst_core: i_dst,
+                byte: 0xC0 + (n as u8),
+            });
+            chain.record_uart_rx(UartByteRecord {
+                tick: 2000 + n,
+                src_core: i_src,
+                dst_core: i_dst,
+                byte: 0xA0 + (n as u8),
+            });
+        }
+        // Sanity pre-snapshot.
+        assert_eq!(chain.uart_tx_history.len(), 5);
+        assert_eq!(chain.uart_rx_history.len(), 5);
+        assert_eq!(chain.uart_tx_total_by_src[i_src], 5);
+        assert_eq!(chain.uart_rx_total_by_dst[i_dst], 5);
+
+        let bytes = bincode::serde::encode_to_vec(
+            &chain,
+            bincode::config::standard(),
+        )
+        .expect("encode");
+        let (restored, _): (Chain, _) = bincode::serde::decode_from_slice(
+            &bytes,
+            bincode::config::standard(),
+        )
+        .expect("decode");
+
+        assert_eq!(
+            restored.uart_tx_history.len(), 5,
+            "VecDeque<UartByteRecord> serde round-trip preserves length"
+        );
+        assert_eq!(
+            restored.uart_rx_history.len(), 5,
+            "uart_rx_history same"
+        );
+        assert_eq!(
+            restored.uart_tx_total_by_src[i_src], 5,
+            "uart_tx_total_by_src round-trips"
+        );
+        assert_eq!(
+            restored.uart_rx_total_by_dst[i_dst], 5,
+            "uart_rx_total_by_dst round-trips"
+        );
+        // Spot-check ordering preservation: front of TX
+        // history is the first push; back is the last.
+        assert_eq!(
+            restored.uart_tx_history.front().map(|r| (r.tick, r.byte)),
+            Some((1000, 0xC0)),
+            "VecDeque ordering preserved through serde"
+        );
+        assert_eq!(
+            restored.uart_tx_history.back().map(|r| (r.tick, r.byte)),
+            Some((1004, 0xC4)),
+        );
+    }
+
     /// Regression: late-booted core stays delayed across
     /// MULTIPLE instructions.  Prior to the boot-epoch fix,
     /// the second instruction would schedule at

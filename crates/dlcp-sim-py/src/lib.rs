@@ -1112,6 +1112,46 @@ impl Chain {
         self.i_main1
     }
 
+    /// Count of `uart_tx_history` records dropped from the
+    /// front since chain construction or the last
+    /// `apply_reset_all` (e.g. via the rust-side
+    /// `Chain::apply_reset_all`).  Use this to detect that
+    /// `tx_record_since_last_capture` (and its mirror
+    /// helpers) returned a truncated tail because the
+    /// rolling-window cap evicted older matching records
+    /// since the last mark -- the absolute-counter delta
+    /// asks for more bytes than the buffer can deliver.
+    /// Codex MEDIUM from review of feb091e: capture
+    /// helpers return only `Vec<u8>`, so without this
+    /// accessor Python callers cannot distinguish "exactly
+    /// N bytes arrived" from "many more bytes arrived but
+    /// were truncated".  Mark + capture pattern with loss
+    /// detection:
+    ///
+    ///     pre = chain.uart_tx_history_dropped
+    ///     chain.mark_tx_capture_point()
+    ///     chain.step_tcy(...)
+    ///     bytes = chain.tx_record_since_last_capture()
+    ///     if chain.uart_tx_history_dropped > pre:
+    ///         # rolling window evicted some bytes between
+    ///         # mark and capture; bytes is the surviving
+    ///         # tail, not the full set.
+    #[getter]
+    fn uart_tx_history_dropped(&self) -> u64 {
+        self.inner.uart_tx_history_dropped
+    }
+
+    /// Mirror of `uart_tx_history_dropped` for the
+    /// destination-accept-side `uart_rx_history` buffer.
+    /// Same loss-detection pattern applies to
+    /// `ctl_rx_record_since_last_capture` /
+    /// `main0_rx_record_since_last_capture` /
+    /// `main1_rx_record_since_last_capture`.
+    #[getter]
+    fn uart_rx_history_dropped(&self) -> u64 {
+        self.inner.uart_rx_history_dropped
+    }
+
     /// Snapshot of the HD44780 LCD's two display lines as
     /// a `(line1, line2)` tuple of UTF-8-lossy strings.
     /// Trailing whitespace is preserved (callers decide
