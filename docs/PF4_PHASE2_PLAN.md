@@ -62,7 +62,7 @@ tests/sim/test_main_gpsim_portability.py               -- chain,main,timer3
 tests/sim/test_main_gpsim_preset_banks.py              -- chain,gpsim
 tests/sim/test_main_gpsim_usb_engine.py                -- chain,control,gpsim
 tests/sim/test_main_stdby_pin_io.py                    -- chain,control,gpsim,wire
-tests/sim/test_patch_compatibility.py                  -- main (utility import)
+tests/sim/test_patch_compatibility.py                  -- main (utility, cat B)
 tests/sim/test_reconnect_wake_gate.py                  -- chain,control,gpsim,wire
 tests/sim/test_robustness_waiting.py                   -- control,gpsim
 tests/sim/test_v171_fault_indicator.py                 -- control,gpsim
@@ -78,16 +78,16 @@ tests/sim/test_v171_sentinel_reconnect.py              -- control,gpsim
 tests/sim/test_v171_v31_chain.py                       -- chain,gpsim
 tests/sim/test_v171_v32_layer5_diag_chain.py           -- control,gpsim,wire
 tests/sim/test_v17_chain.py                            -- chain,gpsim
-tests/sim/test_v17_relocation.py                       -- control
+tests/sim/test_v17_relocation.py                       -- control (mixed cat C+D)
 tests/sim/test_v17_shifted_full_parity.py              -- control,gpsim
-tests/sim/test_v28_wire_delayed_switch_repros.py       -- control,gpsim,wire
-tests/sim/test_v30_relocation.py                       -- chain,gpsim,main
+tests/sim/test_v28_wire_delayed_switch_repros.py       -- control,gpsim,wire (mixed cat C+D)
+tests/sim/test_v30_relocation.py                       -- chain,gpsim,main (cat D dominant)
 tests/sim/test_v31_command_matrix.py                   -- chain,control,gpsim
 tests/sim/test_v31_dsp_boot_equivalence.py             -- chain,control,gpsim
 tests/sim/test_v31_happy_path.py                       -- chain,control,gpsim
 tests/sim/test_v31_review_findings.py                  -- chain,control,gpsim,wire
 tests/sim/test_v31_usb_hid_dispatch.py                 -- chain,control,gpsim
-tests/sim/test_v31_usb_preset_ab.py                    -- gpsim (guard only)
+tests/sim/test_v31_usb_preset_ab.py                    -- gpsim (unused import, cat B')
 tests/sim/test_v31_v163b_robustness.py                 -- chain,control,gpsim,wire
 tests/sim/test_v32_layer5_diag_counters.py             -- chain,control,gpsim,main
 tests/sim/test_wire_chain_bridge.py                    -- wire (DELETE WITH WRAPPER)
@@ -96,7 +96,9 @@ tests/sim/test_wire_chain_gpsim.py                     -- gpsim,wire
 
 ## Surgery shape per file
 
-The 41 files split into THREE categories:
+The 41 files split into FIVE categories.  **Categorization corrected
+post-codex review** (see commit message "address codex review of
+a049114"); the prior 3-category split mis-grouped 4 files.
 
 ### A. "delete with wrapper" (purely gpsim infrastructure tests)
 
@@ -121,16 +123,23 @@ BEFORE the wrapper module is deleted.
 
   * `tests/sim/test_patch_compatibility.py` -- imports
     `build_seeded_main_sim_hex` from `main_gpsim.py`.
-  * `tests/sim/test_v17_relocation.py` -- imports `_read_reg` from
-    `control_gpsim.py` (also a utility; verify it's not actually
-    a runtime call).
 
 Action: identify the utility, audit its dependencies, move to a new
 module, update import in this test file (and any other consumers).
 
+### B'. "unused-import only" (truly trivial)
+
+Imports a `_gpsim` symbol but never references it in the module body.
+Surgery: just delete the import line.
+
+  * `tests/sim/test_v31_usb_preset_ab.py` -- imports
+    `gpsim_available` at line 22 but never calls it.
+
+Action: `Edit` to drop the single import line.
+
 ### C. "dual-path test bodies with `if dlcp_sim_backend == "gpsim":`"
 
-The bulk: 37 of 41 files.  Each has the standard dual_supported
+The bulk: 32 of 41 files.  Each has the standard dual_supported
 shape:
 
 ```python
@@ -207,6 +216,42 @@ Verify per file:
 
   Expected: identical pass/skip/xfail counts to current rust mode.
 
+### D. "gpsim-only tests inside an otherwise-dual_supported file"
+
+Some files mix dual-path tests with standalone gpsim-only tests.
+The gpsim-only tests typically:
+  * carry `@pytest.mark.gpsim` (no `dual_supported`)
+  * lazily import wrappers INSIDE the test body
+  * don't take a `dlcp_sim_backend` fixture
+
+Each such test needs an individual decision:
+  (a) port the test body to use the rust facade (preferred when the
+      assertion is genuinely backend-agnostic, e.g., bytes-on-the-
+      wire equivalence), or
+  (b) delete the test (when it asserts gpsim-internal mechanics
+      that don't apply to the rust ring).
+
+Files in this category:
+
+  * `tests/sim/test_v30_relocation.py` -- Tier-A structural tests
+    are dual_supported (rust path lives there); the Tier-B gpsim
+    behavioral parity tests at lines 195+, 214+, 265+, 297+ all
+    `@pytest.mark.gpsim` and lazy-import `main_gpsim` /
+    `chain_gpsim` inside their bodies.
+  * `tests/sim/test_v28_wire_delayed_switch_repros.py` -- file
+    docstring is dual_supported but the wire-chain repros at
+    line 265+ are gpsim-only.
+  * `tests/sim/test_v17_relocation.py` -- mostly dual_supported,
+    but line 251+ and 333+ are gpsim-only.  (The earlier "Category
+    B utility-import" claim in the prior version of this plan was
+    wrong -- the file imports `GpsimControlHarness` and runs gpsim
+    bodies, NOT just `_read_reg` as a utility.)
+
+Action per file: enumerate the gpsim-only tests, decide port-vs-
+delete per test, then apply the category-C recipe to the dual-path
+remainder.  Inventory the rust-side coverage first to confirm "port
+or delete" doesn't lose tested behavior.
+
 ### Special case: `test_v171_v32_layer5_diag_chain.py`
 
 Already partially migrated in PF.3 (the wiggle helper exists).  The
@@ -261,11 +306,25 @@ After all 41 files are surgically migrated and tests are green:
 
 ## Effort estimate
 
-  * Surgery (37 category-C files): ~5-15 min per file × 37 = 4-9 hours
+Corrected category counts post codex review of a049114:
+  * A (delete-with-wrapper): 2 files
+  * B (utility-import only): 1 file (`test_patch_compatibility.py`)
+  * B' (unused import): 1 file (`test_v31_usb_preset_ab.py`)
+  * C (dual-path bodies): 32 files
+  * D (mixed dual-path + gpsim-only inside file): 3 files
+  * Special case (PF.3 partially-migrated): 1 file
+  * Plus 1 file (`test_v17_relocation.py`) that's a category-D
+    instance counted under D's 3 above.
+
+  * Category C surgery (32 files): ~5-15 min per file × 32 = 3-8 hours
     of focused per-file editing.
-  * Utility migration (audits + moves): ~2-4 hours.
-  * Wrapper + vendor + artifact deletion + final verify: ~1-2 hours.
-  * **Total: 7-15 hours** across multiple sessions.
+  * Category D triage + port-or-delete (3 files, multiple decisions
+    each): ~2-3 hours; some gpsim-only tests may need rust ports.
+  * Utility migration (`build_seeded_main_sim_hex` + others
+    audited from `main_gpsim.py` etc.): ~2-4 hours.
+  * Wrapper + vendor + artifact deletion + conftest cleanup +
+    final suite verify: ~1-2 hours.
+  * **Total: 8-17 hours** across multiple sessions.
 
 Suggested batching for parallel agents:
 
@@ -279,21 +338,32 @@ Suggested batching for parallel agents:
     test_v17_shifted_full_parity.py, test_v171_v31_chain.py,
     test_v31_command_matrix.py, test_v31_dsp_boot_equivalence.py,
     test_v31_happy_path.py
-  * Batch 4 (5 files, more V31): test_v31_review_findings.py,
-    test_v31_usb_hid_dispatch.py, test_v31_usb_preset_ab.py,
-    test_v31_v163b_robustness.py, test_v32_layer5_diag_counters.py
+  * Batch 4 (4 files, more V31): test_v31_review_findings.py,
+    test_v31_usb_hid_dispatch.py, test_v31_v163b_robustness.py,
+    test_v32_layer5_diag_counters.py
   * Batch 5 (6 files, command/main): test_main_gpsim_command_*,
     test_main_gpsim_portability.py, test_main_gpsim_preset_banks.py,
     test_main_gpsim_usb_engine.py
   * Batch 6 (5 files, chain/wire): test_chain_gpsim_waiting.py,
     test_main_dsp_deafness_chain.py, test_main_stdby_pin_io.py,
     test_reconnect_wake_gate.py, test_robustness_waiting.py
-  * Batch 7 (4 files, control + V28): test_control_v15b_port_*,
-    test_control_v16b_port_*, test_v28_wire_delayed_switch_repros.py,
-    test_v30_relocation.py
-  * Batch 8 (utility migration + special cases): test_patch_
-    compatibility.py, test_v17_relocation.py, test_v171_v32_layer5_
-    diag_chain.py
+  * Batch 7 (2 files, control v15b/v16b ports):
+    test_control_v15b_port_compatibility.py,
+    test_control_v16b_port_compatibility.py
+  * Batch 8 (6 files, mixed C+D / utility / special -- handle
+    LAST since each needs per-test triage, not the C recipe):
+    test_patch_compatibility.py (B utility migration of
+    `build_seeded_main_sim_hex`),
+    test_v31_usb_preset_ab.py (B' trivial unused-import drop),
+    test_v17_relocation.py (mixed C+D, line 251+/333+ are
+    gpsim-only),
+    test_v30_relocation.py (D-dominant: Tier-B parity tests
+    195+/214+/265+/297+ are gpsim-only),
+    test_v28_wire_delayed_switch_repros.py (mixed C+D, repros
+    265+ are gpsim-only),
+    test_v171_v32_layer5_diag_chain.py (PF.3 partially
+    migrated; audit against task #117 first since wiggle helper
+    + canary references are intertwined)
   * Batch 9 (delete-with-wrapper): test_wire_chain_bridge.py,
     test_wire_chain_gpsim.py
 
