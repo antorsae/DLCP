@@ -31,9 +31,12 @@ Three tiers, mirroring the Layer 1 / Layer 2 / Phase A test layout:
 
 * **Tier C — behavioral via the rust facade**: at boot the
   diagnostics cache is zero and the present mask is zero (no PB has
-  replied yet); when the display state index is forced to 2,
-  ``v171_diag_screen`` runs and enqueues the cmd 0x21 query bytes
-  alternating PB1/PB2.
+  replied yet); a long warmup with the rust 3-core ring driving
+  CONTROL into DISPLAY mode must not leak any spurious increments
+  into the diag block (the cmd 0x21 query path is page-local and
+  never fires outside the Diagnostics screen).  Positive query →
+  reply round-trip coverage lives in the Phase C wire-chain
+  integration test ``test_v171_v32_layer5_diag_chain.py``.
 """
 
 from __future__ import annotations
@@ -105,12 +108,6 @@ V171_DIAG_TARGET_EQU = 0x096
 V171_DIAG_PRESENT_EQU = 0x097
 V171_DIAG_POLL_LO_EQU = 0x098
 V171_DIAG_POLL_HI_EQU = 0x099
-
-# Physical addresses for register reads (BSR=1 << 8 | offset).
-V171_DIAG_PB1_I_PHYS = 0x180
-V171_DIAG_PB2_I_PHYS = 0x18B
-V171_DIAG_TARGET_PHYS = 0x196
-V171_DIAG_PRESENT_PHYS = 0x197
 
 ALL_DIAG_CACHE_EQUS = (
     ("v171_diag_pb1_i", V171_DIAG_PB1_I_EQU),

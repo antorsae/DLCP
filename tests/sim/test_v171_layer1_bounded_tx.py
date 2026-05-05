@@ -50,22 +50,6 @@ V171_TX_ENQ_RETRY_ADDR = 0x02D       # ACCESS scratch byte (EQU = physical addre
 V171_TX_SAT_COUNT_EQU = 0x0AD        # 8-bit BANKED-form operand in firmware (asserted in ram.inc)
 V171_TX_SAT_COUNT_PHYS = 0x1AD       # physical address (BSR=1 << 8 | 0xAD); use this for register reads
 
-TX_RING_RD = 0x096
-TX_RING_WR = 0x097
-FULL_SYNC_LO = 0x09F
-FULL_SYNC_HI = 0x0A0
-INTCON_ADDR = 0xFF2
-
-PROFILE1_HYPEX = {
-    0x020: 0x10,
-    0x021: 0x32,  # power
-    0x022: 0x33,  # vol+
-    0x023: 0x34,  # vol-
-    0x024: 0x36,  # input+
-    0x025: 0x37,  # input-
-    0x026: 0x35,  # mute
-}
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture: build a Layer-1 v171 hex once per module

@@ -8,9 +8,9 @@ Two V1.62b behaviors are inlined into V1.71 and verified here:
    and the parser state-machine stuck mid-frame.  V1.62b replaces
    that with a full drain: clear CREN, read RCREG twice (EUSART
    FIFO depth 2), re-enable CREN, then reset the TX/RX ring indices
-   and parser state.  The inline test forces OERR by overflowing
-   the RX ring with the harness-exposed
-   ``inject_bytes`` helper and verifies the parser recovers.
+   and parser state.  The inline tests force OERR by writing the
+   RCSTA.OERR latch directly via the rust facade's ``write_reg``
+   and verify the parser recovers.
 
 2. **Wake frame on reconnect exit.**  When
    ``reconnect_wait_loop`` observes CONNECTED rise (MAIN returned),
@@ -45,9 +45,6 @@ except Exception as exc:  # pragma: no cover
 RCSTA_ADDR = 0xFAB
 OERR_BIT = 1
 CREN_BIT = 4
-RX_FRAME_POSITION_ADDR = 0x0A6
-RX_PARSED_CMD_ADDR = 0x02F
-RX_PARSED_DATA_ADDR = 0x030
 
 
 def _require_rust() -> None:
