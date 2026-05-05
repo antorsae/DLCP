@@ -449,7 +449,10 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
     """
     _require_v32_hex(v32_hex)
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -500,7 +503,10 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
     Timer3/Timer1 ISR-dispatch fidelity bug) CLOSED.
     """
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -536,7 +542,10 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     on the gpsim side closed when gpsim was retired in PF.4 phase 2).
     """
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -586,7 +595,10 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
     these assertions to the Tier-1 strings.
     """
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -637,7 +649,10 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     to the Tier-1 string.
     """
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -701,7 +716,10 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
     """
     _require_v32_hex(v32_hex)
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -843,7 +861,10 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
     not a property of either simulator's UART byte timing.
     """
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -920,7 +941,10 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
     threshold = 4
 
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
@@ -995,7 +1019,10 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     must show the same exit-within-12-steps behavior.
     """
     _require_rust()
-    c = RustChain.from_v171_v32()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
     c.run_until_connected(limit=200)
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
