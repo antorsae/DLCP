@@ -46,31 +46,41 @@ bridge bytes:
 
 Two facts to note:
 
-  1. **MAIN1's data is being transmitted on the wire** (m1_to_m0 =
-     68504 edges) — MAIN1 IS replying.  But that data never lands in
-     PB2 cache (slot[0] stays 0x0).
+  1. **MAIN1 is transmitting on the wire** (m1_to_m0 = 68504
+     edges).  These bridge stats can't distinguish cmd 0x21 reply
+     payload from steady-state status traffic (heartbeat BF/05/07
+     etc.) -- see Caveats; we cannot conclude from end-state alone
+     that MAIN1's cmd 0x21 reply ever completed within the test
+     budget.  But MAIN1 is alive on the wire, not silent.
   2. **PB2 cache slot[1] = 0x1** (MAIN0's diag_d), NOT 0x2 (MAIN1's
-     diag_d).  PB2 cache is being filled with PB1 data.
+     diag_d).  Cross-PB data has landed in PB2's slot.
 
-Cache evolution timeline (probe iter ↔ event):
+Cache evolution timeline (probe iter ↔ end-state observation;
+the "BF/22 / BF/27" annotations are inferences from the
+skip-on-silent reconstruction in the next section, not direct
+per-frame timestamps):
 
 ```
-iter 10: PB1 slot[0] = 0x5     (MAIN0's BF/21 frame -> PB1 cache, correct)
-iter 25: PB2 slot[1] = 0x1     (MAIN0's BF/22 frame -> PB2 cache, MISROUTE)
-iter 35: present = 0x02        (PB2 bit set -- but on stolen data!)
-iter 40: PB1 slot[1] = 0x1     (MAIN0's BF/22 again, this time in PB1)
-iter 45: present = 0x03        (PB1 bit set -- on the second BF/22)
+iter 10: PB1 slot[0] = 0x5     (BF/21 from MAIN0 -> PB1 cache, correct)
+iter 25: PB2 slot[1] = 0x1     (MAIN0's BF/22 -> PB2 cache, MISROUTE)
+iter 35: present = 0x02        (BF/27 lands under target=PB2,
+                                sets PB2 present bit; cache content
+                                is still mostly cross-PB data)
+iter 40: PB1 slot[1] = 0x1     (a fresh burst's BF/22 lands in PB1
+                                this time; target has cycled back)
+iter 45: present = 0x03        (subsequent BF/27 lands under
+                                target=PB1, sets PB1 present bit)
 ```
 
 PB2 cache slot[0] is empty (this probe seeded MAIN1 diag_i=0xC,
 expected 0xC there, observed 0x0).  PB2 cache slot[1] is wrong
 (this probe seeded MAIN1 diag_d=0x2, expected 0x2 there, observed
-0x1 -- which is MAIN0's diag_d, the cross-PB misroute).  Slots
-[2..5] are zero on both MAINs in this run, so they are
-experimentally indistinguishable -- see the Caveats section.
-The canary test separately seeds MAIN1 diag_p=0x07 and observes
-PB2 slot[6]=0x0 at convergence, so the misroute extends through
-slot[6] (BF/27 frame) at minimum.
+0x1 -- MAIN0's diag_d, the cross-PB misroute).  Slots [2..5] are
+zero on both MAINs in this run, so they are experimentally
+indistinguishable -- see Caveats.  The canary test (a separate
+test seeded with MAIN1 diag_p=0x07) observes PB2 slot[6]=0x0 at
+convergence, so the BF/27 frame's slot also fails -- but slots
+[2..5] remain unproven by direct evidence.
 
 ## Root cause: skip-on-silent target toggle race
 
@@ -176,9 +186,11 @@ harness that surfaces it.
     wrong.  Slots [2..5] are zero on both MAINs, so this probe alone
     can't say whether they'd also receive cross-PB data.  The canary
     test (`pb2_bridge_canary`'s hop (f) failure) seeds `diag_p=0x07`
-    on MAIN1 specifically and confirms slot[6] also fails to land,
-    so the misroute extends to the full burst -- but slots [2..5]
-    remain experimentally indistinguishable in the seeded probes.
+    on MAIN1 specifically and confirms slot[6] also fails to land
+    (the BF/27 frame's slot).  Slot[0], slot[1], and slot[6] are
+    therefore directly confirmed; slots [2..5] are NOT directly
+    proven and remain experimentally indistinguishable in the
+    seeded probes.
 
   * The probe configuration is `WireMultiMainChainHarness(main_units
     =2, fast_boot=False, disable_standby_check=False)` -- the same
