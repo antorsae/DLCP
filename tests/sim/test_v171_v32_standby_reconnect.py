@@ -167,8 +167,9 @@ def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit() -> None:
         cold-boot WAITING-loop pattern (grep
         `cold_boot_waiting_loop_and_reduce` in the same file)
         and lets CONTROL exit `reconnect_wait_loop` cleanly
-        (the proven cold-boot pattern is anchored on the
-        `v171_waiting_cold_past_grace_done` label).
+        (the proven cold-boot AND-reduce body is in the routine
+        anchored on the `v171_waiting_cold_past_grace_done`
+        label).
 
     Pre-fix observable trio:
       * MAIN1 stays in standby (`latB=0x00, latA=0x00, db=0`).

@@ -3499,12 +3499,17 @@ v171_preset_exit_check:
 ;
 ; Layout (16x2 LCD):
 ;   Healthy (count == 0):
-;     Row 0: "PBn" + 13 spaces       (count == 0 over the 7 runtime
-;                                     counters + V/W/X abnormal reset
-;                                     flags; POR `O` flag may be 1 on
-;                                     a normal cold boot and is masked
-;                                     out of the count -- see the
-;                                     pass-1 mask at asm:3631)
+;     Row 0: "PBn" + 13 spaces       (the Healthy branch -- target
+;                                     label `v171_diag_render_healthy`
+;                                     -- fires when the abnormal-cell
+;                                     counter `v171_diag_render_abnormal`
+;                                     is 0, where the counter walks
+;                                     the 7 runtime cells I/D/S/B/R/A/P
+;                                     plus the 3 abnormal-reset cells
+;                                     V/W/X; the POR `O` flag may be 1
+;                                     on a normal cold boot and does
+;                                     NOT count toward the abnormal
+;                                     total)
 ;     Row 1: "OK" + 14 spaces
 ;   Absent (present mask bit clear):
 ;     Row 0: "PBn" + 13 spaces
