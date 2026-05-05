@@ -35,6 +35,7 @@ use crate::reset::{ResetSource, apply_reset};
 use crate::scheduler::{Event, EventKind, EventQueue};
 use crate::stack::Stack;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 /// Multi-core chain on a single universal-clock timeline.
 #[derive(Serialize, Deserialize)]
@@ -95,18 +96,29 @@ pub struct Chain {
     ///
     /// **Bounded** at `UART_TX_HISTORY_CAP` records: when
     /// the buffer hits cap, the oldest record is dropped
-    /// from the front and `uart_tx_history_dropped` is
-    /// incremented.  Pushes go through `record_uart_tx`,
-    /// not `Vec::push` directly, so the cap stays
-    /// authoritative.  Codex task #20 (LOW from review of
-    /// a532ac2): unbounded growth produced tens of MB per
-    /// chain on long Phase-5 soak runs.  Capture-since-mark
-    /// callers (`tx_record_since_last_capture` on the PyO3
-    /// facade) clamp gracefully when records are dropped
-    /// between marks; check `uart_tx_history_dropped` if
-    /// the absence of older records would surprise the
-    /// caller.
-    pub uart_tx_history: Vec<UartByteRecord>,
+    /// via `pop_front` (O(1) on `VecDeque`) and
+    /// `uart_tx_history_dropped` is incremented.  Pushes go
+    /// through `record_uart_tx`, not `VecDeque::push_back`
+    /// directly, so the cap stays authoritative.  Codex
+    /// task #20 (LOW from review of a532ac2): unbounded
+    /// growth produced tens of MB per chain on long
+    /// Phase-5 soak runs.  Codex MEDIUM #3 from review of
+    /// 0be5299 prompted the `Vec` -> `VecDeque` switch:
+    /// `Vec::remove(0)` was O(N), so post-cap soak runs
+    /// became dominated by the front-shift memmove.
+    ///
+    /// Capture-since-mark callers
+    /// (`tx_record_since_last_capture` on the PyO3 facade)
+    /// reference the absolute monotonic counter
+    /// `uart_tx_total_by_src[src]` instead of a buffer
+    /// index, so a rolling-window truncation between marks
+    /// surfaces the exact `total_now - mark_value` byte
+    /// delta even when older matching records have been
+    /// evicted.  When the delta exceeds the in-buffer
+    /// matching count, the facade returns the available
+    /// (truncated) tail and the caller can detect the
+    /// loss via `uart_tx_history_dropped`.
+    pub uart_tx_history: VecDeque<UartByteRecord>,
     /// FIFO-accepted RX byte recorder, distinct from
     /// `uart_tx_history`.  `uart_tx_history` records every
     /// wire-attempt at the source-side `deliver_uart_byte`
@@ -126,7 +138,7 @@ pub struct Chain {
     /// wire but the silicon dropped it".  Cleared by
     /// `apply_reset_all` so a re-bootstrap doesn't carry
     /// pre-reset history forward.
-    pub uart_rx_history: Vec<UartByteRecord>,
+    pub uart_rx_history: VecDeque<UartByteRecord>,
     /// TAS3108 audio-DSP I²C slaves connected to one or
     /// more master cores via `couple_tas3108`.  Phase-3.5
     /// uses these to ACK V3.1 MAIN's `dsp_ping` and
@@ -239,6 +251,26 @@ pub struct Chain {
     /// also balloon to tens of MB if unbounded).  Reset by
     /// `apply_reset_all`.
     pub uart_rx_history_dropped: u64,
+
+    /// Absolute monotonic counter of TX-history records
+    /// produced per source core.  Indexed by `src_core`;
+    /// length always matches `cores.len()`.  Lets capture-
+    /// since-mark pointers reference an unchanging absolute
+    /// count instead of a filtered-buffer index that the
+    /// rolling-window cap can shift mid-test.  Codex MEDIUM
+    /// #2 from review of 0be5299: with only the
+    /// filtered-index pointer, a buffer truncation between
+    /// marks silently under-reported new bytes; with this
+    /// counter the PyO3 facade can derive the exact delta
+    /// (`total_now - mark_value`) and slice the last-N
+    /// matching records from the (possibly-truncated)
+    /// rolling window.  Reset to 0 by `apply_reset_all`.
+    pub uart_tx_total_by_src: Vec<u64>,
+    /// RX-side equivalent of `uart_tx_total_by_src`.
+    /// Indexed by `dst_core` (the core whose silicon FIFO
+    /// accepted the byte).  Same monotonic-counter
+    /// semantics; same codex MEDIUM #2 motivation.
+    pub uart_rx_total_by_dst: Vec<u64>,
 }
 
 /// Maximum number of records held in `Chain::uart_tx_history`
@@ -290,8 +322,8 @@ impl Chain {
             events: EventQueue::new(),
             pinnet: PinNet::new(),
             pin_coupling_last: Vec::new(),
-            uart_tx_history: Vec::new(),
-            uart_rx_history: Vec::new(),
+            uart_tx_history: VecDeque::new(),
+            uart_rx_history: VecDeque::new(),
             tas3108_slaves: Vec::new(),
             tas3108_couplings: Vec::new(),
             src4382_slaves: Vec::new(),
@@ -302,6 +334,8 @@ impl Chain {
             uart_coupling_drop_remaining: Vec::new(),
             uart_tx_history_dropped: 0,
             uart_rx_history_dropped: 0,
+            uart_tx_total_by_src: Vec::new(),
+            uart_rx_total_by_dst: Vec::new(),
         }
     }
 
@@ -315,32 +349,42 @@ impl Chain {
     }
 
     /// Push a record into `uart_tx_history` while honoring
-    /// the `UART_TX_HISTORY_CAP` rolling-window cap.  When
-    /// the buffer is at cap, the oldest record is dropped
-    /// from the front and `uart_tx_history_dropped` is
-    /// incremented.  Use this instead of pushing directly
-    /// so cap accounting stays in one place.  Codex task
-    /// #20 (LOW from review of a532ac2).
+    /// the `UART_TX_HISTORY_CAP` rolling-window cap, and
+    /// increment the absolute per-source-core counter
+    /// `uart_tx_total_by_src[record.src_core]`.  When the
+    /// buffer is at cap, the oldest record is dropped via
+    /// `VecDeque::pop_front` (O(1)) and
+    /// `uart_tx_history_dropped` is incremented.  Use this
+    /// instead of pushing directly so cap accounting and
+    /// the absolute counter stay in one place.  Codex
+    /// task #20 + MEDIUM #2/#3 from review of 0be5299.
     fn record_uart_tx(&mut self, record: UartByteRecord) {
         if self.uart_tx_history.len() >= UART_TX_HISTORY_CAP {
-            self.uart_tx_history.remove(0);
+            self.uart_tx_history.pop_front();
             self.uart_tx_history_dropped =
                 self.uart_tx_history_dropped.saturating_add(1);
         }
-        self.uart_tx_history.push(record);
+        self.uart_tx_total_by_src[record.src_core] =
+            self.uart_tx_total_by_src[record.src_core].saturating_add(1);
+        self.uart_tx_history.push_back(record);
     }
 
     /// Mirror of `record_uart_tx` for the
     /// destination-accept-side `uart_rx_history` buffer.
     /// Same `UART_TX_HISTORY_CAP` rolling cap; drops bump
-    /// `uart_rx_history_dropped`.  Codex task #20.
+    /// `uart_rx_history_dropped`.  Increments the
+    /// per-destination-core absolute counter
+    /// `uart_rx_total_by_dst[record.dst_core]`.  Codex
+    /// task #20 + MEDIUM #2/#3 from review of 0be5299.
     fn record_uart_rx(&mut self, record: UartByteRecord) {
         if self.uart_rx_history.len() >= UART_TX_HISTORY_CAP {
-            self.uart_rx_history.remove(0);
+            self.uart_rx_history.pop_front();
             self.uart_rx_history_dropped =
                 self.uart_rx_history_dropped.saturating_add(1);
         }
-        self.uart_rx_history.push(record);
+        self.uart_rx_total_by_dst[record.dst_core] =
+            self.uart_rx_total_by_dst[record.dst_core].saturating_add(1);
+        self.uart_rx_history.push_back(record);
     }
 
     /// Push an HD44780 LCD slave into the chain.  Returns
@@ -559,8 +603,12 @@ impl Chain {
         // with `deliver_uart_byte`.  The synthetic injection
         // has no upstream source, so `src_core` reuses the
         // destination index (the harness IS the source).
+        // Routes through `record_uart_rx` so the rolling
+        // cap and per-dst absolute counter stay correct
+        // (codex MEDIUM #1 from review of 0be5299: this
+        // path previously bypassed the bounded helper).
         if accepted {
-            self.uart_rx_history.push(UartByteRecord {
+            self.record_uart_rx(UartByteRecord {
                 tick: self.current_tick,
                 src_core: core_idx,
                 dst_core: core_idx,
@@ -651,6 +699,12 @@ impl Chain {
         self.stacks.push(Stack::new());
         self.clocks.push(clock);
         self.boot_epochs.push(0);
+        // Absolute monotonic counters per core for capture-
+        // since-mark pointers under the rolling-window cap
+        // (codex MEDIUM #2 from review of 0be5299).  TX
+        // counter indexed by src_core; RX by dst_core.
+        self.uart_tx_total_by_src.push(0);
+        self.uart_rx_total_by_dst.push(0);
         idx
     }
 
@@ -1506,6 +1560,12 @@ impl Chain {
         self.uart_tx_history_dropped = 0;
         self.uart_rx_history.clear();
         self.uart_rx_history_dropped = 0;
+        for total in &mut self.uart_tx_total_by_src {
+            *total = 0;
+        }
+        for total in &mut self.uart_rx_total_by_dst {
+            *total = 0;
+        }
         for level in &mut self.pin_coupling_last {
             *level = None;
         }
@@ -1700,7 +1760,7 @@ mod tests {
         let pre = chain.uart_rx_history.len();
         assert!(chain.inject_uart_rx_byte(0, 0x42));
         assert_eq!(chain.uart_rx_history.len(), pre + 1);
-        let rec = chain.uart_rx_history.last().expect("recorded");
+        let rec = chain.uart_rx_history.back().expect("recorded");
         assert_eq!(rec.byte, 0x42);
         assert_eq!(rec.dst_core, 0);
         // Synthetic injection has no upstream source; record
@@ -2763,11 +2823,11 @@ mod tests {
             "one drop after one over-cap push"
         );
         assert_eq!(
-            chain.uart_tx_history.first().map(|r| r.tick), Some(1),
+            chain.uart_tx_history.front().map(|r| r.tick), Some(1),
             "front-drop must evict the oldest record (tick=0)"
         );
         assert_eq!(
-            chain.uart_tx_history.last().map(|r| r.tick), Some(new_tick),
+            chain.uart_tx_history.back().map(|r| r.tick), Some(new_tick),
             "newest push lands at the back"
         );
 
@@ -2778,6 +2838,78 @@ mod tests {
         assert_eq!(
             chain.uart_tx_history_dropped, 0,
             "apply_reset_all must zero the drop counter"
+        );
+    }
+
+    /// Codex MEDIUM #2 from review of 0be5299: the absolute
+    /// per-source-core counter `uart_tx_total_by_src`
+    /// increments on every recorded TX byte and survives
+    /// rolling-window truncation, so capture-since-mark
+    /// pointers can derive the exact byte delta even when
+    /// the buffer evicted older records.  This test pushes
+    /// 1.5x the cap through `record_uart_tx`, confirms the
+    /// per-source counter == 1.5x cap, the buffer holds
+    /// exactly cap records, and the dropped-count == 0.5x
+    /// cap.  apply_reset_all zeroes the counter alongside
+    /// the buffer.
+    #[test]
+    fn uart_tx_total_by_src_is_monotonic_under_truncation() {
+        let mut chain = Chain::new();
+        let i_src = chain.push_core(Core::new(Variant::Pic18F25K20));
+        let mut dst = Core::new(Variant::Pic18F25K20);
+        dst.memory
+            .write_raw(crate::memory::Address::from_raw(0xFAB), 0x90);
+        let i_dst = chain.push_core(dst);
+        chain.couple_uart(
+            i_src,
+            crate::pinnet::default_tx_pin(),
+            i_dst,
+            crate::pinnet::default_rx_pin(),
+        );
+
+        let push_count = (UART_TX_HISTORY_CAP * 3) / 2;
+        for n in 0u64..push_count as u64 {
+            chain.record_uart_tx(UartByteRecord {
+                tick: n,
+                src_core: i_src,
+                dst_core: i_dst,
+                byte: (n & 0xFF) as u8,
+            });
+        }
+        assert_eq!(
+            chain.uart_tx_total_by_src[i_src],
+            push_count as u64,
+            "absolute counter must reflect total pushed, regardless of buffer cap"
+        );
+        assert_eq!(
+            chain.uart_tx_history.len(),
+            UART_TX_HISTORY_CAP,
+            "buffer caps at UART_TX_HISTORY_CAP under truncation"
+        );
+        assert_eq!(
+            chain.uart_tx_history_dropped,
+            (push_count - UART_TX_HISTORY_CAP) as u64,
+            "drop counter equals pushed minus retained"
+        );
+        // Sanity: the buffer's front record is the oldest
+        // surviving tick (push_count - CAP); back is the
+        // most recent push (push_count - 1).
+        assert_eq!(
+            chain.uart_tx_history.front().map(|r| r.tick),
+            Some((push_count - UART_TX_HISTORY_CAP) as u64),
+            "front of rolling window should be the oldest surviving tick"
+        );
+        assert_eq!(
+            chain.uart_tx_history.back().map(|r| r.tick),
+            Some((push_count - 1) as u64),
+            "back of rolling window should be the most recent tick"
+        );
+
+        chain.apply_reset_all(ResetSource::PowerOn);
+        assert_eq!(
+            chain.uart_tx_total_by_src[i_src],
+            0,
+            "apply_reset_all must zero the absolute counter"
         );
     }
 

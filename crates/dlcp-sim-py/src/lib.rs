@@ -539,7 +539,7 @@ struct Chain {
     /// pointer to the new total.  See
     /// `tx_record_since_last_capture` for the mirror-of-gpsim
     /// semantics.
-    tx_capture_main0: usize,
+    tx_capture_main0: u64,
     /// MAIN1-side TX-record capture point.  Symmetric to
     /// `tx_capture_main0` but filters entries whose
     /// `src_core == i_main1`.  Used by 3-core wire-chain probes
@@ -549,7 +549,7 @@ struct Chain {
     /// path.  Single-MAIN chains alias `i_main1 == i_main0`, so
     /// this capture coincides with `tx_capture_main0` and offers
     /// no new information there.  See task #94 probe.
-    tx_capture_main1: usize,
+    tx_capture_main1: u64,
     /// CONTROL-side RX capture point.  Symmetric to
     /// `tx_capture_ctl` but indexes the new
     /// `Chain::uart_rx_history` (FIFO-accepted bytes) filtered
@@ -559,18 +559,18 @@ struct Chain {
     /// byte loss between MAIN1's TX and CONTROL's silicon RX
     /// FIFO.  See `mark_ctl_rx_capture_point` /
     /// `ctl_rx_record_since_last_capture`.
-    rx_capture_ctl: usize,
+    rx_capture_ctl: u64,
     /// MAIN0-side RX capture point.  Same shape as
     /// `rx_capture_ctl` but filters by
     /// `r.dst_core == self.i_main0`.  Useful for verifying
     /// MAIN0's RX accepts the bytes CONTROL sends downstream.
-    rx_capture_main0: usize,
+    rx_capture_main0: u64,
     /// MAIN1-side RX capture point.  Same shape but filters
     /// by `r.dst_core == self.i_main1`.  Useful for verifying
     /// MAIN1's RX accepts the bytes MAIN0 forwards (and any
     /// CONTROL bytes that hop through MAIN0's parser
     /// decrement-and-forward path).
-    rx_capture_main1: usize,
+    rx_capture_main1: u64,
     /// CONTROL-side TX-record capture point.  Symmetric to
     /// `tx_capture_main0` but filters entries whose
     /// `src_core == i_ctl`.  Used by tests that need to bound
@@ -579,7 +579,7 @@ struct Chain {
     /// function_028 entry") via
     /// `mark_ctl_tx_capture_point` + `ctl_tx_record_since_last_
     /// capture` + `step_until_pc_hit(core_idx=0, ...)`.
-    tx_capture_ctl: usize,
+    tx_capture_ctl: u64,
     /// When true, `step()` applies the per-step "force
     /// CONNECTED" hook to CONTROL: ORs bits 1+3 into 0x01F
     /// (CONNECTED + event-exit) and resets the idle timer at
@@ -1903,15 +1903,24 @@ impl Chain {
             .filter(|r| r.src_core == main0)
             .map(|r| r.byte)
             .collect();
-        // Clamp the capture pointer in case the rolling-window
-        // cap (UART_TX_HISTORY_CAP) dropped older records since
-        // the last mark — then `main_records.len()` can be less
-        // than the saved pointer.  In practice every test
-        // captures well under the 1M-record cap, so this branch
-        // is only reachable on extreme soak runs.  Codex task #20.
-        let start = self.tx_capture_main0.min(main_records.len());
+        // Use the absolute monotonic counter
+        // `uart_tx_total_by_src[main0]` to compute the byte
+        // delta since the last mark.  Robust under rolling-
+        // window truncation: if the buffer evicted older
+        // records since the mark, the delta still reflects
+        // the actual count of new bytes.  When the delta
+        // exceeds the in-buffer matching count (because
+        // truncation evicted some of those new bytes), we
+        // return the available tail and the caller can
+        // detect the loss via `uart_tx_history_dropped`.
+        // Codex MEDIUM #2 from review of 0be5299.
+        let total_now = self.inner.uart_tx_total_by_src[main0];
+        let want = total_now.saturating_sub(self.tx_capture_main0) as usize;
+        let in_buffer = main_records.len();
+        let take = want.min(in_buffer);
+        let start = in_buffer - take;
         let result = main_records[start..].to_vec();
-        self.tx_capture_main0 = main_records.len();
+        self.tx_capture_main0 = total_now;
         result
     }
 
@@ -1922,13 +1931,14 @@ impl Chain {
     /// drop pre-stimulus bytes (boot-time TX, prior query
     /// responses) before injecting the next stimulus.
     fn mark_tx_capture_point(&mut self) {
+        // Mark = absolute total at this instant.  Subsequent
+        // `tx_record_since_last_capture` returns
+        // (total_now - mark) bytes from the rolling window.
+        // Codex MEDIUM #2 from review of 0be5299: previously
+        // this stored a filtered-buffer count, which became
+        // stale on rolling-window eviction.
         let main0 = self.i_main0;
-        self.tx_capture_main0 = self
-            .inner
-            .uart_tx_history
-            .iter()
-            .filter(|r| r.src_core == main0)
-            .count();
+        self.tx_capture_main0 = self.inner.uart_tx_total_by_src[main0];
     }
 
     /// MAIN1 mirror of `mark_tx_capture_point` for 3-core
@@ -1943,13 +1953,10 @@ impl Chain {
     /// stream as `mark_tx_capture_point` and offers no new
     /// information.  See task #94.
     fn mark_main1_tx_capture_point(&mut self) {
+        // Same absolute-counter semantics as
+        // `mark_tx_capture_point` (codex MEDIUM #2).
         let main1 = self.i_main1;
-        self.tx_capture_main1 = self
-            .inner
-            .uart_tx_history
-            .iter()
-            .filter(|r| r.src_core == main1)
-            .count();
+        self.tx_capture_main1 = self.inner.uart_tx_total_by_src[main1];
     }
 
     /// MAIN1 mirror of `tx_record_since_last_capture`.
@@ -1961,6 +1968,8 @@ impl Chain {
     /// chain frames is the caller's responsibility.  See
     /// task #94.
     fn main1_tx_record_since_last_capture(&mut self) -> Vec<u8> {
+        // Same absolute-counter slicing as
+        // `tx_record_since_last_capture` (codex MEDIUM #2).
         let main1 = self.i_main1;
         let main1_records: Vec<u8> = self
             .inner
@@ -1969,11 +1978,13 @@ impl Chain {
             .filter(|r| r.src_core == main1)
             .map(|r| r.byte)
             .collect();
-        // Same rolling-window clamp as
-        // `tx_record_since_last_capture` (codex task #20).
-        let start = self.tx_capture_main1.min(main1_records.len());
+        let total_now = self.inner.uart_tx_total_by_src[main1];
+        let want = total_now.saturating_sub(self.tx_capture_main1) as usize;
+        let in_buffer = main1_records.len();
+        let take = want.min(in_buffer);
+        let start = in_buffer - take;
         let result = main1_records[start..].to_vec();
-        self.tx_capture_main1 = main1_records.len();
+        self.tx_capture_main1 = total_now;
         result
     }
 
@@ -1988,12 +1999,7 @@ impl Chain {
     /// See task #94.
     fn mark_ctl_rx_capture_point(&mut self) {
         let ctl = self.i_ctl;
-        self.rx_capture_ctl = self
-            .inner
-            .uart_rx_history
-            .iter()
-            .filter(|r| r.dst_core == ctl)
-            .count();
+        self.rx_capture_ctl = self.inner.uart_rx_total_by_dst[ctl];
     }
 
     /// Return CONTROL's RX-accepted bytes since the last
@@ -2011,21 +2017,20 @@ impl Chain {
             .filter(|r| r.dst_core == ctl)
             .map(|r| r.byte)
             .collect();
-        let start = self.rx_capture_ctl.min(ctl_records.len());
+        let total_now = self.inner.uart_rx_total_by_dst[ctl];
+        let want = total_now.saturating_sub(self.rx_capture_ctl) as usize;
+        let in_buffer = ctl_records.len();
+        let take = want.min(in_buffer);
+        let start = in_buffer - take;
         let result = ctl_records[start..].to_vec();
-        self.rx_capture_ctl = ctl_records.len();
+        self.rx_capture_ctl = total_now;
         result
     }
 
     /// MAIN0 mirror of `mark_ctl_rx_capture_point`.
     fn mark_main0_rx_capture_point(&mut self) {
         let main0 = self.i_main0;
-        self.rx_capture_main0 = self
-            .inner
-            .uart_rx_history
-            .iter()
-            .filter(|r| r.dst_core == main0)
-            .count();
+        self.rx_capture_main0 = self.inner.uart_rx_total_by_dst[main0];
     }
 
     /// MAIN0 mirror of `ctl_rx_record_since_last_capture`.
@@ -2038,21 +2043,20 @@ impl Chain {
             .filter(|r| r.dst_core == main0)
             .map(|r| r.byte)
             .collect();
-        let start = self.rx_capture_main0.min(main0_records.len());
+        let total_now = self.inner.uart_rx_total_by_dst[main0];
+        let want = total_now.saturating_sub(self.rx_capture_main0) as usize;
+        let in_buffer = main0_records.len();
+        let take = want.min(in_buffer);
+        let start = in_buffer - take;
         let result = main0_records[start..].to_vec();
-        self.rx_capture_main0 = main0_records.len();
+        self.rx_capture_main0 = total_now;
         result
     }
 
     /// MAIN1 mirror of `mark_ctl_rx_capture_point`.
     fn mark_main1_rx_capture_point(&mut self) {
         let main1 = self.i_main1;
-        self.rx_capture_main1 = self
-            .inner
-            .uart_rx_history
-            .iter()
-            .filter(|r| r.dst_core == main1)
-            .count();
+        self.rx_capture_main1 = self.inner.uart_rx_total_by_dst[main1];
     }
 
     /// MAIN1 mirror of `ctl_rx_record_since_last_capture`.
@@ -2065,9 +2069,13 @@ impl Chain {
             .filter(|r| r.dst_core == main1)
             .map(|r| r.byte)
             .collect();
-        let start = self.rx_capture_main1.min(main1_records.len());
+        let total_now = self.inner.uart_rx_total_by_dst[main1];
+        let want = total_now.saturating_sub(self.rx_capture_main1) as usize;
+        let in_buffer = main1_records.len();
+        let take = want.min(in_buffer);
+        let start = in_buffer - take;
         let result = main1_records[start..].to_vec();
-        self.rx_capture_main1 = main1_records.len();
+        self.rx_capture_main1 = total_now;
         result
     }
 
@@ -2082,12 +2090,7 @@ impl Chain {
     /// entry).
     fn mark_ctl_tx_capture_point(&mut self) {
         let ctl = self.i_ctl;
-        self.tx_capture_ctl = self
-            .inner
-            .uart_tx_history
-            .iter()
-            .filter(|r| r.src_core == ctl)
-            .count();
+        self.tx_capture_ctl = self.inner.uart_tx_total_by_src[ctl];
     }
 
     /// CONTROL-side equivalent of `tx_record_since_last_
@@ -2106,9 +2109,13 @@ impl Chain {
             .filter(|r| r.src_core == ctl)
             .map(|r| r.byte)
             .collect();
-        let start = self.tx_capture_ctl.min(ctl_records.len());
+        let total_now = self.inner.uart_tx_total_by_src[ctl];
+        let want = total_now.saturating_sub(self.tx_capture_ctl) as usize;
+        let in_buffer = ctl_records.len();
+        let take = want.min(in_buffer);
+        let start = in_buffer - take;
         let result = ctl_records[start..].to_vec();
-        self.tx_capture_ctl = ctl_records.len();
+        self.tx_capture_ctl = total_now;
         result
     }
 
