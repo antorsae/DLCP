@@ -6,12 +6,12 @@ import pytest
 
 
 # NOTE: this file is intentionally NOT marked dual_supported --
-# 2 of its 5 tests are pre-existing idempotence failures on main
-# (the V3.1 cmd07-guard and diag-coeff source builders are not
-# fully idempotent on the current canonical source).  Marking
-# the file dual_supported would surface the pre-existing failures
-# under DLCP_SIM_BACKEND=dual without any behavioural change.
-# Once the builders are made idempotent, this file gets the marker.
+# 2 of its 5 tests are pre-existing idempotence failures (the V3.1
+# cmd07-guard and diag-coeff source builders are not fully
+# idempotent on the current canonical source) and are gated by
+# strict @pytest.mark.xfail decorators in the test bodies.
+# The marker is informational post-PF.4 phase 2; this file gets
+# it once the builders are made idempotent.
 
 
 def _reload(module_name: str):

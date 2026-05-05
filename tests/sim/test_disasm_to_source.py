@@ -20,7 +20,7 @@ import pytest
 #   * Operators who DO run scripts/annotate_disasm.py get green tests.
 #   * Operators who don't (default) get a clear skip message pointing
 #     at the regenerator command.
-#   * The DLCP_SIM_BACKEND={rust,gpsim} suite gates green either way.
+#   * The full sim suite gates green either way.
 # Tracked as P4-followup #104.
 _ANNOTATED_ASM = (
     Path(__file__).resolve().parents[2]

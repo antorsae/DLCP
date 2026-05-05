@@ -17,13 +17,13 @@ from dlcp_fw.sim.hexio import parse_intel_hex
 # NOTE: this file is intentionally NOT marked dual_supported --
 # 1 of its 3 tests
 # (test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps)
-# is a pre-existing failure on main (the V3.1 build artifact at
+# is a pre-existing failure (the V3.1 build artifact at
 # `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex`
 # diverges from the canonical V3.1 source's stock-sparse-gap
-# overlay).  Marking the file dual_supported would surface the
-# pre-existing failure under DLCP_SIM_BACKEND=dual without any
-# behavioural change.  Once the build artifact is regenerated and
-# the test passes, this file gets the marker.
+# overlay) and is gated by a strict @pytest.mark.xfail decorator
+# in the test body.  The marker is informational post-PF.4 phase 2;
+# this file gets it once the artifact is regenerated and the test
+# passes.
 
 
 def _skip_missing(*paths: Path) -> None:

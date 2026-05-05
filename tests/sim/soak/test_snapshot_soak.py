@@ -15,12 +15,10 @@ the soak tests at the pytest worker level.  Failure dumps land
 in `artifacts/sim_soak_failures/` (created by the Rust side); a
 test failure here always points at the dumped JSON file by name.
 
-Marked `@pytest.mark.dual_supported` because the soak tests do
-not depend on `DLCP_SIM_BACKEND` -- they exercise the Rust
-crate directly, so they're meaningful under any backend
-selection (rust / dual / gpsim).  Marked `@pytest.mark.slow`
-so the fast-subset gate (`pytest -m "not slow"`) skips the
-~2-minute soak run.
+Marked `@pytest.mark.dual_supported` (legacy informational
+marker; rust is the only backend post-PF.4 phase 2) and
+`@pytest.mark.slow` so the fast-subset gate
+(`pytest -m "not slow"`) skips the ~2-minute soak run.
 """
 
 from __future__ import annotations

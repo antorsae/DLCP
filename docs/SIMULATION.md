@@ -299,8 +299,8 @@ If you came from the gpsim-era guide:
   counts via `Chain.bridge_byte_stats` during the PF.4 migration.
 - `Chain.set_link_fault(extra_cycles=N)` raises
   `NotImplementedError` — the rust silicon ring has no bridge-delay
-  model.  Tests that need propagation-delay semantics were retired in
-  PF.4 phase 1 alongside the gpsim harness; reintroducing them
+  model.  Tests that needed propagation-delay semantics were retired
+  alongside the gpsim harness in PF.4 phase 2; reintroducing them
   requires modeling the delay in the rust executor.
 
 ## Related Documentation
