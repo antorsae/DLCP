@@ -526,21 +526,29 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # Timer3, T3CON=0).  Task #94 CLOSED 2026-05-04 -- rust matches
 # HW on the diag-page convergence path.
 #
-# UPDATE 2 (2026-05-04, PF.3): the busy-loop convergence is now
-# unblocked test-side via `_press_drive_until_pb_present`, the
-# RIGHT/LEFT wiggle helper that drives the cmd 0x21/0x22 cadence.
-# `test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2` is
-# un-XFAIL'd.  The remaining 3 `_V171_V32_PB2_BRIDGE_XFAIL`
-# markers stay because the wiggle exposes downstream issues that
-# were previously masked: Tier-1 LCD layout drift in zero_idle /
-# mixed_counters (task #116), and gpsim multi-frame cache misroute
-# in pb_cache_isolation (task #117, shared root cause with the
-# canary's hop (f) failure).  HW retest also surfaced a NEW
-# divergence candidate (task #95): pressing STBY from a Diag page
-# on real HW only dims the CONTROL LCD (Zzz... dimmed) but MAINs
-# keep playing music -- rust behavior at the CONTROL.TX byte-
-# stream level has not yet been probed, so divergence is
-# candidate-only.
+# UPDATE 2 (2026-05-04, PF.3 + Task #116): the busy-loop
+# convergence is now unblocked test-side via
+# `_press_drive_until_pb_present`, the RIGHT/LEFT wiggle helper
+# that drives the cmd 0x21/0x22 cadence; Task #116 also updated
+# the LCD assertion strings to match the Tier-1 per-PB layout
+# (V32_DIAG_TIER1_SPEC.md, 2026-04-20).  4 of the original 5
+# group-A xfails are now resolved:
+#   * diag_page_polls / lcd_renders_zero_idle / lcd_renders_
+#     mixed_counters / lcd_renders_saturation_plus -- the marker
+#     was REMOVED from these tests.  mixed_counters' gpsim path
+#     does an inline `pytest.xfail` (NOT via the marker)
+#     pointing at task #117 since the multi-frame cache misroute
+#     prevents the per-slot extra_check predicate from converging
+#     -- rust path covers the test.
+# Only ONE test still WEARS `_V171_V32_PB2_BRIDGE_XFAIL`:
+#   * pb_cache_isolation (whole-test xfail-NOTRUN on all backends
+#     until task #117 lands; rust path would pass but is held
+#     until the gpsim cache misroute is closed).
+# HW retest also surfaced a NEW divergence candidate (task #95):
+# pressing STBY from a Diag page on real HW only dims the
+# CONTROL LCD (Zzz... dimmed) but MAINs keep playing music --
+# rust behavior at the CONTROL.TX byte-stream level has not yet
+# been probed, so divergence is candidate-only.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
         "PF.3 + Task #116 (2026-05-04) un-XFAIL'd 4 of the original 5 "
