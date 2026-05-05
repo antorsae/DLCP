@@ -4,20 +4,30 @@
 The PF.4 retirement is split into two phases (per
 `docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup tracker"):
 
-  Phase 1 — done (commit-pending after this script lands):
-      Delete the 30 gpsim-only test files + 14 gpsim-only operator
+  Phase 1 — done (commit 5a56279 + 802e932 AST walker):
+      Deleted the 30 gpsim-only test files + 14 gpsim-only operator
       scripts.  The 6 wrapper modules in `src/dlcp_fw/sim/`,
       `vendor/gpsim-0.32.1-xtc/`, and `artifacts/tools/gpsim-xtc/`
-      are KEPT because 40 still-`@pytest.mark.dual_supported`
-      tests in `tests/sim/` retain a `if dlcp_sim_backend ==
-      "gpsim":` conditional branch and therefore still
-      `from dlcp_fw.sim.{wrapper}` at module import time.
+      are KEPT because 41 still-`@pytest.mark.dual_supported`
+      tests in `tests/sim/` retain `if dlcp_sim_backend == "gpsim":`
+      conditional branches OR module-scope wrapper imports and
+      therefore still `from dlcp_fw.sim.{wrapper}` at collection
+      time.  (The "40" figure quoted in the original PF.4 phase-1
+      commit message was off by one; the broadened phase-2 grep in
+      a883405 caught a 41st file -- `test_main_gpsim_portability.py`
+      using the package re-export shape -- and the AST walker in
+      802e932 confirmed the count.)
 
-  Phase 2 — deferred:
-      40-file dual_supported gpsim conditional-branch surgery:
-      remove the gpsim imports + the `if dlcp_sim_backend ==
-      "gpsim":` branches from each, then delete the 6 wrappers,
-      the vendor tree, and the artifacts/tools build dir.
+  Phase 2 — deferred (planning doc landed in commit a049114 ->
+                       refined in abf5db6 -> b915d35):
+      41-file dual_supported gpsim conditional-branch surgery + 6
+      wrapper deletions + vendor/gpsim-0.32.1-xtc retirement +
+      artifacts/tools/gpsim-xtc cleanup.  See
+      `docs/PF4_PHASE2_PLAN.md` for the per-file inventory,
+      5-category split (A=2 delete-with-wrapper, B=1 utility
+      migration, B'=1 unused-import, C=33 dual-path bodies, D=3
+      mixed/non-C, Special=1 PF.3 partial), and 9-batch suggested
+      parallelization.
 
 This script asserts:
   * Phase-1 deletions actually happened (the 30 + 14 paths are

@@ -245,11 +245,12 @@ recipe for this category.  Per-file specifics:
     grafted on or the marker dropped.
 
   * `tests/sim/test_v17_relocation.py` -- mostly dual_supported with
-    a real backend fixture (line 251+, 333+ have gpsim-only tests
-    too).  The earlier "category B utility-import" claim in this
-    plan's first version was wrong -- the file imports
-    `GpsimControlHarness` and runs gpsim bodies, NOT just `_read_reg`
-    as a utility.
+    a real backend fixture; line 250 is `@pytest.mark.dual_supported`
+    + `@pytest.mark.gpsim` and DOES branch on `dlcp_sim_backend`
+    (a category-C body), only line 333 is the truly gpsim-only test.
+    The earlier "category B utility-import" claim in this plan's
+    first version was wrong -- the file imports `GpsimControlHarness`
+    and runs gpsim bodies, NOT just `_read_reg` as a utility.
 
 Action per file: enumerate the gpsim-only tests, decide port-vs-
 delete per test (port preferred when assertion is bytes-on-the-wire
@@ -332,7 +333,7 @@ Corrected category counts post codex review of abf5db6
   * Total: 2 + 1 + 1 + 33 + 3 + 1 = 41 (matches the AST walker
     inventory).
 
-  * Category C surgery (32 files): ~5-15 min per file × 32 = 3-8 hours
+  * Category C surgery (33 files): ~5-15 min per file × 33 = 3-8 hours
     of focused per-file editing.
   * Category D triage + port-or-delete (3 files, multiple decisions
     each): ~2-3 hours; some gpsim-only tests may need rust ports.
