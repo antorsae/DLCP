@@ -345,7 +345,7 @@ def test_v171_preset_boot_init_byte_00_clears_preset_bit(
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_preset_boot_init_any_nonzero_nonone_defaults_to_a(
-    v171_hex: Path, tmp_path: Path
+    v171_hex: Path,
 ) -> None:
     """EEPROM[0x74] = 0xFF (erased) → PRESET_BIT clear (defaults to A)."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
