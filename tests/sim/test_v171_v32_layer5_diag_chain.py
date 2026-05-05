@@ -710,12 +710,15 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
     for _ in range(50):
         c.step_tcy(1_000_000)
     present = c.read_reg(V171_DIAG_PRESENT_PHYS)
-    pb1 = [c.read_reg(V171_DIAG_PB1_BASE_PHYS + i) for i in range(7)]
-    pb2 = [c.read_reg(V171_DIAG_PB2_BASE_PHYS + i) for i in range(7)]
+    # Read PB1/PB2 caches lazily inside the assert error path -- only
+    # needed for diagnostics if the present-mask gate fails.  Mirrors
+    # gpsim's lazy read pattern (codex #78); avoids 14 RAM reads on
+    # the success path.
     assert present == 0, (
         f"[rust] diag_present non-zero without entering Diagnostics: "
-        f"0x{present:02X}; PB1 cache={[hex(v) for v in pb1]}; "
-        f"PB2 cache={[hex(v) for v in pb2]}"
+        f"0x{present:02X}; "
+        f"PB1 cache={[hex(c.read_reg(V171_DIAG_PB1_BASE_PHYS + i)) for i in range(7)]}; "
+        f"PB2 cache={[hex(c.read_reg(V171_DIAG_PB2_BASE_PHYS + i)) for i in range(7)]}"
     )
 # ===========================================================================
 # F4 + xfail Group A canary (2026-04-19 round 2): split into two tests.

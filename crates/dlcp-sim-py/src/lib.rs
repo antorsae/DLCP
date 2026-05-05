@@ -446,13 +446,17 @@ fn build_v17_v3x_chain_single_main(
     })
 }
 
-fn build_v171_v32_chain() -> Result<V171V32ChainHandle, String> {
-    let v171 = HexImage::from_hex_path(v171_control_hex_path())
-        .map_err(|e| format!("V1.71 hex parse: {e:?}"))?;
-    let v32 = HexImage::from_hex_path(v32_main_hex_path())
-        .map_err(|e| format!("V3.2 hex parse: {e:?}"))?;
-    let v23 = HexImage::from_hex_path(v23_main_combined_hex_path())
-        .map_err(|e| format!("V2.3-combined hex parse: {e:?}"))?;
+fn build_v171_v32_chain(
+    control_hex_path: PathBuf,
+    main_hex_path: PathBuf,
+    v23_seed_hex_path: PathBuf,
+) -> Result<V171V32ChainHandle, String> {
+    let v171 = HexImage::from_hex_path(&control_hex_path)
+        .map_err(|e| format!("V1.71 hex parse ({:?}): {e:?}", control_hex_path))?;
+    let v32 = HexImage::from_hex_path(&main_hex_path)
+        .map_err(|e| format!("V3.2 hex parse ({:?}): {e:?}", main_hex_path))?;
+    let v23 = HexImage::from_hex_path(&v23_seed_hex_path)
+        .map_err(|e| format!("V2.3-combined hex parse ({:?}): {e:?}", v23_seed_hex_path))?;
 
     let control = build_v171_control_core(&v171);
     let mut main0 = build_seeded_main_core(&v32, &v23);
@@ -783,8 +787,30 @@ impl Chain {
     /// applied.  Equivalent to the prelude of
     /// `multicore_parity.rs::three_core_ring_v171_v32_v32_*`.
     #[staticmethod]
-    fn from_v171_v32() -> PyResult<Self> {
-        let handle = build_v171_v32_chain()
+    #[pyo3(signature = (
+        control_hex_path=None,
+        main_hex_path=None,
+        v23_seed_hex_path=None,
+    ))]
+    fn from_v171_v32(
+        control_hex_path: Option<String>,
+        main_hex_path: Option<String>,
+        v23_seed_hex_path: Option<String>,
+    ) -> PyResult<Self> {
+        // Default to canonical release paths; tests that build hexes
+        // from current source into a tmp path can pass overrides so
+        // both backends test the same byte-identical fixture (codex
+        // task #77).
+        let control = control_hex_path
+            .map(PathBuf::from)
+            .unwrap_or_else(v171_control_hex_path);
+        let main = main_hex_path
+            .map(PathBuf::from)
+            .unwrap_or_else(v32_main_hex_path);
+        let v23 = v23_seed_hex_path
+            .map(PathBuf::from)
+            .unwrap_or_else(v23_main_combined_hex_path);
+        let handle = build_v171_v32_chain(control, main, v23)
             .map_err(|e| PyRuntimeError::new_err(format!("from_v171_v32: {e}")))?;
         Ok(Self {
             inner: handle.chain,

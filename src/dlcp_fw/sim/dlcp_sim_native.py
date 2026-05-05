@@ -131,22 +131,29 @@ class Chain:
         self._inner = _inner
 
     @classmethod
-    def from_v171_v32(cls) -> "Chain":
+    def from_v171_v32(
+        cls,
+        control_hex_path: str | None = None,
+        main_hex_path: str | None = None,
+        v23_seed_hex_path: str | None = None,
+    ) -> "Chain":
         """Build the canonical V1.71 CONTROL + 2× V3.2 MAIN ring.
 
         Mirrors the prelude of
         ``crates/dlcp-sim/tests/multicore_parity.rs::three_core_ring_v171_v32_v32_*``
         scenarios:
 
-        - Load V1.71 CONTROL hex
-          (``firmware/patched/releases/DLCP_Control_V1.71.hex``).
-        - Load V3.2 MAIN hex (canonical app-only release at
-          ``firmware/patched/releases/DLCP_Firmware_V3.2.hex``)
-          + V2.3-combined seed
-          (``firmware/stock/main/DLCP Firmware V2.3-combined.hex``)
-          and merge to get a silicon-correct MAIN flash
-          (V3.2 app on V2.3 boot block / preset table /
-          EEPROM seed; per task #36 / P3.6 background).
+        - Load V1.71 CONTROL hex (default:
+          ``firmware/patched/releases/DLCP_Control_V1.71.hex``;
+          override via ``control_hex_path``).
+        - Load V3.2 MAIN hex (default: canonical app-only release at
+          ``firmware/patched/releases/DLCP_Firmware_V3.2.hex``;
+          override via ``main_hex_path``) + V2.3-combined seed
+          (default: ``firmware/stock/main/DLCP Firmware V2.3-combined.hex``;
+          override via ``v23_seed_hex_path``) and merge to get
+          a silicon-correct MAIN flash (V3.2 app on V2.3 boot
+          block / preset table / EEPROM seed; per task #36 /
+          P3.6 background).
         - Build CONTROL core (K20) from V1.71.
         - Build 2× MAIN cores (2455) each with the merged
           flash + V2.3 EEPROM seed + AN0=0x0300 (steady-
@@ -158,9 +165,22 @@ class Chain:
         - Apply POR reset to all cores; schedule initial
           steps (cores wake at universal-tick 0).
 
+        Use the path overrides when the test fixture freshly
+        assembles V1.71 / V3.2 hexes from current source into a
+        tmp path -- otherwise the rust path tests the canonical
+        RELEASE while gpsim/source-based tests test the freshly
+        built fixture and the two could diverge on stale-canonical
+        skew (codex task #77).
+
         After return the chain is ready for :meth:`step_ticks`.
         """
-        return cls(_native.Chain.from_v171_v32())
+        return cls(
+            _native.Chain.from_v171_v32(
+                control_hex_path,
+                main_hex_path,
+                v23_seed_hex_path,
+            )
+        )
 
     @classmethod
     def from_v16b_v23(cls) -> "Chain":
