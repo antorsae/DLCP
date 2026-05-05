@@ -192,8 +192,6 @@ class Chain:
     ) -> "Chain":
         """MAIN-only single-core factory.
 
-        Mirror of gpsim's
-        ``MainChainHarness(main_hex, transport_mode="native_ring")``.
         Builds a single 2455 core with V3.x app + V2.3-combined
         seed merge, TAS3108 DSP slave on MSSP I²C, AN0 ADC =
         0x0300, no CONTROL.  All Chain methods (read_reg,
@@ -275,13 +273,10 @@ class Chain:
     def from_v17_control_only(cls, control_hex_path: str) -> "Chain":
         """CONTROL-only single-K20 chain (no MAIN, no UART couplings).
 
-        Mirror of gpsim's ``GpsimControlHarness(hex,
-        fast_boot=False)`` invocation without a synthetic-
-        heartbeat pump.  Boots a single K20 core with an
-        HD44780 LCD slave on the LCD-control pins.  Used by
-        V1.7 / V1.71 relocation-safety tests that compare
-        stock V1.6b vs rebuilt V1.7 vs shifted V1.7 in
-        CONTROL-only mode (no MAIN heartbeats) and assert
+        Boots a single K20 core with an HD44780 LCD slave on the
+        LCD-control pins.  Used by V1.7 / V1.71 relocation-safety
+        tests that compare stock V1.6b vs rebuilt V1.7 vs shifted
+        V1.7 in CONTROL-only mode (no MAIN heartbeats) and assert
         that all three advance identical Tcy and emit
         identical UART TX byte sequences.
 
@@ -363,9 +358,7 @@ class Chain:
         """True when CONTROL has marked itself as connected.
 
         Reads bit 1 of physical RAM 0x01F on the CONTROL
-        core (the ``control_flags`` byte).  Mirror of
-        ``chain_gpsim.py::SingleMainChainHarness.is_connected``.
-        """
+        core (the ``control_flags`` byte)."""
         return bool(self._inner.is_connected())
 
     def is_waiting(self) -> bool:
@@ -403,8 +396,6 @@ class Chain:
         """Step in 3.2 M-tick chunks up to ``limit`` chunks,
         returning early as soon as ``is_waiting()`` is True
         (LCD shows ``"WAITING FOR DLCP"`` on either row).
-        Mirror of
-        ``chain_gpsim.py::SingleMainChainHarness.run_until_waiting``.
         """
         return int(self._inner.run_until_waiting(int(limit)))
 
@@ -424,12 +415,7 @@ class Chain:
         instead of delivered -- modelling a physical chain
         disconnect (CAT5 unplug, optocoupler fault).  Cores
         keep running and TX history is NOT updated for
-        dropped bytes.  Mirror of
-        ``chain_gpsim.py::SingleMainChainHarness.set_blackout``
-        (modulo gpsim's `LinkPipe.clear` step -- the rust
-        engine's destination-side RCREG residual is bounded
-        by the firmware's read latency).
-        """
+        dropped bytes."""
         self._inner.set_blackout(bool(enabled))
 
     def press(self, key: str) -> None:
@@ -437,10 +423,7 @@ class Chain:
         the button's active-low PORTx bit LOW, holds ~1 sec
         sim (50 M universal ticks, well past V1.71's 4-poll
         button debounce), releases HIGH, and settles
-        another ~1 sec sim.  Mirror of
-        ``chain_gpsim.py::SingleMainChainHarness.press``.
-
-        Accepted keys (case-insensitive): SELECT, DOWN,
+        another ~1 sec sim. Accepted keys (case-insensitive): SELECT, DOWN,
         STBY, RIGHT, UP, LEFT.  Raises ``ValueError`` for
         any other key.
         """
@@ -448,9 +431,7 @@ class Chain:
 
     def read_reg(self, addr: int) -> int:
         """Read a single byte of CONTROL's data memory at
-        the given physical address.  Mirror of
-        ``control_gpsim.py::GpsimControlHarness.read_reg``.
-        Common addresses: 0x01F (control_flags), 0x0BF
+        the given physical address. Common addresses: 0x01F (control_flags), 0x0BF
         (display_state_index), 0x0B8 (input_select_cache),
         0x0B9 (volume_cache).
         """
@@ -458,10 +439,7 @@ class Chain:
 
     def write_reg(self, addr: int, value: int) -> None:
         """Write a single byte of CONTROL's data memory at
-        the given physical address.  Mirror of gpsim's
-        ``_issue(f"reg(0xADDR)=0xVAL")`` register-poke
-        command, used by V1.71 tests that drive specific
-        firmware paths via direct RAM writes.
+        the given physical address.
         """
         self._inner.write_reg(int(addr) & 0xFFF, int(value) & 0xFF)
 
@@ -476,10 +454,6 @@ class Chain:
         single-MAIN chain topologies (where i_main0 == i_main1)
         both unit indices target the same core.
 
-        Mirror of gpsim's per-MAIN register read in the
-        wire-chain harnesses (used by V1.71+V3.2 layer-5
-        diag-chain tests, V2.8 wire-chain delayed-switch
-        repros, etc.).
         """
         return int(self._inner.read_main_reg(int(unit), int(addr) & 0xFFF))
 
@@ -502,8 +476,7 @@ class Chain:
         self, core_idx: int, addr: int, length: int
     ) -> bytes:
         """Read a contiguous byte range from a core's program
-        flash.  Mirror of gpsim's ``print mem`` for code memory.
-
+        flash.
         ``core_idx``: 0=CONTROL, 1=MAIN0, 2=MAIN1.
         ``addr``: byte-addressed program flash address.
         ``length``: number of bytes to read.
@@ -526,10 +499,7 @@ class Chain:
         self, core_idx: int, addr: int, payload: bytes
     ) -> None:
         """Patch a contiguous byte range in a core's program
-        flash.  Mirror of gpsim's overlay-manifest mechanism:
-        applies the patch AFTER chain construction so the
-        firmware boots from the patched image without
-        re-assembling the hex.
+        flash.
 
         ``core_idx``: 0=CONTROL, 1=MAIN0, 2=MAIN1.
         ``addr``: byte-addressed program flash address.
@@ -557,10 +527,7 @@ class Chain:
         return int(self._inner.current_cycle)
 
     def pause_heartbeat(self) -> None:
-        """No-op on the rust backend.  Mirror of
-        ``control_gpsim.py::GpsimControlHarness.pause_heartbeat``,
-        which suppresses gpsim's synthetic heartbeat-RX
-        pump.  The rust facade has no synthetic-heartbeat
+        """No-op on the rust backend.The rust facade has no synthetic-heartbeat
         mode -- the chain runs against a real V2.3-combined
         MAIN that emits actual BF replies -- so there is
         nothing to pause.  Provided for duck-typing parity.
@@ -572,9 +539,7 @@ class Chain:
     ) -> tuple[int, int]:
         """Inject 3-byte chain frames into MAIN's RX ring.
 
-        Mirror of gpsim's
-        ``MainChainHarness.inject_frames_fifo`` for
-        ``transport_mode="native_ring"``.  Targets the V3.x
+Targets the V3.x
         firmware's RX ring at physical 0x0200..0x02BF, with rd
         index at 0x0C6 and wr index at 0x0C7.  Frame-aligned
         overrun semantics: each 3-byte frame is either fully
@@ -592,10 +557,7 @@ class Chain:
 
     def write_control_eeprom_byte(self, addr: int, value: int) -> None:
         """Seed CONTROL's EEPROM peripheral at the given
-        8-bit address.  Mirror of gpsim's
-        ``GpsimControlHarness(eeprom_file=...)`` constructor
-        argument that pre-loads CONTROL's EEPROM HEX before
-        simulation starts.  Use this immediately after
+        8-bit address.Use this immediately after
         ``Chain.from_v17_chain(...)`` and BEFORE the first
         ``step()`` / ``warmup()`` call -- the firmware
         reads EEPROM during early boot.
@@ -605,8 +567,6 @@ class Chain:
     def read_dsp_reg(self, subaddr: int) -> int:
         """Read a single TAS3108 DSP register at ``subaddr``.
 
-        Mirror of gpsim's
-        ``MainChainHarness.read_i2c_regfile("dsp34", subaddr)``.
         Returns the byte stored in the rust TAS3108 slave's
         in-memory register file (latched as MAIN's MSSP I²C
         burst writes the DSP).  The rust facade reads the
@@ -628,8 +588,7 @@ class Chain:
         stretch_scl_cycles: int | None = None,
     ) -> None:
         """Program I²C fault-injection on the rust TAS3108
-        slave coupled to MAIN0.  Mirror of gpsim's
-        ``MainChainHarness.set_i2c_fault`` (chain_gpsim.py:471).
+        slave coupled to MAIN0.
 
         Today only ``address_nack_count`` is implemented in the
         rust slave model.  The other knobs (address_stretch_*,
@@ -676,8 +635,7 @@ class Chain:
 
     def clear_i2c_faults(self, device_name: str = "dsp34") -> None:
         """Clear all I²C fault-injection counters on the rust
-        TAS3108 slave coupled to MAIN0.  Mirror of gpsim's
-        ``MainChainHarness.clear_i2c_faults`` (chain_gpsim.py:526).
+        TAS3108 slave coupled to MAIN0.
         """
         if device_name != "dsp34":
             raise ValueError(
@@ -693,8 +651,6 @@ class Chain:
         stop_busy_count: int | None = None,
     ) -> None:
         """Program the MSSP STOP-fault knobs on MAIN0's MSSP.
-        Mirror of gpsim's
-        ``MainChainHarness.set_mssp_stop_fault`` (chain_gpsim.py:451).
 
         While ``stop_busy_count != 0`` and the firmware
         schedules a PEN-driven STOP, the MSSP keeps PEN=1 for
@@ -739,18 +695,13 @@ class Chain:
 
     def clear_mssp_stop_faults(self) -> None:
         """Clear all MSSP fault-injection knobs on MAIN0's
-        MSSP.  Mirror of gpsim's
-        ``MainChainHarness.clear_mssp_stop_faults``
-        (chain_gpsim.py:468).
+        MSSP.
         """
         self._inner.clear_mssp_stop_faults()
 
     def force_reset_main_mssp(self) -> None:
         """Force-abort any in-flight MSSP transaction on MAIN0
-        and clear the SSPCON2 trigger bits.  Mirror of gpsim's
-        ``harness._issue("p18f2455.sspcon2 = 0")`` privileged-
-        register-write workaround used by V3.1/V3.2 PEN-timeout
-        recovery tests.
+        and clear the SSPCON2 trigger bits.
         """
         self._inner.force_reset_main_mssp()
 
@@ -802,10 +753,7 @@ class Chain:
 
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into
-        CONTROL's RX ring buffer.  Mirror of
-        ``control_gpsim.py::GpsimControlHarness.inject_triplet``.
-
-        Two call shapes (gpsim-compat duck typing):
+        CONTROL's RX ring buffer. Two call shapes (gpsim-compat duck typing):
 
           * Single object with ``.route`` / ``.cmd`` /
             ``.data`` attributes (e.g. an ``RxTriplet`` /
@@ -837,9 +785,7 @@ class Chain:
         self, *, cmd: int, data: int, route: int = 0xBF
     ) -> bool:
         """Inject a host command (HFD-over-BF) into
-        CONTROL's RX ring buffer.  Mirror of
-        ``control_gpsim.py::GpsimControlHarness.inject_host_command``.
-        Default route is 0xBF (the parser dispatch tag).
+        CONTROL's RX ring buffer. Default route is 0xBF (the parser dispatch tag).
         Returns True on success, False if the ring buffer
         was too full.
         """
@@ -874,10 +820,7 @@ class Chain:
 
     def tx_record_since_last_capture(self) -> list[int]:
         """Return MAIN0's TX bytes since the previous call
-        (or chain construction).  Mirror of gpsim's
-        ``MainChainHarness.decoder.tx_record_since_last_capture()``
-        used by ``test_v32_layer5_diag_counters`` for
-        byte-level inspection of cmd-0x21 diag responses.
+        (or chain construction).
 
         On MAIN-only chains (no UART couplings), the rust
         ``Chain::drain_completed_tx_bytes`` path records each
@@ -998,9 +941,7 @@ class Chain:
         drop: bool | None = None,
         extra_cycles: int | None = None,
     ) -> None:
-        """Per-link fault primitive.  Mirror of gpsim's
-        ``WireMultiMainChainHarness.set_link_fault(link_name, *,
-        drop, extra_cycles)``.  Spec / ledger: P4-followup C
+        """Per-link fault primitive.Spec / ledger: P4-followup C
         (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
         tracker", task #101).
 
@@ -1079,8 +1020,7 @@ class Chain:
 
     def current_ctl_pc(self) -> int:
         """CONTROL core's current PC (firmware program counter,
-        word-aligned, masked to 21 bits).  Mirror of gpsim's
-        ``pc()`` register read.  Used by tests that align
+        word-aligned, masked to 21 bits).Used by tests that align
         observation windows to firmware-loop-head events.
         """
         return int(self._inner.current_ctl_pc())
@@ -1137,9 +1077,7 @@ class Chain:
 
     def read_dsp_address_nack_count_remaining(self) -> int:
         """Remaining address-NACK injection budget on the
-        TAS3108 slave coupled to MAIN0.  Mirror of gpsim's
-        ``MainChainHarness.read_i2c_attribute("dsp34",
-        "Address_Nack_Count")``.  Used by deafness-chain
+        TAS3108 slave coupled to MAIN0.Used by deafness-chain
         regression tests to prove firmware-driven I²C bursts
         consumed part of the budget set by
         :meth:`set_i2c_fault`.
@@ -1151,8 +1089,6 @@ class Chain:
         CONTROL.  After this call, every subsequent
         :meth:`step` ORs 0x0A into 0x01F (CONNECTED + event-
         exit) and resets the idle timer at 0x09D/0x09E.
-        Mirror of gpsim's
-        ``GpsimControlHarness(heartbeat_force_connected=True)``.
         Idempotent.
         """
         self._inner.enable_force_connected()
@@ -1161,8 +1097,7 @@ class Chain:
         """Inject 3-byte chain frames into CONTROL's RX ring at
         base 0x066 (depth 48 bytes; rd at 0x098, wr at 0x099).
         Returns False if the ring is too full (>= 0x2C bytes
-        pending).  Mirror of gpsim's
-        ``_CliSession::_inject_rx_bytes``.
+        pending).
         """
         return bool(self._inner.inject_control_rx_bytes(list(bytes_)))
 
@@ -1190,8 +1125,7 @@ class Chain:
         """Advance simulation until MAIN0 stops emitting TX
         bytes for ``quiescent_tcy`` consecutive Tcy, or up
         to ``max_tcy`` total.  Returns the number of Tcy
-        actually advanced.  Mirror of gpsim's
-        ``chain.step_until_tx_quiescent()``.
+        actually advanced.
 
         ``require_tx_activity`` (default True): wait for at
         least one TX byte to appear before applying the
@@ -1216,16 +1150,15 @@ class Chain:
 
     def step(self) -> None:
         """Step a single 200K-Tcy / 3.2 M-tick chunk.
-        Mirror of gpsim's ``step()`` cadence.  Used by the
+ Used by the
+
         ``test_v17_shifted_full_parity`` scenario helpers.
         """
         self._inner.step()
 
     def warmup(self, cycles: int) -> None:
         """Step ``cycles`` K20-Tcy worth of universal
-        ticks (each Tcy = 16 universal ticks).  Mirror of
-        ``control_gpsim.py::GpsimControlHarness.warmup``.
-        Used by the parity-test helpers to advance past
+        ticks (each Tcy = 16 universal ticks). Used by the parity-test helpers to advance past
         the cold-boot handshake before driving the
         scenario.
         """
@@ -1322,7 +1255,6 @@ def apply_standby_bypass_overlay(
     AssertionError
         If the precondition fails (the 4 bytes at the patch
         site don't have the documented goto opcode shape).
-        Mirror of gpsim's manifest-precondition assertion.
     """
     from pathlib import Path
     # Local import to avoid a top-of-file cycle: this module is
