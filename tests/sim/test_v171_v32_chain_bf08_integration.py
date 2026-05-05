@@ -118,11 +118,18 @@ def test_main0_dsp_nack_drives_bf08_through_wire_chain_to_control() -> None:
     Path under test:
       1. CONTROL boots and reaches CONNECTED.
       2. MAIN0 DSP starts NACKing all addressed accesses.
-      3. A B0/07/0x30 DSP-ping command is injected into MAIN0's
-         RX FIFO (mirrors the trigger used by the existing
-         MAIN-only tests; reproducible regardless of CONTROL's
-         heartbeat cadence).
-      4. send_dsp_fault_status emits BF/08/<nz> on MAIN0.tx.
+      3. Two B0/07 (volume) commands are injected into MAIN0's
+         RX FIFO -- 0x50 then 0x30 -- mirroring the trigger
+         used by the existing MAIN-only fault tests.  V3.2's
+         cmd 0x07 is the volume handler; the second command
+         dirties volume which forces a volume_dsp_write to
+         the TAS3108, the DSP NACKs the I2C transaction, the
+         volume handler walks dsp_ping under retries, and
+         the DSP-ping latches dsp_fault_flags.bit6 on
+         persistent NACK.
+      4. send_dsp_fault_status emits BF/08/(flags & 0x44) on
+         MAIN0.tx.  Bit 6 is the DSP-ping fault bit; the
+         assertion gates on that specific bit being set.
       5. MAIN1 receives on its RX, forwards on its TX.
       6. CONTROL.rx accepts the BF/08/<nz> frame.
 
@@ -154,9 +161,17 @@ def test_main0_dsp_nack_drives_bf08_through_wire_chain_to_control() -> None:
     chain.mark_ctl_rx_capture_point()
     chain.set_i2c_fault("dsp34", address_nack_count=60000)
 
-    # B0/07/0x30 = DSP-ping (Layer 5 enable mask) -- triggers
-    # dsp_ping which NACKs all addressed accesses, walks
-    # send_dsp_fault_status, emits BF/08/<status> upstream.
+    # V3.2 cmd 0x07 is the volume handler.  The 0x50->0x30
+    # sequence mirrors the trigger used by the existing
+    # MAIN-only fault tests: 0x50 establishes a baseline
+    # volume so the next command DIRTIES the cell, forcing a
+    # volume_dsp_write to TAS3108 which NACKs.  Volume's
+    # retry loop reaches dsp_ping which latches
+    # dsp_fault_flags.bit6 on persistent NACK and walks
+    # send_dsp_fault_status to emit BF/08/(flags & 0x44).
+    chain.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
+    for _ in range(5):
+        chain.step()
     chain.inject_main_frames_fifo([[0xB0, 0x07, 0x30]], fifo_limit=47)
 
     # Step the chain enough to:
@@ -171,7 +186,13 @@ def test_main0_dsp_nack_drives_bf08_through_wire_chain_to_control() -> None:
 
     ctl_rx = list(chain.ctl_rx_record_since_last_capture())
     bf08_payloads = _find_bf08_frames(ctl_rx)
-    nonzero_bf08 = [p for p in bf08_payloads if p != 0]
+    # send_dsp_fault_status emits BF/08/(dsp_fault_flags & 0x44).
+    # Bit 6 (0x40) is the DSP-ping fault bit -- the specific bit
+    # that latches on persistent TAS3108 address NACKs.  Gate on
+    # bit-6 specifically, not arbitrary nonzero, so a regression
+    # that emits the wrong fault code (e.g. bit 2 only = 0x04 =
+    # ACKSTAT-only) doesn't slip through.
+    bit6_bf08 = [p for p in bf08_payloads if p & 0x40]
 
     assert bf08_payloads, (
         f"no BF/08 frames reached CONTROL.rx after MAIN0 DSP "
@@ -180,11 +201,12 @@ def test_main0_dsp_nack_drives_bf08_through_wire_chain_to_control() -> None:
         f"broken.  CTL.rx bytes: "
         f"{[f'{b:02x}' for b in ctl_rx[:50]]}"
     )
-    assert nonzero_bf08, (
-        f"only BF/08/0x00 (clean-status) frames reached CTL.rx; "
-        f"MAIN0 either didn't dispatch send_dsp_fault_status or "
-        f"the wire-chain dropped the non-zero frame.  Saw "
-        f"BF/08 payloads: {[f'0x{p:02x}' for p in bf08_payloads]}"
+    assert bit6_bf08, (
+        f"no BF/08 frame with bit 6 (DSP-ping fault) set "
+        f"reached CTL.rx; MAIN0's dsp_ping may have failed to "
+        f"latch dsp_fault_flags.bit6, or the wire-chain dropped "
+        f"the fault frame.  BF/08 payloads seen: "
+        f"{[f'0x{p:02x}' for p in bf08_payloads]}"
     )
 
 
