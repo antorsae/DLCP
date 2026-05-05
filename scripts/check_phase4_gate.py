@@ -4,7 +4,10 @@
 Per `docs/SIM_REWRITE_RUST_PROGRESS.md` P4.gate (and PF.2 in
 `docs/SIM_REWRITE_RUST_SPEC.md`), the original written gate is:
 
-    `DLCP_SIM_BACKEND=rust pytest tests/sim` green AND wall-clock < 60 s.
+    `pytest tests/sim` green AND wall-clock < 60 s.
+
+(The migration-era `DLCP_SIM_BACKEND` env var was retired in
+PF.4 phase 2; rust is the only backend.)
 
 **Implementation note (this script applies a PROPOSED RELAXATION
 to the original gate)**: the unified-suite 60 s target is
@@ -43,8 +46,6 @@ Exit codes:
          (timing regression)
 
 Implementation notes:
-    * Forces `DLCP_SIM_BACKEND=rust` to make the gate result
-      independent of the caller's environment.
     * Uses `-n 16` per the P4.x verify pattern.
     * Reports the pytest exit code symbolically when nonzero so a
       CI runner can quickly tell test-failure (1) from no-tests-
@@ -54,7 +55,6 @@ Implementation notes:
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
@@ -89,11 +89,9 @@ def _run_pytest(
     cmd = [str(PYTHON), "-m", "pytest", "tests/sim", "-n", "16", "-q"]
     if marker is not None:
         cmd.extend(["-m", marker])
-    env = os.environ.copy()
-    env["DLCP_SIM_BACKEND"] = "rust"
-    print(f"+ [{label}] DLCP_SIM_BACKEND=rust {' '.join(cmd)}", flush=True)
+    print(f"+ [{label}] {' '.join(cmd)}", flush=True)
     started = time.monotonic()
-    cp = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
+    cp = subprocess.run(cmd, cwd=str(REPO_ROOT))
     elapsed = time.monotonic() - started if time_it else 0.0
     return cp.returncode, elapsed
 

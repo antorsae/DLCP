@@ -14,8 +14,9 @@ from dlcp_fw.flash.dlcp_main_flash import DeviceSnapshot, RouteEntry, VersionInf
 
 # All tests in this module are backend-agnostic (static source/hex
 # analysis, flash-tool CLI plumbing, semantic-guard regex matchers).
-# Mark the whole module dual_supported so DLCP_SIM_BACKEND={rust,dual}
-# does not auto-skip them.
+# Mark the whole module dual_supported (legacy informational
+# marker; see tests/sim/conftest.py for the post-PF.4 inert
+# semantics).
 pytestmark = pytest.mark.dual_supported
 
 

@@ -4,9 +4,8 @@ The DLCP simulation harness is a single-process cycle-accurate Rust engine
 (`crates/dlcp-sim/`) that runs the V1.71 CONTROL (PIC18F25K20) and V3.2 MAIN
 (PIC18F2455) firmware images in a universal-clock topology with native
 multi-core ring routing for the current-loop bus.  It replaces the legacy
-three-process gpsim harness; gpsim is retained one release cycle as a
-regression oracle and is scheduled for retirement under
-`docs/SIM_REWRITE_RUST_SPEC.md` PF.4.
+three-process gpsim harness, which was retired in PF.4 phase 2 (see
+`docs/SIM_REWRITE_RUST_SPEC.md` PF.4 + `scripts/check_gpsim_excision.py`).
 
 The full architecture, phase plan, and silicon-fidelity corner-case
 inventory live in:
@@ -18,39 +17,31 @@ inventory live in:
   (driven by `scripts/sim_rewrite_next.py`).
 
 This document is the day-to-day operator's guide: how to build, how to run
-tests, what the public Python and CLI surfaces look like, and where the
-gpsim oracle still matters until PF.4.
+tests, and what the public Python and CLI surfaces look like.
 
 ## Quick Start
 
-### Test gate (rust backend)
+### Test gate
 
 ```bash
-# Full sim suite (default backend = rust):
+# Full sim suite:
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 
 # Phase-5 exit gate (snapshot/replay/soak):
 python3 scripts/check_phase5_gate.py
 
 # Fast subset only (-m "not slow"):
-DLCP_SIM_BACKEND=rust .venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"
 ```
 
-### Backend selection
+### Backend
 
-Tests pick the backend via the `DLCP_SIM_BACKEND` env var, decoded by
-`tests/sim/conftest.py`:
-
-| Value     | Behaviour                                                 |
-|-----------|-----------------------------------------------------------|
-| `rust`    | (default) Run the rust silicon-ring engine.  Tests under  |
-|           | `tests/sim/` that LACK `@pytest.mark.dual_supported` are  |
-|           | auto-skipped.                                             |
-| `gpsim`   | Run the legacy gpsim oracle.  All tests run; no auto-skip.|
-| `dual`    | Run both backends and assert byte-identical UART/LCD/RAM  |
-|           | traces.  The migration safety net.                        |
-
-The conftest uses `rust` when the variable is unset.
+The rust silicon-ring engine (`crates/dlcp-sim/`) is the only sim
+backend.  The migration-era `DLCP_SIM_BACKEND` env var that used to
+select between `rust`, `gpsim`, and `dual` was retired in PF.4
+phase 2 alongside the gpsim wrapper modules and vendor source tree;
+`scripts/check_gpsim_excision.py` is the regression gate against
+re-introducing them.
 
 ### Replay a snapshot/case (P5.3)
 
@@ -254,7 +245,7 @@ P4-followup ticket and add the PyO3 wrapper.
 | Path                                         | Role |
 |----------------------------------------------|------|
 | `src/dlcp_fw/sim/dlcp_sim_native.py`         | Python facade for the rust engine; the modern entry point |
-| `tests/sim/conftest.py`                      | Backend selector + auto-skip plugin for `DLCP_SIM_BACKEND={rust,dual,gpsim}` |
+| `tests/sim/conftest.py`                      | Pytest plugin: ground-truth capture, marker registration, shared firmware fixtures |
 | `tests/sim/soak/`                            | Pytest wrapper that runs the rust soak suite |
 
 ### Operator runbooks
@@ -266,44 +257,16 @@ P4-followup ticket and add the PyO3 wrapper.
 | `scripts/check_replay_round_trip.py`       | P5.3 verifier |
 | `scripts/sim_rewrite_next.py`              | Progress-ledger automation |
 
-### Legacy oracle (retained one release cycle, scheduled for PF.4 retirement)
+### Retired gpsim harness
 
-| Path                                       | Role |
-|--------------------------------------------|------|
-| `vendor/gpsim-0.32.1-xtc/`                 | Vendored gpsim fork; built under `artifacts/tools/gpsim-xtc/` |
-| `src/dlcp_fw/sim/{chain,wire_chain,control,main}_gpsim.py` | Python wrappers for the gpsim subprocess pipeline |
-| `src/dlcp_fw/sim/main_gpsim_timer3.py`     | Timer3 shim for legacy harnesses |
-| `src/dlcp_fw/sim/gpsim.py`                 | Low-level gpsim CLI session driver |
-| `scripts/gpsim-xtc`                        | Wrapper that exports `GPSIM_MODULE_PATH` and invokes the local build |
-
-These files are still imported by 70 test files in `tests/`
-(per the 2026-05-04 inventory at `docs/SIM_REWRITE_RUST_PROGRESS.md`
-P4.9 entry) -- some of which also have `@pytest.mark.dual_supported`
-markers but conditionally branch into the gpsim path on
-`DLCP_SIM_BACKEND=gpsim`, while others are pure gpsim-only (no
-marker -- auto-skipped under rust).  The auto-skipped count under
-rust is the authoritative measurement; the latest PF.1 verification
-(see ledger `docs/SIM_REWRITE_RUST_PROGRESS.md` PF.1 notes) is the
-single source of truth for "how many tests are still skipped" --
-the relationship between the 70 import-sites count and the
-skipped-test count is not a 1:1 mapping (a single import-site file
-can contribute zero or many skipped tests).
-
-All 70 import-site files are preserved as the regression oracle
-through one release cycle per
-`docs/SIM_REWRITE_RUST_SPEC.md` §11.  PF.4's coordinated excision
-will:
-
-1. Delete `vendor/gpsim-0.32.1-xtc/` and `artifacts/tools/gpsim-xtc/`.
-2. Delete the 6 wrapper Python files above.
-3. Delete the still-gpsim-only test files that import them.
-4. Delete the 9 supporting `scripts/` entries (3 ground-truth scripts +
-   6 other gpsim-driver scripts).
-5. Author `scripts/check_gpsim_excision.py` to assert that no remaining
-   import references the deleted modules.
-
-The deletion is co-scheduled with PF.6 (the PR opening) so a single
-release cycle bounds the gpsim retention.
+The legacy gpsim harness (vendored fork at `vendor/gpsim-0.32.1-xtc/`,
+the 6 Python wrapper modules under `src/dlcp_fw/sim/`, the
+`scripts/gpsim*` shell wrappers, and the `DLCP_SIM_BACKEND` env-var
+selector) was retired in PF.4 phase 2.  The regression gate
+`scripts/check_gpsim_excision.py` rejects any re-introduction of
+those modules or path constants.  See
+`docs/SIM_REWRITE_RUST_PROGRESS.md` PF.4 entries for the deletion
+trail.
 
 ## Migration Notes
 
@@ -332,15 +295,13 @@ If you came from the gpsim-era guide:
 - The rust executor does not model bit-level UART timing.  TX bytes
   deliver immediately when the source's TXSR completes shifting; idle-
   line transitions are not simulated.  Tests that asserted on bit-level
-  edge counts via gpsim's `bridge_shift_stats` should switch to byte
-  counts via `Chain.bridge_byte_stats`.
+  edge counts via gpsim's `bridge_shift_stats` switched to byte
+  counts via `Chain.bridge_byte_stats` during the PF.4 migration.
 - `Chain.set_link_fault(extra_cycles=N)` raises
   `NotImplementedError` — the rust silicon ring has no bridge-delay
-  model.  Tests that need propagation-delay semantics must stay
-  `@pytest.mark.gpsim`-only.
-- 299 tests across 33 files are still `@pytest.mark.gpsim`-only and
-  auto-skip under `DLCP_SIM_BACKEND=rust`.  Migration is tracked under
-  the "P4 followup tracker" in `docs/SIM_REWRITE_RUST_PROGRESS.md`.
+  model.  Tests that need propagation-delay semantics were retired in
+  PF.4 phase 1 alongside the gpsim harness; reintroducing them
+  requires modeling the delay in the rust executor.
 
 ## Related Documentation
 

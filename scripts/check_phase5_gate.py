@@ -44,7 +44,6 @@ Exit codes:
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -202,12 +201,9 @@ def _run_soak_suite(python: str) -> int:
         "16",
         "-q",
     ]
-    env = os.environ.copy()
-    env.setdefault("DLCP_SIM_BACKEND", "rust")
-    print(f"+ [P5.4] DLCP_SIM_BACKEND={env['DLCP_SIM_BACKEND']} "
-          f"{' '.join(cmd)}", flush=True)
+    print(f"+ [P5.4] {' '.join(cmd)}", flush=True)
     started = time.monotonic()
-    cp = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
+    cp = subprocess.run(cmd, cwd=str(REPO_ROOT))
     elapsed = time.monotonic() - started
     if cp.returncode != 0:
         meaning = PYTEST_EXIT_CODES.get(

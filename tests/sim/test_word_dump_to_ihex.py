@@ -21,9 +21,10 @@ import pytest
 
 # All tests in this module are backend-agnostic (Python-level
 # behavioral models, hex/source byte comparisons, flash-tool plumbing,
-# scenario runners).  No gpsim runtime, no rust facade.  Mark the
-# whole module dual_supported so DLCP_SIM_BACKEND={rust,dual} does
-# not auto-skip them.
+# scenario runners).  No gpsim runtime, no rust facade.
+# Mark the whole module dual_supported (legacy informational
+# marker; see tests/sim/conftest.py for the post-PF.4 inert
+# semantics).
 pytestmark = pytest.mark.dual_supported
 
 

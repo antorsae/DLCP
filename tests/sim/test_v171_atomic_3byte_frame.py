@@ -46,10 +46,11 @@ from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 # All tests in this module are pure source/hex integrity gates --
 # they read V1.71 assembly text or assembled hex bytes and check
 # structural invariants.  No sim backend (gpsim or rust dlcp-sim)
-# is involved, so the dual-mode plugin's auto-skip would
-# erroneously hide them under DLCP_SIM_BACKEND={dual,rust}.  Apply
-# the marker at module level so every test is dual-mode-eligible.
-# Codex contract for P4.5 dual-mode migration.
+# is involved, so the dual-mode plugin's auto-skip used to hide them under
+# DLCP_SIM_BACKEND={dual,rust}.  After PF.4 phase 2 the
+# auto-skip rule is gone and the marker is informational;
+# leave the pytestmark in place for the test corpus's
+# uniform shape.
 pytestmark = pytest.mark.dual_supported
 
 
