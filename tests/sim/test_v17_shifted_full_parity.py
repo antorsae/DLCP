@@ -387,8 +387,7 @@ def test_parity_ir_decoded_event(
 # ---------------------------------------------------------------------------
 # Scenario H: TX frames immediately after boot warmup.  Covers the
 # full-sync burst (function_028), the preset echo sequence, and the
-# periodic poll.  This is the same behavioral surface that
-# test_control_gpsim_command_emission_legacy.py guards for V1.41.
+# periodic poll.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported

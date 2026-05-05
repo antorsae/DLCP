@@ -1,20 +1,22 @@
 """Happy-path tests for V3.1 — must also pass on V2.3, V2.4, V2.5, V2.6.
 
 These exercise the normal boot-to-audio flow:
-  1. Boot completes and DSP preset registers are loaded
-  2. Different volume commands produce different computed_volume
+  1. Boot completes and DSP preset registers are loaded (I²C path)
+  2. EEPROM-init populates volume RAM at boot
+  3. Two different volume commands produce different computed_volume
+     (volume computation path)
 
 If V3.1 fails any of these but stock versions pass, the V3.1 regression
 is surfaced.
 
 Two earlier tests (`test_volume_command_changes_dsp_registers` and
-`test_boot_volume_applied_to_dsp`) were gpsim-only by design: they
-relied on gpsim's slower scheduler keeping the preset-table I²C burst
-in flight when the post-volume snapshot was taken.  The rust engine
-finishes preset loading earlier, so the snapshot diff would be empty
-on the rust path.  The volume-to-RAM coverage they added is subsumed
-by `test_two_volumes_produce_different_computed_volume` below; the
-EEPROM-init coverage in test #4 is left for a future task.
+the second-half DSP-diff assertion of `test_boot_volume_applied_to_dsp`)
+were gpsim-only by design: they relied on gpsim's slower scheduler
+keeping the preset-table I²C burst in flight when the post-volume
+snapshot was taken.  The rust engine finishes preset loading earlier,
+so the snapshot diff would be empty on the rust path.  Volume-cmd →
+DSP-register-change observable coverage is therefore left to
+`test_v31_dsp_boot_equivalence.py` (full 256-reg snapshot vs stock).
 """
 from __future__ import annotations
 
@@ -135,7 +137,41 @@ def test_dsp_preset_registers_nonzero_after_boot(main_hex: Path) -> None:
 
 
 # ===================================================================
-# Test 2: Two different volume commands produce different DSP states
+# Test 2: EEPROM-init populates volume RAM at boot
+# ===================================================================
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("main_hex", _ALL_VERSIONS)
+def test_boot_volume_applied_to_ram(main_hex: Path) -> None:
+    """After boot, the EEPROM-loaded volume must be applied to RAM.
+
+    The firmware loads volume from EEPROM[0x00-0x03] during
+    main_core_service_1e88 and applies it via the volume write path.
+    Either ``computed_volume`` (0x06E) or ``logical_volume`` (0x066)
+    must be non-zero post-boot.
+
+    Catches issues where the boot volume isn't applied (Fix B'
+    regression, boot timing issues).
+    """
+    _skip_missing(main_hex)
+
+    h = _make_harness(main_hex)
+    _boot_and_activate(h)
+    h.advance_tcy(40 * 200_000)
+
+    computed = h.read_reg(0x06E)
+    logical = h.read_reg(0x066)
+
+    assert computed != 0 or logical != 0, (
+        f"Boot volume not loaded: computed=0x{computed:02X}, "
+        f"logical=0x{logical:02X} — EEPROM volume init may be broken"
+    )
+
+
+# ===================================================================
+# Test 3: Two different volume commands produce different computed_volume
 # ===================================================================
 
 
