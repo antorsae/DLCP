@@ -22,13 +22,14 @@ Coverage notes:
 
 * The local-mode rust test below covers stock V2.3 MAIN with RC2
   low (so RB2 is also driven low alongside the relays/sources).
-  The deleted parametrized 8-combo matrix ran in chain mode (RC2
+  The deleted parametrized 8-pair matrix ran in chain mode (RC2
   high) and asserted RB2 HIGH alongside the same RA3/4/5/6 / RB3 /
-  RB4 / sleep flag invariants, across legacy CONTROL+MAIN pairs
-  (V14/V15b/V16b stock CONTROL + V141/V151b/V161b/V162b patched
-  CONTROL × STOCK V2.3 / V24 / V25 MAIN).  Neither the chain-mode
-  pin-state invariants (RB2 high path, T0CON/INTCON/UCON resets)
-  nor the per-combo coverage exists on the rust path today.
+  RB4 / sleep flag invariants, across these specific pairs:
+  V14+V23-stock, V15b+V23-stock, V16b+V23-stock, V141+V24,
+  V141+V25, V151b+V25, V161b+V25, V162b+V25.  Neither the
+  chain-mode pin-state invariants (RB2 high path, T0CON/INTCON/
+  UCON resets) nor the per-pair coverage exists on the rust path
+  today.
   Reviving that matrix needs a rust 3-core ring chain factory for
   the legacy patched-control × patched-main combos that does not
   exist (the rust facade exposes ``from_v17_chain`` for V1.7-family
