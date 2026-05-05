@@ -39,6 +39,7 @@ Run:
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -165,46 +166,79 @@ def assert_no_imports_to_deleted_scripts() -> int:
     return 0
 
 
+def _gather_python_files() -> list[Path]:
+    """Collect every .py file under tests/, scripts/, src/."""
+    files: list[Path] = []
+    for top in ("tests", "scripts", "src"):
+        files.extend((REPO_ROOT / top).rglob("*.py"))
+    files.sort()
+    return files
+
+
+def _wrappers_imported(tree: ast.AST) -> set[str]:
+    """Walk an AST and return the PHASE_2_WRAPPERS the module imports.
+
+    Catches both shapes (including the multi-line parenthesized form,
+    since the parser normalizes it before we see it):
+      * `from dlcp_fw.sim.{wrapper} import ...`  (submodule form)
+      * `from dlcp_fw.sim import {wrapper}`      (package re-export)
+    """
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module is None:
+            continue
+        if node.module.startswith("dlcp_fw.sim."):
+            tail = node.module[len("dlcp_fw.sim."):]
+            if tail in PHASE_2_WRAPPERS:
+                imported.add(tail)
+        elif node.module == "dlcp_fw.sim":
+            for alias in node.names:
+                if alias.name in PHASE_2_WRAPPERS:
+                    imported.add(alias.name)
+    return imported
+
+
 def report_phase2_inventory() -> None:
-    """Count test files still importing each PHASE_2_WRAPPER, and
-    how many of those carry @pytest.mark.dual_supported.  Phase 2
-    is done when the wrapper-import count drops to 0 across both
-    tests/ and scripts/."""
+    """Walk Python files via AST and tally how many import each
+    PHASE_2_WRAPPER, and how many of those carry @pytest.mark.dual_supported.
+    Phase 2 is done when the wrapper-import count drops to 0 across both
+    tests/ and scripts/.
+
+    Uses AST walking (not regex) so multi-line parenthesized imports like
+    `from dlcp_fw.sim import (\\n    chain_gpsim,\\n    main_gpsim,\\n)`
+    are correctly counted -- the prior line-oriented grep would only
+    match the first physical line and under-count subsequent names.
+    """
     print("\nPhase-2 inventory (wrapper imports remaining):")
+    per_wrapper: dict[str, list[Path]] = {w: [] for w in PHASE_2_WRAPPERS}
+    per_wrapper_dual: dict[str, list[Path]] = {w: [] for w in PHASE_2_WRAPPERS}
     grand_total: set[Path] = set()
     grand_dual: set[Path] = set()
+    for path in _gather_python_files():
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        wrappers = _wrappers_imported(tree)
+        if not wrappers:
+            continue
+        is_dual = "dual_supported" in text
+        for w in wrappers:
+            per_wrapper[w].append(path)
+            if is_dual:
+                per_wrapper_dual[w].append(path)
+        grand_total.add(path)
+        if is_dual:
+            grand_dual.add(path)
     for wrapper in PHASE_2_WRAPPERS:
-        # Two import shapes both keep the wrapper module loaded
-        # at collection time:
-        #   * `from dlcp_fw.sim.{wrapper} import ...` (submodule
-        #     form -- the common case)
-        #   * `from dlcp_fw.sim import {wrapper} ...` (package
-        #     re-export form via src/dlcp_fw/sim/__init__.py;
-        #     codex MEDIUM from 5a56279 caught
-        #     test_main_gpsim_portability.py using this shape)
-        # Match either with one alternation pattern.
-        pattern = (
-            rf"(from\s+dlcp_fw\.sim\.{re.escape(wrapper)}\b"
-            rf"|from\s+dlcp_fw\.sim\s+import\s+(?:[\w,\s]*\b)?"
-            rf"{re.escape(wrapper)}\b)"
-        )
-        cp = subprocess.run(
-            ["grep", "-rEl", pattern, "tests", "scripts", "src"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
-        files = sorted(set(cp.stdout.strip().splitlines())) if cp.stdout.strip() else []
-        dual = []
-        for f in files:
-            try:
-                text = (REPO_ROOT / f).read_text()
-            except OSError:
-                continue
-            if "dual_supported" in text:
-                dual.append(f)
-                grand_dual.add(REPO_ROOT / f)
-            grand_total.add(REPO_ROOT / f)
+        files = per_wrapper[wrapper]
+        dual = per_wrapper_dual[wrapper]
         print(
             f"  {wrapper:>20}: {len(files):3d} import sites "
             f"({len(dual)} of which are @pytest.mark.dual_supported)"
