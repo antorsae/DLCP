@@ -40,21 +40,17 @@ navigation cycles to converge (probe v21 in rust converges in 7
 mixed-nav cycles, matching HW).
 
 PF.3 + task #116 (2026-05-04) un-XFAIL'd 4 of the original 5
-``_V171_V32_PB2_BRIDGE_XFAIL`` tests on rust:
-``test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2`` (both
-backends), ``lcd_renders_zero_idle`` (both backends),
-``lcd_renders_mixed_counters`` (rust only -- gpsim half does
-``pytest.xfail`` inline pointing at task #117 since the multi-frame
-cache misroute prevents the extra_check predicate from converging),
-and ``test_v171_v32_layer5_chain_lcd_renders_saturation_plus``
-(gpsim-only test in this file -- legacy non-wiggle wait swapped for
-the wiggle helper).  ONE test still wears the
-``_V171_V32_PB2_BRIDGE_XFAIL`` marker:
+``_V171_V32_PB2_BRIDGE_XFAIL`` tests:
+``test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2``,
+``lcd_renders_zero_idle``, ``lcd_renders_mixed_counters``, and
+``test_v171_v32_layer5_chain_lcd_renders_saturation_plus``.  ONE
+test still wears the ``_V171_V32_PB2_BRIDGE_XFAIL`` marker:
 
-  * ``pb_cache_isolation`` -- rust path PASSES; gpsim path fails on
-    a multi-frame BF/22..27 cache misroute (PB2 cache stays 0x0 or
-    receives PB1's data).  Same root cause as the canary's hop (f);
-    tracked as task #117.
+  * ``pb_cache_isolation`` -- passes on rust; the marker stays from
+    the PF.3 era as a pure decorator-cleanup follow-up (the
+    underlying multi-frame BF/22..27 cache misroute, originally
+    tracked as task #117, was a gpsim-side bug that closed when
+    gpsim was retired in PF.4 phase 2).
 
 The original Task #22 framing (gpsim two-MAIN topology echoes MAIN0's
 TX into both downstream and upstream paths) is the architectural half
@@ -104,10 +100,10 @@ def _require_v32_hex(v32_hex: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rust-side mirrors of the gpsim navigation / readback helpers.  Kept
-# next to the gpsim helpers so the dual-supported tests don't have to
-# branch on `dlcp_sim_backend` for every line -- each backend reads its
-# own helper, both produce the same firmware-observable invariant.
+# Rust-side navigation / readback helpers.  Originally added as
+# mirrors of the gpsim helpers during the dual-backend migration;
+# the gpsim path was retired in PF.4 phase 2 so these are now the
+# only helpers in the file.
 # ---------------------------------------------------------------------------
 
 
@@ -329,25 +325,13 @@ def _rust_diag_canary_run(  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 # Hex source skew caveat (post codex review of 16fa3ee, 2026-05-03)
 # ---------------------------------------------------------------------------
-# The rust path uses `Chain.from_v171_v32()` which loads CANONICAL
-# release hexes from `firmware/patched/releases/{DLCP_Control_V1.71,
-# DLCP_Firmware_V3.2}.hex`.  The gpsim path uses the `v171_hex` and
-# `v32_hex` fixtures which build from the CURRENT source via
-# `assemble_v17(V171_CONTROL_ASM, ...)` and `assemble_v30(V32_MAIN_ASM,
-# ...)`.  For unmodified source the two binaries are byte-identical;
-# however a Phase A/B source change landing BEFORE a canonical
-# release rebuild (`scripts/build_v32_release.py` /
-# `scripts/build_v171_release.py`) would silently make the rust path
-# test stale binaries while the gpsim path tests current source.
-#
-# Tracking: pending sim-rewrite progress-ledger entry "Add hex-path
-# overrides to `Chain.from_v171_v32` to avoid stale-canonical skew".
-# Until that lands, dual-mode failures that diverge between the two
-# backends should first verify both backends are loading the SAME
-# firmware revision -- compare the EEPROM revision byte at MAIN
-# `eeprom_data[0x82]` (per `scripts/build_v32_release.py`) and the
-# `control_release_metadata[11]` byte at CONTROL flash byte 0x77BB
-# (per `scripts/build_v171_release.py`).
+# `Chain.from_v171_v32()` loads CANONICAL release hexes from
+# `firmware/patched/releases/{DLCP_Control_V1.71,DLCP_Firmware_V3.2}.hex`.
+# A Phase A/B source change landing BEFORE a canonical release
+# rebuild (`scripts/build_v32_release.py` / `scripts/build_v171_release.py`)
+# would silently make these tests load stale binaries.  Tracking:
+# pending sim-rewrite progress-ledger entry "Add hex-path overrides
+# to `Chain.from_v171_v32` to avoid stale-canonical skew".
 # ---------------------------------------------------------------------------
 
 
@@ -558,14 +542,12 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     between cache slots would mean the parser is indexing the wrong
     PB on reply arrival.
 
-    Post-PF.3 (2026-05-04): rust path PASSES via the
+    Post-PF.3 (2026-05-04): test PASSES via the
     ``_press_drive_until_pb_present`` wiggle helper (busy-loop
-    convergence resolved).  gpsim path FAILS on a multi-frame
-    BF/22..27 cache misroute -- PB2 cache stays 0x0 or receives
-    PB1's data on the second-and-later frames of the 7-frame burst.
-    Tracked as task #117 (shared root cause with the canary's hop
-    (f) failure).  Decorator stays via ``_V171_V32_PB2_BRIDGE_XFAIL``
-    until #117 lands.
+    convergence resolved).  Decorator stays via
+    ``_V171_V32_PB2_BRIDGE_XFAIL`` from the PF.3 era; retire once a
+    follow-up cleans up the marker on the test directly (task #117
+    on the gpsim side closed when gpsim was retired in PF.4 phase 2).
     """
     _require_rust()
     c = RustChain.from_v171_v32()

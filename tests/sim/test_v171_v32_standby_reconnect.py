@@ -128,9 +128,7 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
 
 
 @pytest.mark.dual_supported
-def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit(
-    dlcp_sim_backend: str,
-) -> None:
+def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit() -> None:
     """Bug #45 end-to-end regression: panel-press STDBY/WAKE on the
     V1.71+V3.2+V3.2 canonical pair must (a) wake both MAINs and
     (b) bring CONTROL back to Volume display (out of `Waiting for DLCP`).
@@ -177,11 +175,7 @@ def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit(
       * CONTROL LCD returns to `Volume:...` and `is_waiting()` clears
         within a few hundred chunks of sim time.
 
-    Stays rust-only: the gpsim multi-MAIN harness has documented
-    flakiness in this exact path.
     """
-    if dlcp_sim_backend == "gpsim":
-        pytest.skip("rust-only: gpsim multi-MAIN harness is documented-flaky on STBY/WAKE")
     if not _RUST_OK:
         pytest.fail(f"rust facade not importable: {_RUST_ERR!r}")
 

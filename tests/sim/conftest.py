@@ -117,10 +117,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 #     marker; today it is purely informational ("this test was
 #     ported during the migration") and has no runtime effect.
 #
-#   * ``dlcp_sim_backend`` fixture — returns ``"rust"`` constant.
-#     One test still takes it as a parameter (legacy migration
-#     plumbing in test_v171_v32_standby_reconnect.py); the value
-#     is read-only.
+#   * ``dlcp_sim_backend`` fixture — was preserved as an inert
+#     ``"rust"`` constant for the migration period; the last
+#     consumer was removed in the same commit that lands these
+#     comments, so the fixture itself is gone too.
 #
 # The migration-era auto-skip rule (skip every tests/sim item lacking
 # ``dual_supported``) was retired in PF.4 phase 2 follow-up: it was
@@ -145,17 +145,6 @@ def pytest_configure(config: pytest.Config) -> None:
         "effect; 223+ tests still carry it from the porting era.  New "
         "tests don't need to add it.",
     )
-
-
-@pytest.fixture(scope="session")
-def dlcp_sim_backend() -> str:
-    """Inert fixture: returns the constant ``"rust"``.
-
-    Legacy from the gpsim->rust migration period; tests that still
-    take this fixture as a parameter keep collecting cleanly.  New
-    tests don't need to take it.
-    """
-    return "rust"
 
 
 def _capture_enabled(config: pytest.Config) -> bool:
