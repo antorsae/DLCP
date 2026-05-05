@@ -14,17 +14,9 @@ The two parity gates are:
 2. Blackout + STBY press leaves the chain in the WAITING state after
    wake — spec §A5 "Chain blackout/wake WAITING".
 
-Each test is marked ``gpsim`` + ``slow``; the V1.7 hex images are
-built once per test module by the ``v17_chain_images`` fixture
-(scope=module) so the V1.7 source is assembled at most twice
-(canonical + shifted) per pytest invocation.
-
-Phase 4 dual-mode migration (P4.4): each test that has been wired to
-both gpsim AND the rust ``dlcp-sim`` engine carries the
-``@pytest.mark.dual_supported`` marker.  The test body branches on the
-session-scoped ``dlcp_sim_backend`` fixture and runs the matching
-backend.  Tests without the marker stay gpsim-only until their
-adapter is added.
+The V1.7 hex images are built once per test module by the
+``v17_chain_images`` fixture (scope=module) so the V1.7 source is
+assembled at most twice (canonical + shifted) per pytest invocation.
 """
 
 from __future__ import annotations
@@ -38,14 +30,7 @@ from dlcp_fw.paths import (
     V17_CONTROL_ASM_COMMENTS,
     V17_CONTROL_RAM_INC,
 )
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.chain_gpsim import SingleMainChainHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17, build_shifted_asm
-    _CHAIN_IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _CHAIN_IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17, build_shifted_asm
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -56,25 +41,7 @@ except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_ERROR = exc
 
 
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _CHAIN_IMPORT_OK:
-        pytest.skip("chain_gpsim harness not importable in this env")
-
-
 def _require_rust() -> None:
-    """Hard-fail if the rust facade isn't importable.
-
-    Tests that opted into ``DLCP_SIM_BACKEND={rust,dual}`` via
-    ``@pytest.mark.dual_supported`` MUST exercise the rust path
-    when invoked under those backends; silently skipping (the
-    P4.3 plugin already handles the "test not migrated yet"
-    case via the marker) would let a broken
-    ``crates/dlcp-sim-py/build.sh`` pass the dual-mode gate.
-    Codex review of ec0381a (MEDIUM): the original
-    ``pytest.skip`` here masked import-path regressions.
-    """
     if not _RUST_CHAIN_IMPORT_OK:
         pytest.fail(
             "rust dlcp_sim_native facade not importable -- "
@@ -84,71 +51,61 @@ def _require_rust() -> None:
         )
 
 
-def _assert_v17_chain_reaches_display_rust(control_hex: Path) -> None:
-    """Rust-backend body of the chain-reaches-display tests.
-
-    Builds the rust V1.7-family single-MAIN chain via
-    :meth:`Chain.from_v17_chain` (V2.3-combined MAIN by
-    default), runs the steady-state convergence predicate up
-    to 140 chunks (the gpsim chunk-limit contract for
-    ``run_until_connected``), then asserts the V1.6b chain
-    parity gates -- ``is_connected``, ``not is_waiting``,
-    and ``"Volume:" in lcd[0]``.
+def _assert_v17_chain_reaches_display(control_hex: Path) -> None:
+    """Build the rust V1.7-family single-MAIN chain via
+    :meth:`Chain.from_v17_chain` (V2.3-combined MAIN by default), run
+    the steady-state convergence predicate up to 140 chunks, then
+    assert the V1.6b chain parity gates -- ``is_connected``,
+    ``not is_waiting``, and ``"Volume:" in lcd[0]``.
     """
     _require_rust()
     chain = RustChain.from_v17_chain(str(control_hex))
-    # gpsim contract: limit=140 chunks; predicate firing on the
-    # 140th iteration counts as success.  We therefore don't
-    # gate on the chunk count -- the explicit is_connected /
-    # is_waiting / lcd-content assertions below catch
-    # non-convergence (run_until_connected returns the limit
-    # both when the predicate fires on the last chunk and when
-    # it never fires; the post-loop assertions disambiguate).
-    # Codex review of ec0381a (LOW).
+    # limit=140 chunks; predicate firing on the 140th iteration counts
+    # as success.  We don't gate on the chunk count -- the explicit
+    # is_connected / is_waiting / lcd-content assertions below catch
+    # non-convergence (run_until_connected returns the limit both when
+    # the predicate fires on the last chunk and when it never fires;
+    # the post-loop assertions disambiguate).
     chain.run_until_connected(limit=140)
     assert chain.is_connected(), (
-        f"rust chain not connected after run_until_connected; "
+        f"chain not connected after run_until_connected; "
         f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
     assert not chain.is_waiting(), (
-        f"rust chain still in WAITING state; "
+        f"chain still in WAITING state; "
         f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
     assert "Volume:" in chain.lcd_lines()[0], (
-        f"rust chain LCD did not reach Volume screen; "
+        f"chain LCD did not reach Volume screen; "
         f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
 
 
-def _assert_v17_chain_reaches_display_gpsim(
-    control_hex: Path, main_hex: Path, label: str
-) -> None:
-    """gpsim-backend body of the chain-reaches-display tests.
-
-    Mirror of the original gpsim-only body; lifted out so the
-    three dual-mode `_chain_reaches_display` tests share a
-    single implementation.  ``label`` shows up in failure
-    messages so the matrix entry is identifiable in pytest
-    output (e.g. ``"V1.6b+V2.3"``, ``"V1.7+V2.3"``,
-    ``"V1.7-shifted+V2.3"``).
-    """
-    _require_gpsim()
-    pair = _new_pair(control_hex, main_hex)
-    try:
-        last = pair.run_until_connected(limit=140)
-        assert last is not None
-        assert pair.is_connected(), (
-            f"{label} never connected; lcd={last.lcd!r} "
-            f"flags=0x{last.control_flags:02X}"
-        )
-        assert not pair.is_waiting(), (
-            f"{label} stayed in WAITING; lcd={last.lcd!r}"
-        )
-        assert "Volume:" in last.lcd[0], (
-            f"{label} did not reach Volume: {last.lcd!r}"
-        )
-    finally:
-        pair.close()
+def _run_blackout_wake(control_hex: Path) -> None:
+    """Build the rust V1.7-family single-MAIN chain, run to connected
+    Volume display, set blackout, press STBY (CONTROL enters Zzz
+    standby), step until standby is rendered, press STBY again (wake),
+    and confirm CONTROL falls back to WAITING because the chain link
+    is blacked out."""
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(control_hex))
+    chain.run_until_connected(limit=140)
+    assert chain.is_connected(), (
+        f"chain not connected; lcd={chain.lcd_lines()!r}"
+    )
+    chain.set_blackout(True)
+    chain.press("STBY")
+    chain.step_many(80)
+    assert "ZZZ" in chain.lcd_lines()[0].upper(), (
+        f"chain did not enter standby before wake; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+    chain.press("STBY")
+    chain.run_until_waiting(limit=20)
+    assert chain.is_waiting(), (
+        f"chain did not fall back to WAITING after wake "
+        f"blackout; lcd={chain.lcd_lines()!r}"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -170,211 +127,60 @@ def v17_chain_images(tmp_path_factory: pytest.TempPathFactory) -> dict:
     return {"v17": hex_v17, "shifted": hex_shifted}
 
 
-def _new_pair(control_hex: Path, main_hex: Path) -> SingleMainChainHarness:
-    return SingleMainChainHarness(
-        control_hex,
-        main_hex,
-        fast_boot=False,
-        control_chunk_cycles=200_000,
-        main_chunk_cycles=200_000,
-        hold_cycles=240_000,
-        disable_standby_check=False,
-        bypass_i2c=False,
-        main_transport_mode="native_ring",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Spec §A5 gate #1: chain reaches Volume screen.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v17_stock_v16b_chain_reaches_display(
-    stock_main_hex: Path, dlcp_sim_backend: str
-) -> None:
-    """Sanity baseline: stock V1.6b CONTROL + stock MAIN V2.3 reach Volume.
-
-    Dual-mode migration (P4.4): runs gpsim by default, runs rust
-    when ``DLCP_SIM_BACKEND=rust``, runs both when
-    ``DLCP_SIM_BACKEND=dual``.  The rust path uses the
-    V2.3-combined silicon image (same boot block + EEPROM that
-    real silicon flashes back from PICkit); the gpsim path
-    uses ``stock_main_hex`` (the app-only V2.3.hex; gpsim's
-    ``MainChainHarness`` synthesizes the boot block on the
-    fly).  Both backends converge to the same observable end
-    state: ``is_connected``, not ``is_waiting``, and
-    ``"Volume:"`` on LCD line 1.
-    """
-    # In dual mode, validate the rust facade FIRST so a missing
-    # native binding fails fast (before the slow ~50 s gpsim
-    # path even starts) and so a gpsim-side skip
-    # (`_require_gpsim` -> pytest.skip) cannot silently swallow
-    # the rust path with it.  Codex review of 2983ff8 (LOW).
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _assert_v17_chain_reaches_display_rust(STOCK_CONTROL_HEX_V16B)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _assert_v17_chain_reaches_display_gpsim(
-            STOCK_CONTROL_HEX_V16B, stock_main_hex, "V1.6b+V2.3"
-        )
+def test_v17_stock_v16b_chain_reaches_display() -> None:
+    """Sanity baseline: stock V1.6b CONTROL + stock MAIN V2.3 reach Volume."""
+    _assert_v17_chain_reaches_display(STOCK_CONTROL_HEX_V16B)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v17_rebuilt_chain_reaches_display(
-    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_v17_rebuilt_chain_reaches_display(v17_chain_images) -> None:
     """V1.7 byte-identical rebuild behaves exactly like stock V1.6b.
 
-    Dual-mode migration (P4.4): the rebuilt hex
-    (``v17_chain_images["v17"]``) is, by construction,
-    byte-identical to ``STOCK_CONTROL_HEX_V16B`` -- so the
-    rust path is logically equivalent to
-    `test_v17_stock_v16b_chain_reaches_display`'s rust path.
-    Running both anyway acts as a regression gate against an
-    accidental ``assemble_v17`` divergence.
+    The rebuilt hex is, by construction, byte-identical to
+    ``STOCK_CONTROL_HEX_V16B``.  Running it anyway acts as a regression
+    gate against an accidental ``assemble_v17`` divergence.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _assert_v17_chain_reaches_display_rust(v17_chain_images["v17"])
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _assert_v17_chain_reaches_display_gpsim(
-            v17_chain_images["v17"], stock_main_hex, "V1.7+V2.3"
-        )
+    _assert_v17_chain_reaches_display(v17_chain_images["v17"])
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v17_shifted_chain_reaches_display(
-    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_v17_shifted_chain_reaches_display(v17_chain_images) -> None:
     """V1.7 shifted (+0x222) must still converge to Volume screen.
 
-    The dynamic standby-check overlay resolves the patch site via the
-    ``post_connect_init`` symbol from the sibling ``.lst``.  If
-    relocation broke anything behaviorally — a missed TBLPTR load, a
-    hardcoded branch, a stale address in the overlay stack — the
-    chain would either fail to connect or land in WAITING.
-
-    Dual-mode migration (P4.4): the rust facade loads the
-    shifted hex via :meth:`Chain.from_v17_chain` like any
-    other K20 hex; the executor's PIC18 dispatch is
-    relocation-agnostic, so the same behavioural parity gate
-    holds for the rust backend.
+    If relocation broke anything behaviorally — a missed TBLPTR load,
+    a hardcoded branch, a stale address in the overlay stack — the
+    chain would either fail to connect or land in WAITING.  The
+    PIC18 dispatch is relocation-agnostic, so the same parity gate
+    holds.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _assert_v17_chain_reaches_display_rust(v17_chain_images["shifted"])
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _assert_v17_chain_reaches_display_gpsim(
-            v17_chain_images["shifted"], stock_main_hex, "V1.7-shifted+V2.3"
-        )
+    _assert_v17_chain_reaches_display(v17_chain_images["shifted"])
 
 
 # ---------------------------------------------------------------------------
 # Spec §A5 gate #2: blackout/wake leaves chain in WAITING state.
 # ---------------------------------------------------------------------------
 
-def _run_blackout_wake(pair: SingleMainChainHarness) -> None:
-    last = pair.run_until_connected(limit=140)
-    assert last is not None
-    assert pair.is_connected(), (
-        f"chain never connected; lcd={last.lcd!r} "
-        f"flags=0x{last.control_flags:02X}"
-    )
-    pair.set_blackout(True)
-    pair.press("STBY")
-    pair.step_many(80)
-    assert "ZZZ" in pair.lcd_lines()[0].upper(), (
-        f"chain did not enter standby before wake: {pair.lcd_lines()!r}"
-    )
-    pair.press("STBY")
-    waiting = pair.run_until_waiting(limit=20)
-    assert waiting is not None
-    assert pair.is_waiting(), (
-        f"chain did not fall back to WAITING after wake blackout: {waiting.lcd!r}"
-    )
-
-
-def _run_blackout_wake_rust(control_hex: Path) -> None:
-    """Rust-backend body of the chain blackout/wake tests.
-
-    Mirror of `_run_blackout_wake` but uses the rust facade.
-    Build a single-MAIN chain via :meth:`Chain.from_v17_chain`,
-    run to the connected Volume display, set blackout, press
-    STBY (CONTROL enters Zzz standby), step until the standby
-    screen is rendered, press STBY again (wake), and confirm
-    CONTROL falls back to WAITING because the chain link is
-    blacked out.
-    """
-    _require_rust()
-    chain = RustChain.from_v17_chain(str(control_hex))
-    chain.run_until_connected(limit=140)
-    assert chain.is_connected(), (
-        f"rust chain not connected; lcd={chain.lcd_lines()!r}"
-    )
-    chain.set_blackout(True)
-    chain.press("STBY")
-    chain.step_many(80)
-    assert "ZZZ" in chain.lcd_lines()[0].upper(), (
-        f"rust chain did not enter standby before wake; "
-        f"lcd={chain.lcd_lines()!r}"
-    )
-    chain.press("STBY")
-    chain.run_until_waiting(limit=20)
-    assert chain.is_waiting(), (
-        f"rust chain did not fall back to WAITING after wake "
-        f"blackout; lcd={chain.lcd_lines()!r}"
-    )
-
-
-def _run_blackout_wake_gpsim(control_hex: Path, main_hex: Path) -> None:
-    """gpsim-backend body of the chain blackout/wake tests.
-
-    Lifted from the original 3 gpsim-only tests so the dual-
-    mode wrappers share a single implementation.  No logic
-    change.
-    """
-    _require_gpsim()
-    pair = _new_pair(control_hex, main_hex)
-    try:
-        _run_blackout_wake(pair)
-    finally:
-        pair.close()
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v17_stock_v16b_blackout_wake_shows_waiting() -> None:
+    _run_blackout_wake(STOCK_CONTROL_HEX_V16B)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v17_stock_v16b_blackout_wake_shows_waiting(
-    stock_main_hex: Path, dlcp_sim_backend: str
-) -> None:
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _run_blackout_wake_rust(STOCK_CONTROL_HEX_V16B)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _run_blackout_wake_gpsim(STOCK_CONTROL_HEX_V16B, stock_main_hex)
+def test_v17_rebuilt_blackout_wake_shows_waiting(v17_chain_images) -> None:
+    _run_blackout_wake(v17_chain_images["v17"])
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v17_rebuilt_blackout_wake_shows_waiting(
-    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
-) -> None:
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _run_blackout_wake_rust(v17_chain_images["v17"])
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _run_blackout_wake_gpsim(v17_chain_images["v17"], stock_main_hex)
-
-
-@pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_v17_shifted_blackout_wake_shows_waiting(
-    v17_chain_images, stock_main_hex: Path, dlcp_sim_backend: str
-) -> None:
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _run_blackout_wake_rust(v17_chain_images["shifted"])
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _run_blackout_wake_gpsim(v17_chain_images["shifted"], stock_main_hex)
+def test_v17_shifted_blackout_wake_shows_waiting(v17_chain_images) -> None:
+    _run_blackout_wake(v17_chain_images["shifted"])

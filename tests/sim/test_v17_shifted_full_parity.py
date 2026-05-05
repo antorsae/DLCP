@@ -1,9 +1,9 @@
 """V1.7 shifted CONTROL — full behavioral parity against stock V1.6b.
 
-Exercises every behavioral surface reachable through
-``GpsimControlHarness``: boot-time TX burst, button presses (volume /
-standby / mute / menu navigation), UART RX parser responses to
-simulated MAIN replies, IR decode dispatch, and LCD rendering.
+Exercises every behavioral surface reachable through the rust facade:
+boot-time TX burst, button presses (volume / standby / mute / menu
+navigation), UART RX parser responses to simulated MAIN replies, IR
+decode dispatch, and LCD rendering.
 
 For each scenario, the test drives **stock V1.6b** and **V1.7 shifted**
 with identical inputs and asserts that their observable outputs (TX
@@ -11,16 +11,13 @@ frame sequence, LCD rows, flag-register bytes) match exactly.  Any
 divergence is a relocation bug: the shifted image must be behavioral
 idem to stock within every flow, which proves the V1.7 shifted baseline
 is safe to build V1.71 on top of.
-
-All tests are ``@pytest.mark.gpsim`` + ``@pytest.mark.slow`` because
-each scenario spins up two gpsim instances and runs them to quiescence.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Sequence, Tuple
+from typing import Callable, Sequence, Tuple
 
 import pytest
 
@@ -29,14 +26,7 @@ from dlcp_fw.paths import (
     V17_CONTROL_ASM_COMMENTS,
     V17_CONTROL_RAM_INC,
 )
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.control_gpsim import GpsimControlHarness, RxTriplet
-    from dlcp_fw.sim.v17_symbols import assemble_v17, build_shifted_asm
-    _IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17, build_shifted_asm
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -47,21 +37,7 @@ except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_ERROR = exc
 
 
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _IMPORT_OK:
-        pytest.skip("control_gpsim harness not importable")
-
-
 def _require_rust() -> None:
-    """Hard-fail if the rust facade isn't importable.
-
-    Tests that opted into ``DLCP_SIM_BACKEND={rust,dual}`` via
-    ``@pytest.mark.dual_supported`` MUST exercise the rust path
-    when invoked under those backends.  Mirrors the gate used
-    by ``test_v17_chain.py``.
-    """
     if not _RUST_CHAIN_IMPORT_OK:
         pytest.fail(
             "rust dlcp_sim_native facade not importable -- "
@@ -93,30 +69,10 @@ def v17_shifted_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
 # Harness helpers
 # ---------------------------------------------------------------------------
 
-# Standalone harness settings (no MAIN attached): use heartbeat "full" so
-# CONTROL sees constant BF replies and stays in DISPLAY mode.  Warmup past
-# the initial boot-handshake phase before running test scenarios.
+# Warmup past the initial boot-handshake phase before running scenarios.
 _WARMUP_CYCLES = 25_000_000
 _STEPS_PER_PRESS = 12
 _RX_STEPS_PER_FRAME = 6
-
-
-def _new_harness(control_hex: Path) -> GpsimControlHarness:
-    """Boot a CONTROL-only harness with safe defaults for parity tests.
-
-    ``fast_boot=False`` because the V1.7 shifted image has NOP padding
-    at stock 0x0052 (inside the former defensive stub), making the
-    ``control_disable_boot_wait`` overlay's byte preconditions
-    unmatchable.  The longer warmup uses ``warmup(25M)`` to cover the
-    same startup interval.
-    """
-    return GpsimControlHarness(
-        control_hex,
-        fast_boot=False,
-        chunk_cycles=600_000,
-        hold_cycles=300_000,
-        heartbeat_rx_mode="full",
-    )
 
 
 @dataclass(frozen=True)
@@ -141,40 +97,7 @@ class ScenarioOutcome:
         }
 
 
-def _capture(h: GpsimControlHarness) -> ScenarioOutcome:
-    return ScenarioOutcome(
-        lcd_lines=tuple(h.lcd_lines()),
-        tx_frames=tuple((f.route, f.cmd, f.data) for f in h.tx_frames()),
-        flags=h.read_reg(0x01F),
-        display_state=h.read_reg(0x0BF),
-        input_select_cache=h.read_reg(0x0B8),
-        volume_cache=h.read_reg(0x0B9),
-    )
-
-
-def _run_scenario(
-    control_hex: Path,
-    scenario: Callable[[GpsimControlHarness], None],
-) -> ScenarioOutcome:
-    """Boot a harness, warmup, run the scenario, capture outcome."""
-    h = _new_harness(control_hex)
-    try:
-        h.warmup(_WARMUP_CYCLES)
-        scenario(h)
-        # Let the firmware drain any pending TX before we sample state.
-        for _ in range(6):
-            h.step()
-        return _capture(h)
-    finally:
-        h.close()
-
-
-def _capture_rust(chain: "RustChain") -> ScenarioOutcome:
-    """Capture the same observables as :func:`_capture` but
-    from a rust :class:`Chain` rather than a gpsim harness.
-    Mirror of `_capture` -- if the gpsim capture surface
-    grows, this helper grows in lockstep.
-    """
+def _capture(chain: "RustChain") -> ScenarioOutcome:
     return ScenarioOutcome(
         lcd_lines=tuple(chain.lcd_lines()),
         tx_frames=tuple(chain.tx_frames()),
@@ -185,48 +108,25 @@ def _capture_rust(chain: "RustChain") -> ScenarioOutcome:
     )
 
 
-def _run_scenario_rust(
+def _run_scenario(
     control_hex: Path,
     scenario: Callable[["RustChain"], None],
 ) -> ScenarioOutcome:
-    """Rust-backend equivalent of :func:`_run_scenario`.
+    """Build a single-MAIN chain (V1.6b/V1.7-shifted CONTROL +
+    V2.3-combined MAIN), warm up to the parity budget (25 M Tcy),
+    run the scenario, drain 6 chunks, and capture the outcome.
 
-    Builds a single-MAIN chain (V1.6b/V1.7-shifted CONTROL +
-    V2.3-combined MAIN), warms up to the gpsim parity
-    budget (25 M Tcy = ~8 s sim, post-handshake), runs the
-    scenario, drains 6 chunks via `chain.step()` (which
-    advances the rust facade's fixed 200K-Tcy convenience
-    cadence), and captures the outcome.
-
-    No `set_chunk_cycles` knob: the rust simulator has a
-    universal-clock event scheduler, not gpsim's chunked-
-    alternating execution model, so the gpsim concept of
-    a per-harness chunk size doesn't translate.  Scenarios
-    that need a specific amount of simulated time per step
-    can call `chain.step_tcy(N)` directly; the duck-typed
-    `_press_sequence` / `_rx_sequence` / `_ir_event`
-    helpers use the parameterless `step()` which suffices
-    for the parity gates here (verified empirically: all
-    18 scenarios converge to the same observable end state
-    on stock-vs-shifted with the 200K-Tcy default).
-
-    Note on the warmup / heartbeat model: gpsim runs
-    CONTROL standalone with synthetic ``heartbeat_rx_mode=
-    "full"`` BF replies; the rust facade has no synthetic-
-    heartbeat mode, so the chain runs against a real
-    V2.3-combined MAIN which converges to CONNECTED
-    naturally.  Both backends reach the same steady-state
-    (Volume display, ``control_flags.CONNECTED`` set);
-    parity is asserted between stock and shifted runs ON
-    THE SAME backend, so the gpsim/rust difference in how
-    we got there doesn't affect the stock-vs-shifted diff.
+    The chain runs against a real V2.3-combined MAIN which converges
+    to CONNECTED naturally.  The Volume display is reached by both
+    stock and shifted runs; parity is asserted between them.
     """
+    _require_rust()
     chain = RustChain.from_v17_chain(str(control_hex))
     chain.warmup(_WARMUP_CYCLES)
     scenario(chain)
     for _ in range(6):
         chain.step()
-    return _capture_rust(chain)
+    return _capture(chain)
 
 
 def _assert_parity(
@@ -270,70 +170,15 @@ def _assert_parity(
 def _run_and_compare(
     scenario_name: str,
     v17_shifted_hex: Path,
-    scenario: Callable[[GpsimControlHarness], None],
-    *,
-    tx_only: bool = False,
-    backend: str = "gpsim",
-) -> None:
-    """Run the scenario on both stock V1.6b and V1.7-shifted
-    images on the selected backend, then assert observable
-    parity.  ``backend`` defaults to ``gpsim`` for backward
-    compatibility with non-dual-mode invocations.
-
-    The scenario callable is duck-typed: it may target a
-    gpsim ``GpsimControlHarness`` OR a rust
-    :class:`dlcp_fw.sim.dlcp_sim_native.Chain`.  Both surfaces
-    expose the same method names used by the parity helpers
-    (``press``, ``step``, ``inject_triplet``,
-    ``inject_decoded_ir_event``, ``inject_host_command``);
-    the rust facade's ``inject_triplet`` supports both
-    positional ``(route, cmd, data)`` and an
-    ``RxTriplet``-shaped attribute object, so the existing
-    ``_rx_sequence`` / ``_ir_event`` helpers work
-    unchanged on either backend.
-    """
-    if backend == "gpsim":
-        _require_gpsim()
-        stock = _run_scenario(STOCK_CONTROL_HEX_V16B, scenario)
-        shifted = _run_scenario(v17_shifted_hex, scenario)
-    elif backend == "rust":
-        _require_rust()
-        stock = _run_scenario_rust(STOCK_CONTROL_HEX_V16B, scenario)
-        shifted = _run_scenario_rust(v17_shifted_hex, scenario)
-    else:
-        raise ValueError(
-            f"unknown backend {backend!r}; expected 'gpsim' or 'rust'"
-        )
-    _assert_parity(
-        f"{scenario_name}[{backend}]", stock, shifted, tx_only=tx_only,
-    )
-
-
-def _run_and_compare_dual(
-    scenario_name: str,
-    v17_shifted_hex: Path,
-    scenario: Callable[[GpsimControlHarness], None],
-    dlcp_sim_backend: str,
+    scenario: Callable[["RustChain"], None],
     *,
     tx_only: bool = False,
 ) -> None:
-    """Dispatch to gpsim, rust, or both per ``dlcp_sim_backend``.
-
-    The rust path is validated FIRST in dual mode so a
-    missing native binding fails fast (~3 s) instead of
-    waiting for the slow gpsim run; same rationale as
-    test_v17_chain.py post-2983ff8.
-    """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _run_and_compare(
-            scenario_name, v17_shifted_hex, scenario,
-            tx_only=tx_only, backend="rust",
-        )
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _run_and_compare(
-            scenario_name, v17_shifted_hex, scenario,
-            tx_only=tx_only, backend="gpsim",
-        )
+    """Run the scenario on both stock V1.6b and V1.7-shifted on the
+    rust backend, then assert observable parity."""
+    stock = _run_scenario(STOCK_CONTROL_HEX_V16B, scenario)
+    shifted = _run_scenario(v17_shifted_hex, scenario)
+    _assert_parity(scenario_name, stock, shifted, tx_only=tx_only)
 
 
 # ---------------------------------------------------------------------------
@@ -341,15 +186,10 @@ def _run_and_compare_dual(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_idle_warmup(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_idle_warmup(v17_shifted_hex: Path) -> None:
     """After warmup with no button presses, stock and shifted agree."""
-    _run_and_compare_dual(
-        "idle_warmup", v17_shifted_hex, lambda h: None, dlcp_sim_backend,
-    )
+    _run_and_compare("idle_warmup", v17_shifted_hex, lambda h: None)
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +198,8 @@ def test_parity_idle_warmup(
 # surfaced the TBLPTR literal issue was in this flow).
 # ---------------------------------------------------------------------------
 
-def _press_sequence(keys: Sequence[str]) -> Callable[[GpsimControlHarness], None]:
-    def _do(h: GpsimControlHarness) -> None:
+def _press_sequence(keys: Sequence[str]) -> Callable[["RustChain"], None]:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         for key in keys:
             h.press(key)
             for _ in range(_STEPS_PER_PRESS):
@@ -368,44 +208,28 @@ def _press_sequence(keys: Sequence[str]) -> Callable[[GpsimControlHarness], None
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_volume_up_sequence(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
-    _run_and_compare_dual(
-        "volume_up_x5",
-        v17_shifted_hex,
-        _press_sequence(["UP"] * 5),
-        dlcp_sim_backend,
+def test_parity_volume_up_sequence(v17_shifted_hex: Path) -> None:
+    _run_and_compare(
+        "volume_up_x5", v17_shifted_hex, _press_sequence(["UP"] * 5),
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_volume_down_sequence(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
-    _run_and_compare_dual(
-        "volume_down_x5",
-        v17_shifted_hex,
-        _press_sequence(["DOWN"] * 5),
-        dlcp_sim_backend,
+def test_parity_volume_down_sequence(v17_shifted_hex: Path) -> None:
+    _run_and_compare(
+        "volume_down_x5", v17_shifted_hex, _press_sequence(["DOWN"] * 5),
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_volume_up_then_down(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
-    _run_and_compare_dual(
+def test_parity_volume_up_then_down(v17_shifted_hex: Path) -> None:
+    _run_and_compare(
         "volume_mixed",
         v17_shifted_hex,
         _press_sequence(["UP"] * 3 + ["DOWN"] * 3 + ["UP"] * 2),
-        dlcp_sim_backend,
     )
 
 
@@ -417,30 +241,20 @@ def test_parity_volume_up_then_down(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_menu_select_cycle(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
-    _run_and_compare_dual(
-        "menu_select_cycle",
-        v17_shifted_hex,
-        _press_sequence(["SELECT"] * 4),
-        dlcp_sim_backend,
+def test_parity_menu_select_cycle(v17_shifted_hex: Path) -> None:
+    _run_and_compare(
+        "menu_select_cycle", v17_shifted_hex, _press_sequence(["SELECT"] * 4),
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_menu_mixed_navigation(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
-    _run_and_compare_dual(
+def test_parity_menu_mixed_navigation(v17_shifted_hex: Path) -> None:
+    _run_and_compare(
         "menu_mixed",
         v17_shifted_hex,
         _press_sequence(["SELECT", "UP", "SELECT", "DOWN", "SELECT", "LEFT", "RIGHT"]),
-        dlcp_sim_backend,
     )
 
 
@@ -450,16 +264,10 @@ def test_parity_menu_mixed_navigation(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_stby_enter_then_wake(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
-    _run_and_compare_dual(
-        "stby_toggle",
-        v17_shifted_hex,
-        _press_sequence(["STBY", "STBY"]),
-        dlcp_sim_backend,
+def test_parity_stby_enter_then_wake(v17_shifted_hex: Path) -> None:
+    _run_and_compare(
+        "stby_toggle", v17_shifted_hex, _press_sequence(["STBY", "STBY"]),
     )
 
 
@@ -469,23 +277,22 @@ def test_parity_stby_enter_then_wake(
 # TX/flag state identically.
 # ---------------------------------------------------------------------------
 
-def _rx_sequence(frames: Sequence[Tuple[int, int, int]]) -> Callable[[GpsimControlHarness], None]:
-    def _do(h: GpsimControlHarness) -> None:
+def _rx_sequence(
+    frames: Sequence[Tuple[int, int, int]],
+) -> Callable[["RustChain"], None]:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         for route, cmd, data in frames:
-            h.inject_triplet(RxTriplet(route=route, cmd=cmd, data=data))
+            h.inject_triplet(route, cmd, data)
             for _ in range(_RX_STEPS_PER_FRAME):
                 h.step()
     return _do
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_rx_bf_status_frames(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_rx_bf_status_frames(v17_shifted_hex: Path) -> None:
     """Inject the full BF/* status-echo set MAIN sends during sync."""
-    _run_and_compare_dual(
+    _run_and_compare(
         "rx_bf_status",
         v17_shifted_hex,
         _rx_sequence([
@@ -495,37 +302,28 @@ def test_parity_rx_bf_status_frames(
             (0xBF, 0x07, 0x45),  # volume = 0x45
             (0xBF, 0x1D, 0x7F),  # cmd1d setting
         ]),
-        dlcp_sim_backend,
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_rx_volume_sweep(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_rx_volume_sweep(v17_shifted_hex: Path) -> None:
     """Sweep volume BF/07 across the range, checking cache tracking."""
-    _run_and_compare_dual(
+    _run_and_compare(
         "rx_volume_sweep",
         v17_shifted_hex,
         _rx_sequence([(0xBF, 0x07, v) for v in (0x20, 0x40, 0x60, 0x7F)]),
-        dlcp_sim_backend,
     )
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_rx_input_cycle(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_rx_input_cycle(v17_shifted_hex: Path) -> None:
     """Cycle input_select through the BF/06 echo path."""
-    _run_and_compare_dual(
+    _run_and_compare(
         "rx_input_cycle",
         v17_shifted_hex,
         _rx_sequence([(0xBF, 0x06, i) for i in range(4)]),
-        dlcp_sim_backend,
     )
 
 
@@ -536,23 +334,20 @@ def test_parity_rx_input_cycle(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_press_then_rx_echo(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_press_then_rx_echo(v17_shifted_hex: Path) -> None:
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.press("UP")
         for _ in range(_STEPS_PER_PRESS):
             h.step()
-        h.inject_triplet(RxTriplet(route=0xBF, cmd=0x07, data=0x46))
+        h.inject_triplet(0xBF, 0x07, 0x46)
         for _ in range(_RX_STEPS_PER_FRAME):
             h.step()
         h.press("UP")
         for _ in range(_STEPS_PER_PRESS):
             h.step()
 
-    _run_and_compare_dual("press_then_rx", v17_shifted_hex, _do, dlcp_sim_backend)
+    _run_and_compare("press_then_rx", v17_shifted_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -561,8 +356,8 @@ def test_parity_press_then_rx_echo(
 # IR→TX mapping for the canonical Hypex RC5 profile.
 # ---------------------------------------------------------------------------
 
-def _ir_event(addr: int, cmd: int) -> Callable[[GpsimControlHarness], None]:
-    def _do(h: GpsimControlHarness) -> None:
+def _ir_event(addr: int, cmd: int) -> Callable[["RustChain"], None]:
+    def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.inject_decoded_ir_event(addr=addr, cmd=cmd)
         for _ in range(_STEPS_PER_PRESS):
             h.step()
@@ -570,7 +365,6 @@ def _ir_event(addr: int, cmd: int) -> Callable[[GpsimControlHarness], None]:
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
 @pytest.mark.parametrize(
     "addr,cmd,label",
@@ -586,14 +380,8 @@ def test_parity_ir_decoded_event(
     addr: int,
     cmd: int,
     label: str,
-    dlcp_sim_backend: str,
 ) -> None:
-    _run_and_compare_dual(
-        f"ir_{label}",
-        v17_shifted_hex,
-        _ir_event(addr, cmd),
-        dlcp_sim_backend,
-    )
+    _run_and_compare(f"ir_{label}", v17_shifted_hex, _ir_event(addr, cmd))
 
 
 # ---------------------------------------------------------------------------
@@ -604,21 +392,13 @@ def test_parity_ir_decoded_event(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_boot_full_sync_burst(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_boot_full_sync_burst(v17_shifted_hex: Path) -> None:
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         # Give the periodic full-sync emitter a chance to run after warmup.
         for _ in range(40):
             h.step()
-    _run_and_compare_dual(
-        "boot_full_sync",
-        v17_shifted_hex,
-        _do,
-        dlcp_sim_backend,
-    )
+    _run_and_compare("boot_full_sync", v17_shifted_hex, _do)
 
 
 # ---------------------------------------------------------------------------
@@ -628,11 +408,8 @@ def test_parity_boot_full_sync_burst(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_host_preset_select(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_host_preset_select(v17_shifted_hex: Path) -> None:
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.inject_host_command(cmd=0x20, data=0x00)
         for _ in range(12):
@@ -640,18 +417,15 @@ def test_parity_host_preset_select(
         h.inject_host_command(cmd=0x20, data=0x01)
         for _ in range(12):
             h.step()
-    _run_and_compare_dual("host_preset_toggle", v17_shifted_hex, _do, dlcp_sim_backend)
+    _run_and_compare("host_preset_toggle", v17_shifted_hex, _do)
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_parity_host_cmd1d_setting(
-    v17_shifted_hex: Path, dlcp_sim_backend: str
-) -> None:
+def test_parity_host_cmd1d_setting(v17_shifted_hex: Path) -> None:
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         for value in (0x10, 0x20, 0x40, 0x7F):
             h.inject_host_command(cmd=0x1D, data=value)
             for _ in range(8):
                 h.step()
-    _run_and_compare_dual("host_cmd1d_sweep", v17_shifted_hex, _do, dlcp_sim_backend)
+    _run_and_compare("host_cmd1d_sweep", v17_shifted_hex, _do)

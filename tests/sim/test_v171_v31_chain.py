@@ -30,14 +30,7 @@ from dlcp_fw.paths import (
     V171_CONTROL_ASM,
     V31_MAIN_HEX,
 )
-from dlcp_fw.sim.gpsim import gpsim_available
-
-try:
-    from dlcp_fw.sim.chain_gpsim import SingleMainChainHarness
-    from dlcp_fw.sim.v17_symbols import assemble_v17
-    _CHAIN_IMPORT_OK = True
-except Exception:  # pragma: no cover
-    _CHAIN_IMPORT_OK = False
+from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -46,15 +39,6 @@ try:
 except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_OK = False
     _RUST_CHAIN_IMPORT_ERROR = exc
-
-
-def _require_gpsim() -> None:
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    if not _CHAIN_IMPORT_OK:
-        pytest.skip("chain_gpsim harness not importable in this env")
-    if not V31_MAIN_HEX.exists():
-        pytest.skip(f"missing V3.1 MAIN hex: {V31_MAIN_HEX}")
 
 
 def _require_rust() -> None:
@@ -96,103 +80,29 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-def _new_pair(control_hex: Path) -> SingleMainChainHarness:
-    return SingleMainChainHarness(
-        control_hex,
-        V31_MAIN_HEX,
-        fast_boot=False,
-        control_chunk_cycles=200_000,
-        main_chunk_cycles=200_000,
-        hold_cycles=240_000,
-        disable_standby_check=False,
-        bypass_i2c=False,
-        main_transport_mode="native_ring",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Gate A: V1.71 + V3.1 reach the Volume screen
 # ---------------------------------------------------------------------------
 
-def _assert_v171_v31_reaches_display_rust(control_hex: Path) -> None:
-    """Rust-backend body of the chain-reaches-display test.
-    Mirror of `_assert_v17_chain_reaches_display_rust` from
-    `test_v17_chain.py` but uses
-    :meth:`Chain.from_v17_v3x_chain` for the V3.1 MAIN merge.
-    """
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v171_v31_chain_reaches_display(v171_hex: Path) -> None:
+    """V1.71 CONTROL + V3.1 MAIN converge to Volume screen post-connect."""
     _require_rust()
-    chain = _new_rust_chain(control_hex)
+    chain = _new_rust_chain(v171_hex)
     chain.run_until_connected(limit=140)
     assert chain.is_connected(), (
-        f"rust V1.71+V3.1 not connected; tick={chain.current_tick()}, "
+        f"V1.71+V3.1 not connected; tick={chain.current_tick()}, "
         f"lcd={chain.lcd_lines()!r}"
     )
     assert not chain.is_waiting(), (
-        f"rust V1.71+V3.1 still in WAITING; tick={chain.current_tick()}, "
+        f"V1.71+V3.1 still in WAITING; tick={chain.current_tick()}, "
         f"lcd={chain.lcd_lines()!r}"
     )
     assert "Volume:" in chain.lcd_lines()[0], (
-        f"rust V1.71+V3.1 LCD did not reach Volume; "
+        f"V1.71+V3.1 LCD did not reach Volume; "
         f"tick={chain.current_tick()}, lcd={chain.lcd_lines()!r}"
     )
-
-
-def _run_v171_v31_blackout_wake_rust(control_hex: Path) -> None:
-    """Rust-backend body of the blackout/wake test.  Mirror
-    of `_run_blackout_wake_rust` from `test_v17_chain.py`.
-    """
-    _require_rust()
-    chain = _new_rust_chain(control_hex)
-    chain.run_until_connected(limit=140)
-    assert chain.is_connected(), (
-        f"rust V1.71+V3.1 not connected; lcd={chain.lcd_lines()!r}"
-    )
-    chain.set_blackout(True)
-    chain.press("STBY")
-    chain.step_many(80)
-    assert "ZZZ" in chain.lcd_lines()[0].upper(), (
-        f"rust V1.71+V3.1 did not enter standby before wake; "
-        f"lcd={chain.lcd_lines()!r}"
-    )
-    chain.press("STBY")
-    chain.run_until_waiting(limit=20)
-    assert chain.is_waiting(), (
-        f"rust V1.71+V3.1 did not fall back to WAITING after wake "
-        f"blackout; lcd={chain.lcd_lines()!r}"
-    )
-
-
-@pytest.mark.dual_supported
-@pytest.mark.gpsim
-@pytest.mark.slow
-def test_v171_v31_chain_reaches_display(
-    v171_hex: Path, dlcp_sim_backend: str
-) -> None:
-    """V1.71 CONTROL + V3.1 MAIN converge to Volume screen post-connect.
-
-    Dual-mode migration (P4.5).  Rust path runs first in
-    dual mode so a missing native binding fails fast.
-    """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _assert_v171_v31_reaches_display_rust(v171_hex)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        pair = _new_pair(v171_hex)
-        try:
-            last = pair.run_until_connected(limit=140)
-            assert last is not None
-            assert pair.is_connected(), (
-                f"V1.71+V3.1 never connected; lcd={last.lcd!r} "
-                f"flags=0x{last.control_flags:02X}"
-            )
-            assert not pair.is_waiting(), (
-                f"V1.71+V3.1 stayed in WAITING; lcd={last.lcd!r}"
-            )
-            assert "Volume:" in last.lcd[0], (
-                f"V1.71+V3.1 did not reach Volume: {last.lcd!r}"
-            )
-        finally:
-            pair.close()
 
 
 # ---------------------------------------------------------------------------
@@ -200,44 +110,25 @@ def test_v171_v31_chain_reaches_display(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v171_v31_blackout_wake_shows_waiting(
-    v171_hex: Path, dlcp_sim_backend: str
-) -> None:
-    """After blackout + STBY toggle, V1.71 CONTROL falls back to WAITING.
-
-    Dual-mode migration (P4.5).
-    """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        _run_v171_v31_blackout_wake_rust(v171_hex)
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        _require_gpsim()
-        pair = _new_pair(v171_hex)
-        try:
-            last = pair.run_until_connected(limit=140)
-            assert last is not None
-            assert pair.is_connected(), (
-                f"V1.71+V3.1 never connected; lcd={last.lcd!r} "
-                f"flags=0x{last.control_flags:02X}"
-            )
-
-            pair.set_blackout(True)
-            pair.press("STBY")
-            pair.step_many(80)
-            assert "ZZZ" in pair.lcd_lines()[0].upper(), (
-                f"V1.71+V3.1 did not enter standby before wake: "
-                f"{pair.lcd_lines()!r}"
-            )
-
-            pair.press("STBY")
-            waiting = pair.run_until_waiting(limit=20)
-            assert waiting is not None, (
-                "V1.71+V3.1 produced no steps while waiting for reconnect"
-            )
-            assert pair.is_waiting(), (
-                f"V1.71+V3.1 did not fall back to WAITING after wake blackout: "
-                f"{waiting.lcd!r}"
-            )
-        finally:
-            pair.close()
+def test_v171_v31_blackout_wake_shows_waiting(v171_hex: Path) -> None:
+    """After blackout + STBY toggle, V1.71 CONTROL falls back to WAITING."""
+    _require_rust()
+    chain = _new_rust_chain(v171_hex)
+    chain.run_until_connected(limit=140)
+    assert chain.is_connected(), (
+        f"V1.71+V3.1 not connected; lcd={chain.lcd_lines()!r}"
+    )
+    chain.set_blackout(True)
+    chain.press("STBY")
+    chain.step_many(80)
+    assert "ZZZ" in chain.lcd_lines()[0].upper(), (
+        f"V1.71+V3.1 did not enter standby before wake; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+    chain.press("STBY")
+    chain.run_until_waiting(limit=20)
+    assert chain.is_waiting(), (
+        f"V1.71+V3.1 did not fall back to WAITING after wake "
+        f"blackout; lcd={chain.lcd_lines()!r}"
+    )
