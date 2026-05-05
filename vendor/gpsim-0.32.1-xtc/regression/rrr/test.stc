@@ -1,2 +1,0 @@
-load test_pwm2.cod
-scope.ch0 = portb3

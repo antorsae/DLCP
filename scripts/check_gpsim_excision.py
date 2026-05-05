@@ -1,47 +1,29 @@
 #!/usr/bin/env python3
-"""check_gpsim_excision.py — track PF.4 (gpsim retirement) progress.
+"""check_gpsim_excision.py — regression gate against re-introducing gpsim.
 
-The PF.4 retirement is split into two phases (per
-`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup tracker"):
+The gpsim retirement (PF.4 phases 1 + 2) is complete:
 
-  Phase 1 — done (commit 5a56279 + 802e932 AST walker):
-      Deleted the 30 gpsim-only test files + 14 gpsim-only operator
-      scripts.  The 6 wrapper modules in `src/dlcp_fw/sim/`,
-      `vendor/gpsim-0.32.1-xtc/`, and `artifacts/tools/gpsim-xtc/`
-      are KEPT because 41 still-`@pytest.mark.dual_supported`
-      tests in `tests/sim/` retain `if dlcp_sim_backend == "gpsim":`
-      conditional branches OR module-scope wrapper imports and
-      therefore still `from dlcp_fw.sim.{wrapper}` at collection
-      time.  (The "40" figure quoted in the original PF.4 phase-1
-      commit message was off by one; the broadened phase-2 grep in
-      a883405 caught a 41st file -- `test_main_gpsim_portability.py`
-      using the package re-export shape -- and the AST walker in
-      802e932 confirmed the count.)
+  Phase 1 (commit 5a56279 + 802e932 AST walker): deleted 30 gpsim-only
+  test files + 14 gpsim-only operator scripts.
 
-  Phase 2 — deferred (planning doc landed in commit a049114 ->
-                       refined in abf5db6 -> b915d35):
-      41-file dual_supported gpsim conditional-branch surgery + 6
-      wrapper deletions + vendor/gpsim-0.32.1-xtc retirement +
-      artifacts/tools/gpsim-xtc cleanup.  See
-      `docs/PF4_PHASE2_PLAN.md` for the per-file inventory,
-      5-category split (A=2 delete-with-wrapper, B=1 utility
-      migration, B'=1 unused-import, C=33 dual-path bodies, D=3
-      mixed/non-C, Special=1 PF.3 partial), and 9-batch suggested
-      parallelization.
+  Phase 2 (commits a049114, abf5db6, b915d35 plan + batches 1-9, ending
+  at the e023c01 wrapper deletion): surgically migrated 31 dual_supported
+  files off the 6 gpsim wrapper modules, then deleted the wrappers along
+  with the 3 Category-A test files that solely exercised them.
 
-This script asserts:
-  * Phase-1 deletions actually happened (the 30 + 14 paths are
-    absent).
-  * No remaining import in tests/ or scripts/ references one of
-    the 14 deleted operator scripts.
-  * Phase-2 inventory is reproducible: the script counts how
-    many test files still import a gpsim wrapper, and how many
-    of those carry @pytest.mark.dual_supported.
+This script now serves as a regression gate.  It scans the entire
+working tree for any of the following and exits non-zero if anything
+is found:
+
+  * imports of the 6 deleted wrapper modules
+    (chain_gpsim, control_gpsim, wire_chain_gpsim, main_gpsim,
+     main_gpsim_timer3, gpsim — the gpsim-binary locator).
+  * references to any of the deleted operator scripts.
+  * any of the GPSIM_XTC_* constants (deleted from src/dlcp_fw/paths.py).
 
 Exit codes:
-    0 — phase 1 verified clean; phase 2 inventory reported.
-    1 — a phase-1 deletion target is still present.
-    2 — a deleted operator script is still imported somewhere.
+    0 — clean.  No live gpsim references in the codebase.
+    1 — at least one re-introduction found; details printed to stderr.
 
 Run:
     .venv_ep0/bin/python scripts/check_gpsim_excision.py
@@ -49,228 +31,178 @@ Run:
 
 from __future__ import annotations
 
-import ast
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Phase-1 deletion inventory: these 44 paths must be ABSENT.
-PHASE_1_DELETED_TESTS: list[str] = [
-    "tests/asm_unit_tests/test_main_core_service_265c_parity.py",
-    "tests/sim/test_chain_gpsim_v141_v24_v25_recovery.py",
-    "tests/sim/test_chain_gpsim_v161b_v24_v25_i2c_faults.py",
-    "tests/sim/test_chain_gpsim_v25_recovery.py",
-    "tests/sim/test_chain_gpsim_v25_v162b_recovery.py",
-    "tests/sim/test_control_gpsim_command_emission_legacy.py",
-    "tests/sim/test_control_gpsim_full_config_persistence.py",
-    "tests/sim/test_control_gpsim_host_command_injection.py",
-    "tests/sim/test_control_gpsim_ir_compatibility.py",
-    "tests/sim/test_control_gpsim_ir_preset_switch.py",
-    "tests/sim/test_control_gpsim_preset_eeprom_diff.py",
-    "tests/sim/test_control_gpsim_response_parser.py",
-    "tests/sim/test_control_main_powercycle_sync.py",
-    "tests/sim/test_control_v164b_ir_endpoints.py",
-    "tests/sim/test_gpsim_control_lcd.py",
-    "tests/sim/test_gpsim_control_presets.py",
-    "tests/sim/test_main_gpsim_an0_boot.py",
-    "tests/sim/test_main_gpsim_cmd03_instruction_path.py",
-    "tests/sim/test_main_gpsim_fault_injection.py",
-    "tests/sim/test_main_gpsim_filename_ab.py",
-    "tests/sim/test_main_gpsim_i2c_regfile.py",
-    "tests/sim/test_main_gpsim_mailbox.py",
-    "tests/sim/test_main_gpsim_timer3_compare.py",
-    "tests/sim/test_main_v25_timeout_recovery.py",
-    "tests/sim/test_v27_v163b_robustness.py",
-    "tests/sim/test_v30_gpsim_equivalence.py",
-    "tests/sim/test_v31_combined_dsp_table_apply.py",
-    "tests/sim/test_wire_chain_gpsim_i2c_faults.py",
-    "tests/sim/test_wire_chain_gpsim_internal_faults.py",
-    "tests/sim/test_wire_chain_gpsim_stock_faults.py",
-]
-
-PHASE_1_DELETED_SCRIPTS: list[str] = [
-    "scripts/capture_gpsim_ground_truth.py",
-    "scripts/capture_v171_early_boot_parity.py",
-    "scripts/check_ground_truth_capture.py",
-    "scripts/gpsim_headless_chain_diagnose.py",
-    "scripts/gpsim_lcd_capture_decode.py",
-    "scripts/gpsim_menu_command_audit.py",
-    "scripts/gpsim_tui_simulator.py",
-    "scripts/probe_baudcon_mapping.py",
-    "scripts/probe_v171_layer2_chain.py",
-    "scripts/replay_ground_truth.py",
-    "scripts/run_phase0_blessing.py",
-    "scripts/simctl.py",
-    "scripts/test_button_inject.py",
-    "scripts/test_full_boot.py",
-]
-
-# Wrapper module names that phase-2 surgery will eventually delete
-# from `src/dlcp_fw/sim/`.  Used by the phase-2 inventory walker so
-# the count drops to 0 once the 41 dual_supported test files have
-# been migrated and the wrappers themselves can land in the
-# delete-set.  See docs/PF4_PHASE2_PLAN.md for the per-file
-# surgery shape and 9-batch parallelization plan.
-PHASE_2_WRAPPERS: list[str] = [
+# 6 wrapper modules deleted in commit e023c01 (PF.4 phase 2 batch 9).
+DELETED_WRAPPER_MODULES: tuple[str, ...] = (
     "chain_gpsim",
-    "wire_chain_gpsim",
     "control_gpsim",
+    "wire_chain_gpsim",
     "main_gpsim",
     "main_gpsim_timer3",
     "gpsim",
-]
+)
+
+# Operator scripts deleted in PF.4 phase 1 (commit 5a56279).
+DELETED_OPERATOR_SCRIPTS: tuple[str, ...] = (
+    "gpsim_tui_simulator.py",
+    "gpsim_menu_command_audit.py",
+    "gpsim_lcd_capture_decode.py",
+    "gpsim_headless_chain_diagnose.py",
+    "test_full_boot.py",
+    "test_button_inject.py",
+    "simctl.py",
+    "probe_baudcon_mapping.py",
+    "probe_v171_layer2_chain.py",
+    "capture_v171_early_boot_parity.py",
+    "capture_gpsim_ground_truth.py",
+    "run_phase0_blessing.py",
+    "replay_ground_truth.py",
+    "check_ground_truth_capture.py",
+)
+
+# Constants removed from src/dlcp_fw/paths.py in PF.4 phase 2 batch 9
+# follow-up.  Any re-introduction must trip this gate.
+DELETED_PATH_CONSTANTS: tuple[str, ...] = (
+    "GPSIM_XTC_SOURCE_DIR",
+    "GPSIM_XTC_ARTIFACTS_DIR",
+    "GPSIM_XTC_BUILD_DIR",
+    "GPSIM_XTC_BIN_DIR",
+    "GPSIM_XTC_BINARY",
+    "GPSIM_XTC_COMPAT_BINARY",
+    "GPSIM_XTC_BUILD_BINARY",
+    "GPSIM_XTC_MODULE_DIR",
+)
+
+# Skip these directories when scanning.
+SKIP_DIRS: tuple[str, ...] = (
+    ".git",
+    ".venv_ep0",
+    ".venv",
+    "__pycache__",
+    "vendor",
+    "artifacts",
+    ".pytest_cache",
+    ".ruff_cache",
+    "target",
+    "node_modules",
+)
 
 
-def fail(rc: int, msg: str) -> int:
-    print(f"FAIL ({rc}): {msg}", file=sys.stderr)
-    return rc
-
-
-def assert_phase1_deleted() -> int:
-    """Walk PHASE_1_DELETED_{TESTS,SCRIPTS} and assert each path
-    is absent from the working tree.  A still-present file
-    suggests an incomplete or reverted deletion."""
-    still_present: list[str] = []
-    for rel in PHASE_1_DELETED_TESTS + PHASE_1_DELETED_SCRIPTS:
-        if (REPO_ROOT / rel).exists():
-            still_present.append(rel)
-    if still_present:
-        return fail(
-            1,
-            "PF.4 phase-1 deletion incomplete -- the following paths "
-            f"still exist:\n  - "
-            + "\n  - ".join(still_present),
-        )
-    return 0
-
-
-def assert_no_imports_to_deleted_scripts() -> int:
-    """Grep tests/ and scripts/ for any remaining import that
-    references one of the 14 deleted operator scripts.  An
-    operator script's module name is its filename without `.py`,
-    e.g. `gpsim_tui_simulator.py` -> `gpsim_tui_simulator`."""
-    broken: list[str] = []
-    for script_rel in PHASE_1_DELETED_SCRIPTS:
-        module = Path(script_rel).stem
-        # Match `import scripts.{module}` or
-        # `from scripts.{module}`.
-        pattern = rf"\b(import|from)\s+scripts\.{re.escape(module)}\b"
-        cp = subprocess.run(
-            ["grep", "-rEl", pattern, "tests", "scripts", "src"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
-        # grep returns 1 if no match; treat that as clean.
-        if cp.returncode == 0 and cp.stdout.strip():
-            for line in cp.stdout.strip().splitlines():
-                broken.append(f"{module} still imported by {line}")
-    if broken:
-        return fail(
-            2,
-            "Deleted operator scripts are still imported elsewhere:\n  - "
-            + "\n  - ".join(broken),
-        )
-    return 0
-
-
-def _gather_python_files() -> list[Path]:
-    """Collect every .py file under tests/, scripts/, src/."""
-    files: list[Path] = []
-    for top in ("tests", "scripts", "src"):
-        files.extend((REPO_ROOT / top).rglob("*.py"))
-    files.sort()
-    return files
-
-
-def _wrappers_imported(tree: ast.AST) -> set[str]:
-    """Walk an AST and return the PHASE_2_WRAPPERS the module imports.
-
-    Catches both shapes (including the multi-line parenthesized form,
-    since the parser normalizes it before we see it):
-      * `from dlcp_fw.sim.{wrapper} import ...`  (submodule form)
-      * `from dlcp_fw.sim import {wrapper}`      (package re-export)
-    """
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
+def _iter_python_files(root: Path):
+    for path in root.rglob("*.py"):
+        if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if node.module is None:
+        # Skip the gate script itself — it documents the deleted names.
+        if path.resolve() == Path(__file__).resolve():
             continue
-        if node.module.startswith("dlcp_fw.sim."):
-            tail = node.module[len("dlcp_fw.sim."):]
-            if tail in PHASE_2_WRAPPERS:
-                imported.add(tail)
-        elif node.module == "dlcp_fw.sim":
-            for alias in node.names:
-                if alias.name in PHASE_2_WRAPPERS:
-                    imported.add(alias.name)
-    return imported
+        yield path
 
 
-def report_phase2_inventory() -> None:
-    """Walk Python files via AST and tally how many import each
-    PHASE_2_WRAPPER, and how many of those carry @pytest.mark.dual_supported.
-    Phase 2 is done when the wrapper-import count drops to 0 across both
-    tests/ and scripts/.
-
-    Uses AST walking (not regex) so multi-line parenthesized imports like
-    `from dlcp_fw.sim import (\\n    chain_gpsim,\\n    main_gpsim,\\n)`
-    are correctly counted -- the prior line-oriented grep would only
-    match the first physical line and under-count subsequent names.
-    """
-    print("\nPhase-2 inventory (wrapper imports remaining):")
-    per_wrapper: dict[str, list[Path]] = {w: [] for w in PHASE_2_WRAPPERS}
-    per_wrapper_dual: dict[str, list[Path]] = {w: [] for w in PHASE_2_WRAPPERS}
-    grand_total: set[Path] = set()
-    grand_dual: set[Path] = set()
-    for path in _gather_python_files():
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
-        wrappers = _wrappers_imported(tree)
-        if not wrappers:
-            continue
-        is_dual = "dual_supported" in text
-        for w in wrappers:
-            per_wrapper[w].append(path)
-            if is_dual:
-                per_wrapper_dual[w].append(path)
-        grand_total.add(path)
-        if is_dual:
-            grand_dual.add(path)
-    for wrapper in PHASE_2_WRAPPERS:
-        files = per_wrapper[wrapper]
-        dual = per_wrapper_dual[wrapper]
-        print(
-            f"  {wrapper:>20}: {len(files):3d} import sites "
-            f"({len(dual)} of which are @pytest.mark.dual_supported)"
-        )
-    print(
-        f"  {'TOTAL':>20}: {len(grand_total):3d} unique import-site files; "
-        f"{len(grand_dual)} of those are @pytest.mark.dual_supported "
-        f"(those need surgery before phase 2 can delete the wrapper)."
+def _scan_imports(files) -> list[tuple[Path, int, str]]:
+    """Find imports of deleted wrapper modules."""
+    pat = re.compile(
+        r"\b(?:from|import)\s+dlcp_fw\.sim\.(?P<mod>%s)\b"
+        % "|".join(DELETED_WRAPPER_MODULES)
     )
+    hits: list[tuple[Path, int, str]] = []
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if pat.search(line):
+                hits.append((path, lineno, line.rstrip()))
+    return hits
+
+
+def _scan_path_constants(files) -> list[tuple[Path, int, str]]:
+    """Find references to deleted GPSIM_XTC_* constants."""
+    names = "|".join(DELETED_PATH_CONSTANTS)
+    pat = re.compile(rf"\b({names})\b")
+    hits: list[tuple[Path, int, str]] = []
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if pat.search(line):
+                hits.append((path, lineno, line.rstrip()))
+    return hits
+
+
+def _scan_operator_scripts(files) -> list[tuple[Path, int, str]]:
+    """Find IMPORTS or shell invocations of deleted operator scripts.
+
+    Skip historical mentions in docstrings/comments — those are
+    deletion-history notes that future readers benefit from.  Only
+    flag a re-introduction at import time or as a subprocess argument,
+    which is the only shape that would resurrect a deleted script.
+    """
+    bare_names = [n[:-3] for n in DELETED_OPERATOR_SCRIPTS if n.endswith(".py")]
+    bare_names_pat = "|".join(re.escape(n) for n in bare_names)
+    # Match `import scripts.<name>`, `from scripts.<name>`, or
+    # `python scripts/<name>.py` shell invocations.
+    pat = re.compile(
+        rf"\b(?:import\s+scripts\.|from\s+scripts\.)({bare_names_pat})\b"
+        rf"|scripts/({bare_names_pat})\.py\b(?!\s*\)|\s*`)"
+    )
+    hits: list[tuple[Path, int, str]] = []
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            # Skip commented lines and docstring-style markers entirely;
+            # those are documentation, not re-introduction.
+            if stripped.startswith("#") or stripped.startswith('"') or stripped.startswith("'"):
+                continue
+            if pat.search(line):
+                hits.append((path, lineno, line.rstrip()))
+    return hits
 
 
 def main() -> int:
-    rc1 = assert_phase1_deleted()
-    if rc1 != 0:
-        return rc1
-    rc2 = assert_no_imports_to_deleted_scripts()
-    if rc2 != 0:
-        return rc2
-    print("PF.4 phase-1 verified clean.")
-    report_phase2_inventory()
-    return 0
+    files = list(_iter_python_files(REPO_ROOT))
+    wrapper_hits = _scan_imports(files)
+    constant_hits = _scan_path_constants(files)
+    operator_hits = _scan_operator_scripts(files)
+
+    if not (wrapper_hits or constant_hits or operator_hits):
+        print("gpsim retirement clean: no live references found.")
+        print(f"  scanned {len(files)} python files.")
+        return 0
+
+    if wrapper_hits:
+        print("\nIMPORT REGRESSIONS — gpsim wrapper modules re-introduced:",
+              file=sys.stderr)
+        for path, lineno, line in wrapper_hits:
+            print(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line}",
+                  file=sys.stderr)
+
+    if constant_hits:
+        print("\nCONSTANT REGRESSIONS — GPSIM_XTC_* constants re-introduced:",
+              file=sys.stderr)
+        for path, lineno, line in constant_hits:
+            print(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line}",
+                  file=sys.stderr)
+
+    if operator_hits:
+        print("\nSCRIPT REGRESSIONS — deleted operator scripts re-introduced:",
+              file=sys.stderr)
+        for path, lineno, line in operator_hits:
+            print(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line}",
+                  file=sys.stderr)
+
+    return 1
 
 
 if __name__ == "__main__":

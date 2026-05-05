@@ -1,5 +1,0 @@
-
-Run make. This will assemble the example and create the uart_stim.txt.
-
-Then run: gpsim -c example.stc
-

@@ -21,9 +21,9 @@ using addresses that were uniformly **0x20 too low**.  Those were
 the column-header addresses; the table's data rows agree with
 `/opt/homebrew/Cellar/gputils/.../p18f2455.inc` and with the V2.3
 disassembly opcodes (e.g. stock V2.3's `movwf BAUDCON` at PC 0x455A
-disassembles to 6EB8 → 0xFB8, not 0xF98).  See
-`scripts/probe_baudcon_mapping.py` (P0.0) and spec §11b for the
-empirical resolution.  The 2455 and K20 happen to share the same
+disassembles to 6EB8 → 0xFB8, not 0xF98).  Spec §11b documents the
+empirical resolution; the original `scripts/probe_baudcon_mapping.py`
+(P0.0) was retired in PF.4 phase 1 (commit 5a56279).  The 2455 and K20 happen to share the same
 top-of-bank-15 layout for the SFRs this probe touches.
 
   Register   PIC18F2455 (MAIN)   PIC18F25K20 (CONTROL)

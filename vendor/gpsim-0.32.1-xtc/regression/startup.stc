@@ -1,5 +1,0 @@
-# gpsim configuration file.
-load STC
-run
-quit
-

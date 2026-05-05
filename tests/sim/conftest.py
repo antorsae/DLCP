@@ -49,9 +49,9 @@ def _ground_truth_root() -> Path:
 
     Defaults to ``artifacts/ground_truth/`` under the repo, but can
     be overridden via the ``DLCP_GROUND_TRUTH_OUT`` environment
-    variable.  ``scripts/replay_ground_truth.py`` uses the override
-    to write replayed captures into a tempdir without clobbering
-    the blessed corpus.
+    variable (used historically by an external replay runner to
+    write captures into a tempdir without clobbering the blessed
+    corpus).
     """
     override = os.environ.get("DLCP_GROUND_TRUTH_OUT")
     if override:
@@ -99,8 +99,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             f"{GROUND_TRUTH_ROOT.relative_to(ARTIFACTS_DIR.parent)}/<test_id>/. "
             "Used by the sim-rewrite Phase 0 capture pipeline.  "
             "The output root may be overridden via the "
-            "DLCP_GROUND_TRUTH_OUT env var (used by "
-            "scripts/replay_ground_truth.py)."
+            "DLCP_GROUND_TRUTH_OUT env var."
         ),
     )
 
@@ -218,9 +217,10 @@ def ground_truth_dir(request: pytest.FixtureRequest) -> Path | None:
 
     Created lazily so tests that don't opt in pay no I/O cost.  The
     directory persists across pytest invocations so an external runner
-    (``scripts/capture_gpsim_ground_truth.py``) can sweep
-    ``artifacts/ground_truth/`` and treat each subdirectory as one
-    captured fixture.
+    can sweep ``artifacts/ground_truth/`` and treat each subdirectory
+    as one captured fixture.  (The historical
+    ``scripts/capture_gpsim_ground_truth.py`` runner was retired in
+    PF.4 phase 1.)
     """
     if not _capture_enabled(request.config):
         return None
