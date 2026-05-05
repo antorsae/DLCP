@@ -67,14 +67,13 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return hex_out
 
 
-# Module-level dual_supported marker.  Tests in this file work
-# on the rust facade (structural source/hex gates + 3 sim tests
-# that use only register-poke patterns).  The earlier
-# parametrized `_saturated_direct_helper_aborts_after_two_byte_commits`
-# test relied on gpsim-specific PC manipulation + breakpoints with
-# no rust analogue and was deleted in PF.4 phase 2 batch 2 (the
-# rust universal-clock scheduler doesn't expose PC-jump or
-# per-instruction breakpoints).
+# Module-level dual_supported marker.  Tests in this file run
+# on the rust facade: structural source/hex gates, 3 register-
+# poke sim tests, plus the parametrized
+# `_saturated_direct_helper_aborts_via_atomic_reserve` test
+# (revived under task #123; uses the rust facade's
+# `set_core_pc` + `step_tcy` primitives, both wrapped from
+# the rust executor under task #100).
 pytestmark = pytest.mark.dual_supported
 
 
