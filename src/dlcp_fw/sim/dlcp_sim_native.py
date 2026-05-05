@@ -364,8 +364,7 @@ class Chain:
     def is_waiting(self) -> bool:
         """True when CONTROL's LCD shows the WAITING screen.
 
-        Mirror of ``chain_gpsim.py::_is_waiting_lcd``: the
-        substring ``"WAITING FOR DLCP"`` (case-insensitive)
+        The substring ``"WAITING FOR DLCP"`` (case-insensitive)
         appears on either of the two LCD rows.
         """
         return bool(self._inner.is_waiting())
@@ -401,11 +400,9 @@ class Chain:
 
     def step_many(self, n_chunks: int) -> None:
         """Step ``n_chunks`` chunks of 3.2 M ticks each (no
-        early-exit predicate).  Mirror of
-        ``chain_gpsim.py::SingleMainChainHarness.step_many``.
-        Used by the V1.7 blackout/wake test to give the
-        firmware time to render the standby screen after
-        a STBY press.
+        early-exit predicate).  Used by the V1.7 blackout/
+        wake test to give the firmware time to render the
+        standby screen after a STBY press.
         """
         self._inner.step_many(int(n_chunks))
 
@@ -521,13 +518,11 @@ class Chain:
 
     @property
     def current_cycle(self) -> int:
-        """CONTROL's K20-Tcy cycle counter (mirror of
-        ``control_gpsim.py::GpsimControlHarness.current_cycle``).
-        """
+        """CONTROL's K20-Tcy cycle counter."""
         return int(self._inner.current_cycle)
 
     def pause_heartbeat(self) -> None:
-        """No-op on the rust backend.The rust facade has no synthetic-heartbeat
+        """No-op on the rust backend.  The rust facade has no synthetic-heartbeat
         mode -- the chain runs against a real V2.3-combined
         MAIN that emits actual BF replies -- so there is
         nothing to pause.  Provided for duck-typing parity.
@@ -539,7 +534,7 @@ class Chain:
     ) -> tuple[int, int]:
         """Inject 3-byte chain frames into MAIN's RX ring.
 
-Targets the V3.x
+        Targets the V3.x
         firmware's RX ring at physical 0x0200..0x02BF, with rd
         index at 0x0C6 and wr index at 0x0C7.  Frame-aligned
         overrun semantics: each 3-byte frame is either fully
@@ -557,7 +552,7 @@ Targets the V3.x
 
     def write_control_eeprom_byte(self, addr: int, value: int) -> None:
         """Seed CONTROL's EEPROM peripheral at the given
-        8-bit address.Use this immediately after
+        8-bit address.  Use this immediately after
         ``Chain.from_v17_chain(...)`` and BEFORE the first
         ``step()`` / ``warmup()`` call -- the firmware
         reads EEPROM during early boot.
@@ -941,7 +936,7 @@ Targets the V3.x
         drop: bool | None = None,
         extra_cycles: int | None = None,
     ) -> None:
-        """Per-link fault primitive.Spec / ledger: P4-followup C
+        """Per-link fault primitive.  Spec / ledger: P4-followup C
         (``docs/SIM_REWRITE_RUST_PROGRESS.md`` "P4 followup
         tracker", task #101).
 
