@@ -485,7 +485,7 @@ def test_v32_layer5_symbols_resolve(v32_hex: Path) -> None:
 
 
 # ===========================================================================
-# Tier C — behavioral via gpsim
+# Tier C — behavioral via the rust facade
 # ===========================================================================
 
 
@@ -1045,9 +1045,10 @@ def test_v32_preset_job_state_unchanged_by_diag_traffic(v32_hex: Path) -> None:
 # 4 reset-cause RAM flags classified at cold-init from the RCON snapshot.
 # New chain `cmd 0x22` reply burst (BF/28..BF/2B) carrying the 4 flags.
 # New HID `cmd 0x44` returning a structured 11-byte diag snapshot.
-# All Tier-1 paths are source-level structural tests (Tier A) — gpsim
-# behavioral tests are scheduled in Phase 2.7 once the chain harness
-# learns to inject cmd 0x22 / read HID cmd 0x44 responses.
+# All Tier-1 paths are source-level structural tests (Tier A) plus
+# the cold-POR rust facade test below; chain-level cmd 0x22 / HID
+# cmd 0x44 round-trip behavioural coverage lives in
+# tests/sim/test_v171_v32_layer5_diag_chain.py and tests/sim/test_dlcp_diag.py.
 # ===========================================================================
 
 
@@ -1331,7 +1332,7 @@ def test_v32_source_hid_cmd_diag_snapshot_response_layout() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tier C — gpsim behavioral: Tier-1 reset-cause classification
+# Tier C — behavioral via the rust facade: Tier-1 reset-cause classification
 # ---------------------------------------------------------------------------
 
 
