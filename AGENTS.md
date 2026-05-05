@@ -637,6 +637,9 @@ disappears mechanically.
   acceptance + risk register + glossary)
 - Implementation plan: `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md`
   (PIC18 silicon-fidelity gap closure for spec section 11c)
+- PF.4 phase 2 plan: `docs/PF4_PHASE2_PLAN.md` (gpsim wrapper excision
+  inventory + per-file surgery shape + 9-batch suggested parallelization;
+  multi-session work, follow-up to PF.4 phase 1 commit 5a56279)
 - Progress ledger (machine-readable): `docs/SIM_REWRITE_RUST_PROGRESS.md`
 - Automation entry: `scripts/sim_rewrite_next.py`
   - `python3 scripts/sim_rewrite_next.py status` — current phase + next pending sub-task
