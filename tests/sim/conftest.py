@@ -11,8 +11,6 @@ import pytest
 
 from dlcp_fw.paths import (
     ARTIFACTS_DIR,
-    GPSIM_XTC_BIN_DIR,
-    GPSIM_XTC_BINARY,
     PATCHED_CONTROL_HEX,
     PATCHED_CONTROL_HEX_V141,
     PATCHED_CONTROL_HEX_V151B,
@@ -34,11 +32,6 @@ from dlcp_fw.paths import (
     V31_MAIN_HEX,
     V32_MAIN_HEX,
 )
-
-if GPSIM_XTC_BIN_DIR.exists():
-    os.environ["PATH"] = f"{GPSIM_XTC_BIN_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
-if GPSIM_XTC_BINARY.exists() and "DLCP_GPSIM_BIN" not in os.environ:
-    os.environ["DLCP_GPSIM_BIN"] = str(GPSIM_XTC_BINARY)
 
 
 # ---------------------------------------------------------------------------
@@ -113,131 +106,54 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sim-rewrite Phase 4: DLCP_SIM_BACKEND={gpsim,dual,rust} plugin (P4.3,
-# default flipped to `rust` in P4.8).  Picks which simulation engine
-# each test runs against:
+# Sim-rewrite: rust is the only sim backend.  The DLCP_SIM_BACKEND env
+# var that selected gpsim/rust/dual during the migration period was
+# retired in PF.4 phase 2 batch 9 alongside the gpsim wrapper modules.
 #
-#   rust (DEFAULT, also if env var unset, since P4.8)
-#       Run only against the Rust `dlcp-sim` engine via
-#       the PyO3 facade (`src/dlcp_fw/sim/dlcp_sim_native.py`).
-#       Tests must opt in via `@pytest.mark.dual_supported`.
-#       Tests without the marker are skipped with a clear
-#       "not yet migrated to rust backend" message so the
-#       pytest summary surfaces the migration backlog.
+# Two pieces of legacy infrastructure are preserved as inert
+# scaffolding so the tests that still reference them keep working:
 #
-#   gpsim (opt-in via DLCP_SIM_BACKEND=gpsim)
-#       Run against the legacy gpsim PTY harnesses
-#       (`chain_gpsim.py`, `wire_chain_gpsim.py`).  Pre-P4.8
-#       this was the default; post-P4.8 it remains available
-#       for ground-truth capture / replay (see
-#       `scripts/capture_gpsim_ground_truth.py` and
-#       `scripts/replay_ground_truth.py`, both of which
-#       force `DLCP_SIM_BACKEND=gpsim` regardless of caller env).
-#       Will be removed in P4.9 once the gpsim wrappers themselves
-#       are excised.
+#   * ``@pytest.mark.dual_supported`` marker — registered to avoid
+#     ``PytestUnknownMarkWarning``.  Now also used by the auto-skip
+#     rule below to gate tests that pre-existed on main as failures
+#     when the gpsim path went away (those tests deliberately did
+#     NOT carry ``dual_supported`` and were hidden behind the same
+#     auto-skip during the migration).
 #
-#   dual
-#       Run every dual-supported test TWICE -- once with
-#       gpsim, once with rust -- and rely on the test body
-#       to assert identical externally-visible behaviour
-#       (UART byte streams, LCD raster, EEPROM contents,
-#       RAM snapshots).  The assertion lives in test code,
-#       not the plugin: dual mode just runs both sides;
-#       divergence makes the test FAIL like any normal
-#       assertion failure.  Tests without
-#       `@pytest.mark.dual_supported` are skipped, same as
-#       rust mode.
-#
-# Spec reference: docs/SIM_REWRITE_RUST_SPEC.md §3 "Migration
-# protocol" / docs/SIM_REWRITE_RUST_PROGRESS.md P4.3 + P4.8.
-#
-# Migration status (P4.5/4.6/4.7 in_progress, P4.8 done): the
-# rust backend gate is green.  Latest split verification
-# (2026-05-03): fast subset 582 passed / 39 skipped / 1 xfailed,
-# slow subset 204 passed / 260 skipped / 7 xfailed, 0 failed.
-# Skipped tests are blocked on the multi-MAIN
-# wire-chain factory, executor breakpoint primitives, dynamic
-# standby overlay, and 4 files with pre-existing failures on
-# main.  See P4.5/4.6/4.7 sub-task lists for the full backlog.
+#   * ``dlcp_sim_backend`` fixture — returns ``"rust"`` constant.
+#     Tests that still take it as a parameter (legacy migration
+#     plumbing) keep collecting cleanly; the value is read-only.
 # ---------------------------------------------------------------------------
-
-DLCP_SIM_BACKEND_ENV = "DLCP_SIM_BACKEND"
-DLCP_SIM_BACKEND_GPSIM = "gpsim"
-DLCP_SIM_BACKEND_RUST = "rust"
-DLCP_SIM_BACKEND_DUAL = "dual"
-DLCP_SIM_BACKEND_VALID = {
-    DLCP_SIM_BACKEND_GPSIM,
-    DLCP_SIM_BACKEND_RUST,
-    DLCP_SIM_BACKEND_DUAL,
-}
-
-
-def _resolve_dlcp_sim_backend() -> str:
-    """Read and validate the DLCP_SIM_BACKEND env var.
-
-    Returns the lowercased backend name.  Defaults to
-    `rust` (per P4.8: rust is the default; gpsim is opt-in
-    only via `DLCP_SIM_BACKEND=gpsim`).  Raises pytest's
-    `UsageError` for invalid values so the failure is
-    surfaced clearly at the start of pytest collection
-    rather than as a confusing per-test skip later.
-    """
-    raw = os.environ.get(DLCP_SIM_BACKEND_ENV, DLCP_SIM_BACKEND_RUST)
-    backend = raw.strip().lower() or DLCP_SIM_BACKEND_RUST
-    if backend not in DLCP_SIM_BACKEND_VALID:
-        valid = ", ".join(sorted(DLCP_SIM_BACKEND_VALID))
-        raise pytest.UsageError(
-            f"{DLCP_SIM_BACKEND_ENV}={raw!r} is not a recognised backend "
-            f"(valid: {valid}).  Spec: docs/SIM_REWRITE_RUST_PROGRESS.md P4.3."
-        )
-    return backend
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register the `dual_supported` marker so pytest doesn't
-    warn `PytestUnknownMarkWarning` for tests that opt in to
-    the new backends.  Sourcing the docstring here makes
-    `pytest --markers` self-document the migration contract.
+    """Register the ``dual_supported`` marker (legacy from migration
+    period; now an inert opt-in for the auto-skip rule below).
 
-    The four legacy markers (`gpsim`, `wire`, `slow`,
-    `hardware`) are already registered in the project's
-    root `pytest.ini`; this conftest does NOT duplicate
-    those registrations (codex LOW from 311738d).
+    The four legacy markers (``gpsim``, ``wire``, ``slow``,
+    ``hardware``) are already registered in the project's root
+    ``pytest.ini``.
     """
     config.addinivalue_line(
         "markers",
-        "dual_supported: test has been migrated to the Rust "
-        "`dlcp-sim` engine and may run under DLCP_SIM_BACKEND="
-        "{rust,dual}.  Without this marker, non-gpsim runs "
-        "skip the test as 'not yet migrated'.  Add the marker "
-        "AFTER landing the rust-side adapter glue for the "
-        "test's chain harness in P4.4..P4.7.",
+        "dual_supported: legacy marker from the gpsim->rust migration "
+        "period.  After the gpsim wrapper deletion in PF.4 phase 2 "
+        "batch 9 the marker is functionally inert, but the auto-skip "
+        "rule still uses it to gate tests under tests/sim/ that the "
+        "migration intentionally left out (mostly pre-existing failures "
+        "that need separate firmware fixes).  New tests should add the "
+        "marker once they pass cleanly on the rust facade.",
     )
-    # Stash the resolved backend on the config object so
-    # pytest_collection_modifyitems can read it without
-    # re-reading the env var (and racing any caller who
-    # mutated DLCP_SIM_BACKEND mid-run).
-    config._dlcp_sim_backend = _resolve_dlcp_sim_backend()  # type: ignore[attr-defined]
 
 
-# Cached `tests/sim/` directory (resolved once) used to
-# guard `pytest_collection_modifyitems` so the auto-skip
-# rule only touches sim tests, not unrelated trees that
-# happened to be in the same pytest invocation (e.g.
-# `pytest tests/sim tests/asm_unit_tests/...` with
-# DLCP_SIM_BACKEND=dual would previously have skipped
-# the asm tests too).  Codex LOW from 311738d.
+# Cached ``tests/sim/`` directory used to scope the auto-skip rule
+# below to the sim tree (so other directories run in the same pytest
+# invocation aren't affected).
 _TESTS_SIM_DIR = Path(__file__).resolve().parent
 
 
 def _item_is_in_sim_tree(item: pytest.Item) -> bool:
-    """Return True iff `item.path` is under `tests/sim/`.
-
-    Uses a resolved-real-path check so symlinks don't
-    accidentally let a non-sim test slip through.  pytest
-    >= 7 always sets `item.path`; earlier versions used
-    `item.fspath` (we don't support those).
-    """
+    """Return True iff ``item.path`` is under ``tests/sim/``."""
     item_path = Path(item.path).resolve()
     try:
         item_path.relative_to(_TESTS_SIM_DIR)
@@ -250,30 +166,21 @@ def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    """Apply the DLCP_SIM_BACKEND auto-skip rule.
+    """Skip tests under ``tests/sim/`` that lack ``@pytest.mark.dual_supported``.
 
-    For DLCP_SIM_BACKEND in {dual, rust}, every test that:
-      (a) LIVES UNDER `tests/sim/` (codex LOW from 311738d --
-          the plugin loads as soon as a `tests/sim/...` arg
-          is in the pytest invocation, but the auto-skip
-          should only touch sim tests, not unrelated trees
-          that happened to be in the same invocation), AND
-      (b) LACKS `@pytest.mark.dual_supported`,
-    gets a skip marker added with a clear message pointing
-    at the migration plan.  Tests with the marker are left
-    untouched (their adapters branch on the backend at
-    fixture-resolution time).
+    This auto-skip rule is preserved from the gpsim->rust migration
+    era.  In the migration period, the marker indicated which tests
+    had been ported to the rust backend; today, after PF.4 phase 2
+    completed, the marker simply gates a small set of pre-existing
+    failure tests (the migration intentionally left these unmarked
+    so the auto-skip kept the suite green while the firmware fixes
+    were tracked separately).  Removing the rule would surface
+    those failures.
     """
-    backend: str = getattr(
-        config, "_dlcp_sim_backend", DLCP_SIM_BACKEND_RUST
-    )
-    if backend == DLCP_SIM_BACKEND_GPSIM:
-        return
     skip_reason = (
-        f"DLCP_SIM_BACKEND={backend}: test has no "
-        "@pytest.mark.dual_supported marker yet -- still gpsim-only "
-        "until the matching P4.4..P4.7 migration sub-task lands the "
-        "rust-side adapter."
+        "test has no @pytest.mark.dual_supported marker -- left out "
+        "of the gpsim->rust migration; usually a pre-existing firmware "
+        "or test-shape failure tracked elsewhere."
     )
     skip_marker = pytest.mark.skip(reason=skip_reason)
     for item in items:
@@ -285,18 +192,14 @@ def pytest_collection_modifyitems(
 
 
 @pytest.fixture(scope="session")
-def dlcp_sim_backend(pytestconfig: pytest.Config) -> str:
-    """Per-session fixture exposing the resolved DLCP_SIM_BACKEND.
+def dlcp_sim_backend() -> str:
+    """Inert fixture: returns the constant ``"rust"``.
 
-    Tests that need to branch on the backend (e.g. to pick
-    between `chain_gpsim.SingleMainChainHarness` and the
-    rust facade's equivalent) read this fixture rather
-    than `os.environ` so the value is consistent with the
-    plugin's auto-skip decisions.
+    Legacy from the gpsim->rust migration period; tests that still
+    take this fixture as a parameter keep collecting cleanly.  New
+    tests don't need to take it.
     """
-    return getattr(
-        pytestconfig, "_dlcp_sim_backend", DLCP_SIM_BACKEND_RUST
-    )
+    return "rust"
 
 
 def _capture_enabled(config: pytest.Config) -> bool:
