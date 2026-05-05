@@ -123,11 +123,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 #     is read-only.
 #
 # The migration-era auto-skip rule (skip every tests/sim item lacking
-# ``dual_supported``) was retired alongside this commit's parent: that
-# rule was over-conservative — only one test under tests/sim actually
-# fails on rust (a stale source-grep test), and that one now carries
-# an explicit ``@pytest.mark.skip``.  All other unmarked tests pass,
-# skip via runtime ``pytest.skip()``, or are already xfail-decorated.
+# ``dual_supported``) was retired in PF.4 phase 2 follow-up: it was
+# grossly over-conservative.  Of the 28 unmarked tests, 27 pass / skip
+# / xfail cleanly on rust; the remaining one was a buggy slice-end
+# anchor in test_v171_sentinel_reconnect.py that has since been fixed.
+# All sim tests now run; nothing is auto-skipped.
 # ---------------------------------------------------------------------------
 
 
@@ -135,9 +135,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """Register the ``dual_supported`` marker (legacy from migration
     period; now functionally inert).
 
-    The four legacy markers (``gpsim``, ``wire``, ``slow``,
-    ``hardware``) are already registered in the project's root
-    ``pytest.ini``.
+    The remaining legacy markers (``slow``, ``hardware``) are
+    registered in the project's root ``pytest.ini``.
     """
     config.addinivalue_line(
         "markers",
