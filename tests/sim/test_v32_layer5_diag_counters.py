@@ -32,7 +32,6 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V32_MAIN_ASM, V32_MAIN_HEX
-from dlcp_fw.sim.gpsim import gpsim_available
 from dlcp_fw.sim.v30_symbols import assemble_v30, load_gpasm_symbols_for_hex
 
 
@@ -490,133 +489,69 @@ def test_v32_layer5_symbols_resolve(v32_hex: Path) -> None:
 # ===========================================================================
 
 
-def _boot_v32_main_only_and_step_tcy(v32_hex: Path, backend: str, total_tcy: int):
-    """Boot V3.2 MAIN under the chosen backend and step `total_tcy`
-    MAIN-Tcy.  Returns an object with `read_reg(addr) -> int` and
-    `close()` so the caller can read RAM cells and clean up.
-
-    gpsim path: MainChainHarness chunked via `chunk_cycles=200_000`.
-    rust path: `Chain.from_v3x_main_only(...).step_tcy(total_tcy)`
-    in a single call (no chunking).
+def _boot_v32_main_only_and_step_tcy(v32_hex: Path, total_tcy: int):
+    """Boot V3.2 MAIN on the rust facade and step `total_tcy` MAIN-Tcy.
+    Returns an object with `read_reg(addr) -> int` and `close()` so the
+    caller can read RAM cells and clean up.
     """
-    if backend == "rust":
-        try:
-            from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
-        except Exception as exc:  # pragma: no cover
-            pytest.fail(f"rust dlcp_sim_native facade not importable -- {exc!r}")
-
-        chain = RustChain.from_v3x_main_only(str(v32_hex))
-        chain.step_tcy(total_tcy)
-
-        class _RustHandle:
-            def read_reg(self, addr: int) -> int:
-                return chain.read_reg(addr)
-
-            def write_reg(self, addr: int, value: int) -> None:
-                chain.write_reg(addr, value)
-
-            def inject_main_frames_fifo(
-                self, frames: list[list[int]], fifo_limit: int
-            ) -> tuple[int, int]:
-                return chain.inject_main_frames_fifo(frames, fifo_limit)
-
-            def advance_tcy(self, tcy: int) -> None:
-                chain.step_tcy(tcy)
-
-            def close(self) -> None:
-                pass
-
-        return _RustHandle()
-
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
     try:
-        from dlcp_fw.sim.chain_gpsim import MainChainHarness
-        from dlcp_fw.sim.control_gpsim import _read_reg
-    except Exception:
-        pytest.skip("gpsim harness not importable")
+        from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    except Exception as exc:  # pragma: no cover
+        pytest.fail(f"rust dlcp_sim_native facade not importable -- {exc!r}")
 
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
-    chunks = total_tcy // 200_000
-    try:
-        for _ in range(chunks):
-            h.step()
-    except Exception:
-        h.close()
-        raise
+    chain = RustChain.from_v3x_main_only(str(v32_hex))
+    chain.step_tcy(total_tcy)
 
-    class _GpsimHandle:
+    class _RustHandle:
         def read_reg(self, addr: int) -> int:
-            return _read_reg(h._issue, addr)
+            return chain.read_reg(addr)
 
         def write_reg(self, addr: int, value: int) -> None:
-            h._issue(f"reg(0x{addr:03X})=0x{value:02X}", 5.0)
+            chain.write_reg(addr, value)
 
         def inject_main_frames_fifo(
             self, frames: list[list[int]], fifo_limit: int
         ) -> tuple[int, int]:
-            return h.inject_frames_fifo(frames, fifo_limit=fifo_limit)
+            return chain.inject_main_frames_fifo(frames, fifo_limit)
 
         def advance_tcy(self, tcy: int) -> None:
-            chunks = tcy // 200_000
-            for _ in range(chunks):
-                h.step()
+            chain.step_tcy(tcy)
 
         def close(self) -> None:
-            h.close()
+            pass
 
-    return _GpsimHandle()
+    return _RustHandle()
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_layer5_healthy_boot_keeps_counters_zero(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_layer5_healthy_boot_keeps_counters_zero(v32_hex: Path) -> None:
     """A healthy boot must NOT fire any counter.  If a normal startup
     increments any of them, either the hook is mis-placed or the cold-init
     POR clear isn't running.
     """
-    backends = ["rust"] if dlcp_sim_backend == "rust" else (
-        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
-    )
-    for backend in backends:
-        h = _boot_v32_main_only_and_step_tcy(
-            v32_hex, backend, total_tcy=40 * 200_000,
-        )
-        try:
-            for name, addr in ALL_COUNTER_ADDRS:
-                value = h.read_reg(addr)
-                assert value == 0, (
-                    f"[{backend}] healthy boot left counter {name} at "
-                    f"0x{value:02X} (expected 0); either an unrelated code "
-                    f"path is hitting the hook or POR clear isn't running"
-                )
-        finally:
-            h.close()
+    h = _boot_v32_main_only_and_step_tcy(v32_hex, total_tcy=40 * 200_000)
+    try:
+        for name, addr in ALL_COUNTER_ADDRS:
+            value = h.read_reg(addr)
+            assert value == 0, (
+                f"healthy boot left counter {name} at 0x{value:02X} "
+                f"(expected 0); either an unrelated code path is hitting "
+                f"the hook or POR clear isn't running"
+            )
+    finally:
+        h.close()
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_layer5_diag_block_clears_on_cold_start(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_layer5_diag_block_clears_on_cold_start(v32_hex: Path) -> None:
     """On cold start (RCON.BOR=0 at fixture init), the diag block must be
-    zero after the cold init runs.  This is the spec's "POR/BOR clears"
-    behavior — paired with the in-firmware RCON gate.
+    zero after the cold init runs.
 
-    Both backends cold-start every harness boot with all RCON bits
-    matching POR semantics (BOR=0, POR=0), so this test exercises
-    the POR path.
+    The rust facade cold-starts every harness boot with all RCON bits
+    matching POR semantics (BOR=0, POR=0), so this test exercises the
+    POR path.
 
     Note: we can't easily trigger a real POR mid-test (would require
     harness restart).  This test pin-checks that the initial values
@@ -625,33 +560,27 @@ def test_v32_layer5_diag_block_clears_on_cold_start(
     register-write path works; if a future RCON/restart fixture
     lands, the pre-load + restart variant slots in trivially.
     """
-    backends = ["rust"] if dlcp_sim_backend == "rust" else (
-        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
-    )
-    for backend in backends:
-        h = _boot_v32_main_only_and_step_tcy(
-            v32_hex, backend, total_tcy=25 * 200_000,
-        )
-        try:
-            # First: pin-check that cold init left all 7 counters at 0.
-            for name, addr in ALL_COUNTER_ADDRS:
-                value = h.read_reg(addr)
-                assert value == 0, (
-                    f"[{backend}] cold init left {name} at 0x{value:02X} "
-                    f"(expected 0); cold-init clrf may not have run"
-                )
-            # Second: prove the register-write path works (would let a
-            # future RCON/restart variant of this test slot in trivially).
-            for _, addr in ALL_COUNTER_ADDRS:
-                h.write_reg(addr, 0xAB)
-            for name, addr in ALL_COUNTER_ADDRS:
-                actual = h.read_reg(addr)
-                assert actual == 0xAB, (
-                    f"[{backend}] pre-load of {name} (0xAB) didn't take; "
-                    f"register-write path is broken"
-                )
-        finally:
-            h.close()
+    h = _boot_v32_main_only_and_step_tcy(v32_hex, total_tcy=25 * 200_000)
+    try:
+        # First: pin-check that cold init left all 7 counters at 0.
+        for name, addr in ALL_COUNTER_ADDRS:
+            value = h.read_reg(addr)
+            assert value == 0, (
+                f"cold init left {name} at 0x{value:02X} (expected 0); "
+                f"cold-init clrf may not have run"
+            )
+        # Second: prove the register-write path works (would let a
+        # future RCON/restart variant of this test slot in trivially).
+        for _, addr in ALL_COUNTER_ADDRS:
+            h.write_reg(addr, 0xAB)
+        for name, addr in ALL_COUNTER_ADDRS:
+            actual = h.read_reg(addr)
+            assert actual == 0xAB, (
+                f"pre-load of {name} (0xAB) didn't take; "
+                f"register-write path is broken"
+            )
+    finally:
+        h.close()
 
 
 @pytest.mark.dual_supported
@@ -772,131 +701,22 @@ def test_v32_cmd21_masks_high_nibble_before_tx() -> None:
     )
 
 
-def test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells(
-    v32_hex: Path,
-) -> None:
-    """REGRESSION: even if the diag cells hold corrupted values
-    (high nibble set, e.g. from uninitialized RAM at first power-on),
-    the cmd 0x21 reply burst MUST emit data bytes in 0x00..0x0F range
-    only.
-
-    Test shape:
-      1. Boot V3.2 MAIN.
-      2. Force the diag cells (0x2E5..0x2EC) to a high-nibble pattern:
-         0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0 (each with bit 7
-         set; chain forwarder would mis-frame these).
-      3. Inject a cmd 0x21 query (CONTROL→MAIN B1/0x21/0x00).
-      4. Capture MAIN's TX byte stream during the reply burst.
-      5. Verify every data byte (offsets 2, 5, 8, 11, 14, 17, 20 of
-         the burst) is in 0x00..0x0F.
-      6. Verify route+cmd bytes (BF/2N pairs) are unchanged.
-
-    This is the behavioral counterpart of
-    `test_v32_cmd21_masks_high_nibble_before_tx` — even if the source
-    test passes (mask is in place), this gpsim test confirms the mask
-    is APPLIED at the right point in the instruction sequence.
-
-    NOT marked dual_supported: the gpsim path was sketched but
-    `_capture_cmd21_tx_burst` was never implemented and
-    `GpsimMainHarness` doesn't exist in `main_gpsim.py`, so the
-    test skipped on gpsim too (always-skip).  Probed the rust path
-    using the new TX-recording API (cc01363):
-    `inject_main_frames_fifo([[0xB0|B1|BF, 0x21, 0x00]])` does NOT
-    elicit the expected 7-frame BF/2N diag-counter burst on rust --
-    the cmd 0x21 dispatcher requires firmware state that
-    MAIN-only boot+activate doesn't reach (likely CONNECTED state
-    via heartbeat-pump traffic from a CONTROL peer).  Migrating
-    this test would require either (a) a full V1.71 + V3.2 chain
-    factory exposing tx_record_since_last_capture, or (b) a
-    CONTROL-side stimulus pump that drives the firmware into the
-    state where cmd 0x21 fires.  Tracked as a P4.6/P4.7 follow-up;
-    the source-level mask test
-    (`test_v32_cmd21_masks_high_nibble_before_tx`) covers the
-    same `andlw 0x0F` invariant at compile time.
-    """
-    if not gpsim_available():
-        pytest.skip("gpsim not installed")
-    try:
-        from dlcp_fw.sim.main_gpsim import GpsimMainHarness  # type: ignore[attr-defined]
-    except Exception:
-        pytest.skip("main_gpsim harness not importable")
-
-    h = GpsimMainHarness(v32_hex)
-    try:
-        h.warmup(2_000_000)
-        # Force corrupted diag cells: 0x80, 0x90, ..., 0xE0 (all bit 7 set).
-        corrupted = (0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0)
-        for offset, value in enumerate(corrupted):
-            h._issue(f"reg(0x{0x2E5 + offset:03X})=0x{value:02X}", 5.0)
-        # Verify the writes took.
-        for offset, value in enumerate(corrupted):
-            actual = _read_reg_helper_local(h._issue, 0x2E5 + offset)
-            assert actual == value, (
-                f"failed to corrupt diag cell at 0x{0x2E5+offset:03X} "
-                f"to 0x{value:02X} (got 0x{actual:02X})"
-            )
-        # Inject cmd 0x21 query and capture MAIN's TX stream.
-        try:
-            tx_bytes = _capture_cmd21_tx_burst(h, query_route=0xB1)
-        except NotImplementedError as exc:
-            pytest.skip(
-                f"cmd21 TX-capture helper not yet implemented in "
-                f"main_gpsim harness ({exc}); the source-level mask "
-                f"test (`test_v32_cmd21_masks_high_nibble_before_tx`) "
-                f"covers the same invariant at compile time."
-            )
-        assert len(tx_bytes) >= 21, (
-            f"reply burst too short ({len(tx_bytes)} bytes), expected "
-            f">= 21 for 7 frames"
-        )
-        for frame_idx in range(7):
-            base = frame_idx * 3
-            assert tx_bytes[base] == 0xBF, (
-                f"frame {frame_idx} route byte: expected 0xBF, "
-                f"got 0x{tx_bytes[base]:02X}"
-            )
-            assert tx_bytes[base + 1] == 0x21 + frame_idx, (
-                f"frame {frame_idx} cmd byte: expected 0x{0x21+frame_idx:02X}, "
-                f"got 0x{tx_bytes[base+1]:02X}"
-            )
-            data_byte = tx_bytes[base + 2]
-            assert 0x00 <= data_byte <= 0x0F, (
-                f"frame {frame_idx} data byte 0x{data_byte:02X} > 0x0F — "
-                f"chain forwarder will mis-frame this as a route byte. "
-                f"cmd21 handler is missing the `andlw 0x0F` mask."
-            )
-    finally:
-        h.close()
-
-
-def _read_reg_helper_local(issue, addr: int) -> int:
-    """Local copy of _read_reg semantics — returns the byte at
-    physical RAM address via gpsim CLI ``reg(0xNNN)`` query."""
-    out = issue(f"reg(0x{addr:03X})", 5.0)
-    # gpsim returns "reg(0xNNN) = 0xVV" or similar.
-    m = re.search(r"=\s*0x([0-9A-Fa-f]+)", out)
-    if not m:
-        raise RuntimeError(f"unexpected reg() response: {out!r}")
-    return int(m.group(1), 16) & 0xFF
-
-
-def _capture_cmd21_tx_burst(h, *, query_route: int) -> bytes:
-    """Inject a single cmd 0x21 query into MAIN's RX and capture the
-    7-frame BF/2N reply burst from MAIN's TX recorder.
-
-    NOT YET IMPLEMENTED in this harness — the test that calls this
-    helper falls back to a pytest.skip when NotImplementedError fires.
-    The source-level mask test covers the same invariant at compile
-    time so the regression is still caught even when this helper is
-    skipped.
-    """
-    raise NotImplementedError(
-        "cmd21_tx_burst capture requires a main_gpsim harness extension "
-        "that injects a single 3-byte chain frame and exposes the TX "
-        "recorder for byte-level inspection.  Sketch: chain.write_rx_bytes"
-        "([query_route, 0x21, 0x00]); chain.step_until_tx_quiescent(); "
-        "return chain.tx_record_since_last_capture()."
-    )
+# Note: an earlier
+# `test_v32_cmd21_emits_only_low_nibble_bytes_under_corrupted_cells`
+# test attempted a behavioral counterpart of
+# `test_v32_cmd21_masks_high_nibble_before_tx` — forcing the diag cells
+# to high-nibble values, injecting a cmd 0x21 query, and asserting every
+# data byte in the 7-frame BF/2N reply burst falls in 0x00..0x0F.
+#
+# It was deleted in PF.4 phase 2 batch 4: the gpsim path required a
+# `GpsimMainHarness.tx_record_since_last_capture` helper that was never
+# implemented (the test always pytest.skip'd on gpsim too), and the rust
+# path requires a full V1.71 + V3.2 CONTROL-driven chain to push MAIN
+# into the CONNECTED state where cmd 0x21 dispatches — MAIN-only boot
+# + frame injection isn't enough.  The source-level mask test
+# (`test_v32_cmd21_masks_high_nibble_before_tx`) already pins the
+# `andlw 0x0F` invariant in the helper body; the cmd 0x21 wire-level
+# emission is exercised end-to-end by `test_v171_v32_layer5_diag_chain.py`.
 
 
 @pytest.mark.dual_supported
@@ -990,11 +810,8 @@ def test_v32_diag_inc_sat_macro_has_explicit_upper_bound_clamp() -> None:
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_diag_counters_stay_zero_during_extended_idle(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_diag_counters_stay_zero_during_extended_idle(v32_hex: Path) -> None:
     """REGRESSION: real-HW operator saw counter values 7..15+ within
     seconds of a power-cycle.  If MAIN's cold-init properly clears
     the diag block AND no internal code path bumps counters during
@@ -1014,74 +831,34 @@ def test_v32_diag_counters_stay_zero_during_extended_idle(
     The existing test_v32_layer5_healthy_boot_keeps_counters_zero
     covers a SHORT (~8M cycle) window; this test extends to ~40M
     cycles to catch slower / periodic-only counter drift.
-
-    Previously gpsim-only: rust MAIN-only chains used to saturate
-    diag_i to 0x0F during this idle window because the secondary
-    I²C device at 0xE2/0xE3 (cfg71 / SRC4382) wasn't modeled --
-    every cfg71 write NACKed and tripped the diag_i I²C-fault
-    hook.  The rust symptom MATCHED the real-HW operator's report
-    (diag_i 7..15+ in seconds), suggesting the operator's rig
-    might also have had a cfg71/SRC4382 dropout.  Fixed by the
-    SRC4382 slave wiring (commit 89e2623).
     """
-    backends = ["rust"] if dlcp_sim_backend == "rust" else (
-        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
-    )
-    for backend in backends:
-        # 40M MAIN-Tcy ≈ 3.3 s at 12 MIPS.  Long enough for any
-        # periodic counter bump to surface.
-        h = _boot_v32_main_only_and_step_tcy(
-            v32_hex, backend, total_tcy=200 * 200_000,
+    # 40M MAIN-Tcy ≈ 3.3 s at 12 MIPS.  Long enough for any periodic
+    # counter bump to surface.
+    h = _boot_v32_main_only_and_step_tcy(v32_hex, total_tcy=200 * 200_000)
+    try:
+        anomalies = []
+        for name, addr in ALL_COUNTER_ADDRS:
+            value = h.read_reg(addr)
+            if value != 0:
+                anomalies.append((name, value))
+        assert not anomalies, (
+            f"counter(s) bumped during extended idle (no external "
+            f"events): {anomalies}.  Either an internal periodic path "
+            f"is firing the diag_inc_sat macro spuriously, or the "
+            f"cold-init clrf isn't running, or RAM[0x2E5..0x2EC] is "
+            f"being written by another code path that overlaps the "
+            f"diag block.  This is the bug class the real-HW operator "
+            f"saw on the rig (counters 7..15+ within seconds of cold "
+            f"boot)."
         )
-        try:
-            anomalies = []
-            for name, addr in ALL_COUNTER_ADDRS:
-                value = h.read_reg(addr)
-                if value != 0:
-                    anomalies.append((name, value))
-            assert not anomalies, (
-                f"[{backend}] counter(s) bumped during extended idle "
-                f"(no external events): {anomalies}.  Either an internal "
-                f"periodic path is firing the diag_inc_sat macro "
-                f"spuriously, or the cold-init clrf isn't running, or "
-                f"RAM[0x2E5..0x2EC] is being written by another code "
-                f"path that overlaps the diag block.  This is the bug "
-                f"class the real-HW operator saw on the rig (counters "
-                f"7..15+ within seconds of cold boot)."
-            )
-        finally:
-            h.close()
+    finally:
+        h.close()
 
 
 _DIAG_SEED = (1, 2, 3, 4, 5, 6, 7)
 
 
-def _run_diag_isolation_test_gpsim(v32_hex: Path) -> tuple[int, ...]:
-    from dlcp_fw.sim.chain_gpsim import MainChainHarness
-    from dlcp_fw.sim.control_gpsim import _read_reg
-
-    h = MainChainHarness(
-        v32_hex,
-        chunk_cycles=200_000,
-        standby_mode="hold",
-        rc2_mode="low",
-        bypass_i2c=False,
-        transport_mode="native_ring",
-    )
-    try:
-        for _ in range(20):
-            h.step()
-        for offset, value in enumerate(_DIAG_SEED):
-            h._issue(f"reg(0x{0x2E5 + offset:03X})=0x{value:02X}", 5.0)
-        h.inject_frames_fifo([[0xB1, 0x21, 0x00]], fifo_limit=47)
-        for _ in range(60):
-            h.step()
-        return tuple(_read_reg(h._issue, 0x2E5 + i) for i in range(7))
-    finally:
-        h.close()
-
-
-def _run_diag_isolation_test_rust(v32_hex: Path) -> tuple[int, ...]:
+def _run_diag_isolation_test(v32_hex: Path) -> tuple[int, ...]:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
 
     chain = RustChain.from_v3x_main_only(str(v32_hex))
@@ -1094,11 +871,8 @@ def _run_diag_isolation_test_rust(v32_hex: Path) -> tuple[int, ...]:
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_diag_counters_isolated_per_hook(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_diag_counters_isolated_per_hook(v32_hex: Path) -> None:
     """REGRESSION: each diag counter must increment ONLY when its
     specific event class fires.  If, say, cmd 0x21 traffic causes
     `diag_s` (standby) or `diag_r` (recovery) to bump, the counter
@@ -1111,41 +885,21 @@ def test_v32_diag_counters_isolated_per_hook(
     reply burst to complete, then re-read the diag block.  Counters
     MUST be unchanged from the seed pattern (cmd 0x21 is observational
     only — it must not increment any counter).
-
-    Migrated to dual_supported in P4.7: rust path uses
-    Chain.from_v3x_main_only + write_reg + inject_main_frames_fifo +
-    read_reg.  No CONTROL peer is needed — the test only injects the
-    cmd 0x21 query frame and checks the diag block is unchanged.
     """
-    if dlcp_sim_backend in {"rust", "dual"}:
-        try:
-            from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain  # noqa: F401
-        except Exception as exc:  # pragma: no cover
-            pytest.fail(
-                f"rust dlcp_sim_native facade not importable -- {exc!r}"
-            )
-        post = _run_diag_isolation_test_rust(v32_hex)
-        assert post == _DIAG_SEED, (
-            f"[rust] cmd 0x21 query bumped one or more counters!  Seed "
-            f"was {_DIAG_SEED}, post-query {post}.  cmd 0x21 must be "
-            f"observational."
+    try:
+        from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain  # noqa: F401
+    except Exception as exc:  # pragma: no cover
+        pytest.fail(
+            f"rust dlcp_sim_native facade not importable -- {exc!r}"
         )
-    if dlcp_sim_backend in {"gpsim", "dual"}:
-        if not gpsim_available():
-            pytest.skip("gpsim not installed")
-        try:
-            from dlcp_fw.sim.chain_gpsim import MainChainHarness  # noqa: F401
-            from dlcp_fw.sim.control_gpsim import _read_reg  # noqa: F401
-        except Exception:
-            pytest.skip("gpsim harness not importable")
-        post = _run_diag_isolation_test_gpsim(v32_hex)
-        assert post == _DIAG_SEED, (
-            f"[gpsim] cmd 0x21 query bumped one or more counters!  Seed "
-            f"was {_DIAG_SEED}, post-query {post}.  cmd 0x21 must be "
-            f"observational — if it causes ANY counter to increment, "
-            f"the diag-page cadence will feed back into MAIN-side state "
-            f"changes, which is the cascade the operator saw on the rig."
-        )
+    post = _run_diag_isolation_test(v32_hex)
+    assert post == _DIAG_SEED, (
+        f"cmd 0x21 query bumped one or more counters!  Seed was "
+        f"{_DIAG_SEED}, post-query {post}.  cmd 0x21 must be "
+        f"observational — if it causes ANY counter to increment, "
+        f"the diag-page cadence will feed back into MAIN-side state "
+        f"changes, which is the cascade the operator saw on the rig."
+    )
 
 
 @pytest.mark.dual_supported
@@ -1203,11 +957,8 @@ def test_v32_cold_init_does_not_skip_clear_on_software_reset() -> None:
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_diag_block_unchanged_by_preset_job(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
     """REGRESSION: the V3.2 preset_job state machine lives at
     0x2DE..0x2E4, immediately below the diag block at 0x2E5..0x2EC.
     If preset_job_apply uses an FSR-base + offset write that overruns
@@ -1220,56 +971,35 @@ def test_v32_diag_block_unchanged_by_preset_job(
     block must be unchanged -- preset switching has nothing to do
     with diagnostic counters and must not write into the diag
     region.
-
-    Previously gpsim-only: rust MAIN-only chains used to saturate
-    diag_i to 0x0F during the 120-chunk post-switch settle (cfg71
-    NACK from missing SRC4382 slave).  Fixed by the SRC4382 slave
-    wiring (commit 89e2623); rust now keeps diag_i at 0 across
-    the full post-switch window so the preset-overlap invariant
-    is testable.
-
-    Route swapped from 0xB1 to 0xB0 for backend-uniform
-    "MAIN0-broadcast" semantics matching the rest of the migrated
-    suite (cf. test_v31_v163b_robustness's _inject_main_frame_h).
     """
-    backends = ["rust"] if dlcp_sim_backend == "rust" else (
-        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
-    )
-    for backend in backends:
-        h = _boot_v32_main_only_and_step_tcy(
-            v32_hex, backend, total_tcy=20 * 200_000,
+    h = _boot_v32_main_only_and_step_tcy(v32_hex, total_tcy=20 * 200_000)
+    try:
+        baseline = tuple(h.read_reg(0x2E5 + i) for i in range(8))
+        # Trigger preset switch via cmd 0x20 (preset select B).
+        h.inject_main_frames_fifo(
+            [[0xB0, 0x20, 0x01]], fifo_limit=47,
         )
-        try:
-            baseline = tuple(h.read_reg(0x2E5 + i) for i in range(8))
-            # Trigger preset switch via cmd 0x20 (preset select B).
-            h.inject_main_frames_fifo(
-                [[0xB0, 0x20, 0x01]], fifo_limit=47,
-            )
-            # Let preset job complete (PENDING → HOLDING → APPLY →
-            # COMMIT).  120 chunks = 24M MAIN-Tcy is enough on both
-            # backends.
-            h.advance_tcy(120 * 200_000)
-            post = tuple(h.read_reg(0x2E5 + i) for i in range(8))
-            assert post == baseline, (
-                f"[{backend}] diag block changed during preset switch!  "
-                f"baseline={baseline}, post={post}.  preset_job_service "
-                f"or one of its helpers (preset_job_apply, "
-                f"preset_force_mute, etc.) wrote into 0x2E5..0x2EC.  "
-                f"This is the memory-overlap hypothesis the operator's "
-                f"instinct flagged -- diag cells are being clobbered "
-                f"by an unrelated routine, then read as 'elevated "
-                f"counters' on the Diag page."
-            )
-        finally:
-            h.close()
+        # Let preset job complete (PENDING → HOLDING → APPLY →
+        # COMMIT).  120 chunks = 24M MAIN-Tcy is enough.
+        h.advance_tcy(120 * 200_000)
+        post = tuple(h.read_reg(0x2E5 + i) for i in range(8))
+        assert post == baseline, (
+            f"diag block changed during preset switch!  "
+            f"baseline={baseline}, post={post}.  preset_job_service "
+            f"or one of its helpers (preset_job_apply, "
+            f"preset_force_mute, etc.) wrote into 0x2E5..0x2EC.  "
+            f"This is the memory-overlap hypothesis the operator's "
+            f"instinct flagged -- diag cells are being clobbered "
+            f"by an unrelated routine, then read as 'elevated "
+            f"counters' on the Diag page."
+        )
+    finally:
+        h.close()
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_preset_job_state_unchanged_by_diag_traffic(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_preset_job_state_unchanged_by_diag_traffic(v32_hex: Path) -> None:
     """REGRESSION (mirror of above): cmd 0x21 reply traffic must NOT
     write into preset_job state (0x2DE..0x2E4) either.  If the cmd 0x21
     handler accidentally clobbers preset_job_state (e.g., from a
@@ -1280,43 +1010,33 @@ def test_v32_preset_job_state_unchanged_by_diag_traffic(
     = all zeros), inject many cmd 0x21 queries, snapshot again.
     State must be unchanged.
     """
-    backends = ["rust"] if dlcp_sim_backend == "rust" else (
-        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
-    )
-    for backend in backends:
-        h = _boot_v32_main_only_and_step_tcy(
-            v32_hex, backend, total_tcy=20 * 200_000,
-        )
-        try:
-            # preset_job_state at 0x2DE, preset_job_target 0x2DF, etc.,
-            # 7 bytes
-            baseline = tuple(h.read_reg(0x2DE + i) for i in range(7))
-            # Many cmd 0x21 queries.  Route was swapped from the
-            # original test's 0xB1 (addressed-unit-only per
-            # dlcp_main_v32.asm:1769) to 0xB0 (broadcast: MAIN0
-            # + MAIN1, sets active_flags.bit0 = 0).  The parser
-            # accepts both on both backends; 0xB0 is the
-            # backend-uniform broadcast choice that matches the
-            # migration pattern in test_v31_v163b_robustness's
-            # _inject_main_frame_h helper.  cmd 0x21 emission
-            # isn't asserted here, only that the cmd 0x21 PARSER
-            # doesn't clobber preset_job state.
-            for _ in range(20):
-                h.inject_main_frames_fifo(
-                    [[0xB0, 0x21, 0x00]], fifo_limit=47,
-                )
-                h.advance_tcy(8 * 200_000)
-            post = tuple(h.read_reg(0x2DE + i) for i in range(7))
-            assert post == baseline, (
-                f"[{backend}] preset_job state changed during sustained "
-                f"cmd 0x21 traffic!  baseline={baseline}, post={post}.  "
-                f"cmd21 handler is writing into preset_job state -- this "
-                f"would cause the next genuine preset switch to find "
-                f"preset_job in an unexpected state and hang.  Stack-"
-                f"overflow in cmd21 handler?  FSR mishap?"
+    h = _boot_v32_main_only_and_step_tcy(v32_hex, total_tcy=20 * 200_000)
+    try:
+        # preset_job_state at 0x2DE, preset_job_target 0x2DF, etc.,
+        # 7 bytes
+        baseline = tuple(h.read_reg(0x2DE + i) for i in range(7))
+        # Many cmd 0x21 queries.  Route 0xB0 is the broadcast form
+        # (MAIN0 + MAIN1, sets active_flags.bit0 = 0).  The parser
+        # accepts both 0xB0 and 0xB1 here; 0xB0 matches the
+        # backend-uniform broadcast pattern used elsewhere.  cmd 0x21
+        # emission isn't asserted; only that the cmd 0x21 PARSER
+        # doesn't clobber preset_job state.
+        for _ in range(20):
+            h.inject_main_frames_fifo(
+                [[0xB0, 0x21, 0x00]], fifo_limit=47,
             )
-        finally:
-            h.close()
+            h.advance_tcy(8 * 200_000)
+        post = tuple(h.read_reg(0x2DE + i) for i in range(7))
+        assert post == baseline, (
+            f"preset_job state changed during sustained cmd 0x21 "
+            f"traffic!  baseline={baseline}, post={post}.  cmd21 "
+            f"handler is writing into preset_job state -- this would "
+            f"cause the next genuine preset switch to find preset_job "
+            f"in an unexpected state and hang.  Stack-overflow in "
+            f"cmd21 handler?  FSR mishap?"
+        )
+    finally:
+        h.close()
 
 
 # ===========================================================================
@@ -1616,47 +1336,37 @@ def test_v32_source_hid_cmd_diag_snapshot_response_layout() -> None:
 
 
 @pytest.mark.dual_supported
-@pytest.mark.gpsim
 @pytest.mark.slow
-def test_v32_tier1_cold_por_sets_only_por_flag(
-    v32_hex: Path, dlcp_sim_backend: str,
-) -> None:
+def test_v32_tier1_cold_por_sets_only_por_flag(v32_hex: Path) -> None:
     """A clean cold start (POR) must set diag_reset_por = 1 and
     leave the other 3 reset-cause flags = 0.  This pins the cold-init
     classification cascade for the POR path.
 
-    Both backends cold-start every harness boot with all RCON bits
-    matching POR semantics (BOR=0, POR=0), so this test exercises
-    the POR branch of the classification cascade.
+    The rust facade cold-starts every harness boot with all RCON bits
+    matching POR semantics (BOR=0, POR=0), so this test exercises the
+    POR branch of the classification cascade.
     """
-    backends = ["rust"] if dlcp_sim_backend == "rust" else (
-        ["gpsim"] if dlcp_sim_backend == "gpsim" else ["rust", "gpsim"]
-    )
-    for backend in backends:
-        # Let cold init complete (~5 chunks = 1M cycles is generous;
-        # the cold-init clrf + classification cascade happens within
-        # the first ~10k cycles).
-        h = _boot_v32_main_only_and_step_tcy(
-            v32_hex, backend, total_tcy=5 * 200_000,
+    # Let cold init complete (~5 chunks = 1M cycles is generous; the
+    # cold-init clrf + classification cascade happens within the first
+    # ~10k cycles).
+    h = _boot_v32_main_only_and_step_tcy(v32_hex, total_tcy=5 * 200_000)
+    try:
+        por = h.read_reg(DIAG_RESET_POR_ADDR)
+        bor = h.read_reg(DIAG_RESET_BOR_ADDR)
+        wdt = h.read_reg(DIAG_RESET_WDT_ADDR)
+        sw  = h.read_reg(DIAG_RESET_SW_ADDR)
+        assert por == 1, (
+            f"cold POR must set diag_reset_por=1 (got 0x{por:02X}).  "
+            f"The classification cascade did not enter the POR branch "
+            f"-- either RCON.POR was set when classification ran "
+            f"(re-arm happened too early?) or the cascade is wrong."
         )
-        try:
-            por = h.read_reg(DIAG_RESET_POR_ADDR)
-            bor = h.read_reg(DIAG_RESET_BOR_ADDR)
-            wdt = h.read_reg(DIAG_RESET_WDT_ADDR)
-            sw  = h.read_reg(DIAG_RESET_SW_ADDR)
-            assert por == 1, (
-                f"[{backend}] cold POR must set diag_reset_por=1 "
-                f"(got 0x{por:02X}).  The classification cascade did "
-                f"not enter the POR branch -- either RCON.POR was set "
-                f"when classification ran (re-arm happened too early?) "
-                f"or the cascade is wrong."
-            )
-            assert (bor, wdt, sw) == (0, 0, 0), (
-                f"[{backend}] cold POR should leave bor=wdt=sw=0 (got "
-                f"bor=0x{bor:02X} wdt=0x{wdt:02X} sw=0x{sw:02X}).  "
-                f"The 'exactly one flag set per session' invariant is "
-                f"broken -- either the clrf block isn't running before "
-                f"the cascade, or the cascade is writing multiple flags."
-            )
-        finally:
-            h.close()
+        assert (bor, wdt, sw) == (0, 0, 0), (
+            f"cold POR should leave bor=wdt=sw=0 (got "
+            f"bor=0x{bor:02X} wdt=0x{wdt:02X} sw=0x{sw:02X}).  "
+            f"The 'exactly one flag set per session' invariant is "
+            f"broken -- either the clrf block isn't running before "
+            f"the cascade, or the cascade is writing multiple flags."
+        )
+    finally:
+        h.close()
