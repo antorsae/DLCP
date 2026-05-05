@@ -38,10 +38,10 @@ MAIN0 diag block (untouched):       [0x5, 0x1, 0, 0, 0, 0, 0]   correct
 MAIN1 diag block (untouched):       [0xC, 0x2, 0, 0, 0, 0, 0]   correct
 diag_present = 0x03                 (both bits set)
 bridge bytes:
-  ctl_to_m0: delta=356      (CONTROL queries)
-  m0_to_m1:  delta=67898    (MAIN0 forwards downstream)
-  m1_to_m0:  delta=68504    (MAIN1 replies upstream)
-  m0_to_ctl: delta=67898    (MAIN0 forwards reply to CONTROL)
+  ctl_to_m0: delta=356      (CONTROL TX -> MAIN0)
+  m0_to_m1:  delta=67898    (MAIN0 TX -> MAIN1, downstream)
+  m1_to_m0:  delta=68504    (MAIN1 TX -> MAIN0, upstream traffic)
+  m0_to_ctl: delta=67898    (MAIN0 TX -> CONTROL, upstream traffic)
 ```
 
 Two facts to note:
