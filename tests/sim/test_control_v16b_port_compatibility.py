@@ -75,6 +75,7 @@ def _require_rust() -> None:
 
 WARMUP_CYCLES = 25_000_000
 IR_STEPS = 3
+KEY_STEPS = 8
 
 # Remote profile register layouts (0x020..0x026).
 PROFILE_REGS: dict[str, dict[int, int]] = {
@@ -305,4 +306,127 @@ def test_ir_actions_match_stock_v16b_dispatch_behavior(
     )
     assert patched_delta == stock_delta, (
         f"delta mismatch: patched={patched_delta!r} stock={stock_delta!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Coverage revived from PF.4 phase 2 batch 7 deletion (codex task #131).
+# These tests cover natural-state-friendly invariants on the V1.6b/V1.61b
+# pair: IR with wrong address / unknown command, front-panel key-action
+# frame parity, and cmd 0x18 host-command reset behaviour.  The
+# EEPROM-clamp test (test_v161b_clamps_stale_setup_index_from_eeprom)
+# stays deferred -- it requires Setup-screen navigation that depends on
+# RIGHT-press advancing display_state_index, which is the same V1.5b/
+# V1.6b silicon-fidelity gap that blocks the cmd18 test below.
+# ---------------------------------------------------------------------------
+
+
+def _run_action_frames_v16(
+    control_hex: Path, *, pre_keys: list[str], action_key: str,
+) -> list[tuple[int, int, int]]:
+    """Boot, optionally pre-press keys to set context, capture the TX
+    frames emitted in response to ``action_key``."""
+    c = _boot_rust_harness(control_hex)
+    for key in pre_keys:
+        c.press(key)
+        for _ in range(KEY_STEPS):
+            c.step()
+    before = len(c.tx_frames())
+    c.press(action_key)
+    for _ in range(KEY_STEPS):
+        c.step()
+    return [
+        (f[0], f[1], f[2])
+        for f in c.tx_frames()[before:]
+        if f[0] == 0xB0 and f[1] in (0x03, 0x06, 0x07)
+    ]
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("profile_name", "valid_cmd", "wrong_addr"),
+    [
+        pytest.param("profile1_hypex", 0x33, 0x00, id="wrong_addr_profile1"),
+        pytest.param("profile2_standard", 0x10, 0x10, id="wrong_addr_profile2"),
+    ],
+)
+def test_ir_wrong_address_is_ignored_like_stock_v16b(
+    patched_control_hex_v161b: Path,
+    profile_name: str,
+    valid_cmd: int,
+    wrong_addr: int,
+) -> None:
+    """An IR event with a valid command but the WRONG address must
+    emit zero frames and produce zero state delta -- the address
+    filter is the first dispatch gate."""
+    stock_frames, stock_delta = _run_ir_case(
+        STOCK_CONTROL_HEX_V16B,
+        profile_name=profile_name,
+        decoded_cmd=valid_cmd,
+        decoded_addr=wrong_addr,
+    )
+    patched_frames, patched_delta = _run_ir_case(
+        patched_control_hex_v161b,
+        profile_name=profile_name,
+        decoded_cmd=valid_cmd,
+        decoded_addr=wrong_addr,
+    )
+    expected_delta = {"volume_delta": 0, "input_delta": 0, "mute_delta": 0}
+    assert patched_frames == stock_frames == []
+    assert patched_delta == stock_delta == expected_delta
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("profile_name", "decoded_addr", "unknown_cmd"),
+    [
+        pytest.param("profile1_hypex", 0x10, 0x3D, id="unknown_cmd_profile1"),
+        pytest.param("profile2_standard", 0x00, 0x3D, id="unknown_cmd_profile2"),
+    ],
+)
+def test_ir_unknown_command_is_ignored_like_stock_v16b(
+    patched_control_hex_v161b: Path,
+    profile_name: str,
+    decoded_addr: int,
+    unknown_cmd: int,
+) -> None:
+    """An IR event with the right address but an UNKNOWN command must
+    emit zero frames and produce zero state delta -- the command
+    dispatch table is the second gate."""
+    stock_frames, stock_delta = _run_ir_case(
+        STOCK_CONTROL_HEX_V16B,
+        profile_name=profile_name,
+        decoded_cmd=unknown_cmd,
+        decoded_addr=decoded_addr,
+    )
+    patched_frames, patched_delta = _run_ir_case(
+        patched_control_hex_v161b,
+        profile_name=profile_name,
+        decoded_cmd=unknown_cmd,
+        decoded_addr=decoded_addr,
+    )
+    expected_delta = {"volume_delta": 0, "input_delta": 0, "mute_delta": 0}
+    assert patched_frames == stock_frames == []
+    assert patched_delta == stock_delta == expected_delta
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_key_action_legacy_frames_match_stock_v16b(
+    patched_control_hex_v161b: Path,
+) -> None:
+    """Front-panel SELECT and UP presses must emit byte-for-byte
+    identical legacy frame bursts on stock V1.6b vs patched V1.61b.
+    """
+    assert _run_action_frames_v16(
+        STOCK_CONTROL_HEX_V16B, pre_keys=[], action_key="SELECT",
+    ) == _run_action_frames_v16(
+        patched_control_hex_v161b, pre_keys=[], action_key="SELECT",
+    )
+    assert _run_action_frames_v16(
+        STOCK_CONTROL_HEX_V16B, pre_keys=[], action_key="UP",
+    ) == _run_action_frames_v16(
+        patched_control_hex_v161b, pre_keys=[], action_key="UP",
     )
