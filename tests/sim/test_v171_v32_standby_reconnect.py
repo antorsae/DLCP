@@ -164,12 +164,9 @@ def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit() -> None:
         sentinel cells (raw_status_cache 0xA1, cmd1d_cache 0xA7,
         input_select_cache 0xB8, volume_cache 0xB9).  Removing
         the four `clrf WREG, A` instructions matches the proven
-        cold-boot WAITING-loop pattern (grep
-        `cold_boot_waiting_loop_and_reduce` in the same file)
-        and lets CONTROL exit `reconnect_wait_loop` cleanly
-        (the proven cold-boot AND-reduce body is in the routine
-        anchored on the `v171_waiting_cold_past_grace_done`
-        label).
+        cold-boot AND-reduce body inside the routine anchored on
+        the `v171_waiting_cold_past_grace_done` label, and lets
+        CONTROL exit `reconnect_wait_loop` cleanly.
 
     Pre-fix observable trio:
       * MAIN1 stays in standby (`latB=0x00, latA=0x00, db=0`).
