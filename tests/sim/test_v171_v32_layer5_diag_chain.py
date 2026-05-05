@@ -442,11 +442,11 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
     now reaches DISPLAY mode on rust after the codex hypothesis #1
     fix to ``build_v171_v32_chain`` (PORTA/PORTC seeded to 0xFF
     after POR so V1.71 doesn't read the wiped 0x00 PORT bits as
-    "STBY-stuck-pressed" -> Zzz).  Both rust and gpsim paths drive
-    the chain with the same freshly-built ``v171_hex`` / ``v32_hex``
-    tmp fixtures via the ``control_hex_path`` / ``main_hex_path``
-    overrides on ``Chain.from_v171_v32`` (codex task #77), so the
-    two backends test byte-identical hex bytes.
+    "STBY-stuck-pressed" -> Zzz).  Drives the chain with the
+    freshly-built ``v171_hex`` / ``v32_hex`` tmp fixtures via the
+    ``control_hex_path`` / ``main_hex_path`` overrides on
+    ``Chain.from_v171_v32`` (codex task #77) so the test gates
+    on the current source rather than the canonical release hex.
     """
     _require_v32_hex(v32_hex)
     _require_rust()
