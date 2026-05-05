@@ -362,8 +362,6 @@ Recent verification (latest 2026-04-22):
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x37 -> 0x38`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_control_gpsim_ir_preset_switch.py -k "waiting or reaches_main"` -> `2 passed`
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v28_wire_delayed_switch_repros.py` -> `5 xfailed`
 - `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `6 tests collected` (5 existing + 1 V1.71/V3.2 Layer 5 Diagnostics-page test)
 - `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `6 skipped` (expected when camera or HID open-path access is unavailable; the Layer 5 test additionally requires `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to Diagnostics)
 

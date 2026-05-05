@@ -19,10 +19,14 @@ Phase C exercises the *protocol contract* end-to-end:
 3. CONTROL parses each frame into the right per-PB cache slot.
 4. The compact 16×2 LCD layout renders the cached values per spec.
 
-Per ``docs/SIMULATION_FIDELITY.md`` §"2026-04-18 correction", the
-sim engine is faithful for the preset-apply / IR / button race
-classes that Phase C needs (TAS3108 byte timing matches real
-hardware within 20 %).
+``docs/SIMULATION_FIDELITY.md`` §"2026-04-18 correction" measured
+the now-retired gpsim harness against real hardware for the
+preset-apply / IR / button race classes that Phase C needs and
+found byte timing within 20 % of hardware.  The rust engine has
+not been re-measured to that depth; treat the Phase C convergence
+expectations below as load-bearing only insofar as the silicon-ring
+executor preserves the gpsim TAS3108/UART byte cadences (verified
+by parity gates in P3.5 / P5).
 
 Phase C v1 covers the protocol-contract subset of the spec's 15-case
 test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /
@@ -122,9 +126,7 @@ def _rust_navigate_to_diagnostics(rust_chain) -> None:  # type: ignore[no-untype
 
 
 def _rust_main_diag_block(rust_chain, main_idx: int) -> tuple[int, ...]:  # type: ignore[no-untyped-def]
-    """Mirror of `_main_diag_block` for the rust facade.
-
-    Reads MAIN's 7 diag-counter bytes (diag_i..diag_p at
+    """Read MAIN's 7 diag-counter bytes (diag_i..diag_p at
     0x2E5..0x2EB) via the per-MAIN register read primitive
     (`Chain.read_main_reg(unit, addr)`).
     """
@@ -164,8 +166,8 @@ def _rust_diag_present(rust_chain) -> int:  # type: ignore[no-untyped-def]
 
 
 def _rust_diag_pb_cache(rust_chain, pb_idx: int) -> tuple[int, ...]:  # type: ignore[no-untyped-def]
-    """Mirror of `_diag_pb_cache` for the rust facade.  Reads the
-    7-byte cache (I, D, S, B, R, A, P) for PB1 (idx=0) or PB2 (idx=1).
+    """Read the 7-byte CONTROL diag cache (I, D, S, B, R, A, P) for
+    PB1 (idx=0) or PB2 (idx=1).
     """
     base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
     return tuple(rust_chain.read_reg(base + i) for i in range(7))
@@ -174,9 +176,9 @@ def _rust_diag_pb_cache(rust_chain, pb_idx: int) -> tuple[int, ...]:  # type: ig
 def _rust_wait_for_pb_present(  # type: ignore[no-untyped-def]
     rust_chain, *, pb_mask: int, limit: int = 250,
 ) -> bool:
-    """Mirror of `_wait_for_pb_present`.  Steps the chain until
-    `v171_diag_present` has the requested PB bits set, or `limit`
-    chain steps elapse.  Returns True on success.
+    """Step the chain until `v171_diag_present` has the requested
+    PB bits set, or `limit` chain steps elapse.  Returns True on
+    success.
     """
     for _ in range(limit):
         if (_rust_diag_present(rust_chain) & pb_mask) == pb_mask:
@@ -222,12 +224,11 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
     latency; tracked under task #117 for the gpsim path where the
     later frames fail to land at all.
     """
-    # rust press() is synchronous (it internally steps the simulator
+    # press() is synchronous (it internally steps the simulator
     # for BUTTON_HOLD_TICKS + BUTTON_RELEASE_SETTLE_TICKS), so no
     # extra step()-after-press is needed here -- by the time press()
     # returns, the schedule is fully applied and ``on_pb1`` matches
-    # the actual chain state.  Contrast with the gpsim mirror, which
-    # MUST step after press() to cash the schedule.
+    # the actual chain state.
     on_pb1 = True
     steps_since_press = 0
     converged = False
