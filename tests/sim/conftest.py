@@ -118,8 +118,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 #     ported during the migration") and has no runtime effect.
 #
 #   * ``dlcp_sim_backend`` fixture — returns ``"rust"`` constant.
-#     Two tests still take it as a parameter (legacy migration
-#     plumbing); the value is read-only.
+#     One test still takes it as a parameter (legacy migration
+#     plumbing in test_v171_v32_standby_reconnect.py); the value
+#     is read-only.
 #
 # The migration-era auto-skip rule (skip every tests/sim item lacking
 # ``dual_supported``) was retired alongside this commit's parent: that

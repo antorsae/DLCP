@@ -131,6 +131,10 @@ def _scan_imports(files) -> list[tuple[Path, int, str]]:
             continue
         in_paren_block = False
         for lineno, line in enumerate(text.splitlines(), start=1):
+            # Commented-out imports are documentation/history, not
+            # re-introductions.  Skip them at every shape.
+            if line.lstrip().startswith("#"):
+                continue
             if pat_dotted.search(line):
                 hits.append((path, lineno, line.rstrip()))
                 continue

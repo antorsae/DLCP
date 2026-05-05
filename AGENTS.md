@@ -273,7 +273,6 @@ Current suite (~86 test files, ~909 tests collected after PF.4 phase 1 deletions
 Pytest markers:
 
 - `slow`: long-running simulation test
-- `wire`: legacy current-loop / wire-chain test marker (inert post-PF.4)
 - `hardware`: live hardware test; skipped by default unless `--run-hardware` is passed
 - `dual_supported`: legacy informational marker carried by ~223 tests since the gpsim->rust port; functionally inert post-PF.4 phase 2 (the migration-era auto-skip rule + `DLCP_SIM_BACKEND` env var were retired in batch 9 and follow-up cleanup).  New tests don't need it
 
