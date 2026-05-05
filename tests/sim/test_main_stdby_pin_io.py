@@ -49,6 +49,9 @@ import pytest
 
 from dlcp_fw.paths import (
     PATCHED_CONTROL_HEX_V162B,
+    PATCHED_MAIN_HEX_V24,
+    PATCHED_MAIN_HEX_V25,
+    STOCK_MAIN_COMBINED_HEX,
     STOCK_MAIN_HEX,
 )
 
@@ -72,9 +75,14 @@ def _require_rust() -> None:
 # PIC18F2455 SFR addresses
 _LATA = 0xF89
 _LATB = 0xF8A
+_PORTC = 0xF82
+_T0CON = 0xFD5
+_INTCON = 0xFF2
+_UCON = 0xF6D
 
 # MAIN firmware RAM addresses
 _SLEEP_FLAG = 0x095
+_STATUS_5E = 0x05E
 
 
 def _skip_missing(*paths: Path) -> None:
@@ -125,6 +133,122 @@ def test_stdby_pin_io_local_mode() -> None:
     assert sleep_flag == 0x01, (
         f"sleep flag not 0x01; 0x095=0x{sleep_flag:02X}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Chain-mode standby pin-state matrix (revived from PF.4 phase 2 batch 6
+# deletion -- task #129).  The deleted gpsim test parametrized over 8
+# CONTROL+MAIN firmware combos via WireMultiMainChainHarness and pressed
+# the STBY button on CONTROL to drive cmd 0x03/0x00 across the wire to
+# MAIN.  On the rust facade we bypass CONTROL and inject the cmd 0x03/0x00
+# frame directly into MAIN0's RX FIFO -- the MAIN-side pin-transition
+# response is what the deleted test was uniquely covering, and that
+# response depends only on which MAIN firmware is loaded (the cmd
+# 0x03/0x00 frame is byte-identical regardless of which CONTROL emits
+# it; the matching CONTROL combo from the original matrix doesn't change
+# the MAIN response).  CONTROL emission is independently exercised by
+# the IR-dispatch tests in test_control_v15b/v16b_port_compatibility.py.
+# Parametrized over the 3 distinct MAIN firmware versions in the
+# original matrix (V2.3 stock, V2.4 patched, V2.5 patched).
+# ---------------------------------------------------------------------------
+
+
+def _run_chain_mode_stdby(main_hex: Path) -> dict[int, int]:
+    """Build a MAIN-only chain in CHAIN mode (RC2 high) using V2.3
+    boot-block as the silicon seed, drive the standby cmd, and snapshot
+    every pin/register the deleted matrix asserted on.
+    """
+    _require_rust()
+    chain = RustChain.from_v3x_main_only(
+        str(main_hex), v23_seed_hex_path=str(STOCK_MAIN_COMBINED_HEX),
+    )
+    # Drive RC2 high externally (chain mode strap).  set_main_pin pins the
+    # external pin level via gpio.drive_external_pin so it survives any
+    # firmware-side PORTC reads that would otherwise see RC2 default LOW.
+    chain.set_main_pin(0, "C", 2, True)
+    chain.step_tcy(4_000_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    chain.step_tcy(4_000_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x00]], fifo_limit=47)
+    chain.step_tcy(8_000_000)
+    return {
+        _LATA: chain.read_reg(_LATA),
+        _LATB: chain.read_reg(_LATB),
+        _T0CON: chain.read_reg(_T0CON),
+        _INTCON: chain.read_reg(_INTCON),
+        _UCON: chain.read_reg(_UCON),
+        _SLEEP_FLAG: chain.read_reg(_SLEEP_FLAG),
+        _STATUS_5E: chain.read_reg(_STATUS_5E),
+    }
+
+
+def _assert_chain_mode_stdby_pins(regs: dict[int, int], main_id: str) -> None:
+    """Assert all MAIN pin/register states expected after standby in
+    chain mode (RC2 high).  Mirrors the deleted ``_assert_stdby_pins``
+    helper's invariants.
+    """
+    lata = regs[_LATA]
+    latb = regs[_LATB]
+    t0con = regs[_T0CON]
+    intcon = regs[_INTCON]
+    ucon = regs[_UCON]
+    sleep_flag = regs[_SLEEP_FLAG]
+    status_5e = regs[_STATUS_5E]
+    ctx = f" [{main_id}]"
+
+    # Relay/source outputs driven low.
+    assert not (lata & 0x08), f"RA3 not low; LATA=0x{lata:02X}{ctx}"
+    assert not (lata & 0x10), f"RA4 not low; LATA=0x{lata:02X}{ctx}"
+    assert not (lata & 0x20), f"RA5 not low; LATA=0x{lata:02X}{ctx}"
+    assert not (lata & 0x40), f"RA6 not low; LATA=0x{lata:02X}{ctx}"
+
+    # Auxiliary outputs driven low.
+    assert not (latb & 0x10), f"RB4 not low; LATB=0x{latb:02X}{ctx}"
+    assert not (latb & 0x08), f"RB3 not low; LATB=0x{latb:02X}{ctx}"
+
+    # RB2 high (chain mode strap latches RC2 -> RB2).
+    assert latb & 0x04, f"RB2 not high (chain mode); LATB=0x{latb:02X}{ctx}"
+
+    # Timer0 killed.
+    assert not (t0con & 0x80), f"TMR0ON not clear; T0CON=0x{t0con:02X}{ctx}"
+    assert not (intcon & 0x20), f"T0IE not clear; INTCON=0x{intcon:02X}{ctx}"
+
+    # USB disabled.
+    assert ucon == 0x00, f"UCON not 0x00; UCON=0x{ucon:02X}{ctx}"
+
+    # Sleep flag set.
+    assert sleep_flag == 0x01, (
+        f"sleep flag not 0x01; 0x095=0x{sleep_flag:02X}{ctx}"
+    )
+
+    # MAIN status: bit 3 cleared (active flag down) post-standby.
+    assert not (status_5e & 0x08), (
+        f"0x5E bit 3 not clear (standby); 0x5E=0x{status_5e:02X}{ctx}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "main_hex,main_id",
+    [
+        pytest.param(STOCK_MAIN_HEX, "v23-stock", id="v23-stock"),
+        pytest.param(PATCHED_MAIN_HEX_V24, "v24-patched", id="v24-patched"),
+        pytest.param(PATCHED_MAIN_HEX_V25, "v25-patched", id="v25-patched"),
+    ],
+)
+def test_stdby_pin_io_chain_mode(main_hex: Path, main_id: str) -> None:
+    """In chain mode (RC2 high), the standby cmd drives RA3/4/5/6 and
+    RB3/RB4 low while keeping RB2 HIGH (the chain-strap output);
+    Timer0 / T0IE clear, UCON=0, sleep flag set, status_5e.bit3
+    cleared.  Parametrized over the 3 distinct MAIN firmware versions
+    that appeared in the deleted 8-combo matrix; the CONTROL-side
+    parametrization is dropped because cmd 0x03/0x00 is byte-identical
+    across CONTROL versions.
+    """
+    _skip_missing(main_hex, STOCK_MAIN_COMBINED_HEX)
+    regs = _run_chain_mode_stdby(main_hex)
+    _assert_chain_mode_stdby_pins(regs, main_id)
 
 
 # ---------------------------------------------------------------------------

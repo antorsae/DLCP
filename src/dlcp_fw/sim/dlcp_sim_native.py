@@ -474,6 +474,31 @@ class Chain:
         """
         return int(self._inner.read_main_reg(int(unit), int(addr) & 0xFFF))
 
+    def set_main_pin(
+        self,
+        unit: int,
+        port: str,
+        bit: int,
+        level: bool,
+    ) -> None:
+        """Drive an external input pin on one MAIN's PORTx to the
+        requested logic level.  Equivalent of gpsim's
+        ``MainChainHarness(rc2_mode=...)`` continuous pin-level
+        hold (codex task #75).
+
+        ``unit`` selects MAIN0 (0) or MAIN1 (1); ``port`` is "A",
+        "B", or "C"; ``bit`` is 0..7; ``level`` is True for HIGH,
+        False for LOW.
+
+        The held level survives firmware writes to the PORTx
+        register because the GPIO peripheral applies TRIS-aware
+        external-pin propagation on every read of an INPUT pin.
+        Use this to set strap pins like RC2 (chain-mode select)
+        before firmware boot samples them, or to drive INTx /
+        RBIF / RA0-wake test stimuli.
+        """
+        self._inner.set_main_pin(int(unit), str(port), int(bit), bool(level))
+
     def write_main_reg(self, unit: int, addr: int, value: int) -> None:
         """Write a single byte of one MAIN's data memory at
         the given physical address.

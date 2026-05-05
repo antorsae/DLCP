@@ -668,6 +668,17 @@ fn panel_button_pin(key: &str) -> Result<(PortLetter, u8), String> {
     }
 }
 
+fn parse_port_letter(name: &str) -> Result<PortLetter, String> {
+    match name.trim().to_ascii_uppercase().as_str() {
+        "A" => Ok(PortLetter::A),
+        "B" => Ok(PortLetter::B),
+        "C" => Ok(PortLetter::C),
+        other => Err(format!(
+            "unknown PORT name {other:?}; expected one of A, B, C"
+        )),
+    }
+}
+
 /// Universal-tick budget for a button press: hold the bit
 /// LOW for `BUTTON_HOLD_TICKS`, then release HIGH and
 /// step `BUTTON_RELEASE_SETTLE_TICKS` more.  V1.71's
@@ -1326,6 +1337,50 @@ impl Chain {
         self.inner.cores[i_main]
             .memory
             .write_raw(dlcp_sim::memory::Address::from_raw(addr), value);
+        Ok(())
+    }
+
+    /// Drive an external input pin on one MAIN's PORTx to the
+    /// requested logic level.  Equivalent of gpsim's
+    /// ``MainChainHarness(rc2_mode=...)`` continuous pin-level
+    /// hold (codex task #75).  ``unit`` selects MAIN0 (0) or
+    /// MAIN1 (1); ``port`` is "A", "B", or "C"; ``bit`` is
+    /// 0..=7; ``level`` is True for HIGH, False for LOW.
+    ///
+    /// The held level survives firmware writes to the PORTx
+    /// register because the GPIO peripheral applies TRIS-aware
+    /// external-pin propagation on every read of an INPUT pin.
+    /// Use this to set strap pins like RC2 (chain-mode select)
+    /// before firmware boot samples them, or to drive INTx /
+    /// RBIF / RA0-wake test stimuli.
+    fn set_main_pin(
+        &mut self,
+        unit: u8,
+        port: &str,
+        bit: u8,
+        level: bool,
+    ) -> PyResult<()> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "set_main_pin: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        let port_letter = parse_port_letter(port)
+            .map_err(PyValueError::new_err)?;
+        if bit >= 8 {
+            return Err(PyValueError::new_err(format!(
+                "set_main_pin: bit must be 0..=7; got {bit}"
+            )));
+        }
+        if level {
+            self.inner.set_pin_high(i_main, port_letter, bit);
+        } else {
+            self.inner.set_pin_low(i_main, port_letter, bit);
+        }
         Ok(())
     }
 
