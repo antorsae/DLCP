@@ -1347,12 +1347,19 @@ impl Chain {
     /// MAIN1 (1); ``port`` is "A", "B", or "C"; ``bit`` is
     /// 0..=7; ``level`` is True for HIGH, False for LOW.
     ///
-    /// The held level survives firmware writes to the PORTx
-    /// register because the GPIO peripheral applies TRIS-aware
-    /// external-pin propagation on every read of an INPUT pin.
-    /// Use this to set strap pins like RC2 (chain-mode select)
-    /// before firmware boot samples them, or to drive INTx /
-    /// RBIF / RA0-wake test stimuli.
+    /// **Caveat (gpio.rs::drive_external_pin):** the held level
+    /// is only stored when the pin is currently a *general
+    /// digital input* (TRIS bit set, ANSEL/ADCON bit configured
+    /// digital, no peripheral override).  If TRIS is cleared
+    /// (pin is output) at call time, the call is silently a
+    /// no-op.  If firmware later flips TRIS to output, LATx
+    /// takes over and the previously-held external level no
+    /// longer drives the pin.  This is fine for strap pins
+    /// like RC2 (chain-mode select) that firmware never
+    /// reconfigures, and for steady-state INTx / RBIF / RA0-
+    /// wake stimuli; do not rely on "held level survives
+    /// output" semantics for pins whose TRIS direction toggles
+    /// during the test.
     fn set_main_pin(
         &mut self,
         unit: u8,

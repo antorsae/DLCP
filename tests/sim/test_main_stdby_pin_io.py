@@ -1,11 +1,18 @@
 """Verify MAIN MCU pin I/O changes during standby (cmd=0x03 data=0x00).
 
-Two rust-facade tests:
+Three rust-facade tests:
 
 * ``test_stdby_pin_io_local_mode`` — drives MAIN-only chain in local
   mode (RC2 low) and checks all expected pin/register changes after
   the cmd 0x03 standby frame: RA3/RA4/RA5/RA6 low, RB2/RB3/RB4 low,
   sleep flag set.
+* ``test_stdby_pin_io_chain_mode`` — drives MAIN-only chain in chain
+  mode (RC2 high externally via ``set_main_pin``) and asserts the
+  chain-mode invariants (RB2 HIGH alongside RA3/4/5/6 / RB3 / RB4
+  low, T0CON.TMR0ON / INTCON.T0IE clear, UCON=0, sleep flag set,
+  status_5e.bit3 cleared).  Parametrized over the 3 distinct MAIN
+  firmwares from the deleted gpsim 8-combo matrix: V2.3 stock,
+  V2.4 patched, V2.5 patched.
 * ``test_v162b_oerr_recovery_must_not_kill_txie`` — pure binary scan
   over the V1.62b patched HEX, asserting the patch stub region does
   not contain `bcf PIE1, TXIE` (which would break standby delivery
@@ -20,22 +27,13 @@ bridge-FIFO UART byte injection.
 
 Coverage notes:
 
-* The local-mode rust test below covers stock V2.3 MAIN with RC2
-  low (so RB2 is also driven low alongside the relays/sources).
-  The deleted parametrized 8-pair matrix ran in chain mode (RC2
-  high) and asserted RB2 HIGH alongside the same RA3/4/5/6 / RB3 /
-  RB4 / sleep flag invariants, across these specific pairs:
-  V14+V23-stock, V15b+V23-stock, V16b+V23-stock, V141+V24,
-  V141+V25, V151b+V25, V161b+V25, V162b+V25.  Neither the
-  chain-mode pin-state invariants (RB2 high path, T0CON/INTCON/
-  UCON resets) nor the per-pair coverage exists on the rust path
-  today.
-  Reviving that matrix needs a rust 3-core ring chain factory for
-  the legacy patched-control × patched-main combos that does not
-  exist (the rust facade exposes ``from_v17_chain`` for V1.7-family
-  + stock V2.3 and ``from_v17_v3x_chain`` for V1.7-family + V3.x).
-  Tracked as task #129 (legacy CONTROL+MAIN standby pin matrix
-  recovery).
+* The chain-mode rust test below covers the deleted 8-combo
+  matrix's MAIN-side invariants (V2.3 stock + V2.4 + V2.5);
+  CONTROL parametrization is dropped because cmd 0x03/0x00 frames
+  are byte-identical regardless of which CONTROL emits them, and
+  CONTROL emission is independently exercised by the IR-dispatch
+  tests in ``test_control_v15b/v16b_port_compatibility.py``.
+  Task #129 closed in commit 88c41cf.
 * The V1.62b OERR-recovery fix is preserved by the binary-scan
   regression test below, which catches any new ``bcf PIE1, TXIE``
   instruction that snuck into the patch stub region.
@@ -75,7 +73,6 @@ def _require_rust() -> None:
 # PIC18F2455 SFR addresses
 _LATA = 0xF89
 _LATB = 0xF8A
-_PORTC = 0xF82
 _T0CON = 0xFD5
 _INTCON = 0xFF2
 _UCON = 0xF6D
