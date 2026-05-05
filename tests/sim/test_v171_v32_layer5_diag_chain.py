@@ -213,14 +213,23 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
     above the V171_DIAG_POLL_RELOAD = 0x80 ticks cadence.
 
     ``settle_steps`` continues wiggling for this many additional
-    chain steps AFTER ``pb_mask`` is reached.  The 7-frame
-    BF/21..27 burst is spread over multiple cadence fires (one
-    frame per cmd 0x21 query, alternating PB1/PB2), so the mask
-    bit sets after the FIRST frame per PB but later cache slots
-    need more cadences to populate.  Tests that assert on
-    cache[1..6] should pass settle_steps=200 (~25 more wiggles)
-    so cache slots 1-2 fully populate before assertion.
+    chain steps AFTER ``pb_mask`` is reached.  V3.2's `cmd 0x21`
+    handler emits a single 7-frame BF/21..27 burst per query
+    (V32_DIAG_TIER1_SPEC.md line 102-105), but EMPIRICALLY (probe
+    /tmp/probe_ctl_cache.py) cache slot[N] populates progressively
+    across many wiggle cycles (slot[0] hits at ~wiggle 11, slot[1]
+    at ~wiggle 22-34) -- the present mask flips on the first slot
+    landing, so tests that assert on cache[1..6] need this extra
+    settle.  Likely cause is V1.71 parser / chain-transport
+    latency; tracked under task #117 for the gpsim path where the
+    later frames fail to land at all.
     """
+    # rust press() is synchronous (it internally steps the simulator
+    # for BUTTON_HOLD_TICKS + BUTTON_RELEASE_SETTLE_TICKS), so no
+    # extra step()-after-press is needed here -- by the time press()
+    # returns, the schedule is fully applied and ``on_pb1`` matches
+    # the actual chain state.  Contrast with the gpsim mirror, which
+    # MUST step after press() to cash the schedule.
     on_pb1 = True
     steps_since_press = 0
     converged = False
@@ -709,6 +718,14 @@ def _press_drive_until_pb_present(
     On exit (success or timeout) the chain is left on PB1 Diag(4)
     so subsequent LCD assertions render PB1 data on row 0.
 
+    Note: ``GpsimControlHarness.press()`` SCHEDULES a key for the
+    NEXT ``step()`` call (it sets a release-cycle target rather
+    than steps directly).  This helper steps once immediately
+    after every press so the schedule is applied before the next
+    mask check; otherwise an early break could leave a press
+    pending and ``on_pb1`` tracking diverging from actual chain
+    state (codex MEDIUM from 4118a4e review).
+
     Operator HW retest 2026-05-04 confirmed real silicon also
     needs multiple LEFT/RIGHT cycles for both PBs to reply (probe
     v21 in rust converges in 7 wiggle cycles).  This helper is
@@ -734,10 +751,14 @@ def _press_drive_until_pb_present(
         steps_since_press += 1
         if steps_since_press >= press_period:
             chain.press("RIGHT" if on_pb1 else "LEFT")
+            chain.step()  # apply scheduled press before next mask check
+            if converged:
+                extra_remaining -= 1
             on_pb1 = not on_pb1
             steps_since_press = 0
     if not on_pb1:
         chain.press("LEFT")
+        chain.step()
         on_pb1 = True
         for _ in range(8):
             chain.step()
@@ -915,15 +936,14 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     between cache slots would mean the parser is indexing the wrong
     PB on reply arrival.
 
-    XFailed on BOTH backends as of 2026-05-04.  Root cause shared:
-    V1.71's foreground busy-loop in `display_loop_iteration`
-    (asm:2885-2897) only exits on user-driven events; this test
-    injects only the 4 RIGHT navigation presses, no further input,
-    so `v171_diag_present` does not converge within the test budget
-    on either backend.  Operator HW retest 2026-05-04 confirmed
-    real HW behaves the same (multiple LEFT/RIGHT cycles required
-    to converge); task #94 (briefly framed as rust-specific) CLOSED.
-    Marker-only migration to `dual_supported`.
+    Post-PF.3 (2026-05-04): rust path PASSES via the
+    ``_press_drive_until_pb_present`` wiggle helper (busy-loop
+    convergence resolved).  gpsim path FAILS on a multi-frame
+    BF/22..27 cache misroute -- PB2 cache stays 0x0 or receives
+    PB1's data on the second-and-later frames of the 7-frame burst.
+    Tracked as task #117 (shared root cause with the canary's hop
+    (f) failure).  Decorator stays via ``_V171_V32_PB2_BRIDGE_XFAIL``
+    until #117 lands.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -1025,19 +1045,14 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
 
     Per spec §"LCD Examples" — All clear case.
 
-    XFailed on BOTH backends as of 2026-05-04.  Root cause shared:
-    V1.71's foreground busy-loop in `display_loop_iteration`
-    (asm:2885-2897) only exits on user-driven events; this test
-    injects only 4 RIGHT presses (no further input), so
-    `v171_diag_present` does not converge on either backend.  Note:
-    the expected LCD strings here are from the PRE-Tier-1 spec;
-    under V1.71 Tier-1 + Phase 3.4 (Option-D layout) the actual
-    rendering is per-PB ("PB1" / "OK..." / "PB1: X#...").  The
-    busy-loop non-convergence + the layout mismatch each
-    independently keep the test xfailing.  Operator HW retest
-    2026-05-04 confirmed real HW also needs multiple LEFT/RIGHT
-    nav cycles to converge.  Task #94 CLOSED.  Marker-only
-    migration to `dual_supported`.
+    Post-PF.3 (2026-05-04): the busy-loop blocker is resolved test-
+    side via ``_press_drive_until_pb_present``.  What still XFAILs
+    is the LCD layout drift: the expected strings here are pre-
+    Tier-1 ('1:I D S B R A P' / '2:I D S B R A P' on a single
+    screen), but Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20)
+    renders one PB per page with a compact nonzero list (idle:
+    'PB1' / 'OK', mixed: 'PB1: I2 B1 R1 O1' / blank).  Tracked
+    as task #116; the assertion update lives in that follow-up.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -1108,21 +1123,15 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     PB1: diag_i=2, diag_b=1, diag_r=1
     PB2: diag_s=1, diag_b=1, diag_a=3
 
-    XFailed on BOTH backends as of 2026-05-04.  Root cause is the
-    same on both: V1.71 firmware's foreground busy-loop in
-    `display_loop_iteration` (asm:2885-2897) only exits on user-driven
-    events (button press, mute toggle, IR remote).  This test injects
-    only 4 RIGHT presses to reach the diag page and then no further
-    input, so the loop iterates ~93 K times per cadence call and the
-    BF/2N reply burst never fully converges within the gpsim oracle
-    budget.  Operator HW retest 2026-05-04 (V3.2 rev 0x3F + V1.71
-    rev 0x0F) confirmed real silicon ALSO shows "PB1/PB2 n/a" after
-    just 4 RIGHT presses — multiple LEFT/RIGHT navigation cycles are
-    required for HW to converge as well (probe v21 in rust converges
-    in 7 cycles).  Tracked as task #94 (CLOSED 2026-05-04 — rust
-    matches HW; the prior "rust-fidelity-bug / Timer3 dispatch" framing
-    was withdrawn after HW retest).  Marker-only migration to
-    `dual_supported`.
+    Post-PF.3 (2026-05-04): the busy-loop blocker is resolved test-
+    side via ``_press_drive_until_pb_present``.  What still XFAILs
+    is the LCD layout drift: the expected strings here are pre-
+    Tier-1 ('1:I2D S B1R1A P ' / '2:I D S1B1R A3P ' on a single
+    screen), but Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20)
+    renders one PB per page with a compact nonzero list ('PB1: I2
+    B1 R1 O1' / blank for PB1 view, 'PB2: S1 B1 A3 O1' / blank for
+    PB2 view).  Tracked as task #116; the assertion update lives
+    in that follow-up.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -1189,11 +1198,32 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
+@pytest.mark.xfail(
+    reason=(
+        "Same Tier-1 LCD layout drift as zero_idle / mixed_counters "
+        "(task #116): the test asserts the pre-Tier-1 '1:I+D' line-0 "
+        "format, but Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) "
+        "renders one PB per page with a compressed nonzero list "
+        "('PB1: I+ ...').  Also fails the same V1.71 busy-loop "
+        "convergence path as the original PB2 bridge xfails (now "
+        "fixable by swapping `_wait_for_pb_present` for "
+        "`_press_drive_until_pb_present`).  Both blockers are tracked "
+        "as #116; this test was missed by codex review of 4118a4e and "
+        "is now grouped with the other Tier-1 layout xfails."
+    ),
+    strict=False,
+    run=False,
+)
 def test_v171_v32_layer5_chain_lcd_renders_saturation_plus(v171_hex: Path, v32_hex: Path) -> None:
     """Saturated counter (0x0F) must render as '+' per the encoding.
 
     Forces diag_i=0x0F on PB1; expects '+' between 'I' and 'D' in
     line 0.
+
+    XFAIL'd post-PF.3 (codex MEDIUM from 4118a4e review): assertion
+    matches pre-Tier-1 layout AND the wait helper is the legacy
+    non-wiggle ``_wait_for_pb_present`` -- both blockers are
+    tracked under task #116.
     """
     _require_gpsim()
     _require_v32_hex(v32_hex)
