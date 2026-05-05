@@ -275,7 +275,7 @@ Pytest markers:
 - `slow`: long-running simulation test
 - `wire`: legacy current-loop / wire-chain test marker (inert post-PF.4)
 - `hardware`: live hardware test; skipped by default unless `--run-hardware` is passed
-- `dual_supported`: test has been migrated to the rust dlcp-sim engine; the conftest auto-skip rule for `DLCP_SIM_BACKEND={rust,dual}` only schedules tests that carry this marker
+- `dual_supported`: legacy informational marker carried by ~223 tests since the gpsim->rust port; functionally inert post-PF.4 phase 2 (the migration-era auto-skip rule + `DLCP_SIM_BACKEND` env var were retired in batch 9 and follow-up cleanup).  New tests don't need it
 
 **Removed in PF.4 phase 1 (commit 5a56279)**: 30 gpsim-only test files have been deleted now that rust is the default backend.  The bullet-list entries below that name `test_chain_gpsim_v25_recovery`, `test_chain_gpsim_v25_v162b_recovery`, `test_chain_gpsim_v141_v24_v25_recovery`, `test_chain_gpsim_v161b_v24_v25_i2c_faults`, `test_main_v25_timeout_recovery`, `test_wire_chain_gpsim_stock_faults`, `test_wire_chain_gpsim_i2c_faults`, `test_wire_chain_gpsim_internal_faults`, `test_main_gpsim_an0_boot`, `test_main_gpsim_cmd03_instruction_path`, `test_main_gpsim_fault_injection`, `test_main_gpsim_filename_ab`, `test_main_gpsim_i2c_regfile`, `test_main_gpsim_mailbox`, `test_main_gpsim_timer3_compare`, `test_gpsim_control_presets`, `test_gpsim_control_lcd`, `test_control_gpsim_command_emission_legacy`, `test_control_gpsim_full_config_persistence`, `test_control_gpsim_host_command_injection`, `test_control_gpsim_ir_compatibility`, `test_control_gpsim_ir_preset_switch`, `test_control_gpsim_preset_eeprom_diff`, `test_control_gpsim_response_parser`, `test_control_main_powercycle_sync`, `test_control_v164b_ir_endpoints`, `test_v27_v163b_robustness`, `test_v30_gpsim_equivalence`, `test_v31_combined_dsp_table_apply`, plus `tests/asm_unit_tests/test_main_core_service_265c_parity.py` are STALE -- those tests no longer exist in the working tree.  Inline references kept as historical record; consult `git log` for the deletion commit if you need the previous test-coverage shape.
 
@@ -618,12 +618,11 @@ disappears mechanically.
 - Ground truth fixtures: `artifacts/ground_truth/<test_id>/`
 - Divergence reports: `artifacts/sim_rewrite_divergences/<task_id>__<ts>.log`
 
-**Latest Rust simulator verification (2026-05-03):**
+**Latest Rust simulator verification (2026-05-05):**
 
 - `cargo test -p dlcp-sim --release` -> passed (existing ignored tests only)
 - `cargo build --release -p dlcp-sim-py && bash crates/dlcp-sim-py/build.sh` -> passed
-- `DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m "not slow"` -> `582 passed, 39 skipped, 1 xfailed`
-- `DLCP_SIM_BACKEND=rust .../analysis/.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -m slow` -> `204 passed, 260 skipped, 7 xfailed`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `795 passed, 6 skipped, 10 xfailed` (rust-only; the migration-era `DLCP_SIM_BACKEND` env var + auto-skip rule were retired in PF.4 phase 2 follow-up)
 
 The linked worktree may not contain `.venv_ep0`; use the shared tools
 checkout interpreter from `$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.venv_ep0/bin/python`.

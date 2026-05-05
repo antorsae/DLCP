@@ -113,21 +113,26 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # scaffolding so the tests that still reference them keep working:
 #
 #   * ``@pytest.mark.dual_supported`` marker — registered to avoid
-#     ``PytestUnknownMarkWarning``.  Now also used by the auto-skip
-#     rule below to gate tests that pre-existed on main as failures
-#     when the gpsim path went away (those tests deliberately did
-#     NOT carry ``dual_supported`` and were hidden behind the same
-#     auto-skip during the migration).
+#     ``PytestUnknownMarkWarning``.  223+ tests still carry the
+#     marker; today it is purely informational ("this test was
+#     ported during the migration") and has no runtime effect.
 #
 #   * ``dlcp_sim_backend`` fixture — returns ``"rust"`` constant.
-#     Tests that still take it as a parameter (legacy migration
-#     plumbing) keep collecting cleanly; the value is read-only.
+#     Two tests still take it as a parameter (legacy migration
+#     plumbing); the value is read-only.
+#
+# The migration-era auto-skip rule (skip every tests/sim item lacking
+# ``dual_supported``) was retired alongside this commit's parent: that
+# rule was over-conservative — only one test under tests/sim actually
+# fails on rust (a stale source-grep test), and that one now carries
+# an explicit ``@pytest.mark.skip``.  All other unmarked tests pass,
+# skip via runtime ``pytest.skip()``, or are already xfail-decorated.
 # ---------------------------------------------------------------------------
 
 
 def pytest_configure(config: pytest.Config) -> None:
     """Register the ``dual_supported`` marker (legacy from migration
-    period; now an inert opt-in for the auto-skip rule below).
+    period; now functionally inert).
 
     The four legacy markers (``gpsim``, ``wire``, ``slow``,
     ``hardware``) are already registered in the project's root
@@ -136,58 +141,10 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "dual_supported: legacy marker from the gpsim->rust migration "
-        "period.  After the gpsim wrapper deletion in PF.4 phase 2 "
-        "batch 9 the marker is functionally inert, but the auto-skip "
-        "rule still uses it to gate tests under tests/sim/ that the "
-        "migration intentionally left out (mostly pre-existing failures "
-        "that need separate firmware fixes).  New tests should add the "
-        "marker once they pass cleanly on the rust facade.",
+        "period.  After PF.4 phase 2 batch 9 the marker has no runtime "
+        "effect; 223+ tests still carry it from the porting era.  New "
+        "tests don't need to add it.",
     )
-
-
-# Cached ``tests/sim/`` directory used to scope the auto-skip rule
-# below to the sim tree (so other directories run in the same pytest
-# invocation aren't affected).
-_TESTS_SIM_DIR = Path(__file__).resolve().parent
-
-
-def _item_is_in_sim_tree(item: pytest.Item) -> bool:
-    """Return True iff ``item.path`` is under ``tests/sim/``."""
-    item_path = Path(item.path).resolve()
-    try:
-        item_path.relative_to(_TESTS_SIM_DIR)
-    except ValueError:
-        return False
-    return True
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config,
-    items: list[pytest.Item],
-) -> None:
-    """Skip tests under ``tests/sim/`` that lack ``@pytest.mark.dual_supported``.
-
-    This auto-skip rule is preserved from the gpsim->rust migration
-    era.  In the migration period, the marker indicated which tests
-    had been ported to the rust backend; today, after PF.4 phase 2
-    completed, the marker simply gates a small set of pre-existing
-    failure tests (the migration intentionally left these unmarked
-    so the auto-skip kept the suite green while the firmware fixes
-    were tracked separately).  Removing the rule would surface
-    those failures.
-    """
-    skip_reason = (
-        "test has no @pytest.mark.dual_supported marker -- left out "
-        "of the gpsim->rust migration; usually a pre-existing firmware "
-        "or test-shape failure tracked elsewhere."
-    )
-    skip_marker = pytest.mark.skip(reason=skip_reason)
-    for item in items:
-        if not _item_is_in_sim_tree(item):
-            continue
-        if "dual_supported" in {m.name for m in item.iter_markers()}:
-            continue
-        item.add_marker(skip_marker)
 
 
 @pytest.fixture(scope="session")
