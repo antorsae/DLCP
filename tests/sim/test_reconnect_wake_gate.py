@@ -53,7 +53,8 @@ Coverage notes:
   needs either a rust 3-core ring factory for legacy patched-control
   × patched-main pairs or a CONTROL-side stimulus pump to drive
   the standby/reconnect timing without bridge-FIFO scaffolding.
-  Tracked as a follow-up task.
+  Tracked as task #129 (legacy CONTROL+MAIN standby pin matrix
+  recovery).
 """
 from __future__ import annotations
 

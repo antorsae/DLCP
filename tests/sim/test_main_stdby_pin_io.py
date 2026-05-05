@@ -20,16 +20,21 @@ bridge-FIFO UART byte injection.
 
 Coverage notes:
 
-* The local-mode rust test below preserves the same pin-state
-  invariants (RA3/4/5/6 low, RB2/3/4 low, sleep flag set) for
-  stock V2.3 MAIN.  The deleted parametrized 8-combo matrix
-  exercised those invariants across legacy CONTROL+MAIN pairs
-  (V14/V15b/V16b CONTROL × STOCK/V24/V25 MAIN); reviving that
-  matrix on rust requires a chain factory for the legacy patched-
-  control × patched-main combos that does not exist today (the
-  rust facade exposes ``from_v17_chain`` for V1.7-family + stock
-  V2.3 and ``from_v17_v3x_chain`` for V1.7-family + V3.x).  Tracked
-  as a follow-up task.
+* The local-mode rust test below covers stock V2.3 MAIN with RC2
+  low (so RB2 is also driven low alongside the relays/sources).
+  The deleted parametrized 8-combo matrix ran in chain mode (RC2
+  high) and asserted RB2 HIGH alongside the same RA3/4/5/6 / RB3 /
+  RB4 / sleep flag invariants, across legacy CONTROL+MAIN pairs
+  (V14/V15b/V16b stock CONTROL + V141/V151b/V161b/V162b patched
+  CONTROL × STOCK V2.3 / V24 / V25 MAIN).  Neither the chain-mode
+  pin-state invariants (RB2 high path, T0CON/INTCON/UCON resets)
+  nor the per-combo coverage exists on the rust path today.
+  Reviving that matrix needs a rust 3-core ring chain factory for
+  the legacy patched-control × patched-main combos that does not
+  exist (the rust facade exposes ``from_v17_chain`` for V1.7-family
+  + stock V2.3 and ``from_v17_v3x_chain`` for V1.7-family + V3.x).
+  Tracked as task #129 (legacy CONTROL+MAIN standby pin matrix
+  recovery).
 * The V1.62b OERR-recovery fix is preserved by the binary-scan
   regression test below, which catches any new ``bcf PIE1, TXIE``
   instruction that snuck into the patch stub region.
