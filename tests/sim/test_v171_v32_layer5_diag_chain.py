@@ -28,25 +28,37 @@ test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /
 AN0 / RA1) are added incrementally as the per-counter fault-injection
 hooks become available.
 
-Four tests share `_V171_V32_PB2_BRIDGE_XFAIL` and are xfailed on BOTH
-backends (gpsim wire-chain harness AND rust silicon-correct ring) as
-of 2026-05-04.  Root cause is firmware-design, not harness-specific:
-V1.71's foreground busy-loop in `display_loop_iteration`
-(asm:2885-2897) only exits on user-driven events (button press, mute,
-IR remote).  These tests inject 4 RIGHT presses to reach the diag
-page and then no further input, so CONTROL's cmd 0x21 / cmd 0x22
-diag-poll cadence never re-fires often enough to converge
-`v171_diag_present` to 0x03 within the test budget on either backend.
-Operator HW retest 2026-05-04 (V3.2 rev 0x3F + V1.71 rev 0x0F) showed
-real silicon ALSO shows "PB1/PB2 n/a" after just 4 RIGHT presses;
-multiple LEFT/RIGHT navigation cycles are required to converge HW.
-Probe v21 in rust converges in 7 mixed-nav cycles, matching HW.
+PF.3 (2026-05-04) added ``_press_drive_until_pb_present`` (and the
+rust mirror ``_rust_press_drive_until_pb_present``), which alternates
+RIGHT/LEFT presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
+foreground busy-loop in ``display_loop_iteration`` (asm:2885-2897)
+keeps exiting and the cmd 0x21 / cmd 0x22 cadence re-fires often
+enough for both PBs to reply.  This is a faithful test-side
+reproduction: operator HW retest 2026-05-04 (V3.2 rev 0x3F + V1.71
+rev 0x0F) confirmed real silicon also needs multiple LEFT/RIGHT
+navigation cycles to converge (probe v21 in rust converges in 7
+mixed-nav cycles, matching HW).
+
+That fix un-XFAIL'd ``test_v171_v32_layer5_chain_diag_page_polls_
+pb1_and_pb2`` on both backends.  Three tests still share
+``_V171_V32_PB2_BRIDGE_XFAIL``, but for DIFFERENT reasons that
+post-PF.3 convergence surfaces:
+
+  * ``lcd_renders_zero_idle`` and ``lcd_renders_mixed_counters`` --
+    Tier-1 LCD layout drift (V32_DIAG_TIER1_SPEC.md, 2026-04-20):
+    one PB per page with a compressed nonzero list ('PB1' / 'OK'
+    idle; 'PB1: I2 B1 R1 O1' for mixed counters), versus the
+    pre-Tier-1 expectation of both PBs on one screen.  Tracked as
+    task #116.
+  * ``pb_cache_isolation`` -- rust path PASSES; gpsim path fails on
+    a multi-frame BF/22..27 cache misroute (PB2 cache stays 0x0 or
+    receives PB1's data).  Same root cause as the canary's hop (f);
+    tracked as task #117.
 
 The original Task #22 framing (gpsim two-MAIN topology echoes MAIN0's
 TX into both downstream and upstream paths) is the architectural half
 of the issue and is retired by the rust silicon-correct ring (P3.6a in
-`docs/SIM_REWRITE_RUST_PROGRESS.md`); it does NOT explain the
-no-convergence on either backend in the no-user-events test scenario.
+``docs/SIM_REWRITE_RUST_PROGRESS.md``); it is distinct from #117.
 """
 
 from __future__ import annotations
@@ -175,6 +187,66 @@ def _rust_wait_for_pb_present(  # type: ignore[no-untyped-def]
     return (_rust_diag_present(rust_chain) & pb_mask) == pb_mask
 
 
+def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
+    rust_chain, *, pb_mask: int, limit: int = 400, press_period: int = 8,
+    settle_steps: int = 0,
+) -> bool:
+    """Drive CONTROL's diag-poll cadence by alternating RIGHT/LEFT
+    presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
+    ``display_loop_iteration`` busy-loop (asm:2885-2897) keeps
+    exiting and the cmd 0x21/0x22 timer re-fires often enough for
+    both PB replies to land.
+
+    Caller must have positioned CONTROL on PB1 Diag(4) (e.g. via
+    ``_rust_navigate_to_diagnostics``) before calling.  The wiggle
+    pattern is:
+      * From PB1(4) press RIGHT  -> PB2(5)
+      * From PB2(5) press LEFT   -> PB1(4)
+      * repeat
+    On exit (success or timeout) the chain is left on PB1 Diag(4)
+    so subsequent LCD assertions render PB1 data on row 0.
+
+    ``press_period`` is the number of chain steps between
+    consecutive presses.  Presses themselves are ~100 M ticks of
+    sim time each (50 M HOLD + 50 M RELEASE_SETTLE), so a small
+    ``press_period`` keeps the foreground loop exiting at well
+    above the V171_DIAG_POLL_RELOAD = 0x80 ticks cadence.
+
+    ``settle_steps`` continues wiggling for this many additional
+    chain steps AFTER ``pb_mask`` is reached.  The 7-frame
+    BF/21..27 burst is spread over multiple cadence fires (one
+    frame per cmd 0x21 query, alternating PB1/PB2), so the mask
+    bit sets after the FIRST frame per PB but later cache slots
+    need more cadences to populate.  Tests that assert on
+    cache[1..6] should pass settle_steps=200 (~25 more wiggles)
+    so cache slots 1-2 fully populate before assertion.
+    """
+    on_pb1 = True
+    steps_since_press = 0
+    converged = False
+    extra_remaining = 0
+    for _ in range(limit):
+        if not converged and (_rust_diag_present(rust_chain) & pb_mask) == pb_mask:
+            converged = True
+            extra_remaining = settle_steps
+        if converged and extra_remaining <= 0:
+            break
+        rust_chain.step()
+        if converged:
+            extra_remaining -= 1
+        steps_since_press += 1
+        if steps_since_press >= press_period:
+            rust_chain.press("RIGHT" if on_pb1 else "LEFT")
+            on_pb1 = not on_pb1
+            steps_since_press = 0
+    if not on_pb1:
+        rust_chain.press("LEFT")
+        on_pb1 = True
+        for _ in range(8):
+            rust_chain.step()
+    return converged
+
+
 def _rust_diag_canary_run(  # type: ignore[no-untyped-def]
     rust_chain,
 ) -> tuple[dict[str, int], int, tuple[int, ...]]:
@@ -219,10 +291,11 @@ def _rust_diag_canary_run(  # type: ignore[no-untyped-def]
     _rust_set_main_diag_block(rust_chain, 1, diag_p=0x07)
     pre_stats = rust_chain.bridge_byte_stats()
     _rust_navigate_to_diagnostics(rust_chain)
-    for _ in range(250):
-        rust_chain.step()
-        if (_rust_diag_present(rust_chain) & 0x02) == 0x02:
-            break
+    # Drive the cmd 0x21/0x22 cadence with alternating RIGHT/LEFT
+    # wiggles so V1.71's display_loop_iteration busy-loop keeps
+    # exiting and PB2's reply burst lands.  Operator HW retest
+    # 2026-05-04 confirmed real silicon needs the same wiggle.
+    _rust_press_drive_until_pb_present(rust_chain, pb_mask=0x02, limit=200)
     post_stats = rust_chain.bridge_byte_stats()
     # Compute deltas across EVERY hop the chain reports (3 on
     # rust, 4 on gpsim if this helper were ever reused there).
@@ -435,31 +508,49 @@ def _require_v32_hex(v32_hex: Path) -> None:
 # ISR-dispatch hypothesis was falsified (peripheral_timers_parity
 # IRQ unit tests pass; probe v19 showed V1.71 never enables
 # Timer3, T3CON=0).  Task #94 CLOSED 2026-05-04 -- rust matches
-# HW on the diag-page convergence path.  The four
-# `_V171_V32_PB2_BRIDGE_XFAIL` markers stay because the
-# no-user-events test gate is non-converging by V1.71 firmware
-# design (foreground busy-loop in `display_loop_iteration`
-# asm:2885-2897 only exits on user-driven events).  P3.6b is
-# closed.  HW retest also surfaced a NEW divergence candidate
-# (task #95): pressing STBY from a Diag page on real HW only dims
-# the CONTROL LCD (Zzz... dimmed) but MAINs keep playing music --
-# rust behavior at the CONTROL.TX byte-stream level has not yet
-# been probed, so divergence is candidate-only.
+# HW on the diag-page convergence path.
+#
+# UPDATE 2 (2026-05-04, PF.3): the busy-loop convergence is now
+# unblocked test-side via `_press_drive_until_pb_present`, the
+# RIGHT/LEFT wiggle helper that drives the cmd 0x21/0x22 cadence.
+# `test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2` is
+# un-XFAIL'd.  The remaining 3 `_V171_V32_PB2_BRIDGE_XFAIL`
+# markers stay because the wiggle exposes downstream issues that
+# were previously masked: Tier-1 LCD layout drift in zero_idle /
+# mixed_counters (task #116), and gpsim multi-frame cache misroute
+# in pb_cache_isolation (task #117, shared root cause with the
+# canary's hop (f) failure).  HW retest also surfaced a NEW
+# divergence candidate (task #95): pressing STBY from a Diag page
+# on real HW only dims the CONTROL LCD (Zzz... dimmed) but MAINs
+# keep playing music -- rust behavior at the CONTROL.TX byte-
+# stream level has not yet been probed, so divergence is
+# candidate-only.
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
-        "Shared firmware-design non-convergence on both backends as of "
-        "2026-05-04: V1.71's foreground busy-loop in "
-        "`display_loop_iteration` (asm:2885-2897) only exits on "
-        "user-driven events; these tests inject 4 RIGHT presses + no "
-        "further input, so the cmd 0x21/0x22 diag-poll cadence never "
-        "re-fires often enough to set v171_diag_present bit 1 within "
-        "the test budget on gpsim or rust.  Operator HW retest "
-        "2026-05-04 confirmed real silicon also needs multiple "
-        "LEFT/RIGHT navigation cycles to converge.  Task #94 CLOSED "
-        "(rust matches HW).  The original Task #22 gpsim two-MAIN "
-        "bridge-echo framing applies to architectural fan-out (retired "
-        "by the rust silicon ring per P3.6a), not to this no-input "
-        "convergence path."
+        "PF.3 (2026-05-04) added _press_drive_until_pb_present, which "
+        "alternates RIGHT/LEFT presses across PB1 Diag(4) <-> PB2 Diag(5) "
+        "to keep V1.71's display_loop_iteration busy-loop "
+        "(asm:2885-2897) exiting and the cmd 0x21/0x22 cadence firing.  "
+        "That fix unblocked test_v171_v32_layer5_chain_diag_page_polls_"
+        "pb1_and_pb2 -- now un-XFAIL'd (passes on both rust and gpsim).  "
+        "The remaining 3 xfails on this constant hit DIFFERENT failures "
+        "after busy-loop convergence:\n"
+        "  * lcd_renders_zero_idle / lcd_renders_mixed_counters -- "
+        "Tier-1 LCD layout drift (V32_DIAG_TIER1_SPEC.md, 2026-04-20): "
+        "one PB per page with a compressed nonzero list ('PB1' / 'OK' "
+        "idle; 'PB1: I2 B1 R1 O1' for mixed counters).  The expected "
+        "strings here are pre-Tier-1 (both PBs on one screen as "
+        "'1:I D S B R A P').  Tracked as task #116.\n"
+        "  * pb_cache_isolation -- rust path PASSES (busy-loop fixed).  "
+        "gpsim wire-chain has a multi-frame cache misroute (PB2 cache "
+        "stays 0x0 or gets PB1's data) on the BF/22..27 burst.  Tracked "
+        "as task #117 (shared root cause with the canary's hop (f)).\n"
+        "Operator HW retest 2026-05-04 confirmed real silicon also "
+        "needs multiple LEFT/RIGHT navigation cycles to converge "
+        "(probe v21 in rust converges in 7 wiggle cycles); task #94 "
+        "CLOSED.  The historical Task #22 gpsim two-MAIN bridge-echo "
+        "framing applies to architectural fan-out (retired by the rust "
+        "silicon ring per P3.6a) and is distinct from #117."
     ),
     strict=False,
     run=False,
@@ -594,6 +685,65 @@ def _wait_for_pb_present(
     return False
 
 
+def _press_drive_until_pb_present(
+    chain: WireMultiMainChainHarness,
+    *,
+    pb_mask: int,
+    limit: int = 400,
+    press_period: int = 8,
+    settle_steps: int = 0,
+) -> bool:
+    """gpsim mirror of ``_rust_press_drive_until_pb_present``.
+
+    Drive CONTROL's diag-poll cadence by alternating RIGHT/LEFT
+    presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
+    ``display_loop_iteration`` busy-loop (asm:2885-2897) keeps
+    exiting and the cmd 0x21/0x22 timer re-fires often enough for
+    both PB replies to land.
+
+    Caller must have positioned CONTROL on PB1 Diag(4) (e.g. via
+    ``_navigate_to_diagnostics``) before calling.  Wiggle pattern:
+      * From PB1(4) press RIGHT  -> PB2(5)
+      * From PB2(5) press LEFT   -> PB1(4)
+      * repeat
+    On exit (success or timeout) the chain is left on PB1 Diag(4)
+    so subsequent LCD assertions render PB1 data on row 0.
+
+    Operator HW retest 2026-05-04 confirmed real silicon also
+    needs multiple LEFT/RIGHT cycles for both PBs to reply (probe
+    v21 in rust converges in 7 wiggle cycles).  This helper is
+    the test-side faithful reproduction.
+
+    ``settle_steps`` continues wiggling for this many additional
+    chain steps AFTER ``pb_mask`` is reached -- see the rust
+    mirror's docstring for the multi-frame burst rationale.
+    """
+    on_pb1 = True
+    steps_since_press = 0
+    converged = False
+    extra_remaining = 0
+    for _ in range(limit):
+        if not converged and (_diag_present(chain) & pb_mask) == pb_mask:
+            converged = True
+            extra_remaining = settle_steps
+        if converged and extra_remaining <= 0:
+            break
+        chain.step()
+        if converged:
+            extra_remaining -= 1
+        steps_since_press += 1
+        if steps_since_press >= press_period:
+            chain.press("RIGHT" if on_pb1 else "LEFT")
+            on_pb1 = not on_pb1
+            steps_since_press = 0
+    if not on_pb1:
+        chain.press("LEFT")
+        on_pb1 = True
+        for _ in range(8):
+            chain.step()
+    return converged
+
+
 # ===========================================================================
 # Tier C — wire-chain end-to-end
 # ===========================================================================
@@ -673,7 +823,6 @@ def test_v171_v32_layer5_chain_idle_caches_zero_at_boot(
 @pytest.mark.gpsim
 @pytest.mark.wire
 @pytest.mark.slow
-@_V171_V32_PB2_BRIDGE_XFAIL
 def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
     v171_hex: Path, v32_hex: Path, dlcp_sim_backend: str,
 ) -> None:
@@ -691,21 +840,18 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
 
     This is the protocol-contract end-to-end gate.
 
-    XFailed on BOTH backends as of 2026-05-04.  Root cause is the
-    same on both: V1.71 firmware's foreground busy-loop in
-    `display_loop_iteration` (asm:2885-2897) only exits on user-driven
-    events.  This test injects only 4 RIGHT presses, then no further
-    input, so neither backend converges `v171_diag_present` to 0x03
-    within the test budget.  Operator HW retest 2026-05-04 (V3.2
-    rev 0x3F + V1.71 rev 0x0F) confirmed real HW also shows "PB1/PB2
-    n/a" after just 4 RIGHT presses; multiple LEFT/RIGHT navigation
-    cycles are required for HW to converge (probe v21 in rust
-    converges in 7 cycles).  Task #94 (briefly framed as a
-    rust-specific Timer3/Timer1 ISR-dispatch fidelity bug) CLOSED
-    2026-05-04 -- rust matches HW on this path.  Marker-only
-    migration to `dual_supported` keeps both backends running the
-    same xfail; closing the xfail would require driving navigation
-    events from inside the test.
+    PF.3 (2026-05-04) un-XFAIL'd this test on both backends by
+    swapping the navigation-only ``_wait_for_pb_present`` poll loop
+    for ``_press_drive_until_pb_present``, which alternates RIGHT/
+    LEFT presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
+    ``display_loop_iteration`` busy-loop (asm:2885-2897) keeps
+    exiting and the cmd 0x21/0x22 cadence re-fires often enough for
+    both PBs to reply.  Operator HW retest 2026-05-04 (V3.2 rev 0x3F
+    + V1.71 rev 0x0F) confirmed real silicon also needs multiple
+    LEFT/RIGHT cycles to converge (probe v21 in rust converges in 7
+    wiggle cycles); the wiggle harness is a faithful test-side
+    reproduction.  Task #94 (briefly framed as a rust-specific
+    Timer3/Timer1 ISR-dispatch fidelity bug) CLOSED.
     """
     if dlcp_sim_backend in {"rust", "dual"}:
         _require_rust()
@@ -715,7 +861,7 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
             f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
         _rust_navigate_to_diagnostics(c)
-        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=200)
         assert ok, (
             f"[rust] diag_present never reached 0x03; got "
             f"0x{_rust_diag_present(c):02X}; "
@@ -735,12 +881,13 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
                 f"lcd={chain.lcd_lines()!r}"
             )
             _navigate_to_diagnostics(chain)
-            # Two cadence cycles is enough for both PBs to reply at
-            # least once.  V171_DIAG_POLL_RELOAD is 0x80 ticks ≈ 1 s;
-            # at the 60 K cycle chunk the chain step is ~15 ms, so
-            # 0x80 ticks ≈ 6 chain steps.  Step ~80 to be generous.
-            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200,
-                                      context="both PBs reply")
+            # Drive cmd 0x21/0x22 cadence by alternating RIGHT/LEFT
+            # presses across PB1 Diag(4) <-> PB2 Diag(5) so V1.71's
+            # display_loop_iteration busy-loop keeps exiting.  Real
+            # silicon needs the same wiggle (operator HW retest
+            # 2026-05-04) -- this is a faithful test-side reproduction,
+            # not a workaround.
+            ok = _press_drive_until_pb_present(chain, pb_mask=0x03, limit=200)
             assert ok, (
                 f"[gpsim] diag_present never reached 0x03; got "
                 f"0x{_diag_present(chain):02X}; "
@@ -788,7 +935,11 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
         _rust_set_main_diag_block(c, 0, diag_i=0x5, diag_d=0x1)
         _rust_set_main_diag_block(c, 1, diag_i=0xC, diag_d=0x2)
         _rust_navigate_to_diagnostics(c)
-        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        # settle_steps=200 lets the BF/22 frame populate cache[1]
+        # for both PBs after the mask hit on the BF/21 frame.
+        ok = _rust_press_drive_until_pb_present(
+            c, pb_mask=0x03, limit=600, settle_steps=200
+        )
         assert ok, "[rust] both PBs never replied"
         pb1_cache = _rust_diag_pb_cache(c, 0)
         pb2_cache = _rust_diag_pb_cache(c, 1)
@@ -824,7 +975,11 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
             _set_main_diag_block(chain, 0, diag_i=0x5, diag_d=0x1)
             _set_main_diag_block(chain, 1, diag_i=0xC, diag_d=0x2)
             _navigate_to_diagnostics(chain)
-            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
+            # settle_steps=200 lets cache[1] populate from the BF/22
+            # frame (mask flips on BF/21).
+            ok = _press_drive_until_pb_present(
+                chain, pb_mask=0x03, limit=600, settle_steps=200
+            )
             assert ok, "[gpsim] both PBs never replied"
             pb1_cache = _diag_pb_cache(chain, 0)
             pb2_cache = _diag_pb_cache(chain, 1)
@@ -892,7 +1047,7 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
             f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
         )
         _rust_navigate_to_diagnostics(c)
-        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=200)
         assert ok, "[rust] both PBs never replied"
         for _ in range(8):
             c.step()
@@ -918,7 +1073,7 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
                 f"lcd={chain.lcd_lines()!r}"
             )
             _navigate_to_diagnostics(chain)
-            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
+            ok = _press_drive_until_pb_present(chain, pb_mask=0x03, limit=200)
             assert ok, "[gpsim] both PBs never replied"
             # After both PBs replied with all-zero counters, the screen
             # redraws via v171_diag_check_redraw.  Step a few more times
@@ -979,7 +1134,12 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
         _rust_set_main_diag_block(c, 0, diag_i=2, diag_b=1, diag_r=1)
         _rust_set_main_diag_block(c, 1, diag_s=1, diag_b=1, diag_a=3)
         _rust_navigate_to_diagnostics(c)
-        ok = _rust_wait_for_pb_present(c, pb_mask=0x03, limit=200)
+        # Mixed counters need cache[3] (B), cache[4] (R), cache[5] (A)
+        # populated for the LCD assertion -- settle long enough for
+        # the full 7-frame BF/21..27 burst to reach those slots.
+        ok = _rust_press_drive_until_pb_present(
+            c, pb_mask=0x03, limit=800, settle_steps=400
+        )
         assert ok, "[rust] both PBs never replied"
         for _ in range(8):
             c.step()
@@ -1005,7 +1165,11 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
             _set_main_diag_block(chain, 0, diag_i=2, diag_b=1, diag_r=1)
             _set_main_diag_block(chain, 1, diag_s=1, diag_b=1, diag_a=3)
             _navigate_to_diagnostics(chain)
-            ok = _wait_for_pb_present(chain, pb_mask=0x03, limit=200)
+            # See rust path comment above re settle_steps for the
+            # full 7-frame burst.
+            ok = _press_drive_until_pb_present(
+                chain, pb_mask=0x03, limit=800, settle_steps=400
+            )
             assert ok, "[gpsim] both PBs never replied"
             for _ in range(8):
                 chain.step()
@@ -1122,18 +1286,19 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
 #     instead of silently masking it under the Group-A xfail.
 #
 # (2) Hop-attribution canary — same probe but also asserts CONTROL
-#     parses PB2's reply.  Currently expected to fail at hop (e) with
-#     ALL bridges flowing (137k+ edges each); the failure manifests
-#     because in the no-user-events test scenario CONTROL's
-#     foreground busy-loop in `display_loop_iteration`
-#     (asm:2885-2897) never re-fires the cmd 0x21/0x22 cadence often
-#     enough to land PB2's reply within the canary budget.  Same
-#     root cause as the four `_V171_V32_PB2_BRIDGE_XFAIL` tests
-#     above (verified on real HW 2026-05-04).  The historical Task
-#     #22 "gpsim bridge echo" framing applies to architectural
-#     fan-out (retired by the rust silicon ring) and would not
-#     dispose of this xfail.  Marked run=True so the hop-attribution
-#     report still fires every CI run.
+#     parses PB2's reply AND that the BF/27 payload landed in PB2
+#     cache slot[6].  Post-PF.3 (2026-05-04): the canary's
+#     `_diag_canary_run` helper now uses
+#     `_press_drive_until_pb_present` to drive the cmd 0x21/0x22
+#     cadence, so hop (e) (`v171_diag_present` bit 1) PASSES.  The
+#     xfail now fires at hop (f) instead -- gpsim's wire-chain
+#     misroutes the multi-frame BF/22..27 burst, so PB2 cache slot
+#     [6] never receives the BF/27 diag_p payload.  Same root cause
+#     as `pb_cache_isolation` gpsim path failure; tracked as task
+#     #117.  The historical Task #22 "gpsim bridge echo" framing
+#     applies to architectural fan-out (retired by the rust silicon
+#     ring) and is distinct from #117.  Marked run=True so the
+#     hop-attribution report still fires every CI run.
 # ===========================================================================
 
 
@@ -1153,14 +1318,11 @@ def _diag_canary_run(
     _set_main_diag_block(chain, 1, diag_p=0x07)
     pre_stats = chain.bridge_shift_stats()
     _navigate_to_diagnostics(chain)
-    # 250 chain steps ≥ 2 cadence cycles at the default chunk
-    # (~125 steps per V171_DIAG_POLL_RELOAD = 0x80 ticks); long
-    # enough for both PB1 + PB2 queries to be issued and (in a
-    # working bridge) for both replies to land.
-    for _ in range(250):
-        chain.step()
-        if (_diag_present(chain) & 0x02) == 0x02:
-            break
+    # Drive the cmd 0x21/0x22 cadence with alternating RIGHT/LEFT
+    # wiggles so V1.71's display_loop_iteration busy-loop keeps
+    # exiting and PB2's reply burst lands.  Operator HW retest
+    # 2026-05-04 confirmed real silicon needs the same wiggle.
+    _press_drive_until_pb_present(chain, pb_mask=0x02, limit=200)
     post_stats = chain.bridge_shift_stats()
     deltas = {
         link: post_stats.get(link, {}).get("total_edges", 0)
@@ -1206,28 +1368,24 @@ def test_v171_v32_layer5_chain_bridges_all_carry_traffic(
 @pytest.mark.slow
 @pytest.mark.xfail(
     reason=(
-        "Hop-attribution canary: bytes flow through every bridge "
-        "(transport canary above passes) but CONTROL never sets "
-        "v171_diag_present bit 1 within the canary budget.  Shared "
-        "firmware-design root cause as of 2026-05-04: V1.71's "
-        "foreground busy-loop in `display_loop_iteration` "
-        "(asm:2885-2897) only exits on user-driven events, and this "
-        "canary injects only the 4 RIGHT-press navigation, so the "
-        "cmd 0x21/0x22 cadence never re-fires often enough to land "
-        "PB2's reply.  Operator HW retest 2026-05-04 (V3.2 rev 0x3F "
-        "+ V1.71 rev 0x0F) confirmed real silicon also needs multiple "
-        "LEFT/RIGHT navigation cycles to converge; task #94 CLOSED.  "
-        "The historical Task #22 gpsim two-MAIN bridge-echo framing "
-        "applies to architectural fan-out (retired by the rust silicon "
-        "ring per P3.6a) and does not dispose of this xfail.  Runs "
-        "every cycle so the hop-attribution report is fresh.  Strict "
-        "so XPASS surfaces as a real failure: when the PB2 reply "
-        "convergence path is fixed (firmware redesign of the "
-        "display_loop_iteration busy-loop, or a test-harness change "
-        "that injects the additional LEFT/RIGHT cycles real silicon "
-        "needs), this decorator must be removed in the same commit "
-        "(codex LOW from 59068fd -- non-strict xfail would silently "
-        "green-light a stale gate)."
+        "Hop-attribution canary: PF.3 (2026-05-04) added the "
+        "_press_drive_until_pb_present wiggle helper that drives "
+        "V1.71's display_loop_iteration busy-loop and reaches "
+        "v171_diag_present bit 1 (hop (e) now passes).  The canary "
+        "now FAILS instead at hop (f): PB2 cache slot[6] (BF/27 "
+        "diag_p payload) stays 0x00 even though present=0x02 and "
+        "13 K+ edges flow on every hop.  Root cause is the gpsim "
+        "wire-chain multi-frame cache misroute on the BF/22..27 "
+        "burst -- frames after the first one don't land in the right "
+        "PB cache.  Same root cause as test_v171_v32_layer5_chain_"
+        "pb_cache_isolation gpsim path failure (rust path PASSES "
+        "there post-PF.3); tracked as task #117.  The historical "
+        "Task #22 gpsim two-MAIN bridge-echo framing applies to "
+        "architectural fan-out (retired by the rust silicon ring per "
+        "P3.6a) and is distinct from #117.  Strict so XPASS surfaces "
+        "as a real failure: when task #117 is fixed this xfail must "
+        "be removed in the same commit (codex LOW from 59068fd -- "
+        "non-strict xfail would silently green-light a stale gate)."
     ),
     strict=True,
     run=True,
@@ -1247,19 +1405,15 @@ def test_v171_v32_layer5_chain_pb2_bridge_canary(
         e. ``v171_diag_present`` bit 1  — parser landed PB2 reply
         f. ``v171_diag_pb2_p`` == 0x07  — BF/27 payload landed in cache
 
-    Currently expected to fail at hop (e) with hops (a)..(d) all
-    showing 137k+ edges of traffic.  Root cause as of 2026-05-04 is
-    shared with the four ``_V171_V32_PB2_BRIDGE_XFAIL`` tests:
-    V1.71's foreground busy-loop in ``display_loop_iteration``
-    (asm:2885-2897) only exits on user-driven events, and these
-    canary runs inject only the 4 RIGHT-press navigation, so the
-    cmd 0x21/0x22 cadence never re-fires often enough to land PB2's
-    reply within the canary budget.  Operator HW retest 2026-05-04
-    confirmed real silicon also needs multiple LEFT/RIGHT cycles to
-    converge.  When this canary XPASSes, the 4 Group-A tests at
-    ``_V171_V32_PB2_BRIDGE_XFAIL`` should XPASS too.  The historical
-    Task #22 "gpsim bridge echo" framing is retired by the rust
-    silicon ring (P3.6a) and is not the cause of this xfail.
+    PF.3 (2026-05-04) installed ``_press_drive_until_pb_present`` in
+    ``_diag_canary_run`` to drive V1.71's busy-loop and unblock the
+    cadence; hops (a)-(e) now pass.  Hop (f) still XFAILs on gpsim
+    because the multi-frame BF/22..27 burst misroutes -- PB2 cache
+    slot[6] never receives the BF/27 payload.  Tracked as task #117.
+    The rust path (which has its own ``_rust_diag_canary_run`` mirror
+    in this file) does NOT exhibit the misroute because the rust
+    silicon ring delivers whole bytes per cmd 0x21 query rather than
+    gpsim's batched-edge model.
     """
     _require_gpsim()
     _require_v32_hex(v32_hex)
@@ -1387,7 +1541,9 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
          `display_loop_iteration` (asm:2885-2897) only exits on
          user-driven events; cadence still issues PB2 queries that
          fail to land within the test budget; same shape as the
-         four `_V171_V32_PB2_BRIDGE_XFAIL` tests).
+         remaining `_V171_V32_PB2_BRIDGE_XFAIL` tests post-PF.3 --
+         see ``_press_drive_until_pb_present`` for the wiggle-based
+         resolution path).
       4. Press LEFT four times -> exit page -> land back on Volume.
          (Tier-1 menu rework moved Diag from state 2 to states 4-5;
          exit now requires four LEFT presses to walk back to Volume(0).)
@@ -1512,10 +1668,12 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
 
     Both MAINs are checked: PB1's replies tend to surface in CONTROL
     sooner than PB2's in the no-user-events test scenario (the
-    `_V171_V32_PB2_BRIDGE_XFAIL` shared-busy-loop convergence root
-    cause; see file-level docstring), but the MAIN1 hardware still
-    SERVES the cmd 0x21 queries either way.  Counter cascade on the
-    MAIN1 (PB2) hardware is a real firmware bug regardless of
+    pre-PF.3 ``_V171_V32_PB2_BRIDGE_XFAIL`` busy-loop convergence
+    root cause; see file-level docstring -- now resolved test-side
+    via ``_press_drive_until_pb_present`` for tests that opt into
+    the wiggle), but the MAIN1 hardware still SERVES the cmd 0x21
+    queries either way.  Counter cascade on the MAIN1 (PB2)
+    hardware is a real firmware bug regardless of
     whether the reply makes it back to CONTROL.
 
     Migrated to dual_supported in P4.7: cascade-detection is a
