@@ -109,10 +109,11 @@ PHASE_1_DELETED_SCRIPTS: list[str] = [
 ]
 
 # Wrapper module names that phase-2 surgery will eventually delete
-# from `src/dlcp_fw/sim/`.  Used by the phase-2 inventory grep so
-# the count drops to 0 once the 40 dual_supported test files have
+# from `src/dlcp_fw/sim/`.  Used by the phase-2 inventory walker so
+# the count drops to 0 once the 41 dual_supported test files have
 # been migrated and the wrappers themselves can land in the
-# delete-set.
+# delete-set.  See docs/PF4_PHASE2_PLAN.md for the per-file
+# surgery shape and 9-batch parallelization plan.
 PHASE_2_WRAPPERS: list[str] = [
     "chain_gpsim",
     "wire_chain_gpsim",
