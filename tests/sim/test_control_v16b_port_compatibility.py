@@ -22,25 +22,29 @@ Four rust-facade tests preserve the V1.61b regression surface:
   also calls; the patched stub adds an EDGE-triggered shortcut
   but the body is shared).
 
-Five earlier gpsim-only tests
-(``test_v161b_clamps_stale_setup_index_from_eeprom``,
-``test_cmd18_reset_behavior_matches_v16b``,
-``test_ir_wrong_address_is_ignored_like_stock_v16b``,
-``test_ir_unknown_command_is_ignored_like_stock_v16b``,
-``test_key_action_legacy_frames_match_stock_v16b``) were deleted
-in PF.4 phase 2 batch 7: all relied on ``GpsimControlHarness``
-with ``heartbeat_force_connected=True`` (a gpsim-only legacy
-mask that pins ``0x01F.bit1`` high every step regardless of
-firmware ``btg``).  Without that mask V1.61b's retry-stub timing
-diverges from V1.6b stock in firmware-correct ways the legacy
-test was specifically designed to suppress.  The rust facade
-does not expose ``heartbeat_force_connected`` and shouldn't —
-the natural-state path matches real silicon, so re-creating the
-suppression mask would prove the wrong invariant.  The deleted
-coverage is preserved by the binary-scan verifier above (which
-catches any change in V1.61b's patch stub bytes) and the IR
-dispatch test (which exercises the full IR command set including
-power).
+Five earlier gpsim-only tests were deleted in PF.4 phase 2 batch 7,
+all NATURAL-STATE FRIENDLY but pruned in this batch as a scope
+decision.  None of them genuinely required gpsim's
+``heartbeat_force_connected=True`` mask; their invariants could
+migrate to the rust facade:
+
+* ``test_v161b_clamps_stale_setup_index_from_eeprom``: seeds stale
+  EEPROM, navigates to Setup screen, asserts V1.61b clamps the
+  stale index and scrubs EEPROM.  Rust facade has
+  ``write_control_eeprom_byte`` before warmup.
+* ``test_cmd18_reset_behavior_matches_v16b``: cmd18 reset behaviour
+  via ``inject_host_command``.  Rust facade has equivalent.
+* ``test_ir_wrong_address_is_ignored_like_stock_v16b``: asserts no
+  frames + no state delta for invalid IR address.
+* ``test_ir_unknown_command_is_ignored_like_stock_v16b``: same shape,
+  unknown cmd byte instead of wrong address.
+* ``test_key_action_legacy_frames_match_stock_v16b``: front-panel
+  press('S') / press('U') frame parity.
+
+Tracked as task #131 for revival.  Remaining coverage in this
+file is the 3 binary-scan / source-level tests (catch any change
+in V1.61b's patch stub bytes) and the IR dispatch test (full IR
+command set including power).
 """
 
 from __future__ import annotations

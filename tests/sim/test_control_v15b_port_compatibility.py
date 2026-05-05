@@ -16,25 +16,30 @@ Three rust-facade tests preserve the V1.51b regression surface:
   matched stock under gpsim's legacy ``heartbeat_force_connected
   =True`` mask (see deleted tests below).
 
-Five earlier gpsim-only tests
-(``test_cmd18_reset_behavior_matches_v15b_not_v14``,
-``test_ir_power_actions_match_stock_v15b_under_legacy_gpsim_mask``,
-``test_ir_wrong_address_is_ignored_like_stock_v15b``,
-``test_ir_unknown_command_is_ignored_like_stock_v15b``,
-``test_key_action_legacy_frames_match_stock_v15b``) were deleted
-in PF.4 phase 2 batch 7: all relied on ``GpsimControlHarness``
-with ``heartbeat_force_connected=True`` (a gpsim-only legacy
-mask that pins ``0x01F.bit1`` high every step regardless of
-firmware ``btg``).  Without that mask V1.51b's retry-stub timing
-diverges from V1.5b stock in firmware-correct ways the legacy
-test was specifically designed to suppress.  The rust facade
-does not expose ``heartbeat_force_connected`` and shouldn't —
-the natural-state path matches real silicon, so re-creating the
-suppression mask would prove the wrong invariant.  The deleted
-coverage is preserved by the binary-scan verifier above (which
-catches any change in V1.51b's patch stub bytes) and the IR
-vol/input/mute dispatch test (which exercises the most common
-remote-control paths).
+Five earlier gpsim-only tests were deleted in PF.4 phase 2 batch 7:
+
+* ``test_ir_power_actions_match_stock_v15b_under_legacy_gpsim_mask``:
+  GENUINELY mask-dependent.  V1.51b's reconnect/full-sync retry
+  stub at 0x70BC observes ``0x01F.bit1`` edges via ``btg``; under
+  gpsim's ``heartbeat_force_connected=True`` the bit was pinned
+  high so the stub's edge-triggered shortcut never fired,
+  matching V1.5b stock.  Natural-state simulators (rust, real
+  silicon) see the divergence.  Reviving on rust would prove
+  the wrong invariant.
+
+* ``test_cmd18_reset_behavior_matches_v15b_not_v14``,
+  ``test_ir_wrong_address_is_ignored_like_stock_v15b``,
+  ``test_ir_unknown_command_is_ignored_like_stock_v15b``,
+  ``test_key_action_legacy_frames_match_stock_v15b``: NATURAL-STATE
+  FRIENDLY but deleted in this batch as a scope decision.  Their
+  invariants (no frames on invalid IR, cmd18 reset behaviour,
+  front-panel key-action frame parity) do not require the
+  legacy mask and could migrate to the rust facade.  Tracked as
+  task #131 for revival.
+
+Remaining coverage in this file is the binary-scan verifier
+(catches any change in V1.51b's patch stub bytes) and the IR
+vol/input/mute dispatch test (most common remote-control paths).
 """
 
 from __future__ import annotations
