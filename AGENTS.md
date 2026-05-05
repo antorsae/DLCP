@@ -276,7 +276,7 @@ Pytest markers:
 - `hardware`: live hardware test; skipped by default unless `--run-hardware` is passed
 - `dual_supported`: legacy informational marker carried by ~223 tests since the gpsim->rust port; functionally inert post-PF.4 phase 2 (the migration-era auto-skip rule + `DLCP_SIM_BACKEND` env var were retired in batch 9 and follow-up cleanup).  New tests don't need it
 
-**Removed in PF.4 phase 1 (commit 5a56279)**: 30 gpsim-only test files have been deleted now that rust is the default backend.  The bullet-list entries below that name `test_chain_gpsim_v25_recovery`, `test_chain_gpsim_v25_v162b_recovery`, `test_chain_gpsim_v141_v24_v25_recovery`, `test_chain_gpsim_v161b_v24_v25_i2c_faults`, `test_main_v25_timeout_recovery`, `test_wire_chain_gpsim_stock_faults`, `test_wire_chain_gpsim_i2c_faults`, `test_wire_chain_gpsim_internal_faults`, `test_main_gpsim_an0_boot`, `test_main_gpsim_cmd03_instruction_path`, `test_main_gpsim_fault_injection`, `test_main_gpsim_filename_ab`, `test_main_gpsim_i2c_regfile`, `test_main_gpsim_mailbox`, `test_main_gpsim_timer3_compare`, `test_gpsim_control_presets`, `test_gpsim_control_lcd`, `test_control_gpsim_command_emission_legacy`, `test_control_gpsim_full_config_persistence`, `test_control_gpsim_host_command_injection`, `test_control_gpsim_ir_compatibility`, `test_control_gpsim_ir_preset_switch`, `test_control_gpsim_preset_eeprom_diff`, `test_control_gpsim_response_parser`, `test_control_main_powercycle_sync`, `test_control_v164b_ir_endpoints`, `test_v27_v163b_robustness`, `test_v30_gpsim_equivalence`, `test_v31_combined_dsp_table_apply`, plus `tests/asm_unit_tests/test_main_core_service_265c_parity.py` are STALE -- those tests no longer exist in the working tree.  Inline references kept as historical record; consult `git log` for the deletion commit if you need the previous test-coverage shape.
+PF.4 phase 1 (commit 5a56279) deleted 30 gpsim-only test files; phase 2 retired the gpsim wrappers.  Consult `git log` for the deletion trail if you need the historical test-coverage shape.
 
 Overlay/patch integrity:
 - `test_overlay_engine.py`, `test_patch_compatibility.py`
@@ -286,44 +286,23 @@ Overlay/patch integrity:
 Robustness/recovery:
 - `test_robustness_waiting.py` (WAITING FOR DLCP regression)
 - `test_chain_gpsim_waiting.py` (chain WAITING regression)
-- `test_chain_gpsim_v25_recovery.py` (raw-main V2.5 chain characterization)
-- `test_chain_gpsim_v25_v162b_recovery.py` (V2.5 + V1.62b recovery)
-- `test_chain_gpsim_v141_v24_v25_recovery.py` (V1.41/V2.4/V2.5 chain recovery)
-- `test_chain_gpsim_v161b_v24_v25_i2c_faults.py` (V1.61b I2C fault chain)
 - `test_reconnect_wake_gate.py` (V1.62b reconnect wake gate)
-- `test_main_v25_timeout_recovery.py` (MAIN V2.5 timeout probe)
-
-Wire-chain/multi-PB:
-- `test_wire_chain_gpsim.py` (UART smoke regression)
-- `test_wire_chain_gpsim_stock_faults.py` (stock fault injection)
-- `test_wire_chain_gpsim_i2c_faults.py` (I2C wake characterization)
-- `test_wire_chain_gpsim_internal_faults.py` (internal-fault wake characterization)
-- `test_v28_wire_delayed_switch_repros.py` (two-MAIN delayed-switch desync, mute/standby interleave, START/STOP fault, and soak repros)
-- `test_gpsim_multi_processor_uart_topology.py` (multi-processor UART)
 
 Main behavior:
 - `test_main_model_banking.py`, `test_main_dsp_refresh_behavior.py`
 - `test_main_dsp_deafness_chain.py` (DSP1/DSP2/DSP3 isolation)
 - `test_main_dsp_filename_sim_validation.py` (filename A/B simulation)
 - `test_main_stdby_pin_io.py` (standby pin I/O + V1.62b TXIE guard)
-- `test_main_gpsim_an0_boot.py`, `test_main_gpsim_cmd03_instruction_path.py`
 - `test_main_gpsim_command_compatibility.py`, `test_main_gpsim_command_edges.py`, `test_main_gpsim_command_matrix.py`
-- `test_main_gpsim_fault_injection.py`
-- `test_main_gpsim_filename_ab.py`, `test_main_gpsim_i2c_regfile.py`
-- `test_main_gpsim_mailbox.py`, `test_main_gpsim_preset_banks.py`
-- `test_main_gpsim_timer3_compare.py`
+- `test_main_gpsim_preset_banks.py`
 - `test_main_gpsim_usb_engine.py` (USB SIE filename forward+reverse, stock compat)
 
 Control behavior:
-- `test_control_ui_and_persistence.py`, `test_gpsim_control_presets.py`, `test_gpsim_control_lcd.py`
+- `test_control_ui_and_persistence.py`
 - `test_control_v15b_port_compatibility.py`, `test_control_v16b_port_compatibility.py`
-- `test_control_gpsim_command_emission_legacy.py`, `test_control_gpsim_full_config_persistence.py`
-- `test_control_gpsim_host_command_injection.py`, `test_control_gpsim_ir_compatibility.py`
-- `test_control_gpsim_ir_preset_switch.py`, `test_control_gpsim_preset_eeprom_diff.py`
-- `test_control_gpsim_response_parser.py`
 
 End-to-end/faults:
-- `test_scenarios.py`, `test_bus_faults.py`, `test_control_main_powercycle_sync.py`
+- `test_scenarios.py`, `test_bus_faults.py`
 
 Flash/probe tools:
 - `test_dlcp_main_flash.py`
@@ -341,13 +320,9 @@ Hardware-loop tooling:
 Live hardware (optional):
 - `tests/hardware/test_live_state_transitions.py` (preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, reconnect responsiveness soak, and the V1.71+V3.2 Layer 5 PB1 Diag-page rendering test on the real DLCP rig — the diag-page test gates on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to PB1 Diag (V1.71 Tier-1 menu state 4) via FOUR physical RIGHT button presses from Volume; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
 
-V2.7 + V1.63b:
-- `test_v27_v163b_robustness.py` (bus-clear, DSP ping, fault reporting, PEN timeout)
-
 V3.0 source rewrite:
 - `test_v30_equivalence.py` (hex integrity + source quality)
-- `test_v30_gpsim_equivalence.py` (behavioral parity with stock)
-- `test_v30_relocation.py` (10 structural + 6 gpsim behavioral shift tests)
+- `test_v30_relocation.py` (structural shift tests)
 
 V1.7 CONTROL source rewrite:
 - `test_v17_equivalence.py` (hex integrity vs stock V1.6b, RAM equates, source quality)

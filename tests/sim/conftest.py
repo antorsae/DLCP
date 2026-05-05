@@ -109,24 +109,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # var that selected gpsim/rust/dual during the migration period was
 # retired in PF.4 phase 2 batch 9 alongside the gpsim wrapper modules.
 #
-# Two pieces of legacy infrastructure are preserved as inert
-# scaffolding so the tests that still reference them keep working:
+# One piece of legacy migration scaffolding is still around:
 #
-#   * ``@pytest.mark.dual_supported`` marker — registered to avoid
-#     ``PytestUnknownMarkWarning``.  223+ tests still carry the
-#     marker; today it is purely informational ("this test was
+#   * ``@pytest.mark.dual_supported`` marker — registered below to
+#     avoid ``PytestUnknownMarkWarning``.  223+ tests still carry
+#     the marker; today it is purely informational ("this test was
 #     ported during the migration") and has no runtime effect.
 #
-#   * ``dlcp_sim_backend`` fixture — was preserved as an inert
-#     ``"rust"`` constant for the migration period; the last
-#     consumer was removed in the same commit that lands these
-#     comments, so the fixture itself is gone too.
-#
-# The migration-era auto-skip rule (skip every tests/sim item lacking
-# ``dual_supported``) was retired in PF.4 phase 2 follow-up: it was
-# grossly over-conservative.  Of the 28 unmarked tests, 27 pass / skip
-# / xfail cleanly on rust; the remaining one was a buggy slice-end
-# anchor in test_v171_sentinel_reconnect.py that has since been fixed.
+# The migration-era ``dlcp_sim_backend`` fixture and the auto-skip
+# rule (skip every tests/sim item lacking ``dual_supported``) were
+# retired in the PF.4 phase 2 follow-up sweep: the fixture had no
+# in-tree consumers, and the auto-skip was grossly over-conservative
+# (of 28 unmarked tests, 27 passed / skipped / xfailed cleanly on
+# rust; the one real failure was a buggy slice-end anchor in
+# test_v171_sentinel_reconnect.py that has since been fixed).
 # All sim tests now run; nothing is auto-skipped.
 # ---------------------------------------------------------------------------
 

@@ -19,9 +19,10 @@ Phase C exercises the *protocol contract* end-to-end:
 3. CONTROL parses each frame into the right per-PB cache slot.
 4. The compact 16×2 LCD layout renders the cached values per spec.
 
-Per ``docs/SIMULATION_FIDELITY.md`` §"2026-04-18 correction", gpsim is
-faithful for the preset-apply / IR / button race classes that Phase C
-needs (TAS3108 byte timing matches real hardware within 20 %).
+Per ``docs/SIMULATION_FIDELITY.md`` §"2026-04-18 correction", the
+sim engine is faithful for the preset-apply / IR / button race
+classes that Phase C needs (TAS3108 byte timing matches real
+hardware within 20 %).
 
 Phase C v1 covers the protocol-contract subset of the spec's 15-case
 test matrix.  The per-counter primary tests (I2C / DSP / RCV / S / B /
@@ -108,11 +109,10 @@ def _require_v32_hex(v32_hex: Path) -> None:
 
 
 def _rust_navigate_to_diagnostics(rust_chain) -> None:  # type: ignore[no-untyped-def]
-    """Mirror of `_navigate_to_diagnostics` for the rust facade.
+    """Drive CONTROL to PB1 Diag(4).
 
-    Drives CONTROL to PB1 Diag(4) by pressing RIGHT four times with
-    8 intermediate steps to settle each press.  Identical key cadence
-    to the gpsim helper above; both target the same V1.71 menu state
+    Presses RIGHT four times with 8 intermediate steps to settle
+    each press.  Targets the V1.71 menu state
     machine, which doesn't change behavior across simulators.
     """
     for _ in range(4):
@@ -143,11 +143,11 @@ def _rust_set_main_diag_block(  # type: ignore[no-untyped-def]
     diag_b: int = 0, diag_r: int = 0, diag_a: int = 0,
     diag_p: int = 0
 ) -> None:
-    """Mirror of `_set_main_diag_block` for the rust facade.
+    """Set diag-counter cells on MAIN.
 
-    Writes each diag-counter cell on MAIN via the per-MAIN write
-    primitive (`Chain.write_main_reg(unit, addr, value)`).  Same
-    low-nibble masking as the gpsim helper.
+    Writes each cell via the per-MAIN write primitive
+    (`Chain.write_main_reg(unit, addr, value)`).  Counter values
+    are masked to the low nibble.
     """
     for value, addr in (
         (diag_i, DIAG_I_PHYS), (diag_d, DIAG_D_PHYS),
@@ -263,37 +263,20 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
 def _rust_diag_canary_run(  # type: ignore[no-untyped-def]
     rust_chain,
 ) -> tuple[dict[str, int], int, tuple[int, ...]]:
-    """Mirror of `_diag_canary_run` for the rust facade.
+    """Run a diag-page poll cycle and snapshot per-hop byte deltas.
 
-    Drives a diag-page poll cycle and snapshots per-hop byte
-    deltas.  Returns ``(hop_deltas, present_mask, pb2_cache)``.
-    Pre-loads MAIN1's diag_p = 0x07 so a successful PB2 reply
-    has a distinct payload, identical to the gpsim helper at
-    line 1079.
+    Returns ``(hop_deltas, present_mask, pb2_cache)``.  Pre-loads
+    MAIN1's diag_p = 0x07 so a successful PB2 reply has a distinct
+    payload.
 
-    **Topology divergence from gpsim** (codex MEDIUM from
-    48a862d): the rust 3-core chain wires a TRUE ring
-    (CONTROL -> MAIN0 -> MAIN1 -> CONTROL), so it has THREE
-    UART couplings rather than gpsim's four.  Hop names match
-    the rust topology:
+    **Topology** (codex MEDIUM from 48a862d): the rust 3-core
+    chain wires a TRUE ring (CONTROL -> MAIN0 -> MAIN1 -> CONTROL)
+    with THREE UART couplings:
        * ``ctl_to_m0`` -- CONTROL TX -> MAIN0 RX
        * ``m0_to_m1``  -- MAIN0 TX  -> MAIN1 RX
-       * ``m1_to_ctl`` -- MAIN1 TX  -> CONTROL RX  (rust ring's
-                          upstream return; gpsim's equivalent
-                          role is ``m0_to_ctl`` plus
-                          ``m1_to_m0`` together)
-    The gpsim mirror returns four hops (``ctl_to_m0``,
-    ``m0_to_m1``, ``m1_to_m0``, ``m0_to_ctl``).  Tests that
-    iterate the dict keys MUST handle either topology -- e.g.
-    ``all(v > 0 for v in deltas.values())`` works on both.
-    Tests that hard-code gpsim's four label set will fail on
-    rust.
-
-    Per-hop counts are byte-level (rust silicon ring delivers
-    whole bytes), not bit-level (gpsim's batched-edge model).
-    For the canary's "> 0" assertion both shapes are
-    interchangeable -- both are nonzero iff traffic flowed.
-    See the ``Chain.bridge_byte_stats`` docstring in
+       * ``m1_to_ctl`` -- MAIN1 TX  -> CONTROL RX
+    Per-hop counts are byte-level.  See the
+    ``Chain.bridge_byte_stats`` docstring in
     ``src/dlcp_fw/sim/dlcp_sim_native.py``.
     """
     rust_chain.run_until_connected(limit=200)
