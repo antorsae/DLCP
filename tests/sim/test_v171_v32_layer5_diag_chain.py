@@ -544,25 +544,29 @@ def _require_v32_hex(v32_hex: Path) -> None:
 _V171_V32_PB2_BRIDGE_XFAIL = pytest.mark.xfail(
     reason=(
         "PF.3 + Task #116 (2026-05-04) un-XFAIL'd 4 of the original 5 "
-        "tests on this constant: diag_page_polls + lcd_renders_zero_"
-        "idle + lcd_renders_mixed_counters via the wiggle helper "
-        "_press_drive_until_pb_present (drives V1.71's "
-        "display_loop_iteration busy-loop), and saturation_plus via "
-        "the same helper + Tier-1 LCD layout assertion update.  Only "
-        "ONE test still wears this marker:\n"
-        "  * pb_cache_isolation -- rust path PASSES (busy-loop fixed).  "
-        "gpsim wire-chain has a multi-frame cache misroute (PB2 cache "
-        "stays 0x0 or gets PB1's data) on the BF/22..27 burst.  Tracked "
-        "as task #117 (shared root cause with the canary's hop (f) "
-        "failure).\n"
-        "The marker name is preserved for git-history grep continuity; "
-        "it should be retired when task #117 lands.  Operator HW retest "
-        "2026-05-04 confirmed real silicon also needs multiple LEFT/"
-        "RIGHT navigation cycles to converge (probe v21 in rust "
-        "converges in 7 wiggle cycles); task #94 CLOSED.  The "
-        "historical Task #22 gpsim two-MAIN bridge-echo framing applies "
-        "to architectural fan-out (retired by the rust silicon ring per "
-        "P3.6a) and is distinct from #117."
+        "tests on this constant.  Detailed status:\n"
+        "  * diag_page_polls -- both backends pass.\n"
+        "  * lcd_renders_zero_idle -- both backends pass.\n"
+        "  * lcd_renders_mixed_counters -- rust passes; the gpsim "
+        "block calls pytest.xfail INLINE (NOT via this marker) "
+        "pointing at task #117, so under DLCP_SIM_BACKEND=gpsim the "
+        "test xfails and under DLCP_SIM_BACKEND=dual the rust path "
+        "covers the test.\n"
+        "  * saturation_plus -- gpsim-only (no dual_supported); "
+        "passes via wiggle helper.\n"
+        "ONE test still wears this marker (whole-test, run=False):\n"
+        "  * pb_cache_isolation -- rust path PASSES (busy-loop fixed) "
+        "but the marker keeps it xfail-NOTRUN on all backends until "
+        "the gpsim-side multi-frame cache misroute (task #117, shared "
+        "root cause with the canary's hop (f) failure) is closed.  "
+        "Marker should be retired when #117 lands; the rust path can "
+        "then run cleanly.\n"
+        "Operator HW retest 2026-05-04 confirmed real silicon also "
+        "needs multiple LEFT/RIGHT navigation cycles to converge "
+        "(probe v21 in rust converges in 7 wiggle cycles); task #94 "
+        "CLOSED.  The historical Task #22 gpsim two-MAIN bridge-echo "
+        "framing applies to architectural fan-out (retired by the rust "
+        "silicon ring per P3.6a) and is distinct from #117."
     ),
     strict=False,
     run=False,
@@ -1210,6 +1214,11 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
         # block above already covered the test -- skipping the gpsim
         # half intentionally (codex LOW from 0f6f742) so dual mode
         # reports the test as PASSED rather than XFAIL.
+        # Gate _require_gpsim() / _require_v32_hex() BEFORE xfail so a
+        # missing gpsim install reports as an env skip instead of the
+        # task-#117 cache-misroute reason (codex LOW from 9e826ed).
+        _require_gpsim()
+        _require_v32_hex(v32_hex)
         pytest.xfail(
             "gpsim multi-frame cache misroute on the BF/22..27 burst "
             "(task #117): PB1 cache slots [3]=B / [4]=R / [7]=O "
