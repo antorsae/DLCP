@@ -9,12 +9,11 @@ Verifies the behavioral surface of the first inline V1.61b feature:
 * Re-issuing the same shortcut after the bit already matches is a
   no-op — no frame emitted, no EEPROM write.
 * EEPROM byte 0x74 is updated by the inline helper
-  ``v171_send_preset_frame_and_persist`` (visible as a
-  ``reg(0xFA9)=0x74 reg(0xFA8)=...`` sequence via gpsim's EEPROM
-  emulation).
+  ``v171_send_preset_frame_and_persist`` (visible as
+  ``reg(0xFA9)=0x74 reg(0xFA8)=...`` writes to the EEPROM SFRs).
 
-Upstream V1.7 suite must remain green.  All tests are ``gpsim``
-markers; the structural gates live in ``test_v171_baseline.py``.
+Upstream V1.7 suite must remain green.  Structural gates live in
+``test_v171_baseline.py``.
 """
 
 from __future__ import annotations
@@ -57,17 +56,10 @@ def _frame_tuple(f) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
 
 
 def _step_tcy(h, tcy: int) -> None:  # type: ignore[no-untyped-def]
-    """Advance the harness by exactly `tcy` K20 instruction cycles.
-    Rust facade exposes `step_tcy(N)` directly.  gpsim's harness
-    only has `step()` which advances `chunk_cycles` (passed at
-    construction) per call -- so for the gpsim path the caller
-    must construct the harness with `chunk_cycles=tcy` first; this
-    helper then issues exactly one `step()` call.
+    """Advance the rust facade by exactly `tcy` K20 instruction
+    cycles via `step_tcy(N)`.
     """
-    if hasattr(h, "step_tcy"):
-        h.step_tcy(tcy)
-    else:
-        h.step()
+    h.step_tcy(tcy)
 
 
 @pytest.fixture(scope="module")
@@ -190,12 +182,7 @@ def test_v171_ir_0x39_twice_emits_once(
     so the assertion isolates an immediate duplicate IR emit
     instead of catching the independent Layer-2 periodic preset
     broadcast that can legitimately arrive later in a coarse
-    200K-Tcy step window.  Codex review of 8917f3f (MEDIUM)
-    flagged that rust's fixed 200K-Tcy `step()` was 20x wider
-    than gpsim's configured 10K-Tcy chunks, so the body now uses
-    `_step_tcy(h, 10_000)` which dispatches to `step_tcy(10000)`
-    on rust and (after the gpsim harness is built with
-    chunk_cycles=10_000) `step()` on gpsim.
+    200K-Tcy step window.  Uses ``_step_tcy(h, 10_000)``.
     """
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
@@ -226,9 +213,7 @@ def test_v171_ir_0x38_twice_emits_once(
     """Second RC5 0x38 when already in A is a no-op.
 
     Same tightened-window rationale as the repeat-0x39 test
-    above (codex MEDIUM): use `_step_tcy(h, 10_000)` so the
-    rust path advances at the same 10K-Tcy granularity as
-    gpsim's configured chunk size.
+    above: use ``_step_tcy(h, 10_000)`` for 10K-Tcy granularity.
     """
     def _do(h) -> None:  # type: ignore[no-untyped-def]
         h.warmup(25_000_000)
@@ -325,26 +310,10 @@ def test_v171_non_preset_ir_first_frame_is_not_preset(
 # Preset boot init: EEPROM 0x74 → PRESET_BIT (V1.71 inline of V1.61b)
 # ---------------------------------------------------------------------------
 
-def _write_preset_eeprom_image(path: Path, preset_byte: int) -> None:
-    """Write an Intel HEX EEPROM image with byte 0x74 = ``preset_byte``.
-
-    gpsim's ``load e`` expects EEPROM data at the raw 0x00..0xFF
-    addresses (no 0xF00000 extension); we produce a minimal single-
-    record image setting the preset slot.
-    """
-    addr = 0x0074
-    data = bytes([preset_byte & 0xFF])
-    ll = len(data)
-    total = ll + ((addr >> 8) & 0xFF) + (addr & 0xFF) + 0x00 + sum(data)
-    cc = (~total + 1) & 0xFF
-    record = f":{ll:02X}{addr:04X}00{data.hex().upper()}{cc:02X}"
-    path.write_text(record + "\n" + ":00000001FF\n", encoding="ascii")
-
-
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_preset_boot_init_byte_01_sets_preset_bit(
-    v171_hex: Path, tmp_path: Path
+    v171_hex: Path,
 ) -> None:
     """EEPROM[0x74] = 0x01 → PRESET_BIT set after settings_load_eeprom runs."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -354,15 +323,13 @@ def test_v171_preset_boot_init_byte_01_sets_preset_bit(
             f"PRESET_BIT not set after boot with EEPROM[0x74]=0x01 "
             f"(flags=0x{flags:02X})"
         )
-    _run_with_rust(v171_hex, _do,
-        eeprom_init={0x74: 0x01},
-    )
+    _run_with_rust(v171_hex, _do, eeprom_init={0x74: 0x01})
 
 
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_preset_boot_init_byte_00_clears_preset_bit(
-    v171_hex: Path, tmp_path: Path
+    v171_hex: Path,
 ) -> None:
     """EEPROM[0x74] = 0x00 → PRESET_BIT clear after boot."""
     def _do(h) -> None:  # type: ignore[no-untyped-def]
@@ -372,9 +339,7 @@ def test_v171_preset_boot_init_byte_00_clears_preset_bit(
             f"PRESET_BIT unexpectedly set after boot with EEPROM[0x74]=0x00 "
             f"(flags=0x{flags:02X})"
         )
-    _run_with_rust(v171_hex, _do,
-        eeprom_init={0x74: 0x00},
-    )
+    _run_with_rust(v171_hex, _do, eeprom_init={0x74: 0x00})
 
 
 @pytest.mark.dual_supported

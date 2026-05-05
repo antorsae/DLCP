@@ -163,8 +163,8 @@ def test_v171_bf08_set_then_clear_flag_transition(
 
     The underlying resync-on-clear (full_sync counter zeroed on the
     1→0 transition) is verified by the source code (``clrf 0x9F``
-    etc.); capturing the zero state cycle-exactly from gpsim requires
-    a breakpoint harness out of scope here.  This test only verifies
+    etc.); capturing the zero state cycle-exactly requires a
+    breakpoint harness out of scope here.  This test only verifies
     the observable side: DSP_FAULT_BIT goes 1→0 when BF/08/0x00
     arrives while the bit was previously 1.
     """
