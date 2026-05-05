@@ -490,18 +490,24 @@ class Chain:
         "B", or "C"; ``bit`` is 0..7; ``level`` is True for HIGH,
         False for LOW.
 
-        **Caveat (gpio.rs::drive_external_pin):** the held level
-        is only stored when the pin is currently a *general
-        digital input* (TRIS bit set, ANSEL/ADCON bit configured
-        digital, no peripheral override).  If TRIS is cleared
-        (pin is output) at call time, the call is silently a
-        no-op.  If firmware later flips TRIS to output, LATx
-        takes over and the previously-held external level no
-        longer drives the pin.  This is fine for strap pins like
-        RC2 (chain-mode select) that firmware never reconfigures,
-        and for steady-state INTx / RBIF / RA0-wake stimuli; do
-        not rely on "held level survives output" semantics for
-        pins whose TRIS direction toggles during the test.
+        **Caveat (gpio.rs::drive_external_pin /
+        is_general_input_pin):** the held level is only *stored*
+        when the pin is currently a general input -- TRIS bit
+        set, plus on PIC18F2455 RC4/RC5 the USB peripheral must
+        not be overriding the pin (UCON.USBEN clear).  If TRIS
+        is cleared (pin is output) at call time, the call is
+        silently a no-op.  If firmware later flips TRIS to
+        output, LATx takes over and the previously-held external
+        level no longer drives the pin.  Separately, the held
+        level is only *visible* on subsequent PORT reads when the
+        pin is configured digital (ANSEL/ANSELH bit clear in
+        refresh_port's analog mask); analog-configured pins
+        store the level but read 0.  This is fine for strap
+        pins like RC2 (chain-mode select) that firmware never
+        reconfigures, and for steady-state INTx / RBIF / RA0-
+        wake stimuli; do not rely on "held level survives output"
+        semantics for pins whose TRIS direction toggles during
+        the test.
         """
         self._inner.set_main_pin(int(unit), str(port), int(bit), bool(level))
 

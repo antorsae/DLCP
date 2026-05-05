@@ -1,22 +1,23 @@
 """Verify MAIN MCU pin I/O changes during standby (cmd=0x03 data=0x00).
 
-Three rust-facade tests:
+Two rust-facade tests + one backend-agnostic binary-scan test:
 
-* ``test_stdby_pin_io_local_mode`` — drives MAIN-only chain in local
-  mode (RC2 low) and checks all expected pin/register changes after
-  the cmd 0x03 standby frame: RA3/RA4/RA5/RA6 low, RB2/RB3/RB4 low,
-  sleep flag set.
-* ``test_stdby_pin_io_chain_mode`` — drives MAIN-only chain in chain
-  mode (RC2 high externally via ``set_main_pin``) and asserts the
-  chain-mode invariants (RB2 HIGH alongside RA3/4/5/6 / RB3 / RB4
-  low, T0CON.TMR0ON / INTCON.T0IE clear, UCON=0, sleep flag set,
-  status_5e.bit3 cleared).  Parametrized over the 3 distinct MAIN
-  firmwares from the deleted gpsim 8-combo matrix: V2.3 stock,
-  V2.4 patched, V2.5 patched.
-* ``test_v162b_oerr_recovery_must_not_kill_txie`` — pure binary scan
-  over the V1.62b patched HEX, asserting the patch stub region does
-  not contain `bcf PIE1, TXIE` (which would break standby delivery
-  during OERR soft-recovery).
+* ``test_stdby_pin_io_local_mode`` (rust facade) — drives MAIN-only
+  chain in local mode (RC2 low) and checks all expected pin/register
+  changes after the cmd 0x03 standby frame: RA3/RA4/RA5/RA6 low,
+  RB2/RB3/RB4 low, sleep flag set.
+* ``test_stdby_pin_io_chain_mode`` (rust facade) — drives MAIN-only
+  chain in chain mode (RC2 high externally via ``set_main_pin``)
+  and asserts the chain-mode invariants (RB2 HIGH alongside
+  RA3/4/5/6 / RB3 / RB4 low, T0CON.TMR0ON / INTCON.T0IE clear,
+  UCON=0, sleep flag set, status_5e.bit3 cleared).  Parametrized
+  over the 3 distinct MAIN firmwares from the deleted gpsim 8-combo
+  matrix: V2.3 stock, V2.4 patched, V2.5 patched.
+* ``test_v162b_oerr_recovery_must_not_kill_txie`` (binary scan) —
+  pure Intel-HEX byte scan over the V1.62b patched HEX (no chain),
+  asserting the patch stub region does not contain
+  `bcf PIE1, TXIE` (which would break standby delivery during
+  OERR soft-recovery).
 
 Two earlier wire-chain gpsim tests
 (``test_stdby_pin_io`` parametrized over 8 firmware combos, and
