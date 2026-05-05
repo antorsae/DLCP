@@ -34,11 +34,26 @@ Three earlier wire-chain gpsim tests
 ``test_v31_v163b_wire_chain_standby_reconnect_dsp_gate``) were deleted
 in PF.4 phase 2 batch 6: they used ``WireMultiMainChainHarness`` for
 bridge-FIFO suppression + SFR restore via gpsim CLI, both
-gpsim-PTY-bridge-specific scaffolding with no rust analogue.  The
-wake-frame integration is covered end-to-end by the V1.71×V3.2 chain
-tests in ``test_v171_v32_layer5_diag_chain.py``; the binary-scan
-guard above plus the MAIN-only gate test below catch any regression
-of the underlying fix.
+gpsim-PTY-bridge-specific scaffolding with no rust analogue.
+
+Coverage notes:
+
+* The two remaining tests below preserve the binary-level guard
+  (the wake-frame ``call 0x0C98`` lives in the right spot) and the
+  MAIN-only DSP-gate behaviour (volume cmd is gated by the active
+  flag).  Together they prove the firmware fix exists and the gate
+  semantics work.
+* The legacy V2.5/V2.6/V3.1 wire-chain integration scenarios — full
+  CONTROL→MAIN standby cycle with cfg71 I²C glitch + SFR restore +
+  one-step bridge suppression to isolate the reconnect_wait_done
+  exit path — are NOT replaced.  ``test_v171_v32_standby_reconnect.py``
+  exercises STBY/WAKE/reconnect on the V1.71+V3.2 chain but does
+  not cover post-reconnect DSP writes or the legacy V2.5/V2.6
+  firmware combos.  Reviving the legacy-combo integration coverage
+  needs either a rust 3-core ring factory for legacy patched-control
+  × patched-main pairs or a CONTROL-side stimulus pump to drive
+  the standby/reconnect timing without bridge-FIFO scaffolding.
+  Tracked as a follow-up task.
 """
 from __future__ import annotations
 
