@@ -105,8 +105,9 @@ Doc-only review of round-1 spec found five issues; all addressed below:
    never set the present bit, and treat the reply as incomplete).
    Round-2 design adds a NEW `cmd 0x22` chain query that returns
    the 4 reset flags via 4 frames `BF/28..BF/2B`.  V1.71 fires
-   cmd 0x22 ONCE per Diag-page entry (or on a long cadence) since
-   reset cause never changes within a session.  Older MAINs (≤ rev
+   cmd 0x22 strictly fire-once per Diag-page entry per PB
+   (no long-cadence polling) since reset cause never changes
+   within a session.  Older MAINs (≤ rev
    0x36) emit ONE stray `0x00` byte upstream when `cmd 0x22` arrives
    (the cmd-XOR-chain dispatch's ACK echo path runs even for cmds
    without handlers — see "Old MAIN behavior on cmd 0x22") but no
@@ -575,7 +576,8 @@ A2 V1 X1 O3 B4..      ← 9 visible + .. overflow marker on last 2 chars
 ```
 
 The `..` marker tells the operator there are MORE counters at non-
-zero than fit on screen.  For the full 12-cell snapshot, use
+zero than fit on screen.  For the full 11-cell visible snapshot
+(plus the 12th internal RA1-shadow byte), use
 `scripts/dlcp_diag.py` (HID retrieval).
 
 ### Counter encoding (unchanged from current)
@@ -905,7 +907,9 @@ Layout dispatch (per-PB):
 
 * **Absent** (`v171_diag_present.<pb_bit>` clear): row 0 = `PBn`,
   row 1 = `n/a`.  PB has never replied to cmd 0x21 / cmd 0x22 yet.
-* **Healthy** (all 11 cache cells == 0): row 0 = `PBn`, row 1 = `OK`.
+* **Healthy** (7 runtime counters I/D/S/B/R/A/P + abnormal reset
+  flags V/W/X all 0; the POR `O` flag may be 1 on a normal cold
+  boot): row 0 = `PBn`, row 1 = `OK`.
 * **Degraded** (1 to 9 non-zero cells): row 0 = `PBn:` + ` X#` * up
   to 4 entries; row 1 = `X#` + ` X#` * up to 4 more entries (no
   leading space on first entry); pad both rows to 16 chars.

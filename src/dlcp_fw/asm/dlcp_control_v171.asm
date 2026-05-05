@@ -3499,7 +3499,12 @@ v171_preset_exit_check:
 ;
 ; Layout (16x2 LCD):
 ;   Healthy (count == 0):
-;     Row 0: "PBn" + 13 spaces       (count == 0 over all 11 cells)
+;     Row 0: "PBn" + 13 spaces       (count == 0 over the 7 runtime
+;                                     counters + V/W/X abnormal reset
+;                                     flags; POR `O` flag may be 1 on
+;                                     a normal cold boot and is masked
+;                                     out of the count -- see the
+;                                     pass-1 mask at asm:3631)
 ;     Row 1: "OK" + 14 spaces
 ;   Absent (present mask bit clear):
 ;     Row 0: "PBn" + 13 spaces

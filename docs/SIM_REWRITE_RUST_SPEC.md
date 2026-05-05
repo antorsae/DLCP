@@ -1,8 +1,8 @@
 # DLCP Simulator Rewrite — Rust Cycle-Perfect Engine (`dlcp-sim`)
 
-Last updated: 2026-05-03
+Last updated: 2026-05-05
 Branch: `feature/sim-rewrite-rust`
-Status: **Phase 0 — pending**
+Status: **Phases 0–5 done; PF.1–PF.4 done; P4.gate timing relaxation pending sign-off** — see `docs/SIM_REWRITE_RUST_PROGRESS.md` for the canonical phase-state ledger.
 
 ---
 
@@ -406,7 +406,7 @@ The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status
 | Risk / decision                                              | Mitigation / rationale                                       |
 |--------------------------------------------------------------|--------------------------------------------------------------|
 | Subtle PIC18 ISA edge cases not covered by spec text         | Differential test against gpsim (oracle) for entire ISA exercised by V1.71 + V3.2 firmware. Any divergence: gpsim wins, Rust fixes. |
-| 2455 BAUDCON address — initially flagged as a gpsim/datasheet divergence; resolved to NO divergence | Rust port maps BAUDCON at **0xFB8** (matching gpsim, gputils' `p18f2455.inc`, and the assembled stock V2.3 disassembly opcode `6EB8`). The original "datasheet says 0xF98" reading was a PDF→markdown rendering artifact in `firmware/reference/39632e.md`'s Table 5-1; the table's data rows agree with gputils (BAUDCON at 0xFB8). Empirically validated by `scripts/probe_baudcon_mapping.py` (P0.0): V3.2 MAIN's `movwf BAUDCON, ACCESS` at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931` assembles to opcode `6EB8` and gpsim observes the 0x48 write at register 0xFB8 (with 0xF98 unmapped on the 2455 model and unchanged after run). See §11b for full evidence. |
+| 2455 BAUDCON address — initially flagged as a gpsim/datasheet divergence; resolved to NO divergence | Rust port maps BAUDCON at **0xFB8** (matching gpsim, gputils' `p18f2455.inc`, and the assembled stock V2.3 disassembly opcode `6EB8`). The original "datasheet says 0xF98" reading was a PDF→markdown rendering artifact in `firmware/reference/39632e.md`'s Table 5-1; the table's data rows agree with gputils (BAUDCON at 0xFB8). Empirically validated by the now-retired `scripts/probe_baudcon_mapping.py` (P0.0): V3.2 MAIN's `movwf BAUDCON, ACCESS` (currently at `src/dlcp_fw/asm/dlcp_main_v32.asm:7963`) assembles to opcode `6EB8` and gpsim observed the 0x48 write at register 0xFB8 (with 0xF98 unmapped on the 2455 model and unchanged after run).  See §11b for full evidence. |
 | K20 vs. 2455 SFR drift                                       | Encoded as static data tables per `Variant`; no code branching in hot path. |
 | Peripheral fidelity escapes harming firmware regressions    | Phase 4 dual-run is mandatory before gpsim retires per-test. Hardware-only tests (`tests/hardware/`) remain the final tiebreaker per `docs/SIMULATION_FIDELITY.md`. |
 | Multi-core scheduler bugs (race, deadlock)                   | Phase 3 has a reproducer for the Task #22 echo-loop; that's a stress test in itself. Plus property tests on event-queue invariants. |
@@ -448,7 +448,7 @@ at 0xF98.
   at 0xFB8.  `firmware/disasm/main/gpdasm_output.asm:8833` shows the
   stock V2.3 BAUDCON write disassembling to opcode `6EB8`
   (`movwf 0xFB8, ACCESS=0`).
-- The V3.2 MAIN source at `src/dlcp_fw/asm/dlcp_main_v32.asm:7931`
+- The V3.2 MAIN source at `src/dlcp_fw/asm/dlcp_main_v32.asm:7963`
   emits the same `movwf BAUDCON, ACCESS` instruction; gputils resolves
   `BAUDCON` to 0xFB8, so the assembled hex has byte signature
   `48 0E B8 6E` (`movlw 0x48; movwf 0xFB8 a=0`) and never the
@@ -635,7 +635,7 @@ question.
 - Datasheet (MAIN): `firmware/reference/39632e.md` (DS39632E PIC18F2455/2550/4455/4550)
 - Datasheet (CONTROL): `firmware/reference/40001303h.md` (DS40001303H PIC18F25K20 family)
 - Clock derivation: `docs/analysis/MAIN_CLOCK_TIMING.md`
-- **Note**: The CONTROL source header at `src/dlcp_fw/asm/dlcp_control_v171.asm:4` says "PIC18F25K20 @ ~16 MHz (4 MIPS)" — this comment is stale. Empirical proof CONTROL is **12 MHz** (3 MIPS): SPBRG=0x05 with BRGH=0/BRG16=0 (`v171.asm:773`) yields BAUD = Fosc / (64 × 6) = 31,250 only at Fosc=12 MHz; at 16 MHz it would be 41,667. The harness override at `src/dlcp_fw/sim/control_gpsim.py:51` also tells gpsim CONTROL is 12 MHz. The stale header comment is not in scope for this rewrite to fix.
+- **Note**: The CONTROL source header at `src/dlcp_fw/asm/dlcp_control_v171.asm:4` says "PIC18F25K20 @ ~16 MHz (4 MIPS)" — this comment is stale. Empirical proof CONTROL is **12 MHz** (3 MIPS): SPBRG=0x05 with BRGH=0/BRG16=0 (`v171.asm:773`) yields BAUD = Fosc / (64 × 6) = 31,250 only at Fosc=12 MHz; at 16 MHz it would be 41,667. (The legacy gpsim harness override that asserted CONTROL is 12 MHz lived in `src/dlcp_fw/sim/control_gpsim.py`; that file was retired in PF.4 phase 2.  The rust executor honours 12 MHz directly via the K20 core's `instr_per_tick` configuration.) The stale header comment is not in scope for this rewrite to fix.
 - AN0 boot detail: `docs/analysis/MAIN_AN0_STANDBY_TRACE.md`
 - V1.71 source: `src/dlcp_fw/asm/dlcp_control_v171.asm`
 - V3.2 source: `src/dlcp_fw/asm/dlcp_main_v32.asm`

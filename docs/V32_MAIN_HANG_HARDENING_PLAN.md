@@ -168,12 +168,14 @@ Implementation status (last refreshed 2026-05-03):
   `bnz v171_reconnect_wait_done` exit NEVER fired post-STDBY/WAKE,
   and CONTROL stayed parked on `Waiting for DLCP` indefinitely even
   after MAIN's status burst had cleared all four sentinels.  The
-  cold-boot WAITING loop (`v171_waiting_cold_past_grace_done` at
-  asm:4747; AND-reduce body at asm:4754-4773) had the same
-  AND-reduce structure WITHOUT the spurious clrf and worked correctly
-  -- the fix matches its proven pattern.  Current source has the
-  fixed reconnect-loop AND-reduce at asm:5060-5083 with the
-  bnz-exit at asm:5084.  Removing the four `clrf WREG, A`
+  cold-boot WAITING loop (anchored on the
+  `v171_waiting_cold_past_grace_done` label; AND-reduce body in
+  the same routine) had the same AND-reduce structure WITHOUT
+  the spurious clrf and worked correctly -- the fix matches its
+  proven pattern.  Current source has the fixed reconnect-loop
+  AND-reduce in the body immediately preceding the
+  `bnz v171_reconnect_wait_done` exit (grep that label name to
+  find both sites).  Removing the four `clrf WREG, A`
   instructions saves 8 bytes total in the V1.71 release.  Verified
   in the rust sim: post-fix
   `tests/sim/test_v171_v32_standby_reconnect.py

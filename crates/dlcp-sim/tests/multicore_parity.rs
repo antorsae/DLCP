@@ -3178,11 +3178,13 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 
     // ----- Phase 2: parser-driven STDBY (gate-open -> closed) -----
     inject_frame(&mut chain, 0xB0, 0x03, 0x00);
-    // Wait for BOTH the gate close (standby_request_handler asm:1916)
-    // AND the event consumption (standby_event_dispatch asm:8399 clears
-    // event_flags.bit2 and increments diag_s).  Waiting for diag_s>=1
-    // is the tighter predicate -- it implies the dispatch path ran end
-    // to end.
+    // Wait for the gate close (standby_request_handler asm:1916) and
+    // the dispatch reaching the shutdown branch.  diag_s increments at
+    // asm:8396, which runs BEFORE hw_standby_shutdown and BEFORE
+    // event_flags.bit2 clears at asm:8399 -- so diag_s>=1 implies
+    // "dispatch reached shutdown branch with active_flags.bit3 clear",
+    // not yet "event consumed".  The separate `ef1 & 0x04 == 0`
+    // assertion below covers consumption.
     chain.run_until(500_000, 2_000_000_000, |c| {
         c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E7)) >= 1
     });
@@ -3205,8 +3207,11 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     // ----- Phase 3: parser-driven WAKE (gate-closed -> open) -----
     // wake_request_handler at asm:1881 sets event_flags.bit2 + sets
     // active_flags.bit3 (BEFORE adc_boot_gate); then standby_event_dispatch
-    // takes the bring-up branch and increments diag_b.  diag_b=1 is the
-    // tighter end-to-end predicate.
+    // takes the bring-up branch.  diag_b increments at asm:8392, BEFORE
+    // adc_boot_gate returns and BEFORE event_flags.bit2 clears -- so
+    // diag_b>=1 implies "dispatch reached bring-up branch", not yet
+    // "event consumed".  Indirect proof that consumption occurred is
+    // the subsequent STDBY2 progress (Phase 4 below).
     inject_frame(&mut chain, 0xB0, 0x03, 0x01);
     chain.run_until(500_000, 2_000_000_000, |c| {
         c.cores[i_main0].memory.read_raw(Address::from_raw(0x2E8)) >= 1

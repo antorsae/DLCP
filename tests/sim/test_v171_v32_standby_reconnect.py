@@ -147,21 +147,28 @@ def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit() -> None:
         `wake_request_handler`.
 
       * CONTROL-side reconnect AND-reduce (V1.71, the four
-        `clrf WREG, A` instructions formerly inside reconnect_wait_loop's
-        sentinel-AND-reduce; current source has the working pattern at
-        asm:5060-5083 with the `bnz v171_reconnect_wait_done` exit at
-        asm:5084).  The original sentinel-AND-reduce had a spurious
-        `clrf WREG, A` between the `subwf` and the immediate
-        `btfss STATUS, Z, A` in each of the four sentinel-test blocks.
-        CLRF on PIC18 always sets STATUS.Z = 1, so the btfss test
-        always skipped the `movlw 0x01`.  ram_0x018 was therefore
-        always 0 and the `bnz v171_reconnect_wait_done` NEVER fired
-        post-STDBY/WAKE, even after MAIN's status burst had cleared
-        all four sentinel cells (raw_status_cache 0xA1, cmd1d_cache
-        0xA7, input_select_cache 0xB8, volume_cache 0xB9).  Removing
+        `clrf WREG, A` instructions formerly inside the
+        `reconnect_wait_loop` sentinel-AND-reduce; current source
+        has the working pattern in the body immediately preceding
+        the `bnz v171_reconnect_wait_done` exit -- grep for
+        `v171_reconnect_wait_done` in
+        `src/dlcp_fw/asm/dlcp_control_v171.asm` to find both the
+        AND-reduce body and the label).  The original sentinel-
+        AND-reduce had a spurious `clrf WREG, A` between the
+        `subwf` and the immediate `btfss STATUS, Z, A` in each of
+        the four sentinel-test blocks.  CLRF on PIC18 always sets
+        STATUS.Z = 1, so the btfss test always skipped the
+        `movlw 0x01`.  ram_0x018 was therefore always 0 and the
+        `bnz v171_reconnect_wait_done` NEVER fired post-STDBY/
+        WAKE, even after MAIN's status burst had cleared all four
+        sentinel cells (raw_status_cache 0xA1, cmd1d_cache 0xA7,
+        input_select_cache 0xB8, volume_cache 0xB9).  Removing
         the four `clrf WREG, A` instructions matches the proven
-        cold-boot WAITING-loop pattern (asm:4754-4773) and lets
-        CONTROL exit `reconnect_wait_loop` cleanly.
+        cold-boot WAITING-loop pattern (grep
+        `cold_boot_waiting_loop_and_reduce` in the same file)
+        and lets CONTROL exit `reconnect_wait_loop` cleanly
+        (the proven cold-boot pattern is anchored on the
+        `v171_waiting_cold_past_grace_done` label).
 
     Pre-fix observable trio:
       * MAIN1 stays in standby (`latB=0x00, latA=0x00, db=0`).

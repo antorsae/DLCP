@@ -629,7 +629,9 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
           Absent   (PB has never replied):
               row 0 = "PBn"               (+ 13 spaces)
               row 1 = "n/a"               (+ 13 spaces)
-          Healthy  (all 11 cache cells == 0):
+          Healthy  (7 runtime counters I/D/S/B/R/A/P + V/W/X
+                    abnormal reset flags all 0; POR `O` flag may
+                    be 1 on a normal cold boot and is masked out):
               row 0 = "PBn"               (+ 13 spaces)
               row 1 = "OK"                (+ 14 spaces)
           Degraded (1..9 non-zero cells):
