@@ -1903,7 +1903,14 @@ impl Chain {
             .filter(|r| r.src_core == main0)
             .map(|r| r.byte)
             .collect();
-        let result = main_records[self.tx_capture_main0..].to_vec();
+        // Clamp the capture pointer in case the rolling-window
+        // cap (UART_TX_HISTORY_CAP) dropped older records since
+        // the last mark — then `main_records.len()` can be less
+        // than the saved pointer.  In practice every test
+        // captures well under the 1M-record cap, so this branch
+        // is only reachable on extreme soak runs.  Codex task #20.
+        let start = self.tx_capture_main0.min(main_records.len());
+        let result = main_records[start..].to_vec();
         self.tx_capture_main0 = main_records.len();
         result
     }
@@ -1962,7 +1969,10 @@ impl Chain {
             .filter(|r| r.src_core == main1)
             .map(|r| r.byte)
             .collect();
-        let result = main1_records[self.tx_capture_main1..].to_vec();
+        // Same rolling-window clamp as
+        // `tx_record_since_last_capture` (codex task #20).
+        let start = self.tx_capture_main1.min(main1_records.len());
+        let result = main1_records[start..].to_vec();
         self.tx_capture_main1 = main1_records.len();
         result
     }
@@ -2001,7 +2011,8 @@ impl Chain {
             .filter(|r| r.dst_core == ctl)
             .map(|r| r.byte)
             .collect();
-        let result = ctl_records[self.rx_capture_ctl..].to_vec();
+        let start = self.rx_capture_ctl.min(ctl_records.len());
+        let result = ctl_records[start..].to_vec();
         self.rx_capture_ctl = ctl_records.len();
         result
     }
@@ -2027,7 +2038,8 @@ impl Chain {
             .filter(|r| r.dst_core == main0)
             .map(|r| r.byte)
             .collect();
-        let result = main0_records[self.rx_capture_main0..].to_vec();
+        let start = self.rx_capture_main0.min(main0_records.len());
+        let result = main0_records[start..].to_vec();
         self.rx_capture_main0 = main0_records.len();
         result
     }
@@ -2053,7 +2065,8 @@ impl Chain {
             .filter(|r| r.dst_core == main1)
             .map(|r| r.byte)
             .collect();
-        let result = main1_records[self.rx_capture_main1..].to_vec();
+        let start = self.rx_capture_main1.min(main1_records.len());
+        let result = main1_records[start..].to_vec();
         self.rx_capture_main1 = main1_records.len();
         result
     }
@@ -2093,7 +2106,8 @@ impl Chain {
             .filter(|r| r.src_core == ctl)
             .map(|r| r.byte)
             .collect();
-        let result = ctl_records[self.tx_capture_ctl..].to_vec();
+        let start = self.tx_capture_ctl.min(ctl_records.len());
+        let result = ctl_records[start..].to_vec();
         self.tx_capture_ctl = ctl_records.len();
         result
     }

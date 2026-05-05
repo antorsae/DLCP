@@ -92,6 +92,20 @@ pub struct Chain {
     /// asserts the recorder is non-empty after V3.1 chain
     /// convergence.  Cleared by `apply_reset_all` so a
     /// re-bootstrap doesn't carry pre-reset history forward.
+    ///
+    /// **Bounded** at `UART_TX_HISTORY_CAP` records: when
+    /// the buffer hits cap, the oldest record is dropped
+    /// from the front and `uart_tx_history_dropped` is
+    /// incremented.  Pushes go through `record_uart_tx`,
+    /// not `Vec::push` directly, so the cap stays
+    /// authoritative.  Codex task #20 (LOW from review of
+    /// a532ac2): unbounded growth produced tens of MB per
+    /// chain on long Phase-5 soak runs.  Capture-since-mark
+    /// callers (`tx_record_since_last_capture` on the PyO3
+    /// facade) clamp gracefully when records are dropped
+    /// between marks; check `uart_tx_history_dropped` if
+    /// the absence of older records would surprise the
+    /// caller.
     pub uart_tx_history: Vec<UartByteRecord>,
     /// FIFO-accepted RX byte recorder, distinct from
     /// `uart_tx_history`.  `uart_tx_history` records every
@@ -207,7 +221,37 @@ pub struct Chain {
     /// initialized to 0 (no drop) for every coupling on
     /// creation in `couple_uart`.
     pub uart_coupling_drop_remaining: Vec<u32>,
+
+    /// Count of `uart_tx_history` records dropped from the
+    /// front when the buffer hit `UART_TX_HISTORY_CAP`.  Lets
+    /// callers detect that the rolling window has truncated
+    /// older records; `tx_record_since_last_capture`-style
+    /// pointers can clamp gracefully when this is non-zero.
+    /// Reset to 0 by `apply_reset_all` alongside the buffer
+    /// itself.  See task #20 (codex LOW from review of
+    /// a532ac2).
+    pub uart_tx_history_dropped: u64,
+
+    /// Count of `uart_rx_history` records dropped from the
+    /// front when the buffer hit `UART_TX_HISTORY_CAP` (the
+    /// rx-side buffer reuses the same cap; same task #20
+    /// motivation -- soak runs on accepted-byte history can
+    /// also balloon to tens of MB if unbounded).  Reset by
+    /// `apply_reset_all`.
+    pub uart_rx_history_dropped: u64,
 }
+
+/// Maximum number of records held in `Chain::uart_tx_history`
+/// at one time.  When the recorder pushes a new record beyond
+/// this cap, the oldest record is dropped from the front and
+/// `Chain::uart_tx_history_dropped` is incremented.  Each
+/// record is ~24 bytes, so 1M entries cap a chain at ~24 MB
+/// of recorder state -- bounded for Phase-5 soak (millions of
+/// universal ticks per chain) without losing the most recent
+/// window.  Codex task #20 (LOW from review of a532ac2):
+/// `uart_tx_history` previously grew unbounded and could
+/// produce tens of MB per chain on long runs.
+pub const UART_TX_HISTORY_CAP: usize = 1_000_000;
 
 /// One UART byte delivered between two cores.  See
 /// `Chain::uart_tx_history`.
@@ -256,6 +300,8 @@ impl Chain {
             lcd_couplings: Vec::new(),
             uart_blackout: false,
             uart_coupling_drop_remaining: Vec::new(),
+            uart_tx_history_dropped: 0,
+            uart_rx_history_dropped: 0,
         }
     }
 
@@ -266,6 +312,35 @@ impl Chain {
     /// docstring for the full semantics.
     pub fn set_uart_blackout(&mut self, enabled: bool) {
         self.uart_blackout = enabled;
+    }
+
+    /// Push a record into `uart_tx_history` while honoring
+    /// the `UART_TX_HISTORY_CAP` rolling-window cap.  When
+    /// the buffer is at cap, the oldest record is dropped
+    /// from the front and `uart_tx_history_dropped` is
+    /// incremented.  Use this instead of pushing directly
+    /// so cap accounting stays in one place.  Codex task
+    /// #20 (LOW from review of a532ac2).
+    fn record_uart_tx(&mut self, record: UartByteRecord) {
+        if self.uart_tx_history.len() >= UART_TX_HISTORY_CAP {
+            self.uart_tx_history.remove(0);
+            self.uart_tx_history_dropped =
+                self.uart_tx_history_dropped.saturating_add(1);
+        }
+        self.uart_tx_history.push(record);
+    }
+
+    /// Mirror of `record_uart_tx` for the
+    /// destination-accept-side `uart_rx_history` buffer.
+    /// Same `UART_TX_HISTORY_CAP` rolling cap; drops bump
+    /// `uart_rx_history_dropped`.  Codex task #20.
+    fn record_uart_rx(&mut self, record: UartByteRecord) {
+        if self.uart_rx_history.len() >= UART_TX_HISTORY_CAP {
+            self.uart_rx_history.remove(0);
+            self.uart_rx_history_dropped =
+                self.uart_rx_history_dropped.saturating_add(1);
+        }
+        self.uart_rx_history.push(record);
     }
 
     /// Push an HD44780 LCD slave into the chain.  Returns
@@ -750,7 +825,7 @@ impl Chain {
         // semantics: gpsim's UART trace records bits on the
         // wire, regardless of whether the destination's
         // SPEN/CREN gate accepts them.
-        self.uart_tx_history.push(UartByteRecord {
+        self.record_uart_tx(UartByteRecord {
             tick: self.current_tick,
             src_core: coupling.src_core,
             dst_core: coupling.dst_core,
@@ -794,7 +869,7 @@ impl Chain {
         // rx_history localizes byte-loss to the destination's
         // accept gate (vs upstream couplings).
         if accepted {
-            self.uart_rx_history.push(UartByteRecord {
+            self.record_uart_rx(UartByteRecord {
                 tick: self.current_tick,
                 src_core: coupling.src_core,
                 dst_core: coupling.dst_core,
@@ -1297,7 +1372,7 @@ impl Chain {
                 acc.push(byte);
             }
             for byte in acc {
-                self.uart_tx_history.push(UartByteRecord {
+                self.record_uart_tx(UartByteRecord {
                     tick: self.current_tick,
                     src_core: src_core_idx,
                     dst_core: src_core_idx,
@@ -1428,7 +1503,9 @@ impl Chain {
         // independent so a future `apply_reset_all`-only
         // path stays consistent.
         self.uart_tx_history.clear();
+        self.uart_tx_history_dropped = 0;
         self.uart_rx_history.clear();
+        self.uart_rx_history_dropped = 0;
         for level in &mut self.pin_coupling_last {
             *level = None;
         }
@@ -2603,6 +2680,104 @@ mod tests {
         assert!(
             chain.uart_tx_history.is_empty(),
             "apply_reset_all must clear uart_tx_history"
+        );
+    }
+
+    /// Codex task #20 (LOW from review of a532ac2): the
+    /// `Chain::uart_tx_history` rolling-window cap drops the
+    /// oldest record when the buffer hits
+    /// `UART_TX_HISTORY_CAP`, and `uart_tx_history_dropped`
+    /// counts the drops.  Use a tiny synthetic cap-equivalent
+    /// scenario to exercise the helper directly: push one
+    /// past the configured cap and assert the front-drop +
+    /// counter increment.  Pushing a real million records
+    /// through `deliver_uart_byte` would slow the test
+    /// dramatically (1M `Vec::remove(0)` is O(N²) on the
+    /// over-cap path), so this test exercises
+    /// `record_uart_tx` near the boundary by pre-loading
+    /// the history with `UART_TX_HISTORY_CAP - 1` records
+    /// and then pushing two more -- the second one triggers
+    /// the front-drop branch.
+    #[test]
+    fn uart_tx_history_caps_at_one_million_with_drop_counter() {
+        let mut chain = Chain::new();
+        let i_src = chain.push_core(Core::new(Variant::Pic18F25K20));
+        let mut dst = Core::new(Variant::Pic18F25K20);
+        dst.memory
+            .write_raw(crate::memory::Address::from_raw(0xFAB), 0x90);
+        let i_dst = chain.push_core(dst);
+        chain.couple_uart(
+            i_src,
+            crate::pinnet::default_tx_pin(),
+            i_dst,
+            crate::pinnet::default_rx_pin(),
+        );
+
+        // Pre-load the rolling window to one shy of the cap
+        // by pushing directly through the helper (so the cap
+        // accounting stays consistent with the production
+        // path).  We tag each record with a unique tick so
+        // we can verify the front-drop ordering.
+        for tick in 0u64..(UART_TX_HISTORY_CAP as u64) - 1 {
+            chain.record_uart_tx(UartByteRecord {
+                tick,
+                src_core: i_src,
+                dst_core: i_dst,
+                byte: 0,
+            });
+        }
+        assert_eq!(chain.uart_tx_history.len(), UART_TX_HISTORY_CAP - 1);
+        assert_eq!(
+            chain.uart_tx_history_dropped, 0,
+            "no drops yet -- under cap"
+        );
+
+        // One more push lands at the cap.  No drop yet.
+        chain.record_uart_tx(UartByteRecord {
+            tick: UART_TX_HISTORY_CAP as u64 - 1,
+            src_core: i_src,
+            dst_core: i_dst,
+            byte: 0,
+        });
+        assert_eq!(chain.uart_tx_history.len(), UART_TX_HISTORY_CAP);
+        assert_eq!(
+            chain.uart_tx_history_dropped, 0,
+            "still no drop -- at cap, not over"
+        );
+
+        // The next push triggers the front-drop branch:
+        // tick=0 record gets evicted, tick=CAP gets pushed.
+        let new_tick = UART_TX_HISTORY_CAP as u64;
+        chain.record_uart_tx(UartByteRecord {
+            tick: new_tick,
+            src_core: i_src,
+            dst_core: i_dst,
+            byte: 0,
+        });
+        assert_eq!(
+            chain.uart_tx_history.len(), UART_TX_HISTORY_CAP,
+            "buffer stays at cap after over-cap push"
+        );
+        assert_eq!(
+            chain.uart_tx_history_dropped, 1,
+            "one drop after one over-cap push"
+        );
+        assert_eq!(
+            chain.uart_tx_history.first().map(|r| r.tick), Some(1),
+            "front-drop must evict the oldest record (tick=0)"
+        );
+        assert_eq!(
+            chain.uart_tx_history.last().map(|r| r.tick), Some(new_tick),
+            "newest push lands at the back"
+        );
+
+        // apply_reset_all must clear the drop counter too,
+        // not just the buffer.
+        chain.apply_reset_all(ResetSource::PowerOn);
+        assert!(chain.uart_tx_history.is_empty());
+        assert_eq!(
+            chain.uart_tx_history_dropped, 0,
+            "apply_reset_all must zero the drop counter"
         );
     }
 
