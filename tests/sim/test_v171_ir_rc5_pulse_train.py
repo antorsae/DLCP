@@ -61,10 +61,11 @@ except Exception as exc:  # pragma: no cover
 #
 # - 14-bit frame: S1 (start, '1') + S2 (start, '1') + T (toggle) +
 #   5-bit address + 6-bit command.
-# - Manchester encoding: '1' = HIGH-then-LOW (signal-active second
-#   half), '0' = LOW-then-HIGH.  Idle = HIGH at MCU pin (TSOP IR
-#   receivers output HIGH for "no carrier", LOW when 36 kHz carrier
-#   is on).
+# - Manchester encoding at the MCU pin: '1' = LOW-then-HIGH
+#   (carrier first half, idle second half), '0' = HIGH-then-LOW.
+#   Idle = HIGH at MCU pin (TSOP IR receivers output HIGH for "no
+#   carrier", LOW when the 36 kHz carrier is on -- so a logical
+#   '1' active in the first half-bit drives the pin LOW).
 # - Half-bit time: 889 µs (full bit = 1.778 ms).
 # - Frame total: 14 × 1.778 ms = 24.9 ms; inter-frame gap >= 89 ms.
 #
@@ -171,10 +172,11 @@ _RC5_BC61C70_REGRESSION_XFAIL = pytest.mark.xfail(
         "sample windows are off and it returns to the "
         "flow_ir_rc5_decode_02E4 abort path with ir_decoded_cmd "
         "untouched at 0xFF.  Diagnostic in the test body shows "
-        "mid-burst pending=0xFF (ISR fires + latches correctly) and "
-        "post pending=0x00 (foreground drained the flag) -- only "
-        "the decoder's output is wrong, isolating the bug to the "
-        "foreground-vs-bit-bang timing.  XPASS will surface when "
+        "post-train pending=0xFF (ISR fires + latches during the "
+        "pulse train) and post-settle pending=0x00 (foreground "
+        "drained the flag) -- only the decoder's output is wrong, "
+        "isolating the bug to the foreground-vs-bit-bang timing.  "
+        "XPASS will surface when "
         "the firmware is fixed (likely by reverting bc61c70's "
         "deferral so ir_rc5_decode runs from the ISR again, the "
         "V1.7 stock pattern).  Strict so XPASS = real failure: the "
@@ -228,12 +230,15 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
     # cmd=0x3A (V1.64b explicit standby endpoint).
     _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x3A)
 
-    # Mid-burst snapshot: did the ISR latch v171_ir_decode_pending?
-    # If yes, the IOC->RBIF->ISR chain works; the bug is in the
-    # foreground decoder timing.  If no, ISR isn't firing at all
-    # (sim modeling gap or misconfigured RB-IOC).
-    mid_pending = chain.read_reg(0x0AA)
-    mid_flags = chain.read_reg(0x01F)
+    # Post-train snapshot (immediately after the pulse train,
+    # before the foreground-service settle).  The pulse train
+    # spans ~25 ms simulated, during which the ISR has been
+    # firing on every RB5 edge and latching pending=0xFF if
+    # the IOC->RBIF->ISR chain works.  If post_train_pending
+    # is 0xFF here, the ISR latch path is intact; the bug is
+    # localised to the foreground decoder timing.
+    post_train_pending = chain.read_reg(0x0AA)
+    post_train_flags = chain.read_reg(0x01F)
 
     # Step enough ticks for the foreground service routine to drain
     # the pending flag and run ir_rc5_decode -- the decoder itself
@@ -253,7 +258,7 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
 
     # Diagnostic eprint so a failure shows what the decoder
     # actually saw.  Distinguishes:
-    #   - ISR didn't fire        -> mid_pending == 0
+    #   - ISR didn't fire        -> post_train_pending == 0
     #   - ISR fired, fg ran      -> post_pending == 0, decoded_cmd correct
     #   - ISR fired, fg ran late -> post_pending == 0, decoded_cmd wrong (bc61c70 regression)
     #   - ISR fired, fg never    -> post_pending != 0
@@ -261,7 +266,7 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
         f"\nRC5 pulse-train decode result:\n"
         f"  pre:        ir_decoded_cmd=0x{pre_decoded_cmd:02X}, addr=0x{pre_decoded_addr:02X}, "
         f"pending=0x{pre_pending:02X}, flags=0x{pre_flags:02X}\n"
-        f"  mid-burst:  pending=0x{mid_pending:02X}, flags=0x{mid_flags:02X}\n"
+        f"  post-train: pending=0x{post_train_pending:02X}, flags=0x{post_train_flags:02X}\n"
         f"  post:       ir_decoded_cmd=0x{decoded_cmd:02X}, addr=0x{decoded_addr:02X}, "
         f"pending=0x{post_pending:02X}, flags=0x{post_flags:02X}\n"
         f"  expected: cmd=0x3A, addr=0x10\n"
@@ -311,8 +316,13 @@ def test_v171_rc5_pulse_train_decodes_wake_endpoint(v171_hex: Path) -> None:
         h.step()
 
     before_tx = len(h.tx_frames())
+    pre_pending = chain.read_reg(0x0AA)
+    pre_flags = chain.read_reg(0x01F)
 
     _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x3B)
+
+    post_train_pending = chain.read_reg(0x0AA)
+    post_train_flags = chain.read_reg(0x01F)
 
     h.step_ticks(20_000_000)
     for _ in range(40):
@@ -320,13 +330,18 @@ def test_v171_rc5_pulse_train_decodes_wake_endpoint(v171_hex: Path) -> None:
 
     decoded_cmd = chain.read_reg(0x01D)
     decoded_addr = chain.read_reg(0x01E)
+    post_pending = chain.read_reg(0x0AA)
+    post_flags = chain.read_reg(0x01F)
     new_frames = h.tx_frames()[before_tx:]
 
     print(
-        f"\nRC5 wake pulse-train: "
-        f"ir_decoded_cmd=0x{decoded_cmd:02X} (expected 0x3B), "
-        f"ir_decoded_addr=0x{decoded_addr:02X} (expected 0x10), "
-        f"new TX={list(new_frames)}"
+        f"\nRC5 wake pulse-train decode result:\n"
+        f"  pre:        pending=0x{pre_pending:02X}, flags=0x{pre_flags:02X}\n"
+        f"  post-train: pending=0x{post_train_pending:02X}, flags=0x{post_train_flags:02X}\n"
+        f"  post:       ir_decoded_cmd=0x{decoded_cmd:02X} (expected 0x3B), "
+        f"addr=0x{decoded_addr:02X} (expected 0x10), "
+        f"pending=0x{post_pending:02X}, flags=0x{post_flags:02X}\n"
+        f"  TX frames after injection: {list(new_frames)}"
     )
 
     assert decoded_cmd == 0x3B, (
@@ -342,11 +357,12 @@ def test_v171_rc5_pulse_train_decodes_wake_endpoint(v171_hex: Path) -> None:
     )
 
 
-# Note on test scope: the xfail tests above include a print of the
-# mid-burst v171_ir_decode_pending and post-burst pending + flags
-# state.  When investigating an xfail or the firmware fix landing,
-# read the captured stdout: a healthy IOC->RBIF->ISR->pending chain
-# shows ``mid pending=0xFF`` (ISR latched the IR event) and
-# ``post pending=0x00`` (foreground service drained the flag).
-# That isolates the bc61c70 regression to the foreground decoder's
-# bit-bang timing alone.
+# Note on test scope: the xfail tests above print the
+# v171_ir_decode_pending and control_flags state at three points
+# (pre, post-train, post-settle).  When investigating an xfail or
+# the firmware fix landing, read the captured stdout: a healthy
+# IOC->RBIF->ISR->pending chain shows ``post-train pending=0xFF``
+# (ISR latched the IR event during the pulse train) and
+# ``post-settle pending=0x00`` (foreground service drained the
+# flag).  That isolates the bc61c70 regression to the foreground
+# decoder's bit-bang timing alone.
