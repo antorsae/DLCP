@@ -239,12 +239,98 @@ def _looks_like(text: str, target: str, *, max_dist: int = 2) -> bool:
     goal = _norm(target)
     if not norm:
         return False
-    if goal in norm or norm in goal:
+    # Forward substring: target appears inside the observation
+    # (e.g. "WAITING FOR DLCP V32" matches "WAITING FOR DLCP").
+    if goal in norm:
+        return True
+    # Reverse substring: the observation appears inside the target.
+    # Only allow when norm is a meaningful fragment (>= 3 chars), not
+    # a single OCR character that happens to land inside a template
+    # string (codex review of #43: a stray "P" was matching both
+    # "PRESET" and "WAITINGFORDLCP" on PB Diag-page captures).
+    if norm in goal and len(norm) >= 3:
         return True
     return _levenshtein(norm, goal) <= max_dist
 
 
+def _group_rows(observations: list[OcrObservation]) -> tuple[str, str]:
+    """Group OCR observations into (top_row_text, bottom_row_text)
+    by clustering on y-coordinate.  Within each row, observations are
+    ordered by x-coordinate and joined with spaces.
+
+    The HD44780 LCD has two rows; in the camera frame they appear at
+    distinct y-bands separated by a noticeable gap.  We split at the
+    largest adjacent y-gap.  When all observations cluster together
+    (gap < 0.05 in normalised image coords), they are treated as a
+    single row and bottom_row_text is empty.
+
+    Codex review of #43.
+    """
+    if not observations:
+        return "", ""
+    # Sort by y descending: top of the camera frame comes first.  In
+    # the Vision framework's normalised coordinate space, y=1 is the
+    # top edge.
+    sorted_obs = sorted(observations, key=lambda item: -item.y)
+    if len(sorted_obs) == 1:
+        return sorted_obs[0].text.strip(), ""
+    largest_gap = 0.0
+    split_idx = 0
+    for i in range(len(sorted_obs) - 1):
+        gap = sorted_obs[i].y - sorted_obs[i + 1].y
+        if gap > largest_gap:
+            largest_gap = gap
+            split_idx = i
+    if largest_gap < 0.05:
+        ordered = sorted(sorted_obs, key=lambda item: item.x)
+        return (
+            " ".join(o.text.strip() for o in ordered if o.text.strip()),
+            "",
+        )
+    top = sorted(sorted_obs[: split_idx + 1], key=lambda item: item.x)
+    bottom = sorted(sorted_obs[split_idx + 1 :], key=lambda item: item.x)
+    top_text = " ".join(o.text.strip() for o in top if o.text.strip())
+    bottom_text = " ".join(o.text.strip() for o in bottom if o.text.strip())
+    return top_text, bottom_text
+
+
+def _extract_pb_diag(
+    observations: list[OcrObservation],
+) -> tuple[str | None, str | None]:
+    """First-pass extractor for the V1.71 Tier-1 PB Diagnostics page.
+
+    Per docs/V32_DIAG_TIER1_SPEC.md (and V1.71 CONTROL asm:3603+
+    which writes 'P','B','1' at row 0 cols 0..2 on state 4 / PB1
+    Diag, and 'P','B','2' on state 5 / PB2 Diag), the LCD shows
+    "PBn" (optionally with ":" + counter cells) on row 0 and one of
+    "OK" / "n/a" / sparse counter cells on row 1.
+
+    Returns (line1, line2) when row 0 normalises to "PB1*" or "PB2*"
+    -- raw concatenated row text, no firmware-string snapping --
+    or (None, None) otherwise so the legacy snapper can run.
+
+    Codex review of #43: without this short-circuit, single-character
+    OCR fragments from Diag-page cells (e.g. "P", "I", "D") were
+    being snapped to "WAITING FOR DLCP" / "Preset" / "Active: B" by
+    the legacy `_pick_lines` template matcher.
+    """
+    top_text, bottom_text = _group_rows(observations)
+    norm_top = _norm(top_text)
+    if not (norm_top.startswith("PB1") or norm_top.startswith("PB2")):
+        return None, None
+    return top_text, bottom_text
+
+
 def _pick_lines(observations: list[OcrObservation]) -> tuple[str | None, str | None]:
+    # First-pass: detect PB Diag page (Tier-1 layout) and return
+    # raw row strings before legacy firmware-string snapping kicks
+    # in.  Codex review of #43 -- the snapper was hallucinating
+    # "WAITING FOR DLCP" / "Preset" / "Active: B" when fed
+    # fragmented Diag-page OCR.
+    pb_line1, pb_line2 = _extract_pb_diag(observations)
+    if pb_line1 is not None:
+        return pb_line1, pb_line2
+
     ordered = sorted(observations, key=lambda item: (-item.y, item.x))
     line1: str | None = None
     line2: str | None = None
@@ -257,6 +343,11 @@ def _pick_lines(observations: list[OcrObservation]) -> tuple[str | None, str | N
             continue
         norm = _norm(text)
         if norm in {"A", "B"}:
+            # Standalone single-letter observation: stage as a
+            # candidate active-letter, but require Volume or Active
+            # context elsewhere in the frame before emitting.  See
+            # codex review of #43 -- a stray "B" from a Diag-page
+            # cell was being emitted as "Active: B" without context.
             active_letter = norm
             continue
         if "DLCP" in norm or _looks_like(text, "WAITING FOR DLCP", max_dist=5):
@@ -285,7 +376,13 @@ def _pick_lines(observations: list[OcrObservation]) -> tuple[str | None, str | N
                 active_letter = "B"
             line2 = f"Active:{suffix}".rstrip()
 
-    if active_letter is not None:
+    # Emit `Active: A/B` only when the frame also showed a Volume
+    # screen (which carries the active letter alongside the level)
+    # or an explicit Active line.  Without that context, a
+    # standalone "A"/"B" observation is more likely a Diag-page
+    # cell fragment than an active-preset indicator.  Codex review
+    # of #43.
+    if active_letter is not None and (line1 == "Volume" or active_seen):
         line2 = f"Active: {active_letter}"
     elif active_seen:
         line2 = "Active:"

@@ -1367,6 +1367,126 @@ def test_lcd_pick_lines_prefers_explicit_active_line_when_present() -> None:
     assert line2 == "Active: B"
 
 
+# ---------------------------------------------------------------------------
+# Task #43: PB Diag-page consensus extractor must NOT hallucinate
+# 'WAITING FOR DLCP' / 'Preset' / 'Active: B' from PB Diag-page captures.
+# Codex review (read-only investigation) traced this to two bugs in
+# `_pick_lines`: (1) `_looks_like` allowed reverse substring matches on
+# single-character OCR fragments (so a stray "P" matched both
+# "WAITINGFORDLCP" and "PRESET"), and (2) standalone "A"/"B"
+# observations were always emitted as "Active: A/B" without any Volume
+# or Active context.  The fix adds a first-pass PB Diag extractor
+# (`_extract_pb_diag`) that short-circuits when row 0 starts with
+# "PB1" or "PB2", returns raw row strings, tightens `_looks_like` to
+# require >= 3 chars for reverse substring matches, and gates the
+# standalone-letter emission on Volume/Active context.
+# ---------------------------------------------------------------------------
+
+
+def test_lcd_extract_pb_diag_returns_raw_rows_for_pb1_ok_layout() -> None:
+    """Tier-1 'healthy short' PB1 page (PB has replied with all-zero
+    counters) renders 'PB1' on row 0 and 'OK' on row 1.  The
+    consensus extractor must return the raw row strings, not
+    snap to a firmware template.
+    """
+    observations = [
+        lcd.OcrObservation(text="PB1", confidence=0.99, x=0.05, y=0.85, w=0.15, h=0.12),
+        lcd.OcrObservation(text="OK", confidence=0.99, x=0.05, y=0.30, w=0.10, h=0.12),
+    ]
+
+    line1, line2 = lcd._pick_lines(observations)
+
+    assert line1 == "PB1"
+    assert line2 == "OK"
+
+
+def test_lcd_extract_pb_diag_handles_counter_cells_on_pb2() -> None:
+    """PB2 Diag with counter cells (degraded/overflow): row 0
+    starts 'PB2', row 1 has cell labels.  The extractor must
+    return both rows verbatim.
+    """
+    observations = [
+        lcd.OcrObservation(text="PB2:", confidence=0.97, x=0.05, y=0.85, w=0.15, h=0.12),
+        lcd.OcrObservation(text="I+ D1 SE B4", confidence=0.92, x=0.20, y=0.85, w=0.55, h=0.12),
+        lcd.OcrObservation(text="RA A3 O8 V6 W+", confidence=0.91, x=0.05, y=0.30, w=0.70, h=0.12),
+    ]
+
+    line1, line2 = lcd._pick_lines(observations)
+
+    assert line1 is not None and line1.startswith("PB2")
+    assert "I+" in line1 and "B4" in line1
+    assert line2 is not None and line2.startswith("RA")
+
+
+def test_lcd_pick_lines_does_not_hallucinate_on_fragmented_pb_diag_ocr() -> None:
+    """When the OCR pipeline returns single-character fragments
+    from a Diag-page capture, the legacy snapper used to vote
+    'WAITING FOR DLCP' / 'Preset' / 'Active: B' against the
+    template strings.  The PB extractor + tightened `_looks_like`
+    must keep all of those out of the consensus.
+    """
+    observations = [
+        lcd.OcrObservation(text="P", confidence=0.40, x=0.05, y=0.85, w=0.05, h=0.10),
+        lcd.OcrObservation(text="B1", confidence=0.55, x=0.10, y=0.85, w=0.08, h=0.10),
+        lcd.OcrObservation(text="I+", confidence=0.60, x=0.20, y=0.85, w=0.06, h=0.10),
+        lcd.OcrObservation(text="D1", confidence=0.62, x=0.30, y=0.85, w=0.06, h=0.10),
+        lcd.OcrObservation(text="B", confidence=0.45, x=0.55, y=0.85, w=0.05, h=0.10),
+    ]
+
+    line1, line2 = lcd._pick_lines(observations)
+
+    # Row 0 starts with "PB1" once row text is concatenated; PB
+    # extractor short-circuits and returns raw row.  Stray "B"
+    # is NOT emitted as "Active: B".
+    assert line1 is not None and line1.startswith("P")
+    assert "PB1" in line1.replace(" ", "")
+    assert line1 != "WAITING FOR DLCP"
+    assert line1 != "Preset"
+    assert line2 != "Active: B"
+
+
+def test_lcd_looks_like_rejects_single_character_substring_match() -> None:
+    """Reverse-substring match (`norm in goal`) must require
+    at least 3 chars.  Without this, single-letter fragments
+    like 'P' silently match 'PRESET' / 'WAITINGFORDLCP'.
+    """
+    # Single character: must NOT match.
+    assert not lcd._looks_like("P", "Preset")
+    assert not lcd._looks_like("P", "WAITING FOR DLCP")
+    # Two characters: still rejected as too short for reverse match.
+    assert not lcd._looks_like("PR", "Preset")
+    # Three characters: reverse-substring match allowed.
+    assert lcd._looks_like("PRE", "Preset")
+    # Forward substring still works regardless of length: target
+    # appears inside the observation.
+    assert lcd._looks_like("PRESET MODE", "Preset")
+    # Levenshtein still catches near-misses within max_dist.
+    assert lcd._looks_like("Pres3t", "Preset", max_dist=2)
+
+
+def test_lcd_pick_lines_drops_standalone_active_letter_without_context() -> None:
+    """A standalone 'B' observation must NOT be emitted as
+    'Active: B' when the frame has no Volume or Active line.
+    This was the root cause of 'Active: B' hallucinations on
+    PB Diag captures with stray letter cells.
+
+    Uses two observations on the SAME row (gap < 0.05) so the
+    PB extractor does not short-circuit (row 0 doesn't start
+    with PB1/PB2) -- the legacy snapper runs and must still
+    behave correctly under the new context gate.
+    """
+    observations = [
+        lcd.OcrObservation(text="X", confidence=0.50, x=0.05, y=0.85, w=0.05, h=0.10),
+        lcd.OcrObservation(text="B", confidence=0.50, x=0.50, y=0.85, w=0.05, h=0.10),
+    ]
+
+    line1, line2 = lcd._pick_lines(observations)
+
+    # No Volume, no explicit Active -- standalone 'B' is not
+    # promoted to 'Active: B'.  line2 stays None.
+    assert line2 is None
+
+
 def test_lcd_resolve_uvcc_address_returns_selector_match_when_default_is_wrong(monkeypatch) -> None:
     monkeypatch.setattr(
         lcd,
