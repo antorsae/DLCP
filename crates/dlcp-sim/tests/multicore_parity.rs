@@ -796,11 +796,31 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 /// chunk.  So 0/200 hits is consistent with sparse
 /// sampling, not proof of non-execution.
 ///
-/// Phrased correctly: CONTROL never **successfully
-/// processes** BF/27 through the BF/2N last-frame path.
+/// **Resolved by P3.6b research closure (steps 1..4 --
+/// tasks #60..#65):** the post-step-2 cycle-level probes
+/// (PC-hit counter at v171_bf2x_case_check entry +
+/// cycle-by-cycle parsed_cmd sniffer) and the step-4
+/// watchdog-intervention experiment together converted the
+/// boundary-sampled negative claim into a hard root cause.
+/// CONTROL never successfully processes BF/27 because the
+/// V1.71 parser-stall watchdog `v171_service_rx_frame_gap`
+/// (asm:2633+) clears `rx_frame_position` ~7 K ticks
+/// BEFORE the BF/27 data byte arrives, so the data byte is
+/// dropped at `flow_rx_parser_entry_04D6`.  Step-4
+/// intervention (force-reset the watchdog timeout to 0x01
+/// when `rx_parsed_cmd` transitions to BF/2N) makes all 11
+/// BF/2N frames dispatch correctly, BF/27 fires once
+/// (target toggles 0->1, present.bit_0 set), and BF/2B
+/// fires once (reset_seen.bit_0 set, RESET_PENDING
+/// cleared).  See the **P3.6b RESEARCH CLOSURE** block
+/// below for the full causal chain (steps 1..8) and the
+/// secondary cadence-starvation observation (PB2 query
+/// never fires due to the foreground busy-loop in
+/// `display_loop_iteration`).
 ///
-/// Hypotheses for the open hop (codex review of 56841f4
-/// added the 4th):
+/// Pre-closure hypotheses (kept for historical context
+/// -- all superseded by the closure block; codex review
+/// of 56841f4 had added the 4th):
 ///   1. CONTROL's parser frame-state machine (0xA6
 ///      counter) is in the wrong state when the BF byte
 ///      arrives -- maybe stuck mid-frame from prior
