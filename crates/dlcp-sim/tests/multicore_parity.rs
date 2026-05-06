@@ -839,8 +839,10 @@ fn three_core_ring_v171_v32_v32_boots_under_silicon_topology() {
 ///      before sample time.
 ///
 /// `#[ignore]`d.  Wall ~ 60 s.  Hop E investigation
-/// pending: trace CONTROL's parser state during the
-/// BF/27 byte arrival window.
+/// CLOSED in the P3.6b RESEARCH CLOSURE block below
+/// (root cause: parser-stall watchdog clears
+/// rx_frame_position ~7 K ticks before the BF/27 data
+/// byte arrives; step-4 intervention proves causality).
 ///
 /// =====================================================
 /// P3.6b RESEARCH CLOSURE (2026-04-28, post-step-8)
