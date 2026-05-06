@@ -511,6 +511,19 @@ class Chain:
         """
         self._inner.set_main_pin(int(unit), str(port), int(bit), bool(level))
 
+    def set_control_pin(self, port: str, bit: int, level: bool) -> None:
+        """CONTROL-side equivalent of ``set_main_pin``: drive an
+        external input pin on CONTROL's PORTx to the requested
+        logic level.  Same ``gpio.rs::drive_external_pin`` caveats
+        apply (pin must currently be a general digital input;
+        TRIS-to-output flip releases the held level).
+
+        Used by the RC5 IR pulse-train tests that drive RB5 with
+        timed edges to exercise the actual ``ir_rc5_decode``
+        decoder rather than poking ``ir_decoded_cmd`` directly.
+        """
+        self._inner.set_control_pin(str(port), int(bit), bool(level))
+
     def write_main_reg(self, unit: int, addr: int, value: int) -> None:
         """Write a single byte of one MAIN's data memory at
         the given physical address.

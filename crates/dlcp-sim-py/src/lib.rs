@@ -1436,6 +1436,29 @@ impl Chain {
         Ok(())
     }
 
+    /// CONTROL-side equivalent of `set_main_pin`: drive an
+    /// external input pin on CONTROL's PORTx to the requested
+    /// logic level.  Same `gpio.rs::drive_external_pin` caveats
+    /// apply (pin must currently be a general digital input;
+    /// TRIS-to-output flip releases the held level).  Used by
+    /// the RC5 IR pulse-train tests that drive RB5 with timed
+    /// edges to exercise the actual `ir_rc5_decode` decoder
+    /// rather than poking `ir_decoded_cmd` directly.
+    fn set_control_pin(&mut self, port: &str, bit: u8, level: bool) -> PyResult<()> {
+        let port_letter = parse_port_letter(port).map_err(PyValueError::new_err)?;
+        if bit >= 8 {
+            return Err(PyValueError::new_err(format!(
+                "set_control_pin: bit must be 0..=7; got {bit}"
+            )));
+        }
+        if level {
+            self.inner.set_pin_high(self.i_ctl, port_letter, bit);
+        } else {
+            self.inner.set_pin_low(self.i_ctl, port_letter, bit);
+        }
+        Ok(())
+    }
+
     /// Read a contiguous byte range from a core's program flash.
     /// Mirror of gpsim's `print mem 0xNN..0xMM` for code memory.
     /// Used to verify overlay-manifest preconditions before
