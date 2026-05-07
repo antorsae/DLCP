@@ -105,9 +105,12 @@ def _is_already_stock_coeff_write(text: str) -> bool:
     if body_start < 0:
         return False
     # Bound the search to the function body.  The canonical source
-    # ends the function at ``coeff_write_pen_done:`` followed by
-    # ``return  0``; stop the scan at the next blank-line gap or
-    # the next top-level label.
+    # ends the function at ``coeff_write_pen_done:`` + ``return  0``
+    # followed by a blank-line gap before the next routine, so a
+    # plain ``\n\n`` search bounds the scan correctly for the
+    # current shape.  4000-byte fallback caps run-time if a future
+    # refactor inlines blank lines into the body (the function is
+    # ~25 instructions today; 4000 bytes is generous overkill).
     body_end = text.find("\n\n", body_start)
     if body_end < 0:
         body_end = body_start + 4000

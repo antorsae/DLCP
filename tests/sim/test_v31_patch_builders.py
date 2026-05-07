@@ -43,6 +43,26 @@ def test_v31_diag_coeff_builder_is_idempotent_on_current_source() -> None:
     assert mod._rewrite_source(text) == text
 
 
+def test_v31_diag_coeff_structural_detector_distinguishes_old_from_new() -> None:
+    """Pin the structural detector contract: ``_is_already_stock_coeff_write``
+    must classify the current canonical V3.1 source (post-rcall optimizations)
+    as "already stock" AND classify the legacy bounded ``_OLD_COEFF_BLOCK``
+    shape as NOT stock.  Without this pinning, a future refactor that broadens
+    the predicate (e.g. drops the ``wait_sen_bounded not in body`` clause)
+    would silently regress the legacy rewrite path while the
+    current-source idempotence test stayed green (codex LOW vs cbe2b66)."""
+    mod = _reload("dlcp_fw.patch.build_v31_diag_coeff_stock")
+    current_text = mod.SOURCE_ASM.read_text(encoding="utf-8", errors="replace")
+
+    assert mod._is_already_stock_coeff_write(current_text), (
+        "current canonical V3.1 source must be detected as already-stock"
+    )
+    assert not mod._is_already_stock_coeff_write(mod._OLD_COEFF_BLOCK), (
+        "legacy bounded coeff-write block must NOT match the stock detector "
+        "(otherwise the rewrite from OLD -> NEW would silently no-op)"
+    )
+
+
 def test_v31_release_builders_use_canonical_inputs(monkeypatch) -> None:
     monkeypatch.setenv("DLCP_FW_V31_MAIN_ASM", "tmp/override_v31.asm")
     monkeypatch.setenv("DLCP_FW_V31_MAIN_HEX", "tmp/override_v31.hex")
