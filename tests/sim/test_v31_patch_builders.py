@@ -50,7 +50,14 @@ def test_v31_diag_coeff_structural_detector_distinguishes_old_from_new() -> None
     shape as NOT stock.  Without this pinning, a future refactor that broadens
     the predicate (e.g. drops the ``wait_sen_bounded not in body`` clause)
     would silently regress the legacy rewrite path while the
-    current-source idempotence test stayed green (codex LOW vs cbe2b66)."""
+    current-source idempotence test stayed green (codex LOW vs cbe2b66).
+
+    Plus three synthetic per-clause checks (codex LOW vs 05323b9): each
+    clause of the triple-check predicate
+    (``coeff_write_wait_sen_stock:`` present + ``coeff_write_pen_stock:``
+    present + ``wait_sen_bounded`` absent) must individually be load-bearing.
+    Hand-crafted inputs exercise the case where exactly one clause is
+    flipped vs the canonical-stock shape, and the detector must reject."""
     mod = _reload("dlcp_fw.patch.build_v31_diag_coeff_stock")
     current_text = mod.SOURCE_ASM.read_text(encoding="utf-8", errors="replace")
 
@@ -60,6 +67,48 @@ def test_v31_diag_coeff_structural_detector_distinguishes_old_from_new() -> None
     assert not mod._is_already_stock_coeff_write(mod._OLD_COEFF_BLOCK), (
         "legacy bounded coeff-write block must NOT match the stock detector "
         "(otherwise the rewrite from OLD -> NEW would silently no-op)"
+    )
+
+    # Synthetic shapes that flip exactly one clause vs the stock body.
+    # Each must be REJECTED by the detector or the corresponding clause is
+    # not load-bearing.
+    _STOCK_SKELETON = (
+        "i2c_tas3108_coeff_write:\n"
+        "    rcall       i2c_wait_bus_idle\n"
+        "    bsf         SSPCON2, 0, ACCESS\n"
+        "coeff_write_wait_sen_stock:\n"
+        "    btfsc       SSPCON2, 0, ACCESS\n"
+        "    bra         coeff_write_wait_sen_stock\n"
+        "    bsf         SSPCON2, 2, ACCESS\n"
+        "coeff_write_pen_stock:\n"
+        "    btfss       SSPCON2, 2, ACCESS\n"
+        "    bra         coeff_write_pen_done\n"
+        "    bra         coeff_write_pen_stock\n"
+        "coeff_write_pen_done:\n"
+        "    return      0\n"
+        "\n"
+    )
+    assert mod._is_already_stock_coeff_write(_STOCK_SKELETON), (
+        "stock skeleton (control case) must match"
+    )
+
+    no_start = _STOCK_SKELETON.replace("coeff_write_wait_sen_stock:", "missing_label_a:")
+    assert not mod._is_already_stock_coeff_write(no_start), (
+        "skeleton without coeff_write_wait_sen_stock: must be rejected; "
+        "START-wait-label clause is not load-bearing"
+    )
+    no_stop = _STOCK_SKELETON.replace("coeff_write_pen_stock:", "missing_label_b:")
+    assert not mod._is_already_stock_coeff_write(no_stop), (
+        "skeleton without coeff_write_pen_stock: must be rejected; "
+        "STOP-wait-label clause is not load-bearing"
+    )
+    with_bounded = _STOCK_SKELETON.replace(
+        "    rcall       i2c_wait_bus_idle\n",
+        "    rcall       i2c_wait_bus_idle\n    rcall       wait_sen_bounded\n",
+    )
+    assert not mod._is_already_stock_coeff_write(with_bounded), (
+        "skeleton WITH wait_sen_bounded inside the function body must be "
+        "rejected; bounded-wait-absence clause is not load-bearing"
     )
 
 
