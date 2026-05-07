@@ -9218,28 +9218,23 @@ cmd21_diag_query_handler:
     ;   BF/26 = diag_a
     ;   BF/27 = diag_p  (last frame; CONTROL uses this to mark PB
     ;                    present and toggle next-target)
-    ; BSR safety: each `movf diag_X, W, BANKED` re-asserts
-    ; `movlb 0x02` because the uart_tx_byte_blocking timeout fallback
-    ; (uart_tx_timeout → uart_config) does an unconditional
-    ; `movlb 0x0` and never restores BSR.  Without re-asserting,
-    ; a TRMT timeout mid-burst would drop subsequent reads to bank 0,
-    ; producing garbage data bytes that could violate the < 0x80
-    ; chain-forwarder invariant the seven-frame protocol relies on.
-    ; Bank is 2 (not 1) because the V3.2 Layer 5 diag block was
-    ; relocated from 0x123..0x12A to 0x2E5..0x2EC on 2026-04-19 to
-    ; escape the USB EP1 OUT buffer (HID OUT) at 0x11A..0x159 — the
-    ; original placement caused HID payload byte 14 corruption on
-    ; every filename / route HID write.  See dlcp_main_ram.inc.
+    ; Implementation: rev 0x37 (Tier-1) loop refactor.  Driven by an
+    ; FSR0 walk and the shared diag_send_burst_xx helper (cmd 0x22 reuses
+    ; it).  Frees ~100 bytes of flash for the new cmd 0x22 + HID cmd 0x44
+    ; handlers vs the rev 0x35 unrolled body, but stays structurally
+    ; identical from the wire's perspective: same 7 frames, same
+    ; `andlw 0x0F` mask, same ACK-echo suppression.
     ;
-    ; Rev 0x37 (Tier-1) loop refactor: structurally identical to the
-    ; rev 0x35 unrolled body — same 7 frames, same `andlw 0x0F` mask,
-    ; same ACK-echo suppression — but driven by an FSR0 walk and a
-    ; shared diag_send_burst_xx helper that cmd 0x22 also uses.  Frees
-    ; ~100 bytes of flash for the new cmd 0x22 + HID cmd 0x44 handlers.
-    ; FSR0 indirect addressing is bank-agnostic (no movlb needed per
-    ; iteration), so the per-frame BSR re-assertion the unrolled body
-    ; needed is implicit — uart_tx_byte_blocking's timeout-fallback
-    ; `movlb 0x0` cannot affect a POSTINC0 read.
+    ; BSR safety: FSR0 indirect addressing (POSTINC0) is bank-agnostic.
+    ; The body never asserts a specific BSR; uart_tx_byte_blocking's
+    ; timeout-fallback path (uart_tx_timeout → uart_config does an
+    ; unconditional `movlb 0x0`) cannot affect a POSTINC0 read, so the
+    ; per-frame BSR re-assertion the rev 0x35 unrolled body needed is
+    ; not necessary here.  The diag block was relocated 0x123..0x12A
+    ; -> 0x2E5..0x2EC on 2026-04-19 to escape the USB EP1 OUT buffer
+    ; (HID OUT) at 0x11A..0x159 — the original placement caused HID
+    ; payload byte 14 corruption on every filename / route HID write.
+    ; See dlcp_main_ram.inc.
     movlw       0x28                        ; sentinel: stop AFTER BF/27 sent
     movwf       ram_0x004, ACCESS
     movlw       0x21                        ; first sub-cmd byte
@@ -9280,15 +9275,18 @@ cmd21_diag_query_handler:
 ; the rev 0x35 fix on cmd 0x21.
 ;
 ; Caller convention:
-;   in : nothing — reads diag_reset_por..diag_reset_sw (0x2ED..0x2F0)
-;        directly.
+;   in : nothing — body sets FSR0 to diag_reset_por (0x2ED) and tail-
+;        calls diag_send_burst_xx, which walks the 4 reset-cause flag
+;        cells via POSTINC0.
 ;   out: returns via flow_main_uart_service_1be6_1e6c (the parser tail
 ;        used by every cmd handler), so dispatch + forwarding to PB2
 ;        stays consistent with stock cmd handlers.
-;   side: BSR is left at 2 on exit (the body re-asserts movlb 0x02
-;         before each diag_reset_X read; same BSR-safety discipline as
-;         cmd21_diag_query_handler).  Callers that depend on bank 0
-;         must reset BSR themselves.
+;   side: FSR0-based reads are bank-agnostic; the body never asserts a
+;         specific bank.  uart_tx_byte_blocking's timeout fallback does
+;         an unconditional `movlb 0x0`, so a wedged-and-recovered TX
+;         path can leave BSR at 0 on exit.  Callers that depend on a
+;         specific bank must reset BSR themselves.  Same shape as
+;         cmd21_diag_query_handler; both share diag_send_burst_xx.
 ; ---------------------------------------------------------------------------
 cmd22_reset_flags_query_handler:
     ; Reuses diag_send_burst_xx (defined immediately below) — exactly
@@ -10204,7 +10202,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x42, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x43, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
