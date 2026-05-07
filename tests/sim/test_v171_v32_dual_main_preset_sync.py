@@ -118,11 +118,18 @@ _PRESET_IR_ADDR = 0x10             # V1.71 menu-configured IR address
 # user-IR test must NOT race against during its immediate-emit
 # window.
 _V171_FULL_SYNC_STEP_ADDR = 0x170
-_V171_FULL_SYNC_STEP_BEFORE_PRESET = 5  # ``incf`` then dispatch on
-                                         # the post-increment value;
-                                         # if pre-step==5, next call
-                                         # increments to 6 and emits
-                                         # preset.
+# Set of pre-call step values that could lead to step 6 (preset
+# dispatch) firing inside ``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``.
+# ``full_sync_burst`` fires roughly every ~4 M ticks (codex
+# measurement on the V1.71 display loop, asm:2793) and the window
+# is 5 M ticks, so up to TWO periodic calls can fit:
+#   * pre-step 5: 1st incf -> 6, dispatch preset.
+#   * pre-step 4: 1st incf -> 5 (standby_wake), 2nd incf -> 6
+#                  (preset) IF a 2nd call lands inside the window.
+# All other pre-step values (0, 1, 2, 3, 6) are safe -- no path
+# from them reaches step 6 within two increments (incf 6 wraps to
+# 1, dispatching volume).  The defensive guard rejects {4, 5}.
+_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR = frozenset({4, 5})
 
 # Convergence budget per switch.  V1.71 ``full_sync_burst`` advances
 # one step per ~20000 display-loop iterations; step 6 (preset frame)
@@ -314,12 +321,14 @@ def _switch_preset_via_ir(chain, target: int) -> None:
     the eventual periodic rebroadcast covering for it), this
     helper asserts that ``[B0, 0x20, target]`` appears on
     CONTROL's TX wire within a short window after IR injection
-    (``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``).  V1.71's
-    ``full_sync_burst`` step 6 fires every ~6 invocations of
-    ``full_sync_burst`` -- one invocation per ~20000 display-loop
-    iterations, so step 6 latency is on the order of 100s of M
-    ticks (>> the immediate-emit window).  Without this guard,
-    a regression in ``v171_send_preset_frame_and_persist`` could
+    (``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``).  ``full_sync_burst``
+    fires every ~4 M ticks (asm:2793 display-loop counter), so
+    up to two periodic calls can land inside the 5 M window;
+    isolation from the periodic preset broadcaster therefore
+    relies on the pre-injection guard below
+    (``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR``) keeping the next
+    ~2 increments away from step 6.  Without this guard, a
+    regression in ``v171_send_preset_frame_and_persist`` could
     pass the test as long as the periodic txonly path eventually
     rebroadcast the same bit (codex MEDIUM from bb3a67b).
     """
@@ -327,21 +336,21 @@ def _switch_preset_via_ir(chain, target: int) -> None:
     cmd = 0x39 if target == 1 else 0x38
     target_frame = (0xB0, 0x20, target)
 
-    # Defensive: ensure the next periodic full_sync_burst call within
-    # the immediate-emit window won't dispatch step 6 (preset frame).
-    # If pre-call step is 5, the next ``incf`` yields 6 and dispatches
-    # ``v171_send_preset_frame_txonly`` -- which would put a [B0,20,target]
-    # frame on the wire from the periodic path, vacuously satisfying
-    # the immediate-emit assertion below.
+    # Defensive: ensure no periodic full_sync_burst call inside the
+    # immediate-emit window can dispatch step 6 (preset).  See
+    # ``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR`` for the derivation -- at
+    # this window/period ratio, both pre-step 5 and pre-step 4 must
+    # be rejected.
     fs_step = chain.read_reg(_V171_FULL_SYNC_STEP_ADDR)
-    assert fs_step != _V171_FULL_SYNC_STEP_BEFORE_PRESET, (
-        f"v171_full_sync_step == {_V171_FULL_SYNC_STEP_BEFORE_PRESET} at "
-        f"IR injection time -- the next periodic full_sync_burst call "
-        f"would dispatch step 6 (preset) inside the "
-        f"{_IR_IMMEDIATE_EMIT_WINDOW_TICKS}-tick immediate-emit window "
-        f"and could vacuously satisfy the assertion below.  Step the "
-        f"chain a bit further before re-injecting, or restructure the "
-        f"test sequence so this hazard does not align."
+    assert fs_step not in _V171_FULL_SYNC_STEP_UNSAFE_FOR_IR, (
+        f"v171_full_sync_step == {fs_step} at IR injection time -- "
+        f"a periodic full_sync_burst call inside the "
+        f"{_IR_IMMEDIATE_EMIT_WINDOW_TICKS}-tick immediate-emit "
+        f"window could reach step 6 (preset) and vacuously satisfy "
+        f"the assertion below.  Unsafe pre-step set is "
+        f"{sorted(_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR)}.  Step the "
+        f"chain a bit further before re-injecting, or restructure "
+        f"the test sequence so this hazard does not align."
     )
 
     pre_frame_count = len(chain.tx_frames())
