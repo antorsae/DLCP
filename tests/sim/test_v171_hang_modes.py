@@ -1,10 +1,24 @@
 """V1.71 CONTROL hang-mode regression tests (per codex shipping-confidence brainstorm).
 
-Two surviving classes (the third — TX-saturation silent-drop —
-was closed structurally by commit 2a8105a's atomic 3-byte-frame
-reserve, which is pinned by tests/sim/test_v171_atomic_3byte_frame.py
-and supersedes the per-byte-abort design that earlier xfails in
-this file used to track):
+Two surviving classes.  The third (TX-saturation multi-byte
+partial-frame drop) was closed for all 3-byte routed senders by
+commit 2a8105a's atomic ``tx_ring_reserve_3`` reserve, which is
+pinned by tests/sim/test_v171_atomic_3byte_frame.py and supersedes
+the per-byte-abort design that earlier xfails in this file used to
+track.  Two ``tx_byte_enqueue`` paths remain outside that closure
+by design and are NOT regressions:
+
+  * The parser ``0xFE`` echo at ``flow_rx_parser_entry_0478`` --
+    intentionally a single-byte best-effort emit (no multi-byte
+    state to corrupt), so saturation drop is acceptable.
+  * ``v171_diag_send_query_w`` -- variable-length cmd 0x21/0x22
+    diagnostics burst that uses the per-byte ``bc <abort>``
+    pattern because atomic reserve would need to know the burst
+    length up-front.  Pinned by
+    ``test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern``
+    below as the canonical reference impl of the per-byte pattern.
+
+The two surviving hang classes:
 
   1. The 48-byte RX software ring at `rx_ring_base` (0x066..0x095)
      has no unread-data guard.  An RX storm while the main loop is in
@@ -18,14 +32,7 @@ this file used to track):
      parser's modulo state happens to align.
 
 Tests are structural source audits (Tier A) -- behavioural Tier C
-gates against gpsim/rust sim are reserved for follow-up commits.
-The diag-query helper test
-(`test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern`)
-is preserved as the canonical reference implementation of the
-per-byte-abort pattern that the diagnostics path uses; the rest of
-V1.71 uses the atomic-reserve approach instead, but the diagnostics
-path can't use atomic-reserve because its frames can vary in length
-across the cmd 0x21 / cmd 0x22 burst.
+gates against the rust sim are reserved for follow-up commits.
 """
 
 from __future__ import annotations
