@@ -54,17 +54,30 @@ Failure modes this test catches
   - Cross-talk between LEFT and RIGHT physical-bank-remapped
     addressing (codex task #45 #94 territory).
 
-Frame injection model
-=====================
+CONTROL-driven trigger model
+============================
 
-The test injects a B0/20/data frame into MAIN0's RX ring (via
-``inject_main_frames_fifo``).  V3.2 firmware processes B0 frames as
-broadcasts and forwards them via TX, so the UART coupling
-(MAIN0.TX → MAIN1.RX in the rust 3-core ring) propagates the frame
-to MAIN1, which then runs its own preset_select_handler.  This
-mirrors the real-hardware path: CONTROL emits B0/20/data on its
-TX, MAIN0 receives + processes + forwards, MAIN1 receives +
-processes.
+The test drives CONTROL's PRESET_BIT (``control_flags`` bit 6 at
+RAM 0x01F) directly and lets V1.71 Layer 2's ``full_sync_burst``
+naturally broadcast the new preset state down to both MAINs.  This
+matches the real hardware flow (every full-sync cycle re-emits the
+preset frame, which is the architectural fix for the V1.61b retry-
+queue desync — see ``dlcp_control_v171.asm:2347+``).
+
+An earlier draft of this test injected B0/20/data frames directly
+into MAIN0's RX ring, but that races against CONTROL's periodic
+preset broadcast — every cycle CONTROL re-broadcasts ITS current
+preset state, which would silently revert any direct injection
+once a step-6 ``v171_send_preset_frame_txonly`` fires.  Driving
+CONTROL's bit aligns CONTROL's broadcasts with the test's intent.
+
+Convergence is verified by polling: after each switch, the helper
+waits until BOTH MAINs report ``active_flags.bit2 == target`` AND
+``preset_job_state == IDLE`` (both per-MAIN copies of RAM 0x2DE).
+Polling protects against (a) reading state mid-HOLDING/APPLY (V3.2
+toggles ``bit2`` at HOLDING→APPLY transition before the I²C-table
+APPLY phase actually writes biquads), and (b) settle budgets that
+are too short for a full ``full_sync_burst`` cycle to reach step 6.
 """
 
 from __future__ import annotations
@@ -84,11 +97,27 @@ except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_ERROR = exc
 
 
-# V3.2 RAM map (per `src/dlcp_fw/asm/dlcp_main_v32.asm`):
+# V3.2 MAIN RAM map (per `src/dlcp_fw/asm/dlcp_main_v32.asm`):
 _ACTIVE_FLAGS = 0x05E              # bit 2 = preset selector (0=A, 1=B)
 _ACTIVE_FLAGS_PRESET_BIT = 0x04    # bit mask for bit 2
 _FILENAME_RAM_BASE = 0x2C0
 _FILENAME_RAM_LEN = 0x1E           # 30 bytes
+_PRESET_JOB_STATE = 0x2DE          # 0=IDLE,1=PENDING,2=HOLDING,3=APPLY,4=COMMIT
+_PRESET_JOB_IDLE = 0
+
+# V1.71 CONTROL RAM map (per `src/dlcp_fw/asm/dlcp_control_v171.asm`):
+_CONTROL_FLAGS_ADDR = 0x01F        # bit 6 = PRESET_BIT (0=A, 1=B)
+_CONTROL_PRESET_BIT = 6
+
+# Convergence budget per switch.  V1.71 ``full_sync_burst`` advances
+# one step per ~20000 display-loop iterations; step 6 (preset frame)
+# fires every 6 invocations.  Adding the V3.2 HOLDING (~150 ms = 7.2 M
+# ticks) + APPLY (96 I²C entries) means a full converge can take
+# 0.5..1.5 G ticks in the worst case.  The deadline is generous to
+# accommodate variability in when step-6 lands relative to the bit
+# being set.
+_SWITCH_POLL_CHUNK_TICKS = 50_000_000
+_SWITCH_POLL_CHUNKS = 60   # 60 × 50 M = 3.0 G ticks (~62 s sim)
 
 
 def _require_rust() -> None:
@@ -161,26 +190,64 @@ def _assert_mains_synchronised(chain, phase: str) -> dict[str, object]:
     return s0
 
 
-def _switch_preset_via_broadcast(chain, target: int) -> None:
-    """Inject a B0/0x20/data preset-broadcast frame at MAIN0's RX
-    ring; MAIN0's parser handles it AND forwards the broadcast to
-    MAIN1 over the UART chain coupling.  ``target`` = 0 selects
-    preset A, 1 selects preset B.
-
-    Settle budget: the V3.2 preset_select_handler sets
-    preset_job_state=PENDING and runs the actual DSP-coefficient
-    swap asynchronously over many cycles.  Step a generous
-    ~100 M ticks (≈ 2 s sim) for the job state machine to land at
-    final preset state on both MAINs.
-    """
+def _set_control_preset_bit(chain, target: int) -> None:
+    """Force CONTROL's PRESET_BIT (control_flags.bit6) to ``target``.
+    V1.71 Layer 2 ``full_sync_burst`` step 6 will then naturally
+    broadcast the new preset down to both MAINs."""
     assert target in (0, 1), f"target must be 0 (A) or 1 (B); got {target}"
-    chain.inject_main_frames_fifo([[0xB0, 0x20, target]], fifo_limit=47)
-    # The V3.2 preset job machine + chain-forward to MAIN1 needs
-    # ample budget.  Test_main_gpsim_usb_engine uses 6M Tcy (≈96M
-    # ticks at 16 ticks/Tcy K20 default) for single-MAIN preset
-    # switching; doubling that for the chain case to cover
-    # MAIN0 -> MAIN0.TX -> MAIN1.RX -> MAIN1 forward latency.
-    chain.step_ticks(200_000_000)
+    flags = chain.read_reg(_CONTROL_FLAGS_ADDR)
+    mask = 1 << _CONTROL_PRESET_BIT
+    if target:
+        flags |= mask
+    else:
+        flags &= ~mask
+    chain.write_reg(_CONTROL_FLAGS_ADDR, flags & 0xFF)
+
+
+def _switch_preset_via_control(chain, target: int) -> None:
+    """Drive CONTROL to broadcast preset ``target`` (0=A, 1=B) and
+    poll until BOTH MAINs converge on (``active_flags.bit2 ==
+    target``) AND (``preset_job_state == IDLE``).  Raises an
+    AssertionError if the chain hasn't converged within the
+    deadline.
+
+    Why poll instead of fixed-budget step:
+      * V3.2 toggles ``active_flags.bit2`` at the HOLDING -> APPLY
+        transition (asm:9582), BEFORE APPLY's 96-entry I²C cycle
+        completes.  Reading bit2 alone could observe "switched"
+        while DSP biquads are still mid-write.
+      * Polling on ``preset_job_state == IDLE`` ensures APPLY +
+        COMMIT have fully finished.
+      * V1.71 ``full_sync_burst`` step 6 (preset frame) only fires
+        every 6 cycles, so a fixed-budget settle that's too short
+        could miss the broadcast entirely.
+    """
+    _set_control_preset_bit(chain, target)
+    for _ in range(_SWITCH_POLL_CHUNKS):
+        chain.step_ticks(_SWITCH_POLL_CHUNK_TICKS)
+        af0 = chain.read_main_reg(0, _ACTIVE_FLAGS)
+        af1 = chain.read_main_reg(1, _ACTIVE_FLAGS)
+        bit0 = (af0 & _ACTIVE_FLAGS_PRESET_BIT) >> 2
+        bit1 = (af1 & _ACTIVE_FLAGS_PRESET_BIT) >> 2
+        pjs0 = chain.read_main_reg(0, _PRESET_JOB_STATE)
+        pjs1 = chain.read_main_reg(1, _PRESET_JOB_STATE)
+        if (
+            bit0 == target
+            and bit1 == target
+            and pjs0 == _PRESET_JOB_IDLE
+            and pjs1 == _PRESET_JOB_IDLE
+        ):
+            return
+    af0 = chain.read_main_reg(0, _ACTIVE_FLAGS)
+    af1 = chain.read_main_reg(1, _ACTIVE_FLAGS)
+    pjs0 = chain.read_main_reg(0, _PRESET_JOB_STATE)
+    pjs1 = chain.read_main_reg(1, _PRESET_JOB_STATE)
+    raise AssertionError(
+        f"chain failed to converge on preset target={target} within "
+        f"{_SWITCH_POLL_CHUNKS * _SWITCH_POLL_CHUNK_TICKS} ticks: "
+        f"M0(af=0x{af0:02X} bit2={(af0 >> 2) & 1} pjs={pjs0}) "
+        f"M1(af=0x{af1:02X} bit2={(af1 >> 2) & 1} pjs={pjs1})"
+    )
 
 
 @pytest.mark.dual_supported
@@ -218,7 +285,7 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
     )
 
     # Phase B1: switch to preset B.
-    _switch_preset_via_broadcast(chain, target=1)
+    _switch_preset_via_control(chain, target=1)
     snap_B1 = _assert_mains_synchronised(chain, phase="B1-switched-to-B")
     assert snap_B1["preset_bit"] is True, (
         f"after B0/20/01 broadcast, active_flags.bit2 must be 1 (preset B); "
@@ -230,7 +297,7 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
     _assert_snapshot_differs(snap_A1, snap_B1, phase_a="A1", phase_b="B1")
 
     # Phase A2: switch back to preset A.
-    _switch_preset_via_broadcast(chain, target=0)
+    _switch_preset_via_control(chain, target=0)
     snap_A2 = _assert_mains_synchronised(chain, phase="A2-switched-back-to-A")
     assert snap_A2["preset_bit"] is False, (
         f"after B0/20/00 broadcast, active_flags.bit2 must be 0 (preset A); "
@@ -238,7 +305,7 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
     )
 
     # Phase B2: switch to preset B again.
-    _switch_preset_via_broadcast(chain, target=1)
+    _switch_preset_via_control(chain, target=1)
     snap_B2 = _assert_mains_synchronised(chain, phase="B2-switched-to-B-again")
     assert snap_B2["preset_bit"] is True
 
@@ -297,21 +364,20 @@ def test_dual_main_preset_bit_tracks_broadcast_payload() -> None:
         f"got 0x{af1:02X}"
     )
 
-    # Drive the broadcast cycle and assert both MAINs' bit2 follow.
-    # Cycle length matches the biquad test (4 switches) to keep the
-    # rapid back-to-back stress consistent across the focused tests.
-    # Pushing to 5 switches with only 200 M ticks settle between each
-    # observed a residual queued preset_job (state=HOLDING, pjt=0)
-    # left over after iter4 in a separate diagnostic run -- not the
-    # behaviour this test is trying to verify, so we cap at 4.
+    # Drive the CONTROL preset bit cycle and assert both MAINs'
+    # bit2 follow.  ``_switch_preset_via_control`` polls until both
+    # MAINs reach (bit2 == target) AND (preset_job_state == IDLE),
+    # so the assertions below are a redundant final check rather
+    # than a gate against in-flight job state -- but they catch
+    # a regression where the polling helper wrongly returns early.
     for target in (1, 0, 1, 0):
-        _switch_preset_via_broadcast(chain, target=target)
+        _switch_preset_via_control(chain, target=target)
         af0 = chain.read_main_reg(0, _ACTIVE_FLAGS)
         af1 = chain.read_main_reg(1, _ACTIVE_FLAGS)
         bit0 = (af0 & _ACTIVE_FLAGS_PRESET_BIT) >> 2
         bit1 = (af1 & _ACTIVE_FLAGS_PRESET_BIT) >> 2
         assert bit0 == target and bit1 == target, (
-            f"after B0/0x20/0x{target:02X}: "
+            f"after CONTROL preset bit set to {target}: "
             f"MAIN0.bit2={bit0} (af=0x{af0:02X}), "
             f"MAIN1.bit2={bit1} (af=0x{af1:02X}); expected both = {target}"
         )
@@ -361,6 +427,23 @@ def test_dual_main_dsp_biquad_byte_equal_after_each_switch() -> None:
                 f"{[(f'0x{i:02X}', f'0x{a:02X}', f'0x{b:02X}') for i, a, b in diffs[:10]]}"
             )
 
+    def _assert_switch_was_delivered(label: str, target: int) -> None:
+        """Guard against vacuous biquad-equality: if the switch never
+        actually reached the firmware, both MAINs would trivially
+        match on whatever state they had before.  Verify by reading
+        active_flags.bit2 on both MAINs (proves the broadcast was
+        delivered AND the preset_select_handler executed)."""
+        af0 = chain.read_main_reg(0, _ACTIVE_FLAGS)
+        af1 = chain.read_main_reg(1, _ACTIVE_FLAGS)
+        bit0 = (af0 & _ACTIVE_FLAGS_PRESET_BIT) >> 2
+        bit1 = (af1 & _ACTIVE_FLAGS_PRESET_BIT) >> 2
+        assert bit0 == target and bit1 == target, (
+            f"[{label}] switch delivery guard failed: "
+            f"M0(af=0x{af0:02X} bit2={bit0}) M1(af=0x{af1:02X} bit2={bit1}); "
+            f"expected both bit2={target}.  Biquad-equality assertion "
+            f"would have passed vacuously without this guard."
+        )
+
     _assert_biquads_equal("boot-default-A")
     for label, target in [
         ("after-switch-to-B", 1),
@@ -368,7 +451,8 @@ def test_dual_main_dsp_biquad_byte_equal_after_each_switch() -> None:
         ("after-switch-to-B-again", 1),
         ("after-switch-back-to-A-again", 0),
     ]:
-        _switch_preset_via_broadcast(chain, target=target)
+        _switch_preset_via_control(chain, target=target)
+        _assert_switch_was_delivered(label, target)
         _assert_biquads_equal(label)
 
 
