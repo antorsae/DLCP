@@ -334,13 +334,11 @@ def _switch_preset_via_ir(chain, target: int) -> None:
     the eventual periodic rebroadcast covering for it), this
     helper asserts that ``[B0, 0x20, target]`` appears on
     CONTROL's TX wire within a short window after IR injection
-    (``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``).  ``full_sync_burst``
-    fires every ~4 M ticks (asm:2793 display-loop counter), so
-    up to two periodic calls can land inside the 5 M window;
-    isolation from the periodic preset broadcaster therefore
-    relies on the pre-injection guard below
-    (``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR``) keeping the next
-    ~2 increments away from step 6.  Without this guard, a
+    (``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``).  Isolation from the
+    periodic preset broadcaster relies on the pre-injection guard
+    below (``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR``); see that
+    constant's comment for the case analysis and the empirical-
+    vs-conservative period reasoning.  Without the guard, a
     regression in ``v171_send_preset_frame_and_persist`` could
     pass the test as long as the periodic txonly path eventually
     rebroadcast the same bit (codex MEDIUM from bb3a67b).
@@ -351,9 +349,10 @@ def _switch_preset_via_ir(chain, target: int) -> None:
 
     # Defensive: ensure no periodic full_sync_burst call inside the
     # immediate-emit window can dispatch step 6 (preset).  See
-    # ``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR`` for the derivation -- at
-    # this window/period ratio, both pre-step 5 and pre-step 4 must
-    # be rejected.
+    # ``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR`` for the derivation;
+    # the conservative two-increment rule rejects {4, 5} so the
+    # guard stays correct under boot-transient cadence and under
+    # future display-loop changes that might compress the period.
     fs_step = chain.read_reg(_V171_FULL_SYNC_STEP_ADDR)
     assert fs_step not in _V171_FULL_SYNC_STEP_UNSAFE_FOR_IR, (
         f"v171_full_sync_step == {fs_step} at IR injection time -- "
