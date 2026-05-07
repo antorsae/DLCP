@@ -105,11 +105,24 @@ _FILENAME_RAM_LEN = 0x1E           # 30 bytes
 _PRESET_JOB_STATE = 0x2DE          # 0=IDLE,1=PENDING,2=HOLDING,3=APPLY,4=COMMIT
 _PRESET_JOB_IDLE = 0
 
-# V1.71 CONTROL RAM map (per `src/dlcp_fw/asm/dlcp_control_v171.asm`):
+# V1.71 CONTROL RAM map (per `src/dlcp_fw/asm/dlcp_control_v171.asm`
+# and `src/dlcp_fw/asm/dlcp_control_ram.inc`):
 _CONTROL_FLAGS_ADDR = 0x01F        # bit 6 = PRESET_BIT (0=A, 1=B)
 _CONTROL_PRESET_BIT = 6
 _PRESET_IR_ADDR = 0x10             # V1.71 menu-configured IR address
                                     # cmd 0x38 -> preset A, 0x39 -> preset B
+# v171_full_sync_step lives at bank-1 offset 0x70 (BANKED accesses
+# after `movlb 0x01` per asm:2371-2372).  Physical address = 0x170.
+# Step counter cycles 1..6; step 6 emits the periodic preset frame
+# (`v171_send_preset_frame_txonly` at asm:3274), which is what the
+# user-IR test must NOT race against during its immediate-emit
+# window.
+_V171_FULL_SYNC_STEP_ADDR = 0x170
+_V171_FULL_SYNC_STEP_BEFORE_PRESET = 5  # ``incf`` then dispatch on
+                                         # the post-increment value;
+                                         # if pre-step==5, next call
+                                         # increments to 6 and emits
+                                         # preset.
 
 # Convergence budget per switch.  V1.71 ``full_sync_burst`` advances
 # one step per ~20000 display-loop iterations; step 6 (preset frame)
@@ -124,10 +137,19 @@ _SWITCH_POLL_CHUNKS = 60   # 60 × 50 M = 3.0 G ticks (~62 s sim)
 # Window in which the IR-driven immediate emit must appear on
 # CONTROL's TX.  At 31250 baud the 3-byte frame transmits in
 # ~960 µs (~46 K ticks at 48 MHz universal clock).  Pad to 5 M
-# ticks to absorb dispatcher latency and any IR-handoff settle,
-# while staying well under the periodic full_sync_burst step-6
-# latency (~100s of M ticks) so a periodic rebroadcast cannot
-# accidentally satisfy the assertion.
+# ticks to absorb dispatcher latency and any IR-handoff settle.
+#
+# Isolation from the periodic broadcaster: ``full_sync_burst``
+# itself fires every ~4 M ticks (codex measurement on the V1.71
+# display loop), but it dispatches the PRESET frame only when
+# the post-increment ``v171_full_sync_step`` lands on 6 (i.e.
+# pre-call step == 5).  The IR helper therefore asserts the
+# pre-call step is NOT 5 before injection, so the next periodic
+# call inside the 5 M window (if any) is a non-preset frame
+# (volume/input/mute/cmd1d_setting/standby_wake).  This makes
+# the immediate-emit assertion robust to test-sequence reorders;
+# without the step guard a rebroadcast race could vacuously
+# satisfy the assertion (codex LOW from 3e497e8).
 _IR_IMMEDIATE_EMIT_WINDOW_TICKS = 5_000_000
 
 
@@ -304,6 +326,24 @@ def _switch_preset_via_ir(chain, target: int) -> None:
     assert target in (0, 1), f"target must be 0 (A) or 1 (B); got {target}"
     cmd = 0x39 if target == 1 else 0x38
     target_frame = (0xB0, 0x20, target)
+
+    # Defensive: ensure the next periodic full_sync_burst call within
+    # the immediate-emit window won't dispatch step 6 (preset frame).
+    # If pre-call step is 5, the next ``incf`` yields 6 and dispatches
+    # ``v171_send_preset_frame_txonly`` -- which would put a [B0,20,target]
+    # frame on the wire from the periodic path, vacuously satisfying
+    # the immediate-emit assertion below.
+    fs_step = chain.read_reg(_V171_FULL_SYNC_STEP_ADDR)
+    assert fs_step != _V171_FULL_SYNC_STEP_BEFORE_PRESET, (
+        f"v171_full_sync_step == {_V171_FULL_SYNC_STEP_BEFORE_PRESET} at "
+        f"IR injection time -- the next periodic full_sync_burst call "
+        f"would dispatch step 6 (preset) inside the "
+        f"{_IR_IMMEDIATE_EMIT_WINDOW_TICKS}-tick immediate-emit window "
+        f"and could vacuously satisfy the assertion below.  Step the "
+        f"chain a bit further before re-injecting, or restructure the "
+        f"test sequence so this hazard does not align."
+    )
+
     pre_frame_count = len(chain.tx_frames())
     chain.inject_decoded_ir_event(addr=_PRESET_IR_ADDR, cmd=cmd)
     chain.step_ticks(_IR_IMMEDIATE_EMIT_WINDOW_TICKS)
