@@ -18,10 +18,12 @@ by design and are NOT regressions:
     would also work here, but the per-byte abort path is
     structurally pinned by
     ``test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern``
-    below so future contributors have a worked example of the
-    pattern when bursts of variable length DO need it (e.g. the
-    cmd 0x21 / cmd 0x22 dispatch loops that call the helper 7 or
-    4 times in a row).
+    below so future contributors have a worked example.  (The
+    actual variable-length burst lives on the V3.2 MAIN reply
+    side -- ``cmd21_diag_query_handler`` /
+    ``cmd22_reset_flags_query_handler`` branch into
+    ``diag_send_burst_xx`` which loops to emit 7 or 4 BF/2N reply
+    frames; that lives in dlcp_main_v32.asm, not here.)
 
 The two surviving hang classes:
 
