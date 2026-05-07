@@ -178,7 +178,10 @@ preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read 
 ; instrumentation hooks placed at the named V3.x code paths per
 ; docs/V163B_DIAGNOSTICS_MENU_SPEC.md.  Each counter is one byte at
 ; 0x2E5..0x2EB (bank 2, see dlcp_main_ram.inc).  The counters saturate at
-; 0x0F so the cmd 0x21 reply burst's packed-nibble encoding fits.
+; 0x0F so the rev 0x37 cmd 0x21 / cmd 0x22 reply burst (one frame per
+; counter / reset-cause flag, low nibble carries the value, high nibble
+; forced to 0 by the shared diag_send_burst_xx mask) stays inside the
+; chain-forwarder's < 0x80 data-byte invariant.
 ;
 ; Side effects: clobbers BSR (caller must re-establish if it cares).
 ; Most hook sites are at routine returns / tail-calls where BSR is reset
@@ -188,12 +191,14 @@ preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read 
 ; value > 0x0F (e.g. RAM corruption from FSR overrun, uninitialized boot
 ; on a non-BOR reset, or a stray write into the diag block), the original
 ; macro would `cpfslt < 0x0F`, fail to skip, fall through to `bra $+4`,
-; and leave the corrupt value untouched.  cmd 0x21 then transmits the
-; corrupt nibble pair verbatim and the operator's Diag-page cells stick
-; at non-physical values forever.  The defense is layered: the cmd
-; 0x21/0x22 send helper masks the wire byte with `andlw 0x0F` (asm:9299-
-; 9301), AND this macro now self-clamps any counter > 0x0F back to 0x0F
-; on the next increment so the in-RAM cell heals too.
+; and leave the corrupt value untouched.  cmd 0x21 then transmitted the
+; corrupt low nibble verbatim and the operator's Diag-page cell stuck at
+; whatever glyph the corrupt value rendered to, forever.  The defense is
+; layered: the diag_send_burst_xx helper masks the wire byte with
+; `andlw 0x0F` (see the mask instruction at the burst-loop body — search
+; for `chain-forwarder safe` in this file), AND this macro now self-
+; clamps any counter > 0x0F back to 0x0F on the next increment so the
+; in-RAM cell heals too.
 ;
 ; Branch shape:
 ;   counter > 0x0F  →  movwf counter (W=0x0F)  →  done    (clamp)
@@ -10202,7 +10207,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x43, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x44, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
