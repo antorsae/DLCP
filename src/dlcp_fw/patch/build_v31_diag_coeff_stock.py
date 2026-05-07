@@ -101,13 +101,15 @@ def _is_already_stock_coeff_write(text: str) -> bool:
     only the STOP-wait label (``coeff_write_pen_stock:`` was a
     legacy-named timeout fall-through label, kept across the rev)
     but lacks the START-wait stock label AND does call
-    ``wait_sen_bounded`` -- so all three clauses agree to reject it.
-    The triple-clause check is intentionally belt-and-suspenders:
-    the START-wait-label clause alone distinguishes the two shapes
-    today, but the STOP-wait-label and bounded-wait-absence clauses
-    each guard against a hypothetical future variant that would
-    otherwise flip the verdict (e.g. a partial rewrite that adds
-    one stock label while keeping bounded waits).
+    ``wait_sen_bounded`` -- two of the three clauses reject it
+    (missing START label, present bounded-wait call), while the
+    STOP-label clause is satisfied.  The combined predicate is
+    intentionally belt-and-suspenders: the START-wait-label clause
+    alone distinguishes the two shapes today, but the
+    STOP-wait-label and bounded-wait-absence clauses each guard
+    against a hypothetical future variant that would otherwise
+    flip the verdict (e.g. a partial rewrite that adds one stock
+    label while keeping bounded waits).
     """
     body_start = text.find("i2c_tas3108_coeff_write:")
     if body_start < 0:
