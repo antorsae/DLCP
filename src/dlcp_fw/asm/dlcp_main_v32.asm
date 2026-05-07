@@ -184,13 +184,40 @@ preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read 
 ; Most hook sites are at routine returns / tail-calls where BSR is reset
 ; on the next instruction anyway — see hook annotations.
 ;
+; Self-healing upper bound (V3.2 hardening): if a counter cell holds a
+; value > 0x0F (e.g. RAM corruption from FSR overrun, uninitialized boot
+; on a non-BOR reset, or a stray write into the diag block), the original
+; macro would `cpfslt < 0x0F`, fail to skip, fall through to `bra $+4`,
+; and leave the corrupt value untouched.  cmd 0x21 then transmits the
+; corrupt nibble pair verbatim and the operator's Diag-page cells stick
+; at non-physical values forever.  The defense is layered: the cmd
+; 0x21/0x22 send helper masks the wire byte with `andlw 0x0F` (asm:9299-
+; 9301), AND this macro now self-clamps any counter > 0x0F back to 0x0F
+; on the next increment so the in-RAM cell heals too.
+;
+; Branch shape:
+;   counter > 0x0F  →  movwf counter (W=0x0F)  →  done    (clamp)
+;   counter == 0x0F →  done                              (saturate)
+;   counter <  0x0F →  incf counter                      (increment)
+;
+; LOCAL labels are required so each macro expansion gets unique label
+; names; the previous `bra $+4` style is replaced because the new shape
+; has two forward branches and a hand-counted offset is brittle.
+;
 ; Usage:    diag_inc_sat   diag_i
 diag_inc_sat MACRO counter
-    movlb   0x02                        ; V3.2 Layer 5 diag block now in BANK 2
+    LOCAL   _check_low, _done
+    movlb   0x02                        ; V3.2 Layer 5 diag block in BANK 2
     movlw   0x0F
+    cpfsgt  counter, BANKED             ; skip if counter > 0x0F
+    bra     _check_low
+    movwf   counter, BANKED             ; counter > 0x0F: clamp to 0x0F (W=0x0F)
+    bra     _done
+_check_low:
     cpfslt  counter, BANKED             ; skip if counter < 0x0F
-    bra     $+4                         ; (executed when counter >= 0x0F → no inc)
-    incf    counter, F, BANKED          ; (executed when counter < 0x0F → inc)
+    bra     _done                       ; counter == 0x0F: saturate (no inc)
+    incf    counter, F, BANKED          ; counter < 0x0F: increment
+_done:
     ENDM
 
 ; ---------------------------------------------------------------------------
@@ -10175,7 +10202,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x40, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

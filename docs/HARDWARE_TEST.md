@@ -1066,6 +1066,15 @@ Counter values render as:
 | `A`..`E` | counter values 10..14 |
 | `+` | counter is saturated at 0x0F (15+ events) |
 
+V3.2 hardens this further with a self-healing upper bound: if a
+counter cell ever holds a value above 0x0F (RAM corruption from FSR
+overrun, uninitialized cells on a non-BOR reset, stray write into the
+diag block, etc.), the next `diag_inc_sat` invocation clamps the cell
+back to 0x0F before any other check fires.  Combined with the
+`andlw 0x0F` mask in the cmd 0x21/0x22 send helper
+(`dlcp_main_v32.asm:9299-9301`), the diag page can no longer get
+stuck rendering non-physical glyphs from a corrupted in-RAM cell.
+
 ### Triggering counter increments
 
 Some counters are easy to bump on the rig:
