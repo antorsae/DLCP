@@ -121,6 +121,15 @@ _PRESET_IR_ADDR = 0x10             # V1.71 menu-configured IR address
 _SWITCH_POLL_CHUNK_TICKS = 50_000_000
 _SWITCH_POLL_CHUNKS = 60   # 60 × 50 M = 3.0 G ticks (~62 s sim)
 
+# Window in which the IR-driven immediate emit must appear on
+# CONTROL's TX.  At 31250 baud the 3-byte frame transmits in
+# ~960 µs (~46 K ticks at 48 MHz universal clock).  Pad to 5 M
+# ticks to absorb dispatcher latency and any IR-handoff settle,
+# while staying well under the periodic full_sync_burst step-6
+# latency (~100s of M ticks) so a periodic rebroadcast cannot
+# accidentally satisfy the assertion.
+_IR_IMMEDIATE_EMIT_WINDOW_TICKS = 5_000_000
+
 
 def _require_rust() -> None:
     if not _RUST_CHAIN_IMPORT_OK:
@@ -277,10 +286,37 @@ def _switch_preset_via_ir(chain, target: int) -> None:
     (asm:3306) which IMMEDIATELY emits ``[B0, 0x20, target]`` AND
     writes EEPROM 0x74 -- distinct from the periodic
     ``v171_send_preset_frame_txonly`` (asm:3274) the
-    control-bit-direct path eventually exercises."""
+    control-bit-direct path eventually exercises.
+
+    To prove the IMMEDIATE-emit path actually fired (rather than
+    the eventual periodic rebroadcast covering for it), this
+    helper asserts that ``[B0, 0x20, target]`` appears on
+    CONTROL's TX wire within a short window after IR injection
+    (``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``).  V1.71's
+    ``full_sync_burst`` step 6 fires every ~6 invocations of
+    ``full_sync_burst`` -- one invocation per ~20000 display-loop
+    iterations, so step 6 latency is on the order of 100s of M
+    ticks (>> the immediate-emit window).  Without this guard,
+    a regression in ``v171_send_preset_frame_and_persist`` could
+    pass the test as long as the periodic txonly path eventually
+    rebroadcast the same bit (codex MEDIUM from bb3a67b).
+    """
     assert target in (0, 1), f"target must be 0 (A) or 1 (B); got {target}"
     cmd = 0x39 if target == 1 else 0x38
+    target_frame = (0xB0, 0x20, target)
+    pre_frame_count = len(chain.tx_frames())
     chain.inject_decoded_ir_event(addr=_PRESET_IR_ADDR, cmd=cmd)
+    chain.step_ticks(_IR_IMMEDIATE_EMIT_WINDOW_TICKS)
+    new_frames = chain.tx_frames()[pre_frame_count:]
+    assert target_frame in new_frames, (
+        f"after IR cmd=0x{cmd:02X}, expected immediate-emit of "
+        f"{target_frame!r} on CONTROL TX within "
+        f"{_IR_IMMEDIATE_EMIT_WINDOW_TICKS} ticks; got new TX frames: "
+        f"{new_frames!r}.  This proves "
+        f"v171_send_preset_frame_and_persist (asm:3306) actually fired "
+        f"-- without this guard, the periodic full_sync_burst step 6 "
+        f"rebroadcast could mask a regression in the immediate-emit path."
+    )
     _wait_for_preset_convergence(
         chain, target, trigger=f"user IR cmd=0x{cmd:02X}"
     )
