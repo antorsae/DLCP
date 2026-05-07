@@ -9179,15 +9179,17 @@ send_dsp_fault_status:
 ; CONTROL-side rendering rules.
 ;
 ; Caller convention:
-;   in : nothing — reads diag_i..diag_p (0x123..0x129) directly.
+;   in : nothing — body sets FSR0 to diag_i (0x2E5) and tail-calls
+;        diag_send_burst_xx, which walks the 7 counters via POSTINC0.
 ;   out: returns via flow_main_uart_service_1be6_1e6c (the parser tail
 ;        used by every cmd handler), so dispatch+forwarding to PB2 stays
 ;        consistent with stock cmd handlers.
-;   side: BSR is left at 1 on exit (the body re-asserts movlb 0x01
-;         before each diag_X read, so this is a side-effect of the
-;         final read, not a guarantee).  Callers that depend on bank 0
-;         must reset BSR themselves.  uart_tx_byte_blocking is bounded
-;         so a wedged TX path cannot hang here.
+;   side: FSR0-based reads are bank-agnostic; the body never asserts a
+;         specific bank.  uart_tx_byte_blocking's timeout fallback does
+;         an unconditional `movlb 0x0`, so a wedged-and-recovered TX
+;         path can leave BSR at 0 on exit.  Callers that depend on a
+;         specific bank must reset BSR themselves.  uart_tx_byte_blocking
+;         is bounded so a wedged TX path cannot hang here.
 ; ---------------------------------------------------------------------------
 cmd21_diag_query_handler:
     ; ---------------------------------------------------------------
@@ -10202,7 +10204,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x41, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x42, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
