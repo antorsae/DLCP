@@ -120,15 +120,29 @@ _PRESET_IR_ADDR = 0x10             # V1.71 menu-configured IR address
 _V171_FULL_SYNC_STEP_ADDR = 0x170
 # Set of pre-call step values that could lead to step 6 (preset
 # dispatch) firing inside ``_IR_IMMEDIATE_EMIT_WINDOW_TICKS``.
-# ``full_sync_burst`` fires roughly every ~4 M ticks (codex
-# measurement on the V1.71 display loop, asm:2793) and the window
-# is 5 M ticks, so up to TWO periodic calls can fit:
-#   * pre-step 5: 1st incf -> 6, dispatch preset.
-#   * pre-step 4: 1st incf -> 5 (standby_wake), 2nd incf -> 6
-#                  (preset) IF a 2nd call lands inside the window.
-# All other pre-step values (0, 1, 2, 3, 6) are safe -- no path
-# from them reaches step 6 within two increments (incf 6 wraps to
-# 1, dispatching volume).  The defensive guard rejects {4, 5}.
+#
+# Two-increment derivation: walk pre-steps 0..6 against the rule
+# "no path reaches step 6 within 2 incf increments":
+#
+#   * pre-step 5: 1st incf -> 6 (preset).            UNSAFE
+#   * pre-step 4: 1st incf -> 5, 2nd incf -> 6.      UNSAFE
+#   * pre-step 3: 1st incf -> 4, 2nd incf -> 5.      safe
+#   * pre-step 2: 1st incf -> 3, 2nd incf -> 4.      safe
+#   * pre-step 1: 1st incf -> 2, 2nd incf -> 3.      safe
+#   * pre-step 0: 1st incf -> 1, 2nd incf -> 2.      safe
+#   * pre-step 6: 1st incf -> 7 wrap to 1, then -> 2. safe
+#
+# Why two increments and not one: codex measurements on the V1.71
+# display loop (asm:2793) recorded the periodic ``full_sync_burst``
+# call cadence at ~4 M ticks during boot transient and ~50 M ticks
+# in steady state (post-``run_until_connected`` + 50 M settle).
+# In steady state only one call fits inside 5 M ticks, so a one-
+# increment guard ({5}) would suffice, but the conservative two-
+# increment guard ({4, 5}) protects against the boot-transient
+# cadence and against future display-loop changes that might
+# compress the period.  Over-rejection cost is small (rejects 2
+# of 7 step values, ~29%), under-rejection cost is silent
+# vacuous-pass on the immediate-emit assertion.
 _V171_FULL_SYNC_STEP_UNSAFE_FOR_IR = frozenset({4, 5})
 
 # Convergence budget per switch.  V1.71 ``full_sync_burst`` advances
@@ -147,16 +161,15 @@ _SWITCH_POLL_CHUNKS = 60   # 60 × 50 M = 3.0 G ticks (~62 s sim)
 # ticks to absorb dispatcher latency and any IR-handoff settle.
 #
 # Isolation from the periodic broadcaster: ``full_sync_burst``
-# itself fires every ~4 M ticks (codex measurement on the V1.71
-# display loop), but it dispatches the PRESET frame only when
-# the post-increment ``v171_full_sync_step`` lands on 6 (i.e.
-# pre-call step == 5).  The IR helper therefore asserts the
-# pre-call step is NOT 5 before injection, so the next periodic
-# call inside the 5 M window (if any) is a non-preset frame
-# (volume/input/mute/cmd1d_setting/standby_wake).  This makes
-# the immediate-emit assertion robust to test-sequence reorders;
-# without the step guard a rebroadcast race could vacuously
-# satisfy the assertion (codex LOW from 3e497e8).
+# dispatches the PRESET frame only when the post-increment
+# ``v171_full_sync_step`` lands on 6.  The IR helper rejects any
+# pre-call step in ``_V171_FULL_SYNC_STEP_UNSAFE_FOR_IR`` so no
+# periodic call inside the 5 M window can dispatch step 6.  See
+# the constant's comment for the full case analysis and the
+# conservative-vs-empirical period reasoning; the assertion is
+# robust to test-sequence reorders that would otherwise let a
+# periodic rebroadcast vacuously satisfy the immediate-emit
+# assertion below (codex LOW from 3e497e8 + 25072cc).
 _IR_IMMEDIATE_EMIT_WINDOW_TICKS = 5_000_000
 
 
