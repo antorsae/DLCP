@@ -12,7 +12,7 @@ the V1.71 deferred-decode service routine
 
 This test drives a real Manchester-encoded RC5 pulse train at
 CONTROL's RB5 input pin with 889 µs half-bit timing, then asserts
-that the V1.71 inline IR dispatch emits the expected standby/wake
+that the V1.71 inline IR dispatch emits the expected standby
 frame to CONTROL's TX stream.  Asserting on the TX frame (rather
 than on the transient ``ir_decoded_cmd``/``ir_decoded_addr``
 register state) is the correct functional contract: the deferred
@@ -91,9 +91,17 @@ except Exception as exc:  # pragma: no cover
 #     under the inverted convention, the falling edge happens at
 #     the mid-bit transition (HIGH first half → LOW second half).
 #     So decoder enters during S1's second half with RB5 LOW.
-#   - Mid-bit sample reads LOW → decoder shifts in 0; reads HIGH →
-#     decoder shifts in 1.  Combined with the inverted Manchester,
-#     this produces the right RC5 cmd byte at ir_decoded_cmd.
+#   - Sample-shift polarity (asm:573-576):
+#       bsf STATUS, C, A      ; assume bit value = 1
+#       btfsc PORTB, RB5, A   ; skip clear-C if RB5 LOW
+#       bcf STATUS, C, A      ; clear C → bit value = 0
+#       rlcf INDF0, F, A      ; rotate C into accumulator
+#     So the decoder shifts in '1' when RB5 reads LOW, '0' when
+#     RB5 reads HIGH -- the opposite of a naïve "level == bit"
+#     reading.  Combined with the inverted Manchester driving
+#     above (bit '1' at the MCU pin = HIGH first-half → LOW
+#     second-half), the decoder reading LOW in the second-half
+#     sample-window correctly shifts in '1'.
 
 # K20 timing: the rust sim's K20 default uses
 # `peripherals::osc::ticks_per_tcy(K20) = 16` at a 48 MHz universal
@@ -186,18 +194,24 @@ def _drive_rc5_pulse_train(chain, addr: int, cmd: int, toggle: int = 0) -> None:
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
-    """Drive RC5 (addr=0x10, cmd=0x3A) at CONTROL.RB5 and verify the
-    decoder produces ``ir_decoded_cmd == 0x3A`` AND the V1.71 inline
-    IR dispatch emits ``[B0, 03, 00]`` (standby frame).
+    """Drive RC5 (addr=0x10, cmd=0x3A) at CONTROL.RB5 and verify
+    the V1.71 inline IR dispatch emits ``[B0, 03, 00]`` (standby
+    frame) to CONTROL's TX stream.
 
-    This exercises the FULL IR path:
-      RBIF ISR latch → v171_ir_decode_pending → foreground
-      v171_service_pending_ir_decode → ir_rc5_decode → inline
-      dispatch.
+    This exercises the FULL IR pipeline:
+      RB5 falling edge → port-B IOC → RBIF → ISR latch
+      ``v171_ir_decode_pending`` → foreground
+      ``v171_service_pending_ir_decode`` → ``ir_rc5_decode``
+      bit-bang → inline dispatch → ``v171_send_standby_cmd_frame``
+      → TX standby frame.
 
-    It will FAIL if commit ``bc61c70``'s deferred foreground
-    decode breaks RC5 timing reliability (the bug under
-    investigation).
+    Asserts on the TX frame rather than ``ir_decoded_cmd`` because
+    the latter is transient mid-state -- the deferred decoder runs
+    MID-pulse-train, writes the cmd byte briefly while the
+    dispatch fires, then a SECOND decoder run later in the same
+    train (re-latched pending=0xFF on subsequent RB5 edges) takes
+    the abort path and overwrites it back to 0xFF.  The TX frame
+    is the durable functional outcome.
     """
     _require_rust()
     chain = RustChain.from_v17_chain(str(v171_hex))
@@ -325,7 +339,7 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
 # be tuned so the decoder's full 14-bit window is sampled.
 
 
-# Note: both tests print the v171_ir_decode_pending and
+# Note: the standby test prints the v171_ir_decode_pending and
 # control_flags state at pre / post-train / post-settle points.
 # A healthy IOC->RBIF->ISR->pending chain shows post-train
 # pending=0xFF (ISR latched at least one RB5 edge during the
