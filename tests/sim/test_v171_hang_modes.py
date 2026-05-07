@@ -1,56 +1,43 @@
 """V1.71 CONTROL hang-mode regression tests (per codex shipping-confidence brainstorm).
 
-Three classes, all motivated by the codex review (HEAD ~46b19d0...46dae4f):
+Two surviving classes (the third — TX-saturation silent-drop —
+was closed structurally by commit 2a8105a's atomic 3-byte-frame
+reserve, which is pinned by tests/sim/test_v171_atomic_3byte_frame.py
+and supersedes the per-byte-abort design that earlier xfails in
+this file used to track):
 
-  1. Layer-1-bounded `tx_byte_enqueue` changed the failure mode of TX
-     ring saturation from "hard hang" to "silent drop".  Most callers
-     don't check STATUS.C, so a dropped byte breaks the wire frame
-     but CONTROL keeps moving as if everything was sent.
-
-  2. The 48-byte RX software ring at `rx_ring_base` (0x066..0x095)
+  1. The 48-byte RX software ring at `rx_ring_base` (0x066..0x095)
      has no unread-data guard.  An RX storm while the main loop is in
      a slow path (LCD repaint, EEPROM write, IR decode) can wrap the
      ring before the parser drains it, overwriting in-flight route /
      cmd / data bytes.
 
-  3. The parser has no frame-gap timeout.  A single dropped or
+  2. The parser has no frame-gap timeout.  A single dropped or
      corrupted byte mid-frame leaves `rx_frame_position` stuck non-
      zero until a future Bx route byte happens to arrive AND the
      parser's modulo state happens to align.
 
-Test tiers:
-  * Tier A (structural) -- audit V1.71 source for the contract each
-    hang class violates; xfail with rationale when the contract is
-    knowingly incomplete (e.g. unchecked enqueue callers exist).
-  * Tier C (behavioral via gpsim) -- reserved for follow-up commits.
-
-This file is intentionally light on Tier C right now: the structural
-audit alone closes the most ROI-valuable gap (TX-failure
-propagation) by enumerating every unchecked call site.  Future
-commits that fix each unchecked caller can use this audit as the
-gate.
+Tests are structural source audits (Tier A) -- behavioural Tier C
+gates against gpsim/rust sim are reserved for follow-up commits.
+The diag-query helper test
+(`test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern`)
+is preserved as the canonical reference implementation of the
+per-byte-abort pattern that the diagnostics path uses; the rest of
+V1.71 uses the atomic-reserve approach instead, but the diagnostics
+path can't use atomic-reserve because its frames can vary in length
+across the cmd 0x21 / cmd 0x22 burst.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import List, Tuple
 
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 
-
-# Note: this file is intentionally NOT marked
-# `@pytest.mark.dual_supported`.  4 of the 14 tests (the
-# `*_checks_each_enqueue*` family) document an in-progress
-# V1.71 hardening goal (see
-# `docs/V32_MAIN_HANG_HARDENING_PLAN.md` §3b) and stay on
-# strict-xfail decorators until the firmware fix lands.
-# The marker is informational post-PF.4 phase 2; this file
-# gets it in the same follow-up commit that lands the
-# hardening.
+pytestmark = pytest.mark.dual_supported
 
 
 # ---------------------------------------------------------------------------
@@ -69,16 +56,6 @@ def _read_v171_ram_inc() -> str:
 def _equ_address(text: str, name: str) -> int | None:
     m = re.search(rf"^\s*{re.escape(name)}\s+equ\s+(0x[0-9A-Fa-f]+)\s*$", text, re.MULTILINE)
     return int(m.group(1), 16) if m else None
-
-
-def _enumerate_tx_enqueue_call_sites(text: str) -> List[Tuple[int, str]]:
-    """Return [(1-indexed line number, raw line)] for every `call/rcall
-    tx_byte_enqueue` site in the V1.71 source."""
-    out: List[Tuple[int, str]] = []
-    for n, line in enumerate(text.splitlines(), start=1):
-        if re.search(r"\b(call|rcall)\s+tx_byte_enqueue\b", line):
-            out.append((n, line.rstrip()))
-    return out
 
 
 def _next_instruction_lines(
@@ -107,54 +84,6 @@ def _next_instruction_lines(
     return out
 
 
-def _next_line_is_bc(
-    text_lines: List[str], call_line_idx: int
-) -> bool:
-    """True if the immediately-following instruction (skipping blank /
-    comment / label-only lines) is a `bc <label>` -- i.e. the caller
-    branches on STATUS.C set by the just-completed tx_byte_enqueue.
-
-    `bc` is the PIC18 "branch if carry" mnemonic; our Layer 1 contract
-    is that tx_byte_enqueue returns C=1 on saturation, so a bc check
-    immediately after the call is the documented "frame-atomic abort"
-    pattern (see v171_diag_send_query_w in dlcp_control_v171.asm).
-
-    Match is case-insensitive because gpasm itself is case-insensitive
-    on mnemonics; if a future contributor writes `BC` it still
-    qualifies as a check (codex LOW review against 47a2db3)."""
-    nxt = _next_instruction_lines(text_lines, call_line_idx, max_lookahead=1)
-    if not nxt:
-        return False
-    _, raw = nxt[0]
-    return bool(re.search(r"^\s*bc\s+\w", raw, re.IGNORECASE))
-
-
-def _categorize_call_sites(text: str) -> Tuple[List[Tuple[int, str]], List[Tuple[int, str]]]:
-    """Return (checked, unchecked) lists.  Checked = next instruction
-    is `bc <label>`.  Unchecked = anything else (next byte-enqueue,
-    return, fall-through to caller, etc.)."""
-    lines = text.splitlines()
-    checked: List[Tuple[int, str]] = []
-    unchecked: List[Tuple[int, str]] = []
-    for line_no, raw in _enumerate_tx_enqueue_call_sites(text):
-        # _next_instruction_lines uses 0-indexed start; line_no is 1-indexed.
-        if _next_line_is_bc(lines, call_line_idx=line_no - 1):
-            checked.append((line_no, raw))
-        else:
-            unchecked.append((line_no, raw))
-    return checked, unchecked
-
-
-def _label_lineno_span(text: str, start_label: str, end_label: str) -> tuple[int, int]:
-    start_idx = text.find(f"{start_label}:")
-    assert start_idx >= 0, f"{start_label} label missing"
-    end_idx = text.find(f"{end_label}:", start_idx + 1)
-    assert end_idx > start_idx, f"could not delimit {start_label}..{end_label}"
-    start_line = text[:start_idx].count("\n") + 1
-    end_line = text[:end_idx].count("\n") + 1
-    return start_line, end_line
-
-
 def _label_block(text: str, start_label: str, end_label: str) -> str:
     start = text.find(f"{start_label}:")
     assert start >= 0, f"{start_label} label missing"
@@ -163,121 +92,9 @@ def _label_block(text: str, start_label: str, end_label: str) -> str:
     return text[start:end]
 
 
-def _label_base_lineno(text: str, label: str) -> int:
-    start = text.find(f"{label}:")
-    assert start >= 0, f"{label} label missing"
-    return text[:start].count("\n") + 1
-
-
-def _assert_immediate_branch_after_calls(
-    *,
-    text: str,
-    start_label: str,
-    end_label: str,
-    abort_label: str,
-    expected_count: int,
-    call_pattern: str = r"\b(call|rcall)\s+tx_byte_enqueue\b",
-) -> None:
-    body = _label_block(text, start_label, end_label)
-    helper_lines = body.splitlines()
-    base_lineno = _label_base_lineno(text, start_label)
-    full_lines = text.splitlines()
-    call_indices = [
-        i for i, line in enumerate(helper_lines)
-        if re.search(call_pattern, line)
-    ]
-    assert len(call_indices) == expected_count, (
-        f"{start_label} should issue exactly {expected_count} checked enqueue call(s); "
-        f"found {len(call_indices)}"
-    )
-    for body_idx in call_indices:
-        src_idx = base_lineno - 1 + body_idx
-        nxt = _next_instruction_lines(full_lines, src_idx, max_lookahead=1)
-        assert nxt, f"{start_label} call at line {src_idx + 1} has no following instruction"
-        nxt_line_no, nxt_raw = nxt[0]
-        assert re.search(
-            rf"^\s*bc\s+{re.escape(abort_label)}\b",
-            nxt_raw,
-            re.IGNORECASE,
-        ), (
-            f"{start_label} call at line {src_idx + 1} is not immediately followed by "
-            f"`bc {abort_label}`; next instruction at line {nxt_line_no} was {nxt_raw!r}"
-        )
-    assert f"{abort_label}:" in body, (
-        f"{start_label} missing abort label {abort_label}:"
-    )
-
-
 # ---------------------------------------------------------------------------
-# Hang class 1: TX enqueue failure propagation (codex top ROI)
+# Diag-query reference impl for the per-byte abort pattern
 # ---------------------------------------------------------------------------
-
-
-def test_v171_serial_tx_routed_frame_propagates_enqueue_failure() -> None:
-    """SHIPPING-CONFIDENCE GATE: every `call tx_byte_enqueue` should
-    immediately check STATUS.C via `bc <abort-label>` so a TX-ring
-    saturation-induced byte drop doesn't silently break the wire frame
-    while CONTROL marches on.
-
-    Background: V1.71 Layer 1 changed `tx_byte_enqueue` from a
-    hard-hang busy-wait (BUG C6) into a bounded retry that returns
-    C=1 on saturation.  The diagnostics path (v171_diag_send_query_w)
-    correctly checks C after every byte and aborts the frame on the
-    first dropped byte.  Most other callers still treat tx_byte_enqueue
-    as if it always succeeds -- so a saturated TX ring under stress
-    produces a half-formed frame on the wire AND state on CONTROL
-    that thinks the frame was sent.
-
-    This test enumerates every call site and reports which ones still
-    don't check.  Currently most are unchecked -- the test is xfailed
-    with the list of unchecked locations so a future fix campaign can
-    use it as a checklist.
-
-    Once every caller is converted to check + abort, flip this from
-    xfail to pass-required so a future regression that introduces a
-    new unchecked caller fails immediately.
-    """
-    text = _read_v171_source()
-    checked, unchecked = _categorize_call_sites(text)
-    assert checked, "no checked tx_byte_enqueue callers found at all -- did the diag-query helper get removed?"
-
-    # The parser's single-byte 0xFE echo path is intentionally best-effort:
-    # it is not a multi-byte frame helper and carries no success-side state
-    # mutation beyond the attempted echo itself.  The audit here is about the
-    # residual multi-byte routed-frame risk.
-    parser_echo_lo, parser_echo_hi = _label_lineno_span(
-        text,
-        "flow_rx_parser_entry_0478",
-        "flow_rx_parser_entry_048A",
-    )
-    unchecked = [
-        (n, line)
-        for n, line in unchecked
-        if not (parser_echo_lo <= n < parser_echo_hi)
-    ]
-
-    if unchecked:
-        # Format the unchecked list for the xfail message so the
-        # operator / fix-campaign-author has the line numbers handy.
-        listing = "\n".join(
-            f"    line {n:>5}: {line.lstrip()}"
-            for n, line in unchecked[:20]
-        )
-        more = ""
-        if len(unchecked) > 20:
-            more = f"\n    ... and {len(unchecked) - 20} more sites"
-        pytest.xfail(
-            f"V1.71 has {len(unchecked)} unchecked tx_byte_enqueue call sites "
-            f"(out of {len(checked) + len(unchecked)} total).  Each one is a "
-            f"silent-drop hazard under TX-ring saturation:\n"
-            f"{listing}{more}\n"
-            f"Fix shape per codex shipping-confidence review: each caller "
-            f"that emits a multi-byte routed frame should read STATUS.C "
-            f"after every `call tx_byte_enqueue` and bra to a per-call-"
-            f"site abort label that resets any state the partial frame "
-            f"committed (e.g. clear v171_full_sync_step before bumping)."
-        )
-    # If no unchecked -- contract is fully satisfied; pass.
 
 
 def test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern() -> None:
@@ -390,118 +207,6 @@ def test_v171_new_bank0_state_cells_are_not_accessed_via_access_bank() -> None:
         assert re.search(rf"\b{name}\b.*\bBANKED\b", text), (
             f"{name} should be accessed via explicit BANKED operands"
         )
-
-
-_V171_HARDENING_PENDING_XFAIL = pytest.mark.xfail(
-    reason=(
-        "V1.71 TX-enqueue hardening pending per "
-        "docs/V32_MAIN_HANG_HARDENING_PLAN.md.  Each `call tx_byte_enqueue` "
-        "in routed/poll/input/volume/cmd1d/standby/wake helpers should "
-        "immediately read STATUS.C and `bc <abort-label>` so a TX-ring "
-        "saturation byte-drop doesn't silently break the wire frame.  "
-        "Tracked as P4-followup #104; the broader unchecked-caller audit "
-        "test_v171_serial_tx_routed_frame_propagates_enqueue_failure "
-        "above already xfails at runtime via pytest.xfail() -- these "
-        "narrower per-helper gates use the decorator form so the suite "
-        "stays green until the firmware fix lands.  Strict so XPASS "
-        "surfaces as a real "
-        "failure: when the hardening lands, this decorator must be "
-        "removed in the same commit (codex LOW from 9cca525 -- "
-        "non-strict xfail would silently green-light a stale gate)."
-    ),
-    strict=True,
-    run=True,
-)
-
-
-@_V171_HARDENING_PENDING_XFAIL
-def test_v171_serial_tx_routed_frame_checks_each_enqueue_and_skips_sync_reset_on_abort() -> None:
-    """Wake/reconnect-critical routed traffic must abort on the first
-    dropped byte and only debounce full-sync on success.
-
-    This is the narrow pass-required version of the broader unchecked-
-    caller audit above.  The initial hardening pass only requires the
-    routed-frame choke-point to be fixed; the repo-wide audit can stay
-    xfail until the rest of the callers are cleaned up.
-    """
-    text = _read_v171_source()
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="serial_tx_routed_frame",
-        end_label="full_sync_burst",
-        abort_label="serial_tx_routed_frame_aborted",
-        expected_count=3,
-    )
-    body = _label_block(text, "serial_tx_routed_frame", "full_sync_burst")
-    assert "clrf    0x9f" in body and "clrf    0xa0" in body, (
-        "serial_tx_routed_frame must still debounce full_sync_lo/full_sync_hi on success"
-    )
-    assert re.search(
-        r"clrf\s+0x9f.*\n.*clrf\s+0xa0.*\n.*return\s+0x0.*\nserial_tx_routed_frame_aborted:\n.*return\s+0x0",
-        body,
-        re.DOTALL,
-    ), (
-        "serial_tx_routed_frame should return on the success path before the "
-        "abort label so a `bc serial_tx_routed_frame_aborted` branch skips the "
-        "full_sync reset entirely"
-    )
-
-
-@_V171_HARDENING_PENDING_XFAIL
-def test_v171_poll_frame_send_checks_each_enqueue_and_aborts_early() -> None:
-    text = _read_v171_source()
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="poll_frame_send",
-        end_label="input_frame_send",
-        abort_label="poll_frame_send_aborted",
-        expected_count=3,
-    )
-
-
-@_V171_HARDENING_PENDING_XFAIL
-def test_v171_input_volume_and_cmd1d_helpers_check_each_enqueue() -> None:
-    text = _read_v171_source()
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="input_frame_send",
-        end_label="volume_frame_send",
-        abort_label="input_frame_send_aborted",
-        expected_count=3,
-    )
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="volume_frame_send",
-        end_label="cmd1d_setting_frame_send",
-        abort_label="volume_frame_send_aborted",
-        expected_count=3,
-    )
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="cmd1d_setting_frame_send",
-        end_label="v171_service_pending_ir_decode",
-        abort_label="cmd1d_setting_frame_send_aborted",
-        expected_count=3,
-    )
-
-
-@_V171_HARDENING_PENDING_XFAIL
-def test_v171_explicit_ir_standby_and_wake_helpers_check_each_enqueue() -> None:
-    text = _read_v171_source()
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="v171_send_standby_cmd_frame",
-        end_label="v171_send_wake_cmd_frame",
-        abort_label="v171_send_standby_cmd_frame_aborted",
-        expected_count=3,
-    )
-    _assert_immediate_branch_after_calls(
-        text=text,
-        start_label="v171_send_wake_cmd_frame",
-        end_label="v171_send_preset_frame_txonly",
-        abort_label="v171_send_wake_cmd_frame_aborted",
-        expected_count=3,
-    )
 
 
 def test_v171_preset_persist_skips_eeprom_write_after_tx_abort() -> None:
