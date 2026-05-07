@@ -1678,6 +1678,40 @@ impl Chain {
         Ok(self.inner.tas3108_slaves[i_dsp].read_subaddr(subaddr))
     }
 
+    /// Read a single TAS3108 DSP subaddress register from the
+    /// DSP slave coupled to a SPECIFIC MAIN core.  ``unit`` =
+    /// 0 selects MAIN0's DSP, 1 selects MAIN1's DSP.  On
+    /// single-MAIN chains where ``i_main0 == i_main1``, both
+    /// values return the same register.  Used by chain-level
+    /// preset-sync tests that need to compare MAIN0's and
+    /// MAIN1's DSP register files byte-by-byte after a
+    /// preset-broadcast cycle to ensure both audio paths
+    /// converge to identical biquad/coefficient state.
+    fn read_main_dsp_reg(&self, unit: u8, subaddr: u8) -> PyResult<u8> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "read_main_dsp_reg: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        let i_dsp = self
+            .inner
+            .tas3108_couplings
+            .iter()
+            .find(|(master, _)| *master == i_main)
+            .map(|(_, slave)| *slave)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "no TAS3108 slave coupled to MAIN{unit} (i_main={i_main}) -- \
+                     chain was not built with a DSP for this MAIN"
+                ))
+            })?;
+        Ok(self.inner.tas3108_slaves[i_dsp].read_subaddr(subaddr))
+    }
+
     /// Program the address-NACK fault counter on the TAS3108
     /// slave coupled to MAIN0.  While `address_nack_count > 0`,
     /// the slave NACKs every address-phase byte that matches

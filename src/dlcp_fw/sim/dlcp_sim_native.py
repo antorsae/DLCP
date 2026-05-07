@@ -639,6 +639,21 @@ class Chain:
         """
         return int(self._inner.read_dsp_reg(int(subaddr) & 0xFF)) & 0xFF
 
+    def read_main_dsp_reg(self, unit: int, subaddr: int) -> int:
+        """Read a TAS3108 DSP register from a SPECIFIC MAIN's
+        DSP slave.
+
+        ``unit=0`` selects MAIN0's DSP, ``unit=1`` selects
+        MAIN1's DSP.  Used by chain-level preset-sync tests
+        that need to compare MAIN0 vs MAIN1 DSP register
+        files byte-by-byte (e.g. confirm both audio paths
+        converge to identical biquad coefficients after a
+        CONTROL preset-switch broadcast).
+        """
+        return int(
+            self._inner.read_main_dsp_reg(int(unit), int(subaddr) & 0xFF)
+        ) & 0xFF
+
     def set_i2c_fault(
         self,
         device_name: str,
