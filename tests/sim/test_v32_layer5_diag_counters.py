@@ -257,6 +257,52 @@ def test_v32_source_diag_r_and_diag_d_hooks_in_volume_dsp_write_recovery() -> No
 
 
 @pytest.mark.dual_supported
+def test_v32_source_dsp_ping_self_asserts_bsr_zero_at_entry() -> None:
+    """REGRESSION (codex MEDIUM vs f018a0e):
+    ``volume_dsp_write``'s retry-exhausted recovery path runs
+    ``diag_inc_sat diag_r`` (sets BSR=2 via the macro's
+    ``movlb 0x02``) and IMMEDIATELY follows with
+    ``rcall i2c_bus_clear`` + ``rcall dsp_ping``.  ``dsp_ping``
+    issues two BANKED writes to ``dsp_fault_flags`` (0x07F, bank 0)
+    -- one in the ACK-clear path, one in the NACK-set path.  If
+    ``dsp_ping`` did NOT self-assert ``movlb 0x0`` at entry, the
+    inherited BSR=2 from the diag_inc_sat caller would route both
+    BANKED writes to 0x27F (bank 2) instead of 0x07F, silently
+    corrupting bank-2 RAM (currently unallocated near 0x27F so the
+    bug is masked, but any future allocation would surface it as
+    an opaque "DSP fault flag never updates" / "neighbor cell
+    spontaneously flips bit 6" symptom).
+
+    Pin the self-assertion structurally so a future refactor that
+    drops the ``movlb 0x0`` is caught at test time.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    start = _label_offset(text, "dsp_ping")
+    end_marker = text.find("\n; ----", start + 1)
+    if end_marker < 0:
+        end_marker = start + 400
+    body = text[start:end_marker]
+    # Body must open with `movlb 0x0` (or 0x00) before the first
+    # SSPCON2 / TAS3108 setup — i.e. the first non-comment, non-
+    # blank instruction line MUST be a bank-0 assertion.
+    helper_lines = body.splitlines()
+    first_instr = None
+    for raw in helper_lines:
+        stripped = raw.split(";", 1)[0].strip()
+        if not stripped or stripped.endswith(":"):
+            continue
+        first_instr = stripped
+        break
+    assert first_instr is not None, "dsp_ping body has no instructions"
+    assert re.match(r"movlb\s+0x0+\b", first_instr), (
+        f"dsp_ping must self-assert BSR=0 at entry (codex MEDIUM "
+        f"vs f018a0e: BSR=2 inherited from diag_inc_sat would route "
+        f"BANKED writes to 0x27F instead of 0x07F).  First "
+        f"instruction was: {first_instr!r}"
+    )
+
+
+@pytest.mark.dual_supported
 def test_v32_source_diag_a_hook_in_an0_hysteresis_monitor() -> None:
     """A counter hooks the AN0-low standby trigger."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
