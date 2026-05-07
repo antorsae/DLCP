@@ -11,12 +11,17 @@ by design and are NOT regressions:
   * The parser ``0xFE`` echo at ``flow_rx_parser_entry_0478`` --
     intentionally a single-byte best-effort emit (no multi-byte
     state to corrupt), so saturation drop is acceptable.
-  * ``v171_diag_send_query_w`` -- variable-length cmd 0x21/0x22
-    diagnostics burst that uses the per-byte ``bc <abort>``
-    pattern because atomic reserve would need to know the burst
-    length up-front.  Pinned by
+  * ``v171_diag_send_query_w`` -- a fixed-3-byte cmd 0x21/0x22
+    query helper (route + cmd + data) that retains the per-byte
+    ``bc <abort>`` pattern as the canonical reference impl
+    preserved across the atomic-reserve rev.  Atomic reserve
+    would also work here, but the per-byte abort path is
+    structurally pinned by
     ``test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern``
-    below as the canonical reference impl of the per-byte pattern.
+    below so future contributors have a worked example of the
+    pattern when bursts of variable length DO need it (e.g. the
+    cmd 0x21 / cmd 0x22 dispatch loops that call the helper 7 or
+    4 times in a row).
 
 The two surviving hang classes:
 
