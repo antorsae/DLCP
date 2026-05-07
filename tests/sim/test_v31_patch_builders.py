@@ -4,14 +4,7 @@ import importlib
 
 import pytest
 
-
-# NOTE: this file is intentionally NOT marked dual_supported --
-# 2 of its 5 tests are pre-existing idempotence failures (the V3.1
-# cmd07-guard and diag-coeff source builders are not fully
-# idempotent on the current canonical source) and are gated by
-# strict @pytest.mark.xfail decorators in the test bodies.
-# The marker is informational post-PF.4 phase 2; this file gets
-# it once the builders are made idempotent.
+pytestmark = pytest.mark.dual_supported
 
 
 def _reload(module_name: str):
@@ -36,30 +29,6 @@ def test_v31_paths_keep_canonical_constants_under_env_override(monkeypatch) -> N
     assert paths.V31_MAIN_HEX != paths.V31_MAIN_HEX_CANONICAL
 
 
-_V31_BUILDER_NON_IDEMPOTENT_XFAIL = pytest.mark.xfail(
-    reason=(
-        "V3.1 patch-builder reseed block missing in current source -- "
-        "V3.2 is the canonical MAIN release (see CLAUDE.md / "
-        "AGENTS.md \"V3.2 Release Ceremony\"); the legacy V3.1 "
-        "cmd07-guard and diag-coeff builders refuse to find their "
-        "_RESEED_OLD anchor block in the current dlcp_main_v31.asm "
-        "and raise RuntimeError(\"failed to locate V3.1 cmd<N> reseed "
-        "block\").  These are diagnostic builders for the legacy V3.1 "
-        "branch, kept around because flashing rigs may still serve "
-        "older firmware revs.  Tracked as P4-followup #104 + the "
-        "ledger \"Pre-existing-failure follow-ups\" entry in "
-        "docs/SIM_REWRITE_RUST_PROGRESS.md.  Strict so XPASS surfaces "
-        "as a real failure: if/when the V3.1 builders are re-anchored "
-        "to current source, this decorator must be removed in the "
-        "same commit (codex LOW from 9cca525 -- non-strict xfail "
-        "would silently green-light a stale gate)."
-    ),
-    strict=True,
-    run=True,
-)
-
-
-@_V31_BUILDER_NON_IDEMPOTENT_XFAIL
 def test_v31_cmd07_guard_builder_is_idempotent_on_current_source() -> None:
     mod = _reload("dlcp_fw.patch.build_v31_cmd07_stock_guard_usb_safe")
     text = mod.SOURCE_ASM.read_text(encoding="utf-8", errors="replace")
@@ -67,7 +36,6 @@ def test_v31_cmd07_guard_builder_is_idempotent_on_current_source() -> None:
     assert mod._rewrite_source(text) == text
 
 
-@_V31_BUILDER_NON_IDEMPOTENT_XFAIL
 def test_v31_diag_coeff_builder_is_idempotent_on_current_source() -> None:
     mod = _reload("dlcp_fw.patch.build_v31_diag_coeff_stock")
     text = mod.SOURCE_ASM.read_text(encoding="utf-8", errors="replace")

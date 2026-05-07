@@ -82,8 +82,45 @@ coeff_write_pen_done:
 """
 
 
+def _is_already_stock_coeff_write(text: str) -> bool:
+    """Structural "already stock" detector.
+
+    Tolerant of ``call``→``rcall`` optimizations and minor whitespace
+    drift inside ``i2c_tas3108_coeff_write``.  Codex flagged the
+    earlier exact-text equality check (``_NEW_COEFF_BLOCK in text``)
+    as brittle against the rev where the canonical V3.1 source
+    converted three of the helper's ``call`` sites to ``rcall``;
+    that drift is what made the builder non-idempotent on the
+    current canonical source.
+
+    The stock-wait shape is uniquely identifiable by the presence
+    of BOTH the START-wait label ``coeff_write_wait_sen_stock:`` and
+    the STOP-wait label ``coeff_write_pen_stock:`` AND the absence
+    of the bounded-wait helper call ``wait_sen_bounded`` inside the
+    function body.  The bounded variant (``_OLD_COEFF_BLOCK``) has
+    neither of the stock labels and DOES call wait_sen_bounded, so
+    the predicate cleanly distinguishes the two shapes.
+    """
+    body_start = text.find("i2c_tas3108_coeff_write:")
+    if body_start < 0:
+        return False
+    # Bound the search to the function body.  The canonical source
+    # ends the function at ``coeff_write_pen_done:`` followed by
+    # ``return  0``; stop the scan at the next blank-line gap or
+    # the next top-level label.
+    body_end = text.find("\n\n", body_start)
+    if body_end < 0:
+        body_end = body_start + 4000
+    body = text[body_start:body_end]
+    return (
+        "coeff_write_wait_sen_stock:" in body
+        and "coeff_write_pen_stock:" in body
+        and "wait_sen_bounded" not in body
+    )
+
+
 def _rewrite_source(text: str) -> str:
-    if _NEW_COEFF_BLOCK in text:
+    if _is_already_stock_coeff_write(text) or _NEW_COEFF_BLOCK in text:
         return text
     if _OLD_COEFF_BLOCK not in text:
         raise RuntimeError("V3.1 coeff-write block not found; source drifted")

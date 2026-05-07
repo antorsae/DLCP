@@ -53,7 +53,6 @@ _RESEED_NEW = """    movf        i2c_coeff_2, W, ACCESS
     clrf        ram_0x0C5, BANKED
     movlw       0x56
     movwf       ram_0x083, BANKED
-    movlw       0x00
     clrf        ram_0x082, BANKED
 """
 

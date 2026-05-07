@@ -13,17 +13,7 @@ from dlcp_fw.paths import (
 from dlcp_fw.patch import build_v31_diag_memread_usb_safe as builder
 from dlcp_fw.sim.hexio import parse_intel_hex
 
-
-# NOTE: this file is intentionally NOT marked dual_supported --
-# 1 of its 3 tests
-# (test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps)
-# is a pre-existing failure (the V3.1 build artifact at
-# `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex`
-# diverges from the canonical V3.1 source's stock-sparse-gap
-# overlay) and is gated by a strict @pytest.mark.xfail decorator
-# in the test body.  The marker is informational post-PF.4 phase 2;
-# this file gets it once the artifact is regenerated and the test
-# passes.
+pytestmark = pytest.mark.dual_supported
 
 
 def _skip_missing(*paths: Path) -> None:
@@ -54,26 +44,6 @@ def test_canonical_v31_release_listing_contains_memread_dispatch_and_handler() -
     assert text.index("hid_cmd_diag_memread:") < text.index("org 0x4C00")
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Pre-existing failure on the V3.1 path: V3.1 source has drifted "
-        "(V3.2 is the canonical MAIN release per CLAUDE.md / AGENTS.md), "
-        "and the diag-memread USB-safe artifact's sparse-gap restoration "
-        "no longer matches the canonical V3.1 hex byte-for-byte.  The "
-        "regenerated artifact would need a fresh `python3 -m "
-        "dlcp_fw.patch.build_v31_diag_memread_usb_safe` run to land in "
-        "lock-step with the current V3.1 source.  Tracked as "
-        "P4-followup #104 + the ledger \"Pre-existing-failure follow-"
-        "ups\" entry in docs/SIM_REWRITE_RUST_PROGRESS.md; not on the "
-        "canonical V3.2 release path so fixing is low-priority "
-        "cleanup.  Strict so XPASS surfaces as a real failure: "
-        "when the artifact is regenerated against current V3.1 "
-        "source, this decorator must be removed in the same commit "
-        "(codex LOW from 9cca525)."
-    ),
-    strict=True,
-    run=True,
-)
 def test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps() -> None:
     _skip_missing(STOCK_MAIN_HEX, V31_MAIN_HEX_CANONICAL, V31_DIAG_MEMREAD_USB_SAFE_HEX)
     stock = parse_intel_hex(STOCK_MAIN_HEX)
