@@ -108,6 +108,8 @@ _PRESET_JOB_IDLE = 0
 # V1.71 CONTROL RAM map (per `src/dlcp_fw/asm/dlcp_control_v171.asm`):
 _CONTROL_FLAGS_ADDR = 0x01F        # bit 6 = PRESET_BIT (0=A, 1=B)
 _CONTROL_PRESET_BIT = 6
+_PRESET_IR_ADDR = 0x10             # V1.71 menu-configured IR address
+                                    # cmd 0x38 -> preset A, 0x39 -> preset B
 
 # Convergence budget per switch.  V1.71 ``full_sync_burst`` advances
 # one step per ~20000 display-loop iterations; step 6 (preset frame)
@@ -204,12 +206,16 @@ def _set_control_preset_bit(chain, target: int) -> None:
     chain.write_reg(_CONTROL_FLAGS_ADDR, flags & 0xFF)
 
 
-def _switch_preset_via_control(chain, target: int) -> None:
-    """Drive CONTROL to broadcast preset ``target`` (0=A, 1=B) and
-    poll until BOTH MAINs converge on (``active_flags.bit2 ==
+def _wait_for_preset_convergence(chain, target: int, *, trigger: str) -> None:
+    """Poll until BOTH MAINs converge on (``active_flags.bit2 ==
     target``) AND (``preset_job_state == IDLE``).  Raises an
     AssertionError if the chain hasn't converged within the
     deadline.
+
+    ``trigger`` is a short label used in the deadline-AssertionError
+    diagnostic so the failure tells the operator whether the
+    upstream trigger was the periodic-broadcast path or the
+    user-IR path.
 
     Why poll instead of fixed-budget step:
       * V3.2 toggles ``active_flags.bit2`` at the HOLDING -> APPLY
@@ -222,7 +228,6 @@ def _switch_preset_via_control(chain, target: int) -> None:
         every 6 cycles, so a fixed-budget settle that's too short
         could miss the broadcast entirely.
     """
-    _set_control_preset_bit(chain, target)
     for _ in range(_SWITCH_POLL_CHUNKS):
         chain.step_ticks(_SWITCH_POLL_CHUNK_TICKS)
         af0 = chain.read_main_reg(0, _ACTIVE_FLAGS)
@@ -243,10 +248,41 @@ def _switch_preset_via_control(chain, target: int) -> None:
     pjs0 = chain.read_main_reg(0, _PRESET_JOB_STATE)
     pjs1 = chain.read_main_reg(1, _PRESET_JOB_STATE)
     raise AssertionError(
-        f"chain failed to converge on preset target={target} within "
+        f"chain failed to converge on preset target={target} via "
+        f"{trigger} within "
         f"{_SWITCH_POLL_CHUNKS * _SWITCH_POLL_CHUNK_TICKS} ticks: "
         f"M0(af=0x{af0:02X} bit2={(af0 >> 2) & 1} pjs={pjs0}) "
         f"M1(af=0x{af1:02X} bit2={(af1 >> 2) & 1} pjs={pjs1})"
+    )
+
+
+def _switch_preset_via_control(chain, target: int) -> None:
+    """Drive CONTROL via the periodic-broadcast path: set
+    ``control_flags.bit6`` (PRESET_BIT) and let
+    ``full_sync_burst`` step 6 emit the broadcast on its next
+    cycle.  Mirrors what would happen on a HID-host preset switch
+    that lands the bit but does not directly invoke
+    ``v171_send_preset_frame_and_persist``."""
+    _set_control_preset_bit(chain, target)
+    _wait_for_preset_convergence(
+        chain, target, trigger="periodic full_sync_burst step 6"
+    )
+
+
+def _switch_preset_via_ir(chain, target: int) -> None:
+    """Drive CONTROL via the user-IR path: inject decoded IR
+    event ``cmd=0x39`` (preset B) or ``cmd=0x38`` (preset A) on
+    ``PRESET_ADDR=0x10`` (V1.71 menu-configured preset endpoint).
+    The IR dispatcher calls ``v171_send_preset_frame_and_persist``
+    (asm:3306) which IMMEDIATELY emits ``[B0, 0x20, target]`` AND
+    writes EEPROM 0x74 -- distinct from the periodic
+    ``v171_send_preset_frame_txonly`` (asm:3274) the
+    control-bit-direct path eventually exercises."""
+    assert target in (0, 1), f"target must be 0 (A) or 1 (B); got {target}"
+    cmd = 0x39 if target == 1 else 0x38
+    chain.inject_decoded_ir_event(addr=_PRESET_IR_ADDR, cmd=cmd)
+    _wait_for_preset_convergence(
+        chain, target, trigger=f"user IR cmd=0x{cmd:02X}"
     )
 
 
@@ -454,6 +490,75 @@ def test_dual_main_dsp_biquad_byte_equal_after_each_switch() -> None:
         _switch_preset_via_control(chain, target=target)
         _assert_switch_was_delivered(label, target)
         _assert_biquads_equal(label)
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_dual_main_preset_sync_via_user_ir_chain() -> None:
+    """Complementary to ``test_dual_main_preset_sync_AB_AB_chain``:
+    triggers preset switches via the user-initiated IR remote
+    path (``cmd=0x38`` -> preset A, ``cmd=0x39`` -> preset B on
+    ``PRESET_ADDR=0x10``) instead of directly setting CONTROL's
+    PRESET_BIT.
+
+    The user-IR path goes through the V1.71 IR dispatcher, which
+    calls ``v171_send_preset_frame_and_persist`` (asm:3306) --
+    that helper IMMEDIATELY emits ``[B0, 0x20, target]`` AND
+    writes EEPROM 0x74.  The other three tests in this file
+    drive the periodic-broadcast path (``full_sync_burst`` step 6
+    -> ``v171_send_preset_frame_txonly`` at asm:3274) by setting
+    the bit and waiting; those tests would still pass even if
+    the immediate-emit / EEPROM-persist plumbing regressed, as
+    long as the periodic re-broadcaster stays healthy.  This
+    test closes that coverage gap (codex LOW from eebe8ca,
+    tracked as task #133).
+
+    Asserted properties match the flagship test: after every
+    IR-driven switch, MAIN0 and MAIN1 are byte-equal on
+    ``active_flags.bit2``, filename RAM 0x2C0..0x2DD, and the
+    full TAS3108 DSP register file (256 subaddresses).
+    """
+    _require_rust()
+    _require_v171_hex(V171_CONTROL_HEX)
+    _require_v32_hex(V32_MAIN_HEX)
+
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(V171_CONTROL_HEX),
+        main_hex_path=str(V32_MAIN_HEX),
+    )
+    chain.run_until_connected(limit=400)
+    assert chain.is_connected() and not chain.is_waiting(), (
+        f"chain stuck in WAITING/Zzz: lcd={chain.lcd_lines()!r}"
+    )
+    chain.step_ticks(50_000_000)
+
+    # Phase A1 (boot default).
+    snap_A1 = _assert_mains_synchronised(chain, phase="A1-boot-default")
+    assert snap_A1["preset_bit"] is False
+
+    # Phase B1: IR cmd 0x39 -> preset B.
+    _switch_preset_via_ir(chain, target=1)
+    snap_B1 = _assert_mains_synchronised(chain, phase="B1-via-IR-0x39")
+    assert snap_B1["preset_bit"] is True, (
+        f"after IR cmd=0x39, active_flags.bit2 must be 1 (preset B); "
+        f"got active_flags=0x{snap_B1['active_flags']:02X}"
+    )
+    _assert_snapshot_differs(snap_A1, snap_B1, phase_a="A1", phase_b="B1-via-IR")
+
+    # Phase A2: IR cmd 0x38 -> preset A.
+    _switch_preset_via_ir(chain, target=0)
+    snap_A2 = _assert_mains_synchronised(chain, phase="A2-via-IR-0x38")
+    assert snap_A2["preset_bit"] is False, (
+        f"after IR cmd=0x38, active_flags.bit2 must be 0 (preset A); "
+        f"got active_flags=0x{snap_A2['active_flags']:02X}"
+    )
+
+    # Phase B2: IR cmd 0x39 again -> preset B.  Verifies that the
+    # user-IR path is repeatable, not a one-shot artefact of the
+    # boot-default state.
+    _switch_preset_via_ir(chain, target=1)
+    snap_B2 = _assert_mains_synchronised(chain, phase="B2-via-IR-0x39-again")
+    assert snap_B2["preset_bit"] is True
 
 
 def _assert_snapshot_differs(
