@@ -414,6 +414,15 @@ _RX_RING_SIZE = 0xC0
 _RX_RING_RD = 0x0C6
 _RX_RING_WR = 0x0C7
 
+# preset_job state-machine addresses (V3.2 asm:153-154).  We inspect
+# these to prove the xact gate dropped at preset_select_handler entry
+# (asm:9532) without storing the target -- not just that the preset
+# bit hadn't yet toggled (which would also be true if the gate failed
+# but the HOLDING timer hadn't fired).  Codex MEDIUM vs a2bb70f.
+_PRESET_JOB_STATE_ADDR = 0x2DE
+_PRESET_JOB_TARGET_ADDR = 0x2DF
+_PRESET_JOB_STATE_IDLE = 0x00
+
 
 def _inject_main1_chain_frame(chain, frame: tuple[int, int, int]) -> None:  # type: ignore[no-untyped-def]
     """Inject a 3-byte chain frame directly into MAIN1's RX ring at
@@ -474,6 +483,17 @@ def test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not
         current_preset_letter = "B" if current_preset_b else "A"
         current_eeprom_base = (
             _PRESET_B_EEPROM_BASE if current_preset_b else _PRESET_A_EEPROM_BASE
+        )
+
+        # Snapshot preset_job state-machine BEFORE the cmd 0x03 +
+        # injection so the post-injection assertion can prove these
+        # didn't move (i.e. the broadcast was dropped at gate entry,
+        # not merely "still in HOLDING but timer hasn't fired").
+        preset_job_state_initial = chain.read_main_reg(1, _PRESET_JOB_STATE_ADDR)
+        preset_job_target_initial = chain.read_main_reg(1, _PRESET_JOB_TARGET_ADDR)
+        assert preset_job_state_initial == _PRESET_JOB_STATE_IDLE, (
+            f"preset_job_state not IDLE at test start: "
+            f"0x{preset_job_state_initial:02X}"
         )
 
         # ---- Step 1: cmd 0x03 WRITE filename ----
@@ -554,6 +574,32 @@ def test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not
             f"preset bit toggled by injected broadcast despite gate: "
             f"before=0x{active_flags_initial:02X}, "
             f"after=0x{active_flags_after_inject:02X}"
+        )
+
+        # ---- Step 3b: Verify the gate dropped at TOP-OF-HANDLER ----
+        # Without this, "preset bit unchanged" would also hold if the
+        # gate failed but the HOLDING timer (~150 ms) hadn't fired
+        # yet -- only 100 ms elapsed in step 2.  Reading
+        # preset_job_state directly proves the handler returned at
+        # asm:9532-9533 without ever reaching the state-machine entry
+        # at asm:9547+.  Codex MEDIUM vs a2bb70f.
+        preset_job_state_after = chain.read_main_reg(
+            1, _PRESET_JOB_STATE_ADDR,
+        )
+        preset_job_target_after = chain.read_main_reg(
+            1, _PRESET_JOB_TARGET_ADDR,
+        )
+        assert preset_job_state_after == _PRESET_JOB_STATE_IDLE, (
+            f"preset_job_state moved to 0x{preset_job_state_after:02X} "
+            f"(not IDLE) after injected broadcast: gate did NOT drop "
+            f"at preset_select_handler entry -- handler reached the "
+            f"PENDING state-machine entry path despite bit 6 set."
+        )
+        assert preset_job_target_after == preset_job_target_initial, (
+            f"preset_job_target was clobbered by injected broadcast "
+            f"despite gate: before=0x{preset_job_target_initial:02X}, "
+            f"after=0x{preset_job_target_after:02X}.  Handler reached "
+            f"asm:9534-9537 (target store) despite bit 6 set."
         )
 
         # ---- Step 4: force_persist clears the gate + persists RAM->EEPROM ----
