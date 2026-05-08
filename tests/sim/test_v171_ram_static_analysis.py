@@ -47,6 +47,7 @@ T1.4  ISR context safety:
 from __future__ import annotations
 
 import re
+import warnings
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 
@@ -419,20 +420,25 @@ def test_t1_2_bank1_equates_accessed_under_movlb_0x01() -> None:
         elif verdict in ("indeterminate", "boundary"):
             indeterminate_sites.append((idx + 1, line.strip(), detail))
 
-    # Indeterminate cases are PRINTED for reviewer audit -- not failed,
-    # but visible.  A reviewer should examine each indeterminate to
-    # confirm BSR=1 is established by some path the static walk
-    # couldn't prove.  This is NOT silent skip-on-indeterminate that
-    # codex flagged on the v1 of this gate.
+    # Indeterminate cases are surfaced as a Python ``UserWarning`` so
+    # pytest's session summary lists them (a plain ``print`` is
+    # captured + hidden for passing tests by default; codex correctly
+    # flagged that as still-silent on 6008238).  The warning includes
+    # the line list so reviewers can audit each site to confirm BSR=1
+    # is established via a path the single-level predecessor walk
+    # couldn't statically prove.
     if indeterminate_sites:
         warning_lines = [
             f"  line {n}: {ln}\n      reason: {v}"
             for n, ln, v in indeterminate_sites
         ]
-        print(
-            "\n[T1.2] INDETERMINATE BANK-1 access sites (predecessor "
-            "BSR could not be statically proven; manual review needed):\n"
-            + "\n".join(warning_lines)
+        warnings.warn(
+            f"[T1.2] {len(indeterminate_sites)} INDETERMINATE BANK-1 "
+            f"access site(s) (predecessor BSR not statically proven; "
+            f"manual review needed):\n"
+            + "\n".join(warning_lines),
+            UserWarning,
+            stacklevel=2,
         )
 
     assert not leak_sites, (
