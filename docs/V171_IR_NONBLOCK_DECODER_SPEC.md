@@ -42,12 +42,26 @@ AND the deferred-decode phase miss.**
 V1.71 currently doesn't use Timer1 for periodic IRQs. PIC18F25K20
 Timer1: 16-bit, prescaler /1/2/4/8, internal Fosc/4 = 3 MHz Fcy.
 
-**Preload math (codex-validated):**
+**Preload math (rust-sim-tuned post-codex review of 61e17a7):**
 
 ```text
-889 µs full-period   = 2667 Tcy  -> TMR1 preload 0xF595
-445 µs first-sample  = 1335 Tcy  -> TMR1 preload 0xFAC9
+~890 µs effective    -> TMR1 FULL preload 0xF5D8 (866 µs raw +
+                        ~24 µs ISR-path overhead per sample)
+~1303 µs first       -> TMR1 FIRST preload 0xF0BC (raw; ~13 µs
+                        first-sample-only ISR overhead)
 ```
+
+The ORIGINAL spec values (`0xF595` full / `0xFAC9` first) were
+calculated against an under-estimated ~7-Tcy ISR-path overhead per
+sample.  The actual overhead is ~60-70 Tcy (vector dispatch + Q4
+alignment + isr_entry prologue + check_tmr1 path + handler header
+to btfsc + reload tail + epilogue), so cumulative drift over 25
+sample intervals pushed sample 26 past bit-13's second half.
+Symptom on the original values: cmds with cmd LSB = 1 (RC5 0x39
+preset B and 0x3B wake) failed Manchester pair-validation on the
+last sample pair.  See `dlcp_control_ram.inc` "PRELOAD VALUES
+(V1.71-tuned post-correction)" block for the empirical sweep
+data and the picked-mid-of-working-range margin rationale.
 
 `T1CON=0x81` sets `RD16=1` + `TMR1ON=1` (internal Fcy/4, prescaler /1,
 16-bit writes via TMR1H buffer + TMR1L). Codex flagged that 16-bit-mode
@@ -91,9 +105,10 @@ goes away with this change). The byte becomes free for future use.
 IDLE (state=0):
   Triggered by: RBIF fires AND RB5=LOW AND IR_ARMED set.
   Action: clear buf0..buf3, sample_count=0; arm Timer1 with
-          445 µs preload (TMR1=0xFAC9) so the FIRST sample lands
-          mid-half-bit (where it's still LOW for the bit '1' phase
-          we just observed); enable PIE1.TMR1IE; set state=1.
+          FIRST preload (V171_IR_TMR1_FIRST_HI/LO = 0xF0BC, ~1303
+          µs raw + ~13 µs ISR overhead) so the first sample lands
+          in S2 first half (HIGH for sentinel '1'); enable
+          PIE1.TMR1IE; set state=1.
 
 SAMPLING (state=1, sample_count=0..0x1F):
   Triggered by: Timer1 ISR (TMR1IF set).
@@ -104,9 +119,9 @@ SAMPLING (state=1, sample_count=0..0x1F):
           buf1 takes 9..16, buf2 takes 17..24, buf3 takes 25..32.
           Polarity matches existing decoder at asm:573-576 (C=1,
           btfsc PORTB.RB5, bcf C → C=0 if RB5 HIGH, then rlcf
-          into the indexed byte).  Reload TMR1 with 0xF595;
-          increment sample_count.  If sample_count >= 32,
-          transition to DONE.
+          into the indexed byte).  Reload TMR1 with FULL preload
+          (V171_IR_TMR1_FULL_HI/LO = 0xF5D8); increment
+          sample_count.  If sample_count >= 32, transition to DONE.
 
   Why byte-indexed (codex HIGH vs the v2 spec): a literal 32-bit
   rolling shift across the 4-byte chain would put samples 25-32

@@ -504,9 +504,11 @@ v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample 
 ;       for TMR1 reload + bcf TMR1IF + return (~10 Tcy)
 ;   (g) ISR epilogue (4 movff + movf + retfie ~6 Tcy)
 ;
-; Total: ~40-50 Tcy / sample of ISR path that adds to the Timer1
-; preload duration before the NEXT btfsc fires.  Cumulative drift
-; over 25 sample intervals is ~1000-1300 Tcy = 333-433 µs --
+; Sum of (a)..(g): ~40-50 Tcy of explicit instructions + ~20 Tcy
+; of vector dispatch / IRQ-detection / Q4 alignment overhead = ~60-
+; 70 Tcy / sample of total ISR path.  That overhead adds to the
+; Timer1 preload duration before the NEXT btfsc fires.  Cumulative
+; drift over 25 sample intervals is ~1500-1750 Tcy = 500-583 µs --
 ; enough to push sample 26 OUT OF bit 13's second half and into
 ; the post-frame idle.  Symptom: cmds with cmd LSB = 1 (0x39, 0x3B)
 ; failed Manchester pair-validation on the LAST pair, so the
@@ -522,7 +524,7 @@ v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample 
 ; Full period 0xF5D8: 0xFFFF - 0xF5D8 + 1 = 2600 Tcy = 866 µs.
 ; Effective period (with ~70 Tcy ISR-path overhead) ≈ 2670 Tcy =
 ; 890 µs, matching V1.6b instrumented 890.4 µs within ±1 µs.  Mid
-; of empirical [0xF5C0..0xF5F0] working range gives ~7-Tcy margin
+; of empirical [0xF5C0..0xF5F0] working range gives ~24-Tcy margin
 ; on each side against per-sample overhead variation.
 ;
 ; First-sample 0xF0BC: unchanged.  Sample 1 lands at falling_edge +

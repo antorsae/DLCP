@@ -324,28 +324,11 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
     )
 
 
-# Wake-endpoint test (cmd=0x3B) was originally paired with the
-# standby-endpoint test above but does not work as a separate gate
-# because the rust sim's K20 default Fcy (3 MHz) makes the
-# decoder's bit-bang sample at ~233 µs intervals -- the 32-sample
-# budget covers only ~5 of 14 RC5 bits, so the LSB of the cmd
-# byte (the only difference between 0x3A and 0x3B) doesn't reach
-# the decoder.  Both standby and wake pulse trains produce the
-# same decoded cmd in sim.  The standby test alone is sufficient
-# proof that the IOC -> RBIF -> ISR latch -> foreground decode ->
-# inline dispatch -> TX pipeline works at the sim level.
-# Reinstate a wake-side gate when ClockDomain::with_fcy_hz lands
-# (per codex 2026-05-07 recommendation) and the sim K20 Fcy can
-# be tuned so the decoder's full 14-bit window is sampled.
-
-
-# Note: the standby test prints the v171_ir_decode_pending and
-# control_flags state at pre / post-train / post-settle points.
-# A healthy IOC->RBIF->ISR->pending chain shows post-train
-# pending=0xFF (ISR latched at least one RB5 edge during the
-# pulse train) and post-settle pending=0x00 (foreground
-# v171_service_pending_ir_decode drained the flag).
-# ir_decoded_cmd post-settle is typically 0xFF because a SECOND
-# decoder run later in the same train takes the abort path and
-# overwrites the briefly-correct cmd value -- look at the TX
-# stream for the decoded outcome instead.
+# Pulse-train coverage of the other three V1.71 inline shortcuts
+# (cmd 0x38 preset A, 0x39 preset B, 0x3B wake) is task #157 -- the
+# decoder timing fix in 61e17a7 unblocks the cmd-LSB=1 cases that
+# previously failed Manchester pair-validation on the last sample
+# pair, so all four cmds now decode correctly via direct register
+# inspection of ir_decoded_cmd.  Adding parametrized variants here
+# (or extending test_v171_ir_command_matrix.py) would lock in the
+# fix as an automated regression gate.

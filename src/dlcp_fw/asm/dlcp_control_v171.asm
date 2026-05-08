@@ -2681,10 +2681,13 @@ v171_service_pending_ir_decode_drop:
 ; with ``V171_IR_TMR1_FIRST_HI/LO`` preload.  Per
 ; V171_IR_NONBLOCK_DECODER_SPEC.md (rust-sim-instrumented against
 ; V1.6b stock decoder), the first sample lands at MID OF S2 FIRST
-; HALF (1345 µs after falling edge) -- legacy SKIPS S1 entirely.
-; Preload value 0xF0BC = 1303 µs T1CON-to-overflow + ~42 µs of
-; ISR/start_decode/sample_handler-to-btfsc overhead = 1345 µs
-; total.  See dlcp_control_ram.inc for the full preload derivation.
+; HALF -- legacy SKIPS S1 entirely.  Preload value 0xF0BC = 1303 µs
+; T1CON-to-overflow + ~13 µs of ISR/start_decode/sample_handler-to-
+; btfsc first-sample overhead.  See dlcp_control_ram.inc for the
+; full preload derivation post-codex-correction (the per-sample
+; FULL preload at 0xF5D8 includes a much larger ~70-Tcy ISR-path
+; overhead per subsequent sample, so FULL is tighter than FIRST
+; minus the 1303 us bias).
 ;
 ; Clobbers: W, STATUS, BSR (movlb 0x1).  Does NOT preserve caller W.
 ; This is safe because the V1.71 isr_entry header at asm:786-792
@@ -2723,8 +2726,9 @@ v171_ir_start_decode:
 ; Reads PORTB.RB5, shifts the resulting Manchester bit into the buffer
 ; byte indexed by sample_count >> 3, increments sample_count.  If
 ; sample_count >= 32, transitions to DONE (calls v171_ir_post_process).
-; Otherwise reloads TMR1 with full-period preload (0xF595) for the next
-; 889 µs sample.
+; Otherwise reloads TMR1 with full-period preload (V171_IR_TMR1_FULL_*
+; = 0xF5D8 ≈ 866 µs preload + ~24 µs ISR-path overhead = ~890 µs
+; effective sample-to-sample interval).
 ;
 ; Uses FSR0 to address buf[byte_index] directly so we don't need a
 ; multi-way branch dispatch BEFORE the rlcf -- avoids the carry-
@@ -6457,7 +6461,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x15                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x16                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
