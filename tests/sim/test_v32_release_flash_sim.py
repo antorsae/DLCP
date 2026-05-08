@@ -257,7 +257,7 @@ def test_v32_release_flash_sim_dry_run_passes_argv_through(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
+def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
     """End-to-end integration test.
 
     1. Build the V1.71+2x V3.2 chain from the canonical V3.2 hex.
@@ -272,9 +272,12 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
        * Preset A/B EEPROM filename slots match the capture sidecars.
        * Route RAM is uniform R (all 6 channels = 0x01).
        * V1.71 CONTROL was actively broadcasting cmd 0x20 preset
-         frames during the post-flash finalize -- proves the xact
-         gate was exercised under live load (Option 1 of the user's
-         consistency-under-CONTROL-hammering ask).
+         frames during the post-flash finalize (Option 1 of the
+         user's consistency-under-CONTROL-hammering ask).
+       * Flasher's identity probe printed the seeded V3.2 identity
+         to stdout (proves ``_probe_device_eeprom_version`` actually
+         read the seeded bytes vs falling back to a probe-failure
+         warning -- closes codex LOW vs 086fd10).
     """
     _require_rust()
     _require_capture_files()
@@ -289,32 +292,46 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
     # this assertion the test could trivially pass in a quiescent
     # no-traffic window where the xact gate's protection is never
     # exercised.
+    #
+    # Coverage scope (codex LOW vs a2bb70f, deferred-then-investigated
+    # in task #150):  the assertion proves ≥1 cmd 0x20 broadcast hit
+    # MAIN1 SOMEWHERE during the run, not specifically during the
+    # per-preset filename xact-gate window (cmd 0x03 WRITE ->
+    # force_persist completion).  Tighter per-window capture proved
+    # impractical: each gate window is ~ 125 ms sim time (cmd 0x03
+    # WRITE+READ + force_persist polling), but V1.71 CONTROL's idle
+    # frame cadence is ~ 1 s and full_sync_burst step 6 (preset
+    # broadcast) is ~ 6 s -- per-window capture is reliably empty.
+    # The DETERMINISTIC proof that the gate's drop path holds when a
+    # broadcast DOES arrive in a gate window is the sibling
+    # ``test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not_clobber``
+    # test.  This wider assertion's job is to prove CONTROL is alive
+    # during the run; Option 2 proves the gate's behavior under
+    # injected broadcasts.
     chain.mark_main1_rx_capture_point()
 
     with install_sim_hub(hub):
         rc = main(["--right"])
     assert rc == 0, "release flasher main() returned non-zero"
 
-    # ---- Verify CONTROL preset broadcasts arrived during finalize ----
+    # ---- Verify CONTROL preset broadcasts arrived during the run ----
     rx_bytes = list(chain.main1_rx_record_since_last_capture())
     # Chain frames are 3-byte [route, cmd, data] sequences; route
     # 0xB0/0xB1 are broadcast/addressed, cmd 0x20 is preset_select
-    # (the frame type the xact gate protects against).  Find
-    # frame-aligned occurrences -- a byte-by-byte walk would
-    # over-count if cmd 0x20 happens to appear in a data byte of a
-    # different frame.  Step by 1 (not 3) because we don't know
-    # frame alignment relative to the first captured byte.
+    # (the frame type the xact gate protects against).  Walk every
+    # byte position because we don't know frame alignment relative
+    # to capture start.
     preset_broadcasts = sum(
         1
-        for i in range(0, max(0, len(rx_bytes) - 2))
+        for i in range(0, max(0, len(rx_bytes) - 1))
         if rx_bytes[i] in (0xB0, 0xB1) and rx_bytes[i + 1] == 0x20
     )
     assert preset_broadcasts >= 1, (
         f"V1.71 CONTROL did not broadcast cmd 0x20 to MAIN1 during "
-        f"finalize (rx_bytes_len={len(rx_bytes)}, preset_count="
-        f"{preset_broadcasts}).  The xact gate test was running in a "
-        f"quiescent no-broadcast window -- gate protection isn't "
-        f"actually being exercised."
+        f"the run (rx_bytes_len={len(rx_bytes)}, preset_count="
+        f"{preset_broadcasts}).  The whole test was running in a "
+        f"quiescent no-broadcast window -- CONTROL is dead or the "
+        f"sim chain isn't running correctly."
     )
 
     # ---- Verify preset A flash table ----
@@ -398,6 +415,29 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
     assert eeprom_identity == identity, (
         f"V3.2 EEPROM identity drifted during run: got "
         f"{eeprom_identity!r}, expected {identity!r}"
+    )
+
+    # ---- Verify flasher's identity probe rendered the seeded values ----
+    # Closes codex LOW vs 086fd10: the seed-survival assertion above
+    # proves the bytes are still in EEPROM at end-of-test, but doesn't
+    # prove the FLASHER's ``_probe_device_eeprom_version`` actually
+    # read them during its info-snapshot phase.  If the probe path
+    # broke (returned ``None`` and was downgraded to a "EEPROM version
+    # probe failed" warning), the seed-survival assertion would still
+    # pass.  We check stdout for the rendered ``revision: 0x{rev:02X}
+    # (EEPROM {major}.{minor})`` line that ``_print_device_snapshot``
+    # emits -- proves the probe ran AND succeeded AND saw the seeded
+    # bytes.
+    captured = capsys.readouterr()
+    expected_revision_line = (
+        f"revision: 0x{identity[2]:02X} (EEPROM {identity[0]}.{identity[1]})"
+    )
+    assert expected_revision_line in captured.out, (
+        f"flasher did not print the seeded V3.2 identity "
+        f"(expected substring: {expected_revision_line!r}).  Either "
+        f"the probe failed and was downgraded to a warning, or the "
+        f"identity bytes drifted between seed and probe.\n\n"
+        f"--- captured stdout ---\n{captured.out}\n--- end ---"
     )
 
 
