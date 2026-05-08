@@ -97,11 +97,23 @@ IDLE (state=0):
 
 SAMPLING (state=1, sample_count=0..0x1F):
   Triggered by: Timer1 ISR (TMR1IF set).
-  Action: shift one bit into buf0..buf3 chain based on RB5 read
-          (matches existing decoder polarity at asm:573-576:
-          C=1, btfsc PORTB.RB5, bcf C → C=0 if RB5 HIGH, then
-          rlcf into buffer); reload TMR1 with 0xF595; increment
-          sample_count.  If sample_count >= 32, transition to DONE.
+  Action: shift one bit into the byte at byte_index =
+          sample_count >> 3 (0..3) within buf0..buf3, BYTE-INDEXED
+          to match the legacy decoder's POSTINC0-every-8-samples
+          fill pattern (asm:574-580): buf0 takes samples 1..8,
+          buf1 takes 9..16, buf2 takes 17..24, buf3 takes 25..32.
+          Polarity matches existing decoder at asm:573-576 (C=1,
+          btfsc PORTB.RB5, bcf C → C=0 if RB5 HIGH, then rlcf
+          into the indexed byte).  Reload TMR1 with 0xF595;
+          increment sample_count.  If sample_count >= 32,
+          transition to DONE.
+
+  Why byte-indexed (codex HIGH vs the v2 spec): a literal 32-bit
+  rolling shift across the 4-byte chain would put samples 25-32
+  in buf0 (reversed from the legacy decoder's low-address-first
+  fill) -- the existing post-process at asm:587+ assumes the
+  legacy layout.  Byte-indexed accumulation matches it exactly:
+  no copy reordering needed at DONE.
 
 DONE (state=2):
   Triggered by: SAMPLING accumulated 32 samples.
@@ -116,8 +128,9 @@ The existing `ir_rc5_decode` body (asm:546-668) accumulates 32 samples
 through `FSR0=0x010` post-incrementing every 8 samples (asm:580
 `movf POSTINC0, F, A`). The 32-sample stream is then compressed into
 RC5 14-bit-frame fields by `flow_ir_rc5_decode_025E` (asm:587+) which
-walks the buffer through `control_core_service_01F0` (asm:490+) for
-Manchester pair validation.
+walks the buffer through `control_core_service_02EE` (codex-identified
+correct helper; asm:600, 609, 632, 657) for Manchester pair
+validation.
 
 The new design preserves this post-processing: after Timer1 accumulates
 32 samples into `v171_ir_buf0..buf3`, we copy those 4 bytes into
