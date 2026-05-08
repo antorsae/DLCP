@@ -271,6 +271,10 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
        * Preset B flash table at 0x4C00..0x55FF matches the capture.
        * Preset A/B EEPROM filename slots match the capture sidecars.
        * Route RAM is uniform R (all 6 channels = 0x01).
+       * V1.71 CONTROL was actively broadcasting cmd 0x20 preset
+         frames during the post-flash finalize -- proves the xact
+         gate was exercised under live load (Option 1 of the user's
+         consistency-under-CONTROL-hammering ask).
     """
     _require_rust()
     _require_capture_files()
@@ -280,9 +284,38 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
 
     from dlcp_fw.flash.dlcp_v32_release_flash import main
 
+    # Mark MAIN1's RX capture so we can assert CONTROL was actively
+    # broadcasting cmd 0x20 preset frames during the run.  Without
+    # this assertion the test could trivially pass in a quiescent
+    # no-traffic window where the xact gate's protection is never
+    # exercised.
+    chain.mark_main1_rx_capture_point()
+
     with install_sim_hub(hub):
         rc = main(["--right"])
     assert rc == 0, "release flasher main() returned non-zero"
+
+    # ---- Verify CONTROL preset broadcasts arrived during finalize ----
+    rx_bytes = list(chain.main1_rx_record_since_last_capture())
+    # Chain frames are 3-byte [route, cmd, data] sequences; route
+    # 0xB0/0xB1 are broadcast/addressed, cmd 0x20 is preset_select
+    # (the frame type the xact gate protects against).  Find
+    # frame-aligned occurrences -- a byte-by-byte walk would
+    # over-count if cmd 0x20 happens to appear in a data byte of a
+    # different frame.  Step by 1 (not 3) because we don't know
+    # frame alignment relative to the first captured byte.
+    preset_broadcasts = sum(
+        1
+        for i in range(0, max(0, len(rx_bytes) - 2))
+        if rx_bytes[i] in (0xB0, 0xB1) and rx_bytes[i + 1] == 0x20
+    )
+    assert preset_broadcasts >= 1, (
+        f"V1.71 CONTROL did not broadcast cmd 0x20 to MAIN1 during "
+        f"finalize (rx_bytes_len={len(rx_bytes)}, preset_count="
+        f"{preset_broadcasts}).  The xact gate test was running in a "
+        f"quiescent no-broadcast window -- gate protection isn't "
+        f"actually being exercised."
+    )
 
     # ---- Verify preset A flash table ----
     # NB: the simulated cmd 0x40 stream does NOT patch the chain's
@@ -366,3 +399,193 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
         f"V3.2 EEPROM identity drifted during run: got "
         f"{eeprom_identity!r}, expected {identity!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Race-stress test: actively inject CONTROL preset broadcast at the worst-
+# case timing (between cmd 0x03 WRITE and force_persist completion) and
+# verify the xact gate (filename_dirty_flags bit 6) drops the broadcast
+# without clobbering the host-written RAM filename.
+# ---------------------------------------------------------------------------
+
+
+_RX_RING_BASE = 0x0200
+_RX_RING_SIZE = 0xC0
+_RX_RING_RD = 0x0C6
+_RX_RING_WR = 0x0C7
+
+
+def _inject_main1_chain_frame(chain, frame: tuple[int, int, int]) -> None:  # type: ignore[no-untyped-def]
+    """Inject a 3-byte chain frame directly into MAIN1's RX ring at
+    physical 0x0200..0x02BF (V3.x convention; rd at 0x0C6, wr at
+    0x0C7).  Mirror of ``inject_main_frames_fifo`` but targets MAIN1
+    instead of MAIN0 -- used to deterministically place a CONTROL
+    preset broadcast in MAIN1's parser queue, bypassing the
+    CONTROL->MAIN0->MAIN1 forward latency.
+    """
+    rd = chain.read_main_reg(1, _RX_RING_RD) % _RX_RING_SIZE
+    wr = chain.read_main_reg(1, _RX_RING_WR) % _RX_RING_SIZE
+    used = (wr + _RX_RING_SIZE - rd) % _RX_RING_SIZE
+    free = _RX_RING_SIZE - 1 - used  # 1-byte free-slot accounting
+    if free < len(frame):
+        raise RuntimeError(
+            f"MAIN1 RX ring full: free={free}, frame={len(frame)}"
+        )
+    for byte in frame:
+        chain.write_main_reg(1, _RX_RING_BASE + wr, byte & 0xFF)
+        wr = (wr + 1) % _RX_RING_SIZE
+    chain.write_main_reg(1, _RX_RING_WR, wr)
+
+
+def test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not_clobber() -> None:
+    """Race-stress: inject a CONTROL preset broadcast at the worst-
+    case timing -- between the flasher's cmd 0x03 WRITE filename and
+    force_persist completion (gate bit 6 set + RAM 0x2C0..0x2DD
+    populated with host bytes).  Verify the xact gate drops the
+    injected broadcast (RAM unchanged, preset bit unchanged, gate
+    still set).  Then complete force_persist and verify EEPROM gets
+    the host-written filename, not the broadcast's would-be clobber.
+
+    This is the deterministic version of the race window the sibling
+    full-main test exercises probabilistically via natural V1.71
+    broadcasts (Option 2 of the user's consistency-under-CONTROL-
+    hammering ask).
+    """
+    _require_rust()
+    _require_capture_files()
+
+    chain, _, _, _ = _build_overlaid_chain()
+    hub = make_sim_hub(chain)
+
+    from dlcp_fw.flash.dlcp_main_flash import (
+        _force_active_filename_persist,
+    )
+
+    path = hub.device_for_unit(1).path
+
+    with install_sim_hub(hub):
+        hid_dev = hub.open_hid_path(path)
+
+        # Determine current preset (firmware may have booted into A or B
+        # depending on EEPROM state).
+        active_flags_initial = chain.read_main_reg(1, 0x05E)
+        current_preset_b = bool(active_flags_initial & 0x04)
+        opposite_preset_data = 0 if current_preset_b else 1
+        current_preset_letter = "B" if current_preset_b else "A"
+        current_eeprom_base = (
+            _PRESET_B_EEPROM_BASE if current_preset_b else _PRESET_A_EEPROM_BASE
+        )
+
+        # ---- Step 1: cmd 0x03 WRITE filename ----
+        # Per V3.2 firmware (asm:355-374), 0x00 in payload bytes 2..0x1F
+        # maps to 0xFF in RAM.  Host's _name_slot_to_cmd03_payload does
+        # the inverse (0x00/0xFF in name slot -> 0x00 in payload), so
+        # name bytes are verbatim and trailing 0x00 in payload becomes
+        # 0xFF in RAM.
+        host_name_bytes = b"RACE-CHECK-NAME"
+        payload = bytearray(64)
+        payload[0] = 0x03
+        payload[1] = 0x09  # WRITE subcmd
+        payload[2 : 2 + len(host_name_bytes)] = host_name_bytes
+        n = hid_dev.write(b"\x00" + bytes(payload))
+        assert n == 65
+        resp = hid_dev.read(64, 1000)
+        assert len(resp) == 64
+        assert resp[0] == 0x03 and resp[1] == 0x09
+
+        # Verify cmd 0x03 actually populated RAM and set bits 5+6.
+        flags_after_write = chain.read_main_reg(1, 0x0BD)
+        assert flags_after_write & 0x40, (
+            f"bit 6 (xact pending) not set after cmd 0x03 WRITE: "
+            f"0x{flags_after_write:02X}"
+        )
+        assert flags_after_write & 0x20, (
+            f"bit 5 (filename dirty) not set after cmd 0x03 WRITE: "
+            f"0x{flags_after_write:02X}"
+        )
+        for i, b in enumerate(host_name_bytes):
+            ram = chain.read_main_reg(1, 0x2C0 + i)
+            assert ram == b, (
+                f"RAM filename[{i}]=0x{ram:02X}, expected 0x{b:02X} "
+                f"after cmd 0x03 WRITE"
+            )
+
+        # ---- Step 2: Inject CONTROL preset broadcast for OPPOSITE preset ----
+        # The firmware's preset_select_handler (asm:9525) reads
+        # filename_dirty_flags.6 first; if set, it BRA's to
+        # preset_select_handler_done without storing the target or
+        # toggling preset.  Without the gate, the request would call
+        # preset_load_filename which clobbers RAM 0x2C0..0x2DD with
+        # the incoming preset's stored EEPROM filename -- corrupting
+        # the host's just-written bytes.
+        _inject_main1_chain_frame(chain, (0xB0, 0x20, opposite_preset_data))
+        # Step the chain so MAIN1's parser drains the RX ring.  The
+        # parser runs every main-loop iteration (~ 200 Tcy); 5 M ticks
+        # is ~ 100 ms sim time, plenty for the parser to dequeue and
+        # dispatch.
+        chain.step_ticks(5_000_000)
+
+        # ---- Step 3: Verify gate held under the injected broadcast ----
+        for i, b in enumerate(host_name_bytes):
+            ram = chain.read_main_reg(1, 0x2C0 + i)
+            assert ram == b, (
+                f"RAM filename[{i}] CLOBBERED by injected broadcast: "
+                f"got 0x{ram:02X}, expected 0x{b:02X}.  "
+                f"xact gate failed -- preset_select_handler did NOT "
+                f"drop the broadcast under bit 6 set."
+            )
+        # Trailing padding bytes should remain 0xFF (the firmware-side
+        # 0x00 -> 0xFF mapping should have produced these during cmd
+        # 0x03 WRITE).
+        for i in range(len(host_name_bytes), _FILENAME_LEN):
+            ram = chain.read_main_reg(1, 0x2C0 + i)
+            assert ram == 0xFF, (
+                f"RAM filename padding[{i}]=0x{ram:02X}, expected 0xFF"
+            )
+        flags_after_inject = chain.read_main_reg(1, 0x0BD)
+        assert flags_after_inject & 0x40, (
+            f"bit 6 cleared by injected broadcast: "
+            f"0x{flags_after_inject:02X}"
+        )
+        active_flags_after_inject = chain.read_main_reg(1, 0x05E)
+        assert (active_flags_after_inject & 0x04) == (
+            active_flags_initial & 0x04
+        ), (
+            f"preset bit toggled by injected broadcast despite gate: "
+            f"before=0x{active_flags_initial:02X}, "
+            f"after=0x{active_flags_after_inject:02X}"
+        )
+
+        # ---- Step 4: force_persist clears the gate + persists RAM->EEPROM ----
+        forced = _force_active_filename_persist(
+            vid=SimUsbHub.DEFAULT_VID,
+            pid=SimUsbHub.DEFAULT_PID,
+            path=path,
+            timeout_s=2.0,
+            poll_s=0.005,
+        )
+        assert forced, "force_persist returned False (no work to do)"
+        flags_after_persist = chain.read_main_reg(1, 0x0BD)
+        assert (flags_after_persist & 0x60) == 0, (
+            f"force_persist did not clear bits 5+6: "
+            f"0x{flags_after_persist:02X}"
+        )
+
+    # ---- Step 5: Verify EEPROM matches host's bytes (NOT clobber) ----
+    # preset_persist_filename writes RAM 0x2C0..0x2DD to EEPROM at
+    # the CURRENT preset's slot (asm:9558 selects A vs B by
+    # active_flags.bit2).  We proved bit 2 unchanged above, so the
+    # slot we read here matches the slot the firmware wrote to.
+    for i, b in enumerate(host_name_bytes):
+        eb = chain.read_main_eeprom_byte(1, current_eeprom_base + i)
+        assert eb == b, (
+            f"EEPROM[{current_eeprom_base + i:#04x}]=0x{eb:02X}, expected "
+            f"0x{b:02X} (host's cmd 0x03 byte; race-stress preset "
+            f"{current_preset_letter})"
+        )
+    for i in range(len(host_name_bytes), _FILENAME_LEN):
+        eb = chain.read_main_eeprom_byte(1, current_eeprom_base + i)
+        assert eb == 0xFF, (
+            f"EEPROM[{current_eeprom_base + i:#04x}]=0x{eb:02X}, expected "
+            f"0xFF (padding)"
+        )
