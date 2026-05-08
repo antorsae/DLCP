@@ -2653,7 +2653,12 @@ v171_service_pending_ir_decode_drop:
 ; confirmed and IR_ARMED set.  Initializes state machine + arms Timer1
 ; for the FIRST sample at 445 µs (mid-second-half of S1, where RB5 is
 ; still LOW for bit '1' Manchester at the inverted-TSOP convention the
-; firmware expects).  PRESERVES W (callable from ISR mid-stream).
+; firmware expects).
+;
+; Clobbers: W, STATUS, BSR (movlb 0x1).  Does NOT preserve caller W.
+; This is safe because the V1.71 isr_entry header at asm:786-792
+; saves W/STATUS/BSR/FSR0/FSR0H to scratch RAM and restores them on
+; exit (W restored at asm:872).
 v171_ir_start_decode:
         movlb   0x1
         clrf    v171_ir_buf0, BANKED
@@ -2686,45 +2691,42 @@ v171_ir_start_decode:
 ; sample_count >= 32, transitions to DONE (calls v171_ir_post_process).
 ; Otherwise reloads TMR1 with full-period preload (0xF595) for the next
 ; 889 µs sample.
+;
+; Uses FSR0 to address buf[byte_index] directly so we don't need a
+; multi-way branch dispatch BEFORE the rlcf -- avoids the carry-
+; clobber bug codex caught in the v2 implementation where addlw
+; (used for branch dispatch) clobbered the RB5-derived carry before
+; the rlcf consumed it.
 v171_ir_sample_handler:
+        ; First compute byte_index = sample_count >> 3 and form the
+        ; 12-bit physical address of buf[byte_index].  Since
+        ; v171_ir_buf0 lives at physical 0x1D7 (BANK 1), buf[k] is at
+        ; 0x1D7 + k for k=0..3.  Loading FSR0 = 0x1D7 + k lets us
+        ; rlcf INDF0 directly without any carry-clobbering arithmetic
+        ; AFTER we set carry from RB5.
         movlb   0x1
-        ; Compute Manchester bit value (matches legacy decoder polarity
-        ; at asm:573-576: C=1 by default, btfsc PORTB.RB5 (skip clear
-        ; if RB5 LOW), bcf C → C=0 if RB5 HIGH).
-        bsf     STATUS, C, A
-        btfsc   PORTB, RB5, A
-        bcf     STATUS, C, A
-        ; Determine target buffer byte: byte_index = sample_count >> 3.
-        ; sample_count is 0..31 across SAMPLING; sample 0 goes into buf0,
-        ; sample 8 into buf1, sample 16 into buf2, sample 24 into buf3.
         movf    v171_ir_sample_count, W, BANKED
         rrncf   WREG, W, A                          ; W = count >> 1
         rrncf   WREG, W, A                          ; W = count >> 2
         rrncf   WREG, W, A                          ; W = count >> 3
-        andlw   0x03                                ; mask byte_index 0..3
-        ; Branch to the right buf shift based on byte_index.
-        bz      v171_ir_sample_shift_buf0
-        addlw   0xFF                                ; W = byte_index - 1
-        bz      v171_ir_sample_shift_buf1
-        addlw   0xFF                                ; W = byte_index - 2
-        bz      v171_ir_sample_shift_buf2
-        ; byte_index == 3
-        rlcf    v171_ir_buf3, F, BANKED
-        bra     v171_ir_sample_advance
-
-v171_ir_sample_shift_buf0:
-        rlcf    v171_ir_buf0, F, BANKED
-        bra     v171_ir_sample_advance
-
-v171_ir_sample_shift_buf1:
-        rlcf    v171_ir_buf1, F, BANKED
-        bra     v171_ir_sample_advance
-
-v171_ir_sample_shift_buf2:
-        rlcf    v171_ir_buf2, F, BANKED
-        ; fall through
-
-v171_ir_sample_advance:
+        andlw   0x03                                ; W = byte_index 0..3
+        addlw   0xD7                                ; W = 0xD7 + byte_index
+                                                    ; (physical low byte of v171_ir_buf{k})
+        movwf   FSR0L, A
+        movlw   0x01
+        movwf   FSR0H, A                            ; FSR0 = 0x1D7 + byte_index
+        ; NOW set carry from RB5 -- nothing between this and rlcf
+        ; touches STATUS.C.  Polarity matches legacy decoder
+        ; (asm:573-576): C=1 default; btfsc PORTB.RB5 (skip clear if
+        ; RB5 LOW); bcf C → C=0 if RB5 HIGH.
+        bsf     STATUS, C, A
+        btfsc   PORTB, RB5, A
+        bcf     STATUS, C, A
+        ; rlcf rotates INDF0 left through C: new bit 0 = old C, new
+        ; C = old bit 7.  We don't care about the new C (next
+        ; iteration will reset it from RB5 anyway).
+        rlcf    INDF0, F, A
+        ; Advance sample_count.
         incf    v171_ir_sample_count, F, BANKED
         ; Check if we've collected all 32 samples.
         movlw   V171_IR_TOTAL_SAMPLES
@@ -6399,7 +6401,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x11                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x12                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
