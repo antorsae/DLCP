@@ -96,8 +96,11 @@ Access via `movlb 0x01` (these are bank-1 GPR addresses; physical
 0x1D5..0x1DC). Add collision/BSR-discipline structural tests mirroring
 the V1.71 diag renderer's test pattern.
 
-`v171_ir_decode_pending` at `0x0AA` is REMOVED (the foreground service
-goes away with this change). The byte becomes free for future use.
+`v171_ir_decode_pending` at `0x0AA` is no longer read or written by
+the M3 firmware path (the deferred-decode foreground service was
+unwired in 86d88e0).  The equate is still defined in
+`dlcp_control_ram.inc:118` for backward compatibility; the byte is
+effectively free RAM going forward.
 
 ### State machine
 
@@ -223,15 +226,22 @@ state=0.
 
 ### Removal of legacy code
 
-After the new path works:
+M3 LANDED status (commit 86d88e0):
 
-* Delete `v171_service_pending_ir_decode` body (asm:2614-2631).
-* Replace the call in `display_loop_iteration` (asm:2766) with an
-  inline `nop` to preserve byte alignment, OR remove the call and
-  let downstream addresses shift (gpasm handles relabeling).
-* `v171_ir_decode_pending` at 0x0AA becomes free RAM (no callers).
-* Keep `ir_rc5_decode` body itself for now as `ir_rc5_decode_legacy`
-  reference (no callers in V1.71); future cleanup can remove it.
+* `v171_service_pending_ir_decode` body still present at
+  asm:2641 but unreachable -- the call from `display_loop_iteration`
+  was removed in 86d88e0.  The dead routine is intentionally kept
+  in place to avoid shifting downstream code addresses (Layer 5
+  chain tests have a known sensitivity to address shifts; see #153).
+  Future cleanup can remove the dead body once a coordinated
+  address-shift sweep is acceptable.
+* `v171_ir_decode_pending` at 0x0AA -- equate still in
+  `dlcp_control_ram.inc:118` but not read/written by the M3 firmware
+  path.  Effectively free RAM.
+* `ir_rc5_decode` legacy body retained as `flow_ir_rc5_decode_025E`
+  -- still CALLED from `v171_ir_post_process` for the Manchester
+  pair-validation post-process logic (this is by design; the M3
+  decoder reuses the legacy validation rather than rewriting it).
 
 ### Code-shift risk
 
@@ -243,12 +253,14 @@ single test fails with timing-only assertions.
 
 ## Validation plan
 
-1. **V1.71 phase-miss test should FAIL after this lands.**
+1. **V1.71 phase-miss test was UPDATED post-M3** (commit 86d88e0):
+   the original
    `tests/sim/test_v171_ir_deferred_phase_miss.py::test_v171_deferred_decode_aborts_when_foreground_misses_low_window`
-   currently PASSES (bug present). New decoder doesn't read 0x0AA at
-   all → poking it has no effect → no abort → test fails. That
-   failure flags the fix — UPDATE the test (delete or rewrite to pin
-   the new behavior).
+   was inverted to pin the post-fix contract.  The renamed test
+   `test_v171_no_deferred_decode_pending_byte_is_unused` asserts
+   that poking RAM 0x0AA has no observable effect (cmd stays 0x00,
+   pending stays 0xFF unchanged), which permanently regression-
+   detects against re-introducing the deferred-decode design.
 
 2. **V1.6b sister test must STILL PASS.**
    `test_v16b_stock_in_isr_decode_immune_to_phase_miss` is unaffected
@@ -343,14 +355,16 @@ single test fails with timing-only assertions.
   full-12-bit literal addressing).  Use `lfsr` + `POSTINC0/1`
   patterns instead, OR define a separate full-address equate.
 * The legacy decoder's per-iteration delay (`call control_core_
-  service_01D8` with W=0xBA / W=0x76) is harder to model than I
-  estimated: nested decrement loops with subtle borrow semantics.
-  My initial trace put per-iteration at ~595 µs, but a codex
-  re-count gave ~885 µs ≈ one Manchester half-bit -- closer to
-  what we'd expect for "sample at mid of each half-bit" cadence.
-  My earlier ~595 µs estimate was wrong; the legacy timing must
-  be re-counted or sim-instrumented before claiming a phase
-  alignment in M3 next-attempt.
+  service_01D8` with W=0xBA / W=0x76) is harder to model than the
+  initial estimate: nested decrement loops with subtle borrow
+  semantics.  Initial trace put per-iteration at ~595 µs, but a
+  codex re-count gave ~885 µs ≈ one Manchester half-bit -- closer
+  to what we'd expect for "sample at mid of each half-bit" cadence.
+  The legacy timing was eventually rust-sim-instrumented (see
+  /tmp/v16b_ir_timing_probe2.py method documented in
+  `dlcp_control_ram.inc`'s preload-derivation block); per-sample
+  interval = 2674 Tcy = 890 µs and first-sample = 4040 Tcy =
+  1345 µs after RB5 falling edge.
 * The ISR-overhead compensation is not unique to my design --
   ANY non-blocking IR decoder running from a Timer1 ISR has to
   account for the per-tick overhead.  This is a real-silicon
