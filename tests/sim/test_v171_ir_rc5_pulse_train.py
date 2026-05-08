@@ -324,11 +324,78 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
     )
 
 
-# Pulse-train coverage of the other three V1.71 inline shortcuts
-# (cmd 0x38 preset A, 0x39 preset B, 0x3B wake) is task #157 -- the
-# decoder timing fix in 61e17a7 unblocks the cmd-LSB=1 cases that
-# previously failed Manchester pair-validation on the last sample
-# pair, so all four cmds now decode correctly via direct register
-# inspection of ir_decoded_cmd.  Adding parametrized variants here
-# (or extending test_v171_ir_command_matrix.py) would lock in the
-# fix as an automated regression gate.
+# ===========================================================================
+# Parametrized pulse-train decode coverage for all 4 V1.71 inline shortcuts
+# (#157).
+#
+# Asserts on ir_decoded_cmd / ir_decoded_addr REGISTERS post-decode rather
+# than on the chain TX stream.  Why: the V1.71 layer-2 full_sync_step
+# machine emits preset/standby/wake frames on its own cadence (independent
+# of IR), so a TX-frame assertion can pass coincidentally.  Direct register
+# inspection isolates "did the decoder actually decode this cmd" from
+# "did the dispatcher fire AND did layer-2 not happen to emit the same
+# frame".
+#
+# This locks in the decoder timing fix from 61e17a7 (V171_IR_TMR1_FULL
+# preload retune from 0xF595 -> 0xF5D8).  Pre-fix, cmds with cmd LSB = 1
+# (0x39 preset B, 0x3B wake) failed Manchester pair-validation on the
+# last sample pair and the legacy decoder bailed to error path
+# (ir_decoded_cmd = 0xFF).  Post-fix, all four cmds decode correctly.
+# ===========================================================================
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("cmd, label", [
+    (0x38, "preset A"),
+    (0x39, "preset B"),
+    (0x3A, "standby"),
+    (0x3B, "wake"),
+])
+def test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd(
+    v171_hex: Path, cmd: int, label: str,
+) -> None:
+    """Drive RC5 (addr=0x10, cmd=<param>) at CONTROL.RB5 and verify
+    the M3 Timer1-driven decoder lands the expected value in
+    ir_decoded_cmd / ir_decoded_addr.
+
+    Exercises the FULL pipeline post-M3 (per 86d88e0 + 61e17a7):
+      RB5 falling edge -> port-B IOC -> RBIF -> isr_entry ->
+      v171_ir_start_decode (Timer1 first preload 0xF0BC) -> 32x
+      v171_ir_sample_handler (Timer1 reload preload 0xF5D8) ->
+      v171_ir_decode_done -> v171_ir_post_process ->
+      flow_ir_rc5_decode_025E (legacy Manchester pair-validation) ->
+      ir_decoded_cmd / ir_decoded_addr written.
+
+    Direct register check, no TX-frame coincidence.
+    """
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(v171_hex))
+    chain.warmup(25_000_000)
+    chain.pause_heartbeat()
+    for _ in range(40):
+        chain.step()
+    chain.set_control_pin("B", 5, True)
+    for _ in range(20):
+        chain.step()
+
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=cmd)
+    # Settle long enough for decode + post_process to land cmd/addr
+    # (~150 ms simulated covers the worst-case ISR-dispatch tail).
+    for _ in range(8):
+        chain.step_ticks(1_000_000)
+
+    decoded_cmd = chain.read_reg(0x01D)
+    decoded_addr = chain.read_reg(0x01E)
+    assert decoded_cmd == cmd, (
+        f"{label} (cmd 0x{cmd:02X}): decoded_cmd=0x{decoded_cmd:02X}, "
+        f"expected 0x{cmd:02X}.  Decoder bailed to error path (0xFF) "
+        f"or never wrote cmd (0x00 / pre-warmup value).  Check the "
+        f"M3 Timer1 preloads in dlcp_control_ram.inc -- the FULL "
+        f"preload V171_IR_TMR1_FULL must produce a sample-to-sample "
+        f"interval close to RC5's 890 us at the btfsc PORTB,RB5 step."
+    )
+    assert decoded_addr == 0x10, (
+        f"{label} (cmd 0x{cmd:02X}): decoded_addr=0x{decoded_addr:02X}, "
+        f"expected 0x10."
+    )
