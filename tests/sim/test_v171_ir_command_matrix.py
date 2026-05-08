@@ -19,16 +19,16 @@ existing LSB-resolution caveats noted in that file.
 Commands covered (V1.71 inline IR shortcuts, hardcoded; no EEPROM
 dependency):
 
-  * cmd 0x38 → preset A toggle  (V1.61b shortcut, asm:3185+)
-  * cmd 0x39 → preset B toggle  (V1.61b shortcut, asm:3206+)
-  * cmd 0x3A → standby endpoint (V1.64b explicit, asm:3247+)
-  * cmd 0x3B → wake endpoint    (V1.64b explicit, asm:3308+)
+  * cmd 0x38 → preset A toggle  (V1.61b shortcut, asm:3403+)
+  * cmd 0x39 → preset B toggle  (V1.61b shortcut, asm:3411+)
+  * cmd 0x3A → standby endpoint (V1.64b explicit, asm:3422+)
+  * cmd 0x3B → wake endpoint    (V1.64b explicit, asm:3431+)
 
 EEPROM-configured commands (VOL+, VOL-, MUTE, etc.) are NOT covered
 by this matrix because they depend on the user's IR-learning
 configuration stored in EEPROM (Common_RAM+33..+43 loaded from
 EEPROM at boot).  Coverage of those paths via direct EEPROM
-configuration is task #156 (deferred).
+configuration is a future task (deferred).
 
 Sequence cases
 ==============
@@ -64,7 +64,7 @@ pytestmark = pytest.mark.dual_supported
 
 PRESET_ADDR = 0x10
 
-# V1.71 inline shortcuts (from asm:3185..3308).
+# V1.71 inline shortcuts (from asm:3373..3440).
 IR_CMD_PRESET_A = 0x38
 IR_CMD_PRESET_B = 0x39
 IR_CMD_STANDBY = 0x3A
@@ -99,7 +99,7 @@ def _warmup(chain) -> None:  # type: ignore[no-untyped-def]
 
 
 # ---------------------------------------------------------------------------
-# Module-scoping note (2026-05-08 investigation, task #156 follow-up):
+# Module-scoping note (2026-05-08 investigation, task #158 follow-up):
 #
 # An attempt to amortise warmup across tests via a module-scoped chain
 # fixture (~6× speedup, 50 s -> ~9 s) revealed a latent issue: half the
@@ -148,7 +148,7 @@ def _inject_and_settle(chain, cmd: int, addr: int = PRESET_ADDR, settle_steps: i
 # Pulse-train decoder coverage is owned by test_v171_ir_rc5_pulse_train.py
 # (cmd 0x3A only -- the decoder's LSB resolution makes a 4-cmd matrix
 # unreliable per the comment block in that file).  Extending pulse-train
-# coverage to all four inline shortcuts is tracked as task #155b.
+# coverage to all four inline shortcuts is tracked as task #157.
 # ===========================================================================
 
 
