@@ -446,12 +446,28 @@ class SimHidBackend:
     directly.
     """
 
-    def __init__(self, hub: "SimUsbHub", device: SimUsbDevice) -> None:
+    def __init__(
+        self,
+        hub: "SimUsbHub",
+        device: SimUsbDevice,
+        *,
+        step_ticks_per_op: Optional[int] = None,
+    ) -> None:
         self._hub = hub
         self._device = device
         self._read_queue: list[bytes] = []
         self._closed = False
         self._lock = threading.Lock()
+        # Inherit from hub if not explicitly overridden so
+        # ``cmd 0x43 verify`` (~70 reads in a row) accumulates sim time
+        # the same way EP0 polling does.  Without this, a long verify
+        # phase advances 0 sim time and the subsequent preset-switch
+        # via EP0 sees a stale firmware state (active_flags.7 still set
+        # because no chain frame has fired since the EP0 write).
+        if step_ticks_per_op is None:
+            self._step_ticks_per_op = hub.default_step_ticks_per_hid_op
+        else:
+            self._step_ticks_per_op = max(0, int(step_ticks_per_op))
 
     # ---- hid.device duck-type API --------------------------------------
 
@@ -476,6 +492,13 @@ class SimHidBackend:
         if response is not None:
             with self._lock:
                 self._read_queue.append(response)
+        # Step the chain so the firmware can react between HID ops.
+        # Critical for cmd 0x43 verify (~70 reads in a row) -- without
+        # stepping, sim time stalls during the verify phase and the
+        # subsequent EP0 preset-switch sees a stale active_flags.7
+        # (no chain frame fired between EP0 write and EP0 poll).
+        if self._step_ticks_per_op > 0:
+            self._hub._chain.step_ticks(self._step_ticks_per_op)
         return len(b)
 
     def read(self, size: int, timeout_ms: int = 0) -> list[int]:
@@ -858,7 +881,26 @@ class SimUsbHub:
     # no firmware-side reaction in between) construct ``SimDlcpEp0``
     # directly with ``step_ticks_per_op=0`` -- the existing
     # ``test_v32_flasher_sim_backend_ep0.py`` pattern.
-    DEFAULT_STEP_TICKS_PER_EP0_OP = 100_000
+    # 2 M ticks (~ 42 ms sim time @ 48 MHz) per EP0 op gives the
+    # unmodified flasher's polling loops (40 polls over a 2 s timeout,
+    # 0.05 s wall-clock spacing) ~ 1.68 s of cumulative sim time.  That
+    # is enough to catch at least one V1.71 CONTROL chain frame
+    # broadcast (~1 s spacing at idle, ~6 s for full_sync_burst step 6),
+    # which is the only path that fires ``cmd_dispatch_gated`` and
+    # clears ``active_flags.7`` after the host's reapply request.
+    # Smaller values (100 k) starve the firmware -- the polling loop
+    # times out before a chain frame can fire.
+    DEFAULT_STEP_TICKS_PER_EP0_OP = 2_000_000
+
+    # Default step-ticks-per-HID-op (1 M ticks ~= 21 ms sim time @ 48 MHz).
+    # Larger than the EP0 default because a typical flasher session does
+    # ~70 cmd 0x43 reads in a row during ``_verify_capture_overlay`` --
+    # they'd accumulate ~1.5 s of sim time, which gives chain frames
+    # (V1.71 CONTROL's ~6 s full_sync_burst step 6) and asynchronous
+    # firmware paths (preset_job_service, active_flags.7 reapply
+    # cleared by cmd_dispatch_gated) plenty of opportunity to converge
+    # before the next EP0 polling phase fires.
+    DEFAULT_STEP_TICKS_PER_HID_OP = 1_000_000
 
     def __init__(
         self,
@@ -868,12 +910,16 @@ class SimUsbHub:
         vid: int = DEFAULT_VID,
         pid: int = DEFAULT_PID,
         default_step_ticks_per_ep0_op: int = DEFAULT_STEP_TICKS_PER_EP0_OP,
+        default_step_ticks_per_hid_op: int = DEFAULT_STEP_TICKS_PER_HID_OP,
     ) -> None:
         self._chain = chain
         self._vid = vid
         self._pid = pid
         self._default_step_ticks_per_ep0_op = max(
             0, int(default_step_ticks_per_ep0_op)
+        )
+        self._default_step_ticks_per_hid_op = max(
+            0, int(default_step_ticks_per_hid_op)
         )
         self._devices: dict[bytes, SimUsbDevice] = {}
         for unit in units:
@@ -898,6 +944,10 @@ class SimUsbHub:
     @property
     def chain(self):  # type: ignore[no-untyped-def]
         return self._chain
+
+    @property
+    def default_step_ticks_per_hid_op(self) -> int:
+        return self._default_step_ticks_per_hid_op
 
     # ---- Hooks consumed by the flasher modules ------------------------
 
@@ -1071,6 +1121,7 @@ def make_sim_hub(
     vid: int = SimUsbHub.DEFAULT_VID,
     pid: int = SimUsbHub.DEFAULT_PID,
     default_step_ticks_per_ep0_op: int = SimUsbHub.DEFAULT_STEP_TICKS_PER_EP0_OP,
+    default_step_ticks_per_hid_op: int = SimUsbHub.DEFAULT_STEP_TICKS_PER_HID_OP,
 ) -> SimUsbHub:
     """Convenience factory mirroring ``make_sim_ep0``."""
     return SimUsbHub(
@@ -1079,4 +1130,5 @@ def make_sim_hub(
         vid=vid,
         pid=pid,
         default_step_ticks_per_ep0_op=default_step_ticks_per_ep0_op,
+        default_step_ticks_per_hid_op=default_step_ticks_per_hid_op,
     )
