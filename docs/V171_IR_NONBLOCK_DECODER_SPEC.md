@@ -283,10 +283,13 @@ single test fails with timing-only assertions.
      b. **Cumulative ISR-overhead drift.**  Each sample handler
         invocation costs ~17 µs of overhead (ISR header + dispatch +
         sample-handler body).  Over 32 samples this drifts the
-        sample window by ~544 µs, by sample 24 the sample lands in
-        the WRONG half of the bit (e.g. mid-second-half instead of
-        mid-first-half).  Manchester pair validation then fails for
-        the late-frame bits and either decodes wrong or aborts.
+        sample window cumulatively by ~544 µs.  Late-frame samples
+        (the test repro showed sample 24 already showing wrong
+        bit-value, codex review notes that point is borderline --
+        24 × 17 µs = 408 µs is just inside the 444 µs half-bit
+        margin; the actual onset of mistimed reads may be a few
+        samples later).  Either way, by the C0 / C1 region the
+        Manchester pair validation breaks.
      c. **Buffer layout doesn't match legacy post-process.**
         V1.6b stock decodes the test pulse train to cmd=0x3A by
         producing buf=`66 A9 59 02`, while my Timer1-driven
@@ -331,12 +334,12 @@ single test fails with timing-only assertions.
 * The legacy decoder's per-iteration delay (`call control_core_
   service_01D8` with W=0xBA / W=0x76) is harder to model than I
   estimated: nested decrement loops with subtle borrow semantics.
-  The actual per-iteration timing was NOT 889 µs but somewhere
-  near 595 µs (32 samples × 595 = 19 ms vs the ~25 ms RC5 frame).
-  This suggests the legacy decoder samples at a NON-half-bit rate
-  and uses pair correlation across multiple samples to recover the
-  Manchester signal -- more sophisticated than the textbook
-  "sample at mid of each half-bit" approach.
+  My initial trace put per-iteration at ~595 µs, but a codex
+  re-count gave ~885 µs ≈ one Manchester half-bit -- closer to
+  what we'd expect for "sample at mid of each half-bit" cadence.
+  My earlier ~595 µs estimate was wrong; the legacy timing must
+  be re-counted or sim-instrumented before claiming a phase
+  alignment in M3 next-attempt.
 * The ISR-overhead compensation is not unique to my design --
   ANY non-blocking IR decoder running from a Timer1 ISR has to
   account for the per-tick overhead.  This is a real-silicon
