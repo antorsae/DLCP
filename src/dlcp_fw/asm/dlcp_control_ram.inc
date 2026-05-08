@@ -528,12 +528,18 @@ v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample 
 ; on each side against per-sample overhead variation.
 ;
 ; First-sample 0xF0BC: unchanged.  Sample 1 lands at falling_edge +
-; 1303 + (RBIF→T1CON ~6 Tcy + Timer1-overflow→btfsc ~25 Tcy ~10 µs)
-; ≈ falling_edge + 1313 µs in the rust sim.  Empirically this puts
-; sample 1 in S2 first half (HIGH for sentinel '1') across all
-; tested cmds.  Hardware re-tuning may be needed if real silicon's
-; ISR-overhead profile differs (see V171_IR_NONBLOCK_DECODER_SPEC.md
-; "Hardware validation handoff" section).
+; 1303 µs (preload) + ~13 µs total first-sample ISR overhead
+; (RBIF→T1CON dispatch + Timer1-overflow→btfsc handler header,
+; ~40 Tcy combined) ≈ falling_edge + 1316 µs in the rust sim.
+; Empirically this puts sample 1 in S2 first half (HIGH for sentinel
+; '1') across all tested cmds.  Hardware re-tuning may be needed if
+; real silicon's ISR-overhead profile differs (see
+; V171_IR_NONBLOCK_DECODER_SPEC.md "Hardware validation handoff"
+; section).  N.B.: the per-sample ISR overhead documented above
+; (~70 Tcy) is LARGER than the first-sample overhead because it
+; includes the post-btfsc reload tail + ISR epilogue + foreground
+; resumption that don't apply on the first sample (Timer1 starts
+; counting at the END of v171_ir_start_decode, not at ISR entry).
 V171_IR_TMR1_FULL_HI       equ  0xF5    ; 0xF5D8 high byte (~866 µs preload)
 V171_IR_TMR1_FULL_LO       equ  0xD8    ; 0xF5D8 low byte (~890 µs effective)
 V171_IR_TMR1_FIRST_HI      equ  0xF0    ; 0xF0BC high byte (~1303 µs)

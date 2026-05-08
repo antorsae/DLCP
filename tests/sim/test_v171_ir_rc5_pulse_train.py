@@ -1,27 +1,30 @@
 """V1.71 IR RC5 pulse-train regression test.
 
-The existing IR sim tests (``test_v171_ir_endpoints.py``,
-``test_v171_preset_inline.py``) inject the decoded result directly
-via ``inject_decoded_ir_event`` -- a RAM poke that writes to
-``ir_decoded_cmd`` (0x01D), ``ir_decoded_addr`` (0x01E), and
-clears ``control_flags.IR_ARMED`` (0x01F.bit0).  That bypasses
-``ir_rc5_decode`` (asm:546+) entirely, so a regression in the
-bit-bang decoder, the port-B IOC -> RBIF -> ISR latch path, or
-the V1.71 deferred-decode service routine
-(``v171_service_pending_ir_decode``) would not be detected.
+The other IR sim tests (``test_v171_ir_endpoints.py``,
+``test_v171_preset_inline.py``, ``test_v171_ir_command_matrix.py``)
+inject the decoded result directly via ``inject_decoded_ir_event``
+-- a RAM poke that writes ``ir_decoded_cmd`` (0x01D),
+``ir_decoded_addr`` (0x01E), and clears ``control_flags.IR_ARMED``
+(0x01F.bit0).  That bypasses the bit-bang Manchester decoder
+entirely, so a regression in the port-B IOC -> RBIF -> ISR latch
+path, the M3 Timer1-driven sample state machine, or the post-process
+hand-off to ``flow_ir_rc5_decode_025E`` would not be detected by
+the inject-based tests.
 
-This test drives a real Manchester-encoded RC5 pulse train at
-CONTROL's RB5 input pin with 889 µs half-bit timing, then asserts
-that the V1.71 inline IR dispatch emits the expected standby
-frame to CONTROL's TX stream.  Asserting on the TX frame (rather
-than on the transient ``ir_decoded_cmd``/``ir_decoded_addr``
-register state) is the correct functional contract: the deferred
-decoder runs MID-pulse-train (the train spans ~25 ms during which
-the foreground display_loop_iteration cycles) and writes the cmd
-byte briefly while the dispatch fires, but a SECOND decoder run
-later in the same train (triggered by subsequent RB5 edges
-re-latching ``v171_ir_decode_pending``) takes the abort path and
-overwrites ir_decoded_cmd back to 0xFF.
+This file drives a real Manchester-encoded RC5 pulse train at
+CONTROL's RB5 input pin with 889 µs half-bit timing.  Two test
+shapes:
+
+  1. ``test_v171_rc5_pulse_train_decodes_standby_endpoint`` -- the
+     original black-box gate: drives cmd=0x3A and asserts the
+     standby chain TX frame appears.
+
+  2. ``test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd`` --
+     parametrized over all four V1.71 inline cmds (0x38/0x39/0x3A/
+     0x3B) and asserts on ``ir_decoded_cmd`` / ``ir_decoded_addr``
+     registers post-decode.  This locks in the M3 timing fix from
+     61e17a7 (V171_IR_TMR1_FULL retune 0xF595 -> 0xF5D8) as an
+     automated regression gate.
 
 Polarity convention (validated empirically against stock V1.6b
 CONTROL by the codex sandbox 2026-05-07): the DLCP firmware
@@ -29,21 +32,13 @@ expects bit '1' = HIGH-then-LOW at the MCU pin, bit '0' =
 LOW-then-HIGH.  Idle = HIGH between frames.  This is INVERTED
 from the standard TSOP-active-low convention.
 
-Investigation arc summary (commits a3851f4 .. 82fbb29 + this
-follow-up):
-  - First version of this test used the wrong Manchester
-    polarity, so all variants xfailed.  Both bc61c70-deferred and
-    a bc61c70-revert variant produced ir_decoded_cmd=0xFF, which
-    looked like a sim fidelity gap.
-  - The bc61c70 revert was tested and breaks 4 layer5_diag_chain
-    tests by re-introducing Bug C3 (``ir_decode_blocks_isr_10ms``)
-    -- the in-ISR decoder stalls UART RX/button RBIF/TXIE for
-    ~7-10 ms, so the deferral cannot be reverted blindly.
-  - Codex investigation confirmed the polarity is inverted and
-    the rust sim DOES faithfully decode RC5 once the polarity is
-    fixed.  Test now passes against the current bc61c70-deferred
-    source -- meaning the user's reported real-hardware IR bug,
-    if any, is NOT reproduced at the simulator level.
+Decoder pipeline post-M3 (per 86d88e0 + 61e17a7):
+  RB5 falling edge -> port-B IOC -> RBIF -> isr_entry ->
+  v171_ir_start_decode -> 32 x v171_ir_sample_handler ->
+  v171_ir_decode_done -> v171_ir_post_process ->
+  flow_ir_rc5_decode_025E -> ir_decoded_cmd / ir_decoded_addr ->
+  control_core_service_0DCE foreground dispatch -> V1.71 inline
+  shortcut case (preset A/B / standby / wake) -> chain TX frame.
 """
 
 from __future__ import annotations
@@ -198,20 +193,23 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
     the V1.71 inline IR dispatch emits ``[B0, 03, 00]`` (standby
     frame) to CONTROL's TX stream.
 
-    This exercises the FULL IR pipeline:
-      RB5 falling edge → port-B IOC → RBIF → ISR latch
-      ``v171_ir_decode_pending`` → foreground
-      ``v171_service_pending_ir_decode`` → ``ir_rc5_decode``
-      bit-bang → inline dispatch → ``v171_send_standby_cmd_frame``
-      → TX standby frame.
+    Exercises the FULL M3 IR pipeline (post-86d88e0 / 61e17a7):
+      RB5 falling edge → port-B IOC → RBIF → isr_entry →
+      v171_ir_start_decode (Timer1 first preload 0xF0BC) →
+      32 x v171_ir_sample_handler (Timer1 reload 0xF5D8) →
+      v171_ir_decode_done → v171_ir_post_process →
+      flow_ir_rc5_decode_025E (Manchester pair-validation) →
+      ir_decoded_cmd / ir_decoded_addr written → control_core_
+      service_0DCE foreground dispatch → V1.71 inline standby
+      case (asm:3422) → v171_send_standby_cmd_frame → TX
+      standby frame.
 
-    Asserts on the TX frame rather than ``ir_decoded_cmd`` because
-    the latter is transient mid-state -- the deferred decoder runs
-    MID-pulse-train, writes the cmd byte briefly while the
-    dispatch fires, then a SECOND decoder run later in the same
-    train (re-latched pending=0xFF on subsequent RB5 edges) takes
-    the abort path and overwrites it back to 0xFF.  The TX frame
-    is the durable functional outcome.
+    Asserts on the TX standby frame appearing in the new frames.
+    The companion parametrized test below
+    (test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd) covers
+    all four V1.71 inline cmds (0x38/0x39/0x3A/0x3B) via direct
+    ir_decoded_cmd register inspection -- this test remains as a
+    black-box pipeline gate for the standby-specific TX-byte path.
     """
     _require_rust()
     chain = RustChain.from_v17_chain(str(v171_hex))
@@ -222,105 +220,40 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
         h.step()
 
     # RB5 starts HIGH (idle).  Must be confirmed before injection
-    # because the decoder aborts if RB5 is HIGH at decode entry --
-    # but ARRIVES at decode entry only after the falling edge of
-    # S1's first half.
+    # because the decoder's RB5=LOW gate at asm:879-880 only arms
+    # the M3 state machine on RBIF when RB5 is currently LOW (i.e.
+    # post falling-edge of S1's first half).
     chain.set_control_pin("B", 5, True)
     for _ in range(20):
         h.step()
 
-    # Snapshot pre-injection state.
     before_tx = len(h.tx_frames())
-    pre_decoded_cmd = chain.read_reg(0x01D)
-    pre_decoded_addr = chain.read_reg(0x01E)
-    pre_pending = chain.read_reg(0x0AA)  # v171_ir_decode_pending
-    pre_flags = chain.read_reg(0x01F)    # control_flags (bit0 = IR_ARMED)
 
     # Drive the RC5 pulse train: addr=0x10 (preset menu),
     # cmd=0x3A (V1.64b explicit standby endpoint).
     _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x3A)
 
-    # Post-train snapshot (immediately after the pulse train,
-    # before the foreground-service settle).  The pulse train
-    # spans ~25 ms simulated, during which the ISR has been
-    # firing on every RB5 edge and latching pending=0xFF if
-    # the IOC->RBIF->ISR chain works.  If post_train_pending
-    # is 0xFF here, the ISR latch path is intact; the bug is
-    # localised to the foreground decoder timing.
-    post_train_pending = chain.read_reg(0x0AA)
-    post_train_flags = chain.read_reg(0x01F)
-    post_train_cmd = chain.read_reg(0x01D)
-    post_train_addr = chain.read_reg(0x01E)
-
-    # Settle in chunks and sample ir_decoded_cmd at each chunk
-    # boundary so we can see if/when it becomes 0x3A and whether
-    # something later clears it back to 0xFF.
-    settle_trace: list[tuple[int, int, int, int, int]] = []
-    for chunk_idx in range(20):
+    # Settle in chunks (post-frame the M3 sample handler keeps
+    # firing until count == 32, then post_process runs).  20 x 1M
+    # universal ticks ~ 417 ms simulated covers the worst-case
+    # decode + dispatch tail.
+    for _ in range(20):
         h.step_ticks(1_000_000)
-        settle_trace.append((
-            chunk_idx,
-            chain.read_reg(0x01D),  # ir_decoded_cmd
-            chain.read_reg(0x01E),  # ir_decoded_addr
-            chain.read_reg(0x0AA),  # pending
-            chain.read_reg(0x01F),  # flags
-        ))
     for _ in range(40):
         h.step()
 
-    # Read the decoded values the firmware should have written.
     decoded_cmd = chain.read_reg(0x01D)
     decoded_addr = chain.read_reg(0x01E)
-    post_pending = chain.read_reg(0x0AA)
-    post_flags = chain.read_reg(0x01F)
 
     new_frames = h.tx_frames()[before_tx:]
-    for idx, c, a, p, f in settle_trace:
-        if c != 0xFF or p != 0:
-            print(
-                f"  settle[{idx}]: cmd=0x{c:02X} addr=0x{a:02X} "
-                f"pending=0x{p:02X} flags=0x{f:02X}"
-            )
-
-    # Diagnostic eprint so a failure shows what the decoder
-    # actually saw.  Distinguishes:
-    #   - ISR didn't fire        -> post_train_pending == 0
-    #   - ISR fired, fg ran      -> post_pending == 0, decoded_cmd correct
-    #   - ISR fired, fg ran twice -> decoded_cmd 0xFF (overwritten by second-run abort)
-    #   - ISR fired, fg never    -> post_pending != 0
-    print(
-        f"\nRC5 pulse-train decode result:\n"
-        f"  pre:        ir_decoded_cmd=0x{pre_decoded_cmd:02X}, addr=0x{pre_decoded_addr:02X}, "
-        f"pending=0x{pre_pending:02X}, flags=0x{pre_flags:02X}\n"
-        f"  post-train: ir_decoded_cmd=0x{post_train_cmd:02X}, "
-        f"addr=0x{post_train_addr:02X}, "
-        f"pending=0x{post_train_pending:02X}, flags=0x{post_train_flags:02X}\n"
-        f"  post-settle: ir_decoded_cmd=0x{decoded_cmd:02X}, addr=0x{decoded_addr:02X}, "
-        f"pending=0x{post_pending:02X}, flags=0x{post_flags:02X}\n"
-        f"  expected: cmd=0x3A, addr=0x10\n"
-        f"  TX frames after injection: {list(new_frames)}"
-    )
-
-    # The functional contract is the V1.71 inline dispatch firing
-    # in response to the RC5 cmd=0x3A.  ir_decoded_cmd / ir_decoded_addr
-    # are TRANSIENT mid-state -- the deferred decoder runs MID-pulse-
-    # train (the train spans ~25 ms during which the foreground
-    # display_loop_iteration cycles), writes 0x3A briefly while the
-    # dispatch fires and emits the standby frame, then a SECOND
-    # decoder run later in the same train (triggered by subsequent
-    # RB5 edges latching pending=0xFF again) takes the abort path
-    # and overwrites ir_decoded_cmd back to 0xFF.  So we assert on
-    # the TX standby frame appearing (the visible/functional
-    # outcome) rather than the transient register state.
     standby_frame = (0xB0, 0x03, 0x00)
     new_tuples = list(new_frames)
     assert standby_frame in new_tuples, (
         f"V1.71 inline IR dispatch should emit {standby_frame} after "
         f"RC5 (addr=0x10, cmd=0x3A) at RB5; got TX frames {new_tuples}.  "
-        f"Diagnostic: ir_decoded_cmd at post-train = "
-        f"0x{post_train_cmd:02X}, post-settle = 0x{decoded_cmd:02X}; "
-        f"pending post-train = 0x{post_train_pending:02X}, post-settle = "
-        f"0x{post_pending:02X}."
+        f"Diagnostic: ir_decoded_cmd post-settle = 0x{decoded_cmd:02X} "
+        f"(expected 0x3A), ir_decoded_addr = 0x{decoded_addr:02X} "
+        f"(expected 0x10)."
     )
 
 

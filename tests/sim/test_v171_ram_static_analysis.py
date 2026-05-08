@@ -433,9 +433,9 @@ def test_t1_2_bank1_equates_accessed_under_movlb_0x01() -> None:
             for n, ln, v in indeterminate_sites
         ]
         warnings.warn(
-            f"[T1.2] {len(indeterminate_sites)} INDETERMINATE BANK-1 "
-            f"access site(s) (predecessor BSR not statically proven; "
-            f"manual review needed):\n"
+            f"[T1.2] INDETERMINATE BANK-1 access sites "
+            f"({len(indeterminate_sites)} total; predecessor BSR not "
+            f"statically proven; manual review needed):\n"
             + "\n".join(warning_lines),
             UserWarning,
             stacklevel=2,

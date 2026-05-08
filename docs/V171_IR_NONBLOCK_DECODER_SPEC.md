@@ -201,15 +201,18 @@ flow_app_cold_init_0434:
 
 #### `v171_ir_start_decode` (~15 instructions)
 
-Arms Timer1 with 445 µs preload, clears buffer + counter, sets
+Arms Timer1 with FIRST preload (V171_IR_TMR1_FIRST = 0xF0BC, ~1303 µs
+raw -> sample 1 lands ~1316 µs after falling edge with ~13 µs
+first-sample-only ISR overhead), clears buffer + counter, sets
 state=1. Returns to ISR.
 
 #### `v171_ir_sample_handler` (~25 instructions)
 
 Reads RB5, shifts into ``buf[sample_count >> 3]`` (byte-indexed),
-increments sample_count. If
-count >= 32, transitions to DONE (calls post_process); else reloads
-TMR1 with 889 µs preload.
+increments sample_count. If count >= 32, transitions to DONE
+(calls post_process); else reloads TMR1 with FULL preload
+(V171_IR_TMR1_FULL = 0xF5D8, ~866 µs raw + ~24 µs per-sample ISR
+overhead = ~890 µs effective sample-to-sample interval).
 
 #### `v171_ir_post_process` (factored from existing `flow_ir_rc5_decode_025E`)
 
