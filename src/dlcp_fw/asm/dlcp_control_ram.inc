@@ -464,9 +464,9 @@ v171_ir_buf3               equ  0x0DA   ; physical 0x1DA; samples 25..32
 v171_ir_flags              equ  0x0DB   ; physical 0x1DB; reserved for state
 v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample handler
 
-; Timer1 preload values (rust-sim-instrumented 2026-05-08 against the
-; V1.6b stock decoder via /tmp/v16b_ir_timing_probe2.py).  PIC18F25K20
-; Fcy = 3 MHz, Tcy = 333.3 ns.  Internal Fcy/4 clock, prescaler /1.
+; Timer1 preload values (rust-sim-instrumented; refined 2026-05-08
+; after task #157 cmd-LSB decode failure).  PIC18F25K20 Fcy = 3 MHz,
+; Tcy = 333.3 ns.  Internal Fcy/4 clock, prescaler /1.
 ;
 ; INSTRUMENTATION RESULTS (V1.6b stock at PC=0x24C, 18 samples
 ; captured before max-iter cap):
@@ -480,7 +480,8 @@ v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample 
 ;     a Manchester half-bit.
 ;   * ISR entry latency: 41 Tcy.
 ;
-; PRELOAD VALUES (V1.71-tuned to match V1.6b sample phase):
+; ORIGINAL PRELOAD CALCULATION (turned out to be wrong, see correction
+; block below):
 ;
 ; Full period 0xF595: 0xFFFF - 0xF595 + 1 = 2667 Tcy.  Slightly under
 ; legacy's 2674 Tcy (-7 Tcy = ~2 µs / sample), within ±1 Tcy jitter.
@@ -488,15 +489,51 @@ v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample 
 ; to-sample-handler-btfsc overhead in V1.71 (~7 Tcy) adds back to
 ; ~2674 effective.
 ;
-; First-sample 0xF0BC: 0xFFFF - 0xF0BC + 1 = 3908 Tcy = 1303 µs.
-; Targets first sample at falling_edge + 1303 + (ISR header + start_
-; decode body + sample_handler-to-btfsc overhead ~125 Tcy = ~42 µs)
-; = falling_edge + 1345 µs.  This positions first sample at mid of
-; S2 first half -- matching V1.6b's measured 4040 Tcy first-sample
-; offset.  Will need empirical calibration during M3 next-attempt
-; (build, run pulse train, dump first-sample cycle, adjust).
-V171_IR_TMR1_FULL_HI       equ  0xF5    ; 0xF595 high byte (~890 µs)
-V171_IR_TMR1_FULL_LO       equ  0x95    ; 0xF595 low byte
+; CORRECTION (2026-05-08, task #157 + codex review):
+;
+; The "~7 Tcy overhead" assumption above was wrong by an order of
+; magnitude.  The actual Timer1-overflow-to-next-btfsc path includes:
+;
+;   (a) Timer1 interrupt detection (1-2 Tcy)
+;   (b) ISR vector dispatch + Q4 alignment (3-4 Tcy)
+;   (c) isr_entry prologue (5 instructions saving STATUS/W/BSR/FSR0)
+;   (d) v171_isr_check_tmr1 path: btfss + call (~3 Tcy)
+;   (e) sample_handler header up to btfsc PORTB,RB5: movlb + 3×rrncf
+;       + andlw + addlw + 4 × movwf for FSR0 + bsf STATUS,C (~12 Tcy)
+;   (f) After btfsc: rlcf + incf + cpfslt + bra-not-taken + 4 × movwf
+;       for TMR1 reload + bcf TMR1IF + return (~10 Tcy)
+;   (g) ISR epilogue (4 movff + movf + retfie ~6 Tcy)
+;
+; Total: ~40-50 Tcy / sample of ISR path that adds to the Timer1
+; preload duration before the NEXT btfsc fires.  Cumulative drift
+; over 25 sample intervals is ~1000-1300 Tcy = 333-433 µs --
+; enough to push sample 26 OUT OF bit 13's second half and into
+; the post-frame idle.  Symptom: cmds with cmd LSB = 1 (0x39, 0x3B)
+; failed Manchester pair-validation on the LAST pair, so the
+; legacy decoder bailed to error path (cmd=0xFF).
+;
+; Empirically swept (FIRST=0xF0BC, vary FULL): preload values in
+; [0xF5C0..0xF5F0] all decode all 4 V1.71 inline shortcuts (0x38,
+; 0x39, 0x3A, 0x3B) correctly.  0xF595 (original) and 0xF607 (too
+; tight) both fail.
+;
+; PRELOAD VALUES (V1.71-tuned post-correction):
+;
+; Full period 0xF5D8: 0xFFFF - 0xF5D8 + 1 = 2600 Tcy = 866 µs.
+; Effective period (with ~70 Tcy ISR-path overhead) ≈ 2670 Tcy =
+; 890 µs, matching V1.6b instrumented 890.4 µs within ±1 µs.  Mid
+; of empirical [0xF5C0..0xF5F0] working range gives ~7-Tcy margin
+; on each side against per-sample overhead variation.
+;
+; First-sample 0xF0BC: unchanged.  Sample 1 lands at falling_edge +
+; 1303 + (RBIF→T1CON ~6 Tcy + Timer1-overflow→btfsc ~25 Tcy ~10 µs)
+; ≈ falling_edge + 1313 µs in the rust sim.  Empirically this puts
+; sample 1 in S2 first half (HIGH for sentinel '1') across all
+; tested cmds.  Hardware re-tuning may be needed if real silicon's
+; ISR-overhead profile differs (see V171_IR_NONBLOCK_DECODER_SPEC.md
+; "Hardware validation handoff" section).
+V171_IR_TMR1_FULL_HI       equ  0xF5    ; 0xF5D8 high byte (~866 µs preload)
+V171_IR_TMR1_FULL_LO       equ  0xD8    ; 0xF5D8 low byte (~890 µs effective)
 V171_IR_TMR1_FIRST_HI      equ  0xF0    ; 0xF0BC high byte (~1303 µs)
 V171_IR_TMR1_FIRST_LO      equ  0xBC    ; 0xF0BC low byte
 V171_IR_TOTAL_SAMPLES      equ  0x20    ; 32 samples per RC5 frame
