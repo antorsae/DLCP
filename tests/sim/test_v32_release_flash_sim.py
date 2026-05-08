@@ -146,7 +146,27 @@ def _patch_chain_preset_tables(chain, overlay_a, overlay_b) -> None:  # type: ig
         )
 
 
-def _post_step_seed_identity_and_routes(chain) -> None:  # type: ignore[no-untyped-def]
+def _read_v32_eeprom_identity() -> tuple[int, int, int]:
+    """Pull the canonical V3.2 EEPROM identity (major, minor, revision)
+    from the parsed V3.2 hex.
+
+    Reading dynamically (instead of hardcoding 0x4F) keeps the test
+    robust to canonical V3.2 release rev bumps via
+    ``scripts/build_v32_release.py`` (codex MEDIUM vs 4a4b352).
+    """
+    from dlcp_fw.flash.dlcp_main_flash import (
+        detect_static_hex_eeprom_version,
+        parse_intel_hex,
+    )
+    info = detect_static_hex_eeprom_version(parse_intel_hex(str(V32_MAIN_HEX)))
+    if info is None:
+        raise RuntimeError(
+            f"could not detect EEPROM identity in {V32_MAIN_HEX}"
+        )
+    return (info.major & 0xFF, info.minor & 0xFF, info.revision & 0xFF)
+
+
+def _post_step_seed_identity_and_routes(chain, identity):  # type: ignore[no-untyped-def]
     """Post-boot seed so the flasher's preflight + route-pick succeed.
 
     Why post-boot: the V3.2 firmware writes EEPROM[0x80..0x81] during
@@ -156,8 +176,10 @@ def _post_step_seed_identity_and_routes(chain) -> None:  # type: ignore[no-untyp
     this -- seed AFTER boot so the flasher's identity probe sees the
     intended values.
 
-    EEPROM[0x80..0x82] = (3, 2, rev): V3.2 identity, so the flasher's
-    ``_compare_firmware_identities`` doesn't emit "downgrade" warnings.
+    ``identity`` is the (major, minor, revision) tuple to write at
+    EEPROM[0x80..0x82].  Caller passes the canonical V3.2 hex's
+    identity (read via ``_read_v32_eeprom_identity``) so the seed
+    survives V3.2 release-rev bumps without the test going stale.
 
     ROUTE_RAM_BASE (0x60..0x65) = all-L for MAIN0, all-R for MAIN1 so
     ``_resolve_uniform_route_label`` picks MAIN1 when ``--right`` is
@@ -165,11 +187,12 @@ def _post_step_seed_identity_and_routes(chain) -> None:  # type: ignore[no-untyp
     so the post-flash ``_apply_all_channel_mapping`` has visible work
     to do (post-test asserts these flip to R).
     """
+    major, minor, revision = identity
     # V3.2 EEPROM identity (overrides V2.3 seed + boot writes).
     for unit in (0, 1):
-        chain.write_main_eeprom_byte(unit, 0x80, 3)
-        chain.write_main_eeprom_byte(unit, 0x81, 2)
-        chain.write_main_eeprom_byte(unit, 0x82, 0x4F)
+        chain.write_main_eeprom_byte(unit, 0x80, major)
+        chain.write_main_eeprom_byte(unit, 0x81, minor)
+        chain.write_main_eeprom_byte(unit, 0x82, revision)
     # Route RAM disambiguation for --right: MAIN0 all-L, MAIN1 all-R.
     for offset in range(_ROUTE_LEN):
         chain.write_main_reg(0, _ROUTE_RAM_BASE + offset, _ROUTE_VALUE_L)
@@ -198,6 +221,7 @@ def _build_overlaid_chain():  # type: ignore[no-untyped-def]
          overlaid image.
     """
     overlay_a, overlay_b = _load_overlays()
+    identity = _read_v32_eeprom_identity()
     chain = RustChain.from_v171_v32(
         control_hex_path=str(V171_CONTROL_HEX),
         main_hex_path=str(V32_MAIN_HEX),
@@ -205,9 +229,9 @@ def _build_overlaid_chain():  # type: ignore[no-untyped-def]
     _patch_chain_preset_tables(chain, overlay_a, overlay_b)
     chain.run_until_connected(limit=400)
     chain.step_ticks(50_000_000)  # boot-side preset-load settle
-    _post_step_seed_identity_and_routes(chain)
+    _post_step_seed_identity_and_routes(chain, identity)
     chain.step_ticks(2_000_000)  # let firmware observe new route bytes
-    return chain, overlay_a, overlay_b
+    return chain, overlay_a, overlay_b, identity
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +275,7 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
     _require_rust()
     _require_capture_files()
 
-    chain, overlay_a, overlay_b = _build_overlaid_chain()
+    chain, overlay_a, overlay_b, identity = _build_overlaid_chain()
     hub = make_sim_hub(chain)
 
     from dlcp_fw.flash.dlcp_v32_release_flash import main
@@ -335,10 +359,10 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
     # post-step seed).  Codex MEDIUM vs 6545298 caught the silent
     # regression where pre-boot seeds were overwritten by firmware
     # boot writes.
-    eeprom_identity = bytes(
+    eeprom_identity = tuple(
         chain.read_main_eeprom_byte(1, 0x80 + i) for i in range(3)
     )
-    assert eeprom_identity == bytes([3, 2, 0x4F]), (
+    assert eeprom_identity == identity, (
         f"V3.2 EEPROM identity drifted during run: got "
-        f"{eeprom_identity.hex()}, expected 03 02 4F"
+        f"{eeprom_identity!r}, expected {identity!r}"
     )

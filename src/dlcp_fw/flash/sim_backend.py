@@ -488,13 +488,17 @@ class SimHidBackend:
                 f"got 0x{b[0]:02X}"
             )
         payload = b[1:]
-        # Capture mode BEFORE dispatch so cmd 0x40's app->bootloader
-        # transition doesn't get post-stepped: if the dispatch flips
-        # mode app->bootloader, we must NOT step (real hardware: the
-        # app firmware is no longer executing).  Likewise cmd 0x41's
-        # bootloader->app verify-OK flips mode back; the post-step
-        # then advances the now-running app firmware, which is what
-        # we want.  Codex MEDIUM vs 6545298.
+        # Capture mode BEFORE dispatch so the post-step gate below
+        # only advances the chain when the simulated app firmware is
+        # actually running BOTH before AND after the dispatch.  On
+        # real hardware the bootloader code path runs entirely on a
+        # separate firmware image (the boot block) which the rust sim
+        # does not model -- stepping the app firmware during any
+        # bootloader-touching op (cmd 0x40 app->bootloader switch,
+        # cmd 0x40 stream packets, cmd 0x41 verify-OK bootloader->app
+        # transition) would advance the app firmware during a window
+        # where it is NOT running on real silicon.  Codex MEDIUM vs
+        # 6545298.
         was_app_before = self._device.mode == "app"
         response = self._dispatch(payload)
         if response is not None:
