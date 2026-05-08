@@ -493,7 +493,14 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
     )
     _rust_navigate_to_diagnostics(c)
-    ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=200)
+    # limit bumped 200 -> 600 to absorb the V3.2 USB-xact-gate
+    # firmware shift (commit pending; preset_select_handler grew by
+    # 2 instructions for the filename_dirty_flags.bit6 gate).  Wiggle
+    # convergence for PB1's first cmd 0x21 reply moved from ~150 to
+    # ~500 in the post-shift build; 600 keeps the test passing with
+    # margin and matches the limit used by
+    # test_v171_v32_layer5_chain_pb_cache_isolation below.
+    ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=600)
     assert ok, (
         f"[rust] diag_present never reached 0x03; got "
         f"0x{_rust_diag_present(c):02X}; "
@@ -586,9 +593,13 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
     # extra_check pins the exit iteration to one where the chain is
     # parked on PB1 Diag(4) so the trailing LCD assertion sees the
     # PB1 view (V1.71's 50M-tick button-hold auto-repeat in rust
-    # makes plain-mask exit unreliable).
+    # makes plain-mask exit unreliable).  limit bumped 400 -> 600 to
+    # absorb the V3.2 USB-xact-gate firmware shift (commit pending;
+    # preset_select_handler grew by 2 instructions).  See sibling
+    # test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2 for the
+    # full rationale.
     ok = _rust_press_drive_until_pb_present(
-        c, pb_mask=0x03, limit=400,
+        c, pb_mask=0x03, limit=600,
         extra_check=lambda ch: ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG,
     )
     assert ok, "[rust] both PBs never replied"

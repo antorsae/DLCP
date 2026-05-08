@@ -128,6 +128,18 @@ preset_filename_eeprom_a EQU  0x60
 preset_filename_eeprom_b EQU  0x83
 current_cmd_data         EQU  0x0A3   ; parser-staged data byte (route/cmd live in nearby bank-0 slots)
 filename_dirty_flags     EQU  0x0BD   ; bit5 = stock filename RAM slot dirty
+                                       ; bit6 = usb_filename_xact_pending
+                                       ;        (V3.2 cleanup: gates
+                                       ;        preset_select_handler from
+                                       ;        running the state machine
+                                       ;        while a USB cmd 0x03 filename
+                                       ;        write is in flight, so a
+                                       ;        concurrent CONTROL B0/20/x
+                                       ;        broadcast can't race the
+                                       ;        host's force_persist and
+                                       ;        clobber RAM via
+                                       ;        preset_load_filename mid-
+                                       ;        HOLDING)
 preset_hold_timer_lo     EQU  0x08C   ; Timer3 ISR countdown low byte used by HOLDING
 preset_hold_timer_hi     EQU  0x08D   ; Timer3 ISR countdown high byte used by HOLDING
 
@@ -378,7 +390,15 @@ flow_hid_command_dispatch_111a:
     movlb       0x0
     movwf       ram_0x0C1, BANKED
     movff       ram_0x11B, ram_0x0C2
-    bsf         ram_0x0BD, 5, BANKED
+    bsf         ram_0x0BD, 5, BANKED            ; filename RAM dirty
+    bsf         ram_0x0BD, 6, BANKED            ; V3.2: gate USB filename xact
+                                                ; until force_persist clears
+                                                ; both bits.  preset_select_
+                                                ; handler defers state-machine
+                                                ; entry while bit6 set so a
+                                                ; concurrent CONTROL B0/20/x
+                                                ; broadcast can't race the
+                                                ; host's force_persist.
 flow_hid_command_dispatch_1126:
     call        main_timer_service_48a6, 0x0
 flow_hid_command_dispatch_112a:
@@ -3252,6 +3272,18 @@ flow_main_core_service_265c_27bc:
     btfss       ram_0x0BD, 5, BANKED
     bra         flow_main_core_service_265c_27ec
     call        preset_persist_filename, 0x0
+    ; V3.2 USB-xact gate: clear bit6 once the EEPROM persist has
+    ; completed.  Whether the dirty bit was set by a USB cmd 0x03 or
+    ; by a separate path, the gate is cleared here so deferred preset
+    ; broadcasts can resume.  preset_persist_filename is foreground-
+    ; atomic (its outgoing-slot decision is made at entry; see
+    ; asm:preset_persist_filename header), so by the time we reach
+    ; this bcf the wire-state for the active preset is fully on
+    ; EEPROM and a queued preset switch is now safe to proceed.  Explicit
+    ; movlb 0x0 because preset_persist_filename's loop calls
+    ; main_flash_service_46de which may leave BSR in a different bank.
+    movlb       0x0
+    bcf         ram_0x0BD, 6, BANKED
 flow_main_core_service_265c_27ec:
     bcf         event_flags, 0, BANKED
 flow_main_core_service_265c_27ee:
@@ -9475,9 +9507,28 @@ preset_job_apply_i2c_timeout:
 ; Preset Select Handler (V3.2 non-blocking — cmd=0x20)
 ; Parser entry: record target preset and start/coalesce the async preset job.
 ; Actual work is done by preset_job_service from the main loop.
+;
+; USB filename-xact gate (V3.2 cleanup): when filename_dirty_flags.bit6 is
+; set, a USB cmd 0x03 filename WRITE has already updated RAM at
+; preset_filename_ram_base but the host's force_persist has not yet
+; flushed RAM to EEPROM.  In that window, advancing the state machine
+; would have the HOLDING -> APPLY transition call preset_load_filename,
+; which OVERWRITES the host's just-written RAM with the incoming
+; preset's stored filename -- silently dropping the host's data.  Gate
+; the state-machine entry on bit6 so the target is recorded but no
+; switch fires until main_core_service_265c clears bit6 after persist.
+; The next CONTROL broadcast (or any subsequent preset_select_handler
+; entry) past the cleared gate will pick up the deferred target.
 ; ---------------------------------------------------------------------------
 preset_select_handler:
     movlb       0x0
+    ; V3.2 USB-xact gate: drop broadcast entirely while host's filename
+    ; write is in flight (bit6 set).  Target NOT stored -- the next
+    ; CONTROL full_sync_burst step 6 broadcast (within ~6 sec) will
+    ; retry once the gate clears.  2-instruction gate; we share the
+    ; ``movlb 0x0`` already at the top of the handler.
+    btfsc       filename_dirty_flags, 6, BANKED
+    bra         preset_select_handler_done
     movf        current_cmd_data, W, BANKED ; data byte: 0=A, 1=B
     andlw       0x01
     movlb       0x2
@@ -10220,7 +10271,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x45, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x4D, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
