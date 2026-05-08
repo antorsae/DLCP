@@ -36,11 +36,21 @@ because:
     a few µs of the falling edge (no blocking call interposed),
     well within the 889 µs LOW window.
 
-This file pins the bug deterministically: we manually set RB5 LOW
-just enough for the ISR to latch pending=0xFF, then flip RB5 HIGH
-BEFORE foreground reaches the decoder, and assert the decoder aborts
-with ``ir_decoded_cmd = 0xFF`` and IR_ARMED cleared.  On real V1.71
-hardware, this is the failure mode reported by the user (2026-05-09).
+This file pins the bug deterministically by directly injecting
+``v171_ir_decode_pending = 0xFF`` (equivalent to "ISR latched
+pending a moment ago while RB5 was LOW") and leaving RB5 HIGH at
+foreground entry, then asserting the decoder aborts with
+``ir_decoded_cmd = 0xFF`` (the abort path's signature value).  On
+real V1.71 hardware, this is the failure mode reported by the user
+(2026-05-09): foreground was busy when RBIF fired, by the time the
+deferred service runs the LOW window has elapsed.
+
+We do NOT assert on IR_ARMED because the V1.71 inline dispatch
+re-arms it after every foreground decode pass (asm:3157, 3188,
+3207, 3227) -- so IR_ARMED is not a stable signal of "abort
+happened".  The cmd/addr=0xFF outputs are the durable signature of
+the abort path (asm:670-672 ``movlw 0xFF / movwf (Common_RAM+12) /
+movwf (Common_RAM+13)``).
 
 The fix path (for a separate commit) is one of:
 
@@ -174,15 +184,18 @@ def test_v171_deferred_decode_aborts_when_foreground_misses_low_window(v171_hex:
         f"RB5 must be HIGH for this test; PORTB=0x{chain.read_reg(0xF81):02X}"
     )
 
-    # Step long enough for foreground to enter the decoder.
-    # ~5 ms sim time should be enough for foreground to complete
-    # any in-flight call + reach v171_service_pending_ir_decode +
-    # call ir_rc5_decode.  ir_rc5_decode's first instruction after
-    # setup is the entry-LOW check at asm:556 -- with RB5 HIGH the
-    # decoder branches to the abort path at flow_ir_rc5_decode_02E4
-    # (asm:668-674) which writes 0xFF to ir_decoded_cmd and
-    # ir_decoded_addr.  The foreground service then writes 0xFF
-    # into ir_decoded_cmd from W and clears IR_ARMED (asm:2625-2626).
+    # Step ~5 ms sim time so foreground reaches the decoder.  The
+    # post_pending == 0 assertion below catches the case where 5 ms
+    # was NOT enough (e.g. control_core_service_0990's ~30 ms EEPROM
+    # batch is in flight in some other test variant -- not the case
+    # here because the chain is fresh from warmup and idle_timeout
+    # hasn't reached its 0xEA60 trigger).  ir_rc5_decode's first
+    # instruction after setup is the entry-LOW check at asm:556 --
+    # with RB5 HIGH the decoder branches to the abort path at
+    # flow_ir_rc5_decode_02E4 (asm:668-674) which writes 0xFF to
+    # (Common_RAM+12)/(13).  The foreground service then writes
+    # 0xFF into ir_decoded_cmd from W (asm:2624) and copies
+    # (Common_RAM+13) into ir_decoded_addr (asm:2625).
     chain.step_ticks(48_000 * 5)  # 5 ms sim time
 
     # Assert the decoder aborted.
@@ -199,19 +212,21 @@ def test_v171_deferred_decode_aborts_when_foreground_misses_low_window(v171_hex:
         f"  post: cmd=0x{post_cmd:02X} addr=0x{post_addr:02X} "
         f"pending=0x{post_pending:02X} flags=0x{post_flags:02X}\n"
         f"  expected (decoder aborted -> bug present):\n"
-        f"    cmd=0xFF, addr=0xFF, pending=0x00, IR_ARMED cleared\n"
+        f"    cmd=0xFF, addr=0xFF, pending=0x00\n"
+        f"    (IR_ARMED is re-armed by inline dispatch -- not asserted)\n"
     )
 
-    # The "bug present" assertions: decoder aborted, ir_decoded_cmd=0xFF.
-    # Strict-xfail: when the firmware is fixed (decoder no longer aborts),
-    # post_cmd would be the actual decoded value or stay 0x00, and this
-    # assertion would fail -> xfail STRICT means pytest reports a test
-    # regression (fix detected).
+    # Bug-present assertions.  Currently PASSING (bug is there).
+    # When firmware is fixed (decoder no longer aborts), post_cmd
+    # will be the actual decoded value or stay at the pre-clear 0x00,
+    # this assertion will FAIL, and the failure will flag the fix.
+    # The test should then be deleted or rewritten to pin the new
+    # (correct) behavior.
     assert post_cmd == 0xFF, (
         f"V1.71 deferred decode SHOULD have aborted to 0xFF (bug "
         f"present); got cmd=0x{post_cmd:02X}.  If this assertion "
-        f"failed, the firmware fix is in -- flip the @xfail decorator "
-        f"off."
+        f"failed, the firmware fix is in -- delete or rewrite this "
+        f"test to pin the new behavior."
     )
     assert post_addr == 0xFF, (
         f"V1.71 deferred decode SHOULD have aborted (addr=0xFF); "
