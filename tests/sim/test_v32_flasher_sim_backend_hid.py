@@ -241,6 +241,118 @@ def test_sim_hid_cmd03_erase_fills_slot_with_0xff() -> None:
         assert ram == 0xFF, f"RAM[{_FILENAME_RAM_BASE + i:04X}]=0x{ram:02X} after erase"
 
 
+def test_sim_hid_cmd03_write_padding_maps_zero_to_0xff_matching_firmware() -> None:
+    """V3.2 firmware's cmd 0x03 WRITE handler maps payload byte 0x00 to
+    RAM byte 0xFF (the host's ``_name_slot_to_cmd03_payload`` converts
+    0x00/0xFF padding in the source name slot to 0x00 in the payload,
+    expecting the firmware to convert back).  ``SimHidBackend`` must
+    mirror that conversion -- otherwise sim RAM ends up with 0x00 padding
+    while real hardware would have 0xFF, and post-flash EEPROM persist
+    + ``_verify_capture_overlay`` parity break.  Codex MEDIUM vs 7d16ff9.
+    """
+    chain = _open_chain()
+    hub = make_sim_hub(chain)
+    dev = hub.open_hid_path(hub.device_for_unit(1).path)
+
+    name_bytes = b"PB-A"  # 4 chars, 26 bytes of trailing padding
+    # Build payload mirroring ``_name_slot_to_cmd03_payload``: name
+    # bytes verbatim, padding bytes (originally 0xFF in name_slot)
+    # become 0x00.
+    payload = bytearray(_HID_REPORT_LEN)
+    payload[0] = 0x03
+    payload[1] = 0x09  # WRITE
+    payload[2 : 2 + len(name_bytes)] = name_bytes
+    # payload[2 + len(name_bytes) : 2 + 0x1E] is already 0x00 from
+    # bytearray init -> firmware should convert these to 0xFF in RAM.
+    resp = _exchange(dev, bytes(payload))
+    assert resp[0] == 0x03 and resp[1] == 0x09
+
+    # Verify RAM: name bytes verbatim, padding bytes are 0xFF (NOT 0x00).
+    for i, b in enumerate(name_bytes):
+        ram = chain.read_main_reg(1, _FILENAME_RAM_BASE + i)
+        assert ram == b, (
+            f"name byte mismatch at {i}: RAM=0x{ram:02X} expected 0x{b:02X}"
+        )
+    for i in range(len(name_bytes), _FILENAME_RAM_LEN):
+        ram = chain.read_main_reg(1, _FILENAME_RAM_BASE + i)
+        assert ram == 0xFF, (
+            f"padding byte at {i}: RAM=0x{ram:02X} expected 0xFF "
+            f"(0x00->0xFF firmware-side conversion)"
+        )
+
+
+def test_sim_usb_hub_make_dlcp_ep0_default_steps_chain_for_polling_loops() -> None:
+    """The hub's ``make_dlcp_ep0`` defaults ``step_ticks_per_op`` to
+    100k ticks (~ 2 ms sim time) so the unmodified flasher's polling
+    loops (e.g. ``_force_active_filename_persist`` with 1.5 s timeout +
+    20 ms poll) actually see firmware-side state changes.  Codex HIGH
+    vs 7d16ff9 (atomic ops would never let firmware run between EP0
+    pokes/reads, leaving dirty bits stuck and the persist trigger
+    timing out)."""
+    chain = _open_chain()
+    hub = make_sim_hub(chain)
+    ep0 = hub.make_dlcp_ep0(
+        vid=SimUsbHub.DEFAULT_VID,
+        pid=SimUsbHub.DEFAULT_PID,
+        path=hub.device_for_unit(1).path,
+    )
+    # Default step_ticks_per_op should be > 0.
+    assert ep0._step_ticks_per_op == SimUsbHub.DEFAULT_STEP_TICKS_PER_EP0_OP
+    assert ep0._step_ticks_per_op >= 100_000
+
+    # Explicit step_ticks_per_op=0 still works (atomic-op test path).
+    ep0_atomic = hub.make_dlcp_ep0(
+        vid=SimUsbHub.DEFAULT_VID,
+        pid=SimUsbHub.DEFAULT_PID,
+        path=hub.device_for_unit(1).path,
+        step_ticks_per_op=0,
+    )
+    assert ep0_atomic._step_ticks_per_op == 0
+
+
+def test_sim_usb_hub_force_persist_clears_dirty_via_flasher_helpers() -> None:
+    """End-to-end: the flasher's ``_force_active_filename_persist``,
+    handed a sim-backed EP0 from ``hub.make_dlcp_ep0``, sees the
+    firmware-side persist drive ``filename_dirty_flags`` bits 5+6 to
+    zero within the default 1.5 s timeout.  Confirms the codex HIGH fix
+    (default step_ticks_per_op) actually unblocks the polling path."""
+    from dlcp_fw.flash.dlcp_main_flash import _force_active_filename_persist
+
+    chain = _open_chain()
+    hub = make_sim_hub(chain)
+
+    # Set bits 5+6 (filename dirty + USB xact pending) so persist has
+    # work to do.
+    chain.write_main_reg(
+        1, _FILENAME_DIRTY_FLAGS_ADDR,
+        chain.read_main_reg(1, _FILENAME_DIRTY_FLAGS_ADDR)
+        | _FILENAME_DIRTY_BIT | _USB_XACT_PENDING_BIT,
+    )
+    assert chain.read_main_reg(1, _FILENAME_DIRTY_FLAGS_ADDR) & (
+        _FILENAME_DIRTY_BIT | _USB_XACT_PENDING_BIT
+    )
+
+    # The flasher's helper opens an EP0 internally via ``_make_dlcp_ep0``;
+    # install_sim_hub redirects that to the hub which provides the step-
+    # ticks default.
+    with install_sim_hub(hub):
+        forced = _force_active_filename_persist(
+            vid=SimUsbHub.DEFAULT_VID,
+            pid=SimUsbHub.DEFAULT_PID,
+            path=hub.device_for_unit(1).path,
+            timeout_s=2.0,
+            poll_s=0.005,
+        )
+    assert forced is True
+    flags = chain.read_main_reg(1, _FILENAME_DIRTY_FLAGS_ADDR) & 0xFF
+    assert (flags & _FILENAME_DIRTY_BIT) == 0, (
+        f"filename_dirty_flags.5 still set after force_persist: 0x{flags:02X}"
+    )
+    assert (flags & _USB_XACT_PENDING_BIT) == 0, (
+        f"filename_dirty_flags.6 still set after force_persist: 0x{flags:02X}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cmd 0x43 (DIAG_MEMREAD)
 # ---------------------------------------------------------------------------

@@ -623,14 +623,26 @@ class SimHidBackend:
         unit = self._device.unit
 
         if subcmd == _CMD03_FILENAME_WRITE_SUBCMD:
-            # WRITE bytes 2..2+0x1E into RAM 0x2C0..0x2DD.  payload bytes
-            # that the flasher emits as 0x00 represent "end of name"
-            # padding (see ``_name_slot_to_cmd03_payload``).
+            # WRITE bytes 2..2+0x1E into RAM 0x2C0..0x2DD.  Critical:
+            # the V3.2 firmware-side WRITE handler (asm lines 355-374,
+            # main_core_service_15b0/15be) MAPS payload byte 0x00 to RAM
+            # 0xFF -- it's how the host signals "end of filename
+            # padding" without needing a length field.  The flasher's
+            # ``_name_slot_to_cmd03_payload`` mirrors this by converting
+            # both 0x00 AND 0xFF in the source name slot to 0x00 in the
+            # payload, expecting the firmware to convert back to 0xFF
+            # in RAM.  We must match that conversion here, or sim RAM
+            # ends up with 0x00 padding while real hardware would have
+            # 0xFF -- post-flash EEPROM persists then carry 0x00 bytes
+            # and break ``_verify_capture_overlay`` parity (codex MEDIUM
+            # vs 7d16ff9).
             for i in range(_FILENAME_RAM_LEN):
+                src = payload[2 + i] & 0xFF
+                dst = 0xFF if src == 0x00 else src
                 chain.write_main_reg(
                     unit,
                     _FILENAME_RAM_BASE + i,
-                    payload[2 + i] & 0xFF,
+                    dst,
                 )
             self._set_filename_dirty_bits(unit)
         elif subcmd == _CMD03_FILENAME_ERASE_SUBCMD:
@@ -696,11 +708,19 @@ class SimHidBackend:
         bytes into ``device.bootloader_stream`` so cmd 0x41 verify can
         compute their CRC against the host's expectation.
 
-        We do NOT patch the running firmware's flash with the streamed
-        bytes -- patching would corrupt the running V3.2 image's state.
-        Instead the sim relies on the test having pre-loaded V3.2 into
-        the chain so the post-flash finalize finds the same firmware
-        the host just streamed."""
+        Critical constraint (codex MEDIUM vs 7d16ff9): we do NOT patch
+        the running firmware's flash with the streamed bytes -- patching
+        flash mid-execution would corrupt the running V3.2 image's
+        state (the firmware executes from 0x1000..0x5FFF, the same
+        window the cmd 0x40 stream targets).  Instead the integration
+        test fixture MUST construct ``Chain.from_v171_v32`` with a
+        pre-overlaid hex (preset A/B captures already applied via
+        ``_apply_capture_overlay`` into a temp hex file before chain
+        construction) so the post-flash finalize's ``_verify_capture_
+        overlay`` reads the correct preset bytes from
+        ``chain.read_core_flash``.  See
+        ``tests/sim/test_v32_release_flash_sim.py`` for the canonical
+        pre-overlay pattern."""
         chunk = bytes(payload[2 : 2 + _BOOTLOADER_PACKET_PAYLOAD_LEN])
         self._device.bootloader_stream.extend(chunk)
         # Real bootloader's ACK: response[0] = 0x40 (cmd echo) is enough
@@ -824,6 +844,22 @@ class SimUsbHub:
     DEFAULT_VID = 0x04D8
     DEFAULT_PID = 0xFF89
 
+    # Default ticks-per-EP0-op for ``make_dlcp_ep0`` (see HIGH from codex
+    # review of 7d16ff9).  The unmodified flasher uses ``time.sleep`` between
+    # EP0 polls, expecting the firmware to be running concurrently on real
+    # hardware.  In the sim, ``time.sleep`` is wall-clock only and the
+    # firmware is paused until ``chain.step_ticks`` is called.  Stepping
+    # ~100k ticks (~ 2 ms sim time at 48 MHz universal clock) per EP0 op
+    # gives the firmware enough run time to service event_flags writes
+    # (force-persist trigger, route apply, etc.) within the flasher's
+    # 1.5 s default timeout.
+    #
+    # Tests that need atomic EP0 ops (poke immediately followed by read,
+    # no firmware-side reaction in between) construct ``SimDlcpEp0``
+    # directly with ``step_ticks_per_op=0`` -- the existing
+    # ``test_v32_flasher_sim_backend_ep0.py`` pattern.
+    DEFAULT_STEP_TICKS_PER_EP0_OP = 100_000
+
     def __init__(
         self,
         chain,  # type: ignore[no-untyped-def]
@@ -831,10 +867,14 @@ class SimUsbHub:
         units: Iterable[int] = (0, 1),
         vid: int = DEFAULT_VID,
         pid: int = DEFAULT_PID,
+        default_step_ticks_per_ep0_op: int = DEFAULT_STEP_TICKS_PER_EP0_OP,
     ) -> None:
         self._chain = chain
         self._vid = vid
         self._pid = pid
+        self._default_step_ticks_per_ep0_op = max(
+            0, int(default_step_ticks_per_ep0_op)
+        )
         self._devices: dict[bytes, SimUsbDevice] = {}
         for unit in units:
             if unit not in (0, 1):
@@ -908,11 +948,18 @@ class SimUsbHub:
         pid: int,
         path: Optional[bytes] = None,
         hid_info=None,  # type: ignore[no-untyped-def]
-        step_ticks_per_op: int = 0,
+        step_ticks_per_op: Optional[int] = None,
     ) -> SimDlcpEp0:
         """Drop-in replacement for ``DlcpEp0(vid=, pid=, path=)``.
 
-        Returns a ``SimDlcpEp0`` bound to the matching simulated MAIN."""
+        Returns a ``SimDlcpEp0`` bound to the matching simulated MAIN.
+
+        ``step_ticks_per_op`` defaults to the hub's
+        ``default_step_ticks_per_ep0_op`` so polling loops in the
+        unmodified flasher (e.g. ``_force_active_filename_persist``,
+        ``_switch_active_preset_ep0``) can observe firmware-side state
+        changes.  Pass ``0`` explicitly to opt out of stepping (atomic
+        ops, used by unit tests that step the chain manually)."""
         target_path: Optional[bytes] = path
         if target_path is None and hid_info is not None:
             target_path = getattr(hid_info, "path", None)
@@ -929,10 +976,15 @@ class SimUsbHub:
             target_dev = unique[0]
         else:
             target_dev = self._devices[target_path]
+        effective_step = (
+            self._default_step_ticks_per_ep0_op
+            if step_ticks_per_op is None
+            else int(step_ticks_per_op)
+        )
         return SimDlcpEp0(
             self._chain,
             unit=target_dev.unit,
-            step_ticks_per_op=step_ticks_per_op,
+            step_ticks_per_op=effective_step,
         )
 
 
@@ -1018,6 +1070,13 @@ def make_sim_hub(
     units: Iterable[int] = (0, 1),
     vid: int = SimUsbHub.DEFAULT_VID,
     pid: int = SimUsbHub.DEFAULT_PID,
+    default_step_ticks_per_ep0_op: int = SimUsbHub.DEFAULT_STEP_TICKS_PER_EP0_OP,
 ) -> SimUsbHub:
     """Convenience factory mirroring ``make_sim_ep0``."""
-    return SimUsbHub(chain, units=units, vid=vid, pid=pid)
+    return SimUsbHub(
+        chain,
+        units=units,
+        vid=vid,
+        pid=pid,
+        default_step_ticks_per_ep0_op=default_step_ticks_per_ep0_op,
+    )
