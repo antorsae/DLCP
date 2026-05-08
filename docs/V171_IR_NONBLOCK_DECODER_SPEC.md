@@ -1,6 +1,7 @@
 # V1.71 IR non-blocking decoder — implementation spec
 
-**Status:** proposed (task #152). Not yet implemented.
+**Status:** corrected after codex review (2026-05-09). Implementation
+in progress (task #152).
 
 **Motivation:** task #151 confirmed that V1.71's deferred-decode design
 (commit `bc61c70`) breaks IR on real hardware — the foreground service
@@ -13,63 +14,124 @@ RB5=LOW at entry, but pays a 7-10 ms in-ISR stall (Bug C3).
 **Goal:** decode RC5 IR without stalling the ISR AND without losing the
 falling-edge phase lock the decoder needs.
 
+## Why option 1 / 2 / 3.5 were rejected
+
+Codex review of the design choice (2026-05-09):
+
+* **Option 1 (revert bc61c70):** restores in-ISR decode at the cost of
+  re-introducing the 10 ms ISR blackout (Bug C3). At 31,250 baud one
+  byte arrives every ~320 µs and the EUSART FIFO holds 2; a 10 ms
+  blackout spans ~31 byte times of dropped UART.
+* **Option 2 (RB5=LOW gate before setf pending):** doesn't fix the
+  bug. Foreground may still enter the decoder after RB5 returns HIGH.
+  Worse: silently drops edges when IOC fires while RB5 is HIGH,
+  removing the 0xFF abort signature as a debug signal. "Lower-noise,
+  not more correct."
+* **Option 3.5 (decode in Timer1 ISR after small delay):** equivalent
+  to option 1. With `IPEN=0` no nested ISR service happens until
+  `retfie`, so the 10 ms blackout is the same regardless of which ISR
+  holds the CPU.
+
+**Option 3 (full state machine) is the only design that solves Bug C3
+AND the deferred-decode phase miss.**
+
 ## Design
 
 ### Timer choice
 
-V1.71 currently doesn't use any of Timer0/1/3 for periodic IRQs (idle
-timer + full-sync counter at `0x9D/0x9E` and `0x9F/0xA0` are software
-counters incremented per `display_loop_iteration`). **Timer1** is free.
+V1.71 currently doesn't use Timer1 for periodic IRQs. PIC18F25K20
+Timer1: 16-bit, prescaler /1/2/4/8, internal Fosc/4 = 3 MHz Fcy.
 
-PIC18F25K20 Timer1: 16-bit, prescaler /1/2/4/8, internal Fosc/4 = 3 MHz
-clock. For an 889 µs interrupt period:
+**Preload math (codex-validated):**
 
-```
-Tcy_per_period  = 889e-6 × 3e6 = 2667
-TMR1 preload    = 0xFFFF - 2667 + 1 = 0xF595  (with prescaler /1)
+```text
+889 µs full-period   = 2667 Tcy  -> TMR1 preload 0xF595
+445 µs first-sample  = 1335 Tcy  -> TMR1 preload 0xFAC9
 ```
 
-So `T1CON = 0x81` (TMR1ON=1, T1CKPS=00 /1, RD16=0, sync internal).
-`PIE1.TMR1IE = 1` to enable interrupt; check via `PIR1.TMR1IF`.
+`T1CON=0x81` sets `RD16=1` + `TMR1ON=1` (internal Fcy/4, prescaler /1,
+16-bit writes via TMR1H buffer + TMR1L). Codex flagged that 16-bit-mode
+writes need the high-byte first / low-byte second sequence; using
+`T1CON=0x01` (8-bit) would let us write TMR1L+TMR1H independently but
+costs an extra Tcy of jitter. Choose `0x81` (16-bit) for cleanliness.
+
+**Sleep caveat:** Timer1 internal Fcy/4 clock does NOT run during true
+Sleep. RBIF wake fires first, the IR ISR re-arms Timer1 after wake.
+CONTROL has no USB-polling concern.
 
 ### State
 
-New banked RAM bytes (all in BANK 1, contiguous after existing V1.71
-state at 0x0AA):
+New banked RAM bytes in BANK 1, allocated AFTER the existing V1.71
+diag-renderer state (codex-recommended free region; bytes 0x0AB-0x0AD
+that the original spec proposed are already in use by
+`bf08_fault_byte` / `v171_rx_frame_gap_timeout` /
+`v171_tx_saturate_count`):
 
-```
-v171_ir_decoder_state    EQU 0x0AB   ; 0=IDLE, 1..0x20=sampling
-v171_ir_decoder_acc_lo   EQU 0x0AC   ; bit accumulator low (16 bits total)
-v171_ir_decoder_acc_hi   EQU 0x0AD   ; bit accumulator high
+```asm
+v171_ir_state          equ 0x0D5   ; physical 0x1D5
+v171_ir_sample_count   equ 0x0D6   ; physical 0x1D6
+v171_ir_buf0           equ 0x0D7   ; 4-byte shift buffer (32 samples)
+v171_ir_buf1           equ 0x0D8
+v171_ir_buf2           equ 0x0D9
+v171_ir_buf3           equ 0x0DA
+v171_ir_flags          equ 0x0DB
+v171_ir_tmp            equ 0x0DC
 ```
 
-`v171_ir_decode_pending` at `0x0AA` is repurposed: still set by the
-RBIF ISR for "edge detected" but cleared when Timer1 takes ownership.
+Access via `movlb 0x01` (these are bank-1 GPR addresses; physical
+0x1D5..0x1DC). Add collision/BSR-discipline structural tests mirroring
+the V1.71 diag renderer's test pattern.
+
+`v171_ir_decode_pending` at `0x0AA` is REMOVED (the foreground service
+goes away with this change). The byte becomes free for future use.
 
 ### State machine
 
 ```
 IDLE (state=0):
   Triggered by: RBIF fires AND RB5=LOW AND IR_ARMED set.
-  Action: clear acc_lo/hi; arm Timer1 with TMR1 preload at HALF the
-          period (889/2 = 445 µs) so the first sample lands in the
-          MIDDLE of S1's second half-bit (where it's still LOW for
-          bit '1'); enable PIE1.TMR1IE; set state=1.
+  Action: clear buf0..buf3, sample_count=0; arm Timer1 with
+          445 µs preload (TMR1=0xFAC9) so the FIRST sample lands
+          mid-half-bit (where it's still LOW for the bit '1' phase
+          we just observed); enable PIE1.TMR1IE; set state=1.
 
-SAMPLING (state=1..0x20):
+SAMPLING (state=1, sample_count=0..0x1F):
   Triggered by: Timer1 ISR (TMR1IF set).
-  Action: shift one bit into acc_lo/acc_hi based on RB5 read
-          (matches existing decoder polarity: RB5=LOW → bit 1,
-          RB5=HIGH → bit 0); reload TMR1 with full-period preload;
-          increment state. If state > 0x20, transition to DONE.
+  Action: shift one bit into buf0..buf3 chain based on RB5 read
+          (matches existing decoder polarity at asm:573-576:
+          C=1, btfsc PORTB.RB5, bcf C → C=0 if RB5 HIGH, then
+          rlcf into buffer); reload TMR1 with 0xF595; increment
+          sample_count.  If sample_count >= 32, transition to DONE.
 
-DONE (state=0x20):
-  Triggered by: SAMPLING completes 32 samples (16 RC5 bits).
-  Action: disable Timer1 (T1CON=0); clear PIE1.TMR1IE; extract
-          ir_decoded_addr from acc_lo, ir_decoded_cmd from acc_hi
-          (per existing decoder bit-layout); clear IR_ARMED; set
-          state=0 (IDLE).
+DONE (state=2):
+  Triggered by: SAMPLING accumulated 32 samples.
+  Action: disable Timer1 (T1CON=0); clear PIE1.TMR1IE; call
+          v171_ir_post_process to validate Manchester pairs and
+          extract addr/cmd; clear IR_ARMED; set state=0 (IDLE).
 ```
+
+### Bit-to-byte mapping (post-process)
+
+The existing `ir_rc5_decode` body (asm:546-668) accumulates 32 samples
+through `FSR0=0x010` post-incrementing every 8 samples (asm:580
+`movf POSTINC0, F, A`). The 32-sample stream is then compressed into
+RC5 14-bit-frame fields by `flow_ir_rc5_decode_025E` (asm:587+) which
+walks the buffer through `control_core_service_01F0` (asm:490+) for
+Manchester pair validation.
+
+The new design preserves this post-processing: after Timer1 accumulates
+32 samples into `v171_ir_buf0..buf3`, we copy those 4 bytes into
+`(Common_RAM+16)..(Common_RAM+19)` (0x010-0x013) and `rcall` into the
+existing decoder's POST-entry-check body at `flow_ir_rc5_decode_025E`
+(asm:587). This reuses the existing Manchester pair validation +
+addr/cmd extraction without rewriting it.
+
+**Caveat:** the existing decoder body does the entry-LOW check at
+asm:556 AND the bit-bang sampling AND the post-process in one routine.
+We need to factor the post-process into a reachable label. One clean
+approach: rename the existing entry-point to `ir_rc5_decode_legacy`
+(unused after this change; kept for reference) and create a NEW
+`v171_ir_post_process` that holds only the post-process logic.
 
 ### ISR integration
 
@@ -85,8 +147,8 @@ flow_app_cold_init_03F6:
 
 flow_check_tmr1:
     btfss   PIR1, TMR1IF, A
-    goto    flow_app_cold_init_0414   ; existing RBIF check
-    rcall   v171_ir_sample_handler    ; NEW
+    goto    flow_app_cold_init_0414      ; existing RBIF check
+    rcall   v171_ir_sample_handler       ; NEW
     bcf     PIR1, TMR1IF, A
     goto    flow_app_cold_init_0436
 
@@ -96,8 +158,9 @@ flow_app_cold_init_0414:
     ... (existing button-state guard)
     btfss   control_flags, IR_ARMED, A
     goto    flow_app_cold_init_0434
-    btfss   PORTB, RB5, A             ; NEW: only latch if RB5=LOW
-    rcall   v171_ir_start_decode      ; NEW (replaces setf pending)
+    btfsc   PORTB, RB5, A                ; NEW: skip if RB5 HIGH
+    goto    flow_app_cold_init_0434      ;   (no falling-edge phase)
+    rcall   v171_ir_start_decode         ; NEW (replaces setf pending)
 
 flow_app_cold_init_0434:
     bcf     INTCON, RBIF, A
@@ -106,132 +169,99 @@ flow_app_cold_init_0434:
 
 ### New routines
 
+(Estimated sizes; verify after assembling.)
+
 #### `v171_ir_start_decode` (~15 instructions)
 
-```asm
-v171_ir_start_decode:
-    ; Called from RBIF ISR when RB5=LOW edge detected + IR_ARMED set.
-    ; Arms Timer1 to fire at 445 µs (mid-second-half of S1).
-    movlb   0x1
-    clrf    v171_ir_decoder_acc_lo, BANKED
-    clrf    v171_ir_decoder_acc_hi, BANKED
-    movlw   0x01
-    movwf   v171_ir_decoder_state, BANKED
-    movlb   0x0
-    movlw   0xFA   ; TMR1 preload high for 445 µs (0xFAAA)
-    movwf   TMR1H, A
-    movlw   0xAA
-    movwf   TMR1L, A
-    bcf     PIR1, TMR1IF, A
-    bsf     PIE1, TMR1IE, A
-    movlw   0x81   ; T1CON: TMR1ON=1, prescaler /1
-    movwf   T1CON, A
-    return  0x0
-```
+Arms Timer1 with 445 µs preload, clears buffer + counter, sets
+state=1. Returns to ISR.
 
-#### `v171_ir_sample_handler` (~30 instructions)
+#### `v171_ir_sample_handler` (~25 instructions)
 
-```asm
-v171_ir_sample_handler:
-    ; Timer1 ISR body.  Shift one bit into acc, advance state, reload TMR1.
-    movlb   0x1
-    bsf     STATUS, C, A
-    btfsc   PORTB, RB5, A
-    bcf     STATUS, C, A
-    rlcf    v171_ir_decoder_acc_lo, F, BANKED
-    rlcf    v171_ir_decoder_acc_hi, F, BANKED
-    incf    v171_ir_decoder_state, F, BANKED
-    movlw   0x21
-    cpfslt  v171_ir_decoder_state, BANKED
-    goto    v171_ir_decode_done
-    ; Reload TMR1 for next 889 µs sample.
-    movlb   0x0
-    movlw   0xF5
-    movwf   TMR1H, A
-    movlw   0x95
-    movwf   TMR1L, A
-    return  0x0
+Reads RB5, shifts into buf chain, increments sample_count. If
+count >= 32, transitions to DONE (calls post_process); else reloads
+TMR1 with 889 µs preload.
 
-v171_ir_decode_done:
-    ; 32 samples collected.  Disable Timer1, decode result, write outputs.
-    movlb   0x0
-    bcf     T1CON, TMR1ON, A
-    bcf     PIE1, TMR1IE, A
-    bcf     PIR1, TMR1IF, A
-    movlb   0x1
-    movf    v171_ir_decoder_acc_lo, W, BANKED
-    movwf   ir_decoded_cmd, A
-    movf    v171_ir_decoder_acc_hi, W, BANKED
-    movwf   ir_decoded_addr, A
-    bcf     control_flags, IR_ARMED, A
-    clrf    v171_ir_decoder_state, BANKED
-    return  0x0
-```
+#### `v171_ir_post_process` (factored from existing `flow_ir_rc5_decode_025E`)
 
-NB: the bit-to-byte mapping (which acc is "addr" and which is "cmd")
-needs to match the current `ir_rc5_decode` byte layout. Verify
-empirically against test_v171_ir_rc5_pulse_train.py during
-implementation — the test expects `cmd=0x3A, addr=0x10` from a known
-pulse train.
+Copies `v171_ir_buf0..buf3` into `(Common_RAM+16..19)`, runs the
+existing Manchester pair-validation logic, extracts addr/cmd, writes
+to `ir_decoded_cmd` / `ir_decoded_addr`, clears IR_ARMED, sets
+state=0.
 
 ### Removal of legacy code
 
 After the new path works:
 
-- Delete `v171_service_pending_ir_decode` body (asm:2614-2631).
-- Replace the call site in `display_loop_iteration` (asm:2766) with
-  `nop` to preserve byte alignment, OR remove the call and let
-  downstream addresses shift (gpasm will handle).
-- Keep `ir_rc5_decode` body itself for now (it's referenced from the
-  V1.7 / V1.6b stock paths via the V17 source rebuild — we only need
-  to stop CALLING it from V1.71's foreground).
+* Delete `v171_service_pending_ir_decode` body (asm:2614-2631).
+* Replace the call in `display_loop_iteration` (asm:2766) with an
+  inline `nop` to preserve byte alignment, OR remove the call and
+  let downstream addresses shift (gpasm handles relabeling).
+* `v171_ir_decode_pending` at 0x0AA becomes free RAM (no callers).
+* Keep `ir_rc5_decode` body itself for now as `ir_rc5_decode_legacy`
+  reference (no callers in V1.71); future cleanup can remove it.
 
 ### Code-shift risk
 
-This adds ~50-80 instructions to the V1.71 hex. Layer 5 chain timing
-tests have shown sensitivity to ~2-byte shifts before; ~50 instruction
-shift will likely require bumping a few `limit=N` parameters in those
-tests. Mitigation: after assembly, run the full V1.71 test gate; bump
-limits only where a single test fails with timing-only assertions.
+This adds ~70-100 instructions to V1.71. Layer 5 chain timing tests
+have shown sensitivity to ~2-byte shifts before; ~50-100 instruction
+shift will likely require bumping a few `limit=N` parameters. Plan:
+after assembling, run the V1.71 test gate; bump limits only where a
+single test fails with timing-only assertions.
 
 ## Validation plan
 
-1. **Unit:** `test_v171_ir_deferred_phase_miss.py` test
-   `test_v171_deferred_decode_aborts_when_foreground_misses_low_window`
-   should FAIL after this lands (decoder no longer aborts under the
-   poked-pending scenario — sample-driven decoder ignores the pending
-   byte entirely). Update the test to either delete it (bug fixed) or
-   pin the new behavior.
-2. **Pulse train:** `test_v171_ir_rc5_pulse_train.py`
-   `test_v171_rc5_pulse_train_decodes_standby_endpoint` MUST still
-   pass (same standby-frame TX outcome, different decoder internals).
-3. **Endpoint dispatch:** `test_v171_ir_endpoints.py` MUST still pass
-   (the inline dispatch path is untouched).
-4. **Sister regression:** `test_v16b_stock_in_isr_decode_immune_to_phase_miss`
-   MUST still pass (V1.6b stock untouched).
-5. **Layer 5 chain timing:** all `test_v171_v32_layer5_*` tests must
-   pass; bump `limit=N` parameters if needed for code-shift compensation.
-6. **Hardware validation:** flash V1.71 + new decoder onto a real CONTROL
-   unit, exercise IR remote (volume up/down, preset A/B, standby/wake).
-   Confirm decoded values reach MAIN.
+1. **V1.71 phase-miss test should FAIL after this lands.**
+   `tests/sim/test_v171_ir_deferred_phase_miss.py::test_v171_deferred_decode_aborts_when_foreground_misses_low_window`
+   currently PASSES (bug present). New decoder doesn't read 0x0AA at
+   all → poking it has no effect → no abort → test fails. That
+   failure flags the fix — UPDATE the test (delete or rewrite to pin
+   the new behavior).
+
+2. **V1.6b sister test must STILL PASS.**
+   `test_v16b_stock_in_isr_decode_immune_to_phase_miss` is unaffected
+   (V1.6b stock is untouched).
+
+3. **Pulse-train test must STILL PASS.**
+   `test_v171_ir_rc5_pulse_train.py::test_v171_rc5_pulse_train_decodes_standby_endpoint`
+   drives a real Manchester pulse train at RB5; the new Timer1-driven
+   decoder MUST produce the same TX standby frame.
+
+4. **Endpoint dispatch must STILL PASS.**
+   `test_v171_ir_endpoints.py` (preset / standby / wake dispatch)
+   uses `inject_decoded_ir_event` which writes directly to
+   `ir_decoded_cmd`/`ir_decoded_addr` — unaffected by the decoder
+   change.
+
+5. **Layer 5 chain timing tests:** all `test_v171_v32_layer5_*` tests
+   must pass; bump `limit=N` parameters as needed for code-shift
+   compensation.
+
+6. **New collision/BSR-discipline tests** for the new RAM bytes,
+   mirroring the V1.71 diag-renderer pattern (look for the existing
+   diag-renderer's collision test as a template).
+
+7. **Hardware validation:** flash V1.71+new decoder onto a real
+   CONTROL unit, exercise IR remote (volume up/down, preset A/B,
+   standby/wake). Confirm decoded values reach MAIN. This is an
+   operator step; document procedure in `docs/HARDWARE_TEST.md`.
+
+## Implementation milestones
+
+1. **M1 (this commit):** spec corrected, no code change.
+2. **M2:** RAM equates + scaffolding (no behavioral change). Add
+   collision tests so future allocations don't conflict.
+3. **M3:** Implement `v171_ir_start_decode` + `v171_ir_sample_handler`
+   + `v171_ir_post_process`. No callers yet.
+4. **M4:** Wire ISR dispatch (TMR1IF branch + RB5=LOW gate on RBIF).
+   Remove call to `v171_service_pending_ir_decode` from
+   `display_loop_iteration`.
+5. **M5:** Update tests (delete or rewrite phase-miss test; verify
+   pulse-train still passes; bump Layer 5 limits if needed).
+6. **M6:** Hardware validation handoff.
 
 ## Hardware-validation responsibility
 
-This change is firmware-touching and timing-critical. Sim validation is
-necessary but NOT sufficient. The operator must flash a real V1.71 unit
-and confirm IR works on hardware before the change is considered
-released. Document the test procedure in `docs/HARDWARE_TEST.md` under
-a new "IR validation" section.
-
-## Estimated work
-
-- Spec doc (this file): done.
-- Implementation: 4-6 hours (asm writing + assembling + iterating
-  on sim test failures).
-- Sim test validation: 1-2 hours.
-- Code-shift fixes for Layer 5 tests: 30-60 min.
-- Hardware validation: operator step (out of scope for this PR).
-
-Total: ~1 day of focused work for the firmware change; full
-sim-test gate convergence may take longer if unexpected interactions
-surface.
+Sim validation is necessary but NOT sufficient. The operator must flash
+a real V1.71 unit and confirm IR works on hardware before the change is
+considered released.
