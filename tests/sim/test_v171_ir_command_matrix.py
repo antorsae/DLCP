@@ -429,14 +429,15 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
       * tx_ring_wr MUST NOT advance by 3+ from a 0x40 dispatch
         (the fallthrough doesn't commit a frame)
 
-    Parametrized over both PRESET_A and PRESET_B starting states so a
-    regression that routes 0x40 into preset-A's "already A" no-op
-    (which would mask the leak from a B-starting baseline) AND a
-    regression that routes 0x40 into preset-B's "already B" no-op
-    (which would mask the leak from an A-starting baseline) are
-    BOTH caught: either leak path would emit the OPPOSITE preset
-    frame from at least one of the two starts, advancing tx_ring_wr
-    by 3+ AND/OR flipping PRESET_BIT.
+    Parametrized over both PRESET_A and PRESET_B starting states.
+    Direction:
+      * A leak into the preset-A case is MASKED from an A-start (the
+        already-A no-op leaves PRESET_BIT unchanged); from a B-start,
+        the same leak FLIPS PRESET_BIT to A and is caught.
+      * Conversely a leak into the preset-B case is masked from B-start
+        and caught from A-start.
+    Running both starts ensures at least one parametrized case detects
+    either leak direction.
     """
     _set_preset_bit(warmed_chain, starting_preset)
     pre_preset = _read_preset(warmed_chain)
