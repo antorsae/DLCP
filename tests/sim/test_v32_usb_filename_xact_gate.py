@@ -120,6 +120,9 @@ _FILENAME_RAM_LEN = 0x1E           # 30 bytes
 _PRESET_JOB_STATE = 0x2DE
 _PRESET_JOB_TARGET = 0x2DF
 _PRESET_JOB_IDLE = 0
+_PRESET_JOB_HOLDING = 0x02
+_PRESET_HOLD_TIMER_LO = 0x08C
+_PRESET_HOLD_TIMER_HI = 0x08D
 
 
 def _require_rust() -> None:
@@ -486,4 +489,108 @@ def test_v32_no_gate_broadcast_unaffected_by_fix() -> None:
         f"({target}); got bit2={bit2}.  Possible polarity inversion "
         f"in the gate check -- preset_select_handler may now skip "
         f"normal broadcasts too."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tier C: HOLDING-state gate (codex MEDIUM vs entry-only gate)
+#
+# The entry-only gate at preset_select_handler closes the race when a
+# CONTROL broadcast ARRIVES during a USB xact.  But it leaves a second
+# race open: cmd 0x03 fires DURING an already-queued PENDING/HOLDING
+# (e.g. user-IR press queued the switch first, then host issued
+# cmd 0x03).  preset_job_holding's HOLDING -> APPLY transition would
+# call preset_load_filename and clobber the host's just-written RAM.
+# The HOLDING-state gate (separate btfsc inside preset_job_holding)
+# closes that.
+# ---------------------------------------------------------------------------
+
+
+def test_v32_preset_job_holding_gates_toggle_on_bit6() -> None:
+    """preset_job_holding must, after the timer-zero check (so we're
+    actually about to toggle bit2 + load filename), check
+    filename_dirty_flags.bit6 and return early if the gate is held.
+    Otherwise an in-flight HOLDING that started BEFORE the USB cmd
+    0x03 will clobber the host's RAM via preset_load_filename when
+    the timer expires."""
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    m = re.search(
+        r"preset_job_holding:[^\n]*\n"
+        r"(?:[^\n]*\n){0,8}?"
+        r"\s*bnz\s+preset_job_holding_wait[^\n]*\n"
+        r"(?:[^\n]*\n){0,12}?"
+        r"\s*btfsc\s+filename_dirty_flags,\s*6,\s*BANKED[^\n]*\n"
+        r"\s*return\s+0",
+        text,
+    )
+    assert m is not None, (
+        "preset_job_holding must, after the Timer3-zero check, gate "
+        "the toggle on filename_dirty_flags.bit6.  If bit6 is set "
+        "(a USB cmd 0x03 is in flight), the toggle would clobber "
+        "the host's RAM via preset_load_filename.  Return early to "
+        "stay in HOLDING; the timer-zero condition will keep the "
+        "state machine pinned at this branch until force_persist "
+        "clears bit6."
+    )
+
+
+def test_v32_xact_gate_blocks_in_flight_holding_toggle() -> None:
+    """Behavioural variant: simulate an in-flight HOLDING (state=2,
+    timer expired) on MAIN0, set bit6 to mimic a USB cmd 0x03 that
+    fired AFTER the HOLDING was queued, run preset_job_service, and
+    assert active_flags.bit2 was NOT toggled and the filename RAM
+    was NOT clobbered."""
+    _require_rust()
+    _require_v32_hex(V32_MAIN_HEX)
+    chain = _open_chain()
+
+    # Snapshot current preset and a unique RAM payload to detect
+    # whether preset_load_filename clobbers it.
+    initial_af = chain.read_main_reg(0, _ACTIVE_FLAGS)
+    initial_bit2 = (initial_af & _ACTIVE_FLAGS_PRESET_BIT) >> 2
+    target = 1 - initial_bit2
+
+    # Write a recognizable host-side filename to RAM 0x2C0..0x2DD.
+    sentinel = bytes(b"USBHOST_FILENAME_DO_NOT_CLOBB!"[:_FILENAME_RAM_LEN])
+    for i, value in enumerate(sentinel):
+        chain.write_main_reg(0, _FILENAME_RAM_BASE + i, value)
+
+    # Set up an in-flight HOLDING with target = opposite preset and
+    # a zero-valued hold timer (timer already expired, so the next
+    # preset_job_service tick would normally toggle).  Set the gate
+    # bit6 to test whether the new HOLDING gate defers.
+    chain.write_main_reg(0, _PRESET_JOB_TARGET, target)
+    chain.write_main_reg(0, _PRESET_JOB_STATE, _PRESET_JOB_HOLDING)
+    chain.write_main_reg(0, _PRESET_HOLD_TIMER_LO, 0)
+    chain.write_main_reg(0, _PRESET_HOLD_TIMER_HI, 0)
+    _set_filename_xact(chain)
+
+    # Step the chain enough for preset_job_service to run multiple
+    # main-loop passes.
+    chain.step_ticks(50_000_000)
+
+    # bit2 must NOT have toggled; HOLDING must still be the state
+    # (the gate returns early WITHOUT advancing); RAM must still
+    # carry the host's sentinel.
+    af = chain.read_main_reg(0, _ACTIVE_FLAGS)
+    bit2 = (af & _ACTIVE_FLAGS_PRESET_BIT) >> 2
+    pjs = chain.read_main_reg(0, _PRESET_JOB_STATE)
+    ram_after = bytes(
+        chain.read_main_reg(0, _FILENAME_RAM_BASE + i)
+        for i in range(_FILENAME_RAM_LEN)
+    )
+
+    assert bit2 == initial_bit2, (
+        f"active_flags.bit2 must NOT toggle while gate is held in "
+        f"HOLDING; initial={initial_bit2}, got={bit2}.  preset_job_"
+        f"holding's bit6 gate must defer the toggle."
+    )
+    assert pjs == _PRESET_JOB_HOLDING, (
+        f"preset_job_state must stay at HOLDING ({_PRESET_JOB_HOLDING}); "
+        f"got pjs={pjs}.  The gate returns early without advancing."
+    )
+    assert ram_after == sentinel, (
+        f"filename RAM was clobbered by a gated HOLDING toggle.  "
+        f"sentinel={sentinel.hex()}, got={ram_after.hex()}.  "
+        f"preset_load_filename ran despite the gate."
     )
