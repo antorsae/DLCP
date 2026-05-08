@@ -63,6 +63,7 @@ _PRESET_A_EEPROM_BASE = 0x60
 _PRESET_B_EEPROM_BASE = 0x83
 _FILENAME_LEN = 0x1E
 _ROUTE_RAM_BASE = 0x60
+_ROUTE_SOURCE_RAM_BASE = 0xA5
 _ROUTE_LEN = 0x06
 _ROUTE_VALUE_L = 0x00
 _ROUTE_VALUE_R = 0x01
@@ -145,40 +146,42 @@ def _patch_chain_preset_tables(chain, overlay_a, overlay_b) -> None:  # type: ig
         )
 
 
-def _seed_mains_with_v32_identity_and_routes(chain) -> None:  # type: ignore[no-untyped-def]
-    """Pre-step seed so the flasher's preflight + route-pick succeed.
+def _post_step_seed_identity_and_routes(chain) -> None:  # type: ignore[no-untyped-def]
+    """Post-boot seed so the flasher's preflight + route-pick succeed.
+
+    Why post-boot: the V3.2 firmware writes EEPROM[0x80..0x81] during
+    boot (V2.3-stock-derived semantics: 0x02->0x80, 0x03->0x81).  A
+    pre-boot ``write_main_eeprom_byte`` seed is overwritten before
+    ``run_until_connected`` returns.  Codex MEDIUM vs 6545298 caught
+    this -- seed AFTER boot so the flasher's identity probe sees the
+    intended values.
 
     EEPROM[0x80..0x82] = (3, 2, rev): V3.2 identity, so the flasher's
-    ``_compare_firmware_identities`` doesn't emit downgrade warnings
-    (would still proceed -- this is just cosmetic).
+    ``_compare_firmware_identities`` doesn't emit "downgrade" warnings.
 
-    ROUTE_RAM_BASE for MAIN0 = all-L (0x00), MAIN1 = all-R (0x01) so
+    ROUTE_RAM_BASE (0x60..0x65) = all-L for MAIN0, all-R for MAIN1 so
     ``_resolve_uniform_route_label`` picks MAIN1 when ``--right`` is
-    requested.
-
-    The route bytes are also seeded into MAIN0/MAIN1 EEPROM via the
-    firmware's normal route-shadow path (route_dirty bit cleared after
-    boot) -- but here we just poke the RAM bytes directly so the
-    EP0-side ``_probe_ep0_app_ram`` reads the expected labels.
+    requested.  ROUTE_SOURCE_RAM_BASE (0xA5..0xAA) = all-L for MAIN1
+    so the post-flash ``_apply_all_channel_mapping`` has visible work
+    to do (post-test asserts these flip to R).
     """
-    # V3.2 EEPROM identity (overrides V2.3 seed).
-    chain.write_main_eeprom_byte(0, 0x80, 3)
-    chain.write_main_eeprom_byte(0, 0x81, 2)
-    chain.write_main_eeprom_byte(0, 0x82, 0x4F)
-    chain.write_main_eeprom_byte(1, 0x80, 3)
-    chain.write_main_eeprom_byte(1, 0x81, 2)
-    chain.write_main_eeprom_byte(1, 0x82, 0x4F)
-
-
-def _post_step_seed_routes(chain) -> None:  # type: ignore[no-untyped-def]
-    """After ``run_until_connected`` + a settle step, poke the route
-    RAM bytes so route-label disambiguation works.
-
-    Done after boot so the firmware's own EEPROM->RAM copy doesn't
-    overwrite our pokes."""
+    # V3.2 EEPROM identity (overrides V2.3 seed + boot writes).
+    for unit in (0, 1):
+        chain.write_main_eeprom_byte(unit, 0x80, 3)
+        chain.write_main_eeprom_byte(unit, 0x81, 2)
+        chain.write_main_eeprom_byte(unit, 0x82, 0x4F)
+    # Route RAM disambiguation for --right: MAIN0 all-L, MAIN1 all-R.
     for offset in range(_ROUTE_LEN):
         chain.write_main_reg(0, _ROUTE_RAM_BASE + offset, _ROUTE_VALUE_L)
         chain.write_main_reg(1, _ROUTE_RAM_BASE + offset, _ROUTE_VALUE_R)
+    # Source RAM seed: MAIN1 starts as all-L so the post-flash
+    # _apply_all_channel_mapping --all-ch R flip is observable in the
+    # final assertion (codex LOW vs 6545298 -- otherwise the assertion
+    # is pre-satisfied by the picker-disambiguation seed).
+    for offset in range(_ROUTE_LEN):
+        chain.write_main_reg(
+            1, _ROUTE_SOURCE_RAM_BASE + offset, _ROUTE_VALUE_L,
+        )
 
 
 def _build_overlaid_chain():  # type: ignore[no-untyped-def]
@@ -200,10 +203,9 @@ def _build_overlaid_chain():  # type: ignore[no-untyped-def]
         main_hex_path=str(V32_MAIN_HEX),
     )
     _patch_chain_preset_tables(chain, overlay_a, overlay_b)
-    _seed_mains_with_v32_identity_and_routes(chain)
     chain.run_until_connected(limit=400)
     chain.step_ticks(50_000_000)  # boot-side preset-load settle
-    _post_step_seed_routes(chain)
+    _post_step_seed_identity_and_routes(chain)
     chain.step_ticks(2_000_000)  # let firmware observe new route bytes
     return chain, overlay_a, overlay_b
 
@@ -259,18 +261,30 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
     assert rc == 0, "release flasher main() returned non-zero"
 
     # ---- Verify preset A flash table ----
+    # NB: the simulated cmd 0x40 stream does NOT patch the chain's
+    # running flash (would corrupt the executing firmware) -- the
+    # fixture pre-patched the preset tables before boot.  This
+    # assertion is therefore a "fixture survives the run" sanity check
+    # (codex LOW vs 6545298), not a "flasher streamed bytes into
+    # flash" check.  The MEANINGFUL post-flash verification is the
+    # EEPROM filename slot below (genuinely written by firmware-side
+    # persist after the flasher's cmd 0x03 + force_persist).
     actual_a = bytes(chain.read_core_flash(2, _PRESET_A_FLASH_BASE, _PRESET_TABLE_SIZE))
     assert actual_a == bytes(overlay_a.table), (
         "preset A flash table mismatch after release flash"
     )
 
-    # ---- Verify preset B flash table ----
+    # ---- Verify preset B flash table (same caveat as above) ----
     actual_b = bytes(chain.read_core_flash(2, _PRESET_B_FLASH_BASE, _PRESET_TABLE_SIZE))
     assert actual_b == bytes(overlay_b.table), (
         "preset B flash table mismatch after release flash"
     )
 
     # ---- Verify preset A EEPROM filename slot ----
+    # MEANINGFUL: the firmware ran the persist code path (driven by
+    # the flasher's force_persist EP0 trigger) and wrote RAM 0x2C0..
+    # 0x2DD to EEPROM 0x60..0x7D.  This assertion fails if persist
+    # broke (e.g. xact gate didn't clear, dirty bit didn't latch).
     actual_a_name = bytes(
         chain.read_main_eeprom_byte(1, _PRESET_A_EEPROM_BASE + i)
         for i in range(_FILENAME_LEN)
@@ -290,10 +304,41 @@ def test_v32_release_flash_sim_full_main_post_flash_state() -> None:
         f"expected {overlay_b.name_slot.hex()}"
     )
 
-    # ---- Verify route mapping is uniform R ----
+    # ---- Verify route shadow RAM is uniform R ----
     routes = bytes(
         chain.read_main_reg(1, _ROUTE_RAM_BASE + i) for i in range(_ROUTE_LEN)
     )
     assert routes == bytes([_ROUTE_VALUE_R] * _ROUTE_LEN), (
-        f"route mapping mismatch: got {routes.hex()}, expected all R"
+        f"route shadow mismatch: got {routes.hex()}, expected all R"
+    )
+
+    # ---- Verify route SOURCE RAM flipped from L (seed) to R ----
+    # MEANINGFUL: ``_post_step_seed_identity_and_routes`` seeded
+    # MAIN1[0xA5..0xAA] = all-L; ``_apply_all_channel_mapping`` writes
+    # both ROUTE_RAM_BASE and ROUTE_SOURCE_RAM_BASE during the
+    # post-flash --all-ch R finalize.  This catches a regression
+    # where ``_apply_all_channel_mapping`` skipped or partially
+    # applied (codex LOW vs 6545298).
+    source_routes = bytes(
+        chain.read_main_reg(1, _ROUTE_SOURCE_RAM_BASE + i) for i in range(_ROUTE_LEN)
+    )
+    assert source_routes == bytes([_ROUTE_VALUE_R] * _ROUTE_LEN), (
+        f"route SOURCE RAM not applied by --all-ch R: got "
+        f"{source_routes.hex()}, expected all R "
+        f"(seed was all-L; flasher must flip to R)"
+    )
+
+    # ---- Verify EEPROM identity reflects V3.2 (post-seed) ----
+    # MEANINGFUL: the V3.2 identity bytes survive the run; the
+    # flasher's ``_compare_firmware_identities`` saw V3.2 (rather than
+    # the V2.3 seed values that the boot path writes if we don't
+    # post-step seed).  Codex MEDIUM vs 6545298 caught the silent
+    # regression where pre-boot seeds were overwritten by firmware
+    # boot writes.
+    eeprom_identity = bytes(
+        chain.read_main_eeprom_byte(1, 0x80 + i) for i in range(3)
+    )
+    assert eeprom_identity == bytes([3, 2, 0x4F]), (
+        f"V3.2 EEPROM identity drifted during run: got "
+        f"{eeprom_identity.hex()}, expected 03 02 4F"
     )

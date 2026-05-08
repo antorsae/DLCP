@@ -488,16 +488,30 @@ class SimHidBackend:
                 f"got 0x{b[0]:02X}"
             )
         payload = b[1:]
+        # Capture mode BEFORE dispatch so cmd 0x40's app->bootloader
+        # transition doesn't get post-stepped: if the dispatch flips
+        # mode app->bootloader, we must NOT step (real hardware: the
+        # app firmware is no longer executing).  Likewise cmd 0x41's
+        # bootloader->app verify-OK flips mode back; the post-step
+        # then advances the now-running app firmware, which is what
+        # we want.  Codex MEDIUM vs 6545298.
+        was_app_before = self._device.mode == "app"
         response = self._dispatch(payload)
         if response is not None:
             with self._lock:
                 self._read_queue.append(response)
-        # Step the chain so the firmware can react between HID ops.
-        # Critical for cmd 0x43 verify (~70 reads in a row) -- without
-        # stepping, sim time stalls during the verify phase and the
-        # subsequent EP0 preset-switch sees a stale active_flags.7
-        # (no chain frame fired between EP0 write and EP0 poll).
-        if self._step_ticks_per_op > 0:
+        # Step the chain only when the simulated app firmware is
+        # actually running (app mode at op start AND op end).  Skipping
+        # bootloader-mode stepping avoids running the app firmware for
+        # ~13 s sim time during a ~660-packet stream phase that would
+        # otherwise cause spurious DSP writes / chain protocol activity
+        # / preset job advances which never happen on real hardware
+        # while the bootloader is in control of the chip.
+        if (
+            self._step_ticks_per_op > 0
+            and was_app_before
+            and self._device.mode == "app"
+        ):
             self._hub._chain.step_ticks(self._step_ticks_per_op)
         return len(b)
 
