@@ -271,9 +271,13 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
        * Preset B flash table at 0x4C00..0x55FF matches the capture.
        * Preset A/B EEPROM filename slots match the capture sidecars.
        * Route RAM is uniform R (all 6 channels = 0x01).
-       * V1.71 CONTROL was actively broadcasting cmd 0x20 preset
-         frames during the post-flash finalize (Option 1 of the
-         user's consistency-under-CONTROL-hammering ask).
+       * ≥1 cmd 0x20 preset broadcast hit MAIN1 SOMEWHERE during
+         the run (sanity precondition: V1.71 CONTROL is alive).
+         This does NOT prove the broadcast overlapped a per-preset
+         xact-gate window -- per-window capture proved infeasible
+         (see task #150 investigation).  The DETERMINISTIC proof
+         that the gate's drop path holds when a broadcast arrives
+         in a gate window lives in Option 2's sibling test.
        * Flasher's identity probe printed the seeded V3.2 identity
          to stdout (proves ``_probe_device_eeprom_version`` actually
          read the seeded bytes vs falling back to a probe-failure
@@ -287,11 +291,13 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
 
     from dlcp_fw.flash.dlcp_v32_release_flash import main
 
-    # Mark MAIN1's RX capture so we can assert CONTROL was actively
-    # broadcasting cmd 0x20 preset frames during the run.  Without
-    # this assertion the test could trivially pass in a quiescent
-    # no-traffic window where the xact gate's protection is never
-    # exercised.
+    # Mark MAIN1's RX capture so we can assert CONTROL was alive +
+    # broadcasting during the run as a sanity precondition.  This
+    # is "CONTROL is transmitting" not "broadcast hit the gate
+    # window"; the latter is unverifiable in this test (gate window
+    # ~ 125 ms sim time vs CONTROL preset-broadcast cadence ~ 6 s,
+    # see task #150 investigation).  Gate behaviour itself is
+    # proven by Option 2's deterministic injection test below.
     #
     # Coverage scope (codex LOW vs a2bb70f, deferred-then-investigated
     # in task #150):  the assertion proves ≥1 cmd 0x20 broadcast hit
@@ -495,10 +501,14 @@ def test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not
     still set).  Then complete force_persist and verify EEPROM gets
     the host-written filename, not the broadcast's would-be clobber.
 
-    This is the deterministic version of the race window the sibling
-    full-main test exercises probabilistically via natural V1.71
-    broadcasts (Option 2 of the user's consistency-under-CONTROL-
-    hammering ask).
+    This is the DETERMINISTIC proof of gate-drop semantics under a
+    cmd 0x20 broadcast in a gate-active window.  The sibling full-
+    main test only proves CONTROL is alive during the run -- not
+    that a natural broadcast hit a gate window (per task #150
+    investigation, per-preset gate windows are ~ 125 ms sim time
+    vs V1.71 CONTROL's ~ 6 s preset broadcast cadence, so natural
+    overlap is reliably empty).  Hence this Option 2 test exists
+    to actively force the worst-case timing.
     """
     _require_rust()
     _require_capture_files()
