@@ -177,9 +177,25 @@ class SimDlcpEp0:
     def read_exact(self, n: int) -> bytes:
         """Read ``n`` bytes starting at the current pointer; auto-
         increment the pointer.  Mirrors the real EP0 protocol's
-        ``read_exact`` semantics."""
+        ``read_exact`` semantics.
+
+        Raises ``ValueError`` if the read would cross the 0x10000
+        boundary -- the real firmware's TBLPTRH-driven EP0 path
+        switches read regions when the pointer climbs past the
+        12-bit data-memory window, which the sim does not model.
+        Surfacing the divergence loudly avoids silent wrap-around
+        reads that look correct but read from address 0x000+ on
+        the second byte (codex LOW vs 83fb65c)."""
         if n <= 0:
             return b""
+        if self._pointer + n > 0x10000:
+            raise ValueError(
+                f"EP0 read would wrap past 0x10000 "
+                f"(pointer=0x{self._pointer:04X}, n={n}); "
+                f"the simulator does not model the real protocol's "
+                f"TBLPTRH-region switch above the 12-bit data-memory "
+                f"window."
+            )
         out = bytearray(n)
         for i in range(n):
             out[i] = (
@@ -193,7 +209,9 @@ class SimDlcpEp0:
             self._chain.step_ticks(self._step_ticks_per_op)
         # Auto-increment the pointer (the real EP0 protocol uses
         # firmware-side TBLPTR with auto-increment in the read path
-        # via ``_poke(0xE7, n, in_dir=True, ...)``).
+        # via ``_poke(0xE7, n, in_dir=True, ...)``).  Bounded by the
+        # wrap check above, so the masked result lands at 0x10000
+        # at the upper limit -- subsequent reads will raise.
         self._pointer = (self._pointer + n) & 0xFFFF
         return bytes(out)
 
@@ -245,11 +263,15 @@ class SimDlcpEp0:
         if in_dir:
             # Short read at ``addr`` (no TBLPTR involved).  The real
             # protocol returns ``read_len`` bytes; in practice the
-            # flasher only uses this for single-byte reads, but we
-            # support ``read_len > 0`` for parity.
-            length = max(1, read_len)
-            out = bytearray(length)
-            for i in range(length):
+            # flasher only uses this for single-byte reads but we
+            # honour ``read_len`` directly for parity.  ``read_len=0``
+            # is an empty read (matches ``DlcpEp0._poke``'s
+            # ``ctrl_transfer(..., 0)`` -> empty bytes return; codex
+            # LOW vs 83fb65c).
+            if read_len <= 0:
+                return b""
+            out = bytearray(read_len)
+            for i in range(read_len):
                 out[i] = (
                     self._chain.read_main_reg(self._unit, (addr + i) & 0xFFFF)
                     & 0xFF

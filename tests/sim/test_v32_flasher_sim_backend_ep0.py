@@ -198,6 +198,42 @@ def test_sim_ep0_force_persist_clears_filename_dirty() -> None:
     )
 
 
+def test_sim_ep0_read_past_0x10000_raises() -> None:
+    """``set_pointer(0xFFFF) + read_exact(2)`` would wrap past the
+    12-bit data-memory window.  The real firmware's TBLPTRH-driven
+    EP0 path switches read regions there; the sim doesn't model
+    that, so we raise loudly instead of silently returning the
+    wrap-to-0 byte (codex LOW vs 83fb65c)."""
+    chain = _open_chain()
+    ep0 = make_sim_ep0(chain, unit=1)
+
+    # Single-byte read AT 0xFFFF is fine (no wrap needed; the
+    # auto-increment afterwards lands on 0x10000 but isn't read).
+    ep0.set_pointer(0xFFFF)
+    _ = ep0.read_exact(1)
+
+    # Two-byte read crossing 0x10000 must raise.
+    ep0.set_pointer(0xFFFF)
+    with pytest.raises(ValueError, match="wrap past 0x10000"):
+        ep0.read_exact(2)
+
+
+def test_sim_ep0_zero_length_read_returns_empty_bytes() -> None:
+    """``_poke(addr, value, in_dir=True, read_len=0)`` matches the
+    real ``DlcpEp0._poke`` behaviour of returning an empty
+    ``bytes()`` rather than a single byte (codex LOW vs 83fb65c)."""
+    chain = _open_chain()
+    ep0 = make_sim_ep0(chain, unit=1)
+
+    # Direct-read path with read_len=0 -> empty bytes.
+    result = ep0._poke(0x05E, 0x00, in_dir=True, read_len=0)
+    assert result == b"", f"expected empty bytes; got {result!r}"
+
+    # Sanity: read_len=1 still returns one byte.
+    result = ep0._poke(0x05E, 0x00, in_dir=True, read_len=1)
+    assert len(result) == 1
+
+
 def test_sim_ep0_can_be_used_with_existing_flasher_helpers() -> None:
     """``SimDlcpEp0`` implements the same surface (``set_pointer``,
     ``read_exact``, ``_poke``) as ``DlcpEp0``.  This lets the
