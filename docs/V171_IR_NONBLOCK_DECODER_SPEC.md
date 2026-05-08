@@ -298,8 +298,8 @@ single test fails with timing-only assertions.
    (no callers AT M2 LANDING TIME -- M3 wired them up).  M2 fixed
    the carry-clobber bug in the sample handler (codex MEDIUM vs
    f4e25bd) by switching to FSR0-based addressing.  Post-M3 the
-   routines are live: v171_ir_start_decode is rcall'd from the
-   RBIF path at asm:888, v171_ir_sample_handler is called from
+   routines are live: v171_ir_start_decode is `call`'d from the
+   RBIF path at asm:888, v171_ir_sample_handler is `call`'d from
    the TMR1IF path at asm:861.
 3. **M3 LANDED (commit 86d88e0 + cleanup 00d4733):** wired the
    ISR + start_decode caller, removed the deferred-decode service
