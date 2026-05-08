@@ -262,20 +262,88 @@ single test fails with timing-only assertions.
 
 ## Implementation milestones
 
-1. **M1 (this commit):** spec corrected, no code change.
-2. **M2:** RAM equates + scaffolding (no behavioral change). Add
-   collision tests so future allocations don't conflict.
-3. **M3:** Implement `v171_ir_start_decode` + `v171_ir_sample_handler`
-   + `v171_ir_post_process`. No callers yet.
-4. **M4:** Wire ISR dispatch (TMR1IF branch + RB5=LOW gate on RBIF).
-   Remove call to `v171_service_pending_ir_decode` from
-   `display_loop_iteration`.
-5. **M5:** Update tests (delete or rewrite phase-miss test; verify
-   pulse-train still passes; bump Layer 5 limits if needed).
-6. **M6:** Hardware validation handoff.
+1. **M1 (commit 4c88d81 / 6d983da / f7365bb):** spec corrected, no
+   code change.
+2. **M2 (commit f4e25bd / 3da7145):** RAM equates + 3 routine bodies
+   (no callers).  Routines are unreachable in the current firmware
+   so existing tests still pass.  M2 fixed the carry-clobber bug in
+   the sample handler (codex MEDIUM vs f4e25bd) by switching to
+   FSR0-based addressing.
+3. **M3 BLOCKED:** wiring the ISR + start_decode caller produced
+   correct deferred-decode-bug fix (phase-miss test now correctly
+   fails on the new firmware = bug detected as fixed) but
+   regressed the pulse-train test (cmd decoded as 0x38 instead of
+   0x3A; later 0xFF abort).  Root cause:
+     a. **`movff` doesn't honour BSR.**  ``movff v171_ir_buf0,
+        dest`` evaluates the operand to 0x0D7 and treats it as
+        physical 0x0D7 (BANK 0, channel-source array), NOT BANK 1's
+        0x1D7.  Need to use ``lfsr`` + ``POSTINC`` for buffer copy
+        OR define a separate full-12-bit equate.  (Found and fixed
+        during M3 attempt; the lfsr/POSTINC approach is cleaner.)
+     b. **Cumulative ISR-overhead drift.**  Each sample handler
+        invocation costs ~17 µs of overhead (ISR header + dispatch +
+        sample-handler body).  Over 32 samples this drifts the
+        sample window by ~544 µs, by sample 24 the sample lands in
+        the WRONG half of the bit (e.g. mid-second-half instead of
+        mid-first-half).  Manchester pair validation then fails for
+        the late-frame bits and either decodes wrong or aborts.
+     c. **Buffer layout doesn't match legacy post-process.**
+        V1.6b stock decodes the test pulse train to cmd=0x3A by
+        producing buf=`66 A9 59 02`, while my Timer1-driven
+        sampler produces `B3 54 AD 80` (different sample phasing).
+        The legacy post-process at `flow_ir_rc5_decode_025E`
+        expects a specific buffer-bit layout that my sample timing
+        doesn't match.  Need to either match the legacy decoder's
+        EXACT phase, or write a NEW post-process for the new
+        buffer layout.
+4. **M3 next-attempt requirements:**
+     a. Compensate for ISR overhead in TMR1 reload preload (subtract
+        ~50 Tcy from the per-sample reload value to keep samples
+        aligned to half-bit centers).
+     b. Decide on first-sample alignment: option A is to enter the
+        decoder at the falling edge and place sample 1 at mid of S1
+        second half; option B is to skip S1 entirely (we know S1=1
+        from the falling edge) and start at mid of S2 first half.
+        Option B is cleaner because the post-process can decode 13
+        bits + treat S1 as known.
+     c. Either replicate the legacy decoder's exact sample phase
+        AND reuse `flow_ir_rc5_decode_025E` post-process, OR write
+        a NEW post-process that takes the new buffer layout.  The
+        latter is cleaner but more code; the former requires
+        instrumenting the legacy decoder to find its first-sample
+        phase precisely.
+     d. **Hardware validation is mandatory** before declaring M3
+        done -- sim ISR overhead may differ from real silicon, so
+        the empirically-tuned reload values may need adjustment on
+        a real V1.71 unit.
+5. **M4-M6 (deferred until M3 complete):**
+     - M4: Update tests (delete or rewrite phase-miss test; verify
+       pulse-train passes; bump Layer 5 limits if needed).
+     - M5: Hardware validation handoff.
+
+## Lessons learned during M3 attempt
+
+* `movff` is NOT BSR-sensitive.  Bank-1 RAM access via the BANKED
+  equate works for `clrf`/`movf`/`movwf`/`bsf`/`bcf`/`btfsc`/
+  `btfss` (which DO use BSR) but NOT for `movff` (which uses
+  full-12-bit literal addressing).  Use `lfsr` + `POSTINC0/1`
+  patterns instead, OR define a separate full-address equate.
+* The legacy decoder's per-iteration delay (`call control_core_
+  service_01D8` with W=0xBA / W=0x76) is harder to model than I
+  estimated: nested decrement loops with subtle borrow semantics.
+  The actual per-iteration timing was NOT 889 µs but somewhere
+  near 595 µs (32 samples × 595 = 19 ms vs the ~25 ms RC5 frame).
+  This suggests the legacy decoder samples at a NON-half-bit rate
+  and uses pair correlation across multiple samples to recover the
+  Manchester signal -- more sophisticated than the textbook
+  "sample at mid of each half-bit" approach.
+* The ISR-overhead compensation is not unique to my design --
+  ANY non-blocking IR decoder running from a Timer1 ISR has to
+  account for the per-tick overhead.  This is a real-silicon
+  timing issue, not a sim quirk.
 
 ## Hardware-validation responsibility
 
-Sim validation is necessary but NOT sufficient. The operator must flash
-a real V1.71 unit and confirm IR works on hardware before the change is
-considered released.
+Sim validation is necessary but NOT sufficient.  The operator must
+flash a real V1.71 unit and confirm IR works on hardware before the
+change is considered released.
