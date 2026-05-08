@@ -179,7 +179,7 @@ flow_app_cold_init_03F6:
 flow_check_tmr1:
     btfss   PIR1, TMR1IF, A
     goto    flow_app_cold_init_0414      ; existing RBIF check
-    rcall   v171_ir_sample_handler       ; NEW
+    call    v171_ir_sample_handler, 0x0  ; NEW
     bcf     PIR1, TMR1IF, A
     goto    flow_app_cold_init_0436
 
@@ -191,7 +191,7 @@ flow_app_cold_init_0414:
     goto    flow_app_cold_init_0434
     btfsc   PORTB, RB5, A                ; NEW: skip if RB5 HIGH
     goto    flow_app_cold_init_0434      ;   (no falling-edge phase)
-    rcall   v171_ir_start_decode         ; NEW (replaces setf pending)
+    call    v171_ir_start_decode, 0x0    ; NEW (replaces setf pending)
 
 flow_app_cold_init_0434:
     bcf     INTCON, RBIF, A
