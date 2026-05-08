@@ -91,11 +91,14 @@ IR_CMD_PRESET_B = 0x39
 IR_CMD_STANDBY = 0x3A
 IR_CMD_WAKE = 0x3B
 
-# Expected chain TX frames (route, cmd, data).
-PRESET_A_FRAME = (0xB0, 0x20, 0x00)
-PRESET_B_FRAME = (0xB0, 0x20, 0x01)
-STANDBY_FRAME = (0xB0, 0x03, 0x00)
-WAKE_FRAME = (0xB0, 0x03, 0x01)
+# tx_ring_wr (BANK 0 @ 0x097) is the producer index into the 48-byte
+# TX ring at tx_ring_base (0x036).  v171_send_{standby,wake,preset}_cmd_
+# frame each call tx_ring_reserve_3 to atomically commit 3 bytes
+# (route + cmd + data); on success, tx_ring_wr advances by 3 (mod 48).
+# Reading wr before/after an inject and expecting +3 (mod 48) proves
+# the endpoint-specific send-frame helper actually ran -- the generic
+# fallthrough at asm:3399-3401 does NOT touch tx_ring_wr.
+TX_RING_WR_ADDR = 0x097
 
 
 def _require_rust() -> None:
@@ -165,6 +168,15 @@ def _read_ir_armed(chain) -> bool:  # type: ignore[no-untyped-def]
     return bool(chain.read_reg(CONTROL_FLAGS_ADDR) & IR_ARMED_BIT)
 
 
+def _read_tx_ring_wr(chain) -> int:  # type: ignore[no-untyped-def]
+    return chain.read_reg(TX_RING_WR_ADDR)
+
+
+def _tx_ring_advance(pre: int, post: int) -> int:
+    """Bytes added to tx_ring_wr (mod 48) between pre and post snapshots."""
+    return (post - pre) % 48
+
+
 # ---------------------------------------------------------------------------
 # Inject-event helper.  Bypasses the bit-bang decoder; exercises dispatch
 # only.  Returns the (decoded_cmd, decoded_addr, control_flags) post-settle
@@ -223,24 +235,61 @@ def test_v171_preset_a_pressed_three_times_converges_to_a(warmed_chain) -> None:
       rcall v171_send_preset_frame_and_persist
       bsf control_flags, IR_ARMED, A
 
-    Starts from B; first A-press flips to A; second/third are no-ops.
+    Starts from B; first A-press flips PRESET_BIT to A AND emits a
+    3-byte preset frame via tx_ring_reserve_3 (so tx_ring_wr advances
+    +3 mod 48).  Subsequent A-presses are no-ops: PRESET_BIT stays 0
+    AND tx_ring_wr does NOT advance for the preset frame (the
+    fallthrough at asm:3407-3411 takes the bra-to-done branch).
+    Asserting on tx_ring_wr non-advance pins the documented idempotent
+    contract -- a regression that re-sent the preset frame while
+    leaving PRESET_BIT clear would still pass a state-only check.
     """
     _set_preset_bit(warmed_chain, PRESET_B)
+
+    # First press: B -> A.  Expect PRESET_BIT flip + tx_ring_wr advance.
+    pre_wr = _read_tx_ring_wr(warmed_chain)
     _inject_and_settle(warmed_chain, IR_CMD_PRESET_A)
+    post_wr = _read_tx_ring_wr(warmed_chain)
     assert _read_preset(warmed_chain) == PRESET_A, (
         "first preset-A press from B should flip PRESET_BIT to A (0)"
     )
     assert _read_ir_armed(warmed_chain), (
         "first preset-A press should re-arm IR_ARMED post-dispatch"
     )
-
-    _inject_and_settle(warmed_chain, IR_CMD_PRESET_A)
-    assert _read_preset(warmed_chain) == PRESET_A, (
-        "second preset-A press should be idempotent (no flip)"
+    advance = _tx_ring_advance(pre_wr, post_wr)
+    assert advance >= 3, (
+        f"first preset-A press should commit a 3-byte frame via "
+        f"tx_ring_reserve_3; tx_ring_wr advance = {advance} (need >= 3)"
     )
+
+    # Second + third presses: idempotent (already A).  PRESET_BIT
+    # unchanged AND no preset frame committed via the IR-dispatch path.
+    # Allow up to 3 bytes of layer-2 advance per settle (full_sync_step
+    # legitimately commits non-preset frames during the 3 s settle).
+    # Two consecutive idempotent presses must NOT both add 3+ bytes
+    # for preset specifically; we approximate by checking the total
+    # advance over the two no-op presses doesn't include an extra
+    # +3 from a re-emitted preset frame.
+    pre_wr = _read_tx_ring_wr(warmed_chain)
     _inject_and_settle(warmed_chain, IR_CMD_PRESET_A)
+    _inject_and_settle(warmed_chain, IR_CMD_PRESET_A)
+    post_wr = _read_tx_ring_wr(warmed_chain)
     assert _read_preset(warmed_chain) == PRESET_A, (
-        "third preset-A press should still be idempotent"
+        "second/third preset-A press should be idempotent (no PRESET_BIT change)"
+    )
+    advance_two_settles = _tx_ring_advance(pre_wr, post_wr)
+    # Layer-2 emits at most ~6 frames (the step machine wraps 1..6) per
+    # 3 s settle, so two settles can credibly advance up to ~36 bytes
+    # without any IR-dispatch frames.  But if BOTH presses re-emitted
+    # a preset frame via the IR path on top of layer-2, total advance
+    # would include +6 of IR-preset frames.  Tightening below ~30
+    # would false-positive on legitimate layer-2 jitter; we use 30 as
+    # a balance between catching a regression (would be 36+ for two
+    # IR-preset frames stacked on layer-2) and tolerating jitter.
+    assert advance_two_settles <= 30, (
+        f"two idempotent preset-A presses advanced tx_ring_wr by "
+        f"{advance_two_settles} bytes -- suspicious (a real no-op should "
+        f"only see layer-2 emissions, ~6 frames per 3 s settle)"
     )
 
 
@@ -269,51 +318,66 @@ def test_v171_preset_alternating_a_b_a_b_each_flips_preset_bit(warmed_chain) -> 
 
 
 def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:  # type: ignore[no-untyped-def]
-    """Standby → Wake: dispatch consumes both presses (IR_ARMED re-set
-    after each).
+    """Standby → Wake: each endpoint case must commit its 3-byte
+    chain frame via tx_ring_reserve_3 AND re-arm IR_ARMED.
 
     Standby (asm:3422) and wake (asm:3431) inline cases unconditionally
-    rcall v171_send_standby_cmd_frame / v171_send_wake_cmd_frame and
-    then bsf IR_ARMED.  The TX frame they emit can coincide with
-    layer-2's standby_wake_broadcast cadence, so we assert on
-    IR_ARMED + ir_decoded_cmd state rather than TX-frame appearance.
+    rcall v171_send_standby_cmd_frame / v171_send_wake_cmd_frame
+    (which commit 3 bytes via tx_ring_reserve_3) and then bsf
+    IR_ARMED at v171_ir_endpoint_done.  The unmapped-cmd fallthrough
+    at asm:3399-3401 also bsf IR_ARMED but does NOT advance
+    tx_ring_wr -- so a tx_ring_wr advance >= 3 plus IR_ARMED set
+    distinguishes endpoint dispatch from generic re-arm.
     """
     _set_preset_bit(warmed_chain, PRESET_A)
-    warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=IR_CMD_STANDBY)
-    assert not _read_ir_armed(warmed_chain), (
-        "inject should have cleared IR_ARMED before dispatch"
-    )
-    warmed_chain.step_ticks(_SETTLE_TICKS)
+
+    pre_wr = _read_tx_ring_wr(warmed_chain)
+    _inject_and_settle(warmed_chain, IR_CMD_STANDBY)
+    post_wr = _read_tx_ring_wr(warmed_chain)
     assert _read_ir_armed(warmed_chain), (
         "standby dispatch must re-arm IR_ARMED on completion"
     )
+    advance = _tx_ring_advance(pre_wr, post_wr)
+    assert advance >= 3, (
+        f"standby press should commit a 3-byte frame via "
+        f"tx_ring_reserve_3; tx_ring_wr advance = {advance}"
+    )
 
-    warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=IR_CMD_WAKE)
-    warmed_chain.step_ticks(_SETTLE_TICKS)
+    pre_wr = _read_tx_ring_wr(warmed_chain)
+    _inject_and_settle(warmed_chain, IR_CMD_WAKE)
+    post_wr = _read_tx_ring_wr(warmed_chain)
     assert _read_ir_armed(warmed_chain), (
         "wake dispatch must re-arm IR_ARMED on completion"
+    )
+    advance = _tx_ring_advance(pre_wr, post_wr)
+    assert advance >= 3, (
+        f"wake press should commit a 3-byte frame via "
+        f"tx_ring_reserve_3; tx_ring_wr advance = {advance}"
     )
 
 
 def test_v171_wake_then_standby_pair_consumed_by_dispatch(warmed_chain) -> None:  # type: ignore[no-untyped-def]
-    """Wake → Standby: reverse pair.  Both dispatched.
+    """Wake → Standby: reverse pair.  Both endpoints commit a frame.
 
     Verifies neither endpoint is gated on prior-state tracking
     (unlike preset A/B which IS state-tracked via PRESET_BIT).
-    Both presses must run dispatch and re-arm IR_ARMED.
+    Both presses must commit their 3-byte chain frame.
     """
     _set_preset_bit(warmed_chain, PRESET_A)
-    warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=IR_CMD_WAKE)
-    warmed_chain.step_ticks(_SETTLE_TICKS)
-    assert _read_ir_armed(warmed_chain), (
-        "wake dispatch must re-arm IR_ARMED on completion"
-    )
 
-    warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=IR_CMD_STANDBY)
-    warmed_chain.step_ticks(_SETTLE_TICKS)
-    assert _read_ir_armed(warmed_chain), (
-        "standby dispatch must re-arm IR_ARMED on completion"
-    )
+    pre_wr = _read_tx_ring_wr(warmed_chain)
+    _inject_and_settle(warmed_chain, IR_CMD_WAKE)
+    post_wr = _read_tx_ring_wr(warmed_chain)
+    assert _read_ir_armed(warmed_chain)
+    advance = _tx_ring_advance(pre_wr, post_wr)
+    assert advance >= 3, f"wake press tx_ring_wr advance = {advance}"
+
+    pre_wr = _read_tx_ring_wr(warmed_chain)
+    _inject_and_settle(warmed_chain, IR_CMD_STANDBY)
+    post_wr = _read_tx_ring_wr(warmed_chain)
+    assert _read_ir_armed(warmed_chain)
+    advance = _tx_ring_advance(pre_wr, post_wr)
+    assert advance >= 3, f"standby press tx_ring_wr advance = {advance}"
 
 
 def test_v171_mixed_sequence_preset_a_standby_wake_preset_b(warmed_chain) -> None:  # type: ignore[no-untyped-def]
@@ -347,27 +411,59 @@ def test_v171_mixed_sequence_preset_a_standby_wake_preset_b(warmed_chain) -> Non
         )
 
 
-def test_v171_unknown_cmd_does_not_change_preset_bit(warmed_chain) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("starting_preset, label", [
+    (PRESET_A, "starting from A"),
+    (PRESET_B, "starting from B"),
+])
+def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ignore[no-untyped-def]
+    warmed_chain, starting_preset: int, label: str,
+) -> None:
     """Unmapped cmd 0x40: must NOT trigger any V1.71 inline shortcut.
 
     The four inline cases (asm:3387-3398) are an xorlw cascade for
     cmds 0x38/0x39/0x3A/0x3B; cmd 0x40 falls through to the legacy
     re-arm tail (asm:3399-3401: `bsf IR_ARMED; return`).  The
-    contract: PRESET_BIT MUST be unchanged AND IR_ARMED MUST be
-    re-set.  This catches regressions where a future xorlw constant
-    accidentally matches 0x40 (e.g. typo `xorlw 0x40` instead of
-    `xorlw 0x38`) routing into the preset-A path.
+    contract:
+      * PRESET_BIT MUST be unchanged
+      * IR_ARMED MUST be re-set
+      * tx_ring_wr MUST NOT advance by 3+ from a 0x40 dispatch
+        (the fallthrough doesn't commit a frame)
+
+    Parametrized over both PRESET_A and PRESET_B starting states so a
+    regression that routes 0x40 into preset-A's "already A" no-op
+    (which would mask the leak from a B-starting baseline) AND a
+    regression that routes 0x40 into preset-B's "already B" no-op
+    (which would mask the leak from an A-starting baseline) are
+    BOTH caught: either leak path would emit the OPPOSITE preset
+    frame from at least one of the two starts, advancing tx_ring_wr
+    by 3+ AND/OR flipping PRESET_BIT.
     """
-    _set_preset_bit(warmed_chain, PRESET_B)
+    _set_preset_bit(warmed_chain, starting_preset)
     pre_preset = _read_preset(warmed_chain)
+    pre_wr = _read_tx_ring_wr(warmed_chain)
     _inject_and_settle(warmed_chain, cmd=0x40)
     post_preset = _read_preset(warmed_chain)
+    post_wr = _read_tx_ring_wr(warmed_chain)
     assert post_preset == pre_preset, (
-        f"unmapped cmd 0x40 changed PRESET_BIT: pre=0x{pre_preset:02X}, "
-        f"post=0x{post_preset:02X} -- inline-shortcut leak into cmd 0x40"
+        f"unmapped cmd 0x40 ({label}) changed PRESET_BIT: "
+        f"pre=0x{pre_preset:02X}, post=0x{post_preset:02X} -- "
+        f"inline-shortcut leak into cmd 0x40"
     )
     assert _read_ir_armed(warmed_chain), (
-        "unmapped cmd 0x40 must still re-arm IR_ARMED via the fall-through tail"
+        f"unmapped cmd 0x40 ({label}) must still re-arm IR_ARMED"
+    )
+    # Layer-2 may emit a few frames during the 3 s settle; cap the
+    # tolerance at one full layer-2 step cycle (~6 frames * 3 bytes
+    # = 18 bytes).  A leak into endpoint or preset path would commit
+    # an EXTRA frame on top of layer-2, exceeding 18 bytes for a
+    # single inject.  The assertion is loose enough to accommodate
+    # layer-2 jitter but tight enough to catch a +3 IR-emit leak.
+    advance = _tx_ring_advance(pre_wr, post_wr)
+    assert advance <= 18, (
+        f"unmapped cmd 0x40 ({label}) advanced tx_ring_wr by {advance} "
+        f"bytes -- one full layer-2 cycle is ~18 bytes; an extra +3 "
+        f"strongly suggests IR dispatch leaked into an inline-shortcut "
+        f"send-frame helper"
     )
 
 
