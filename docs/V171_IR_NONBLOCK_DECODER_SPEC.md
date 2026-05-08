@@ -295,10 +295,12 @@ single test fails with timing-only assertions.
 1. **M1 (commit 4c88d81 / 6d983da / f7365bb):** spec corrected, no
    code change.
 2. **M2 (commit f4e25bd / 3da7145):** RAM equates + 3 routine bodies
-   (no callers).  Routines are unreachable in the current firmware
-   so existing tests still pass.  M2 fixed the carry-clobber bug in
-   the sample handler (codex MEDIUM vs f4e25bd) by switching to
-   FSR0-based addressing.
+   (no callers AT M2 LANDING TIME -- M3 wired them up).  M2 fixed
+   the carry-clobber bug in the sample handler (codex MEDIUM vs
+   f4e25bd) by switching to FSR0-based addressing.  Post-M3 the
+   routines are live: v171_ir_start_decode is rcall'd from the
+   RBIF path at asm:888, v171_ir_sample_handler is called from
+   the TMR1IF path at asm:861.
 3. **M3 LANDED (commit 86d88e0 + cleanup 00d4733):** wired the
    ISR + start_decode caller, removed the deferred-decode service
    call from display_loop_iteration.  Resolved during landing:
