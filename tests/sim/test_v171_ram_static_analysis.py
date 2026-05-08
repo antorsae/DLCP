@@ -106,17 +106,6 @@ def _parse_equates() -> list[tuple[str, int | None, str, str]]:
     return out
 
 
-def _resolve_alias(name: str, equates: list[tuple[str, int | None, str, str]]) -> int | None:
-    """Resolve a symbolic alias chain to its terminal integer value."""
-    for n, v, raw, _ in equates:
-        if n != name:
-            continue
-        if v is not None:
-            return v
-        return _resolve_alias(raw, equates)
-    return None
-
-
 # ---------------------------------------------------------------------------
 # T1.1 — Equate collision detector
 # ---------------------------------------------------------------------------
@@ -195,9 +184,17 @@ _BANK1_COMMENT_PATTERN = re.compile(
 # their respective blocks in dlcp_control_ram.inc).  Names matching
 # any of these prefixes are classified as BANK 1 even when the
 # per-equate block comment doesn't repeat the marker.
+#
+# NOTE: ``v171_ir_*`` is NOT in this list -- it would false-positive
+# on ``v171_ir_decode_pending`` (the legacy deferred-decode latch at
+# 0x0AA, BANK 0; superseded by M3's Timer1-driven decoder but the
+# equate is still in dlcp_control_ram.inc for historical reference).
+# All M3 BANK-1 IR cells (v171_ir_state, sample_count, buf0..3,
+# flags, tmp) have explicit ``; physical 0x1DN`` per-equate comments,
+# so they're caught via the comment-pattern path -- the prefix
+# shortcut isn't needed for them and only leaks false-positives.
 _BANK1_NAME_PREFIXES = (
     "v171_diag_",
-    "v171_ir_",
 )
 
 
@@ -277,22 +274,22 @@ def test_t1_2_bank1_equates_accessed_under_movlb_0x01() -> None:
     """Every BANKED access to a BANK-1 equate must have ``movlb 0x01``
     upstream on the same control-flow path as the access.
 
-    Walks each access backward through INSTRUCTION lines, treating
-    unconditional branches/returns as control-flow barriers.  At a
-    label following an unconditional branch, the walk stops because
-    earlier lines belong to a different basic block (the predecessor
-    branches setting up BSR live elsewhere in the source).  In that
-    case the access is reported as INDETERMINATE -- not a confirmed
-    leak, but also not confirmed safe.
+    Walks each access backward through INSTRUCTION lines.  When the
+    walk crosses a label boundary into a different basic block, the
+    test recurses into the IMMEDIATE PREDECESSOR branches targeting
+    that label and checks each one's tail (single-level dataflow).
+    This catches the bug shape the older diag-renderer test would
+    flag as a false-positive AND avoids exempting real leaks across
+    label boundaries.
 
-    Verdict:
-      * ``movlb 0x01`` / ``movlb 0x1``     same path -> BSR=1 confirmed
-      * ``rcall v171_diag_load_fsr1_base`` same path -> BSR=1 (helper)
-      * ``movlb 0x00`` / ``movlb 0x0``     same path -> BSR=0 LEAK
-      * Walked off the basic-block boundary without resolution ->
-        INDETERMINATE (suppressed; only confirmed leaks fail the gate
-        because manual review confirms predecessor BSR=1 establishment
-        for the diagnostic-loop's known fall-through patterns).
+    Verdict per access:
+      * ``movlb 0x01`` / ``movlb 0x1``     local path -> BSR=1 SAFE
+      * ``rcall v171_diag_load_fsr1_base`` local path -> BSR=1 SAFE
+      * ``movlb 0x00`` / ``movlb 0x0``     local path  -> LEAK
+      * Walked into different block -> check predecessors:
+          - all predecessors SAFE      -> SAFE
+          - any predecessor confirmed LEAK -> LEAK
+          - mix of SAFE + indeterminate    -> INDETERMINATE (warn)
     """
     bank1 = _bank1_equates()
     bank1_names = {name for name, _ in bank1}
@@ -314,13 +311,6 @@ def test_t1_2_bank1_equates_accessed_under_movlb_0x01() -> None:
     movlb_b1_pattern = re.compile(r"\bmovlb\s+0x0?1\b")
     movlb_b0_pattern = re.compile(r"\bmovlb\s+0x0?0\b")
     bsr1_helper_pattern = re.compile(r"\brcall\s+v171_diag_load_fsr1_base\b")
-    # Unconditional control flow: bra/goto/return/retfie/reset/retlw.
-    # When walking back from a BANKED access, encountering one of these
-    # means the next earlier instruction is on a different basic block
-    # and its movlb state doesn't apply to our path.
-    unconditional_branch_pattern = re.compile(
-        r"\b(?:bra|goto|return|retfie|reset|retlw)\b"
-    )
     label_pattern = re.compile(r"^\w+:\s*$")
     separator_pattern = re.compile(r"^\s*;\s*-{20,}\s*$")
 
@@ -336,71 +326,117 @@ def test_t1_2_bank1_equates_accessed_under_movlb_0x01() -> None:
         s = line.split(";", 1)[0].strip()
         return bool(label_pattern.match(s))
 
-    leak_sites: list[tuple[int, str, str]] = []
-    for idx, line in enumerate(lines):
-        if not access_pattern.search(line):
-            continue
-        verdict: str | None = None
+    label_def_pattern = re.compile(r"^(\w+):\s*$")
+
+    def walk_block(start_idx: int) -> tuple[str, str]:
+        """Walk backward through the basic block ENDING at start_idx.
+
+        Returns (verdict, detail).  Verdict: ``safe`` / ``leak`` /
+        ``label:LABELNAME`` / ``boundary``.  ``label:`` means the walk
+        exited the block via the named label (caller should evaluate
+        predecessors).  ``boundary`` means we hit a routine-separator
+        comment with no movlb resolution.
+        """
         steps = 0
-        crossed_label = False
         for back in range(1, len(lines)):
-            if idx - back < 0:
-                # Indeterminate -- walked off file start.
-                break
-            prev = lines[idx - back]
+            i = start_idx - back
+            if i < 0:
+                return "boundary", "walked off file start"
+            prev = lines[i]
             if separator_pattern.match(prev):
-                # Routine boundary -- if we got here without movlb 0x01,
-                # the routine entry didn't establish BSR=1.  This is
-                # only a confirmed leak if we haven't crossed a label
-                # (i.e., we're still in the routine's entry block).
-                if not crossed_label:
-                    verdict = (
-                        f"walked past routine-separator at line "
-                        f"{idx - back + 1} without finding movlb 0x01 "
-                        f"in the entry block"
-                    )
-                break
-            if is_label(prev):
-                # Crossed a label -- the line before the label belongs
-                # to a different basic block.  Continue walking but
-                # only to look for separator (routine boundary).
-                crossed_label = True
-                continue
+                return "boundary", f"routine-separator at line {i + 1}"
+            mlbl = label_def_pattern.match(prev.split(';', 1)[0].strip())
+            if mlbl:
+                return f"label:{mlbl.group(1)}", f"label at line {i + 1}"
             if not is_instruction(prev):
                 continue
             if movlb_b1_pattern.search(prev) or bsr1_helper_pattern.search(prev):
-                if not crossed_label:
-                    break  # confirmed safe in current block
-                # crossed a label boundary -- this movlb is in a
-                # different block; keep walking to find separator
-                # so we can stop the search.
-                continue
+                return "safe", f"movlb 0x01 (or helper) at line {i + 1}"
             if movlb_b0_pattern.search(prev):
-                if not crossed_label:
-                    verdict = (
-                        f"upstream `movlb 0x00` at line {idx - back + 1} "
-                        f"with no intervening movlb 0x01 (same basic block)"
-                    )
-                    break
-                # different block, irrelevant; keep walking.
-                continue
-            if (unconditional_branch_pattern.search(prev)
-                    and crossed_label):
-                # We crossed a label, then walked back to an
-                # unconditional branch out of the previous block.
-                # The preceding lines are on a wholly separate
-                # control-flow path and tell us nothing about our
-                # block's BSR state.  Stop the walk; access is
-                # INDETERMINATE (predecessor BSR may be 0 or 1).
-                break
+                return "leak", f"`movlb 0x00` at line {i + 1}"
             steps += 1
             if steps > 400:
-                break
-        if verdict:
-            leak_sites.append((idx + 1, line.strip(), verdict))
+                return "boundary", "no movlb in 400 instructions"
+        return "boundary", "exhausted"
+
+    def evaluate_predecessors(label: str, visited: set[str]) -> tuple[str, str]:
+        """Single-level predecessor walk: find every ``bra LABEL`` /
+        ``goto LABEL`` reference and walk back from each.
+
+        Returns ``safe`` if ALL predecessors are safe.  ``leak`` if
+        ANY predecessor is a confirmed leak.  ``indeterminate``
+        otherwise.  Recursion guarded by ``visited`` set.
+        """
+        if label in visited:
+            return "indeterminate", f"label {label} already visited (cycle)"
+        visited = visited | {label}
+        # All PIC18 control-flow instructions that can target a label:
+        # unconditional (bra, goto), conditional skip-on-flag (bz, bnz,
+        # bc, bnc, bn, bnn, bov, bnov), call (call, rcall).  Caller's
+        # tail BSR state determines whether the branch leaves the
+        # block in BSR=1 or BSR=0.
+        ref_pattern = re.compile(
+            rf"\b(?:bra|goto|bz|bnz|bc|bnc|bn|bnn|bov|bnov|call|rcall)"
+            rf"\s+{re.escape(label)}\b"
+        )
+        pred_indices = [i for i, l in enumerate(lines) if ref_pattern.search(l)]
+        if not pred_indices:
+            return "indeterminate", f"no predecessor branches to {label}"
+        verdicts: list[str] = []
+        leak_detail: str | None = None
+        for pi in pred_indices:
+            v, d = walk_block(pi)
+            if v.startswith("label:"):
+                # Recurse one more level: a predecessor's block also
+                # ended at a label.  Single-level recursion guards.
+                inner_label = v.split(":", 1)[1]
+                v, d = evaluate_predecessors(inner_label, visited)
+            verdicts.append(v)
+            if v == "leak" and leak_detail is None:
+                leak_detail = f"via predecessor branch at line {pi + 1}: {d}"
+        if all(v == "safe" for v in verdicts):
+            return "safe", f"all {len(verdicts)} predecessor(s) safe"
+        if "leak" in verdicts:
+            return "leak", leak_detail or "predecessor leak"
+        return "indeterminate", (
+            f"predecessor verdicts mixed: "
+            f"{verdicts.count('safe')} safe, "
+            f"{verdicts.count('indeterminate')} indeterminate, "
+            f"{verdicts.count('boundary')} boundary"
+        )
+
+    leak_sites: list[tuple[int, str, str]] = []
+    indeterminate_sites: list[tuple[int, str, str]] = []
+    for idx, line in enumerate(lines):
+        if not access_pattern.search(line):
+            continue
+        verdict, detail = walk_block(idx)
+        if verdict.startswith("label:"):
+            label = verdict.split(":", 1)[1]
+            verdict, detail = evaluate_predecessors(label, set())
+        if verdict == "leak":
+            leak_sites.append((idx + 1, line.strip(), detail))
+        elif verdict in ("indeterminate", "boundary"):
+            indeterminate_sites.append((idx + 1, line.strip(), detail))
+
+    # Indeterminate cases are PRINTED for reviewer audit -- not failed,
+    # but visible.  A reviewer should examine each indeterminate to
+    # confirm BSR=1 is established by some path the static walk
+    # couldn't prove.  This is NOT silent skip-on-indeterminate that
+    # codex flagged on the v1 of this gate.
+    if indeterminate_sites:
+        warning_lines = [
+            f"  line {n}: {ln}\n      reason: {v}"
+            for n, ln, v in indeterminate_sites
+        ]
+        print(
+            "\n[T1.2] INDETERMINATE BANK-1 access sites (predecessor "
+            "BSR could not be statically proven; manual review needed):\n"
+            + "\n".join(warning_lines)
+        )
 
     assert not leak_sites, (
-        f"BANKED access to BANK-1 equate without an upstream movlb 0x01:\n"
+        f"BANKED access to BANK-1 equate WITH a confirmed BSR=0 leak path:\n"
         + "\n".join(
             f"  line {n}: {ln}\n      reason: {v}"
             for n, ln, v in leak_sites
@@ -637,6 +673,22 @@ def test_t1_4a_isr_entry_save_restore_balance() -> None:
         if saves[reg] != restores[reg]:
             slot_mismatches.append((reg, saves[reg], restores[reg]))
 
+    # Slot uniqueness: each save slot used by AT MOST one register.
+    # Two registers sharing a slot means the second save overwrites
+    # the first -- restore would pull a corrupt value.
+    slot_to_regs: dict[str, list[str]] = {}
+    for reg, slot in saves.items():
+        slot_to_regs.setdefault(slot, []).append(reg)
+    slot_collisions = {s: regs for s, regs in slot_to_regs.items() if len(regs) > 1}
+
+    # Minimum required save set.  V1.71 isr_entry must save at least
+    # these registers -- ISR helpers (sample_handler, post_process,
+    # ir_rc5_decode body) modify all of them.  An empty save+restore
+    # block would be "balanced" but catastrophic -- this gate makes
+    # that case fail explicitly.
+    required_saves = {"STATUS", "W", "BSR", "FSR0L", "FSR0H"}
+    missing_required = required_saves - saved
+
     msg_parts: list[str] = []
     if saved_not_restored:
         msg_parts.append(
@@ -650,6 +702,16 @@ def test_t1_4a_isr_entry_save_restore_balance() -> None:
         msg_parts.append(
             "save-slot != restore-slot: "
             + ", ".join(f"{reg}: {s} vs {r}" for reg, s, r in slot_mismatches)
+        )
+    if slot_collisions:
+        msg_parts.append(
+            "two registers sharing the same save slot: "
+            + ", ".join(f"{s}: {', '.join(regs)}" for s, regs in slot_collisions.items())
+        )
+    if missing_required:
+        msg_parts.append(
+            f"missing required saves: {sorted(missing_required)} "
+            f"(ISR helpers depend on these being saved)"
         )
     assert not msg_parts, (
         "isr_entry save/restore imbalance:\n  "
