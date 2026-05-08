@@ -292,7 +292,15 @@ class HidDeviceInfo:
     serial_number: str
 
 
+# Sim-test override hook.  When set (by
+# ``dlcp_fw.flash.sim_backend.install_sim_hub``), ``enumerate_devices`` routes
+# through this callable instead of hidapi.  Default ``None`` -> real-USB path.
+_ENUMERATE_DEVICES_OVERRIDE = None
+
+
 def enumerate_devices(vid: int, pid: int) -> List[HidDeviceInfo]:
+    if _ENUMERATE_DEVICES_OVERRIDE is not None:
+        return _ENUMERATE_DEVICES_OVERRIDE(vid, pid)
     import hid
 
     out: List[HidDeviceInfo] = []

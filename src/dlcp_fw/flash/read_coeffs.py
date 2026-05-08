@@ -164,6 +164,13 @@ def _parse_diag_memread_response(resp: bytes, *, length: int) -> bytes:
     return bytes(resp[3 : 3 + length])
 
 
+# Sim-test override hook.  When set (by
+# ``dlcp_fw.flash.sim_backend.install_sim_hub``), ``HidMemoryReader``
+# constructs its underlying device handle via this callable instead of
+# hidapi.  Default ``None`` -> real-USB path.
+_OPEN_HID_OVERRIDE = None
+
+
 class HidMemoryReader:
     def __init__(
         self,
@@ -173,6 +180,12 @@ class HidMemoryReader:
     ) -> None:
         self._timeout_ms = timeout_ms
         self.info = info
+        if info.path is None:
+            raise RuntimeError("selected HID device has no path")
+        if _OPEN_HID_OVERRIDE is not None:
+            self._hid = None
+            self._dev = _OPEN_HID_OVERRIDE(info.path)
+            return
         try:
             import hid
         except ImportError as exc:
@@ -181,8 +194,6 @@ class HidMemoryReader:
             ) from exc
         self._hid = hid
         self._dev = hid.device()
-        if info.path is None:
-            raise RuntimeError("selected HID device has no path")
         self._dev.open_path(info.path)
         self._dev.set_nonblocking(False)
 

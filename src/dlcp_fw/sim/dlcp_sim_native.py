@@ -629,6 +629,32 @@ class Chain:
         """
         self._inner.write_control_eeprom_byte(int(addr) & 0xFF, int(value) & 0xFF)
 
+    def read_main_eeprom_byte(self, unit: int, addr: int) -> int:
+        """Read a single byte from one MAIN's EEPROM peripheral
+        at the given 8-bit address.  ``unit=0`` selects MAIN0
+        (PB1), ``unit=1`` selects MAIN1 (PB2).  Mirrors the
+        cmd 0x43 (DIAG_MEMREAD) region=1 path used by the
+        V3.2 release flasher to verify post-flash EEPROM
+        filename slots; consumed by the SimHidBackend HID
+        adapter (``dlcp_fw/flash/sim_backend.py``) when
+        routing flasher cmd 0x43 calls through the rust-sim
+        chain.
+        """
+        return int(self._inner.read_main_eeprom_byte(int(unit), int(addr) & 0xFF)) & 0xFF
+
+    def write_main_eeprom_byte(self, unit: int, addr: int, value: int) -> None:
+        """Seed one MAIN's EEPROM peripheral at the given
+        8-bit address.  ``unit=0`` selects MAIN0 (PB1),
+        ``unit=1`` selects MAIN1 (PB2).  Use this
+        immediately after ``Chain.from_v171_v32(...)`` and
+        BEFORE the first ``step_ticks`` call -- the
+        firmware reads EEPROM during early boot for boot
+        preset init, route shadow restore, etc.
+        """
+        self._inner.write_main_eeprom_byte(
+            int(unit), int(addr) & 0xFF, int(value) & 0xFF,
+        )
+
     def read_dsp_reg(self, subaddr: int) -> int:
         """Read a single TAS3108 DSP register at ``subaddr``.
 

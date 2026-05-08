@@ -491,7 +491,28 @@ def _pick_device(
     return devs[0]
 
 
+# Sim-test override hooks.  When set (by
+# ``dlcp_fw.flash.sim_backend.install_sim_hub``), the flasher's HID + EP0
+# transport calls route through these instead of hidapi / pyusb.  Default
+# ``None`` -> real-USB path.
+_OPEN_HID_OVERRIDE = None
+_DLCP_EP0_FACTORY_OVERRIDE = None
+
+
+def _make_dlcp_ep0(*, vid: int, pid: int, path: bytes | None = None, hid_info=None):
+    """Construct a ``DlcpEp0``-shaped object.  Routes through the sim
+    backend when ``_DLCP_EP0_FACTORY_OVERRIDE`` is installed; otherwise
+    uses the real ``DlcpEp0`` (pyusb)."""
+    if _DLCP_EP0_FACTORY_OVERRIDE is not None:
+        return _DLCP_EP0_FACTORY_OVERRIDE(
+            vid=vid, pid=pid, path=path, hid_info=hid_info,
+        )
+    return DlcpEp0(vid=vid, pid=pid, path=path, hid_info=hid_info)
+
+
 def _open_hid(path: bytes):
+    if _OPEN_HID_OVERRIDE is not None:
+        return _OPEN_HID_OVERRIDE(path)
     try:
         import hid
     except ImportError as exc:
@@ -817,7 +838,7 @@ def _describe_active_flags(flags: int) -> str:
 
 
 def _read_active_flags_ep0(*, vid: int, pid: int, path: bytes | None = None) -> int:
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     return _ep0_read_byte(ep0, addr=ACTIVE_FLAGS_ADDR)
 
 
@@ -834,7 +855,7 @@ def _request_active_preset_switch_ep0(
 ) -> dict[str, int]:
     if preset not in {"A", "B"}:
         raise ValueError(f"unsupported preset {preset!r}")
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     before = _ep0_read_byte(ep0, addr=ACTIVE_FLAGS_ADDR)
     target = before & (~ACTIVE_PRESET_MASK & 0xFF)
     if preset == "B":
@@ -902,7 +923,7 @@ def _apply_all_channel_mapping(
         raise ValueError(f"unsupported --all-ch value: {route_label!r}")
 
     expected = bytes([route_value] * ROUTE_LEN)
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
 
     for offset in range(ROUTE_LEN):
         _ep0_write_byte(ep0, addr=ROUTE_RAM_BASE + offset, value=route_value)
@@ -944,7 +965,7 @@ def _force_active_filename_persist(
     if poll_s <= 0:
         raise ValueError("poll_s must be > 0")
 
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     dirty = _ep0_read_byte(ep0, addr=ROUTE_DIRTY_FLAGS_ADDR)
     if (dirty & FILENAME_DIRTY_MASK) == 0:
         return False
@@ -969,7 +990,7 @@ def _probe_ep0_app_ram(
     pid: int,
     path: bytes | None = None,
 ) -> tuple[str, tuple[RouteEntry, ...]]:
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     route_raw = _read_ep0_window(ep0, start=ROUTE_RAM_BASE, size=ROUTE_LEN)
     filename_raw = _read_ep0_window(ep0, start=FILENAME_RAM_BASE, size=FILENAME_LEN)
     return decode_filename_slot(filename_raw), decode_route_entries(route_raw)
@@ -981,7 +1002,7 @@ def _probe_ep0_volume_state(
     pid: int,
     path: bytes | None = None,
 ) -> VolumeRuntimeInfo:
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     logical_raw = _read_ep0_window(ep0, start=LOGICAL_VOLUME_RAM_BASE, size=4)
     computed_raw = _read_ep0_window(ep0, start=COMPUTED_VOLUME_RAM_BASE, size=4)
     event_flags = _ep0_read_byte(ep0, addr=EVENT_FLAGS_ADDR)

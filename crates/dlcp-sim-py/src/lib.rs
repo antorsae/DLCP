@@ -1898,6 +1898,58 @@ impl Chain {
             .set_byte(addr, value);
     }
 
+    /// Read a single byte of one MAIN's EEPROM peripheral
+    /// at the given 8-bit address (MAIN EEPROM is 256
+    /// bytes per PIC18F2455 datasheet).  ``unit`` selects
+    /// MAIN0 (0) or MAIN1 (1); values 2..=255 raise
+    /// ``ValueError``.  Mirrors the cmd 0x43 (DIAG_MEMREAD)
+    /// region=1 path used by the V3.2 release flasher to
+    /// verify post-flash EEPROM filename slots after the
+    /// firmware-side persist completes.  Used by the
+    /// SimHidBackend HID adapter (``flash/sim_backend.py``)
+    /// when routing flasher cmd 0x43 calls through the
+    /// rust-sim chain instead of real USB.
+    fn read_main_eeprom_byte(&self, unit: u8, addr: u8) -> PyResult<u8> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "read_main_eeprom_byte: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        Ok(self.inner.cores[i_main]
+            .peripherals
+            .eeprom
+            .get_byte(addr))
+    }
+
+    /// Write a single byte to one MAIN's EEPROM peripheral
+    /// at the given 8-bit address.  ``unit`` selects MAIN0
+    /// (0) or MAIN1 (1); values 2..=255 raise ``ValueError``.
+    /// Mirrors :meth:`write_control_eeprom_byte` but for
+    /// MAIN.  Should be called AFTER chain construction
+    /// but BEFORE the first step / warmup; the firmware
+    /// reads EEPROM during early boot for boot preset
+    /// initialisation, route shadow restore, etc.
+    fn write_main_eeprom_byte(&mut self, unit: u8, addr: u8, value: u8) -> PyResult<()> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "write_main_eeprom_byte: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        self.inner.cores[i_main]
+            .peripherals
+            .eeprom
+            .set_byte(addr, value);
+        Ok(())
+    }
+
     /// Inject a 3-byte chain frame directly into CONTROL's
     /// RX ring buffer (V1.6b/V1.7/V1.71 layout: ring base
     /// at physical 0x066, parser-consumer index at 0x098,
