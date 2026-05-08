@@ -2630,6 +2630,160 @@ v171_service_pending_ir_decode_drop:
         clrf    v171_ir_decode_pending, BANKED
         return  0x0
 
+
+; ===========================================================================
+; V1.71 IR non-blocking decoder (task #152 / V171_IR_NONBLOCK_DECODER_SPEC.md)
+; ---------------------------------------------------------------------------
+; Replaces the broken deferred-decode design (bc61c70 / task #151).
+; State machine: IDLE → SAMPLING (32 Timer1 ticks at 889 µs) → DONE.
+; Sample handler reads RB5 once per Timer1 tick, accumulates Manchester
+; bits into a byte-indexed 4-byte buffer (buf0=samples 1-8, buf1=9-16,
+; buf2=17-24, buf3=25-32).  On completion, post-process copies the
+; buffer into (Common_RAM+16..19) at 0x010..0x013 and reuses the legacy
+; ir_rc5_decode body's Manchester pair-validation logic at
+; flow_ir_rc5_decode_025E (no further RB5 reads -- pure post-process).
+;
+; All state lives in BANK 1 (movlb 0x01); see RAM equates at
+; v171_ir_state in dlcp_control_ram.inc.  These routines are NOT
+; reachable yet from the ISR -- M2 commit lands the bodies for
+; structural review; M3 commit wires the ISR dispatch.
+; ===========================================================================
+
+; v171_ir_start_decode @ called from RBIF ISR after RB5=LOW falling edge
+; confirmed and IR_ARMED set.  Initializes state machine + arms Timer1
+; for the FIRST sample at 445 µs (mid-second-half of S1, where RB5 is
+; still LOW for bit '1' Manchester at the inverted-TSOP convention the
+; firmware expects).  PRESERVES W (callable from ISR mid-stream).
+v171_ir_start_decode:
+        movlb   0x1
+        clrf    v171_ir_buf0, BANKED
+        clrf    v171_ir_buf1, BANKED
+        clrf    v171_ir_buf2, BANKED
+        clrf    v171_ir_buf3, BANKED
+        clrf    v171_ir_sample_count, BANKED
+        clrf    v171_ir_flags, BANKED
+        movlw   0x01                                ; SAMPLING state
+        movwf   v171_ir_state, BANKED
+        ; Arm Timer1 for 445 µs first sample.  T1CON=0x81 = TMR1ON +
+        ; RD16 (16-bit writes via TMR1H buffer).  In RD16 mode, the
+        ; TMR1H write goes to a buffer; the TMR1L write triggers
+        ; atomic 16-bit load of the counter.  Clear PIR1.TMR1IF
+        ; first so a stale flag doesn't fire immediately.
+        movlw   V171_IR_TMR1_FIRST_HI
+        movwf   TMR1H, A
+        movlw   V171_IR_TMR1_FIRST_LO
+        movwf   TMR1L, A
+        bcf     PIR1, TMR1IF, A
+        bsf     PIE1, TMR1IE, A
+        movlw   0x81                                ; TMR1ON + RD16
+        movwf   T1CON, A
+        return  0x0
+
+
+; v171_ir_sample_handler @ called from Timer1 ISR (TMR1IF set).
+; Reads PORTB.RB5, shifts the resulting Manchester bit into the buffer
+; byte indexed by sample_count >> 3, increments sample_count.  If
+; sample_count >= 32, transitions to DONE (calls v171_ir_post_process).
+; Otherwise reloads TMR1 with full-period preload (0xF595) for the next
+; 889 µs sample.
+v171_ir_sample_handler:
+        movlb   0x1
+        ; Compute Manchester bit value (matches legacy decoder polarity
+        ; at asm:573-576: C=1 by default, btfsc PORTB.RB5 (skip clear
+        ; if RB5 LOW), bcf C → C=0 if RB5 HIGH).
+        bsf     STATUS, C, A
+        btfsc   PORTB, RB5, A
+        bcf     STATUS, C, A
+        ; Determine target buffer byte: byte_index = sample_count >> 3.
+        ; sample_count is 0..31 across SAMPLING; sample 0 goes into buf0,
+        ; sample 8 into buf1, sample 16 into buf2, sample 24 into buf3.
+        movf    v171_ir_sample_count, W, BANKED
+        rrncf   WREG, W, A                          ; W = count >> 1
+        rrncf   WREG, W, A                          ; W = count >> 2
+        rrncf   WREG, W, A                          ; W = count >> 3
+        andlw   0x03                                ; mask byte_index 0..3
+        ; Branch to the right buf shift based on byte_index.
+        bz      v171_ir_sample_shift_buf0
+        addlw   0xFF                                ; W = byte_index - 1
+        bz      v171_ir_sample_shift_buf1
+        addlw   0xFF                                ; W = byte_index - 2
+        bz      v171_ir_sample_shift_buf2
+        ; byte_index == 3
+        rlcf    v171_ir_buf3, F, BANKED
+        bra     v171_ir_sample_advance
+
+v171_ir_sample_shift_buf0:
+        rlcf    v171_ir_buf0, F, BANKED
+        bra     v171_ir_sample_advance
+
+v171_ir_sample_shift_buf1:
+        rlcf    v171_ir_buf1, F, BANKED
+        bra     v171_ir_sample_advance
+
+v171_ir_sample_shift_buf2:
+        rlcf    v171_ir_buf2, F, BANKED
+        ; fall through
+
+v171_ir_sample_advance:
+        incf    v171_ir_sample_count, F, BANKED
+        ; Check if we've collected all 32 samples.
+        movlw   V171_IR_TOTAL_SAMPLES
+        cpfslt  v171_ir_sample_count, BANKED
+        bra     v171_ir_decode_done
+        ; Reload TMR1 for next 889 µs sample.  RD16 buffered write:
+        ; TMR1H first, then TMR1L triggers atomic 16-bit load.
+        movlw   V171_IR_TMR1_FULL_HI
+        movwf   TMR1H, A
+        movlw   V171_IR_TMR1_FULL_LO
+        movwf   TMR1L, A
+        return  0x0
+
+; v171_ir_decode_done @ tail-call from sample_handler when 32 samples
+; collected.  Disables Timer1, calls v171_ir_post_process to extract
+; addr/cmd from the buffer, clears IR_ARMED, returns to IDLE state.
+v171_ir_decode_done:
+        bcf     T1CON, TMR1ON, A
+        bcf     PIE1, TMR1IE, A
+        bcf     PIR1, TMR1IF, A
+        rcall   v171_ir_post_process
+        movlb   0x1
+        clrf    v171_ir_state, BANKED
+        clrf    v171_ir_sample_count, BANKED
+        bcf     control_flags, IR_ARMED, A
+        return  0x0
+
+
+; v171_ir_post_process @ Manchester pair validation + addr/cmd extraction.
+; Copies buf0..buf3 (BANK 1) into (Common_RAM+16)..(Common_RAM+19) at
+; physical 0x010..0x013, then jumps into the legacy decoder's
+; post-process path at flow_ir_rc5_decode_025E.  That path is pure
+; post-process (no further RB5 reads, codex-confirmed asm:587+).  It
+; walks the 32-sample buffer through control_core_service_02EE for
+; Manchester pair validation and writes the decoded address into
+; (Common_RAM+13) and returns the decoded command in W -- caller writes
+; both to ir_decoded_cmd / ir_decoded_addr.
+v171_ir_post_process:
+        movlb   0x1
+        movff   v171_ir_buf0, (Common_RAM + 16)
+        movff   v171_ir_buf1, (Common_RAM + 17)
+        movff   v171_ir_buf2, (Common_RAM + 18)
+        movff   v171_ir_buf3, (Common_RAM + 19)
+        movlb   0x0
+        ; Call the legacy post-process.  flow_ir_rc5_decode_025E sets
+        ; up its own FSR0 = 0x010 (the buffer base, which we just
+        ; populated) and clears its scratch (Common_RAM+5/+20/+14/+13/
+        ; +12) at entry.  No further RB5 reads -- pure post-process
+        ; via control_core_service_02EE for Manchester pair validation
+        ; (codex-confirmed asm:600,609,632,657).  On return, W holds
+        ; decoded command and (Common_RAM+13) holds decoded address;
+        ; mirrors the legacy ir_rc5_decode return contract used by
+        ; the original ISR caller at asm:828-830.
+        call    flow_ir_rc5_decode_025E, 0x0
+        movwf   ir_decoded_cmd, A
+        movff   (Common_RAM + 13), ir_decoded_addr
+        return  0x0
+
+
 v171_service_rx_frame_gap:
         ; Foreground parser-stall guard.  Keep the parser front-end untouched
         ; and watch for a non-empty frame state that stops receiving bytes.
@@ -6245,7 +6399,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x0F                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x11                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

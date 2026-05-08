@@ -431,3 +431,51 @@ v171_diag_render_abnormal   equ  0x0D4   ; non-zero non-POR cells (0..10)
 ; full query/reply round-trip before the next cadence expires.
 V171_DIAG_POLL_RELOAD_LO   equ  0x80
 V171_DIAG_POLL_RELOAD_HI   equ  0x00
+
+; ---------------------------------------------------------------------------
+; V1.71 IR non-blocking decoder state (task #152 / V171_IR_NONBLOCK_DECODER_SPEC.md)
+; ---------------------------------------------------------------------------
+; Replaces the broken deferred-decode design (bc61c70 / task #151).
+; Timer1 ISR samples RB5 every 889 µs into a 4-byte byte-indexed
+; buffer; on completion calls v171_ir_post_process which reuses the
+; legacy ir_rc5_decode body's Manchester pair-validation logic.
+;
+; All cells live in BANK 1.  EQU values are BANKED-form 8-bit
+; operands; callers MUST `movlb 0x01` before any access.  A missing
+; movlb 0x01 here would land at PHYSICAL 0x0D5..0x0DC (BANK 0)
+; which is INSIDE the saved-channel-source array (0x0CD..0x0E4 at
+; bank-0 -- accessed via lfsr 0x0, 0x0d9 etc.) -- silent corruption.
+;
+; Test gate test_v171_ir_decoder_movlb_discipline_before_banked_writes
+; pins the discipline (mirrors the V1.71 diag-renderer's collision
+; test pattern at v171_diag_render_pb_index above).
+;
+; Why bank-1 0x1D5..0x1DC: codex review of the V171_IR_NONBLOCK_DECODER
+; spec (2026-05-09) confirmed this is the next free bank-1 region
+; after the diag renderer at 0x1CD..0x1D4.  The sister bank-0 cells
+; at 0x0D5..0x0DC are part of the saved-channel-source array (live;
+; clobbered would break input_select / volume_save_settings).
+v171_ir_state              equ  0x0D5   ; physical 0x1D5; 0=IDLE, 1=SAMPLING, 2=DONE
+v171_ir_sample_count       equ  0x0D6   ; physical 0x1D6; 0..32 across SAMPLING
+v171_ir_buf0               equ  0x0D7   ; physical 0x1D7; samples 1..8
+v171_ir_buf1               equ  0x0D8   ; physical 0x1D8; samples 9..16
+v171_ir_buf2               equ  0x0D9   ; physical 0x1D9; samples 17..24
+v171_ir_buf3               equ  0x0DA   ; physical 0x1DA; samples 25..32
+v171_ir_flags              equ  0x0DB   ; physical 0x1DB; reserved for state
+v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample handler
+
+; Timer1 preload values (codex-validated 2026-05-09).  PIC18F25K20
+; Fcy = 3 MHz, Tcy = 333.3 ns.  Internal Fcy/4 clock, prescaler /1.
+;
+; 889 µs full Manchester half-bit = 2667 Tcy → preload = 0xFFFF - 2667
+; + 1 = 0xF595.  16-bit Timer1 mode (T1CON=0x81, RD16=1) writes TMR1H
+; first then TMR1L.
+;
+; 445 µs first-sample (mid-half-bit, lands on the LOW second-half of
+; S1 since the falling edge fired ~half-bit before sampling starts):
+; 1335 Tcy → preload = 0xFAC9.
+V171_IR_TMR1_FULL_HI       equ  0xF5    ; 0xF595 high byte (889 µs)
+V171_IR_TMR1_FULL_LO       equ  0x95    ; 0xF595 low byte
+V171_IR_TMR1_FIRST_HI      equ  0xFA    ; 0xFAC9 high byte (445 µs)
+V171_IR_TMR1_FIRST_LO      equ  0xC9    ; 0xFAC9 low byte
+V171_IR_TOTAL_SAMPLES      equ  0x20    ; 32 samples per RC5 frame

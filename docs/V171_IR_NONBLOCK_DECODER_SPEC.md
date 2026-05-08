@@ -191,7 +191,8 @@ state=1. Returns to ISR.
 
 #### `v171_ir_sample_handler` (~25 instructions)
 
-Reads RB5, shifts into buf chain, increments sample_count. If
+Reads RB5, shifts into ``buf[sample_count >> 3]`` (byte-indexed),
+increments sample_count. If
 count >= 32, transitions to DONE (calls post_process); else reloads
 TMR1 with 889 µs preload.
 
