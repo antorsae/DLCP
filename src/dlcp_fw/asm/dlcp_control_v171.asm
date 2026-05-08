@@ -823,7 +823,7 @@ flow_app_cold_init_03DE:                                                  ; addr
 flow_app_cold_init_03F6:                                                  ; address: 0x0003f6
 
         btfss   PIR1, RCIF, A                               ; reg: 0xf9e, bit: 5
-        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
+        goto    v171_isr_check_tmr1                                       ; M3 task #152: TMR1IF gate
         lfsr    0x0, 0x066
         movf    0x99, W, B                                  ; reg: 0x099
         movff   RCREG, PLUSW0                               ; reg1: 0xfae, reg2: 0xfeb
@@ -840,13 +840,26 @@ flow_app_cold_init_040C:                                                  ; addr
         ; software write pointer if this byte would overwrite unread data.
         movf    0x99, W, B                                  ; reg: 0x099
         cpfseq  0x98, B                                     ; reg: 0x098
-        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
+        goto    v171_isr_check_tmr1                                       ; M3: route through TMR1IF
         decf    0x99, F, B                                  ; reg: 0x099
         movlw   0xff
         cpfseq  0x99, B                                     ; reg: 0x099
-        goto    flow_app_cold_init_0414                                   ; dest: 0x000414
+        goto    v171_isr_check_tmr1                                       ; M3: route through TMR1IF
         movlw   0x2f
         movwf   0x99, B                                     ; reg: 0x099
+
+v171_isr_check_tmr1:                                                  ; M3 task #152
+        ; V1.71 task #152 (M3): TMR1IF check.  Timer1 fires every
+        ; ~890 µs during IR SAMPLING state to clock the non-blocking
+        ; RC5 decoder.  call v171_ir_sample_handler reads RB5,
+        ; shifts a Manchester bit into the buffer, advances state,
+        ; and reloads TMR1.  When the 32nd sample is collected, the
+        ; sample handler tail-calls v171_ir_decode_done which writes
+        ; ir_decoded_cmd / ir_decoded_addr and clears IR_ARMED.
+        btfss   PIR1, TMR1IF, A
+        goto    flow_app_cold_init_0414
+        call    v171_ir_sample_handler, 0x0
+        bcf     PIR1, TMR1IF, A
 
 flow_app_cold_init_0414:                                                  ; address: 0x000414
 
@@ -858,7 +871,21 @@ flow_app_cold_init_0414:                                                  ; addr
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         btfss   control_flags, 0x0, A                   ; reg: 0x01f
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
-        setf    v171_ir_decode_pending, BANKED            ; deferred foreground service
+        ; V1.71 task #152 (M3): RB5=LOW gate.  Only arm the Timer1-
+        ; driven decoder if RB5 is currently LOW -- the falling-edge
+        ; phase the decoder needs.  RBIF can fire on RB7:RB4
+        ; transitions (panel buttons too); without this gate, a
+        ; rising-edge would try to arm the decoder mid-frame.
+        btfsc   PORTB, RB5, A
+        goto    flow_app_cold_init_0434
+        ; Don't re-arm if Timer1 is already running (state != IDLE).
+        ; Mid-sample RBIF events are expected (every Manchester
+        ; transition is an RB5 IOC); ignore them while sampling.
+        movlb   0x1
+        movf    v171_ir_state, F, BANKED
+        bnz     flow_app_cold_init_0434
+        ; Falling edge + IR_ARMED + state IDLE: kick the decoder.
+        call    v171_ir_start_decode, 0x0
 
 flow_app_cold_init_0434:                                                  ; address: 0x000434
 
@@ -2765,11 +2792,18 @@ v171_ir_decode_done:
 ; (Common_RAM+13) and returns the decoded command in W -- caller writes
 ; both to ir_decoded_cmd / ir_decoded_addr.
 v171_ir_post_process:
-        movlb   0x1
-        movff   v171_ir_buf0, (Common_RAM + 16)
-        movff   v171_ir_buf1, (Common_RAM + 17)
-        movff   v171_ir_buf2, (Common_RAM + 18)
-        movff   v171_ir_buf3, (Common_RAM + 19)
+        ; Copy BANK 1 buf0..buf3 (physical 0x1D7..0x1DA) into Common_RAM+
+        ; 16..19 (physical 0x010..0x013).  CRITICAL: cannot use ``movff
+        ; v171_ir_buf0, dest`` because movff takes a FULL 12-bit literal
+        ; address; ``v171_ir_buf0`` evaluates to 0x0D7 which movff would
+        ; interpret as physical 0x0D7 (BANK 0, channel-source array)
+        ; -- NOT the BANK 1 cell at 0x1D7.  Use lfsr + POSTINC instead.
+        lfsr    0x0, 0x1D7                          ; FSR0 = bank-1 buf0
+        lfsr    0x1, 0x010                          ; FSR1 = Common_RAM+16
+        movff   POSTINC0, POSTINC1                  ; buf0 -> 0x010
+        movff   POSTINC0, POSTINC1                  ; buf1 -> 0x011
+        movff   POSTINC0, POSTINC1                  ; buf2 -> 0x012
+        movff   POSTINC0, POSTINC1                  ; buf3 -> 0x013
         movlb   0x0
         ; Call the legacy post-process.  flow_ir_rc5_decode_025E sets
         ; up its own FSR0 = 0x010 (the buffer base, which we just
@@ -2919,7 +2953,10 @@ display_loop_iteration:                                               ; address:
 flow_display_loop_iteration_0CB4:                                                  ; address: 0x000cb4
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
-        call    v171_service_pending_ir_decode, 0x0                 ; deferred RC5 decode
+        ; V1.71 task #152 (M3): legacy deferred-decode foreground
+        ; service is removed.  IR decoding now runs entirely from the
+        ; Timer1 ISR via v171_ir_sample_handler -- no foreground
+        ; involvement.  See V171_IR_NONBLOCK_DECODER_SPEC.md.
         movlb   0x00
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0                     ; legacy-link parser stall guard
@@ -6401,7 +6438,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x12                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x13                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

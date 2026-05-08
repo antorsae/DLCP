@@ -464,18 +464,39 @@ v171_ir_buf3               equ  0x0DA   ; physical 0x1DA; samples 25..32
 v171_ir_flags              equ  0x0DB   ; physical 0x1DB; reserved for state
 v171_ir_tmp                equ  0x0DC   ; physical 0x1DC; scratch within sample handler
 
-; Timer1 preload values (codex-validated 2026-05-09).  PIC18F25K20
+; Timer1 preload values (rust-sim-instrumented 2026-05-08 against the
+; V1.6b stock decoder via /tmp/v16b_ir_timing_probe2.py).  PIC18F25K20
 ; Fcy = 3 MHz, Tcy = 333.3 ns.  Internal Fcy/4 clock, prescaler /1.
 ;
-; 889 µs full Manchester half-bit = 2667 Tcy → preload = 0xFFFF - 2667
-; + 1 = 0xF595.  16-bit Timer1 mode (T1CON=0x81, RD16=1) writes TMR1H
-; first then TMR1L.
+; INSTRUMENTATION RESULTS (V1.6b stock at PC=0x24C, 18 samples
+; captured before max-iter cap):
+;   * Inter-sample interval: 2674 Tcy = 890.4 µs (matches Manchester
+;     half-bit within ±1 Tcy jitter).
+;   * First sample at 4040 Tcy = 1345 µs after RB5 falling edge, =
+;     mid of S2 first half -- legacy SKIPS S1 entirely (S1 is always
+;     '1' frame sentinel; the entry-LOW check at PC=0x232 already
+;     confirms RB5 was LOW at ISR entry = S1 second half).
+;   * Decoder header (W=0xBA delay): 1332 Tcy = 444 µs, exactly half
+;     a Manchester half-bit.
+;   * ISR entry latency: 41 Tcy.
 ;
-; 445 µs first-sample (mid-half-bit, lands on the LOW second-half of
-; S1 since the falling edge fired ~half-bit before sampling starts):
-; 1335 Tcy → preload = 0xFAC9.
-V171_IR_TMR1_FULL_HI       equ  0xF5    ; 0xF595 high byte (889 µs)
+; PRELOAD VALUES (V1.71-tuned to match V1.6b sample phase):
+;
+; Full period 0xF595: 0xFFFF - 0xF595 + 1 = 2667 Tcy.  Slightly under
+; legacy's 2674 Tcy (-7 Tcy = ~2 µs / sample), within ±1 Tcy jitter.
+; Tighter match would use 0xF592 (2670 Tcy) but the Timer1-overflow-
+; to-sample-handler-btfsc overhead in V1.71 (~7 Tcy) adds back to
+; ~2674 effective.
+;
+; First-sample 0xF0BC: 0xFFFF - 0xF0BC + 1 = 3908 Tcy = 1303 µs.
+; Targets first sample at falling_edge + 1303 + (ISR header + start_
+; decode body + sample_handler-to-btfsc overhead ~125 Tcy = ~42 µs)
+; = falling_edge + 1345 µs.  This positions first sample at mid of
+; S2 first half -- matching V1.6b's measured 4040 Tcy first-sample
+; offset.  Will need empirical calibration during M3 next-attempt
+; (build, run pulse train, dump first-sample cycle, adjust).
+V171_IR_TMR1_FULL_HI       equ  0xF5    ; 0xF595 high byte (~890 µs)
 V171_IR_TMR1_FULL_LO       equ  0x95    ; 0xF595 low byte
-V171_IR_TMR1_FIRST_HI      equ  0xFA    ; 0xFAC9 high byte (445 µs)
-V171_IR_TMR1_FIRST_LO      equ  0xC9    ; 0xFAC9 low byte
+V171_IR_TMR1_FIRST_HI      equ  0xF0    ; 0xF0BC high byte (~1303 µs)
+V171_IR_TMR1_FIRST_LO      equ  0xBC    ; 0xF0BC low byte
 V171_IR_TOTAL_SAMPLES      equ  0x20    ; 32 samples per RC5 frame

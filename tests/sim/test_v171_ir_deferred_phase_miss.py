@@ -176,81 +176,75 @@ def _run_phase_miss_setup(chain) -> dict:  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.dual_supported
-def test_v171_deferred_decode_aborts_when_foreground_misses_low_window(v171_hex: Path) -> None:
-    """Deterministic phase-miss reproducer.
+def test_v171_no_deferred_decode_pending_byte_is_unused(v171_hex: Path) -> None:
+    """Pin that V1.71 has NO deferred-decode foreground service.
 
-    Pins the V1.71 deferred-decode BUG (introduced bc61c70): when
-    foreground reaches ``ir_rc5_decode`` AFTER the RB5-LOW half-bit
-    window has elapsed, the decoder aborts to 0xFF and the IR press
-    is silently dropped.  This is the user-reported real-HW failure
-    mode (2026-05-09).
+    History: commit ``bc61c70`` introduced a foreground service
+    ``v171_service_pending_ir_decode`` that consumed RAM 0x0AA
+    (``v171_ir_decode_pending``) on each ``display_loop_iteration``
+    pass.  That design caused the user-reported real-HW IR failure
+    (task #151) because the foreground entered ``ir_rc5_decode`` at
+    a phase where RB5 was HIGH, and the decoder aborted to 0xFF.
 
-    Sequence:
-      1. Build chain at idle (RB5 HIGH).
-      2. Force IR_ARMED set + clear ``ir_decoded_cmd``/``ir_decoded_addr``.
-      3. Manually inject ``v171_ir_decode_pending = 0xFF`` (bypasses
-         the ISR-latch question; equivalent to "ISR ran a moment ago
-         and latched pending while RB5 was LOW").
-      4. Leave RB5 HIGH (simulating foreground entry occurring AFTER
-         the LOW half-bit window has ended -- the realistic
-         real-HW timing when foreground was busy with eeprom_write_byte
-         / LCD update / etc).
-      5. Step ~5 ms sim time so foreground enters
-         ``v171_service_pending_ir_decode`` -> ``ir_rc5_decode``.
-      6. Assert: decoder aborted (cmd=0xFF, addr=0xFF, pending cleared).
+    Task #152 (M3) replaced the deferred design with a non-blocking
+    Timer1-driven sample state machine.  The foreground service is
+    GONE; RAM 0x0AA is now unused.
 
-    **This test PASSES today (bug present).  When the firmware is
-    fixed -- by reverting bc61c70's deferral, by rewriting the
-    decoder as non-blocking, or by gating pending-latch on RB5=LOW
-    in the ISR -- this test will FAIL.  That failure flags the bug
-    as fixed and the test should be either deleted or rewritten to
-    pin the new (correct) behavior.**
+    This test pins the new behavior: poking pending=0xFF (the legacy
+    interface) is a NO-OP -- nothing reads or modifies the byte.
+    No abort writes, no decoder invocation, no ir_decoded_cmd/addr
+    change.  If this test ever starts FAILING (cmd!=0x00 or
+    pending!=0xFF after step), it means the deferred-decode design
+    has been re-introduced -- regression.
+
+    Pre-fix this test FAILED (it asserted the bug-present behavior:
+    cmd=0xFF, addr=0xFF after foreground decoded the poked pending
+    flag with RB5 HIGH).  Post-fix the assertions are inverted to
+    pin the no-foreground-service contract.
     """
     _require_rust()
     chain = _build_warmed_chain(v171_hex)
     result = _run_phase_miss_setup(chain)
 
     print(
-        f"\nV1.71 deferred-decode phase-miss outcome:\n"
+        f"\nV1.71 post-M3 (deferred-decode service removed):\n"
         f"  pre:  pending=0x{result['pre_pending']:02X} "
         f"flags=0x{result['pre_flags']:02X}\n"
-        f"  inject: pending=0xFF, IR_ARMED set, RB5=HIGH "
-        f"(foreground will reach decoder with RB5 already HIGH)\n"
+        f"  inject: pending=0xFF, IR_ARMED set, RB5=HIGH\n"
         f"  post: cmd=0x{result['post_cmd']:02X} "
         f"addr=0x{result['post_addr']:02X} "
         f"pending=0x{result['post_pending']:02X} "
         f"flags=0x{result['post_flags']:02X}\n"
-        f"  expected (decoder aborted -> bug present):\n"
-        f"    cmd=0xFF, addr=0xFF, pending=0x00\n"
-        f"    (IR_ARMED is re-armed by inline dispatch -- not asserted)\n"
+        f"  expected (no foreground service for 0x0AA -> no-op):\n"
+        f"    cmd=0x00 (pre-cleared, stayed)\n"
+        f"    addr=0x00\n"
+        f"    pending=0xFF (V1.71 doesn't consume 0x0AA after M3)\n"
     )
 
-    # Bug-present assertions.  Currently PASSING (bug is there).
-    # When firmware is fixed (decoder no longer aborts), post_cmd
-    # will be the actual decoded value or stay at the pre-clear 0x00,
-    # this assertion will FAIL, and the failure will flag the fix.
-    # The test should then be deleted or rewritten to pin the new
-    # (correct) behavior.
-    assert result["post_cmd"] == 0xFF, (
-        f"V1.71 deferred decode SHOULD have aborted to 0xFF (bug "
-        f"present); got cmd=0x{result['post_cmd']:02X}.  If this "
-        f"assertion failed, the firmware fix is in -- delete or "
-        f"rewrite this test to pin the new behavior."
+    # Post-M3 assertions: the deferred-decode pending byte is now
+    # unused.  Poking it has no effect on cmd/addr/pending.
+    # If any of these flip, the deferred-decode design has been
+    # re-introduced (regression).
+    assert result["post_cmd"] != 0xFF, (
+        f"V1.71 post-M3 should NOT abort decoder via the legacy "
+        f"foreground path; got cmd=0xFF.  If this fails, the "
+        f"deferred-decode service has been re-introduced -- "
+        f"regression on task #152's M3 fix."
     )
-    assert result["post_addr"] == 0xFF, (
-        f"V1.71 deferred decode SHOULD have aborted (addr=0xFF); "
+    assert result["post_cmd"] == 0x00, (
+        f"V1.71 post-M3 should leave ir_decoded_cmd at the pre-"
+        f"cleared 0x00 (no decoder ran from the legacy path).  "
+        f"Got cmd=0x{result['post_cmd']:02X}."
+    )
+    assert result["post_addr"] == 0x00, (
+        f"V1.71 post-M3 should leave ir_decoded_addr at 0x00; "
         f"got addr=0x{result['post_addr']:02X}."
     )
-    # NB: IR_ARMED gets RE-ARMED by the V1.71 inline dispatch at the
-    # end of control_core_service_0DCE (asm:3157, 3188, 3207, 3227)
-    # AFTER the cmd-0xFF lookup falls through.  So IR_ARMED is not a
-    # reliable signal of "abort happened" -- cmd/addr=0xFF are.  We
-    # don't assert on IR_ARMED here.
-    assert result["post_pending"] == 0, (
-        f"V1.71 deferred service SHOULD have cleared pending after "
-        f"calling ir_rc5_decode; got pending="
-        f"0x{result['post_pending']:02X}.  (If pending stays 0xFF, "
-        f"the foreground service didn't run."
+    assert result["post_pending"] == 0xFF, (
+        f"V1.71 post-M3 should NOT touch RAM 0x0AA (no foreground "
+        f"service consumes it).  Got pending="
+        f"0x{result['post_pending']:02X}; if cleared, the deferred-"
+        f"decode service is back -- regression."
     )
 
 
