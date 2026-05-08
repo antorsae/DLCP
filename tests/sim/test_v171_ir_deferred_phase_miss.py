@@ -19,8 +19,12 @@ later time depending on:
 
 If the foreground reaches ``ir_rc5_decode`` AFTER the falling-edge's
 LOW half-bit window has ended (i.e. RB5 has flipped HIGH for the next
-half-bit), the decoder aborts at line 556, returns 0xFF, and clears
-IR_ARMED.
+half-bit), the decoder aborts at line 556 and returns 0xFF (and
+0xFF in (Common_RAM+13)) -- the IR press is silently dropped.  The
+foreground service clears IR_ARMED after the call (asm:2626), but
+the V1.71 inline dispatch RE-ARMS it (asm:3157, 3188, 3207, 3227)
+after the cmd-0xFF lookup falls through, so IR_ARMED is not a
+durable signal of "abort happened" -- only cmd/addr=0xFF are.
 
 The existing ``test_v171_ir_rc5_pulse_train.py`` does NOT catch this
 because:
