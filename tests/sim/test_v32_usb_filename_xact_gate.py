@@ -196,26 +196,34 @@ def test_v32_cmd03_write_handler_sets_bit6_alongside_bit5() -> None:
 
 
 def test_v32_force_persist_clears_bit6_after_preset_persist_filename() -> None:
-    """main_core_service_265c (the event_flags.0 dispatcher; the path
-    force_persist USB trigger ultimately reaches) must clear bit6
-    after `call preset_persist_filename` returns -- otherwise the
-    gate stays set forever and the device is stuck."""
+    """main_core_service_265c (the event_flags.0 dispatcher; the
+    force_persist USB trigger ultimately reaches it) must clear bit6
+    on EVERY invocation regardless of whether bit5 was set when this
+    dispatcher ran.  bit5 may have already been cleared by
+    preset_job_pending's persist branch before main_core_service_265c
+    is reached -- if bit6 clearing is gated on bit5, the gate stays
+    set forever and the device locks out preset switches (codex
+    MEDIUM vs f3b25d6).  The bit6 clear must therefore live AFTER
+    the bit5 branch's join label so both paths converge on it."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     m = re.search(
         r"flow_main_core_service_265c_27bc:[^\n]*\n"
         r"\s*btfss\s+ram_0x0BD,\s*5,\s*BANKED[^\n]*\n"
         r"\s*bra\s+flow_main_core_service_265c_27ec[^\n]*\n"
         r"\s*call\s+preset_persist_filename[^\n]*\n"
-        r"(?:[^\n]*\n){0,12}?"
+        r"flow_main_core_service_265c_27ec:[^\n]*\n"
+        r"(?:[^\n]*\n){0,16}?"
         r"\s*bcf\s+ram_0x0BD,\s*6,\s*BANKED",
         text,
     )
     assert m is not None, (
-        "main_core_service_265c persist branch must clear bit6 "
-        "(usb_filename_xact_pending) after preset_persist_filename "
-        "returns.  Without this, the gate never clears and the "
-        "device is permanently locked out of preset switches once "
-        "a USB cmd 0x03 has fired."
+        "main_core_service_265c must clear bit6 AFTER the "
+        "flow_main_core_service_265c_27ec join label so both paths "
+        "(bit5 set/persist-then-clear AND bit5 already cleared by "
+        "preset_job_pending) reach the bit6 clear.  Without this, "
+        "the gate never clears in the bit5-already-cleared path and "
+        "the device is permanently locked out of preset switches "
+        "after the PENDING-time persist races with cmd 0x03."
     )
 
 
@@ -593,4 +601,64 @@ def test_v32_xact_gate_blocks_in_flight_holding_toggle() -> None:
         f"filename RAM was clobbered by a gated HOLDING toggle.  "
         f"sentinel={sentinel.hex()}, got={ram_after.hex()}.  "
         f"preset_load_filename ran despite the gate."
+    )
+
+
+def test_v32_force_persist_clears_gate_after_pending_already_cleared_dirty() -> None:
+    """REGRESSION (codex MEDIUM vs f3b25d6): the PENDING-then-HOLDING
+    strand left the gate stranded.
+
+    Race interleaving:
+      1. CONTROL B0/20/x queues PENDING (target=opposite preset).
+      2. USB cmd 0x03 fires AFTER the PENDING is queued but BEFORE
+         preset_job_pending runs: bit5 + bit6 set, RAM updated.
+      3. preset_job_pending runs: sees bit5 set, calls
+         preset_persist_filename which CLEARS bit5.  Job advances
+         to HOLDING.  bit6 still set.
+      4. HOLDING gate (asm:9670+) sees bit6 set, returns early --
+         state stays at HOLDING.
+      5. Host issues force_persist (event_flags.0 = 1).
+         main_core_service_265c runs: sees bit5 already cleared
+         (step 3 cleared it), so the previous version of the bit6
+         clear (gated on bit5) was SKIPPED.  Gate stays set.
+      6. HOLDING never advances; subsequent broadcasts also gated;
+         device is locked.
+
+    The fix moves the bit6 clear AFTER the bit5 branch's join label
+    so it runs in BOTH paths.  This test simulates the race state
+    directly: set up an in-flight HOLDING with bit5 cleared (as if
+    preset_job_pending already persisted) but bit6 still set,
+    trigger event_flags.0, and verify bit6 clears."""
+    _require_rust()
+    _require_v32_hex(V32_MAIN_HEX)
+    chain = _open_chain()
+
+    # Simulate post-preset_job_pending state: bit5 clear, bit6 set,
+    # job in HOLDING with timer running (so HOLDING gate doesn't
+    # also fire if bit6 happens to clear first).
+    chain.write_main_reg(0, _PRESET_JOB_STATE, _PRESET_JOB_HOLDING)
+    chain.write_main_reg(0, _PRESET_HOLD_TIMER_LO, 0x10)
+    chain.write_main_reg(0, _PRESET_HOLD_TIMER_HI, 0x00)
+    flags = chain.read_main_reg(0, _FILENAME_DIRTY_FLAGS)
+    # Force the exact race state: bit5 cleared, bit6 set.
+    chain.write_main_reg(
+        0,
+        _FILENAME_DIRTY_FLAGS,
+        (flags & ~_FILENAME_DIRTY) | _USB_XACT_PENDING,
+    )
+    pre = chain.read_main_reg(0, _FILENAME_DIRTY_FLAGS)
+    assert (pre & _FILENAME_DIRTY) == 0, "setup: bit5 should be cleared"
+    assert pre & _USB_XACT_PENDING, "setup: bit6 should be set"
+
+    # Trigger force_persist via event_flags.bit0.
+    ev = chain.read_main_reg(0, _EVENT_FLAGS)
+    chain.write_main_reg(0, _EVENT_FLAGS, ev | _EVENT_DIRTY_SERVICE)
+    chain.step_ticks(200_000_000)
+
+    flags_after = chain.read_main_reg(0, _FILENAME_DIRTY_FLAGS)
+    assert (flags_after & _USB_XACT_PENDING) == 0, (
+        f"bit6 must clear on force_persist trigger EVEN WHEN bit5 "
+        f"was already cleared by a prior preset_job_pending persist; "
+        f"got 0x{flags_after:02X}.  This is the no-lockout guarantee "
+        f"for the PENDING-time interleaving (codex MEDIUM vs f3b25d6)."
     )

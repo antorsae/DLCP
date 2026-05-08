@@ -3272,19 +3272,21 @@ flow_main_core_service_265c_27bc:
     btfss       ram_0x0BD, 5, BANKED
     bra         flow_main_core_service_265c_27ec
     call        preset_persist_filename, 0x0
-    ; V3.2 USB-xact gate: clear bit6 once the EEPROM persist has
-    ; completed.  Whether the dirty bit was set by a USB cmd 0x03 or
-    ; by a separate path, the gate is cleared here so deferred preset
-    ; broadcasts can resume.  preset_persist_filename is foreground-
-    ; atomic (its outgoing-slot decision is made at entry; see
-    ; asm:preset_persist_filename header), so by the time we reach
-    ; this bcf the wire-state for the active preset is fully on
-    ; EEPROM and a queued preset switch is now safe to proceed.  Explicit
-    ; movlb 0x0 because preset_persist_filename's loop calls
-    ; main_flash_service_46de which may leave BSR in a different bank.
+flow_main_core_service_265c_27ec:
+    ; V3.2 USB-xact gate: ALWAYS clear bit6 when the host triggers
+    ; the dirty-service path (event_flags.0 = 1), regardless of
+    ; whether bit5 was set when this dispatcher ran.  bit5 may have
+    ; ALREADY been cleared by preset_job_pending's persist branch
+    ; (asm:9568) before main_core_service_265c got to it -- if so,
+    ; the bit5 test above branches over the persist call and bit6
+    ; would stay set forever, locking the gate (codex MEDIUM vs
+    ; f3b25d6).  Putting the bit6 clear AFTER the bit5 branch
+    ; closes ensures both paths converge here.  Explicit movlb 0x0
+    ; because preset_persist_filename (when it runs) calls
+    ; main_flash_service_46de which may leave BSR in a different
+    ; bank.
     movlb       0x0
     bcf         ram_0x0BD, 6, BANKED
-flow_main_core_service_265c_27ec:
     bcf         event_flags, 0, BANKED
 flow_main_core_service_265c_27ee:
     return      0
@@ -10283,7 +10285,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x4E, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x4F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
