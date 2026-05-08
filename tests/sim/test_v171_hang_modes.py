@@ -245,36 +245,60 @@ def test_v171_preset_persist_skips_eeprom_write_after_tx_abort() -> None:
     )
 
 
-def test_v171_ir_decode_is_deferred_out_of_isr() -> None:
-    """The expensive RC5 bit-bang decoder must no longer run inside the
-    ISR critical section.
+def test_v171_ir_decode_runs_via_timer1_state_machine_not_in_isr() -> None:
+    """Post-task #152 (M3): the expensive RC5 bit-bang decoder must
+    not run inside the RBIF ISR critical section AND must not run in
+    the foreground display loop either.
 
-    First-pass shape: the ISR sets a pending byte, returns quickly, and
-    a foreground helper owns the actual `ir_rc5_decode` call.
+    Pre-M3 shape (deferred design, broken on real hardware -- see
+    task #151): ISR latched ``v171_ir_decode_pending`` and a
+    foreground service called ``ir_rc5_decode`` from
+    ``display_loop_iteration``.  This caused the phase-miss bug
+    because the foreground entered the decoder at an arbitrary
+    phase relative to RB5 transitions.
+
+    Post-M3 shape: ISR latches falling-edge with a Timer1 arm
+    (``v171_ir_start_decode``); Timer1 ISR runs
+    ``v171_ir_sample_handler`` to take 32 samples at half-bit
+    intervals; on completion ``v171_ir_decode_done`` calls
+    ``v171_ir_post_process`` which runs the legacy
+    ``flow_ir_rc5_decode_025E`` post-process (not the entire
+    ``ir_rc5_decode`` body -- only the buffer-validation tail).
     """
     text = _read_v171_source()
     isr_block = _label_block(text, "isr_entry", "rx_parser_entry")
+    # ISR must NOT contain the legacy in-ISR decoder call.
     assert "rcall   ir_rc5_decode" not in isr_block, (
-        "ISR should not call ir_rc5_decode directly once RC5 is deferred"
+        "ISR should not call ir_rc5_decode directly (Bug C3 / 10 ms stall)"
     )
-    assert re.search(r"setf\s+v171_ir_decode_pending\b", isr_block), (
-        "ISR should latch v171_ir_decode_pending instead of running ir_rc5_decode inline"
+    # ISR must NOT contain the legacy deferred-decode setf either
+    # (post-M3: replaced with `call v171_ir_start_decode`).
+    assert not re.search(r"setf\s+v171_ir_decode_pending\b", isr_block), (
+        "ISR must no longer latch v171_ir_decode_pending (post-M3 the "
+        "deferred-decode design is replaced by Timer1-driven sampling)"
+    )
+    # ISR must call v171_ir_start_decode on the falling-edge path.
+    assert re.search(r"call\s+v171_ir_start_decode\b", isr_block), (
+        "ISR must call v171_ir_start_decode on RB5 falling edge "
+        "(replaces legacy `setf v171_ir_decode_pending`)"
+    )
+    # ISR must dispatch TMR1IF to the sample handler.
+    assert re.search(r"call\s+v171_ir_sample_handler\b", isr_block), (
+        "ISR must call v171_ir_sample_handler on TMR1IF "
+        "(per-sample Timer1 tick)"
     )
 
 
-def test_v171_foreground_ir_decode_helper_exists_and_is_serviced_from_display_loop() -> None:
+def test_v171_display_loop_no_longer_calls_legacy_ir_service() -> None:
+    """Post-M3: ``display_loop_iteration`` must NOT call the legacy
+    ``v171_service_pending_ir_decode`` foreground service.  IR
+    decoding now runs entirely from the Timer1 ISR.
+    """
     text = _read_v171_source()
-    helper_body = _label_block(text, "v171_service_pending_ir_decode", "mute_frame_send")
-    assert re.search(r"rcall\s+ir_rc5_decode\b", helper_body), (
-        "foreground IR service helper must own the ir_rc5_decode call"
-    )
-    assert "clrf    v171_ir_decode_pending" in helper_body, (
-        "foreground IR service helper must clear the pending latch once serviced"
-    )
-
     display_loop = _label_block(text, "display_loop_iteration", "control_core_service_0DCE")
-    assert re.search(r"call\s+v171_service_pending_ir_decode\b", display_loop), (
-        "display_loop_iteration must service deferred IR decode"
+    assert not re.search(r"call\s+v171_service_pending_ir_decode\b", display_loop), (
+        "display_loop_iteration must NOT call the legacy foreground "
+        "IR service (post-M3 the deferred-decode design is removed)"
     )
 
 

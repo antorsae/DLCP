@@ -2678,14 +2678,20 @@ v171_service_pending_ir_decode_drop:
 
 ; v171_ir_start_decode @ called from RBIF ISR after RB5=LOW falling edge
 ; confirmed and IR_ARMED set.  Initializes state machine + arms Timer1
-; for the FIRST sample at 445 µs (mid-second-half of S1, where RB5 is
-; still LOW for bit '1' Manchester at the inverted-TSOP convention the
-; firmware expects).
+; with ``V171_IR_TMR1_FIRST_HI/LO`` preload.  Per
+; V171_IR_NONBLOCK_DECODER_SPEC.md (rust-sim-instrumented against
+; V1.6b stock decoder), the first sample lands at MID OF S2 FIRST
+; HALF (1345 µs after falling edge) -- legacy SKIPS S1 entirely.
+; Preload value 0xF0BC = 1303 µs T1CON-to-overflow + ~42 µs of
+; ISR/start_decode/sample_handler-to-btfsc overhead = 1345 µs
+; total.  See dlcp_control_ram.inc for the full preload derivation.
 ;
 ; Clobbers: W, STATUS, BSR (movlb 0x1).  Does NOT preserve caller W.
 ; This is safe because the V1.71 isr_entry header at asm:786-792
-; saves W/STATUS/BSR/FSR0/FSR0H to scratch RAM and restores them on
-; exit (W restored at asm:872).
+; saves W/STATUS/BSR/FSR0 to scratch RAM and restores them on exit
+; (W restored at asm:872).  NB: FSR1 is NOT saved by isr_entry --
+; v171_ir_post_process explicitly avoids FSR1 to prevent corrupting
+; foreground FSR1 walks.
 v171_ir_start_decode:
         movlb   0x1
         clrf    v171_ir_buf0, BANKED
@@ -2696,9 +2702,10 @@ v171_ir_start_decode:
         clrf    v171_ir_flags, BANKED
         movlw   0x01                                ; SAMPLING state
         movwf   v171_ir_state, BANKED
-        ; Arm Timer1 for 445 µs first sample.  T1CON=0x81 = TMR1ON +
-        ; RD16 (16-bit writes via TMR1H buffer).  In RD16 mode, the
-        ; TMR1H write goes to a buffer; the TMR1L write triggers
+        ; Arm Timer1 for the V1.6b-matched first-sample preload (mid
+        ; of S2 first half).  T1CON=0x81 = TMR1ON + RD16 (16-bit
+        ; writes via TMR1H buffer).  In RD16 mode, the TMR1H write
+        ; goes to a buffer; the TMR1L write triggers
         ; atomic 16-bit load of the counter.  Clear PIR1.TMR1IF
         ; first so a stale flag doesn't fire immediately.
         movlw   V171_IR_TMR1_FIRST_HI
@@ -2792,18 +2799,30 @@ v171_ir_decode_done:
 ; (Common_RAM+13) and returns the decoded command in W -- caller writes
 ; both to ir_decoded_cmd / ir_decoded_addr.
 v171_ir_post_process:
-        ; Copy BANK 1 buf0..buf3 (physical 0x1D7..0x1DA) into Common_RAM+
-        ; 16..19 (physical 0x010..0x013).  CRITICAL: cannot use ``movff
-        ; v171_ir_buf0, dest`` because movff takes a FULL 12-bit literal
-        ; address; ``v171_ir_buf0`` evaluates to 0x0D7 which movff would
-        ; interpret as physical 0x0D7 (BANK 0, channel-source array)
-        ; -- NOT the BANK 1 cell at 0x1D7.  Use lfsr + POSTINC instead.
+        ; Copy BANK 1 buf0..buf3 (physical 0x1D7..0x1DA) into
+        ; Common_RAM+16..19 (physical 0x010..0x013).
+        ;
+        ; CRITICAL #1: cannot use ``movff v171_ir_buf0, dest``
+        ; because movff takes a FULL 12-bit literal address;
+        ; ``v171_ir_buf0`` evaluates to 0x0D7 which movff would
+        ; interpret as physical 0x0D7 (BANK 0, channel-source
+        ; array) -- NOT the BANK 1 cell at 0x1D7.  Use lfsr +
+        ; POSTINC0 instead.
+        ;
+        ; CRITICAL #2 (codex HIGH vs 86d88e0): the ISR prologue at
+        ; isr_entry (asm:786-792) only saves FSR0, NOT FSR1.
+        ; Foreground code uses FSR1 (diag-renderer walks at
+        ; asm:3857, 3943, 4004 / `lfsr 1, ...` patterns).  If a
+        ; Timer1 IR-sample interrupt fires during one of those
+        ; foreground walks, FSR1 returns clobbered and the
+        ; foreground walk continues with the wrong pointer.  Avoid
+        ; FSR1/POSTINC1 entirely; use FSR0 + explicit 12-bit
+        ; literal destinations.
         lfsr    0x0, 0x1D7                          ; FSR0 = bank-1 buf0
-        lfsr    0x1, 0x010                          ; FSR1 = Common_RAM+16
-        movff   POSTINC0, POSTINC1                  ; buf0 -> 0x010
-        movff   POSTINC0, POSTINC1                  ; buf1 -> 0x011
-        movff   POSTINC0, POSTINC1                  ; buf2 -> 0x012
-        movff   POSTINC0, POSTINC1                  ; buf3 -> 0x013
+        movff   POSTINC0, 0x010                     ; buf0 -> Common_RAM+16
+        movff   POSTINC0, 0x011                     ; buf1 -> Common_RAM+17
+        movff   POSTINC0, 0x012                     ; buf2 -> Common_RAM+18
+        movff   POSTINC0, 0x013                     ; buf3 -> Common_RAM+19
         movlb   0x0
         ; Call the legacy post-process.  flow_ir_rc5_decode_025E sets
         ; up its own FSR0 = 0x010 (the buffer base, which we just
@@ -6438,7 +6457,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x13                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x14                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
