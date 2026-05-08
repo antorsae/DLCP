@@ -209,10 +209,13 @@ class SimDlcpEp0:
             self._chain.step_ticks(self._step_ticks_per_op)
         # Auto-increment the pointer (the real EP0 protocol uses
         # firmware-side TBLPTR with auto-increment in the read path
-        # via ``_poke(0xE7, n, in_dir=True, ...)``).  Bounded by the
-        # wrap check above, so the masked result lands at 0x10000
-        # at the upper limit -- subsequent reads will raise.
-        self._pointer = (self._pointer + n) & 0xFFFF
+        # via ``_poke(0xE7, n, in_dir=True, ...)``).  No mask: a
+        # successful read at the upper limit (e.g. ``read_exact(1)``
+        # from 0xFFFF) leaves the pointer at 0x10000.  Subsequent
+        # reads then trip the wrap check above and raise -- catches
+        # CHUNKED crossings (codex LOW vs 805afd2; the previous mask
+        # silently wrapped a follow-up read to address 0x000).
+        self._pointer = self._pointer + n
         return bytes(out)
 
     def _poke(

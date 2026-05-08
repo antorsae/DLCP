@@ -218,6 +218,24 @@ def test_sim_ep0_read_past_0x10000_raises() -> None:
         ep0.read_exact(2)
 
 
+def test_sim_ep0_chunked_read_past_0x10000_raises() -> None:
+    """Chunked crossing: ``set_pointer(0xFFFF); read_exact(1)`` leaves
+    the pointer at 0x10000; the NEXT ``read_exact(1)`` must raise
+    instead of silently reading from address 0 after a mask wrap
+    (codex LOW vs 805afd2)."""
+    chain = _open_chain()
+    ep0 = make_sim_ep0(chain, unit=1)
+
+    ep0.set_pointer(0xFFFF)
+    _ = ep0.read_exact(1)  # OK: pointer now at 0x10000
+
+    # Without the fix, the pointer would be masked to 0x0000 and
+    # this would silently read MAIN1's address-0 RAM.  With the fix
+    # the wrap check fires.
+    with pytest.raises(ValueError, match="wrap past 0x10000"):
+        ep0.read_exact(1)
+
+
 def test_sim_ep0_zero_length_read_returns_empty_bytes() -> None:
     """``_poke(addr, value, in_dir=True, read_len=0)`` matches the
     real ``DlcpEp0._poke`` behaviour of returning an empty
