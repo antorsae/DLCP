@@ -112,12 +112,19 @@ WAKE_FRAME     = (0xB0, 0x03, 0x01)
 # where X depends on control_flags.bit1 (CONNECTED) at the call site:
 #   bit1 SET   (DISPLAY mode) -> X = 0x01 (matches WAKE_FRAME)
 #   bit1 CLEAR (Zzz mode)     -> X = 0x00 (matches STANDBY_FRAME)
-# This means in DISPLAY mode, observing (0xB0, 0x03, 0x00) in the TX
-# delta is UNAMBIGUOUS proof of an IR-standby dispatch -- layer-2
-# would never emit that data byte while CONNECTED.  Conversely, wake
-# (0x01) coincides with layer-2's DISPLAY-mode emission and CANNOT
-# be content-isolated unless CONNECTED is pre-cleared (artificial
-# test setup).  See #159 for the documented residual gap.
+#
+# Note: an IR-standby dispatch eventually triggers a state-transition
+# tail (asm:5179 region clears CONNECTED then calls standby_wake_
+# broadcast which emits (B0, 03, 0x00) in the now-Zzz mode), so the
+# 3 s settle after a standby inject reliably contains (B0, 03, 0x00)
+# from the state-transition path EVEN IF the IR helper itself
+# regressed to emit a wrong byte.  Layer-2 mute_off (cmd 0x03 data
+# 0x03) and other paths can also produce cmd 0x03 frames during the
+# settle.  So the STANDBY_FRAME presence check is NOT a strict
+# content-isolation gate -- it's additive evidence that catches the
+# entire-path-broken regression (no event_exit, no state transition,
+# no helper emit) but masks wrong-cmd-byte regressions.  See #159
+# for the documented residual gap.
 
 
 def _require_rust() -> None:
@@ -353,17 +360,20 @@ def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:
          helper would still fail this if layer-2 didn't fire in
          the same window).
       3. STANDBY_FRAME (0xB0, 0x03, 0x00) appears in tx_frames
-         delta -- THIS IS UNAMBIGUOUS for standby in DISPLAY mode:
-         layer-2's standby_wake_broadcast (asm:2929) emits (0xB0,
-         0x03, 0x01) when CONNECTED, NOT (0xB0, 0x03, 0x00).  So
-         observing the standby frame ABSOLUTELY proves IR-standby
-         dispatch ran (#159).
+         delta -- additive evidence that catches the entire-path-
+         broken regression (no event_exit set, no state transition,
+         no helper emit).  NOT a strict content-isolation gate:
+         the IR-standby dispatch's state-transition tail (asm:5179)
+         later clears CONNECTED and re-emits (B0, 03, 0x00) via
+         layer-2's standby_wake_broadcast in Zzz mode, so a
+         wrong-cmd-byte regression in the IR helper itself could
+         pass via the tail's emission.  See #159 for the residual
+         gap.
 
-    Wake's content-isolation is harder: WAKE_FRAME (0xB0, 0x03,
-    0x01) coincides with layer-2's DISPLAY-mode emission so we
-    fall back to assertions (1) + (2).  The documented residual
-    gap (#159) is acceptable since standby's content check covers
-    one-half of the endpoint-isolation contract.
+    Wake's content-isolation is similarly imperfect: WAKE_FRAME
+    (0xB0, 0x03, 0x01) coincides with layer-2's DISPLAY-mode
+    emission, so we keep wake's two-layer check (1) + (2) and
+    don't add a presence assertion.
     """
     _set_preset_bit(warmed_chain, PRESET_A)
 
@@ -382,11 +392,12 @@ def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:
         f"tx_ring_reserve_3; tx_ring_wr advance = {advance}"
     )
     assert STANDBY_FRAME in new_frames, (
-        f"standby press must emit {STANDBY_FRAME} via "
-        f"v171_send_standby_cmd_frame.  In DISPLAY mode, layer-2's "
-        f"standby_wake_broadcast emits (0xB0, 0x03, 0x01) NOT "
-        f"(0xB0, 0x03, 0x00), so this frame is unambiguous proof "
-        f"of IR-standby dispatch.  Got new frames: {new_frames}"
+        f"standby press should emit {STANDBY_FRAME} either via "
+        f"v171_send_standby_cmd_frame directly OR via the state-"
+        f"transition tail's standby_wake_broadcast call (CONNECTED "
+        f"cleared post-dispatch).  Absence of the frame indicates "
+        f"the entire IR-standby path (helper + state transition) "
+        f"is broken.  Got new frames: {new_frames}"
     )
 
     # Wake: 2-layer assertion (content not isolatable in DISPLAY mode).
@@ -430,8 +441,9 @@ def test_v171_wake_then_standby_pair_consumed_by_dispatch(warmed_chain) -> None:
     advance = _tx_ring_advance(pre_wr, post_wr)
     assert advance >= 3, f"standby press tx_ring_wr advance = {advance}"
     assert STANDBY_FRAME in new_frames, (
-        f"standby press must emit {STANDBY_FRAME} (content-isolated in "
-        f"DISPLAY mode); got new frames: {new_frames}"
+        f"standby press should emit {STANDBY_FRAME} via the IR helper "
+        f"or the state-transition tail; absence indicates entire "
+        f"IR-standby path is broken.  Got new frames: {new_frames}"
     )
 
 
