@@ -377,7 +377,8 @@ def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:
     """
     _set_preset_bit(warmed_chain, PRESET_A)
 
-    # Standby: full 3-layer assertion (content-isolated in DISPLAY mode).
+    # Standby: 3-layer assertion (IR_ARMED + tx_ring_wr + STANDBY_FRAME
+    # presence).  Layer 3 is additive-evidence-only, see test docstring.
     pre_wr = _read_tx_ring_wr(warmed_chain)
     pre_tx_count = len(warmed_chain.tx_frames())
     _inject_and_settle(warmed_chain, IR_CMD_STANDBY)
