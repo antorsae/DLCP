@@ -417,11 +417,15 @@ def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:
 def test_v171_wake_then_standby_pair_consumed_by_dispatch(warmed_chain) -> None:  # type: ignore[no-untyped-def]
     """Wake → Standby: reverse pair.  Both endpoints commit a frame.
 
-    Same 3-layer assertion shape as test_v171_standby_then_wake but
-    with order reversed.  The standby content-isolation check
-    (STANDBY_FRAME unambiguous in DISPLAY mode) catches a regression
-    where standby stopped routing into v171_send_standby_cmd_frame.
-    Wake remains 2-layer (content not isolatable; #159 residual gap).
+    Same assertion shape as test_v171_standby_then_wake (1) IR_ARMED
+    re-set + (2) tx_ring_wr advance >= 3 + (3) STANDBY_FRAME presence
+    check after the standby press.  The presence check is additive
+    evidence that catches the entire-IR-standby-path-broken regression
+    (no event_exit, no state-transition tail, no helper emit) but
+    masks wrong-cmd-byte regressions because the state-transition
+    tail at asm:5179 re-emits (B0, 03, 0x00) via standby_wake_
+    broadcast in Zzz mode.  Wake remains 2-layer; content isolation
+    not achievable without firmware/sim hooks (#159 residual gap).
     """
     _set_preset_bit(warmed_chain, PRESET_A)
 
