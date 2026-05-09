@@ -175,7 +175,9 @@ Flash layout in V3.2:
 
 | Range | Purpose |
 |---|---|
-| `0x0000..0x4BFF` | Application code (HID dispatch, parser, ISR, services) |
+| `0x0000..0x0FFF` | Boot vectors + stock bootloader stub |
+| `0x1000..0x10AB` | USB descriptors + ASCII hex lookup table |
+| `0x10AC..0x4BFF` | Application code (HID dispatch, parser, ISR, services) |
 | `0x4C00..0x55FE` | DSP preset table B (V2.4+ A/B patch path) |
 | `0x5600..0x57FE` | DSP preset table A (stock-aligned, pinned to flash top) |
 | `0x5800..0x5FFF` | Reserved |
@@ -233,7 +235,7 @@ The PyO3 facade ([`crates/dlcp-sim-py/src/lib.rs`](crates/dlcp-sim-py/src/lib.rs
 - `chain.lcd_lines()` — HD44780 DDRAM snapshot as `(line1, line2)` strings
 - `chain.tx_frames()` / `chain.uart_tx_records_full()` — committed chain frame history and per-byte UART event log
 - `chain.warmup(ticks)` / `chain.run_until_connected(limit)` — boot-to-DISPLAY helpers
-- `chain.uart_link_byte_counts()` / `chain.uart_rx_records_full()` — byte-count snapshots and the per-byte UART event log on every coupling (used by the property + soak harnesses; the rust crate also has bincode `encode(&Chain)` / `decode(&[u8])` snapshot primitives at [`crates/dlcp-sim/src/snapshot.rs`](crates/dlcp-sim/src/snapshot.rs) for the round-trip gate, though those are not exposed via PyO3 today)
+- `chain.bridge_byte_stats()` / `chain.uart_rx_records_full()` — per-link byte-count summary and the per-byte UART event log on every coupling (used by the property + soak harnesses; the rust crate also has bincode `encode(&Chain)` / `decode(&[u8])` snapshot primitives at [`crates/dlcp-sim/src/snapshot.rs`](crates/dlcp-sim/src/snapshot.rs) for the round-trip gate, though those are not exposed via PyO3 today)
 
 ### Fidelity gates
 
