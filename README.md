@@ -47,7 +47,7 @@ The delayed-switch behavior was introduced in `V2.8` for two reasons:
 Volume:          Preset:          Input:          Setup:           Diagnostics:
 +----------------+ +----------------+ +----------------+ +----------------+ +----------------+
 |Volume:-17.0dB A| |Preset          | |Input:          | |Setup           | |PB1: I2 D1 S1 B1|
-|Auto Detect     | |Active: A       | |Auto Detect     | |BL Timeout      | |R1 A0 P0 O1     |
+|Auto Detect     | |Active: A       | |Auto Detect     | |BL Timeout      | |R1 A0 P0 O1 V0  |
 +----------------+ +----------------+ +----------------+ +----------------+ +----------------+
 ```
 
@@ -77,9 +77,9 @@ A new top-level **Diag** menu page on CONTROL displays real-time per-PB counters
 - **R1** — recovery-branch entries
 - **A0** — AN0-triggered standby
 - **P0** — RA1 edge events
-- **O1 / B0 / W0 / X0** — reset-cause flags (POR / BOR / WDT / SW reset, Tier-1)
+- **O1 / V0 / W0 / X0** — reset-cause flags (POR / BOR / WDT / SW reset, Tier-1)
 
-CONTROL polls each MAIN with `BF/21` (runtime counters) every ~1 second and `BF/22` once per page-entry (reset causes). Counters survive ordinary firmware reset; cleared only on POR/BOR. The healthy-system shorthand renders `OK`; degraded systems sparse-render only the non-zero abnormal cells. Spec: [`docs/V32_DIAG_TIER1_SPEC.md`](docs/V32_DIAG_TIER1_SPEC.md).
+CONTROL queries each MAIN with `cmd 0x21` (runtime counters; MAIN replies `BF/21..BF/27`) every ~1 second, and `cmd 0x22` once per Diag-page entry (reset causes; MAIN replies `BF/28..BF/2B`). Counters survive ordinary firmware reset; cleared only on POR/BOR. The healthy-system shorthand renders `OK`; degraded systems sparse-render only the non-zero abnormal cells. Spec: [`docs/V32_DIAG_TIER1_SPEC.md`](docs/V32_DIAG_TIER1_SPEC.md).
 
 ### V1.71 non-blocking IR decoder (M3, Timer1-driven)
 
@@ -169,7 +169,18 @@ Each canonical `V3.2` build bumps the EEPROM revision byte; each `V1.71` build b
 
 **V2.x** releases are binary patches applied to the stock V2.3 hex image. Patch code is injected into dead zones and unused flash regions, with hooks redirecting execution. This works but is constrained by available free space and increasingly fragile as fixes stack up — V2.8 is the last comfortable binary-patched stop before the source-based V3.x line becomes the practical place for further feature work.
 
-**V3.x** releases are assembled from a complete PIC18 source file ([`src/dlcp_fw/asm/dlcp_main_v32.asm`](src/dlcp_fw/asm/dlcp_main_v32.asm)). The source was reconstructed from the stock V2.3 disassembly, verified for byte-exact equivalence at V3.0, then extended with all robustness, preset, and diagnostics features inline. This removes the binary-patch space constraints and makes future development sustainable. Current V3.2 has **~720 bytes** of headroom before the preset-A baked-capture region at `0x4C00`.
+**V3.x** releases are assembled from a complete PIC18 source file ([`src/dlcp_fw/asm/dlcp_main_v32.asm`](src/dlcp_fw/asm/dlcp_main_v32.asm)). The source was reconstructed from the stock V2.3 disassembly, verified for byte-exact equivalence at V3.0, then extended with all robustness, preset, and diagnostics features inline. This removes the binary-patch space constraints and makes future development sustainable.
+
+Flash layout in V3.2:
+
+| Range | Purpose |
+|---|---|
+| `0x0000..0x4BFF` | Application code (HID dispatch, parser, ISR, services) |
+| `0x4C00..0x55FE` | DSP preset table B (V2.4+ A/B patch path) |
+| `0x5600..0x57FE` | DSP preset table A (stock-aligned, pinned to flash top) |
+| `0x5800..0x5FFF` | Reserved |
+
+Current V3.2 has **~720 bytes** of headroom between the last app-code byte and the preset-B baked-capture region at `0x4C00`.
 
 ## V1.7x vs V1.6xb: the same transition on the CONTROL side
 
@@ -222,7 +233,7 @@ The PyO3 facade ([`crates/dlcp-sim-py/src/lib.rs`](crates/dlcp-sim-py/src/lib.rs
 - `chain.lcd_lines()` — HD44780 DDRAM snapshot as `(line1, line2)` strings
 - `chain.tx_frames()` / `chain.uart_tx_records_full()` — committed chain frame history and per-byte UART event log
 - `chain.warmup(ticks)` / `chain.run_until_connected(limit)` — boot-to-DISPLAY helpers
-- `chain.snapshot()` / `Chain.from_snapshot(bytes)` — bincode-stable serialize/restore (used by the property + soak harnesses for round-trip determinism)
+- `chain.uart_link_byte_counts()` / `chain.uart_rx_records_full()` — byte-count snapshots and the per-byte UART event log on every coupling (used by the property + soak harnesses; the rust crate also has bincode `encode(&Chain)` / `decode(&[u8])` snapshot primitives at [`crates/dlcp-sim/src/snapshot.rs`](crates/dlcp-sim/src/snapshot.rs) for the round-trip gate, though those are not exposed via PyO3 today)
 
 ### Fidelity gates
 
@@ -244,7 +255,7 @@ The simulator is good enough to ship firmware against — every regression caugh
 
 ## Test suite
 
-The firmware is validated by a comprehensive simulation suite — **~1 050 tests** spanning the V1.7 byte-identical baseline, the V1.71 feature rewrite, the V3.x MAIN source rewrite, every V1.6xb / V2.x binary overlay, the Layer 5 diagnostic chain, the V1.71/V3.2 dual-MAIN preset sync property tests, and the V1.71 IR pulse-train decoder gate.
+The firmware is validated by a comprehensive simulation suite — **~905 tests** spanning the V1.7 byte-identical baseline, the V1.71 feature rewrite, the V3.x MAIN source rewrite, every V1.6xb / V2.x binary overlay, the Layer 5 diagnostic chain, the V1.71/V3.2 dual-MAIN preset sync property tests, and the V1.71 IR pulse-train decoder gate.
 
 The test harness drives the serial bus, injects faults, and verifies LCD output, DSP register state, and protocol behavior across **two daisy-chained DLCP units** (PB1 + PB2) running against the rust simulator described above. Test categories:
 
