@@ -493,14 +493,15 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
     )
     _rust_navigate_to_diagnostics(c)
-    # limit bumped 200 -> 600 to absorb the V3.2 USB-xact-gate
-    # firmware shift (commit pending; preset_select_handler grew by
-    # 2 instructions for the filename_dirty_flags.bit6 gate).  Wiggle
-    # convergence for PB1's first cmd 0x21 reply moved from ~150 to
-    # ~500 in the post-shift build; 600 keeps the test passing with
-    # margin and matches the limit used by
-    # test_v171_v32_layer5_chain_pb_cache_isolation below.
-    ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=600)
+    # Limit bumped 600 -> 1200 to absorb the M3 IR non-blocking
+    # decoder code shift (86d88e0 + 61e17a7 V171_IR_TMR1_FULL
+    # retune).  Each push touches v171_isr_check_tmr1 / IR ISR
+    # cluster; the resulting ~50-instruction shift in V1.71's
+    # main loop pushed wiggle convergence for PB1's first cmd 0x21
+    # reply from ~500 to >600 (#153).  1200 keeps the test passing
+    # with 2x margin and matches the bumped limit across all
+    # _rust_press_drive_until_pb_present sites in this file.
+    ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=1200)
     assert ok, (
         f"[rust] diag_present never reached 0x03; got "
         f"0x{_rust_diag_present(c):02X}; "
@@ -542,7 +543,7 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     # settle_steps=200 lets the BF/22 frame populate cache[1]
     # for both PBs after the mask hit on the BF/21 frame.
     ok = _rust_press_drive_until_pb_present(
-        c, pb_mask=0x03, limit=600, settle_steps=200
+        c, pb_mask=0x03, limit=1200, settle_steps=200
     )
     assert ok, "[rust] both PBs never replied"
     pb1_cache = _rust_diag_pb_cache(c, 0)
@@ -593,13 +594,13 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
     # extra_check pins the exit iteration to one where the chain is
     # parked on PB1 Diag(4) so the trailing LCD assertion sees the
     # PB1 view (V1.71's 50M-tick button-hold auto-repeat in rust
-    # makes plain-mask exit unreliable).  limit bumped 400 -> 600 to
-    # absorb the V3.2 USB-xact-gate firmware shift (commit pending;
-    # preset_select_handler grew by 2 instructions).  See sibling
+    # makes plain-mask exit unreliable).  Limit bumped 600 -> 1200
+    # to absorb the M3 IR non-blocking decoder code shift (#153 /
+    # commits 86d88e0 + 61e17a7).  See sibling
     # test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2 for the
     # full rationale.
     ok = _rust_press_drive_until_pb_present(
-        c, pb_mask=0x03, limit=600,
+        c, pb_mask=0x03, limit=1200,
         extra_check=lambda ch: ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG,
     )
     assert ok, "[rust] both PBs never replied"
@@ -659,8 +660,12 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     # exit on a state-drifted iteration).  Empirically (probe
     # /tmp/probe_mixed.py) the first qualifying iteration is
     # ~wiggle 20.
+    # limit bumped 400 -> 800 -> 2000 across the M3 IR code shift
+    # (#153 task -- the multi-condition extra_check needs a longer
+    # convergence window because slot[7] (O reset-cause cell) lags
+    # the runtime counters by ~10x more wiggles post-shift).
     ok = _rust_press_drive_until_pb_present(
-        c, pb_mask=0x03, limit=400,
+        c, pb_mask=0x03, limit=2000,
         extra_check=lambda ch: (
             ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
             and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 0) == 0x2
@@ -866,14 +871,26 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
             "[rust] CONTROL fell into WAITING during sustained "
             "Diag-page cadence — cascade reconnect storm."
         )
-    # Walk LEFT back to Volume (4 LEFTs through Tier-1 menu order).
-    for _ in range(4):
+    # Walk LEFT back to Volume.  Adaptive: press LEFT, settle, check
+    # DISPLAY_STATE_INDEX -- repeat until state == 0 (Volume) or budget
+    # exhausted.  V1.71's button-hold auto-repeat (50M ticks) makes a
+    # fixed-count loop unreliable: post the M3 IR code shift (#153)
+    # the foreground main-loop iteration cost shifted, and a
+    # press-settle that previously produced exactly 1 menu step now
+    # absorbs presses non-deterministically.  Reading state after
+    # each press is the robust pattern.
+    max_lefts = 12
+    for _ in range(max_lefts):
+        if c.read_reg(DISPLAY_STATE_INDEX_PHYS) == 0:
+            break
         c.press("LEFT")
         for _ in range(8):
             c.step()
     line0, line1 = c.lcd_lines()
     assert line0.startswith("Volume:"), (
-        f"[rust] LEFT*4 did not return to Volume; LCD={(line0, line1)!r}"
+        f"[rust] LEFT navigation did not return to Volume within "
+        f"{max_lefts} presses; LCD={(line0, line1)!r}, "
+        f"display_state_index=0x{c.read_reg(DISPLAY_STATE_INDEX_PHYS):02X}"
     )
 @pytest.mark.dual_supported
 @pytest.mark.slow
@@ -1018,9 +1035,20 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
     )
     _rust_navigate_to_diagnostics(c)
-    for _ in range(40):
+    # Settle bumped 40 -> 120 to absorb the M3 IR code shift (#153)
+    # -- post-M3, _rust_navigate_to_diagnostics's 4 RIGHTs may land
+    # on PB2 instead of PB1 if the auto-repeat hold time has shifted;
+    # the longer settle gives the menu state machine time to clamp
+    # at PB1 (Tier-1 menu state 4) and the screen to render.
+    for _ in range(120):
         c.step()
     line0_diag, _ = c.lcd_lines()
+    if line0_diag.startswith("PB2"):
+        # Auto-repeat overshot to PB2; one LEFT brings us back to PB1.
+        c.press("LEFT")
+        for _ in range(24):
+            c.step()
+        line0_diag, _ = c.lcd_lines()
     assert line0_diag.startswith("PB1"), (
         f"[rust] chain did not reach PB1 Diag page after navigation; "
         f"LCD={line0_diag!r}"

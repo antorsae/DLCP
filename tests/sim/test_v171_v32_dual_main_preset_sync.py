@@ -417,8 +417,21 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
         f"got active_flags=0x{snap_A1['active_flags']:02X}"
     )
 
+    # Each phase appends a uniform 50M-tick post-IDLE settle so any
+    # background DSP-rewrite tail (V1.71 layer-2 broadcast triggering
+    # incremental I2C uploads on either MAIN) lands at the same
+    # phase before the snapshot is taken.  Without this, B1 was
+    # captured ~50 ms earlier in the post-IDLE rewrite tail than B2
+    # (whose IDLE point is reached AFTER more accumulated layer-2
+    # cycles), and DSP byte 0x37 differed by 0x80.  Aligning the
+    # post-IDLE settle makes the biquad snapshots deterministic.
+    # Bumped per #153 (M3 IR code shift moved the layer-2 cadence
+    # phase relative to the convergence-poll exit point).
+    _POST_IDLE_SETTLE_TICKS = 50_000_000
+
     # Phase B1: switch to preset B.
     _switch_preset_via_control(chain, target=1)
+    chain.step_ticks(_POST_IDLE_SETTLE_TICKS)
     snap_B1 = _assert_mains_synchronised(chain, phase="B1-switched-to-B")
     assert snap_B1["preset_bit"] is True, (
         f"after B0/20/01 broadcast, active_flags.bit2 must be 1 (preset B); "
@@ -431,6 +444,7 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
 
     # Phase A2: switch back to preset A.
     _switch_preset_via_control(chain, target=0)
+    chain.step_ticks(_POST_IDLE_SETTLE_TICKS)
     snap_A2 = _assert_mains_synchronised(chain, phase="A2-switched-back-to-A")
     assert snap_A2["preset_bit"] is False, (
         f"after B0/20/00 broadcast, active_flags.bit2 must be 0 (preset A); "
@@ -439,6 +453,7 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
 
     # Phase B2: switch to preset B again.
     _switch_preset_via_control(chain, target=1)
+    chain.step_ticks(_POST_IDLE_SETTLE_TICKS)
     snap_B2 = _assert_mains_synchronised(chain, phase="B2-switched-to-B-again")
     assert snap_B2["preset_bit"] is True
 
