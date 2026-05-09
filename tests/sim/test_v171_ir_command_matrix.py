@@ -575,7 +575,7 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
         f"Layer-2 does not call these helpers, and the matrix test "
         f"runs with the menu at Volume so the preset menu UP/DOWN "
         f"path (the only other caller of v171_send_preset_frame_and_"
-        f"persist) is not active.  This is unambiguous leak from "
+        f"persist) is not active.  This is an unambiguous leak from "
         f"the V1.71 IR inline-shortcut cascade."
     )
 
@@ -616,8 +616,12 @@ def _v171_hex_inline() -> Path:
     _v171_hex_cache = hex_out
     syms = parse_v17_symbols(lst_out)
     _v171_helper_pcs_cache = {
-        # non-layer-2 helpers (not called by layer-2): hitting these PCs
-        # during a settle proves the IR-specific dispatch ran.
+        # non-layer-2 helpers (not called by layer-2 paths).  Hitting
+        # these PCs during a settle proves dispatch by the V1.71 IR
+        # inline-shortcut cascade OR (for v171_send_preset_frame_and_
+        # persist) the preset menu UP/DOWN navigation path; in the
+        # matrix tests the menu stays at Volume, so a hit is from
+        # the IR cascade.
         "v171_send_standby_cmd_frame":          syms["v171_send_standby_cmd_frame"],
         "v171_send_wake_cmd_frame":             syms["v171_send_wake_cmd_frame"],
         "v171_send_preset_frame_and_persist":   syms["v171_send_preset_frame_and_persist"],
