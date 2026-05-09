@@ -111,8 +111,8 @@ TX_RING_WR_ADDR = 0x097
 # for the layer-2-isolated PC-based leak detection that replaces
 # TX-frame content checks: v171_send_preset_frame_txonly (layer-2's
 # preset helper) at PC 0x0011E8 is at a different address from
-# v171_send_preset_frame_and_persist (IR-only) at 0x00120E, so
-# polling current_ctl_pc against the IR-only helper PC ranges via
+# v171_send_preset_frame_and_persist (non-layer-2) at 0x00120E, so
+# polling current_ctl_pc against the non-layer-2 helper PC ranges via
 # _step_until_no_helper_hit is truly layer-2-isolated.
 
 
@@ -248,9 +248,14 @@ def _step_until_helper_hit(  # type: ignore[no-untyped-def]
     """Step the chain (CONTROL core) until PC enters [helper_pc,
     helper_pc + range_size), or max_tcy elapses.  Returns (hit, pc).
 
-    Layer-2-isolated proof of IR dispatch: each IR-specific helper
-    has a unique PC range that's NOT entered by layer-2's
-    standby_wake_broadcast or full_sync_burst preset_txonly.
+    Layer-2-isolated proof of dispatch: each tracked helper has a
+    unique PC range that's NOT entered by layer-2's standby_wake_
+    broadcast or full_sync_burst preset_txonly.  Note: v171_send_
+    preset_frame_and_persist is also called by the preset menu
+    UP/DOWN navigation path, so a hit during a test that touches
+    that path would NOT be IR-specific -- but the matrix tests
+    here all run with the menu at Volume, so only the V1.71 IR-
+    preset case can plausibly call it in scope.
 
     range_size default 0x20 (16 PIC18 instructions, 32 bytes) is the
     minimum that reliably catches the helper across ``step_until_pc_
@@ -419,7 +424,7 @@ def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:
 
     Two-layer state assertion (PC-hit isolation explored under #159
     but not viable: step_until_pc_hit's 100-Tcy chunking misses the
-    brief PC visits to the IR-only helpers since each helper's body
+    brief PC visits to the non-layer-2 helpers since each helper's body
     does `call tx_ring_reserve_3` / `call tx_byte_enqueue` which
     jumps OUT of the helper PC range -- net helper-PC visit time is
     ~10-15 Tcy out of ~200 Tcy total dispatch latency, which loses
@@ -543,8 +548,8 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
     pre_preset = _read_preset(warmed_chain)
 
     # PC-isolated leak detection (#159 full strengthening): step
-    # through the post-inject window and verify NONE of the IR-only
-    # helpers are entered.  The IR-only helpers
+    # through the post-inject window and verify NONE of the non-layer-2
+    # helpers are entered.  The non-layer-2 helpers
     # (v171_send_standby_cmd_frame, v171_send_wake_cmd_frame,
     # v171_send_preset_frame_and_persist) are at unique PC ranges
     # that layer-2 NEVER enters (layer-2 uses standby_wake_broadcast
@@ -552,7 +557,7 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
     # If cmd 0x40 leaked into any inline-shortcut case, the
     # corresponding helper PC would be entered within ~few-K Tcy
     # of the inject -- 50K Tcy total budget across the union of
-    # all 3 IR-only helper PC ranges (single-pass polling, no
+    # all 3 non-layer-2 helper PC ranges (single-pass polling, no
     # sequential gap) covers this.
     warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x40)
     leaked_pc, last_pc = _step_until_no_helper_hit(
@@ -567,8 +572,11 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
     assert leaked_pc is None, (
         f"unmapped cmd 0x40 ({label}) leaked into IR helper at "
         f"PC=0x{leaked_pc:06X} (observed PC=0x{last_pc:06X}).  "
-        f"Layer-2 does not call IR-specific helpers, so this is "
-        f"unambiguous leak."
+        f"Layer-2 does not call these helpers, and the matrix test "
+        f"runs with the menu at Volume so the preset menu UP/DOWN "
+        f"path (the only other caller of v171_send_preset_frame_and_"
+        f"persist) is not active.  This is unambiguous leak from "
+        f"the V1.71 IR inline-shortcut cascade."
     )
 
     # Continue settle for state checks.
@@ -608,13 +616,13 @@ def _v171_hex_inline() -> Path:
     _v171_hex_cache = hex_out
     syms = parse_v17_symbols(lst_out)
     _v171_helper_pcs_cache = {
-        # IR-only helpers (not called by layer-2): hitting these PCs
+        # non-layer-2 helpers (not called by layer-2): hitting these PCs
         # during a settle proves the IR-specific dispatch ran.
         "v171_send_standby_cmd_frame":          syms["v171_send_standby_cmd_frame"],
         "v171_send_wake_cmd_frame":             syms["v171_send_wake_cmd_frame"],
         "v171_send_preset_frame_and_persist":   syms["v171_send_preset_frame_and_persist"],
         # Layer-2's preset helper (called by full_sync_burst step 6):
-        # NOT in the IR-only set.  Useful as a NEGATIVE marker -- if
+        # NOT in the non-layer-2 set.  Useful as a NEGATIVE marker -- if
         # this is hit during an IR test, the test is observing a
         # layer-2 emission, not the IR dispatch.
         "v171_send_preset_frame_txonly":        syms["v171_send_preset_frame_txonly"],
