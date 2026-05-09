@@ -427,6 +427,14 @@ def test_dual_main_preset_sync_AB_AB_chain() -> None:
     # post-IDLE settle makes the biquad snapshots deterministic.
     # Bumped per #153 (M3 IR code shift moved the layer-2 cadence
     # phase relative to the convergence-poll exit point).
+    #
+    # CAVEAT (codex LOW vs a7e4169): empirically the late-tail DSP
+    # rewrite occurs ~1M ticks AFTER preset_job_state == IDLE, so
+    # the contract "IDLE implies DSP-stable" is approximate, not
+    # strict.  This test now waits past the late-tail rather than
+    # asserting IDLE alone is enough.  If the late-tail is ever
+    # found to be a real firmware bug (vs an expected layer-2
+    # incremental-upload pattern), revisit and tighten.
     _POST_IDLE_SETTLE_TICKS = 50_000_000
 
     # Phase B1: switch to preset B.

@@ -872,13 +872,24 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
             "Diag-page cadence — cascade reconnect storm."
         )
     # Walk LEFT back to Volume.  Adaptive: press LEFT, settle, check
-    # DISPLAY_STATE_INDEX -- repeat until state == 0 (Volume) or budget
-    # exhausted.  V1.71's button-hold auto-repeat (50M ticks) makes a
-    # fixed-count loop unreliable: post the M3 IR code shift (#153)
-    # the foreground main-loop iteration cost shifted, and a
+    # DISPLAY_STATE_INDEX -- repeat until state == 0 (Volume) or
+    # budget exhausted.  V1.71's button-hold auto-repeat (50M ticks)
+    # makes a fixed-count loop unreliable: post the M3 IR code shift
+    # (#153) the foreground main-loop iteration cost shifted, and a
     # press-settle that previously produced exactly 1 menu step now
-    # absorbs presses non-deterministically.  Reading state after
-    # each press is the robust pattern.
+    # absorbs presses non-deterministically.
+    #
+    # Codex LOW vs a7e4169 raised a wrap-around concern (e.g. state
+    # 4 -> 3 -> 2 -> 1 -> 0 -> 4 -> 3 -> ... -> 0 in a 5-state menu).
+    # An earlier monotonic-decrease guard rejected this empirically
+    # because V1.71's Tier-1 menu has sub-state numbering beyond 0..4
+    # (LEFT from state 0x01 lands on state 0x05, presumably a Diag
+    # sub-page entry vs the Diag root).  The final LCD == "Volume:"
+    # check is the real gate: even if intermediate states transit
+    # through sub-page numbering, only the Volume page renders that
+    # line0 prefix, so a false-pass via wrap-only would have to
+    # leave the LCD at Volume's actual rendering -- which is the
+    # contract under test.
     max_lefts = 12
     for _ in range(max_lefts):
         if c.read_reg(DISPLAY_STATE_INDEX_PHYS) == 0:
