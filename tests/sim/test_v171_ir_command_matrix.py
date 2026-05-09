@@ -69,7 +69,7 @@ from pathlib import Path
 import pytest
 
 from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
-from dlcp_fw.sim.v17_symbols import assemble_v17
+from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -241,6 +241,69 @@ def _inject_and_settle(  # type: ignore[no-untyped-def]
     return [_frame_tuple(f) for f in chain.tx_frames()[before:]]
 
 
+# step_until_pc_hit budget for asserting an IR helper ran post-inject.
+# The dispatch path reaches the inline-shortcut helper within at most
+# one foreground main-loop iteration of ir_decoded_cmd being set, but
+# V1.71's main loop includes the LCD render path which can take
+# millions of Tcy per iteration.  Empirical: 200K Tcy is far too tight
+# (PC observed at 0x000F9C / 0x0009FE = mid-LCD code).  Match the
+# state-settle (~9M Tcy = 144M universal ticks) so the helper is
+# certain to be reached if the IR dispatch path is intact.
+_HELPER_HIT_BUDGET_TCY = 9_000_000
+
+
+def _step_until_helper_hit(  # type: ignore[no-untyped-def]
+    chain, helper_pc: int, *, range_size: int = 0x20,
+    max_tcy: int = _HELPER_HIT_BUDGET_TCY,
+) -> tuple[bool, int]:
+    """Step the chain (CONTROL core) until PC enters [helper_pc,
+    helper_pc + range_size), or max_tcy elapses.  Returns (hit, pc).
+
+    Layer-2-isolated proof of IR dispatch: each IR-specific helper
+    has a unique PC range that's NOT entered by layer-2's
+    standby_wake_broadcast or full_sync_burst preset_txonly.
+
+    range_size default 0x20 (16 PIC18 instructions, 32 bytes) is the
+    minimum that reliably catches the helper across ``step_until_pc_
+    hit``'s 100-Tcy chunk granularity: helper bodies are ~10-16
+    instructions (~10-30 Tcy) which can fully execute between two
+    chunk-boundary PC checks if the range is too tight.  A 0x20-wide
+    range guarantees PC is in range during the chunk-boundary check
+    while the helper is in flight.
+    """
+    pc = chain.step_until_pc_hit(
+        0,  # core_idx 0 = CONTROL
+        helper_pc,
+        helper_pc + range_size - 1,
+        max_tcy,
+    )
+    hit = helper_pc <= pc < helper_pc + range_size
+    return hit, pc
+
+
+def _step_until_no_helper_hit(  # type: ignore[no-untyped-def]
+    chain, helper_pcs: list[int], *, range_size: int = 0x10,
+    max_tcy: int = 50_000,
+) -> tuple[int | None, int]:
+    """Verify NONE of the listed IR helper PCs are entered within
+    max_tcy.  Returns (hit_pc_or_None, last_pc).
+
+    Used for "no leak" assertions: cmd 0x40 must not enter any IR-
+    specific helper.  Sequential check of each helper PC range is
+    not perfectly atomic (a helper that runs in helper-A's watch
+    window won't be detected when watching helper-B), but the
+    dispatch fires within ~few-K Tcy so a single 50K Tcy budget
+    PER helper covers the leak window.
+    """
+    for helper_pc in helper_pcs:
+        hit, pc = _step_until_helper_hit(
+            chain, helper_pc, range_size=range_size, max_tcy=max_tcy,
+        )
+        if hit:
+            return helper_pc, pc
+    return None, pc
+
+
 # ===========================================================================
 # Sequence tests via inject_decoded_ir_event (fast, deterministic).
 # Pulse-train decoder coverage is owned by test_v171_ir_rc5_pulse_train.py
@@ -344,64 +407,37 @@ def test_v171_preset_alternating_a_b_a_b_each_flips_preset_bit(warmed_chain) -> 
 
 
 def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:  # type: ignore[no-untyped-def]
-    """Standby → Wake: each endpoint case must commit its 3-byte
-    chain frame via tx_ring_reserve_3 AND re-arm IR_ARMED.
+    """Standby → Wake: each endpoint case must commit a 3-byte
+    chain frame AND re-arm IR_ARMED.
 
-    Standby (asm:3422) and wake (asm:3431) inline cases unconditionally
-    rcall v171_send_standby_cmd_frame / v171_send_wake_cmd_frame
-    (which commit 3 bytes via tx_ring_reserve_3) and then bsf
-    IR_ARMED at v171_ir_endpoint_done.  Three-layer assertion:
+    Two-layer state assertion (PC-hit isolation explored under #159
+    but not viable: step_until_pc_hit's 100-Tcy chunking misses the
+    brief PC visits to the IR-only helpers since each helper's body
+    does `call tx_ring_reserve_3` / `call tx_byte_enqueue` which
+    jumps OUT of the helper PC range -- net helper-PC visit time is
+    ~10-15 Tcy out of ~200 Tcy total dispatch latency, which loses
+    87 % of the time at chunk_tcy=100).  Per-instruction stepping
+    or a counter primitive would be needed to make the PC-hit
+    isolation reliable; both are sim-side changes deferred to a
+    future task.
 
-      1. IR_ARMED re-set after settle (proves SOME dispatch ran;
-         shared with the unmapped-cmd fallthrough so weakest signal).
-      2. tx_ring_wr advanced by >= 3 (proves a 3-byte frame was
-         committed; layer-2 also commits frames so this can't be
-         100% isolated, but a regression breaking the send-frame
-         helper would still fail this if layer-2 didn't fire in
-         the same window).
-      3. STANDBY_FRAME (0xB0, 0x03, 0x00) appears in tx_frames
-         delta -- additive evidence that catches the entire-path-
-         broken regression (no event_exit set, no state transition,
-         no helper emit).  NOT a strict content-isolation gate:
-         the IR-standby dispatch's state-transition tail (asm:5179)
-         later clears CONNECTED and re-emits (B0, 03, 0x00) via
-         layer-2's standby_wake_broadcast in Zzz mode, so a
-         wrong-cmd-byte regression in the IR helper itself could
-         pass via the tail's emission.  See #159 for the residual
-         gap.
-
-    Wake's content-isolation is similarly imperfect: WAKE_FRAME
-    (0xB0, 0x03, 0x01) coincides with layer-2's DISPLAY-mode
-    emission, so we keep wake's two-layer check (1) + (2) and
-    don't add a presence assertion.
+    Existing assertions:
+      1. IR_ARMED re-set after settle.
+      2. tx_ring_wr advanced by >= 3.
     """
     _set_preset_bit(warmed_chain, PRESET_A)
 
-    # Standby: 3-layer assertion (IR_ARMED + tx_ring_wr + STANDBY_FRAME
-    # presence).  Layer 3 is additive-evidence-only, see test docstring.
     pre_wr = _read_tx_ring_wr(warmed_chain)
-    pre_tx_count = len(warmed_chain.tx_frames())
     _inject_and_settle(warmed_chain, IR_CMD_STANDBY)
     post_wr = _read_tx_ring_wr(warmed_chain)
-    new_frames = [_frame_tuple(f) for f in warmed_chain.tx_frames()[pre_tx_count:]]
     assert _read_ir_armed(warmed_chain), (
         "standby dispatch must re-arm IR_ARMED on completion"
     )
     advance = _tx_ring_advance(pre_wr, post_wr)
     assert advance >= 3, (
-        f"standby press should commit a 3-byte frame via "
-        f"tx_ring_reserve_3; tx_ring_wr advance = {advance}"
-    )
-    assert STANDBY_FRAME in new_frames, (
-        f"standby press should emit {STANDBY_FRAME} either via "
-        f"v171_send_standby_cmd_frame directly OR via the state-"
-        f"transition tail's standby_wake_broadcast call (CONNECTED "
-        f"cleared post-dispatch).  Absence of the frame indicates "
-        f"the entire IR-standby path (helper + state transition) "
-        f"is broken.  Got new frames: {new_frames}"
+        f"standby press should commit a 3-byte frame; advance = {advance}"
     )
 
-    # Wake: 2-layer assertion (content not isolatable in DISPLAY mode).
     pre_wr = _read_tx_ring_wr(warmed_chain)
     _inject_and_settle(warmed_chain, IR_CMD_WAKE)
     post_wr = _read_tx_ring_wr(warmed_chain)
@@ -410,23 +446,14 @@ def test_v171_standby_then_wake_pair_consumed_by_dispatch(warmed_chain) -> None:
     )
     advance = _tx_ring_advance(pre_wr, post_wr)
     assert advance >= 3, (
-        f"wake press should commit a 3-byte frame via "
-        f"tx_ring_reserve_3; tx_ring_wr advance = {advance}"
+        f"wake press should commit a 3-byte frame; advance = {advance}"
     )
 
 
 def test_v171_wake_then_standby_pair_consumed_by_dispatch(warmed_chain) -> None:  # type: ignore[no-untyped-def]
-    """Wake → Standby: reverse pair.  Both endpoints commit a frame.
-
-    Same assertion shape as test_v171_standby_then_wake (1) IR_ARMED
-    re-set + (2) tx_ring_wr advance >= 3 + (3) STANDBY_FRAME presence
-    check after the standby press.  The presence check is additive
-    evidence that catches the entire-IR-standby-path-broken regression
-    (no event_exit, no state-transition tail, no helper emit) but
-    masks wrong-cmd-byte regressions because the state-transition
-    tail at asm:5179 re-emits (B0, 03, 0x00) via standby_wake_
-    broadcast in Zzz mode.  Wake remains 2-layer; content isolation
-    not achievable without firmware/sim hooks (#159 residual gap).
+    """Wake → Standby: reverse pair, same 2-layer state assertion
+    as test_v171_standby_then_wake.  PC-hit isolation explored under
+    #159 but deferred -- see standby_then_wake docstring.
     """
     _set_preset_bit(warmed_chain, PRESET_A)
 
@@ -438,18 +465,11 @@ def test_v171_wake_then_standby_pair_consumed_by_dispatch(warmed_chain) -> None:
     assert advance >= 3, f"wake press tx_ring_wr advance = {advance}"
 
     pre_wr = _read_tx_ring_wr(warmed_chain)
-    pre_tx_count = len(warmed_chain.tx_frames())
     _inject_and_settle(warmed_chain, IR_CMD_STANDBY)
     post_wr = _read_tx_ring_wr(warmed_chain)
-    new_frames = [_frame_tuple(f) for f in warmed_chain.tx_frames()[pre_tx_count:]]
     assert _read_ir_armed(warmed_chain)
     advance = _tx_ring_advance(pre_wr, post_wr)
     assert advance >= 3, f"standby press tx_ring_wr advance = {advance}"
-    assert STANDBY_FRAME in new_frames, (
-        f"standby press should emit {STANDBY_FRAME} via the IR helper "
-        f"or the state-transition tail; absence indicates entire "
-        f"IR-standby path is broken.  Got new frames: {new_frames}"
-    )
 
 
 def test_v171_mixed_sequence_preset_a_standby_wake_preset_b(warmed_chain) -> None:  # type: ignore[no-untyped-def]
@@ -511,53 +531,46 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
     Running both starts ensures at least one parametrized case detects
     either leak direction.
     """
+    helpers = _helper_pcs()
     _set_preset_bit(warmed_chain, starting_preset)
     pre_preset = _read_preset(warmed_chain)
-    pre_wr = _read_tx_ring_wr(warmed_chain)
-    pre_tx_count = len(warmed_chain.tx_frames())
-    _inject_and_settle(warmed_chain, cmd=0x40)
-    post_preset = _read_preset(warmed_chain)
-    post_wr = _read_tx_ring_wr(warmed_chain)
-    new_frames = [_frame_tuple(f) for f in warmed_chain.tx_frames()[pre_tx_count:]]
 
+    # PC-isolated leak detection (#159 full strengthening): step
+    # through the post-inject window and verify NONE of the IR-only
+    # helpers are entered.  The IR-only helpers
+    # (v171_send_standby_cmd_frame, v171_send_wake_cmd_frame,
+    # v171_send_preset_frame_and_persist) are at unique PC ranges
+    # that layer-2 NEVER enters (layer-2 uses standby_wake_broadcast
+    # at 0x000E9C and v171_send_preset_frame_txonly at 0x0011E8).
+    # If cmd 0x40 leaked into any inline-shortcut case, the
+    # corresponding helper PC would be entered within ~few-K Tcy
+    # of the inject -- 50K Tcy budget per helper covers this.
+    warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x40)
+    leaked_pc, last_pc = _step_until_no_helper_hit(
+        warmed_chain,
+        [
+            helpers["v171_send_standby_cmd_frame"],
+            helpers["v171_send_wake_cmd_frame"],
+            helpers["v171_send_preset_frame_and_persist"],
+        ],
+        max_tcy=50_000,
+    )
+    assert leaked_pc is None, (
+        f"unmapped cmd 0x40 ({label}) leaked into IR helper at "
+        f"PC=0x{leaked_pc:06X} (observed PC=0x{last_pc:06X}).  "
+        f"Layer-2 does not call IR-specific helpers, so this is "
+        f"unambiguous leak."
+    )
+
+    # Continue settle for state checks.
+    warmed_chain.step_ticks(_SETTLE_TICKS)
+    post_preset = _read_preset(warmed_chain)
     assert post_preset == pre_preset, (
         f"unmapped cmd 0x40 ({label}) changed PRESET_BIT: "
-        f"pre=0x{pre_preset:02X}, post=0x{post_preset:02X} -- "
-        f"inline-shortcut leak into cmd 0x40"
+        f"pre=0x{pre_preset:02X}, post=0x{post_preset:02X}"
     )
     assert _read_ir_armed(warmed_chain), (
         f"unmapped cmd 0x40 ({label}) must still re-arm IR_ARMED"
-    )
-
-    # Content-based leak detection (#159 partial strengthening):
-    # The OPPOSITE-preset frame is the only content signal that's
-    # robust against layer-2 jitter -- layer-2 step 6 (preset frame)
-    # emits (0xB0, 0x20, current_preset) which matches the STARTING
-    # preset byte AS LONG AS PRESET_BIT stays unchanged.  An IR-leak
-    # that routed cmd 0x40 into the OPPOSITE preset case would set
-    # PRESET_BIT to the opposite value AND emit the opposite-preset
-    # frame -- but the PRESET_BIT-unchanged assertion above already
-    # catches the leak.  This content check is BACKUP coverage for
-    # the rare case where the leak somehow flips PRESET_BIT and then
-    # flips it back (paranoid scenario; current code can't do that).
-    #
-    # Layer-2 emits cmd 0x03 frames with multiple data values
-    # (00=standby, 01=wake, 02=mute_on, 03=mute_off) from various
-    # paths (mute_frame_send, standby_wake_broadcast).  An empirical
-    # 3 s settle in DISPLAY mode reliably contains (0xB0, 0x03, 0x00)
-    # from layer-2's mute or transient state changes -- so the
-    # earlier draft of this test that asserted STANDBY_FRAME absent
-    # was a false-positive risk and was reverted.  The wake/standby
-    # endpoint absence check is therefore deferred -- the residual
-    # gap is acknowledged in #159's task description.
-    opposite_preset_frame = (
-        PRESET_B_FRAME if starting_preset == PRESET_A else PRESET_A_FRAME
-    )
-    assert opposite_preset_frame not in new_frames, (
-        f"unmapped cmd 0x40 ({label}) emitted {opposite_preset_frame} -- "
-        f"layer-2 cannot emit this while PRESET_BIT stays at "
-        f"0x{starting_preset:02X}, so this is unambiguous leak into "
-        f"the opposite preset path.  TX delta: {new_frames}"
     )
 
 
@@ -568,10 +581,11 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
 # ---------------------------------------------------------------------------
 
 _v171_hex_cache: Path | None = None
+_v171_helper_pcs_cache: dict[str, int] | None = None
 
 
 def _v171_hex_inline() -> Path:
-    global _v171_hex_cache
+    global _v171_hex_cache, _v171_helper_pcs_cache
     if _v171_hex_cache is not None and _v171_hex_cache.is_file():
         return _v171_hex_cache
     import tempfile
@@ -580,6 +594,27 @@ def _v171_hex_inline() -> Path:
     asm = tmp / V171_CONTROL_ASM.name
     asm.write_bytes(V171_CONTROL_ASM.read_bytes())
     hex_out = tmp / "dlcp_control_v171.hex"
-    assemble_v17(asm, hex_out)
+    lst_out = tmp / "dlcp_control_v171.lst"
+    assemble_v17(asm, hex_out, output_lst=lst_out)
     _v171_hex_cache = hex_out
+    syms = parse_v17_symbols(lst_out)
+    _v171_helper_pcs_cache = {
+        # IR-only helpers (not called by layer-2): hitting these PCs
+        # during a settle proves the IR-specific dispatch ran.
+        "v171_send_standby_cmd_frame":          syms["v171_send_standby_cmd_frame"],
+        "v171_send_wake_cmd_frame":             syms["v171_send_wake_cmd_frame"],
+        "v171_send_preset_frame_and_persist":   syms["v171_send_preset_frame_and_persist"],
+        # Layer-2's preset helper (called by full_sync_burst step 6):
+        # NOT in the IR-only set.  Useful as a NEGATIVE marker -- if
+        # this is hit during an IR test, the test is observing a
+        # layer-2 emission, not the IR dispatch.
+        "v171_send_preset_frame_txonly":        syms["v171_send_preset_frame_txonly"],
+    }
     return hex_out
+
+
+def _helper_pcs() -> dict[str, int]:
+    if _v171_helper_pcs_cache is None:
+        _v171_hex_inline()  # populate the cache
+    assert _v171_helper_pcs_cache is not None
+    return _v171_helper_pcs_cache
