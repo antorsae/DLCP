@@ -100,31 +100,19 @@ IR_CMD_WAKE = 0x3B
 # fallthrough at asm:3399-3401 does NOT touch tx_ring_wr.
 TX_RING_WR_ADDR = 0x097
 
-# Expected chain TX frames (route, cmd, data).  Used for content-
-# based assertions that distinguish IR-dispatch emissions from layer-2
-# full_sync_burst broadcasts.
-PRESET_A_FRAME = (0xB0, 0x20, 0x00)
-PRESET_B_FRAME = (0xB0, 0x20, 0x01)
-STANDBY_FRAME  = (0xB0, 0x03, 0x00)
-WAKE_FRAME     = (0xB0, 0x03, 0x01)
-
-# Layer-2 standby_wake_broadcast (asm:2929) emits (0xB0, 0x03, X)
-# where X depends on control_flags.bit1 (CONNECTED) at the call site:
-#   bit1 SET   (DISPLAY mode) -> X = 0x01 (matches WAKE_FRAME)
-#   bit1 CLEAR (Zzz mode)     -> X = 0x00 (matches STANDBY_FRAME)
-#
-# Note: an IR-standby dispatch eventually triggers a state-transition
-# tail (asm:5179 region clears CONNECTED then calls standby_wake_
-# broadcast which emits (B0, 03, 0x00) in the now-Zzz mode), so the
-# 3 s settle after a standby inject reliably contains (B0, 03, 0x00)
-# from the state-transition path EVEN IF the IR helper itself
-# regressed to emit a wrong byte.  Layer-2 mute_off (cmd 0x03 data
-# 0x03) and other paths can also produce cmd 0x03 frames during the
-# settle.  So the STANDBY_FRAME presence check is NOT a strict
-# content-isolation gate -- it's additive evidence that catches the
-# entire-path-broken regression (no event_exit, no state transition,
-# no helper emit) but masks wrong-cmd-byte regressions.  See #159
-# for the documented residual gap.
+# Note: PRESET_*_FRAME / STANDBY_FRAME / WAKE_FRAME constants were
+# removed in commit a7b1dd6 + this follow-up because all current
+# tests assert on dispatch state (PRESET_BIT, IR_ARMED, tx_ring_wr)
+# or PC-isolated leak detection -- not chain-TX-frame content.
+# Earlier drafts that asserted on TX frame content false-failed
+# against layer-2's multi-data cmd 0x03 emissions and against the
+# IR-standby state-transition tail's standby_wake_broadcast call.
+# See test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame
+# for the only layer-2-isolated content assertion that survives:
+# v171_send_preset_frame_txonly (layer-2's preset helper) at PC
+# 0x0011E8 is at a different address from v171_send_preset_frame_
+# and_persist (IR-only) at 0x00120E, so PC-watching the latter is
+# truly layer-2-isolated.
 
 
 def _require_rust() -> None:
@@ -282,25 +270,43 @@ def _step_until_helper_hit(  # type: ignore[no-untyped-def]
 
 
 def _step_until_no_helper_hit(  # type: ignore[no-untyped-def]
-    chain, helper_pcs: list[int], *, range_size: int = 0x10,
-    max_tcy: int = 50_000,
+    chain, helper_pcs: list[int], *, range_size: int = 0x20,
+    max_tcy: int = 200_000, chunk_tcy: int = 100,
 ) -> tuple[int | None, int]:
     """Verify NONE of the listed IR helper PCs are entered within
-    max_tcy.  Returns (hit_pc_or_None, last_pc).
+    max_tcy.  Returns (hit_helper_pc_or_None, last_pc).
 
-    Used for "no leak" assertions: cmd 0x40 must not enter any IR-
-    specific helper.  Sequential check of each helper PC range is
-    not perfectly atomic (a helper that runs in helper-A's watch
-    window won't be detected when watching helper-B), but the
-    dispatch fires within ~few-K Tcy so a single 50K Tcy budget
-    PER helper covers the leak window.
+    Polls current_ctl_pc against the union of the helper PC ranges
+    every chunk_tcy.  Single-pass UNION check (vs sequential
+    step_until_pc_hit calls which had gap windows where a leak into
+    a non-first helper could slip past) -- codex MEDIUM on a7b1dd6.
+
+    Granularity caveat: chunk_tcy=100 matches step_until_pc_hit's
+    internal chunking, but the helpers only spend ~10-15 Tcy with
+    PC in their range (they call out to tx_ring_reserve_3 /
+    tx_byte_enqueue mid-body).  Single-run hit probability per chunk
+    where helper is in flight is ~10-15%.  This means a leak can
+    still slip past undetected.  TRUE robustness needs a sim-side
+    per-instruction step or step_count_pc_hits primitive.  For now,
+    a leak that slips past adds variance but the test still catches
+    leaks ~10-15% of the time -- additive coverage on top of the
+    PRESET_BIT-unchanged check below.
     """
-    for helper_pc in helper_pcs:
-        hit, pc = _step_until_helper_hit(
-            chain, helper_pc, range_size=range_size, max_tcy=max_tcy,
-        )
-        if hit:
-            return helper_pc, pc
+    factor = 16  # K20 universal ticks per Tcy
+    remaining = max_tcy
+    pc = chain.current_ctl_pc()
+    while remaining > 0:
+        for hp in helper_pcs:
+            if hp <= pc < hp + range_size:
+                return hp, pc
+        advance = min(chunk_tcy, remaining)
+        chain.step_ticks(advance * factor)
+        remaining -= advance
+        pc = chain.current_ctl_pc()
+    # Final check after last advance.
+    for hp in helper_pcs:
+        if hp <= pc < hp + range_size:
+            return hp, pc
     return None, pc
 
 
