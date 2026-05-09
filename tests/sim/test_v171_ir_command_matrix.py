@@ -108,11 +108,12 @@ TX_RING_WR_ADDR = 0x097
 # against layer-2's multi-data cmd 0x03 emissions and against the
 # IR-standby state-transition tail's standby_wake_broadcast call.
 # See test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame
-# for the only layer-2-isolated content assertion that survives:
-# v171_send_preset_frame_txonly (layer-2's preset helper) at PC
-# 0x0011E8 is at a different address from v171_send_preset_frame_
-# and_persist (IR-only) at 0x00120E, so PC-watching the latter is
-# truly layer-2-isolated.
+# for the layer-2-isolated PC-based leak detection that replaces
+# TX-frame content checks: v171_send_preset_frame_txonly (layer-2's
+# preset helper) at PC 0x0011E8 is at a different address from
+# v171_send_preset_frame_and_persist (IR-only) at 0x00120E, so
+# polling current_ctl_pc against the IR-only helper PC ranges via
+# _step_until_no_helper_hit is truly layer-2-isolated.
 
 
 def _require_rust() -> None:
@@ -550,7 +551,9 @@ def test_v171_unknown_cmd_does_not_change_preset_bit_or_emit_frame(  # type: ign
     # at 0x000E9C and v171_send_preset_frame_txonly at 0x0011E8).
     # If cmd 0x40 leaked into any inline-shortcut case, the
     # corresponding helper PC would be entered within ~few-K Tcy
-    # of the inject -- 50K Tcy budget per helper covers this.
+    # of the inject -- 50K Tcy total budget across the union of
+    # all 3 IR-only helper PC ranges (single-pass polling, no
+    # sequential gap) covers this.
     warmed_chain.inject_decoded_ir_event(addr=PRESET_ADDR, cmd=0x40)
     leaked_pc, last_pc = _step_until_no_helper_hit(
         warmed_chain,
