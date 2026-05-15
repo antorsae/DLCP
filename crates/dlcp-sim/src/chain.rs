@@ -361,8 +361,7 @@ impl Chain {
     fn record_uart_tx(&mut self, record: UartByteRecord) {
         if self.uart_tx_history.len() >= UART_TX_HISTORY_CAP {
             self.uart_tx_history.pop_front();
-            self.uart_tx_history_dropped =
-                self.uart_tx_history_dropped.saturating_add(1);
+            self.uart_tx_history_dropped = self.uart_tx_history_dropped.saturating_add(1);
         }
         self.uart_tx_total_by_src[record.src_core] =
             self.uart_tx_total_by_src[record.src_core].saturating_add(1);
@@ -379,8 +378,7 @@ impl Chain {
     fn record_uart_rx(&mut self, record: UartByteRecord) {
         if self.uart_rx_history.len() >= UART_TX_HISTORY_CAP {
             self.uart_rx_history.pop_front();
-            self.uart_rx_history_dropped =
-                self.uart_rx_history_dropped.saturating_add(1);
+            self.uart_rx_history_dropped = self.uart_rx_history_dropped.saturating_add(1);
         }
         self.uart_rx_total_by_dst[record.dst_core] =
             self.uart_rx_total_by_dst[record.dst_core].saturating_add(1);
@@ -597,7 +595,9 @@ impl Chain {
         }
         let RxDelivery { wake, accepted } = {
             let core = &mut self.cores[core_idx];
-            core.peripherals.eusart.deliver_rx_byte(byte, &mut core.memory)
+            core.peripherals
+                .eusart
+                .deliver_rx_byte(byte, &mut core.memory)
         };
         // Record accepted bytes for `uart_rx_history` parity
         // with `deliver_uart_byte`.  The synthetic injection
@@ -1104,7 +1104,11 @@ impl Chain {
         use crate::peripherals::eusart::{PIR1_ADDR, RCREG_ADDR, RCSTA_ADDR, TXSTA_ADDR};
         use crate::peripherals::irq::{PIE1_ADDR, PIE2_ADDR, PIR2_ADDR};
         const WDTCON_ADDR: u16 = 0xFD1;
-        apply_reset(&mut self.cores[core_idx], &mut self.stacks[core_idx], ResetSource::Mclr);
+        apply_reset(
+            &mut self.cores[core_idx],
+            &mut self.stacks[core_idx],
+            ResetSource::Mclr,
+        );
         self.cores[core_idx].reset_cycles_for_test();
         self.cores[core_idx].mclr_held = true;
         self.cores[core_idx].peripherals.eusart.reset_state();
@@ -2815,7 +2819,8 @@ mod tests {
             byte: 0,
         });
         assert_eq!(
-            chain.uart_tx_history.len(), UART_TX_HISTORY_CAP,
+            chain.uart_tx_history.len(),
+            UART_TX_HISTORY_CAP,
             "buffer stays at cap after over-cap push"
         );
         assert_eq!(
@@ -2823,11 +2828,13 @@ mod tests {
             "one drop after one over-cap push"
         );
         assert_eq!(
-            chain.uart_tx_history.front().map(|r| r.tick), Some(1),
+            chain.uart_tx_history.front().map(|r| r.tick),
+            Some(1),
             "front-drop must evict the oldest record (tick=0)"
         );
         assert_eq!(
-            chain.uart_tx_history.back().map(|r| r.tick), Some(new_tick),
+            chain.uart_tx_history.back().map(|r| r.tick),
+            Some(new_tick),
             "newest push lands at the back"
         );
 
@@ -2877,8 +2884,7 @@ mod tests {
             });
         }
         assert_eq!(
-            chain.uart_tx_total_by_src[i_src],
-            push_count as u64,
+            chain.uart_tx_total_by_src[i_src], push_count as u64,
             "absolute counter must reflect total pushed, regardless of buffer cap"
         );
         assert_eq!(
@@ -2907,8 +2913,7 @@ mod tests {
 
         chain.apply_reset_all(ResetSource::PowerOn);
         assert_eq!(
-            chain.uart_tx_total_by_src[i_src],
-            0,
+            chain.uart_tx_total_by_src[i_src], 0,
             "apply_reset_all must zero the absolute counter"
         );
     }
@@ -2957,25 +2962,17 @@ mod tests {
         assert_eq!(chain.uart_tx_total_by_src[i_src], 5);
         assert_eq!(chain.uart_rx_total_by_dst[i_dst], 5);
 
-        let bytes = bincode::serde::encode_to_vec(
-            &chain,
-            bincode::config::standard(),
-        )
-        .expect("encode");
-        let (restored, _): (Chain, _) = bincode::serde::decode_from_slice(
-            &bytes,
-            bincode::config::standard(),
-        )
-        .expect("decode");
+        let bytes =
+            bincode::serde::encode_to_vec(&chain, bincode::config::standard()).expect("encode");
+        let (restored, _): (Chain, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).expect("decode");
 
         assert_eq!(
-            restored.uart_tx_history.len(), 5,
+            restored.uart_tx_history.len(),
+            5,
             "VecDeque<UartByteRecord> serde round-trip preserves length"
         );
-        assert_eq!(
-            restored.uart_rx_history.len(), 5,
-            "uart_rx_history same"
-        );
+        assert_eq!(restored.uart_rx_history.len(), 5, "uart_rx_history same");
         assert_eq!(
             restored.uart_tx_total_by_src[i_src], 5,
             "uart_tx_total_by_src round-trips"

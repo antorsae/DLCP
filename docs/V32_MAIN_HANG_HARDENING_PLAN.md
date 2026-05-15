@@ -1,6 +1,6 @@
 # V3.2 MAIN Hang Hardening Plan
 
-Last updated: 2026-04-21
+Last updated: 2026-05-12
 Scope: MAIN `V3.2` robustness against control-path hangs on two-MAIN chain (`CONTROL <> PB1 <> PB2`)
 
 ## Problem Statement
@@ -42,6 +42,14 @@ Tests:
 
 - Extend `tests/sim/test_v31_v163b_robustness.py` V3.2 sections with non-preset I2C fault injection.
 - Add targeted STOP/SEN/PEN timeout tests that prove return to main loop within bounded time.
+
+Status 2026-05-12:
+
+- Implemented for V3.2 runtime I2C paths: START/Repeated-START/STOP/ACKEN/BF/SSPIF waits now route through bounded helpers.
+- Timeout recovery is centralized through `i2c_timeout_recover_advertise` / `i2c_pen_timeout_recover_advertise`: increment `diag_i` and `diag_r`, reset MSSP, run bus-clear/ping when safe, set `dsp_fault_flags.bit2`, and emit BF/08.
+- Persistent DSP NACK now escalates through the volume retry path to `dsp_fault_flags.bit6`, so CONTROL sees BF/08 with the DSP-fault bit set instead of ACKSTAT-only `0x04`.
+- Regression fixes found during implementation: `mssp_hard_reset` now actually clears `SSPSTAT[5:0]` while preserving `SMP/CKE`, and the new recovery latch lives at `0x2F2` instead of clobbering `main_rx_frame_gap_timeout` at `0x2F1`.
+- Tests: `tests/sim/test_v31_v163b_robustness.py`, `tests/sim/test_v171_v32_chain_bf08_integration.py`, `tests/sim/test_v32_fault_injection_sweep.py`, and `tests/sim/test_v32_layer5_diag_counters.py`.
 
 ## 2) UART Parser/Forwarder Liveness Hardening
 

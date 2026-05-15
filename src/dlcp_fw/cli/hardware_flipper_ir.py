@@ -41,6 +41,12 @@ ACTION_SPECS: tuple[IrActionSpec, ...] = (
     IrActionSpec("VOL_DOWN", "RC5", 0x10, 0x34, aliases=("VOLUME_DOWN",)),
     IrActionSpec("INPUT_UP", "RC5", 0x10, 0x36),
     IrActionSpec("INPUT_DOWN", "RC5", 0x10, 0x37),
+    IrActionSpec("STD_POWER", "RC5", 0x00, 0x0C, aliases=("RC5_POWER",)),
+    IrActionSpec("STD_MUTE", "RC5", 0x00, 0x0D, aliases=("RC5_MUTE",)),
+    IrActionSpec("STD_VOL_UP", "RC5", 0x00, 0x10, aliases=("STD_VOLUME_UP", "RC5_VOL_UP")),
+    IrActionSpec("STD_VOL_DOWN", "RC5", 0x00, 0x11, aliases=("STD_VOLUME_DOWN", "RC5_VOL_DOWN")),
+    IrActionSpec("STD_INPUT_UP", "RC5", 0x00, 0x20, aliases=("STD_CH_UP", "RC5_INPUT_UP")),
+    IrActionSpec("STD_INPUT_DOWN", "RC5", 0x00, 0x21, aliases=("STD_CH_DOWN", "RC5_INPUT_DOWN")),
 )
 
 
@@ -153,6 +159,7 @@ def _response_has_cli_error(clean_text: str) -> bool:
     lowered = clean_text.lower()
     return (
         "unknown command" in lowered
+        or "cannot be run" in lowered
         or "error:" in lowered
         or "failed" in lowered
         or ("usage:" in lowered and "ir tx" in lowered)

@@ -24,7 +24,7 @@ from dlcp_fw.flash.dlcp_main_flash import (
     run_preflight,
 )
 from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
-from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
+from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX, V32_MAIN_ASM
 from dlcp_fw.patch.build_v32_release import build_v32_release
 
 
@@ -428,10 +428,129 @@ def test_pick_device_auto_resolve_requires_unambiguous_match(monkeypatch) -> Non
         _pick_device(0x04D8, 0xFF89, None, route_label="L")
 
 
+def test_wait_for_app_prefers_reconnected_path_when_serial_is_blank(monkeypatch) -> None:
+    other = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"other-path",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="",
+    )
+    target = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"target-path",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="",
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash.enumerate_devices",
+        lambda vid, pid: [other, target],
+    )
+
+    from dlcp_fw.flash.dlcp_main_flash import _wait_for_app
+
+    assert (
+        _wait_for_app(
+            vid=0x04D8,
+            pid=0xFF89,
+            serial_number="",
+            path=b"target-path",
+            timeout_s=0.1,
+        )
+        == target
+    )
+
+
+def test_wait_for_app_does_not_return_other_running_app_for_blank_serial(
+    monkeypatch,
+) -> None:
+    other = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"other-path",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="",
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash.enumerate_devices",
+        lambda vid, pid: [other],
+    )
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _s: None)
+
+    from dlcp_fw.flash.dlcp_main_flash import _wait_for_app
+
+    with pytest.raises(RuntimeError, match="app did not reconnect"):
+        _wait_for_app(
+            vid=0x04D8,
+            pid=0xFF89,
+            serial_number="",
+            path=b"target-path",
+            timeout_s=0.001,
+        )
+
+
+def test_wait_for_app_accepts_unique_new_path_after_reenumeration(monkeypatch) -> None:
+    other = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"other-path",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="",
+    )
+    target = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"new-target-path",
+        manufacturer_string="Hypex",
+        product_string="DLCP",
+        serial_number="",
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash.enumerate_devices",
+        lambda vid, pid: [other, target],
+    )
+
+    from dlcp_fw.flash.dlcp_main_flash import _wait_for_app
+
+    assert (
+        _wait_for_app(
+            vid=0x04D8,
+            pid=0xFF89,
+            serial_number="",
+            path=b"old-target-path",
+            previous_app_paths={b"other-path", b"old-target-path"},
+            timeout_s=0.1,
+        )
+        == target
+    )
+
+
 def test_main_boot_ack_detector_accepts_expected_shapes() -> None:
     assert _looks_like_main_boot_ack(bytes([0x40, 0x00, 0x00]) + bytes(61)) is True
     assert _looks_like_main_boot_ack(bytes([0x00, 0x00, 0x00]) + bytes(61)) is True
     assert _looks_like_main_boot_ack(bytes([0xAA, 0x00, 0x00]) + bytes(61)) is False
+
+
+def test_v32_cmd40_bootloader_entry_preserves_saved_settings_in_source() -> None:
+    """BUG-SETTINGS-01: HID cmd 0x40 must not factory-reset MAIN
+    settings before entering the bootloader."""
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    start = text.index("flow_hid_command_dispatch_13d0:")
+    end = text.index("goto        flash_entry_quiet_shutdown", start)
+    body = text[start:end]
+
+    assert "main_core_service_265c" not in body
+    assert "computed_volume" not in body
+    assert "input_select" not in body
+    assert "ram_0x0BD" not in body
+    assert "event_flags" not in body
+    assert "setf        ram_0x007" in body
+    assert "main_flash_service_46de" in body
 
 
 def test_build_v32_release_rolls_back_source_and_hex_on_assemble_failure(
@@ -456,6 +575,36 @@ def test_build_v32_release_rolls_back_source_and_hex_on_assemble_failure(
 
     assert asm_path.read_text(encoding="utf-8") == original_text
     assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+
+
+def test_build_v32_release_bumps_runtime_eeprom_revision_marker(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BUG-REV-01 regression: the boot-time EEPROM[0x82] migration
+    literal must advance with the canonical EEPROM data tuple."""
+    asm_path = tmp_path / "dlcp_main_v32.asm"
+    asm_path.write_text(
+        "runtime_identity:\n"
+        "        movlw   0x38 ; V3.2_RUNTIME_EEPROM_REV\n"
+        "org 0xF00000\n"
+        "        db      0x03, 0x02, 0x38\n",
+        encoding="utf-8",
+    )
+    output_hex = tmp_path / "DLCP_Firmware_V3.2.hex"
+
+    def _fake_assemble(asm, out_hex, *, output_lst=None, gpasm="gpasm"):
+        out_hex.write_text(":00000001FF\n", encoding="ascii")
+        if output_lst is not None:
+            output_lst.write_text("; ok\n", encoding="ascii")
+
+    monkeypatch.setattr("dlcp_fw.patch.build_v32_release.assemble_v30", _fake_assemble)
+
+    old_rev, new_rev, _ = build_v32_release(asm_path=asm_path, output_hex=output_hex)
+
+    assert (old_rev, new_rev) == (0x38, 0x39)
+    text = asm_path.read_text(encoding="utf-8")
+    assert "movlw   0x39 ; V3.2_RUNTIME_EEPROM_REV" in text
+    assert "db      0x03, 0x02, 0x39" in text
 
 
 def test_build_v32_release_rolls_back_source_lst_on_assemble_failure(
@@ -537,5 +686,3 @@ def test_build_v32_release_deletes_source_lst_if_none_existed_before(
         "build when no `.lst` existed before — next symbol lookup would "
         "silently consume it as canonical"
     )
-
-

@@ -195,6 +195,39 @@ def test_v32_cmd03_write_handler_sets_bit6_alongside_bit5() -> None:
     )
 
 
+def test_v32_cmd03_read_handler_does_not_set_filename_xact_gate() -> None:
+    """cmd 0x03 filename READ must be side-effect-free for the filename
+    dirty/xact bits.
+
+    BUG-PRESET-01: a READ that sets bit6 makes the EP0 preset reapply
+    path skip ``preset_load_filename``, leaving active preset B with
+    preset A's visible filename until a later non-USB preset broadcast.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    m = re.search(
+        r"flow_hid_command_dispatch_111a:[^\n]*\n"
+        r"(?P<body>.*?)"
+        r"flow_hid_command_dispatch_1126:",
+        text,
+        re.S,
+    )
+    assert m is not None, "cmd 0x03 filename response block not found"
+    body = m.group("body")
+    assert re.search(
+        r"movf\s+ram_0x097,\s*W,\s*BANKED[^\n]*\n"
+        r"\s*xorlw\s+0x09[^\n]*\n"
+        r"\s*bz\s+flow_hid_command_dispatch_111a_dirty[^\n]*\n"
+        r"\s*movf\s+ram_0x097,\s*W,\s*BANKED[^\n]*\n"
+        r"\s*xorlw\s+0x0A[^\n]*\n"
+        r"\s*bnz\s+flow_hid_command_dispatch_1126",
+        body,
+    ), (
+        "cmd 0x03 response tail must branch around the bit5/bit6 dirty "
+        "sets unless the subcommand is WRITE (0x09) or ERASE (0x0A); "
+        "READ (0x08) must not arm the USB filename transaction gate"
+    )
+
+
 def test_v32_force_persist_clears_bit6_after_preset_persist_filename() -> None:
     """main_core_service_265c (the event_flags.0 dispatcher; the
     force_persist USB trigger ultimately reaches it) must clear bit6
@@ -297,6 +330,27 @@ def _open_chain():
     assert pjs == _PRESET_JOB_IDLE, (
         f"chain failed to reach IDLE post-boot (pjs={pjs})"
     )
+    return chain
+
+
+def _open_main_only_chain():
+    """Open a V3.2 MAIN-only chain and settle it enough for parser and
+    preset-job tests.
+
+    The USB filename-xact resume guarantee is MAIN-local.  Using a full
+    V1.71+V3.2 chain for a synthetic direct MAIN-frame injection can race
+    CONTROL's periodic full-sync preset broadcast, which represents
+    CONTROL's own stale UI state rather than the host/xact resume path under
+    test.
+    """
+    chain = RustChain.from_v32_main_only()
+    chain.step_ticks(2_000_000_000)
+    pjs = chain.read_main_reg(0, _PRESET_JOB_STATE)
+    assert pjs == _PRESET_JOB_IDLE, (
+        f"MAIN-only chain failed to reach IDLE post-boot (pjs={pjs})"
+    )
+    active = chain.read_main_reg(0, _ACTIVE_FLAGS) & 0x08
+    assert active, "MAIN-only chain did not open active gate after boot settle"
     return chain
 
 
@@ -417,7 +471,7 @@ def test_v32_post_gate_broadcast_dispatches_normally() -> None:
     never been set.  This is the resume guarantee."""
     _require_rust()
     _require_v32_hex(V32_MAIN_HEX)
-    chain = _open_chain()
+    chain = _open_main_only_chain()
 
     initial_af = chain.read_main_reg(0, _ACTIVE_FLAGS)
     initial_bit2 = (initial_af & _ACTIVE_FLAGS_PRESET_BIT) >> 2

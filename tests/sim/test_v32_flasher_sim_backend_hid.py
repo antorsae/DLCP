@@ -12,9 +12,11 @@ The full flasher-via-sim integration test lives in
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from dlcp_fw.paths import V171_CONTROL_HEX, V32_MAIN_HEX
+from dlcp_fw.paths import PROJECT_ROOT, V171_CONTROL_HEX, V32_MAIN_ASM, V32_MAIN_HEX
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -44,8 +46,35 @@ _FILENAME_RAM_LEN = 0x1E
 _FILENAME_DIRTY_FLAGS_ADDR = 0x0BD
 _FILENAME_DIRTY_BIT = 0x20
 _USB_XACT_PENDING_BIT = 0x40
+_LOGICAL_VOLUME_RAM_BASE = 0x066
+_COMPUTED_VOLUME_RAM_BASE = 0x06E
+_INPUT_SELECT_RAM = 0x099
+_INPUT_SELECT_MIRROR_RAM = 0x0B3
+_SETUP_PROFILE_RAM = 0x0B8
+_USER_VOLUME_MINUS_30 = (0xFF, 0xFF, 0xFF, 0xE2)
+_USER_INPUT_COAX_2 = 0x03
+_USER_SETUP_PROFILE_SENTINEL = 0x03
 
 _HID_REPORT_LEN = 64
+_CMD_DIAG_MEMREAD = 0x43
+_DIAG_MEMREAD_REGION_EEPROM = 0x01
+
+
+def test_v32_firmware_hid_entrypoint_matches_listing() -> None:
+    """The rust firmware-HID facade must jump to the current V3.2 USB service."""
+    lst_text = V32_MAIN_ASM.with_suffix(".lst").read_text(encoding="utf-8")
+    match = re.search(
+        r"^main_usb_service_3a26\s+ADDRESS\s+([0-9A-Fa-f]{8})\b",
+        lst_text,
+        re.MULTILINE,
+    )
+    assert match, "V3.2 listing has no main_usb_service_3a26 symbol"
+    service_pc = int(match.group(1), 16)
+
+    facade_src = (PROJECT_ROOT / "crates/dlcp-sim-py/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert f"MAIN_USB_SERVICE_3A26_PC: u32 = 0x{service_pc:04X}" in facade_src
 
 
 def _require_rust() -> None:
@@ -67,6 +96,14 @@ def _open_chain():
     return chain
 
 
+def _read_v32_eeprom_identity_from_hex() -> tuple[int, int, int]:
+    info = dlcp_main_flash.detect_static_hex_eeprom_version(
+        dlcp_main_flash.parse_intel_hex(str(V32_MAIN_HEX))
+    )
+    assert info is not None, f"missing V3.2 EEPROM identity in {V32_MAIN_HEX}"
+    return (info.major & 0xFF, info.minor & 0xFF, info.revision & 0xFF)
+
+
 def _exchange(dev: SimHidBackend, payload: bytes) -> bytes:
     """Helper: write a 64-byte payload (with the 0x00 report id prefix) and
     read the next 64-byte response."""
@@ -79,6 +116,62 @@ def _exchange(dev: SimHidBackend, payload: bytes) -> bytes:
         return b""
     assert len(raw) == _HID_REPORT_LEN
     return bytes(raw)
+
+
+def test_v32_runtime_eeprom_identity_matches_release_hex_without_seed() -> None:
+    """BUG-REV-01: a canonical V3.2 boot must migrate runtime EEPROM
+    identity to the release tuple without test-side seeding.
+
+    The release flasher streams app program memory only; EEPROM bytes in
+    the HEX are not flashed directly.  Therefore V3.2 itself must write
+    the runtime identity tuple during boot, including the release revision
+    at EEPROM[0x82].
+    """
+    chain = _open_chain()
+    expected = _read_v32_eeprom_identity_from_hex()
+    for unit in (0, 1):
+        actual = tuple(chain.read_main_eeprom_byte(unit, 0x80 + i) for i in range(3))
+        assert actual == expected, (
+            f"MAIN{unit} runtime EEPROM identity mismatch: got {actual!r}, "
+            f"expected release tuple {expected!r}"
+        )
+
+
+def test_v32_firmware_hid_report_enters_dispatch_and_reads_eeprom() -> None:
+    """Firmware-path USB HID gate: a simulated host EP1 report must be
+    consumed by V3.2 ``main_usb_service_3a26`` and enter the real
+    ``hid_command_dispatch`` path.
+
+    This specifically guards against the old ``SimHidBackend`` shape,
+    which answered cmd 0x43 by calling ``chain.read_main_eeprom_byte``
+    directly and therefore did not exercise firmware-side USB staging,
+    command dispatch, or EP1 IN response arming.
+    """
+    chain = _open_chain()
+    expected = _read_v32_eeprom_identity_from_hex()
+
+    payload = bytearray(_HID_REPORT_LEN)
+    payload[0] = _CMD_DIAG_MEMREAD
+    payload[1] = _DIAG_MEMREAD_REGION_EEPROM
+    payload[2] = 0x80
+    payload[3] = 0x00
+    payload[4] = 0x03
+
+    resp, dispatch_hits = chain.firmware_hid_report(1, bytes(payload))
+    assert dispatch_hits > 0
+    assert len(resp) == _HID_REPORT_LEN
+    assert resp[0] == _CMD_DIAG_MEMREAD
+    assert resp[1] == 0x00
+    assert resp[2] == 0x03
+    assert tuple(resp[3:6]) == expected
+
+    # Prove the firmware EP1 buffers, not only the returned Python bytes,
+    # reflect the transaction.
+    assert chain.read_main_reg(1, 0x042C) == _CMD_DIAG_MEMREAD
+    assert chain.read_main_reg(1, 0x040C) & 0x80
+    assert chain.read_main_reg(1, 0x0410) & 0x80
+    in_buf = bytes(chain.read_main_reg(1, 0x046C + i) for i in range(6))
+    assert in_buf == bytes(resp[:6])
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +250,7 @@ def test_sim_hid_cmd06_version_matches_target_hex_version() -> None:
     payload[0] = 0x06
     payload[1] = 0x01
     resp = _exchange(dev, bytes(payload))
+    assert dev.last_firmware_hid_dispatch_hits > 0
     assert resp[0] == 0x06
     flag, major, minor = resp[1], resp[2], resp[3]
     # V3.2 firmware: version major/minor are 3/2.  Flag is whatever the
@@ -197,6 +291,7 @@ def test_sim_hid_cmd03_write_then_read_round_trips_filename() -> None:
     # subcmd, per ``_name_slot_to_cmd03_payload``).
     payload[2 : 2 + len(name_bytes)] = name_bytes
     resp = _exchange(dev, bytes(payload))
+    assert dev.last_firmware_hid_dispatch_hits > 0
     assert resp[0] == 0x03 and resp[1] == 0x09
 
     # Verify RAM matches what we wrote.
@@ -234,6 +329,7 @@ def test_sim_hid_cmd03_erase_fills_slot_with_0xff() -> None:
     payload[0] = 0x03
     payload[1] = 0x0A  # ERASE subcmd
     resp = _exchange(dev, bytes(payload))
+    assert dev.last_firmware_hid_dispatch_hits > 0
     assert resp[0] == 0x03 and resp[1] == 0x0A
 
     for i in range(_FILENAME_RAM_LEN):
@@ -265,6 +361,7 @@ def test_sim_hid_cmd03_write_padding_maps_zero_to_0xff_matching_firmware() -> No
     # payload[2 + len(name_bytes) : 2 + 0x1E] is already 0x00 from
     # bytearray init -> firmware should convert these to 0xFF in RAM.
     resp = _exchange(dev, bytes(payload))
+    assert dev.last_firmware_hid_dispatch_hits > 0
     assert resp[0] == 0x03 and resp[1] == 0x09
 
     # Verify RAM: name bytes verbatim, padding bytes are 0xFF (NOT 0x00).
@@ -374,6 +471,7 @@ def test_sim_hid_cmd43_flash_region_matches_chain_read_core_flash() -> None:
     payload[3] = (addr >> 8) & 0xFF
     payload[4] = length
     resp = _exchange(dev, bytes(payload))
+    assert dev.last_firmware_hid_dispatch_hits > 0
     assert resp[0] == 0x43
     assert resp[1] == 0x00, f"DIAG_MEMREAD bad status: 0x{resp[1]:02X}"
     assert resp[2] == length
@@ -400,6 +498,7 @@ def test_sim_hid_cmd43_eeprom_region_matches_chain_read_main_eeprom() -> None:
     payload[3] = (addr >> 8) & 0xFF
     payload[4] = length
     resp = _exchange(dev, bytes(payload))
+    assert dev.last_firmware_hid_dispatch_hits > 0
     assert resp[0] == 0x43
     assert resp[1] == 0x00, f"DIAG_MEMREAD bad status: 0x{resp[1]:02X}"
 
@@ -444,6 +543,61 @@ def test_sim_hid_cmd40_app_to_bootloader_flips_mode() -> None:
     assert "bootl" in hub.enumerate_devices(
         SimUsbHub.DEFAULT_VID, SimUsbHub.DEFAULT_PID
     )[1].product_string
+
+
+def test_sim_hid_cmd40_preserves_user_volume_and_input_settings() -> None:
+    """BUG-SETTINGS-01: app cmd 0x40 writes only the bootloader marker
+    and must preserve EEPROM-backed user settings."""
+    chain = _open_chain()
+    hub = make_sim_hub(chain)
+    sim_dev = hub.device_for_unit(1)
+
+    # Seed both persistent EEPROM bytes and live RAM mirrors to a
+    # non-default state.  The hardware bug reset these to EEPROM[0..4]
+    # = FF FF FF A0 01 (-96 dB, analog 1).
+    for offset, value in enumerate(_USER_VOLUME_MINUS_30):
+        chain.write_main_eeprom_byte(1, offset, value)
+        chain.write_main_reg(1, _COMPUTED_VOLUME_RAM_BASE + 3 - offset, value)
+        chain.write_main_reg(1, _LOGICAL_VOLUME_RAM_BASE + 3 - offset, value)
+    chain.write_main_eeprom_byte(1, 0x04, _USER_INPUT_COAX_2)
+    chain.write_main_reg(1, _INPUT_SELECT_RAM, _USER_INPUT_COAX_2)
+    chain.write_main_reg(1, _INPUT_SELECT_MIRROR_RAM, _USER_INPUT_COAX_2)
+    chain.write_main_eeprom_byte(1, 0x0E, _USER_SETUP_PROFILE_SENTINEL)
+    chain.write_main_reg(1, _SETUP_PROFILE_RAM, _USER_SETUP_PROFILE_SENTINEL)
+
+    dev = hub.open_hid_path(sim_dev.path)
+    payload = bytearray(_HID_REPORT_LEN)
+    payload[0] = 0x40
+    n = dev.write(b"\x00" + bytes(payload))
+    assert n == _HID_REPORT_LEN + 1
+    assert dev.read(_HID_REPORT_LEN, 100) == []
+
+    assert sim_dev.mode == "bootloader"
+    assert sim_dev.last_app_to_bootloader_settings == {
+        "eeprom_volume": _USER_VOLUME_MINUS_30,
+        "eeprom_input": _USER_INPUT_COAX_2,
+        "eeprom_setup_profile": _USER_SETUP_PROFILE_SENTINEL,
+        "computed_volume": bytes(reversed(_USER_VOLUME_MINUS_30)),
+        "logical_volume": bytes(reversed(_USER_VOLUME_MINUS_30)),
+        "input_select": _USER_INPUT_COAX_2,
+        "input_mirror": _USER_INPUT_COAX_2,
+        "setup_profile": _USER_SETUP_PROFILE_SENTINEL,
+    }
+    assert chain.read_main_eeprom_byte(1, 0xFF) == 0x00
+    assert tuple(
+        chain.read_main_eeprom_byte(1, offset) for offset in range(4)
+    ) == _USER_VOLUME_MINUS_30
+    assert chain.read_main_eeprom_byte(1, 0x04) == _USER_INPUT_COAX_2
+    assert bytes(
+        chain.read_main_reg(1, _COMPUTED_VOLUME_RAM_BASE + i) for i in range(4)
+    ) == bytes(reversed(_USER_VOLUME_MINUS_30))
+    assert bytes(
+        chain.read_main_reg(1, _LOGICAL_VOLUME_RAM_BASE + i) for i in range(4)
+    ) == bytes(reversed(_USER_VOLUME_MINUS_30))
+    assert chain.read_main_reg(1, _INPUT_SELECT_RAM) == _USER_INPUT_COAX_2
+    assert chain.read_main_reg(1, _INPUT_SELECT_MIRROR_RAM) == _USER_INPUT_COAX_2
+    assert chain.read_main_eeprom_byte(1, 0x0E) == _USER_SETUP_PROFILE_SENTINEL
+    assert chain.read_main_reg(1, _SETUP_PROFILE_RAM) == _USER_SETUP_PROFILE_SENTINEL
 
 
 def test_sim_hid_cmd40_stream_then_cmd41_verify_round_trips_via_flasher_crc() -> None:

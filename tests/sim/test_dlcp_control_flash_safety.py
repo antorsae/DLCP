@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import types
 
 import pytest
 
@@ -15,7 +17,9 @@ from dlcp_fw.flash.dlcp_control_flash import (
     _pick_device,
     build_control_stream,
     bootloader_mismatch_addresses,
+    crc_stream,
     detect_static_hex_control_release_info,
+    flash_control,
     main,
     parse_intel_hex,
     run_preflight,
@@ -113,12 +117,178 @@ def test_build_control_stream_preserves_release_metadata_bytes() -> None:
     assert stream[offset + 8 : offset + 11] == bytes([0x01, 0x07, 0x31])
 
 
+def test_hfd_v212_control_update_disassembly_contract_is_documented() -> None:
+    pc_dir = Path("firmware/disasm/PC/HFD_v2.12")
+    builder = (pc_dir / "disasm_packet_builder_554590_554980.asm").read_text(encoding="utf-8")
+    parser = (pc_dir / "disasm_response_parser_553910_554520.asm").read_text(encoding="utf-8")
+    txlogic = (pc_dir / "disasm_cmd3_txlogic_554c00_554ed0.asm").read_text(encoding="utf-8")
+
+    # HFD command 0x42 is the CONTROL firmware byte stream.  The builder
+    # starts at internal report offset 3, because offset 0 is HID report ID,
+    # offset 1 is command 0x42, and offset 2 remains zero.  That maps to
+    # device payload offsets 2..31 after hidapi's report-ID byte is stripped.
+    assert "5548f0: be 03 00 00 00" in builder
+    assert "554900: 8b 15 80 94 56 00" in builder
+    assert "554908: 88 44 32 25" in builder
+    assert "554919: e8 86 05 00 00" in builder
+
+    # HFD command 0x41 sends the rolling CRC through the big-endian dword
+    # helper at offset 3.  The high/low CRC bytes therefore land at device
+    # payload offsets 4 and 5, matching dlcp_control_flash.py.
+    assert "55492a: 0f b7 0d 6c b3 57 00" in builder
+    assert "554931: b2 03" in builder
+    assert "554935: e8 36 05 00 00" in builder
+    assert "554e70: 53" in txlogic
+    assert "554e7f: 88 5c 30 25" in txlogic
+
+    # The checked-in slice stops at 0x554ECC, before the final xor literal
+    # at 0x554ED7.  These instructions still pin the same LSB-first bit-13
+    # CRC helper entry and data-bit injection used by MAIN's relay.
+    assert "554eb2: c1 e9 0d" in txlogic
+    assert "554ebb: 66 d1 26" in txlogic
+    assert "554ec9: 66 01 1e" in txlogic
+
+    # Responses are ACK-paced: HFD handles 0x42 responses, advances its report
+    # counter, and either sends another 0x42 or finalizes with 0x41.  The 0x41
+    # response handler treats byte 0xAA as firmware-update success.
+    assert "554266: a1 04 92 56 00" in parser
+    assert "554317: b2 42" in parser
+    assert "554302: b2 41" in parser
+    assert "554333: 80 7f 07 aa" in parser
+
+
+def test_flash_control_starts_with_first_hfd_data_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHidDevice:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+            self.reads: list[int] = []
+
+        def open_path(self, path: bytes) -> None:
+            assert path == b"pb1"
+
+        def set_nonblocking(self, value: bool) -> None:
+            assert value is True
+
+        def write(self, payload: bytes) -> int:
+            self.writes.append(payload)
+            return len(payload)
+
+        def read(self, size: int, timeout_ms: int):
+            self.reads.append(timeout_ms)
+            report = self.writes[-1][1:]
+            resp = bytearray(64)
+            resp[0] = report[0]
+            if report[0] == 0x41:
+                resp[2] = 0xAA
+            return list(resp)
+
+        def close(self) -> None:
+            pass
+
+    fake = FakeHidDevice()
+    monkeypatch.setitem(
+        sys.modules,
+        "hid",
+        types.SimpleNamespace(device=lambda: fake),
+    )
+
+    stream = bytes(i & 0xFF for i in range(CONTROL_PROG_END_EXCL))
+    flash_control(
+        vid=0x04D8,
+        pid=0xFF89,
+        path=b"pb1",
+        stream=stream,
+        pace_ms=0,
+        init_delay_ms=0,
+        verify=True,
+        dry_run=False,
+        verbose=False,
+    )
+
+    stream_reports = (CONTROL_PROG_END_EXCL + 29) // 30
+    assert len(fake.writes) == stream_reports + 1
+    assert len(fake.reads) == stream_reports + 1
+
+    # HFD's first 0x42 packet is not a separate FW_Upd init. It already
+    # carries firmware bytes 0..29 at device-report offsets 2..31.
+    assert fake.writes[0][1] == 0x42
+    assert fake.writes[0][2] == 0x00
+    assert fake.writes[0][3 : 3 + 30] == stream[:30]
+
+    assert fake.writes[-1][1] == 0x41
+    expected_crc = crc_stream(stream)
+    assert fake.writes[-1][5] == (expected_crc >> 8) & 0xFF
+    assert fake.writes[-1][6] == expected_crc & 0xFF
+
+
+def test_flash_control_first_report_times_out_when_ack_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHidDevice:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+            self.closed = False
+            self.nonblocking: bool | None = None
+
+        def open_path(self, path: bytes) -> None:
+            assert path == b"pb1"
+
+        def set_nonblocking(self, value: bool) -> None:
+            self.nonblocking = value
+
+        def write(self, payload: bytes) -> int:
+            self.writes.append(payload)
+            return len(payload)
+
+        def read(self, size: int, timeout_ms: int):
+            return []
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeHidDevice()
+    monkeypatch.setitem(
+        sys.modules,
+        "hid",
+        types.SimpleNamespace(device=lambda: fake),
+    )
+
+    with pytest.raises(RuntimeError, match="no response after control stream report 1"):
+        flash_control(
+            vid=0x04D8,
+            pid=0xFF89,
+            path=b"pb1",
+            stream=bytes([0xFF]) * CONTROL_PROG_END_EXCL,
+            pace_ms=0,
+            init_delay_ms=0,
+            verify=True,
+            dry_run=False,
+            verbose=False,
+            report_timeout_ms=1,
+        )
+
+    assert fake.nonblocking is True
+    assert fake.closed is True
+    assert len(fake.writes) == 1
+    assert fake.writes[0][1] == 0x42
+
+
 def test_preflight_reports_target_release_and_compare_limitation(capsys) -> None:
     rc = main(["--hex", str(V171_CONTROL_HEX), "--preflight-only"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "target release: V1.71 / rev 0x" in out
     assert "live CONTROL version/revision probe is unavailable" in out
+
+
+def test_safe_wrapper_timeout_guidance_mentions_manual_bootloader_hold() -> None:
+    text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
+    assert "live control flash timed out" in text
+    assert "power-cycle while holding UP+DOWN for at least 6s" in text
+    assert "do not press " in text
+    assert "SELECT; retry if the LCD returns to Volume" in text
 
 
 def test_build_v171_release_rolls_back_source_and_hex_on_assemble_failure(

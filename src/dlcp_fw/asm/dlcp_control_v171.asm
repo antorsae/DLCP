@@ -823,7 +823,7 @@ flow_app_cold_init_03DE:                                                  ; addr
 flow_app_cold_init_03F6:                                                  ; address: 0x0003f6
 
         btfss   PIR1, RCIF, A                               ; reg: 0xf9e, bit: 5
-        goto    v171_isr_check_tmr1                                       ; M3 task #152: TMR1IF gate
+        goto    flow_app_cold_init_0414
         lfsr    0x0, 0x066
         movf    0x99, W, B                                  ; reg: 0x099
         movff   RCREG, PLUSW0                               ; reg1: 0xfae, reg2: 0xfeb
@@ -840,26 +840,13 @@ flow_app_cold_init_040C:                                                  ; addr
         ; software write pointer if this byte would overwrite unread data.
         movf    0x99, W, B                                  ; reg: 0x099
         cpfseq  0x98, B                                     ; reg: 0x098
-        goto    v171_isr_check_tmr1                                       ; M3: route through TMR1IF
+        goto    flow_app_cold_init_0414
         decf    0x99, F, B                                  ; reg: 0x099
         movlw   0xff
         cpfseq  0x99, B                                     ; reg: 0x099
-        goto    v171_isr_check_tmr1                                       ; M3: route through TMR1IF
+        goto    flow_app_cold_init_0414
         movlw   0x2f
         movwf   0x99, B                                     ; reg: 0x099
-
-v171_isr_check_tmr1:                                                  ; M3 task #152
-        ; V1.71 task #152 (M3): TMR1IF check.  Timer1 fires every
-        ; ~890 µs during IR SAMPLING state to clock the non-blocking
-        ; RC5 decoder.  call v171_ir_sample_handler reads RB5,
-        ; shifts a Manchester bit into the buffer, advances state,
-        ; and reloads TMR1.  When the 32nd sample is collected, the
-        ; sample handler tail-calls v171_ir_decode_done which writes
-        ; ir_decoded_cmd / ir_decoded_addr and clears IR_ARMED.
-        btfss   PIR1, TMR1IF, A
-        goto    flow_app_cold_init_0414
-        call    v171_ir_sample_handler, 0x0
-        bcf     PIR1, TMR1IF, A
 
 flow_app_cold_init_0414:                                                  ; address: 0x000414
 
@@ -871,21 +858,15 @@ flow_app_cold_init_0414:                                                  ; addr
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         btfss   control_flags, 0x0, A                   ; reg: 0x01f
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
-        ; V1.71 task #152 (M3): RB5=LOW gate.  Only arm the Timer1-
-        ; driven decoder if RB5 is currently LOW -- the falling-edge
-        ; phase the decoder needs.  RBIF can fire on RB7:RB4
-        ; transitions (panel buttons too); without this gate, a
-        ; rising-edge would try to arm the decoder mid-frame.
-        btfsc   PORTB, RB5, A
-        goto    flow_app_cold_init_0434
-        ; Don't re-arm if Timer1 is already running (state != IDLE).
-        ; Mid-sample RBIF events are expected (every Manchester
-        ; transition is an RB5 IOC); ignore them while sampling.
-        movlb   0x1
-        movf    v171_ir_state, F, BANKED
-        bnz     flow_app_cold_init_0434
-        ; Falling edge + IR_ARMED + state IDLE: kick the decoder.
-        call    v171_ir_start_decode, 0x0
+        ; V1.71 hardware fallback (2026-05-09): use the stock V1.6b
+        ; in-ISR RC5 decoder.  The Timer1 sampling state machine passed
+        ; rust-sim pulse tests but decoded no real Flipper IR on silicon.
+        ; Keep the stock timing until a hardware-validated non-blocking
+        ; decoder exists.
+        rcall   ir_rc5_decode                                ; dest: 0x00021e
+        movwf   ir_decoded_cmd, A                        ; reg: 0x01d
+        movff   (Common_RAM + 13), ir_decoded_addr        ; reg1: 0x00d, reg2: 0x01e
+        bcf     control_flags, 0x0, A                   ; reg: 0x01f
 
 flow_app_cold_init_0434:                                                  ; address: 0x000434
 
@@ -926,6 +907,7 @@ flow_app_cold_init_0436:                                                  ; addr
 ; rx_parser_entry:
 rx_parser_entry:                                               ; address: 0x00044a
 
+        movlb   0x00                                        ; RX ring/parser BANKED state lives in bank 0
         btfss   RCSTA, OERR, A                              ; reg: 0xfab, bit: 1
         goto    flow_rx_parser_entry_0456                                   ; dest: 0x000456
         ; ---------------------------------------------------------------
@@ -1223,6 +1205,7 @@ v171_bf08_set_fault:
 v171_bf2x_case_check:
         ; ---------------------------------------------------------------
         ; V1.71 (Layer 5 Phase B + Tier-1): BF/21..2B diagnostics replies
+        ; plus exact BF/2C link-health replies.
         ; ---------------------------------------------------------------
         ; V3.2 rev 0x37 MAIN emits two reply burst types into BF/2N space:
         ;   * cmd 0x21 -> 7-frame burst BF/21..BF/27  (runtime counters)
@@ -1246,6 +1229,14 @@ v171_bf2x_case_check:
         ;                        this PB so the page-entry hook does NOT
         ;                        re-fire cmd 0x22 within the same session
         ;
+        ; Link-health must be exact-special-cased.  Do NOT widen the
+        ; diagnostics cache range to 0x2C: the cache has exactly 11
+        ; cells, so BF/2C would be offset 11 and corrupt adjacent RAM.
+        movlw   0x2C
+        cpfseq  rx_parsed_cmd, A
+        bra     v171_bf2x_diag_range_check
+        bra     v171_health_bf2c_reply
+v171_bf2x_diag_range_check:
         ; Range gate: accept cmd 0x21..0x2B only.
         movlw   0x21
         cpfslt  rx_parsed_cmd, A                          ; cmd < 0x21? -> exit
@@ -1261,11 +1252,11 @@ v171_bf2x_check_upper:
         movwf   (Common_RAM + 4), A                       ; col_offset
         ; --- Pick "effective target" for this frame's cache routing ---
         ; Two reply burst types share the BF/2N space:
-        ;   col 0..6   -- cmd 0x21 reply (runtime cells); use LIVE
-        ;                 v171_diag_target.  This burst's last frame
-        ;                 BF/27 toggles target as a side effect, so
-        ;                 the "live target at frame arrival" is the
-        ;                 right thing.
+        ;   col 0..6   -- cmd 0x21 reply (runtime cells); use SNAPSHOT
+        ;                 v171_diag_runtime_target captured when cmd
+        ;                 0x21 was sent.  BF/27 toggles the live target,
+        ;                 and reset-cause traffic can interleave, so the
+        ;                 live target is not a stable cache key.
         ;   col 7..10  -- cmd 0x22 reply (reset cells, Tier-1); use
         ;                 SNAPSHOT v171_diag_reset_target captured at
         ;                 cmd 0x22 send time.  v171_diag_target can
@@ -1277,9 +1268,10 @@ v171_bf2x_check_upper:
         ;                 PB's cache cells AND set the wrong
         ;                 v171_diag_reset_seen bit on BF/2B.  See the
         ;                 codex review note attached to commit d3d15cd.
-        ; Default = live target; cmd 0x22 path overrides with snapshot.
+        ; Default = runtime snapshot; cmd 0x22 path overrides with its
+        ; reset snapshot.
         movlb   0x01
-        movf    v171_diag_target, W, BANKED
+        movf    v171_diag_runtime_target, W, BANKED
         movwf   (Common_RAM + 5), A                       ; effective_target
         movlw   0x07
         cpfslt  (Common_RAM + 4), A                       ; col < 7? skip if so
@@ -1320,13 +1312,18 @@ v171_bf2x_have_effective_target:
         ; the full query/reply round-trip.
         ;
         ; Use (Common_RAM + 5) effective_target -- which equals
-        ; v171_diag_target on this path (col 6 < 7) -- for the
+        ; v171_diag_runtime_target on this path (col 6 < 7) -- for the
         ; present-mask OR-in.  The btg below operates on the LIVE
         ; v171_diag_target directly because that's what we're toggling.
         movlw   0x01                                      ; PB1 mask
         btfsc   (Common_RAM + 5), 0, A
         movlw   0x02                                      ; PB2 mask
         iorwf   v171_diag_present, F, BANKED
+        ; A completed addressed Diagnostics burst also proves CONTROL
+        ; reached that PB.  Count it as link freshness so Diagnostics
+        ; pages do not need a competing background cmd 0x23 poll.
+        call    v171_health_mark_common_target_fresh, 0x0
+        movlb   0x01
         bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         btg     v171_diag_target, 0, BANKED               ; flip for next query
         movlb   0x00
@@ -1379,6 +1376,49 @@ v171_bf2x_check_reset_last_exit_bsr0:
         ; catastrophic.
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
+
+v171_health_bf2c_reply:
+        ; Exact BF/2C health reply.  Expected replies reset the age for
+        ; the pending target snapshot.  Unsolicited BF/2C is ignored so
+        ; a stale byte cannot falsely mark a PB fresh or touch the
+        ; diagnostics cache.
+        movlb   0x01
+        btfss   v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        bra     v171_health_bf2c_done
+        bcf     v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        clrf    v171_health_pending_ticks, BANKED
+        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        btg     v171_health_poll_target, 0, BANKED
+        btfsc   v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        bra     v171_health_bf2c_pb2
+        clrf    v171_health_age_pb1, BANKED
+        bsf     v171_health_seen_mask, 0, BANKED
+        bra     v171_health_bf2c_done
+v171_health_bf2c_pb2:
+        clrf    v171_health_age_pb2, BANKED
+        bsf     v171_health_seen_mask, 1, BANKED
+v171_health_bf2c_done:
+        movlb   0x00
+        bra     flow_rx_parser_entry_05EA
+
+v171_health_mark_common_target_fresh:
+        ; Input: (Common_RAM + 5).bit0 = target snapshot (0 PB1, 1 PB2).
+        ; Used by the Diagnostics BF/27 last-frame path; a full addressed
+        ; diagnostics reply is also a successful PB reachability proof.
+        movlb   0x01
+        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        btfsc   (Common_RAM + 5), 0, A
+        bra     v171_health_mark_common_target_pb2
+        clrf    v171_health_age_pb1, BANKED
+        bsf     v171_health_seen_mask, 0, BANKED
+        movlb   0x00
+        return  0x0
+v171_health_mark_common_target_pb2:
+        clrf    v171_health_age_pb2, BANKED
+        bsf     v171_health_seen_mask, 1, BANKED
+        movlb   0x00
+        return  0x0
 
 flow_rx_parser_entry_05EA:                                                  ; address: 0x0005ea
 
@@ -2983,6 +3023,8 @@ flow_display_loop_iteration_0CB4:                                               
         movlb   0x00
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0                     ; legacy-link parser stall guard
+        call    v171_health_service, 0x0                          ; link-health ping/age tick
+        call    v171_health_patch_suffix, 0x0                     ; top-level LCD row-2 suffix
         movf    0x9e, W, B                                  ; reg: 0x09e
         xorlw   0xea
         movlw   0x60
@@ -3409,7 +3451,11 @@ v171_ir_preset_a_case:
         bra     v171_ir_preset_done                      ; yes — skip emit
         bcf     control_flags, PRESET_BIT, A             ; 0 = preset A
         rcall   v171_send_preset_frame_and_persist
+        bc      v171_ir_preset_a_abort
         bsf     control_flags, 0x3, A                    ; event_exit
+        bra     v171_ir_preset_done
+v171_ir_preset_a_abort:
+        bsf     control_flags, PRESET_BIT, A             ; restore B if TX/EEPROM aborted
         bra     v171_ir_preset_done
 
 v171_ir_preset_b_case:
@@ -3417,7 +3463,11 @@ v171_ir_preset_b_case:
         bra     v171_ir_preset_done
         bsf     control_flags, PRESET_BIT, A             ; 1 = preset B
         rcall   v171_send_preset_frame_and_persist
+        bc      v171_ir_preset_b_abort
         bsf     control_flags, 0x3, A                    ; event_exit
+        bra     v171_ir_preset_done
+v171_ir_preset_b_abort:
+        bcf     control_flags, PRESET_BIT, A             ; restore A if TX/EEPROM aborted
 
 v171_ir_preset_done:
         bsf     control_flags, IR_ARMED, A
@@ -3429,6 +3479,7 @@ v171_ir_standby_case:
         ; this endpoint forces standby regardless of current state.
         rcall   v171_send_standby_cmd_frame
         bc      v171_ir_endpoint_done
+        bcf     control_flags, 0x1, A                    ; local UI state = standby
         bsf     control_flags, 0x3, A                    ; event_exit
         bra     v171_ir_endpoint_done
 
@@ -3437,6 +3488,7 @@ v171_ir_wake_case:
         ; set event_exit.  Forces wake regardless of current state.
         rcall   v171_send_wake_cmd_frame
         bc      v171_ir_endpoint_done
+        bsf     control_flags, 0x1, A                    ; local UI state = awake
         bsf     control_flags, 0x3, A                    ; event_exit
 
 v171_ir_endpoint_done:
@@ -3659,7 +3711,11 @@ v171_prs_check_up:
         goto    v171_preset_loop                          ; yes — nothing to do
         bcf     control_flags, PRESET_BIT, A             ; flip to A
         rcall   v171_send_preset_frame_and_persist
+        bc      v171_prs_up_abort
         goto    v171_prs_screen_draw
+v171_prs_up_abort:
+        bsf     control_flags, PRESET_BIT, A             ; restore B if TX/EEPROM aborted
+        goto    v171_preset_loop
 
 v171_prs_check_down:
         btfss   0x9a, 0x2, B                              ; DOWN pressed?
@@ -3668,7 +3724,11 @@ v171_prs_check_down:
         goto    v171_preset_loop                          ; yes — nothing to do
         bsf     control_flags, PRESET_BIT, A             ; flip to B
         rcall   v171_send_preset_frame_and_persist
+        bc      v171_prs_down_abort
         goto    v171_prs_screen_draw
+v171_prs_down_abort:
+        bcf     control_flags, PRESET_BIT, A             ; restore A if TX/EEPROM aborted
+        goto    v171_preset_loop
 
 v171_preset_exit_check:
         bcf     control_flags, 0x3, A                    ; clear event_exit
@@ -3751,10 +3811,11 @@ v171_preset_exit_check:
 ;   0=I 1=D 2=S 3=B 4=R 5=A 6=P 7=O 8=V 9=W 10=X
 ; -- runtime counters first (I..P), reset-cause flags last (O..X).
 ;
-; The screen body loops calling display_loop_iteration each tick.  A
-; 16-bit countdown (v171_diag_poll_lo/hi) gates the next cmd 0x21
-; query; on each expiry we alternate between PB1 and PB2 so each PB
-; refreshes at half the cadence (~ once per 2 s at the 0x80 reload).
+; The screen body runs a non-modal foreground-service subset each tick.
+; A 16-bit countdown (v171_diag_poll_lo/hi) gates the next cmd 0x21
+; query; on each expiry the target is loaded from the visible PB page
+; (PB1 page -> PB1, PB2 page -> PB2), so the displayed PB refreshes at
+; the full cadence (~ once per 1 s at the 0x80 reload).
 ; Exits on RIGHT / LEFT (menu nav) or disconnect (CONNECTED clear),
 ; matching the V1.61b preset-screen exit semantics.
 ; ===========================================================================
@@ -3781,12 +3842,10 @@ v171_diag_pb_screen:
         ; fall through to v171_diag_screen
 
 v171_diag_screen:
-        ; First-entry setup: if no PB has ever replied, initialize
-        ; target=0 so the very first cadence-driven query goes to PB1
-        ; per spec.  Target now toggles only on BF/27 reception (the
-        ; LAST frame of the 7-frame burst), not in the cadence loop,
-        ; so we don't pre-flip it any more.  Subsequent entries pick
-        ; up the existing alternating target without a reset.
+        ; Page-entry setup: the cadence send path below reloads
+        ; v171_diag_target from v171_diag_render_pb_index before every
+        ; query, so the active visible page gets the full ~1 s update
+        ; cadence instead of sharing a hidden alternating target.
         ;
         ; Tier-1 page-entry hook: clear v171_diag_reset_seen so the
         ; cadence loop fires cmd 0x22 ONCE per PB on this Diag-page
@@ -3799,10 +3858,6 @@ v171_diag_screen:
         ; re-enter, which clears reset_seen here and re-fires cmd 0x22.
         movlb   0x01
         clrf    v171_diag_reset_seen, BANKED
-        movf    v171_diag_present, F, BANKED
-        bnz     v171_diag_screen_skip_init
-        bcf     v171_diag_target, 0, BANKED
-v171_diag_screen_skip_init:
         ; --- Tier-1 Phase 3.4 follow-up: cadence prime moved to
         ;     page-entry-only.  Originally the countdown clear lived
         ;     in v171_diag_screen_armed below, which the render
@@ -3854,6 +3909,9 @@ v171_diag_screen_draw:
         ; --- ABSENT path ---
         bra     v171_diag_render_absent
 v171_diag_screen_present:
+        call    v171_health_diag_check_stale, 0x0
+        movf    (Common_RAM + 4), F, A
+        bnz     v171_diag_render_stale_or_lost
         ; --- Pass 1: count cells across 11 cache slots in 3 sub-passes:
         ;     [0..6]  = runtime counters (I D S B R A P): always abnormal.
         ;     [7]     = POR flag (O):                     "expected" -- set on
@@ -3912,6 +3970,50 @@ v171_diag_count_abnormal_skip:
         movf    v171_diag_render_abnormal, F, BANKED
         bz      v171_diag_render_healthy
         bra     v171_diag_render_degraded
+
+; --- STALE/LOST layout: row 0 = "PBn old" or "PBn lost"; row 1 blank.
+v171_diag_render_stale_or_lost:
+        movlb   0x00
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   0x02
+        cpfseq  (Common_RAM + 4), A
+        bra     v171_diag_render_old
+        movlw   'l'
+        call    lcd_char_write, 0x0
+        movlw   'o'
+        call    lcd_char_write, 0x0
+        movlw   's'
+        call    lcd_char_write, 0x0
+        movlw   't'
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movlw   0x08
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+        bra     v171_diag_render_stale_row1_blank
+v171_diag_render_old:
+        movlw   'o'
+        call    lcd_char_write, 0x0
+        movlw   'l'
+        call    lcd_char_write, 0x0
+        movlw   'd'
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movlw   0x09
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+v171_diag_render_stale_row1_blank:
+        movlw   0xC0
+        call    lcd_command, 0x0
+        movlb   0x01
+        movlw   0x10
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+        bra     v171_diag_screen_armed
 
 ; --- ABSENT layout: row 0 = "PBn" + 13 spaces, row 1 = "n/a" + 13 spaces.
 v171_diag_render_absent:
@@ -4241,29 +4343,60 @@ v171_diag_screen_armed:
         ; design intent.
 
 v171_diag_loop:
-        call    display_loop_iteration, 0x0
+        ; Do not call display_loop_iteration here: it is a modal helper
+        ; that parks internally until a UI event, which stalls the
+        ; Diagnostics poll cadence during a static wait.  The Diag page
+        ; needs the non-modal subset only: button scan + RX parser +
+        ; frame-gap guard, then return to the cadence/redraw logic below.
+        bsf     INTCON, RBIE, A
+        call    button_scan_debounce, 0x0
+        movlb   0x00
+        call    rx_parser_entry, 0x0
+        call    v171_service_rx_frame_gap, 0x0
+        call    v171_health_service, 0x0
+        call    control_core_service_0DCE, 0x0
         movlb   0x00
         ; Decrement the 16-bit poll countdown.  When it reaches zero,
         ; enqueue a cmd 0x21 query for the current target PB and reload.
+v171_diag_poll_check:
         movlb   0x01
         movf    v171_diag_poll_lo, W, BANKED
         iorwf   v171_diag_poll_hi, W, BANKED
         bnz     v171_diag_loop_dec
-        ; Countdown expired.  Normally target only toggles on BF/27
-        ; reception (in v171_bf2x_case_check) so it stays stable for
-        ; the full query/reply round-trip.  But that means a SILENT
-        ; or unsupported PB would never advance the target -- polling
-        ; would lock onto the silent slot forever and the responding
-        ; PB would never get re-queried.  Skip-on-silent gate: if
-        ; RUNTIME_PENDING is still set when the cadence expires, the
-        ; previous query never completed, so advance target now (and
-        ; clear PENDING) before sending the next query.
+        ; Countdown expired.  If RUNTIME_PENDING is still set, wait a
+        ; small number of missed cadences before retrying the visible
+        ; PB.  The target is loaded from v171_diag_render_pb_index in
+        ; v171_diag_send_now, so a silent hidden PB cannot steal the
+        ; active page's ~1 s refresh cadence, and one BF/21..BF/27
+        ; burst stays in flight at a time.
         movlb   0x01
         btfss   v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v171_diag_send_now                         ; previous reply landed
-        ; Previous query timed out -- skip the silent target.
-        btg     v171_diag_target, 0, BANKED
+        decf    v171_diag_runtime_timeout, F, BANKED
+        bnz     v171_diag_runtime_wait                     ; still in timeout window
+        ; Previous visible-page query timed out -- retry it.
+        call    v171_health_age_visible_diag_target, 0x0
+        movlb   0x01
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        bra     v171_diag_send_now
+v171_diag_runtime_wait:
+        movlw   V171_DIAG_POLL_RELOAD_LO
+        movwf   v171_diag_poll_lo, BANKED
+        movlw   V171_DIAG_POLL_RELOAD_HI
+        movwf   v171_diag_poll_hi, BANKED
+        movlb   0x00
+        bra     v171_diag_check_redraw
 v171_diag_send_now:
+        ; BUG-DIAG-01/02: per-PB Diagnostics pages must refresh the PB
+        ; the operator is actually viewing at the full cadence.  The
+        ; BF/27 parser may toggle v171_diag_target after a reply, but
+        ; the next send reloads it from v171_diag_render_pb_index so
+        ; hidden PBs cannot make the active page wait every other
+        ; cadence cycle.
+        movlb   0x01
+        movf    v171_diag_render_pb_index, W, BANKED
+        andlw   0x01
+        movwf   v171_diag_target, BANKED
         ; --- Tier-1: cmd 0x22 fire-once-per-PB-per-page-entry hook ---
         ; State machine for the new cmd 0x22 (reset-cause flags) query:
         ;
@@ -4334,6 +4467,15 @@ v171_diag_check_reset_seen:
         rcall   v171_diag_send_reset_query
         movlb   0x01
 v171_diag_send_runtime_only:
+        ; Snapshot the runtime target before emitting cmd 0x21.  The
+        ; BF/21..BF/27 reply burst is routed to cache via this snapshot
+        ; instead of the live target, which may toggle or be reused by
+        ; reset-cause query handling before all reply frames land.
+        movf    v171_diag_target, W, BANKED
+        andlw   0x01
+        movwf   v171_diag_runtime_target, BANKED
+        movlw   V171_DIAG_RUNTIME_TIMEOUT_RELOAD
+        movwf   v171_diag_runtime_timeout, BANKED
         bsf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         movlb   0x00
         rcall   v171_diag_send_runtime_query
@@ -4364,6 +4506,8 @@ v171_diag_check_redraw:
         movlb   0x01
         btfsc   v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
         bra     v171_diag_do_redraw                        ; cache changed
+        btfsc   v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bra     v171_diag_do_redraw                        ; freshness changed
         movf    v171_diag_present, W, BANKED
         xorwf   v171_diag_present_snap, W, BANKED
         bz      v171_diag_redraw_skip                      ; no change
@@ -4371,6 +4515,7 @@ v171_diag_do_redraw:
         movf    v171_diag_present, W, BANKED
         movwf   v171_diag_present_snap, BANKED
         bcf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        bcf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
         goto    v171_diag_screen_draw
 v171_diag_redraw_skip:
@@ -4566,6 +4711,274 @@ v171_diag_send_query_aborted_done:
         return  0x0
 
 
+; ---------------------------------------------------------------------------
+; v171_health_service -- non-blocking per-PB link freshness service.
+; ---------------------------------------------------------------------------
+; Coarse-ticks via v171_health_tick_div.  On each tick, either sends a
+; one-frame health query to the next PB or times out the previous pending
+; query, ages that PB, and advances to the other target.  Replies are handled
+; by the exact BF/2C parser case.
+; ---------------------------------------------------------------------------
+v171_health_service:
+        movlb   0x01
+        incf    v171_health_tick_div, F, BANKED
+        bz      v171_health_tick
+        movlb   0x00
+        return  0x0
+
+v171_health_tick:
+        btfss   control_flags, CONNECTED, A
+        bra     v171_health_reset_unknown
+        ; Diagnostics pages already run addressed cmd 0x21/cmd 0x22
+        ; traffic.  Do not add background cmd 0x23 traffic there:
+        ; BF/27 completions refresh link age, and runtime timeouts age
+        ; the visible PB.
+        movlb   0x00
+        movlw   0x04
+        cpfslt  display_state_index, BANKED
+        return  0x0
+        movlb   0x01
+        btfsc   v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        bra     v171_health_pending_timeout
+        call    v171_health_send_query, 0x0
+        bc      v171_health_done_b0
+        movlb   0x01
+        bsf     v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        movlw   V171_HEALTH_PENDING_TICKS
+        movwf   v171_health_pending_ticks, BANKED
+        bcf     v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        btfsc   v171_health_poll_target, 0, BANKED
+        bsf     v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        movlb   0x00
+        return  0x0
+
+v171_health_pending_timeout:
+        movf    v171_health_pending_ticks, F, BANKED
+        bz      v171_health_pending_timeout_expired
+        decf    v171_health_pending_ticks, F, BANKED
+        movlb   0x00
+        return  0x0
+v171_health_pending_timeout_expired:
+        rcall   v171_health_age_pending_target
+        bcf     v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        clrf    v171_health_pending_ticks, BANKED
+        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        btg     v171_health_poll_target, 0, BANKED
+        movlb   0x00
+        return  0x0
+
+v171_health_age_pending_target:
+        movlb   0x01
+        btfsc   v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        bra     v171_health_age_pending_pb2
+        movlw   0x0F
+        cpfseq  v171_health_age_pb1, BANKED
+        incf    v171_health_age_pb1, F, BANKED
+        return  0x0
+v171_health_age_pending_pb2:
+        movlw   0x0F
+        cpfseq  v171_health_age_pb2, BANKED
+        incf    v171_health_age_pb2, F, BANKED
+        return  0x0
+
+v171_health_age_visible_diag_target:
+        movlb   0x01
+        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        btfsc   v171_diag_render_pb_index, 0, BANKED
+        bra     v171_health_age_visible_diag_pb2
+        movlw   0x0F
+        cpfseq  v171_health_age_pb1, BANKED
+        incf    v171_health_age_pb1, F, BANKED
+        movlb   0x00
+        return  0x0
+v171_health_age_visible_diag_pb2:
+        movlw   0x0F
+        cpfseq  v171_health_age_pb2, BANKED
+        incf    v171_health_age_pb2, F, BANKED
+        movlb   0x00
+        return  0x0
+
+v171_health_reset_unknown:
+        movlb   0x01
+        clrf    v171_health_age_pb1, BANKED
+        clrf    v171_health_age_pb2, BANKED
+        clrf    v171_health_seen_mask, BANKED
+        clrf    v171_health_flags, BANKED
+        clrf    v171_health_poll_target, BANKED
+        clrf    v171_health_tick_div, BANKED
+        clrf    v171_health_pending_ticks, BANKED
+v171_health_done_b0:
+        movlb   0x00
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_health_send_query -- enqueue [B1/B2, 0x23, 0x00].
+; ---------------------------------------------------------------------------
+; Uses tx_ring_reserve_3 so a saturated TX ring drops the whole frame.  Health
+; is low priority: if foreground/full-sync traffic is already queued, report
+; busy (STATUS.C=1) and let the next health tick try again rather than starting
+; a timeout while the ping is still stuck behind older bytes.
+; STATUS.C is preserved as the success/fail result for the caller.
+; ---------------------------------------------------------------------------
+v171_health_send_query:
+        movlb   0x00
+        movf    tx_ring_wr, W, B
+        cpfseq  tx_ring_rd, B
+        bra     v171_health_send_query_busy
+        call    tx_ring_reserve_3, 0x0
+        bc      v171_health_send_query_done
+        movlw   0xB1
+        movlb   0x01
+        btfsc   v171_health_poll_target, 0, BANKED
+        movlw   0xB2
+        movlb   0x00
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x23
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        clrf    tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+v171_health_send_query_done:
+        movlb   0x00
+        return  0x0
+v171_health_send_query_busy:
+        bsf     STATUS, C, A
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_health_patch_suffix -- patch top-level row-2 tail with link status.
+; ---------------------------------------------------------------------------
+; Only Volume/Preset/Input/Setup (display_state_index 0..3) opt in.  The
+; routine writes four tail characters at row 2 cols 13..16 only when the
+; health state marks the display dirty, so a previous longer suffix is cleared
+; before shorter/empty states without adding LCD work to every foreground tick.
+; ---------------------------------------------------------------------------
+v171_health_patch_suffix:
+        movlb   0x01
+        btfsc   v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bra     v171_health_patch_suffix_dirty
+        movlb   0x00
+        return  0x0
+v171_health_patch_suffix_dirty:
+        movlb   0x00
+        btfss   control_flags, CONNECTED, A
+        return  0x0
+        movlw   0x04
+        cpfslt  display_state_index, BANKED
+        return  0x0
+        clrf    (Common_RAM + 4), A                         ; suffix mask
+        movlb   0x01
+        movlw   V171_HEALTH_STALE_AGE
+        cpfslt  v171_health_age_pb1, BANKED                 ; age < stale? skip
+        bsf     (Common_RAM + 4), 0, A
+        movlw   V171_HEALTH_STALE_AGE
+        cpfslt  v171_health_age_pb2, BANKED
+        bsf     (Common_RAM + 4), 1, A
+        ; If PB1 is stale and PB2 has missed any health bucket, the ring
+        ; cannot prove PB2 is currently reachable through PB1.  Surface the
+        ; shared-path uncertainty as !1 2 instead of a misleading narrow !1.
+        btfss   (Common_RAM + 4), 0, A
+        bra     v171_health_patch_have_mask
+        movf    v171_health_age_pb2, F, BANKED
+        bz      v171_health_patch_have_mask
+        bsf     (Common_RAM + 4), 1, A
+v171_health_patch_have_mask:
+        movlb   0x00
+        movlw   0x80
+        movwf   (Common_RAM + 1), A
+        movlw   0xCC                                        ; row 2 col 13 (1-based)
+        call    lcd_command, 0x0
+        movlw   0x03
+        cpfseq  (Common_RAM + 4), A
+        bra     v171_health_patch_not_both
+        movlw   '!'
+        call    lcd_char_write, 0x0
+        movlw   '1'
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   '2'
+        call    lcd_char_write, 0x0
+        bra     v171_health_patch_done
+v171_health_patch_not_both:
+        movf    (Common_RAM + 4), F, A
+        bz      v171_health_patch_clear
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   '!'
+        call    lcd_char_write, 0x0
+        movlw   '1'
+        btfsc   (Common_RAM + 4), 1, A
+        movlw   '2'
+        call    lcd_char_write, 0x0
+        bra     v171_health_patch_done
+v171_health_patch_clear:
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+v171_health_patch_done:
+        movlb   0x01
+        bcf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        movlb   0x00
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_health_diag_check_stale -- classify rendered PB freshness for Diag.
+; ---------------------------------------------------------------------------
+; out: (Common_RAM + 4) = 0 fresh/unknown, 1 old, 2 lost.  Reads the
+; current v171_diag_render_pb_index and the corresponding health age.
+; ---------------------------------------------------------------------------
+v171_health_diag_check_stale:
+        clrf    (Common_RAM + 4), A
+        movlb   0x01
+        btfsc   v171_diag_render_pb_index, 0, BANKED
+        bra     v171_health_diag_check_pb2
+        movf    v171_health_age_pb1, W, BANKED
+        bra     v171_health_diag_check_have_age
+v171_health_diag_check_pb2:
+        movlw   V171_HEALTH_STALE_AGE
+        cpfslt  v171_health_age_pb1, BANKED
+        bra     v171_health_diag_check_pb2_shared
+        movf    v171_health_age_pb2, W, BANKED
+        bra     v171_health_diag_check_have_age
+v171_health_diag_check_pb2_shared:
+        movf    v171_health_age_pb2, F, BANKED
+        bz      v171_health_diag_check_pb2_fresh_after_pb1
+        movf    v171_health_age_pb1, W, BANKED
+        bra     v171_health_diag_check_have_age
+v171_health_diag_check_pb2_fresh_after_pb1:
+        movf    v171_health_age_pb2, W, BANKED
+v171_health_diag_check_have_age:
+        movwf   (Common_RAM + 5), A
+        movlw   V171_HEALTH_LOST_AGE
+        cpfslt  (Common_RAM + 5), A
+        bra     v171_health_diag_check_lost
+        movlw   V171_HEALTH_STALE_AGE
+        cpfslt  (Common_RAM + 5), A
+        bra     v171_health_diag_check_old
+        movlb   0x00
+        return  0x0
+v171_health_diag_check_old:
+        movlw   0x01
+        movwf   (Common_RAM + 4), A
+        movlb   0x00
+        return  0x0
+v171_health_diag_check_lost:
+        movlw   0x02
+        movwf   (Common_RAM + 4), A
+        movlb   0x00
+        return  0x0
+
+
 control_core_service_0F54:                                               ; address: 0x000f54
 
         movlw   0x04
@@ -4731,6 +5144,12 @@ flow_v171_diag_cache_zero:
         bra     flow_v171_diag_cache_zero
         movlb   0x01                                        ; reset_seen lives in bank 1
         clrf    v171_diag_reset_seen, BANKED                ; physical 0x19D
+        clrf    v171_health_age_pb1, BANKED                 ; link health starts unknown/fresh
+        clrf    v171_health_age_pb2, BANKED
+        clrf    v171_health_seen_mask, BANKED
+        clrf    v171_health_flags, BANKED
+        clrf    v171_health_poll_target, BANKED
+        clrf    v171_health_tick_div, BANKED
         movlb   0x00                                        ; restore default bank
         ; --- end Bug #44 fix ---
 
@@ -5087,7 +5506,7 @@ flow_post_connect_init_11F0:                                                  ; 
         movlb   0x00
         decfsz  0xbf, W, B                                  ; state - 1 == 0?
         goto    v171_menu_ck_state_2
-        rcall   v171_preset_screen                          ; state == 1 -> Preset
+        call    v171_preset_screen, 0x0                     ; state == 1 -> Preset
         goto    flow_boot_handshake_wait_120A
 
 v171_menu_ck_state_2:
@@ -5112,7 +5531,7 @@ v171_menu_ck_state_4:
         goto    boot_handshake_wait                         ; not 4 -- try PB2 Diag
         ; Tier-1: state 4 = PB1 Diag (W = PB index 0).
         movlw   0x00
-        rcall   v171_diag_pb_screen
+        call    v171_diag_pb_screen, 0x0
         goto    flow_boot_handshake_wait_120A
 
 boot_handshake_wait:                                                  ; address: 0x0011fe
@@ -5122,7 +5541,7 @@ boot_handshake_wait:                                                  ; address:
         goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
         ; Tier-1: state 5 = PB2 Diag (W = PB index 1).
         movlw   0x01
-        rcall   v171_diag_pb_screen
+        call    v171_diag_pb_screen, 0x0
 
 flow_boot_handshake_wait_120A:                                                  ; address: 0x00120a
 
@@ -5373,6 +5792,12 @@ v171_reconnect_past_grace_done:
 v171_reconnect_wait_done:
         movlb   0x01
         clrf    0x73, BANKED                                ; clear retry counter
+        clrf    v171_health_age_pb1, BANKED                 ; wake/reconnect health unknown
+        clrf    v171_health_age_pb2, BANKED
+        clrf    v171_health_seen_mask, BANKED
+        clrf    v171_health_flags, BANKED
+        clrf    v171_health_poll_target, BANKED
+        clrf    v171_health_tick_div, BANKED
         movlb   0x00
         bsf     control_flags, CONNECTED, A                ; mark connected
 
@@ -6461,7 +6886,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x16                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x29                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

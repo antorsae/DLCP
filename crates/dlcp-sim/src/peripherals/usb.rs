@@ -282,7 +282,9 @@ impl Usb {
         if entry.stat & BDSTAT_UOWN == 0 {
             return false;
         }
-        let max_len = usize::from(entry.count).max(bytes.len()).min(HID_REPORT_LEN);
+        let max_len = usize::from(entry.count)
+            .max(bytes.len())
+            .min(HID_REPORT_LEN);
         let copy_len = bytes.len().min(max_len);
         entry.buffer = bytes[..copy_len].to_vec();
         entry.count = copy_len as u8;

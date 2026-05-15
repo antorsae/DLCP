@@ -107,6 +107,11 @@
 ; Note: bits 0/1/7 are reserved for periodic_service handshake plumbing.
 dsp_fault_flags         EQU  0x07F
 
+; Bank-2 recovery latch outside the cmd 0x44 visible diag block.  Bit0 means
+; a previous MSSP timeout needs one bus-clear at the next clean I2C entry.
+; 0x2F1 is main_rx_frame_gap_timeout; use the reserved upper-bank slot at 0x2F2.
+i2c_recover_flags       EQU  0x2F2
+
 ; Shared 16-bit timeout countdown used by every wait_*_bounded helper.
 ; Seeded to ~0x1000 (see wait_seed). Each wait_tick decrements; carry set on 0.
 ; Caveat: helpers share the slot — only one bounded wait may be active at a
@@ -390,6 +395,13 @@ flow_hid_command_dispatch_111a:
     movlb       0x0
     movwf       ram_0x0C1, BANKED
     movff       ram_0x11B, ram_0x0C2
+    movf        ram_0x097, W, BANKED
+    xorlw       0x09
+    bz          flow_hid_command_dispatch_111a_dirty
+    movf        ram_0x097, W, BANKED
+    xorlw       0x0A
+    bnz         flow_hid_command_dispatch_1126
+flow_hid_command_dispatch_111a_dirty:
     bsf         ram_0x0BD, 5, BANKED            ; filename RAM dirty
     bsf         ram_0x0BD, 6, BANKED            ; V3.2: gate USB filename xact
                                                 ; until force_persist clears
@@ -732,59 +744,9 @@ flow_hid_command_dispatch_13ca:
     movff       i2c_coeff_2, ram_0x0C1
     bra         flow_hid_command_dispatch_112e
 flow_hid_command_dispatch_13d0:
-    movlw       0xA0
-    movlb       0x0
-    movwf       computed_volume, BANKED
-    setf        computed_volume_1, BANKED
-    setf        computed_volume_2, BANKED
-    setf        computed_volume_3, BANKED
-    movlw       0x01
-    movwf       input_select, BANKED
-    movlw       0x03
-    movwf       ram_0x05F, ACCESS
-    clrf        ram_0x060, BANKED
-    clrf        ram_0x061, BANKED
-    clrf        ram_0x062, BANKED
-    movlw       0x01
-    movwf       ram_0x063, BANKED
-    movwf       ram_0x064, BANKED
-    movwf       ram_0x065, BANKED
-    movwf       ram_0x0B4, BANKED
-    movlw       0x04
-    movwf       ram_0x0B8, BANKED
-    clrf        ram_0x09B, BANKED
-    clrf        ram_0x09C, BANKED
-    clrf        ram_0x09D, BANKED
-    clrf        ram_0x09E, BANKED
-    clrf        i2c_coeff_3, ACCESS
-flow_hid_command_dispatch_1402:
-    movlw       0xC0
-    addwf       i2c_coeff_3, W, ACCESS
-    call        fsr2_page2_from_W, 0x0       ; W05-E02: FSR2=0x0200|W (helper clobbers W with 0x02; setf uses no W)
-    setf        INDF2, ACCESS
-    incf        i2c_coeff_3, F, ACCESS
-    movlw       0x1D
-    cpfsgt      i2c_coeff_3, ACCESS
-    bra         flow_hid_command_dispatch_1402
-    clrf        i2c_coeff_3, ACCESS
-flow_hid_command_dispatch_141a:
-    movlw       0x00
-    addwf       i2c_coeff_3, W, ACCESS
-    rcall       setup_fsr2_page_1_or_2
-    setf        INDF2, ACCESS
-    incf        i2c_coeff_3, F, ACCESS
-    movlw       0x0E
-    cpfsgt      i2c_coeff_3, ACCESS
-    bra         flow_hid_command_dispatch_141a
-    movlb       0x0
-    bsf         ram_0x0BD, 0, BANKED
-    bsf         ram_0x0BD, 5, BANKED
-    bsf         ram_0x0BD, 4, BANKED
-    bsf         ram_0x0BD, 1, BANKED
-    bsf         ram_0x0BD, 2, BANKED
-    bsf         ram_0x0BD, 3, BANKED
-    bsf         event_flags, 0, BANKED
-    call        main_core_service_265c, 0x0
+    ; BUG-SETTINGS-01: app cmd 0x40 is the firmware-update handoff,
+    ; not a factory reset.  Preserve user EEPROM-backed settings and
+    ; only set the bootloader-entry marker below.
     clrf        ram_0x008, ACCESS
     setf        ram_0x007, ACCESS
     clrf        ram_0x009, ACCESS
@@ -1601,6 +1563,13 @@ flow_cmd_dispatch_gated_1a76:
     bcf         PIR2, 1, ACCESS
     call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
     call        main_core_service_4574, 0x0
+    movlb       0x0
+    btfsc       filename_dirty_flags, 5, BANKED
+    bra         flow_cmd_dispatch_gated_reapply_skip_name
+    btfsc       filename_dirty_flags, 6, BANKED
+    bra         flow_cmd_dispatch_gated_reapply_skip_name
+    call        preset_load_filename, 0x0
+flow_cmd_dispatch_gated_reapply_skip_name:
     bsf         RCSTA, 4, ACCESS
     bcf         active_flags, 7, ACCESS
     movlb       0x0
@@ -1950,10 +1919,12 @@ wake_request_handler:
 ; standby_request_handler                  (cmd=0x03 data=0x00)
 ; Symmetric inverse of wake: clear active_flags.bit3 (close the gate) and
 ; raise event_flags.bit2 to schedule hw_standby_shutdown. If the gate was
-; already closed, just clear event_flags.bit2 (no further action). This is
-; the broadcast that closes EVERY MAIN's gate on the chain — once closed,
-; cmd_dispatch_gated drops every command at cmd_gate_reject until a wake
-; reopens it.
+; already closed, preserve any pending event: CONTROL may emit duplicate
+; standby frames before standby_event_dispatch runs, and clearing bit2 there
+; would cancel the hardware shutdown while leaving the logical gate closed.
+; This is the broadcast that closes EVERY MAIN's gate on the chain — once
+; closed, cmd_dispatch_gated drops every command at cmd_gate_reject until a
+; wake reopens it.
 ; ---------------------------------------------------------------------------
 standby_request_handler:
     btfss       active_flags, 3, ACCESS              ; gate currently open?
@@ -1962,7 +1933,7 @@ standby_request_handler:
     bra         flow_main_uart_service_1be6_1ca6
 flow_main_uart_service_1be6_1ca2:
     movlb       0x0
-    bcf         event_flags, 2, BANKED               ; gate was already closed
+    nop                                             ; duplicate standby: keep pending bit2 intact
 flow_main_uart_service_1be6_1ca6:
     btfsc       event_flags, 2, BANKED
     bcf         active_flags, 3, ACCESS              ; close the gate (BROADCAST drops all MAINs)
@@ -2283,6 +2254,9 @@ flow_main_uart_service_1be6_1e48:
     xorlw       0x03                            ; V3.2 Tier-1: cumulative 0x21 ^ 0x03 = 0x22
     btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x22 (reset-cause flags query)
     goto        cmd22_reset_flags_query_handler
+    xorlw       0x01                            ; V3.2 link health: cumulative 0x22 ^ 0x01 = 0x23
+    btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x23 (one-frame health ping)
+    goto        cmd23_health_query_handler
 flow_main_uart_service_1be6_1e6c:
     btfss       active_flags, 6, ACCESS
     bra         flow_main_uart_service_1be6_1e80
@@ -2526,13 +2500,19 @@ flow_main_core_service_1e88_20c2:
     clrf        ram_0x008, ACCESS
     movlw       0x80
     movwf       ram_0x007, ACCESS
-    movlw       0x02
+    movlw       0x03
     movwf       ram_0x009, ACCESS
     call        main_flash_service_46de, 0x0
     clrf        ram_0x008, ACCESS
     movlw       0x81
     movwf       ram_0x007, ACCESS
-    movlw       0x03
+    movlw       0x02
+    movwf       ram_0x009, ACCESS
+    call        main_flash_service_46de, 0x0
+    clrf        ram_0x008, ACCESS
+    movlw       0x82
+    movwf       ram_0x007, ACCESS
+    movlw       0x63                            ; V3.2_RUNTIME_EEPROM_REV
     movwf       ram_0x009, ACCESS
     goto        main_flash_service_46de
 
@@ -2678,9 +2658,8 @@ flow_main_i2c_service_2100_226a:
     movff       INDF1, ram_0x06D
 flow_main_i2c_service_2100_2286:
     bsf         SSPCON2, 0, ACCESS
-flow_main_i2c_service_2100_2288:
-    btfsc       SSPCON2, 0, ACCESS
-    bra         flow_main_i2c_service_2100_2288
+    call        wait_sen_bounded, 0x0
+    bc          main_i2c_service_2100_pen_timeout
     movlw       0x68
     call        i2c_byte_tx, 0x0
     movlb       0x1
@@ -2740,13 +2719,18 @@ flow_main_i2c_service_2100_22fc:
     cpfsgt      ram_0x05B, ACCESS
     bra         flow_main_i2c_service_2100_22a8
     bsf         SSPCON2, 2, ACCESS
-flow_main_i2c_service_2100_231a:
-    btfsc       SSPCON2, 2, ACCESS
-    bra         flow_main_i2c_service_2100_231a
+    call        wait_pen_bounded, 0x0
+    bc          main_i2c_service_2100_timeout
     incf        ram_0x05A, F, ACCESS
     movlw       0x06
     cpfsgt      ram_0x05A, ACCESS
     bra         flow_main_i2c_service_2100_226a
+    retlw       0x06
+main_i2c_service_2100_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    retlw       0x06
+main_i2c_service_2100_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
     retlw       0x06
 
 
@@ -5597,38 +5581,15 @@ main_flash_service_3810:
 ; Function: main_i2c_service_381c          (legacy preset table-entry I2C apply)
 ; Address : 0x381C
 ; ---------------------------------------------------------------------------
-; This is the synchronous, UNBOUNDED preset apply path inherited from V2.x.
+; This is the synchronous preset-table apply path inherited from V2.x.
 ; It reads one preset table entry from flash (24 bytes, ram_0x013:014 ->
 ; flash, count 0x17 to ram_0x02F), then issues a single I2C burst to the
 ; TAS3108 DSP at write addr 0x68 with up to 24 data bytes.
 ;
-; CRITICAL HAZARDS (V3.2 hardening targets — workstream 1 deferred):
-;   • SSPCON2.SEN poll at flow_main_i2c_service_381c_3870 has NO timeout
-;     (legacy stock pattern — this is a fixed-iteration pulse on healthy
-;     hardware, but a stuck START condition will hang here forever).
-;   • SSPCON2.PEN poll at flow_main_i2c_service_381c_389c has NO timeout
-;     (same hazard, on STOP).
-;   • i2c_byte_tx is V3.1+ bounded inside, but a SEN/PEN hang upstream
-;     leaves any half-applied table entry uncommitted.
-;
-; The V3.2 async path (preset_job_apply_i2c_entry) is a near-clone of this
-; routine that wraps the same flash_read + I2C burst pattern with the
-; bounded wait_sen/pen_bounded helpers and the
-; preset_job_apply_i2c_recover bus-clear/ping path. Field-debugged callers
-; (delayed-switch path) MUST use that copy — this stock body is preserved
-; only for the few non-preset call sites that have not yet been migrated.
-;
-; W1 ATTEMPT NOTE (2026-04-17): a bounded-wait + recover wrapper here
-; broke test_v32_main_bus_clear_recovers_after_mssp_stop_fault and
-; test_v32_main_pen_timeout_recovers in test_v31_v163b_robustness.py.
-; Root cause: the recover path returns `0` to the caller, which signals
-; "table entry applied" to main_core_service_4574 and cmd_dispatch_gated.
-; During a multi-loop fault window the caller advances past entries that
-; were never written, losing dirty state. A future M1 needs either
-; (a) a return-value contract change so callers honor a "retry" signal,
-; or (b) per-call internal retry with a bounded counter. Until then the
-; legacy unbounded behavior is the only one that satisfies both
-; robustness tests and the V3.2 wire-chain convergence gates.
+; V3.2 hang-hardening: every SEN/PEN wait in this legacy body is bounded.
+; Timeout routes through i2c_timeout_recover_advertise, which increments
+; diagnostics, resets/clears the MSSP bus, pings the DSP, emits BF/08, and
+; returns to the caller instead of stranding the cooperative main loop.
 ;
 ; Called from: main_i2c_service_27f0 (DSP I2C refresh), cmd_dispatch_gated
 ;              (channel sync), some legacy reconnect/wake paths.
@@ -5641,7 +5602,7 @@ main_i2c_service_381c:
     clrf        ram_0x008, ACCESS
     movlw       0x04                                ; first read: 4-byte header (TAS reg + len)
     movwf       ram_0x007, ACCESS
-    rcall       flash_read_fsr2_0017                ; W05-E04: FSR2 dest=0x0017 helper (in rcall reach)
+    call        flash_read_fsr2_0017, 0x0           ; W05-E04 helper; far-safe after M1 growth
     movff       ram_0x018, ram_0x02F                ; ram_0x02F = TAS reg byte
     movff       ram_0x019, ram_0x031                ; ram_0x031 = byte count
     movlw       0x19                                ; >= 25 -> end-of-table sentinel
@@ -5664,9 +5625,8 @@ main_i2c_service_381c:
     movwf       ram_0x009, ACCESS
     rcall       flash_read                          ; W02-E07: back in range after W01-R01 compaction
     bsf         SSPCON2, 0, ACCESS                  ; SEN — START
-flow_main_i2c_service_381c_3870:
-    btfsc       SSPCON2, 0, ACCESS                  ; <-- M1 unbounded SEN poll (W1 deferred)
-    bra         flow_main_i2c_service_381c_3870
+    call        wait_sen_bounded, 0x0
+    bc          main_i2c_service_381c_timeout
     movlw       0x68                                ; TAS3108 write address
     rcall       i2c_byte_tx
     movf        ram_0x02F, W, ACCESS                ; reg byte
@@ -5684,10 +5644,15 @@ flow_main_i2c_service_381c_3894:
     subwf       ram_0x030, W, ACCESS
     bnc         flow_main_i2c_service_381c_3884
     bsf         SSPCON2, 2, ACCESS                  ; PEN — STOP
-flow_main_i2c_service_381c_389c:
-    btfsc       SSPCON2, 2, ACCESS                  ; <-- M1 unbounded PEN poll (W1 deferred)
-    bra         flow_main_i2c_service_381c_389c
+    call        wait_pen_bounded, 0x0
+    bc          main_i2c_service_381c_pen_timeout
 flow_main_i2c_service_381c_38a0:
+    return      0
+main_i2c_service_381c_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    return      0
+main_i2c_service_381c_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
     return      0
 
 
@@ -6454,6 +6419,7 @@ flow_main_flash_service_3ce8_3d78:
     clrf        diag_reset_bor, BANKED
     clrf        diag_reset_wdt, BANKED
     clrf        diag_reset_sw, BANKED
+    clrf        i2c_recover_flags, BANKED
 
     ; --- V3.2 rev 0x37 Tier-1: reset-cause classification cascade ---
     ; Silicon clears the corresponding RCON bit on each reset cause
@@ -6706,8 +6672,8 @@ i2c_byte_tx:
     bz          flow_i2c_byte_tx_master
     bsf         SSPCON1, 4, ACCESS
 flow_i2c_byte_tx_sspif:
-    btfss       PIR1, 3, ACCESS
-    bra         flow_i2c_byte_tx_sspif
+    call        wait_sspif_bounded, 0x0
+    bc          flow_i2c_byte_tx_timeout
     btfss       SSPSTAT, 2, ACCESS
     movf        SSPSTAT, W, ACCESS
     bra         flow_i2c_byte_tx_exit
@@ -6737,6 +6703,9 @@ flow_i2c_byte_tx_was_ack:
     movff       ram_0x00E, BSR              ; restore caller's BSR (also undoes any macro BSR clobber)
     movf        SSPCON2, W, ACCESS
 flow_i2c_byte_tx_exit:
+    return      0
+flow_i2c_byte_tx_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
     return      0
 
 
@@ -7281,31 +7250,35 @@ i2c_secondary_dev_random_read:
     movff       WREG, ram_0x006
     rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS
-flow_i2c_secondary_dev_random_4246:
-    btfsc       SSPCON2, 0, ACCESS
-    bra         flow_i2c_secondary_dev_random_4246
+    rcall       wait_sen_bounded
+    bc          i2c_secondary_dev_random_timeout
     movlw       0xE2
     rcall       i2c_byte_tx
     movf        ram_0x006, W, ACCESS
     rcall       i2c_byte_tx
     bsf         SSPCON2, 1, ACCESS
-flow_i2c_secondary_dev_random_4258:
-    btfsc       SSPCON2, 1, ACCESS
-    bra         flow_i2c_secondary_dev_random_4258
+    rcall       wait_rsen_bounded
+    bc          i2c_secondary_dev_random_timeout
     movlw       0xE3
     rcall       i2c_byte_tx
     rcall       main_i2c_service_464c
     movwf       ram_0x007, ACCESS
     bsf         SSPCON2, 5, ACCESS
     bsf         SSPCON2, 4, ACCESS
-flow_i2c_secondary_dev_random_426c:
-    btfsc       SSPCON2, 4, ACCESS
-    bra         flow_i2c_secondary_dev_random_426c
+    rcall       wait_acken_bounded
+    bc          i2c_secondary_dev_random_timeout
     bsf         SSPCON2, 2, ACCESS
-flow_i2c_secondary_dev_random_4272:
-    btfsc       SSPCON2, 2, ACCESS
-    bra         flow_i2c_secondary_dev_random_4272
+    rcall       wait_pen_bounded
+    bc          i2c_secondary_dev_random_pen_timeout
     movf        ram_0x007, W, ACCESS
+    return      0
+i2c_secondary_dev_random_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    clrf        WREG, ACCESS
+    return      0
+i2c_secondary_dev_random_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
+    clrf        WREG, ACCESS
     return      0
 
 
@@ -7477,7 +7450,7 @@ i2c_tas3108_reg1f_write:
     rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
     rcall       wait_sen_bounded
-    bc          i2c_reg1f_done
+    bc          i2c_reg1f_timeout
     movlw       0x68
     rcall       i2c_byte_tx
     movlw       0x1F
@@ -7492,7 +7465,14 @@ i2c_tas3108_reg1f_write:
     rcall       i2c_byte_tx
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     rcall       wait_pen_bounded
+    bc          i2c_reg1f_pen_timeout
 i2c_reg1f_done:
+    return      0
+i2c_reg1f_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    return      0
+i2c_reg1f_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
     return      0
 
 
@@ -7812,9 +7792,8 @@ clrf_i2c_coeff_0123_and_write:
 i2c_tas3108_coeff_write:
     rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS          ; stock START wait
-coeff_write_wait_sen_stock:
-    btfsc       SSPCON2, 0, ACCESS
-    bra         coeff_write_wait_sen_stock
+    rcall       wait_sen_bounded
+    bc          coeff_write_timeout
     movlw       0x68
     rcall       i2c_byte_tx
     movlw       0x30
@@ -7825,12 +7804,15 @@ coeff_write_wait_sen_stock:
     movff       i2c_coeff_3, ram_0x04C
     call        main_i2c_service_39a6, 0x0
     bsf         SSPCON2, 2, ACCESS          ; stock STOP wait
-coeff_write_pen_stock:
-    btfss       SSPCON2, 2, ACCESS
-    bra         coeff_write_pen_done
-    bra         coeff_write_pen_stock
-coeff_write_pen_timeout:
+    rcall       wait_pen_bounded
+    bc          coeff_write_pen_timeout
 coeff_write_pen_done:
+    return      0
+coeff_write_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    return      0
+coeff_write_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
     return      0
 
 
@@ -8195,10 +8177,13 @@ main_i2c_service_464c:
     btfsc       STATUS, 2, ACCESS
 flow_main_i2c_service_464c_4668:
     bsf         SSPCON2, 3, ACCESS
-flow_main_i2c_service_464c_466a:
-    btfss       SSPSTAT, 0, ACCESS
-    bra         flow_main_i2c_service_464c_466a
+    call        wait_bf_set_bounded, 0x0
+    bc          main_i2c_service_464c_timeout
     movf        SSPBUF, W, ACCESS
+    return      0
+main_i2c_service_464c_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    clrf        WREG, ACCESS
     return      0
 
 
@@ -8279,7 +8264,7 @@ i2c_secondary_dev_write:
     movff       WREG, ram_0x007
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
     rcall       wait_sen_bounded
-    bc          i2c_secondary_done
+    bc          i2c_secondary_timeout
     movlw       0xE2
     call        i2c_byte_tx, 0x0
     movf        ram_0x007, W, ACCESS
@@ -8288,7 +8273,14 @@ i2c_secondary_dev_write:
     call        i2c_byte_tx, 0x0
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     rcall       wait_pen_bounded
+    bc          i2c_secondary_pen_timeout
 i2c_secondary_done:
+    return      0
+i2c_secondary_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    return      0
+i2c_secondary_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
     return      0
 
 
@@ -8518,10 +8510,12 @@ flow_standby_event_dispatch_47ac:
 ; ---------------------------------------------------------------------------
 mssp_hard_reset:
     movff       WREG, ram_0x004
-    movlw       0x3F
+    movlw       0xC0
     andwf       SSPSTAT, F, ACCESS
     clrf        SSPCON1, ACCESS
     clrf        SSPCON2, ACCESS
+    bcf         SSPCON1, 7, ACCESS
+    bcf         SSPCON1, 6, ACCESS
     movf        ram_0x004, W, ACCESS
     iorwf       SSPCON1, F, ACCESS
     movf        ram_0x003, W, ACCESS
@@ -8802,16 +8796,14 @@ main_timer_service_48a6:
     retlw       0x71
 
 ; ---------------------------------------------------------------------------
-; Function: i2c_wait_bus_idle              (M1: STOCK unbounded MSSP-idle spin)
+; Function: i2c_wait_bus_idle              (bounded MSSP idle wait)
 ; Address : 0x48B6
 ; ---------------------------------------------------------------------------
 ; Spin until the MSSP module reports idle: SSPCON2[4:0] (SEN, RSEN, PEN,
 ; RCEN, ACKEN) == 0 AND SSPSTAT.R_nW (bit 2) == 0.
 ;
-; BUG M1 (i2c_busywait_no_timeout): no timeout. This is the canonical
-; example of the unbounded-wait pattern that the V3.2 hardening plan
-; targets. The V3.1+ wait_*_bounded helpers cover SEN/PEN/BF/TRMT but the
-; "is the controller idle at all" question still uses this stock primitive.
+; V3.2 hang-hardening: timeout routes through the same centralized
+; MSSP-recovery and BF/08 advertisement helper used by direct SEN/PEN waits.
 ;
 ; Used by i2c_tas3108_reg1f_write, i2c_tas3108_coeff_write,
 ; i2c_secondary_dev_random_read at the start of each transaction (so a
@@ -8823,12 +8815,28 @@ main_timer_service_48a6:
 ; address window because the assembler packs sequentially.
 ; ---------------------------------------------------------------------------
 i2c_wait_bus_idle:
+    movlb       0x2
+    btfss       i2c_recover_flags, 0, BANKED
+    bra         i2c_wait_bus_idle_seed
+    btfsc       SSPCON2, 2, ACCESS
+    bra         i2c_wait_bus_idle_seed
+    bcf         i2c_recover_flags, 0, BANKED
+    call        i2c_bus_clear, 0x0
+i2c_wait_bus_idle_seed:
+    rcall       wait_seed
+i2c_wait_bus_idle_loop:
     movff       SSPCON2, ram_0x003
     movlw       0x1F
     andwf       ram_0x003, F, ACCESS                ; mask SEN/RSEN/PEN/RCEN/ACKEN
     btfsc       STATUS, 2, ACCESS                   ; if any of those set, keep spinning
     btfsc       SSPSTAT, 2, ACCESS                  ; AND while R_nW (master in receive)
-    bra         i2c_wait_bus_idle
+    bra         i2c_wait_bus_idle_busy
+    bcf         STATUS, 0, ACCESS
+    retlw       0x1F
+i2c_wait_bus_idle_busy:
+    rcall       wait_tick
+    bnc         i2c_wait_bus_idle_loop
+    call        i2c_timeout_recover_advertise, 0x0
     retlw       0x1F
 flow_i2c_wait_bus_idle_48c6:
     call        main_i2c_service_355c, 0x0
@@ -9102,6 +9110,15 @@ wait_sen_loop:
     bnc         wait_sen_loop
     return      0
 
+wait_rsen_bounded:
+    rcall       wait_seed
+wait_rsen_loop:
+    btfss       SSPCON2, 1, ACCESS          ; RSEN clear?
+    bra         wait_wait_done
+    rcall       wait_tick
+    bnc         wait_rsen_loop
+    return      0
+
 wait_pen_bounded:
     rcall       wait_seed
 wait_pen_loop:
@@ -9111,6 +9128,15 @@ wait_pen_loop:
     bnc         wait_pen_loop
     return      0
 
+wait_acken_bounded:
+    rcall       wait_seed
+wait_acken_loop:
+    btfss       SSPCON2, 4, ACCESS          ; ACKEN clear?
+    bra         wait_wait_done
+    rcall       wait_tick
+    bnc         wait_acken_loop
+    return      0
+
 wait_bf_clear_bounded:
     rcall       wait_seed
 wait_bf_clear_loop:
@@ -9118,6 +9144,24 @@ wait_bf_clear_loop:
     bra         wait_wait_done              ; BF=0: buffer empty, done
     rcall       wait_tick
     bnc         wait_bf_clear_loop
+    return      0                           ; C=1: timed out
+
+wait_bf_set_bounded:
+    rcall       wait_seed
+wait_bf_set_loop:
+    btfsc       SSPSTAT, 0, ACCESS          ; BF set?
+    bra         wait_wait_done
+    rcall       wait_tick
+    bnc         wait_bf_set_loop
+    return      0                           ; C=1: timed out
+
+wait_sspif_bounded:
+    rcall       wait_seed
+wait_sspif_loop:
+    btfsc       PIR1, 3, ACCESS             ; SSPIF set?
+    bra         wait_wait_done
+    rcall       wait_tick
+    bnc         wait_sspif_loop
     return      0                           ; C=1: timed out
 wait_wait_done:
     bcf         STATUS, 0, ACCESS
@@ -9178,16 +9222,23 @@ dsp_ping:
     movlb       0x0                          ; assert bank 0 for dsp_fault_flags
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
     rcall       wait_sen_bounded
-    bc          dsp_ping_nack
+    bc          dsp_ping_nack_reset
     movlw       0x68                        ; TAS3108 write addr
     call        i2c_byte_tx, 0x0
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     rcall       wait_pen_bounded
+    bc          dsp_ping_nack_reset
     btfss       SSPCON2, 6, ACCESS          ; ACKSTAT?
     bcf         dsp_fault_flags, 6, BANKED  ; ACK: clear fault
     btfsc       SSPCON2, 6, ACCESS
     bra         dsp_ping_nack
     return      0
+dsp_ping_nack_reset:
+    movlw       0x80
+    movwf       ram_0x003, ACCESS
+    movlw       0x08
+    rcall       mssp_hard_reset
+    movlb       0x0
 dsp_ping_nack:
     bsf         dsp_fault_flags, 6, BANKED  ; NACK: set fault
     return      0
@@ -9206,6 +9257,48 @@ send_dsp_fault_status:
     rcall       uart_tx_byte_blocking
     movf        ram_0x00D, W, ACCESS
     bra         uart_tx_byte_blocking
+
+; ---------------------------------------------------------------------------
+; Centralized I2C/MSSP timeout recovery + observability.
+; ---------------------------------------------------------------------------
+; Contract:
+;   in : timeout already detected by a bounded wait helper
+;   out: C=1, dsp_fault_flags.bit2 set, BF/08 emitted with a non-zero
+;        transport/fault payload.  The caller must return to the main loop
+;        or retry from a bounded state-machine path.
+;   touches: timeout scratch, BSR, W, UART TX.
+; ---------------------------------------------------------------------------
+i2c_pen_timeout_recover_advertise:
+    clrf        ram_0x00D, ACCESS
+    bsf         ram_0x00D, 0, ACCESS
+    bra         i2c_timeout_recover_common
+
+i2c_timeout_recover_advertise:
+    clrf        ram_0x00D, ACCESS
+    btfsc       SSPCON2, 2, ACCESS
+    bsf         ram_0x00D, 0, ACCESS         ; remember PEN-pending timeout
+i2c_timeout_recover_common:
+    diag_inc_sat diag_i                      ; I: I2C/MSSP transport timeout
+    diag_inc_sat diag_r                      ; R: recovery branch entered
+    movlb       0x2
+    bsf         i2c_recover_flags, 0, BANKED ; next clean I2C entry bus-clears
+    movlw       0x80
+    movwf       ram_0x003, ACCESS            ; stock SSPSTAT SMP state
+    movlw       0x08                         ; MSSP master mode bits
+    call        mssp_hard_reset, 0x0
+    btfsc       ram_0x00D, 0, ACCESS
+    bra         i2c_timeout_skip_bus_probe
+    call        i2c_bus_clear, 0x0
+    call        dsp_ping, 0x0                ; updates bit6 if DSP still NACKs
+i2c_timeout_skip_bus_probe:
+    movlb       0x0
+    bcf         SSPCON1, 7, ACCESS           ; clear WCOL after aborted tx
+    bcf         SSPCON1, 6, ACCESS           ; clear SSPOV after aborted rx
+    movlb       0x0
+    bsf         dsp_fault_flags, 2, BANKED   ; keep timeout visible after ACK ping
+    call        send_dsp_fault_status, 0x0
+    bsf         STATUS, 0, ACCESS
+    return      0
 
 ; ---------------------------------------------------------------------------
 ; cmd 0x21 — Diagnostics counter reply burst (V3.2 Layer 5)
@@ -9352,6 +9445,31 @@ cmd22_reset_flags_query_handler:
     bra         diag_send_burst_xx
 
 ; ---------------------------------------------------------------------------
+; cmd 0x23 — Link-health ping reply (V1.71/V3.2 freshness MVP)
+; ---------------------------------------------------------------------------
+; Reached from main_uart_service_1be6 dispatch when CONTROL sends
+; [B1/B2, 0x23, 0x00].  Emits exactly one chain-safe reply:
+;
+;   BF/2C/00
+;
+; The data byte is intentionally constant for the MVP.  CONTROL owns
+; freshness and only needs a complete addressed reply; MAIN-local
+; sequence/counter telemetry can be added later if it proves useful.
+;
+; Like cmd 0x21 / 0x22, suppress the cmd-XOR ACK echo before returning
+; through the normal parser tail.
+; ---------------------------------------------------------------------------
+cmd23_health_query_handler:
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movlw       0x2C
+    rcall       uart_tx_byte_blocking
+    movlw       0x00
+    rcall       uart_tx_byte_blocking
+    bcf         active_flags, 6, ACCESS     ; suppress cmd-XOR ACK echo
+    goto        flow_main_uart_service_1be6_1e6c
+
+; ---------------------------------------------------------------------------
 ; diag_send_burst_xx — shared helper for cmd 0x21 + cmd 0x22 reply burst
 ; ---------------------------------------------------------------------------
 ; Caller convention:
@@ -9392,6 +9510,7 @@ volume_dsp_write:
     movlb       0x0
     bcf         dsp_fault_flags, 2, BANKED  ; clear ACKSTAT latch
     rcall       i2c_tas3108_coeff_write
+    movlb       0x0                          ; helper may leave BSR != 0
     btfsc       dsp_fault_flags, 2, BANKED  ; NACKed?
     bra         vol_write_nacked
     ; Success: DSP responded, clear all fault state
@@ -9595,7 +9714,7 @@ preset_force_mute:
     bsf         active_flags, 4, ACCESS
     bsf         active_flags, 5, ACCESS
     bcf         event_flags, 5, BANKED
-    bra         clrf_i2c_coeff_0123_and_write   ; W03-E02: tail-call (helper falls through to i2c_tas3108_coeff_write whose return chains back to caller of preset_force_mute)
+    goto        clrf_i2c_coeff_0123_and_write   ; tail-call; far-safe after M1 growth
 
 ; ---------------------------------------------------------------------------
 ; Preset Job State Machine (V3.2: async delayed preset switching)
@@ -9759,6 +9878,13 @@ preset_job_apply_final:
 ; --- COMMIT (4): finalize preset switch, restore volume if appropriate ---
 preset_job_commit:
     movlb       0x2
+    ; If CONTROL changed target during APPLY, keep the forced-mute context
+    ; and immediately run another coalesced switch instead of going idle on
+    ; the older target.
+    movf        preset_job_target, W, BANKED
+    btfsc       active_flags, 2, ACCESS     ; current preset B?
+    xorlw       0x01
+    bnz         preset_job_commit_rearm
     btfss       preset_job_flags, 0, BANKED ; did we force mute?
     bra         preset_job_commit_idle      ; no → leave mute as user had it
     btfsc       preset_job_flags, 1, BANKED ; user wants mute?
@@ -9771,6 +9897,9 @@ preset_job_commit:
 
 preset_job_commit_idle:
     bra         preset_job_cancel_done      ; shared tail: state=IDLE+return
+
+preset_job_commit_rearm:
+    bra         preset_job_pending_timer
 
 ; --- Cancel with unmute (coalesced back to same preset) ---
 preset_job_cancel_unmute:
@@ -10285,7 +10414,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x4F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x63, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

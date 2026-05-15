@@ -280,7 +280,9 @@ def test_menu_dispatch_tier1_layout() -> None:
     # block (which holds the state == 5 / PB2-Diag branch).
     body_end = text.find("flow_boot_handshake_wait_120A:", body_start)
     body = text[body_start:body_end]
-    assert re.search(r"rcall\s+v171_preset_screen", body), "state 1 -> preset wiring"
+    assert re.search(r"(?:r)?call\s+v171_preset_screen", body), (
+        "state 1 -> preset wiring"
+    )
     # State 2 is now Input (was Diagnostics in pre-Tier-1 Layer 5).
     assert re.search(
         r"movlw\s+0x02[^\n]*\n\s*cpfseq\s+0xbf[\s\S]{0,200}call\s+control_core_service_1912",
@@ -293,7 +295,7 @@ def test_menu_dispatch_tier1_layout() -> None:
     ), "state 3 -> Setup wiring (Tier-1 reordering)"
     # State 4 is PB1 Diag with W = 0 in PB-index parameter.
     assert re.search(
-        r"movlw\s+0x04[^\n]*\n\s*cpfseq\s+0xbf[\s\S]{0,200}movlw\s+0x00\s*\n\s*rcall\s+v171_diag_pb_screen",
+        r"movlw\s+0x04[^\n]*\n\s*cpfseq\s+0xbf[\s\S]{0,200}movlw\s+0x00\s*\n\s*(?:r)?call\s+v171_diag_pb_screen",
         body,
     ), "state 4 -> PB1 Diag wiring (W = PB-index 0)"
 
@@ -373,17 +375,16 @@ def test_diag_pb_screen_stashes_index_and_falls_through_to_screen() -> None:
     )
 
 
-def test_diag_screen_label_exists_and_initializes_target() -> None:
+def test_diag_screen_label_exists_and_primes_page_entry_state() -> None:
     """``v171_diag_screen:`` must be a top-level label, and its first
-    body block must initialize ``v171_diag_target`` from the present mask
-    (target=0 on first entry so the very first cadence-driven query goes
-    to PB1 per spec; toggle now happens on BF/27 reception (the LAST
-    frame of the 7-frame burst), not in the cadence loop, so we don't
-    pre-flip it any more).
+    body block must prime the page-entry state without choosing a hidden
+    alternating poll target.
 
     Tier-1 (2026-04-20) added a clrf v171_diag_reset_seen at the same
     init point so the page-entry hook fires cmd 0x22 ONCE per PB on
-    each Diag-page visit.  Window extended to cover the new init line.
+    each Diag-page visit.  BUG-DIAG-01/02 then moved target selection
+    to the cadence send path, where it can be loaded from the visible
+    PB page on every query.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_screen")
@@ -391,14 +392,13 @@ def test_diag_screen_label_exists_and_initializes_target() -> None:
     # Window: from label through first ~1500 chars covers the (now larger
     # with Tier-1) init block including the reset_seen clear.
     head = text[off:off + 1500]
-    assert "v171_diag_present" in head, "first block must touch present mask"
-    assert "bcf     v171_diag_target, 0, BANKED" in head, (
-        "first-entry init must clear diag_target.0 so the first cadence "
-        "query goes to PB1"
-    )
     assert "clrf    v171_diag_reset_seen" in head, (
         "Tier-1 page-entry hook must clear v171_diag_reset_seen so the "
         "cadence loop fires cmd 0x22 ONCE per PB per Diag-page visit"
+    )
+    assert "bcf     v171_diag_target, 0, BANKED" not in head, (
+        "page entry must not force target PB1; the send path must choose "
+        "the currently visible PB page"
     )
 
 
@@ -561,7 +561,7 @@ def test_diag_send_query_uses_b1_or_b2_route_and_cmd_byte_param() -> None:
         "reset wrapper must seed W = 0x22"
     )
     # Shared helper structure.
-    body = _label_body(text, "v171_diag_send_query_w", "control_core_service_0F54")
+    body = _label_body(text, "v171_diag_send_query_w", "v171_health_service")
     assert re.search(r"movlw\s+0xB1", body), "PB1 route literal missing"
     assert re.search(r"movlw\s+0xB2", body), "PB2 route literal missing"
     # Three tx_byte_enqueue invocations (route, cmd, data).
@@ -591,7 +591,7 @@ def test_bf2x_parser_case_handles_cmds_21_through_2b() -> None:
     # added for Tier-1 (RESET LAST frame on BF/2B) AND the codex MEDIUM
     # fix (effective-target picker for cmd 0x22 frames).  8 KB covers
     # the full handler body including all comments.
-    body = text[off:off + 8000]
+    body = text[off:off + 10000]
     # Range gate: must reject < 0x21 and >= 0x2C.
     assert re.search(r"movlw\s+0x21\s*\n\s*cpfslt\s+rx_parsed_cmd", body), (
         "lower-bound check (cmd < 0x21 -> exit) missing"
@@ -842,7 +842,7 @@ def test_diag_parser_sets_dirty_on_every_bf2x_write() -> None:
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0
-    body = text[off:off + 8000]
+    body = text[off:off + 10000]
     # Locate the cache write (movff rx_parsed_data, INDF0) and the
     # BF/27 last-frame gate (cpfseq with W=0x06).  bsf DIRTY must sit
     # between them.  NOTE: there are TWO cpfseq instructions on
@@ -886,44 +886,72 @@ def test_diag_check_redraw_honors_dirty_flag() -> None:
     ), "redraw path must clear DIRTY after redraw fires"
 
 
-def test_diag_loop_advances_target_on_silent_pb() -> None:
-    """Coverage for HIGH #2: silent-PB skip-on-pending in the cadence loop.
+def test_diag_loop_retries_visible_page_on_silent_pb() -> None:
+    """BUG-DIAG-01/02: cadence must query the visible PB page.
 
-    Without this gate, a silent or unsupported PB would never advance
-    the target (which only flips on BF/27 reception), pinning the poll
-    loop on the missing slot forever.  The fix: cadence checks
-    RUNTIME_PENDING; if still set when the next cadence fires, advance
-    target BEFORE sending so the responding PB gets re-queried.
-
-    V1.71 Tier-1 (2026-04-20) renamed PENDING -> RUNTIME_PENDING (bit 1)
-    and added RESET_PENDING (bit 2) for the new cmd 0x22 page-entry
-    query.  Only RUNTIME_PENDING gates the silent-target skip; the
-    cmd 0x22 page-entry hook has its own RESET_PENDING handling and
-    doesn't participate in target-advance logic.
+    The old global alternating target could leave PB2 visible while the
+    next cadence queried PB1, so the active page refreshed at half
+    cadence.  The send path now reloads v171_diag_target from
+    v171_diag_render_pb_index before each query.  If that visible PB is
+    silent, the timeout path clears RUNTIME_PENDING and retries it
+    instead of advancing to the hidden page.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_loop")
     assert off >= 0
-    # Window through the cadence-expired path.  Tier-1 expanded the loop
-    # body twice: first with the cmd 0x22 fire-once-per-PB block, then
-    # with the RESET_PENDING timeout-give-up path.  Bump window to 6000.
-    body = text[off:off + 6000]
-    # btfss on RUNTIME_PENDING + bra to skip the toggle: when set
-    # (silent), don't skip -> btg target.
+    body = _label_body(text, "v171_diag_loop", "v171_diag_check_buttons")
+    assert body, "v171_diag_loop body not found"
     assert re.search(
         r"btfss\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         body,
-    ), "silent-PB gate must check RUNTIME_PENDING before sending"
-    assert re.search(
+    ), "cadence loop must check RUNTIME_PENDING before sending"
+    assert not re.search(
         r"btg\s+v171_diag_target,\s*0,\s*BANKED",
         body,
-    ), "silent-PB gate must toggle target when RUNTIME_PENDING is still set"
+    ), "visible-page timeout must retry the active PB, not advance target"
+    assert re.search(
+        r"movf\s+v171_diag_render_pb_index,\s*W,\s*BANKED\s*\n"
+        r"\s*andlw\s+0x01\s*\n"
+        r"\s*movwf\s+v171_diag_target,\s*BANKED",
+        body,
+    ), "send path must load diag_target from the visible PB page"
     # The cadence path must SET RUNTIME_PENDING after sending so the
     # next cadence can detect a no-reply.
     assert re.search(
         r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_RUNTIME_PENDING,\s*BANKED",
         body,
     ), "cadence path must set RUNTIME_PENDING when issuing a query"
+
+
+def test_diag_loop_uses_non_modal_foreground_services() -> None:
+    """BUG-DIAG-01/02: the Diag loop must not call the modal display
+    helper.
+
+    ``display_loop_iteration`` parks internally until a UI event, which
+    stalls the Diag poll cadence during a static wait and makes panel
+    responsiveness depend on the long modal loop.  Diag needs the
+    one-shot subset only: button scan, RX parser, and frame-gap guard.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    off = _label_offset(text, "v171_diag_loop")
+    end = _label_offset(text, "v171_diag_check_buttons")
+    assert off >= 0 and end > off
+    body = text[off:end]
+    assert not re.search(r"call\s+display_loop_iteration,\s*0x0", body), (
+        "Diagnostics loop must not call the modal display loop"
+    )
+    assert re.search(r"call\s+button_scan_debounce,\s*0x0", body), (
+        "Diagnostics loop must scan buttons once per loop"
+    )
+    assert re.search(r"call\s+rx_parser_entry,\s*0x0", body), (
+        "Diagnostics loop must drain RX once per loop"
+    )
+    assert re.search(r"call\s+v171_service_rx_frame_gap,\s*0x0", body), (
+        "Diagnostics loop must run the frame-gap guard once per loop"
+    )
+    assert re.search(r"call\s+control_core_service_0DCE,\s*0x0", body), (
+        "Diagnostics loop must dispatch decoded IR once per loop"
+    )
 
 
 def test_diag_parser_clears_pending_on_bf27() -> None:
@@ -936,7 +964,7 @@ def test_diag_parser_clears_pending_on_bf27() -> None:
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0
-    body = text[off:off + 8000]
+    body = text[off:off + 10000]
     # RUNTIME_PENDING clear must be inside the col_offset == 6 (BF/27) path.
     # Anchor on `movlw 0x06\ncpfseq (Common_RAM + 4)` to skip over the
     # codex-MEDIUM-fix col-7 effective-target picker (which uses
@@ -1179,11 +1207,8 @@ def test_diag_loop_fires_cmd_22_once_per_pb_per_page_entry() -> None:
     chain bandwidth) fails this test.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    off = _label_offset(text, "v171_diag_loop")
-    # 6 KB window covers the loop body through the cmd 0x22 hook +
-    # the RESET_PENDING timeout-give-up path + cmd 0x21 cadence +
-    # check_redraw block.
-    body = text[off:off + 6000]
+    body = _label_body(text, "v171_diag_loop", "v171_diag_check_buttons")
+    assert body, "v171_diag_loop body not found"
     # The hook must check RESET_PENDING.  Tier-1 timeout (F1 fix) made
     # this a btfss + bra-to-check-reset-seen pattern: when PENDING is
     # SET, fall into the timeout-decrement branch; when CLEAR, branch to
@@ -1232,7 +1257,7 @@ def test_bf2x_parser_uses_effective_target_for_cmd22_frames() -> None:
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
-    body = text[off:off + 8000]
+    body = text[off:off + 10000]
     # The col-7 gate must be present (cpfslt against W=0x07 on col_offset).
     assert re.search(
         r"movlw\s+0x07\s*\n\s*cpfslt\s+\(Common_RAM \+ 4\),\s*A",
@@ -1315,8 +1340,8 @@ def test_diag_loop_times_out_reset_pending_after_n_cadences() -> None:
         (treat as "unknown" per spec) and clear RESET_PENDING.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
-    off = _label_offset(text, "v171_diag_loop")
-    body = text[off:off + 6000]
+    body = _label_body(text, "v171_diag_loop", "v171_diag_check_buttons")
+    assert body, "v171_diag_loop body not found"
     # Snapshot of v171_diag_target into v171_diag_reset_target on send.
     assert re.search(
         r"movwf\s+v171_diag_reset_target,\s*BANKED",

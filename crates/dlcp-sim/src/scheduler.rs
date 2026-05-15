@@ -21,9 +21,9 @@
 //! pin propagation, and chain-step semantics build on top
 //! of it through P3.2-P3.7.
 
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use serde::{Deserialize, Serialize};
 
 /// What an event's owner is.  Phase-3 distinguishes by
 /// callback target rather than by core id directly --
@@ -51,10 +51,7 @@ pub enum EventKind {
     /// chain's pinnet UART couplings.  `uart_coupling_idx`
     /// indexes `Chain::pinnet::uart`; `byte` is the
     /// already-shifted-out byte.
-    UartByteDelivery {
-        uart_coupling_idx: usize,
-        byte: u8,
-    },
+    UartByteDelivery { uart_coupling_idx: usize, byte: u8 },
     /// A peripheral-internal deadline (timer overflow,
     /// EEPROM write completion, ADC conversion done, etc.)
     /// scheduled by a peripheral via the queue.  Carries
@@ -208,10 +205,7 @@ mod tests {
     #[test]
     fn peripheral_deadline_event_drains_alongside_core_events() {
         let mut q = EventQueue::new();
-        q.push(
-            10,
-            EventKind::CoreInstructionComplete(0),
-        );
+        q.push(10, EventKind::CoreInstructionComplete(0));
         q.push(
             5,
             EventKind::PeripheralDeadline {

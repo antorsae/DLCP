@@ -38,7 +38,10 @@
 //! have no dedicated accessor; adding one is a one-line change
 //! when a future need arises.
 
-#![allow(dead_code, reason = "P1.7 parser; consumed by P1.6 reset path + P2 oscillator/peripheral models")]
+#![allow(
+    dead_code,
+    reason = "P1.7 parser; consumed by P1.6 reset path + P2 oscillator/peripheral models"
+)]
 
 use serde::{Deserialize, Serialize};
 

@@ -74,6 +74,11 @@ class MainRoleState:
     mode: str = ""
     version: str | None = None
     warnings: list[str] = dataclasses.field(default_factory=list)
+    logical_volume_low: int | None = None
+    computed_volume_low: int | None = None
+    input_select: int | None = None
+    input_mirror: int | None = None
+    setup_profile: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -242,6 +247,21 @@ def _probe_main_role_state(*, vid: int, pid: int, path: bytes) -> MainRoleState:
             else f"{snapshot.version.major}.{snapshot.version.minor}"
         ),
         warnings=list(snapshot.warnings),
+        logical_volume_low=(
+            None if snapshot.volume_state is None else snapshot.volume_state.logical_low
+        ),
+        computed_volume_low=(
+            None if snapshot.volume_state is None else snapshot.volume_state.computed_low
+        ),
+        input_select=(
+            None if snapshot.input_state is None else snapshot.input_state.input_select
+        ),
+        input_mirror=(
+            None if snapshot.input_state is None else snapshot.input_state.input_mirror
+        ),
+        setup_profile=(
+            None if snapshot.input_state is None else snapshot.input_state.setup_profile
+        ),
     )
 
 
@@ -350,6 +370,21 @@ def _parse_delays_ms(delays_ms: str) -> list[float]:
     return delays
 
 
+def _parse_ir_action_sequence(sequence: str) -> list[str]:
+    actions: list[str] = []
+    for item in sequence.split(","):
+        action = item.strip()
+        if not action:
+            continue
+        # Validate against the sender's registry while preserving the user's
+        # spelling in the artifact for direct command reproduction.
+        hardware_flipper_ir.resolve_action_spec(action)
+        actions.append(hardware_flipper_ir._normalize_action_name(action))
+    if not actions:
+        raise RuntimeError("IR action sequence must contain at least one action")
+    return actions
+
+
 def _camera_probe_kwargs_from_args(
     args: argparse.Namespace,
     *,
@@ -390,9 +425,56 @@ def _compact_role_observation(state: MainRoleState) -> dict[str, object]:
         "active_flags": _active_flags_value(state),
         "active": _is_active_state(state),
         "muted": _is_muted_state(state),
+        "logical_volume_low": state.logical_volume_low,
+        "computed_volume_low": state.computed_volume_low,
+        "input_select": state.input_select,
+        "input_mirror": state.input_mirror,
+        "setup_profile": state.setup_profile,
         "raw_window_hex": state.raw_window_hex,
         "mode": state.mode,
         "version": state.version,
+    }
+
+
+def _state_change_signature(state: MainRoleState) -> dict[str, object]:
+    return {
+        "active_preset": state.active_preset,
+        "active_config_name": state.active_config_name,
+        "active_flags": _active_flags_value(state),
+        "active": _is_active_state(state),
+        "muted": _is_muted_state(state),
+        "logical_volume_low": state.logical_volume_low,
+        "computed_volume_low": state.computed_volume_low,
+        "input_select": state.input_select,
+        "input_mirror": state.input_mirror,
+        "setup_profile": state.setup_profile,
+    }
+
+
+def _state_pair_delta(
+    before: Sequence[MainRoleState],
+    after: Sequence[MainRoleState],
+) -> dict[str, object]:
+    before_by_path = {item.path: item for item in before}
+    after_by_path = {item.path: item for item in after}
+    paths = sorted(set(before_by_path) | set(after_by_path))
+    per_path: dict[str, object] = {}
+    changed = False
+    for path in paths:
+        before_item = before_by_path.get(path)
+        after_item = after_by_path.get(path)
+        before_sig = None if before_item is None else _state_change_signature(before_item)
+        after_sig = None if after_item is None else _state_change_signature(after_item)
+        path_changed = before_sig != after_sig
+        changed = changed or path_changed
+        per_path[path] = {
+            "changed": path_changed,
+            "before": before_sig,
+            "after": after_sig,
+        }
+    return {
+        "changed": changed,
+        "paths": per_path,
     }
 
 
@@ -1531,51 +1613,103 @@ def _run_preset_sequence_scenario(
     ir_template = args.ir_command_template or _default_flipper_ir_command_template(
         port=args.flipper_port
     )
-    ir_results = _execute_ir_sequence(ir_template=ir_template, steps=steps)
-    main_wait = _wait_for_main_pair_preset(
-        vid=args.vid,
-        pid=args.pid,
-        expected_preset=expected_preset,
-        timeout_s=args.timeout_s,
-        poll_interval_s=args.main_poll_s,
-    )
+    ir_results: list[dict[str, object]] = []
+    main_wait: dict[str, object] | None = None
+    lcd_wait: dict[str, object] | None = None
+    after_lcd: dict[str, object] | None = None
+    states_after: list[MainRoleState] = []
+    left_after: MainRoleState | None = None
+    right_after: MainRoleState | None = None
     expected_line2 = f"Active: {expected_preset}"
-    lcd_wait = _wait_for_lcd_target(
-        expected_line1="Volume",
-        expected_line2=expected_line2,
-        timeout_s=args.lcd_timeout_s,
-        poll_interval_s=args.lcd_poll_s,
-        probe_captures=args.lcd_probe_captures,
-        args=args,
-        output_root=run_root / "lcd_wait",
-    )
-    after_lcd = _probe_lcd(
-        **_camera_probe_kwargs_from_args(
-            args,
-            output_root=run_root / "after",
-            skip_configure=True,
-        )
-    )
-    states_after = _collect_main_roles(vid=args.vid, pid=args.pid)
-    left_after, right_after = _assert_left_right_roles(states_after)
+    out_path = run_root / "result.json"
 
-    _assert_expected_role_pair(
-        left_after,
-        right_after,
-        expected_preset=expected_preset,
-        context=scenario_name,
-    )
-    _assert_lcd_consensus(
-        after_lcd,
-        expected_line1="Volume",
-        expected_line2=expected_line2,
-        context=scenario_name,
-    )
+    try:
+        ir_results = _execute_ir_sequence(ir_template=ir_template, steps=steps)
+        main_wait = _wait_for_main_pair_preset(
+            vid=args.vid,
+            pid=args.pid,
+            expected_preset=expected_preset,
+            timeout_s=args.timeout_s,
+            poll_interval_s=args.main_poll_s,
+        )
+        lcd_wait = _wait_for_lcd_target(
+            expected_line1="Volume",
+            expected_line2=expected_line2,
+            timeout_s=args.lcd_timeout_s,
+            poll_interval_s=args.lcd_poll_s,
+            probe_captures=args.lcd_probe_captures,
+            args=args,
+            output_root=run_root / "lcd_wait",
+        )
+        after_lcd = _probe_lcd(
+            **_camera_probe_kwargs_from_args(
+                args,
+                output_root=run_root / "after",
+                skip_configure=True,
+            )
+        )
+        states_after = _collect_main_roles(vid=args.vid, pid=args.pid)
+        left_after, right_after = _assert_left_right_roles(states_after)
+
+        _assert_expected_role_pair(
+            left_after,
+            right_after,
+            expected_preset=expected_preset,
+            context=scenario_name,
+        )
+        _assert_lcd_consensus(
+            after_lcd,
+            expected_line1="Volume",
+            expected_line2=expected_line2,
+            context=scenario_name,
+        )
+    except Exception as exc:
+        try:
+            states_after = _collect_main_roles(vid=args.vid, pid=args.pid)
+        except Exception as collect_exc:
+            final_snapshot: dict[str, object] = {
+                "collect_error": str(collect_exc),
+            }
+        else:
+            final_snapshot = {
+                "mains": [_compact_role_observation(item) for item in states_after],
+            }
+            try:
+                left_after, right_after = _assert_left_right_roles(states_after)
+            except Exception as role_exc:
+                final_snapshot["role_error"] = str(role_exc)
+            else:
+                final_snapshot["pair"] = _role_pair_payload(left_after, right_after)
+
+        payload = {
+            "status": "FAIL",
+            "scenario": scenario_name,
+            "run_root": str(run_root),
+            "expected_preset": expected_preset,
+            "target_preset": expected_preset,
+            "baseline_lcd": baseline_lcd,
+            "ir_command_template": ir_template,
+            "sequence": [dataclasses.asdict(step) for step in steps],
+            "ir_results": ir_results,
+            "main_wait": main_wait,
+            "lcd_wait": lcd_wait,
+            "after_lcd": after_lcd,
+            "before": _role_pair_payload(left_before, right_before),
+            "final_snapshot": final_snapshot,
+            "error": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        }
+        out_path.write_text(_json_dumps(payload), encoding="utf-8")
+        raise RuntimeError(f"{exc}; result_path={out_path}") from exc
 
     payload = {
+        "status": "PASS",
         "scenario": scenario_name,
         "run_root": str(run_root),
         "expected_preset": expected_preset,
+        "target_preset": expected_preset,
         "baseline_lcd": baseline_lcd,
         "ir_command_template": ir_template,
         "sequence": [dataclasses.asdict(step) for step in steps],
@@ -1586,7 +1720,6 @@ def _run_preset_sequence_scenario(
         "before": _role_pair_payload(left_before, right_before),
         "after": _role_pair_payload(left_after, right_after),
     }
-    out_path = run_root / "result.json"
     out_path.write_text(_json_dumps(payload), encoding="utf-8")
     return out_path
 
@@ -1939,6 +2072,94 @@ def _cmd_reconnect_responsiveness_soak(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ir_receiver_sweep(args: argparse.Namespace) -> int:
+    actions = _parse_ir_action_sequence(args.actions)
+    run_root = args.output_root / "ir_receiver_sweep" / time.strftime("%Y%m%d_%H%M%S")
+    run_root.mkdir(parents=True, exist_ok=True)
+    out_path = run_root / "result.json"
+    ir_template = _resolve_ir_template(args)
+
+    before = _collect_main_roles(vid=args.vid, pid=args.pid)
+    _assert_left_right_roles(before)
+    steps: list[dict[str, object]] = []
+    any_changed = False
+
+    try:
+        previous = before
+        for index, action in enumerate(actions, 1):
+            ir_result = _send_ir(ir_template, action=action)
+            if args.settle_s > 0:
+                time.sleep(max(0.0, args.settle_s))
+            current = _collect_main_roles(vid=args.vid, pid=args.pid)
+            delta = _state_pair_delta(previous, current)
+            any_changed = any_changed or bool(delta["changed"])
+            steps.append(
+                {
+                    "index": index,
+                    "action": action,
+                    "ir": ir_result,
+                    "settle_s": args.settle_s,
+                    "changed": delta["changed"],
+                    "delta": delta,
+                    "after": [_compact_role_observation(item) for item in current],
+                }
+            )
+            previous = current
+
+        status = "PASS"
+        error: dict[str, object] | None = None
+        if args.require_any_change and not any_changed:
+            status = "FAIL"
+            error = {
+                "type": "RuntimeError",
+                "message": "no IR sweep action changed MAIN-visible state",
+            }
+    except Exception as exc:
+        try:
+            final = _collect_main_roles(vid=args.vid, pid=args.pid)
+        except Exception as collect_exc:
+            final_payload: object = {"collect_error": str(collect_exc)}
+        else:
+            final_payload = [_compact_role_observation(item) for item in final]
+        payload = {
+            "status": "FAIL",
+            "scenario": "ir_receiver_sweep",
+            "run_root": str(run_root),
+            "actions": actions,
+            "ir_command_template": ir_template,
+            "before": [_compact_role_observation(item) for item in before],
+            "steps": steps,
+            "any_changed": any_changed,
+            "final": final_payload,
+            "error": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        }
+        out_path.write_text(_json_dumps(payload), encoding="utf-8")
+        raise RuntimeError(f"{exc}; result_path={out_path}") from exc
+
+    final = previous
+    payload = {
+        "status": status,
+        "scenario": "ir_receiver_sweep",
+        "run_root": str(run_root),
+        "actions": actions,
+        "ir_command_template": ir_template,
+        "before": [_compact_role_observation(item) for item in before],
+        "steps": steps,
+        "any_changed": any_changed,
+        "final": [_compact_role_observation(item) for item in final],
+        "error": error,
+    }
+    out_path.write_text(_json_dumps(payload), encoding="utf-8")
+    if status != "PASS":
+        message = error["message"] if error else "IR receiver sweep failed"
+        raise RuntimeError(f"{message}; result_path={out_path}")
+    print(_json_dumps({"result_path": str(out_path), "status": status, "any_changed": any_changed}))
+    return 0
+
+
 def _cmd_ir_preset_roundtrip(args: argparse.Namespace) -> int:
     run_root = args.output_root / "ir_preset_roundtrip" / time.strftime("%Y%m%d_%H%M%S")
     run_root.mkdir(parents=True, exist_ok=True)
@@ -2193,6 +2414,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_convergence_wait_args(p_soak)
     _add_camera_args(p_soak)
     p_soak.set_defaults(func=_cmd_reconnect_responsiveness_soak)
+
+    p_sweep = sub.add_parser(
+        "ir-receiver-sweep",
+        help="send named IR actions and record MAIN-visible state deltas without using LCD OCR",
+    )
+    p_sweep.add_argument(
+        "--actions",
+        default="VOL_UP,VOL_DOWN,STD_VOL_UP,STD_VOL_DOWN,F2,F1,MUTE,MUTE,STD_MUTE,STD_MUTE",
+        help="comma-separated hardware_flipper_ir action names to send",
+    )
+    p_sweep.add_argument("--settle-s", type=float, default=1.0)
+    p_sweep.add_argument(
+        "--require-any-change",
+        action="store_true",
+        help="fail if no action changes volume, preset, mute, active, or input state",
+    )
+    _add_ir_transport_args(p_sweep)
+    p_sweep.set_defaults(func=_cmd_ir_receiver_sweep)
 
     p_ir = sub.add_parser(
         "ir-preset-roundtrip",

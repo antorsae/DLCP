@@ -589,6 +589,10 @@ def test_cli_all_ch_requests_post_flash_finalize(monkeypatch, tmp_path: Path) ->
         "dlcp_fw.flash.dlcp_main_flash._apply_all_channel_mapping",
         fake_apply_all_channel_mapping,
     )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._pick_device",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no live unit")),
+    )
 
     rc = main(
         [

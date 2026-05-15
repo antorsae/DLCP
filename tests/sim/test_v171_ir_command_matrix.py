@@ -45,11 +45,10 @@ dependency):
   * cmd 0x3A → standby endpoint (V1.64b explicit, asm:3422+)
   * cmd 0x3B → wake endpoint    (V1.64b explicit, asm:3431+)
 
-EEPROM-configured commands (VOL+, VOL-, MUTE, etc.) are NOT covered
-by this matrix because they depend on the user's IR-learning
-configuration stored in EEPROM (Common_RAM+33..+43 loaded from
-EEPROM at boot).  Coverage of those paths via direct EEPROM
-configuration is a future task (deferred).
+EEPROM-configured commands (VOL+, VOL-, MUTE, POWER, INPUT+/INPUT-)
+are covered by ``test_v171_profile_ir_actions_match_stock_v16b_dispatch_behavior``.
+That test writes the same remote-profile registers used by stock V1.6b
+and compares V1.71 dispatch deltas against the known-good stock image.
 
 Sequence cases
 ==============
@@ -68,7 +67,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
+from dlcp_fw.paths import STOCK_CONTROL_HEX_V16B, V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 
 try:
@@ -230,6 +229,133 @@ def _inject_and_settle(  # type: ignore[no-untyped-def]
     return [_frame_tuple(f) for f in chain.tx_frames()[before:]]
 
 
+# Remote profile registers (Common_RAM + 32..38) used by stock V1.6b
+# and V1.71's inherited dispatch path.  Profile 1 is the Hypex RC5
+# profile used by scripts/hardware_flipper_ir.py; profile 2 is the
+# alternate standard RC5 profile still present in the firmware.
+PROFILE_REGS: dict[str, dict[int, int]] = {
+    "profile1_hypex": {
+        0x020: 0x10,  # address
+        0x021: 0x32,  # power
+        0x022: 0x33,  # vol+
+        0x023: 0x34,  # vol-
+        0x024: 0x36,  # input+
+        0x025: 0x37,  # input-
+        0x026: 0x35,  # mute
+    },
+    "profile2_standard": {
+        0x020: 0x00,  # address
+        0x021: 0x0C,  # power
+        0x022: 0x10,  # vol+
+        0x023: 0x11,  # vol-
+        0x024: 0x20,  # input+
+        0x025: 0x21,  # input-
+        0x026: 0x0D,  # mute
+    },
+}
+
+PROFILE_CASES: dict[str, tuple[tuple[int, int, str], ...]] = {
+    "profile1_hypex": (
+        (0x10, 0x32, "power"),
+        (0x10, 0x33, "volume_up"),
+        (0x10, 0x34, "volume_down"),
+        (0x10, 0x35, "mute"),
+        (0x10, 0x36, "input_up"),
+        (0x10, 0x37, "input_down"),
+    ),
+    "profile2_standard": (
+        (0x00, 0x0C, "power"),
+        (0x00, 0x10, "volume_up"),
+        (0x00, 0x11, "volume_down"),
+        (0x00, 0x0D, "mute"),
+        (0x00, 0x20, "input_up"),
+        (0x00, 0x21, "input_down"),
+    ),
+}
+
+
+def _boot_profile_chain(control_hex: Path):  # type: ignore[no-untyped-def]
+    _require_rust()
+    chain = RustChain.from_v17_chain(str(control_hex))
+    chain.warmup(25_000_000)
+    chain.pause_heartbeat()
+    for _ in range(40):
+        chain.step()
+    return chain
+
+
+def _configure_profile(chain, profile_name: str) -> None:  # type: ignore[no-untyped-def]
+    for addr, value in PROFILE_REGS[profile_name].items():
+        chain.write_reg(addr, value)
+
+
+def _prime_profile_state(chain) -> None:  # type: ignore[no-untyped-def]
+    # Deterministic state before each decoded IR event.  Clear the
+    # stock debounce countdown, volume/input/mute/standby flags, then
+    # re-arm IR dispatch so inject_decoded_ir_event can hand off to
+    # the foreground service.
+    chain.write_reg(0x01B, 0x00)
+    chain.write_reg(0x01C, 0x00)
+    chain.write_reg(0x0B9, 0x33)
+    chain.write_reg(0x0B7, 0x03)
+    flags = chain.read_reg(CONTROL_FLAGS_ADDR) & ~0x32
+    chain.write_reg(CONTROL_FLAGS_ADDR, flags | IR_ARMED_BIT)
+
+
+def _profile_snapshot(chain) -> dict[str, int]:  # type: ignore[no-untyped-def]
+    flags = chain.read_reg(CONTROL_FLAGS_ADDR)
+    mute = (flags >> 4) & 0x01
+    if mute == 0:
+        mute = (flags >> 5) & 0x01
+    return {
+        "standby": (flags >> 1) & 0x01,
+        "volume": chain.read_reg(0x0B9),
+        "input_idx": chain.read_reg(0x0B7),
+        "mute": mute,
+    }
+
+
+def _s8_delta(before: int, after: int) -> int:
+    delta = (after - before) & 0xFF
+    return delta - 0x100 if delta > 0x7F else delta
+
+
+def _profile_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    return {
+        "standby_delta": _s8_delta(before["standby"], after["standby"]),
+        "volume_delta": _s8_delta(before["volume"], after["volume"]),
+        "input_delta": _s8_delta(before["input_idx"], after["input_idx"]),
+        "mute_delta": _s8_delta(before["mute"], after["mute"]),
+    }
+
+
+def _profile_relevant_frames(frames) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
+    out: list[tuple[int, int, int]] = []
+    for frame in frames:
+        route, cmd, data = _frame_tuple(frame)
+        if route == 0xB0 and cmd in (0x03, 0x06, 0x07):
+            out.append((route, cmd, data))
+    return out
+
+
+def _run_profile_case(  # type: ignore[no-untyped-def]
+    chain, *, decoded_addr: int, decoded_cmd: int,
+) -> tuple[list[tuple[int, int, int]], dict[str, int]]:
+    _prime_profile_state(chain)
+    before_state = _profile_snapshot(chain)
+    before_frames = len(chain.tx_frames())
+    chain.inject_decoded_ir_event(
+        addr=decoded_addr,
+        cmd=decoded_cmd,
+        clear_debounce=True,
+    )
+    for _ in range(3):
+        chain.step()
+    after_state = _profile_snapshot(chain)
+    frames = chain.tx_frames()[before_frames:]
+    return _profile_relevant_frames(frames), _profile_delta(before_state, after_state)
+
+
 # step_until_pc_hit budget for asserting an IR helper ran post-inject.
 # The dispatch path reaches the inline-shortcut helper within at most
 # one foreground main-loop iteration of ir_decoded_cmd being set, but
@@ -319,10 +445,53 @@ def _step_until_no_helper_hit(  # type: ignore[no-untyped-def]
 # ===========================================================================
 # Sequence tests via inject_decoded_ir_event (fast, deterministic).
 # Pulse-train decoder coverage is owned by test_v171_ir_rc5_pulse_train.py
-# (cmd 0x3A only -- the decoder's LSB resolution makes a 4-cmd matrix
-# unreliable per the comment block in that file).  Extending pulse-train
-# coverage to all four inline shortcuts is tracked as task #157.
+# (profile-1 Hypex commands, profile-2 standard commands, and all four
+# V1.71 inline shortcuts).
 # ===========================================================================
+
+
+@pytest.mark.slow
+def test_v171_profile_ir_actions_match_stock_v16b_dispatch_behavior() -> None:
+    """V1.71 must preserve stock V1.6b dispatch for configured IR profiles.
+
+    BUG-IR-01 is not only about the RB5 decoder.  The real Flipper sender
+    uses profile-1 Hypex commands (0x32..0x37), while older parity tests
+    focused on profile-2/standard commands (0x0C, 0x10, ...).  This test
+    drives decoded events through the inherited profile-dispatch path for
+    both profiles and compares V1.71 state deltas plus immediate command
+    frames against the stock V1.6b image.
+    """
+    if not STOCK_CONTROL_HEX_V16B.is_file():
+        pytest.skip(f"missing V1.6b stock hex: {STOCK_CONTROL_HEX_V16B}")
+
+    for profile_name, cases in PROFILE_CASES.items():
+        stock = _boot_profile_chain(STOCK_CONTROL_HEX_V16B)
+        v171 = _boot_profile_chain(_v171_hex_inline())
+        _configure_profile(stock, profile_name)
+        _configure_profile(v171, profile_name)
+
+        for decoded_addr, decoded_cmd, label in cases:
+            stock_frames, stock_delta = _run_profile_case(
+                stock,
+                decoded_addr=decoded_addr,
+                decoded_cmd=decoded_cmd,
+            )
+            v171_frames, v171_delta = _run_profile_case(
+                v171,
+                decoded_addr=decoded_addr,
+                decoded_cmd=decoded_cmd,
+            )
+            assert v171_delta == stock_delta, (
+                f"{profile_name} {label} cmd=0x{decoded_cmd:02X}: "
+                f"V1.71 state delta {v171_delta!r} != stock V1.6b "
+                f"{stock_delta!r}"
+            )
+            assert v171_frames[:1] == stock_frames[:1], (
+                f"{profile_name} {label} cmd=0x{decoded_cmd:02X}: "
+                f"first relevant V1.71 frame {v171_frames[:1]!r} != "
+                f"stock V1.6b {stock_frames[:1]!r}; full V1.71="
+                f"{v171_frames!r} stock={stock_frames!r}"
+            )
 
 
 def test_v171_preset_a_pressed_three_times_converges_to_a(warmed_chain) -> None:  # type: ignore[no-untyped-def]

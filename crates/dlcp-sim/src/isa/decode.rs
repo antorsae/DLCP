@@ -63,7 +63,11 @@ pub enum Access {
 impl Access {
     /// Decode the `a` bit of a byte- or bit-oriented opcode.
     pub const fn from_bit(bit: u16) -> Self {
-        if bit & 1 == 0 { Access::AccessBank } else { Access::BankSelected }
+        if bit & 1 == 0 {
+            Access::AccessBank
+        } else {
+            Access::BankSelected
+        }
     }
 }
 
@@ -140,101 +144,289 @@ pub enum Instruction {
     // ------------------------------------------------------------------
     // Byte-oriented (31 ops; all have `f` and `a`; most have `d`).
     // ------------------------------------------------------------------
-    AddWf { d: Dest, a: Access, f: u8 },
-    AddWfC { d: Dest, a: Access, f: u8 },
-    AndWf { d: Dest, a: Access, f: u8 },
-    Clrf { a: Access, f: u8 },
-    Comf { d: Dest, a: Access, f: u8 },
-    CpfsEq { a: Access, f: u8 },
-    CpfsGt { a: Access, f: u8 },
-    CpfsLt { a: Access, f: u8 },
-    Decf { d: Dest, a: Access, f: u8 },
-    DecfSz { d: Dest, a: Access, f: u8 },
-    DcfSnz { d: Dest, a: Access, f: u8 },
-    Incf { d: Dest, a: Access, f: u8 },
-    IncfSz { d: Dest, a: Access, f: u8 },
-    InfSnz { d: Dest, a: Access, f: u8 },
-    IorWf { d: Dest, a: Access, f: u8 },
-    Movf { d: Dest, a: Access, f: u8 },
+    AddWf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    AddWfC {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    AndWf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Clrf {
+        a: Access,
+        f: u8,
+    },
+    Comf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    CpfsEq {
+        a: Access,
+        f: u8,
+    },
+    CpfsGt {
+        a: Access,
+        f: u8,
+    },
+    CpfsLt {
+        a: Access,
+        f: u8,
+    },
+    Decf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    DecfSz {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    DcfSnz {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Incf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    IncfSz {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    InfSnz {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    IorWf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Movf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
     /// 2-word.  `src` and `dst` are 12-bit data-memory addresses.
-    Movff { src: u16, dst: u16 },
-    Movwf { a: Access, f: u8 },
-    Mulwf { a: Access, f: u8 },
-    Negf { a: Access, f: u8 },
-    Rlcf { d: Dest, a: Access, f: u8 },
-    Rlncf { d: Dest, a: Access, f: u8 },
-    Rrcf { d: Dest, a: Access, f: u8 },
-    Rrncf { d: Dest, a: Access, f: u8 },
-    Setf { a: Access, f: u8 },
-    SubFwb { d: Dest, a: Access, f: u8 },
-    Subwf { d: Dest, a: Access, f: u8 },
-    SubwfB { d: Dest, a: Access, f: u8 },
-    Swapf { d: Dest, a: Access, f: u8 },
-    TstfSz { a: Access, f: u8 },
-    XorWf { d: Dest, a: Access, f: u8 },
+    Movff {
+        src: u16,
+        dst: u16,
+    },
+    Movwf {
+        a: Access,
+        f: u8,
+    },
+    Mulwf {
+        a: Access,
+        f: u8,
+    },
+    Negf {
+        a: Access,
+        f: u8,
+    },
+    Rlcf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Rlncf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Rrcf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Rrncf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Setf {
+        a: Access,
+        f: u8,
+    },
+    SubFwb {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Subwf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    SubwfB {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    Swapf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
+    TstfSz {
+        a: Access,
+        f: u8,
+    },
+    XorWf {
+        d: Dest,
+        a: Access,
+        f: u8,
+    },
 
     // ------------------------------------------------------------------
     // Bit-oriented (5 ops).
     // ------------------------------------------------------------------
-    Bcf { b: u8, a: Access, f: u8 },
-    Bsf { b: u8, a: Access, f: u8 },
-    BtfSc { b: u8, a: Access, f: u8 },
-    BtfSs { b: u8, a: Access, f: u8 },
-    Btg { b: u8, a: Access, f: u8 },
+    Bcf {
+        b: u8,
+        a: Access,
+        f: u8,
+    },
+    Bsf {
+        b: u8,
+        a: Access,
+        f: u8,
+    },
+    BtfSc {
+        b: u8,
+        a: Access,
+        f: u8,
+    },
+    BtfSs {
+        b: u8,
+        a: Access,
+        f: u8,
+    },
+    Btg {
+        b: u8,
+        a: Access,
+        f: u8,
+    },
 
     // ------------------------------------------------------------------
     // Literal (10 ops).
     // ------------------------------------------------------------------
-    AddLw { k: u8 },
-    AndLw { k: u8 },
-    IorLw { k: u8 },
+    AddLw {
+        k: u8,
+    },
+    AndLw {
+        k: u8,
+    },
+    IorLw {
+        k: u8,
+    },
     /// 2-word.  `k` is the 12-bit literal distributed across both
     /// words.
-    Lfsr { fsr: FsrIndex, k: u16 },
+    Lfsr {
+        fsr: FsrIndex,
+        k: u16,
+    },
     /// `k` is a 4-bit literal; only `k & 0x0F` is meaningful.
-    MovLb { k: u8 },
-    MovLw { k: u8 },
-    MulLw { k: u8 },
-    RetLw { k: u8 },
-    SubLw { k: u8 },
-    XorLw { k: u8 },
+    MovLb {
+        k: u8,
+    },
+    MovLw {
+        k: u8,
+    },
+    MulLw {
+        k: u8,
+    },
+    RetLw {
+        k: u8,
+    },
+    SubLw {
+        k: u8,
+    },
+    XorLw {
+        k: u8,
+    },
 
     // ------------------------------------------------------------------
     // Control (21 ops).
     // ------------------------------------------------------------------
-    Bc { n: i8 },
-    Bn { n: i8 },
-    Bnc { n: i8 },
-    Bnn { n: i8 },
-    Bnov { n: i8 },
-    Bnz { n: i8 },
-    Bov { n: i8 },
+    Bc {
+        n: i8,
+    },
+    Bn {
+        n: i8,
+    },
+    Bnc {
+        n: i8,
+    },
+    Bnn {
+        n: i8,
+    },
+    Bnov {
+        n: i8,
+    },
+    Bnz {
+        n: i8,
+    },
+    Bov {
+        n: i8,
+    },
     /// 11-bit signed PC offset, sign-extended to `i16`.  PC update
     /// is `PC = (PC + 2) + 2*n`.
-    Bra { n: i16 },
-    Bz { n: i8 },
+    Bra {
+        n: i16,
+    },
+    Bz {
+        n: i8,
+    },
     /// 2-word.  `n` is a 20-bit word address (`PC = 2 * n`); `fast`
     /// is the `s` bit (true → save W/STATUS/BSR shadow registers).
-    Call { n: u32, fast: bool },
+    Call {
+        n: u32,
+        fast: bool,
+    },
     Clrwdt,
     Daw,
     /// 2-word.  `n` is a 20-bit word address (`PC = 2 * n`).
-    Goto { n: u32 },
+    Goto {
+        n: u32,
+    },
     Nop,
     Pop,
     Push,
     /// 11-bit signed PC offset, sign-extended.  `PC = (PC + 2) + 2*n`.
-    Rcall { n: i16 },
+    Rcall {
+        n: i16,
+    },
     Reset,
-    Retfie { fast: bool },
-    Return { fast: bool },
+    Retfie {
+        fast: bool,
+    },
+    Return {
+        fast: bool,
+    },
     Sleep,
 
     // ------------------------------------------------------------------
     // Table (8 ops).
     // ------------------------------------------------------------------
-    TblRd { mode: TableMode },
-    TblWt { mode: TableMode },
+    TblRd {
+        mode: TableMode,
+    },
+    TblWt {
+        mode: TableMode,
+    },
 
     // ------------------------------------------------------------------
     // Sentinel for the 4 reserved 2-word continuation patterns
@@ -246,9 +438,13 @@ pub enum Instruction {
     /// Second-word continuation of a 2-word op fetched out of
     /// sequence (encoded as `1111 xxxx xxxx xxxx`).  Behaves as
     /// NOP on real silicon.
-    NopContinuation { word: u16 },
+    NopContinuation {
+        word: u16,
+    },
     /// Any opcode that doesn't match the documented encoding.
-    Reserved { word: u16 },
+    Reserved {
+        word: u16,
+    },
 }
 
 /// Decode one PIC18 opcode.
@@ -292,11 +488,46 @@ pub const fn decode(word1: u16, word2: u16) -> (Instruction, u32) {
         0b0100 => decode_byte_orient_high4(word1, low8, d, a, high6),
         0b0101 => decode_byte_orient_high5(word1, low8, d, a, high6),
         0b0110 => decode_byte_orient_high6(word1, low8, d, a, high6),
-        0b0111 => (Instruction::Btg { b: bit_b, a: bit_a, f: low8 }, 2),
-        0b1000 => (Instruction::Bsf { b: bit_b, a: bit_a, f: low8 }, 2),
-        0b1001 => (Instruction::Bcf { b: bit_b, a: bit_a, f: low8 }, 2),
-        0b1010 => (Instruction::BtfSs { b: bit_b, a: bit_a, f: low8 }, 2),
-        0b1011 => (Instruction::BtfSc { b: bit_b, a: bit_a, f: low8 }, 2),
+        0b0111 => (
+            Instruction::Btg {
+                b: bit_b,
+                a: bit_a,
+                f: low8,
+            },
+            2,
+        ),
+        0b1000 => (
+            Instruction::Bsf {
+                b: bit_b,
+                a: bit_a,
+                f: low8,
+            },
+            2,
+        ),
+        0b1001 => (
+            Instruction::Bcf {
+                b: bit_b,
+                a: bit_a,
+                f: low8,
+            },
+            2,
+        ),
+        0b1010 => (
+            Instruction::BtfSs {
+                b: bit_b,
+                a: bit_a,
+                f: low8,
+            },
+            2,
+        ),
+        0b1011 => (
+            Instruction::BtfSc {
+                b: bit_b,
+                a: bit_a,
+                f: low8,
+            },
+            2,
+        ),
         0b1100 => decode_movff(word1, word2),
         0b1101 => decode_bra_rcall(word1),
         0b1110 => decode_1110(word1, word2, low8),
@@ -332,13 +563,24 @@ const fn decode_0000(
     // 0000 0001 0000 kkkk — MOVLB (4-bit literal).
     if high8 == 0b0000_0001 {
         if (word1 & 0x00F0) == 0 {
-            return (Instruction::MovLb { k: (word1 & 0x0F) as u8 }, 2);
+            return (
+                Instruction::MovLb {
+                    k: (word1 & 0x0F) as u8,
+                },
+                2,
+            );
         }
         return (Instruction::Reserved { word: word1 }, 2);
     }
     // 0000 001a ffff ffff — MULWF.
     if (word1 & 0xFE00) == 0b0000_0010_0000_0000 {
-        return (Instruction::Mulwf { a: Access::from_bit(word1 >> 8), f: low8 }, 2);
+        return (
+            Instruction::Mulwf {
+                a: Access::from_bit(word1 >> 8),
+                f: low8,
+            },
+            2,
+        );
     }
     // 0000 01da ffff ffff — DECF.
     if high6 == 0b0000_01 {
@@ -361,14 +603,54 @@ const fn decode_misc_0000_0000(word1: u16, low8: u8) -> (Instruction, u32) {
         0x06 => (Instruction::Pop, 2),
         0x07 => (Instruction::Daw, 2),
         // Table reads / writes: 0000 1000..1111
-        0x08 => (Instruction::TblRd { mode: TableMode::from_bits(0) }, 2),
-        0x09 => (Instruction::TblRd { mode: TableMode::from_bits(1) }, 2),
-        0x0A => (Instruction::TblRd { mode: TableMode::from_bits(2) }, 2),
-        0x0B => (Instruction::TblRd { mode: TableMode::from_bits(3) }, 2),
-        0x0C => (Instruction::TblWt { mode: TableMode::from_bits(0) }, 2),
-        0x0D => (Instruction::TblWt { mode: TableMode::from_bits(1) }, 2),
-        0x0E => (Instruction::TblWt { mode: TableMode::from_bits(2) }, 2),
-        0x0F => (Instruction::TblWt { mode: TableMode::from_bits(3) }, 2),
+        0x08 => (
+            Instruction::TblRd {
+                mode: TableMode::from_bits(0),
+            },
+            2,
+        ),
+        0x09 => (
+            Instruction::TblRd {
+                mode: TableMode::from_bits(1),
+            },
+            2,
+        ),
+        0x0A => (
+            Instruction::TblRd {
+                mode: TableMode::from_bits(2),
+            },
+            2,
+        ),
+        0x0B => (
+            Instruction::TblRd {
+                mode: TableMode::from_bits(3),
+            },
+            2,
+        ),
+        0x0C => (
+            Instruction::TblWt {
+                mode: TableMode::from_bits(0),
+            },
+            2,
+        ),
+        0x0D => (
+            Instruction::TblWt {
+                mode: TableMode::from_bits(1),
+            },
+            2,
+        ),
+        0x0E => (
+            Instruction::TblWt {
+                mode: TableMode::from_bits(2),
+            },
+            2,
+        ),
+        0x0F => (
+            Instruction::TblWt {
+                mode: TableMode::from_bits(3),
+            },
+            2,
+        ),
         // RETFIE / RETURN — `0001 000s` and `0001 001s` (s in bit 0).
         0x10 => (Instruction::Retfie { fast: false }, 2),
         0x11 => (Instruction::Retfie { fast: true }, 2),
@@ -402,7 +684,11 @@ const fn decode_literal_0000_1xxx(word1: u16, low8: u8) -> (Instruction, u32) {
 // ---------------------------------------------------------------
 
 const fn decode_byte_orient_high1(
-    word1: u16, low8: u8, d: Dest, a: Access, high6: u16,
+    word1: u16,
+    low8: u8,
+    d: Dest,
+    a: Access,
+    high6: u16,
 ) -> (Instruction, u32) {
     match high6 {
         0b0001_00 => (Instruction::IorWf { d, a, f: low8 }, 2),
@@ -414,7 +700,11 @@ const fn decode_byte_orient_high1(
 }
 
 const fn decode_byte_orient_high2(
-    word1: u16, low8: u8, d: Dest, a: Access, high6: u16,
+    word1: u16,
+    low8: u8,
+    d: Dest,
+    a: Access,
+    high6: u16,
 ) -> (Instruction, u32) {
     match high6 {
         0b0010_00 => (Instruction::AddWfC { d, a, f: low8 }, 2),
@@ -426,7 +716,11 @@ const fn decode_byte_orient_high2(
 }
 
 const fn decode_byte_orient_high3(
-    word1: u16, low8: u8, d: Dest, a: Access, high6: u16,
+    word1: u16,
+    low8: u8,
+    d: Dest,
+    a: Access,
+    high6: u16,
 ) -> (Instruction, u32) {
     match high6 {
         0b0011_00 => (Instruction::Rrcf { d, a, f: low8 }, 2),
@@ -438,7 +732,11 @@ const fn decode_byte_orient_high3(
 }
 
 const fn decode_byte_orient_high4(
-    word1: u16, low8: u8, d: Dest, a: Access, high6: u16,
+    word1: u16,
+    low8: u8,
+    d: Dest,
+    a: Access,
+    high6: u16,
 ) -> (Instruction, u32) {
     match high6 {
         0b0100_00 => (Instruction::Rrncf { d, a, f: low8 }, 2),
@@ -450,7 +748,11 @@ const fn decode_byte_orient_high4(
 }
 
 const fn decode_byte_orient_high5(
-    word1: u16, low8: u8, d: Dest, a: Access, high6: u16,
+    word1: u16,
+    low8: u8,
+    d: Dest,
+    a: Access,
+    high6: u16,
 ) -> (Instruction, u32) {
     match high6 {
         0b0101_00 => (Instruction::Movf { d, a, f: low8 }, 2),
@@ -462,7 +764,11 @@ const fn decode_byte_orient_high5(
 }
 
 const fn decode_byte_orient_high6(
-    word1: u16, low8: u8, _d: Dest, a: Access, high6: u16,
+    word1: u16,
+    low8: u8,
+    _d: Dest,
+    a: Access,
+    high6: u16,
 ) -> (Instruction, u32) {
     // The high4=0110 block contains the eight no-`d`-bit
     // byte-oriented ops, ordered by the (bits 11..9) selector:
@@ -636,7 +942,11 @@ mod tests {
         // f=0x42, d=F, a=BANKED  →  0x27_42 = 0010 0111 0100 0010
         assert_eq!(
             d(0b0010_0111_0100_0010),
-            Instruction::AddWf { d: Dest::F, a: Access::BankSelected, f: 0x42 },
+            Instruction::AddWf {
+                d: Dest::F,
+                a: Access::BankSelected,
+                f: 0x42
+            },
         );
     }
 
@@ -645,7 +955,11 @@ mod tests {
         // ADDWFC f, d=W, a=ACCESS: 0010 0000 ffff ffff with f=0x10
         assert_eq!(
             d(0b0010_0000_0001_0000),
-            Instruction::AddWfC { d: Dest::W, a: Access::AccessBank, f: 0x10 },
+            Instruction::AddWfC {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x10
+            },
         );
     }
 
@@ -654,7 +968,11 @@ mod tests {
         // ANDWF f, d=F, a=ACCESS:  0001 0110 ffff ffff
         assert_eq!(
             d(0b0001_0110_1010_1010),
-            Instruction::AndWf { d: Dest::F, a: Access::AccessBank, f: 0xAA },
+            Instruction::AndWf {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0xAA
+            },
         );
     }
 
@@ -663,7 +981,10 @@ mod tests {
         // CLRF f, a=BANKED:  0110 1011 ffff ffff
         assert_eq!(
             d(0b0110_1011_0000_0001),
-            Instruction::Clrf { a: Access::BankSelected, f: 0x01 },
+            Instruction::Clrf {
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -672,7 +993,11 @@ mod tests {
         // COMF f, d=W, a=ACCESS:  0001 1100 ffff ffff
         assert_eq!(
             d(0b0001_1100_0000_0001),
-            Instruction::Comf { d: Dest::W, a: Access::AccessBank, f: 0x01 },
+            Instruction::Comf {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -681,7 +1006,10 @@ mod tests {
         // CPFSEQ f, a=ACCESS:  0110 0010 ffff ffff
         assert_eq!(
             d(0b0110_0010_0000_0001),
-            Instruction::CpfsEq { a: Access::AccessBank, f: 0x01 },
+            Instruction::CpfsEq {
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -690,7 +1018,10 @@ mod tests {
         // CPFSGT f, a=BANKED:  0110 0101 ffff ffff
         assert_eq!(
             d(0b0110_0101_0000_0001),
-            Instruction::CpfsGt { a: Access::BankSelected, f: 0x01 },
+            Instruction::CpfsGt {
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -699,7 +1030,10 @@ mod tests {
         // CPFSLT f, a=ACCESS:  0110 0000 ffff ffff
         assert_eq!(
             d(0b0110_0000_0000_0001),
-            Instruction::CpfsLt { a: Access::AccessBank, f: 0x01 },
+            Instruction::CpfsLt {
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -708,7 +1042,11 @@ mod tests {
         // DECF f, d=F, a=ACCESS:  0000 0110 ffff ffff
         assert_eq!(
             d(0b0000_0110_1111_0000),
-            Instruction::Decf { d: Dest::F, a: Access::AccessBank, f: 0xF0 },
+            Instruction::Decf {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0xF0
+            },
         );
     }
 
@@ -717,7 +1055,11 @@ mod tests {
         // DECFSZ f, d=F, a=BANKED:  0010 1111 ffff ffff
         assert_eq!(
             d(0b0010_1111_0000_0001),
-            Instruction::DecfSz { d: Dest::F, a: Access::BankSelected, f: 0x01 },
+            Instruction::DecfSz {
+                d: Dest::F,
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -726,7 +1068,11 @@ mod tests {
         // DCFSNZ f, d=W, a=ACCESS:  0100 1100 ffff ffff
         assert_eq!(
             d(0b0100_1100_0000_0010),
-            Instruction::DcfSnz { d: Dest::W, a: Access::AccessBank, f: 0x02 },
+            Instruction::DcfSnz {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x02
+            },
         );
     }
 
@@ -735,7 +1081,11 @@ mod tests {
         // INCF f, d=F, a=BANKED:  0010 1011 ffff ffff
         assert_eq!(
             d(0b0010_1011_0000_0001),
-            Instruction::Incf { d: Dest::F, a: Access::BankSelected, f: 0x01 },
+            Instruction::Incf {
+                d: Dest::F,
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -744,7 +1094,11 @@ mod tests {
         // INCFSZ f, d=F, a=ACCESS:  0011 1110 ffff ffff
         assert_eq!(
             d(0b0011_1110_0000_0001),
-            Instruction::IncfSz { d: Dest::F, a: Access::AccessBank, f: 0x01 },
+            Instruction::IncfSz {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -753,7 +1107,11 @@ mod tests {
         // INFSNZ f, d=F, a=ACCESS:  0100 1010 ffff ffff
         assert_eq!(
             d(0b0100_1010_0000_0001),
-            Instruction::InfSnz { d: Dest::F, a: Access::AccessBank, f: 0x01 },
+            Instruction::InfSnz {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -762,7 +1120,11 @@ mod tests {
         // IORWF f, d=W, a=ACCESS:  0001 0000 ffff ffff
         assert_eq!(
             d(0b0001_0000_0000_0001),
-            Instruction::IorWf { d: Dest::W, a: Access::AccessBank, f: 0x01 },
+            Instruction::IorWf {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -771,7 +1133,11 @@ mod tests {
         // MOVF f, d=W, a=ACCESS:  0101 0000 ffff ffff
         assert_eq!(
             d(0b0101_0000_0000_0001),
-            Instruction::Movf { d: Dest::W, a: Access::AccessBank, f: 0x01 },
+            Instruction::Movf {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -780,7 +1146,13 @@ mod tests {
         // MOVFF src, dst:  1100 ssss ssss ssss + 1111 dddd dddd dddd
         // src = 0x123, dst = 0xFB8 (BAUDCON on the 2455 — see spec §11b)
         let (op, n) = decode(0b1100_0001_0010_0011, 0b1111_1111_1011_1000);
-        assert_eq!(op, Instruction::Movff { src: 0x123, dst: 0xFB8 });
+        assert_eq!(
+            op,
+            Instruction::Movff {
+                src: 0x123,
+                dst: 0xFB8
+            }
+        );
         assert_eq!(n, 4);
     }
 
@@ -790,7 +1162,10 @@ mod tests {
         // V3.2 MAIN's `movwf BAUDCON, ACCESS` is exactly 6E B8.
         assert_eq!(
             d(0x6EB8),
-            Instruction::Movwf { a: Access::AccessBank, f: 0xB8 },
+            Instruction::Movwf {
+                a: Access::AccessBank,
+                f: 0xB8
+            },
         );
     }
 
@@ -799,7 +1174,10 @@ mod tests {
         // MULWF f, a=BANKED:  0000 0011 ffff ffff
         assert_eq!(
             d(0b0000_0011_0000_0010),
-            Instruction::Mulwf { a: Access::BankSelected, f: 0x02 },
+            Instruction::Mulwf {
+                a: Access::BankSelected,
+                f: 0x02
+            },
         );
     }
 
@@ -808,7 +1186,10 @@ mod tests {
         // NEGF f, a=BANKED:  0110 1101 ffff ffff
         assert_eq!(
             d(0b0110_1101_0000_0001),
-            Instruction::Negf { a: Access::BankSelected, f: 0x01 },
+            Instruction::Negf {
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -817,7 +1198,11 @@ mod tests {
         // RLCF f, d=F, a=ACCESS:  0011 0110 ffff ffff
         assert_eq!(
             d(0b0011_0110_0000_0001),
-            Instruction::Rlcf { d: Dest::F, a: Access::AccessBank, f: 0x01 },
+            Instruction::Rlcf {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -826,7 +1211,11 @@ mod tests {
         // RLNCF f, d=F, a=BANKED:  0100 0111 ffff ffff
         assert_eq!(
             d(0b0100_0111_0000_0001),
-            Instruction::Rlncf { d: Dest::F, a: Access::BankSelected, f: 0x01 },
+            Instruction::Rlncf {
+                d: Dest::F,
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -835,7 +1224,11 @@ mod tests {
         // RRCF f, d=W, a=ACCESS:  0011 0000 ffff ffff
         assert_eq!(
             d(0b0011_0000_0000_0001),
-            Instruction::Rrcf { d: Dest::W, a: Access::AccessBank, f: 0x01 },
+            Instruction::Rrcf {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -844,7 +1237,11 @@ mod tests {
         // RRNCF f, d=W, a=ACCESS:  0100 0000 ffff ffff
         assert_eq!(
             d(0b0100_0000_0000_0001),
-            Instruction::Rrncf { d: Dest::W, a: Access::AccessBank, f: 0x01 },
+            Instruction::Rrncf {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -853,7 +1250,10 @@ mod tests {
         // SETF f, a=BANKED:  0110 1001 ffff ffff
         assert_eq!(
             d(0b0110_1001_0000_0001),
-            Instruction::Setf { a: Access::BankSelected, f: 0x01 },
+            Instruction::Setf {
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -862,7 +1262,11 @@ mod tests {
         // SUBFWB f, d=W, a=ACCESS:  0101 0100 ffff ffff
         assert_eq!(
             d(0b0101_0100_0000_0001),
-            Instruction::SubFwb { d: Dest::W, a: Access::AccessBank, f: 0x01 },
+            Instruction::SubFwb {
+                d: Dest::W,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -871,7 +1275,11 @@ mod tests {
         // SUBWF f, d=F, a=ACCESS:  0101 1110 ffff ffff
         assert_eq!(
             d(0b0101_1110_0000_0001),
-            Instruction::Subwf { d: Dest::F, a: Access::AccessBank, f: 0x01 },
+            Instruction::Subwf {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -880,7 +1288,11 @@ mod tests {
         // SUBWFB f, d=W, a=BANKED:  0101 1001 ffff ffff
         assert_eq!(
             d(0b0101_1001_0000_0001),
-            Instruction::SubwfB { d: Dest::W, a: Access::BankSelected, f: 0x01 },
+            Instruction::SubwfB {
+                d: Dest::W,
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -889,7 +1301,11 @@ mod tests {
         // SWAPF f, d=F, a=ACCESS:  0011 1010 ffff ffff
         assert_eq!(
             d(0b0011_1010_0000_0001),
-            Instruction::Swapf { d: Dest::F, a: Access::AccessBank, f: 0x01 },
+            Instruction::Swapf {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -898,7 +1314,10 @@ mod tests {
         // TSTFSZ f, a=BANKED:  0110 0111 ffff ffff
         assert_eq!(
             d(0b0110_0111_0000_0001),
-            Instruction::TstfSz { a: Access::BankSelected, f: 0x01 },
+            Instruction::TstfSz {
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -907,7 +1326,11 @@ mod tests {
         // XORWF f, d=F, a=ACCESS:  0001 1010 ffff ffff
         assert_eq!(
             d(0b0001_1010_0000_0001),
-            Instruction::XorWf { d: Dest::F, a: Access::AccessBank, f: 0x01 },
+            Instruction::XorWf {
+                d: Dest::F,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -918,7 +1341,11 @@ mod tests {
         // BCF f, b=3, a=ACCESS:  1001 011 0 ffff ffff
         assert_eq!(
             d(0b1001_0110_0000_0001),
-            Instruction::Bcf { b: 3, a: Access::AccessBank, f: 0x01 },
+            Instruction::Bcf {
+                b: 3,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -927,7 +1354,11 @@ mod tests {
         // BSF f, b=5, a=BANKED:  1000 1011 ffff ffff
         assert_eq!(
             d(0b1000_1011_0000_0001),
-            Instruction::Bsf { b: 5, a: Access::BankSelected, f: 0x01 },
+            Instruction::Bsf {
+                b: 5,
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -936,7 +1367,11 @@ mod tests {
         // BTFSC f, b=2, a=ACCESS:  1011 0100 ffff ffff
         assert_eq!(
             d(0b1011_0100_0000_0001),
-            Instruction::BtfSc { b: 2, a: Access::AccessBank, f: 0x01 },
+            Instruction::BtfSc {
+                b: 2,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -945,7 +1380,11 @@ mod tests {
         // BTFSS f, b=7, a=BANKED:  1010 1111 ffff ffff
         assert_eq!(
             d(0b1010_1111_0000_0001),
-            Instruction::BtfSs { b: 7, a: Access::BankSelected, f: 0x01 },
+            Instruction::BtfSs {
+                b: 7,
+                a: Access::BankSelected,
+                f: 0x01
+            },
         );
     }
 
@@ -954,7 +1393,11 @@ mod tests {
         // BTG f, b=4, a=ACCESS:  0111 1000 ffff ffff
         assert_eq!(
             d(0b0111_1000_0000_0001),
-            Instruction::Btg { b: 4, a: Access::AccessBank, f: 0x01 },
+            Instruction::Btg {
+                b: 4,
+                a: Access::AccessBank,
+                f: 0x01
+            },
         );
     }
 
@@ -981,7 +1424,13 @@ mod tests {
         //   word1 = 1110 1110 00 01 0001 = 0xEE11  (fsr=01, k high = 0x1)
         //   word2 = 1111 0000 0010 0011 = 0xF023   (k low = 0x23)
         let (op, n) = decode(0xEE11, 0xF023);
-        assert_eq!(op, Instruction::Lfsr { fsr: FsrIndex::Fsr1, k: 0x123 });
+        assert_eq!(
+            op,
+            Instruction::Lfsr {
+                fsr: FsrIndex::Fsr1,
+                k: 0x123
+            }
+        );
         assert_eq!(n, 4);
     }
 
@@ -1109,7 +1558,13 @@ mod tests {
         //   the encoding is 20 bits total: low8 in word1, low12 in word2.
         //   So n = 0x22BB → low8 = 0xBB, the rest 0x022 in word2.
         let (op, nbytes) = decode(0xECBB, 0xF022);
-        assert_eq!(op, Instruction::Call { n: 0x22BB, fast: false });
+        assert_eq!(
+            op,
+            Instruction::Call {
+                n: 0x22BB,
+                fast: false
+            }
+        );
         assert_eq!(nbytes, 4);
     }
 
@@ -1193,42 +1648,82 @@ mod tests {
 
     #[test]
     fn op_tblrd_star() {
-        assert_eq!(d(0x0008), Instruction::TblRd { mode: TableMode::NoModify });
+        assert_eq!(
+            d(0x0008),
+            Instruction::TblRd {
+                mode: TableMode::NoModify
+            }
+        );
     }
 
     #[test]
     fn op_tblrd_postinc() {
-        assert_eq!(d(0x0009), Instruction::TblRd { mode: TableMode::PostIncrement });
+        assert_eq!(
+            d(0x0009),
+            Instruction::TblRd {
+                mode: TableMode::PostIncrement
+            }
+        );
     }
 
     #[test]
     fn op_tblrd_postdec() {
-        assert_eq!(d(0x000A), Instruction::TblRd { mode: TableMode::PostDecrement });
+        assert_eq!(
+            d(0x000A),
+            Instruction::TblRd {
+                mode: TableMode::PostDecrement
+            }
+        );
     }
 
     #[test]
     fn op_tblrd_preinc() {
-        assert_eq!(d(0x000B), Instruction::TblRd { mode: TableMode::PreIncrement });
+        assert_eq!(
+            d(0x000B),
+            Instruction::TblRd {
+                mode: TableMode::PreIncrement
+            }
+        );
     }
 
     #[test]
     fn op_tblwt_star() {
-        assert_eq!(d(0x000C), Instruction::TblWt { mode: TableMode::NoModify });
+        assert_eq!(
+            d(0x000C),
+            Instruction::TblWt {
+                mode: TableMode::NoModify
+            }
+        );
     }
 
     #[test]
     fn op_tblwt_postinc() {
-        assert_eq!(d(0x000D), Instruction::TblWt { mode: TableMode::PostIncrement });
+        assert_eq!(
+            d(0x000D),
+            Instruction::TblWt {
+                mode: TableMode::PostIncrement
+            }
+        );
     }
 
     #[test]
     fn op_tblwt_postdec() {
-        assert_eq!(d(0x000E), Instruction::TblWt { mode: TableMode::PostDecrement });
+        assert_eq!(
+            d(0x000E),
+            Instruction::TblWt {
+                mode: TableMode::PostDecrement
+            }
+        );
     }
 
     #[test]
     fn op_tblwt_preinc() {
-        assert_eq!(d(0x000F), Instruction::TblWt { mode: TableMode::PreIncrement });
+        assert_eq!(
+            d(0x000F),
+            Instruction::TblWt {
+                mode: TableMode::PreIncrement
+            }
+        );
     }
 
     // Misc --------------------------------------------
@@ -1280,23 +1775,17 @@ mod tests {
         // add it here AND add a dedicated `op_*` test above.
         let mnemonics: &[&str] = &[
             // Byte-oriented (31)
-            "ADDWF","ADDWFC","ANDWF","CLRF","COMF","CPFSEQ","CPFSGT",
-            "CPFSLT","DECF","DECFSZ","DCFSNZ","INCF","INCFSZ","INFSNZ",
-            "IORWF","MOVF","MOVFF","MOVWF","MULWF","NEGF","RLCF",
-            "RLNCF","RRCF","RRNCF","SETF","SUBFWB","SUBWF","SUBWFB",
-            "SWAPF","TSTFSZ","XORWF",
-            // Bit-oriented (5)
-            "BCF","BSF","BTFSC","BTFSS","BTG",
-            // Literal (10)
-            "ADDLW","ANDLW","IORLW","LFSR","MOVLB","MOVLW","MULLW",
-            "RETLW","SUBLW","XORLW",
+            "ADDWF", "ADDWFC", "ANDWF", "CLRF", "COMF", "CPFSEQ", "CPFSGT", "CPFSLT", "DECF",
+            "DECFSZ", "DCFSNZ", "INCF", "INCFSZ", "INFSNZ", "IORWF", "MOVF", "MOVFF", "MOVWF",
+            "MULWF", "NEGF", "RLCF", "RLNCF", "RRCF", "RRNCF", "SETF", "SUBFWB", "SUBWF", "SUBWFB",
+            "SWAPF", "TSTFSZ", "XORWF", // Bit-oriented (5)
+            "BCF", "BSF", "BTFSC", "BTFSS", "BTG", // Literal (10)
+            "ADDLW", "ANDLW", "IORLW", "LFSR", "MOVLB", "MOVLW", "MULLW", "RETLW", "SUBLW", "XORLW",
             // Control (21)
-            "BC","BN","BNC","BNN","BNOV","BNZ","BOV","BRA","BZ",
-            "CALL","CLRWDT","DAW","GOTO","NOP","POP","PUSH","RCALL",
-            "RESET","RETFIE","RETURN","SLEEP",
+            "BC", "BN", "BNC", "BNN", "BNOV", "BNZ", "BOV", "BRA", "BZ", "CALL", "CLRWDT", "DAW",
+            "GOTO", "NOP", "POP", "PUSH", "RCALL", "RESET", "RETFIE", "RETURN", "SLEEP",
             // Table (8)
-            "TBLRD*","TBLRD*+","TBLRD*-","TBLRD+*",
-            "TBLWT*","TBLWT*+","TBLWT*-","TBLWT+*",
+            "TBLRD*", "TBLRD*+", "TBLRD*-", "TBLRD+*", "TBLWT*", "TBLWT*+", "TBLWT*-", "TBLWT+*",
         ];
         assert_eq!(mnemonics.len(), 75, "PIC18 ISA has exactly 75 mnemonics");
     }

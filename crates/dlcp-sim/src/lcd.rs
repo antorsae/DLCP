@@ -249,7 +249,10 @@ mod tests {
         send_byte(&mut lcd, true, b'H');
         send_byte(&mut lcd, true, b'i');
         let l1 = lcd.line1();
-        assert!(l1.starts_with("Hi"), "line1 should start with 'Hi', got {l1:?}");
+        assert!(
+            l1.starts_with("Hi"),
+            "line1 should start with 'Hi', got {l1:?}"
+        );
         assert_eq!(lcd.cursor_for_test(), 0x02);
     }
 
@@ -260,7 +263,10 @@ mod tests {
         send_byte(&mut lcd, false, 0xC0);
         send_byte(&mut lcd, true, b'O');
         send_byte(&mut lcd, true, b'k');
-        assert!(lcd.line2().starts_with("Ok"), "line2 should start with 'Ok'");
+        assert!(
+            lcd.line2().starts_with("Ok"),
+            "line2 should start with 'Ok'"
+        );
     }
 
     #[test]

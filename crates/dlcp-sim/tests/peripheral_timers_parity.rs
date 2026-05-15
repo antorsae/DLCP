@@ -48,7 +48,10 @@ fn encode_movwf(f: u8) -> [u8; 2] {
 fn build_timer0_8bit_demo_flash() -> Vec<u8> {
     let mut flash = vec![0u8; 32 * 1024];
     let prog: &[(u32, [u8; 2])] = &[
-        (0x0000, encode_movlw(T0CON_TMR0ON | T0CON_T08BIT | T0CON_PSA)),
+        (
+            0x0000,
+            encode_movlw(T0CON_TMR0ON | T0CON_T08BIT | T0CON_PSA),
+        ),
         (0x0002, encode_movwf(0xD5)), // T0CON @ 0xFD5
         (0x0004, [0xFF, 0xD7]),       // BRA -1 self-loop
     ];
@@ -80,8 +83,7 @@ fn run_demo(flash: Vec<u8>, cycle_target: u64) -> Core {
     apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
     let mut total: u64 = 0;
     while total < cycle_target {
-        let cycles = step(&mut core, &mut stack)
-            .expect("timer demo executes cleanly");
+        let cycles = step(&mut core, &mut stack).expect("timer demo executes cleanly");
         total += cycles as u64;
     }
     core
@@ -170,7 +172,8 @@ fn timer1_timer2_and_special_event_reset_cover_fid09() {
     // and postscaler driving TMR2IF.
     let mut core = Core::new(Variant::Pic18F25K20);
 
-    core.memory.write_raw(Address::from_raw(T1CON_ADDR), T1CON_TMR1ON);
+    core.memory
+        .write_raw(Address::from_raw(T1CON_ADDR), T1CON_TMR1ON);
     core.peripherals
         .timers
         .on_sfr_write(T1CON_ADDR, T1CON_TMR1ON, &mut core.memory);
@@ -228,10 +231,8 @@ fn timer_latches_external_edges_and_idle_behavior_cover_fid09() {
     // management chapters.
     let mut core = Core::new(Variant::Pic18F25K20);
 
-    core.memory.write_raw(
-        Address::from_raw(T0CON_ADDR),
-        T0CON_TMR0ON | T0CON_PSA,
-    );
+    core.memory
+        .write_raw(Address::from_raw(T0CON_ADDR), T0CON_TMR0ON | T0CON_PSA);
     core.peripherals.tick_tcy(0x0123, &mut core.memory);
     core.peripherals
         .timers
@@ -249,10 +250,8 @@ fn timer_latches_external_edges_and_idle_behavior_cover_fid09() {
         "latched TMR0H stays stable until the next TMR0L read"
     );
 
-    core.memory.write_raw(
-        Address::from_raw(T3CON_ADDR),
-        T3CON_TMR3ON | T3CON_RD16,
-    );
+    core.memory
+        .write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON | T3CON_RD16);
     core.peripherals
         .timers
         .on_sfr_write(T3CON_ADDR, T3CON_TMR3ON | T3CON_RD16, &mut core.memory);
@@ -267,10 +266,8 @@ fn timer_latches_external_edges_and_idle_behavior_cover_fid09() {
     assert_eq!(core.memory.read_raw(Address::from_raw(TMR3L_ADDR)), 0);
     assert_eq!(core.memory.read_raw(Address::from_raw(TMR3H_ADDR)), 0);
 
-    core.memory.write_raw(
-        Address::from_raw(T1CON_ADDR),
-        T1CON_TMR1ON | T1CON_RD16,
-    );
+    core.memory
+        .write_raw(Address::from_raw(T1CON_ADDR), T1CON_TMR1ON | T1CON_RD16);
     core.peripherals
         .timers
         .on_sfr_write(T1CON_ADDR, T1CON_TMR1ON | T1CON_RD16, &mut core.memory);
@@ -303,10 +300,8 @@ fn timer_latches_external_edges_and_idle_behavior_cover_fid09() {
         .inject_t0cki_rising_edge(&mut core.memory);
     assert_eq!(core.memory.read_raw(Address::from_raw(TMR0L_ADDR)), 1);
 
-    core.memory.write_raw(
-        Address::from_raw(T1CON_ADDR),
-        T1CON_TMR1ON | T1CON_TMR1CS,
-    );
+    core.memory
+        .write_raw(Address::from_raw(T1CON_ADDR), T1CON_TMR1ON | T1CON_TMR1CS);
     core.peripherals
         .timers
         .on_sfr_write(T1CON_ADDR, T1CON_TMR1ON | T1CON_TMR1CS, &mut core.memory);
@@ -314,10 +309,8 @@ fn timer_latches_external_edges_and_idle_behavior_cover_fid09() {
     core.peripherals
         .timers
         .reset_timer3_for_special_event(&mut core.memory);
-    core.memory.write_raw(
-        Address::from_raw(T3CON_ADDR),
-        T3CON_TMR3ON | T3CON_TMR3CS,
-    );
+    core.memory
+        .write_raw(Address::from_raw(T3CON_ADDR), T3CON_TMR3ON | T3CON_TMR3CS);
     core.peripherals
         .timers
         .on_sfr_write(T3CON_ADDR, T3CON_TMR3ON | T3CON_TMR3CS, &mut core.memory);
@@ -409,7 +402,8 @@ fn timer3_pending_with_pie2_tmr3ie_and_gie_marks_irq_pending_compat_mode() {
     // 0x?? -- we explicitly clear IPEN so peripheral_pending takes
     // the IPEN=0 path that any PIE&PIR match returns true.
     let rcon = core.memory.read_raw(Address::from_raw(RCON_ADDR));
-    core.memory.write_raw(Address::from_raw(RCON_ADDR), rcon & !0x80);
+    core.memory
+        .write_raw(Address::from_raw(RCON_ADDR), rcon & !0x80);
 
     // Enable GIE | PEIE so peripheral IRQs are unmasked.
     core.memory
@@ -425,7 +419,8 @@ fn timer3_pending_with_pie2_tmr3ie_and_gie_marks_irq_pending_compat_mode() {
     );
 
     // Set TMR3IF: now is_irq_pending must return true.
-    core.memory.write_raw(Address::from_raw(PIR2_ADDR), PIR2_TMR3IF);
+    core.memory
+        .write_raw(Address::from_raw(PIR2_ADDR), PIR2_TMR3IF);
     assert!(
         dlcp_sim::peripherals::irq::is_irq_pending(&core.memory),
         "TMR3IF + TMR3IE + GIE must mark IRQ pending in compat mode"
@@ -455,12 +450,12 @@ fn timer3_overflow_dispatches_to_high_vector_via_executor() {
     // Setup at 0x0020: PIE2=TMR3IE; INTCON=GIE|PEIE; T3CON=TMR3ON; BRA -1.
     let setup: &[(u32, [u8; 2])] = &[
         (0x0020, encode_movlw(PIE2_TMR3IE)),
-        (0x0022, encode_movwf(0xA0)),                                      // PIE2 @ 0xFA0
+        (0x0022, encode_movwf(0xA0)), // PIE2 @ 0xFA0
         (0x0024, encode_movlw(INTCON_GIE | INTCON_PEIE)),
-        (0x0026, encode_movwf(0xF2)),                                      // INTCON @ 0xFF2
+        (0x0026, encode_movwf(0xF2)), // INTCON @ 0xFF2
         (0x0028, encode_movlw(T3CON_TMR3ON)),
-        (0x002A, encode_movwf(0xB1)),                                      // T3CON @ 0xFB1
-        (0x002C, [0xFF, 0xD7]),                                            // BRA -1 self-loop @ 0x002C
+        (0x002A, encode_movwf(0xB1)), // T3CON @ 0xFB1
+        (0x002C, [0xFF, 0xD7]),       // BRA -1 self-loop @ 0x002C
     ];
     for (addr, bytes) in setup {
         flash[*addr as usize] = bytes[0];
@@ -487,8 +482,7 @@ fn timer3_overflow_dispatches_to_high_vector_via_executor() {
     let mut total: u64 = 0;
     let mut vector_seen_with_push = false;
     while total < 300_000 {
-        let cycles = step(&mut core, &mut stack)
-            .expect("timer3 IRQ demo executes cleanly");
+        let cycles = step(&mut core, &mut stack).expect("timer3 IRQ demo executes cleanly");
         total += cycles as u64;
         let pc = core.pc();
         let in_high_vector_range = (0x0008..0x0018).contains(&pc);

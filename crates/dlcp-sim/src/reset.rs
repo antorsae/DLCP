@@ -412,10 +412,8 @@ fn apply_2455_por_sfr_defaults(core: &mut Core) {
     for &(addr, value, _name) in POR_2455 {
         core.memory.write_raw(Address::from_raw(addr), value);
     }
-    core.memory.write_raw(
-        Address::from_raw(0xF92),
-        trisa_por_value_2455(&core.config),
-    );
+    core.memory
+        .write_raw(Address::from_raw(0xF92), trisa_por_value_2455(&core.config));
 }
 
 fn trisa_por_value_k20(config: &Config) -> u8 {
@@ -630,10 +628,8 @@ fn apply_k20_por_sfr_defaults(core: &mut Core) {
     // of the gpsim-compat static table: V1.71's FOSC=XT disables
     // RA6/RA7 as PORTA pins (TRISA=0x3F), and PBADEN=0 makes
     // ANSELH reset to zero.
-    core.memory.write_raw(
-        Address::from_raw(0xF92),
-        trisa_por_value_k20(&core.config),
-    );
+    core.memory
+        .write_raw(Address::from_raw(0xF92), trisa_por_value_k20(&core.config));
     core.memory.write_raw(
         Address::from_raw(0xF7F),
         if core.config.pbaden() { 0x1F } else { 0x00 },
@@ -1497,8 +1493,7 @@ mod tests {
     fn pic2455_por_seeds_osc_tris_and_usb_sfr_rows() {
         let mut core = Core::new(Variant::Pic18F2455);
         core.config = Config::from_bytes([
-            0x3A, 0x46, 0x3E, 0x1E, 0xFF, 0x00, 0x80, 0xFF, 0x0F, 0xC0, 0x0F, 0xA0, 0x0F,
-            0x40,
+            0x3A, 0x46, 0x3E, 0x1E, 0xFF, 0x00, 0x80, 0xFF, 0x0F, 0xC0, 0x0F, 0xA0, 0x0F, 0x40,
         ]);
         let mut stack = Stack::new();
         apply_reset(&mut core, &mut stack, ResetSource::PowerOn);

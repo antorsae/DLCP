@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import plistlib
+import subprocess
 
 import pytest
 
@@ -62,6 +64,63 @@ def test_render_shadow_table_contains_headers() -> None:
 def test_decode_macos_location_id_extracts_bus_and_ports() -> None:
     assert shadow._decode_macos_location_id(0x01120000) == (0x01, (1, 2))
     assert shadow._decode_macos_location_id(0x03112000) == (0x03, (1, 1, 2))
+
+
+def test_macos_location_id_refreshes_stale_hid_cache(monkeypatch) -> None:
+    shadow._macos_hid_device_index.cache_clear()
+    monkeypatch.setattr(shadow.sys, "platform", "darwin")
+    payloads = [
+        plistlib.dumps(
+            [
+                {
+                    "IORegistryEntryID": 111,
+                    "VendorID": 0x04D8,
+                    "ProductID": 0xFF89,
+                    "LocationID": 0x01120000,
+                }
+            ]
+        ),
+        plistlib.dumps(
+            [
+                {
+                    "IORegistryEntryID": 111,
+                    "VendorID": 0x04D8,
+                    "ProductID": 0xFF89,
+                    "LocationID": 0x01120000,
+                },
+                {
+                    "IORegistryEntryID": 222,
+                    "VendorID": 0x04D8,
+                    "ProductID": 0xFF89,
+                    "LocationID": 0x03112000,
+                },
+            ]
+        ),
+    ]
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(_args, 0, stdout=payloads.pop(0), stderr=b"")
+
+    monkeypatch.setattr(shadow.subprocess, "run", fake_run)
+
+    assert (
+        shadow._macos_location_id_for_hid_path(
+            vid=0x04D8,
+            pid=0xFF89,
+            path=b"DevSrvsID:111",
+        )
+        == 0x01120000
+    )
+    assert (
+        shadow._macos_location_id_for_hid_path(
+            vid=0x04D8,
+            pid=0xFF89,
+            path=b"DevSrvsID:222",
+        )
+        == 0x03112000
+    )
+    assert payloads == []
+    shadow._macos_hid_device_index.cache_clear()
 
 
 def test_dlcp_ep0_large_read_uses_repeated_e7_reads() -> None:

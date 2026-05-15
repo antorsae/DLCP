@@ -93,8 +93,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
 fn trace_missing_operand_exits_1() {
     let dir = tempdir();
     let case = write_case(dir.path(), "case.json");
-    let (code, _stdout, stderr) =
-        run(&["replay", case.to_str().unwrap(), "--trace"]);
+    let (code, _stdout, stderr) = run(&["replay", case.to_str().unwrap(), "--trace"]);
     assert_eq!(code, 1, "expected exit 1, got {code} (stderr: {stderr})");
     assert!(
         stderr.contains("--trace"),

@@ -18,7 +18,7 @@ use dlcp_sim::core::{Core, RunState};
 use dlcp_sim::exec::step;
 use dlcp_sim::memory::{Address, Variant};
 use dlcp_sim::peripherals::eusart::{
-    BAUDCON_ADDR, PIR1_ADDR, RCSTA_ADDR, RCREG_ADDR, SPBRG_ADDR, TXREG_ADDR, TXSTA_ADDR,
+    BAUDCON_ADDR, PIR1_ADDR, RCREG_ADDR, RCSTA_ADDR, SPBRG_ADDR, TXREG_ADDR, TXSTA_ADDR,
 };
 use dlcp_sim::reset::{ResetSource, apply_reset};
 use dlcp_sim::stack::Stack;
@@ -113,8 +113,7 @@ fn run_demo(cycle_target: u64) -> (Core, Stack) {
 
     let mut total: u64 = 0;
     while total < cycle_target {
-        let cycles = step(&mut core, &mut stack)
-            .expect("demo program executes cleanly");
+        let cycles = step(&mut core, &mut stack).expect("demo program executes cleanly");
         total += cycles as u64;
     }
     (core, stack)
@@ -222,14 +221,13 @@ fn txif_delay_and_sync_policy_cover_fid11() {
     // synchronous mode is outside DLCP scope and must not look
     // like async TX by accidentally emitting a frame.
     let mut core = Core::new(Variant::Pic18F25K20);
-    core.memory.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+    core.memory
+        .write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
     core.memory
         .write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_TRMT);
-    core.peripherals.eusart.on_sfr_write(
-        TXSTA_ADDR,
-        TXSTA_TXEN | TXSTA_TRMT,
-        &mut core.memory,
-    );
+    core.peripherals
+        .eusart
+        .on_sfr_write(TXSTA_ADDR, TXSTA_TXEN | TXSTA_TRMT, &mut core.memory);
     core.memory.write_raw(Address::from_raw(TXREG_ADDR), 0x66);
     core.peripherals
         .eusart
@@ -240,7 +238,10 @@ fn txif_delay_and_sync_policy_cover_fid11() {
         "TXIF is not valid immediately after TXREG -> TSR"
     );
     core.peripherals.tick_tcy(1, &mut core.memory);
-    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF,
+        0
+    );
     core.peripherals.tick_tcy(1, &mut core.memory);
     assert_eq!(
         core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_TXIF,
@@ -259,12 +260,13 @@ fn txif_delay_and_sync_policy_cover_fid11() {
     sync_core
         .memory
         .write_raw(Address::from_raw(TXREG_ADDR), 0x77);
-    sync_core.peripherals.eusart.on_sfr_write(
-        TXREG_ADDR,
-        0x77,
-        &mut sync_core.memory,
-    );
-    sync_core.peripherals.tick_tcy(10_000, &mut sync_core.memory);
+    sync_core
+        .peripherals
+        .eusart
+        .on_sfr_write(TXREG_ADDR, 0x77, &mut sync_core.memory);
+    sync_core
+        .peripherals
+        .tick_tcy(10_000, &mut sync_core.memory);
     assert_eq!(
         sync_core.memory.read_raw(Address::from_raw(TXSTA_ADDR)) & TXSTA_TRMT,
         TXSTA_TRMT,
@@ -322,7 +324,8 @@ fn rx_ferr_wue_send_break_and_autobaud_policy_cover_fid11() {
 
     core.memory.write_raw(Address::from_raw(SPBRG_ADDR), 5);
     core.memory.write_raw(Address::from_raw(BAUDCON_ADDR), 0x40);
-    core.memory.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
+    core.memory
+        .write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN);
     core.memory.write_raw(
         Address::from_raw(TXSTA_ADDR),
         TXSTA_TXEN | TXSTA_TRMT | TXSTA_SENDB,
@@ -344,10 +347,8 @@ fn rx_ferr_wue_send_break_and_autobaud_policy_cover_fid11() {
         "SENDB auto-clears when the break frame completes"
     );
 
-    core.memory.write_raw(
-        Address::from_raw(BAUDCON_ADDR),
-        BAUDCON_ABDEN,
-    );
+    core.memory
+        .write_raw(Address::from_raw(BAUDCON_ADDR), BAUDCON_ABDEN);
     core.peripherals.tick_tcy(10_000, &mut core.memory);
     assert_eq!(
         core.memory.read_raw(Address::from_raw(BAUDCON_ADDR)) & (BAUDCON_ABDEN | BAUDCON_ABDOVF),

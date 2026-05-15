@@ -78,7 +78,11 @@ impl Xorshift64 {
         // xorshift64 is degenerate at state=0; replace with the
         // golden-ratio constant so seed `0` is still a valid
         // soak case.
-        let s = if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed };
+        let s = if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        };
         Self(s)
     }
     fn next_u64(&mut self) -> u64 {
@@ -93,11 +97,7 @@ impl Xorshift64 {
     /// stimulus generation -- we're not running statistical
     /// tests over the RNG output.
     fn gen_below(&mut self, n: u64) -> u64 {
-        if n == 0 {
-            0
-        } else {
-            self.next_u64() % n
-        }
+        if n == 0 { 0 } else { self.next_u64() % n }
     }
 }
 
@@ -139,11 +139,7 @@ fn build_v171_control_chain() -> Chain {
         .expect("crate dir has 2 ancestors")
         .join("firmware/patched/releases/DLCP_Control_V1.71.hex");
     let image = HexImage::from_hex_path(&hex_path).expect("V1.71 hex parses");
-    let core = core_from_hex_image(
-        Variant::Pic18F25K20,
-        &image,
-        CoreLoadOptions::default(),
-    );
+    let core = core_from_hex_image(Variant::Pic18F25K20, &image, CoreLoadOptions::default());
     let clock = ClockDomain::new(Variant::Pic18F25K20);
     let mut chain = Chain::new();
     chain.push_core_with_clock(core, clock);
@@ -206,9 +202,7 @@ fn dump_replay_case(
         .expect("crate dir has 2 ancestors")
         .join("artifacts/sim_soak_failures");
     let kind_part = kind.map(|k| format!("_{k}")).unwrap_or_default();
-    let path = dir.join(format!(
-        "{test}_seed_{scenario_idx:05}{kind_part}.json"
-    ));
+    let path = dir.join(format!("{test}_seed_{scenario_idx:05}{kind_part}.json"));
     let case = serde_json::json!({
         "format": "dlcp-sim-replay-v1",
         "initial_factory": factory,
@@ -316,11 +310,7 @@ fn empty_chain_replay_determinism_soak() {
                 scenario_idx,
                 "empty",
                 &stims,
-                &format!(
-                    "replay-determinism: a={} b={} bytes",
-                    ba.len(),
-                    bb.len()
-                ),
+                &format!("replay-determinism: a={} b={} bytes", ba.len(), bb.len()),
                 None,
             );
             panic!(
@@ -538,17 +528,13 @@ impl Drop for DumpArtifact {
 /// binary build artifact.
 #[test]
 fn dump_replay_case_is_replay_v1_shape() {
-    let stims = vec![
-        Stimulus::StepTicks(1234),
-        Stimulus::SetUartBlackout(true),
-    ];
+    let stims = vec![Stimulus::StepTicks(1234), Stimulus::SetUartBlackout(true)];
     // Use a PID-derived synthetic scenario_idx so two
     // concurrent cargo-test runs don't share the same dump
     // file path (codex LOW from 5b15006: deterministic path
     // collision risk).  Stays well above SOAK_SCENARIOS so
     // it's obviously synthetic.
-    let synthetic_idx: u64 = u64::from(std::process::id())
-        .wrapping_add(SOAK_SCENARIOS * 100);
+    let synthetic_idx: u64 = u64::from(std::process::id()).wrapping_add(SOAK_SCENARIOS * 100);
     let _suffix = dump_replay_case(
         "dump_replay_case_is_replay_v1_shape",
         0xDEAD,
@@ -571,10 +557,8 @@ fn dump_replay_case_is_replay_v1_shape() {
     // assertion panics.  (Codex LOW from 5b15006: previous
     // version only removed the file on the success path.)
     let _cleanup = DumpArtifact(dump_path.clone());
-    let body = std::fs::read_to_string(&dump_path)
-        .expect("self-test dump exists");
-    let v: serde_json::Value =
-        serde_json::from_str(&body).expect("dump parses as JSON");
+    let body = std::fs::read_to_string(&dump_path).expect("self-test dump exists");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("dump parses as JSON");
 
     // case.json v1 contract:
     assert_eq!(v["format"], "dlcp-sim-replay-v1");

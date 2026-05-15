@@ -124,13 +124,7 @@ impl PinNet {
         });
     }
 
-    pub fn couple_pin(
-        &mut self,
-        src_core: usize,
-        src_pin: PinId,
-        dst_core: usize,
-        dst_pin: PinId,
-    ) {
+    pub fn couple_pin(&mut self, src_core: usize, src_pin: PinId, dst_core: usize, dst_pin: PinId) {
         self.pin.push(PinCoupling {
             src_core,
             src_pin,
@@ -204,8 +198,14 @@ mod tests {
     #[test]
     fn couple_pin_records_one_coupling() {
         let mut net = PinNet::new();
-        let src = PinId { port: PortLetter::C, bit: 0 };
-        let dst = PinId { port: PortLetter::A, bit: 0 };
+        let src = PinId {
+            port: PortLetter::C,
+            bit: 0,
+        };
+        let dst = PinId {
+            port: PortLetter::A,
+            bit: 0,
+        };
         net.couple_pin(0, src, 1, dst);
         assert_eq!(net.pin.len(), 1);
         assert_eq!(net.pin[0].src_pin, src);
@@ -215,8 +215,14 @@ mod tests {
     #[test]
     fn couple_i2c_slave_records_one_coupling() {
         let mut net = PinNet::new();
-        let sda = PinId { port: PortLetter::C, bit: 4 };
-        let scl = PinId { port: PortLetter::C, bit: 3 };
+        let sda = PinId {
+            port: PortLetter::C,
+            bit: 4,
+        };
+        let scl = PinId {
+            port: PortLetter::C,
+            bit: 3,
+        };
         net.couple_i2c_slave(0, sda, scl, 42);
         assert_eq!(net.i2c.len(), 1);
         assert_eq!(net.i2c[0].slave_id, 42);
@@ -226,11 +232,17 @@ mod tests {
     fn default_pin_constants_match_pic18_eusart_assignment() {
         assert_eq!(
             default_tx_pin(),
-            PinId { port: PortLetter::C, bit: 6 }
+            PinId {
+                port: PortLetter::C,
+                bit: 6
+            }
         );
         assert_eq!(
             default_rx_pin(),
-            PinId { port: PortLetter::C, bit: 7 }
+            PinId {
+                port: PortLetter::C,
+                bit: 7
+            }
         );
     }
 }

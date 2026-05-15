@@ -36,6 +36,8 @@ pytestmark = pytest.mark.dual_supported
 # Hand-mirrored from src/dlcp_fw/flash/dlcp_main_flash.py constants
 # (kept private there).  Cross-check on test setup: V3.2 RAM map.
 _ACTIVE_FLAGS_ADDR = 0x05E
+_ACTIVE_PRESET_MASK = 0x04
+_ACTIVE_REAPPLY_MASK = 0x80
 _EVENT_FLAGS_ADDR = 0x07E
 _FILENAME_DIRTY_FLAGS_ADDR = 0x0BD
 _EVENT_DIRTY_SERVICE_MASK = 0x01
@@ -43,6 +45,8 @@ _FILENAME_DIRTY_MASK = 0x20
 _USB_XACT_PENDING_MASK = 0x40
 _FILENAME_RAM_BASE = 0x2C0
 _FILENAME_RAM_LEN = 0x1E
+_PRESET_A_EEPROM_BASE = 0x60
+_PRESET_B_EEPROM_BASE = 0x83
 
 
 def _require_rust() -> None:
@@ -62,6 +66,33 @@ def _open_chain():
     assert chain.is_connected() and not chain.is_waiting()
     chain.step_ticks(50_000_000)  # boot-side preset-load settle
     return chain
+
+
+def _open_main_only_chain():
+    _require_rust()
+    if not V32_MAIN_HEX.exists():
+        pytest.skip("missing V3.2 firmware artifact")
+    chain = RustChain.from_v3x_main_only(str(V32_MAIN_HEX))
+    chain.step_tcy(20 * 200_000)
+    chain.inject_main_frames_fifo([[0xB0, 0x03, 0x01]], fifo_limit=47)
+    chain.step_tcy(20 * 200_000)
+    assert chain.read_reg(_ACTIVE_FLAGS_ADDR) & 0x08, "MAIN not active"
+    return chain
+
+
+def _filename_slot(label: bytes) -> bytes:
+    if len(label) > _FILENAME_RAM_LEN:
+        raise ValueError(label)
+    return label + bytes([0xFF] * (_FILENAME_RAM_LEN - len(label)))
+
+
+def _seed_main_only_filename_slot(chain, base: int, slot: bytes) -> None:  # type: ignore[no-untyped-def]
+    for i, value in enumerate(slot):
+        chain.write_main_eeprom_byte(0, base + i, value)
+
+
+def _read_main_only_filename_ram(chain) -> bytes:  # type: ignore[no-untyped-def]
+    return bytes(chain.read_reg(_FILENAME_RAM_BASE + i) for i in range(_FILENAME_RAM_LEN))
 
 
 def test_sim_ep0_read_byte_matches_chain_read_main_reg() -> None:
@@ -195,6 +226,51 @@ def test_sim_ep0_force_persist_clears_filename_dirty() -> None:
     assert (flags_after & _USB_XACT_PENDING_MASK) == 0, (
         f"USB xact gate (bit6) should clear after force_persist; "
         f"got 0x{flags_after:02X}"
+    )
+
+
+def test_v32_ep0_reapply_reload_filename_ram_for_restored_preset() -> None:
+    """BUG-PRESET-01: active_flags.bit7 reapply must reload the live
+    filename RAM for the restored preset.
+
+    Release flashing writes preset A's filename, then preset B's filename,
+    then restores the originally active preset through the EP0 reapply path.
+    With no CONTROL broadcast involved, that reapply path must update
+    RAM 0x2C0..0x2DD from the active preset's EEPROM slot.
+    """
+    chain = _open_main_only_chain()
+    slot_a = _filename_slot(b"LX521.4 22MG10F-v5")
+    slot_b = _filename_slot(b"LX521.4 22MG10F-v7")
+    _seed_main_only_filename_slot(chain, _PRESET_A_EEPROM_BASE, slot_a)
+    _seed_main_only_filename_slot(chain, _PRESET_B_EEPROM_BASE, slot_b)
+
+    # Precondition: device is currently on B and live RAM still shows B.
+    flags = chain.read_reg(_ACTIVE_FLAGS_ADDR)
+    flags = (flags | _ACTIVE_PRESET_MASK) & (~_ACTIVE_REAPPLY_MASK & 0xFF)
+    chain.write_reg(_ACTIVE_FLAGS_ADDR, flags)
+    for i, value in enumerate(slot_b):
+        chain.write_reg(_FILENAME_RAM_BASE + i, value)
+    assert _read_main_only_filename_ram(chain) == slot_b
+
+    # EP0 restore request: switch to A and set reapply pending.
+    chain.write_reg(
+        _ACTIVE_FLAGS_ADDR,
+        (flags & (~_ACTIVE_PRESET_MASK & 0xFF)) | _ACTIVE_REAPPLY_MASK,
+    )
+    for _ in range(80):
+        if not (chain.read_reg(_ACTIVE_FLAGS_ADDR) & _ACTIVE_REAPPLY_MASK):
+            break
+        chain.step_ticks(2_000_000)
+
+    active_flags = chain.read_reg(_ACTIVE_FLAGS_ADDR)
+    assert (active_flags & _ACTIVE_REAPPLY_MASK) == 0, (
+        f"reapply bit did not clear: active_flags=0x{active_flags:02X}"
+    )
+    assert (active_flags & _ACTIVE_PRESET_MASK) == 0, (
+        f"preset A was not restored: active_flags=0x{active_flags:02X}"
+    )
+    assert _read_main_only_filename_ram(chain) == slot_a, (
+        "EP0 reapply restored preset A but left live filename RAM on preset B"
     )
 
 

@@ -71,7 +71,10 @@
 //!   them; if a future SRC4382 robustness test needs them, copy
 //!   the pattern from `tas3108.rs::set_address_nack_count`.
 
-#![allow(dead_code, reason = "Phase-4 scaffold; extended use lands in follow-up commits")]
+#![allow(
+    dead_code,
+    reason = "Phase-4 scaffold; extended use lands in follow-up commits"
+)]
 
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +96,10 @@ pub struct StrapAddr {
 impl StrapAddr {
     /// DLCP's hardcoded strapping: A1=0, A0=1.  Write address
     /// `0xE2`, read address `0xE3`.
-    pub const DLCP: Self = StrapAddr { a1: false, a0: true };
+    pub const DLCP: Self = StrapAddr {
+        a1: false,
+        a0: true,
+    };
 
     /// Compute the slave write-address byte (R/W = 0).
     pub const fn write_address(self) -> u8 {
@@ -261,7 +267,9 @@ impl Src4382 {
         } else if byte == read_addr {
             match self.last_latched_subaddr {
                 Some(start) => {
-                    self.phase = Phase::Reading { next_subaddr: start };
+                    self.phase = Phase::Reading {
+                        next_subaddr: start,
+                    };
                     true
                 }
                 None => {

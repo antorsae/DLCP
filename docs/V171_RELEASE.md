@@ -11,28 +11,42 @@ of 2026-04-21.
 - canonical CONTROL builder: `scripts/build_v171_release.py`
 - recommended flashing path: use `scripts/flash_control_safe.sh`
   with `--hex firmware/patched/releases/DLCP_Control_V1.71.hex`
+- active implementation bugs for the V1.71/V3.2 pair are tracked in
+  [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md)
 
 V1.71 supersedes V1.64b for chains paired with V3.2 MAIN.  V1.64b
 remains the canonical fallback for chains running V3.1 / V2.x MAIN
 that do not need the V1.71-specific features.
 
-## Current Known Issue (2026-04-22)
+## Current Validation Status (2026-05-09)
 
-The current canonical pair still has a real-hardware standby/wake
-regression:
+The historical 2026-04-22 hardware issue for the recommended pair was:
 
-- canonical CONTROL revision: `V1.71 / rev 0x04`
-- canonical MAIN revision: `V3.2 / rev 0x38`
-- reproduced symptom: after `STDBY -> WAKE`, CONTROL can remain on
+- canonical CONTROL revision then: `V1.71 / rev 0x19`
+- current canonical CONTROL revision: `V1.71 / rev 0x1C`
+- canonical MAIN revision then: `V3.2 / rev 0x53`
+- reproduced symptom: after `STDBY -> WAKE`, CONTROL could remain on
   `WAITING FOR DLCP` while both MAINs are already awake, healthy, and
   visible on USB
 
-This is no longer best explained as a MAIN wake failure.  The current
-analysis points at CONTROL-side reconnect fragility: the critical
-wake/poll frames still ride best-effort TX paths that ignore
-`tx_byte_enqueue` saturation, and that combines badly with the still-
-unfixed IR-in-ISR UART stall window.  See
-[`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`](analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md).
+The source tree now carries simulator regressions for the wake/reconnect
+contract, including duplicate standby-frame idempotence on MAIN, plus the
+active V1.71/V3.2 bug ledger.  Live hardware confirmation is still required
+before the ledger rows can be marked `done`.  See
+[`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`](analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md)
+and [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md).
+
+2026-05-10 Diagnostics note: V1.71 rev `0x1C` keeps the stock-compatible
+V1.6b IR receiver path and refreshes the visible PB Diagnostics page at the
+full cadence.
+
+2026-05-09 IR note: V1.71 rev `0x1A` uses the stock-compatible V1.6b
+in-ISR RC5 decoder path again.  The Timer1 non-blocking receiver passed
+rust-sim pulse tests but decoded no real Flipper IR in the earlier hardware
+session; keep that Timer1 path out of the live ISR path until a
+hardware-validated replacement exists.  Later operator testing confirmed real
+IR works on both stock CONTROL V1.6b and CONTROL V1.71 with the
+stock-compatible path.
 
 ## What's New vs V1.64b
 
@@ -148,6 +162,15 @@ scripts/flash_control_safe.sh \
   --hex firmware/patched/releases/DLCP_Control_V1.71.hex
 ```
 
+CONTROL must already be in its manual bootloader.  Power-cycle while holding
+`UP + DOWN` for at least 6 seconds; do not touch `SELECT`.  The bootloader
+check samples `UP` and `DOWN` active-low for 11 stable delay loops
+(approximately 5.5 s) and rejects the combo if `SELECT` is also pressed.  If
+the LCD returns to `Volume`, CONTROL is still running the app and the flash
+will time out waiting for the bootloader prompt.  The safe wrapper protects
+that path with `--live-timeout-s` (default 180 s).  For quick operator retries,
+use a shorter watchdog, for example `--live-timeout-s 10`.
+
 What the wrapper does:
 
 1. bootloader-integrity preflight (refuses to flash if the bootloader
@@ -170,13 +193,41 @@ back to the host, so device-versus-hex compare is not available yet.
 Read the CONTROL's reported version label after flashing. The visible
 label remains `V1.71`; the monotonic release revision is a build-time
 metadata field reported by the flash preflight, not a front-panel
-string. Walk Volume → RIGHT four times to reach PB1 Diag (V1.71
-Tier-1 menu state 4), then cycle LEFT → RIGHT 5–10 times to converge,
-and confirm the LCD ends on a `PB1` / `OK` (all-zero counters) or
-`PB1:` + cell entries (non-zero counters) layout (an initial render
-of `PB1` / `n/a` is normal before the cmd 0x21 cadence has populated
-the cache).  Press RIGHT once more to reach PB2 Diag (state 5) and
-repeat the LEFT/RIGHT convergence cycling for the PB2 page.
+string.
+
+Walk Volume → RIGHT four times to reach PB1 Diag (V1.71 Tier-1 menu
+state 4), then wait about 1 second without LEFT/RIGHT cycling.  The
+LCD must update from any initial `PB1` / `n/a` render to either
+`PB1` / `OK` (all-zero counters) or `PB1:` + cell entries (non-zero
+counters).  Press RIGHT once more to reach PB2 Diag (state 5), wait about
+1 second, and require the same static update behavior for PB2.
+
+Run the strict static-wait gates after manually positioning CONTROL on
+each page:
+
+```bash
+DLCP_HW_LAYER5_AT_DIAG=1 \
+DLCP_HW_LAYER5_REQUIRE_PB1_DATA=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_diagnostics_pb1_data_lands_on_real_silicon \
+  --run-hardware
+
+DLCP_HW_LAYER5_AT_DIAG=1 \
+DLCP_HW_LAYER5_REQUIRE_PB2_DATA=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_diagnostics_pb2_data_lands_on_real_silicon \
+  --run-hardware
+```
+
+To verify Diagnostics does not starve normal IR/UI work, run:
+
+```bash
+DLCP_HW_LAYER5_AT_DIAG=1 \
+DLCP_HW_LAYER5_IR_ACTIONS=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_diagnostics_page_ir_actions_dispatch_on_real_silicon \
+  --run-hardware
+```
 
 For the full Diagnostics page operator walk-through see
 [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page".

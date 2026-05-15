@@ -27,12 +27,7 @@ fn has_category(variant: Variant, name: &str) -> bool {
 #[test]
 fn missing_peripheral_stub_policy() {
     for variant in [Variant::Pic18F25K20, Variant::Pic18F2455] {
-        for category in [
-            "CCP/ECCP/PWM",
-            "Comparator/CVREF/FVR",
-            "HLVD",
-            "PSP/SPP",
-        ] {
+        for category in ["CCP/ECCP/PWM", "Comparator/CVREF/FVR", "HLVD", "PSP/SPP"] {
             assert!(
                 has_category(variant, category),
                 "{variant:?} must classify missing peripheral category {category}"

@@ -34,8 +34,8 @@ use dlcp_sim::chain::Chain;
 use dlcp_sim::clock::ClockDomain;
 use dlcp_sim::core::{CoreLoadOptions, core_from_hex_image};
 use dlcp_sim::hex::HexImage;
-use dlcp_sim::memory::Variant;
 use dlcp_sim::memory::Address;
+use dlcp_sim::memory::Variant;
 use dlcp_sim::reset::{RCON_ADDR, RCON_POR, RCON_RI, ResetSource};
 use dlcp_sim::snapshot::{decode, encode};
 use proptest::prelude::*;
@@ -78,13 +78,8 @@ fn build_v171_control_chain() -> Chain {
         .and_then(|p| p.parent())
         .expect("crate dir has 2 ancestors")
         .join("firmware/patched/releases/DLCP_Control_V1.71.hex");
-    let image =
-        HexImage::from_hex_path(&hex_path).expect("V1.71 hex parses");
-    let core = core_from_hex_image(
-        Variant::Pic18F25K20,
-        &image,
-        CoreLoadOptions::default(),
-    );
+    let image = HexImage::from_hex_path(&hex_path).expect("V1.71 hex parses");
+    let core = core_from_hex_image(Variant::Pic18F25K20, &image, CoreLoadOptions::default());
     let clock = ClockDomain::new(Variant::Pic18F25K20);
     let mut chain = Chain::new();
     chain.push_core_with_clock(core, clock);
@@ -101,9 +96,7 @@ fn build_v171_control_chain() -> Chain {
     // leave RCON=0 (Memory::new zero-fill) and this assertion
     // would fire.  Byte-stable snapshot round-trip alone would
     // not catch that ordering regression.
-    let rcon = chain.cores[0]
-        .memory
-        .read_raw(Address::from_raw(RCON_ADDR));
+    let rcon = chain.cores[0].memory.read_raw(Address::from_raw(RCON_ADDR));
     // Use `assert!` (not `debug_assert!`) because the verify gate
     // runs `cargo test --release` and the workspace doesn't
     // override release debug-asserts -- a debug_assert here would

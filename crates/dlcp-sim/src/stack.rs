@@ -24,7 +24,10 @@
 //! architectural state visible; resetting on overflow is a
 //! policy that lives outside this module.
 
-#![allow(dead_code, reason = "P1.5 storage; consumed by P1.6 reset path + P1.2 CALL/RETURN executor")]
+#![allow(
+    dead_code,
+    reason = "P1.5 storage; consumed by P1.6 reset path + P1.2 CALL/RETURN executor"
+)]
 
 use crate::core::Core;
 use crate::memory::{Address, Memory};
@@ -280,8 +283,7 @@ impl Stack {
 
     /// Compose the STKPTR SFR byte from the current state.
     pub const fn stkptr(&self) -> u8 {
-        (self.flags & (STKPTR_STKFUL | STKPTR_STKUNF))
-            | (self.depth & STKPTR_INDEX_MASK)
+        (self.flags & (STKPTR_STKFUL | STKPTR_STKUNF)) | (self.depth & STKPTR_INDEX_MASK)
     }
 
     /// Apply a software write to STKPTR.  Bits 4..0 set the new
@@ -317,10 +319,7 @@ impl Stack {
         mem.write_raw(Address::from_raw(TOSH_ADDR), (tos >> 8) as u8);
         // TOSU<7:5> unimplemented per DS Tbl 5-1 footnote;
         // TOS uses bits <20:16> of PC.
-        mem.write_raw(
-            Address::from_raw(TOSU_ADDR),
-            ((tos >> 16) as u8) & 0x1F,
-        );
+        mem.write_raw(Address::from_raw(TOSU_ADDR), ((tos >> 16) as u8) & 0x1F);
     }
 }
 

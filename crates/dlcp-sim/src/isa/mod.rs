@@ -13,7 +13,5 @@
 pub mod decode;
 pub mod fsr;
 
-pub use crate::isa::decode::{
-    Access, Dest, FsrIndex, Instruction, TableMode, decode,
-};
+pub use crate::isa::decode::{Access, Dest, FsrIndex, Instruction, TableMode, decode};
 pub use crate::isa::fsr::{FsrAccessMode, classify_fsr_indirect, fsr_high_addr, fsr_low_addr};

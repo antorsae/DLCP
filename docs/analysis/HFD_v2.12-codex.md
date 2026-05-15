@@ -32,7 +32,10 @@ That host work is still contingent on firmware support described in
 - Host command IDs used by HFD are: `0x03`, `0x04`, `0x05`, `0x06`, `0x40`, `0x41`, `0x42`.
 - Routing UI options are hardcoded as four strings and loaded into each channel combo from addresses `0x551710`, `0x551720`, `0x551730`, `0x551740`.
 - Selected routing indices are copied to state bytes `+0x5E..+0x63` and sent to DLCP via command `0x05`.
-- Firmware update path is implemented in HFD using commands `0x40/0x41/0x42`; this appears to be the control-update relay path through DLCP.
+- Firmware update path is implemented in HFD using commands `0x40/0x41/0x42`.
+  The CONTROL update relay is specifically the HFD `0x42` stream plus `0x41`
+  CRC verify path through MAIN; see
+  `docs/analysis/FIRMWARE_UPDATE_MECHANISM.md` for the byte-level contract.
 
 ## Binary Interface Architecture
 
@@ -151,16 +154,22 @@ Implication:
 - `0x06`: configuration/capability pull; parser updates large state block and re-requests
 - `0x04`: targeted setup/update command (subcommand in `cl`)
 - `0x03`: message/transaction command used around filter/status operations
-- `0x40/0x41/0x42`: firmware-update stream/control path
-  - `0x40` and `0x42` stream data from table buffer
-  - `0x41` transmits accumulator/finalization state
+- `0x40/0x41/0x42`: firmware-update paths
+  - CONTROL update uses HFD `0x42` as an ACK-paced 30-byte/report stream
+    through MAIN to CONTROL bootloader
+  - the first `0x42` is not a separate `FW_Upd` or magic-init report; it
+    already carries firmware bytes 0..29 at device payload offsets 2..31
+  - `0x41` transmits the CRC/finalization state; for CONTROL update the CRC
+    high/low bytes are placed at device payload offsets 4 and 5
   - helper `0x554ea4` manipulates 16-bit state (`0x57b36c`) consistent with CRC/LFSR-style processing
 
 ## Main vs Control interaction (host perspective)
 
 - USB HID endpoint is on DLCP main path (VID/PID device).
 - HFD command surface includes firmware-update logic (`0x40/0x41/0x42`) and update status strings.
-- Given DLCP architecture and existing firmware-update analysis, HFD reaches control firmware indirectly via main relay/update mechanism.
+- The CONTROL update path reaches CONTROL firmware indirectly through MAIN's
+  command `0x42` relay, then finalizes with HFD command `0x41`; MAIN emits the
+  CONTROL Intel HEX EOF/finalize sequence on CRC success.
 
 Relevant strings:
 - `"Firmware update complete"`

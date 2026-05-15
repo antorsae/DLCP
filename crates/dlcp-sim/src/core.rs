@@ -33,7 +33,7 @@
 use crate::config::Config;
 use crate::hex::HexImage;
 use crate::memory::{Address, Memory, Variant};
-use crate::peripherals::{irq, Peripherals};
+use crate::peripherals::{Peripherals, irq};
 use serde::{Deserialize, Serialize};
 
 /// Default for `&'static str` probe-label fields skipped during

@@ -245,10 +245,8 @@ def test_v171_preset_persist_skips_eeprom_write_after_tx_abort() -> None:
     )
 
 
-def test_v171_ir_decode_runs_via_timer1_state_machine_not_in_isr() -> None:
-    """Post-task #152 (M3): the expensive RC5 bit-bang decoder must
-    not run inside the RBIF ISR critical section AND must not run in
-    the foreground display loop either.
+def test_v171_ir_decode_uses_hardware_validated_stock_isr_path() -> None:
+    """BUG-IR-01 hardware fallback: use the stock V1.6b ISR RC5 path.
 
     Pre-M3 shape (deferred design, broken on real hardware -- see
     task #151): ISR latched ``v171_ir_decode_pending`` and a
@@ -257,42 +255,49 @@ def test_v171_ir_decode_runs_via_timer1_state_machine_not_in_isr() -> None:
     because the foreground entered the decoder at an arbitrary
     phase relative to RB5 transitions.
 
-    Post-M3 shape: ISR latches falling-edge with a Timer1 arm
-    (``v171_ir_start_decode``); Timer1 ISR runs
-    ``v171_ir_sample_handler`` to take 32 samples at half-bit
-    intervals; on completion ``v171_ir_decode_done`` calls
-    ``v171_ir_post_process`` which runs the legacy
-    ``flow_ir_rc5_decode_025E`` post-process (not the entire
-    ``ir_rc5_decode`` body -- only the buffer-validation tail).
+    M3 Timer1 shape: ISR latched falling-edge with a Timer1 arm and
+    samples RB5 in ``v171_ir_sample_handler``.  That passed rust-sim
+    pulse tests but decoded no real Flipper IR on 2026-05-09 hardware.
+
+    Current required shape: the RBIF ISR calls the stock ``ir_rc5_decode``
+    body directly, stores cmd/address, and clears IR_ARMED exactly like
+    V1.6b.  This intentionally accepts the short ISR stall until a
+    hardware-validated non-blocking receiver exists.
     """
     text = _read_v171_source()
     isr_block = _label_block(text, "isr_entry", "rx_parser_entry")
-    # ISR must NOT contain the legacy in-ISR decoder call.
-    assert "rcall   ir_rc5_decode" not in isr_block, (
-        "ISR should not call ir_rc5_decode directly (Bug C3 / 10 ms stall)"
+    assert "rcall   ir_rc5_decode" in isr_block, (
+        "V1.71 must use the stock-compatible in-ISR RC5 decoder until "
+        "the Timer1 receiver is proven on real hardware"
     )
-    # ISR must NOT contain the legacy deferred-decode setf either
-    # (post-M3: replaced with `call v171_ir_start_decode`).
+    assert "movwf   ir_decoded_cmd" in isr_block, (
+        "ISR must store the decoded RC5 command like stock V1.6b"
+    )
+    assert "movff   (Common_RAM + 13), ir_decoded_addr" in isr_block, (
+        "ISR must store the decoded RC5 address like stock V1.6b"
+    )
+    assert re.search(r"bcf\s+control_flags,\s*(?:IR_ARMED|0x0)\b", isr_block), (
+        "ISR must clear IR_ARMED after a decode, leaving dispatch to the "
+        "normal foreground path"
+    )
+    # The broken foreground-deferred latch must remain absent.
     assert not re.search(r"setf\s+v171_ir_decode_pending\b", isr_block), (
-        "ISR must no longer latch v171_ir_decode_pending (post-M3 the "
-        "deferred-decode design is replaced by Timer1-driven sampling)"
+        "ISR must not reintroduce the foreground-deferred decode latch"
     )
-    # ISR must call v171_ir_start_decode on the falling-edge path.
-    assert re.search(r"call\s+v171_ir_start_decode\b", isr_block), (
-        "ISR must call v171_ir_start_decode on RB5 falling edge "
-        "(replaces legacy `setf v171_ir_decode_pending`)"
+    assert not re.search(r"call\s+v171_ir_start_decode\b", isr_block), (
+        "Timer1 IR receiver is disabled for BUG-IR-01 until it is "
+        "hardware validated"
     )
-    # ISR must dispatch TMR1IF to the sample handler.
-    assert re.search(r"call\s+v171_ir_sample_handler\b", isr_block), (
-        "ISR must call v171_ir_sample_handler on TMR1IF "
-        "(per-sample Timer1 tick)"
+    assert not re.search(r"call\s+v171_ir_sample_handler\b", isr_block), (
+        "Timer1 IR sample handler must not be in the live ISR path"
     )
 
 
 def test_v171_display_loop_no_longer_calls_legacy_ir_service() -> None:
-    """Post-M3: ``display_loop_iteration`` must NOT call the legacy
-    ``v171_service_pending_ir_decode`` foreground service.  IR
-    decoding now runs entirely from the Timer1 ISR.
+    """``display_loop_iteration`` must NOT call the broken foreground
+    ``v171_service_pending_ir_decode`` service.  IR decoding runs from
+    the RBIF ISR stock path until the non-blocking receiver is hardware
+    validated.
     """
     text = _read_v171_source()
     display_loop = _label_block(text, "display_loop_iteration", "control_core_service_0DCE")

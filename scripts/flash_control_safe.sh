@@ -18,8 +18,10 @@ Options:
   --vid INT               USB VID (decimal or 0x...)
   --pid INT               USB PID (decimal or 0x...)
   --path STR              hidapi path for specific device selection
-  --pace-ms INT           Inter-report delay in ms
-  --init-delay-ms INT     Delay after init report in ms
+  --pace-ms INT           Inter-report delay in ms (default: 0, ACK-paced like HFD)
+  --init-delay-ms INT     Delay before first 0x42 data report in ms (default: 0)
+  --report-timeout-ms INT Timeout waiting for each 0x42 ACK (default: 5000)
+  --live-timeout-s INT    Kill the live flash subprocess after this many seconds (default: 180)
   --preflight-only        Run checks only; do not flash
   --yes                   Skip confirmation prompt for live flash
   -h, --help              Show this help
@@ -49,6 +51,8 @@ PID=""
 HID_PATH=""
 PACE_MS=""
 INIT_DELAY_MS=""
+REPORT_TIMEOUT_MS=""
+LIVE_TIMEOUT_S="180"
 PREFLIGHT_ONLY=0
 ASSUME_YES=0
 
@@ -94,6 +98,16 @@ while [[ $# -gt 0 ]]; do
       INIT_DELAY_MS="$2"
       shift 2
       ;;
+    --report-timeout-ms)
+      [[ $# -ge 2 ]] || { echo "error: --report-timeout-ms requires a value" >&2; exit 2; }
+      REPORT_TIMEOUT_MS="$2"
+      shift 2
+      ;;
+    --live-timeout-s)
+      [[ $# -ge 2 ]] || { echo "error: --live-timeout-s requires a value" >&2; exit 2; }
+      LIVE_TIMEOUT_S="$2"
+      shift 2
+      ;;
     --preflight-only)
       PREFLIGHT_ONLY=1
       shift
@@ -133,6 +147,7 @@ common_cmd=("${PYTHON}" "-m" "dlcp_fw.flash.dlcp_control_flash" "--hex" "${HEX}"
 [[ -n "${HID_PATH}" ]] && common_cmd+=("--path" "${HID_PATH}")
 [[ -n "${PACE_MS}" ]] && common_cmd+=("--pace-ms" "${PACE_MS}")
 [[ -n "${INIT_DELAY_MS}" ]] && common_cmd+=("--init-delay-ms" "${INIT_DELAY_MS}")
+[[ -n "${REPORT_TIMEOUT_MS}" ]] && common_cmd+=("--report-timeout-ms" "${REPORT_TIMEOUT_MS}")
 
 echo "[safe-flash] running preflight"
 preflight_cmd=("${common_cmd[@]}" "--preflight-only" "-v")
@@ -162,6 +177,26 @@ echo "[safe-flash] starting live control flash"
 flash_cmd=("${common_cmd[@]}" "-v")
 (
   cd "${ROOT_DIR}"
-  "${flash_cmd[@]}"
+  "${PYTHON}" -c '
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+cmd = sys.argv[2:]
+try:
+    completed = subprocess.run(cmd, timeout=timeout_s)
+except subprocess.TimeoutExpired:
+    print(
+        f"[safe-flash] live control flash timed out after {timeout_s:g}s; "
+        "CONTROL is likely not in UP+DOWN bootloader mode or the selected "
+        "MAIN is not connected to CONTROL. For manual bootloader entry, "
+        "power-cycle while holding UP+DOWN for at least 6s and do not press "
+        "SELECT; retry if the LCD returns to Volume.",
+        file=sys.stderr,
+        flush=True,
+    )
+    raise SystemExit(124)
+raise SystemExit(completed.returncode)
+' "${LIVE_TIMEOUT_S}" "${flash_cmd[@]}"
 )
 echo "[safe-flash] done"

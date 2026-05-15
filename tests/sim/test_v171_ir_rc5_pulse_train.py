@@ -12,14 +12,19 @@ hand-off to ``flow_ir_rc5_decode_025E`` would not be detected by
 the inject-based tests.
 
 This file drives a real Manchester-encoded RC5 pulse train at
-CONTROL's RB5 input pin with 889 µs half-bit timing.  Two test
+CONTROL's RB5 input pin with 889 µs half-bit timing.  Three test
 shapes:
 
   1. ``test_v171_rc5_pulse_train_decodes_standby_endpoint`` -- the
      original black-box gate: drives cmd=0x3A and asserts the
      standby chain TX frame appears.
 
-  2. ``test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd`` --
+  2. ``test_v16b_and_v171_rc5_pulse_train_decode_same_command_stress`` --
+     drives the same RB5 waveform matrix into stock V1.6b and V1.71,
+     including the current Hypex profile-1 commands used by the
+     Flipper hardware sender.
+
+  3. ``test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd`` --
      parametrized over all four V1.71 inline cmds (0x38/0x39/0x3A/
      0x3B) and asserts on ``ir_decoded_cmd`` / ``ir_decoded_addr``
      registers post-decode.  This locks in the M3 timing fix from
@@ -47,7 +52,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import V17_CONTROL_RAM_INC, V171_CONTROL_ASM
+from dlcp_fw.paths import STOCK_CONTROL_HEX_V16B, V17_CONTROL_RAM_INC, V171_CONTROL_ASM
 from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
@@ -106,6 +111,12 @@ except Exception as exc:  # pragma: no cover
 # oscillator constant `DLCP_EXTERNAL_OSC_HZ = 12_000_000`).  RC5
 # half-bit at this universal-clock rate is 889 × 48 = 42,672 ticks.
 RC5_HALF_BIT_TICKS = 889 * 48  # 42,672 ticks per half-bit
+RC5_INTER_FRAME_GAP_TICKS = 90_000 * 48
+
+IR_DECODED_CMD_PHYS = 0x01D
+IR_DECODED_ADDR_PHYS = 0x01E
+CONTROL_FLAGS_PHYS = 0x01F
+IR_ARMED_MASK = 0x01
 
 
 def _require_rust() -> None:
@@ -184,6 +195,97 @@ def _drive_rc5_pulse_train(chain, addr: int, cmd: int, toggle: int = 0) -> None:
     # decoder's tail bit sees a stable idle.
     chain.set_control_pin("B", 5, True)
     chain.step_ticks(RC5_HALF_BIT_TICKS)
+
+
+def _build_warmed_ir_chain(hex_path: Path):  # type: ignore[no-untyped-def]
+    chain = RustChain.from_v17_chain(str(hex_path))
+    chain.warmup(25_000_000)
+    chain.pause_heartbeat()
+    for _ in range(40):
+        chain.step()
+    chain.set_control_pin("B", 5, True)
+    chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+    return chain
+
+
+def _prime_for_rc5_decode(chain) -> None:  # type: ignore[no-untyped-def]
+    chain.write_reg(0x01B, 0x00)
+    chain.write_reg(0x01C, 0x00)
+    chain.write_reg(IR_DECODED_CMD_PHYS, 0x00)
+    chain.write_reg(IR_DECODED_ADDR_PHYS, 0x00)
+    flags = chain.read_reg(CONTROL_FLAGS_PHYS)
+    chain.write_reg(CONTROL_FLAGS_PHYS, (flags & ~0x32) | IR_ARMED_MASK)
+    chain.set_control_pin("B", 5, True)
+    chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+
+
+def _wait_for_decoded(chain, *, addr: int, cmd: int, label: str) -> None:  # type: ignore[no-untyped-def]
+    for _ in range(20):
+        if (
+            chain.read_reg(IR_DECODED_CMD_PHYS) == cmd
+            and chain.read_reg(IR_DECODED_ADDR_PHYS) == addr
+        ):
+            return
+        chain.step_ticks(1_000_000)
+    pytest.fail(
+        f"{label}: RC5 pulse train did not decode to addr=0x{addr:02X} "
+        f"cmd=0x{cmd:02X}; got addr=0x{chain.read_reg(IR_DECODED_ADDR_PHYS):02X} "
+        f"cmd=0x{chain.read_reg(IR_DECODED_CMD_PHYS):02X} "
+        f"flags=0x{chain.read_reg(CONTROL_FLAGS_PHYS):02X}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v16b_and_v171_rc5_pulse_train_decode_same_command_stress(
+    v171_hex: Path,
+) -> None:
+    """Drive the same real-RB5 RC5 pulse sequence into stock V1.6b and V1.71.
+
+    This is the parity gate for BUG-IR-01: stock V1.6b is the known-good
+    reference for real IR, and V1.71 must decode the same waveform for
+    the current Hypex profile, standard profile, and V1.71 shortcut
+    commands.  The test does not use ``inject_decoded_ir_event``; every
+    command enters via CONTROL.RB5 timing edges.
+    """
+    _require_rust()
+    if not STOCK_CONTROL_HEX_V16B.is_file():
+        pytest.skip(f"missing V1.6b stock hex: {STOCK_CONTROL_HEX_V16B}")
+
+    cases = [
+        (0x10, 0x33, "hypex profile volume up"),
+        (0x10, 0x34, "hypex profile volume down"),
+        (0x10, 0x35, "hypex profile mute"),
+        (0x10, 0x36, "hypex profile input/preset next"),
+        (0x10, 0x37, "hypex profile input/preset previous"),
+        (0x10, 0x10, "standard profile volume up"),
+        (0x10, 0x11, "standard profile volume down"),
+        (0x10, 0x20, "standard profile input/preset next"),
+        (0x10, 0x21, "standard profile input/preset previous"),
+        (0x10, 0x0D, "standard profile mute"),
+        (0x10, 0x38, "preset A shortcut"),
+        (0x10, 0x39, "preset B shortcut"),
+        (0x10, 0x3B, "wake shortcut"),
+        # Keep side-effecting power/standby commands last.  The goal
+        # here is decoder parity, not testing post-standby dispatch
+        # from the same warmed chain.
+        (0x10, 0x32, "hypex profile power"),
+        (0x10, 0x0C, "standard profile power"),
+        (0x10, 0x3A, "standby shortcut"),
+    ]
+
+    for image_label, hex_path in (("V1.6b", STOCK_CONTROL_HEX_V16B), ("V1.71", v171_hex)):
+        for repeat in range(2):
+            chain = _build_warmed_ir_chain(hex_path)
+            for addr, cmd, label in cases:
+                _prime_for_rc5_decode(chain)
+                _drive_rc5_pulse_train(chain, addr=addr, cmd=cmd, toggle=repeat & 1)
+                _wait_for_decoded(
+                    chain,
+                    addr=addr,
+                    cmd=cmd,
+                    label=f"{image_label} repeat {repeat + 1} {label}",
+                )
 
 
 @pytest.mark.dual_supported

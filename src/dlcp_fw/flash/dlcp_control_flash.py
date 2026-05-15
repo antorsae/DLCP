@@ -3,10 +3,11 @@
 Flash DLCP Control firmware *through the main DLCP USB HID* using the main
 firmware's command 0x42 relay (binary -> Intel HEX -> current-loop UART).
 
-Reverse-engineered from main firmware disassembly:
-  - cmd 0x42: init/update + stream data (30 bytes per HID report at offsets 2..31)
-  - cmd 0x41: CRC verify (expected CRC bytes at offsets 4..5: [hi, lo])
-  - end-of-file: send one 0x42 report with all-zero payload (0x000000.. record)
+Reverse-engineered from HFD v2.12 and main firmware disassembly:
+  - cmd 0x42: first packet both arms the relay and streams bytes 0..29
+  - cmd 0x42: stream data is 30 bytes per HID report at offsets 2..31
+  - cmd 0x41: CRC verify uses bytes at offsets 4..5: [hi, lo]
+  - CRC success makes MAIN send CONTROL's Intel HEX EOF/finalize sequence
 
 This tool intentionally only touches CONTROL application flash (0x0040..0x77BF).
 
@@ -349,9 +350,14 @@ def _hid_write64(dev, payload64: bytes) -> None:
 
 
 def _hid_read64(dev, timeout_ms: int = 1000) -> Optional[bytes]:
-    data = dev.read(64, timeout_ms)
-    if not data:
-        return None
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
+    while True:
+        data = dev.read(64, 0)
+        if data:
+            break
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.005)
     b = bytes(data)
     # Some stacks include report ID, some don't.
     if len(b) == 65 and b[0] == 0x00:
@@ -370,6 +376,26 @@ def _mk_report(cmd: int) -> bytearray:
     return r
 
 
+def _hid_write64_expect_response(
+    dev,
+    payload64: bytes,
+    *,
+    expected_cmd: int,
+    context: str,
+    timeout_ms: int = 5000,
+) -> bytes:
+    _hid_write64(dev, payload64)
+    resp = _hid_read64(dev, timeout_ms=timeout_ms)
+    if resp is None:
+        raise RuntimeError(f"no response after {context}")
+    if resp[0] != (expected_cmd & 0xFF):
+        raise RuntimeError(
+            f"unexpected response after {context}: "
+            f"resp[0]=0x{resp[0]:02X}, expected 0x{expected_cmd & 0xFF:02X}"
+        )
+    return resp
+
+
 def flash_control(
     *,
     vid: int,
@@ -381,6 +407,7 @@ def flash_control(
     verify: bool,
     dry_run: bool,
     verbose: bool,
+    report_timeout_ms: int = 5000,
 ) -> None:
     if len(stream) != CONTROL_PROG_END_EXCL:
         raise ValueError(f"stream must be {CONTROL_PROG_END_EXCL} bytes, got {len(stream)}")
@@ -405,17 +432,19 @@ def flash_control(
         if path is None:
             raise RuntimeError("selected HID device has no path")
     dev.open_path(path)
-    dev.set_nonblocking(False)
+    # python-hidapi read timeouts are not reliable on all macOS backends once
+    # MAIN is wedged waiting for a CONTROL bootloader prompt.  Poll explicitly
+    # so a missing first 0x42 ACK fails fast instead of hanging indefinitely.
+    dev.set_nonblocking(True)
 
     try:
-        # 1) init update mode
-        if verbose:
-            print("sending init (0x42)...")
-        r = _mk_report(0x42)
-        _hid_write64(dev, bytes(r))
-        time.sleep(init_delay_ms / 1000.0)
-
-        # 2) stream bytes (30 per report at offsets 2..31)
+        # 1) stream bytes (30 per report at offsets 2..31).
+        #
+        # HFD does not send a separate FW_Upd/magic init packet.  MAIN's
+        # first cmd 0x42 waits for the CONTROL bootloader prompt and then
+        # relays that same report's bytes 0..29.
+        if init_delay_ms:
+            time.sleep(init_delay_ms / 1000.0)
         total = len(stream)
         pos = 0
         report_i = 0
@@ -428,7 +457,13 @@ def flash_control(
 
             r = _mk_report(0x42)
             r[2 : 2 + 30] = chunk
-            _hid_write64(dev, bytes(r))
+            resp = _hid_write64_expect_response(
+                dev,
+                bytes(r),
+                expected_cmd=0x42,
+                context=f"control stream report {report_i + 1}",
+                timeout_ms=report_timeout_ms,
+            )
 
             pos += 30
             report_i += 1
@@ -436,12 +471,17 @@ def flash_control(
             if pace_ms:
                 time.sleep(pace_ms / 1000.0)
 
-            if verbose and (time.time() - last_print) > 0.5:
+            if verbose and (report_i == 1 or (time.time() - last_print) > 0.5):
                 pct = min(100.0, (pos / total) * 100.0)
-                print(f"streaming: report={report_i} pos=0x{pos:04X}/{total:04X} ({pct:5.1f}%)")
+                print(
+                    f"streaming: report={report_i} pos=0x{pos:04X}/{total:04X} "
+                    f"({pct:5.1f}%) resp[0..3]="
+                    + " ".join(f"{x:02x}" for x in resp[:4])
+                )
                 last_print = time.time()
 
-        # 3) CRC verify (recommended before EOF/reset)
+        # 2) CRC verify. MAIN emits CONTROL's Intel HEX EOF/finalize sequence
+        # on CRC success; HFD does not send an extra cmd 0x42 EOF packet.
         if verify:
             if verbose:
                 print("sending CRC verify (0x41)...")
@@ -464,14 +504,6 @@ def flash_control(
 
             if verbose:
                 print("CRC verify OK.")
-
-        # 4) EOF record trigger: one 0x42 report with all-zero payload.
-        # This should make the main send an Intel HEX ":00000001FF" to the CONTROL bootloader.
-        if verbose:
-            print("sending EOF trigger (0x42 all-zero payload)...")
-        r = _mk_report(0x42)
-        _hid_write64(dev, bytes(r))
-        time.sleep(0.5)
     finally:
         try:
             dev.close()
@@ -502,8 +534,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="run safety checks and print checksums/CRC; do not write over USB",
     )
-    ap.add_argument("--pace-ms", type=int, default=75, help="sleep after each 0x42 report (default: 75ms)")
-    ap.add_argument("--init-delay-ms", type=int, default=1500, help="wait after init 0x42 (default: 1500ms)")
+    ap.add_argument("--pace-ms", type=int, default=0, help="sleep after each 0x42 report (default: 0ms; HFD sends the next report after the previous ACK)")
+    ap.add_argument("--init-delay-ms", type=int, default=0, help="wait before the first 0x42 data report (default: 0ms; there is no separate init report)")
+    ap.add_argument("--report-timeout-ms", type=int, default=5000, help="timeout waiting for each 0x42 ACK (default: 5000ms)")
     ap.add_argument("--no-verify", action="store_true", help="unsafe: skip CRC verify command (0x41)")
     ap.add_argument(
         "--force-unsafe",
@@ -577,6 +610,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         verify=not args.no_verify,
         dry_run=args.dry_run or args.preflight_only,
         verbose=args.verbose,
+        report_timeout_ms=max(1, args.report_timeout_ms),
     )
     return 0
 

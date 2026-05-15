@@ -49,7 +49,10 @@
 //! * Status register `0x02` semantics -- reads return zero
 //!   (no error).  V3.1 doesn't appear to poll it pre-chain.
 
-#![allow(dead_code, reason = "Phase-3.5 scaffold; chain wiring lands in a follow-up commit")]
+#![allow(
+    dead_code,
+    reason = "Phase-3.5 scaffold; chain wiring lands in a follow-up commit"
+)]
 
 use serde::{Deserialize, Serialize};
 
@@ -310,7 +313,9 @@ impl Tas3108 {
             // Reference: codex review of 5330a68 LOW #1.
             match self.last_latched_subaddr {
                 Some(start) => {
-                    self.phase = Phase::Reading { next_subaddr: start };
+                    self.phase = Phase::Reading {
+                        next_subaddr: start,
+                    };
                     true
                 }
                 None => {
@@ -430,13 +435,19 @@ mod tests {
 
         // Second address byte (read direction): NACKed too.
         dsp.on_start();
-        assert!(!dsp.consume_tx_byte(0x69), "second address (read) must NACK");
+        assert!(
+            !dsp.consume_tx_byte(0x69),
+            "second address (read) must NACK"
+        );
         dsp.on_stop();
         assert_eq!(dsp.bytes_nacked, 2);
 
         // Third address byte: counter exhausted, normal ACK.
         dsp.on_start();
-        assert!(dsp.consume_tx_byte(0x68), "third address must ACK after counter exhausted");
+        assert!(
+            dsp.consume_tx_byte(0x68),
+            "third address must ACK after counter exhausted"
+        );
         dsp.on_stop();
         assert_eq!(dsp.bytes_acked, 1);
     }
@@ -452,19 +463,28 @@ mod tests {
 
         // Broadcast: ACKed; counter untouched.
         dsp.on_start();
-        assert!(dsp.consume_tx_byte(0x00), "broadcast must ACK regardless of fault");
+        assert!(
+            dsp.consume_tx_byte(0x00),
+            "broadcast must ACK regardless of fault"
+        );
         dsp.on_stop();
 
         // Non-matching address (0xA0): NACKed-as-Ignored, but
         // not counted against the address-NACK counter (no
         // decrement).
         dsp.on_start();
-        assert!(!dsp.consume_tx_byte(0xA0), "non-matching address always NACKs");
+        assert!(
+            !dsp.consume_tx_byte(0xA0),
+            "non-matching address always NACKs"
+        );
         dsp.on_stop();
 
         // Counter is still 5 -- own write address still NACKs.
         dsp.on_start();
-        assert!(!dsp.consume_tx_byte(0x68), "own address must still NACK (counter 5 -> 4)");
+        assert!(
+            !dsp.consume_tx_byte(0x68),
+            "own address must still NACK (counter 5 -> 4)"
+        );
         dsp.on_stop();
 
         // clear_i2c_faults zeroes the counter.
@@ -655,7 +675,10 @@ mod tests {
         assert!(!slave_b.consume_tx_byte(0x68));
         // Slave A's transaction continues with data 0x6A as a
         // SUBADDRESS or DATA byte.  Slave B must NOT reawaken.
-        assert!(!slave_b.consume_tx_byte(0x6A), "ignored slave must not re-address");
+        assert!(
+            !slave_b.consume_tx_byte(0x6A),
+            "ignored slave must not re-address"
+        );
         assert!(!slave_b.consume_tx_byte(0xAA));
         slave_b.on_stop();
         // After the next START, slave B's state is reset
@@ -678,7 +701,10 @@ mod tests {
     fn read_address_before_any_subaddress_latched_nacks() {
         let mut dsp = Tas3108::default();
         dsp.on_start();
-        assert!(!dsp.consume_tx_byte(0x69), "read without prior latch must NACK");
+        assert!(
+            !dsp.consume_tx_byte(0x69),
+            "read without prior latch must NACK"
+        );
         // After a write transaction sets the subaddress, a
         // subsequent read at 0x69 ACKs.
         dsp.on_start();

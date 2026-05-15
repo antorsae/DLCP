@@ -360,6 +360,11 @@ _FILENAME_RAM_LEN = 0x1E
 _FILENAME_DIRTY_FLAGS_ADDR = 0x0BD
 _FILENAME_DIRTY_BIT = 0x20  # bit5: filename region dirty
 _USB_XACT_PENDING_BIT = 0x40  # bit6: USB filename transaction in flight
+_LOGICAL_VOLUME_RAM_BASE = 0x066
+_COMPUTED_VOLUME_RAM_BASE = 0x06E
+_INPUT_SELECT_RAM = 0x099
+_INPUT_SELECT_MIRROR_RAM = 0x0B3
+_SETUP_PROFILE_RAM = 0x0B8
 
 # Subcmds for cmd 0x03 (mirror flasher's CMD03_FILENAME_*_SUBCMD constants).
 _CMD03_FILENAME_READ_SUBCMD = 0x08
@@ -415,6 +420,7 @@ class SimUsbDevice:
     manufacturer_string: str = "Hypex sim"
     mode: str = "app"  # "app" or "bootloader"
     bootloader_stream: bytearray = dataclasses.field(default_factory=bytearray)
+    last_app_to_bootloader_settings: dict[str, object] | None = None
 
     @property
     def product_string(self) -> str:
@@ -436,11 +442,13 @@ class SimHidBackend:
       * ``close()``:      no-op on the sim path.
       * ``set_nonblocking(flag)``: no-op (sim is always synchronous).
 
-    Dispatches on the cmd byte (payload[0]) to chain-backed shortcuts.  Each
-    response is queued onto ``self._read_queue``; the next ``read`` pops the
-    head.  Out-of-band reports (e.g. unrelated to the just-issued write)
-    aren't simulated -- the flasher never relies on them in healthy
-    operation.
+    App-mode cmd 0x03/0x06/0x43 reports are dispatched through the V3.2
+    firmware HID path exposed by the rust facade.  Bootloader stream/verify
+    commands remain sim-side because the Microchip boot block itself is not
+    modeled.  Each response is queued onto ``self._read_queue``; the next
+    ``read`` pops the head.  Out-of-band reports (e.g. unrelated to the
+    just-issued write) aren't simulated -- the flasher never relies on them
+    in healthy operation.
 
     Construction is via ``SimUsbHub.open_hid_path(path)``; do not instantiate
     directly.
@@ -458,6 +466,7 @@ class SimHidBackend:
         self._read_queue: list[bytes] = []
         self._closed = False
         self._lock = threading.Lock()
+        self._last_firmware_hid_dispatch_hits = 0
         # Inherit from hub if not explicitly overridden so
         # ``cmd 0x43 verify`` (~70 reads in a row) accumulates sim time
         # the same way EP0 polling does.  Without this, a long verify
@@ -545,6 +554,14 @@ class SimHidBackend:
     def set_nonblocking(self, flag: bool) -> None:
         pass
 
+    @property
+    def last_firmware_hid_dispatch_hits(self) -> int:
+        """Number of V3.2 ``hid_command_dispatch`` entries observed while
+        servicing the most recent app-mode report through the firmware
+        HID path.  A value >0 proves the sim did not answer via a
+        Python-side command shortcut."""
+        return self._last_firmware_hid_dispatch_hits
+
     # ---- Cmd dispatch --------------------------------------------------
 
     def _dispatch(self, payload: bytes) -> Optional[bytes]:
@@ -567,17 +584,48 @@ class SimHidBackend:
             return self._echo_with_status(cmd, status=0xFE)
 
         # App mode dispatch.
-        if cmd == 0x06:
-            return self._handle_cmd06_version(payload)
-        if cmd == 0x03:
-            return self._handle_cmd03_filename(payload)
+        if cmd in (0x06, 0x03, _CMD_DIAG_MEMREAD):
+            return self._dispatch_app_report_via_firmware(payload)
         if cmd == 0x40:
             return self._handle_app_to_bootloader_switch(payload)
-        if cmd == _CMD_DIAG_MEMREAD:
-            return self._handle_cmd43_memread(payload)
         # Unknown cmd in app mode: echo + NAK so the flasher's parser
         # surfaces a clear error rather than silently hanging.
         return self._echo_with_status(cmd, status=0xFE)
+
+    def _dispatch_app_report_via_firmware(self, payload: bytes) -> bytes:
+        """Run app-mode HID commands through the V3.2 firmware dispatcher.
+
+        Older sim tests answered cmd 0x03/0x06/0x43 by mirroring side
+        effects directly in Python.  That hid bugs in the real firmware
+        HID path.  The rust facade now stages a configured EP1 OUT
+        transaction and invokes ``main_usb_service_3a26`` /
+        ``hid_command_dispatch`` on the target MAIN, returning the EP1 IN
+        payload.  Keep bootloader handoff/stream commands as Python
+        shortcuts because the Microchip boot block itself is not modeled.
+        """
+        chain = self._hub._chain
+        if not hasattr(chain, "firmware_hid_report"):
+            raise RuntimeError(
+                "SimHidBackend requires Chain.firmware_hid_report for "
+                "app-mode HID dispatch"
+            )
+        response, dispatch_hits = chain.firmware_hid_report(
+            self._device.unit,
+            payload,
+        )
+        self._last_firmware_hid_dispatch_hits = int(dispatch_hits)
+        response = bytes(response)
+        if len(response) != _HID_REPORT_LEN:
+            raise RuntimeError(
+                f"firmware_hid_report returned {len(response)} bytes, "
+                f"expected {_HID_REPORT_LEN}"
+            )
+        if self._last_firmware_hid_dispatch_hits <= 0:
+            raise RuntimeError(
+                "firmware_hid_report returned without entering "
+                "hid_command_dispatch"
+            )
+        return response
 
     def _echo_with_status(self, cmd: int, *, status: int) -> bytes:
         resp = bytearray(_HID_REPORT_LEN)
@@ -724,18 +772,42 @@ class SimHidBackend:
     def _handle_app_to_bootloader_switch(self, payload: bytes) -> bytes:
         """Switch the simulated device to bootloader mode.
 
-        The real DLCP MAIN's app cmd 0x40 writes ``EEPROM[0xFF] = 0`` and
-        resets into bootloader mode.  In the sim we don't simulate the
-        bootloader firmware, so we just flip the device's mode flag --
-        the next ``enumerate_devices`` call will see the bootloader-mode
-        product string and the flasher's ``_wait_for_bootloader`` will
-        accept it.
+        V3.2 app cmd 0x40 writes ``EEPROM[0xFF] = 0`` and resets into
+        bootloader mode.  It must not flush factory defaults into the
+        user settings EEPROM block; the real firmware only uses the
+        0xFF marker for the bootloader handoff.  In the sim we don't
+        execute the bootloader firmware, so after writing the marker we
+        flip the device's mode flag -- the next ``enumerate_devices``
+        call will see the bootloader-mode product string and the
+        flasher's ``_wait_for_bootloader`` will accept it.
 
         Returns no response (the real device replies later via the
         bootloader stream's first packet).  Returning ``None`` skips
         adding to the read queue; the host's read after this write
         returns empty and the host moves on to the reconnect wait.
         """
+        chain = self._hub._chain
+        unit = self._device.unit
+        self._device.last_app_to_bootloader_settings = {
+            "eeprom_volume": tuple(
+                chain.read_main_eeprom_byte(unit, offset) & 0xFF
+                for offset in range(4)
+            ),
+            "eeprom_input": chain.read_main_eeprom_byte(unit, 0x04) & 0xFF,
+            "eeprom_setup_profile": chain.read_main_eeprom_byte(unit, 0x0E) & 0xFF,
+            "computed_volume": bytes(
+                chain.read_main_reg(unit, _COMPUTED_VOLUME_RAM_BASE + i) & 0xFF
+                for i in range(4)
+            ),
+            "logical_volume": bytes(
+                chain.read_main_reg(unit, _LOGICAL_VOLUME_RAM_BASE + i) & 0xFF
+                for i in range(4)
+            ),
+            "input_select": chain.read_main_reg(unit, _INPUT_SELECT_RAM) & 0xFF,
+            "input_mirror": chain.read_main_reg(unit, _INPUT_SELECT_MIRROR_RAM) & 0xFF,
+            "setup_profile": chain.read_main_reg(unit, _SETUP_PROFILE_RAM) & 0xFF,
+        }
+        chain.write_main_eeprom_byte(unit, 0xFF, 0x00)
         self._device.mode = "bootloader"
         self._device.bootloader_stream = bytearray()
         return None

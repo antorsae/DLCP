@@ -24,12 +24,14 @@ tests (``test_v171_v32_layer5_diag_chain.py``).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
 from dlcp_fw.paths import (
     V31_MAIN_HEX,
+    V32_MAIN_ASM,
     V32_MAIN_HEX,
 )
 
@@ -44,11 +46,18 @@ except Exception as exc:  # pragma: no cover
 _STATUS_5E = 0x05E
 _FLAGS_7E = 0x07E
 _FLAGS_7F = 0x07F
+_LOGICAL_VOLUME_REG = 0x066
 _VOLUME_REG = 0x06E
+_RX_RING_RD = 0x0C6
+_RX_RING_WR = 0x0C7
 _PRESET_B_BIT = 0x04
 _PRESET_JOB_STATE = 0x2DE
 _PRESET_JOB_TARGET = 0x2DF
 _PRESET_JOB_INDEX = 0x2E0
+_DIAG_I_ADDR = 0x2E5
+_DIAG_R_ADDR = 0x2E9
+_MAIN_RX_FRAME_GAP_TIMEOUT = 0x2F1
+_I2C_RECOVER_FLAGS = 0x2F2
 _DSP_FAULT_BIT = 6  # 0x07F.bit6: persistent DSP fault
 
 
@@ -119,6 +128,12 @@ class _RustMainOnlyAdapter:
             stop_busy_cycles=stop_busy_cycles,
             stop_busy_count=stop_busy_count,
         )
+
+    def set_mssp_start_fault(self, *, cycles: int, count: int) -> None:
+        self._c.set_mssp_start_fault(cycles=cycles, count=count)
+
+    def clear_mssp_start_faults(self) -> None:
+        self._c.clear_mssp_start_faults()
 
     def clear_mssp_stop_faults(self) -> None:
         self._c.clear_mssp_stop_faults()
@@ -193,6 +208,41 @@ def _inject_main_frame_h(
         f"failed to inject MAIN frame B0/{cmd:02X}/{data:02X}: "
         f"delivered={delivered} overruns={overruns}"
     )
+
+
+def test_v32_i2c_recover_latch_does_not_clobber_rx_gap_timeout() -> None:
+    """The MSSP recovery latch must not reuse live parser liveness RAM."""
+    text = V32_MAIN_ASM.read_text()
+    ram_inc = V32_MAIN_ASM.with_name("dlcp_main_ram.inc").read_text()
+    mssp_reset_body = text.split("mssp_hard_reset:", 1)[1].split(
+        "; ---------------------------------------------------------------------------",
+        1,
+    )[0]
+
+    assert _I2C_RECOVER_FLAGS != _MAIN_RX_FRAME_GAP_TIMEOUT
+    assert f"i2c_recover_flags       EQU  0x{_I2C_RECOVER_FLAGS:03X}" in text
+    assert (
+        f"main_rx_frame_gap_timeout   EQU  0x{_MAIN_RX_FRAME_GAP_TIMEOUT:03X}"
+        in ram_inc
+    )
+    assert "movlw       0xC0" in mssp_reset_body
+    assert "andwf       SSPSTAT, F, ACCESS" in mssp_reset_body
+
+
+def test_v32_volume_dsp_write_reasserts_bank0_after_i2c_helper() -> None:
+    """The NACK test must read dsp_fault_flags in bank 0 after I2C calls."""
+    text = V32_MAIN_ASM.read_text()
+    body = text.split("volume_dsp_write:", 1)[1].split(
+        "vol_write_nacked:",
+        1,
+    )[0]
+
+    assert re.search(
+        r"rcall\s+i2c_tas3108_coeff_write\s*\n"
+        r"\s*movlb\s+0x0+\s*[^\n]*\n"
+        r"\s*btfsc\s+dsp_fault_flags,\s*2,\s*BANKED",
+        body,
+    ), "volume_dsp_write must reassert BSR=0 before testing dsp_fault_flags.bit2"
 
 
 # -----------------------------------------------------------------------
@@ -315,11 +365,12 @@ def test_main_pen_timeout_recovers() -> None:
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v32_main_bus_clear_recovers_after_mssp_stop_fault() -> None:
-    """V3.2 preserves bus-clear recovery after MSSP STOP fault cascade."""
+    """V3.2 consumes fresh runtime commands after an MSSP STOP cascade."""
     _skip_missing(V32_MAIN_HEX)
 
     h = _make_adapter(V32_MAIN_HEX)
     _boot_and_activate_h(h)
+    _wait_for_uart_settled_h(h)
 
     snap_a = h.read_dsp_snapshot()
     h.inject_main_frames_fifo([[0xB0, 0x07, 0x50]], fifo_limit=47)
@@ -334,19 +385,27 @@ def test_v32_main_bus_clear_recovers_after_mssp_stop_fault() -> None:
 
     h.clear_mssp_stop_faults()
     h.advance_tcy(15 * h.chunk_tcy)
+    assert h.read_reg(_DIAG_I_ADDR) > 0, "STOP timeout was not counted in diag_i"
+    assert h.read_reg(_DIAG_R_ADDR) > 0, "STOP recovery was not counted in diag_r"
 
-    snap_b = h.read_dsp_snapshot()
-    h.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-    h.advance_tcy(20 * h.chunk_tcy)
-    after_b = h.read_dsp_snapshot()
-    diff_recovery = [
-        (r, snap_b[r], after_b[r])
-        for r in range(256)
-        if snap_b[r] != after_b[r]
-    ]
+    _inject_main_frame_h(h, cmd=0x07, data=0x40)
+    for _ in range(80):
+        h.probe_step()
+        if (
+            h.read_reg(_LOGICAL_VOLUME_REG) == 0xE0
+            and h.read_reg(_VOLUME_REG) == 0xE0
+            and h.read_reg(_RX_RING_RD) == h.read_reg(_RX_RING_WR)
+        ):
+            break
+    else:
+        raise AssertionError(
+            "V3.2 did not consume the follow-up volume command after "
+            "MSSP STOP recovery"
+        )
 
-    assert len(diff_recovery) > 0, (
-        "V3.2 DSP path not recovered after MSSP STOP cascade"
+    assert not (h.read_reg(_FLAGS_7F) & 0x44), (
+        f"follow-up volume command left DSP/I2C fault bits set: "
+        f"0x07F=0x{h.read_reg(_FLAGS_7F):02X}"
     )
 
 
@@ -380,6 +439,43 @@ def test_v32_main_pen_timeout_recovers() -> None:
     ]
 
     assert len(diff) > 0, "V3.2 DSP path broken after PEN timeout"
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v32_runtime_start_timeout_keeps_main_loop_responsive_and_flags_fault() -> None:
+    """A permanent START/SEN fault in a normal runtime DSP write must not
+    strand MAIN in an MSSP busy-wait.
+
+    This covers the long-soak field symptom: audio keeps playing because
+    MAIN is trapped inside an I2C/MSSP wait and later control frames are
+    never serviced.  A robust V3.2 MAIN must bound the wait, run recovery,
+    advertise the fault via the existing BF/08 state byte, and return to
+    the parser so a follow-up command can be consumed.
+    """
+    _skip_missing(V32_MAIN_HEX)
+
+    h = _make_adapter(V32_MAIN_HEX)
+    _boot_and_activate_h(h)
+    _wait_for_uart_settled_h(h)
+
+    h.set_mssp_start_fault(cycles=5_000_000, count=-1)
+    _inject_main_frame_h(h, cmd=0x07, data=0x30)
+    h.advance_tcy(8 * h.chunk_tcy)
+
+    _inject_main_frame_h(h, cmd=0x20, data=0x01)
+    h.advance_tcy(8 * h.chunk_tcy)
+
+    assert h.read_reg(_PRESET_JOB_TARGET) == 0x01, (
+        "follow-up preset command was not consumed after a runtime START "
+        "fault; MAIN likely wedged inside an unbounded MSSP wait"
+    )
+    assert h.read_reg(_FLAGS_7F) & 0x44, (
+        f"DSP/I2C fault was not advertised in dsp_fault_flags after "
+        f"bounded START recovery; flags=0x{h.read_reg(_FLAGS_7F):02X}"
+    )
+    assert h.read_reg(_DIAG_I_ADDR) > 0, "I2C timeout was not counted in diag_i"
+    assert h.read_reg(_DIAG_R_ADDR) > 0, "I2C recovery was not counted in diag_r"
 
 
 @pytest.mark.dual_supported

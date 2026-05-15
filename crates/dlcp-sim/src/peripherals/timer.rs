@@ -282,10 +282,7 @@ impl Timers {
                 if !new_rd16 {
                     // RD16=0 after the write: SFR memory IS
                     // the live byte going forward.
-                    mem.write_raw(
-                        Address::from_raw(TMR3H_ADDR),
-                        self.tmr3h_live,
-                    );
+                    mem.write_raw(Address::from_raw(TMR3H_ADDR), self.tmr3h_live);
                 } else if !self.last_t3con_rd16 {
                     // 0->1 transition only: seed the buffer
                     // from the live byte so a subsequent
@@ -347,10 +344,7 @@ impl Timers {
                 let t3con = mem.read_raw(Address::from_raw(T3CON_ADDR));
                 if (t3con & T3CON_RD16) != 0 {
                     self.tmr3h_live = self.tmr3h_buffer;
-                    mem.write_raw(
-                        Address::from_raw(TMR3H_ADDR),
-                        self.tmr3h_buffer,
-                    );
+                    mem.write_raw(Address::from_raw(TMR3H_ADDR), self.tmr3h_buffer);
                 }
                 self.timer3_prescaler_tcy = 0;
                 let _ = value;
@@ -487,13 +481,7 @@ impl Timers {
         if t0con & T0CON_T08BIT != 0 {
             // 8-bit mode: TMR0L is the counter; TMR0H is
             // not used.  Overflow at 0xFF -> 0x00.
-            advance_8bit_counter(
-                mem,
-                TMR0L_ADDR,
-                increments,
-                INTCON_ADDR,
-                INTCON_TMR0IF,
-            );
+            advance_8bit_counter(mem, TMR0L_ADDR, increments, INTCON_ADDR, INTCON_TMR0IF);
         } else {
             let lo = mem.read_raw(Address::from_raw(TMR0L_ADDR)) as u32;
             let hi = self.tmr0h_live as u32;
@@ -501,10 +489,7 @@ impl Timers {
             let new_total = cur + increments;
             let new_value = (new_total & 0xFFFF) as u16;
             let wraps = new_total >> 16;
-            mem.write_raw(
-                Address::from_raw(TMR0L_ADDR),
-                (new_value & 0xFF) as u8,
-            );
+            mem.write_raw(Address::from_raw(TMR0L_ADDR), (new_value & 0xFF) as u8);
             self.tmr0h_live = (new_value >> 8) as u8;
             if wraps > 0 {
                 let intcon = mem.read_raw(Address::from_raw(INTCON_ADDR));
@@ -538,10 +523,7 @@ impl Timers {
         let new_total = cur + increments;
         let new_value = (new_total & 0xFFFF) as u16;
         let wraps = new_total >> 16;
-        mem.write_raw(
-            Address::from_raw(TMR1L_ADDR),
-            (new_value & 0xFF) as u8,
-        );
+        mem.write_raw(Address::from_raw(TMR1L_ADDR), (new_value & 0xFF) as u8);
         self.tmr1h_live = (new_value >> 8) as u8;
         if (t1con & T1CON_RD16) == 0 {
             mem.write_raw(Address::from_raw(TMR1H_ADDR), self.tmr1h_live);
@@ -615,10 +597,7 @@ impl Timers {
         let new_total = cur + increments;
         let new_value = (new_total & 0xFFFF) as u16;
         let wraps = new_total >> 16;
-        mem.write_raw(
-            Address::from_raw(TMR3L_ADDR),
-            (new_value & 0xFF) as u8,
-        );
+        mem.write_raw(Address::from_raw(TMR3L_ADDR), (new_value & 0xFF) as u8);
         let new_high = (new_value >> 8) as u8;
         self.tmr3h_live = new_high;
         // Mirror live high byte to SFR memory only in RD16=0
@@ -672,13 +651,7 @@ fn timer3_prescaler_divisor(t3con: u8) -> u32 {
 
 /// Advance an 8-bit counter at `lo_addr` by `n`, asserting
 /// the IRQ flag at `pir_addr`.`pir_bit` on each wrap.
-fn advance_8bit_counter(
-    mem: &mut Memory,
-    lo_addr: u16,
-    n: u32,
-    pir_addr: u16,
-    pir_bit: u8,
-) {
+fn advance_8bit_counter(mem: &mut Memory, lo_addr: u16, n: u32, pir_addr: u16, pir_bit: u8) {
     let cur = mem.read_raw(Address::from_raw(lo_addr)) as u32;
     let new_total = cur + n;
     let new_lo = (new_total & 0xFF) as u8;
@@ -755,10 +728,7 @@ mod tests {
         let mut t = Timers::default();
         let mut mem = fresh_mem();
         // TMR0ON | (T08BIT=0 -> 16-bit) | PSA.  Prescaler 1:1.
-        mem.write_raw(
-            Address::from_raw(T0CON_ADDR),
-            T0CON_TMR0ON | T0CON_PSA,
-        );
+        mem.write_raw(Address::from_raw(T0CON_ADDR), T0CON_TMR0ON | T0CON_PSA);
         // Tick 0x0100 = 256 -> live TMR0H = 0x01, TMR0L = 0x00.
         // In 16-bit mode, reading TMR0L latches live high into TMR0H.
         t.tick_tcy(0x100, &mut mem);

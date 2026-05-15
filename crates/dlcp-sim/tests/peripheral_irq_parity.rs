@@ -261,8 +261,10 @@ fn nested_high_interrupt_over_low_restores_gates_by_context() {
         .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE | INTCON_PEIE);
     core.memory
         .write_raw(Address::from_raw(PIE1_ADDR), PIE1_TMR1IE | PIE1_TMR2IE);
-    core.memory.write_raw(Address::from_raw(IPR1_ADDR), PIE1_TMR2IE);
-    core.memory.write_raw(Address::from_raw(PIR1_ADDR), PIR1_TMR1IF);
+    core.memory
+        .write_raw(Address::from_raw(IPR1_ADDR), PIE1_TMR2IE);
+    core.memory
+        .write_raw(Address::from_raw(PIR1_ADDR), PIR1_TMR1IF);
 
     step(&mut core, &mut stack).expect("low interrupt dispatches");
     assert_eq!(core.pc(), IRQ_VECTOR_LOW);
@@ -271,18 +273,21 @@ fn nested_high_interrupt_over_low_restores_gates_by_context() {
     assert_eq!(intcon & INTCON_GIE, INTCON_GIE, "low ISR leaves GIEH set");
     assert_eq!(intcon & INTCON_PEIE, 0, "low ISR clears GIEL");
 
-    core.memory.write_raw(
-        Address::from_raw(PIR1_ADDR),
-        PIR1_TMR1IF | PIR1_TMR2IF,
-    );
+    core.memory
+        .write_raw(Address::from_raw(PIR1_ADDR), PIR1_TMR1IF | PIR1_TMR2IF);
     step(&mut core, &mut stack).expect("high interrupt preempts low ISR");
     assert_eq!(core.pc(), IRQ_VECTOR_HIGH);
     assert_eq!(stack.depth(), 2);
     let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
     assert_eq!(intcon & INTCON_GIE, 0, "high ISR clears GIEH");
-    assert_eq!(intcon & INTCON_PEIE, 0, "low gate remains clear during preemption");
+    assert_eq!(
+        intcon & INTCON_PEIE,
+        0,
+        "low gate remains clear during preemption"
+    );
 
-    core.memory.write_raw(Address::from_raw(PIR1_ADDR), PIR1_TMR1IF);
+    core.memory
+        .write_raw(Address::from_raw(PIR1_ADDR), PIR1_TMR1IF);
     step(&mut core, &mut stack).expect("nested high RETFIE returns to low ISR");
     assert_eq!(core.pc(), IRQ_VECTOR_LOW);
     assert_eq!(stack.depth(), 1);
@@ -299,5 +304,8 @@ fn nested_high_interrupt_over_low_restores_gates_by_context() {
     assert_eq!(core.pc(), 0x0040);
     assert_eq!(stack.depth(), 0);
     let intcon = core.memory.read_raw(Address::from_raw(INTCON_ADDR));
-    assert_eq!(intcon & (INTCON_GIE | INTCON_PEIE), INTCON_GIE | INTCON_PEIE);
+    assert_eq!(
+        intcon & (INTCON_GIE | INTCON_PEIE),
+        INTCON_GIE | INTCON_PEIE
+    );
 }

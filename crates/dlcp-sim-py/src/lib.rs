@@ -38,7 +38,7 @@ use dlcp_sim::memory::Variant;
 use dlcp_sim::peripherals::src4382::Src4382;
 use dlcp_sim::peripherals::tas3108::Tas3108;
 use dlcp_sim::pinnet::{PortLetter, default_rx_pin, default_tx_pin};
-use dlcp_sim::reset::ResetSource;
+use dlcp_sim::reset::{ResetSource, apply_reset};
 
 /// Path to the project root (the `analysis-sim-rewrite-rust`
 /// directory) at compile time.  Resolved from
@@ -127,6 +127,28 @@ fn build_seeded_main_core(v3_app: &HexImage, v23_seed: &HexImage) -> Core {
 /// via "uninitialized" sentinel checks).
 fn build_v171_control_core(v171: &HexImage) -> Core {
     core_from_hex_image(Variant::Pic18F25K20, v171, CoreLoadOptions::default())
+}
+
+fn parse_reset_source(source: &str) -> PyResult<ResetSource> {
+    match source
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "")
+        .as_str()
+    {
+        "poweron" | "por" => Ok(ResetSource::PowerOn),
+        "brownout" | "bor" => Ok(ResetSource::BrownOut),
+        "mclr" => Ok(ResetSource::Mclr),
+        "wdt" | "watchdog" => Ok(ResetSource::Wdt),
+        "resetinstruction" | "reset" => Ok(ResetSource::ResetInstruction),
+        "stackfull" => Ok(ResetSource::StackFull),
+        "stackunderflow" => Ok(ResetSource::StackUnderflow),
+        other => Err(PyValueError::new_err(format!(
+            "unknown reset source {other:?}; expected one of \
+             por/poweron, bor/brownout, mclr, wdt, reset, \
+             stackfull, stackunderflow"
+        ))),
+    }
 }
 
 /// Build a stock V2.3 MAIN core from V2.3-combined.  Unlike
@@ -1380,6 +1402,187 @@ impl Chain {
         Ok(())
     }
 
+    /// Execute one 64-byte DLCP app-mode HID feature report through the
+    /// V3.2 firmware's EP1 OUT/IN service path.
+    ///
+    /// This is intentionally below full USB enumeration fidelity: it
+    /// models the host-visible "configured EP1 OUT report has arrived"
+    /// boundary by staging the OUT data buffer/BDT cells that the firmware
+    /// consumes, then invokes `main_usb_service_3a26` twice as a firmware
+    /// subroutine.  The first invocation copies EP1 OUT data from
+    /// 0x042C..0x046B into command RAM 0x011A..0x0159; the second invokes
+    /// `hid_command_dispatch` and copies the response from 0x015A..0x0199
+    /// to EP1 IN data buffer 0x046C..0x04AB.
+    ///
+    /// Returns `(response, dispatch_hits)`, where `response` is the 64-byte
+    /// EP1 IN payload and `dispatch_hits` counts entries at the actual
+    /// V3.2 `hid_command_dispatch` PC.  Tests use the hit count to guard
+    /// against falling back to Python-side command emulation.
+    #[pyo3(signature = (unit, report, max_steps=20_000))]
+    fn firmware_hid_report(
+        &mut self,
+        unit: u8,
+        report: Vec<u8>,
+        max_steps: usize,
+    ) -> PyResult<(Vec<u8>, usize)> {
+        const HID_REPORT_LEN: usize = 64;
+        const MAIN_USB_SERVICE_3A26_PC: u32 = 0x356A;
+        const HID_COMMAND_DISPATCH_PC: u32 = 0x10AC;
+        const RETURN_SENTINEL_PC: u32 = 0x001F_FFFE;
+
+        const RAM_USB_STATE: u16 = 0x00CD;
+        const RAM_HID_STAGED: u16 = 0x00C0;
+        const ACTIVE_FLAGS: u16 = 0x005E;
+        const PORTC_ADDR: u16 = 0x0F82;
+        const UCON_ADDR: u16 = 0x0F6D;
+        const UEP1_ADDR: u16 = 0x0F71;
+        const BDT_EP1_OUT_STAT: u16 = 0x040C;
+        const BDT_EP1_OUT_COUNT: u16 = 0x040D;
+        const BDT_EP1_OUT_ADDR_LO: u16 = 0x040E;
+        const BDT_EP1_OUT_ADDR_HI: u16 = 0x040F;
+        const BDT_EP1_IN_STAT: u16 = 0x0410;
+        const BDT_EP1_IN_COUNT: u16 = 0x0411;
+        const BDT_EP1_IN_ADDR_LO: u16 = 0x0412;
+        const BDT_EP1_IN_ADDR_HI: u16 = 0x0413;
+        const EP1_OUT_BUFFER: u16 = 0x042C;
+        const EP1_IN_BUFFER: u16 = 0x046C;
+
+        if report.len() > HID_REPORT_LEN {
+            return Err(PyValueError::new_err(format!(
+                "firmware_hid_report: report must be <= {HID_REPORT_LEN} bytes; got {}",
+                report.len()
+            )));
+        }
+        if max_steps == 0 {
+            return Err(PyValueError::new_err(
+                "firmware_hid_report: max_steps must be > 0",
+            ));
+        }
+
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "firmware_hid_report: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+
+        {
+            let mem = &mut self.inner.cores[i_main].memory;
+            let addr = |raw: u16| dlcp_sim::memory::Address::from_raw(raw);
+
+            // Minimum host-configured USB state needed for the firmware
+            // gate at main_usb_service_3a26 to accept an EP1 OUT report.
+            mem.write_raw(addr(RAM_USB_STATE), 0x06);
+            mem.write_raw(addr(RAM_HID_STAGED), 0x00);
+            mem.write_raw(addr(ACTIVE_FLAGS), mem.read_raw(addr(ACTIVE_FLAGS)) | 0x08);
+            mem.write_raw(addr(PORTC_ADDR), mem.read_raw(addr(PORTC_ADDR)) | 0x01);
+            mem.write_raw(addr(UCON_ADDR), mem.read_raw(addr(UCON_ADDR)) & !0x02);
+            mem.write_raw(addr(UEP1_ADDR), 0x1E);
+
+            // Mirror main_usb_service_4624's EP1 BDT setup, then present a
+            // host-owned OUT completion by clearing UOWN on EP1 OUT.  The
+            // firmware copy helper uses fixed data buffers at 0x042C and
+            // 0x046C, but the address/count cells are kept coherent so the
+            // visible BDT state matches a configured endpoint.
+            mem.write_raw(addr(BDT_EP1_OUT_COUNT), HID_REPORT_LEN as u8);
+            mem.write_raw(addr(BDT_EP1_OUT_ADDR_LO), 0x2C);
+            mem.write_raw(addr(BDT_EP1_OUT_ADDR_HI), 0x04);
+            mem.write_raw(addr(BDT_EP1_OUT_STAT), 0x08);
+            mem.write_raw(addr(BDT_EP1_IN_COUNT), 0x00);
+            mem.write_raw(addr(BDT_EP1_IN_ADDR_LO), 0x6C);
+            mem.write_raw(addr(BDT_EP1_IN_ADDR_HI), 0x04);
+            mem.write_raw(addr(BDT_EP1_IN_STAT), 0x40);
+
+            for i in 0..HID_REPORT_LEN {
+                let value = report.get(i).copied().unwrap_or(0);
+                mem.write_raw(addr(EP1_OUT_BUFFER + i as u16), value);
+                mem.write_raw(addr(EP1_IN_BUFFER + i as u16), 0);
+            }
+        }
+
+        fn run_subroutine(
+            chain: &mut RustChain,
+            core_idx: usize,
+            pc: u32,
+            sentinel_pc: u32,
+            watch_pc: Option<u32>,
+            max_steps: usize,
+        ) -> PyResult<usize> {
+            let old_pc = chain.cores[core_idx].pc();
+            if !chain.stacks[core_idx].push(sentinel_pc) {
+                return Err(PyRuntimeError::new_err(
+                    "firmware_hid_report: unable to push synthetic return address",
+                ));
+            }
+            chain.stacks[core_idx].mirror_to_sfrs(&mut chain.cores[core_idx].memory);
+            chain.cores[core_idx].set_pc(pc);
+
+            let mut hits = 0usize;
+            for _ in 0..max_steps {
+                let current_pc = chain.cores[core_idx].pc();
+                if current_pc == sentinel_pc {
+                    chain.cores[core_idx].set_pc(old_pc);
+                    return Ok(hits);
+                }
+                if watch_pc.is_some_and(|wanted| current_pc == wanted) {
+                    hits += 1;
+                }
+                {
+                    let core = &mut chain.cores[core_idx];
+                    let stack = &mut chain.stacks[core_idx];
+                    dlcp_sim::step(core, stack).map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "firmware_hid_report: firmware step failed at PC 0x{current_pc:06X}: {e:?}"
+                        ))
+                    })?;
+                }
+            }
+            chain.cores[core_idx].set_pc(old_pc);
+            Err(PyRuntimeError::new_err(format!(
+                "firmware_hid_report: main_usb_service_3a26 did not return within {max_steps} instructions"
+            )))
+        }
+
+        // Phase 1: firmware consumes EP1 OUT into command RAM and clears
+        // the response buffer.
+        let _ = run_subroutine(
+            &mut self.inner,
+            i_main,
+            MAIN_USB_SERVICE_3A26_PC,
+            RETURN_SENTINEL_PC,
+            None,
+            max_steps,
+        )?;
+
+        // Phase 2: firmware dispatches the staged command and arms EP1 IN.
+        let dispatch_hits = run_subroutine(
+            &mut self.inner,
+            i_main,
+            MAIN_USB_SERVICE_3A26_PC,
+            RETURN_SENTINEL_PC,
+            Some(HID_COMMAND_DISPATCH_PC),
+            max_steps,
+        )?;
+
+        let mem = &self.inner.cores[i_main].memory;
+        let addr = |raw: u16| dlcp_sim::memory::Address::from_raw(raw);
+        let in_stat = mem.read_raw(addr(BDT_EP1_IN_STAT));
+        if (in_stat & 0x80) == 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "firmware_hid_report: firmware did not arm EP1 IN response (BDT stat=0x{in_stat:02X})"
+            )));
+        }
+
+        let mut response = Vec::with_capacity(HID_REPORT_LEN);
+        for i in 0..HID_REPORT_LEN {
+            response.push(mem.read_raw(addr(EP1_IN_BUFFER + i as u16)));
+        }
+        Ok((response, dispatch_hits))
+    }
+
     /// Drive an external input pin on one MAIN's PORTx to the
     /// requested logic level.  Equivalent of gpsim's
     /// ``MainChainHarness(rc2_mode=...)`` continuous pin-level
@@ -1405,13 +1608,7 @@ impl Chain {
     /// / RBIF / RA0-wake stimuli; do not rely on "held level
     /// survives output" semantics for pins whose TRIS direction
     /// toggles during the test.
-    fn set_main_pin(
-        &mut self,
-        unit: u8,
-        port: &str,
-        bit: u8,
-        level: bool,
-    ) -> PyResult<()> {
+    fn set_main_pin(&mut self, unit: u8, port: &str, bit: u8, level: bool) -> PyResult<()> {
         let i_main = match unit {
             0 => self.i_main0,
             1 => self.i_main1,
@@ -1421,8 +1618,7 @@ impl Chain {
                 )));
             }
         };
-        let port_letter = parse_port_letter(port)
-            .map_err(PyValueError::new_err)?;
+        let port_letter = parse_port_letter(port).map_err(PyValueError::new_err)?;
         if bit >= 8 {
             return Err(PyValueError::new_err(format!(
                 "set_main_pin: bit must be 0..=7; got {bit}"
@@ -1475,12 +1671,7 @@ impl Chain {
     /// standby-bypass overlay primitive that
     /// `test_v17_relocation::test_shifted_gpsim_with_dynamic_
     /// standby_overlay` migration needs.
-    fn read_core_flash(
-        &self,
-        core_idx: usize,
-        addr: u32,
-        length: usize,
-    ) -> PyResult<Vec<u8>> {
+    fn read_core_flash(&self, core_idx: usize, addr: u32, length: usize) -> PyResult<Vec<u8>> {
         let target_idx = match core_idx {
             0 => self.i_ctl,
             1 => self.i_main0,
@@ -1530,12 +1721,7 @@ impl Chain {
     /// Spec / ledger ref: P4-followup E
     /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
     /// tracker", task #103).
-    fn patch_core_flash(
-        &mut self,
-        core_idx: usize,
-        addr: u32,
-        bytes: &[u8],
-    ) -> PyResult<()> {
+    fn patch_core_flash(&mut self, core_idx: usize, addr: u32, bytes: &[u8]) -> PyResult<()> {
         let target_idx = match core_idx {
             0 => self.i_ctl,
             1 => self.i_main0,
@@ -1665,6 +1851,33 @@ impl Chain {
         (delivered, overruns)
     }
 
+    /// Inject raw bytes into one MAIN core's silicon EUSART receive path.
+    /// Returns `(accepted, dropped)`, where dropped bytes failed the same
+    /// SPEN/CREN/OERR/FIFO/MCLR gates used by real UART delivery.  This is
+    /// intentionally lower-level than `inject_main_frames_fifo`, which writes
+    /// directly into the firmware's native ring buffer.
+    fn inject_main_uart_rx_bytes(&mut self, unit: u8, bytes: Vec<u8>) -> PyResult<(usize, usize)> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "inject_main_uart_rx_bytes: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        let mut accepted = 0_usize;
+        let mut dropped = 0_usize;
+        for byte in bytes {
+            if self.inner.inject_uart_rx_byte(i_main, byte) {
+                accepted += 1;
+            } else {
+                dropped += 1;
+            }
+        }
+        Ok((accepted, dropped))
+    }
+
     /// Read a single TAS3108 DSP subaddress register from the
     /// DSP slave coupled to MAIN0.  Mirror of gpsim's
     /// `MainChainHarness.read_i2c_regfile("dsp34", subaddr)`
@@ -1789,6 +2002,70 @@ impl Chain {
             .clear_stop_faults();
     }
 
+    /// Program the MSSP START-fault knobs on MAIN0's MSSP
+    /// peripheral.  While `count != 0` and firmware schedules
+    /// SEN or RSEN, the simulated peripheral keeps the
+    /// transfer-control bit set for the normal SCL period plus
+    /// `cycles` Tcy.  This gives sim-only sweeps a real
+    /// peripheral-owned SEN-stuck stimulus instead of repeatedly
+    /// writing SSPCON2 from Python.
+    fn set_mssp_start_fault(&mut self, cycles: u32, count: i64) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .set_start_fault(cycles, count);
+    }
+
+    /// Clear MAIN0's MSSP START-fault knobs.
+    fn clear_mssp_start_faults(&mut self) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .clear_start_faults();
+    }
+
+    /// Program MAIN0's MSSP clock-stretch fault knobs.  While
+    /// `count != 0`, the next MSSP master sequence deadlines are
+    /// extended by `cycles` Tcy.  This exposes the rust MSSP model's
+    /// existing clock-stretch hook to Python so sim-only fault sweeps
+    /// can approximate SCL-held-low behavior without patching
+    /// firmware-visible SFRs directly.
+    fn set_mssp_clock_stretch(&mut self, cycles: u32, count: i64) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .set_clock_stretch(cycles, count);
+    }
+
+    /// Clear MAIN0's MSSP clock-stretch fault knobs.
+    fn clear_mssp_clock_stretch(&mut self) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .clear_clock_stretch();
+    }
+
+    /// Force MAIN0's I²C bus lines low at the MSSP peripheral
+    /// boundary.  Any in-flight master sequence remains busy
+    /// until both forced-low lines are released.  GPIO pin holds
+    /// are still separate; callers that need bitbang bus-clear
+    /// reads should also hold RB0/RB1 through `set_main_pin` or
+    /// direct PORT readback forcing.
+    fn set_mssp_line_hold(&mut self, scl_low: bool, sda_low: bool) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .set_line_hold(scl_low, sda_low);
+    }
+
+    /// Release MAIN0's forced MSSP line holds.
+    fn clear_mssp_line_holds(&mut self) {
+        self.inner.cores[self.i_main0]
+            .peripherals
+            .mssp
+            .clear_line_holds();
+    }
+
     /// Force-abort any in-flight MSSP transaction on MAIN0
     /// and clear the SSPCON2 trigger bits.  Mirror of gpsim's
     /// `harness._issue("p18f2455.sspcon2 = 0")` workaround
@@ -1879,6 +2156,41 @@ impl Chain {
         Ok(())
     }
 
+    /// Apply a reset source to one MAIN core and schedule it to run again.
+    /// `unit` is 0 for MAIN0 / PB1 and 1 for MAIN1 / PB2.  Accepted reset
+    /// sources are parsed by `parse_reset_source` (`bor`, `por`, `mclr`,
+    /// `wdt`, `reset`, `stackfull`, `stackunderflow`).
+    fn apply_main_reset(&mut self, unit: u8, source: &str) -> PyResult<()> {
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "apply_main_reset: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+        let src = parse_reset_source(source)?;
+        apply_reset(
+            &mut self.inner.cores[i_main],
+            &mut self.inner.stacks[i_main],
+            src,
+        );
+        self.inner.schedule_next_core_step(i_main);
+        Ok(())
+    }
+
+    /// Apply a reset source to every core, clear chain-level UART history,
+    /// and re-bootstrap all cores at tick zero.  This is the simulator
+    /// analogue for whole-system POR/BOR sweeps.
+    fn apply_reset_all(&mut self, source: &str) -> PyResult<()> {
+        let src = parse_reset_source(source)?;
+        let offsets = vec![0_u64; self.inner.cores.len()];
+        self.inner.apply_reset_all(src);
+        self.inner.schedule_initial_steps(&offsets);
+        Ok(())
+    }
+
     /// Write a single byte to CONTROL's EEPROM peripheral
     /// at the given 8-bit address (CONTROL EEPROM is 256
     /// bytes per PIC18F25K20 datasheet).  Mirror of
@@ -1919,10 +2231,7 @@ impl Chain {
                 )));
             }
         };
-        Ok(self.inner.cores[i_main]
-            .peripherals
-            .eeprom
-            .get_byte(addr))
+        Ok(self.inner.cores[i_main].peripherals.eeprom.get_byte(addr))
     }
 
     /// Write a single byte to one MAIN's EEPROM peripheral
@@ -2441,7 +2750,9 @@ impl Chain {
     /// Spec / ledger ref: P4-followup A
     /// (`docs/SIM_REWRITE_RUST_PROGRESS.md` "P4 followup
     /// tracker", task #99).
-    fn bridge_byte_stats(&self) -> std::collections::HashMap<String, std::collections::HashMap<String, u64>> {
+    fn bridge_byte_stats(
+        &self,
+    ) -> std::collections::HashMap<String, std::collections::HashMap<String, u64>> {
         let mut out: std::collections::HashMap<String, std::collections::HashMap<String, u64>> =
             std::collections::HashMap::with_capacity(self.inner.pinnet.uart.len());
         // Build a lookup from core_idx -> short role name so

@@ -158,7 +158,7 @@ def test_v171_menu_dispatch_routes_state_1_to_preset_screen() -> None:
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     # Between the flow_post_connect_init_11F0 label and its
-    # v171_menu_ck_state_2 follow-up, the rcall to v171_preset_screen
+    # v171_menu_ck_state_2 follow-up, the call to v171_preset_screen
     # must appear.
     start = text.find("flow_post_connect_init_11F0:")
     end = text.find("v171_menu_ck_state_2:", start)
@@ -166,6 +166,8 @@ def test_v171_menu_dispatch_routes_state_1_to_preset_screen() -> None:
         "could not locate menu dispatch in source"
     )
     dispatch = text[start:end]
-    assert "rcall" in dispatch and "v171_preset_screen" in dispatch, (
+    assert "v171_preset_screen" in dispatch and (
+        "rcall" in dispatch or "call" in dispatch
+    ), (
         f"preset screen not called from state=1 dispatch arm:\n{dispatch}"
     )

@@ -224,6 +224,12 @@ def _macos_location_id_for_hid_path(
         return None
     item = _macos_hid_device_index().get(service_id)
     if item is None:
+        # HID paths can change immediately after a MAIN reset.  The
+        # one-entry ioreg cache is useful during steady-state probing,
+        # but stale right after re-enumeration.
+        _macos_hid_device_index.cache_clear()
+        item = _macos_hid_device_index().get(service_id)
+    if item is None:
         return None
     if int(item.get("VendorID", -1)) != vid or int(item.get("ProductID", -1)) != pid:
         return None

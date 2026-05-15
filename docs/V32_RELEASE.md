@@ -11,6 +11,8 @@ This is the operator runbook for the recommended MAIN deployment as of
 - canonical MAIN build path: `scripts/build_v32_release.py` (bumps the EEPROM revision byte, then rebuilds the same canonical hex)
 - recommended flashing path: use `scripts/dlcp_v32_release_flash.py`, which
   bakes preset A/B captures into canonical `V3.2.hex` at flash time
+- active implementation bugs for the V1.71/V3.2 pair are tracked in
+  [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md)
 
 V3.2 supersedes V3.1 for two-MAIN chains. The headline change is the
 async delayed-preset-switch remediation (see
@@ -22,21 +24,26 @@ Non-canonical local experiment images (e.g. `DLCP_Firmware_V3.2.lst`,
 `DLCP_Firmware_V3.2.cod`) are gpasm byproducts and not part of this
 release workflow.
 
-## Current Known Issue (2026-04-22)
+## Current Validation Status (2026-05-09)
 
-The current canonical pair still shows a real-hardware
-`STDBY -> WAKE -> WAITING FOR DLCP` regression:
+The current canonical release identities are:
 
-- canonical MAIN revision: `V3.2 / rev 0x38`
-- canonical CONTROL revision: `V1.71 / rev 0x04`
-- reproduced on the live two-MAIN rig with paired LCD + USB capture
+- MAIN: `V3.2 / rev 0x55`
+- CONTROL: `V1.71 / rev 0x1C`
 
-The important discriminator from the 2026-04-22 hardware run is that
-both MAINs had already woken cleanly while CONTROL still showed
-`WAITING FOR DLCP`.  So for the current source, this is no longer best
-described as "MAIN failed to wake"; the remaining issue is CONTROL-side
-reconnect fragility.  See
-[`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`](analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md).
+The historical 2026-04-22 hardware issue for this pair was originally seen on:
+
+- then-current MAIN revision: `V3.2 / rev 0x53`
+- then-current CONTROL revision: `V1.71 / rev 0x19`
+- reproduced symptom: after `STDBY -> WAKE`, CONTROL could remain on
+  `WAITING FOR DLCP` while both MAINs were already awake and visible
+
+The source tree now carries simulator regressions for the wake/reconnect
+contract, including duplicate standby-frame idempotence on MAIN, plus the
+active V1.71/V3.2 bug ledger.  Live hardware confirmation is still required
+before the ledger rows can be marked `done`.  See
+[`docs/analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md`](analysis/V171_V32_STDBY_WAKE_WAITING_REAL_HW_2026-04-22.md)
+and [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md).
 
 ## What's New vs V3.1
 
@@ -160,6 +167,46 @@ These checks are useful after each PB flash so the installed version,
 active config, routing, and active preset are visible before any
 acoustic testing.
 
+After flashing V3.2, run the MAIN identity/A-B filename gate:
+
+```bash
+DLCP_HW_RELEASE_IDENTITY_CONFIRM=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_v32_release_identity_and_ab_filename_ram \
+  --run-hardware
+```
+
+If validating settings preservation, record the pre-flash logical volume low
+byte, input byte, and setup/profile byte (`ram_0x0B8`) first, then run:
+
+```bash
+DLCP_HW_RELEASE_SETTINGS_CONFIRM=1 \
+DLCP_HW_EXPECTED_VOLUME_LOW=<pre_flash_low> \
+DLCP_HW_EXPECTED_INPUT=<pre_flash_input> \
+DLCP_HW_EXPECTED_SETUP_PROFILE=<pre_flash_profile> \
+  .venv_ep0/bin/python -m pytest -q -s \
+  tests/hardware/test_live_state_transitions.py::test_live_v32_release_flash_preserves_expected_user_settings \
+  --run-hardware
+```
+
+After pairing with V1.71 CONTROL, select A and B from the physical
+front-panel Preset screen and run the front-panel confirmation for
+each target:
+
+```bash
+DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 \
+DLCP_HW_EXPECTED_PRESET=A \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram \
+  --run-hardware
+
+DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 \
+DLCP_HW_EXPECTED_PRESET=B \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram \
+  --run-hardware
+```
+
 ## CONTROL Pairing
 
 V3.2 MAIN is designed to pair with V1.71 CONTROL.  Earlier CONTROL
@@ -199,8 +246,9 @@ Sim coverage for the V3.2 + V1.71 combination is in:
 - `tests/sim/test_v28_wire_delayed_switch_repros.py` (delayed-switch
   remediation regressions)
 
-See [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page" for
-the live-rig walk-through.
+See [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page" and
+[`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md) for the
+live-rig confirmation gates.
 
 ## Release Notes
 

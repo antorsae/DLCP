@@ -84,18 +84,20 @@ fn print_usage(program: &str) {
 }
 
 fn build_initial_chain(case: &Case) -> Result<Chain, String> {
-    match (case.initial_factory.as_deref(), case.initial_snapshot_hex.as_deref()) {
-        (Some(_), Some(_)) => Err(
-            "case must set EXACTLY ONE of initial_factory or initial_snapshot_hex"
-                .to_string(),
-        ),
-        (None, None) => Err(
-            "case must set ONE of initial_factory or initial_snapshot_hex"
-                .to_string(),
-        ),
+    match (
+        case.initial_factory.as_deref(),
+        case.initial_snapshot_hex.as_deref(),
+    ) {
+        (Some(_), Some(_)) => {
+            Err("case must set EXACTLY ONE of initial_factory or initial_snapshot_hex".to_string())
+        }
+        (None, None) => {
+            Err("case must set ONE of initial_factory or initial_snapshot_hex".to_string())
+        }
         (Some("empty"), None) => Ok(Chain::new()),
-        (Some("v171_control"), None) => build_v171_control_chain()
-            .map_err(|e| format!("v171_control build failed: {e}")),
+        (Some("v171_control"), None) => {
+            build_v171_control_chain().map_err(|e| format!("v171_control build failed: {e}"))
+        }
         (Some(other), None) => Err(format!("unknown initial_factory: {other:?}")),
         (None, Some(hex)) => {
             let bytes = decode_hex(hex)?;
@@ -110,13 +112,9 @@ fn build_v171_control_chain() -> Result<Chain, String> {
         .and_then(|p| p.parent())
         .ok_or("crate dir has no grandparent")?
         .join("firmware/patched/releases/DLCP_Control_V1.71.hex");
-    let image = HexImage::from_hex_path(&hex_path)
-        .map_err(|e| format!("V1.71 hex parse: {e:?}"))?;
-    let core = core_from_hex_image(
-        Variant::Pic18F25K20,
-        &image,
-        CoreLoadOptions::default(),
-    );
+    let image =
+        HexImage::from_hex_path(&hex_path).map_err(|e| format!("V1.71 hex parse: {e:?}"))?;
+    let core = core_from_hex_image(Variant::Pic18F25K20, &image, CoreLoadOptions::default());
     let clock = ClockDomain::new(Variant::Pic18F25K20);
     let mut chain = Chain::new();
     chain.push_core_with_clock(core, clock);
@@ -163,12 +161,8 @@ fn apply(
         }
     };
     if let Some(f) = trace {
-        writeln!(
-            f,
-            "[tick {tick}] {summary}",
-            tick = chain.current_tick
-        )
-        .map_err(|e| format!("trace write: {e}"))?;
+        writeln!(f, "[tick {tick}] {summary}", tick = chain.current_tick)
+            .map_err(|e| format!("trace write: {e}"))?;
     }
     Ok(())
 }
@@ -185,9 +179,9 @@ fn cmd_replay(args: &[String]) -> Result<(), (String, u8)> {
         match args[i].as_str() {
             flag @ ("--final-snapshot" | "--trace") => {
                 i += 1;
-                let operand = args.get(i).ok_or_else(|| {
-                    (format!("{flag} requires a path operand"), 1u8)
-                })?;
+                let operand = args
+                    .get(i)
+                    .ok_or_else(|| (format!("{flag} requires a path operand"), 1u8))?;
                 if operand.starts_with("--") {
                     return Err((
                         format!(
@@ -215,10 +209,10 @@ fn cmd_replay(args: &[String]) -> Result<(), (String, u8)> {
         i += 1;
     }
     let case_path = case_path.ok_or_else(|| ("missing <case.json>".to_string(), 1))?;
-    let case_text = std::fs::read_to_string(case_path)
-        .map_err(|e| (format!("read {case_path}: {e}"), 1))?;
-    let case: Case = serde_json::from_str(&case_text)
-        .map_err(|e| (format!("parse {case_path}: {e}"), 1))?;
+    let case_text =
+        std::fs::read_to_string(case_path).map_err(|e| (format!("read {case_path}: {e}"), 1))?;
+    let case: Case =
+        serde_json::from_str(&case_text).map_err(|e| (format!("parse {case_path}: {e}"), 1))?;
     if case.format != FORMAT {
         return Err((
             format!(
@@ -231,10 +225,7 @@ fn cmd_replay(args: &[String]) -> Result<(), (String, u8)> {
     let mut chain = build_initial_chain(&case).map_err(|e| (e, 2))?;
 
     let mut trace_file = match trace_path {
-        Some(p) => Some(
-            std::fs::File::create(p)
-                .map_err(|e| (format!("open trace {p}: {e}"), 1))?,
-        ),
+        Some(p) => Some(std::fs::File::create(p).map_err(|e| (format!("open trace {p}: {e}"), 1))?),
         None => None,
     };
     for s in &case.stimuli {
@@ -296,15 +287,17 @@ fn cmd_encode_hex(args: &[String]) -> Result<(), (String, u8)> {
     let path = args
         .first()
         .ok_or_else(|| ("missing <snapshot.bin>".to_string(), 1))?;
-    let bytes = std::fs::read(Path::new(path))
-        .map_err(|e| (format!("read {path}: {e}"), 1))?;
+    let bytes = std::fs::read(Path::new(path)).map_err(|e| (format!("read {path}: {e}"), 1))?;
     println!("{}", encode_hex(&bytes));
     Ok(())
 }
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
-    let program = argv.first().cloned().unwrap_or_else(|| "dlcp-sim".to_string());
+    let program = argv
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "dlcp-sim".to_string());
     let args = &argv[1..];
     let result = match args.first().map(String::as_str) {
         Some("replay") => cmd_replay(&args[1..]),

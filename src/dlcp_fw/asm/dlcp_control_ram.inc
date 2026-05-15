@@ -123,8 +123,10 @@ v171_ir_decode_pending     equ  0x0AA
 ; counter saturates at hi=4, lo=arbitrary -- the gate stays
 ; permanently armed for the rest of the WAITING session.
 V171_WAITING_GRACE_THRESHOLD_HI equ 0x04
-; Count-up timeout seed: with `infsnz`, 0xF8 expires after 8 empty-loop ticks.
-V171_RX_FRAME_GAP_RELOAD   equ  0xF8
+; Count-up timeout seed: with `infsnz`, 0x80 expires after 128 empty-loop
+; ticks.  The old 0xF8/8-tick window could split valid 31.25 kbaud frames
+; between route/cmd/data bytes in the foreground loop.
+V171_RX_FRAME_GAP_RELOAD   equ  0x80
 
 ; RC5 codes that V1.71 dispatches (documented here for cross-reference
 ; with the annotator and ir_dispatch edits).
@@ -260,7 +262,11 @@ v171_diag_pb2_reset_wdt    equ  0x094  ; Tier-1
 v171_diag_pb2_reset_sw     equ  0x095  ; Tier-1
 
 ; Poll-state cells (also BANK 1):
-;   v171_diag_target       = 0 -> query PB1 next, 1 -> query PB2 next
+;   v171_diag_target       = current in-flight query target:
+;                            0 -> PB1, 1 -> PB2.  The Diag loop reloads
+;                            this from v171_diag_render_pb_index before
+;                            every send so the visible PB page gets the
+;                            full ~1 s update cadence.
 ;   v171_diag_present      = bit0 set when PB1 has ever replied,
 ;                            bit1 set when PB2 has ever replied
 ;                            (used to render "n/a" for never-seen PBs)
@@ -291,10 +297,10 @@ v171_diag_lcd_pad_count    equ  0x09B
 ;                                          (set when cadence fires cmd 0x21;
 ;                                          cleared by the parser case on
 ;                                          BF/27 reception).  If still set
-;                                          on the next cadence expiry,
-;                                          target advances anyway so a
-;                                          silent or unsupported PB can't
-;                                          pin the poll target forever.
+;                                          after the timeout window,
+;                                          CONTROL clears PENDING and retries
+;                                          the visible PB page.  A truly
+;                                          absent PB keeps rendering n/a.
 ;   bit 2  V171_DIAG_FLAG_RESET_PENDING    Tier-1: cmd 0x22 in flight,
 ;                                          awaiting BF/2B (set when the
 ;                                          page-entry hook fires cmd 0x22;
@@ -355,6 +361,45 @@ v171_diag_reset_target     equ  0x09E
 ; zero, the cadence loop sets v171_diag_reset_seen.reset_target and
 ; clears RESET_PENDING (give-up path).
 v171_diag_reset_timeout    equ  0x09F
+
+; v171_diag_runtime_target captures v171_diag_target's bit 0 at the time
+; cmd 0x21 was sent.  The diagnostics page can interleave cmd 0x21 and
+; cmd 0x22 replies, and v171_diag_target toggles on BF/27; routing all
+; BF/21..BF/27 cells through this snapshot keeps an in-flight runtime
+; burst pinned to the PB that was actually queried.
+v171_diag_runtime_target   equ  0x0AE
+
+; Runtime cmd 0x21 timeout counter.  While RUNTIME_PENDING is set, cadence
+; expiry decrements this instead of immediately sending another cmd 0x21
+; and overwriting v171_diag_runtime_target.  Only when it reaches zero do
+; we treat the visible PB as silent, clear PENDING, and retry that page.
+; This preserves the full BF/21..BF/27 burst as an atomic logical
+; transaction from CONTROL's cache-routing perspective while keeping the
+; active page's user-visible refresh cadence bounded.
+v171_diag_runtime_timeout  equ  0x0AF
+V171_DIAG_RUNTIME_TIMEOUT_RELOAD equ 0x10
+
+; --- V1.71/V3.2 link-health freshness MVP (BANK 1) ---
+; CONTROL-owned freshness state for the tiny cmd 0x23 / BF/2C health ping.
+; Equate operands are BANKED-form; physical addresses are 0x1B0..0x1B6.
+;
+; Ages are coarse missed-health buckets, saturating at 0x0F.  A received
+; expected BF/2C reply resets the addressed PB age to 0 and sets the
+; corresponding seen bit.  Unknown-after-wake starts as seen_mask=0 and
+; ages=0, so the main-screen suffix stays clear until real misses accrue.
+v171_health_age_pb1        equ  0x0B0  ; physical 0x1B0
+v171_health_age_pb2        equ  0x0B1  ; physical 0x1B1
+v171_health_seen_mask      equ  0x0B2  ; physical 0x1B2; bit0 PB1, bit1 PB2
+v171_health_flags          equ  0x0B3  ; physical 0x1B3
+V171_HEALTH_FLAG_PENDING        equ 0x00
+V171_HEALTH_FLAG_TARGET         equ 0x01  ; snapshot: 0 PB1, 1 PB2
+V171_HEALTH_FLAG_DISPLAY_DIRTY  equ 0x02
+v171_health_poll_target    equ  0x0B4  ; physical 0x1B4; 0 PB1, 1 PB2
+v171_health_tick_div       equ  0x0B5  ; physical 0x1B5
+v171_health_pending_ticks  equ  0x0B6  ; physical 0x1B6
+V171_HEALTH_PENDING_TICKS  equ  0x20
+V171_HEALTH_STALE_AGE      equ  0x03
+V171_HEALTH_LOST_AGE       equ  0x0A
 
 ; Cadence-cycle reload for the cmd 0x22 timeout.  Each cadence cycle
 ; is ~1 s (set by V171_DIAG_POLL_RELOAD_LO/HI).  A reload of 4 gives
@@ -439,6 +484,11 @@ V171_DIAG_POLL_RELOAD_HI   equ  0x00
 ; Timer1 ISR samples RB5 every 889 µs into a 4-byte byte-indexed
 ; buffer; on completion calls v171_ir_post_process which reuses the
 ; legacy ir_rc5_decode body's Manchester pair-validation logic.
+;
+; 2026-05-09 hardware note: this Timer1 receiver is currently NOT on
+; the live ISR path.  It passed rust-sim pulse tests but decoded no real
+; Flipper IR on silicon.  V1.71 rev 0x1A falls back to the stock V1.6b
+; in-ISR decoder until this state machine is hardware validated.
 ;
 ; All cells live in BANK 1.  EQU values are BANKED-form 8-bit
 ; operands; callers MUST `movlb 0x01` before any access.  A missing

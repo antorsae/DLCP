@@ -67,10 +67,14 @@ ACTIVE_REAPPLY_MASK = 0x80
 EVENT_DIRTY_SERVICE_MASK = 0x01
 EVENT_VOLUME_DIRTY_MASK = 0x08
 EVENT_ROUTE_APPLY_MASK = 0x10
+EVENT_BOOT_COMPLETE_MASK = 0x80
+EEPROM_SETTINGS_DIRTY_MASK = 0x01
 EEPROM_ROUTE_DIRTY_MASK = 0x02
+EEPROM_SETUP_PROFILE_DIRTY_MASK = 0x04
 FILENAME_DIRTY_MASK = 0x20
 LOGICAL_VOLUME_RAM_BASE = 0x066
 COMPUTED_VOLUME_RAM_BASE = 0x06E
+SETUP_PROFILE_RAM = 0x0B8
 PRESET_FLASH_BASES = {
     "A": PRESET_A_FLASH_BASE,
 }
@@ -147,6 +151,13 @@ class VolumeRuntimeInfo:
 
 
 @dataclasses.dataclass(frozen=True)
+class InputRuntimeInfo:
+    input_select: int
+    input_mirror: int
+    setup_profile: int
+
+
+@dataclasses.dataclass(frozen=True)
 class DeviceSnapshot:
     mode: str
     product_string: str
@@ -159,6 +170,7 @@ class DeviceSnapshot:
     active_routes: Optional[tuple[RouteEntry, ...]]
     volume_state: Optional[VolumeRuntimeInfo]
     warnings: tuple[str, ...]
+    input_state: Optional[InputRuntimeInfo] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -507,6 +519,8 @@ def _make_dlcp_ep0(*, vid: int, pid: int, path: bytes | None = None, hid_info=No
         return _DLCP_EP0_FACTORY_OVERRIDE(
             vid=vid, pid=pid, path=path, hid_info=hid_info,
         )
+    if hid_info is None:
+        return DlcpEp0(vid=vid, pid=pid, path=path)
     return DlcpEp0(vid=vid, pid=pid, path=path, hid_info=hid_info)
 
 
@@ -952,6 +966,154 @@ def _apply_all_channel_mapping(
     return decode_route_entries(route_raw)
 
 
+def _int32_to_le_bytes(value: int) -> bytes:
+    return int(value).to_bytes(4, byteorder="little", signed=True)
+
+
+def _wait_for_ep0_boot_complete(
+    ep0: DlcpEp0,
+    *,
+    timeout_s: float = 2.0,
+    poll_s: float = 0.05,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        try:
+            if _ep0_read_byte(ep0, addr=EVENT_FLAGS_ADDR) & EVENT_BOOT_COMPLETE_MASK:
+                return True
+        except Exception:
+            # USB can be visible before EP0 RAM reads are fully stable.
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.0, poll_s))
+
+
+def _wait_for_settings_persist_ep0(
+    ep0: DlcpEp0,
+    *,
+    dirty_mask: int = EEPROM_SETTINGS_DIRTY_MASK,
+    timeout_s: float = 2.0,
+    poll_s: float = 0.05,
+) -> None:
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    last_dirty = 0
+    last_events = 0
+    while True:
+        last_dirty = _ep0_read_byte(ep0, addr=ROUTE_DIRTY_FLAGS_ADDR)
+        last_events = _ep0_read_byte(ep0, addr=EVENT_FLAGS_ADDR)
+        if (
+            (last_dirty & dirty_mask) == 0
+            and (last_events & EVENT_DIRTY_SERVICE_MASK) == 0
+        ):
+            return
+        _ep0_or_byte(ep0, addr=EVENT_FLAGS_ADDR, mask=EVENT_DIRTY_SERVICE_MASK)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "settings dirty flag did not clear after EP0 restore "
+                f"(dirty=0x{last_dirty:02X}, event_flags=0x{last_events:02X})"
+            )
+        time.sleep(max(0.0, poll_s))
+
+
+def _restore_runtime_settings_ep0(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None,
+    volume_state: VolumeRuntimeInfo | None,
+    input_state: InputRuntimeInfo | None,
+    settle_s: float = 0.2,
+) -> None:
+    if volume_state is None and input_state is None:
+        return
+
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
+    _wait_for_ep0_boot_complete(ep0)
+    dirty_mask = 0
+    computed = (
+        _int32_to_le_bytes(volume_state.computed_raw)
+        if volume_state is not None
+        else b""
+    )
+    logical = (
+        _int32_to_le_bytes(volume_state.logical_raw)
+        if volume_state is not None
+        else b""
+    )
+
+    last_values: dict[str, int | bytes] = {}
+    for attempt in range(3):
+        if volume_state is not None:
+            for offset, value in enumerate(computed):
+                _ep0_write_byte(
+                    ep0,
+                    addr=COMPUTED_VOLUME_RAM_BASE + offset,
+                    value=value,
+                )
+            for offset, value in enumerate(logical):
+                _ep0_write_byte(
+                    ep0,
+                    addr=LOGICAL_VOLUME_RAM_BASE + offset,
+                    value=value,
+                )
+            _ep0_or_byte(ep0, addr=EVENT_FLAGS_ADDR, mask=EVENT_VOLUME_DIRTY_MASK)
+            dirty_mask |= EEPROM_SETTINGS_DIRTY_MASK
+
+        if input_state is not None:
+            _ep0_write_byte(ep0, addr=0x099, value=input_state.input_select)
+            _ep0_write_byte(ep0, addr=0x0B3, value=input_state.input_mirror)
+            _ep0_write_byte(
+                ep0,
+                addr=SETUP_PROFILE_RAM,
+                value=input_state.setup_profile,
+            )
+            _ep0_or_byte(ep0, addr=EVENT_FLAGS_ADDR, mask=EVENT_ROUTE_APPLY_MASK)
+            dirty_mask |= EEPROM_SETTINGS_DIRTY_MASK | EEPROM_SETUP_PROFILE_DIRTY_MASK
+
+        if dirty_mask:
+            _ep0_or_byte(ep0, addr=ROUTE_DIRTY_FLAGS_ADDR, mask=dirty_mask)
+            _ep0_or_byte(ep0, addr=EVENT_FLAGS_ADDR, mask=EVENT_DIRTY_SERVICE_MASK)
+        if settle_s > 0:
+            time.sleep(settle_s)
+        _wait_for_settings_persist_ep0(ep0, dirty_mask=dirty_mask)
+
+        last_values = {}
+        if volume_state is not None:
+            last_values["computed"] = _read_ep0_window(
+                ep0, start=COMPUTED_VOLUME_RAM_BASE, size=4
+            )
+            last_values["logical"] = _read_ep0_window(
+                ep0, start=LOGICAL_VOLUME_RAM_BASE, size=4
+            )
+        if input_state is not None:
+            last_values["input_select"] = _ep0_read_byte(ep0, addr=0x099)
+            last_values["input_mirror"] = _ep0_read_byte(ep0, addr=0x0B3)
+            last_values["setup_profile"] = _ep0_read_byte(ep0, addr=SETUP_PROFILE_RAM)
+
+        ok = True
+        if volume_state is not None:
+            ok = ok and last_values["computed"] == computed
+            ok = ok and last_values["logical"] == logical
+        if input_state is not None:
+            ok = ok and last_values["input_select"] == input_state.input_select
+            ok = ok and last_values["input_mirror"] == input_state.input_mirror
+            ok = ok and last_values["setup_profile"] == input_state.setup_profile
+        if ok:
+            return
+
+        time.sleep(0.1 * (attempt + 1))
+
+    raise RuntimeError(
+        "settings restore verify failed after app return: "
+        f"expected volume={computed.hex()}/{logical.hex()} "
+        f"input={None if input_state is None else input_state.input_select:#04x} "
+        f"mirror={None if input_state is None else input_state.input_mirror:#04x} "
+        f"setup_profile={None if input_state is None else input_state.setup_profile:#04x}; "
+        f"last={last_values!r}"
+    )
+
+
 def _force_active_filename_persist(
     *,
     vid: int,
@@ -1018,6 +1180,20 @@ def _probe_ep0_volume_state(
     )
 
 
+def _probe_ep0_input_state(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None = None,
+) -> InputRuntimeInfo:
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
+    return InputRuntimeInfo(
+        input_select=_ep0_read_byte(ep0, addr=0x099),
+        input_mirror=_ep0_read_byte(ep0, addr=0x0B3),
+        setup_profile=_ep0_read_byte(ep0, addr=SETUP_PROFILE_RAM),
+    )
+
+
 def _probe_device_eeprom_version(
     *,
     info: HidDeviceInfo,
@@ -1055,6 +1231,7 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
     active_config_raw: Optional[bytes] = None
     active_routes: Optional[tuple[RouteEntry, ...]] = None
     volume_state: Optional[VolumeRuntimeInfo] = None
+    input_state: Optional[InputRuntimeInfo] = None
 
     if info.path is not None:
         dev = _open_hid(info.path)
@@ -1091,6 +1268,14 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
             )
         except Exception as exc:
             warnings.append(f"EP0 volume probe failed: {exc}")
+        try:
+            input_state = _probe_ep0_input_state(
+                vid=vid,
+                pid=pid,
+                path=info.path,
+            )
+        except Exception as exc:
+            warnings.append(f"EP0 input probe failed: {exc}")
 
     return DeviceSnapshot(
         mode=mode,
@@ -1104,6 +1289,7 @@ def _probe_device_snapshot(*, info: HidDeviceInfo, vid: int, pid: int) -> Device
         active_routes=active_routes,
         volume_state=volume_state,
         warnings=tuple(warnings),
+        input_state=input_state,
     )
 
 
@@ -1157,6 +1343,13 @@ def _print_device_snapshot(title: str, snapshot: DeviceSnapshot) -> None:
             f" (low=0x{snapshot.volume_state.logical_low:02X},"
             f" raw=0x{snapshot.volume_state.logical_raw & 0xFFFFFFFF:08X})"
         )
+    if snapshot.input_state is not None:
+        print(
+            "  input select:"
+            f" 0x{snapshot.input_state.input_select:02X}"
+            f" (mirror=0x{snapshot.input_state.input_mirror:02X}, "
+            f"setup/profile=0x{snapshot.input_state.setup_profile:02X})"
+        )
     for warning in snapshot.warnings:
         print(f"  warning: {warning}")
 
@@ -1192,6 +1385,8 @@ def _wait_for_app(
     vid: int,
     pid: int,
     serial_number: str,
+    path: bytes | None = None,
+    previous_app_paths: set[bytes] | None = None,
     timeout_s: float,
 ) -> HidDeviceInfo:
     deadline = time.time() + timeout_s
@@ -1199,11 +1394,23 @@ def _wait_for_app(
     while time.time() < deadline:
         devs = enumerate_devices(vid, pid)
         app_devs = [dev for dev in devs if _device_mode(dev) == "app"]
+        if path is not None:
+            path_matches = [dev for dev in app_devs if dev.path == path]
+            if len(path_matches) == 1:
+                return path_matches[0]
+        if previous_app_paths:
+            new_path_matches = [
+                dev
+                for dev in app_devs
+                if dev.path is not None and dev.path not in previous_app_paths
+            ]
+            if len(new_path_matches) == 1:
+                return new_path_matches[0]
         if serial_number:
             serial_matches = [dev for dev in app_devs if dev.serial_number == serial_number]
             if len(serial_matches) == 1:
                 return serial_matches[0]
-        if len(app_devs) == 1:
+        if path is None and len(app_devs) == 1:
             return app_devs[0]
         last_modes = [f"{dev.product_string or '<no-product>'}:{_device_mode(dev)}" for dev in devs]
         time.sleep(0.2)
@@ -1288,6 +1495,11 @@ def flash_main(
         return None
 
     initial = _pick_device(vid, pid, path, route_label=route_label)
+    initial_app_paths = {
+        dev.path
+        for dev in enumerate_devices(vid, pid)
+        if dev.path is not None and _device_mode(dev) == "app"
+    }
     initial_mode = _device_mode(initial)
     if verbose:
         print(
@@ -1427,8 +1639,18 @@ def flash_main(
                 vid=vid,
                 pid=pid,
                 serial_number=boot_dev.serial_number,
+                path=boot_dev.path,
+                previous_app_paths=initial_app_paths,
                 timeout_s=post_info_timeout_s,
             )
+            if post_dev.path is not None and initial_snapshot is not None:
+                _restore_runtime_settings_ep0(
+                    vid=vid,
+                    pid=pid,
+                    path=post_dev.path,
+                    volume_state=initial_snapshot.volume_state,
+                    input_state=initial_snapshot.input_state,
+                )
             if report_info:
                 _print_device_snapshot(
                     "after flash:",
@@ -1632,6 +1854,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     stream = build_main_stream(hex_mem)
 
     path: Optional[bytes] = args.path.encode("utf-8") if args.path else None
+    pre_finalize_snapshot: Optional[DeviceSnapshot] = None
+    if (bool(overlays) or args.all_ch is not None) and not (
+        args.dry_run or args.preflight_only
+    ):
+        try:
+            pre_info = _pick_device(
+                args.vid,
+                args.pid,
+                path,
+                route_label=args.all_ch,
+            )
+            if _device_mode(pre_info) == "app":
+                pre_finalize_snapshot = _probe_device_snapshot(
+                    info=pre_info,
+                    vid=args.vid,
+                    pid=args.pid,
+                )
+        except Exception as exc:
+            if args.verbose:
+                print(f"warning: pre-flash settings snapshot skipped: {exc}")
 
     post_dev = flash_main(
         vid=args.vid,
@@ -1761,6 +2003,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             print(f"  requested all channels: {args.all_ch}")
             print(f"  verified mappings: {format_route_entries(routes)}")
+
+        if pre_finalize_snapshot is not None:
+            _restore_runtime_settings_ep0(
+                vid=args.vid,
+                pid=args.pid,
+                path=post_dev.path,
+                volume_state=pre_finalize_snapshot.volume_state,
+                input_state=pre_finalize_snapshot.input_state,
+            )
 
     return 0
 

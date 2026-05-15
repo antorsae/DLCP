@@ -24,7 +24,7 @@ Use this document for:
 - preset-switch state transitions
 - mute/standby/wake timing interactions
 - multi-MAIN synchronization
-- real-hardware confirmation of gpsim findings
+- real-hardware confirmation of simulator findings
 - distinguishing simulator-model gaps from product bugs
 
 ## Purpose
@@ -37,7 +37,7 @@ end-to-end user-visible behavior:
 - does a follow-up `MUTE` actually mute both MAINs?
 - does `STANDBY` actually drive both MAINs inactive?
 - after wake, does CONTROL leave `Zzz...` and return to a usable display?
-- are gpsim failures real firmware bugs or simulator/harness artifacts?
+- are simulator failures real firmware bugs or harness/model artifacts?
 
 This setup is strong enough to answer most of those questions on real hardware.
 
@@ -72,7 +72,7 @@ Do not use system Python.
 
 This setup can directly answer:
 
-1. Whether a remaining gpsim failure reproduces on real hardware.
+1. Whether a remaining simulator failure reproduces on real hardware.
 2. Whether a failure is realistic remote use or only an extreme timing edge.
 3. Whether CONTROL and the two MAINs converge to the same final state.
 4. Whether wake/reconnect problems are user-visible LCD problems or only
@@ -89,7 +89,8 @@ This setup is especially good for timing sweeps such as:
 
 ## What This Setup Cannot Prove Alone
 
-This setup does **not** fully replace gpsim or electrical instrumentation.
+This setup does **not** fully replace the rust simulator or electrical
+instrumentation.
 
 It cannot directly prove:
 
@@ -103,7 +104,7 @@ It cannot directly prove:
 Therefore:
 
 - use real hardware for end-to-end truth
-- use gpsim for synthetic fault injection
+- use the rust simulator for synthetic fault injection
 - use a logic analyzer/current-loop sniffer only if byte-level transport proof
   becomes necessary
 
@@ -170,7 +171,7 @@ Important properties:
 
 Current state:
 
-- deterministic simulator tests, gpsim tests, and mocked unit tests for the
+- deterministic rust-simulator tests and mocked unit tests for the
   hardware helper CLIs all live under `tests/sim/`
 - files such as `test_hardware_loop.py` and `test_hardware_state_test.py` are
   **not** live-rig tests; they are unit tests around the helper code
@@ -178,14 +179,15 @@ Current state:
 Preferred structure moving forward:
 
 - keep pure unit tests for hardware helper logic in `tests/sim/`
-- keep gpsim wire/current-loop tests in `tests/sim/` and mark them `wire`
+- keep rust-simulator wire/current-loop tests in `tests/sim/` and mark them
+  `wire`
 - add real live-rig tests under `tests/hardware/` when implemented and mark
   them `hardware`
 
 Pytest policy:
 
 - `@pytest.mark.wire`
-  - means a gpsim current-loop/wire-chain test
+  - means a simulator current-loop/wire-chain test
 - `@pytest.mark.hardware`
   - means a live hardware test that touches the real rig
 - live hardware tests are skipped by default
@@ -195,7 +197,7 @@ Recommended commands:
 
 ```bash
 .venv_ep0/bin/python -m pytest tests/sim -m "wire" -q
-.venv_ep0/bin/python -m pytest tests/sim -m "gpsim and not wire" -q
+.venv_ep0/bin/python -m pytest tests/sim -q
 .venv_ep0/bin/python -m pytest tests -m hardware --run-hardware -q
 ```
 
@@ -380,6 +382,78 @@ Pass criteria:
 - the `LEFT` MAIN reports preset `B`
 - the `RIGHT` MAIN reports preset `B`
 
+### V1.71/V3.2 ledger hardware phase runner
+
+The implementation-bug ledger gates below can also be printed or run through
+one operator wrapper:
+
+```bash
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py
+```
+
+Default mode is dry-run: it prints every live-rig phase, required environment
+variables, and manual preconditions.  To run one phase after positioning the
+rig, pass `--execute --phase <name>`.  Multi-phase `--execute` runs pause
+before each phase by default so the operator can reposition the CONTROL page or
+swap CONTROL firmware between phases; use `--no-pause` only when an external
+script handles that positioning.  Examples:
+
+```bash
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --list --bug BUG-DIAG-02
+
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --preflight --phase all
+
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --preflight --phase all \
+  --report-json artifacts/probes/v171_v32_ledger_gate/preflight.json
+
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --execute --phase identity
+
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --execute --pause --phase diag-pb1 --phase diag-button-actions --phase diag-ir-actions
+
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --execute --pause --bug BUG-DIAG-02
+```
+
+`--list` is a pure discovery mode.  It prints all phase, alias, and bug
+selectors plus the resolved selected phase list; it does not run pytest or
+probe hardware.
+
+`--preflight` is non-destructive.  It does not send IR, press buttons, switch
+presets, or enter standby; it only checks visible MAIN HID devices, camera
+inventory, and Flipper serial discovery for the selected phases.  For phases
+that need LCD OCR, preflight requires either an explicit
+`DLCP_HW_CAMERA_SELECTOR` or at least one camera that is not an obvious host
+camera such as a MacBook camera, Desk View, or screen capture device.
+
+`--report-json <path>` writes the selected phases, exact commands, preflight
+inventory/failures, and executed phase return codes to a machine-readable JSON
+file.  Use it for live closure runs so the ledger can cite a durable artifact
+instead of only terminal scrollback.
+
+`--bug BUG-...` expands a ledger bug ID to the phase set listed in
+`docs/IMPL_V171_V32_BUG_LEDGER.md`, de-duplicating phases when multiple bugs
+are selected.
+
+`diag-button-actions` is a convenience alias that expands to the PB1 and PB2
+per-page physical-button gates (`diag-buttons-pb1`, `diag-buttons-pb2`).
+`diag-ir-actions` similarly expands to the PB1 and PB2 per-page IR gates
+(`diag-ir-pb1`, `diag-ir-pb2`).  The full Diagnostics IR gates intentionally
+set `DLCP_HW_IR_PROFILE=HYPEX` because they exercise Hypex-profile preset
+shortcuts (`F1`/`F2`) and V1.71 explicit `STANDBY`/`WAKE` endpoints.  Use the
+receiver sweep or legacy IR stress gates for standard RC5 profile evidence.
+
+The phase runner covers the release identity gate, physical front-panel A/B,
+physical front-panel standby/wake, IR preset/mute/standby/wake timing checks,
+the no-OCR IR receiver sweep diagnostic, V1.6b-vs-V1.71 real-IR stress,
+PB1 Diagnostics layout, PB1/PB2 static
+Diagnostics convergence, Diagnostics-page physical LEFT/RIGHT responsiveness,
+and Diagnostics-page IR volume/mute/preset/standby/wake dispatch.
+
 ### 5. Use role-safe flashing only
 
 Before any MAIN flash, first run:
@@ -400,6 +474,88 @@ Rule:
 For release wrappers that currently accept only `--path`, the operator must use
 the role-derived `path` from `identify-mains`. This is mandatory for PB1/PB2
 setups because USB enumeration order is not a safe proxy for physical position.
+
+### 6. Confirm V3.2 release identity and A/B filenames
+
+After flashing V3.2 with baked LX521.4 captures, run the MAIN-only identity
+gate.  It can be run with one MAIN connected at a time, matching the
+one-board-at-a-time release-flash workflow:
+
+```bash
+DLCP_HW_RELEASE_IDENTITY_CONFIRM=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_v32_release_identity_and_ab_filename_ram \
+  --run-hardware
+```
+
+Pass criteria:
+
+- HID reports V3.2.
+- runtime EEPROM identity/revision matches
+  `firmware/patched/releases/DLCP_Firmware_V3.2.hex`.
+- preset A active filename RAM and HID cmd `0x03` readback are
+  `LX521.4 22MG10F-v5`.
+- preset B active filename RAM and HID cmd `0x03` readback are
+  `LX521.4 22MG10F-v7`.
+
+### 7. Confirm physical front-panel A/B selection
+
+This is the live confirmation for the original front-panel A/B report.  It is
+not an EP0 switch and not an IR `F1`/`F2` shortcut.
+
+Run it twice, once after selecting A and once after selecting B from CONTROL's
+physical Preset screen:
+
+```bash
+DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 \
+DLCP_HW_EXPECTED_PRESET=A \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram \
+  --run-hardware
+
+DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 \
+DLCP_HW_EXPECTED_PRESET=B \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram \
+  --run-hardware
+```
+
+Pass criteria:
+
+- CONTROL LCD is either `Volume` / `Active: A|B` or `Preset` / `Active: A|B`.
+- both MAINs report the selected active preset.
+- both MAINs' active filename RAM matches the baked release capture:
+  A = `LX521.4 22MG10F-v5`, B = `LX521.4 22MG10F-v7`.
+
+### 8. Confirm physical front-panel STBY/WAKE from Volume
+
+This is the live confirmation for BUG-STDBY-01.  It exercises the real
+front-panel STBY button path from the Volume screen; it is not an IR command
+and not synthetic GPIO injection.
+
+Start from CONTROL `Volume` / `Active: A|B`, then run:
+
+```bash
+DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_manual_front_panel_standby_wake_from_volume \
+  --run-hardware -s
+```
+
+Operator actions:
+
+1. When the test prints `press physical STBY now`, press the CONTROL
+   front-panel `STBY` button once.
+2. Wait for the test to observe standby evidence.
+3. When the test prints `press physical STBY again now to wake`, press
+   front-panel `STBY` again.
+
+Pass criteria:
+
+- standby evidence appears from MAIN state or expected temporary USB absence;
+- after wake, both MAINs are active and unmuted on the original preset;
+- CONTROL LCD returns to `Volume` / `Active: A|B`;
+- CONTROL does not remain on `WAITING FOR DLCP`.
 
 ## Immediate Stop Conditions
 
@@ -462,7 +618,7 @@ For each delay in `50, 100, 250, 500, 1000 ms`:
 
 Interpretation:
 
-- gpsim-only red, hardware green: simulator/harness wake model gap
+- simulator-only red, hardware green: simulator/harness wake model gap
 - hardware red at moderate delays: real firmware bug
 
 ### D. Rapid-toggle stress
@@ -475,6 +631,107 @@ Interpretation:
 
 This is partly stress, but it is still useful because it approximates repeated
 remote presses.
+
+### D2. Real IR receiver sweep diagnostic
+
+Use this before the V1.6b-vs-V1.71 comparison if the rig appears to ignore all
+IR commands.  It does not require LCD OCR.  It sends a small Hypex + standard
+RC5 action matrix and records MAIN-visible volume, preset, mute, active, input,
+and setup/profile deltas.
+
+```bash
+DLCP_HW_IR_RECEIVER_SWEEP=1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_ir_receiver_profile_sweep_records_any_state_change \
+  --run-hardware
+```
+
+Default action list:
+
+```text
+VOL_UP,VOL_DOWN,STD_VOL_UP,STD_VOL_DOWN,F2,F1,MUTE,MUTE,STD_MUTE,STD_MUTE
+```
+
+Override with `DLCP_HW_IR_SWEEP_ACTIONS=...` when narrowing the test.  Artifacts
+are written under
+`artifacts/probes/hardware_state_test/pytest/ir_receiver_sweep/.../result.json`.
+
+Pass criterion: at least one action changes MAIN-visible state.  A failure here
+means the current hardware session has not established any working RC5
+receive/dispatch path, so the legacy stress comparison cannot yet distinguish a
+V1.71 regression from a sender/profile/rig issue.
+
+### D3. Real IR legacy stress, V1.6b vs V1.71
+
+This is the hardware companion to the BUG-IR-01 simulator parity test.  It
+uses legacy RC5 profile commands generated by `scripts/hardware_flipper_ir.py`
+(`VOL_UP`/`VOL_DOWN`/`MUTE`/`POWER` for Hypex profile, or
+`STD_VOL_UP`/`STD_VOL_DOWN`/`STD_MUTE`/`STD_POWER` for standard RC5 profile),
+not the V1.71-only endpoint shortcuts.  Run it twice after the receiver sweep
+has shown at least one real IR command changes MAIN-visible state:
+
+1. Flash stock CONTROL V1.6b and establish the baseline gate.
+2. Flash CONTROL V1.71 and run the same gate.
+
+Use the safe CONTROL flasher for both payloads after placing CONTROL in
+manual `UP + DOWN` bootloader mode.  Power-cycle while holding `UP + DOWN`
+for at least 6 seconds and do not touch `SELECT`; the bootloader accepts the
+combo only after 11 stable delay loops, about 5.5 seconds.  If the LCD returns
+to `Volume`, CONTROL is still in the app and the flash attempt should be
+restarted after another bootloader-entry attempt.
+
+```bash
+scripts/flash_control_safe.sh \
+  --hex 'firmware/stock/control/DLCP Control Firmware V1.6b.hex' \
+  --path '<MAIN path connected to CONTROL>' \
+  --live-timeout-s 10
+
+scripts/flash_control_safe.sh \
+  --hex firmware/patched/releases/DLCP_Control_V1.71.hex \
+  --path '<MAIN path connected to CONTROL>' \
+  --live-timeout-s 10
+```
+
+```bash
+DLCP_HW_IR_LEGACY_STRESS=1 \
+DLCP_HW_EXPECTED_CONTROL_VERSION=V1.6b \
+DLCP_HW_IR_PROFILE=HYPEX \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_ir_legacy_command_stress_from_volume \
+  --run-hardware
+
+DLCP_HW_IR_LEGACY_STRESS=1 \
+DLCP_HW_EXPECTED_CONTROL_VERSION=V1.71 \
+DLCP_HW_IR_PROFILE=HYPEX \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_ir_legacy_command_stress_from_volume \
+  --run-hardware
+```
+
+If the CONTROL setup byte is known or suspected to be the standard RC5 profile
+instead of the Hypex profile, rerun the same gate with
+`DLCP_HW_IR_PROFILE=STANDARD`.  Standard profile maps to RC5 address `0x00`
+with `Vol+ = 0x10`, `Vol- = 0x11`, `Mute = 0x0D`, and `Power = 0x0C`.
+
+Each pytest run writes
+`artifacts/probes/hardware_state_test/pytest/legacy_ir_stress/.../result.json`.
+The result records the requested `DLCP_HW_EXPECTED_CONTROL_VERSION`, the
+expected CONTROL hex path, static release metadata, payload CRC, and
+payload/application/bootloader SHA-256 hashes.  Use those fields when attaching
+the V1.6b and V1.71 run artifacts to `BUG-IR-01`; they prove which firmware
+image the live run was intended to validate, even though the CONTROL version is
+not directly readable over the MAIN relay during the test.
+
+Pass criteria:
+
+- volume up/down changes both MAIN logical volume readbacks and restores them
+- MUTE toggles on and off on both MAINs
+- POWER enters standby and a second POWER wakes both MAINs
+- after wake, CONTROL's LCD returns to a usable `Volume` screen
+
+The gate intentionally uses only IR commands that should work on both V1.6b
+and V1.71.  It does not use the V1.71-only explicit preset or standby/wake
+endpoint shortcuts.
 
 ### E. Reconnect soak
 
@@ -636,7 +893,7 @@ Implementation:
 Why it matters:
 
 - this is the strongest real-hardware discriminator between firmware bug and
-  gpsim wake-model gap
+  simulator wake-model gap
 
 Implemented paths:
 
@@ -673,6 +930,12 @@ Optional strict LCD mode (disable dim-backlight fallback and require literal
 .venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py \
   --run-hardware -k preset_standby_wake_timing_sweep
 ```
+
+For the V1.71/V3.2 bug-ledger `BUG-IR-02` closure, run the live pytest through
+`scripts/run_v171_v32_ledger_hardware_gate.py --bug BUG-IR-02` or set
+`DLCP_HW_REQUIRE_STANDBY_LCD_ZZZ=1`; that makes the pytest wrapper pass
+`--no-standby-blank-fallback` and requires literal `Zzz...` LCD evidence before
+WAKE.
 
 ### 5. Reconnect and responsiveness soak
 
@@ -739,7 +1002,7 @@ Reason:
 
 Use this decision rule.
 
-### If gpsim fails, but hardware passes
+### If the simulator fails, but hardware passes
 
 Classify as:
 
@@ -747,10 +1010,10 @@ Classify as:
 
 Examples:
 
-- gpsim remains at `Zzz...`, but real hardware wakes normally
-- gpsim loses sync after standby, but both real MAINs converge correctly
+- the simulator remains at `Zzz...`, but real hardware wakes normally
+- the simulator loses sync after standby, but both real MAINs converge correctly
 
-### If both gpsim and hardware fail the same user-visible scenario
+### If both simulator and hardware fail the same user-visible scenario
 
 Classify as:
 
@@ -794,7 +1057,7 @@ future robustness work.
 Keep these boundaries:
 
 - real hardware for end-to-end truth
-- gpsim for synthetic bus/parser faults
+- rust simulator for synthetic bus/parser faults
 - optional future sniffer for current-loop byte capture
 
 Do not try to infer stuck-`PEN` or stuck-`SEN` conclusions from this hardware
@@ -859,14 +1122,14 @@ Use this flow for PB1/PB2 validation and any role-safe flash session.
    - IR sequence and timing
    - LCD images/video
    - per-MAIN observed preset/state
-9. Compare outcome with gpsim expectations.
+9. Compare outcome with simulator expectations.
 
 ## Current Best Use Of This Setup
 
 For the delayed-switch remediation specifically, this hardware setup is already
 good enough to answer the most important open question:
 
-- is the remaining standby/wake failure a real firmware bug or a gpsim/harness
+- is the remaining standby/wake failure a real firmware bug or a simulator/harness
   wake-model problem?
 
 It is also good enough to answer:
@@ -952,7 +1215,7 @@ control on the unit and isn't part of the routine 2-cycle gate.
 
 Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
 
-> **Updated 2026-05-04 (operator HW retest).**  Pre-2026-05-04 versions
+> **Updated 2026-05-09 (BUG-DIAG-01/02 fix).**  Pre-2026-05-04 versions
 > of this runbook described the Diagnostics page as a single
 > two-row Diagnostics(2) screen (`1:I D S B R A P` / `2:I D S B R A P`),
 > framed it as a "Task #22 discriminator" (gpsim two-MAIN echo-loop),
@@ -961,13 +1224,11 @@ Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
 > `docs/V32_DIAG_TIER1_SPEC.md` and `dlcp_control_v171.asm:4805+`)
 > split that single-screen layout into per-PB pages at states 4
 > (PB1) and 5 (PB2), each rendering one of four `PBn` / `n/a` /
-> `OK` / `PBn:` layouts.  Real HW also shows `PBn` / `n/a` after only
-> the initial 4-RIGHT navigation; converging the row to counter
-> values requires multiple LEFT/RIGHT navigation cycles around the
-> active PB-Diag state.  The shared firmware-design root cause is
-> V1.71's foreground busy-loop in `display_loop_iteration`
-> (asm:2885-2897) which only exits on user-driven events.  This
-> is not a Task #22 reproduction.
+> `OK` / `PBn:` layouts.  Current V1.71/V3.2 firmware must update the
+> active PB page from a static wait.  LEFT/RIGHT cycling is no longer an
+> accepted workaround for persistent `PBn` / `n/a`; after about 1 second
+> on the page, `n/a` is acceptable only when that PB is genuinely absent
+> or silent.
 
 ### Prerequisites
 
@@ -1004,31 +1265,26 @@ Walk-through:
 
 1. Power-cycle both MAINs and CONTROL.  Wait for CONTROL to reach
    the Volume screen.
-2. From Volume, press the IR `RIGHT` key FOUR times to navigate
+2. From Volume, press the physical `RIGHT` touch button FOUR times to navigate
    `Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4)`.
-3. Observe the LCD.  Initial render after the 4-RIGHT navigation
-   may show:
+3. Observe the LCD for about 1 second.  The first frame after the
+   4-RIGHT navigation may briefly show:
    ```
    PB1
    n/a
    ```
-   That is normal on a clean rig and does NOT indicate a fault —
-   the BF/2N reply burst has not had a chance to populate the
-   cache yet.  Convergence requires multiple LEFT/RIGHT navigation
-   cycles (see step 4).
-4. To converge PB1's page to counter values (or stable `OK`):
-   press IR `LEFT` once (PB1 Diag(4) → Setup(3)), then `RIGHT`
-   once (back to PB1 Diag(4)).  Repeat the `LEFT → RIGHT` cycle
-   5–10 times.  Each navigation event exits V1.71's
-   `display_loop_iteration` foreground busy-loop and lets the
-   cmd 0x21/0x22 cadence re-fire, eventually flipping the layout
-   to `PB1` / `OK` (all-zero counters) or `PB1:` + cell entries
-   (some non-zero counters) on PB1's page.
-5. To check PB2: press IR `RIGHT` once more (PB1 Diag → PB2 Diag,
+   It must then update to `PB1` / `OK` (all-zero counters) or
+   `PB1:` + cell entries (some non-zero counters).  If it stays
+   `PB1` / `n/a`, PB1 is absent/silent or the diagnostics reply path
+   is broken.
+4. While still on PB1 Diag, verify normal controls remain responsive:
+   volume up/down, mute, preset A/B, standby, and wake IR actions must
+   still dispatch.  LEFT/RIGHT physical navigation must not feel stalled.
+5. To check PB2: press the physical `RIGHT` touch button once more (PB1 Diag → PB2 Diag,
    state 4 → 5).  PB2's page renders the same `PBn` / `n/a` /
-   `OK` / `PBn:` layouts independently.  Cycle LEFT/RIGHT 5–10
-   times around state 5 to converge.
-6. Press the IR `LEFT` key repeatedly to return to Volume.
+   `OK` / `PBn:` layouts independently.  Wait about 1 second and
+   require the same static update behavior.
+6. Press the physical `LEFT` touch button repeatedly to return to Volume.
    CONTROL's diag query path is page-local, so leaving the page
    stops all diag traffic.
 
@@ -1040,10 +1296,50 @@ once for PB2 at state 5):
 | What | Expected | Failure attribution |
 |---|---|---|
 | Row 0 renders `PB1` (PB1 page) or `PB2` (PB2 page) prefix | yes | If wrong literal appears: V1.71 CONTROL not flashed correctly, or operator did not navigate to the correct state (4 or 5) |
-| Row 1 shows `n/a` initially, converges to `OK` or cell entries after 5–10 LEFT/RIGHT cycles | yes | If row 1 stays `n/a` even after navigation cycling: that PB's MAIN doesn't recognize cmd 0x21 (V3.2 not flashed) or has a real reply-path bug |
+| Row 1 may briefly show `n/a`, then reaches `OK` or cell entries within about 1 second of static wait | yes | If row 1 stays `n/a`: that PB is genuinely absent/silent, that PB's MAIN doesn't recognize cmd 0x21 (V3.2 not flashed), or there is a real reply-path bug |
 | Row 0 flips to `PBn:` + cell entries when at least 1 counter is non-zero | yes | If row 0 stays bare `PBn` literal with non-zero counter activity expected: V1.71 layout dispatch broken |
-| LEFT exits the page cleanly | yes | If CONTROL hangs: violates Layer 1 bounded-TX guarantee |
-| No effect on Volume/Preset/Input/Setup operation | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
+| Physical LEFT/RIGHT navigate away from each PB page promptly | yes | If CONTROL hangs or misses the touch: diagnostics foreground service is starving normal button scan |
+| Volume, mute, preset, standby, and wake IR actions still dispatch while on PB1/PB2 pages | yes | If actions are delayed or ignored: diagnostics foreground service is starving normal UI/IR dispatch |
+| No effect on Volume/Preset/Input/Setup operation after leaving Diagnostics | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
+
+Automated opt-in physical-button responsiveness gate:
+
+```bash
+DLCP_HW_LAYER5_AT_DIAG=1 \
+DLCP_HW_LAYER5_BUTTON_ACTIONS=1 \
+DLCP_HW_EXPECTED_DIAG_PAGE=PB1 \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_manual_diagnostics_buttons_remain_responsive \
+  --run-hardware -s
+```
+
+Run this twice: once from PB1 Diagnostics with
+`DLCP_HW_EXPECTED_DIAG_PAGE=PB1`, and again from PB2 Diagnostics with
+`DLCP_HW_EXPECTED_DIAG_PAGE=PB2`.  The test prompts for a physical RIGHT press,
+then asks the operator to navigate back to the same PB page, then prompts for a
+physical LEFT press.
+
+Automated opt-in IR dispatch gate:
+
+```bash
+DLCP_HW_LAYER5_AT_DIAG=1 \
+DLCP_HW_LAYER5_IR_ACTIONS=1 \
+DLCP_HW_EXPECTED_DIAG_PAGE=PB1 \
+DLCP_HW_IR_PROFILE=HYPEX \
+  .venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_diagnostics_page_ir_actions_dispatch_on_real_silicon \
+  --run-hardware
+```
+
+Run this twice: once after manually navigating CONTROL to PB1 Diagnostics with
+`DLCP_HW_EXPECTED_DIAG_PAGE=PB1`, and again after manually navigating CONTROL
+to PB2 Diagnostics with `DLCP_HW_EXPECTED_DIAG_PAGE=PB2`.  Wait about
+1 second on the target page before starting each run.  The test sends
+Hypex-profile real Flipper IR volume, mute, `F1`/`F2` preset, explicit
+`STANDBY`, and explicit `WAKE` actions from that page, so it will leave
+Diagnostics after the standby/wake portion and may change the active preset
+during the run.  It asserts both MAINs wake and CONTROL's LCD returns to
+`Volume`.
 
 ### Counter semantics
 
@@ -1089,23 +1385,21 @@ Some counters are easy to bump on the rig:
 The remaining counters (`I`, `D`, `R`, `P`) need a fault-injection
 harness to bump and aren't part of the basic operator walk-through.
 
-### What this validates (post 2026-05-04 retest)
+### What this validates (post BUG-DIAG-01/02)
 
 This walk-through validates that V1.71 CONTROL is correctly parsing
-the V3.2 BF/2N diag-reply burst once the foreground busy-loop has
-exited often enough to deliver multiple cmd 0x21/0x22 query cycles.
-Initial `PB1` / `n/a` (or `PB2` / `n/a`) rendering after the first
-4-RIGHT (or 5-RIGHT) navigation is the firmware-by-design state, not
-a Task #22 sim reproduction (see Updated 2026-05-04 note at the top
-of this section).
+the V3.2 BF/2N diag-reply burst without depending on user navigation
+to advance the diagnostics cadence.  It also validates that the
+Diagnostics foreground loop continues to service normal UI work:
+physical navigation and decoded IR commands for volume, mute, preset,
+standby, and wake.
 
 If both per-PB pages converge to `OK` / `PB1:`+cells / `PB2:`+cells
-(or stable `PBn` / `n/a` for a genuinely silent PB) after 5–10
-LEFT/RIGHT navigation cycles around the corresponding state, V1.71
-+ V3.2 are operating correctly.  If `PB2` / `n/a` is stuck on the
-PB2 page (state 5) even after extensive navigation cycling while
-the PB1 page (state 4) converges, that points at a real V3.2 PB2
-reply-path or V1.71 parser-target-toggle bug.
+(or stable `PBn` / `n/a` for a genuinely silent PB) after a static
+wait, V1.71 + V3.2 are operating correctly.  If `PB2` / `n/a` is stuck
+on the PB2 page (state 5) while the PB1 page (state 4) converges, that
+points at a real V3.2 PB2 reply-path, V1.71 parser-target bug, or PB2
+wiring/absence issue.
 
 ## WAITING FOR DLCP recovery (V1.71 operator reset, 2026-04-21)
 
@@ -1116,6 +1410,10 @@ V3.2 MAIN fails to re-emit its sentinel-clearing burst.  See
 for the feature definition and
 [`docs/V32_MAIN_HANG_HARDENING_PLAN.md`](V32_MAIN_HANG_HARDENING_PLAN.md)
 §"MAIN Wake-Path Sentinel Re-Emit" for the MAIN-side root cause.
+The 2026-05-09 V3.2 ledger gate also covers the related duplicate-standby
+case where two `B0/03/00` frames arrive before MAIN's shutdown dispatcher:
+duplicate standby must preserve the pending shutdown event instead of leaving
+the logical gate closed with hardware latches still enabled.
 
 ### Prerequisites
 
@@ -1187,6 +1485,6 @@ for the feature definition and
   something other than the CONTROL WAITING path wedged.
 - There is no sim test for this path; the validation loop is
   exclusively hand-traced source review + codex review + this
-  operator walk-through.  Tracked gap; adding a gpsim behavioral
+  operator walk-through.  Tracked gap; adding a rust-simulator behavioral
   test that drives button pins in the WAITING state is an open
   workstream.

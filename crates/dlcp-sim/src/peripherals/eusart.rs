@@ -288,7 +288,10 @@ impl Eusart {
     ) -> RxDelivery {
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
         if (rcsta & RCSTA_SPEN) == 0 || (rcsta & RCSTA_CREN) == 0 {
-            return RxDelivery { wake: false, accepted: false };
+            return RxDelivery {
+                wake: false,
+                accepted: false,
+            };
         }
         let baudcon = mem.read_raw(Address::from_raw(BAUDCON_ADDR));
         let wake = (baudcon & BAUDCON_WUE) != 0;
@@ -302,17 +305,20 @@ impl Eusart {
         // masking firmware that forgets the CREN-toggle
         // recovery dance.
         if (rcsta & RCSTA_OERR) != 0 {
-            return RxDelivery { wake, accepted: false };
+            return RxDelivery {
+                wake,
+                accepted: false,
+            };
         }
         if self.rx_fifo.len() >= RX_FIFO_DEPTH {
             // FIFO full: latch OERR, drop the byte.  Per DS
             // §20.4.4 OERR clears when firmware writes
             // CREN=0 (handled in `on_sfr_write` for RCSTA).
-            mem.write_raw(
-                Address::from_raw(RCSTA_ADDR),
-                rcsta | RCSTA_OERR,
-            );
-            return RxDelivery { wake, accepted: false };
+            mem.write_raw(Address::from_raw(RCSTA_ADDR), rcsta | RCSTA_OERR);
+            return RxDelivery {
+                wake,
+                accepted: false,
+            };
         }
         let rx9_enabled = (rcsta & RCSTA_RX9) != 0;
         self.rx_fifo.push_back(RxEntry {
@@ -322,11 +328,11 @@ impl Eusart {
         });
         self.update_rx_front_sfrs(mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-        mem.write_raw(
-            Address::from_raw(PIR1_ADDR),
-            pir1 | PIR1_RCIF,
-        );
-        RxDelivery { wake, accepted: true }
+        mem.write_raw(Address::from_raw(PIR1_ADDR), pir1 | PIR1_RCIF);
+        RxDelivery {
+            wake,
+            accepted: true,
+        }
     }
 
     fn update_rx_front_sfrs(&self, mem: &mut Memory) {
@@ -380,10 +386,7 @@ impl Eusart {
             // when the FIFO is now empty.
             if self.rx_fifo.is_empty() {
                 let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-                mem.write_raw(
-                    Address::from_raw(PIR1_ADDR),
-                    pir1 & !PIR1_RCIF,
-                );
+                mem.write_raw(Address::from_raw(PIR1_ADDR), pir1 & !PIR1_RCIF);
             }
         }
     }
@@ -460,10 +463,7 @@ impl Eusart {
             );
             mem.write_raw(Address::from_raw(RCREG_ADDR), 0);
             let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
-            mem.write_raw(
-                Address::from_raw(PIR1_ADDR),
-                pir1 & !PIR1_RCIF,
-            );
+            mem.write_raw(Address::from_raw(PIR1_ADDR), pir1 & !PIR1_RCIF);
             self.tsr_busy_tcy = None;
             self.tsr_byte = None;
             self.tsr_send_break = false;
@@ -489,10 +489,7 @@ impl Eusart {
             // refuses to accept NEW bytes (gated by the
             // SPEN/CREN check in `deliver_rx_byte`).
             let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
-            mem.write_raw(
-                Address::from_raw(RCSTA_ADDR),
-                rcsta & !RCSTA_OERR,
-            );
+            mem.write_raw(Address::from_raw(RCSTA_ADDR), rcsta & !RCSTA_OERR);
         }
     }
 
@@ -743,9 +740,7 @@ fn set_pir1_txif(mem: &mut Memory, on: bool) {
 pub fn is_async_tx_enabled(mem: &Memory) -> bool {
     let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
     let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
-    (rcsta & RCSTA_SPEN) != 0
-        && (txsta & TXSTA_TXEN) != 0
-        && (txsta & TXSTA_SYNC) == 0
+    (rcsta & RCSTA_SPEN) != 0 && (txsta & TXSTA_TXEN) != 0 && (txsta & TXSTA_SYNC) == 0
 }
 
 #[cfg(test)]
@@ -831,7 +826,8 @@ mod tests {
         eusart.tick_tcy(2, &mut mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
-            pir1 & PIR1_TXIF, PIR1_TXIF,
+            pir1 & PIR1_TXIF,
+            PIR1_TXIF,
             "TXIF asserts on the second Tcy after TXREG -> TSR"
         );
 
@@ -845,11 +841,13 @@ mod tests {
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
-            txsta & TXSTA_TRMT, TXSTA_TRMT,
+            txsta & TXSTA_TRMT,
+            TXSTA_TRMT,
             "TRMT must reassert post-frame"
         );
         assert_eq!(
-            pir1 & PIR1_TXIF, PIR1_TXIF,
+            pir1 & PIR1_TXIF,
+            PIR1_TXIF,
             "TXIF stays 1 once TXREG drained"
         );
     }
@@ -879,7 +877,8 @@ mod tests {
         eusart.on_sfr_write(TXREG_ADDR, 0xBB, &mut mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
-            pir1 & PIR1_TXIF, 0,
+            pir1 & PIR1_TXIF,
+            0,
             "TXIF must clear when TXREG holds queued byte"
         );
 
@@ -913,13 +912,11 @@ mod tests {
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
-            txsta & TXSTA_TRMT, 0,
+            txsta & TXSTA_TRMT,
+            0,
             "TRMT POR is 0 in this synthetic mem; not changed"
         );
-        assert_eq!(
-            pir1 & PIR1_TXIF, 0,
-            "TXIF must be 0 with async-tx gate off"
-        );
+        assert_eq!(pir1 & PIR1_TXIF, 0, "TXIF must be 0 with async-tx gate off");
 
         // No frame should drain even after many Tcy.
         eusart.tick_tcy(10_000, &mut mem);
@@ -948,7 +945,8 @@ mod tests {
         eusart.tick_tcy(2, &mut mem);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
-            pir1 & PIR1_TXIF, PIR1_TXIF,
+            pir1 & PIR1_TXIF,
+            PIR1_TXIF,
             "TXIF must assert when TXEN goes 0->1 with empty TXREG"
         );
     }
@@ -973,7 +971,8 @@ mod tests {
         eusart.tick_tcy(960, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         assert_eq!(
-            txsta & TXSTA_TRMT, 0,
+            txsta & TXSTA_TRMT,
+            0,
             "TX9=1 keeps TRMT low past 10-bit boundary"
         );
 
@@ -981,7 +980,8 @@ mod tests {
         eusart.tick_tcy(96, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         assert_eq!(
-            txsta & TXSTA_TRMT, TXSTA_TRMT,
+            txsta & TXSTA_TRMT,
+            TXSTA_TRMT,
             "TX9=1 frame completes at 11-bit boundary (1056 Tcy)"
         );
     }
@@ -1043,7 +1043,8 @@ mod tests {
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         assert_eq!(
-            txsta & TXSTA_TRMT, 0,
+            txsta & TXSTA_TRMT,
+            0,
             "TRMT must clear once TSR loads (TXSTA=0x{txsta:02X})"
         );
         assert_eq!(pir1 & PIR1_TXIF, 0, "TXIF delay starts low");
@@ -1085,7 +1086,8 @@ mod tests {
         eusart.tick_tcy(1920, &mut mem);
         let txsta = mem.read_raw(Address::from_raw(TXSTA_ADDR));
         assert_eq!(
-            txsta & TXSTA_TRMT, TXSTA_TRMT,
+            txsta & TXSTA_TRMT,
+            TXSTA_TRMT,
             "Both frames must drain in a single 1920-Tcy tick"
         );
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
@@ -1142,10 +1144,7 @@ mod tests {
         let mut mem = fresh_mem();
         // SPEN | CREN.
         const RCSTA_CREN: u8 = 1 << 4;
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0x77, &mut mem);
         assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0x77);
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
@@ -1190,10 +1189,7 @@ mod tests {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
         const RCSTA_CREN: u8 = 1 << 4;
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0xAB, &mut mem);
         assert_eq!(
             mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
@@ -1224,10 +1220,7 @@ mod tests {
     fn rx_fifo_holds_two_bytes_in_order() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0xB1, &mut mem);
         eusart.deliver_rx_byte(0x04, &mut mem);
         // RCREG holds the OLDEST (front) byte.
@@ -1269,10 +1262,7 @@ mod tests {
     fn rx_fifo_third_byte_sets_oerr_and_is_dropped() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0x11, &mut mem);
         eusart.deliver_rx_byte(0x22, &mut mem);
         // Third byte: dropped, OERR latched.
@@ -1311,10 +1301,7 @@ mod tests {
     fn rcsta_cren_falling_edge_clears_oerr_only_preserving_fifo() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0xAA, &mut mem);
         eusart.deliver_rx_byte(0xBB, &mut mem);
         eusart.deliver_rx_byte(0xCC, &mut mem); // overflow -> OERR set
@@ -1369,10 +1356,7 @@ mod tests {
     fn oerr_blocks_rx_until_cren_toggle() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0x11, &mut mem);
         eusart.deliver_rx_byte(0x22, &mut mem);
         eusart.deliver_rx_byte(0x33, &mut mem); // -> OERR set, dropped
@@ -1404,16 +1388,10 @@ mod tests {
         );
         // Now firmware does the recovery: CREN=0 then CREN=1.
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            rcsta & !RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), rcsta & !RCSTA_CREN);
         eusart.on_sfr_write(RCSTA_ADDR, rcsta & !RCSTA_CREN, &mut mem);
         let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            rcsta | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), rcsta | RCSTA_CREN);
         eusart.on_sfr_write(RCSTA_ADDR, rcsta | RCSTA_CREN, &mut mem);
         // Receiver re-armed: new bytes accepted.
         eusart.deliver_rx_byte(0x55, &mut mem);
@@ -1436,10 +1414,7 @@ mod tests {
     fn rcsta_spen_falling_edge_drains_fifo_and_clears_state() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
         let mut mem = fresh_mem();
-        mem.write_raw(
-            Address::from_raw(RCSTA_ADDR),
-            RCSTA_SPEN | RCSTA_CREN,
-        );
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
         eusart.deliver_rx_byte(0xAA, &mut mem);
         eusart.deliver_rx_byte(0xBB, &mut mem);
         eusart.deliver_rx_byte(0xCC, &mut mem); // OERR set
@@ -1447,10 +1422,7 @@ mod tests {
         // held byte queued for after + a previously-
         // completed byte sitting in the TX history (a
         // chain dispatcher hasn't yet drained).
-        mem.write_raw(
-            Address::from_raw(TXSTA_ADDR),
-            TXSTA_TXEN | TXSTA_TRMT,
-        );
+        mem.write_raw(Address::from_raw(TXSTA_ADDR), TXSTA_TXEN | TXSTA_TRMT);
         eusart.on_sfr_write(TXSTA_ADDR, TXSTA_TXEN | TXSTA_TRMT, &mut mem);
         eusart.on_sfr_write(TXREG_ADDR, 0x55, &mut mem); // -> TSR
         eusart.on_sfr_write(TXREG_ADDR, 0x77, &mut mem); // -> txreg_holding
@@ -1472,15 +1444,9 @@ mod tests {
         mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
         eusart.on_sfr_write(RCSTA_ADDR, new_rcsta, &mut mem);
         // Full shutdown: RX side clears.
-        assert_eq!(
-            mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR,
-            0
-        );
+        assert_eq!(mem.read_raw(Address::from_raw(RCSTA_ADDR)) & RCSTA_OERR, 0);
         assert_eq!(mem.read_raw(Address::from_raw(RCREG_ADDR)), 0);
-        assert_eq!(
-            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
-            0
-        );
+        assert_eq!(mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF, 0);
         // TX side also drains -- the held byte and TSR
         // state are gone.
         assert!(

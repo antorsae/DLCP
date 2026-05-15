@@ -8,6 +8,40 @@ Historical correction note (2026-03-30):
   the `0xF6C..0xF7F` range; on the real CONTROL silicon those are legacy label
   names, not a literal USB-endpoint block.
 
+HFD streaming correction (2026-05-09):
+
+- HFD v2.12 does **not** send a separate `FW_Upd`/magic init HID report.
+  The first host `0x42` report already carries firmware bytes 0..29 in payload
+  offsets 2..31.  MAIN sends `BF/18/01`, waits for CONTROL's `FW_Upd`
+  bootloader prompt, compares that prompt against its internal expected string,
+  sets the update flag, and then relays the same first data report.
+- HFD sends every subsequent `0x42` report ACK-paced, then sends `0x41` with
+  the 16-bit CRC in payload offsets 4..5.  On CRC success MAIN sends the
+  CONTROL Intel HEX EOF/finalize sequence itself; HFD does not send an extra
+  all-zero EOF `0x42`.
+- CONTROL V1.5b/V1.6b/V1.71 do not reliably enter bootloader from the
+  application-side `BF/18/01` path.  Enter bootloader manually with `UP+DOWN`
+  held during power-on, then stream through MAIN.
+
+HFD v2.12 disassembly fingerprints for that correction:
+
+- `firmware/disasm/PC/HFD_v2.12/disasm_packet_builder_554590_554980.asm`
+  has the `0x42` stream builder at `0x5548F0`: it starts with `ESI=3`, copies
+  bytes from the firmware buffer into the HID buffer at `[ctx + 0x25 + ESI]`,
+  calls the CRC helper at `0x554EA4`, then increments the firmware-buffer
+  cursor.  Because `[ctx + 0x25]` is the HID report-id slot and
+  `[ctx + 0x26]` is command `0x42`, those bytes land at device payload
+  offsets `2..31`.
+- The `0x41` verify builder is at `0x55492A`: it loads the 16-bit rolling CRC
+  from `0x57B36C`, calls the big-endian dword helper `0x554E70` with
+  `DL=3`, and therefore places the CRC high/low bytes at device payload
+  offsets `4` and `5`.
+- `firmware/disasm/PC/HFD_v2.12/disasm_response_parser_553910_554520.asm`
+  handles `0x42` responses at `0x554266`: it advances the report counter and
+  sends the next `0x42` only after the previous response.  It sends `0x41`
+  when the report count reaches the transfer count.  The `0x41` response path
+  at `0x554323` treats the `0xAA` status byte as firmware-update success.
+
 ## Overview
 
 The DLCP control unit firmware can be updated through the main DLCP's USB connection,
@@ -67,7 +101,7 @@ label_060 (0x1456):
   tstfsz  0xCB              ; Test firmware update flag
   bra     label_064         ; Already active → relay data
 
-  ; === FIRST 0x42 COMMAND: INITIALIZE UPDATE MODE ===
+  ; === FIRST 0x42 COMMAND: INITIALIZE UPDATE MODE, THEN RELAY SAME DATA ===
 
   ; 1. Clear all state variables
   clrf    0x7C-0x87         ; Clear CRC, address, checksum accumulators
@@ -90,6 +124,9 @@ label_060 (0x1456):
   ; 6. If match: set firmware update mode flag
   movlw   0x01
   movwf   0xCB              ; 0xCB = 1 → update mode active
+
+  ; 7. Continue into the data-relay path for this same first 0x42 packet.
+  ; HFD does not send a separate magic/init-only packet.
 ```
 
 ### 1.3 Factory Reset Command (function_107 at 0x484E)
@@ -121,18 +158,22 @@ Important version note:
 
 ### 2.1 Relay Architecture
 
-When subsequent USB HID packets arrive with command byte 0x42 and the update flag
-(0xCB) is set, the main PIC calls **function_003** (0x15CE):
+When the first and subsequent USB HID packets arrive with command byte 0x42,
+the main PIC calls **function_003** (0x15CE) after update mode is armed:
 
 ```
 USB HID Packet (64 bytes)              UART Intel HEX Record
 ┌────┬────┬────────────────────┐       ┌──────────────────────────────────┐
-│0x42│Addr│  Binary data       │  ───► │:10AAAA00DDDDDDDDDDDDDDDDDDDDDDDDCC│
-│cmd │Hi:Lo│ (up to 16 bytes)  │       │ ^  ^     ^                       ^│
+│0x42│00  │  Binary data       │  ───► │:10AAAA00DDDDDDDDDDDDDDDDDDDDDDDDCC│
+│cmd │pad │ (30 bytes/report)  │       │ ^  ^     ^                       ^│
 └────┴────┴────────────────────┘       │ │  │     │                       ││
                                         │ len addr  data (hex ASCII)    chksum│
                                         └──────────────────────────────────┘
 ```
+
+HFD places the 30 streamed firmware bytes at device payload offsets 2..31.
+Addressing is maintained by the MAIN relay state, not by host-supplied address
+bytes in each report.
 
 ### 2.2 function_003 Detailed Flow (0x15CE)
 
@@ -724,7 +765,8 @@ Step  PC (Hypex FD)              Main DLCP PIC              Control Unit
 ─────────────────────────────────────────────────────────────────────────
  1.   User selects "Update
       Control Firmware"
- 2.   Send USB HID [0x42, ...]  ──►
+ 2.   Send first USB HID
+      [0x42, pad, bytes 0..29] ──►
  3.                              Clear state, prepare
  4.                              Send 0xBF 0x18 0x01  ────►
  5.                                                        Receive factory
@@ -742,38 +784,52 @@ Step  PC (Hypex FD)              Main DLCP PIC              Control Unit
 13.                              ◄──────────────────────── Send ":FW_Upd\r\n"
 14.                              Verify "FW_Upd" match
 15.                              Set 0xCB=1 (update mode)
-16.   ◄── USB HID status/ACK ──
-17.   Send [0x42, addr, data...] ──►
-18.                              Convert binary → Intel HEX
+16.                              Convert same first 0x42
+                                  payload → Intel HEX
                                   Compute CRC
                                   Build ":10AAAA00DD...CC"
-19.                              Send HEX record      ────►
-20.                                                        Parse HEX record
-21.                                                        Verify checksum
-22.                                                        Erase flash page
+17.                              Send HEX record      ────►
+18.                                                        Parse HEX record
+19.                                                        Verify checksum
+20.                                                        Erase flash page
                                                             (if aligned)
-23.                                                        Write to flash
+21.                                                        Write to flash
                                                             (32-byte blocks)
-24.                              ◄──────────────────────── Send ":XX\r\n" ACK
-25.                              Verify ACK checksum
-26.   ◄── USB HID ACK ─────────
-      ... (repeat 17-26 for all records) ...
-27.   Send [0x42, EOF record]    ──►
-28.                              Send ":000000..." EOF ────►
-29.                                                        Write reset vector
+22.                              ◄──────────────────────── Send ":XX\r\n" ACK
+23.                              Verify ACK checksum
+24.   ◄── USB HID ACK ─────────
+25.   Send next [0x42, data...] ──►
+26.                              Convert binary → Intel HEX
+                                  Compute CRC
+                                  Build ":10AAAA00DD...CC"
+27.                              Send HEX record      ────►
+28.                                                        Parse HEX record
+29.                                                        Verify checksum
+30.                                                        Erase flash page
+                                                            (if aligned)
+31.                                                        Write to flash
+                                                            (32-byte blocks)
+32.                              ◄──────────────────────── Send ":XX\r\n" ACK
+33.                              Verify ACK checksum
+34.   ◄── USB HID ACK ─────────
+      ... (repeat 25-34 for remaining data reports) ...
+35.   Send [0x41, CRC hi:lo]     ──►
+36.                              Verify CRC and send
+                                  ":000000..." EOF ───────►
+37.                                                        Write reset vector
                                                             (function_081)
-30.                                                        GOTO 0x7800 at
+38.                                                        GOTO 0x7800 at
                                                             addr 0x0000
-31.                                                        App vectors at
+39.                                                        App vectors at
                                                             0x0008-0x001F
-32.                                                        Write 0x01 →
+40.                                                        Write 0x01 →
                                                             EEPROM[0xFF]
-33.                                                        Execute RESET
-34.                                                        ─── rebooting ───
-35.                                                        Bootloader runs
-36.                                                        EEPROM[FF]=0x01
+41.                                                        Execute RESET
+42.                                                        ─── rebooting ───
+43.                                                        Bootloader runs
+44.                                                        EEPROM[FF]=0x01
                                                             → jump to app
-37.                                                        Application runs
+45.                                                        Application runs
                                                             normally
 ```
 

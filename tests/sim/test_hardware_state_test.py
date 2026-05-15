@@ -82,6 +82,20 @@ def test_parse_delays_ms_parses_numeric_csv() -> None:
         hw._parse_delays_ms("100,banana")
 
 
+def test_parse_ir_action_sequence_validates_sender_actions() -> None:
+    assert hw._parse_ir_action_sequence("vol_up, STD_VOL_UP ,f2") == [
+        "VOL_UP",
+        "STD_VOL_UP",
+        "F2",
+    ]
+
+    with pytest.raises(RuntimeError, match="IR action sequence must contain at least one"):
+        hw._parse_ir_action_sequence(" , ")
+
+    with pytest.raises(RuntimeError, match="unknown IR action"):
+        hw._parse_ir_action_sequence("VOL_UP,not_a_key")
+
+
 def test_identify_mains_requires_exact_left_right(monkeypatch) -> None:
     left = hw.MainRoleState(
         path="left-path",
@@ -725,6 +739,75 @@ def test_preset_convergence_command_writes_result(monkeypatch, tmp_path) -> None
     assert payload["sequence"] == [{"action": "F2", "sleep_after_s": 0.0}]
 
 
+def test_preset_convergence_failure_writes_result_artifact(monkeypatch, tmp_path) -> None:
+    left_a = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+    )
+    right_a = dataclasses.replace(
+        left_a,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+        raw_window_hex="09",
+    )
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [left_a, right_a])
+    monkeypatch.setattr(
+        hw,
+        "_probe_lcd",
+        lambda **kwargs: {"consensus": {"line1": "Volume", "line2": "Active: A"}},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_execute_ir_sequence",
+        lambda **kwargs: [
+            {
+                "action": "F2",
+                "cli_command": "ir tx RC5 10 39",
+                "returncode": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        hw,
+        "_wait_for_main_pair_preset",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("preset did not move")),
+    )
+
+    with pytest.raises(RuntimeError, match="preset did not move"):
+        hw.main(
+            [
+                "--output-root",
+                str(tmp_path),
+                "preset-convergence",
+                "--action",
+                "F2",
+            ]
+        )
+
+    result_files = list((tmp_path / "preset_convergence").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "FAIL"
+    assert payload["expected_preset"] == "B"
+    assert payload["target_preset"] == "B"
+    assert payload["ir_results"][0]["cli_command"] == "ir tx RC5 10 39"
+    assert payload["error"]["message"] == "preset did not move"
+    assert payload["final_snapshot"]["pair"]["left"]["active_preset"] == "A"
+    assert payload["final_snapshot"]["pair"]["right"]["active_preset"] == "A"
+
+
 def test_rapid_toggle_command_expands_sequence_and_expected_target(monkeypatch, tmp_path) -> None:
     seen: dict[str, object] = {}
 
@@ -752,6 +835,173 @@ def test_rapid_toggle_command_expands_sequence_and_expected_target(monkeypatch, 
     assert call["expected_preset"] == "A"
     assert [step.action for step in call["steps"]] == ["F1", "F2", "F1"]
     assert [step.sleep_after_s for step in call["steps"]] == [0.25, 0.25, 0.0]
+
+
+def test_ir_receiver_sweep_records_state_deltas(monkeypatch, tmp_path) -> None:
+    left_before = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+        logical_volume_low=0xA0,
+        computed_volume_low=0xA0,
+    )
+    right_before = dataclasses.replace(
+        left_before,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+    )
+    left_after = dataclasses.replace(left_before, logical_volume_low=0xA1, computed_volume_low=0xA1)
+    right_after = dataclasses.replace(right_before, logical_volume_low=0xA1, computed_volume_low=0xA1)
+    states = iter([[left_before, right_before], [left_after, right_after]])
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: next(states))
+    monkeypatch.setattr(
+        hw,
+        "_send_ir",
+        lambda template, action: {"action": action, "cli_command": f"fake {action}"},
+    )
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    rc = hw.main(
+        [
+            "--output-root",
+            str(tmp_path),
+            "ir-receiver-sweep",
+            "--actions",
+            "VOL_UP",
+            "--settle-s",
+            "0",
+            "--require-any-change",
+        ]
+    )
+
+    assert rc == 0
+    result_files = list((tmp_path / "ir_receiver_sweep").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "PASS"
+    assert payload["any_changed"] is True
+    assert payload["steps"][0]["action"] == "VOL_UP"
+    assert payload["steps"][0]["delta"]["changed"] is True
+    assert payload["steps"][0]["delta"]["paths"]["left-path"]["after"]["logical_volume_low"] == 0xA1
+
+
+def test_ir_receiver_sweep_can_fail_when_nothing_changes(monkeypatch, tmp_path) -> None:
+    left = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+        logical_volume_low=0xA0,
+        computed_volume_low=0xA0,
+    )
+    right = dataclasses.replace(
+        left,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+    )
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [left, right])
+    monkeypatch.setattr(
+        hw,
+        "_send_ir",
+        lambda template, action: {"action": action, "cli_command": f"fake {action}"},
+    )
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    with pytest.raises(RuntimeError, match=r"no IR sweep action changed.*result_path="):
+        hw.main(
+            [
+                "--output-root",
+                str(tmp_path),
+                "ir-receiver-sweep",
+                "--actions",
+                "VOL_UP",
+                "--settle-s",
+                "0",
+                "--require-any-change",
+            ]
+        )
+
+    result_files = list((tmp_path / "ir_receiver_sweep").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "FAIL"
+    assert payload["any_changed"] is False
+    assert payload["error"]["message"] == "no IR sweep action changed MAIN-visible state"
+
+
+def test_ir_receiver_sweep_send_failure_writes_artifact_path(monkeypatch, tmp_path) -> None:
+    left = hw.MainRoleState(
+        path="left-path",
+        serial="",
+        product="DLCP",
+        manufacturer="Hypex BV",
+        role="LEFT",
+        active_preset="A",
+        active_config_name="CfgL",
+        route_labels=["L"] * 6,
+        route_values=[0] * 6,
+        raw_window_hex="08",
+        logical_volume_low=0xA0,
+        computed_volume_low=0xA0,
+    )
+    right = dataclasses.replace(
+        left,
+        path="right-path",
+        role="RIGHT",
+        active_config_name="CfgR",
+        route_labels=["R"] * 6,
+        route_values=[1] * 6,
+    )
+
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [left, right])
+    monkeypatch.setattr(
+        hw,
+        "_send_ir",
+        lambda template, action: (_ for _ in ()).throw(RuntimeError("Flipper rejected command")),
+    )
+    monkeypatch.setattr(hw.time, "sleep", lambda _: None)
+
+    with pytest.raises(RuntimeError, match=r"Flipper rejected command.*result_path="):
+        hw.main(
+            [
+                "--output-root",
+                str(tmp_path),
+                "ir-receiver-sweep",
+                "--actions",
+                "VOL_UP",
+                "--settle-s",
+                "0",
+            ]
+        )
+
+    result_files = list((tmp_path / "ir_receiver_sweep").rglob("result.json"))
+    assert len(result_files) == 1
+    payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "FAIL"
+    assert payload["steps"] == []
+    assert payload["final"][0]["path"] == "left-path"
+    assert payload["error"]["message"] == "Flipper rejected command"
 
 
 def test_lcd_summary_contains_text_matches_observations() -> None:
@@ -898,6 +1148,7 @@ def test_preset_standby_wake_timing_sweep_command_writes_result(monkeypatch, tmp
 
 def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> None:
     actions: list[str] = []
+    call_order: list[str] = []
 
     left_after = hw.MainRoleState(
         path="left-path",
@@ -924,13 +1175,29 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(
         hw,
         "_send_single_ir_action",
-        lambda *, args, action: (actions.append(action) or {"action": action}),
+        lambda *, args, action: (
+            call_order.append(f"ir:{action}") or actions.append(action) or {"action": action}
+        ),
     )
     monkeypatch.setattr(hw, "_capture_sticky_path_roles", lambda **kwargs: {"path_roles": {}, "states": [], "error": None})
-    monkeypatch.setattr(hw, "_wait_for_standby_lcd_entry", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(
+        hw,
+        "_wait_for_standby_lcd_entry",
+        lambda **kwargs: (
+            call_order.append("lcd:standby")
+            or {"matched_mode": "lcd_zzz", "expected_line1": "Zzz..."}
+        ),
+    )
     monkeypatch.setattr(hw, "_try_read_pair_state", lambda **kwargs: {"ok": True})
     monkeypatch.setattr(hw, "_wait_for_wake_two_phase", lambda **kwargs: {"ok": True})
-    monkeypatch.setattr(hw, "_wait_for_post_wake_lcd_outcome", lambda **kwargs: {"status": "usable"})
+    monkeypatch.setattr(
+        hw,
+        "_wait_for_post_wake_lcd_outcome",
+        lambda **kwargs: (
+            call_order.append("lcd:wake")
+            or {"status": "usable", "line1": "Volume"}
+        ),
+    )
     monkeypatch.setattr(hw, "_read_pair_state", lambda *, vid, pid: (left_after, right_after))
     monkeypatch.setattr(hw.time, "sleep", lambda _: None)
 
@@ -959,6 +1226,10 @@ def test_run_standby_wake_cycle_uses_endpoint_actions(monkeypatch, tmp_path) -> 
     )
 
     assert actions == ["STANDBY", "WAKE"]
+    assert call_order == ["ir:STANDBY", "lcd:standby", "ir:WAKE", "lcd:wake"]
+    assert payload["standby_lcd"]["expected_line1"] == "Zzz..."
+    assert payload["standby_lcd"]["matched_mode"] == "lcd_zzz"
+    assert payload["wake_lcd"]["line1"] == "Volume"
     assert payload["after"]["left"]["active_preset"] == "B"
     assert payload["after"]["right"]["active_preset"] == "B"
 

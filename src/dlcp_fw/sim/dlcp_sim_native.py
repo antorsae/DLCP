@@ -539,6 +539,30 @@ class Chain:
             int(unit), int(addr) & 0xFFF, int(value) & 0xFF
         )
 
+    def firmware_hid_report(
+        self,
+        unit: int,
+        payload: bytes | bytearray | list[int],
+        max_steps: int = 20_000,
+    ) -> tuple[bytes, int]:
+        """Execute one app-mode 64-byte HID report through the
+        running V3.2 firmware's EP1 OUT/IN service path.
+
+        This models a configured EP1 transaction at the firmware
+        dispatcher boundary rather than emulating command semantics in
+        Python: the rust facade stages the EP1 OUT BDT/data buffer,
+        invokes ``main_usb_service_3a26`` twice, and returns the EP1 IN
+        data buffer.  The second tuple element is the number of observed
+        entries into ``hid_command_dispatch``.
+        """
+        report = [int(b) & 0xFF for b in payload]
+        response, dispatch_hits = self._inner.firmware_hid_report(
+            int(unit),
+            report,
+            int(max_steps),
+        )
+        return bytes(response), int(dispatch_hits)
+
     def read_core_flash(
         self, core_idx: int, addr: int, length: int
     ) -> bytes:
@@ -618,6 +642,19 @@ class Chain:
         py_frames = [[int(b) & 0xFF for b in f] for f in frames]
         return tuple(self._inner.inject_main_frames_fifo(
             py_frames, int(fifo_limit),
+        ))
+
+    def inject_main_uart_rx_bytes(
+        self, unit: int, bytes_: list[int] | bytes
+    ) -> tuple[int, int]:
+        """Inject raw bytes into one MAIN's silicon EUSART RX path.
+
+        Returns ``(accepted, dropped)``.  Unlike
+        :meth:`inject_main_frames_fifo`, this exercises the UART
+        peripheral gates (`SPEN`, `CREN`, OERR, FIFO capacity, MCLR).
+        """
+        return tuple(self._inner.inject_main_uart_rx_bytes(
+            int(unit), [int(b) & 0xFF for b in bytes_],
         ))
 
     def write_control_eeprom_byte(self, addr: int, value: int) -> None:
@@ -805,6 +842,71 @@ class Chain:
         """
         self._inner.clear_mssp_stop_faults()
 
+    def set_mssp_start_fault(
+        self,
+        *,
+        cycles: int,
+        count: int,
+    ) -> None:
+        """Program MAIN0's MSSP START/SEN fault knobs.
+
+        ``cycles`` extends each selected SEN/RSEN sequence deadline by
+        that many Tcy; ``count`` is the number of affected start
+        sequences, with ``-1`` meaning indefinite.  Unlike a test-side
+        SSPCON2 poke, this leaves the peripheral state machine owning
+        the busy bit and completion timing.
+        """
+        self._inner.set_mssp_start_fault(
+            max(0, int(cycles)),
+            max(-1, int(count)),
+        )
+
+    def clear_mssp_start_faults(self) -> None:
+        """Clear MAIN0's MSSP START/SEN fault knobs."""
+        self._inner.clear_mssp_start_faults()
+
+    def set_mssp_clock_stretch(
+        self,
+        *,
+        cycles: int,
+        count: int,
+    ) -> None:
+        """Program MAIN0's MSSP clock-stretch injection knobs.
+
+        ``cycles`` extends each selected MSSP sequence deadline by
+        that many Tcy; ``count`` is the number of affected sequences,
+        with ``-1`` meaning indefinite.  This approximates a held-low
+        SCL / clock-stretch condition in sim-only sweeps.
+        """
+        self._inner.set_mssp_clock_stretch(
+            max(0, int(cycles)),
+            max(-1, int(count)),
+        )
+
+    def clear_mssp_clock_stretch(self) -> None:
+        """Clear MAIN0's MSSP clock-stretch injection knobs."""
+        self._inner.clear_mssp_clock_stretch()
+
+    def set_mssp_line_hold(
+        self,
+        *,
+        scl_low: bool = False,
+        sda_low: bool = False,
+    ) -> None:
+        """Force MAIN0's MSSP bus lines low at the peripheral boundary.
+
+        While either line is forced low, in-flight MSSP master
+        sequences remain busy and their transfer-control bits do not
+        auto-clear.  GPIO pin reads are still modelled separately, so
+        tests that exercise bitbang bus-clear should also force RB0/RB1
+        readback through the existing pin/PORT helpers.
+        """
+        self._inner.set_mssp_line_hold(bool(scl_low), bool(sda_low))
+
+    def clear_mssp_line_holds(self) -> None:
+        """Release MAIN0's forced MSSP bus line holds."""
+        self._inner.clear_mssp_line_holds()
+
     def force_reset_main_mssp(self) -> None:
         """Force-abort any in-flight MSSP transaction on MAIN0
         and clear the SSPCON2 trigger bits.
@@ -856,6 +958,19 @@ class Chain:
                 "The PIC18F2455 ADC is 10-bit per DS39632E §21."
             )
         self._inner.set_main_an0_sample(int(unit), v)
+
+    def apply_main_reset(self, unit: int, source: str) -> None:
+        """Apply a reset source to one MAIN core and schedule it to run.
+
+        ``source`` accepts ``por`` / ``poweron``, ``bor`` /
+        ``brownout``, ``mclr``, ``wdt``, ``reset``,
+        ``stackfull``, or ``stackunderflow``.
+        """
+        self._inner.apply_main_reset(int(unit), str(source))
+
+    def apply_reset_all(self, source: str) -> None:
+        """Apply a reset source to every core and re-bootstrap the chain."""
+        self._inner.apply_reset_all(str(source))
 
     def inject_triplet(self, frame_or_route, cmd=None, data=None) -> bool:  # type: ignore[no-untyped-def]
         """Inject a 3-byte chain frame directly into

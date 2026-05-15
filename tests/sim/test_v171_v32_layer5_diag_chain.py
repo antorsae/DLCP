@@ -76,7 +76,7 @@ from dlcp_fw.paths import (
     V171_CONTROL_ASM,
     V32_MAIN_ASM,
 )
-from dlcp_fw.sim.v17_symbols import assemble_v17
+from dlcp_fw.sim.v17_symbols import assemble_v17, parse_v17_symbols
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
 
@@ -105,6 +105,106 @@ def _require_v32_hex(v32_hex: Path) -> None:
         pytest.skip(f"missing V3.2 hex: {v32_hex}")
 
 
+_CONTROL_BUTTON_PINS = {
+    # V1.71 button_scan_debounce reads active-low panel pins:
+    # RIGHT=RA4, LEFT=RC5.  Use short taps rather than Chain.press(),
+    # whose long hold deliberately exercises auto-repeat.
+    "RIGHT": ("A", 4),
+    "LEFT": ("C", 5),
+}
+
+
+CONTROL_FLAGS_PHYS = 0x01F
+IR_ARMED_MASK = 0x01
+CONTROL_CONNECTED_MASK = 0x02
+MUTE_MASK = 0x20
+PRESET_BIT_MASK = 0x40
+VOLUME_CACHE_PHYS = 0x0B9
+IR_PROFILE_ADDR_PHYS = 0x020
+IR_PROFILE_POWER_PHYS = 0x021
+IR_PROFILE_VOL_UP_PHYS = 0x022
+IR_PROFILE_VOL_DOWN_PHYS = 0x023
+IR_PROFILE_INPUT_UP_PHYS = 0x024
+IR_PROFILE_INPUT_DOWN_PHYS = 0x025
+IR_PROFILE_MUTE_PHYS = 0x026
+MAIN_ACTIVE_FLAGS_PHYS = 0x05E
+MAIN_ACTIVE_PRESET_MASK = 0x04
+MAIN_ACTIVE_GATE_MASK = 0x08
+MAIN_DIAG_STANDBY_PHYS = 0x2E7
+MAIN_DIAG_WAKE_PHYS = 0x2E8
+IR_ADDR_HYPEX = 0x10
+IR_CMD_VOL_UP = 0x10
+IR_CMD_VOL_DOWN = 0x11
+IR_CMD_MUTE = 0x0D
+IR_CMD_PRESET_A = 0x38
+IR_CMD_PRESET_B = 0x39
+IR_CMD_STANDBY = 0x3A
+IR_CMD_WAKE = 0x3B
+
+
+def _rust_tap_key(rust_chain, key: str) -> None:  # type: ignore[no-untyped-def]
+    port, bit = _CONTROL_BUTTON_PINS[key]
+    rust_chain.set_control_pin(port, bit, False)
+    rust_chain.step_ticks(5_000_000)
+    rust_chain.set_control_pin(port, bit, True)
+    rust_chain.step_ticks(5_000_000)
+
+
+def _frame_tuple(frame) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+    return tuple(frame) if isinstance(frame, tuple) else (frame.route, frame.cmd, frame.data)
+
+
+def _configure_hypex_ir_profile(rust_chain) -> None:  # type: ignore[no-untyped-def]
+    """Use a deterministic IR profile for legacy vol/mute dispatch."""
+    for addr, value in (
+        (IR_PROFILE_ADDR_PHYS, IR_ADDR_HYPEX),
+        (IR_PROFILE_POWER_PHYS, 0x0C),
+        (IR_PROFILE_VOL_UP_PHYS, IR_CMD_VOL_UP),
+        (IR_PROFILE_VOL_DOWN_PHYS, IR_CMD_VOL_DOWN),
+        (IR_PROFILE_INPUT_UP_PHYS, 0x20),
+        (IR_PROFILE_INPUT_DOWN_PHYS, 0x21),
+        (IR_PROFILE_MUTE_PHYS, IR_CMD_MUTE),
+    ):
+        rust_chain.write_reg(addr, value)
+
+
+def _inject_diag_ir(
+    rust_chain, cmd: int, *, settle_ticks: int = 12_000_000,
+) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
+    before = len(rust_chain.tx_frames())
+    rust_chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=cmd)
+    rust_chain.step_ticks(settle_ticks)
+    return [_frame_tuple(f) for f in rust_chain.tx_frames()[before:]]
+
+
+def _wait_until(
+    rust_chain, predicate, *, attempts: int = 120, ticks: int = 2_000_000,
+) -> None:  # type: ignore[no-untyped-def]
+    for _ in range(attempts):
+        if predicate():
+            return
+        rust_chain.step_ticks(ticks)
+    pytest.fail(
+        f"condition did not converge; lcd={rust_chain.lcd_lines()!r} "
+        f"control_flags=0x{rust_chain.read_reg(CONTROL_FLAGS_PHYS):02X} "
+        f"display_state=0x{rust_chain.read_reg(DISPLAY_STATE_INDEX_PHYS):02X}"
+    )
+
+
+def _main_preset_bits(rust_chain) -> tuple[int, int]:  # type: ignore[no-untyped-def]
+    return tuple(
+        (rust_chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS_PHYS) & MAIN_ACTIVE_PRESET_MASK) >> 2
+        for unit in (0, 1)
+    )
+
+
+def _main_active_gates(rust_chain) -> tuple[int, int]:  # type: ignore[no-untyped-def]
+    return tuple(
+        (rust_chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS_PHYS) & MAIN_ACTIVE_GATE_MASK) >> 3
+        for unit in (0, 1)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rust-side navigation / readback helpers.  Originally added as
 # mirrors of the gpsim helpers during the dual-backend migration;
@@ -116,12 +216,24 @@ def _require_v32_hex(v32_hex: Path) -> None:
 def _rust_navigate_to_diagnostics(rust_chain) -> None:  # type: ignore[no-untyped-def]
     """Drive CONTROL to PB1 Diag(4).
 
-    Presses RIGHT four times with 8 intermediate steps to settle
-    each press.  Targets the V1.71 menu state
-    machine, which doesn't change behavior across simulators.
+    Taps RIGHT four times with short active-low physical-style pulses.
+    ``Chain.press()`` holds long enough to auto-repeat once the Diag
+    page uses its intended non-modal poll loop, so this helper avoids
+    the facade's synthetic long hold.
     """
     for _ in range(4):
-        rust_chain.press("RIGHT")
+        _rust_tap_key(rust_chain, "RIGHT")
+        for _ in range(8):
+            rust_chain.step()
+
+
+def _rust_navigate_to_diag_page(rust_chain, pb_idx: int) -> None:  # type: ignore[no-untyped-def]
+    """Drive CONTROL to PB1 Diag(4) or PB2 Diag(5)."""
+    if pb_idx not in {0, 1}:
+        raise ValueError(f"pb_idx must be 0 or 1, got {pb_idx!r}")
+    _rust_navigate_to_diagnostics(rust_chain)
+    if pb_idx == 1:
+        _rust_tap_key(rust_chain, "RIGHT")
         for _ in range(8):
             rust_chain.step()
 
@@ -172,6 +284,12 @@ def _rust_diag_pb_cache(rust_chain, pb_idx: int) -> tuple[int, ...]:  # type: ig
     """
     base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
     return tuple(rust_chain.read_reg(base + i) for i in range(7))
+
+
+def _parse_v171_symbols(hex_path: Path) -> dict[str, int]:
+    lst_path = hex_path.with_suffix(".lst")
+    assert lst_path.exists(), f"missing V1.71 listing beside {hex_path}"
+    return parse_v17_symbols(lst_path)
 
 
 def _rust_wait_for_pb_present(  # type: ignore[no-untyped-def]
@@ -225,11 +343,6 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
     latency; tracked under task #117 for the gpsim path where the
     later frames fail to land at all.
     """
-    # press() is synchronous (it internally steps the simulator
-    # for BUTTON_HOLD_TICKS + BUTTON_RELEASE_SETTLE_TICKS), so no
-    # extra step()-after-press is needed here -- by the time press()
-    # returns, the schedule is fully applied and ``on_pb1`` matches
-    # the actual chain state.
     on_pb1 = True
     steps_since_press = 0
     converged = False
@@ -247,7 +360,7 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
             extra_remaining -= 1
         steps_since_press += 1
         if steps_since_press >= press_period:
-            rust_chain.press("RIGHT" if on_pb1 else "LEFT")
+            _rust_tap_key(rust_chain, "RIGHT" if on_pb1 else "LEFT")
             on_pb1 = not on_pb1
             steps_since_press = 0
     # Skip the post-loop normalize when extra_check is provided:
@@ -255,7 +368,7 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
     # state they want (typically display_state_index == STATE_PB1_DIAG),
     # and an extra normalization press would auto-repeat past it.
     if extra_check is None and not on_pb1:
-        rust_chain.press("LEFT")
+        _rust_tap_key(rust_chain, "LEFT")
         on_pb1 = True
         for _ in range(8):
             rust_chain.step()
@@ -336,6 +449,9 @@ V171_DIAG_PB1_BASE_PHYS = 0x180        # I D S B R A P O V W X (11 bytes)
 V171_DIAG_PB2_BASE_PHYS = 0x18B        # I D S B R A P O V W X (11 bytes)
 V171_DIAG_TARGET_PHYS = 0x196
 V171_DIAG_PRESENT_PHYS = 0x197
+V171_DIAG_POLL_LO_PHYS = 0x198
+V171_DIAG_POLL_HI_PHYS = 0x199
+V171_DIAG_FLAGS_PHYS = 0x19C
 
 # MAIN diag block (BANK 2 upper, physical addresses for gpsim CLI reads).
 # Relocated 2026-04-19 from 0x123..0x12A to escape the USB EP1 OUT buffer
@@ -508,6 +624,254 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
         f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}; "
         f"PB2 cache={[hex(v) for v in _rust_diag_pb_cache(c, 1)]}"
     )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v171_v32_layer5_chain_diag_static_wait_updates_pb1_and_pb2(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """BUG-DIAG-01: each visible Diagnostics page must refresh by
+    static wait without requiring repeated LEFT/RIGHT cycling.
+
+    The legacy tests below use ``_rust_press_drive_until_pb_present`` to
+    force convergence by repeatedly leaving and re-entering the diag page.
+    That is now only a workaround.  The product behavior must be: enter
+    a PB1/PB2 Diagnostics page once, wait, and see live data within the
+    bounded poll cadence.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+
+    _rust_navigate_to_diagnostics(c)
+    for pb_idx, pb_mask, pb_label in ((0, 0x01, "PB1"), (1, 0x02, "PB2")):
+        if pb_idx == 1:
+            _rust_tap_key(c, "RIGHT")
+            for _ in range(8):
+                c.step()
+
+        for _ in range(400):
+            line0, line1 = c.lcd_lines()
+            present = _rust_diag_present(c)
+            if (
+                (present & pb_mask) == pb_mask
+                and line0.startswith(pb_label)
+                and "n/a" not in line1.lower()
+            ):
+                break
+            c.step()
+
+        present = _rust_diag_present(c)
+        line0, line1 = c.lcd_lines()
+        assert (present & pb_mask) == pb_mask, (
+            f"[rust] static Diag wait did not discover {pb_label}; "
+            f"present=0x{present:02X}; lcd={(line0, line1)!r}; "
+            f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}; "
+            f"PB2 cache={[hex(v) for v in _rust_diag_pb_cache(c, 1)]}"
+        )
+        assert line0.startswith(pb_label), (
+            f"[rust] expected visible {pb_label} page; lcd={(line0, line1)!r}"
+        )
+        assert "n/a" not in line1.lower(), (
+            f"[rust] static {pb_label} Diag wait still renders n/a: "
+            f"lcd={(line0, line1)!r}"
+        )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_layer5_diag_visible_page_refreshes_on_next_cadence(
+    v171_hex: Path, v32_hex: Path, pb_idx: int, pb_label: str
+) -> None:
+    """BUG-DIAG-01: the visible per-PB page must get the full cadence.
+
+    The old alternating-target loop could leave PB2 visible while the
+    next cadence queried PB1, so a fresh PB2 counter update did not reach
+    the LCD until a later cadence.  Force that worst-case target state and
+    require the active page's PB to refresh immediately on the next
+    cadence tick.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+
+    _rust_navigate_to_diag_page(c, pb_idx)
+    for _ in range(10):
+        c.step()
+    assert c.lcd_lines()[0].startswith(pb_label), c.lcd_lines()
+
+    active_base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
+    inactive_target = 1 - pb_idx
+    _rust_set_main_diag_block(c, pb_idx, diag_i=0x7)
+    assert c.read_reg(active_base) == 0x0
+
+    # Align before the countdown read.  A fixed-size `step()` can stop
+    # after `iorwf poll_hi,W` but before `bnz`; poking the countdown there
+    # leaves STATUS.Z reflecting the old value, which is not the "cadence
+    # expired" state this test is trying to exercise.
+    syms = _parse_v171_symbols(v171_hex)
+    poll_check_pc = syms["v171_diag_poll_check"]
+    hit = c.step_until_pc_hit(0, poll_check_pc, poll_check_pc, max_tcy=5_000_000)
+    assert hit == poll_check_pc, (
+        f"CONTROL did not reach v171_diag_poll_check; hit PC=0x{hit:04X}; "
+        f"lcd={c.lcd_lines()!r}"
+    )
+
+    # Reproduce the stale alternating-target state: the operator is on
+    # PBn, but v171_diag_target points at the other PB as the cadence
+    # expires.  Correct firmware reloads target from the visible page
+    # before sending cmd 0x21/cmd 0x22.
+    c.write_reg(V171_DIAG_TARGET_PHYS, inactive_target)
+    c.write_reg(V171_DIAG_POLL_LO_PHYS, 0x00)
+    c.write_reg(V171_DIAG_POLL_HI_PHYS, 0x00)
+    c.write_reg(V171_DIAG_FLAGS_PHYS, 0x00)
+
+    # One Chain.step is 200K CONTROL Tcy (~50 ms).  Twenty chunks keep the
+    # assertion inside the <=1 s diagnostic refresh contract while allowing
+    # PB1/PB2's ring paths to drain at their natural simulated latency.
+    for _ in range(20):
+        c.step()
+        if (
+            c.read_reg(active_base) == 0x7
+            and c.lcd_lines()[0].startswith(f"{pb_label}: I7")
+        ):
+            break
+
+    assert c.read_reg(active_base) == 0x7, (
+        f"{pb_label} visible page did not refresh on the next cadence when "
+        f"diag_target initially pointed at PB{inactive_target + 1}; "
+        f"target=0x{c.read_reg(V171_DIAG_TARGET_PHYS):02X}; "
+        f"cache={[hex(v) for v in _rust_diag_pb_cache(c, pb_idx)]}; "
+        f"lcd={c.lcd_lines()!r}"
+    )
+    line0, _ = c.lcd_lines()
+    assert line0.startswith(f"{pb_label}: I7"), c.lcd_lines()
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_layer5_diag_page_dispatches_ir_volume_mute_and_preset(
+    v171_hex: Path, v32_hex: Path, pb_idx: int, pb_label: str
+) -> None:
+    """While parked on PB1/PB2 Diagnostics, decoded IR commands must still
+    run through the normal dispatch path.
+
+    BUG-DIAG-02 broadened: replacing the modal display loop must not
+    make Diagnostics a dead-end mode.  Volume, mute, and preset IR
+    commands are expected to update CONTROL state and emit their normal
+    CONTROL->MAIN frames without requiring the operator to leave the
+    Diagnostics page first.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _configure_hypex_ir_profile(c)
+    c.write_reg(VOLUME_CACHE_PHYS, 0x33)
+    c.write_reg(CONTROL_FLAGS_PHYS, c.read_reg(CONTROL_FLAGS_PHYS) & ~MUTE_MASK & ~PRESET_BIT_MASK)
+    _rust_navigate_to_diag_page(c, pb_idx)
+    assert c.lcd_lines()[0].startswith(pb_label), c.lcd_lines()
+
+    frames = _inject_diag_ir(c, IR_CMD_VOL_UP)
+    assert c.read_reg(VOLUME_CACHE_PHYS) == 0x34, (
+        f"Diag page ignored IR volume-up; volume=0x{c.read_reg(VOLUME_CACHE_PHYS):02X}"
+    )
+    assert (0xB0, 0x07, 0x34) in frames, (
+        f"IR volume-up on Diag should emit B0/07/34; frames={frames!r}"
+    )
+
+    frames = _inject_diag_ir(c, IR_CMD_MUTE)
+    assert c.read_reg(CONTROL_FLAGS_PHYS) & MUTE_MASK, (
+        f"Diag page ignored IR mute; flags=0x{c.read_reg(CONTROL_FLAGS_PHYS):02X}"
+    )
+    assert (0xB0, 0x03, 0x02) in frames, (
+        f"IR mute-on on Diag should emit B0/03/02; frames={frames!r}"
+    )
+
+    frames = _inject_diag_ir(c, IR_CMD_PRESET_B, settle_ticks=20_000_000)
+    assert c.read_reg(CONTROL_FLAGS_PHYS) & PRESET_BIT_MASK, (
+        f"Diag page ignored IR preset-B; flags=0x{c.read_reg(CONTROL_FLAGS_PHYS):02X}"
+    )
+    assert (0xB0, 0x20, 0x01) in frames, (
+        f"IR preset-B on Diag should emit B0/20/01; frames={frames!r}"
+    )
+    _wait_until(c, lambda: _main_preset_bits(c) == (1, 1), attempts=160)
+
+    line0, _ = c.lcd_lines()
+    assert line0.startswith(pb_label), (
+        f"volume/mute/preset IR should not force navigation away from Diag; lcd={c.lcd_lines()!r}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_layer5_diag_page_dispatches_ir_standby_and_wake(
+    v171_hex: Path, v32_hex: Path, pb_idx: int, pb_label: str
+) -> None:
+    """IR standby/wake must work from Diagnostics, including local UI state.
+
+    Standby should leave the PB1/PB2 Diagnostics page and render Zzz while
+    both MAINs observe the standby command.  Wake should bring CONTROL
+    back through reconnect/awake display state with both MAINs awake;
+    preserving the previous PB Diagnostics menu state is acceptable.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _configure_hypex_ir_profile(c)
+    _rust_navigate_to_diag_page(c, pb_idx)
+    assert c.lcd_lines()[0].startswith(pb_label), c.lcd_lines()
+
+    standby_frames = _inject_diag_ir(c, IR_CMD_STANDBY, settle_ticks=20_000_000)
+    assert (0xB0, 0x03, 0x00) in standby_frames, (
+        f"CONTROL did not emit standby frame from Diag IR; frames={standby_frames!r}"
+    )
+    _wait_until(c, lambda: "ZZZ" in c.lcd_lines()[0].upper(), attempts=120)
+    _wait_until(c, lambda: _main_active_gates(c) == (0, 0), attempts=180)
+
+    wake_frames = _inject_diag_ir(c, IR_CMD_WAKE, settle_ticks=20_000_000)
+    assert (0xB0, 0x03, 0x01) in wake_frames, (
+        f"CONTROL did not emit wake frame from Diag IR; frames={wake_frames!r}"
+    )
+    _wait_until(
+        c,
+        lambda: (
+            c.is_connected()
+            and bool(c.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_CONNECTED_MASK)
+            and "ZZZ" not in c.lcd_lines()[0].upper()
+        ),
+        attempts=180,
+    )
+    _wait_until(c, lambda: _main_active_gates(c) == (1, 1), attempts=240)
+
+
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_pb_cache_isolation(
@@ -894,7 +1258,7 @@ def test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive(
     for _ in range(max_lefts):
         if c.read_reg(DISPLAY_STATE_INDEX_PHYS) == 0:
             break
-        c.press("LEFT")
+        _rust_tap_key(c, "LEFT")
         for _ in range(8):
             c.step()
     line0, line1 = c.lcd_lines()
@@ -1056,7 +1420,7 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     line0_diag, _ = c.lcd_lines()
     if line0_diag.startswith("PB2"):
         # Auto-repeat overshot to PB2; one LEFT brings us back to PB1.
-        c.press("LEFT")
+        _rust_tap_key(c, "LEFT")
         for _ in range(24):
             c.step()
         line0_diag, _ = c.lcd_lines()
@@ -1064,7 +1428,7 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
         f"[rust] chain did not reach PB1 Diag page after navigation; "
         f"LCD={line0_diag!r}"
     )
-    c.press("LEFT")
+    _rust_tap_key(c, "LEFT")
     exit_seen = False
     for _ in range(12):
         c.step()

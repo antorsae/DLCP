@@ -155,10 +155,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of range")]
     fn drift_above_max_panics() {
-        let _ = ClockDomain::with_drift_ppm(
-            Variant::Pic18F25K20,
-            MAX_DRIFT_PPM + 1,
-        );
+        let _ = ClockDomain::with_drift_ppm(Variant::Pic18F25K20, MAX_DRIFT_PPM + 1);
     }
 
     #[test]
@@ -192,9 +189,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of range")]
     fn drift_i32_min_panics_via_unsigned_abs_guard() {
-        let _ = ClockDomain::with_drift_ppm(
-            Variant::Pic18F25K20,
-            i32::MIN,
-        );
+        let _ = ClockDomain::with_drift_ppm(Variant::Pic18F25K20, i32::MIN);
     }
 }

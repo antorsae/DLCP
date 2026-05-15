@@ -184,10 +184,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
         let return_pc = core.pc();
         let pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if pushed
-            && stack.depth() as usize == crate::stack::STACK_DEPTH
-            && core.config.stvren()
-        {
+        if pushed && stack.depth() as usize == crate::stack::STACK_DEPTH && core.config.stvren() {
             // Stack-full reset during IRQ dispatch.  Per
             // DS39632E §5.1.2.4 the push that takes the
             // stack to depth=31 ("becomes full") triggers
@@ -202,11 +199,7 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
             // is the FILLING push) + 5a315b3 MEDIUM
             // (trigger keyed to depth-becomes-full, not
             // STKFUL latch transition).
-            crate::reset::apply_reset(
-                core,
-                stack,
-                crate::reset::ResetSource::StackFull,
-            );
+            crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackFull);
             stack.mirror_to_sfrs(&mut core.memory);
             return Some(2);
         }
@@ -236,15 +229,8 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
         let return_pc = core.pc();
         let pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if pushed
-            && stack.depth() as usize == crate::stack::STACK_DEPTH
-            && core.config.stvren()
-        {
-            crate::reset::apply_reset(
-                core,
-                stack,
-                crate::reset::ResetSource::StackFull,
-            );
+        if pushed && stack.depth() as usize == crate::stack::STACK_DEPTH && core.config.stvren() {
+            crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackFull);
             stack.mirror_to_sfrs(&mut core.memory);
             return Some(2);
         }
@@ -260,15 +246,8 @@ pub fn try_dispatch_irq(core: &mut Core, stack: &mut Stack) -> Option<u8> {
         let return_pc = core.pc();
         let pushed = stack.push(return_pc);
         stack.mirror_to_sfrs(&mut core.memory);
-        if pushed
-            && stack.depth() as usize == crate::stack::STACK_DEPTH
-            && core.config.stvren()
-        {
-            crate::reset::apply_reset(
-                core,
-                stack,
-                crate::reset::ResetSource::StackFull,
-            );
+        if pushed && stack.depth() as usize == crate::stack::STACK_DEPTH && core.config.stvren() {
+            crate::reset::apply_reset(core, stack, crate::reset::ResetSource::StackFull);
             stack.mirror_to_sfrs(&mut core.memory);
             return Some(2);
         }
@@ -687,7 +666,8 @@ mod tests {
         // stay clear inside an ISR until RETFIE re-enables
         // it).
         let int_flag_cleared = intcon & !0x02; // clear INT0IF only
-        core.memory.write_raw(Address::from_raw(INTCON_ADDR), int_flag_cleared);
+        core.memory
+            .write_raw(Address::from_raw(INTCON_ADDR), int_flag_cleared);
         let c2 = step(&mut core, &mut stack).unwrap();
         assert_eq!(c2, 2, "RETFIE billed at 2 Tcy");
         assert_eq!(core.pc(), 0x0042, "RETFIE restored pre-IRQ PC");
@@ -715,20 +695,14 @@ mod tests {
         let mut core = Core::new(Variant::Pic18F25K20);
         // Stage initial W/STATUS/BSR via direct memory writes
         // so the test doesn't depend on the executor.
-        core.memory
-            .write_raw(Address::from_raw(0xFE8), 0xAB); // WREG
-        core.memory
-            .write_raw(Address::from_raw(0xFD8), 0x1F); // STATUS (5 LSBs)
-        core.memory
-            .write_raw(Address::from_raw(0xFE0), 0x05); // BSR
+        core.memory.write_raw(Address::from_raw(0xFE8), 0xAB); // WREG
+        core.memory.write_raw(Address::from_raw(0xFD8), 0x1F); // STATUS (5 LSBs)
+        core.memory.write_raw(Address::from_raw(0xFE0), 0x05); // BSR
         core.save_fast_regs();
         // Clobber.
-        core.memory
-            .write_raw(Address::from_raw(0xFE8), 0x00);
-        core.memory
-            .write_raw(Address::from_raw(0xFD8), 0x00);
-        core.memory
-            .write_raw(Address::from_raw(0xFE0), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFE8), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFD8), 0x00);
+        core.memory.write_raw(Address::from_raw(0xFE0), 0x00);
         core.restore_fast_regs();
         assert_eq!(
             core.memory.read_raw(Address::from_raw(0xFE8)),
@@ -759,8 +733,10 @@ mod tests {
         // onto the shadow.
         let mut core = Core::new(Variant::Pic18F25K20);
         core.set_pc(0x0042);
-        core.memory
-            .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH | 0x10 | 0x02);
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x10 | 0x02,
+        );
         core.memory.write_raw(Address::from_raw(0xFE8), 0x66); // WREG
         core.memory.write_raw(Address::from_raw(0xFD8), 0x07); // STATUS
         core.memory.write_raw(Address::from_raw(0xFE0), 0x02); // BSR
@@ -796,12 +772,18 @@ mod tests {
     fn irq_dispatch_mirrors_stack_into_tos_sfrs() {
         let mut core = Core::new(Variant::Pic18F25K20);
         core.set_pc(0x1234);
-        core.memory
-            .write_raw(Address::from_raw(INTCON_ADDR), INTCON_GIE_GIEH | 0x10 | 0x02);
+        core.memory.write_raw(
+            Address::from_raw(INTCON_ADDR),
+            INTCON_GIE_GIEH | 0x10 | 0x02,
+        );
         let mut stack = Stack::new();
         try_dispatch_irq(&mut core, &mut stack).unwrap();
         // Pushed PC = 0x001234.  SFR mirror must reflect it.
-        assert_eq!(core.memory.read_raw(Address::from_raw(0xFFC)), 1, "STKPTR depth=1");
+        assert_eq!(
+            core.memory.read_raw(Address::from_raw(0xFFC)),
+            1,
+            "STKPTR depth=1"
+        );
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFFD)), 0x34, "TOSL");
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFFE)), 0x12, "TOSH");
         assert_eq!(core.memory.read_raw(Address::from_raw(0xFFF)), 0x00, "TOSU");
@@ -960,6 +942,9 @@ mod tests {
         // accepted), STKFUL latched.
         assert_eq!(core.pc(), IRQ_VECTOR_HIGH, "STVREN=0 must vector normally");
         assert_eq!(stack.depth(), 31, "filling push reaches depth=31");
-        assert!(stack.overflow(), "STKFUL latched on filling push regardless of STVREN");
+        assert!(
+            stack.overflow(),
+            "STKFUL latched on filling push regardless of STVREN"
+        );
     }
 }

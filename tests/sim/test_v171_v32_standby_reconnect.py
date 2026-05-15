@@ -127,6 +127,34 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     )
 
 
+def test_v32_duplicate_standby_preserves_pending_shutdown_event() -> None:
+    """Volume-screen STBY can emit duplicate `B0/03/00` frames.
+
+    The first frame clears active_flags.bit3 and sets event_flags.bit2; if a
+    duplicate arrives before `standby_event_dispatch`, the gate is already
+    closed.  That closed-gate path must be idempotent.  Clearing
+    event_flags.bit2 here cancels the pending hardware shutdown: the MAIN
+    reports logically inactive, but LATB/LATA stay enabled and diag_s never
+    increments.
+    """
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    handler_start = text.find("standby_request_handler:")
+    handler_end = text.find("cmd03_mute_on_handler:", handler_start)
+    assert handler_start >= 0 and handler_end > handler_start, "standby_request_handler body not found"
+    body = text[handler_start:handler_end]
+
+    closed_start = body.find("flow_main_uart_service_1be6_1ca2:")
+    closed_end = body.find("flow_main_uart_service_1be6_1ca6:", closed_start)
+    assert closed_start >= 0 and closed_end > closed_start, "closed-gate duplicate-standby branch not found"
+    closed_branch = body[closed_start:closed_end]
+
+    assert "bcf         event_flags, 2" not in closed_branch, (
+        "duplicate standby while active_flags.bit3 is already clear must not "
+        "clear event_flags.bit2; that cancels the pending shutdown dispatcher"
+    )
+    assert "duplicate standby: keep pending bit2 intact" in closed_branch
+
+
 @pytest.mark.dual_supported
 def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit() -> None:
     """Bug #45 end-to-end regression: panel-press STDBY/WAKE on the

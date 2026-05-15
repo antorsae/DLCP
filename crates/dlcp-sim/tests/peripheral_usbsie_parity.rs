@@ -78,7 +78,10 @@ fn usb_sfr_bdt_state_machine() {
         let usb = &mut core.peripherals.usb;
         usb.inject_out(1, &[0x43, 0x00, 0x34, 0x12, 0x03], memory)
     };
-    assert!(accepted, "EP1 OUT should be accepted when UOWN and EPOUTEN are set");
+    assert!(
+        accepted,
+        "EP1 OUT should be accepted when UOWN and EPOUTEN are set"
+    );
     assert_eq!(core.peripherals.usb.out_bdt(1).stat & BDSTAT_UOWN, 0);
     assert_eq!(core.peripherals.usb.out_bdt(1).count, 5);
     assert_ne!(
@@ -93,7 +96,10 @@ fn usb_sfr_bdt_state_machine() {
 
     let clear_trnif = core.memory.read_raw(Address::from_raw(UIR_ADDR)) & !UIR_TRNIF;
     sfr_write(&mut core, UIR_ADDR, clear_trnif);
-    assert_eq!(core.memory.read_raw(Address::from_raw(UIR_ADDR)) & UIR_TRNIF, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(UIR_ADDR)) & UIR_TRNIF,
+        0
+    );
 
     core.peripherals.usb.arm_in(1, b"abc", 0x0440);
     let packet = {
@@ -121,7 +127,10 @@ fn usb_sfr_bdt_state_machine() {
     assert_ne!(uir & UIR_IDLEIF, 0);
     assert_ne!(uir & UIR_ACTVIF, 0);
     assert_eq!(core.memory.read_raw(Address::from_raw(UADDR_ADDR)), 0);
-    assert_eq!(core.memory.read_raw(Address::from_raw(UCON_ADDR)) & UCON_SUSPND, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(UCON_ADDR)) & UCON_SUSPND,
+        0
+    );
 }
 
 #[test]
@@ -145,7 +154,10 @@ fn dlcp_hid_commands() {
     report[3] = 0x12;
     report[4] = 0x03;
     let resp = execute_dlcp_hid_report(&mut core, &report);
-    assert_eq!(&resp[..6], &[CMD_DIAG_MEMREAD, 0x00, 0x03, 0xAA, 0xBB, 0xCC]);
+    assert_eq!(
+        &resp[..6],
+        &[CMD_DIAG_MEMREAD, 0x00, 0x03, 0xAA, 0xBB, 0xCC]
+    );
 
     report = [0u8; HID_REPORT_LEN];
     report[0] = CMD_DIAG_MEMREAD;
@@ -153,19 +165,40 @@ fn dlcp_hid_commands() {
     report[2] = 0x60;
     report[4] = 0x03;
     let resp = execute_dlcp_hid_report(&mut core, &report);
-    assert_eq!(&resp[..6], &[CMD_DIAG_MEMREAD, 0x00, 0x03, b'A', b'B', b'C']);
+    assert_eq!(
+        &resp[..6],
+        &[CMD_DIAG_MEMREAD, 0x00, 0x03, b'A', b'B', b'C']
+    );
 
     report = [0u8; HID_REPORT_LEN];
     report[0] = CMD_DIAG_QUERY;
     let resp = execute_dlcp_hid_report(&mut core, &report);
-    assert_eq!(&resp[..10], &[CMD_DIAG_QUERY, 0x00, 0x07, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(
+        &resp[..10],
+        &[CMD_DIAG_QUERY, 0x00, 0x07, 1, 2, 3, 4, 5, 6, 7]
+    );
 
     report = [0u8; HID_REPORT_LEN];
     report[0] = CMD_DIAG_SNAPSHOT;
     let resp = execute_dlcp_hid_report(&mut core, &report);
     assert_eq!(
         &resp[..14],
-        &[CMD_DIAG_SNAPSHOT, 0x00, 0x0B, 1, 2, 3, 4, 5, 6, 7, 1, 0, 1, 0]
+        &[
+            CMD_DIAG_SNAPSHOT,
+            0x00,
+            0x0B,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            1,
+            0,
+            1,
+            0
+        ]
     );
 
     report = [0u8; HID_REPORT_LEN];

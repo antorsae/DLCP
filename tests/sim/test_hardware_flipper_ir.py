@@ -47,6 +47,22 @@ def test_resolve_action_spec_supports_hypex_profile_actions_and_aliases() -> Non
     assert (mute.protocol, mute.address, mute.command) == ("RC5", 0x10, 0x35)
 
 
+def test_resolve_action_spec_supports_standard_rc5_profile_actions() -> None:
+    power = ir.resolve_action_spec("std_power")
+    mute = ir.resolve_action_spec("rc5_mute")
+    vol_up = ir.resolve_action_spec("std_vol_up")
+    vol_down = ir.resolve_action_spec("rc5_vol_down")
+    input_up = ir.resolve_action_spec("std_ch_up")
+    input_down = ir.resolve_action_spec("std_input_down")
+
+    assert (power.protocol, power.address, power.command) == ("RC5", 0x00, 0x0C)
+    assert (mute.protocol, mute.address, mute.command) == ("RC5", 0x00, 0x0D)
+    assert (vol_up.protocol, vol_up.address, vol_up.command) == ("RC5", 0x00, 0x10)
+    assert (vol_down.protocol, vol_down.address, vol_down.command) == ("RC5", 0x00, 0x11)
+    assert (input_up.protocol, input_up.address, input_up.command) == ("RC5", 0x00, 0x20)
+    assert (input_down.protocol, input_down.address, input_down.command) == ("RC5", 0x00, 0x21)
+
+
 def test_send_ir_action_formats_flipper_cli_command_and_returns_port(monkeypatch) -> None:
     monkeypatch.setattr(ir, "resolve_flipper_serial_port", lambda *, port=None: "/dev/cu.usbmodemflip_Ovarlide1")
     monkeypatch.setattr(
@@ -60,6 +76,25 @@ def test_send_ir_action_formats_flipper_cli_command_and_returns_port(monkeypatch
     assert payload["canonical_action"] == "F2"
     assert payload["cli_command"] == "ir tx RC5 10 39"
     assert payload["port"] == "/dev/cu.usbmodemflip_Ovarlide1"
+
+
+def test_send_ir_action_rejects_open_application_cli_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ir,
+        "resolve_flipper_serial_port",
+        lambda *, port=None: "/dev/cu.usbmodemflip_Ovarlide1",
+    )
+    monkeypatch.setattr(
+        ir,
+        "issue_cli_command",
+        lambda port, command, timeout_s, idle_s: (
+            ">: ir tx RC5 10 39\r\n"
+            "this command cannot be run while an application is open\r\n>:\r\n"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot be run while an application is open"):
+        ir.send_ir_action(action="F2")
 
 
 def test_main_prints_json_for_supported_action(monkeypatch, capsys) -> None:

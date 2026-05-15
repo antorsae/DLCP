@@ -133,10 +133,7 @@ impl Adc {
         // ADRESH<1:0>:ADRESL).  ADFM=0: left-justified
         // (bits 9..0 in ADRESH<7:0>:ADRESL<7:6>).
         let (adresh, adresl) = if adfm {
-            (
-                ((sample >> 8) & 0x03) as u8,
-                (sample & 0xFF) as u8,
-            )
+            (((sample >> 8) & 0x03) as u8, (sample & 0xFF) as u8)
         } else {
             let shifted = sample << 6;
             ((shifted >> 8) as u8, (shifted & 0xFF) as u8)
@@ -145,10 +142,7 @@ impl Adc {
         mem.write_raw(Address::from_raw(ADRESL_ADDR), adresl);
         // GO/DONE auto-clears (DS §21.2.4).
         let con0 = mem.read_raw(Address::from_raw(ADCON0_ADDR));
-        mem.write_raw(
-            Address::from_raw(ADCON0_ADDR),
-            con0 & !ADCON0_GODONE,
-        );
+        mem.write_raw(Address::from_raw(ADCON0_ADDR), con0 & !ADCON0_GODONE);
         // ADIF asserts.
         let pir1 = mem.read_raw(Address::from_raw(PIR1_ADDR));
         mem.write_raw(Address::from_raw(PIR1_ADDR), pir1 | PIR1_ADIF);
@@ -184,7 +178,8 @@ impl Adc {
 
     fn current_sample(&self, mem: &Memory) -> u16 {
         let channel = current_channel(mem);
-        if !channel_supported(self.variant, channel) || !channel_is_analog(self.variant, channel, mem)
+        if !channel_supported(self.variant, channel)
+            || !channel_is_analog(self.variant, channel, mem)
         {
             return 0;
         }
@@ -297,10 +292,7 @@ mod tests {
         mem.write_raw(Address::from_raw(ADCON2_ADDR), ADCON2_ADFM);
         adc.set_an0_sample(0x0236); // V3.2 boot threshold.
         // Trigger.
-        mem.write_raw(
-            Address::from_raw(ADCON0_ADDR),
-            ADCON0_GODONE | ADCON0_ADON,
-        );
+        mem.write_raw(Address::from_raw(ADCON0_ADDR), ADCON0_GODONE | ADCON0_ADON);
         adc.on_sfr_write(ADCON0_ADDR, ADCON0_GODONE | ADCON0_ADON, &mut mem);
         // Tick past the conversion window.
         adc.tick_tcy(20, &mut mem);
@@ -313,14 +305,8 @@ mod tests {
         assert_eq!(pir1 & PIR1_ADIF, PIR1_ADIF);
         // Result loaded right-justified.  0x0236 = 10 0011 0110
         // -> ADRESH = 0x02, ADRESL = 0x36.
-        assert_eq!(
-            mem.read_raw(Address::from_raw(ADRESH_ADDR)),
-            0x02,
-        );
-        assert_eq!(
-            mem.read_raw(Address::from_raw(ADRESL_ADDR)),
-            0x36,
-        );
+        assert_eq!(mem.read_raw(Address::from_raw(ADRESH_ADDR)), 0x02,);
+        assert_eq!(mem.read_raw(Address::from_raw(ADRESL_ADDR)), 0x36,);
     }
 
     #[test]
@@ -333,14 +319,8 @@ mod tests {
         adc.on_sfr_write(ADCON0_ADDR, ADCON0_GODONE | ADCON0_ADON, &mut mem);
         adc.tick_tcy(20, &mut mem);
         // 0x0236 << 6 = 0x8D80.  ADRESH = 0x8D, ADRESL = 0x80.
-        assert_eq!(
-            mem.read_raw(Address::from_raw(ADRESH_ADDR)),
-            0x8D,
-        );
-        assert_eq!(
-            mem.read_raw(Address::from_raw(ADRESL_ADDR)),
-            0x80,
-        );
+        assert_eq!(mem.read_raw(Address::from_raw(ADRESH_ADDR)), 0x8D,);
+        assert_eq!(mem.read_raw(Address::from_raw(ADRESL_ADDR)), 0x80,);
     }
 
     #[test]

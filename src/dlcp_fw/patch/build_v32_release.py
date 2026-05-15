@@ -17,6 +17,10 @@ _EEPROM_REV_RE = re.compile(
     r"(^\s*db\s+0x03,\s*0x02,\s*0x)([0-9A-Fa-f]{2})(\b.*$)",
     re.MULTILINE,
 )
+_RUNTIME_REV_RE = re.compile(
+    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.2_RUNTIME_EEPROM_REV\b.*$)",
+    re.MULTILINE,
+)
 
 
 def read_v32_release_revision(asm_path: Path = V32_MAIN_ASM) -> int:
@@ -44,6 +48,13 @@ def _rewrite_v32_release_revision(text: str) -> tuple[str, int, int]:
         )
     new_rev = old_rev + 1
     updated = text[: match.start(2)] + f"{new_rev:02X}" + text[match.end(2) :]
+    runtime_match = _RUNTIME_REV_RE.search(updated)
+    if runtime_match is not None:
+        updated = (
+            updated[: runtime_match.start(2)]
+            + f"{new_rev:02X}"
+            + updated[runtime_match.end(2) :]
+        )
     return updated, old_rev, new_rev
 
 

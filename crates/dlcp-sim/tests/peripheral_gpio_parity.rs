@@ -8,6 +8,7 @@
 //! DS40001303H §10 I/O Ports / §9 Interrupts / Table 5-2 ANSEL notes,
 //! and DS39632E §10 I/O Ports plus the USB RC4/RC5 pin-sharing notes.
 
+use dlcp_sim::RunState;
 use dlcp_sim::chain::Chain;
 use dlcp_sim::core::Core;
 use dlcp_sim::exec::step;
@@ -15,7 +16,6 @@ use dlcp_sim::memory::{Address, Variant};
 use dlcp_sim::pinnet::{PinId, PortLetter};
 use dlcp_sim::reset::{ResetSource, apply_reset};
 use dlcp_sim::stack::Stack;
-use dlcp_sim::RunState;
 
 const TRISA_ADDR: u16 = 0xF92;
 const TRISB_ADDR: u16 = 0xF93;
@@ -97,8 +97,7 @@ fn run_demo(cycle_target: u64) -> Core {
     apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
     let mut total: u64 = 0;
     while total < cycle_target {
-        let cycles = step(&mut core, &mut stack)
-            .expect("GPIO demo executes cleanly");
+        let cycles = step(&mut core, &mut stack).expect("GPIO demo executes cleanly");
         total += cycles as u64;
     }
     core
@@ -107,28 +106,19 @@ fn run_demo(cycle_target: u64) -> Core {
 #[test]
 fn trisb_write_round_trips() {
     let core = run_demo(8);
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(TRISB_ADDR)),
-        0x00,
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(TRISB_ADDR)), 0x00,);
 }
 
 #[test]
 fn latb_write_round_trips() {
     let core = run_demo(8);
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(LATB_ADDR)),
-        0xA5,
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(LATB_ADDR)), 0xA5,);
 }
 
 #[test]
 fn trisc_write_round_trips() {
     let core = run_demo(20);
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(TRISC_ADDR)),
-        0xC3,
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(TRISC_ADDR)), 0xC3,);
 }
 
 /// K20 POR resolves TRISA from CONFIG1H/FOSC.  The default
@@ -137,10 +127,7 @@ fn trisc_write_round_trips() {
 #[test]
 fn trisa_por_value_matches_k20_table() {
     let core = run_demo(1);
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(TRISA_ADDR)),
-        0x3F,
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(TRISA_ADDR)), 0x3F,);
 }
 
 /// LATA / LATC start at POR `xxxx xxxx` (= 0 in our model).
@@ -166,7 +153,9 @@ fn port_tris_lat_analog_and_usb_policy_cover_fid14() {
     }
     sfr_write(&mut chain.cores[idx], LATB_ADDR, 0x0A);
     assert_eq!(
-        chain.cores[idx].memory.read_raw(Address::from_raw(PORTB_ADDR)),
+        chain.cores[idx]
+            .memory
+            .read_raw(Address::from_raw(PORTB_ADDR)),
         0xFA,
         "input RB7..RB4 preserve external level; output RB3..RB0 mirror LATB"
     );
@@ -177,14 +166,20 @@ fn port_tris_lat_analog_and_usb_policy_cover_fid14() {
     sfr_write(&mut chain.cores[idx], ANSEL_ADDR, 0x01);
     chain.set_pin_high(idx, PortLetter::A, 0);
     assert_eq!(
-        chain.cores[idx].memory.read_raw(Address::from_raw(PORTA_ADDR)) & 0x01,
+        chain.cores[idx]
+            .memory
+            .read_raw(Address::from_raw(PORTA_ADDR))
+            & 0x01,
         0,
         "RA0 analog mode must not read back as a digital high"
     );
     sfr_write(&mut chain.cores[idx], ANSEL_ADDR, 0x00);
     chain.set_pin_high(idx, PortLetter::A, 0);
     assert_eq!(
-        chain.cores[idx].memory.read_raw(Address::from_raw(PORTA_ADDR)) & 0x01,
+        chain.cores[idx]
+            .memory
+            .read_raw(Address::from_raw(PORTA_ADDR))
+            & 0x01,
         0x01,
         "RA0 digital input must expose the injected high level"
     );
@@ -231,8 +226,12 @@ fn external_edges_ra0_wake_mclr_and_pin_coupling_cover_fid14() {
     chain.set_pin_high(idx, PortLetter::B, 1);
     chain.set_pin_high(idx, PortLetter::B, 2);
     chain.set_pin_high(idx, PortLetter::B, 4);
-    let intcon = chain.cores[idx].memory.read_raw(Address::from_raw(INTCON_ADDR));
-    let intcon3 = chain.cores[idx].memory.read_raw(Address::from_raw(INTCON3_ADDR));
+    let intcon = chain.cores[idx]
+        .memory
+        .read_raw(Address::from_raw(INTCON_ADDR));
+    let intcon3 = chain.cores[idx]
+        .memory
+        .read_raw(Address::from_raw(INTCON3_ADDR));
     assert_ne!(intcon & 0x02, 0, "RB0 rising edge sets INT0IF");
     assert_ne!(intcon3 & 0x01, 0, "RB1 rising edge sets INT1IF");
     assert_ne!(intcon3 & 0x02, 0, "RB2 rising edge sets INT2IF");
@@ -251,7 +250,9 @@ fn external_edges_ra0_wake_mclr_and_pin_coupling_cover_fid14() {
     // plus re-bootstrap resumes from the reset vector.
     let mut reset_chain = Chain::new();
     let mut reset_core = Core::new(Variant::Pic18F25K20);
-    reset_core.flash_mut().copy_from_slice(&build_self_loop_flash());
+    reset_core
+        .flash_mut()
+        .copy_from_slice(&build_self_loop_flash());
     let reset_idx = reset_chain.push_core(reset_core);
     reset_chain.apply_reset_all(ResetSource::PowerOn);
     reset_chain.schedule_initial_steps(&[0]);

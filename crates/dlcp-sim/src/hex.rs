@@ -24,11 +24,14 @@
 //! (PIC18F2455 program-memory map) and DS41303G §5
 //! (PIC18F25K20 program-memory map).
 
-#![allow(dead_code, reason = "P1.8a hex loader; consumed by P1.8b executor + P1.8d/e parity tests")]
+#![allow(
+    dead_code,
+    reason = "P1.8a hex loader; consumed by P1.8b executor + P1.8d/e parity tests"
+)]
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 /// Maximum on-die program memory across the two variants
 /// this simulator targets — 32 KiB on the K20 and 24 KiB on
@@ -147,13 +150,13 @@ impl HexImage {
                         // can reach an `i` that would overflow.  The
                         // cost of `checked_add` is one branch per
                         // byte; keep it.
-                        let addr = base.checked_add(i as u32).ok_or(
-                            HexLoadError::AddressOutOfRange {
-                                line: line_no,
-                                address: u32::MAX,
-                                length: len as u8,
-                            },
-                        )?;
+                        let addr =
+                            base.checked_add(i as u32)
+                                .ok_or(HexLoadError::AddressOutOfRange {
+                                    line: line_no,
+                                    address: u32::MAX,
+                                    length: len as u8,
+                                })?;
                         image.write_byte(addr, b, line_no, len)?;
                     }
                 }
@@ -286,11 +289,7 @@ pub enum HexLoadError {
     /// non-zero address field — the Intel HEX spec requires
     /// `0x0000` for both, so a non-zero value points at a
     /// corrupted hex.
-    BadControlRecordAddress {
-        line: usize,
-        kind: u8,
-        address: u16,
-    },
+    BadControlRecordAddress { line: usize, kind: u8, address: u16 },
     /// Saw another record after the EOF record.
     RecordsAfterEof { line: usize },
     /// Reached end of input without an EOF record.
@@ -361,7 +360,11 @@ impl fmt::Display for HexLoadError {
                 f,
                 "line {line}: EOF (type 01) record carries a non-empty payload"
             ),
-            Self::BadControlRecordAddress { line, kind, address } => write!(
+            Self::BadControlRecordAddress {
+                line,
+                kind,
+                address,
+            } => write!(
                 f,
                 "line {line}: control record (type 0x{kind:02X}) has non-zero address 0x{address:04X} (must be 0x0000)"
             ),
@@ -398,7 +401,9 @@ struct ParsedRecord {
 }
 
 fn parse_record(line: &str, line_no: usize) -> Result<ParsedRecord, HexLoadError> {
-    let body = line.strip_prefix(':').ok_or(HexLoadError::BadStartChar { line: line_no })?;
+    let body = line
+        .strip_prefix(':')
+        .ok_or(HexLoadError::BadStartChar { line: line_no })?;
 
     if body.len() < 10 {
         return Err(HexLoadError::ShortRecord {
@@ -592,7 +597,10 @@ mod tests {
         // hand so the checksum check still passes (otherwise that
         // error fires first).  Sum-with-zero-checksum: 02+00+00+00+00 = 0x02.
         let err = parse_record(":02000000 00 FE".replace(' ', "").as_str(), 6).unwrap_err();
-        assert!(matches!(err, HexLoadError::ByteCountMismatch { line: 6, .. }));
+        assert!(matches!(
+            err,
+            HexLoadError::ByteCountMismatch { line: 6, .. }
+        ));
     }
 
     #[test]
@@ -602,7 +610,11 @@ mod tests {
         // Corrupt the checksum byte to 0x00 to trigger the error.
         let err = parse_record(":010000000000", 9).unwrap_err();
         match err {
-            HexLoadError::BadChecksum { line, computed, found } => {
+            HexLoadError::BadChecksum {
+                line,
+                computed,
+                found,
+            } => {
                 assert_eq!(line, 9);
                 assert_eq!(computed, 0xFF);
                 assert_eq!(found, 0x00);
@@ -634,11 +646,8 @@ mod tests {
 
     #[test]
     fn loads_data_record_into_flash() {
-        let img = HexImage::from_hex_str(&build_hex(&[
-            data_rec(0x0000, &[0x00]),
-            eof_rec(),
-        ]))
-        .unwrap();
+        let img =
+            HexImage::from_hex_str(&build_hex(&[data_rec(0x0000, &[0x00]), eof_rec()])).unwrap();
         assert_eq!(img.flash[0], 0x00);
         assert_eq!(img.flash[1], 0xFF);
         assert!(img.flash_present[0]);
@@ -652,11 +661,8 @@ mod tests {
         // an address with no record.  Without this distinction, an
         // app-only V3.x merge would over-write the V2.3 seed at
         // every app-range hole.
-        let img = HexImage::from_hex_str(&build_hex(&[
-            data_rec(0x0010, &[0xFF, 0xFF]),
-            eof_rec(),
-        ]))
-        .unwrap();
+        let img = HexImage::from_hex_str(&build_hex(&[data_rec(0x0010, &[0xFF, 0xFF]), eof_rec()]))
+            .unwrap();
         // Both bytes read as 0xFF (their default + the record).
         assert_eq!(img.flash[0x0010], 0xFF);
         assert_eq!(img.flash[0x0011], 0xFF);
@@ -685,7 +691,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             img.config,
-            [0x3A, 0x46, 0x3E, 0x1E, 0xFF, 0x00, 0x80, 0xFF, 0x0F, 0xC0, 0x0F, 0xA0, 0x0F, 0x40]
+            [
+                0x3A, 0x46, 0x3E, 0x1E, 0xFF, 0x00, 0x80, 0xFF, 0x0F, 0xC0, 0x0F, 0xA0, 0x0F, 0x40
+            ]
         );
     }
 
@@ -721,11 +729,8 @@ mod tests {
 
     #[test]
     fn rejects_records_after_eof() {
-        let err = HexImage::from_hex_str(&build_hex(&[
-            eof_rec(),
-            data_rec(0x0000, &[0x00]),
-        ]))
-        .unwrap_err();
+        let err = HexImage::from_hex_str(&build_hex(&[eof_rec(), data_rec(0x0000, &[0x00])]))
+            .unwrap_err();
         assert!(matches!(err, HexLoadError::RecordsAfterEof { line: 2 }));
     }
 
@@ -742,7 +747,10 @@ mod tests {
         // ELA (type 04) with 3 payload bytes instead of 2.
         let bad_ela = rec(0x04, 0x0000, &[0x00, 0x30, 0x40]);
         let err = HexImage::from_hex_str(&build_hex(&[bad_ela, eof_rec()])).unwrap_err();
-        assert!(matches!(err, HexLoadError::BadElaLength { line: 1, len: 3 }));
+        assert!(matches!(
+            err,
+            HexLoadError::BadElaLength { line: 1, len: 3 }
+        ));
     }
 
     #[test]
@@ -752,7 +760,10 @@ mod tests {
         let err = HexImage::from_hex_str(&build_hex(&[weird, eof_rec()])).unwrap_err();
         assert!(matches!(
             err,
-            HexLoadError::UnknownRecordType { line: 1, kind: 0x03 }
+            HexLoadError::UnknownRecordType {
+                line: 1,
+                kind: 0x03
+            }
         ));
     }
 
@@ -776,13 +787,14 @@ mod tests {
 
     #[test]
     fn rejects_address_out_of_flash_range() {
-        let err = HexImage::from_hex_str(&build_hex(&[
-            data_rec(0x8000, &[0x00]),
-            eof_rec(),
-        ]))
-        .unwrap_err();
+        let err = HexImage::from_hex_str(&build_hex(&[data_rec(0x8000, &[0x00]), eof_rec()]))
+            .unwrap_err();
         match err {
-            HexLoadError::AddressOutOfRange { line, address, length } => {
+            HexLoadError::AddressOutOfRange {
+                line,
+                address,
+                length,
+            } => {
                 assert_eq!(line, 1);
                 assert_eq!(address, 0x8000);
                 assert_eq!(length, 1);
@@ -856,7 +868,11 @@ mod tests {
         ]))
         .unwrap_err();
         match err {
-            HexLoadError::AddressOutOfRange { line, address, length } => {
+            HexLoadError::AddressOutOfRange {
+                line,
+                address,
+                length,
+            } => {
                 assert_eq!(line, 2);
                 assert_eq!(address, 0xFFFF_FFFF);
                 assert_eq!(length, 2);
@@ -871,7 +887,11 @@ mod tests {
         let bad_eof = rec(0x01, 0x1234, &[]);
         let err = HexImage::from_hex_str(&build_hex(&[bad_eof])).unwrap_err();
         match err {
-            HexLoadError::BadControlRecordAddress { line, kind, address } => {
+            HexLoadError::BadControlRecordAddress {
+                line,
+                kind,
+                address,
+            } => {
                 assert_eq!(line, 1);
                 assert_eq!(kind, 0x01);
                 assert_eq!(address, 0x1234);
@@ -886,7 +906,11 @@ mod tests {
         let bad_ela = rec(0x04, 0x4242, &[0x00, 0x30]);
         let err = HexImage::from_hex_str(&build_hex(&[bad_ela, eof_rec()])).unwrap_err();
         match err {
-            HexLoadError::BadControlRecordAddress { line, kind, address } => {
+            HexLoadError::BadControlRecordAddress {
+                line,
+                kind,
+                address,
+            } => {
                 assert_eq!(line, 1);
                 assert_eq!(kind, 0x04);
                 assert_eq!(address, 0x4242);

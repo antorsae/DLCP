@@ -66,8 +66,7 @@ fn run_adc_demo(an0: u16, cycle_target: u64) -> Core {
     core.peripherals.adc.set_an0_sample(an0);
     let mut total: u64 = 0;
     while total < cycle_target {
-        let cycles = step(&mut core, &mut stack)
-            .expect("ADC demo executes cleanly");
+        let cycles = step(&mut core, &mut stack).expect("ADC demo executes cleanly");
         total += cycles as u64;
     }
     core
@@ -87,28 +86,16 @@ fn an0_0x0236_loads_correct_adresh_adresl() {
     assert_eq!(con0 & ADCON0_ADON, ADCON0_ADON, "ADON preserved");
     let pir1 = core.memory.read_raw(Address::from_raw(PIR1_ADDR));
     assert_eq!(pir1 & PIR1_ADIF, PIR1_ADIF, "ADIF must assert");
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(ADRESH_ADDR)),
-        0x02
-    );
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(ADRESL_ADDR)),
-        0x36
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESH_ADDR)), 0x02);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESL_ADDR)), 0x36);
 }
 
 /// AN0 = 0x0229 (low hysteresis).
 #[test]
 fn an0_0x0229_loads_correct_adresh_adresl() {
     let core = run_adc_demo(0x0229, 50);
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(ADRESH_ADDR)),
-        0x02
-    );
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(ADRESL_ADDR)),
-        0x29
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESH_ADDR)), 0x02);
+    assert_eq!(core.memory.read_raw(Address::from_raw(ADRESL_ADDR)), 0x29);
 }
 
 /// Mid-conversion the GO/DONE bit is still set.
@@ -144,7 +131,8 @@ fn adc_channel_mux_ansel_and_vref_policy_cover_fid12() {
     let mut core = Core::new(Variant::Pic18F25K20);
     core.memory
         .write_raw(Address::from_raw(ADCON2_ADDR), ADCON2_ADFM);
-    core.memory.write_raw(Address::from_raw(ANSEL_ADDR), 0b0000_0011);
+    core.memory
+        .write_raw(Address::from_raw(ANSEL_ADDR), 0b0000_0011);
     core.peripherals.adc.set_channel_sample(0, 0x0111);
     core.peripherals.adc.set_channel_sample(1, 0x0222);
 
@@ -172,7 +160,8 @@ fn adc_channel_mux_ansel_and_vref_policy_cover_fid12() {
         "Vref bits select the reference for the normalized injected sample"
     );
 
-    core.memory.write_raw(Address::from_raw(ANSEL_ADDR), 0b0000_0001);
+    core.memory
+        .write_raw(Address::from_raw(ANSEL_ADDR), 0b0000_0001);
     core.memory.write_raw(Address::from_raw(ADCON0_ADDR), ch1);
     core.peripherals
         .adc
@@ -195,7 +184,8 @@ fn adc_acqt_adcs_and_sleep_frc_cover_fid12() {
     let mut core = Core::new(Variant::Pic18F2455);
     core.peripherals.adc.set_channel_sample(0, 0x03A5);
     let adcon2 = ADCON2_ADFM | (5 << ADCON2_ACQT_SHIFT) | 0b101;
-    core.memory.write_raw(Address::from_raw(ADCON2_ADDR), adcon2);
+    core.memory
+        .write_raw(Address::from_raw(ADCON2_ADDR), adcon2);
     let start = ADCON0_ADON | ADCON0_GODONE;
     core.memory.write_raw(Address::from_raw(ADCON0_ADDR), start);
     core.peripherals
@@ -208,7 +198,10 @@ fn adc_acqt_adcs_and_sleep_frc_cover_fid12() {
         "ACQT=12 Tad and ADCS=Fosc/16 hold GO/DONE until 96 Tcy"
     );
     core.peripherals.tick_tcy(1, &mut core.memory);
-    assert_eq!(core.memory.read_raw(Address::from_raw(ADCON0_ADDR)) & ADCON0_GODONE, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(ADCON0_ADDR)) & ADCON0_GODONE,
+        0
+    );
     assert_eq!(core.memory.read_raw(Address::from_raw(ADRESH_ADDR)), 0x03);
     assert_eq!(core.memory.read_raw(Address::from_raw(ADRESL_ADDR)), 0xA5);
 

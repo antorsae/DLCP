@@ -64,13 +64,13 @@ fn build_mssp_demo_flash(sspadd: u8) -> Vec<u8> {
 
 fn run_mssp_demo(sspadd: u8, cycle_target: u64) -> Core {
     let mut core = Core::new(Variant::Pic18F2455);
-    core.flash_mut().copy_from_slice(&build_mssp_demo_flash(sspadd));
+    core.flash_mut()
+        .copy_from_slice(&build_mssp_demo_flash(sspadd));
     let mut stack = Stack::new();
     apply_reset(&mut core, &mut stack, ResetSource::PowerOn);
     let mut total: u64 = 0;
     while total < cycle_target {
-        let cycles = step(&mut core, &mut stack)
-            .expect("MSSP demo program executes cleanly");
+        let cycles = step(&mut core, &mut stack).expect("MSSP demo program executes cleanly");
         total += cycles as u64;
     }
     core
@@ -125,10 +125,7 @@ fn sspstat_bf_starts_clear_after_por() {
 #[test]
 fn sspadd_persists() {
     let core = run_mssp_demo(0x77, 6);
-    assert_eq!(
-        core.memory.read_raw(Address::from_raw(SSPADD_ADDR)),
-        0x77,
-    );
+    assert_eq!(core.memory.read_raw(Address::from_raw(SSPADD_ADDR)), 0x77,);
 }
 
 #[test]
@@ -152,7 +149,10 @@ fn unsupported_modes_and_general_call_are_inert_for_fid10() {
         .on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut core.memory);
     core.peripherals.tick_tcy(100, &mut core.memory);
     assert_eq!(core.memory.read_raw(Address::from_raw(SSPCON2_ADDR)), 0);
-    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF,
+        0
+    );
     assert_eq!(core.peripherals.mssp.take_last_bus_event(), None);
 
     core.memory.write_raw(
@@ -166,7 +166,10 @@ fn unsupported_modes_and_general_call_are_inert_for_fid10() {
         .on_sfr_write(SSPCON2_ADDR, SSPCON2_SEN, &mut core.memory);
     core.peripherals.tick_tcy(100, &mut core.memory);
     assert_eq!(core.memory.read_raw(Address::from_raw(SSPCON2_ADDR)), 0);
-    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF,
+        0
+    );
     assert_eq!(core.peripherals.mssp.take_last_bus_event(), None);
 
     core.memory.write_raw(
@@ -184,10 +187,12 @@ fn unsupported_modes_and_general_call_are_inert_for_fid10() {
         SSPCON2_GCEN,
         "GCEN persists as an SFR bit but does not schedule a master transfer"
     );
-    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF,
+        0
+    );
 
-    core.memory
-        .write_raw(Address::from_raw(SSPBUF_ADDR), 0xA5);
+    core.memory.write_raw(Address::from_raw(SSPBUF_ADDR), 0xA5);
     core.peripherals
         .mssp
         .on_sfr_write(SSPBUF_ADDR, 0xA5, &mut core.memory);
@@ -224,10 +229,19 @@ fn clock_stretch_collision_and_lines_cover_fid10() {
         SSPCON2_SEN,
         "clock stretch keeps SEN pending beyond the nominal SCL period"
     );
-    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF, 0);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF,
+        0
+    );
     core.peripherals.tick_tcy(5, &mut core.memory);
-    assert_eq!(core.memory.read_raw(Address::from_raw(SSPCON2_ADDR)) & SSPCON2_SEN, 0);
-    assert_eq!(core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF, PIR1_SSPIF);
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(SSPCON2_ADDR)) & SSPCON2_SEN,
+        0
+    );
+    assert_eq!(
+        core.memory.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_SSPIF,
+        PIR1_SSPIF
+    );
     let lines = core.peripherals.mssp.lines();
     assert!(lines.scl_high);
     assert!(!lines.sda_high, "START leaves SDA low while SCL is high");
@@ -252,9 +266,7 @@ fn clock_stretch_collision_and_lines_cover_fid10() {
     core.peripherals
         .mssp
         .on_sfr_write(SSPCON2_ADDR, SSPCON2_RSEN, &mut core.memory);
-    core.peripherals
-        .mssp
-        .inject_bus_collision(&mut core.memory);
+    core.peripherals.mssp.inject_bus_collision(&mut core.memory);
     assert_eq!(
         core.memory.read_raw(Address::from_raw(PIR2_ADDR)) & PIR2_BCLIF,
         PIR2_BCLIF,

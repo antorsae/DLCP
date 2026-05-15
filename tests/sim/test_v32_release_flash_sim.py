@@ -67,6 +67,17 @@ _ROUTE_SOURCE_RAM_BASE = 0xA5
 _ROUTE_LEN = 0x06
 _ROUTE_VALUE_L = 0x00
 _ROUTE_VALUE_R = 0x01
+_ACTIVE_FLAGS_ADDR = 0x05E
+_ACTIVE_PRESET_MASK = 0x04
+_FILENAME_RAM_BASE = 0x2C0
+_COMPUTED_VOLUME_RAM_BASE = 0x06E
+_LOGICAL_VOLUME_RAM_BASE = 0x066
+_INPUT_SELECT_RAM = 0x099
+_INPUT_SELECT_MIRROR_RAM = 0x0B3
+_SETUP_PROFILE_RAM = 0x0B8
+_USER_VOLUME_MINUS_30 = (0xFF, 0xFF, 0xFF, 0xE2)
+_USER_INPUT_COAX_2 = 0x03
+_USER_SETUP_PROFILE_SENTINEL = 0x03
 
 
 def _require_rust() -> None:
@@ -166,7 +177,7 @@ def _read_v32_eeprom_identity() -> tuple[int, int, int]:
     return (info.major & 0xFF, info.minor & 0xFF, info.revision & 0xFF)
 
 
-def _post_step_seed_identity_and_routes(chain, identity):  # type: ignore[no-untyped-def]
+def _post_step_seed_identity_routes_and_settings(chain, identity):  # type: ignore[no-untyped-def]
     """Post-boot seed so the flasher's preflight + route-pick succeed.
 
     Why post-boot: the V3.2 firmware writes EEPROM[0x80..0x81] during
@@ -186,6 +197,10 @@ def _post_step_seed_identity_and_routes(chain, identity):  # type: ignore[no-unt
     requested.  ROUTE_SOURCE_RAM_BASE (0xA5..0xAA) = all-L for MAIN1
     so the post-flash ``_apply_all_channel_mapping`` has visible work
     to do (post-test asserts these flip to R).
+
+    MAIN1 volume/input are seeded to a non-default user setting so the
+    release-flash path proves HID cmd 0x40 preserves user settings
+    instead of flushing the firmware defaults (-96 dB, analog 1).
     """
     major, minor, revision = identity
     # V3.2 EEPROM identity (overrides V2.3 seed + boot writes).
@@ -205,6 +220,18 @@ def _post_step_seed_identity_and_routes(chain, identity):  # type: ignore[no-unt
         chain.write_main_reg(
             1, _ROUTE_SOURCE_RAM_BASE + offset, _ROUTE_VALUE_L,
         )
+    # User-settings preservation seed.  EEPROM stores volume high..low
+    # at 0x00..0x03, while RAM stores low..high from computed/logical
+    # base.  -30 dB is FF FF FF E2.
+    for offset, value in enumerate(_USER_VOLUME_MINUS_30):
+        chain.write_main_eeprom_byte(1, offset, value)
+        chain.write_main_reg(1, _COMPUTED_VOLUME_RAM_BASE + 3 - offset, value)
+        chain.write_main_reg(1, _LOGICAL_VOLUME_RAM_BASE + 3 - offset, value)
+    chain.write_main_eeprom_byte(1, 0x04, _USER_INPUT_COAX_2)
+    chain.write_main_reg(1, _INPUT_SELECT_RAM, _USER_INPUT_COAX_2)
+    chain.write_main_reg(1, _INPUT_SELECT_MIRROR_RAM, _USER_INPUT_COAX_2)
+    chain.write_main_eeprom_byte(1, 0x0E, _USER_SETUP_PROFILE_SENTINEL)
+    chain.write_main_reg(1, _SETUP_PROFILE_RAM, _USER_SETUP_PROFILE_SENTINEL)
 
 
 def _build_overlaid_chain():  # type: ignore[no-untyped-def]
@@ -229,7 +256,7 @@ def _build_overlaid_chain():  # type: ignore[no-untyped-def]
     _patch_chain_preset_tables(chain, overlay_a, overlay_b)
     chain.run_until_connected(limit=400)
     chain.step_ticks(50_000_000)  # boot-side preset-load settle
-    _post_step_seed_identity_and_routes(chain, identity)
+    _post_step_seed_identity_routes_and_settings(chain, identity)
     chain.step_ticks(2_000_000)  # let firmware observe new route bytes
     return chain, overlay_a, overlay_b, identity
 
@@ -315,7 +342,6 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
     # during the run; Option 2 proves the gate's behavior under
     # injected broadcasts.
     chain.mark_main1_rx_capture_point()
-
     with install_sim_hub(hub):
         rc = main(["--right"])
     assert rc == 0, "release flasher main() returned non-zero"
@@ -384,6 +410,24 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
         f"expected {overlay_b.name_slot.hex()}"
     )
 
+    # ---- Verify restored active preset and live filename RAM agree ----
+    # BUG-PRESET-01: the flasher writes A then B, then restores the
+    # originally active preset through the EP0 reapply path.  EEPROM can
+    # verify correctly while RAM 0x2C0..0x2DD still holds the last-written
+    # B filename unless the reapply path reloads filename RAM for the
+    # restored active preset.
+    active_flags = chain.read_main_reg(1, _ACTIVE_FLAGS_ADDR)
+    assert (active_flags & _ACTIVE_PRESET_MASK) == 0, (
+        f"release flash did not restore preset A: active_flags=0x{active_flags:02X}"
+    )
+    active_name_ram = bytes(
+        chain.read_main_reg(1, _FILENAME_RAM_BASE + i) for i in range(_FILENAME_LEN)
+    )
+    assert active_name_ram == bytes(overlay_a.name_slot), (
+        f"active filename RAM mismatch after preset restore: got "
+        f"{active_name_ram.hex()}, expected preset A {overlay_a.name_slot.hex()}"
+    )
+
     # ---- Verify route shadow RAM is uniform R ----
     routes = bytes(
         chain.read_main_reg(1, _ROUTE_RAM_BASE + i) for i in range(_ROUTE_LEN)
@@ -407,6 +451,37 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
         f"{source_routes.hex()}, expected all R "
         f"(seed was all-L; flasher must flip to R)"
     )
+
+    # ---- Verify release flash preserves user volume/input/profile settings ----
+    # BUG-SETTINGS-01: app cmd 0x40 used by the flasher must only set the
+    # bootloader-entry marker, not flush factory defaults into EEPROM.
+    post_flash_eeprom_volume = tuple(
+        chain.read_main_eeprom_byte(1, offset) for offset in range(4)
+    )
+    handoff_settings = hub.device_for_unit(1).last_app_to_bootloader_settings
+    assert handoff_settings is not None, "sim did not capture cmd 0x40 handoff settings"
+    pre_handoff_computed_volume = handoff_settings["computed_volume"]
+    assert isinstance(pre_handoff_computed_volume, bytes)
+    expected_post_eeprom_volume = tuple(reversed(pre_handoff_computed_volume))
+    assert post_flash_eeprom_volume == expected_post_eeprom_volume, (
+        f"release flash changed EEPROM volume away from the pre-flash live "
+        f"setting: got {post_flash_eeprom_volume!r}, expected "
+        f"{expected_post_eeprom_volume!r} from handoff RAM "
+        f"{pre_handoff_computed_volume.hex()}"
+    )
+    assert chain.read_main_eeprom_byte(1, 0x04) == _USER_INPUT_COAX_2
+    post_flash_computed_volume = bytes(
+        chain.read_main_reg(1, _COMPUTED_VOLUME_RAM_BASE + i) for i in range(4)
+    )
+    post_flash_logical_volume = bytes(
+        chain.read_main_reg(1, _LOGICAL_VOLUME_RAM_BASE + i) for i in range(4)
+    )
+    assert post_flash_computed_volume == handoff_settings["computed_volume"]
+    assert post_flash_logical_volume == handoff_settings["logical_volume"]
+    assert chain.read_main_reg(1, _INPUT_SELECT_RAM) == _USER_INPUT_COAX_2
+    assert chain.read_main_reg(1, _INPUT_SELECT_MIRROR_RAM) == _USER_INPUT_COAX_2
+    assert chain.read_main_eeprom_byte(1, 0x0E) == _USER_SETUP_PROFILE_SENTINEL
+    assert chain.read_main_reg(1, _SETUP_PROFILE_RAM) == _USER_SETUP_PROFILE_SENTINEL
 
     # ---- Verify EEPROM identity reflects V3.2 (post-seed) ----
     # MEANINGFUL: the V3.2 identity bytes survive the run; the

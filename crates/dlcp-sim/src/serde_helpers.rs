@@ -30,9 +30,7 @@ pub mod boxed_big_array {
         <[T; N] as BigArray<T>>::serialize(value.as_ref(), serializer)
     }
 
-    pub fn deserialize<'de, D, T, const N: usize>(
-        deserializer: D,
-    ) -> Result<Box<[T; N]>, D::Error>
+    pub fn deserialize<'de, D, T, const N: usize>(deserializer: D) -> Result<Box<[T; N]>, D::Error>
     where
         D: Deserializer<'de>,
         T: Deserialize<'de>,
