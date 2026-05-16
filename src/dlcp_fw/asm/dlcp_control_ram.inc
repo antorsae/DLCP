@@ -469,13 +469,14 @@ v171_diag_render_letter_tmp equ  0x0D3   ; v171_diag_letter_for_idx cascade scra
 v171_diag_render_abnormal   equ  0x0D4   ; non-zero non-POR cells (0..10)
 
 ; Poll cadence reload value.  Each v171_diag_screen tick decrements
-; the 16-bit countdown by 1; with display_loop_iteration on the K20
-; control loop the per-tick wall time is on the order of single-digit
-; ms.  Spec calls for "500 ms to 1 s cadence is sufficient".
-; 0x0080 ticks (~1 s cadence) gives the firmware enough time for one
-; full query/reply round-trip before the next cadence expires.
-V171_DIAG_POLL_RELOAD_LO   equ  0x80
-V171_DIAG_POLL_RELOAD_HI   equ  0x00
+; the 16-bit countdown by 1.  Measured in the rust ring, the non-modal
+; Diagnostics loop runs at roughly 7.7 kHz when idle; the old 0x0080
+; reload therefore fired cmd 0x21 at ~60 Hz, causing excessive chain
+; traffic and repeated full-LCD redraws on real hardware.  0x1E00 keeps
+; the operator-visible refresh close to 1 Hz while the page-entry clear
+; path still makes the first query immediate.
+V171_DIAG_POLL_RELOAD_LO   equ  0x00
+V171_DIAG_POLL_RELOAD_HI   equ  0x1E
 
 ; ---------------------------------------------------------------------------
 ; V1.71 IR non-blocking decoder state (task #152 / V171_IR_NONBLOCK_DECODER_SPEC.md)

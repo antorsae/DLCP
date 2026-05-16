@@ -329,7 +329,7 @@ def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
     consecutive presses.  Presses themselves are ~100 M ticks of
     sim time each (50 M HOLD + 50 M RELEASE_SETTLE), so a small
     ``press_period`` keeps the foreground loop exiting at well
-    above the V171_DIAG_POLL_RELOAD = 0x80 ticks cadence.
+    above the V171_DIAG_POLL_RELOAD = 0x1E00 ticks cadence.
 
     ``settle_steps`` continues wiggling for this many additional
     chain steps AFTER ``pb_mask`` is reached.  V3.2's `cmd 0x21`
@@ -1096,6 +1096,44 @@ def test_v171_v32_layer5_chain_no_query_off_diag_page(
         f"0x{present:02X}; "
         f"PB1 cache={[hex(c.read_reg(V171_DIAG_PB1_BASE_PHYS + i)) for i in range(7)]}; "
         f"PB2 cache={[hex(c.read_reg(V171_DIAG_PB2_BASE_PHYS + i)) for i in range(7)]}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v171_v32_layer5_diag_page_cadence_is_not_fast_polling(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """REGRESSION: parked PB1/PB2 Diagnostics pages must not poll at
+    tens of Hz.
+
+    The first Diagnostics query is intentionally immediate on page entry,
+    but after that the active page should refresh near 1 Hz.  A previous
+    0x0080 reload estimate produced ~60 cmd 0x21 queries/s in the rust
+    ring, which in turn produced hundreds of BF/2N replies/s and repeated
+    full-LCD redraws on real hardware.
+    """
+    _require_v32_hex(v32_hex)
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_navigate_to_diagnostics(c)
+    c.step_ticks(50_000_000)  # absorb the immediate page-entry query
+    c.mark_ctl_tx_capture_point()
+    c.step_ticks(96_000_000)  # 2 s at the 48 MHz universal clock
+    tx = c.ctl_tx_record_since_last_capture()
+    frames = [tuple(tx[i:i + 3]) for i in range(0, len(tx) - 2, 3)]
+    runtime_queries = [f for f in frames if f[1] == 0x21]
+    assert 1 <= len(runtime_queries) <= 4, (
+        "Diagnostics cadence is fast-polling instead of ~1 Hz: "
+        f"{len(runtime_queries)} cmd 0x21 queries in 2 simulated seconds; "
+        f"first frames={frames[:12]!r}; lcd={c.lcd_lines()!r}"
     )
 # ===========================================================================
 # F4 + xfail Group A canary (2026-04-19 round 2): split into two tests.

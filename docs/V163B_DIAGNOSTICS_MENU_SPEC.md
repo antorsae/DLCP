@@ -318,8 +318,8 @@ its 7-byte per-PB cache verbatim.
 - render the compact single-screen encoding above
 - skip a silent or unsupported PB after a single timed-out cadence
   cycle so the responding PB keeps refreshing
-- redraw the LCD whenever the cache changes, not only when the
-  per-PB present mask changes
+- redraw the LCD when a reply burst completes and the cache snapshot
+  is coherent, not on every individual BF/2N cell
 - never block the existing volume/input/setup behavior if a PB does not answer
 
 Recommended behavior on missing support:
@@ -373,8 +373,9 @@ To avoid extra UART chatter:
 
 - send no diagnostics queries outside the Diagnostics page
 - on entering the page, query PB1 once and PB2 once
-- while the page stays active, refresh one PB at a time at a low rate
-- a 500 ms to 1 s cadence is sufficient
+- while the page stays active, refresh the visible PB at a low rate
+- roughly 1 s cadence is sufficient; avoid tens-of-Hz polling because
+  it produces excessive BF/2N traffic and repeated full-LCD redraws
 
 This keeps diagnostics traffic page-local and negligible on the
 31,250 baud link.

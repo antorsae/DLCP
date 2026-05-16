@@ -13,8 +13,8 @@ Vol/Preset/Diagnostics/Input/Setup ring) per
 * ``v171_diag_screen`` page body that renders the spec layout
 * ``v171_diag_send_query`` 3-byte enqueue (route / 0x21 / 0x00) with
   STATUS.C-checked frame atomicity on TX-ring saturation
-* ``v171_bf2x_case_check`` parser case for BF/21..27 replies — sets
-  DIRTY on every cache write; on BF/27 (last frame) also clears
+* ``v171_bf2x_case_check`` parser case for BF/21..27 replies — caches
+  all cells, then sets DIRTY on BF/27 burst completion, clears
   PENDING, sets present-mask bit, and toggles target
 * ``v171_diag_emit_nib_w`` nibble-to-LCD-char encoder
 * Menu dispatch: state 2 → diag, state 3 → Input, state 4 → Setup
@@ -139,8 +139,8 @@ ALL_DIAG_CACHE_EQUS = (
 )
 
 # Constants exported from ram.inc:
-V171_DIAG_POLL_RELOAD_LO_EXPECTED = 0x80
-V171_DIAG_POLL_RELOAD_HI_EXPECTED = 0x00
+V171_DIAG_POLL_RELOAD_LO_EXPECTED = 0x00
+V171_DIAG_POLL_RELOAD_HI_EXPECTED = 0x1E
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +236,10 @@ def test_ram_inc_diag_block_pins_at_expected_addresses() -> None:
 def test_ram_inc_poll_reload_constants_are_documented() -> None:
     """Poll cadence reload literals must be present and pin to the spec range.
 
-    Spec calls for 500 ms .. 1 s.  At 0x0080 ticks the LCD refreshes
-    near the upper end.  Pinning the value here means future changes
-    have to update both the EQU and this test.
+    Spec calls for roughly 1 s.  The V1.71 non-modal Diagnostics loop
+    runs much faster than the original 0x0080 estimate; 0x1E00 keeps
+    the LCD/chain cadence near the intended range.  Pinning the value
+    here means future changes have to update both the EQU and this test.
     """
     text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
     lo = _equ_address(text, "V171_DIAG_POLL_RELOAD_LO")
@@ -827,40 +828,38 @@ def test_v171_diag_flags_byte_pinned_and_bit_aliases() -> None:
     assert _equ_address(text, "V171_DIAG_FLAG_PENDING") == 0x01
 
 
-def test_diag_parser_sets_dirty_on_every_bf2x_write() -> None:
-    """Coverage for HIGH #1: redraw on counter change with stable present.
+def test_diag_parser_coalesces_dirty_to_burst_completion() -> None:
+    """Diagnostics must not trigger a full LCD redraw per BF/2N cell.
 
-    Without the dirty flag the screen freezes once both PBs have been
-    seen present at least once — the only redraw trigger was
-    ``v171_diag_present XOR snap``.  The fix sets DIRTY in
-    ``v171_bf2x_case_check`` after every cache write so the next
-    ``v171_diag_check_redraw`` triggers regardless of present-mask
-    movement.  This test guards that the bsf is BEFORE the
-    ``cpfseq col_offset == 6`` BF/27 gate (so it fires for ALL frames,
-    not just the last one).
+    The earlier HIGH #1 fix set DIRTY after every cache write.  That
+    kept values live, but with the real active page cadence it caused
+    repeated full-screen redraws while parked on PB1/PB2.  The parser
+    should cache every BF/21..BF/27 cell, then set DIRTY only when the
+    runtime burst completes at BF/27; BF/28..BF/2B reset bursts set
+    DIRTY only at BF/2B.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
     assert off >= 0
     body = text[off:off + 10000]
-    # Locate the cache write (movff rx_parsed_data, INDF0) and the
-    # BF/27 last-frame gate (cpfseq with W=0x06).  bsf DIRTY must sit
-    # between them.  NOTE: there are TWO cpfseq instructions on
-    # (Common_RAM + 4) in the parser body now -- the codex MEDIUM fix
-    # added a cpfslt gate for the col-7 effective-target picker, but
-    # we explicitly find the BF/27 gate by anchoring on the movlw 0x06
-    # immediately preceding it.
     write_pos = body.find("movff   rx_parsed_data, INDF0")
     gate_pos = body.find("movlw   0x06\n        cpfseq  (Common_RAM + 4), A")
     assert write_pos >= 0 and gate_pos > write_pos
     between = body[write_pos:gate_pos]
-    assert re.search(
+    assert not re.search(
         r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_DIRTY,\s*BANKED",
         between,
     ), (
-        "DIRTY flag must be set after the cache write but BEFORE the "
-        "BF/27-only gate — otherwise BF/21..26 writes don't redraw"
+        "DIRTY must not be set for every BF/2N cell; redraw on burst "
+        "completion instead"
     )
+    runtime_path = body[gate_pos:body.find("v171_bf2x_check_reset_last:")]
+    assert "call    v171_health_mark_common_target_fresh" in runtime_path
+    reset_path = body[body.find("v171_bf2x_check_reset_last:"):body.find("v171_bf2x_check_reset_last_exit_bsr0:")]
+    assert re.search(
+        r"bsf\s+v171_diag_flags,\s*V171_DIAG_FLAG_DIRTY,\s*BANKED",
+        reset_path,
+    ), "BF/2B reset-burst completion must mark the screen dirty"
 
 
 def test_diag_check_redraw_honors_dirty_flag() -> None:

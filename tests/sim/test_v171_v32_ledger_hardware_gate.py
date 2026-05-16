@@ -435,7 +435,7 @@ def test_runner_dry_run_prints_ir_legacy_control_hex_identity(capsys) -> None:
     assert "firmware/stock/control/DLCP Control Firmware V1.6b.hex" in captured.out
     assert "firmware/patched/releases/DLCP_Control_V1.71.hex" in captured.out
     assert "V1.60 / rev <unknown>, crc16=0x2199" in captured.out
-    assert "V1.71 / rev 0x28, crc16=0x1029" in captured.out
+    assert "V1.71 / rev 0x2A, crc16=0x3DFF" in captured.out
 
     phase_payloads = {
         phase.name: runner._phase_payload(phase)
@@ -444,7 +444,7 @@ def test_runner_dry_run_prints_ir_legacy_control_hex_identity(capsys) -> None:
         )
     }
     assert phase_payloads["ir-legacy-v16b"]["expected_control_hex"]["payload_crc"] == 0x2199
-    assert phase_payloads["ir-legacy-v171"]["expected_control_hex"]["payload_crc"] == 0x1029
+    assert phase_payloads["ir-legacy-v171"]["expected_control_hex"]["payload_crc"] == 0x3DFF
 
 
 def test_settings_live_gate_rejects_out_of_range_expected_bytes() -> None:
@@ -795,7 +795,7 @@ def test_list_mode_prints_bug_phase_selection_without_hardware(capsys) -> None:
     assert "Bug selectors:" in captured.out
     assert "ir-legacy-v16b: Real-IR legacy stress baseline on stock CONTROL V1.6b." in captured.out
     assert "[CONTROL V1.60 / rev <unknown>, crc16=0x2199]" in captured.out
-    assert "[CONTROL V1.71 / rev 0x28, crc16=0x1029]" in captured.out
+    assert "[CONTROL V1.71 / rev 0x2A, crc16=0x3DFF]" in captured.out
     assert "BUG-IR-01: ir-receiver-sweep, ir-legacy-v16b, ir-legacy-v171" in captured.out
     assert "Selected phases:" in captured.out
     assert "ir-receiver-sweep, ir-legacy-v16b, ir-legacy-v171" in captured.out
@@ -853,7 +853,7 @@ def test_remaining_mode_prints_non_done_bug_closure_commands(capsys) -> None:
     assert (
         "expected CONTROL ir-legacy-v171: "
         "firmware/patched/releases/DLCP_Control_V1.71.hex "
-        "(V1.71 / rev 0x28, crc16=0x1029)"
+        "(V1.71 / rev 0x2A, crc16=0x3DFF)"
     ) in captured.out
 
 
@@ -1021,10 +1021,10 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
         "DLCP_HW_EXPECTED_VOLUME_LOW",
     ]
     assert plan["expected_control_hex"]["ir-legacy-v16b"]["payload_crc"] == 0x2199
-    assert plan["expected_control_hex"]["ir-legacy-v171"]["payload_crc"] == 0x1029
+    assert plan["expected_control_hex"]["ir-legacy-v171"]["payload_crc"] == 0x3DFF
     ir_bug = next(item for item in report["remaining_bugs"] if item["bug"] == "BUG-IR-01")
     assert ir_bug["expected_control_hex"]["ir-legacy-v16b"]["payload_crc"] == 0x2199
-    assert ir_bug["expected_control_hex"]["ir-legacy-v171"]["payload_crc"] == 0x1029
+    assert ir_bug["expected_control_hex"]["ir-legacy-v171"]["payload_crc"] == 0x3DFF
     settings_bug = next(
         item for item in report["remaining_bugs"] if item["bug"] == "BUG-SETTINGS-01"
     )

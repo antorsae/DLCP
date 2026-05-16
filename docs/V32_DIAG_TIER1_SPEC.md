@@ -358,10 +358,13 @@ cmd 0x2B → cache slot 10 (diag_reset_sw) ← marks reset-cache fresh
 Two LAST-FRAME markers, one per query type:
 
 * `BF/27` — still the runtime-burst end.  CONTROL marks PB present,
-  clears the runtime PENDING flag, toggles the runtime target.
+  clears the runtime PENDING flag, toggles the runtime target, and
+  marks the Diagnostics screen dirty once for the completed runtime
+  burst.
 * `BF/2B` — the reset-burst end.  CONTROL clears a separate
   `RESET_PENDING` flag (does NOT touch the runtime present mask
-  or target).
+  or target) and marks the Diagnostics screen dirty once for the
+  completed reset burst.
 
 This decoupling preserves backward compatibility:
 
@@ -511,6 +514,11 @@ with K20 EUSART buffers (BANK 0).
   `BF/27` reception.  Cadence-driven, fires every ~1 s.
 - `RESET_PENDING`   — set when CONTROL fires `cmd 0x22`, cleared on
   `BF/2B` reception.  Fires ONCE per Diag-page entry (per PB).
+
+`DIRTY` is burst-coalesced: individual `BF/21..BF/26` and `BF/28..BF/2A`
+cache writes do not force a full LCD redraw.  The redraw gate fires on
+the last frame (`BF/27` or `BF/2B`) so the LCD renders a coherent cache
+snapshot and sustained Diagnostics pages do not repaint for every cell.
 
 ## LCD layouts (Option D — locked)
 

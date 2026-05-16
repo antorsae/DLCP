@@ -77,7 +77,7 @@ Completion criteria for this ledger:
 | ID | Status | Area | Symptom | Required red test |
 | --- | --- | --- | --- | --- |
 | BUG-DIAG-01 | green | CONTROL diagnostics | PB1/PB2 Diagnostics pages stay `n/a` during a static wait even though MAINs are present, and the visible per-PB page must not refresh at half cadence because the hidden PB is the next global target. | `tests/sim/test_v171_v32_layer5_diag_chain.py::{test_v171_v32_layer5_chain_diag_static_wait_updates_pb1_and_pb2,test_v171_v32_layer5_diag_visible_page_refreshes_on_next_cadence}`. |
-| BUG-DIAG-02 | green | CONTROL diagnostics/UI | Diagnostics pages stall foreground services: static polling makes buttons less responsive and decoded IR commands are not dispatched while on PB1/PB2 pages. | `test_diag_loop_uses_non_modal_foreground_services`, `test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`, `test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly`, `test_v171_v32_layer5_diag_page_dispatches_ir_volume_mute_and_preset`, and `test_v171_v32_layer5_diag_page_dispatches_ir_standby_and_wake`. |
+| BUG-DIAG-02 | green | CONTROL diagnostics/UI | Diagnostics pages stall foreground services: static polling makes buttons less responsive and decoded IR commands are not dispatched while on PB1/PB2 pages. | `test_diag_loop_uses_non_modal_foreground_services`, `test_v171_v32_layer5_diag_page_cadence_is_not_fast_polling`, `test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`, `test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly`, `test_v171_v32_layer5_diag_page_dispatches_ir_volume_mute_and_preset`, and `test_v171_v32_layer5_diag_page_dispatches_ir_standby_and_wake`. |
 | BUG-IR-01 | green | CONTROL IR | Earlier real-IR gates did not move MAIN state, but the operator later explicitly retested real IR and reported that it works on both stock V1.6b and V1.71. The Timer1 non-blocking receiver remains retired; V1.71 rev `0x1C` uses the stock V1.6b in-ISR RC5 decoder path while formal versioned hardware-gate artifacts are collected. | `tests/sim/test_v171_ir_rc5_pulse_train.py::test_v16b_and_v171_rc5_pulse_train_decode_same_command_stress`, `tests/sim/test_v171_hang_modes.py::test_v171_ir_decode_uses_hardware_validated_stock_isr_path`, and `test_v171_profile_ir_actions_match_stock_v16b_dispatch_behavior`. |
 | BUG-IR-02 | green | CONTROL IR/UI | Explicit IR standby/wake endpoints emit frames but do not update local CONTROL display state coherently. | `tests/sim/test_v171_v32_user_visible_desync_bugs.py::{test_explicit_ir_standby_updates_control_lcd_state,test_explicit_ir_wake_returns_control_lcd_to_volume}` and `test_v171_v32_layer5_diag_page_dispatches_ir_standby_and_wake`. |
 | BUG-STDBY-01 | green | MAIN standby/wake | Volume-screen STBY can emit duplicate `B0/03/00` frames; the second duplicate clears the pending MAIN shutdown event before `standby_event_dispatch`, leaving the logical gate closed but hardware latches still enabled. | `tests/sim/test_v171_v32_standby_reconnect.py::{test_v32_duplicate_standby_preserves_pending_shutdown_event,test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit}`. |
@@ -110,8 +110,9 @@ Green simulator runs through 2026-05-11:
   tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_diag_page_dispatches_ir_standby_and_wake`
   -> `4 passed`.
 - Diagnostics page behavior: static PB1/PB2 refresh, PB cache isolation,
-  mixed-counter LCD rendering, LEFT responsiveness, no counter cascade,
-  decoded IR volume/mute/preset, decoded IR standby/wake on PB1 and PB2.
+  mixed-counter LCD rendering, non-fast-polling cadence, burst-coalesced
+  LCD redraws, LEFT responsiveness, no counter cascade, decoded IR
+  volume/mute/preset, decoded IR standby/wake on PB1 and PB2.
 - IR decode/dispatch path: V1.6b and V1.71 both pass the same RB5 RC5
   pulse-train stress suite in sim, including the current Hypex profile-1
   commands used by the Flipper hardware sender, and V1.71 profile dispatch

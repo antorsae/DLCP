@@ -1293,12 +1293,13 @@ v171_bf2x_have_effective_target:
         movlw   0x01
         movwf   FSR0H, A
         movff   rx_parsed_data, INDF0                     ; *(slot) = data
-        ; Mark the screen dirty so check_redraw redraws on the next
-        ; loop iteration even when v171_diag_present is unchanged.
-        ; Without this, the screen freezes against later counter
-        ; updates once both PBs have been seen present at least once.
+        ; Do not redraw on every individual BF/2N cell.  The LCD is
+        ; rendered from the complete per-PB cache; mark DIRTY only when
+        ; the runtime burst completes (BF/27, via the health-freshness
+        ; helper below) or when the reset burst completes (BF/2B).
+        ; This keeps sustained Diagnostics pages from turning a single
+        ; query into seven full-screen LCD rewrites.
         movlb   0x01
-        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
         ; Last-frame dispatch: col_offset 6 = BF/27 (RUNTIME LAST),
         ; col_offset 10 = BF/2B (Tier-1 RESET LAST).
         movlw   0x06
@@ -1350,6 +1351,7 @@ v171_bf2x_check_reset_last:
         btfsc   (Common_RAM + 5), 0, A
         movlw   0x02                                      ; PB2 reset_seen bit
         iorwf   v171_diag_reset_seen, F, BANKED
+        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
         bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
 v171_bf2x_check_reset_last_exit_bsr0:
         ; HOT FIX (real-HW disaster 2026-04-20): the prior `bra flow_
@@ -6886,7 +6888,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x29                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x2A                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
