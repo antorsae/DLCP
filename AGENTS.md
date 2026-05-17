@@ -395,6 +395,7 @@ Full test gate (all versions, parallel):
 Top-level docs:
 
 - `docs/AB_PRESETS.md` (A/B preset patch design, flashing, checks)
+- `docs/RELEASE_ARCHIVE.md` (historical MAIN/CONTROL release table; root README focuses on V3.2 + V1.71)
 - `docs/HARDWARE_TEST.md` (real-hardware state-transition validation runbook for two MAINs, CONTROL, IR, and LCD capture)
 - `docs/HARDWARE_LOOP.md` (real-hardware audio playback/capture workflow and firmware comparison matrix)
 - `docs/RECOVERY.md` (PICkit 5 readback recombination and full MAIN recovery image workflow)
