@@ -92,6 +92,10 @@ const SUBADDR_COUNT: usize = 256;
 pub struct Src4382Stats {
     pub bytes_acked: u64,
     pub bytes_nacked: u64,
+    pub address_nacks_consumed: u64,
+    pub data_nacks_consumed: u64,
+    pub address_nack_count_remaining: u32,
+    pub data_nack_count_remaining: u32,
     pub tx_bytes_by_subaddr: [u64; SUBADDR_COUNT],
     pub read_bytes_by_subaddr: [u64; SUBADDR_COUNT],
     pub write_transactions: u64,
@@ -225,6 +229,11 @@ pub struct Src4382 {
     address_nack_count_remaining: u32,
     /// Fault-injection: remaining post-address data-byte NACKs.
     data_nack_count_remaining: u32,
+    /// Cause-specific consumed-fault counters.  Aggregate bytes_nacked also
+    /// includes wrong-slave-address traffic on the shared MAIN bus, so tests
+    /// must use these fields to prove an injected SRC4382 fault fired.
+    address_nacks_consumed: u64,
+    data_nacks_consumed: u64,
     /// Completed write transactions.  Kept for tests that need to
     /// assert a specific audio-route value occurred even if later idle
     /// polling writes the same register again.
@@ -258,6 +267,8 @@ impl Src4382 {
             reads_by_subaddr: Box::new([0u64; SUBADDR_COUNT]),
             address_nack_count_remaining: 0,
             data_nack_count_remaining: 0,
+            address_nacks_consumed: 0,
+            data_nacks_consumed: 0,
             write_log: Vec::new(),
             current_write: None,
         }
@@ -292,6 +303,10 @@ impl Src4382 {
         Src4382Stats {
             bytes_acked: self.bytes_acked,
             bytes_nacked: self.bytes_nacked,
+            address_nacks_consumed: self.address_nacks_consumed,
+            data_nacks_consumed: self.data_nacks_consumed,
+            address_nack_count_remaining: self.address_nack_count_remaining,
+            data_nack_count_remaining: self.data_nack_count_remaining,
             tx_bytes_by_subaddr: *self.tx_bytes_by_subaddr,
             read_bytes_by_subaddr: *self.read_bytes_by_subaddr,
             write_transactions: self.write_transactions,
@@ -310,6 +325,8 @@ impl Src4382 {
         self.read_bytes_by_subaddr.fill(0);
         self.write_transactions = 0;
         self.read_transactions = 0;
+        self.address_nacks_consumed = 0;
+        self.data_nacks_consumed = 0;
         self.writes_by_subaddr.fill(0);
         self.reads_by_subaddr.fill(0);
         self.write_log.clear();
@@ -380,6 +397,7 @@ impl Src4382 {
         if byte == write_addr {
             if self.address_nack_count_remaining > 0 {
                 self.address_nack_count_remaining -= 1;
+                self.address_nacks_consumed += 1;
                 self.phase = Phase::Ignored;
                 return false;
             }
@@ -388,6 +406,7 @@ impl Src4382 {
         } else if byte == read_addr {
             if self.address_nack_count_remaining > 0 {
                 self.address_nack_count_remaining -= 1;
+                self.address_nacks_consumed += 1;
                 self.phase = Phase::Ignored;
                 return false;
             }
@@ -467,6 +486,7 @@ impl Src4382 {
             return false;
         }
         self.data_nack_count_remaining -= 1;
+        self.data_nacks_consumed += 1;
         self.phase = Phase::Ignored;
         true
     }
@@ -670,6 +690,8 @@ mod tests {
         assert_eq!(stats.bytes_acked, 0);
         assert_eq!(stats.write_transactions, 0);
         assert_eq!(stats.writes_by_subaddr[0x0D], 0);
+        assert_eq!(stats.address_nack_count_remaining, 0);
+        assert_eq!(stats.data_nack_count_remaining, 0);
         assert_eq!(s.read_subaddr(0x0D), 0x0B);
     }
 
@@ -690,6 +712,9 @@ mod tests {
         );
         s.on_start();
         assert!(s.consume_tx_byte(0xE2), "next own address recovers");
+        let stats = s.stats();
+        assert_eq!(stats.address_nacks_consumed, 1);
+        assert_eq!(stats.address_nack_count_remaining, 0);
     }
 
     #[test]
@@ -702,6 +727,30 @@ mod tests {
         assert!(!s.consume_tx_byte(0x0D), "subaddress byte is NACKed");
         assert!(!s.consume_tx_byte(0x08), "ignored until next START");
         assert_eq!(s.read_subaddr(0x0D), 0x00);
-        assert_eq!(s.stats().writes_by_subaddr[0x0D], 0);
+        let stats = s.stats();
+        assert_eq!(stats.writes_by_subaddr[0x0D], 0);
+        assert_eq!(stats.data_nacks_consumed, 1);
+        assert_eq!(stats.data_nack_count_remaining, 0);
+    }
+
+    #[test]
+    fn src4382_stats_reset_preserves_fault_budgets() {
+        let mut s = Src4382::default();
+        s.set_address_nack_count(3);
+        s.set_data_nack_count(4);
+
+        s.on_start();
+        assert!(!s.consume_tx_byte(0xE2));
+        s.on_stop();
+        assert_eq!(s.stats().address_nacks_consumed, 1);
+
+        s.reset_stats();
+        let stats = s.stats();
+        assert_eq!(stats.bytes_acked, 0);
+        assert_eq!(stats.bytes_nacked, 0);
+        assert_eq!(stats.address_nacks_consumed, 0);
+        assert_eq!(stats.data_nacks_consumed, 0);
+        assert_eq!(stats.address_nack_count_remaining, 2);
+        assert_eq!(stats.data_nack_count_remaining, 4);
     }
 }

@@ -493,6 +493,6 @@ Latest operator observation follow-up: a visibly pulsing A/B badge on the
 Volume screen is not reproduced as firmware-origin steady-idle badge churn.
 The simulator now exposes a per-DDRAM-cell LCD write counter, and the focused
 test above proves CONTROL does not rewrite row 0 column 15 during steady idle.
-If the badge still pulses on hardware after flashing the rev `0x6E`/`0x2C`
+If the badge still pulses on hardware after flashing the rev `0x6E`/`0x2D`
 pair, triage it as repeated display-loop exits/re-entry or LCD electrical
 behavior, not as SRC4382 polling traffic.

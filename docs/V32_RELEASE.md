@@ -13,6 +13,10 @@ This is the operator runbook for the recommended MAIN deployment as of
   bakes preset A/B captures into canonical `V3.2.hex` at flash time
 - active implementation bugs for the V1.71/V3.2 pair are tracked in
   [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md)
+- Diagnostics counter fault-injection closure is tracked separately in
+  [`docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+  and
+  [`docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
 
 V3.2 supersedes V3.1 for two-MAIN chains. The headline change is the
 async delayed-preset-switch remediation (see
@@ -29,20 +33,29 @@ release workflow.
 The current canonical release identities are:
 
 - MAIN: `V3.2 / rev 0x6E`
-- CONTROL: `V1.71 / rev 0x2C`
+- CONTROL: `V1.71 / rev 0x2D`
 
 Current local non-hardware verification:
 
 - `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` ->
   previous dedicated simulator gate `1067 passed, 1 skipped, 7 warnings in 702.71s`
 - `.venv_ep0/bin/python -m pytest tests -n 16 -q` ->
-  `1077 passed, 18 skipped, 7 warnings in 427.89s`
+  `1081 passed, 18 skipped, 10 warnings in 393.86s`
 
 The rev `0x6E` MAIN includes the SRC4382 Auto Detect cadence candidate,
 source-loss debounce, and fixed-digital SRC route priming from
 `docs/SRC4382_AUTODETECT_POLLING_SPEC.md`.  It is ready for targeted operator
 hardware retest, but the active ledger still requires structured live-rig
 evidence before final closure.
+
+Diagnostics counter matrix status: the full displayed counter matrix in
+[`docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+now has simulator coverage for every displayed row without `gap`, `partial`,
+`PB1-only`, source-hook-only, seeded-render-only, or navigation-driven rows.
+`P` is explicitly simulator-only PORTA-edge coverage and remains
+hardware-realistic not-applicable until PIC18F2455 RA1 analog masking is
+modeled.  The bug-ledger audit and live-rig evidence remain separate final
+release requirements.
 
 The historical 2026-04-22 hardware issue for this pair was originally seen on:
 
@@ -62,8 +75,9 @@ and [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md).
 
 - async delayed preset switch (preset_job state machine) avoids the
   V3.1 sync-write hangs on long preset apply sequences
-- 7 saturating-byte diagnostic counters (I, D, S, B, R, A, P) + RA1
-  edge-detect shadow at `0x123..0x12A`
+- 7 saturating-byte diagnostic counters (I, D, S, B, R, A, P) plus the RA1
+  edge-detect shadow at `0x2E5..0x2EC`; the full runtime/reset diagnostics
+  block spans `0x2E5..0x2F0`
 - `cmd 0x21` reply burst — 7 frames `BF/21..27`, one counter per frame
   in the data byte's low nibble; consumed by the V1.71 CONTROL
   Diagnostics screen
@@ -261,7 +275,9 @@ Sim coverage for the V3.2 + V1.71 combination is in:
 
 See [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page" and
 [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md) for the
-live-rig confirmation gates.
+live-rig confirmation gates.  For Diagnostics counter-specific release closure,
+also require the separate fault-injection matrix and implementation plan linked
+above.
 
 ## Release Notes
 

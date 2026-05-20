@@ -589,6 +589,10 @@ class Chain:
         (
             bytes_acked,
             bytes_nacked,
+            address_nacks_consumed,
+            data_nacks_consumed,
+            address_nack_count_remaining,
+            data_nack_count_remaining,
             tx_bytes_by_subaddr,
             read_bytes_by_subaddr,
             write_transactions,
@@ -599,6 +603,10 @@ class Chain:
         return {
             "bytes_acked": int(bytes_acked),
             "bytes_nacked": int(bytes_nacked),
+            "address_nacks_consumed": int(address_nacks_consumed),
+            "data_nacks_consumed": int(data_nacks_consumed),
+            "address_nack_count_remaining": int(address_nack_count_remaining),
+            "data_nack_count_remaining": int(data_nack_count_remaining),
             "tx_bytes_by_subaddr": list(tx_bytes_by_subaddr),
             "read_bytes_by_subaddr": list(read_bytes_by_subaddr),
             "write_transactions": int(write_transactions),
@@ -827,6 +835,41 @@ class Chain:
         """Clear one MAIN-coupled TAS3108 completed-write log."""
         self._inner.reset_main_dsp_write_log(int(unit))
 
+    def reset_main_tas3108_stats(self, unit: int) -> None:
+        """Clear one MAIN-coupled TAS3108 traffic/fault-consumed stats.
+
+        Pending injected fault budgets are intentionally preserved so tests can
+        reset observability immediately before driving firmware traffic.
+        """
+        self._inner.reset_main_tas3108_stats(int(unit))
+
+    def read_main_tas3108_stats(self, unit: int) -> dict[str, int]:
+        """Return one MAIN-coupled TAS3108 traffic/fault snapshot."""
+        (
+            bytes_acked,
+            bytes_nacked,
+            address_nacks_consumed,
+            data_nacks_consumed,
+            address_nack_count_remaining,
+            data_nack_count_remaining,
+        ) = self._inner.read_main_tas3108_stats(int(unit))
+        return {
+            "bytes_acked": int(bytes_acked),
+            "bytes_nacked": int(bytes_nacked),
+            "address_nacks_consumed": int(address_nacks_consumed),
+            "data_nacks_consumed": int(data_nacks_consumed),
+            "address_nack_count_remaining": int(address_nack_count_remaining),
+            "data_nack_count_remaining": int(data_nack_count_remaining),
+        }
+
+    def inject_main_tas3108_address_nack(self, unit: int, count: int) -> None:
+        """Inject address-phase NACKs into one MAIN-coupled TAS3108."""
+        self._inner.inject_main_tas3108_address_nack(int(unit), max(0, int(count)))
+
+    def inject_main_tas3108_data_nack(self, unit: int, count: int) -> None:
+        """Inject post-address data-byte NACKs into one MAIN-coupled TAS3108."""
+        self._inner.inject_main_tas3108_data_nack(int(unit), max(0, int(count)))
+
     def set_i2c_fault(
         self,
         device_name: str,
@@ -843,10 +886,10 @@ class Chain:
         """Program I²C fault-injection on the rust TAS3108
         slave coupled to MAIN0.
 
-        Today only ``address_nack_count`` is implemented in the
+        ``address_nack_count`` and ``data_nack_count`` are implemented in the
         rust slave model.  The other knobs (address_stretch_*,
-        data_nack_count, data_stuck_sda_*, stretch_scl_cycles,
-        hold_scl_low) raise ``NotImplementedError`` so callers
+        data_stuck_sda_*, stretch_scl_cycles, hold_scl_low) raise
+        ``NotImplementedError`` so callers
         get a clear failure rather than a silent no-op.
 
         ``device_name`` is required for gpsim signature parity
@@ -867,8 +910,6 @@ class Chain:
             unsupported.append("address_stretch_scl_cycles")
         if address_stretch_count is not None:
             unsupported.append("address_stretch_count")
-        if data_nack_count is not None:
-            unsupported.append("data_nack_count")
         if data_stuck_sda_cycles is not None:
             unsupported.append("data_stuck_sda_cycles")
         if data_stuck_sda_count is not None:
@@ -884,7 +925,9 @@ class Chain:
                 f"{', '.join(unsupported)}"
             )
         if address_nack_count is not None:
-            self._inner.set_dsp_i2c_fault(max(0, int(address_nack_count)))
+            self.inject_main_tas3108_address_nack(0, address_nack_count)
+        if data_nack_count is not None:
+            self.inject_main_tas3108_data_nack(0, data_nack_count)
 
     def clear_i2c_faults(self, device_name: str = "dsp34") -> None:
         """Clear all I²C fault-injection counters on the rust
@@ -951,6 +994,31 @@ class Chain:
         MSSP.
         """
         self._inner.clear_mssp_stop_faults()
+
+    def set_main_mssp_stop_fault(
+        self,
+        unit: int,
+        *,
+        stop_busy_cycles: int | None = None,
+        stop_busy_count: int | None = None,
+    ) -> None:
+        """Per-MAIN variant of :meth:`set_mssp_stop_fault`."""
+        if stop_busy_cycles is None and stop_busy_count is None:
+            return
+        if stop_busy_cycles is None or stop_busy_count is None:
+            raise ValueError(
+                "set_main_mssp_stop_fault: stop_busy_cycles and "
+                "stop_busy_count must be passed together."
+            )
+        self._inner.set_main_mssp_stop_fault(
+            int(unit),
+            max(0, int(stop_busy_cycles)),
+            max(-1, int(stop_busy_count)),
+        )
+
+    def clear_main_mssp_stop_faults(self, unit: int) -> None:
+        """Clear one MAIN's MSSP STOP-fault knobs."""
+        self._inner.clear_main_mssp_stop_faults(int(unit))
 
     def set_mssp_start_fault(
         self,
@@ -1022,6 +1090,10 @@ class Chain:
         and clear the SSPCON2 trigger bits.
         """
         self._inner.force_reset_main_mssp()
+
+    def force_reset_main_mssp_unit(self, unit: int) -> None:
+        """Per-MAIN variant of :meth:`force_reset_main_mssp`."""
+        self._inner.force_reset_main_mssp_unit(int(unit))
 
     def set_main_an0_sample(self, unit: int, value: int) -> None:
         """Set the AN0 (rail-sense ADC ch 0) sample for one MAIN.

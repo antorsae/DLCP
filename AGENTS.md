@@ -249,6 +249,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/validate_src4382_manual_evidence.py`
 - `scripts/dlcp_main_flash.py`
 - `scripts/dlcp_v31_release_flash.py`
+- `scripts/dlcp_v32_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
 - `scripts/dlcp_ep0_flash_probe.py`
 - `scripts/sim_presets_ab.py`
@@ -271,7 +272,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (~1099 tests collected after PF.4 phase 1 deletions and current
+Current suite (~1130 tests collected after PF.4 phase 1 deletions and current
 V1.71/V3.2 bug-ledger additions per `pytest tests --collect-only`).
 
 Pytest markers:
@@ -322,7 +323,7 @@ Hardware-loop tooling:
 - `test_hardware_flipper_ir.py`, `test_hardware_loop.py`, `test_hardware_state_test.py`
 
 Live hardware (optional):
-- `tests/hardware/test_live_state_transitions.py` (MAIN V3.2 release identity + A/B filename RAM confirmation, physical front-panel A/B confirmation, physical front-panel STBY/WAKE confirmation, real-IR stress for V1.6b-vs-V1.71 comparison, preset convergence, rapid-toggle convergence, preset→mute timing sweep, preset→standby/wake timing sweep, reconnect responsiveness soak, and the V1.71+V3.2 Layer 5 PB1/PB2 Diagnostics gates on the real DLCP rig — the release-identity test gates on `DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`; the front-panel preset gate gates on `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 DLCP_HW_EXPECTED_PRESET=A|B`; the front-panel standby/wake gate gates on `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`; the cross-version IR stress gate gates on `DLCP_HW_IR_LEGACY_STRESS=1`; the diag tests gate on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to PB1/PB2 Diag and waits for the static cadence; the diag physical-button test additionally gates on `DLCP_HW_LAYER5_BUTTON_ACTIONS=1`, and the diag IR-actions test additionally gates on `DLCP_HW_LAYER5_IR_ACTIONS=1`, with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2` for per-page runs; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
+- `tests/hardware/test_live_state_transitions.py` (17 live tests: MAIN V3.2 release identity + A/B filename RAM confirmation; release-flash settings preservation; SRC4382 Auto Detect acoustic confirmation; physical front-panel A/B confirmation; physical front-panel STBY/WAKE confirmation; preset convergence; rapid-toggle convergence; preset→mute timing sweep; preset→standby/wake timing sweep; reconnect responsiveness soak; IR receiver profile sweep; real-IR legacy stress for V1.6b-vs-V1.71 comparison; and the V1.71+V3.2 Layer 5 PB1/PB2 Diagnostics gates on the real DLCP rig — release identity gates on `DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`; settings preservation gates on `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1` plus `DLCP_HW_EXPECTED_VOLUME_LOW`, `DLCP_HW_EXPECTED_INPUT`, and `DLCP_HW_EXPECTED_SETUP_PROFILE`; SRC4382 acoustic confirmation gates on `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1`, `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1`, `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1`, `DLCP_HW_SRC4382_USER_ACTIONS_OK=1`, and `DLCP_HW_SRC4382_SOAK_OK=1`; the front-panel preset gate uses `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 DLCP_HW_EXPECTED_PRESET=A|B`; the front-panel standby/wake gate uses `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`; the IR receiver sweep gates on `DLCP_HW_IR_RECEIVER_SWEEP=1`; the cross-version IR stress gate uses `DLCP_HW_IR_LEGACY_STRESS=1`; the diag tests gate on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to PB1/PB2 Diag and waits for the static cadence; the diag physical-button test additionally gates on `DLCP_HW_LAYER5_BUTTON_ACTIONS=1`, and the diag IR-actions test additionally gates on `DLCP_HW_LAYER5_IR_ACTIONS=1`, with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2` for per-page runs; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
 
 V3.0 source rewrite:
 - `test_v30_equivalence.py` (hex integrity + source quality)
@@ -359,19 +360,23 @@ V3.2 SRC4382 Auto Detect:
 - `test_v32_src4382_audio_path_regression.py` (SRC route/TAS3108 refresh contract, exact route-pair guard, negative mutation proof for route/TAS refresh breaks)
 - `test_v32_src4382_autodetect_polling.py` (reduced SRC4382 Auto Detect traffic, one receiver-select write per candidate change, worst-position source detection, explicit-input preemption, mute/unmute, standby/wake, preset-select, SRC4382 NACK/no-stall behavior, and V1.71 + two-V3.2 chain liveness)
 
+V1.71/V3.2 Diagnostics fault matrix:
+- `test_v171_v32_diag_fault_matrix_manifest.py` (required-test manifest for PB1/PB2 runtime/reset diagnostics fault-surfacing coverage)
+- `test_v171_v32_layer5_diag_chain.py` (Layer 5 chain tests, including real-stimulus LCD surfacing for `I/D/S/B/R/A/P`, reset-cause `O/V/W/X`, stale-pending `n/a`, static PB page freshness, and Diagnostics foreground service responsiveness)
+
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
 Recent verification (latest 2026-05-20):
 
-- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1099 tests collected`
+- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1130 tests collected`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
-- `.venv_ep0/bin/python scripts/build_v171_release.py` -> canonical `DLCP_Control_V1.71.hex` rebuilt with release rev bump `0x18 -> 0x19`
+- `.venv_ep0/bin/python scripts/build_v171_release.py` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x2D`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
 - `.venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x6D -> 0x6E`
-- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `17 tests collected` (MAIN release identity/A-B filename RAM + physical front-panel A/B confirmation + physical front-panel STBY/WAKE confirmation + six IR/LCD state-transition tests + five V1.71/V3.2 Layer 5 Diagnostics tests + SRC4382 Auto Detect acoustic confirmation)
-- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `17 skipped` without the required live-rig attachments/env (`DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`, `DLCP_HW_IR_LEGACY_STRESS=1`, Flipper serial, camera, `DLCP_HW_LAYER5_AT_DIAG=1`, `DLCP_HW_LAYER5_BUTTON_ACTIONS=1` / `DLCP_HW_LAYER5_IR_ACTIONS=1`, and the SRC4382 acoustic confirmation envs)
+- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `17 tests collected` (MAIN release identity/A-B filename RAM, release-flash settings preservation, SRC4382 Auto Detect acoustic confirmation, physical front-panel A/B confirmation, physical front-panel STBY/WAKE confirmation, preset convergence, rapid-toggle convergence, preset timing sweeps, reconnect soak, IR receiver sweep, real-IR legacy stress, and five V1.71/V3.2 Layer 5 Diagnostics tests)
+- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `17 skipped` without the required live-rig attachments/env (`DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`, `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1` plus `DLCP_HW_EXPECTED_VOLUME_LOW` / `DLCP_HW_EXPECTED_INPUT` / `DLCP_HW_EXPECTED_SETUP_PROFILE`, `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1`, `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1`, `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1`, `DLCP_HW_SRC4382_USER_ACTIONS_OK=1`, `DLCP_HW_SRC4382_SOAK_OK=1`, `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`, `DLCP_HW_IR_RECEIVER_SWEEP=1`, `DLCP_HW_IR_LEGACY_STRESS=1`, Flipper serial, camera, `DLCP_HW_LAYER5_AT_DIAG=1`, and `DLCP_HW_LAYER5_BUTTON_ACTIONS=1` / `DLCP_HW_LAYER5_IR_ACTIONS=1`)
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --collect --phase all` -> `17 tests collected`, then printed the hardware phase command manifest
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --phase diag-ir-actions` -> dry-run printed separate PB1 and PB2 Diagnostics IR hardware phase commands with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2`
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --bug BUG-DIAG-02` -> dry-run expands the ledger bug to `diag-pb1`, `diag-pb2`, `diag-buttons-pb1`, `diag-buttons-pb2`, `diag-ir-pb1`, and `diag-ir-pb2`
@@ -385,9 +390,13 @@ Recent verification (latest 2026-05-20):
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v32_release_flash_sim.py tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_runtime_eeprom_identity_matches_release_hex_without_seed tests/sim/test_dlcp_main_flash.py::test_build_v32_release_bumps_runtime_eeprom_revision_marker` -> `6 passed in 60.69s`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_ledger_hardware_gate.py tests/sim/test_v32_src4382_autodetect_polling.py tests/sim/test_v32_src4382_audio_path_regression.py` -> `116 passed in 39.55s`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v32_release_flash_sim.py` -> `4 passed in 53.82s`
-- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> previous dedicated simulator gate `1067 passed, 1 skipped, 7 warnings in 702.71s`; the later full `tests` gate below includes the latest simulator runner-helper tests
-- `.venv_ep0/bin/python -m pytest tests -n 16 -q` -> `1081 passed, 18 skipped, 10 warnings in 393.86s`
-- `cargo test --workspace` -> passed; `snapshot_soak` sub-binary reported `6 passed in 1380.05s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q -n 8 tests/sim/test_v171_v32_diag_fault_matrix_manifest.py tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_entry_clears_stale_pending_timeout_state tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_injected_src4382_i2c_fault tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_standby_wake_event_counters tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_tas3108_dsp_fault_episode tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_volume_dsp_recovery_counter tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_bounded_i2c_timeout_recovery_counter tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_an0_standby_trigger tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_ra1_edge_counter tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_reset_cause_flags` -> `30 passed in 77.19s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_layer5_diag_chain.py tests/sim/test_v32_layer5_diag_counters.py tests/sim/test_v32_src4382_autodetect_polling.py` -> `116 passed in 610.66s`
+- `cargo test -p dlcp-sim src4382 --quiet` -> `11 passed`
+- `cargo test -p dlcp-sim tas3108 --quiet` -> `17 passed`
+- `cargo test -p dlcp-sim -p dlcp-sim-py` -> passed; `snapshot_soak` reported `6 passed in 1357.95s` and `dlcp-sim-py` reported `0 passed` (compile gate)
+- `cargo build --release -p dlcp-sim-py && bash crates/dlcp-sim-py/build.sh` -> rebuilt and relinked the Python native module
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `1112 passed, 1 skipped, 7 warnings in 422.91s`
 
 V3.1-only gate (80 tests, ~8 min):
 
@@ -424,6 +433,7 @@ Top-level docs:
 - `docs/IMPL_V171_V32_BUG_LEDGER.md` (active V1.71/V3.2 implementation bug ledger and red-test-first workflow)
 - `docs/V171_V32_LINK_HEALTH_FRESHNESS_SPEC.md` (V1.71/V3.2 per-MAIN link-health freshness, UI markers, USB diagnostics, and phased implementation plan)
 - `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (V1.71/V3.2 Diagnostics counter fault-injection coverage matrix and closure plan)
+- `docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (implementation plan for closing the V1.71/V3.2 Diagnostics counter fault-injection matrix)
 - `docs/NO_POP_FIRMWARE_FLASH.md` (V3.2+ pop-free flash-entry path; implemented as `flash_entry_quiet_shutdown`; operator validation runbook in `docs/HARDWARE_TEST.md` §"Re-flash pop monitoring")
 - `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
 - `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)

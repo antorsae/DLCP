@@ -73,6 +73,19 @@ Completion criteria for this ledger:
   artifact paths for non-`done` rows, `DONE:` evidence for `done` rows,
   artifact status, and no blocking reasons.
 
+Release closure criteria beyond this bug ledger:
+
+- The separate Diagnostics counter matrix in
+  `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` now has simulator coverage
+  for every displayed row without `gap`, `partial`, `PB1-only`,
+  source-hook-only, seeded-render-only, or navigation-driven rows.  Its
+  implementation plan is
+  `docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`; `P` remains explicitly
+  simulator-only PORTA-edge coverage, not hardware-realistic closure.
+- Treat the bug-ledger audit as necessary but not sufficient for final
+  V1.71/V3.2 release closure because live-rig evidence is still required
+  separately.
+
 ## Active Bugs
 
 | ID | Status | Area | Symptom | Required red test |
@@ -324,7 +337,7 @@ Green simulator runs through 2026-05-20:
   After the later positive operator IR report, the full collect/report path was
   rerun with
   `--report-json artifacts/probes/v171_v32_ledger_gate/collect_after_ir_operator_report.json`
-  and again collected `16` hardware tests while writing the phase command
+  and again collected `17` hardware tests while writing the phase command
   manifest plus the per-bug `bug_phase_map` closure map and `bug_closure`
   status object.  Because this was a collect-only run, every selected
   closure row is intentionally `not_run` until a real `--execute` report

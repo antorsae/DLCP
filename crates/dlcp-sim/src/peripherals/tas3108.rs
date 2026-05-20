@@ -116,6 +116,17 @@ pub struct Tas3108WriteTransaction {
     pub payload: Vec<u8>,
 }
 
+/// Structured diagnostic snapshot for TAS3108 I2C traffic and injected faults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tas3108Stats {
+    pub bytes_acked: u64,
+    pub bytes_nacked: u64,
+    pub address_nacks_consumed: u64,
+    pub data_nacks_consumed: u64,
+    pub address_nack_count_remaining: u32,
+    pub data_nack_count_remaining: u32,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct Tas3108WriteInProgress {
     start_subaddr: u8,
@@ -170,6 +181,15 @@ pub struct Tas3108 {
     /// addresses still take their default code paths.  Set to
     /// 0 to clear; defaults to 0 (no fault).
     address_nack_count_remaining: u32,
+    /// Fault-injection: remaining post-address data-byte NACKs.  This mirrors
+    /// the SRC4382 model and lets V1.71/V3.2 diagnostics tests fail after the
+    /// address phase, on the TAS3108 subaddress or payload byte.
+    data_nack_count_remaining: u32,
+    /// Cause-specific consumed-fault counters.  Aggregate bytes_nacked also
+    /// includes normal address mismatches when several slaves share the bus, so
+    /// tests must use these fields to prove an injected TAS3108 fault fired.
+    address_nacks_consumed: u64,
+    data_nacks_consumed: u64,
 }
 
 impl Default for Tas3108 {
@@ -193,6 +213,9 @@ impl Tas3108 {
             write_log: Vec::new(),
             current_write: None,
             address_nack_count_remaining: 0,
+            data_nack_count_remaining: 0,
+            address_nacks_consumed: 0,
+            data_nacks_consumed: 0,
         }
     }
 
@@ -213,6 +236,15 @@ impl Tas3108 {
         self.address_nack_count_remaining = count;
     }
 
+    /// Program the fault-injection data-NACK counter.
+    /// While `count > 0`, post-address subaddress/data bytes are NACKed,
+    /// the current transaction transitions to Ignored, and the counter is
+    /// decremented.  Address bytes and unrelated slave-address mismatches are
+    /// unaffected.
+    pub fn set_data_nack_count(&mut self, count: u32) {
+        self.data_nack_count_remaining = count;
+    }
+
     /// Read the remaining address-NACK injections.  Mirror of
     /// gpsim's `read_i2c_attribute("dsp34", "Address_Nack_Count")`
     /// which returns the gpsim regfile module's current
@@ -224,6 +256,33 @@ impl Tas3108 {
         self.address_nack_count_remaining
     }
 
+    /// Read the remaining data-NACK injections.
+    pub fn data_nack_count_remaining(&self) -> u32 {
+        self.data_nack_count_remaining
+    }
+
+    /// Return a copy of traffic/fault observability counters.
+    pub fn stats(&self) -> Tas3108Stats {
+        Tas3108Stats {
+            bytes_acked: self.bytes_acked,
+            bytes_nacked: self.bytes_nacked,
+            address_nacks_consumed: self.address_nacks_consumed,
+            data_nacks_consumed: self.data_nacks_consumed,
+            address_nack_count_remaining: self.address_nack_count_remaining,
+            data_nack_count_remaining: self.data_nack_count_remaining,
+        }
+    }
+
+    /// Clear traffic and consumed-fault stats without changing register
+    /// contents or remaining fault-injection budgets.
+    pub fn reset_stats(&mut self) {
+        self.bytes_acked = 0;
+        self.bytes_nacked = 0;
+        self.address_nacks_consumed = 0;
+        self.data_nacks_consumed = 0;
+        self.write_log.clear();
+    }
+
     /// Clear all fault-injection counters back to their
     /// default (no-fault) state.  Mirror of
     /// `MainChainHarness.clear_i2c_faults` (chain_gpsim.py:526),
@@ -231,6 +290,7 @@ impl Tas3108 {
     /// stretch / data-NACK / stuck-SDA knobs.
     pub fn clear_i2c_faults(&mut self) {
         self.address_nack_count_remaining = 0;
+        self.data_nack_count_remaining = 0;
     }
 
     /// Slave-address byte the master must use to ADDRESS this
@@ -345,6 +405,7 @@ impl Tas3108 {
         // which only NACKs the device's own slave addresses.
         if self.address_nack_count_remaining > 0 && (byte == write_addr || byte == read_addr) {
             self.address_nack_count_remaining -= 1;
+            self.address_nacks_consumed += 1;
             self.phase = Phase::Ignored;
             return false;
         }
@@ -401,6 +462,9 @@ impl Tas3108 {
     }
 
     fn handle_subaddress_byte(&mut self, byte: u8) -> bool {
+        if self.nack_data_byte() {
+            return false;
+        }
         self.last_latched_subaddr = Some(byte);
         self.finish_current_write();
         self.current_write = Some(Tas3108WriteInProgress {
@@ -412,6 +476,9 @@ impl Tas3108 {
     }
 
     fn handle_write_data_byte(&mut self, byte: u8, next_subaddr: u8) -> bool {
+        if self.nack_data_byte() {
+            return false;
+        }
         self.regs[next_subaddr as usize] = byte;
         if let Some(tx) = &mut self.current_write {
             tx.payload.push(byte);
@@ -434,6 +501,16 @@ impl Tas3108 {
                 });
             }
         }
+    }
+
+    fn nack_data_byte(&mut self) -> bool {
+        if self.data_nack_count_remaining == 0 {
+            return false;
+        }
+        self.data_nack_count_remaining -= 1;
+        self.data_nacks_consumed += 1;
+        self.phase = Phase::Ignored;
+        true
     }
 
     /// True iff the slave is currently in a read transaction
@@ -523,6 +600,54 @@ mod tests {
         );
         dsp.on_stop();
         assert_eq!(dsp.bytes_acked, 1);
+    }
+
+    /// Fault-injection: data NACKs start after a successful address phase.
+    /// The subaddress byte is the first data-phase byte in the TAS3108 write
+    /// protocol.
+    #[test]
+    fn data_nack_counter_nacks_subaddress_then_recovers() {
+        let mut dsp = Tas3108::default();
+        dsp.set_data_nack_count(1);
+
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x68), "address phase must ACK");
+        assert!(!dsp.consume_tx_byte(0x30), "subaddress byte must NACK");
+        dsp.on_stop();
+
+        let stats = dsp.stats();
+        assert_eq!(stats.data_nacks_consumed, 1);
+        assert_eq!(stats.data_nack_count_remaining, 0);
+        assert_eq!(stats.bytes_acked, 1);
+        assert_eq!(stats.bytes_nacked, 1);
+
+        dsp.on_start();
+        assert!(dsp.consume_tx_byte(0x68));
+        assert!(dsp.consume_tx_byte(0x30), "data-NACK budget is exhausted");
+        assert!(dsp.consume_tx_byte(0xAA));
+        dsp.on_stop();
+        assert_eq!(dsp.read_subaddr(0x30), 0xAA);
+    }
+
+    #[test]
+    fn reset_stats_preserves_fault_budgets() {
+        let mut dsp = Tas3108::default();
+        dsp.set_address_nack_count(3);
+        dsp.set_data_nack_count(4);
+
+        dsp.on_start();
+        assert!(!dsp.consume_tx_byte(0x68));
+        dsp.on_stop();
+        assert_eq!(dsp.stats().address_nacks_consumed, 1);
+
+        dsp.reset_stats();
+        let stats = dsp.stats();
+        assert_eq!(stats.bytes_acked, 0);
+        assert_eq!(stats.bytes_nacked, 0);
+        assert_eq!(stats.address_nacks_consumed, 0);
+        assert_eq!(stats.data_nacks_consumed, 0);
+        assert_eq!(stats.address_nack_count_remaining, 2);
+        assert_eq!(stats.data_nack_count_remaining, 4);
     }
 
     /// Fault-injection: broadcast (0x00) and other (mismatched)

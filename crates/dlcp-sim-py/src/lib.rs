@@ -1487,12 +1487,29 @@ impl Chain {
     fn read_main_src4382_stats(
         &self,
         unit: u8,
-    ) -> PyResult<(u64, u64, Vec<u64>, Vec<u64>, u64, u64, Vec<u64>, Vec<u64>)> {
+    ) -> PyResult<(
+        u64,
+        u64,
+        u64,
+        u64,
+        u32,
+        u32,
+        Vec<u64>,
+        Vec<u64>,
+        u64,
+        u64,
+        Vec<u64>,
+        Vec<u64>,
+    )> {
         let slave_idx = self.src4382_slave_index(unit, "read_main_src4382_stats")?;
         let stats = self.inner.src4382_slaves[slave_idx].stats();
         Ok((
             stats.bytes_acked,
             stats.bytes_nacked,
+            stats.address_nacks_consumed,
+            stats.data_nacks_consumed,
+            stats.address_nack_count_remaining,
+            stats.data_nack_count_remaining,
             stats.tx_bytes_by_subaddr.to_vec(),
             stats.read_bytes_by_subaddr.to_vec(),
             stats.write_transactions,
@@ -2073,6 +2090,56 @@ impl Chain {
         Ok(())
     }
 
+    /// Clear one MAIN-coupled TAS3108 traffic/fault-consumed stats
+    /// without clearing still-pending injected fault budgets.
+    fn reset_main_tas3108_stats(&mut self, unit: u8) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "reset_main_tas3108_stats")?;
+        self.inner.reset_main_tas3108_stats(i_main).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "reset_main_tas3108_stats: no TAS3108 slave coupled to MAIN{unit}"
+            ))
+        })
+    }
+
+    /// Return a raw tuple consumed by the Python facade and converted
+    /// to a named dict there.
+    fn read_main_tas3108_stats(&self, unit: u8) -> PyResult<(u64, u64, u64, u64, u32, u32)> {
+        let slave_idx = self.tas3108_slave_index(unit, "read_main_tas3108_stats")?;
+        let stats = self.inner.tas3108_slaves[slave_idx].stats();
+        Ok((
+            stats.bytes_acked,
+            stats.bytes_nacked,
+            stats.address_nacks_consumed,
+            stats.data_nacks_consumed,
+            stats.address_nack_count_remaining,
+            stats.data_nack_count_remaining,
+        ))
+    }
+
+    /// Inject address-phase NACKs into one MAIN-coupled TAS3108.
+    fn inject_main_tas3108_address_nack(&mut self, unit: u8, count: u32) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "inject_main_tas3108_address_nack")?;
+        self.inner
+            .inject_main_tas3108_address_nack(i_main, count)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "inject_main_tas3108_address_nack: no TAS3108 slave coupled to MAIN{unit}"
+                ))
+            })
+    }
+
+    /// Inject post-address data-byte NACKs into one MAIN-coupled TAS3108.
+    fn inject_main_tas3108_data_nack(&mut self, unit: u8, count: u32) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "inject_main_tas3108_data_nack")?;
+        self.inner
+            .inject_main_tas3108_data_nack(i_main, count)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "inject_main_tas3108_data_nack: no TAS3108 slave coupled to MAIN{unit}"
+                ))
+            })
+    }
+
     /// Program the address-NACK fault counter on the TAS3108
     /// slave coupled to MAIN0.  While `address_nack_count > 0`,
     /// the slave NACKs every address-phase byte that matches
@@ -2148,6 +2215,32 @@ impl Chain {
             .peripherals
             .mssp
             .clear_stop_faults();
+    }
+
+    /// Per-MAIN variant of `set_mssp_stop_fault` for two-MAIN
+    /// diagnostics and fault-injection coverage.
+    fn set_main_mssp_stop_fault(
+        &mut self,
+        unit: u8,
+        stop_busy_cycles: u32,
+        stop_busy_count: i64,
+    ) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "set_main_mssp_stop_fault")?;
+        self.inner.cores[i_main]
+            .peripherals
+            .mssp
+            .set_stop_fault(stop_busy_cycles, stop_busy_count);
+        Ok(())
+    }
+
+    /// Clear one MAIN's MSSP STOP-fault knobs.
+    fn clear_main_mssp_stop_faults(&mut self, unit: u8) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "clear_main_mssp_stop_faults")?;
+        self.inner.cores[i_main]
+            .peripherals
+            .mssp
+            .clear_stop_faults();
+        Ok(())
     }
 
     /// Program the MSSP START-fault knobs on MAIN0's MSSP
@@ -2240,6 +2333,18 @@ impl Chain {
             dlcp_sim::memory::Address::from_raw(dlcp_sim::peripherals::mssp::SSPCON2_ADDR),
             0,
         );
+    }
+
+    /// Per-MAIN variant of `force_reset_main_mssp`.
+    fn force_reset_main_mssp_unit(&mut self, unit: u8) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "force_reset_main_mssp_unit")?;
+        let core = &mut self.inner.cores[i_main];
+        core.peripherals.mssp.reset_state();
+        core.memory.write_raw(
+            dlcp_sim::memory::Address::from_raw(dlcp_sim::peripherals::mssp::SSPCON2_ADDR),
+            0,
+        );
+        Ok(())
     }
 
     /// Set the AN0 (rail-sense ADC channel 0) sample for a

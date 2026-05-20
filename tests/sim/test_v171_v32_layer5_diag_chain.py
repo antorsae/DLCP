@@ -141,6 +141,29 @@ IR_CMD_PRESET_B = 0x39
 IR_CMD_STANDBY = 0x3A
 IR_CMD_WAKE = 0x3B
 
+DIAG_LABEL_OFFSETS = {
+    "I": 0,
+    "D": 1,
+    "S": 2,
+    "B": 3,
+    "R": 4,
+    "A": 5,
+    "P": 6,
+    "O": 7,
+    "V": 8,
+    "W": 9,
+    "X": 10,
+}
+DIAG_CACHE_LEN = 11
+DIAG_RESET_LABELS = ("O", "V", "W", "X")
+RESET_SOURCE_ORDER = ("por", "bor", "wdt", "reset")
+RESET_SOURCE_LABELS = {
+    "por": "O",
+    "bor": "V",
+    "wdt": "W",
+    "reset": "X",
+}
+
 
 def _rust_tap_key(rust_chain, key: str) -> None:  # type: ignore[no-untyped-def]
     port, bit = _CONTROL_BUTTON_PINS[key]
@@ -152,6 +175,13 @@ def _rust_tap_key(rust_chain, key: str) -> None:  # type: ignore[no-untyped-def]
 
 def _frame_tuple(frame) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
     return tuple(frame) if isinstance(frame, tuple) else (frame.route, frame.cmd, frame.data)
+
+
+def _bytes_to_frames(bytes_: list[int]) -> list[tuple[int, int, int]]:
+    return [
+        tuple(int(b) & 0xFF for b in bytes_[idx:idx + 3])  # type: ignore[misc]
+        for idx in range(0, len(bytes_) - 2, 3)
+    ]
 
 
 def _configure_hypex_ir_profile(rust_chain) -> None:  # type: ignore[no-untyped-def]
@@ -203,6 +233,21 @@ def _main_active_gates(rust_chain) -> tuple[int, int]:  # type: ignore[no-untype
         (rust_chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS_PHYS) & MAIN_ACTIVE_GATE_MASK) >> 3
         for unit in (0, 1)
     )
+
+
+def _rust_connected_chain(
+    v171_hex: Path, v32_hex: Path,
+):  # type: ignore[no-untyped-def]
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +348,14 @@ def _rust_diag_pb_cache(rust_chain, pb_idx: int) -> tuple[int, ...]:  # type: ig
     return tuple(rust_chain.read_reg(base + i) for i in range(7))
 
 
+def _rust_diag_pb_cache_all(rust_chain, pb_idx: int) -> tuple[int, ...]:  # type: ignore[no-untyped-def]
+    """Read the full 11-byte CONTROL diag cache:
+    I, D, S, B, R, A, P, O, V, W, X.
+    """
+    base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
+    return tuple(rust_chain.read_reg(base + i) for i in range(DIAG_CACHE_LEN))
+
+
 def _parse_v171_symbols(hex_path: Path) -> dict[str, int]:
     lst_path = hex_path.with_suffix(".lst")
     assert lst_path.exists(), f"missing V1.71 listing beside {hex_path}"
@@ -340,6 +393,99 @@ def _rust_wait_for_visible_diag_cache(  # type: ignore[no-untyped-def]
                 return True
         rust_chain.step()
     return False
+
+
+def _rust_drive_main_volume_frame(
+    rust_chain, unit: int, value: int = 0x40,
+) -> None:  # type: ignore[no-untyped-def]
+    """Inject a real chain volume frame into one MAIN's UART RX path."""
+    for byte in (0xB0, 0x07, value & 0xFF):
+        accepted, dropped = rust_chain.inject_main_uart_rx_bytes(unit, [byte])
+        assert accepted == 1 and dropped == 0, (
+            f"failed to inject MAIN{unit} volume byte 0x{byte:02X}: "
+            f"accepted={accepted} dropped={dropped}"
+        )
+        rust_chain.step_ticks(1_000_000)
+
+
+def _rust_wait_for_main_diag_delta(  # type: ignore[no-untyped-def]
+    rust_chain, *, unit: int, addr: int, baseline: int,
+    min_delta: int = 1, attempts: int = 160, ticks: int = 2_000_000,
+) -> int:
+    """Wait for a MAIN diag byte to increase by at least ``min_delta``."""
+    for _ in range(attempts):
+        value = rust_chain.read_main_reg(unit, addr)
+        if value >= baseline + min_delta:
+            return value
+        rust_chain.step_ticks(ticks)
+    value = rust_chain.read_main_reg(unit, addr)
+    pytest.fail(
+        f"MAIN{unit} diag at 0x{addr:03X} did not reach "
+        f"0x{baseline + min_delta:02X}; got 0x{value:02X}; "
+        f"block={_rust_main_diag_block(rust_chain, unit)}; "
+        f"lcd={rust_chain.lcd_lines()!r}"
+    )
+
+
+def _assert_diag_deltas_allowed(
+    before: tuple[int, ...], after: tuple[int, ...], *,
+    allowed_offsets: set[int], context: str,
+) -> None:
+    """Fail if any unlisted diag cache/counter cell changed."""
+    for label, offset in DIAG_LABEL_OFFSETS.items():
+        if offset >= len(before) or offset >= len(after) or offset in allowed_offsets:
+            continue
+        assert after[offset] == before[offset], (
+            f"{context}: unexpected {label} delta at offset {offset}; "
+            f"before={[hex(v) for v in before]}; after={[hex(v) for v in after]}"
+        )
+
+
+def _assert_lcd_diag_token(
+    line0: str, line1: str, *, label: str, value: int, context: str,
+) -> None:
+    """Assert the sparse Diag renderer emitted an exact `Lx` token.
+
+    Plain substring checks are not enough: `B` and `P` occur in the `PBn`
+    page label, and `O` can occur in the healthy `OK` row.
+    """
+    token = f"{label}{value & 0x0F:X}"
+    lcd_text = f"{line0}\n{line1}"
+    assert re.search(rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])", lcd_text), (
+        f"{context}: LCD did not render exact token {token!r}; "
+        f"lcd={(line0, line1)!r}"
+    )
+
+
+def _assert_diag_cache_value(
+    cache: tuple[int, ...], *, label: str, expected: int, context: str,
+) -> None:
+    offset = DIAG_LABEL_OFFSETS[label]
+    actual = cache[offset]
+    assert actual == (expected & 0x0F), (
+        f"{context}: cache[{offset}]/{label} expected "
+        f"0x{expected & 0x0F:X}, got 0x{actual:X}; "
+        f"cache={[hex(v) for v in cache]}"
+    )
+
+
+def _rust_surface_visible_diag(  # type: ignore[no-untyped-def]
+    rust_chain, *, pb_idx: int, checks, limit: int = 1000,
+) -> tuple[str, str, tuple[int, ...]]:
+    """Navigate once to a PB Diag page and wait there until checks land."""
+    _rust_navigate_to_diag_page(rust_chain, pb_idx)
+    ok = _rust_wait_for_visible_diag_cache(
+        rust_chain, pb_idx=pb_idx, checks=checks, limit=limit
+    )
+    line0, line1 = rust_chain.lcd_lines()
+    cache = _rust_diag_pb_cache_all(rust_chain, pb_idx)
+    assert ok, (
+        f"PB{pb_idx + 1} Diag did not surface expected counters; "
+        f"checks={checks!r}; cache={[hex(v) for v in cache]}; "
+        f"lcd={(line0, line1)!r}; "
+        f"main={_rust_main_diag_block(rust_chain, pb_idx)}"
+    )
+    return line0, line1, cache
 
 
 def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
@@ -505,6 +651,19 @@ DIAG_B_PHYS = 0x2E8
 DIAG_R_PHYS = 0x2E9
 DIAG_A_PHYS = 0x2EA
 DIAG_P_PHYS = 0x2EB
+DIAG_RESET_POR_PHYS = 0x2ED
+DIAG_RESET_BOR_PHYS = 0x2EE
+DIAG_RESET_WDT_PHYS = 0x2EF
+DIAG_RESET_SW_PHYS = 0x2F0
+DSP_FAULT_FLAGS_PHYS = 0x07F
+DSP_FAULT_BIT = 0x40
+RCON_PHYS = 0xFD0
+RESET_SOURCE_RCON = {
+    "por": 0x1C,    # POR=0, BOR=0, TO/PD/RI=1; POR wins the cascade.
+    "bor": 0x1E,    # BOR=0, POR=1.
+    "wdt": 0x17,    # TO=0, BOR/POR/PD/RI=1.
+    "reset": 0x0F,  # RI=0, BOR/POR/PD/TO=1.
+}
 
 # V3.2 SRC4382 Auto Detect state / simulated receiver registers used by
 # fault-to-Diagnostics surfacing tests.
@@ -739,8 +898,12 @@ def test_v171_v32_layer5_chain_diag_static_wait_updates_pb1_and_pb2(
 
 @pytest.mark.dual_supported
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    "pb_idx,pending_target",
+    [(0, 0), (0, 1), (1, 0), (1, 1)],
+)
 def test_v171_v32_diag_entry_clears_stale_pending_timeout_state(
-    v171_hex: Path, v32_hex: Path
+    v171_hex: Path, v32_hex: Path, pb_idx: int, pending_target: int
 ) -> None:
     """Real-HW regression, 2026-05-20: PB1/PB2 Diag rendered ``n/a``
     for many minutes, then eventually changed to ``OK``.
@@ -750,18 +913,11 @@ def test_v171_v32_diag_entry_clears_stale_pending_timeout_state(
     bytes at zero.  Pre-fix, page entry cleared the poll countdown but
     not the pending state; the first cadence decremented runtime_timeout
     from 0 to 0xFF and suppressed fresh cmd 0x21 queries for 256 poll
-    cadences.  This test seeds that stale state BEFORE entering PB1 Diag
-    and requires the page to discover PB1 from a static wait.
+    cadences.  This test seeds that stale state BEFORE entering PB1/PB2
+    Diag and requires the visible page to discover its PB from a static
+    wait, including same-target and opposite-target stale transactions.
     """
-    _require_rust()
-    c = RustChain.from_v171_v32(
-        control_hex_path=str(v171_hex),
-        main_hex_path=str(v32_hex),
-    )
-    c.run_until_connected(limit=200)
-    assert c.is_connected() and not c.is_waiting(), (
-        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-    )
+    c = _rust_connected_chain(v171_hex, v32_hex)
 
     # Seed the exact stale transaction shape observed on hardware.  Old
     # firmware carried these bytes into v171_diag_screen; fixed firmware
@@ -771,25 +927,28 @@ def test_v171_v32_diag_entry_clears_stale_pending_timeout_state(
         V171_DIAG_FLAGS_PHYS,
         V171_DIAG_FLAG_RUNTIME_PENDING_MASK | V171_DIAG_FLAG_RESET_PENDING_MASK,
     )
-    c.write_reg(V171_DIAG_RUNTIME_TARGET_PHYS, 0x01)
+    c.write_reg(V171_DIAG_RUNTIME_TARGET_PHYS, pending_target)
     c.write_reg(V171_DIAG_RUNTIME_TIMEOUT_PHYS, 0x00)
-    c.write_reg(V171_DIAG_RESET_TARGET_PHYS, 0x01)
+    c.write_reg(V171_DIAG_RESET_TARGET_PHYS, pending_target)
     c.write_reg(V171_DIAG_RESET_TIMEOUT_PHYS, 0x00)
 
-    _rust_navigate_to_diag_page(c, 0)
-    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=0, checks=((0, 0),), limit=400)
+    _rust_navigate_to_diag_page(c, pb_idx)
+    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=pb_idx, checks=((0, 0),), limit=400)
     line0, line1 = c.lcd_lines()
-    assert ok and (_rust_diag_present(c) & 0x01), (
-        "[rust] stale pending/timeout state blocked PB1 discovery; "
+    pb_mask = 1 << pb_idx
+    pb_label = f"PB{pb_idx + 1}"
+    assert ok and (_rust_diag_present(c) & pb_mask), (
+        f"[rust] stale pending/timeout state blocked {pb_label} discovery; "
+        f"pending_target=PB{pending_target + 1}; "
         f"present=0x{_rust_diag_present(c):02X}; "
         f"flags=0x{c.read_reg(V171_DIAG_FLAGS_PHYS):02X}; "
         f"runtime_timeout=0x{c.read_reg(V171_DIAG_RUNTIME_TIMEOUT_PHYS):02X}; "
         f"reset_timeout=0x{c.read_reg(V171_DIAG_RESET_TIMEOUT_PHYS):02X}; "
         f"lcd={(line0, line1)!r}; "
-        f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}"
+        f"cache={[hex(v) for v in _rust_diag_pb_cache_all(c, pb_idx)]}"
     )
-    assert line0.startswith("PB1") and "n/a" not in line1.lower(), (
-        f"[rust] PB1 Diag must not remain n/a after stale-state entry; "
+    assert line0.startswith(pb_label) and "n/a" not in line1.lower(), (
+        f"[rust] {pb_label} Diag must not remain n/a after stale-state entry; "
         f"lcd={(line0, line1)!r}"
     )
 
@@ -1171,11 +1330,12 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
 @pytest.mark.dual_supported
 @pytest.mark.slow
 @pytest.mark.parametrize("fault_kind", ("address", "data"))
+@pytest.mark.parametrize("unit,pb_label", [(0, "PB1"), (1, "PB2")])
 def test_v171_v32_diag_lcd_surfaces_injected_src4382_i2c_fault(
-    v171_hex: Path, v32_hex: Path, fault_kind: str
+    v171_hex: Path, v32_hex: Path, fault_kind: str, unit: int, pb_label: str
 ) -> None:
     """End-to-end fault surfacing: inject a real SRC4382 I2C NACK, prove
-    MAIN increments ``diag_i``, then prove CONTROL's PB1 Diag page renders
+    MAIN increments ``diag_i``, then prove CONTROL's PB Diag page renders
     that counter through the cmd 0x21 / BF/21 protocol.
 
     This is intentionally stronger than the older LCD tests that seed
@@ -1183,104 +1343,548 @@ def test_v171_v32_diag_lcd_surfaces_injected_src4382_i2c_fault(
     this proves an injected fault reaches the user-visible Diagnostics
     page.
     """
-    _require_rust()
-    c = RustChain.from_v171_v32(
-        control_hex_path=str(v171_hex),
-        main_hex_path=str(v32_hex),
-    )
-    c.run_until_connected(limit=200)
-    assert c.is_connected() and not c.is_waiting(), (
-        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-    )
+    c = _rust_connected_chain(v171_hex, v32_hex)
 
-    _rust_configure_main_src4382_no_source(c, 0)
+    _rust_configure_main_src4382_no_source(c, unit)
+    before_block = _rust_main_diag_block(c, unit)
+    before_i = c.read_main_reg(unit, DIAG_I_PHYS)
     if fault_kind == "address":
-        c.inject_main_src4382_address_nack(0, 1000)
+        c.inject_main_src4382_address_nack(unit, 1000)
     else:
-        c.inject_main_src4382_data_nack(0, 1000)
-    c.reset_main_src4382_stats(0)
+        c.inject_main_src4382_data_nack(unit, 1000)
+    c.reset_main_src4382_stats(unit)
 
-    delivered, overruns = c.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
-    assert delivered == 3 and overruns == 0
-    c.step_ticks(20_000_000)
+    _rust_drive_main_volume_frame(c, unit, 0x40)
+    main_diag_i = _rust_wait_for_main_diag_delta(
+        c, unit=unit, addr=DIAG_I_PHYS, baseline=before_i,
+        attempts=180, ticks=2_000_000,
+    )
 
-    stats = c.read_main_src4382_stats(0)
-    main_diag_i = c.read_main_reg(0, DIAG_I_PHYS)
-    assert stats["bytes_nacked"] > 0, (
+    stats = c.read_main_src4382_stats(unit)
+    consumed_key = f"{fault_kind}_nacks_consumed"
+    other_key = "data_nacks_consumed" if fault_kind == "address" else "address_nacks_consumed"
+    assert stats[consumed_key] > 0, (
         f"SRC4382 {fault_kind} NACK injection did not fire; stats={stats!r}"
     )
-    assert main_diag_i > 0, (
-        f"SRC4382 {fault_kind} NACK did not increment MAIN0.diag_i; "
+    assert stats[other_key] == 0, (
+        f"SRC4382 {fault_kind} NACK test consumed the wrong fault kind; "
+        f"stats={stats!r}"
+    )
+    if fault_kind == "address":
+        c.inject_main_src4382_address_nack(unit, 0)
+    else:
+        c.inject_main_src4382_data_nack(unit, 0)
+    main_diag_i = c.read_main_reg(unit, DIAG_I_PHYS)
+    assert main_diag_i > before_i, (
+        f"SRC4382 {fault_kind} NACK did not increment MAIN{unit}.diag_i; "
         f"diag_i=0x{main_diag_i:02X}; stats={stats!r}"
     )
-
-    _rust_navigate_to_diag_page(c, 0)
-    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=0, checks=((0, 1),), limit=800)
-    line0, line1 = c.lcd_lines()
-    cache = _rust_diag_pb_cache(c, 0)
-    assert ok, (
-        f"PB1 Diag did not surface injected SRC4382 {fault_kind} NACK; "
-        f"MAIN0.diag_i=0x{main_diag_i:02X}; CONTROL cache={cache}; "
-        f"lcd={(line0, line1)!r}; stats={stats!r}"
+    after_block = _rust_main_diag_block(c, unit)
+    _assert_diag_deltas_allowed(
+        before_block,
+        after_block,
+        allowed_offsets={DIAG_LABEL_OFFSETS["I"]},
+        context=f"MAIN{unit} SRC4382 {fault_kind} NACK",
     )
-    assert line0.startswith("PB1:") and "I" in line0, (
-        f"PB1 LCD did not render the I counter for injected SRC4382 "
-        f"{fault_kind} NACK; lcd={(line0, line1)!r}; cache={cache}"
+
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=unit,
+        checks=((DIAG_LABEL_OFFSETS["I"], min(main_diag_i & 0x0F, 0x0F)),),
+        limit=1000,
+    )
+    expected_i = main_diag_i & 0x0F
+    _assert_diag_cache_value(
+        cache,
+        label="I",
+        expected=expected_i,
+        context=f"{pb_label} SRC4382 {fault_kind} NACK",
+    )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="I",
+        value=expected_i,
+        context=f"{pb_label} SRC4382 {fault_kind} NACK",
     )
 
 
 @pytest.mark.dual_supported
 @pytest.mark.slow
+@pytest.mark.parametrize("pb_idx,pb_label", [(0, "PB1"), (1, "PB2")])
 def test_v171_v32_diag_lcd_surfaces_standby_wake_event_counters(
-    v171_hex: Path, v32_hex: Path
+    v171_hex: Path, v32_hex: Path, pb_idx: int, pb_label: str
 ) -> None:
     """End-to-end event-counter surfacing for a different Diagnostics path.
 
-    Drive real CONTROL STBY/WAKE actions, prove MAIN0 increments the S/B
-    counters, then prove PB1 Diag renders those counters through the same
+    Drive real CONTROL STBY/WAKE actions, prove both MAINs increment S/B
+    counters, then prove the selected PB Diag renders those counters through the same
     user-visible LCD path.
+    """
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    before_blocks = {unit: _rust_main_diag_block(c, unit) for unit in (0, 1)}
+
+    c.press("STBY")
+    c.step_many(80)
+    for unit in (0, 1):
+        assert c.read_main_reg(unit, DIAG_S_PHYS) > before_blocks[unit][DIAG_LABEL_OFFSETS["S"]], (
+            f"MAIN{unit}.diag_s did not increment after STBY; "
+            f"before={before_blocks[unit]}; "
+            f"after={_rust_main_diag_block(c, unit)}; lcd={c.lcd_lines()!r}"
+        )
+
+    c.press("STBY")
+    for _ in range(20):
+        c.step_many(100)
+        if (
+            all(
+                c.read_main_reg(unit, DIAG_B_PHYS)
+                > before_blocks[unit][DIAG_LABEL_OFFSETS["B"]]
+                for unit in (0, 1)
+            )
+            and not c.is_waiting()
+        ):
+            break
+    for unit in (0, 1):
+        after_block = _rust_main_diag_block(c, unit)
+        assert after_block[DIAG_LABEL_OFFSETS["B"]] > before_blocks[unit][DIAG_LABEL_OFFSETS["B"]], (
+            f"MAIN{unit}.diag_b did not increment after WAKE; "
+            f"before={before_blocks[unit]}; after={after_block}; "
+            f"lcd={c.lcd_lines()!r}"
+        )
+        _assert_diag_deltas_allowed(
+            before_blocks[unit],
+            after_block,
+            allowed_offsets={DIAG_LABEL_OFFSETS["S"], DIAG_LABEL_OFFSETS["B"]},
+            context=f"MAIN{unit} standby/wake",
+        )
+    c.run_until_connected(limit=300)
+
+    expected_s = c.read_main_reg(pb_idx, DIAG_S_PHYS) & 0x0F
+    expected_b = c.read_main_reg(pb_idx, DIAG_B_PHYS) & 0x0F
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=pb_idx,
+        checks=((DIAG_LABEL_OFFSETS["S"], expected_s), (DIAG_LABEL_OFFSETS["B"], expected_b)),
+        limit=1000,
+    )
+    for label, expected in (("S", expected_s), ("B", expected_b)):
+        _assert_diag_cache_value(
+            cache,
+            label=label,
+            expected=expected,
+            context=f"{pb_label} standby/wake",
+        )
+        _assert_lcd_diag_token(
+            line0,
+            line1,
+            label=label,
+            value=expected,
+            context=f"{pb_label} standby/wake",
+        )
+
+
+def _rust_trigger_tas3108_volume_fault_episode(  # type: ignore[no-untyped-def]
+    c, *, unit: int,
+) -> tuple[dict[str, int], tuple[int, ...], tuple[int, ...]]:
+    """Drive a real volume-write TAS3108 address-NACK episode on one MAIN."""
+    c.inject_main_tas3108_address_nack(unit, 0)
+    _rust_drive_main_volume_frame(c, unit, 0x50)
+    c.step_ticks(30_000_000)
+    flags_before = c.read_main_reg(unit, DSP_FAULT_FLAGS_PHYS)
+    assert (flags_before & DSP_FAULT_BIT) == 0, (
+        f"MAIN{unit} DSP fault bit already set before injected episode; "
+        f"flags=0x{flags_before:02X}; block={_rust_main_diag_block(c, unit)}"
+    )
+
+    before = _rust_main_diag_block(c, unit)
+    c.inject_main_tas3108_address_nack(unit, 60_000)
+    c.reset_main_tas3108_stats(unit)
+    _rust_drive_main_volume_frame(c, unit, 0x30)
+
+    stats: dict[str, int] = {}
+    after = before
+    for _ in range(260):
+        c.step_ticks(2_000_000)
+        stats = c.read_main_tas3108_stats(unit)
+        after = _rust_main_diag_block(c, unit)
+        if (
+            stats["address_nacks_consumed"] > 0
+            and after[DIAG_LABEL_OFFSETS["R"]] > before[DIAG_LABEL_OFFSETS["R"]]
+            and after[DIAG_LABEL_OFFSETS["D"]] > before[DIAG_LABEL_OFFSETS["D"]]
+        ):
+            break
+
+    # Stop the injected fault after proving it fired; the latched counters
+    # are what the diagnostics protocol should surface.
+    c.inject_main_tas3108_address_nack(unit, 0)
+    c.step_ticks(20_000_000)
+    return stats, before, after
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("unit,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_diag_lcd_surfaces_tas3108_dsp_fault_episode(
+    v171_hex: Path, v32_hex: Path, unit: int, pb_label: str
+) -> None:
+    """D row: a real TAS3108 volume-write fault must reach Diagnostics.
+
+    The stimulus is a TAS3108 address NACK during ``volume_dsp_write``.
+    A ping-only fault is not sufficient for this row because ``D`` is the
+    user-visible DSP-fault episode latch.
+    """
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    stats, before, after = _rust_trigger_tas3108_volume_fault_episode(c, unit=unit)
+    assert stats["address_nacks_consumed"] > 0, (
+        f"TAS3108 address NACK budget was not consumed; stats={stats!r}"
+    )
+    _assert_diag_deltas_allowed(
+        before,
+        after,
+        allowed_offsets={
+            DIAG_LABEL_OFFSETS["I"],
+            DIAG_LABEL_OFFSETS["D"],
+            DIAG_LABEL_OFFSETS["R"],
+        },
+        context=f"MAIN{unit} TAS3108 fault episode",
+    )
+    assert after[DIAG_LABEL_OFFSETS["D"]] > before[DIAG_LABEL_OFFSETS["D"]], (
+        f"MAIN{unit}.diag_d did not increment after TAS3108 fault episode; "
+        f"before={before}; after={after}; stats={stats!r}"
+    )
+
+    expected_d = after[DIAG_LABEL_OFFSETS["D"]] & 0x0F
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=unit,
+        checks=((DIAG_LABEL_OFFSETS["D"], expected_d),),
+        limit=1200,
+    )
+    _assert_diag_cache_value(
+        cache,
+        label="D",
+        expected=expected_d,
+        context=f"{pb_label} TAS3108 fault episode",
+    )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="D",
+        value=expected_d,
+        context=f"{pb_label} TAS3108 fault episode",
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("unit,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_diag_lcd_surfaces_volume_dsp_recovery_counter(
+    v171_hex: Path, v32_hex: Path, unit: int, pb_label: str
+) -> None:
+    """R row producer 1: volume-write retry exhaustion surfaces as ``R``."""
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    stats, before, after = _rust_trigger_tas3108_volume_fault_episode(c, unit=unit)
+    _assert_diag_deltas_allowed(
+        before,
+        after,
+        allowed_offsets={
+            DIAG_LABEL_OFFSETS["I"],
+            DIAG_LABEL_OFFSETS["D"],
+            DIAG_LABEL_OFFSETS["R"],
+        },
+        context=f"MAIN{unit} volume-write recovery",
+    )
+    assert after[DIAG_LABEL_OFFSETS["R"]] > before[DIAG_LABEL_OFFSETS["R"]], (
+        f"MAIN{unit}.diag_r did not increment after volume-write recovery; "
+        f"before={before}; after={after}; stats={stats!r}"
+    )
+
+    expected_r = after[DIAG_LABEL_OFFSETS["R"]] & 0x0F
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=unit,
+        checks=((DIAG_LABEL_OFFSETS["R"], expected_r),),
+        limit=1200,
+    )
+    _assert_diag_cache_value(
+        cache,
+        label="R",
+        expected=expected_r,
+        context=f"{pb_label} volume-write recovery",
+    )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="R",
+        value=expected_r,
+        context=f"{pb_label} volume-write recovery",
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("unit,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_diag_lcd_surfaces_bounded_i2c_timeout_recovery_counter(
+    v171_hex: Path, v32_hex: Path, unit: int, pb_label: str
+) -> None:
+    """R row producer 2: bounded MSSP STOP timeout surfaces as ``R``.
+
+    This is distinct from a TAS3108 NACK: the simulated MSSP peripheral
+    keeps PEN busy long enough to exercise the bounded wait/recovery path.
+    """
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    _rust_drive_main_volume_frame(c, unit, 0x50)
+    c.step_ticks(30_000_000)
+    before = _rust_main_diag_block(c, unit)
+
+    c.set_main_mssp_stop_fault(unit, stop_busy_cycles=5_000_000, stop_busy_count=-1)
+    _rust_drive_main_volume_frame(c, unit, 0x30)
+    after = before
+    for _ in range(220):
+        c.step_ticks(2_000_000)
+        after = _rust_main_diag_block(c, unit)
+        if after[DIAG_LABEL_OFFSETS["R"]] > before[DIAG_LABEL_OFFSETS["R"]]:
+            break
+    c.clear_main_mssp_stop_faults(unit)
+    c.force_reset_main_mssp_unit(unit)
+    c.step_ticks(20_000_000)
+
+    assert after[DIAG_LABEL_OFFSETS["R"]] > before[DIAG_LABEL_OFFSETS["R"]], (
+        f"MAIN{unit}.diag_r did not increment after MSSP STOP timeout; "
+        f"before={before}; after={after}; lcd={c.lcd_lines()!r}"
+    )
+    _assert_diag_deltas_allowed(
+        before,
+        after,
+        allowed_offsets={DIAG_LABEL_OFFSETS["I"], DIAG_LABEL_OFFSETS["R"]},
+        context=f"MAIN{unit} MSSP STOP timeout",
+    )
+    expected_r = after[DIAG_LABEL_OFFSETS["R"]] & 0x0F
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=unit,
+        checks=((DIAG_LABEL_OFFSETS["R"], expected_r),),
+        limit=1200,
+    )
+    _assert_diag_cache_value(
+        cache,
+        label="R",
+        expected=expected_r,
+        context=f"{pb_label} MSSP STOP timeout",
+    )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="R",
+        value=expected_r,
+        context=f"{pb_label} MSSP STOP timeout",
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("unit,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_diag_lcd_surfaces_an0_standby_trigger(
+    v171_hex: Path, v32_hex: Path, unit: int, pb_label: str
+) -> None:
+    """A row: a real AN0 high-to-low standby trigger surfaces as ``A``."""
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    c.set_main_an0_sample(unit, 0x0300)
+    c.step_ticks(120_000_000)
+    before_block = _rust_main_diag_block(c, unit)
+    before_a = c.read_main_reg(unit, DIAG_A_PHYS)
+
+    c.set_main_an0_sample(unit, 0x0100)
+    after_a = _rust_wait_for_main_diag_delta(
+        c, unit=unit, addr=DIAG_A_PHYS, baseline=before_a,
+        attempts=260, ticks=2_000_000,
+    )
+    after_block = _rust_main_diag_block(c, unit)
+    _assert_diag_deltas_allowed(
+        before_block,
+        after_block,
+        allowed_offsets={DIAG_LABEL_OFFSETS["A"], DIAG_LABEL_OFFSETS["S"]},
+        context=f"MAIN{unit} AN0 standby trigger",
+    )
+    c.set_main_an0_sample(unit, 0x0300)
+    c.press("STBY")
+    c.step_many(80)
+    c.press("STBY")
+    c.run_until_connected(limit=300)
+
+    expected_a = after_a & 0x0F
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=unit,
+        checks=((DIAG_LABEL_OFFSETS["A"], expected_a),),
+        limit=1200,
+    )
+    _assert_diag_cache_value(
+        cache,
+        label="A",
+        expected=expected_a,
+        context=f"{pb_label} AN0 standby trigger",
+    )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="A",
+        value=expected_a,
+        context=f"{pb_label} AN0 standby trigger",
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("unit,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_diag_lcd_surfaces_ra1_edge_counter(
+    v171_hex: Path, v32_hex: Path, unit: int, pb_label: str
+) -> None:
+    """P row: one modeled RA1 edge increments once and surfaces as ``P``."""
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    c.set_main_pin(unit, "A", 1, True)
+    c.step_ticks(30_000_000)
+    before_block = _rust_main_diag_block(c, unit)
+    before_p = c.read_main_reg(unit, DIAG_P_PHYS)
+
+    c.set_main_pin(unit, "A", 1, False)
+    after_p = _rust_wait_for_main_diag_delta(
+        c, unit=unit, addr=DIAG_P_PHYS, baseline=before_p,
+        attempts=120, ticks=2_000_000,
+    )
+    c.step_ticks(30_000_000)
+    steady_p = c.read_main_reg(unit, DIAG_P_PHYS)
+    assert steady_p == after_p, (
+        f"MAIN{unit}.diag_p repeated while RA1 was held steady low; "
+        f"after_edge=0x{after_p:02X}; steady=0x{steady_p:02X}"
+    )
+    after_block = _rust_main_diag_block(c, unit)
+    _assert_diag_deltas_allowed(
+        before_block,
+        after_block,
+        allowed_offsets={DIAG_LABEL_OFFSETS["P"]},
+        context=f"MAIN{unit} RA1 edge",
+    )
+
+    expected_p = after_p & 0x0F
+    line0, line1, cache = _rust_surface_visible_diag(
+        c,
+        pb_idx=unit,
+        checks=((DIAG_LABEL_OFFSETS["P"], expected_p),),
+        limit=1000,
+    )
+    _assert_diag_cache_value(
+        cache,
+        label="P",
+        expected=expected_p,
+        context=f"{pb_label} RA1 edge",
+    )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="P",
+        value=expected_p,
+        context=f"{pb_label} RA1 edge",
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "source,label,offset",
+    [
+        ("por", "O", DIAG_LABEL_OFFSETS["O"]),
+        ("bor", "V", DIAG_LABEL_OFFSETS["V"]),
+        ("wdt", "W", DIAG_LABEL_OFFSETS["W"]),
+        ("reset", "X", DIAG_LABEL_OFFSETS["X"]),
+    ],
+)
+@pytest.mark.parametrize("pb_idx,pb_label", [(0, "PB1"), (1, "PB2")])
+def test_v171_v32_diag_lcd_surfaces_reset_cause_flags(
+    v171_hex: Path, v32_hex: Path, source: str, label: str,
+    offset: int, pb_idx: int, pb_label: str,
+) -> None:
+    """Reset rows O/V/W/X: cmd 0x22 reset flags reach PB1/PB2 LCD pages.
+
+    The two MAINs deliberately boot with different reset causes so a PB cache
+    routing bug cannot pass by showing the other MAIN's reset flags.
     """
     _require_rust()
     c = RustChain.from_v171_v32(
         control_hex_path=str(v171_hex),
         main_hex_path=str(v32_hex),
     )
-    c.run_until_connected(limit=200)
-    assert c.is_connected() and not c.is_waiting(), (
-        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
-    )
-
-    c.press("STBY")
-    c.step_many(80)
-    assert c.read_main_reg(0, DIAG_S_PHYS) >= 1, (
-        f"MAIN0.diag_s did not increment after STBY; "
-        f"diag block={_rust_main_diag_block(c, 0)}; lcd={c.lcd_lines()!r}"
-    )
-
-    c.press("STBY")
-    for _ in range(20):
-        c.step_many(100)
-        if c.read_main_reg(0, DIAG_B_PHYS) >= 1 and not c.is_waiting():
-            break
-    assert c.read_main_reg(0, DIAG_B_PHYS) >= 1, (
-        f"MAIN0.diag_b did not increment after WAKE; "
-        f"diag block={_rust_main_diag_block(c, 0)}; lcd={c.lcd_lines()!r}"
-    )
+    # Seed the reset-cause latch that real silicon exposes in RCON at reset
+    # entry, then let V3.2's cold-init classification code set the diag flag.
+    # This keeps the test on the firmware classification path without waiting
+    # for a full mid-session bootloader re-entry.
+    other_source = RESET_SOURCE_ORDER[
+        (RESET_SOURCE_ORDER.index(source) + 1) % len(RESET_SOURCE_ORDER)
+    ]
+    sources_by_unit = {
+        pb_idx: source,
+        1 - pb_idx: other_source,
+    }
+    for unit, unit_source in sources_by_unit.items():
+        c.write_main_reg(unit, RCON_PHYS, RESET_SOURCE_RCON[unit_source])
     c.run_until_connected(limit=300)
-
-    _rust_navigate_to_diag_page(c, 0)
-    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=0, checks=((2, 1), (3, 1)), limit=1000)
-    line0, line1 = c.lcd_lines()
-    cache = _rust_diag_pb_cache(c, 0)
-    lcd_text = f"{line0}\n{line1}"
-    assert ok, (
-        f"PB1 Diag did not surface STBY/WAKE S/B counters; "
-        f"MAIN0 diag block={_rust_main_diag_block(c, 0)}; "
-        f"CONTROL cache={cache}; lcd={(line0, line1)!r}"
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain did not reconnect after {source} reset; lcd={c.lcd_lines()!r}"
     )
-    assert "S" in lcd_text and "B" in lcd_text, (
-        f"PB1 LCD did not render S/B counters after STBY/WAKE; "
-        f"lcd={(line0, line1)!r}; cache={cache}"
+
+    checks = [(offset, 1)]
+    if source == "por":
+        # POR alone intentionally renders as healthy "OK".  Add an unrelated
+        # real I2C fault after reset classification so the sparse renderer has
+        # an abnormal row and must emit the O1 token while still sourcing O
+        # from the cmd 0x22 reset cache.
+        _rust_configure_main_src4382_no_source(c, pb_idx)
+        before_i = c.read_main_reg(pb_idx, DIAG_I_PHYS)
+        c.inject_main_src4382_address_nack(pb_idx, 1000)
+        c.reset_main_src4382_stats(pb_idx)
+        _rust_drive_main_volume_frame(c, pb_idx, 0x40)
+        after_i = _rust_wait_for_main_diag_delta(
+            c, unit=pb_idx, addr=DIAG_I_PHYS, baseline=before_i,
+            attempts=180, ticks=2_000_000,
+        )
+        checks.append((DIAG_LABEL_OFFSETS["I"], after_i & 0x0F))
+
+    c.mark_ctl_tx_capture_point()
+    c.mark_ctl_rx_capture_point()
+    line0, line1, cache = _rust_surface_visible_diag(
+        c, pb_idx=pb_idx, checks=tuple(checks), limit=1400
+    )
+    ctl_tx_frames = _bytes_to_frames(c.ctl_tx_record_since_last_capture())
+    ctl_rx_frames = _bytes_to_frames(c.ctl_rx_record_since_last_capture())
+    expected_route = 0xB1 if pb_idx == 0 else 0xB2
+    assert (expected_route, 0x22, 0x00) in ctl_tx_frames, (
+        f"{pb_label} did not emit cmd 0x22 reset query; "
+        f"expected={(expected_route, 0x22, 0x00)!r}; frames={ctl_tx_frames!r}"
+    )
+    expected_reply = (0xBF, 0x28 + (offset - DIAG_LABEL_OFFSETS["O"]), 0x01)
+    assert expected_reply in ctl_rx_frames, (
+        f"{pb_label} CONTROL RX did not receive expected BF/28..2B reset reply; "
+        f"expected={expected_reply!r}; frames={ctl_rx_frames!r}"
+    )
+
+    for reset_label in DIAG_RESET_LABELS:
+        expected = 1 if reset_label == label else 0
+        _assert_diag_cache_value(
+            cache,
+            label=reset_label,
+            expected=expected,
+            context=(
+                f"{pb_label} {source} reset cause "
+                f"(other PB booted as {other_source})"
+            ),
+        )
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label=label,
+        value=1,
+        context=f"{pb_label} {source} reset cause",
     )
 
 

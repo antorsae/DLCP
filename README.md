@@ -2,8 +2,8 @@
 
 Drop-in replacement firmware for the **Hypex DLCP**.  The current release pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.2.hex`](firmware/patched/releases/DLCP_Firmware_V3.2.hex)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.71.hex`](firmware/patched/releases/DLCP_Control_V1.71.hex)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.2.hex`](firmware/patched/releases/DLCP_Firmware_V3.2.hex) (`V3.2 / rev 0x6E`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.71.hex`](firmware/patched/releases/DLCP_Control_V1.71.hex) (`V1.71 / rev 0x2D`)
 
 This README focuses on the supported V3.2 + V1.71 deployment.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
@@ -33,6 +33,14 @@ Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `W
 
 **Coordinated switching.**  In a two-MAIN chain, V3.2 coordinates the mute/wait/apply sequence so left and right switch together instead of one side audibly moving first.
 
+**SRC4382 input handling.**  V3.2 rev `0x6E` reduces SRC4382 Auto Detect
+polling, debounces source-loss detection, and primes the SRC route when a
+fixed digital input is selected.  The rationale is practical: Auto Detect
+should not spend the foreground loop constantly querying the receiver, a single
+transient status sample should not flap the selected route, and selecting
+S/PDIF/USB/AES/Optical manually must restore the receiver/TAS path without
+depending on a previous Auto Detect scan.
+
 **Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  The same data is available over USB:
 
 ```bash
@@ -49,6 +57,11 @@ Counters:
 - `A`: AN0 standby triggers
 - `P`: RA1 edge events
 - `O/V/W/X`: POR, brownout, watchdog, software-reset flags
+
+The simulator fault-injection matrix now covers every displayed Diagnostics
+field from stimulus through MAIN counter, CONTROL cache, and PB1/PB2 LCD
+rendering.  `P` is intentionally scoped to the simulator-only RA1 PORTA-edge
+invariant until PIC18F2455 RA1 analog masking is modeled.
 
 For raw state capture when USB still works but the chain or LCD is unhealthy:
 
@@ -140,6 +153,13 @@ Full simulator gate:
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 ```
 
+Current non-hardware verification snapshot:
+
+- `tests --collect-only`: `1130 tests collected`
+- focused Diagnostics fault matrix gate: `30 passed`
+- broader Diagnostics/SRC gate: `116 passed`
+- full simulator gate: `1112 passed, 1 skipped`
+
 Hardware runbook:
 
 - [docs/HARDWARE_TEST.md](docs/HARDWARE_TEST.md)
@@ -151,6 +171,8 @@ Core implementation docs:
 - Active bug ledger: [docs/IMPL_V171_V32_BUG_LEDGER.md](docs/IMPL_V171_V32_BUG_LEDGER.md)
 - Robustness plan: [docs/V32_MAIN_HANG_HARDENING_PLAN.md](docs/V32_MAIN_HANG_HARDENING_PLAN.md)
 - Diagnostics protocol: [docs/V32_DIAG_TIER1_SPEC.md](docs/V32_DIAG_TIER1_SPEC.md)
+- Diagnostics fault matrix: [docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+- Diagnostics matrix implementation: [docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
 - Simulator details: [docs/SIM_REWRITE_RUST_SPEC.md](docs/SIM_REWRITE_RUST_SPEC.md)
 
 ## Disclaimer

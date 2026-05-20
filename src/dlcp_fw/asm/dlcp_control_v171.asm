@@ -4638,7 +4638,7 @@ v171_diag_send_query:
 v171_diag_send_query_w:
         ; Frame atomicity: reserve three TX slots before writing the
         ; route/cmd/data bytes.  This mirrors serial_tx_routed_frame and
-        ; v171_health_send_query: if the ring is saturated, nothing from
+        ; the health-query sender: if the ring is saturated, nothing from
         ; this frame reaches the wire and the cadence retries cleanly.
         ; Keep the per-byte C checks too; they are defensive and preserve
         ; the existing pending-bit cleanup contract if a future edit breaks
@@ -4706,7 +4706,7 @@ v171_diag_send_query_aborted:
         ; that already left CONTROL keeps its tracking intact.
         ;
         ; Cmd byte (0x21 or 0x22) lives in (Common_RAM + 28); it was
-        ; stashed at the top of v171_diag_send_query_w before any TX,
+        ; stashed at routine entry before any TX,
         ; so it is always valid here.  tx_byte_enqueue may have left
         ; BSR anywhere -- re-assert BANK 1 before touching the flag byte.
         movlb   0x01

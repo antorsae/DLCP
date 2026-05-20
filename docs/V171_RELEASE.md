@@ -13,6 +13,10 @@ of 2026-04-21.
   with `--hex firmware/patched/releases/DLCP_Control_V1.71.hex`
 - active implementation bugs for the V1.71/V3.2 pair are tracked in
   [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md)
+- Diagnostics counter fault-injection closure is tracked separately in
+  [`docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+  and
+  [`docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
 
 V1.71 supersedes V1.64b for chains paired with V3.2 MAIN.  V1.64b
 remains the canonical fallback for chains running V3.1 / V2.x MAIN
@@ -23,7 +27,7 @@ that do not need the V1.71-specific features.
 The historical 2026-04-22 hardware issue for the recommended pair was:
 
 - canonical CONTROL revision then: `V1.71 / rev 0x19`
-- current canonical CONTROL revision: `V1.71 / rev 0x2C`
+- current canonical CONTROL revision: `V1.71 / rev 0x2D`
 - canonical MAIN revision then: `V3.2 / rev 0x53`
 - reproduced symptom: after `STDBY -> WAKE`, CONTROL could remain on
   `WAITING FOR DLCP` while both MAINs are already awake, healthy, and
@@ -39,6 +43,15 @@ and [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md).
 2026-05-10 Diagnostics note: V1.71 rev `0x1C` keeps the stock-compatible
 V1.6b IR receiver path and refreshes the visible PB Diagnostics page at the
 full cadence.
+
+Diagnostics counter matrix status: the full displayed counter matrix in
+[`docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+now has simulator coverage for every displayed row without `gap`, `partial`,
+`PB1-only`, source-hook-only, seeded-render-only, or navigation-driven rows.
+`P` is explicitly simulator-only PORTA-edge coverage and remains
+hardware-realistic not-applicable until PIC18F2455 RA1 analog masking is
+modeled.  The bug-ledger audit and live-rig evidence remain separate final
+release requirements.
 
 2026-05-09 IR note: V1.71 rev `0x1A` uses the stock-compatible V1.6b
 in-ISR RC5 decoder path again.  The Timer1 non-blocking receiver passed
@@ -289,7 +302,9 @@ button pins in a wedged WAITING state; operator validation is
 covered in `docs/HARDWARE_TEST.md` §"WAITING FOR DLCP recovery".
 
 See [`docs/HARDWARE_TEST.md`](HARDWARE_TEST.md) §"Diagnostics page"
-for the live-rig walk-through of the Layer 5 path.
+for the live-rig walk-through of the Layer 5 path.  For Diagnostics
+counter-specific release closure, also require the separate fault-injection
+matrix and implementation plan linked above.
 
 ## Release Notes
 

@@ -449,6 +449,47 @@ impl Chain {
         self.tas3108_couplings.push((master_core_idx, slave_idx));
     }
 
+    /// Return the first TAS3108 slave coupled to `master_core_idx`.
+    pub fn tas3108_slave_for_master(&self, master_core_idx: usize) -> Option<usize> {
+        self.tas3108_couplings
+            .iter()
+            .find(|(master, _)| *master == master_core_idx)
+            .map(|(_, slave)| *slave)
+    }
+
+    /// Test/facade helper: clear observable traffic stats for the
+    /// TAS3108 slave coupled to `master_core_idx` without clearing any
+    /// still-pending injected fault budget.
+    pub fn reset_main_tas3108_stats(&mut self, master_core_idx: usize) -> Option<()> {
+        let slave_idx = self.tas3108_slave_for_master(master_core_idx)?;
+        self.tas3108_slaves[slave_idx].reset_stats();
+        Some(())
+    }
+
+    /// Test/facade helper: inject address-phase NACKs into the TAS3108
+    /// slave coupled to `master_core_idx`.
+    pub fn inject_main_tas3108_address_nack(
+        &mut self,
+        master_core_idx: usize,
+        count: u32,
+    ) -> Option<()> {
+        let slave_idx = self.tas3108_slave_for_master(master_core_idx)?;
+        self.tas3108_slaves[slave_idx].set_address_nack_count(count);
+        Some(())
+    }
+
+    /// Test/facade helper: inject post-address data-byte NACKs into the
+    /// TAS3108 slave coupled to `master_core_idx`.
+    pub fn inject_main_tas3108_data_nack(
+        &mut self,
+        master_core_idx: usize,
+        count: u32,
+    ) -> Option<()> {
+        let slave_idx = self.tas3108_slave_for_master(master_core_idx)?;
+        self.tas3108_slaves[slave_idx].set_data_nack_count(count);
+        Some(())
+    }
+
     /// Push an SRC4382 slave into the chain.  Returns the
     /// slave's index in `src4382_slaves` for use by
     /// `couple_src4382`.  See
