@@ -486,6 +486,64 @@ impl Chain {
         self.src4382_couplings.push((master_core_idx, slave_idx));
     }
 
+    /// Return the first SRC4382 slave coupled to `master_core_idx`.
+    pub fn src4382_slave_for_master(&self, master_core_idx: usize) -> Option<usize> {
+        self.src4382_couplings
+            .iter()
+            .find(|(master, _)| *master == master_core_idx)
+            .map(|(_, slave)| *slave)
+    }
+
+    /// Test/facade helper: seed a coupled SRC4382 register without
+    /// going through I²C, used to model receiver status.
+    pub fn poke_main_src4382_reg(
+        &mut self,
+        master_core_idx: usize,
+        subaddr: u8,
+        value: u8,
+    ) -> Option<()> {
+        let slave_idx = self.src4382_slave_for_master(master_core_idx)?;
+        self.src4382_slaves[slave_idx].poke_subaddr(subaddr, value);
+        Some(())
+    }
+
+    /// Test/facade helper: read a coupled SRC4382 register.
+    pub fn read_main_src4382_reg(&self, master_core_idx: usize, subaddr: u8) -> Option<u8> {
+        let slave_idx = self.src4382_slave_for_master(master_core_idx)?;
+        Some(self.src4382_slaves[slave_idx].read_subaddr(subaddr))
+    }
+
+    /// Test/facade helper: reset coupled SRC4382 traffic stats.
+    pub fn reset_main_src4382_stats(&mut self, master_core_idx: usize) -> Option<()> {
+        let slave_idx = self.src4382_slave_for_master(master_core_idx)?;
+        self.src4382_slaves[slave_idx].reset_stats();
+        Some(())
+    }
+
+    /// Test/facade helper: inject address NACKs into the SRC4382
+    /// coupled to a MAIN core.
+    pub fn inject_main_src4382_address_nack(
+        &mut self,
+        master_core_idx: usize,
+        count: u32,
+    ) -> Option<()> {
+        let slave_idx = self.src4382_slave_for_master(master_core_idx)?;
+        self.src4382_slaves[slave_idx].set_address_nack_count(count);
+        Some(())
+    }
+
+    /// Test/facade helper: inject post-address data NACKs into the
+    /// SRC4382 coupled to a MAIN core.
+    pub fn inject_main_src4382_data_nack(
+        &mut self,
+        master_core_idx: usize,
+        count: u32,
+    ) -> Option<()> {
+        let slave_idx = self.src4382_slave_for_master(master_core_idx)?;
+        self.src4382_slaves[slave_idx].set_data_nack_count(count);
+        Some(())
+    }
+
     /// Wire source-core EUSART TX to destination-core
     /// EUSART RX.  Phase-3.5 will dispatch byte
     /// propagation through `pinnet.uart` on each

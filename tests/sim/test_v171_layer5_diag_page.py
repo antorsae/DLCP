@@ -140,7 +140,7 @@ ALL_DIAG_CACHE_EQUS = (
 
 # Constants exported from ram.inc:
 V171_DIAG_POLL_RELOAD_LO_EXPECTED = 0x00
-V171_DIAG_POLL_RELOAD_HI_EXPECTED = 0x1E
+V171_DIAG_POLL_RELOAD_HI_EXPECTED = 0x5A
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +237,10 @@ def test_ram_inc_poll_reload_constants_are_documented() -> None:
     """Poll cadence reload literals must be present and pin to the spec range.
 
     Spec calls for roughly 1 s.  The V1.71 non-modal Diagnostics loop
-    runs much faster than the original 0x0080 estimate; 0x1E00 keeps
-    the LCD/chain cadence near the intended range.  Pinning the value
-    here means future changes have to update both the EQU and this test.
+    runs much faster than the original 0x0080 estimate. After the V3.2
+    SRC4382 Auto Detect load reduction, 0x5A00 keeps the LCD/chain
+    cadence near the intended range. Pinning the value here means future
+    changes have to update both the EQU and this test.
     """
     text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
     lo = _equ_address(text, "V171_DIAG_POLL_RELOAD_LO")
@@ -385,7 +386,10 @@ def test_diag_screen_label_exists_and_primes_page_entry_state() -> None:
     init point so the page-entry hook fires cmd 0x22 ONCE per PB on
     each Diag-page visit.  BUG-DIAG-01/02 then moved target selection
     to the cadence send path, where it can be loaded from the visible
-    PB page on every query.
+    PB page on every query.  The entry block must also drop stale
+    in-flight diag transaction state; otherwise a pending bit paired
+    with a zero timeout decrements 0 -> 0xFF and suppresses fresh
+    visible-PB queries for 256 poll cadences.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_diag_screen")
@@ -397,10 +401,46 @@ def test_diag_screen_label_exists_and_primes_page_entry_state() -> None:
         "Tier-1 page-entry hook must clear v171_diag_reset_seen so the "
         "cadence loop fires cmd 0x22 ONCE per PB per Diag-page visit"
     )
+    for name in (
+        "v171_diag_flags",
+        "v171_diag_reset_target",
+        "v171_diag_reset_timeout",
+        "v171_diag_runtime_target",
+        "v171_diag_runtime_timeout",
+    ):
+        assert f"clrf    {name}" in head, (
+            f"page entry must clear stale {name}; otherwise old pending "
+            "state can block the first fresh PB diag query"
+        )
     assert "bcf     v171_diag_target, 0, BANKED" not in head, (
         "page entry must not force target PB1; the send path must choose "
         "the currently visible PB page"
     )
+
+
+def test_diag_boot_init_clears_sparse_transaction_state() -> None:
+    """Cold init must clear the sparse diag cells outside the contiguous
+    0x180..0x197 cache-zero loop.
+
+    The PB Diag page can be entered after a soft reconnect or noisy POR
+    RAM state.  If v171_diag_flags or its timeout bytes are non-zero at
+    boot, the page can inherit a phantom pending transaction before any
+    BF/27 reply has had a chance to arrive.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    body = _label_body(text, "flow_v171_diag_cache_zero", "bcf     TRISC")
+    assert body, "cold-init diag zeroing block not found"
+    for name in (
+        "v171_diag_reset_seen",
+        "v171_diag_flags",
+        "v171_diag_reset_target",
+        "v171_diag_reset_timeout",
+        "v171_diag_runtime_target",
+        "v171_diag_runtime_timeout",
+    ):
+        assert re.search(rf"clrf\s+{name},\s*BANKED", body), (
+            f"cold init must clear sparse diag transaction cell {name}"
+        )
 
 
 def test_diag_screen_body_renders_per_pb_sparse_layout() -> None:
@@ -530,14 +570,15 @@ def test_diag_send_query_uses_b1_or_b2_route_and_cmd_byte_param() -> None:
       v171_diag_send_runtime_query  -> movlw 0x21; bra ..._w  (cmd 0x21)
       v171_diag_send_reset_query    -> movlw 0x22; bra ..._w  (cmd 0x22)
 
-    The shared helper v171_diag_send_query_w enqueues 3 bytes: route
-    (0xB1 or 0xB2 depending on v171_diag_target bit 0), the cmd byte from
-    W, and a data byte 0x00.  Backward-compat alias v171_diag_send_query
-    forwards to v171_diag_send_runtime_query so older call sites still
-    work.
+    The shared helper v171_diag_send_query_w reserves a complete 3-byte
+    frame, then enqueues route (0xB1 or 0xB2 depending on
+    v171_diag_target bit 0), the cmd byte from W, and a data byte 0x00.
+    Backward-compat alias v171_diag_send_query forwards to
+    v171_diag_send_runtime_query so older call sites still work.
 
-    Pin both wrappers + the shared helper structure (3 tx_byte_enqueue
-    calls) so a refactor that drops one of the wrappers fails loudly.
+    Pin both wrappers + the shared helper structure (tx_ring_reserve_3
+    plus 3 tx_byte_enqueue calls) so a refactor that drops one of the
+    wrappers fails loudly.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     # Both wrappers + alias must be present.
@@ -565,6 +606,10 @@ def test_diag_send_query_uses_b1_or_b2_route_and_cmd_byte_param() -> None:
     body = _label_body(text, "v171_diag_send_query_w", "v171_health_service")
     assert re.search(r"movlw\s+0xB1", body), "PB1 route literal missing"
     assert re.search(r"movlw\s+0xB2", body), "PB2 route literal missing"
+    assert re.search(r"call\s+tx_ring_reserve_3", body), (
+        "diagnostics query must reserve a complete 3-byte frame before "
+        "enqueuing route/cmd/data"
+    )
     # Three tx_byte_enqueue invocations (route, cmd, data).
     enqueue_calls = re.findall(r"call\s+tx_byte_enqueue", body)
     assert len(enqueue_calls) == 3, (

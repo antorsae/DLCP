@@ -3860,6 +3860,15 @@ v171_diag_screen:
         ; re-enter, which clears reset_seen here and re-fires cmd 0x22.
         movlb   0x01
         clrf    v171_diag_reset_seen, BANKED
+        ; Drop any stale in-flight transaction state on page entry.
+        ; If RUNTIME_PENDING or RESET_PENDING survives with a zero
+        ; timeout byte, the cadence loop decrements 0 -> 0xFF and can
+        ; block fresh PB queries for 256 poll cadences before retrying.
+        clrf    v171_diag_flags, BANKED
+        clrf    v171_diag_reset_target, BANKED
+        clrf    v171_diag_reset_timeout, BANKED
+        clrf    v171_diag_runtime_target, BANKED
+        clrf    v171_diag_runtime_timeout, BANKED
         ; --- Tier-1 Phase 3.4 follow-up: cadence prime moved to
         ;     page-entry-only.  Originally the countdown clear lived
         ;     in v171_diag_screen_armed below, which the render
@@ -4598,9 +4607,9 @@ v171_diag_emit_nib_sat:
 ; ---------------------------------------------------------------------------
 ; v171_diag_send_query — enqueue a 3-byte cmd 0x21 query for the current
 ; target PB.  Route is computed from v171_diag_target (0 → 0xB1 PB1,
-; 1 → 0xB2 PB2).  Reuses the raw tx_byte_enqueue path (Layer-1 bounded);
-; if any byte saturates the ring it is silently dropped — the caller will
-; naturally retry on the next poll-cadence expiry.
+; 1 → 0xB2 PB2).  Uses tx_ring_reserve_3 before the raw tx_byte_enqueue
+; writes so a saturated TX ring drops the whole diagnostics frame rather
+; than leaking a partial route/cmd fragment to MAIN.
 ;
 ; Per spec, do NOT use the routed-frame helper (full_sync_burst path) —
 ; that would clobber the periodic-broadcast counter and cause the chain
@@ -4627,11 +4636,13 @@ v171_diag_send_query:
         bra     v171_diag_send_runtime_query
 
 v171_diag_send_query_w:
-        ; Frame atomicity: tx_byte_enqueue (Layer 1) drops a single
-        ; byte on TX-ring saturation and signals via STATUS.C=1.  We
-        ; check C after every byte (including the final data byte)
-        ; and bail on the first dropped byte so we don't keep pumping
-        ; the rest of an already-broken frame.
+        ; Frame atomicity: reserve three TX slots before writing the
+        ; route/cmd/data bytes.  This mirrors serial_tx_routed_frame and
+        ; v171_health_send_query: if the ring is saturated, nothing from
+        ; this frame reaches the wire and the cadence retries cleanly.
+        ; Keep the per-byte C checks too; they are defensive and preserve
+        ; the existing pending-bit cleanup contract if a future edit breaks
+        ; the reserve guarantee.
         ;
         ; PENDING reset on abort: caller (cadence loop) sets RUNTIME_PENDING
         ; before calling for cmd 0x21; the page-entry hook sets RESET_PENDING
@@ -4668,6 +4679,8 @@ v171_diag_send_query_w:
         ; the route byte first.  ram_0x028 is the V1.71 scratch range
         ; documented in the dlcp_control_ram.inc free-slot audit.
         movwf   (Common_RAM + 28), A                       ; saved cmd byte
+        call    tx_ring_reserve_3, 0x0
+        bc      v171_diag_send_query_aborted               ; ring saturated; no bytes emitted
         ; --- byte 0: route ---
         movlw   0xB1                                       ; default = PB1 query
         movlb   0x01
@@ -5132,7 +5145,8 @@ flow_ccs_0FA0_103C:                                                  ; address: 
         ; docs/analysis/TASK_44_LCD_VS_CMD44_DIVERGENCE.md.
         ;
         ; Loop form: 24 contiguous cells (0x180..0x197) cleared via
-        ; FSR0 + POSTINC0; reset_seen at 0x19D cleared separately.
+        ; FSR0 + POSTINC0; sparse diag transaction cells above 0x197
+        ; are cleared separately.
         ; +20 bytes total; runs once at POR / cold-init exit (NOT in
         ; app_cold_init body proper, because adding code there shifts
         ; isr_entry past 0x0003a6 and breaks the byte-identical vector
@@ -5146,6 +5160,11 @@ flow_v171_diag_cache_zero:
         bra     flow_v171_diag_cache_zero
         movlb   0x01                                        ; reset_seen lives in bank 1
         clrf    v171_diag_reset_seen, BANKED                ; physical 0x19D
+        clrf    v171_diag_flags, BANKED                     ; physical 0x19C
+        clrf    v171_diag_reset_target, BANKED              ; physical 0x19E
+        clrf    v171_diag_reset_timeout, BANKED             ; physical 0x19F
+        clrf    v171_diag_runtime_target, BANKED            ; physical 0x1AE
+        clrf    v171_diag_runtime_timeout, BANKED           ; physical 0x1AF
         clrf    v171_health_age_pb1, BANKED                 ; link health starts unknown/fresh
         clrf    v171_health_age_pb2, BANKED
         clrf    v171_health_seen_mask, BANKED
@@ -6888,7 +6907,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x2A                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x2D                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

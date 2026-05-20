@@ -70,6 +70,15 @@ pub struct Hd44780 {
     /// pair.  `Some(high)` after the first E-falling-edge of
     /// a byte; `None` after the second (byte complete).
     pending_high_nibble: Option<u8>,
+    /// Per-DDRAM-address data-write counters.  These are debug
+    /// instrumentation for tests that need to prove a displayed cell is
+    /// not being churned by firmware while the visible text stays the same.
+    #[serde(skip, default = "default_ddram_write_counts")]
+    ddram_write_counts: [u64; DDRAM_SIZE],
+}
+
+fn default_ddram_write_counts() -> [u64; DDRAM_SIZE] {
+    [0; DDRAM_SIZE]
 }
 
 impl Default for Hd44780 {
@@ -79,6 +88,7 @@ impl Default for Hd44780 {
             cursor: 0,
             prev_e: false,
             pending_high_nibble: None,
+            ddram_write_counts: [0; DDRAM_SIZE],
         }
     }
 }
@@ -144,6 +154,7 @@ impl Hd44780 {
                     // Clear display.  All DDRAM = space,
                     // cursor home.
                     self.ddram = [b' '; DDRAM_SIZE];
+                    self.ddram_write_counts = [0; DDRAM_SIZE];
                     self.cursor = 0;
                 }
                 0x02 | 0x03 => {
@@ -171,6 +182,7 @@ impl Hd44780 {
             let idx = self.cursor as usize;
             if idx < self.ddram.len() {
                 self.ddram[idx] = byte;
+                self.ddram_write_counts[idx] = self.ddram_write_counts[idx].saturating_add(1);
             }
             // Cursor wraps within the 7-bit DDRAM address
             // space (per HD44780).
@@ -196,6 +208,12 @@ impl Hd44780 {
     #[doc(hidden)]
     pub fn ddram_byte_for_test(&self, addr: u8) -> u8 {
         self.ddram[(addr as usize) & 0x7F]
+    }
+
+    /// Test-only: count data writes to a raw DDRAM byte address.
+    #[doc(hidden)]
+    pub fn ddram_write_count_for_test(&self, addr: u8) -> u64 {
+        self.ddram_write_counts[(addr as usize) & 0x7F]
     }
 
     /// Test-only: peek at the cursor.

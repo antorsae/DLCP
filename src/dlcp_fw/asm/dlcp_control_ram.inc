@@ -472,11 +472,14 @@ v171_diag_render_abnormal   equ  0x0D4   ; non-zero non-POR cells (0..10)
 ; the 16-bit countdown by 1.  Measured in the rust ring, the non-modal
 ; Diagnostics loop runs at roughly 7.7 kHz when idle; the old 0x0080
 ; reload therefore fired cmd 0x21 at ~60 Hz, causing excessive chain
-; traffic and repeated full-LCD redraws on real hardware.  0x1E00 keeps
-; the operator-visible refresh close to 1 Hz while the page-entry clear
-; path still makes the first query immediate.
+; traffic and repeated full-LCD redraws on real hardware.  The page-entry
+; clear path still makes the first query immediate.  V3.2's SRC4382 Auto
+; Detect rewrite removed enough MAIN-side I2C load that the old 0x1E00
+; value measured closer to 3 Hz in the full V1.71/V3.2 chain; 0x5A00
+; restores the intended ~1 Hz operator-visible cadence without returning
+; to modal waits.
 V171_DIAG_POLL_RELOAD_LO   equ  0x00
-V171_DIAG_POLL_RELOAD_HI   equ  0x1E
+V171_DIAG_POLL_RELOAD_HI   equ  0x5A
 
 ; ---------------------------------------------------------------------------
 ; V1.71 IR non-blocking decoder state (task #152 / V171_IR_NONBLOCK_DECODER_SPEC.md)

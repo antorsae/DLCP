@@ -82,6 +82,37 @@ use serde::{Deserialize, Serialize};
 /// 8-bit subaddress space -- 256 entries.
 const SUBADDR_COUNT: usize = 256;
 
+/// Structured diagnostic snapshot for SRC4382 I²C traffic.
+///
+/// The aggregate byte counters predate this struct and are kept
+/// for compatibility.  The per-subaddress counters let firmware-
+/// path tests distinguish "Auto Detect is repeatedly rewriting
+/// register 0x0D" from unrelated bus traffic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Src4382Stats {
+    pub bytes_acked: u64,
+    pub bytes_nacked: u64,
+    pub tx_bytes_by_subaddr: [u64; SUBADDR_COUNT],
+    pub read_bytes_by_subaddr: [u64; SUBADDR_COUNT],
+    pub write_transactions: u64,
+    pub read_transactions: u64,
+    pub writes_by_subaddr: [u64; SUBADDR_COUNT],
+    pub reads_by_subaddr: [u64; SUBADDR_COUNT],
+}
+
+/// One completed master-write transaction to the SRC4382.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Src4382WriteTransaction {
+    pub start_subaddr: u8,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct Src4382WriteInProgress {
+    start_subaddr: u8,
+    payload: Vec<u8>,
+}
+
 /// SRC4382 strapping pins (A1, A0).  In the DLCP, A1=0 and
 /// A0=1 are pulled by the schematic, giving the I²C address
 /// byte format `11100 0 1 R/W` -> write `0xE2`, read `0xE3`.
@@ -170,6 +201,35 @@ pub struct Src4382 {
     /// Diagnostic counters (matches Tas3108 surface).
     pub bytes_acked: u64,
     pub bytes_nacked: u64,
+    /// TX bytes after an accepted SRC4382 write address, indexed
+    /// by normalized page-local subaddress (`subaddr & 0x7F`).
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
+    tx_bytes_by_subaddr: Box<[u64; SUBADDR_COUNT]>,
+    /// Slave-driven RX bytes, indexed by normalized page-local
+    /// subaddress (`subaddr & 0x7F`).
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
+    read_bytes_by_subaddr: Box<[u64; SUBADDR_COUNT]>,
+    /// Number of committed write data bytes.
+    write_transactions: u64,
+    /// Number of accepted read-address phases.
+    read_transactions: u64,
+    /// Committed write data bytes by normalized page-local
+    /// subaddress (`subaddr & 0x7F`).
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
+    writes_by_subaddr: Box<[u64; SUBADDR_COUNT]>,
+    /// Provided read bytes by normalized page-local subaddress
+    /// (`subaddr & 0x7F`).
+    #[serde(with = "crate::serde_helpers::boxed_big_array")]
+    reads_by_subaddr: Box<[u64; SUBADDR_COUNT]>,
+    /// Fault-injection: remaining own-address NACKs.
+    address_nack_count_remaining: u32,
+    /// Fault-injection: remaining post-address data-byte NACKs.
+    data_nack_count_remaining: u32,
+    /// Completed write transactions.  Kept for tests that need to
+    /// assert a specific audio-route value occurred even if later idle
+    /// polling writes the same register again.
+    write_log: Vec<Src4382WriteTransaction>,
+    current_write: Option<Src4382WriteInProgress>,
 }
 
 impl Default for Src4382 {
@@ -190,6 +250,16 @@ impl Src4382 {
             phase: Phase::Idle,
             bytes_acked: 0,
             bytes_nacked: 0,
+            tx_bytes_by_subaddr: Box::new([0u64; SUBADDR_COUNT]),
+            read_bytes_by_subaddr: Box::new([0u64; SUBADDR_COUNT]),
+            write_transactions: 0,
+            read_transactions: 0,
+            writes_by_subaddr: Box::new([0u64; SUBADDR_COUNT]),
+            reads_by_subaddr: Box::new([0u64; SUBADDR_COUNT]),
+            address_nack_count_remaining: 0,
+            data_nack_count_remaining: 0,
+            write_log: Vec::new(),
+            current_write: None,
         }
     }
 
@@ -217,13 +287,58 @@ impl Src4382 {
         self.regs[subaddr as usize] = value;
     }
 
+    /// Return a copy of the current traffic counters.
+    pub fn stats(&self) -> Src4382Stats {
+        Src4382Stats {
+            bytes_acked: self.bytes_acked,
+            bytes_nacked: self.bytes_nacked,
+            tx_bytes_by_subaddr: *self.tx_bytes_by_subaddr,
+            read_bytes_by_subaddr: *self.read_bytes_by_subaddr,
+            write_transactions: self.write_transactions,
+            read_transactions: self.read_transactions,
+            writes_by_subaddr: *self.writes_by_subaddr,
+            reads_by_subaddr: *self.reads_by_subaddr,
+        }
+    }
+
+    /// Clear traffic counters without changing register contents or
+    /// fault-injection state.
+    pub fn reset_stats(&mut self) {
+        self.bytes_acked = 0;
+        self.bytes_nacked = 0;
+        self.tx_bytes_by_subaddr.fill(0);
+        self.read_bytes_by_subaddr.fill(0);
+        self.write_transactions = 0;
+        self.read_transactions = 0;
+        self.writes_by_subaddr.fill(0);
+        self.reads_by_subaddr.fill(0);
+        self.write_log.clear();
+    }
+
+    /// Completed write transaction log.
+    pub fn write_log(&self) -> &[Src4382WriteTransaction] {
+        &self.write_log
+    }
+
+    /// Program own-address NACK fault injection.
+    pub fn set_address_nack_count(&mut self, count: u32) {
+        self.address_nack_count_remaining = count;
+    }
+
+    /// Program post-address data-byte NACK fault injection.
+    pub fn set_data_nack_count(&mut self, count: u32) {
+        self.data_nack_count_remaining = count;
+    }
+
     /// Reset transaction state on a master-issued START.
     pub fn on_start(&mut self) {
+        self.finish_current_write();
         self.phase = Phase::Idle;
     }
 
     /// Reset transaction state on a master-issued STOP.
     pub fn on_stop(&mut self) {
+        self.finish_current_write();
         self.phase = Phase::Idle;
     }
 
@@ -232,6 +347,7 @@ impl Src4382 {
     /// `last_latched_subaddr`) so a write-then-repeated-start
     /// read works.
     pub fn on_repeated_start(&mut self) {
+        self.finish_current_write();
         self.phase = Phase::Idle;
     }
 
@@ -262,14 +378,25 @@ impl Src4382 {
         // transitions to Ignored for the rest of the
         // transaction.
         if byte == write_addr {
+            if self.address_nack_count_remaining > 0 {
+                self.address_nack_count_remaining -= 1;
+                self.phase = Phase::Ignored;
+                return false;
+            }
             self.phase = Phase::AwaitingSubaddress;
             true
         } else if byte == read_addr {
+            if self.address_nack_count_remaining > 0 {
+                self.address_nack_count_remaining -= 1;
+                self.phase = Phase::Ignored;
+                return false;
+            }
             match self.last_latched_subaddr {
                 Some(start) => {
                     self.phase = Phase::Reading {
                         next_subaddr: start,
                     };
+                    self.read_transactions += 1;
                     true
                 }
                 None => {
@@ -287,17 +414,60 @@ impl Src4382 {
     }
 
     fn handle_subaddress_byte(&mut self, byte: u8) -> bool {
+        if self.nack_data_byte() {
+            return false;
+        }
         self.last_latched_subaddr = Some(byte);
+        self.finish_current_write();
+        self.current_write = Some(Src4382WriteInProgress {
+            start_subaddr: byte,
+            payload: Vec::new(),
+        });
         self.phase = Phase::Writing { next_subaddr: byte };
+        self.tx_bytes_by_subaddr[Self::normalized_subaddr(byte)] += 1;
         true
     }
 
     fn handle_write_data_byte(&mut self, byte: u8, next_subaddr: u8) -> bool {
+        if self.nack_data_byte() {
+            return false;
+        }
         self.regs[next_subaddr as usize] = byte;
+        if let Some(tx) = &mut self.current_write {
+            tx.payload.push(byte);
+        }
+        let normalized = Self::normalized_subaddr(next_subaddr);
+        self.tx_bytes_by_subaddr[normalized] += 1;
+        self.writes_by_subaddr[normalized] += 1;
+        self.write_transactions += 1;
         // 8-bit subaddress wraps mod 256.
         self.phase = Phase::Writing {
             next_subaddr: next_subaddr.wrapping_add(1),
         };
+        true
+    }
+
+    fn finish_current_write(&mut self) {
+        if let Some(tx) = self.current_write.take() {
+            if !tx.payload.is_empty() {
+                self.write_log.push(Src4382WriteTransaction {
+                    start_subaddr: tx.start_subaddr,
+                    payload: tx.payload,
+                });
+            }
+        }
+    }
+
+    fn normalized_subaddr(subaddr: u8) -> usize {
+        (subaddr & 0x7F) as usize
+    }
+
+    fn nack_data_byte(&mut self) -> bool {
+        if self.data_nack_count_remaining == 0 {
+            return false;
+        }
+        self.data_nack_count_remaining -= 1;
+        self.phase = Phase::Ignored;
         true
     }
 
@@ -319,6 +489,9 @@ impl Src4382 {
         match self.phase {
             Phase::Reading { next_subaddr } => {
                 let byte = self.regs[next_subaddr as usize];
+                let normalized = Self::normalized_subaddr(next_subaddr);
+                self.read_bytes_by_subaddr[normalized] += 1;
+                self.reads_by_subaddr[normalized] += 1;
                 self.phase = Phase::Reading {
                     next_subaddr: next_subaddr.wrapping_add(1),
                 };
@@ -376,6 +549,13 @@ mod tests {
         assert_eq!(s.bytes_nacked, 0);
         // Data byte landed at the latched subaddress.
         assert_eq!(s.read_subaddr(0x0D), 0x08);
+        assert_eq!(s.write_log().len(), 1);
+        assert_eq!(s.write_log()[0].start_subaddr, 0x0D);
+        assert_eq!(s.write_log()[0].payload, vec![0x08]);
+        let stats = s.stats();
+        assert_eq!(stats.write_transactions, 1);
+        assert_eq!(stats.writes_by_subaddr[0x0D], 1);
+        assert_eq!(stats.tx_bytes_by_subaddr[0x0D], 2);
     }
 
     /// Init burst of 16 register writes from V3.2's
@@ -459,6 +639,10 @@ mod tests {
         // Slave drives a byte.
         assert_eq!(s.provide_rx_byte(), 0xA5);
         s.on_stop();
+        let stats = s.stats();
+        assert_eq!(stats.read_transactions, 1);
+        assert_eq!(stats.reads_by_subaddr[0x12], 1);
+        assert_eq!(stats.read_bytes_by_subaddr[0x12], 1);
     }
 
     /// Read-before-any-latch is rejected with NACK + Ignored
@@ -468,5 +652,56 @@ mod tests {
         let mut s = Src4382::default();
         s.on_start();
         assert!(!s.consume_tx_byte(0xE3));
+    }
+
+    #[test]
+    fn src4382_stats_reset_keeps_register_contents() {
+        let mut s = Src4382::default();
+        s.on_start();
+        assert!(s.consume_tx_byte(0xE2));
+        assert!(s.consume_tx_byte(0x0D));
+        assert!(s.consume_tx_byte(0x0B));
+        s.on_stop();
+        assert_eq!(s.stats().writes_by_subaddr[0x0D], 1);
+
+        s.reset_stats();
+
+        let stats = s.stats();
+        assert_eq!(stats.bytes_acked, 0);
+        assert_eq!(stats.write_transactions, 0);
+        assert_eq!(stats.writes_by_subaddr[0x0D], 0);
+        assert_eq!(s.read_subaddr(0x0D), 0x0B);
+    }
+
+    #[test]
+    fn src4382_address_nack_only_targets_own_address() {
+        let mut s = Src4382::default();
+        s.set_address_nack_count(1);
+
+        s.on_start();
+        assert!(
+            !s.consume_tx_byte(0x68),
+            "wrong address still NACKs normally"
+        );
+        s.on_start();
+        assert!(
+            !s.consume_tx_byte(0xE2),
+            "first own address is injected NACK"
+        );
+        s.on_start();
+        assert!(s.consume_tx_byte(0xE2), "next own address recovers");
+    }
+
+    #[test]
+    fn src4382_data_nack_does_not_commit_byte() {
+        let mut s = Src4382::default();
+        s.set_data_nack_count(1);
+
+        s.on_start();
+        assert!(s.consume_tx_byte(0xE2));
+        assert!(!s.consume_tx_byte(0x0D), "subaddress byte is NACKed");
+        assert!(!s.consume_tx_byte(0x08), "ignored until next START");
+        assert_eq!(s.read_subaddr(0x0D), 0x00);
+        assert_eq!(s.stats().writes_by_subaddr[0x0D], 0);
     }
 }

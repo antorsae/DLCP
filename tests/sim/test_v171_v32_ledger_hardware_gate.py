@@ -26,6 +26,49 @@ def _load_runner() -> ModuleType:
     return module
 
 
+def _load_src4382_evidence_validator() -> ModuleType:
+    path = PROJECT_ROOT / "scripts" / "validate_src4382_manual_evidence.py"
+    spec = importlib.util.spec_from_file_location("validate_src4382_manual_evidence", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _src4382_identity_lines() -> tuple[str, str, str]:
+    validator = _load_src4382_evidence_validator()
+    identities = validator.current_release_identities()
+    control = identities["CONTROL"].display
+    main = identities["MAIN"].display
+    return (
+        f"CONTROL: {control}",
+        f"MAIN PB1: {main}",
+        f"MAIN PB2: {main}",
+    )
+
+
+def _src4382_expected_firmware_payload() -> dict[str, str]:
+    validator = _load_src4382_evidence_validator()
+    identities = validator.current_release_identities()
+    hashes = validator.current_release_hashes()
+    return {
+        "CONTROL": identities["CONTROL"].display,
+        "CONTROL SHA256": hashes["CONTROL"],
+        "MAIN PB1": identities["MAIN"].display,
+        "MAIN PB1 SHA256": hashes["MAIN"],
+        "MAIN PB2": identities["MAIN"].display,
+        "MAIN PB2 SHA256": hashes["MAIN"],
+    }
+
+
+def _runner_control_identity(runner: ModuleType, phase_name: str) -> dict[str, object]:
+    phase = next(phase for phase in runner.PHASES if phase.name == phase_name)
+    identity = runner._control_hex_identity_for_phase(phase)
+    assert identity is not None
+    return identity
+
+
 def _hardware_test_nodes() -> set[str]:
     path = PROJECT_ROOT / "tests" / "hardware" / "test_live_state_transitions.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -70,6 +113,463 @@ def _ledger_text() -> str:
     return (PROJECT_ROOT / "docs" / "IMPL_V171_V32_BUG_LEDGER.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_src4382_manual_evidence_template_is_tracked_and_referenced() -> None:
+    template_path = PROJECT_ROOT / "docs" / "SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md"
+    template = template_path.read_text(encoding="utf-8")
+    hardware_runbook = (PROJECT_ROOT / "docs" / "HARDWARE_TEST.md").read_text(
+        encoding="utf-8"
+    )
+    impl_spec = (
+        PROJECT_ROOT / "docs" / "IMPL_SRC4382_AUTODETECT_POLLING_SPEC.md"
+    ).read_text(encoding="utf-8")
+    ledger = _ledger_text()
+    validator = (PROJECT_ROOT / "scripts" / "validate_src4382_manual_evidence.py").read_text(
+        encoding="utf-8"
+    )
+    validator_module = _load_src4382_evidence_validator()
+    identities = validator_module.current_release_identities()
+    hashes = validator_module.current_release_hashes()
+
+    artifact_path = (
+        "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md"
+    )
+    required_fields = (
+        "CONTROL: V1.71",
+        "CONTROL SHA256:",
+        "CONTROL flashed/running V1.71? yes/no:",
+        "MAIN PB1: V3.2",
+        "MAIN PB1 SHA256:",
+        "MAIN PB1 visible/running V3.2? yes/no:",
+        "MAIN PB2: V3.2",
+        "MAIN PB2 SHA256:",
+        "MAIN PB2 visible/running V3.2? yes/no:",
+        "Normal low-band output? yes/no",
+        "Fixed digital sources tested after Auto Detect (S/PDIF, USB Audio, AES, Optical as available):",
+        "Any fixed digital source silent? yes/no:",
+        "Selected same source? yes/no",
+        "Volume responsive? yes/no",
+        "Mute/unmute responsive? yes/no",
+        "Preset A/B responsive and audio correct after switch? yes/no",
+        "Standby/wake responsive and both MAINs recover? yes/no",
+        "Explicit input selection responsive? yes/no",
+        "Auto Detect no-source duration >= 30 min? yes/no, duration:",
+        "Fixed-input playback duration >= 1 h? yes/no, duration:",
+        "UI stalls observed? yes/no:",
+        "Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details:",
+        "Unexplained I/R growth observed? yes/no:",
+        "PB1 before/after diag I/R:",
+        "PB2 before/after diag I/R:",
+        "I/R growth explanation if any:",
+        "Pass/fail:",
+    )
+
+    assert "BUG-SRC4382-AD-01" in template
+    assert identities["CONTROL"].display in template
+    assert identities["MAIN"].display in template
+    assert hashes["CONTROL"] in template
+    assert hashes["MAIN"] in template
+    assert artifact_path in template
+    for field in required_fields:
+        assert field in template, f"missing SRC4382 manual evidence field: {field}"
+    for text in (hardware_runbook, impl_spec, ledger):
+        assert "docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md" in text
+        assert artifact_path in text
+        assert "scripts/validate_src4382_manual_evidence.py" in text
+    assert artifact_path in validator
+
+
+def test_src4382_manual_evidence_artifact_is_prefilled_with_current_release_identity() -> None:
+    validator = _load_src4382_evidence_validator()
+    identities = validator.current_release_identities()
+    hashes = validator.current_release_hashes()
+    artifact_path = validator.DEFAULT_EVIDENCE_PATH
+    artifact = artifact_path.read_text(encoding="utf-8")
+
+    assert identities["CONTROL"].display in artifact
+    assert identities["MAIN"].display in artifact
+    assert hashes["CONTROL"] in artifact
+    assert hashes["MAIN"] in artifact
+
+    errors = validator.validate_path(artifact_path)
+    assert errors
+    assert not any(error.startswith("firmware field must include current") for error in errors)
+    assert not any(error.startswith("firmware hash field must include current") for error in errors)
+    assert "section needs concrete entry: Date/Time" in errors
+    assert (
+        "field must start with yes or no: Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: -> ''"
+        in errors
+    )
+
+
+def _passing_src4382_manual_evidence() -> str:
+    control_line, main_pb1_line, main_pb2_line = _src4382_identity_lines()
+    validator = _load_src4382_evidence_validator()
+    hashes = validator.current_release_hashes()
+    return f"""# SRC4382 Auto Detect Manual Evidence
+
+BUG-SRC4382-AD-01
+
+## Date/Time
+
+2026-05-19 22:30
+
+## Firmware
+
+{control_line}
+
+CONTROL SHA256: {hashes["CONTROL"]}
+
+CONTROL flashed/running V1.71? yes/no: yes
+
+{main_pb1_line}
+
+MAIN PB1 SHA256: {hashes["MAIN"]}
+
+MAIN PB1 visible/running V3.2? yes/no: yes
+
+{main_pb2_line}
+
+MAIN PB2 SHA256: {hashes["MAIN"]}
+
+MAIN PB2 visible/running V3.2? yes/no: yes
+
+## Test Setup
+
+Source/input: SPDIF 1
+
+Preset: A
+
+Volume: -30 dB
+
+Audio material or measurement used for low-band check: sweep + music
+
+## Fixed-Input Playback
+
+Normal low-band output? yes/no: yes
+
+Fixed digital sources tested after Auto Detect (S/PDIF, USB Audio, AES, Optical as available): S/PDIF, USB Audio, AES, Optical
+
+Any fixed digital source silent? yes/no: no
+
+Notes: baseline sounds normal
+
+## Auto Detect Playback
+
+Selected same source? yes/no: yes
+
+Normal low-band output? yes/no: yes
+
+Notes: Auto Detect sounds normal
+
+## User Actions While Playing
+
+Volume responsive? yes/no: yes
+
+Mute/unmute responsive? yes/no: yes
+
+Preset A/B responsive and audio correct after switch? yes/no: yes
+
+Standby/wake responsive and both MAINs recover? yes/no: yes
+
+Explicit input selection responsive? yes/no: yes
+
+## Soak
+
+Auto Detect no-source duration >= 30 min? yes/no, duration: yes, 35 min
+
+Fixed-input playback duration >= 1 h? yes/no, duration: yes, 1 h 5 min
+
+UI stalls observed? yes/no: no
+
+Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: no
+
+Unexplained I/R growth observed? yes/no: no
+
+PB1 before/after diag I/R: I0/R0 -> I0/R0
+
+PB2 before/after diag I/R: I0/R0 -> I0/R0
+
+I/R growth explanation if any: none
+
+## Optional Captures
+
+Audio capture / SPL / RTA: n/a
+
+SCL/SDA capture: n/a
+
+Probe logs: n/a
+
+## Verdict
+
+Pass/fail: pass
+
+Remaining concerns: none
+"""
+
+
+def test_src4382_manual_evidence_validator_accepts_complete_pass() -> None:
+    validator = _load_src4382_evidence_validator()
+    assert validator.validate_text(_passing_src4382_manual_evidence()) == []
+
+
+def test_src4382_manual_evidence_validator_rejects_template_and_short_soak() -> None:
+    validator = _load_src4382_evidence_validator()
+    template = (
+        PROJECT_ROOT / "docs" / "SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md"
+    ).read_text(encoding="utf-8")
+    template_errors = validator.validate_text(template)
+    assert template_errors
+    assert any(
+        error == "field must be yes: Normal low-band output? yes/no: -> ''"
+        for error in template_errors
+    )
+
+    short_soak = _passing_src4382_manual_evidence().replace(
+        "yes, 35 min", "yes, 15 min"
+    )
+    errors = validator.validate_text(short_soak)
+    assert any("duration too short" in error for error in errors)
+
+
+def test_src4382_manual_evidence_validator_requires_concrete_run_metadata() -> None:
+    validator = _load_src4382_evidence_validator()
+    missing_metadata = (
+        _passing_src4382_manual_evidence()
+        .replace("2026-05-19 22:30", "-")
+        .replace("Source/input: SPDIF 1", "Source/input:")
+        .replace("Preset: A", "Preset:")
+        .replace("Volume: -30 dB", "Volume:")
+        .replace(
+            "Audio material or measurement used for low-band check: sweep + music",
+            "Audio material or measurement used for low-band check:",
+        )
+    )
+
+    errors = validator.validate_text(missing_metadata)
+
+    assert "section needs concrete entry: Date/Time" in errors
+    for label in (
+        "Source/input:",
+        "Preset:",
+        "Volume:",
+        "Audio material or measurement used for low-band check:",
+    ):
+        assert f"field needs concrete value: {label} -> ''" in errors
+
+
+def test_src4382_manual_evidence_validator_requires_release_pair_confirmation() -> None:
+    validator = _load_src4382_evidence_validator()
+    missing_confirmations = (
+        _passing_src4382_manual_evidence()
+        .replace("CONTROL flashed/running V1.71? yes/no: yes", "CONTROL flashed/running V1.71? yes/no:")
+        .replace("MAIN PB1 visible/running V3.2? yes/no: yes", "MAIN PB1 visible/running V3.2? yes/no: no")
+        .replace("MAIN PB2 visible/running V3.2? yes/no: yes", "MAIN PB2 visible/running V3.2? yes/no:")
+    )
+
+    errors = validator.validate_text(missing_confirmations)
+
+    assert (
+        "field must be yes: CONTROL flashed/running V1.71? yes/no: -> ''"
+        in errors
+    )
+    assert (
+        "field must be yes: MAIN PB1 visible/running V3.2? yes/no: -> 'no'"
+        in errors
+    )
+    assert (
+        "field must be yes: MAIN PB2 visible/running V3.2? yes/no: -> ''"
+        in errors
+    )
+
+
+def test_src4382_manual_evidence_validator_rejects_stale_release_revisions() -> None:
+    validator = _load_src4382_evidence_validator()
+    identities = validator.current_release_identities()
+    control = identities["CONTROL"]
+    main = identities["MAIN"]
+    stale_control_rev = "0x00" if control.rev_hex != "0x00" else "0xFF"
+    stale_main_rev = "0x00" if main.rev_hex != "0x00" else "0xFF"
+    stale_revisions = (
+        _passing_src4382_manual_evidence()
+        .replace(control.display, f"{control.version} / rev {stale_control_rev}")
+        .replace(main.display, f"{main.version} / rev {stale_main_rev}")
+    )
+
+    errors = validator.validate_text(stale_revisions)
+
+    assert (
+        f"firmware field must include current {control.display}: "
+        f"CONTROL: -> '{control.version} / rev {stale_control_rev}'"
+    ) in errors
+    assert (
+        f"firmware field must include current {main.display}: "
+        f"MAIN PB1: -> '{main.version} / rev {stale_main_rev}'"
+    ) in errors
+    assert (
+        f"firmware field must include current {main.display}: "
+        f"MAIN PB2: -> '{main.version} / rev {stale_main_rev}'"
+    ) in errors
+
+
+def test_src4382_manual_evidence_validator_rejects_stale_release_hashes() -> None:
+    validator = _load_src4382_evidence_validator()
+    hashes = validator.current_release_hashes()
+    stale_control_hash = "0" * 64 if hashes["CONTROL"] != "0" * 64 else "f" * 64
+    stale_main_hash = "0" * 64 if hashes["MAIN"] != "0" * 64 else "f" * 64
+    stale_hashes = (
+        _passing_src4382_manual_evidence()
+        .replace(hashes["CONTROL"], stale_control_hash)
+        .replace(hashes["MAIN"], stale_main_hash)
+    )
+
+    errors = validator.validate_text(stale_hashes)
+
+    assert (
+        "firmware hash field must include current SHA256 "
+        f"{hashes['CONTROL']}: CONTROL SHA256: -> '{stale_control_hash}'"
+    ) in errors
+    assert (
+        "firmware hash field must include current SHA256 "
+        f"{hashes['MAIN']}: MAIN PB1 SHA256: -> '{stale_main_hash}'"
+    ) in errors
+    assert (
+        "firmware hash field must include current SHA256 "
+        f"{hashes['MAIN']}: MAIN PB2 SHA256: -> '{stale_main_hash}'"
+    ) in errors
+
+
+def test_src4382_manual_evidence_validator_requires_ir_snapshots() -> None:
+    validator = _load_src4382_evidence_validator()
+    missing_snapshot = _passing_src4382_manual_evidence().replace(
+        "PB1 before/after diag I/R: I0/R0 -> I0/R0",
+        "PB1 before/after diag I/R:",
+    )
+    invalid_snapshot = _passing_src4382_manual_evidence().replace(
+        "PB2 before/after diag I/R: I0/R0 -> I0/R0",
+        "PB2 before/after diag I/R: unchanged",
+    )
+
+    missing_errors = validator.validate_text(missing_snapshot)
+    invalid_errors = validator.validate_text(invalid_snapshot)
+
+    assert (
+        "field needs concrete value: PB1 before/after diag I/R: -> ''"
+        in missing_errors
+    )
+    assert (
+        "field needs I/R before-after value like I0/R0 -> I0/R0: "
+        "PB2 before/after diag I/R: -> 'unchanged'"
+    ) in invalid_errors
+
+
+def test_src4382_manual_evidence_validator_requires_badge_observation() -> None:
+    validator = _load_src4382_evidence_validator()
+    missing_badge_field = _passing_src4382_manual_evidence().replace(
+        "Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: no\n\n",
+        "",
+    )
+    blank_badge_value = _passing_src4382_manual_evidence().replace(
+        "Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: no",
+        "Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details:",
+    )
+    malformed_badge_value = _passing_src4382_manual_evidence().replace(
+        "Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: no",
+        "Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: pulsing observed",
+    )
+
+    assert (
+        "missing field: Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details:"
+        in validator.validate_text(missing_badge_field)
+    )
+    assert (
+        "field must start with yes or no: Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: -> ''"
+        in validator.validate_text(blank_badge_value)
+    )
+    assert (
+        "field must start with yes or no: Volume A/B badge pulsing or abnormal LCD refresh observed? yes/no/details: -> 'pulsing observed'"
+        in validator.validate_text(malformed_badge_value)
+    )
+
+
+def test_src4382_manual_evidence_validator_requires_ir_growth_explanation() -> None:
+    validator = _load_src4382_evidence_validator()
+    growth_without_explanation = _passing_src4382_manual_evidence().replace(
+        "PB1 before/after diag I/R: I0/R0 -> I0/R0",
+        "PB1 before/after diag I/R: I0/R0 -> I1/R0",
+    )
+    growth_with_explanation = growth_without_explanation.replace(
+        "I/R growth explanation if any: none",
+        "I/R growth explanation if any: expected I increment from injected SRC4382 NACK",
+    )
+
+    errors = validator.validate_text(growth_without_explanation)
+
+    assert (
+        "field needs concrete growth explanation: "
+        "I/R growth explanation if any: -> 'none'"
+    ) in errors
+    assert validator.validate_text(growth_with_explanation) == []
+
+
+def test_src4382_manual_evidence_validator_rejects_prefix_words_as_yes_no() -> None:
+    validator = _load_src4382_evidence_validator()
+    prefix_words = (
+        _passing_src4382_manual_evidence()
+        .replace(
+            "CONTROL flashed/running V1.71? yes/no: yes",
+            "CONTROL flashed/running V1.71? yes/no: yesterday",
+        )
+        .replace(
+            "UI stalls observed? yes/no: no",
+            "UI stalls observed? yes/no: none",
+        )
+        .replace("Pass/fail: pass", "Pass/fail: passive")
+    )
+
+    errors = validator.validate_text(prefix_words)
+
+    assert (
+        "field must be yes: CONTROL flashed/running V1.71? yes/no: "
+        "-> 'yesterday'"
+    ) in errors
+    assert "field must be no: UI stalls observed? yes/no: -> 'none'" in errors
+    assert "verdict must be pass: 'passive'" in errors
+
+
+def test_src4382_manual_evidence_validator_requires_dated_timestamp() -> None:
+    validator = _load_src4382_evidence_validator()
+
+    missing_time = _passing_src4382_manual_evidence().replace(
+        "2026-05-19 22:30", "2026-05-19"
+    )
+    assert validator.validate_text(missing_time) == [
+        "section needs time-like value: Date/Time -> '2026-05-19'"
+    ]
+
+    missing_date = _passing_src4382_manual_evidence().replace(
+        "2026-05-19 22:30", "22:30 hardware run"
+    )
+    assert validator.validate_text(missing_date) == [
+        "section needs date-like value: Date/Time -> '22:30 hardware run'"
+    ]
+
+
+def test_src4382_manual_evidence_validator_cli_returns_nonzero_for_failure(
+    tmp_path: Path,
+) -> None:
+    validator = _load_src4382_evidence_validator()
+    evidence = tmp_path / "evidence.md"
+    evidence.write_text(_passing_src4382_manual_evidence(), encoding="utf-8")
+    assert validator.main([str(evidence)]) == 0
+
+    evidence.write_text(
+        _passing_src4382_manual_evidence().replace("Pass/fail: pass", "Pass/fail: fail"),
+        encoding="utf-8",
+    )
+    assert validator.main([str(evidence)]) == 1
 
 
 def _active_ledger_bug_ids(ledger: str) -> set[str]:
@@ -167,6 +667,31 @@ def _required_sim_evidence_tests_by_bug() -> dict[str, tuple[str, ...]]:
             "test_sim_hid_cmd40_preserves_user_volume_and_input_settings",
             "test_v32_release_flash_sim_full_main_post_flash_state",
         ),
+        "BUG-SRC4382-AD-01": (
+            "test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh",
+            "test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation",
+            "test_v32_audio_path_safety_guard_rejects_missing_tas_refresh_mutation",
+            "test_v32_src4382_autodetect_no_source_cadence_is_reduced",
+            "test_v32_cadence_guard_rejects_unthrottled_receiver_select_mutation",
+            "test_v32_src4382_autodetect_source_present_cadence_is_reduced",
+            "test_v32_source_present_cadence_guard_rejects_unthrottled_monitor_mutation",
+            "test_v32_src4382_no_source_scan_does_not_read_non_pcm_status",
+            "test_v32_src4382_source_present_latches_non_pcm_status",
+            "test_v32_src4382_single_source_loss_sample_does_not_flap_route",
+            "test_v32_src4382_sustained_source_loss_resumes_scan_within_1s",
+            "test_v32_src4382_writes_0d_only_when_candidate_changes",
+            "test_v32_src4382_full_scan_detects_worst_position_source_within_500ms",
+            "test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation",
+            "test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route",
+            "test_v32_src4382_manual_digital_input_primes_default_receiver_route",
+            "test_v32_src4382_fixed_input_goes_quiet_after_route_converges",
+            "test_v32_src4382_autodetect_mute_unmute_remain_responsive",
+            "test_v32_src4382_autodetect_standby_wake_remain_responsive",
+            "test_v32_src4382_autodetect_preset_change_remains_responsive",
+            "test_v32_src4382_nack_does_not_block_volume_command",
+            "test_v171_v32_src4382_autodetect_dual_main_chain_soak_stays_responsive",
+            "test_v32_lx521_a_b_payloads_reach_each_main_tas3108",
+        ),
     }
 
 
@@ -237,6 +762,15 @@ def test_phase_env_contract_covers_live_hardware_opt_in_gates() -> None:
         "DLCP_HW_EXPECTED_VOLUME_LOW",
         "DLCP_HW_EXPECTED_INPUT",
         "DLCP_HW_EXPECTED_SETUP_PROFILE",
+    }
+    assert phase_contract["src4382-ad-acoustic"]["env"] == {
+        "DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM": "1"
+    }
+    assert phase_contract["src4382-ad-acoustic"]["required_env"] == {
+        "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK",
+        "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK",
+        "DLCP_HW_SRC4382_USER_ACTIONS_OK",
+        "DLCP_HW_SRC4382_SOAK_OK",
     }
     assert phase_contract["front-panel-preset-a"]["env"] == {
         "DLCP_HW_FRONT_PANEL_PRESET_CONFIRM": "1",
@@ -327,6 +861,7 @@ def test_phase_resource_contract_covers_live_hardware_requirements() -> None:
     expected = {
         "identity": ("any", False, False),
         "settings": ("any", False, False),
+        "src4382-ad-acoustic": ("pair", False, False),
         "front-panel-preset-a": ("pair", True, False),
         "front-panel-preset-b": ("pair", True, False),
         "front-panel-standby-wake": ("pair", True, False),
@@ -435,7 +970,11 @@ def test_runner_dry_run_prints_ir_legacy_control_hex_identity(capsys) -> None:
     assert "firmware/stock/control/DLCP Control Firmware V1.6b.hex" in captured.out
     assert "firmware/patched/releases/DLCP_Control_V1.71.hex" in captured.out
     assert "V1.60 / rev <unknown>, crc16=0x2199" in captured.out
-    assert "V1.71 / rev 0x2A, crc16=0x3DFF" in captured.out
+    v171_identity = _runner_control_identity(runner, "ir-legacy-v171")
+    assert (
+        f"{v171_identity['release_short']}, "
+        f"crc16=0x{v171_identity['payload_crc']:04X}"
+    ) in captured.out
 
     phase_payloads = {
         phase.name: runner._phase_payload(phase)
@@ -444,7 +983,10 @@ def test_runner_dry_run_prints_ir_legacy_control_hex_identity(capsys) -> None:
         )
     }
     assert phase_payloads["ir-legacy-v16b"]["expected_control_hex"]["payload_crc"] == 0x2199
-    assert phase_payloads["ir-legacy-v171"]["expected_control_hex"]["payload_crc"] == 0x3DFF
+    assert (
+        phase_payloads["ir-legacy-v171"]["expected_control_hex"]["payload_crc"]
+        == v171_identity["payload_crc"]
+    )
 
 
 def test_settings_live_gate_rejects_out_of_range_expected_bytes() -> None:
@@ -601,7 +1143,10 @@ def test_ledger_documents_runner_stop_condition() -> None:
         "--audit-completion --report-json "
         "artifacts/probes/v171_v32_ledger_gate/completion_audit_current.json"
     ) in ledger
-    assert "FAIL with `BUG-REV-01` done and the remaining nine rows still `green`" in ledger
+    assert (
+        "FAIL with `BUG-REV-01` done, nine rows still `green`, and\n"
+        "`BUG-SRC4382-AD-01` still `blocked`"
+    ) in ledger
     assert "artifacts/probes/v171_v32_ledger_gate/completion_audit_current.json" in ledger
     assert (
         ".venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py "
@@ -795,7 +1340,11 @@ def test_list_mode_prints_bug_phase_selection_without_hardware(capsys) -> None:
     assert "Bug selectors:" in captured.out
     assert "ir-legacy-v16b: Real-IR legacy stress baseline on stock CONTROL V1.6b." in captured.out
     assert "[CONTROL V1.60 / rev <unknown>, crc16=0x2199]" in captured.out
-    assert "[CONTROL V1.71 / rev 0x2A, crc16=0x3DFF]" in captured.out
+    v171_identity = _runner_control_identity(runner, "ir-legacy-v171")
+    assert (
+        f"[CONTROL {v171_identity['release_short']}, "
+        f"crc16=0x{v171_identity['payload_crc']:04X}]"
+    ) in captured.out
     assert "BUG-IR-01: ir-receiver-sweep, ir-legacy-v16b, ir-legacy-v171" in captured.out
     assert "Selected phases:" in captured.out
     assert "ir-receiver-sweep, ir-legacy-v16b, ir-legacy-v171" in captured.out
@@ -845,15 +1394,32 @@ def test_remaining_mode_prints_non_done_bug_closure_commands(capsys) -> None:
     assert "remaining_preflight_current.json" in captured.out
     assert "remaining_closure_current.json" in captured.out
     assert "--mirror-selected-bug-reports" in captured.out
+    assert "manual evidence:" in captured.out
+    assert "expected firmware:" in captured.out
+    for label, value in _src4382_expected_firmware_payload().items():
+        assert f"{label}: {value}" in captured.out
+    assert "PY scripts/run_v171_v32_ledger_hardware_gate.py --src4382-manual-evidence" in captured.out
+    assert (
+        "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md"
+    ) in captured.out
+    assert (
+        "PY scripts/validate_src4382_manual_evidence.py "
+        "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md"
+    ) in captured.out
     assert (
         "expected CONTROL ir-legacy-v16b: "
         "firmware/stock/control/DLCP Control Firmware V1.6b.hex "
         "(V1.60 / rev <unknown>, crc16=0x2199)"
     ) in captured.out
+    runner = _load_runner()
+    v171_identity = _runner_control_identity(runner, "ir-legacy-v171")
     assert (
         "expected CONTROL ir-legacy-v171: "
         "firmware/patched/releases/DLCP_Control_V1.71.hex "
-        "(V1.71 / rev 0x2A, crc16=0x3DFF)"
+        f"({v171_identity['release_short']}, "
+        f"crc16=0x{v171_identity['payload_crc']:04X})"
     ) in captured.out
 
 
@@ -959,6 +1525,171 @@ def test_remaining_mode_report_json_records_commands(tmp_path) -> None:
     ]
 
 
+def test_src4382_manual_evidence_mode_prints_artifact_and_commands(
+    monkeypatch,
+    capsys,
+) -> None:
+    runner = _load_runner()
+    monkeypatch.setattr(
+        runner,
+        "_src4382_manual_evidence_status",
+        lambda: (
+            "manual_evidence_missing",
+            ["evidence file does not exist: test SRC4382 evidence"],
+        ),
+    )
+
+    rc = runner.main(["--src4382-manual-evidence", "--python", "PY"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "SRC4382 Auto Detect manual evidence:" in captured.out
+    assert "BUG-SRC4382-AD-01" in captured.out
+    assert "src4382-ad-acoustic" in captured.out
+    assert "two visible V3.2 MAIN HID devices (left + right)" in captured.out
+    assert "CONTROL V1.71:" in captured.out
+    assert (
+        "scripts/flash_control_safe.sh --hex "
+        "firmware/patched/releases/DLCP_Control_V1.71.hex --preflight-only"
+        in captured.out
+    )
+    assert (
+        "scripts/flash_control_safe.sh --hex "
+        "firmware/patched/releases/DLCP_Control_V1.71.hex"
+        in captured.out
+    )
+    assert "MAIN V3.2:" in captured.out
+    assert "PY scripts/dlcp_v32_release_flash.py --left" in captured.out
+    assert "PY scripts/dlcp_v32_release_flash.py --right" in captured.out
+    assert "docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md" in captured.out
+    assert (
+        "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md"
+    ) in captured.out
+    assert "expected firmware fields:" in captured.out
+    for label, value in _src4382_expected_firmware_payload().items():
+        assert f"{label}: {value}" in captured.out
+    assert "current evidence status: manual_evidence_missing" in captured.out
+    assert "current evidence errors:" in captured.out
+    assert "evidence file does not exist: test SRC4382 evidence" in captured.out
+    assert (
+        "PY scripts/validate_src4382_manual_evidence.py "
+        "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md"
+    ) in captured.out
+    assert "DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1" in captured.out
+    assert "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1" in captured.out
+    assert "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1" in captured.out
+    assert "DLCP_HW_SRC4382_USER_ACTIONS_OK=1" in captured.out
+    assert "DLCP_HW_SRC4382_SOAK_OK=1" in captured.out
+    assert (
+        "PY scripts/run_v171_v32_ledger_hardware_gate.py --preflight "
+        "--bug BUG-SRC4382-AD-01"
+    ) in captured.out
+    assert (
+        "PY scripts/run_v171_v32_ledger_hardware_gate.py --execute --keep-going "
+        "--bug BUG-SRC4382-AD-01 --require-bug-closed BUG-SRC4382-AD-01"
+    ) in captured.out
+    assert "--summarize-artifacts" in captured.out
+    assert "--audit-completion" in captured.out
+
+
+def test_src4382_manual_evidence_mode_report_json_records_payload(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    runner = _load_runner()
+    monkeypatch.setattr(
+        runner,
+        "_src4382_manual_evidence_status",
+        lambda: (
+            "manual_evidence_missing",
+            ["evidence file does not exist: test SRC4382 evidence"],
+        ),
+    )
+    report_path = tmp_path / "src4382-manual-evidence-report.json"
+
+    rc = runner.main(
+        [
+            "--src4382-manual-evidence",
+            "--python",
+            "PY",
+            "--report-json",
+            str(report_path),
+        ]
+    )
+
+    assert rc == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["mode"]["src4382_manual_evidence"] is True
+    payload = report["src4382_manual_evidence"]
+    assert payload["bug"] == "BUG-SRC4382-AD-01"
+    assert payload["phase"] == "src4382-ad-acoustic"
+    assert payload["main_requirement"] == "pair"
+    assert payload["template"] == "docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md"
+    assert (
+        payload["manual_evidence"]
+        == "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md"
+    )
+    assert payload["manual_evidence_status"] == "manual_evidence_missing"
+    assert payload["manual_evidence_errors"] == [
+        "evidence file does not exist: test SRC4382 evidence"
+    ]
+    assert payload["expected_firmware"] == _src4382_expected_firmware_payload()
+    assert payload["required_env"] == [
+        "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK",
+        "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK",
+        "DLCP_HW_SRC4382_USER_ACTIONS_OK",
+        "DLCP_HW_SRC4382_SOAK_OK",
+    ]
+    assert (
+        "DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1"
+        in payload["execute_shell_command"]
+    )
+    assert (
+        "--require-bug-closed BUG-SRC4382-AD-01"
+        in payload["execute_shell_command"]
+    )
+    assert payload["control_flash"] == [
+        [
+            "scripts/flash_control_safe.sh",
+            "--hex",
+            "firmware/patched/releases/DLCP_Control_V1.71.hex",
+            "--preflight-only",
+        ],
+        [
+            "scripts/flash_control_safe.sh",
+            "--hex",
+            "firmware/patched/releases/DLCP_Control_V1.71.hex",
+        ],
+    ]
+    assert payload["control_flash_shell_commands"] == [
+        (
+            "scripts/flash_control_safe.sh --hex "
+            "firmware/patched/releases/DLCP_Control_V1.71.hex --preflight-only"
+        ),
+        (
+            "scripts/flash_control_safe.sh --hex "
+            "firmware/patched/releases/DLCP_Control_V1.71.hex"
+        ),
+    ]
+    assert payload["flash"] == [
+        ["PY", "scripts/dlcp_v32_release_flash.py", "--left"],
+        ["PY", "scripts/dlcp_v32_release_flash.py", "--right"],
+    ]
+    assert payload["flash_shell_commands"] == [
+        "PY scripts/dlcp_v32_release_flash.py --left",
+        "PY scripts/dlcp_v32_release_flash.py --right",
+    ]
+    assert payload["validator"] == [
+        "PY",
+        "scripts/validate_src4382_manual_evidence.py",
+        "artifacts/probes/v171_v32_ledger_gate/"
+        "bug_src4382_ad_01_manual_evidence.md",
+    ]
+
+
 def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
     tmp_path,
 ) -> None:
@@ -987,6 +1718,7 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
         "BUG-PRESET-02",
         "BUG-PRESET-03",
         "BUG-SETTINGS-01",
+        "BUG-SRC4382-AD-01",
         "BUG-STDBY-01",
     ]
     assert plan["phases"] == [
@@ -1008,6 +1740,7 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
         "rapid-toggle",
         "preset-convergence",
         "settings",
+        "src4382-ad-acoustic",
         "front-panel-standby-wake",
         "reconnect-soak",
     ]
@@ -1019,12 +1752,23 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
         "DLCP_HW_EXPECTED_INPUT",
         "DLCP_HW_EXPECTED_SETUP_PROFILE",
         "DLCP_HW_EXPECTED_VOLUME_LOW",
+        "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK",
+        "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK",
+        "DLCP_HW_SRC4382_SOAK_OK",
+        "DLCP_HW_SRC4382_USER_ACTIONS_OK",
     ]
     assert plan["expected_control_hex"]["ir-legacy-v16b"]["payload_crc"] == 0x2199
-    assert plan["expected_control_hex"]["ir-legacy-v171"]["payload_crc"] == 0x3DFF
+    v171_identity = _runner_control_identity(runner, "ir-legacy-v171")
+    assert (
+        plan["expected_control_hex"]["ir-legacy-v171"]["payload_crc"]
+        == v171_identity["payload_crc"]
+    )
     ir_bug = next(item for item in report["remaining_bugs"] if item["bug"] == "BUG-IR-01")
     assert ir_bug["expected_control_hex"]["ir-legacy-v16b"]["payload_crc"] == 0x2199
-    assert ir_bug["expected_control_hex"]["ir-legacy-v171"]["payload_crc"] == 0x3DFF
+    assert (
+        ir_bug["expected_control_hex"]["ir-legacy-v171"]["payload_crc"]
+        == v171_identity["payload_crc"]
+    )
     settings_bug = next(
         item for item in report["remaining_bugs"] if item["bug"] == "BUG-SETTINGS-01"
     )
@@ -1033,6 +1777,43 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
         "DLCP_HW_EXPECTED_SETUP_PROFILE",
         "DLCP_HW_EXPECTED_VOLUME_LOW",
     ]
+    src4382_bug = next(
+        item for item in report["remaining_bugs"] if item["bug"] == "BUG-SRC4382-AD-01"
+    )
+    assert src4382_bug["required_env"] == [
+        "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK",
+        "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK",
+        "DLCP_HW_SRC4382_SOAK_OK",
+        "DLCP_HW_SRC4382_USER_ACTIONS_OK",
+    ]
+    assert src4382_bug["manual_evidence"] == {
+        "template": "docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md",
+        "manual_evidence": (
+            "artifacts/probes/v171_v32_ledger_gate/"
+            "bug_src4382_ad_01_manual_evidence.md"
+        ),
+        "expected_firmware": _src4382_expected_firmware_payload(),
+        "helper": [
+            "PY",
+            "scripts/run_v171_v32_ledger_hardware_gate.py",
+            "--src4382-manual-evidence",
+        ],
+        "helper_shell_command": (
+            "PY scripts/run_v171_v32_ledger_hardware_gate.py "
+            "--src4382-manual-evidence"
+        ),
+        "validator": [
+            "PY",
+            "scripts/validate_src4382_manual_evidence.py",
+            "artifacts/probes/v171_v32_ledger_gate/"
+            "bug_src4382_ad_01_manual_evidence.md",
+        ],
+        "validator_shell_command": (
+            "PY scripts/validate_src4382_manual_evidence.py "
+            "artifacts/probes/v171_v32_ledger_gate/"
+            "bug_src4382_ad_01_manual_evidence.md"
+        ),
+    }
     assert "--mirror-selected-bug-reports" in plan["execute_shell_command"]
     assert "--require-bug-closed BUG-STDBY-01" in plan["execute_shell_command"]
 
@@ -1296,7 +2077,7 @@ def test_audit_completion_fails_until_every_ledger_bug_is_done(tmp_path, capsys)
     audit = report["completion_audit"]
     assert report["mode"]["audit_completion"] is True
     assert audit["complete"] is False
-    assert audit["status_counts"] == {"done": 1, "green": 9}
+    assert audit["status_counts"] == {"blocked": 1, "done": 1, "green": 9}
     assert audit["done_bugs"] == ["BUG-REV-01"]
     assert audit["done_without_evidence"] == []
     assert audit["done_with_weak_evidence"] == []
@@ -1304,7 +2085,7 @@ def test_audit_completion_fails_until_every_ledger_bug_is_done(tmp_path, capsys)
         {
             "id": "all_active_bugs_done",
             "passed": False,
-            "evidence": "9 active rows are not done",
+            "evidence": "10 active rows are not done",
         },
         {
             "id": "done_rows_have_done_evidence",
@@ -1317,7 +2098,7 @@ def test_audit_completion_fails_until_every_ledger_bug_is_done(tmp_path, capsys)
             "evidence": (
                 "not ready: BUG-DIAG-01, BUG-DIAG-02, BUG-IR-01, BUG-IR-02, "
                 "BUG-PRESET-01, BUG-PRESET-02, BUG-PRESET-03, "
-                "BUG-SETTINGS-01, BUG-STDBY-01"
+                "BUG-SETTINGS-01, BUG-SRC4382-AD-01, BUG-STDBY-01"
             ),
         },
         {
@@ -1326,7 +2107,7 @@ def test_audit_completion_fails_until_every_ledger_bug_is_done(tmp_path, capsys)
             "evidence": (
                 "blocked: BUG-DIAG-01, BUG-DIAG-02, BUG-IR-01, BUG-IR-02, "
                 "BUG-PRESET-01, BUG-PRESET-02, BUG-PRESET-03, "
-                "BUG-SETTINGS-01, BUG-STDBY-01"
+                "BUG-SETTINGS-01, BUG-SRC4382-AD-01, BUG-STDBY-01"
             ),
         },
     ]
@@ -1392,7 +2173,10 @@ def test_audit_completion_fails_until_every_ledger_bug_is_done(tmp_path, capsys)
     assert remaining_bug_ids == {
         bug_id for bug_id, cells in active_rows.items() if cells[1] != "done"
     }
-    assert {item["status"] for item in audit["remaining_bugs"]} == {"green"}
+    assert {item["status"] for item in audit["remaining_bugs"]} == {
+        "blocked",
+        "green",
+    }
     for item in audit["remaining_bugs"]:
         safe_bug = item["bug"].lower().replace("-", "_")
         assert item["preflight_report"] == (
@@ -1432,6 +2216,11 @@ def test_audit_completion_passes_when_all_ledger_bugs_are_done(
             for bug_id in runner.BUG_PHASES
         },
     )
+    monkeypatch.setattr(
+        runner,
+        "_src4382_manual_evidence_status",
+        lambda: ("passed", []),
+    )
 
     rc = runner.main(["--audit-completion", "--python", "PY"])
 
@@ -1444,6 +2233,61 @@ def test_audit_completion_passes_when_all_ledger_bugs_are_done(
     assert "PASS done_rows_have_done_evidence" in captured.out
     assert "PASS hardware_artifacts_ready" in captured.out
     assert "PASS prompt_to_artifact_checklist_ready" in captured.out
+
+
+def test_audit_completion_fails_if_src4382_done_row_lacks_valid_manual_evidence(
+    monkeypatch,
+    capsys,
+) -> None:
+    runner = _load_runner()
+    monkeypatch.setattr(
+        runner,
+        "_active_ledger_statuses",
+        lambda: {"BUG-SRC4382-AD-01": "done"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_completion_audit_evidence_lines",
+        lambda: {
+            "BUG-SRC4382-AD-01": (
+                "DONE: `artifacts/probes/v171_v32_ledger_gate/"
+                "bug_src4382_ad_01_manual_evidence.md` -> `pass`"
+            )
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_src4382_manual_evidence_status",
+        lambda: (
+            "manual_evidence_missing",
+            ["evidence file does not exist: manual SRC4382 evidence"],
+        ),
+    )
+
+    rc = runner.main(["--audit-completion", "--python", "PY"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "Completion audit: NOT COMPLETE" in captured.out
+    assert (
+        "done rows with invalid manual evidence: BUG-SRC4382-AD-01"
+        in captured.out
+    )
+    assert "FAIL done_rows_have_done_evidence" in captured.out
+    assert "invalid manual evidence: BUG-SRC4382-AD-01" in captured.out
+    audit = runner._completion_audit_payload("PY")
+    assert audit["done_with_invalid_manual_evidence"] == ["BUG-SRC4382-AD-01"]
+    assert audit["done_manual_evidence_errors"] == {
+        "BUG-SRC4382-AD-01": [
+            "evidence file does not exist: manual SRC4382 evidence"
+        ]
+    }
+    src4382_prompt = audit["prompt_to_artifact_checklist"]["bugs"][0]
+    assert src4382_prompt["bug"] == "BUG-SRC4382-AD-01"
+    assert src4382_prompt["ready_to_mark_done"] is False
+    assert src4382_prompt["blocking_reasons"] == [
+        "done_row_invalid_manual_evidence"
+    ]
 
 
 def test_audit_completion_fails_if_prompt_to_artifact_checklist_blocks(
@@ -1520,6 +2364,11 @@ def test_audit_completion_fails_if_done_rows_have_weak_done_evidence(
         runner,
         "_completion_audit_evidence_lines",
         lambda: {"BUG-REV-01": "DONE:"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_src4382_manual_evidence_status",
+        lambda: ("passed", []),
     )
 
     rc = runner.main(["--audit-completion", "--python", "PY"])
@@ -1767,6 +2616,239 @@ def test_summarize_artifacts_require_all_ready_passes_when_all_green_rows_ready(
     assert summary["not_ready_bugs"] == []
 
 
+def test_summarize_artifacts_requires_valid_src4382_manual_evidence(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    runner = _load_runner()
+    evidence_identity = {"schema": 2, "test": "current"}
+    monkeypatch.setattr(
+        runner,
+        "_current_evidence_identity",
+        lambda: evidence_identity,
+    )
+    evidence = tmp_path / "bug_src4382_ad_01_manual_evidence.md"
+    monkeypatch.setattr(
+        runner,
+        "SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH",
+        str(evidence),
+    )
+    preflight = tmp_path / "bug_src4382_ad_01_preflight_current.json"
+    closure = tmp_path / "bug_src4382_ad_01_closure_current.json"
+    report_path = tmp_path / "artifact-summary-src4382.json"
+    selected_phases = _selected_phase_payloads(runner, ["BUG-SRC4382-AD-01"])
+    preflight.write_text(
+        json.dumps(
+            {
+                "evidence_identity": evidence_identity,
+                "selected_phases": selected_phases,
+                "preflight": {"status": "PASS", "failures": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    closure.write_text(
+        json.dumps(
+            {
+                "evidence_identity": evidence_identity,
+                "final_rc": 0,
+                "selected_phases": selected_phases,
+                "phase_results": _phase_results_for_bugs(
+                    runner,
+                    ["BUG-SRC4382-AD-01"],
+                ),
+                "bug_closure": {"BUG-SRC4382-AD-01": {"status": "passed"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_ledger_statuses",
+        lambda: {"BUG-SRC4382-AD-01": "green"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_remaining_bug_payloads",
+        lambda python, selected_bug_names: [
+            {
+                "bug": "BUG-SRC4382-AD-01",
+                "status": "green",
+                "preflight_report": str(preflight),
+                "closure_report": str(closure),
+            },
+        ],
+    )
+
+    rc = runner.main(
+        [
+            "--summarize-artifacts",
+            "--require-all-ready",
+            "--python",
+            "PY",
+            "--report-json",
+            str(report_path),
+        ]
+    )
+    assert rc == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    row = report["artifact_summary"]["rows"][0]
+    assert row["artifact_status"] == "manual_evidence_missing"
+    assert row["bug_closure_status"] == "passed"
+    assert row["manual_evidence_status"] == "manual_evidence_missing"
+    assert row["manual_evidence_errors"]
+    assert report["artifact_summary"]["ready_to_mark_done"] == []
+    assert report["artifact_summary"]["not_ready_bugs"] == ["BUG-SRC4382-AD-01"]
+
+    evidence.write_text(_passing_src4382_manual_evidence(), encoding="utf-8")
+    report_path = tmp_path / "artifact-summary-src4382-ready.json"
+    rc = runner.main(
+        [
+            "--summarize-artifacts",
+            "--require-all-ready",
+            "--python",
+            "PY",
+            "--report-json",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    row = report["artifact_summary"]["rows"][0]
+    assert row["artifact_status"] == "passed"
+    assert row["manual_evidence_status"] == "passed"
+    assert row["manual_evidence_errors"] == []
+    assert report["artifact_summary"]["ready_to_mark_done"] == [
+        "BUG-SRC4382-AD-01"
+    ]
+    assert report["artifact_summary"]["not_ready_bugs"] == []
+
+
+def test_summarize_artifacts_accepts_src4382_manual_evidence_without_live_report(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    runner = _load_runner()
+    evidence = tmp_path / "bug_src4382_ad_01_manual_evidence.md"
+    evidence.write_text(_passing_src4382_manual_evidence(), encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH",
+        str(evidence),
+    )
+    preflight = tmp_path / "missing_preflight.json"
+    closure = tmp_path / "missing_closure.json"
+    report_path = tmp_path / "artifact-summary-src4382-manual-only.json"
+    monkeypatch.setattr(
+        runner,
+        "_active_ledger_statuses",
+        lambda: {"BUG-SRC4382-AD-01": "green"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_remaining_bug_payloads",
+        lambda python, selected_bug_names: [
+            {
+                "bug": "BUG-SRC4382-AD-01",
+                "status": "green",
+                "preflight_report": str(preflight),
+                "closure_report": str(closure),
+            },
+        ],
+    )
+
+    rc = runner.main(
+        [
+            "--summarize-artifacts",
+            "--require-all-ready",
+            "--python",
+            "PY",
+            "--report-json",
+            str(report_path),
+        ]
+    )
+
+    assert rc == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    row = report["artifact_summary"]["rows"][0]
+    assert row["artifact_status"] == "passed"
+    assert row["preflight_status"] == "missing"
+    assert row["closure_identity_status"] == "manual_evidence"
+    assert row["bug_closure_status"] == "manual_evidence"
+    assert row["manual_evidence_status"] == "passed"
+    assert row["manual_evidence_errors"] == []
+    assert report["artifact_summary"]["ready_to_mark_done"] == [
+        "BUG-SRC4382-AD-01"
+    ]
+    assert report["artifact_summary"]["not_ready_bugs"] == []
+    assert report["artifact_summary"]["missing_reports"] == []
+
+
+def test_summarize_artifacts_reports_invalid_src4382_manual_evidence_without_live_report(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    runner = _load_runner()
+    evidence = tmp_path / "bug_src4382_ad_01_manual_evidence.md"
+    evidence.write_text(
+        _passing_src4382_manual_evidence().replace("Pass/fail: pass", "Pass/fail: fail"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH",
+        str(evidence),
+    )
+    preflight = tmp_path / "missing_preflight.json"
+    closure = tmp_path / "missing_closure.json"
+    report_path = tmp_path / "artifact-summary-src4382-invalid-manual.json"
+    monkeypatch.setattr(
+        runner,
+        "_active_ledger_statuses",
+        lambda: {"BUG-SRC4382-AD-01": "green"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_remaining_bug_payloads",
+        lambda python, selected_bug_names: [
+            {
+                "bug": "BUG-SRC4382-AD-01",
+                "status": "green",
+                "preflight_report": str(preflight),
+                "closure_report": str(closure),
+            },
+        ],
+    )
+
+    rc = runner.main(
+        [
+            "--summarize-artifacts",
+            "--require-all-ready",
+            "--python",
+            "PY",
+            "--report-json",
+            str(report_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "BUG-SRC4382-AD-01 [green]: manual_evidence_failed" in captured.out
+    assert "manual evidence: verdict must be pass: 'fail'" in captured.out
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    row = report["artifact_summary"]["rows"][0]
+    assert row["artifact_status"] == "manual_evidence_failed"
+    assert row["preflight_status"] == "missing"
+    assert row["closure_identity_status"] == "missing"
+    assert row["bug_closure_status"] is None
+    assert row["manual_evidence_status"] == "manual_evidence_failed"
+    assert row["manual_evidence_errors"] == ["verdict must be pass: 'fail'"]
+    assert report["artifact_summary"]["ready_to_mark_done"] == []
+    assert report["artifact_summary"]["not_ready_bugs"] == ["BUG-SRC4382-AD-01"]
+    assert report["artifact_summary"]["missing_reports"] == []
+
+
 def test_summarize_artifacts_rejects_stale_passed_reports(
     monkeypatch,
     tmp_path,
@@ -1973,7 +3055,7 @@ def test_evidence_identity_covers_ledger_runner_tests_and_release_hexes() -> Non
 
     identity = runner._current_evidence_identity()
 
-    assert runner.REPORT_SCHEMA_VERSION == 11
+    assert runner.REPORT_SCHEMA_VERSION == 13
     assert identity["schema"] == runner.REPORT_SCHEMA_VERSION
     ledger = _ledger_text()
     assert f"current report schema is `{runner.REPORT_SCHEMA_VERSION}`" in ledger
@@ -2000,6 +3082,8 @@ def test_evidence_identity_covers_ledger_runner_tests_and_release_hexes() -> Non
         "main_flash_module",
         "main_v32_hex",
         "runner",
+        "src4382_manual_evidence_template",
+        "src4382_manual_evidence_validator",
         "v32_release_flash_module",
     }
     for item in files.values():

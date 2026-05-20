@@ -888,7 +888,7 @@ def _switch_active_preset_ep0(
     pid: int,
     preset: str,
     path: bytes | None = None,
-    timeout_s: float = 2.0,
+    timeout_s: float = 5.0,
     poll_interval_s: float = 0.05,
     settle_s: float = 0.25,
     stable_reads: int = 2,

@@ -569,6 +569,7 @@ fn mirror_pc_and_stack_to_sfrs(core: &mut Core, stack: &Stack) {
 /// test for the per-cell rationale and references to the gpsim
 /// source + DS40001303H tables that justify each exemption.
 #[test]
+#[ignore = "requires retired gpsim ground-truth fixture artifacts/ground_truth/v171_early_boot_parity"]
 fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     let root = repo_root();
     let hex_path = root.join("firmware/patched/releases/DLCP_Control_V1.71.hex");
@@ -583,12 +584,22 @@ fn isa_matches_gpsim_ground_truth_for_v171_reset_through_init() {
     let cycle_target: u64 = pick_cycle_target(&snapshot_dir);
     let stem = format!("early_boot_v171_{}", cycle_target);
 
-    let ram_expected =
-        std::fs::read(snapshot_dir.join(format!("{stem}.ram.bin"))).expect("read ram snapshot");
+    let ram_path = snapshot_dir.join(format!("{stem}.ram.bin"));
+    let ram_expected = std::fs::read(&ram_path).unwrap_or_else(|err| {
+        panic!(
+            "read RAM snapshot {}: {err}. Recreate the retired gpsim fixture before running this ignored parity gate.",
+            ram_path.display()
+        )
+    });
     assert_eq!(ram_expected.len(), 256);
 
-    let sfr_text = std::fs::read_to_string(snapshot_dir.join(format!("{stem}.sfr.json")))
-        .expect("read sfr snapshot");
+    let sfr_path = snapshot_dir.join(format!("{stem}.sfr.json"));
+    let sfr_text = std::fs::read_to_string(&sfr_path).unwrap_or_else(|err| {
+        panic!(
+            "read SFR snapshot {}: {err}. Recreate the retired gpsim fixture before running this ignored parity gate.",
+            sfr_path.display()
+        )
+    });
     let sfr_expected = parse_sfr_snapshot(&sfr_text);
     // The capture covers exactly 0xF60..0x1000 = 160 SFR bytes;
     // any other count means the capture script + parser drifted.

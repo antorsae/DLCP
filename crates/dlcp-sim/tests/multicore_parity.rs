@@ -5361,10 +5361,19 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     //   0x0BF = menu_state (BANK 0 access RAM, no banking)
     //   0x196 = v171_diag_target  (BANK 1, physical = 0x180 + 0x16)
     //   0x197 = v171_diag_present (BANK 1, physical = 0x180 + 0x17)
+    //   0x198 = v171_diag_poll_lo (BANK 1)
+    //   0x199 = v171_diag_poll_hi (BANK 1)
+    //   0x19A = v171_diag_present_snap (BANK 1)
+    //   0x19C = v171_diag_flags (BANK 1; bit0 = DIRTY)
     //   0x180..0x186 = v171_diag_pb1_* (BANK 1)
     const MENU_STATE_RAM: u16 = 0x0BF;
     const MENU_STATE_PB1_DIAG: u8 = 4;
     const V171_DIAG_PRESENT_PHYS: u16 = 0x197;
+    const V171_DIAG_POLL_LO_PHYS: u16 = 0x198;
+    const V171_DIAG_POLL_HI_PHYS: u16 = 0x199;
+    const V171_DIAG_PRESENT_SNAP_PHYS: u16 = 0x19A;
+    const V171_DIAG_FLAGS_PHYS: u16 = 0x19C;
+    const V171_DIAG_FLAG_DIRTY: u8 = 0x01;
     const V171_DIAG_PB1_BASE_PHYS: u16 = 0x180;
 
     // Step 1: navigate from Volume screen to PB1 Diag via 4
@@ -5426,6 +5435,13 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
         lcd_pre_seed_line0,
         lcd_pre_seed_line1
     );
+    // From here this is a renderer contract test.  Stop the live BF/21
+    // reply stream and drain in-flight EUSART state so the manual cache
+    // seed below is not immediately overwritten by MAIN's real idle
+    // diagnostic burst before CONTROL consumes the DIRTY redraw.
+    chain.set_uart_blackout(true);
+    chain.cores[i_ctl].peripherals.eusart.reset_state();
+    chain.cores[i_main0].peripherals.eusart.reset_state();
 
     // Step 3: seed CONTROL's diag cache with non-zero V1.71
     // Tier-1 Overflow encoding values matching the hardware
@@ -5447,10 +5463,30 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
             .write_raw(Address::from_raw(V171_DIAG_PB1_BASE_PHYS + i as u16), v);
     }
     // Set the present mask bit 0 so the diag screen render takes
-    // the Degraded/Overflow layout instead of Absent.
+    // the Degraded/Overflow layout instead of Absent.  Current V3.2 MAINs
+    // can already have PB1 present by this point, so also mark the
+    // cache DIRTY exactly as the real BF/27/BF/2B parser does.  Relying
+    // only on `present XOR present_snap` made this test stale once the
+    // static Diag page began receiving PB1 replies before the manual seed.
     chain.cores[i_ctl]
         .memory
         .write_raw(Address::from_raw(V171_DIAG_PRESENT_PHYS), 0x01);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(V171_DIAG_PRESENT_SNAP_PHYS), 0x00);
+    chain.cores[i_ctl].memory.write_raw(
+        Address::from_raw(V171_DIAG_FLAGS_PHYS),
+        V171_DIAG_FLAG_DIRTY,
+    );
+    // Keep the next cadence send out of the way while the dirty redraw
+    // consumes the seeded cache.  This is a direct-render contract test,
+    // not a BF/21 chain-convergence test.
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(V171_DIAG_POLL_LO_PHYS), 0xFF);
+    chain.cores[i_ctl]
+        .memory
+        .write_raw(Address::from_raw(V171_DIAG_POLL_HI_PHYS), 0xFF);
 
     // Diag readback: verify the writes actually landed.
     let pb1_i_after_seed = chain.cores[i_ctl]
@@ -5476,8 +5512,8 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     // (`asm:4131+`): redraw fires when EITHER
     // v171_diag_flags.DIRTY is set OR
     // v171_diag_present XOR v171_diag_present_snap != 0.  We
-    // seeded v171_diag_present=0x01 above; snap was initialized
-    // to 0 on screen entry.  XOR is 0x01 -> non-zero -> redraw.
+    // explicitly set DIRTY after the manual cache seed above, matching
+    // the real parser-side dirty mark.
     //
     // Walk forward in chunks and stop once BOTH LCD rows have
     // flipped to the Degraded/Overflow layout (row 0 starts

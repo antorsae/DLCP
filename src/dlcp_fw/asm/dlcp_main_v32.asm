@@ -112,6 +112,11 @@ dsp_fault_flags         EQU  0x07F
 ; 0x2F1 is main_rx_frame_gap_timeout; use the reserved upper-bank slot at 0x2F2.
 i2c_recover_flags       EQU  0x2F2
 
+; SRC4382 Auto Detect source-loss debounce.  0 = no pending loss sample.
+; 1 = one RXCKR=0 sample while an Auto Detect route is selected; require a
+; second consecutive miss before clearing the route and resuming the scan.
+src4382_loss_debounce   EQU  0x2F3
+
 ; Shared 16-bit timeout countdown used by every wait_*_bounded helper.
 ; Seeded to ~0x1000 (see wait_seed). Each wait_tick decrements; carry set on 0.
 ; Caveat: helpers share the slot — only one bounded wait may be active at a
@@ -1447,7 +1452,10 @@ flow_cmd_dispatch_gated_1966:
     call        main_core_service_4516, 0x0
     movlw       0x01
     call        i2c_tas3108_reg1f_write, 0x0
-    bra         flow_cmd_dispatch_gated_1990
+    movlw       0x08
+    movwf       ram_0x006, ACCESS
+    movlw       0x30
+    bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_1970:
     movf        ram_0x093, W, BANKED
     bz          flow_cmd_dispatch_gated_1966
@@ -2072,6 +2080,10 @@ cmd06_input_select_handler:
     bra         flow_main_uart_service_1be6_1d22
     movff       ram_0x0A3, input_select              ; commit new input
     movff       input_select, input_select_mirror
+    movlb       0x0
+    setf        ram_0x0AB, BANKED                    ; force route re-evaluation
+    movlw       0x65
+    movwf       ram_0x0BB, BANKED                    ; run slow I2C service immediately
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d22:
     movff       input_select, ram_0x0BC
@@ -2512,7 +2524,7 @@ flow_main_core_service_1e88_20c2:
     clrf        ram_0x008, ACCESS
     movlw       0x82
     movwf       ram_0x007, ACCESS
-    movlw       0x63                            ; V3.2_RUNTIME_EEPROM_REV
+    movlw       0x6E                            ; V3.2_RUNTIME_EEPROM_REV
     movwf       ram_0x009, ACCESS
     goto        main_flash_service_46de
 
@@ -3524,34 +3536,54 @@ flow_main_i2c_service_27f0_28aa:
 flow_main_i2c_service_27f0_28ce:
     tstfsz      input_select, BANKED
     bra         flow_main_i2c_service_27f0_2902
+    tstfsz      ram_0x0BA, BANKED
+    bra         flow_main_i2c_service_27f0_ad_wait
     movff       ram_0x0BE, ram_0x006
     movlw       0x0D
     call        i2c_secondary_dev_write, 0x0
+    movlb       0x0
+    movlw       0x12                            ; candidate settle countdown
+    movwf       ram_0x0BA, BANKED
+    bra         flow_main_i2c_service_27f0_295c
+flow_main_i2c_service_27f0_ad_wait:
+    decfsz      ram_0x0BA, F, BANKED
+    bra         flow_main_i2c_service_27f0_295c
     movlw       0x13
     call        i2c_secondary_dev_random_read, 0x0
     movlb       0x0
     movwf       ram_0x0BE, BANKED
     tstfsz      ram_0x0BE, BANKED
     bra         flow_main_i2c_service_27f0_290a
+    movf        ram_0x0AB, W, BANKED
+    bz          flow_main_i2c_service_27f0_ad_scan_miss
+    movlb       0x02
+    tstfsz      src4382_loss_debounce, BANKED
+    bra         flow_main_i2c_service_27f0_ad_loss_confirmed
+    movlw       0x01
+    movwf       src4382_loss_debounce, BANKED
+    movlb       0x0
+    movff       ram_0x0AB, ram_0x093
+    bra         flow_main_i2c_service_27f0_ad_monitor
+flow_main_i2c_service_27f0_ad_loss_confirmed:
+    clrf        src4382_loss_debounce, BANKED
+    movlb       0x0
+flow_main_i2c_service_27f0_ad_scan_miss:
     clrf        ram_0x093, BANKED
-    movlw       0x0A
-    cpfsgt      ram_0x0BA, BANKED
-    bra         flow_main_i2c_service_27f0_2906
-    clrf        ram_0x0BA, BANKED
-    movlw       0x04
-    subwf       ram_0x0B6, W, BANKED
-    btfss       STATUS, 0, ACCESS
     incf        ram_0x0B6, F, BANKED
     movf        ram_0x0B6, W, BANKED
     xorlw       0x04
     bnz         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_2902:
     clrf        ram_0x0B6, BANKED
-    bra         flow_main_i2c_service_27f0_295c
-flow_main_i2c_service_27f0_2906:
-    incf        ram_0x0BA, F, BANKED
+    clrf        ram_0x0BA, BANKED
+    movlb       0x02
+    clrf        src4382_loss_debounce, BANKED
+    movlb       0x0
     bra         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_290a:
+    movlb       0x02
+    clrf        src4382_loss_debounce, BANKED
+    movlb       0x0
     tstfsz      ram_0x0B6, BANKED
     bra         flow_main_i2c_service_27f0_2912
     movlw       0x03
@@ -3594,9 +3626,12 @@ flow_main_i2c_service_27f0_292e:
     btfss       active_flags, 4, ACCESS
     bra         flow_main_i2c_service_27f0_295a
     bsf         active_flags, 5, ACCESS
-    bra         flow_main_i2c_service_27f0_295c
+    bra         flow_main_i2c_service_27f0_ad_monitor
 flow_main_i2c_service_27f0_295a:
     bcf         active_flags, 5, ACCESS
+flow_main_i2c_service_27f0_ad_monitor:
+    movlw       0x28                            ; source-present monitor countdown
+    movwf       ram_0x0BA, BANKED
 flow_main_i2c_service_27f0_295c:
     movlb       0x0
     movf        ram_0x093, W, BANKED
@@ -6420,6 +6455,7 @@ flow_main_flash_service_3ce8_3d78:
     clrf        diag_reset_wdt, BANKED
     clrf        diag_reset_sw, BANKED
     clrf        i2c_recover_flags, BANKED
+    clrf        src4382_loss_debounce, BANKED
 
     ; --- V3.2 rev 0x37 Tier-1: reset-cause classification cascade ---
     ; Silicon clears the corresponding RCON bit on each reset cause
@@ -10414,7 +10450,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x63, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x6E, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

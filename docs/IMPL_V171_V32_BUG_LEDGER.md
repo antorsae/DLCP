@@ -1,11 +1,12 @@
 # V1.71 / V3.2 Implementation Bug Ledger
 
-Last updated: 2026-05-11
+Last updated: 2026-05-20
 Scope: deployed `DLCP_Control_V1.71.hex` with `DLCP_Firmware_V3.2.hex`
 Status: active; current simulator red tests are green.  `BUG-REV-01` is
-hardware-closed; remaining green rows still require the listed live-rig
-confirmation.  The hardware rig is currently disconnected, so live closure is
-blocked until MAIN USB, CONTROL, LCD camera, and Flipper are reconnected.
+hardware-closed; remaining green rows and the SRC4382 blocked row still require
+the listed live-rig confirmation.  The hardware rig is currently disconnected,
+so live closure is blocked until MAIN USB, CONTROL, LCD camera, and Flipper are
+reconnected.
 
 This ledger tracks product-firmware bugs in the recommended CONTROL/MAIN pair.
 It is separate from:
@@ -86,10 +87,11 @@ Completion criteria for this ledger:
 | BUG-PRESET-03 | green | CONTROL preset dispatch | IR/menu preset handlers flip local `PRESET_BIT` before the fallible atomic TX helper succeeds; under TX saturation CONTROL can show a preset that was not sent or persisted. | `tests/sim/test_v171_v32_user_visible_desync_bugs.py::test_ir_preset_b_tx_saturation_does_not_change_local_preset_state`. |
 | BUG-REV-01 | done | MAIN firmware identity | V3.2 app flash leaves runtime EEPROM identity at old values, e.g. `revision: 0x30 (EEPROM 2.3)`, because the app flasher streams program memory only and the firmware does not migrate the EEPROM tuple. | `test_v32_runtime_eeprom_identity_matches_release_hex_without_seed` and `test_build_v32_release_bumps_runtime_eeprom_revision_marker`. |
 | BUG-SETTINGS-01 | green | MAIN release flash / user settings | MAIN app HID cmd `0x40` is a firmware-update handoff, but the V3.2 handler flushed factory defaults into EEPROM first, resetting volume to `-96 dB`, input to analog 1, and potentially the shared setup/profile byte after flash. | `tests/sim/test_dlcp_main_flash.py::test_v32_cmd40_bootloader_entry_preserves_saved_settings_in_source`, `tests/sim/test_v32_flasher_sim_backend_hid.py::test_sim_hid_cmd40_preserves_user_volume_and_input_settings`, and `test_v32_release_flash_sim_full_main_post_flash_state`. |
+| BUG-SRC4382-AD-01 | blocked | MAIN SRC4382 Auto Detect | V3.2 overpolls SRC4382 in Auto Detect; the broad rewrite broke the route/TAS contract, while the later bad-audio observation was retested on 2026-05-20 as a speaker-wiring false alarm. Canonical V3.2 rev `0x6E` now contains an in-place countdown candidate, source-loss debounce, and fixed-digital SRC route priming for the rev `0x6D` no-audio-on-manual-source hardware finding, but closure remains blocked on structured hardware retest/soak evidence. | `tests/sim/test_v32_src4382_audio_path_regression.py::{test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh,test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation,test_v32_audio_path_safety_guard_rejects_missing_tas_refresh_mutation}`, `tests/sim/test_v32_src4382_autodetect_polling.py::{test_v32_src4382_autodetect_no_source_cadence_is_reduced,test_v32_cadence_guard_rejects_unthrottled_receiver_select_mutation,test_v32_src4382_autodetect_source_present_cadence_is_reduced,test_v32_source_present_cadence_guard_rejects_unthrottled_monitor_mutation,test_v32_src4382_no_source_scan_does_not_read_non_pcm_status,test_v32_src4382_source_present_latches_non_pcm_status,test_v32_src4382_single_source_loss_sample_does_not_flap_route,test_v32_src4382_sustained_source_loss_resumes_scan_within_1s,test_v32_src4382_writes_0d_only_when_candidate_changes,test_v32_src4382_full_scan_detects_worst_position_source_within_500ms,test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation,test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route,test_v32_src4382_manual_digital_input_primes_default_receiver_route,test_v32_src4382_fixed_input_goes_quiet_after_route_converges,test_v32_src4382_autodetect_mute_unmute_remain_responsive,test_v32_src4382_autodetect_standby_wake_remain_responsive,test_v32_src4382_autodetect_preset_change_remains_responsive,test_v32_src4382_nack_does_not_block_volume_command,test_v171_v32_src4382_autodetect_dual_main_chain_soak_stays_responsive}`, and `tests/sim/test_v32_release_flash_sim.py::test_v32_lx521_a_b_payloads_reach_each_main_tas3108`. |
 
 ## Current Verification Snapshot
 
-Green simulator runs through 2026-05-11:
+Green simulator runs through 2026-05-20:
 
 - Consolidated ledger gate before the PB1/PB2 Diagnostics-IR split:
   `pytest -q tests/sim/test_v171_v32_layer5_diag_chain.py
@@ -155,7 +157,7 @@ Green simulator runs through 2026-05-11:
   tests/sim/test_v32_flasher_sim_backend_hid.py::test_sim_hid_cmd40_preserves_user_volume_and_input_settings
   tests/sim/test_v32_release_flash_sim.py::test_v32_release_flash_sim_full_main_post_flash_state
   tests/sim/test_v171_v32_ledger_hardware_gate.py`
-  -> `68 passed`.  This includes the shared setup/profile byte
+  -> `79 passed in 46.16s`.  This includes the shared setup/profile byte
   `EEPROM[0x0E]` / `RAM[0x0B8]` and exact input preservation through the full
   release-flash sim ceremony.
 - Broader MAIN flasher regression pass after the exact input/profile restore:
@@ -165,7 +167,7 @@ Green simulator runs through 2026-05-11:
   -> `46 passed, 3 warnings`.
 - Hardware-gate runner mapping:
   `pytest -q tests/sim/test_v171_v32_ledger_hardware_gate.py`
-  -> `66 passed`; this pins every active ledger bug to a `--bug` hardware
+  -> `86 passed in 5.28s`; this pins every active ledger bug to a `--bug` hardware
   phase selection, verifies the ledger hardware phase-map table matches the
   runner, verifies runner phase opt-in/env contracts for the live hardware tests,
   verifies runner phase resource requirements for MAIN visibility, LCD camera,
@@ -218,7 +220,7 @@ Green simulator runs through 2026-05-11:
   and blockers, and
   the `--summarize-artifacts --require-all-ready` reader and default
   `artifact_summary_current.json` report path for stable per-bug preflight and
-  closure reports, plus schema-11 evidence-identity rejection for stale reports
+  closure reports, plus schema-13 evidence-identity rejection for stale reports
   produced against older ledger, runner, hardware-test, live hardware helper,
   hardware runbook, flash helper, V3.2 MAIN, V1.71 CONTROL, or stock V1.6b
   CONTROL files, and the
@@ -229,13 +231,22 @@ Green simulator runs through 2026-05-11:
   execution-order guard that keeps the stock V1.6b real-IR baseline
   immediately followed by the V1.71 restore/stress phase:
   `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_ledger_hardware_gate.py`
-  -> `66 passed`.  This now includes a guard that every live hardware phase is
+  -> `86 passed in 5.28s`.  This now includes a guard that every live hardware phase is
   required by at least one active ledger bug, so the `preset-mute` timing phase
   cannot be orphaned outside closure readiness, and a guard that the active
   table lists every concrete simulator evidence test used for each bug.  It
   also verifies that every bug detail section documents a `Red test target`,
-  and that Diagnostics hardware prompts stay on the one-second static-cadence
-  contract instead of drifting back to a two-second settle.
+  that Diagnostics hardware prompts stay on the one-second static-cadence,
+  and that the tracked SRC4382 manual-evidence template and validator stay
+  wired into the runbook, implementation spec, ledger, and artifact-summary
+  readiness path, including the manual-only artifact path when the live pytest
+  wrapper is not run, and that invalid manual evidence is reported as
+  `manual_evidence_failed` with inline validator errors instead of a generic
+  missing closure report.  It also verifies that the
+  `--src4382-manual-evidence` helper prints the current CONTROL/MAIN
+  revision and SHA256 fields required by the validator, and guards the
+  one-second Diagnostics settle contract instead of drifting back to a
+  two-second settle.
 - Diagnostics focused gate after the V1.71 rev `0x1C` visible-page cadence
   rebuild:
   `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_layer5_diag_page.py
@@ -249,7 +260,7 @@ Green simulator runs through 2026-05-11:
 - Flipper IR sender/profile support:
   `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_flipper_ir.py
   tests/sim/test_v171_v32_ledger_hardware_gate.py`
-  -> `73 passed`; this now covers both Hypex-profile RC5 (`addr=0x10`) and
+  -> `83 passed in 5.34s`; this now covers both Hypex-profile RC5 (`addr=0x10`) and
   standard RC5 (`addr=0x00`) action names.  The hardware legacy-IR test also
   collected cleanly after adding `DLCP_HW_IR_PROFILE=HYPEX|STANDARD`:
   `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py::test_live_ir_legacy_command_stress_from_volume --collect-only -q`
@@ -264,7 +275,7 @@ Green simulator runs through 2026-05-11:
 - IR receiver-sweep diagnostic support:
   `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_state_test.py
   tests/sim/test_v171_v32_ledger_hardware_gate.py`
-  -> `111 passed`; this includes artifact-path reporting for both no-state-
+  -> `121 passed in 5.46s`; this includes artifact-path reporting for both no-state-
   change failures and Flipper/sender command failures.  The live opt-in test
   also collects cleanly:
   `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py::test_live_ir_receiver_profile_sweep_records_any_state_change --collect-only -q`
@@ -273,10 +284,10 @@ Green simulator runs through 2026-05-11:
   `.venv_ep0/bin/python -m pytest -q tests/sim/test_hardware_state_test.py
   tests/sim/test_hardware_flipper_ir.py
   tests/sim/test_v171_v32_ledger_hardware_gate.py`
-  -> `118 passed`.
+  -> `128 passed in 5.53s`.
 - Full simulator gate:
   `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q`
-  -> `989 passed, 6 skipped, 7 warnings` after the V1.71 rev `0x1C`
+  -> prior dedicated simulator gate `1067 passed, 1 skipped, 7 warnings in 702.71s` after the V1.71 rev `0x1C`
   visible-Diagnostics-page cadence rebuild, V1.71 rev `0x1A`
   stock-compatible IR fallback rebuild, CONTROL-flash first-ACK
   timeout/watchdog hardening, HFD update-stream disassembly contract test, and
@@ -289,7 +300,8 @@ Green simulator runs through 2026-05-11:
   active status-vocabulary guard, completion-criteria checklist guard,
   preservation of already-`done` ledger status in preflight/list reports, and
   the `--remaining` per-bug closure-command view, already-`done` filter, and
-  `--audit-completion` stop condition plus ledger documentation guard, and
+  `--audit-completion` stop condition plus ledger documentation guard, SRC4382
+  manual-evidence validation for already-`done` rows, and
   stable closure-artifact summary reporting with the `--require-all-ready`
   pre-ledger-mutation gate, the `--list-phases` spelling alias, and byte-literal
   validation for the required settings-preservation env vars, plus the real-IR
@@ -297,12 +309,18 @@ Green simulator runs through 2026-05-11:
   live-settings pytest byte-range rejection, and expected CONTROL hex identity
   capture in legacy-IR hardware artifacts:
   `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` ->
-  `989 passed, 6 skipped, 7 warnings`.
+  `1067 passed, 1 skipped, 7 warnings in 702.71s`; the later full `tests`
+  gate below includes the added SRC4382 evidence-helper/validator simulator tests.
+- Full local `tests` gate after the SRC4382 Auto Detect documentation refresh:
+  `.venv_ep0/bin/python -m pytest tests -n 16 -q` ->
+  `1081 passed, 18 skipped, 10 warnings in 393.86s`.  The skipped tests are
+  live-hardware opt-in checks and do not close the SRC4382 acoustic evidence
+  requirement.
 - Live hardware test collection:
   `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q`
-  -> `16 tests collected`.  The phase runner collect/report path also works:
+  -> `17 tests collected`.  The phase runner collect/report path also works:
   `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --collect --phase all --report-json artifacts/probes/v171_v32_ledger_gate/collect_only.json`
-  -> `16 tests collected` and wrote the JSON command manifest.
+  -> `17 tests collected` and wrote the JSON command manifest.
   After the later positive operator IR report, the full collect/report path was
   rerun with
   `--report-json artifacts/probes/v171_v32_ledger_gate/collect_after_ir_operator_report.json`
@@ -475,19 +493,25 @@ to mark `done`.  Without `--report-json`, this mode writes
 report carries an evidence identity over this ledger's hardware phase-map
 contract, the runner, the hardware runbook, the hardware test file, live
 hardware helper modules, flash helper modules, the safe CONTROL flash wrapper,
-canonical V3.2 MAIN hex, canonical V1.71 CONTROL hex, and stock V1.6b CONTROL
-hex; the summary refuses stale PASS/PASS artifacts while allowing mutable
-ledger status / `DONE:` evidence edits after live artifacts are captured.  The
-current report schema is `11`, bumped after schema `6` added the hardware
-runbook to the evidence identity and schema `5` added expected CONTROL hex
-identity to legacy-IR phase and remaining-plan payloads.  Schema `7` records
+canonical V3.2 MAIN hex, canonical V1.71 CONTROL hex, stock V1.6b CONTROL
+hex, and the SRC4382 manual-evidence template/validator; the summary refuses
+stale PASS/PASS artifacts while allowing mutable ledger status / `DONE:`
+evidence edits after live artifacts are captured.  The current report schema is `13`,
+bumped after schema `6` added the hardware runbook to the evidence
+identity and schema `5` added expected CONTROL hex identity to legacy-IR phase
+and remaining-plan payloads.  Schema `7` records
 whether the current PASS preflight report selected every phase required by the
 bug; a generic PASS preflight for the wrong phase set is not sufficient to mark
 a bug ready.  Schema `8` adds the completion-audit prompt-to-artifact checklist,
 schema `9` makes that checklist a top-level completion blocker, and schema
 `10` records the `DONE:` evidence line for already-closed rows.  Schema `11`
 rejects weak `DONE:` rows that lack a concrete pass result and command or
-artifact path.
+artifact path.  Schema `12` adds the SRC4382 Auto Detect acoustic phase and
+its manual confirmation environment contract.  The schema-13 bump adds SRC4382 manual
+evidence validator/template identity, artifact-summary readiness fields
+(`manual_evidence_status`, `manual_evidence_errors`), and completion-audit
+blocking for already-`done` SRC4382 rows so passed closure reports or premature
+ledger edits are blocked until the completed manual artifact validates.
 
 Earlier hardware readiness preflight on 2026-05-09 after reconnecting MAINs,
 camera, and Flipper, before the host-camera-only filter was added:
@@ -535,17 +559,20 @@ including stdout `Bug closure status` and JSON `bug_closure` rows.  Because
 this was a preflight-only run, every selected non-`done` closure row is
 correctly `not_run`, while already-closed `BUG-REV-01` stays `done`; this
 artifact only proves current rig availability, not firmware behavior.
-The combined mirrored preflight was also refreshed after the schema-11 bump:
-`.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --preflight --bug BUG-DIAG-01 --bug BUG-DIAG-02 --bug BUG-IR-01 --bug BUG-IR-02 --bug BUG-PRESET-01 --bug BUG-PRESET-02 --bug BUG-PRESET-03 --bug BUG-SETTINGS-01 --bug BUG-STDBY-01 --mirror-selected-bug-reports --report-json artifacts/probes/v171_v32_ledger_gate/remaining_preflight_current.json`
+The combined mirrored preflight was last refreshed after the schema-12 bump:
+`.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --preflight --bug BUG-DIAG-01 --bug BUG-DIAG-02 --bug BUG-IR-01 --bug BUG-IR-02 --bug BUG-PRESET-01 --bug BUG-PRESET-02 --bug BUG-PRESET-03 --bug BUG-SETTINGS-01 --bug BUG-SRC4382-AD-01 --bug BUG-STDBY-01 --mirror-selected-bug-reports --report-json artifacts/probes/v171_v32_ledger_gate/remaining_preflight_current.json`
 -> FAIL for the same disconnected-rig / missing-settings reasons, and rewrote
-each `bug_*_preflight_current.json` mirror with current schema-11 identity.
+each `bug_*_preflight_current.json` mirror with then-current schema-12 identity;
+these artifacts are intentionally stale under schema `13` until hardware is
+reconnected and the remaining phases are rerun.
 The completion audit command also records the current blocker:
 `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --audit-completion --report-json artifacts/probes/v171_v32_ledger_gate/completion_audit_current.json`
--> FAIL with `BUG-REV-01` done and the remaining nine rows still `green`.
+-> FAIL with `BUG-REV-01` done, nine rows still `green`, and
+`BUG-SRC4382-AD-01` still `blocked`.
 The runner wrote
 `artifacts/probes/v171_v32_ledger_gate/completion_audit_current.json`,
 including the prompt-to-artifact checklist with `BUG-REV-01` ready and the
-remaining nine rows blocked by `ledger_status_not_done` and
+remaining ten non-`done` rows blocked by `ledger_status_not_done` and
 `hardware_artifacts_not_ready`.
 The stable artifact summary currently confirms no remaining live closure is
 ready:
@@ -570,6 +597,7 @@ Hardware phase map for `scripts/run_v171_v32_ledger_hardware_gate.py --bug`:
 | BUG-DIAG-01 | `diag-layout-pb1`, `diag-pb1`, `diag-pb2` |
 | BUG-DIAG-02 | `diag-pb1`, `diag-pb2`, `diag-button-actions`, `diag-ir-actions` |
 | BUG-SETTINGS-01 | `settings`, then rerun the relevant release-flash ceremony, `identity`, and `ir-receiver-sweep` |
+| BUG-SRC4382-AD-01 | `src4382-ad-acoustic` |
 
 For BUG-IR-02, the `preset-standby-wake` phase sets
 `DLCP_HW_REQUIRE_STANDBY_LCD_ZZZ=1`, which makes the live pytest wrapper pass
@@ -579,7 +607,7 @@ artifact must therefore contain literal `Zzz...` standby LCD evidence before
 
 ## Completion Audit
 
-Audit date: 2026-05-11
+Audit date: 2026-05-20
 
 Objective: address every implementation bug listed in this ledger by proving a
 sim red test, fixing the code, making the sim gate green, and then passing the
@@ -597,6 +625,7 @@ listed hardware confirmation before changing status from `green` to `done`.
 | BUG-PRESET-03 | IR preset TX-saturation rollback test passes in sim. | No dedicated hardware step unless TX saturation is reproduced; normal preset A/B hardware checks cover the non-saturated path. The current IR `preset-convergence` phase failed before any MAIN preset change, so it is receiver-path evidence, not a preset-state rollback result. |
 | BUG-REV-01 | Runtime EEPROM identity and builder revision-marker tests pass; release-flash sim post-state passes. | DONE: `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --execute --no-pause --phase identity` -> `1 passed` / `PASS [identity]`; both connected MAINs matched canonical V3.2 runtime identity/revision and A/B filename RAM. |
 | BUG-SETTINGS-01 | Source guard proves cmd `0x40` no longer calls the factory-default EEPROM flush; sim HID and release-flash tests preserve non-default volume/input/setup-profile exactly. | PARTIAL: real right+left release-flash preserved the stable CONTROL-owned settings (`0xA0` / `0x00` / `0x04`) and identity after flash. Still run a stronger hardware proof after setting non-default volume through CONTROL, plus the ordinary real-IR stress gate to confirm the configured Hypex RC5 profile dispatches. |
+| BUG-SRC4382-AD-01 | Audio-path safety tests prove Auto Detect still drives SRC4382 route and TAS3108 refresh, mutation proof catches a missing route event, cadence tests reduce no-source/source-present traffic with red cases for high traffic and too-slow discovery, no-source scans avoid stale `0x12` reads, source-present scans latch `0x12` into `ram_0x0BF`, worst-position discovery stays responsive, explicit input preempts Auto Detect, manual fixed digital inputs prime the default SRC route, fixed input then goes quiet, mute/unmute, standby/wake, and preset-select remain responsive while Auto Detect is active, SRC4382 address/data NACKs are bounded, and LX521 A/B TAS3108 payloads reach both MAINs. | Run `src4382-ad-acoustic` after flashing canonical V3.2/V1.71: fixed-input and Auto Detect playback must have normal low-band output, every fixed digital source selected after Auto Detect must produce audio, volume/mute/preset/standby/wake/input must remain responsive, and the Auto Detect/fixed-input soak must show no UI stall, must record whether the Volume-screen A/B badge pulses or shows abnormal LCD refresh, and must show no unexplained `I`/`R` growth. |
 
 Additional live hardware gate added on 2026-05-09:
 `tests/hardware/test_live_state_transitions.py::test_live_v32_release_identity_and_ab_filename_ram`.
@@ -1230,6 +1259,151 @@ Hardware confirmation:
   values:
   `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1 DLCP_HW_EXPECTED_VOLUME_LOW=0xA0 DLCP_HW_EXPECTED_INPUT=0x00 DLCP_HW_EXPECTED_SETUP_PROFILE=0x04 pytest -q -s tests/hardware/test_live_state_transitions.py::test_live_v32_release_flash_preserves_expected_user_settings --run-hardware`
   -> `1 passed, 3 warnings`.
+
+## BUG-SRC4382-AD-01: SRC4382 Auto Detect Overpolling And Audio Regression
+
+Observed behavior:
+
+- Stock-equivalent V3.2 polled SRC4382 Auto Detect status at high cadence:
+  roughly `912` ACKed transmit bytes/s with no source and `1147` ACKed
+  transmit bytes/s with a source present in the firmware-path simulator.
+- The first attempted cadence rewrite replaced the legacy
+  `main_i2c_service_27f0` path and live hardware immediately sounded thin with
+  missing bass after flashing MAIN+CONTROL.
+- The later rev `0x6D` in-place candidate retested with corrected speaker wiring
+  and Auto Detect audio worked, but selecting fixed digital sources
+  (`S/PDIF`, `USB Audio`, `AES`, `Optical`) after Auto Detect produced no audio.
+
+Root cause:
+
+- The SRC4382 service is part of the audio route contract, not just a status
+  poll.  It computes `ram_0x093`, sets `event_flags.bit1`, and lets
+  `cmd_dispatch_gated` write the SRC4382 route pair and refresh TAS3108
+  coefficient `0x30`.
+- The failed rewrite removed or bypassed that route/TAS refresh path.  The
+  simulator lacked a test that would fail when SRC4382 routing changed without
+  the downstream TAS3108 refresh.
+- The rev `0x6D` fixed-source failure was a narrower route gap: CONTROL's fixed
+  digital menu choices become external-mux route requests `0/5/6/7`.  Those
+  routes toggled mux/TAS state but did not restore SRC4382 `0x0D=0x08`,
+  `0x08=0x30`, so Auto Detect could leave the SRC listening to the wrong
+  receiver.
+
+Red test target:
+
+- Add audio-path safety tests that prove Auto Detect source-present status
+  still drives the route event and TAS3108 refresh.
+- Add a mutation proof that removes the Auto Detect route event and verifies
+  the safety guard fails before hardware listening tests would catch the route
+  refresh break.
+- Add cadence guards that fail on the stock-equivalent high Auto Detect traffic
+  and reject repeated receiver-select writes for the same candidate.
+- Add user-facing responsiveness tests for explicit input preemption, mute,
+  standby/wake, preset-select, and SRC4382 address/data NACKs while a volume
+  command still lands.
+- Add a V1.71 + two-V3.2 chain liveness test so the deployed CONTROL + PB1 +
+  PB2 topology remains responsive under the reduced Auto Detect load.
+
+Acceptance:
+
+- The legacy `main_i2c_service_27f0` route/DSP contract is preserved.
+- No-source and source-present Auto Detect SRC4382 traffic are reduced by more
+  than 10x from the stock-equivalent simulator baseline.
+- Worst-position source discovery still converges through SRC route and
+  TAS3108 refresh within the simulator target.
+- Explicit fixed-input selection preempts Auto Detect and converges through
+  the route/TAS path, then the SRC4382 scanner goes quiet while fixed input
+  remains selected.
+- Manual fixed digital input selections restore the default SRC4382
+  receiver/transmitter pair and refresh TAS before the scanner goes quiet.
+- No-source scanning reads `0x13` for source presence without reading stale
+  `0x12` non-PCM status before a source exists.
+- Source-present scanning reads `0x12` and leaves it in the legacy `ram_0x0BF`
+  status scratch, not a receiver-select write shadow.
+- Mute/unmute, standby/wake, and preset-select remain responsive while Auto
+  Detect is active.
+- SRC4382 address/data NACKs increment `I` and do not stop a user volume command
+  from applying under the reduced Auto Detect load.
+- V1.71 CONTROL remains connected while both V3.2 MAINs run Auto Detect through
+  no-source, source-present route convergence, and a forwarded volume command.
+- Hardware fixed-input and Auto Detect playback are acoustically equivalent to
+  the stock-equivalent baseline; the release is not closed without this.
+
+Implementation result:
+
+- V3.2 keeps `cmd_dispatch_gated` and the existing route/TAS refresh behavior.
+- Canonical V3.2 rev `0x6E` contains an in-place countdown candidate:
+  no-source scanning writes `0x0D` once per candidate, waits via
+  `ram_0x0BA`, reads `0x13`, and only reads `0x12` into `ram_0x0BF` after a
+  source-present status sample.  `ram_0x0BF` remains the legacy register
+  `0x12` status scratch.
+- The candidate now also debounces source loss: a selected Auto Detect route
+  ignores one transient `0x13.RXCKR == 0` monitor sample, while sustained loss
+  resumes scanning within the simulator `1 s` bound.
+- Rev `0x6E` also forces route reconciliation on every explicit `cmd 0x06`
+  input change and makes external-mux route requests `0/5/6/7` write the
+  default SRC4382 pair `0x0D=0x08`, `0x08=0x30`.
+- Green tests:
+  `test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh`,
+  `test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation`,
+  `test_v32_audio_path_safety_guard_rejects_missing_tas_refresh_mutation`,
+  `test_v32_src4382_autodetect_no_source_cadence_is_reduced`,
+  `test_v32_cadence_guard_rejects_unthrottled_receiver_select_mutation`,
+  `test_v32_src4382_autodetect_source_present_cadence_is_reduced`,
+  `test_v32_source_present_cadence_guard_rejects_unthrottled_monitor_mutation`,
+  `test_v32_src4382_no_source_scan_does_not_read_non_pcm_status`,
+  `test_v32_src4382_source_present_latches_non_pcm_status`,
+  `test_v32_src4382_writes_0d_only_when_candidate_changes`,
+  `test_v32_src4382_full_scan_detects_worst_position_source_within_500ms`,
+  `test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation`,
+  `test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route`,
+  `test_v32_src4382_manual_digital_input_primes_default_receiver_route`,
+  `test_v32_src4382_fixed_input_goes_quiet_after_route_converges`,
+  `test_v32_src4382_autodetect_mute_unmute_remain_responsive`,
+  `test_v32_src4382_autodetect_standby_wake_remain_responsive`,
+  `test_v32_src4382_autodetect_preset_change_remains_responsive`,
+  `test_v32_src4382_nack_does_not_block_volume_command`,
+  `test_v171_v32_src4382_autodetect_dual_main_chain_soak_stays_responsive`,
+  and `test_v32_lx521_a_b_payloads_reach_each_main_tas3108`.
+
+Hardware confirmation:
+
+- Flash canonical V3.2 MAINs and V1.71 CONTROL.
+- Play a known source on fixed input and Auto Detect with verified speaker
+  wiring and confirm normal low-band output.
+- Specifically retest each fixed digital source used by the operator after
+  first letting Auto Detect scan; none may be silent on rev `0x6E`.
+- Exercise volume, mute, preset A/B, standby/wake, and input changes while
+  Auto Detect is active.
+- Run the Auto Detect/fixed-input soak from the SRC4382 spec or an equivalent
+  operator procedure and confirm no UI stall or unexplained `I`/`R` growth,
+  with concrete PB1/PB2 `I`/`R` before/after snapshots recorded.  Also record
+  whether the Volume-screen A/B badge pulses or shows abnormal LCD refresh.
+- If the result is reported manually rather than through the pytest hardware
+  gate, fill `docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md` following the
+  runbook in `docs/HARDWARE_TEST.md`.  Closure requires a pass verdict with
+  fixed-input audio, Auto Detect audio, user actions, soak duration, and
+  explicit V1.71 CONTROL and two-V3.2-MAIN confirmation, current release
+  SHA256 hashes, PB1/PB2 `I`/`R` before/after snapshots, and a yes/no
+  Volume-screen A/B badge observation all explicitly accounted for.  Any
+  `I`/`R` growth must include a concrete explanation.  Store the report as an artifact such as
+  `artifacts/probes/v171_v32_ledger_gate/bug_src4382_ad_01_manual_evidence.md`
+  and validate it with `scripts/validate_src4382_manual_evidence.py` before
+  referencing that path in the eventual `DONE:` evidence line.
+- Record the manual closure with:
+  `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1 DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1 DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1 DLCP_HW_SRC4382_USER_ACTIONS_OK=1 DLCP_HW_SRC4382_SOAK_OK=1 pytest -q tests/hardware/test_live_state_transitions.py::test_live_src4382_autodetect_acoustic_manual_confirmation --run-hardware`.
+- Current preflight blocker:
+  `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --preflight --bug BUG-SRC4382-AD-01 --report-json artifacts/probes/v171_v32_ledger_gate/bug_src4382_ad_01_preflight_current.json`
+  -> `Preflight FAIL`: no MAIN HID devices are currently visible, and
+  `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK`,
+  `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK`,
+  `DLCP_HW_SRC4382_USER_ACTIONS_OK`, and `DLCP_HW_SRC4382_SOAK_OK` are
+  missing.  The JSON artifact records `BUG-SRC4382-AD-01: not_run`.
+- Current completion audit:
+  `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --audit-completion --report-json artifacts/probes/v171_v32_ledger_gate/completion_audit_current.json`
+  -> `NOT COMPLETE`: `BUG-SRC4382-AD-01` remains `blocked`, artifact readiness
+  is `0 ready, 10 not ready`, and all non-`done` hardware-confirmation rows
+  still block final closure.
 
 ## Tracking Rules
 

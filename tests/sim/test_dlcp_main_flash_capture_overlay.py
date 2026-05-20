@@ -663,6 +663,10 @@ def test_cli_capture_a_warns_when_diag_memread_endpoint_is_missing(
         lambda **kwargs: "A",
     )
     monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._pick_device",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no live unit")),
+    )
+    monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._verify_capture_overlay",
         lambda **kwargs: (_ for _ in ()).throw(
             RuntimeError(
@@ -817,6 +821,10 @@ def test_cli_capture_a_warns_when_eeprom_name_has_not_persisted_yet(
         lambda **kwargs: "A",
     )
     monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._pick_device",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no live unit")),
+    )
+    monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._verify_capture_overlay",
         lambda **kwargs: (_ for _ in ()).throw(
             RuntimeError(
@@ -920,6 +928,10 @@ def test_cli_capture_a_and_b_finalize_switches_b_and_restores_a(
     monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._probe_active_preset_ep0",
         lambda **kwargs: "A",
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._pick_device",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no live unit")),
     )
     monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._switch_active_preset_ep0",

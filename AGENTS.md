@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-05-03
+Last updated: 2026-05-20
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -246,6 +246,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/dlcp_diag.py`
 - `scripts/build_v171_release.py`
 - `scripts/build_v32_release.py`
+- `scripts/validate_src4382_manual_evidence.py`
 - `scripts/dlcp_main_flash.py`
 - `scripts/dlcp_v31_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
@@ -270,7 +271,7 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (~931 tests collected after PF.4 phase 1 deletions and current
+Current suite (~1099 tests collected after PF.4 phase 1 deletions and current
 V1.71/V3.2 bug-ledger additions per `pytest tests --collect-only`).
 
 Pytest markers:
@@ -354,29 +355,39 @@ V3.1 source rewrite:
 - `test_v31_usb_hid_dispatch.py` (filename RAM, cmd 0x20 switch, version staging)
 - `test_v31_diag_memread_usb_safe.py` (canonical + USB-safe diagnostic HID flash/EEPROM memory reads)
 
+V3.2 SRC4382 Auto Detect:
+- `test_v32_src4382_audio_path_regression.py` (SRC route/TAS3108 refresh contract, exact route-pair guard, negative mutation proof for route/TAS refresh breaks)
+- `test_v32_src4382_autodetect_polling.py` (reduced SRC4382 Auto Detect traffic, one receiver-select write per candidate change, worst-position source detection, explicit-input preemption, mute/unmute, standby/wake, preset-select, SRC4382 NACK/no-stall behavior, and V1.71 + two-V3.2 chain liveness)
+
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (latest 2026-05-09):
+Recent verification (latest 2026-05-20):
 
-- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `931 tests collected`
+- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1099 tests collected`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
 - `.venv_ep0/bin/python scripts/build_v171_release.py` -> canonical `DLCP_Control_V1.71.hex` rebuilt with release rev bump `0x18 -> 0x19`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
-- `.venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x52 -> 0x53`
-- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `14 tests collected` (MAIN release identity/A-B filename RAM + physical front-panel A/B confirmation + physical front-panel STBY/WAKE confirmation + six IR/LCD state-transition tests + five V1.71/V3.2 Layer 5 Diagnostics tests)
-- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `14 skipped` without the required live-rig attachments/env (`DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`, `DLCP_HW_IR_LEGACY_STRESS=1`, Flipper serial, camera, `DLCP_HW_LAYER5_AT_DIAG=1`, and/or `DLCP_HW_LAYER5_BUTTON_ACTIONS=1` / `DLCP_HW_LAYER5_IR_ACTIONS=1` after manual Diagnostics-page positioning)
-- `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --collect --phase identity` -> `14 tests collected`, then printed the release identity hardware phase command
+- `.venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x6D -> 0x6E`
+- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `17 tests collected` (MAIN release identity/A-B filename RAM + physical front-panel A/B confirmation + physical front-panel STBY/WAKE confirmation + six IR/LCD state-transition tests + five V1.71/V3.2 Layer 5 Diagnostics tests + SRC4382 Auto Detect acoustic confirmation)
+- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `17 skipped` without the required live-rig attachments/env (`DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`, `DLCP_HW_IR_LEGACY_STRESS=1`, Flipper serial, camera, `DLCP_HW_LAYER5_AT_DIAG=1`, `DLCP_HW_LAYER5_BUTTON_ACTIONS=1` / `DLCP_HW_LAYER5_IR_ACTIONS=1`, and the SRC4382 acoustic confirmation envs)
+- `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --collect --phase all` -> `17 tests collected`, then printed the hardware phase command manifest
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --phase diag-ir-actions` -> dry-run printed separate PB1 and PB2 Diagnostics IR hardware phase commands with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2`
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --bug BUG-DIAG-02` -> dry-run expands the ledger bug to `diag-pb1`, `diag-pb2`, `diag-buttons-pb1`, `diag-buttons-pb2`, `diag-ir-pb1`, and `diag-ir-pb2`
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --list --bug BUG-DIAG-02` -> listed all phase/alias/bug selectors and selected `diag-pb1`, `diag-pb2`, `diag-buttons-pb1`, `diag-buttons-pb2`, `diag-ir-pb1`, `diag-ir-pb2` without probing hardware
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --preflight --phase all` -> preflight failed without connected DLCP MAINs or Flipper (`MAIN HID devices: 0`, `Flipper serial candidates: 0`, 3 camera entries visible)
-- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_ledger_hardware_gate.py` -> `8 passed`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_ledger_hardware_gate.py` -> `86 passed in 5.28s`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_diag_page_dispatches_ir_volume_mute_and_preset tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_layer5_diag_page_dispatches_ir_standby_and_wake` -> `4 passed`
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_layer5_diag_chain.py tests/sim/test_v171_layer5_diag_page.py::test_diag_loop_uses_non_modal_foreground_services tests/sim/test_v171_ir_rc5_pulse_train.py tests/sim/test_v171_ir_deferred_phase_miss.py tests/sim/test_v171_ir_command_matrix.py::test_v171_standby_then_wake_pair_consumed_by_dispatch tests/sim/test_v171_ir_command_matrix.py::test_v171_profile_ir_actions_match_stock_v16b_dispatch_behavior tests/sim/test_v171_v32_standby_reconnect.py tests/sim/test_v171_v32_user_visible_desync_bugs.py tests/sim/test_v32_flasher_sim_backend_ep0.py::test_v32_ep0_reapply_reload_filename_ram_for_restored_preset tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_runtime_eeprom_identity_matches_release_hex_without_seed tests/sim/test_dlcp_main_flash.py::test_build_v32_release_bumps_runtime_eeprom_revision_marker tests/sim/test_v32_release_flash_sim.py::test_v32_release_flash_sim_full_main_post_flash_state` -> `39 passed` before the PB1/PB2 Diagnostics IR split; the split is covered by the targeted 4-case run and full sim gate above/below
 - `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_ir_command_matrix.py tests/sim/test_v171_ir_endpoints.py tests/sim/test_v171_preset_inline.py tests/sim/test_v171_v32_dual_main_preset_sync.py` -> `25 passed`
-- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `911 passed, 6 skipped, 4 warnings`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v32_src4382_autodetect_polling.py tests/sim/test_v32_src4382_audio_path_regression.py` -> `33 passed in 35.53s`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v32_release_flash_sim.py tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_runtime_eeprom_identity_matches_release_hex_without_seed tests/sim/test_dlcp_main_flash.py::test_build_v32_release_bumps_runtime_eeprom_revision_marker` -> `6 passed in 60.69s`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v171_v32_ledger_hardware_gate.py tests/sim/test_v32_src4382_autodetect_polling.py tests/sim/test_v32_src4382_audio_path_regression.py` -> `116 passed in 39.55s`
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_v32_release_flash_sim.py` -> `4 passed in 53.82s`
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> previous dedicated simulator gate `1067 passed, 1 skipped, 7 warnings in 702.71s`; the later full `tests` gate below includes the latest simulator runner-helper tests
+- `.venv_ep0/bin/python -m pytest tests -n 16 -q` -> `1081 passed, 18 skipped, 10 warnings in 393.86s`
+- `cargo test --workspace` -> passed; `snapshot_soak` sub-binary reported `6 passed in 1380.05s`
 
 V3.1-only gate (80 tests, ~8 min):
 
@@ -412,6 +423,7 @@ Top-level docs:
 - `docs/V171_RELEASE.md` (recommended `V1.71` CONTROL deployment workflow + V3.2 MAIN pairing)
 - `docs/IMPL_V171_V32_BUG_LEDGER.md` (active V1.71/V3.2 implementation bug ledger and red-test-first workflow)
 - `docs/V171_V32_LINK_HEALTH_FRESHNESS_SPEC.md` (V1.71/V3.2 per-MAIN link-health freshness, UI markers, USB diagnostics, and phased implementation plan)
+- `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (V1.71/V3.2 Diagnostics counter fault-injection coverage matrix and closure plan)
 - `docs/NO_POP_FIRMWARE_FLASH.md` (V3.2+ pop-free flash-entry path; implemented as `flash_entry_quiet_shutdown`; operator validation runbook in `docs/HARDWARE_TEST.md` §"Re-flash pop monitoring")
 - `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
 - `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)
@@ -422,6 +434,9 @@ Top-level docs:
 - `docs/IMPL_V31_SOURCE_REWRITE_SPEC.md` (V3.1 source rewrite implementation prompt)
 - `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (Layer 5 Diagnostics page / counter protocol; implemented in the committed V1.71 CONTROL + V3.2 MAIN pair)
 - `docs/SRC4382_USB_DIAGNOSTICS_SPEC.md` (draft V3.2+ MAIN USB HID endpoints for SRC4382 selected-signal diagnostics)
+- `docs/SRC4382_AUTODETECT_POLLING_SPEC.md` (V3.2+ MAIN SRC4382 Auto Detect polling spec; current V3.2 candidate reduces Auto Detect traffic while preserving the SRC route/TAS contract, with closure still blocked on acoustic hardware evidence)
+- `docs/IMPL_SRC4382_AUTODETECT_POLLING_SPEC.md` (test-first implementation plan and hardware-blocked ledger for SRC4382 Auto Detect polling on canonical V3.2 MAIN + V1.71 CONTROL)
+- `docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md` (manual hardware evidence template for closing `BUG-SRC4382-AD-01` without running the live pytest hardware gate)
 - `docs/V31_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.1 MAIN size-reduction campaign — **frozen 2026-04-21**)
 - `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (V3.1 size campaign ledger — **frozen 2026-04-21**)
 - `docs/V32_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.2 MAIN size-reduction campaign — **active successor**)

@@ -738,6 +738,41 @@ impl Chain {
             })
     }
 
+    fn main_core_index(&self, unit: u8, method: &str) -> PyResult<usize> {
+        match unit {
+            0 => Ok(self.i_main0),
+            1 => Ok(self.i_main1),
+            other => Err(PyValueError::new_err(format!(
+                "{method}: unit must be 0 or 1; got {other}"
+            ))),
+        }
+    }
+
+    fn src4382_slave_index(&self, unit: u8, method: &str) -> PyResult<usize> {
+        let i_main = self.main_core_index(unit, method)?;
+        self.inner.src4382_slave_for_master(i_main).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "{method}: no SRC4382 slave coupled to MAIN{unit} \
+                 (i_main={i_main})"
+            ))
+        })
+    }
+
+    fn tas3108_slave_index(&self, unit: u8, method: &str) -> PyResult<usize> {
+        let i_main = self.main_core_index(unit, method)?;
+        self.inner
+            .tas3108_couplings
+            .iter()
+            .find(|(master, _)| *master == i_main)
+            .map(|(_, slave)| *slave)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "{method}: no TAS3108 slave coupled to MAIN{unit} \
+                     (i_main={i_main})"
+                ))
+            })
+    }
+
     /// Universal-clock ticks per Tcy for the core at `i_ctl`.
     /// K20 chains (mixed CONTROL+MAIN where K20 is the primary
     /// timekeeper, OR CONTROL-only chains where K20 is the only
@@ -1184,6 +1219,13 @@ impl Chain {
         (lcd.line1(), lcd.line2())
     }
 
+    /// Debug/testing helper: count completed data writes to one HD44780 DDRAM
+    /// byte address on CONTROL's LCD.  This lets UI tests distinguish stable
+    /// visible text from firmware repeatedly rewriting the same cell.
+    fn lcd_ddram_write_count(&self, addr: u8) -> u64 {
+        self.inner.lcd_slaves[self.i_lcd].ddram_write_count_for_test(addr)
+    }
+
     /// True when CONTROL has marked itself as connected to
     /// the chain ring.  Reads bit 1 of physical RAM 0x01F
     /// on the CONTROL core (the `control_flags` byte the
@@ -1402,6 +1444,103 @@ impl Chain {
         Ok(())
     }
 
+    /// Seed one MAIN-coupled SRC4382 register without going through
+    /// I²C.  This is a simulator-only status seeding hook used by
+    /// firmware-path tests; the running firmware still performs all
+    /// reads/writes through its MSSP code.
+    fn poke_main_src4382_reg(&mut self, unit: u8, subaddr: u8, value: u8) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "poke_main_src4382_reg")?;
+        self.inner
+            .poke_main_src4382_reg(i_main, subaddr, value)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "poke_main_src4382_reg: no SRC4382 slave coupled to MAIN{unit}"
+                ))
+            })
+    }
+
+    /// Read one MAIN-coupled SRC4382 register.
+    fn read_main_src4382_reg(&self, unit: u8, subaddr: u8) -> PyResult<u8> {
+        let i_main = self.main_core_index(unit, "read_main_src4382_reg")?;
+        self.inner
+            .read_main_src4382_reg(i_main, subaddr)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "read_main_src4382_reg: no SRC4382 slave coupled to MAIN{unit}"
+                ))
+            })
+    }
+
+    /// Clear MAIN-coupled SRC4382 traffic counters.
+    fn reset_main_src4382_stats(&mut self, unit: u8) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "reset_main_src4382_stats")?;
+        self.inner.reset_main_src4382_stats(i_main).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "reset_main_src4382_stats: no SRC4382 slave coupled to MAIN{unit}"
+            ))
+        })
+    }
+
+    /// Return a raw tuple consumed by the Python facade and converted
+    /// to a named dict there.
+    #[allow(clippy::type_complexity)]
+    fn read_main_src4382_stats(
+        &self,
+        unit: u8,
+    ) -> PyResult<(u64, u64, Vec<u64>, Vec<u64>, u64, u64, Vec<u64>, Vec<u64>)> {
+        let slave_idx = self.src4382_slave_index(unit, "read_main_src4382_stats")?;
+        let stats = self.inner.src4382_slaves[slave_idx].stats();
+        Ok((
+            stats.bytes_acked,
+            stats.bytes_nacked,
+            stats.tx_bytes_by_subaddr.to_vec(),
+            stats.read_bytes_by_subaddr.to_vec(),
+            stats.write_transactions,
+            stats.read_transactions,
+            stats.writes_by_subaddr.to_vec(),
+            stats.reads_by_subaddr.to_vec(),
+        ))
+    }
+
+    /// Return the first data byte of every completed SRC4382 write
+    /// transaction that started at `subaddr`.  This is used for route
+    /// contract tests where later idle polling may overwrite the final
+    /// register value but the important invariant is that the expected
+    /// route write occurred.
+    fn read_main_src4382_write_values(&self, unit: u8, subaddr: u8) -> PyResult<Vec<u8>> {
+        let slave_idx = self.src4382_slave_index(unit, "read_main_src4382_write_values")?;
+        Ok(self.inner.src4382_slaves[slave_idx]
+            .write_log()
+            .iter()
+            .filter(|tx| tx.start_subaddr == subaddr)
+            .filter_map(|tx| tx.payload.first().copied())
+            .collect())
+    }
+
+    /// Inject address-phase NACKs into one MAIN-coupled SRC4382.
+    fn inject_main_src4382_address_nack(&mut self, unit: u8, count: u32) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "inject_main_src4382_address_nack")?;
+        self.inner
+            .inject_main_src4382_address_nack(i_main, count)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "inject_main_src4382_address_nack: no SRC4382 slave coupled to MAIN{unit}"
+                ))
+            })
+    }
+
+    /// Inject post-address data-byte NACKs into one MAIN-coupled SRC4382.
+    fn inject_main_src4382_data_nack(&mut self, unit: u8, count: u32) -> PyResult<()> {
+        let i_main = self.main_core_index(unit, "inject_main_src4382_data_nack")?;
+        self.inner
+            .inject_main_src4382_data_nack(i_main, count)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "inject_main_src4382_data_nack: no SRC4382 slave coupled to MAIN{unit}"
+                ))
+            })
+    }
+
     /// Execute one 64-byte DLCP app-mode HID feature report through the
     /// V3.2 firmware's EP1 OUT/IN service path.
     ///
@@ -1418,16 +1557,24 @@ impl Chain {
     /// EP1 IN payload and `dispatch_hits` counts entries at the actual
     /// V3.2 `hid_command_dispatch` PC.  Tests use the hit count to guard
     /// against falling back to Python-side command emulation.
-    #[pyo3(signature = (unit, report, max_steps=20_000))]
+    #[pyo3(signature = (
+        unit,
+        report,
+        max_steps=20_000,
+        main_usb_service_pc=None,
+        hid_command_dispatch_pc=None,
+    ))]
     fn firmware_hid_report(
         &mut self,
         unit: u8,
         report: Vec<u8>,
         max_steps: usize,
+        main_usb_service_pc: Option<u32>,
+        hid_command_dispatch_pc: Option<u32>,
     ) -> PyResult<(Vec<u8>, usize)> {
         const HID_REPORT_LEN: usize = 64;
-        const MAIN_USB_SERVICE_3A26_PC: u32 = 0x356A;
-        const HID_COMMAND_DISPATCH_PC: u32 = 0x10AC;
+        const DEFAULT_MAIN_USB_SERVICE_3A26_PC: u32 = 0x3436;
+        const DEFAULT_HID_COMMAND_DISPATCH_PC: u32 = 0x10AC;
         const RETURN_SENTINEL_PC: u32 = 0x001F_FFFE;
 
         const RAM_USB_STATE: u16 = 0x00CD;
@@ -1458,6 +1605,9 @@ impl Chain {
                 "firmware_hid_report: max_steps must be > 0",
             ));
         }
+        let main_usb_service_pc = main_usb_service_pc.unwrap_or(DEFAULT_MAIN_USB_SERVICE_3A26_PC);
+        let hid_command_dispatch_pc =
+            hid_command_dispatch_pc.unwrap_or(DEFAULT_HID_COMMAND_DISPATCH_PC);
 
         let i_main = match unit {
             0 => self.i_main0,
@@ -1551,7 +1701,7 @@ impl Chain {
         let _ = run_subroutine(
             &mut self.inner,
             i_main,
-            MAIN_USB_SERVICE_3A26_PC,
+            main_usb_service_pc,
             RETURN_SENTINEL_PC,
             None,
             max_steps,
@@ -1561,9 +1711,9 @@ impl Chain {
         let dispatch_hits = run_subroutine(
             &mut self.inner,
             i_main,
-            MAIN_USB_SERVICE_3A26_PC,
+            main_usb_service_pc,
             RETURN_SENTINEL_PC,
-            Some(HID_COMMAND_DISPATCH_PC),
+            Some(hid_command_dispatch_pc),
             max_steps,
         )?;
 
@@ -1901,28 +2051,26 @@ impl Chain {
     /// preset-broadcast cycle to ensure both audio paths
     /// converge to identical biquad/coefficient state.
     fn read_main_dsp_reg(&self, unit: u8, subaddr: u8) -> PyResult<u8> {
-        let i_main = match unit {
-            0 => self.i_main0,
-            1 => self.i_main1,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "read_main_dsp_reg: unit must be 0 or 1; got {other}"
-                )));
-            }
-        };
-        let i_dsp = self
-            .inner
-            .tas3108_couplings
-            .iter()
-            .find(|(master, _)| *master == i_main)
-            .map(|(_, slave)| *slave)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "no TAS3108 slave coupled to MAIN{unit} (i_main={i_main}) -- \
-                     chain was not built with a DSP for this MAIN"
-                ))
-            })?;
+        let i_dsp = self.tas3108_slave_index(unit, "read_main_dsp_reg")?;
         Ok(self.inner.tas3108_slaves[i_dsp].read_subaddr(subaddr))
+    }
+
+    /// Return the most recent completed TAS3108 write payload that
+    /// started at `subaddr` for a specific MAIN's DSP slave.  This
+    /// exposes logical preset-entry writes (e.g. 20-byte biquad
+    /// payloads) that the byte register-file snapshot cannot preserve.
+    fn read_main_dsp_write_payload(&self, unit: u8, subaddr: u8) -> PyResult<Option<Vec<u8>>> {
+        let i_dsp = self.tas3108_slave_index(unit, "read_main_dsp_write_payload")?;
+        Ok(self.inner.tas3108_slaves[i_dsp]
+            .last_write_payload(subaddr)
+            .map(|payload| payload.to_vec()))
+    }
+
+    /// Clear the completed TAS3108 write-log for one MAIN's DSP slave.
+    fn reset_main_dsp_write_log(&mut self, unit: u8) -> PyResult<()> {
+        let i_dsp = self.tas3108_slave_index(unit, "reset_main_dsp_write_log")?;
+        self.inner.tas3108_slaves[i_dsp].reset_write_log();
+        Ok(())
     }
 
     /// Program the address-NACK fault counter on the TAS3108

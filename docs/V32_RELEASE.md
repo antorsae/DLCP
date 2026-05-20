@@ -24,12 +24,25 @@ Non-canonical local experiment images (e.g. `DLCP_Firmware_V3.2.lst`,
 `DLCP_Firmware_V3.2.cod`) are gpasm byproducts and not part of this
 release workflow.
 
-## Current Validation Status (2026-05-09)
+## Current Validation Status (2026-05-20)
 
 The current canonical release identities are:
 
-- MAIN: `V3.2 / rev 0x55`
-- CONTROL: `V1.71 / rev 0x1C`
+- MAIN: `V3.2 / rev 0x6E`
+- CONTROL: `V1.71 / rev 0x2C`
+
+Current local non-hardware verification:
+
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` ->
+  previous dedicated simulator gate `1067 passed, 1 skipped, 7 warnings in 702.71s`
+- `.venv_ep0/bin/python -m pytest tests -n 16 -q` ->
+  `1077 passed, 18 skipped, 7 warnings in 427.89s`
+
+The rev `0x6E` MAIN includes the SRC4382 Auto Detect cadence candidate,
+source-loss debounce, and fixed-digital SRC route priming from
+`docs/SRC4382_AUTODETECT_POLLING_SPEC.md`.  It is ready for targeted operator
+hardware retest, but the active ledger still requires structured live-rig
+evidence before final closure.
 
 The historical 2026-04-22 hardware issue for this pair was originally seen on:
 

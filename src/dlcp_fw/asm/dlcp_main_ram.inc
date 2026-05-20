@@ -368,7 +368,8 @@ diag_reset_sw               EQU  0x2F0    ; X — software-reset fired (panic / 
 main_rx_frame_gap_timeout   EQU  0x2F1    ; 0x00 = idle/fresh, counts up; wrap -> reset
 
 ; 0x2F2 reserved by V3.2 MSSP timeout recovery latch (i2c_recover_flags).
-; 0x2F3..0x2FF reserved (Tier-2 chain-link health counters + future)
+; 0x2F3 reserved by V3.2 SRC4382 Auto Detect source-loss debounce.
+; 0x2F4..0x2FF reserved (Tier-2 chain-link health counters + future)
 
 ram_0x12C                   EQU  0x12C
 ram_0x12D                   EQU  0x12D

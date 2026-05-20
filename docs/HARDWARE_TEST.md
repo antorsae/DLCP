@@ -1488,3 +1488,104 @@ the logical gate closed with hardware latches still enabled.
   operator walk-through.  Tracked gap; adding a rust-simulator behavioral
   test that drives button pins in the WAITING state is an open
   workstream.
+
+## SRC4382 Auto Detect Acoustic Gate
+
+This closes the hardware side of `BUG-SRC4382-AD-01` after the simulator has
+proved the SRC4382 route/TAS3108 contract and the reduced Auto Detect polling
+cadence.  The live check is intentionally acoustic because the previous bad
+audio observation was caused by speaker misconnection; the gate now verifies
+the corrected speaker path, the rev `0x6E` fixed-digital route-priming fix,
+and future route/TAS regressions.
+
+### Prerequisites
+
+- CONTROL flashed with canonical V1.71.
+- both MAINs flashed with canonical V3.2.
+- known audio source available on at least one fixed digital input and through
+  Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and
+  `Optical` individually.
+- operator has verified the speaker wiring and has enough low-band content or
+  measurement to catch route/TAS audio-path regressions.
+
+### Procedure
+
+1. Start on a fixed digital input with a known preset and volume.  Confirm
+   playback has normal low-band output.
+2. Switch to Auto Detect and confirm the same source is selected and playback
+   still has normal low-band output.
+3. Leave Auto Detect and select each available fixed digital source.  None may
+   be silent, and each must retain normal low-band output.
+4. While playing, exercise volume, mute, preset A/B, standby/wake, and explicit
+   input selection.  CONTROL must stay responsive.  Watch the Volume-screen
+   A/B badge as well; current simulator coverage proves steady idle should not
+   rewrite that LCD cell repeatedly, so any visible pulsing should be recorded
+   as hardware/UI evidence rather than attributed to SRC4382 traffic.
+5. Run the SRC4382 soak from `docs/SRC4382_AUTODETECT_POLLING_SPEC.md` or an
+   equivalent operator soak: at least 30 minutes Auto Detect no-source and at
+   least 1 hour fixed-input playback.  There must be no UI stall and no
+   unexplained `I`/`R` growth.  Record PB1/PB2 `I`/`R` diagnostics before and
+   after the soak so any growth can be attributed instead of inferred.
+6. Record the manual evidence using
+   `docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md`, then record the manual
+   confirmation.
+
+### Manual evidence checklist
+
+When reporting results without running the pytest hardware gate, fill the
+tracked template at `docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md` so
+`BUG-SRC4382-AD-01` can be closed from a concrete operator record.  Save the
+completed report as an artifact, for example:
+
+```text
+artifacts/probes/v171_v32_ledger_gate/bug_src4382_ad_01_manual_evidence.md
+```
+
+The ledger `DONE:` line should reference that artifact path and a concrete
+`PASS` verdict; weak free-form notes are not enough for closure.
+
+The minimum closure evidence is a concrete dated run record with a date-like
+and time-like timestamp, source/input, preset, volume, and low-band check
+material filled in, a `pass` verdict with all required yes/no fields passing,
+soak durations meeting the stated thresholds, current release SHA256 hashes,
+concrete PB1/PB2 `I`/`R` before/after snapshots, and no unexplained `I`/`R`
+growth.  Any `I`/`R` counter growth must include a concrete explanation.  Also record whether the
+Volume-screen A/B badge pulsed or otherwise looked like abnormal LCD refresh.
+`n/a` is acceptable only for optional captures.
+Validate the completed artifact before closing the ledger item:
+
+```bash
+.venv_ep0/bin/python scripts/validate_src4382_manual_evidence.py \
+  artifacts/probes/v171_v32_ledger_gate/bug_src4382_ad_01_manual_evidence.md
+```
+
+Then confirm the artifact summary marks `BUG-SRC4382-AD-01` ready for a ledger
+update.  A valid manual report is accepted even when the live pytest closure
+report is absent; an invalid report is printed as `manual_evidence_failed`
+with the validator errors listed inline:
+
+```bash
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --summarize-artifacts --require-all-ready \
+  --report-json artifacts/probes/v171_v32_ledger_gate/artifact_summary_current.json
+```
+
+### Pytest recording command
+
+```bash
+DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1 \
+DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1 \
+DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1 \
+DLCP_HW_SRC4382_USER_ACTIONS_OK=1 \
+DLCP_HW_SRC4382_SOAK_OK=1 \
+.venv_ep0/bin/python -m pytest -q \
+  tests/hardware/test_live_state_transitions.py::test_live_src4382_autodetect_acoustic_manual_confirmation \
+  --run-hardware
+```
+
+Equivalent ledger-runner selector:
+
+```bash
+.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py \
+  --execute --bug BUG-SRC4382-AD-01
+```

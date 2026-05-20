@@ -19,6 +19,7 @@ import pytest
 from dlcp_fw.paths import PROJECT_ROOT, V171_CONTROL_HEX, V32_MAIN_ASM, V32_MAIN_HEX
 
 try:
+    from dlcp_fw.sim import dlcp_sim_native as native_facade
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
 
     _RUST_OK = True
@@ -61,7 +62,7 @@ _DIAG_MEMREAD_REGION_EEPROM = 0x01
 
 
 def test_v32_firmware_hid_entrypoint_matches_listing() -> None:
-    """The rust firmware-HID facade must jump to the current V3.2 USB service."""
+    """The firmware-HID facade must jump to the current V3.2 USB service."""
     lst_text = V32_MAIN_ASM.with_suffix(".lst").read_text(encoding="utf-8")
     match = re.search(
         r"^main_usb_service_3a26\s+ADDRESS\s+([0-9A-Fa-f]{8})\b",
@@ -71,10 +72,16 @@ def test_v32_firmware_hid_entrypoint_matches_listing() -> None:
     assert match, "V3.2 listing has no main_usb_service_3a26 symbol"
     service_pc = int(match.group(1), 16)
 
-    facade_src = (PROJECT_ROOT / "crates/dlcp-sim-py/src/lib.rs").read_text(
+    py_facade_src = (PROJECT_ROOT / "src/dlcp_fw/sim/dlcp_sim_native.py").read_text(
         encoding="utf-8"
     )
-    assert f"MAIN_USB_SERVICE_3A26_PC: u32 = 0x{service_pc:04X}" in facade_src
+    assert "_v32_main_symbol(\"main_usb_service_3a26\"" in py_facade_src
+    assert native_facade._v32_main_symbol("main_usb_service_3a26", 0) == service_pc
+
+    rust_facade_src = (PROJECT_ROOT / "crates/dlcp-sim-py/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "main_usb_service_pc=None" in rust_facade_src
 
 
 def _require_rust() -> None:

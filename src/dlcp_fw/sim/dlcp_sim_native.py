@@ -42,6 +42,7 @@ Module-import contract:
 
 from __future__ import annotations
 
+from functools import lru_cache as _lru_cache
 # The native extension is built by `cargo build --release
 # -p dlcp-sim-py` and symlinked into `src/` by `build.sh`.
 # We keep the native module behind a private alias so the
@@ -82,6 +83,26 @@ import dlcp_sim_native as _native
 #: gating during the migration window
 #: (e.g. tests that need a specific bindings version).
 __version__: str = _native.__version__
+
+
+@_lru_cache(maxsize=None)
+def _v32_main_symbol(name: str, fallback: int) -> int:
+    """Resolve a canonical V3.2 MAIN symbol from the gpasm listing.
+
+    The PyO3 helper executes firmware subroutines by PC.  Those PCs move when
+    V3.2 source changes, so keep the native fallback for old binaries but feed
+    current labels from the release listing whenever available.
+    """
+    try:
+        from dlcp_fw.paths import V32_MAIN_HEX
+        from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
+
+        symbols = load_gpasm_symbols_for_hex(V32_MAIN_HEX)
+        if symbols and name in symbols:
+            return int(symbols[name])
+    except Exception:
+        pass
+    return int(fallback)
 
 
 class Chain:
@@ -374,6 +395,10 @@ class Chain:
         """
         return tuple(self._inner.lcd_lines())  # type: ignore[return-value]
 
+    def lcd_ddram_write_count(self, addr: int) -> int:
+        """Count completed data writes to one raw HD44780 DDRAM address."""
+        return int(self._inner.lcd_ddram_write_count(int(addr) & 0x7F))
+
     def is_connected(self) -> bool:
         """True when CONTROL has marked itself as connected.
 
@@ -539,6 +564,67 @@ class Chain:
             int(unit), int(addr) & 0xFFF, int(value) & 0xFF
         )
 
+    def poke_main_src4382_reg(self, unit: int, subaddr: int, value: int) -> None:
+        """Seed one MAIN-coupled SRC4382 register.
+
+        This bypasses I2C only for simulator setup.  Firmware still
+        exercises its real MSSP read/write path when tests step time.
+        """
+        self._inner.poke_main_src4382_reg(
+            int(unit), int(subaddr) & 0xFF, int(value) & 0xFF
+        )
+
+    def read_main_src4382_reg(self, unit: int, subaddr: int) -> int:
+        """Read one MAIN-coupled SRC4382 register from the sim model."""
+        return int(self._inner.read_main_src4382_reg(
+            int(unit), int(subaddr) & 0xFF
+        ))
+
+    def reset_main_src4382_stats(self, unit: int) -> None:
+        """Clear one MAIN-coupled SRC4382 traffic counters."""
+        self._inner.reset_main_src4382_stats(int(unit))
+
+    def read_main_src4382_stats(self, unit: int) -> dict[str, object]:
+        """Return one MAIN-coupled SRC4382 traffic snapshot."""
+        (
+            bytes_acked,
+            bytes_nacked,
+            tx_bytes_by_subaddr,
+            read_bytes_by_subaddr,
+            write_transactions,
+            read_transactions,
+            writes_by_subaddr,
+            reads_by_subaddr,
+        ) = self._inner.read_main_src4382_stats(int(unit))
+        return {
+            "bytes_acked": int(bytes_acked),
+            "bytes_nacked": int(bytes_nacked),
+            "tx_bytes_by_subaddr": list(tx_bytes_by_subaddr),
+            "read_bytes_by_subaddr": list(read_bytes_by_subaddr),
+            "write_transactions": int(write_transactions),
+            "read_transactions": int(read_transactions),
+            "writes_by_subaddr": list(writes_by_subaddr),
+            "reads_by_subaddr": list(reads_by_subaddr),
+        }
+
+    def read_main_src4382_write_values(self, unit: int, subaddr: int) -> list[int]:
+        """Return the first data byte for each completed SRC4382 write
+        transaction that started at ``subaddr``."""
+        return [
+            int(v) & 0xFF
+            for v in self._inner.read_main_src4382_write_values(
+                int(unit), int(subaddr) & 0xFF
+            )
+        ]
+
+    def inject_main_src4382_address_nack(self, unit: int, count: int) -> None:
+        """Inject address-phase NACKs into one MAIN-coupled SRC4382."""
+        self._inner.inject_main_src4382_address_nack(int(unit), int(count))
+
+    def inject_main_src4382_data_nack(self, unit: int, count: int) -> None:
+        """Inject post-address data-byte NACKs into one MAIN-coupled SRC4382."""
+        self._inner.inject_main_src4382_data_nack(int(unit), int(count))
+
     def firmware_hid_report(
         self,
         unit: int,
@@ -556,10 +642,14 @@ class Chain:
         entries into ``hid_command_dispatch``.
         """
         report = [int(b) & 0xFF for b in payload]
+        main_usb_service_pc = _v32_main_symbol("main_usb_service_3a26", 0x3436)
+        hid_command_dispatch_pc = _v32_main_symbol("hid_command_dispatch", 0x10AC)
         response, dispatch_hits = self._inner.firmware_hid_report(
             int(unit),
             report,
             int(max_steps),
+            main_usb_service_pc,
+            hid_command_dispatch_pc,
         )
         return bytes(response), int(dispatch_hits)
 
@@ -716,6 +806,26 @@ class Chain:
         return int(
             self._inner.read_main_dsp_reg(int(unit), int(subaddr) & 0xFF)
         ) & 0xFF
+
+    def read_main_dsp_write_payload(self, unit: int, subaddr: int) -> bytes | None:
+        """Read the most recent completed TAS3108 write payload that
+        started at ``subaddr`` for one MAIN's DSP slave.
+
+        This preserves full preset-entry payloads such as 20-byte
+        biquad writes.  The byte register-file snapshot exposed by
+        :meth:`read_main_dsp_reg` is intentionally lossy for those
+        entries because later bytes land at subsequent subaddresses.
+        """
+        payload = self._inner.read_main_dsp_write_payload(
+            int(unit), int(subaddr) & 0xFF
+        )
+        if payload is None:
+            return None
+        return bytes(payload)
+
+    def reset_main_dsp_write_log(self, unit: int) -> None:
+        """Clear one MAIN-coupled TAS3108 completed-write log."""
+        self._inner.reset_main_dsp_write_log(int(unit))
 
     def set_i2c_fault(
         self,

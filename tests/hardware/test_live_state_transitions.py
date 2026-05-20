@@ -674,6 +674,41 @@ def test_live_v32_release_flash_preserves_expected_user_settings() -> None:
 
 
 @pytest.mark.hardware
+def test_live_src4382_autodetect_acoustic_manual_confirmation() -> None:
+    """Opt-in hardware closure for BUG-SRC4382-AD-01.
+
+    The simulator can prove that the route/TAS3108 write contract still fires
+    and that the stock-equivalent Auto Detect path remains responsive.  It
+    cannot prove that the acoustic result is not the thin/no-bass failure
+    observed on the rig, so this gate records explicit operator confirmation
+    after playing the flashed firmware.
+    """
+    if os.environ.get("DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM") != "1":
+        pytest.skip(
+            "set DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1 after checking fixed-input "
+            "and Auto Detect playback on V3.2/V1.71 hardware"
+        )
+
+    required = {
+        "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK": "fixed-input playback has normal low-band output",
+        "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK": "Auto Detect playback has normal low-band output",
+        "DLCP_HW_SRC4382_USER_ACTIONS_OK": "volume/mute/preset/standby/wake/input stayed responsive",
+        "DLCP_HW_SRC4382_SOAK_OK": "Auto Detect/fixed-input soak showed no UI stall or unexplained I/R growth",
+    }
+    missing = [f"{name}=1 ({reason})" for name, reason in required.items() if os.environ.get(name) != "1"]
+    if missing:
+        pytest.fail("set all manual SRC4382 acoustic confirmations:\n" + "\n".join(missing))
+
+    states = hw._read_pair_state(vid=hw.DEFAULT_VID, pid=hw.DEFAULT_PID)
+    left, right = hw._assert_left_right_roles(states)
+    assert left.active_preset in {"A", "B"}
+    assert right.active_preset in {"A", "B"}
+
+    settings = _running_main_user_settings()
+    assert settings, "no running MAIN app devices with readable volume/input state"
+
+
+@pytest.mark.hardware
 def test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram(
     tmp_path: Path,
 ) -> None:

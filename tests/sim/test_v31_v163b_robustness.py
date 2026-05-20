@@ -238,7 +238,7 @@ def test_v32_volume_dsp_write_reasserts_bank0_after_i2c_helper() -> None:
     )[0]
 
     assert re.search(
-        r"rcall\s+i2c_tas3108_coeff_write\s*\n"
+        r"(?:rcall\s+i2c_tas3108_coeff_write|call\s+i2c_tas3108_coeff_write,\s*0x0)\s*\n"
         r"\s*movlb\s+0x0+\s*[^\n]*\n"
         r"\s*btfsc\s+dsp_fault_flags,\s*2,\s*BANKED",
         body,

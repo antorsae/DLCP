@@ -1780,8 +1780,8 @@ mod tests {
             "MULWF", "NEGF", "RLCF", "RLNCF", "RRCF", "RRNCF", "SETF", "SUBFWB", "SUBWF", "SUBWFB",
             "SWAPF", "TSTFSZ", "XORWF", // Bit-oriented (5)
             "BCF", "BSF", "BTFSC", "BTFSS", "BTG", // Literal (10)
-            "ADDLW", "ANDLW", "IORLW", "LFSR", "MOVLB", "MOVLW", "MULLW", "RETLW", "SUBLW", "XORLW",
-            // Control (21)
+            "ADDLW", "ANDLW", "IORLW", "LFSR", "MOVLB", "MOVLW", "MULLW", "RETLW", "SUBLW",
+            "XORLW", // Control (21)
             "BC", "BN", "BNC", "BNN", "BNOV", "BNZ", "BOV", "BRA", "BZ", "CALL", "CLRWDT", "DAW",
             "GOTO", "NOP", "POP", "PUSH", "RCALL", "RESET", "RETFIE", "RETURN", "SLEEP",
             // Table (8)

@@ -78,6 +78,13 @@ _SETUP_PROFILE_RAM = 0x0B8
 _USER_VOLUME_MINUS_30 = (0xFF, 0xFF, 0xFF, 0xE2)
 _USER_INPUT_COAX_2 = 0x03
 _USER_SETUP_PROFILE_SENTINEL = 0x03
+_PRESET_JOB_STATE = 0x2DE
+_PRESET_JOB_IDLE = 0
+_CONTROL_FLAGS_ADDR = 0x01F
+_CONTROL_PRESET_BIT = 6
+_SWITCH_POLL_CHUNK_TICKS = 50_000_000
+_SWITCH_POLL_CHUNKS = 60
+_CONTROL_PRESET_BROADCAST_SETTLE_CHUNKS = 8
 
 
 def _require_rust() -> None:
@@ -96,6 +103,29 @@ def _require_capture_files() -> None:
             pytest.skip(f"missing capture fixture: {path}")
     if not V171_CONTROL_HEX.is_file() or not V32_MAIN_HEX.is_file():
         pytest.skip("missing V1.71 / V3.2 firmware artifacts")
+
+
+def _count_control_routed_frames(rx_bytes: list[int]) -> int:
+    return sum(
+        1
+        for i in range(0, max(0, len(rx_bytes) - 1))
+        if rx_bytes[i] in (0xB0, 0xB1)
+    )
+
+
+def _wait_for_main1_control_traffic(chain) -> tuple[list[int], int]:  # type: ignore[no-untyped-def]
+    rx_bytes = list(chain.main1_rx_record_since_last_capture())
+    control_frames = _count_control_routed_frames(rx_bytes)
+    if control_frames:
+        return rx_bytes, control_frames
+
+    for _ in range(_CONTROL_PRESET_BROADCAST_SETTLE_CHUNKS):
+        chain.step_ticks(_SWITCH_POLL_CHUNK_TICKS)
+        rx_bytes.extend(chain.main1_rx_record_since_last_capture())
+        control_frames = _count_control_routed_frames(rx_bytes)
+        if control_frames:
+            break
+    return rx_bytes, control_frames
 
 
 def _load_overlays():
@@ -261,6 +291,95 @@ def _build_overlaid_chain():  # type: ignore[no-untyped-def]
     return chain, overlay_a, overlay_b, identity
 
 
+def _decode_preset_table_payloads(table: bytes) -> dict[int, bytes]:
+    """Decode the logical TAS3108 writes stored in one V3.2 preset table.
+
+    Each regular entry is 24 bytes.  Byte 1 is the TAS3108 subaddress,
+    byte 2 is the data length, and bytes 4.. carry the payload.  V3.2
+    applies 96 regular entries from logical 0x5600..0x5EFF plus one
+    final logical entry at 0x5F00.
+    """
+    assert len(table) == _PRESET_TABLE_SIZE
+    payloads: dict[int, bytes] = {}
+    for off in [*range(0, 0x900, 0x18), 0x900]:
+        entry = table[off : off + 0x18]
+        subaddr = entry[1]
+        length = entry[2]
+        assert 0 < length < 0x19, (
+            f"invalid TAS3108 payload length at table offset "
+            f"0x{off:03X}: 0x{length:02X}"
+        )
+        assert subaddr not in payloads, (
+            f"duplicate TAS3108 subaddr 0x{subaddr:02X} in preset table"
+        )
+        payloads[subaddr] = bytes(entry[4 : 4 + length])
+    return payloads
+
+
+def _assert_tas_payloads_match_overlay(chain, unit: int, overlay, label: str) -> None:  # type: ignore[no-untyped-def]
+    expected = _decode_preset_table_payloads(bytes(overlay.table))
+    missing: list[int] = []
+    mismatches: list[tuple[int, bytes | None, bytes]] = []
+    for subaddr, want in expected.items():
+        got = chain.read_main_dsp_write_payload(unit, subaddr)
+        if got is None:
+            missing.append(subaddr)
+        elif got != want:
+            mismatches.append((subaddr, got, want))
+
+    assert not missing, (
+        f"{label} MAIN{unit} never wrote {len(missing)} expected "
+        f"TAS3108 preset payload(s): "
+        f"{[f'0x{sub:02X}' for sub in missing[:16]]}"
+    )
+    assert not mismatches, (
+        f"{label} MAIN{unit} TAS3108 payload mismatch in "
+        f"{len(mismatches)} subaddr(s); first mismatches: "
+        f"{[(f'0x{sub:02X}', got.hex() if got is not None else None, want.hex()) for sub, got, want in mismatches[:6]]}"
+    )
+
+
+def _set_control_preset_bit(chain, target: int) -> None:  # type: ignore[no-untyped-def]
+    assert target in (0, 1)
+    flags = chain.read_reg(_CONTROL_FLAGS_ADDR)
+    mask = 1 << _CONTROL_PRESET_BIT
+    if target:
+        flags |= mask
+    else:
+        flags &= ~mask
+    chain.write_reg(_CONTROL_FLAGS_ADDR, flags & 0xFF)
+
+
+def _wait_for_preset_convergence(chain, target: int) -> None:  # type: ignore[no-untyped-def]
+    assert target in (0, 1)
+    want_bit = _ACTIVE_PRESET_MASK if target else 0
+    for _ in range(_SWITCH_POLL_CHUNKS):
+        chain.step_ticks(_SWITCH_POLL_CHUNK_TICKS)
+        if all(
+            (chain.read_main_reg(unit, _ACTIVE_FLAGS_ADDR) & _ACTIVE_PRESET_MASK)
+            == want_bit
+            and chain.read_main_reg(unit, _PRESET_JOB_STATE) == _PRESET_JOB_IDLE
+            for unit in (0, 1)
+        ):
+            return
+    state = [
+        (
+            unit,
+            chain.read_main_reg(unit, _ACTIVE_FLAGS_ADDR),
+            chain.read_main_reg(unit, _PRESET_JOB_STATE),
+        )
+        for unit in (0, 1)
+    ]
+    raise AssertionError(
+        f"preset target {target} did not converge; MAIN states={state!r}"
+    )
+
+
+def _switch_preset_via_control(chain, target: int) -> None:  # type: ignore[no-untyped-def]
+    _set_control_preset_bit(chain, target)
+    _wait_for_preset_convergence(chain, target)
+
+
 # ---------------------------------------------------------------------------
 # Slim integration: argv plumbing
 # ---------------------------------------------------------------------------
@@ -298,13 +417,12 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
        * Preset B flash table at 0x4C00..0x55FF matches the capture.
        * Preset A/B EEPROM filename slots match the capture sidecars.
        * Route RAM is uniform R (all 6 channels = 0x01).
-       * ≥1 cmd 0x20 preset broadcast hit MAIN1 SOMEWHERE during
-         the run (sanity precondition: V1.71 CONTROL is alive).
-         This does NOT prove the broadcast overlapped a per-preset
-         xact-gate window -- per-window capture proved infeasible
-         (see task #150 investigation).  The DETERMINISTIC proof
-         that the gate's drop path holds when a broadcast arrives
-         in a gate window lives in Option 2's sibling test.
+       * ≥1 CONTROL-routed frame hit MAIN1 somewhere during the run
+         or a bounded post-run settle (sanity precondition: V1.71
+         CONTROL is alive).  This does NOT prove preset-broadcast
+         xact-gate behavior; the DETERMINISTIC proof that the gate's
+         drop path holds when a cmd 0x20 broadcast arrives in a gate
+         window lives in Option 2's sibling test.
        * Flasher's identity probe printed the seeded V3.2 identity
          to stdout (proves ``_probe_device_eeprom_version`` actually
          read the seeded bytes vs falling back to a probe-failure
@@ -318,52 +436,33 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
 
     from dlcp_fw.flash.dlcp_v32_release_flash import main
 
-    # Mark MAIN1's RX capture so we can assert CONTROL was alive +
-    # broadcasting during the run as a sanity precondition.  This
-    # is "CONTROL is transmitting" not "broadcast hit the gate
-    # window"; the latter is unverifiable in this test (gate window
-    # ~ 125 ms sim time vs CONTROL preset-broadcast cadence ~ 6 s,
-    # see task #150 investigation).  Gate behaviour itself is
-    # proven by Option 2's deterministic injection test below.
+    # Mark MAIN1's RX capture so we can assert CONTROL was alive
+    # during the run as a sanity precondition.  This is "CONTROL is
+    # transmitting" not "preset broadcast hit the gate window"; the
+    # latter is proven by Option 2's deterministic injection test below.
     #
     # Coverage scope (codex LOW vs a2bb70f, deferred-then-investigated
-    # in task #150):  the assertion proves ≥1 cmd 0x20 broadcast hit
-    # MAIN1 SOMEWHERE during the run, not specifically during the
-    # per-preset filename xact-gate window (cmd 0x03 WRITE ->
-    # force_persist completion).  Tighter per-window capture proved
-    # impractical: each gate window is ~ 125 ms sim time (cmd 0x03
-    # WRITE+READ + force_persist polling), but V1.71 CONTROL's idle
-    # frame cadence is ~ 1 s and full_sync_burst step 6 (preset
-    # broadcast) is ~ 6 s -- per-window capture is reliably empty.
-    # The DETERMINISTIC proof that the gate's drop path holds when a
-    # broadcast DOES arrive in a gate window is the sibling
+    # in task #150): this wider assertion proves CONTROL traffic reaches
+    # MAIN1 while the flasher runs.  The sibling
     # ``test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not_clobber``
-    # test.  This wider assertion's job is to prove CONTROL is alive
-    # during the run; Option 2 proves the gate's behavior under
-    # injected broadcasts.
+    # test proves cmd 0x20 gate behavior under injected broadcasts.
     chain.mark_main1_rx_capture_point()
     with install_sim_hub(hub):
         rc = main(["--right"])
     assert rc == 0, "release flasher main() returned non-zero"
 
-    # ---- Verify CONTROL preset broadcasts arrived during the run ----
-    rx_bytes = list(chain.main1_rx_record_since_last_capture())
+    # ---- Verify CONTROL traffic arrives around the run ----
+    rx_bytes, control_frames = _wait_for_main1_control_traffic(chain)
     # Chain frames are 3-byte [route, cmd, data] sequences; route
-    # 0xB0/0xB1 are broadcast/addressed, cmd 0x20 is preset_select
-    # (the frame type the xact gate protects against).  Walk every
-    # byte position because we don't know frame alignment relative
-    # to capture start.
-    preset_broadcasts = sum(
-        1
-        for i in range(0, max(0, len(rx_bytes) - 1))
-        if rx_bytes[i] in (0xB0, 0xB1) and rx_bytes[i + 1] == 0x20
-    )
-    assert preset_broadcasts >= 1, (
-        f"V1.71 CONTROL did not broadcast cmd 0x20 to MAIN1 during "
-        f"the run (rx_bytes_len={len(rx_bytes)}, preset_count="
-        f"{preset_broadcasts}).  The whole test was running in a "
-        f"quiescent no-broadcast window -- CONTROL is dead or the "
-        f"sim chain isn't running correctly."
+    # 0xB0/0xB1 proves broadcast/addressed CONTROL traffic.  Walk every
+    # byte position because we don't know frame alignment relative to
+    # capture start.  If the flasher finishes in a quiescent window,
+    # advance a bounded settle before failing.
+    assert control_frames >= 1, (
+        f"V1.71 CONTROL did not send routed traffic to MAIN1 during "
+        f"the run or post-run settle (rx_bytes_len={len(rx_bytes)}, "
+        f"control_frame_count={control_frames}). CONTROL is dead or the "
+        f"sim chain is not advancing correctly."
     )
 
     # ---- Verify preset A flash table ----
@@ -426,6 +525,9 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
     assert active_name_ram == bytes(overlay_a.name_slot), (
         f"active filename RAM mismatch after preset restore: got "
         f"{active_name_ram.hex()}, expected preset A {overlay_a.name_slot.hex()}"
+    )
+    _assert_tas_payloads_match_overlay(
+        chain, 1, overlay_a, "post-release-flash restored preset A"
     )
 
     # ---- Verify route shadow RAM is uniform R ----
@@ -520,6 +622,45 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
         f"identity bytes drifted between seed and probe.\n\n"
         f"--- captured stdout ---\n{captured.out}\n--- end ---"
     )
+
+
+@pytest.mark.slow
+def test_v32_lx521_a_b_payloads_reach_each_main_tas3108() -> None:
+    """The release captures must reach the simulated TAS3108 as exact
+    logical payload writes, not merely exist in flash or leave both
+    MAINs equal.
+
+    This catches the release-class failure where both MAINs can agree
+    on the wrong/empty/thin DSP state.  The TAS3108 byte register file
+    is lossy for 20-byte biquad writes, so the assertion uses the
+    completed-write payload log exposed by the Rust model.
+    """
+    _require_rust()
+    _require_capture_files()
+
+    chain, overlay_a, overlay_b, _ = _build_overlaid_chain()
+    payloads_a = _decode_preset_table_payloads(bytes(overlay_a.table))
+    payloads_b = _decode_preset_table_payloads(bytes(overlay_b.table))
+    differing = {
+        subaddr
+        for subaddr in payloads_a
+        if payloads_a[subaddr] != payloads_b[subaddr]
+    }
+    assert {0x37, 0x38, 0x73, 0x77, 0x78, 0x82, 0x86, 0x87}.issubset(
+        differing
+    ), (
+        f"LX521 A/B capture fixture no longer differs in the expected "
+        f"biquad-heavy subaddresses; differing={sorted(differing)!r}"
+    )
+
+    for unit in (0, 1):
+        _assert_tas_payloads_match_overlay(chain, unit, overlay_a, "boot preset A")
+        chain.reset_main_dsp_write_log(unit)
+
+    _switch_preset_via_control(chain, 1)
+
+    for unit in (0, 1):
+        _assert_tas_payloads_match_overlay(chain, unit, overlay_b, "switched preset B")
 
 
 # ---------------------------------------------------------------------------

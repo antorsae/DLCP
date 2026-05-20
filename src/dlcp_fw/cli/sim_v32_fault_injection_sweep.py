@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from dlcp_fw.flash.sim_backend import SimUsbHub, make_sim_hub
-from dlcp_fw.paths import ARTIFACTS_DIR
+from dlcp_fw.paths import ARTIFACTS_DIR, V32_MAIN_HEX
 from dlcp_fw.sim.dlcp_sim_native import Chain
+from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
 
 
 TICKS_PER_SEC = 48_000_000
@@ -32,10 +33,17 @@ DIAG_STANDBY = 0x2E7
 DIAG_WAKE = 0x2E8
 
 MAIN0_CORE_IDX = 1
-PC_ADC_BOOT_GATE_LO = 0x2900
-PC_ADC_BOOT_GATE_HI = 0x2944
-PC_UART_REENABLE_LO = 0x44DC
-PC_UART_REENABLE_HI = 0x4514
+
+
+def _v32_symbol(name: str, fallback: int) -> int:
+    symbols = load_gpasm_symbols_for_hex(V32_MAIN_HEX) or {}
+    return int(symbols.get(name, fallback))
+
+
+PC_ADC_BOOT_GATE_LO = _v32_symbol("adc_boot_gate", 0x27BE)
+PC_ADC_BOOT_GATE_HI = _v32_symbol("adc_boot_gate_exit", PC_ADC_BOOT_GATE_LO + 0x44)
+PC_UART_REENABLE_LO = PC_ADC_BOOT_GATE_HI
+PC_UART_REENABLE_HI = PC_UART_REENABLE_LO + 0x80
 
 SSPCON2 = 0xFC5
 RCSTA = 0xFAB

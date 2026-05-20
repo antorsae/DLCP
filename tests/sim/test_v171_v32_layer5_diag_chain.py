@@ -273,6 +273,23 @@ def _rust_set_main_diag_block(  # type: ignore[no-untyped-def]
         rust_chain.write_main_reg(main_idx, addr, value & 0x0F)
 
 
+def _rust_configure_main_src4382_no_source(  # type: ignore[no-untyped-def]
+    rust_chain, unit: int,
+) -> None:
+    """Put one MAIN into a deterministic Auto Detect / no-source state."""
+    for addr, value in (
+        (INPUT_SELECT_PHYS, 0x00),
+        (INPUT_SELECT_MIRROR_PHYS, 0x00),
+        (SCAN_CANDIDATE_INDEX_PHYS, 0x00),
+        (SCAN_MISS_DEBOUNCE_PHYS, 0x00),
+        (I2C_SLOW_COUNTER_PHYS, 0x65),
+    ):
+        rust_chain.write_main_reg(unit, addr, value)
+    rust_chain.poke_main_src4382_reg(unit, SRC_REG_RX_STATUS, 0x00)
+    rust_chain.poke_main_src4382_reg(unit, SRC_REG_NON_PCM, 0x00)
+    rust_chain.reset_main_src4382_stats(unit)
+
+
 def _rust_diag_present(rust_chain) -> int:  # type: ignore[no-untyped-def]
     """CONTROL's `v171_diag_present` byte at PHYS 0x197."""
     return rust_chain.read_reg(V171_DIAG_PRESENT_PHYS)
@@ -304,6 +321,25 @@ def _rust_wait_for_pb_present(  # type: ignore[no-untyped-def]
             return True
         rust_chain.step()
     return (_rust_diag_present(rust_chain) & pb_mask) == pb_mask
+
+
+def _rust_wait_for_visible_diag_cache(  # type: ignore[no-untyped-def]
+    rust_chain, *, pb_idx: int, checks, limit: int = 500,
+) -> bool:
+    """Wait until the visible PB Diag page has parsed expected cache cells.
+
+    ``checks`` is an iterable of ``(offset, min_value)`` pairs against the
+    CONTROL cache for the visible PB.
+    """
+    pb_label = f"PB{pb_idx + 1}"
+    base = V171_DIAG_PB1_BASE_PHYS if pb_idx == 0 else V171_DIAG_PB2_BASE_PHYS
+    for _ in range(limit):
+        line0, line1 = rust_chain.lcd_lines()
+        if line0.startswith(pb_label) and "n/a" not in line1.lower():
+            if all(rust_chain.read_reg(base + offset) >= min_value for offset, min_value in checks):
+                return True
+        rust_chain.step()
+    return False
 
 
 def _rust_press_drive_until_pb_present(  # type: ignore[no-untyped-def]
@@ -452,6 +488,12 @@ V171_DIAG_PRESENT_PHYS = 0x197
 V171_DIAG_POLL_LO_PHYS = 0x198
 V171_DIAG_POLL_HI_PHYS = 0x199
 V171_DIAG_FLAGS_PHYS = 0x19C
+V171_DIAG_RESET_TARGET_PHYS = 0x19E
+V171_DIAG_RESET_TIMEOUT_PHYS = 0x19F
+V171_DIAG_RUNTIME_TARGET_PHYS = 0x1AE
+V171_DIAG_RUNTIME_TIMEOUT_PHYS = 0x1AF
+V171_DIAG_FLAG_RUNTIME_PENDING_MASK = 0x02
+V171_DIAG_FLAG_RESET_PENDING_MASK = 0x04
 
 # MAIN diag block (BANK 2 upper, physical addresses for gpsim CLI reads).
 # Relocated 2026-04-19 from 0x123..0x12A to escape the USB EP1 OUT buffer
@@ -463,6 +505,16 @@ DIAG_B_PHYS = 0x2E8
 DIAG_R_PHYS = 0x2E9
 DIAG_A_PHYS = 0x2EA
 DIAG_P_PHYS = 0x2EB
+
+# V3.2 SRC4382 Auto Detect state / simulated receiver registers used by
+# fault-to-Diagnostics surfacing tests.
+INPUT_SELECT_PHYS = 0x099
+INPUT_SELECT_MIRROR_PHYS = 0x0B3
+SCAN_CANDIDATE_INDEX_PHYS = 0x0B6
+SCAN_MISS_DEBOUNCE_PHYS = 0x0BA
+I2C_SLOW_COUNTER_PHYS = 0x0BB
+SRC_REG_NON_PCM = 0x12
+SRC_REG_RX_STATUS = 0x13
 
 # Menu state indices.  V1.71 Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20)
 # moved Diagnostics from state 2 (between Preset and Input) to states 4-5
@@ -687,6 +739,63 @@ def test_v171_v32_layer5_chain_diag_static_wait_updates_pb1_and_pb2(
 
 @pytest.mark.dual_supported
 @pytest.mark.slow
+def test_v171_v32_diag_entry_clears_stale_pending_timeout_state(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """Real-HW regression, 2026-05-20: PB1/PB2 Diag rendered ``n/a``
+    for many minutes, then eventually changed to ``OK``.
+
+    Reproduction shape: CONTROL enters a PB Diag page with stale
+    RUNTIME_PENDING / RESET_PENDING bits already set and their timeout
+    bytes at zero.  Pre-fix, page entry cleared the poll countdown but
+    not the pending state; the first cadence decremented runtime_timeout
+    from 0 to 0xFF and suppressed fresh cmd 0x21 queries for 256 poll
+    cadences.  This test seeds that stale state BEFORE entering PB1 Diag
+    and requires the page to discover PB1 from a static wait.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+
+    # Seed the exact stale transaction shape observed on hardware.  Old
+    # firmware carried these bytes into v171_diag_screen; fixed firmware
+    # clears them at page entry before the first cadence decision.
+    c.write_reg(V171_DIAG_PRESENT_PHYS, 0x00)
+    c.write_reg(
+        V171_DIAG_FLAGS_PHYS,
+        V171_DIAG_FLAG_RUNTIME_PENDING_MASK | V171_DIAG_FLAG_RESET_PENDING_MASK,
+    )
+    c.write_reg(V171_DIAG_RUNTIME_TARGET_PHYS, 0x01)
+    c.write_reg(V171_DIAG_RUNTIME_TIMEOUT_PHYS, 0x00)
+    c.write_reg(V171_DIAG_RESET_TARGET_PHYS, 0x01)
+    c.write_reg(V171_DIAG_RESET_TIMEOUT_PHYS, 0x00)
+
+    _rust_navigate_to_diag_page(c, 0)
+    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=0, checks=((0, 0),), limit=400)
+    line0, line1 = c.lcd_lines()
+    assert ok and (_rust_diag_present(c) & 0x01), (
+        "[rust] stale pending/timeout state blocked PB1 discovery; "
+        f"present=0x{_rust_diag_present(c):02X}; "
+        f"flags=0x{c.read_reg(V171_DIAG_FLAGS_PHYS):02X}; "
+        f"runtime_timeout=0x{c.read_reg(V171_DIAG_RUNTIME_TIMEOUT_PHYS):02X}; "
+        f"reset_timeout=0x{c.read_reg(V171_DIAG_RESET_TIMEOUT_PHYS):02X}; "
+        f"lcd={(line0, line1)!r}; "
+        f"PB1 cache={[hex(v) for v in _rust_diag_pb_cache(c, 0)]}"
+    )
+    assert line0.startswith("PB1") and "n/a" not in line1.lower(), (
+        f"[rust] PB1 Diag must not remain n/a after stale-state entry; "
+        f"lcd={(line0, line1)!r}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
 @pytest.mark.parametrize("pb_idx,pb_label", [(0, "PB1"), (1, "PB2")])
 def test_v171_v32_layer5_diag_visible_page_refreshes_on_next_cadence(
     v171_hex: Path, v32_hex: Path, pb_idx: int, pb_label: str
@@ -880,11 +989,12 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     """Forcing distinct counter values into PB1 vs PB2's diag block must
     surface as distinct CONTROL cache slots after the next poll.
 
-    Concrete: set PB1 diag_i=5 and PB2 diag_i=12.  After both PBs have
-    replied at least once, CONTROL's PB1 cache must show 0x5_ in the
-    high nibble of *_id, and PB2 cache must show 0xC_.  Cross-talk
-    between cache slots would mean the parser is indexing the wrong
-    PB on reply arrival.
+    Concrete: set PB1 diag_d/diag_p=1/5 and PB2 diag_d/diag_p=2/12.
+    After both PBs have replied at least once, CONTROL's PB1 and PB2
+    caches must preserve those distinct values.  Avoid diag_i here:
+    V3.2 Auto Detect legitimately owns the live I2C counter while this
+    test is driving the chain.  Cross-talk between cache slots would
+    mean the parser is indexing the wrong PB on reply arrival.
 
     PF.3 closeout (2026-05-05): the stale ``_V171_V32_PB2_BRIDGE_XFAIL``
     decorator was retired here -- the underlying gpsim-side multi-
@@ -901,8 +1011,8 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     assert c.is_connected() and not c.is_waiting(), (
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
     )
-    _rust_set_main_diag_block(c, 0, diag_i=0x5, diag_d=0x1)
-    _rust_set_main_diag_block(c, 1, diag_i=0xC, diag_d=0x2)
+    _rust_set_main_diag_block(c, 0, diag_d=0x1, diag_p=0x5)
+    _rust_set_main_diag_block(c, 1, diag_d=0x2, diag_p=0xC)
     _rust_navigate_to_diagnostics(c)
     # settle_steps=200 lets the BF/22 frame populate cache[1]
     # for both PBs after the mask hit on the BF/21 frame.
@@ -912,21 +1022,21 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
     assert ok, "[rust] both PBs never replied"
     pb1_cache = _rust_diag_pb_cache(c, 0)
     pb2_cache = _rust_diag_pb_cache(c, 1)
-    assert pb1_cache[0] == 0x5, (
-        f"[rust] PB1 cache[0] (diag_i) expected 0x5; got "
-        f"0x{pb1_cache[0]:X}; full={[hex(v) for v in pb1_cache]}"
-    )
     assert pb1_cache[1] == 0x1, (
         f"[rust] PB1 cache[1] (diag_d) expected 0x1; got "
         f"0x{pb1_cache[1]:X}"
     )
-    assert pb2_cache[0] == 0xC, (
-        f"[rust] PB2 cache[0] (diag_i) expected 0xC; got "
-        f"0x{pb2_cache[0]:X}; full={[hex(v) for v in pb2_cache]}"
-    )
     assert pb2_cache[1] == 0x2, (
         f"[rust] PB2 cache[1] (diag_d) expected 0x2; got "
         f"0x{pb2_cache[1]:X}"
+    )
+    assert pb1_cache[6] == 0x5, (
+        f"[rust] PB1 cache[6] (diag_p) expected 0x5; got "
+        f"0x{pb1_cache[6]:X}; full={[hex(v) for v in pb1_cache]}"
+    )
+    assert pb2_cache[6] == 0xC, (
+        f"[rust] PB2 cache[6] (diag_p) expected 0xC; got "
+        f"0x{pb2_cache[6]:X}; full={[hex(v) for v in pb2_cache]}"
     )
 @pytest.mark.dual_supported
 @pytest.mark.slow
@@ -1055,6 +1165,122 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     )
     assert line1 == "                ", (
         f"[rust] row 1 mismatch (expected blank): got {line1!r}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("fault_kind", ("address", "data"))
+def test_v171_v32_diag_lcd_surfaces_injected_src4382_i2c_fault(
+    v171_hex: Path, v32_hex: Path, fault_kind: str
+) -> None:
+    """End-to-end fault surfacing: inject a real SRC4382 I2C NACK, prove
+    MAIN increments ``diag_i``, then prove CONTROL's PB1 Diag page renders
+    that counter through the cmd 0x21 / BF/21 protocol.
+
+    This is intentionally stronger than the older LCD tests that seed
+    MAIN diag RAM directly.  Direct seeding proves protocol/rendering;
+    this proves an injected fault reaches the user-visible Diagnostics
+    page.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+
+    _rust_configure_main_src4382_no_source(c, 0)
+    if fault_kind == "address":
+        c.inject_main_src4382_address_nack(0, 1000)
+    else:
+        c.inject_main_src4382_data_nack(0, 1000)
+    c.reset_main_src4382_stats(0)
+
+    delivered, overruns = c.inject_main_frames_fifo([[0xB0, 0x07, 0x40]], fifo_limit=47)
+    assert delivered == 3 and overruns == 0
+    c.step_ticks(20_000_000)
+
+    stats = c.read_main_src4382_stats(0)
+    main_diag_i = c.read_main_reg(0, DIAG_I_PHYS)
+    assert stats["bytes_nacked"] > 0, (
+        f"SRC4382 {fault_kind} NACK injection did not fire; stats={stats!r}"
+    )
+    assert main_diag_i > 0, (
+        f"SRC4382 {fault_kind} NACK did not increment MAIN0.diag_i; "
+        f"diag_i=0x{main_diag_i:02X}; stats={stats!r}"
+    )
+
+    _rust_navigate_to_diag_page(c, 0)
+    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=0, checks=((0, 1),), limit=800)
+    line0, line1 = c.lcd_lines()
+    cache = _rust_diag_pb_cache(c, 0)
+    assert ok, (
+        f"PB1 Diag did not surface injected SRC4382 {fault_kind} NACK; "
+        f"MAIN0.diag_i=0x{main_diag_i:02X}; CONTROL cache={cache}; "
+        f"lcd={(line0, line1)!r}; stats={stats!r}"
+    )
+    assert line0.startswith("PB1:") and "I" in line0, (
+        f"PB1 LCD did not render the I counter for injected SRC4382 "
+        f"{fault_kind} NACK; lcd={(line0, line1)!r}; cache={cache}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v171_v32_diag_lcd_surfaces_standby_wake_event_counters(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """End-to-end event-counter surfacing for a different Diagnostics path.
+
+    Drive real CONTROL STBY/WAKE actions, prove MAIN0 increments the S/B
+    counters, then prove PB1 Diag renders those counters through the same
+    user-visible LCD path.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+
+    c.press("STBY")
+    c.step_many(80)
+    assert c.read_main_reg(0, DIAG_S_PHYS) >= 1, (
+        f"MAIN0.diag_s did not increment after STBY; "
+        f"diag block={_rust_main_diag_block(c, 0)}; lcd={c.lcd_lines()!r}"
+    )
+
+    c.press("STBY")
+    for _ in range(20):
+        c.step_many(100)
+        if c.read_main_reg(0, DIAG_B_PHYS) >= 1 and not c.is_waiting():
+            break
+    assert c.read_main_reg(0, DIAG_B_PHYS) >= 1, (
+        f"MAIN0.diag_b did not increment after WAKE; "
+        f"diag block={_rust_main_diag_block(c, 0)}; lcd={c.lcd_lines()!r}"
+    )
+    c.run_until_connected(limit=300)
+
+    _rust_navigate_to_diag_page(c, 0)
+    ok = _rust_wait_for_visible_diag_cache(c, pb_idx=0, checks=((2, 1), (3, 1)), limit=1000)
+    line0, line1 = c.lcd_lines()
+    cache = _rust_diag_pb_cache(c, 0)
+    lcd_text = f"{line0}\n{line1}"
+    assert ok, (
+        f"PB1 Diag did not surface STBY/WAKE S/B counters; "
+        f"MAIN0 diag block={_rust_main_diag_block(c, 0)}; "
+        f"CONTROL cache={cache}; lcd={(line0, line1)!r}"
+    )
+    assert "S" in lcd_text and "B" in lcd_text, (
+        f"PB1 LCD did not render S/B counters after STBY/WAKE; "
+        f"lcd={(line0, line1)!r}; cache={cache}"
     )
 
 

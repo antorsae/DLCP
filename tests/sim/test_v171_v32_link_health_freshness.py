@@ -249,6 +249,24 @@ def test_main_screen_link_failure_suffix_surfaces_and_recovers(v171_hex: Path) -
 
 
 @pytest.mark.slow
+def test_volume_screen_preset_badge_cell_is_not_refreshed_during_steady_idle(
+    v171_hex: Path,
+) -> None:
+    _require_rust()
+    chain = RustChain.from_v171_v32(control_hex_path=str(v171_hex))
+    chain.run_until_connected(limit=200)
+    start_lines = chain.lcd_lines()
+    assert start_lines[0].startswith("Volume:"), start_lines
+    assert start_lines[0][15] in {"A", "B", "!"}, start_lines
+
+    badge_writes_before = chain.lcd_ddram_write_count(0x0F)
+    chain.step_ticks(100_000_000)
+
+    assert chain.lcd_lines() == start_lines
+    assert chain.lcd_ddram_write_count(0x0F) == badge_writes_before
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "pb_idx,state,age_addr,diag_base,present_bit,pb_label",
     [

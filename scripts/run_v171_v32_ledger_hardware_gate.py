@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -29,10 +30,19 @@ import xml.etree.ElementTree as ET
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = REPO_ROOT / "docs" / "IMPL_V171_V32_BUG_LEDGER.md"
 TEST_FILE = "tests/hardware/test_live_state_transitions.py"
-REPORT_SCHEMA_VERSION = 11
+REPORT_SCHEMA_VERSION = 13
+SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH = (
+    "artifacts/probes/v171_v32_ledger_gate/bug_src4382_ad_01_manual_evidence.md"
+)
 EVIDENCE_FILE_PATHS = {
     "runner": Path(__file__).resolve(),
     "hardware_runbook": REPO_ROOT / "docs" / "HARDWARE_TEST.md",
+    "src4382_manual_evidence_template": REPO_ROOT
+    / "docs"
+    / "SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md",
+    "src4382_manual_evidence_validator": REPO_ROOT
+    / "scripts"
+    / "validate_src4382_manual_evidence.py",
     "hardware_test": REPO_ROOT / TEST_FILE,
     "hardware_state_cli": REPO_ROOT / "src" / "dlcp_fw" / "cli" / "hardware_state_test.py",
     "hardware_lcd_probe_cli": REPO_ROOT / "src" / "dlcp_fw" / "cli" / "hardware_lcd_probe.py",
@@ -118,6 +128,27 @@ PHASES: tuple[Phase, ...] = (
             "volume/input/profile RAM."
         ),
         main_requirement="any",
+    ),
+    Phase(
+        name="src4382-ad-acoustic",
+        description="SRC4382 Auto Detect throttle acoustic and responsiveness confirmation.",
+        node="test_live_src4382_autodetect_acoustic_manual_confirmation",
+        env=(("DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM", "1"),),
+        required_env=(
+            "DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK",
+            "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK",
+            "DLCP_HW_SRC4382_USER_ACTIONS_OK",
+            "DLCP_HW_SRC4382_SOAK_OK",
+        ),
+        manual=(
+            "After flashing canonical V3.2 MAINs and V1.71 CONTROL, play a "
+            "known source on fixed input and Auto Detect. Confirm normal "
+            "low-band output, then exercise volume, mute, preset A/B, "
+            "standby/wake, and input changes. Run the soak from the SRC4382 "
+            "spec or equivalent operator procedure and set all required "
+            "DLCP_HW_SRC4382_*_OK flags to 1."
+        ),
+        main_requirement="pair",
     ),
     Phase(
         name="front-panel-preset-a",
@@ -379,6 +410,7 @@ PHASE_ALIASES: dict[str, tuple[str, ...]] = {
 BUG_PHASES: dict[str, tuple[str, ...]] = {
     "BUG-REV-01": ("identity",),
     "BUG-SETTINGS-01": ("settings", "identity", "ir-receiver-sweep"),
+    "BUG-SRC4382-AD-01": ("src4382-ad-acoustic",),
     "BUG-PRESET-01": (
         "identity",
         "front-panel-preset-a",
@@ -870,6 +902,15 @@ def _stable_artifact_summary_report_path() -> Path:
     )
 
 
+def _stable_completion_audit_report_path() -> Path:
+    return (
+        Path("artifacts")
+        / "probes"
+        / "v171_v32_ledger_gate"
+        / "completion_audit_current.json"
+    )
+
+
 def _safe_bug_id(bug_id: str) -> str:
     return bug_id.lower().replace("-", "_")
 
@@ -1023,6 +1064,40 @@ def _has_strong_done_evidence(evidence_line: str) -> bool:
     return has_pass_result and has_artifact_or_command
 
 
+def _src4382_expected_firmware_payload() -> dict[str, str]:
+    validator = _load_src4382_manual_evidence_validator()
+    identities = validator.current_release_identities()
+    hashes = validator.current_release_hashes()
+    return {
+        "CONTROL": identities["CONTROL"].display,
+        "CONTROL SHA256": hashes["CONTROL"],
+        "MAIN PB1": identities["MAIN"].display,
+        "MAIN PB1 SHA256": hashes["MAIN"],
+        "MAIN PB2": identities["MAIN"].display,
+        "MAIN PB2 SHA256": hashes["MAIN"],
+    }
+
+
+def _src4382_remaining_manual_evidence_payload(python: str) -> dict[str, object]:
+    script = str(Path("scripts") / "run_v171_v32_ledger_hardware_gate.py")
+    validator_script = str(Path("scripts") / "validate_src4382_manual_evidence.py")
+    template = EVIDENCE_FILE_PATHS["src4382_manual_evidence_template"].relative_to(
+        REPO_ROOT
+    )
+    evidence = Path(SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH)
+    helper = [python, script, "--src4382-manual-evidence"]
+    validator = [python, validator_script, str(evidence)]
+    return {
+        "template": str(template),
+        "manual_evidence": str(evidence),
+        "expected_firmware": _src4382_expected_firmware_payload(),
+        "helper": helper,
+        "helper_shell_command": _shell_command((), helper),
+        "validator": validator,
+        "validator_shell_command": _shell_command((), validator),
+    }
+
+
 def _remaining_bug_payloads(
     python: str,
     selected_bug_names: list[str],
@@ -1064,25 +1139,28 @@ def _remaining_bug_payloads(
             "--report-json",
             str(closure_report),
         ]
-        payloads.append(
-            {
-                "bug": bug_id,
-                "status": status,
-                "phases": [phase.name for phase in phases],
-                "required_env": required_env,
-                **(
-                    {"expected_control_hex": expected_control_hex}
-                    if expected_control_hex
-                    else {}
-                ),
-                "preflight_report": str(preflight_report),
-                "closure_report": str(closure_report),
-                "preflight": preflight,
-                "preflight_shell_command": _shell_command((), preflight),
-                "execute": execute,
-                "execute_shell_command": _shell_command((), execute),
-            }
-        )
+        payload: dict[str, object] = {
+            "bug": bug_id,
+            "status": status,
+            "phases": [phase.name for phase in phases],
+            "required_env": required_env,
+            **(
+                {"expected_control_hex": expected_control_hex}
+                if expected_control_hex
+                else {}
+            ),
+            "preflight_report": str(preflight_report),
+            "closure_report": str(closure_report),
+            "preflight": preflight,
+            "preflight_shell_command": _shell_command((), preflight),
+            "execute": execute,
+            "execute_shell_command": _shell_command((), execute),
+        }
+        if bug_id == "BUG-SRC4382-AD-01":
+            payload["manual_evidence"] = _src4382_remaining_manual_evidence_payload(
+                python
+            )
+        payloads.append(payload)
     return payloads
 
 
@@ -1092,6 +1170,7 @@ def _prompt_to_artifact_checklist(
     artifact_summary: dict[str, object],
     done_without_evidence: list[str],
     done_with_weak_evidence: list[str],
+    done_with_invalid_manual_evidence: list[str],
     evidence_lines: dict[str, str],
 ) -> dict[str, object]:
     active_rows = _active_ledger_rows()
@@ -1118,6 +1197,8 @@ def _prompt_to_artifact_checklist(
                 blocking_reasons.append("done_row_missing_done_evidence")
             if bug_id in done_with_weak_evidence:
                 blocking_reasons.append("done_row_weak_done_evidence")
+            if bug_id in done_with_invalid_manual_evidence:
+                blocking_reasons.append("done_row_invalid_manual_evidence")
             ready_to_mark_done = not blocking_reasons
         else:
             blocking_reasons.append("ledger_status_not_done")
@@ -1280,6 +1361,14 @@ def _print_remaining_bugs(
                 f"({identity['release_short']}, "
                 f"crc16=0x{identity['payload_crc']:04X})"
             )
+        if manual_evidence := payload.get("manual_evidence"):
+            print("    manual evidence:")
+            print("      expected firmware:")
+            for label, value in manual_evidence["expected_firmware"].items():
+                print(f"        {label}: {value}")
+            print(f"      helper: {manual_evidence['helper_shell_command']}")
+            print(f"      artifact: {manual_evidence['manual_evidence']}")
+            print(f"      validate: {manual_evidence['validator_shell_command']}")
         print(f"    preflight: {payload['preflight_shell_command']}")
         print(f"    execute: {payload['execute_shell_command']}")
     plan = _remaining_plan_payload(python, payloads)
@@ -1301,6 +1390,148 @@ def _print_remaining_bugs(
     return payloads
 
 
+def _src4382_manual_evidence_payload(python: str) -> dict[str, object]:
+    bug_id = "BUG-SRC4382-AD-01"
+    phase = PHASE_BY_NAME["src4382-ad-acoustic"]
+    script = str(Path("scripts") / "run_v171_v32_ledger_hardware_gate.py")
+    validator_script = str(Path("scripts") / "validate_src4382_manual_evidence.py")
+    template = EVIDENCE_FILE_PATHS["src4382_manual_evidence_template"].relative_to(
+        REPO_ROOT
+    )
+    evidence = Path(SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH)
+    preflight_report = _stable_bug_preflight_report_path(bug_id)
+    closure_report = _stable_bug_closure_report_path(bug_id)
+    summary_report = _stable_artifact_summary_report_path().relative_to(REPO_ROOT)
+    audit_report = _stable_completion_audit_report_path()
+    control_hex = str(Path("firmware") / "patched" / "releases" / "DLCP_Control_V1.71.hex")
+    control_flash_preflight = [
+        str(Path("scripts") / "flash_control_safe.sh"),
+        "--hex",
+        control_hex,
+        "--preflight-only",
+    ]
+    control_flash = [
+        str(Path("scripts") / "flash_control_safe.sh"),
+        "--hex",
+        control_hex,
+    ]
+    flash_left = [python, str(Path("scripts") / "dlcp_v32_release_flash.py"), "--left"]
+    flash_right = [python, str(Path("scripts") / "dlcp_v32_release_flash.py"), "--right"]
+
+    validator = [python, validator_script, str(evidence)]
+    manual_evidence_status, manual_evidence_errors = _src4382_manual_evidence_status()
+    preflight = [
+        python,
+        script,
+        "--preflight",
+        "--bug",
+        bug_id,
+        "--report-json",
+        str(preflight_report),
+    ]
+    execute = [
+        python,
+        script,
+        "--execute",
+        "--keep-going",
+        "--bug",
+        bug_id,
+        "--require-bug-closed",
+        bug_id,
+        "--report-json",
+        str(closure_report),
+    ]
+    summary = [
+        python,
+        script,
+        "--summarize-artifacts",
+        "--report-json",
+        str(summary_report),
+    ]
+    audit = [
+        python,
+        script,
+        "--audit-completion",
+        "--report-json",
+        str(audit_report),
+    ]
+    execute_env = phase.env + tuple((name, "1") for name in phase.required_env)
+    return {
+        "bug": bug_id,
+        "ledger_status": _active_ledger_statuses().get(bug_id, "unknown"),
+        "phase": phase.name,
+        "main_requirement": phase.main_requirement,
+        "template": str(template),
+        "manual_evidence": str(evidence),
+        "expected_firmware": _src4382_expected_firmware_payload(),
+        "required_env": list(phase.required_env),
+        "phase_env": dict(phase.env),
+        "manual_evidence_status": manual_evidence_status,
+        "manual_evidence_errors": manual_evidence_errors,
+        "control_flash": [control_flash_preflight, control_flash],
+        "control_flash_shell_commands": [
+            _shell_command((), control_flash_preflight),
+            _shell_command((), control_flash),
+        ],
+        "flash": [flash_left, flash_right],
+        "flash_shell_commands": [
+            _shell_command((), flash_left),
+            _shell_command((), flash_right),
+        ],
+        "validator": validator,
+        "validator_shell_command": _shell_command((), validator),
+        "preflight": preflight,
+        "preflight_shell_command": _shell_command((), preflight),
+        "execute": execute,
+        "execute_shell_command": _shell_command(execute_env, execute),
+        "summary": summary,
+        "summary_shell_command": _shell_command((), summary),
+        "audit": audit,
+        "audit_shell_command": _shell_command((), audit),
+    }
+
+
+def _print_src4382_manual_evidence(python: str) -> dict[str, object]:
+    payload = _src4382_manual_evidence_payload(python)
+    print("SRC4382 Auto Detect manual evidence:")
+    print(f"  bug: {payload['bug']} [{payload['ledger_status']}]")
+    print(f"  phase: {payload['phase']}")
+    print("  hardware requirement: two visible V3.2 MAIN HID devices (left + right)")
+    print("  flash candidate before evidence:")
+    print("    CONTROL V1.71:")
+    for command in payload["control_flash_shell_commands"]:
+        print(f"      {command}")
+    print("    MAIN V3.2:")
+    for command in payload["flash_shell_commands"]:
+        print(f"      {command}")
+    print(f"  template: {payload['template']}")
+    print(f"  evidence artifact: {payload['manual_evidence']}")
+    print("  expected firmware fields:")
+    for label, value in payload["expected_firmware"].items():
+        print(f"    {label}: {value}")
+    print(f"  current evidence status: {payload['manual_evidence_status']}")
+    if payload["manual_evidence_errors"]:
+        print("  current evidence errors:")
+        for error in payload["manual_evidence_errors"]:
+            print(f"    - {error}")
+    print("  validate completed artifact:")
+    print(f"    {payload['validator_shell_command']}")
+    print("  required manual-confirmation env:")
+    env_names = [
+        *payload["phase_env"].keys(),
+        *payload["required_env"],
+    ]
+    for name in env_names:
+        print(f"    {name}=1")
+    print("  hardware commands:")
+    print(f"    preflight: {payload['preflight_shell_command']}")
+    print(f"    closure: {payload['execute_shell_command']}")
+    print("  after evidence is captured:")
+    print(f"    summary: {payload['summary_shell_command']}")
+    print(f"    audit: {payload['audit_shell_command']}")
+    return payload
+
+
 def _completion_audit_payload(python: str) -> dict[str, object]:
     statuses = _active_ledger_statuses()
     remaining = _remaining_bug_payloads(python, selected_bug_names=[])
@@ -1315,6 +1546,13 @@ def _completion_audit_payload(python: str) -> dict[str, object]:
         if "DONE:" in evidence_lines.get(bug_id, "")
         and not _has_strong_done_evidence(evidence_lines.get(bug_id, ""))
     ]
+    done_with_invalid_manual_evidence: list[str] = []
+    done_manual_evidence_errors: dict[str, list[str]] = {}
+    if "BUG-SRC4382-AD-01" in done:
+        manual_status, manual_errors = _src4382_manual_evidence_status()
+        if manual_status != "passed":
+            done_with_invalid_manual_evidence.append("BUG-SRC4382-AD-01")
+            done_manual_evidence_errors["BUG-SRC4382-AD-01"] = manual_errors
     counts: dict[str, int] = {}
     for status in statuses.values():
         counts[status] = counts.get(status, 0) + 1
@@ -1324,6 +1562,7 @@ def _completion_audit_payload(python: str) -> dict[str, object]:
         artifact_summary=artifact_summary,
         done_without_evidence=done_without_evidence,
         done_with_weak_evidence=done_with_weak_evidence,
+        done_with_invalid_manual_evidence=done_with_invalid_manual_evidence,
         evidence_lines=evidence_lines,
     )
     checklist = [
@@ -1338,10 +1577,18 @@ def _completion_audit_payload(python: str) -> dict[str, object]:
         },
         {
             "id": "done_rows_have_done_evidence",
-            "passed": not done_without_evidence and not done_with_weak_evidence,
+            "passed": (
+                not done_without_evidence
+                and not done_with_weak_evidence
+                and not done_with_invalid_manual_evidence
+            ),
             "evidence": (
                 "every done row has DONE evidence"
-                if not done_without_evidence and not done_with_weak_evidence
+                if (
+                    not done_without_evidence
+                    and not done_with_weak_evidence
+                    and not done_with_invalid_manual_evidence
+                )
                 else "; ".join(
                     part
                     for part in (
@@ -1355,6 +1602,12 @@ def _completion_audit_payload(python: str) -> dict[str, object]:
                             "weak DONE evidence: "
                             + ", ".join(done_with_weak_evidence)
                             if done_with_weak_evidence
+                            else ""
+                        ),
+                        (
+                            "invalid manual evidence: "
+                            + ", ".join(done_with_invalid_manual_evidence)
+                            if done_with_invalid_manual_evidence
                             else ""
                         ),
                     )
@@ -1392,6 +1645,8 @@ def _completion_audit_payload(python: str) -> dict[str, object]:
         "done_bugs": done,
         "done_without_evidence": done_without_evidence,
         "done_with_weak_evidence": done_with_weak_evidence,
+        "done_with_invalid_manual_evidence": done_with_invalid_manual_evidence,
+        "done_manual_evidence_errors": done_manual_evidence_errors,
         "remaining_bugs": remaining,
         "artifact_summary": artifact_summary,
         "completion_checklist": checklist,
@@ -1420,6 +1675,12 @@ def _print_completion_audit(python: str) -> dict[str, object]:
         print(
             "  done rows with weak DONE evidence: "
             f"{', '.join(str(bug_id) for bug_id in done_with_weak_evidence)}"
+        )
+    done_with_invalid_manual_evidence = payload["done_with_invalid_manual_evidence"]
+    if done_with_invalid_manual_evidence:
+        print(
+            "  done rows with invalid manual evidence: "
+            + ", ".join(str(bug_id) for bug_id in done_with_invalid_manual_evidence)
         )
     if remaining:
         print("  remaining:")
@@ -1519,6 +1780,30 @@ def _selected_phase_names_from_report(report: dict[str, object] | None) -> set[s
     }
 
 
+def _load_src4382_manual_evidence_validator():
+    path = REPO_ROOT / "scripts" / "validate_src4382_manual_evidence.py"
+    spec = importlib.util.spec_from_file_location(
+        "validate_src4382_manual_evidence",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load SRC4382 evidence validator: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _src4382_manual_evidence_status() -> tuple[str, list[str]]:
+    path = REPO_ROOT / SRC4382_MANUAL_EVIDENCE_RELATIVE_PATH
+    if not path.exists():
+        return "manual_evidence_missing", [f"evidence file does not exist: {path}"]
+    validator = _load_src4382_manual_evidence_validator()
+    errors = [str(error) for error in validator.validate_path(path)]
+    if errors:
+        return "manual_evidence_failed", errors
+    return "passed", []
+
+
 def _artifact_summary_payload(python: str) -> dict[str, object]:
     statuses = _active_ledger_statuses()
     current_identity = _current_evidence_identity()
@@ -1575,22 +1860,43 @@ def _artifact_summary_payload(python: str) -> dict[str, object]:
                 preflight_status = "unknown"
                 preflight_failures = []
         closure_report = str(remaining["closure_report"])
+        manual_evidence_status: str | None = None
+        manual_evidence_errors: list[str] = []
+        if bug_id == "BUG-SRC4382-AD-01":
+            manual_evidence_status, manual_evidence_errors = (
+                _src4382_manual_evidence_status()
+            )
         report_path = REPO_ROOT / closure_report
         report = _read_report_json(report_path)
         if report is None:
+            if manual_evidence_status == "passed":
+                artifact_status = "passed"
+            elif manual_evidence_status is not None:
+                artifact_status = manual_evidence_status
+            else:
+                artifact_status = "missing"
+            if artifact_status == "passed":
+                ready_to_mark_done.append(bug_id)
             rows.append(
                 {
                     "bug": bug_id,
                     "ledger_status": ledger_status,
-                    "artifact_status": "missing",
+                    "artifact_status": artifact_status,
                     "preflight_status": preflight_status,
                     "preflight_identity_status": preflight_identity_status,
                     "preflight_missing_required_phases": preflight_missing_required_phases,
                     "preflight_report": preflight_report,
                     "preflight_failures": preflight_failures,
                     "closure_report": closure_report,
-                    "closure_identity_status": "missing",
-                    "bug_closure_status": None,
+                    "closure_identity_status": (
+                        "manual_evidence" if artifact_status == "passed" else "missing"
+                    ),
+                    "bug_closure_status": (
+                        "manual_evidence" if artifact_status == "passed" else None
+                    ),
+                    "reported_bug_closure_status": None,
+                    "manual_evidence_status": manual_evidence_status,
+                    "manual_evidence_errors": manual_evidence_errors,
                     "final_rc": None,
                 }
             )
@@ -1612,8 +1918,17 @@ def _artifact_summary_payload(python: str) -> dict[str, object]:
             else None
         )
         final_rc = report.get("final_rc")
-        if bug_status == "passed":
-            if closure_identity_status != "current":
+        if (
+            bug_id == "BUG-SRC4382-AD-01"
+            and manual_evidence_status == "passed"
+            and bug_status in {None, "missing", "not_run"}
+        ):
+            artifact_status = "passed"
+            ready_to_mark_done.append(bug_id)
+        elif bug_status == "passed":
+            if manual_evidence_status not in {None, "passed"}:
+                artifact_status = manual_evidence_status
+            elif closure_identity_status != "current":
                 artifact_status = f"passed_closure_{closure_identity_status}"
             elif preflight_identity_status != "current":
                 artifact_status = f"passed_preflight_{preflight_identity_status}"
@@ -1642,6 +1957,8 @@ def _artifact_summary_payload(python: str) -> dict[str, object]:
                 "closure_identity_status": closure_identity_status,
                 "bug_closure_status": bug_status,
                 "reported_bug_closure_status": reported_bug_status,
+                "manual_evidence_status": manual_evidence_status,
+                "manual_evidence_errors": manual_evidence_errors,
                 "final_rc": final_rc,
             }
         )
@@ -1675,6 +1992,10 @@ def _print_artifact_summary(python: str) -> dict[str, object]:
                 f"(preflight={row['preflight_status']}, "
                 f"closure={row['closure_report']})"
             )
+            manual_errors = row.get("manual_evidence_errors", [])
+            if isinstance(manual_errors, list) and manual_errors:
+                for error in manual_errors:
+                    print(f"    manual evidence: {error}")
     ready = payload["ready_to_mark_done"]
     if ready:
         print(f"  ready to mark done: {', '.join(str(bug) for bug in ready)}")
@@ -1713,6 +2034,7 @@ def _base_report(
             "remaining": args.remaining,
             "audit_completion": args.audit_completion,
             "summarize_artifacts": args.summarize_artifacts,
+            "src4382_manual_evidence": args.src4382_manual_evidence,
             "require_all_ready": args.require_all_ready,
             "collect": args.collect,
             "preflight": args.preflight,
@@ -1865,6 +2187,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--src4382-manual-evidence",
+        action="store_true",
+        help=(
+            "Print the SRC4382 Auto Detect manual evidence artifact path, "
+            "validator command, and closure commands. Does not probe hardware."
+        ),
+    )
+    parser.add_argument(
         "--require-all-ready",
         action="store_true",
         help=(
@@ -1959,6 +2289,7 @@ def main(argv: list[str] | None = None) -> int:
             and not args.remaining
             and not args.audit_completion
             and not args.summarize_artifacts
+            and not args.src4382_manual_evidence
         )
         else (args.python or _resolve_python())
     )
@@ -2047,6 +2378,10 @@ def main(argv: list[str] | None = None) -> int:
             for bug_id in artifact_summary["not_ready_bugs"]:
                 print(f"  {bug_id}", file=sys.stderr)
             return finish(1)
+        return finish(0)
+
+    if args.src4382_manual_evidence:
+        report["src4382_manual_evidence"] = _print_src4382_manual_evidence(python)
         return finish(0)
 
     if args.collect:

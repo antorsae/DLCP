@@ -1513,12 +1513,10 @@ mod tests {
     #[test]
     fn reset_state_drains_completed_tx_fifo() {
         let mut eusart = Eusart::new(Variant::Pic18F25K20);
-        let mut mem = fresh_mem();
         eusart.completed_tx_bytes.push_back(0xDE);
         eusart.completed_tx_bytes.push_back(0xAD);
         eusart.reset_state();
         assert!(eusart.take_completed_tx_byte().is_none());
-        let _ = &mem;
     }
 
     /// `reset_state` clears any in-flight TX so a SLEEP-then-

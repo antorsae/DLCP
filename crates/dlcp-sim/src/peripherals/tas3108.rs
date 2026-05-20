@@ -103,6 +103,25 @@ impl Default for Phase {
     }
 }
 
+/// One completed master-write transaction to the TAS3108.
+///
+/// This is intentionally higher level than the byte-addressed register
+/// file: DLCP preset entries write a logical subaddress plus a 4- or
+/// 20-byte payload.  The final byte stored at a subaddress is too lossy
+/// to prove that the real LX521 coefficient payload reached the DSP, so
+/// tests use this log to compare the exact payload sent by firmware.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Tas3108WriteTransaction {
+    pub start_subaddr: u8,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct Tas3108WriteInProgress {
+    start_subaddr: u8,
+    payload: Vec<u8>,
+}
+
 /// TAS3108 audio-DSP I²C slave.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Tas3108 {
@@ -132,6 +151,14 @@ pub struct Tas3108 {
     /// completed exactly N writes to subaddress 0x30").
     pub bytes_acked: u64,
     pub bytes_nacked: u64,
+    /// Completed write transactions, preserving the start
+    /// subaddress and entire data payload for each STOP-terminated
+    /// write.  This is simulator observability only; the byte register
+    /// file remains the compatibility surface for older tests.
+    write_log: Vec<Tas3108WriteTransaction>,
+    /// Current write payload being accumulated between subaddress
+    /// latch and transaction termination.
+    current_write: Option<Tas3108WriteInProgress>,
     /// Fault-injection: remaining count of address-phase
     /// NACKs.  When `> 0`, the slave NACKs its own write/read
     /// address byte (transitioning to `Ignored` for the rest
@@ -163,6 +190,8 @@ impl Tas3108 {
             phase: Phase::Idle,
             bytes_acked: 0,
             bytes_nacked: 0,
+            write_log: Vec::new(),
+            current_write: None,
             address_nack_count_remaining: 0,
         }
     }
@@ -219,11 +248,34 @@ impl Tas3108 {
         self.regs[subaddr as usize]
     }
 
+    /// Return the most recent completed write payload that started at
+    /// `subaddr`, if any.  Used by Python-facing release tests to assert
+    /// exact preset-table payload delivery.
+    pub fn last_write_payload(&self, subaddr: u8) -> Option<&[u8]> {
+        self.write_log
+            .iter()
+            .rev()
+            .find(|tx| tx.start_subaddr == subaddr)
+            .map(|tx| tx.payload.as_slice())
+    }
+
+    /// Completed write transaction log.
+    pub fn write_log(&self) -> &[Tas3108WriteTransaction] {
+        &self.write_log
+    }
+
+    /// Clear completed write observability without changing register
+    /// contents or transaction state.
+    pub fn reset_write_log(&mut self) {
+        self.write_log.clear();
+    }
+
     /// Reset transaction state on a master-issued START.  The
     /// next [`consume_tx_byte`] is interpreted as a slave-
     /// address byte.  Caller (chain dispatcher) invokes this
     /// when MSSP completes its Start-condition state.
     pub fn on_start(&mut self) {
+        self.finish_current_write();
         self.phase = Phase::Idle;
     }
 
@@ -233,6 +285,7 @@ impl Tas3108 {
     /// MSSP state machine's `complete_start` /
     /// `complete_stop` hooks.
     pub fn on_stop(&mut self) {
+        self.finish_current_write();
         self.phase = Phase::Idle;
     }
 
@@ -242,6 +295,7 @@ impl Tas3108 {
     /// "expect address byte" state.  Equivalent to
     /// `on_start` in this Phase-3.5 model.
     pub fn on_repeated_start(&mut self) {
+        self.finish_current_write();
         self.phase = Phase::Idle;
     }
 
@@ -348,12 +402,20 @@ impl Tas3108 {
 
     fn handle_subaddress_byte(&mut self, byte: u8) -> bool {
         self.last_latched_subaddr = Some(byte);
+        self.finish_current_write();
+        self.current_write = Some(Tas3108WriteInProgress {
+            start_subaddr: byte,
+            payload: Vec::new(),
+        });
         self.phase = Phase::Writing { next_subaddr: byte };
         true
     }
 
     fn handle_write_data_byte(&mut self, byte: u8, next_subaddr: u8) -> bool {
         self.regs[next_subaddr as usize] = byte;
+        if let Some(tx) = &mut self.current_write {
+            tx.payload.push(byte);
+        }
         // Per §6.2.1 sequential addressing: subaddress auto-
         // increments after every data byte written.  Wraps
         // mod 256 because the subaddress is 8-bit.
@@ -361,6 +423,17 @@ impl Tas3108 {
             next_subaddr: next_subaddr.wrapping_add(1),
         };
         true
+    }
+
+    fn finish_current_write(&mut self) {
+        if let Some(tx) = self.current_write.take() {
+            if !tx.payload.is_empty() {
+                self.write_log.push(Tas3108WriteTransaction {
+                    start_subaddr: tx.start_subaddr,
+                    payload: tx.payload,
+                });
+            }
+        }
     }
 
     /// True iff the slave is currently in a read transaction
@@ -513,6 +586,11 @@ mod tests {
         assert_eq!(dsp.read_subaddr(0x31), 0xAD);
         assert_eq!(dsp.read_subaddr(0x32), 0xBE);
         assert_eq!(dsp.read_subaddr(0x33), 0xEF);
+        assert_eq!(
+            dsp.last_write_payload(0x30),
+            Some([0xDE, 0xAD, 0xBE, 0xEF].as_slice())
+        );
+        assert_eq!(dsp.write_log().len(), 1);
         assert_eq!(dsp.bytes_acked, 6);
     }
 
@@ -662,7 +740,7 @@ mod tests {
     /// trigger a transaction.
     #[test]
     fn nacked_slave_ignores_payload_until_next_start() {
-        let mut dsp = Tas3108::default();
+        let dsp = Tas3108::default();
         // Slave A's address is 0x68; we simulate slave B
         // (CS0=true -> 0x6A) seeing the same bus traffic
         // intended for slave A.  Slave B should NACK the
