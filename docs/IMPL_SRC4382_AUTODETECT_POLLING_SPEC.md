@@ -31,9 +31,11 @@ with a new Auto Detect state machine.  That remains rejected because it broke
 the route/TAS refresh contract.  A later audio complaint against the in-place
 countdown candidate was retested on 2026-05-20 and traced to misconnected
 speakers, not firmware.  The same hardware retest exposed a real fixed-source
-bug: CONTROL's fixed digital inputs select external-mux route requests
-`0/5/6/7`, and rev `0x6D` did not restore the SRC4382 receiver/transmitter
-route after Auto Detect had parked it elsewhere.
+bug: explicit input changes did not reliably force route reconciliation after
+Auto Detect had parked the SRC4382 elsewhere.  The deployed front-panel
+`S/PDIF` item emits `B0/06/05` and maps to route `1`; external-mux route
+requests `0/5/6/7` are a separate stock branch that must restore the default
+SRC4382 pair.
 
 The current candidate keeps the legacy service body and route/TAS contract,
 adds an in-place `ram_0x0BA` countdown around Auto Detect candidate/status
@@ -401,17 +403,21 @@ candidate.  Earlier firmware/audit attempts now separate into two classes:
   simulator-visible audio path.
 - A smaller dwell throttle inside `main_i2c_service_27f0` whose initial
   bad-audio report was retested and traced to speaker wiring, not firmware.
-- A fixed-digital external-mux gap in rev `0x6D`: selecting `S/PDIF`,
-  `USB Audio`, `AES`, or `Optical` after Auto Detect did not re-prime the
-  SRC4382 default route pair, so the mux could select a source that the SRC was
-  no longer listening to.
+- A fixed-input route gap in rev `0x6D`: selecting a displayed fixed digital
+  source after Auto Detect did not reliably force route reconciliation, so the
+  fixed source could inherit the previous Auto Detect receiver state.  The
+  real front-panel `S/PDIF` item emits `B0/06/05` and should converge to MAIN
+  route `1` (`0x0D=0x09`, `0x08=0x70`) on the deployed `BF/05 == 3` routing
+  profile; external-mux route requests `0/5/6/7` are a separate stock branch
+  that must restore the default SRC4382 pair.
 
 The current V3.2 candidate intentionally does not replace
 `main_i2c_service_27f0`.  It preserves the service, adds a small countdown gate
 inside the Auto Detect branch, and keeps all route/DSP side effects delegated to
 the existing `cmd_dispatch_gated` contract.  Rev `0x6E` also forces route
-reconciliation when `cmd 0x06` changes the input and makes external-mux routes
-`0/5/6/7` restore SRC4382 `0x0D=0x08`, `0x08=0x30`.
+reconciliation when `cmd 0x06` changes the input, preserves the displayed
+S/PDIF route (`B0/06/05` -> route `1`, `0x0D=0x09`, `0x08=0x70`), and makes
+external-mux routes `0/5/6/7` restore SRC4382 `0x0D=0x08`, `0x08=0x30`.
 
 Implementation shape:
 

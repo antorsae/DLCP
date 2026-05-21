@@ -60,12 +60,24 @@ The fixed route table is:
 | `3` | `0x08` | `0x30` |
 | `4` | `0x0B` | `0xF0` |
 
-The CONTROL audio menu's fixed digital choices are a second, hardware-specific
-case: UI values `1..4` become route requests `0/5/6/7`, which select the
-external input mux rather than one of the four Auto Detect SRC routes.  Those
-routes must still restore the SRC4382 to the default receiver/transmitter pair
-`0x0D=0x08`, `0x08=0x30`; otherwise Auto Detect can leave the SRC parked on the
-wrong receiver after the user selects a fixed digital source.
+The CONTROL audio menu's displayed fixed digital choices are a second,
+hardware-specific case.  In the default deployed routing profile
+(`BF/05 == 3`), the front-panel items emit these `cmd 0x06` input bytes and
+MAIN route requests:
+
+| CONTROL menu item | `cmd 0x06` input byte | MAIN route request | SRC4382 `0x0D` | SRC4382 `0x08` |
+| --- | ---: | ---: | ---: | ---: |
+| `S/PDIF` | `0x05` | `1` | `0x09` | `0x70` |
+| `USB Audio` | `0x06` | `2` | `0x0A` | `0xB0` |
+| `AES` | `0x07` | `3` | `0x08` | `0x30` |
+| `Optical` | `0x08` | `4` | `0x0B` | `0xF0` |
+
+The legacy route requests `0/5/6/7` still exist for the stock external-mux
+branches.  Those routes must restore the SRC4382 to the default
+receiver/transmitter pair `0x0D=0x08`, `0x08=0x30`; otherwise Auto Detect can
+leave the SRC parked on the wrong receiver after the user selects a fixed
+source.  The regression suite must cover both surfaces: direct route priming
+for `0/5/6/7` and the real CONTROL menu path for displayed `S/PDIF`.
 
 Future code may reorganize how Auto Detect finds a route, but it must emit the
 same `ram_0x093` / `event_flags.bit1` contract or an explicitly equivalent
@@ -129,7 +141,7 @@ Relevant V3.2 paths in the current cadence candidate:
 - Explicit `cmd 0x06` input changes invalidate the route shadow and force the
   slow I2C service to run immediately, so selecting a fixed source cannot be
   skipped just because the previous route shadow already matched.
-- Fixed digital external-mux routes `0/5/6/7` now write the default SRC4382
+- Legacy external-mux routes `0/5/6/7` now write the default SRC4382
   route pair `0x0D=0x08`, `0x08=0x30` after the external mux/TAS handoff.
 - Route application is reconciled through `ram_0x093`, `ram_0x0AB`, and
   `event_flags.bit1`; it is not merely a status poll.
@@ -237,7 +249,8 @@ Target tests:
 | Worst-position source discovery | Green canary. | Source found within the `500 ms` target. |
 | Slow-discovery mutation | Generated firmware that changes the candidate settle countdown to `0x24` must miss the `500 ms` discovery budget. | Pins the lower-traffic boundary so Auto Detect cannot pass by becoming too slow. |
 | Explicit input preemption | Must remain responsive. | Fixed input converges promptly through the route/TAS path and Auto Detect does not overwrite it. |
-| Manual fixed-digital route priming | Must write `0x0D=0x08`, `0x08=0x30` and refresh TAS for UI values `1..4`. | Prevents the rev `0x6D` hardware failure where fixed digital inputs were silent after Auto Detect. |
+| Manual fixed-digital route priming | External-mux route requests `0/5/6/7` must write `0x0D=0x08`, `0x08=0x30` and refresh TAS. | Prevents the external-mux branches from inheriting an unrelated Auto Detect receiver. |
+| CONTROL S/PDIF menu path | Front-panel `S/PDIF` must emit `B0/06/05`; both MAINs must converge to route `1`, write `0x0D=0x09`, `0x08=0x70`, and refresh TAS after Auto Detect. | Prevents repeating the RCA S/PDIF manual-selection blind spot. |
 | Fixed-input quiet mode | `0` ACKed SRC4382 bytes/s after fixed-input route convergence. | Proves the reduced Auto Detect scan is silent once a manual input is selected. |
 | SRC4382 NACK/no-stall | Must remain responsive. | Fault increments diagnostics, retry traffic stays bounded, and a volume command still applies. |
 | Mute/unmute responsiveness | Must remain responsive. | Mute and unmute parse under Auto Detect load and refresh TAS3108 coefficient `0x30`. |
@@ -428,8 +441,11 @@ The SRC4382 Auto Detect polling work is complete only when:
 - Full four-input source discovery remains within `500 ms`.
 - Explicit fixed-input selection converges promptly and is not overwritten by
   Auto Detect.
-- Manual fixed digital inputs restore the default SRC4382 route pair after Auto
-  Detect and produce audio on hardware.
+- Displayed fixed digital inputs converge through their matching SRC4382 route
+  pair after Auto Detect and produce audio on hardware; the real front-panel
+  S/PDIF path is explicitly covered.
+- External-mux route requests restore the default SRC4382 route pair after Auto
+  Detect.
 - Volume/mute/preset/standby/wake remain responsive while Auto Detect scans.
 - SRC4382 I2C faults increment diagnostics and do not stall MAIN.
 - Full simulator gate passes.

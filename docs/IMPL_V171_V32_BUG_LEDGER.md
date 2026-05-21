@@ -100,7 +100,7 @@ Release closure criteria beyond this bug ledger:
 | BUG-PRESET-03 | green | CONTROL preset dispatch | IR/menu preset handlers flip local `PRESET_BIT` before the fallible atomic TX helper succeeds; under TX saturation CONTROL can show a preset that was not sent or persisted. | `tests/sim/test_v171_v32_user_visible_desync_bugs.py::test_ir_preset_b_tx_saturation_does_not_change_local_preset_state`. |
 | BUG-REV-01 | done | MAIN firmware identity | V3.2 app flash leaves runtime EEPROM identity at old values, e.g. `revision: 0x30 (EEPROM 2.3)`, because the app flasher streams program memory only and the firmware does not migrate the EEPROM tuple. | `test_v32_runtime_eeprom_identity_matches_release_hex_without_seed` and `test_build_v32_release_bumps_runtime_eeprom_revision_marker`. |
 | BUG-SETTINGS-01 | green | MAIN release flash / user settings | MAIN app HID cmd `0x40` is a firmware-update handoff, but the V3.2 handler flushed factory defaults into EEPROM first, resetting volume to `-96 dB`, input to analog 1, and potentially the shared setup/profile byte after flash. | `tests/sim/test_dlcp_main_flash.py::test_v32_cmd40_bootloader_entry_preserves_saved_settings_in_source`, `tests/sim/test_v32_flasher_sim_backend_hid.py::test_sim_hid_cmd40_preserves_user_volume_and_input_settings`, and `test_v32_release_flash_sim_full_main_post_flash_state`. |
-| BUG-SRC4382-AD-01 | blocked | MAIN SRC4382 Auto Detect | V3.2 overpolls SRC4382 in Auto Detect; the broad rewrite broke the route/TAS contract, while the later bad-audio observation was retested on 2026-05-20 as a speaker-wiring false alarm. Canonical V3.2 rev `0x6E` now contains an in-place countdown candidate, source-loss debounce, and fixed-digital SRC route priming for the rev `0x6D` no-audio-on-manual-source hardware finding, but closure remains blocked on structured hardware retest/soak evidence. | `tests/sim/test_v32_src4382_audio_path_regression.py::{test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh,test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation,test_v32_audio_path_safety_guard_rejects_missing_tas_refresh_mutation}`, `tests/sim/test_v32_src4382_autodetect_polling.py::{test_v32_src4382_autodetect_no_source_cadence_is_reduced,test_v32_cadence_guard_rejects_unthrottled_receiver_select_mutation,test_v32_src4382_autodetect_source_present_cadence_is_reduced,test_v32_source_present_cadence_guard_rejects_unthrottled_monitor_mutation,test_v32_src4382_no_source_scan_does_not_read_non_pcm_status,test_v32_src4382_source_present_latches_non_pcm_status,test_v32_src4382_single_source_loss_sample_does_not_flap_route,test_v32_src4382_sustained_source_loss_resumes_scan_within_1s,test_v32_src4382_writes_0d_only_when_candidate_changes,test_v32_src4382_full_scan_detects_worst_position_source_within_500ms,test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation,test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route,test_v32_src4382_manual_digital_input_primes_default_receiver_route,test_v32_src4382_fixed_input_goes_quiet_after_route_converges,test_v32_src4382_autodetect_mute_unmute_remain_responsive,test_v32_src4382_autodetect_standby_wake_remain_responsive,test_v32_src4382_autodetect_preset_change_remains_responsive,test_v32_src4382_nack_does_not_block_volume_command,test_v171_v32_src4382_autodetect_dual_main_chain_soak_stays_responsive}`, and `tests/sim/test_v32_release_flash_sim.py::test_v32_lx521_a_b_payloads_reach_each_main_tas3108`. |
+| BUG-SRC4382-AD-01 | blocked | MAIN SRC4382 Auto Detect | V3.2 overpolls SRC4382 in Auto Detect; the broad rewrite broke the route/TAS contract, while the later bad-audio observation was retested on 2026-05-20 as a speaker-wiring false alarm. Canonical V3.2 rev `0x6E` now contains an in-place countdown candidate, source-loss debounce, explicit route reconciliation for fixed inputs, the real front-panel S/PDIF path (`B0/06/05` -> route `1`), and external-mux route priming, but closure remains blocked on structured hardware retest/soak evidence. | `tests/sim/test_v32_src4382_audio_path_regression.py::{test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh,test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation,test_v32_audio_path_safety_guard_rejects_missing_tas_refresh_mutation}`, `tests/sim/test_v32_src4382_autodetect_polling.py::{test_v32_src4382_autodetect_no_source_cadence_is_reduced,test_v32_cadence_guard_rejects_unthrottled_receiver_select_mutation,test_v32_src4382_autodetect_source_present_cadence_is_reduced,test_v32_source_present_cadence_guard_rejects_unthrottled_monitor_mutation,test_v32_src4382_no_source_scan_does_not_read_non_pcm_status,test_v32_src4382_source_present_latches_non_pcm_status,test_v32_src4382_single_source_loss_sample_does_not_flap_route,test_v32_src4382_sustained_source_loss_resumes_scan_within_1s,test_v32_src4382_writes_0d_only_when_candidate_changes,test_v32_src4382_full_scan_detects_worst_position_source_within_500ms,test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation,test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route,test_v32_src4382_external_mux_input_primes_default_receiver_route,test_v171_v32_control_spdif_menu_selects_route_after_autodetect,test_v32_src4382_fixed_input_goes_quiet_after_route_converges,test_v32_src4382_autodetect_mute_unmute_remain_responsive,test_v32_src4382_autodetect_standby_wake_remain_responsive,test_v32_src4382_autodetect_preset_change_remains_responsive,test_v32_src4382_nack_does_not_block_volume_command,test_v171_v32_src4382_autodetect_dual_main_chain_soak_stays_responsive}`, and `tests/sim/test_v32_release_flash_sim.py::test_v32_lx521_a_b_payloads_reach_each_main_tas3108`. |
 
 ## Current Verification Snapshot
 
@@ -638,7 +638,7 @@ listed hardware confirmation before changing status from `green` to `done`.
 | BUG-PRESET-03 | IR preset TX-saturation rollback test passes in sim. | No dedicated hardware step unless TX saturation is reproduced; normal preset A/B hardware checks cover the non-saturated path. The current IR `preset-convergence` phase failed before any MAIN preset change, so it is receiver-path evidence, not a preset-state rollback result. |
 | BUG-REV-01 | Runtime EEPROM identity and builder revision-marker tests pass; release-flash sim post-state passes. | DONE: `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --execute --no-pause --phase identity` -> `1 passed` / `PASS [identity]`; both connected MAINs matched canonical V3.2 runtime identity/revision and A/B filename RAM. |
 | BUG-SETTINGS-01 | Source guard proves cmd `0x40` no longer calls the factory-default EEPROM flush; sim HID and release-flash tests preserve non-default volume/input/setup-profile exactly. | PARTIAL: real right+left release-flash preserved the stable CONTROL-owned settings (`0xA0` / `0x00` / `0x04`) and identity after flash. Still run a stronger hardware proof after setting non-default volume through CONTROL, plus the ordinary real-IR stress gate to confirm the configured Hypex RC5 profile dispatches. |
-| BUG-SRC4382-AD-01 | Audio-path safety tests prove Auto Detect still drives SRC4382 route and TAS3108 refresh, mutation proof catches a missing route event, cadence tests reduce no-source/source-present traffic with red cases for high traffic and too-slow discovery, no-source scans avoid stale `0x12` reads, source-present scans latch `0x12` into `ram_0x0BF`, worst-position discovery stays responsive, explicit input preempts Auto Detect, manual fixed digital inputs prime the default SRC route, fixed input then goes quiet, mute/unmute, standby/wake, and preset-select remain responsive while Auto Detect is active, SRC4382 address/data NACKs are bounded, and LX521 A/B TAS3108 payloads reach both MAINs. | Run `src4382-ad-acoustic` after flashing canonical V3.2/V1.71: fixed-input and Auto Detect playback must have normal low-band output, every fixed digital source selected after Auto Detect must produce audio, volume/mute/preset/standby/wake/input must remain responsive, and the Auto Detect/fixed-input soak must show no UI stall, must record whether the Volume-screen A/B badge pulses or shows abnormal LCD refresh, and must show no unexplained `I`/`R` growth. |
+| BUG-SRC4382-AD-01 | Audio-path safety tests prove Auto Detect still drives SRC4382 route and TAS3108 refresh, mutation proof catches a missing route event, cadence tests reduce no-source/source-present traffic with red cases for high traffic and too-slow discovery, no-source scans avoid stale `0x12` reads, source-present scans latch `0x12` into `ram_0x0BF`, worst-position discovery stays responsive, explicit input preempts Auto Detect, external-mux inputs prime the default SRC route, the real front-panel S/PDIF path emits `B0/06/05` and converges both MAINs to route `1`, fixed input then goes quiet, mute/unmute, standby/wake, and preset-select remain responsive while Auto Detect is active, SRC4382 address/data NACKs are bounded, and LX521 A/B TAS3108 payloads reach both MAINs. | Run `src4382-ad-acoustic` after flashing canonical V3.2/V1.71: fixed-input and Auto Detect playback must have normal low-band output, every fixed digital source selected after Auto Detect must produce audio, volume/mute/preset/standby/wake/input must remain responsive, and the Auto Detect/fixed-input soak must show no UI stall, must record whether the Volume-screen A/B badge pulses or shows abnormal LCD refresh, and must show no unexplained `I`/`R` growth. |
 
 Additional live hardware gate added on 2026-05-09:
 `tests/hardware/test_live_state_transitions.py::test_live_v32_release_identity_and_ab_filename_ram`.
@@ -1296,11 +1296,15 @@ Root cause:
 - The failed rewrite removed or bypassed that route/TAS refresh path.  The
   simulator lacked a test that would fail when SRC4382 routing changed without
   the downstream TAS3108 refresh.
-- The rev `0x6D` fixed-source failure was a narrower route gap: CONTROL's fixed
-  digital menu choices become external-mux route requests `0/5/6/7`.  Those
-  routes toggled mux/TAS state but did not restore SRC4382 `0x0D=0x08`,
-  `0x08=0x30`, so Auto Detect could leave the SRC listening to the wrong
-  receiver.
+- The rev `0x6D` fixed-source failure was a narrower route gap: explicit input
+  changes were not forced through route reconciliation, so a fixed source could
+  inherit the previous Auto Detect receiver state.  The first follow-up tests
+  also described the wrong surface: on the deployed `BF/05 == 3` routing
+  profile, the displayed fixed-digital menu entries emit `cmd 0x06` values
+  `0x05..0x08` (`S/PDIF`, `USB Audio`, `AES`, `Optical`), which map to MAIN
+  routes `1..4`.  External-mux route requests `0/5/6/7` are still real stock
+  branches and must restore the default SRC4382 pair, but they are not the
+  displayed `S/PDIF` menu path.
 
 Red test target:
 
@@ -1327,7 +1331,11 @@ Acceptance:
 - Explicit fixed-input selection preempts Auto Detect and converges through
   the route/TAS path, then the SRC4382 scanner goes quiet while fixed input
   remains selected.
-- Manual fixed digital input selections restore the default SRC4382
+- Displayed fixed digital input selections converge through the matching
+  SRC4382 route pair and refresh TAS before the scanner goes quiet.  The
+  front-panel `S/PDIF` path specifically emits `B0/06/05` and converges both
+  MAINs to route `1` (`0x0D=0x09`, `0x08=0x70`) after Auto Detect.
+- External-mux route requests `0/5/6/7` restore the default SRC4382
   receiver/transmitter pair and refresh TAS before the scanner goes quiet.
 - No-source scanning reads `0x13` for source presence without reading stale
   `0x12` non-PCM status before a source exists.
@@ -1354,8 +1362,9 @@ Implementation result:
   ignores one transient `0x13.RXCKR == 0` monitor sample, while sustained loss
   resumes scanning within the simulator `1 s` bound.
 - Rev `0x6E` also forces route reconciliation on every explicit `cmd 0x06`
-  input change and makes external-mux route requests `0/5/6/7` write the
-  default SRC4382 pair `0x0D=0x08`, `0x08=0x30`.
+  input change, preserves the displayed S/PDIF route (`B0/06/05` -> route `1`,
+  `0x0D=0x09`, `0x08=0x70`), and makes external-mux route requests `0/5/6/7`
+  write the default SRC4382 pair `0x0D=0x08`, `0x08=0x30`.
 - Green tests:
   `test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh`,
   `test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation`,
@@ -1370,7 +1379,8 @@ Implementation result:
   `test_v32_src4382_full_scan_detects_worst_position_source_within_500ms`,
   `test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation`,
   `test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route`,
-  `test_v32_src4382_manual_digital_input_primes_default_receiver_route`,
+  `test_v32_src4382_external_mux_input_primes_default_receiver_route`,
+  `test_v171_v32_control_spdif_menu_selects_route_after_autodetect`,
   `test_v32_src4382_fixed_input_goes_quiet_after_route_converges`,
   `test_v32_src4382_autodetect_mute_unmute_remain_responsive`,
   `test_v32_src4382_autodetect_standby_wake_remain_responsive`,

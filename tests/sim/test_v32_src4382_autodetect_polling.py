@@ -50,6 +50,15 @@ SRC_REG_NON_PCM = 0x12
 SRC_REG_RX_STATUS = 0x13
 TAS_REG_VOLUME_COEFF = 0x30
 
+CONTROL_INPUT_INDEX = 0x0B7
+CONTROL_INPUT_SELECT_CACHE = 0x0B8
+CONTROL_DISPLAY_STATE = 0x0BF
+CONTROL_RAW_STATUS_CACHE = 0x0A1
+CONTROL_BUTTON_PINS = {
+    "RIGHT": ("A", 4),
+    "UP": ("C", 0),
+}
+
 BOOT_TCY = 16_000_000
 ONE_SECOND_TCY = 4_000_000
 SHORT_DWELL_TCY = 500_000
@@ -135,6 +144,26 @@ def _assert_rx_ring_drained(chain) -> None:  # type: ignore[no-untyped-def]
 
 def _assert_main_rx_ring_drained(chain, unit: int) -> None:  # type: ignore[no-untyped-def]
     assert chain.read_main_reg(unit, RX_RING_RD) == chain.read_main_reg(unit, RX_RING_WR)
+
+
+def _tap_control_key(chain, key: str) -> None:  # type: ignore[no-untyped-def]
+    port, bit = CONTROL_BUTTON_PINS[key]
+    chain.set_control_pin(port, bit, False)
+    chain.step_ticks(5_000_000)
+    chain.set_control_pin(port, bit, True)
+    chain.step_ticks(5_000_000)
+
+
+def _force_mains_to_autodetect_prior_route(chain, route: int, rx: int, tx: int) -> None:  # type: ignore[no-untyped-def]
+    for unit in (0, 1):
+        chain.write_main_reg(unit, INPUT_SELECT, 0x00)
+        chain.write_main_reg(unit, INPUT_SELECT_MIRROR, 0x00)
+        chain.write_main_reg(unit, SRC_ROUTE_REQUEST, route)
+        chain.write_main_reg(unit, ROUTE_SHADOW, route)
+        chain.poke_main_src4382_reg(unit, SRC_REG_RX_CONTROL, rx)
+        chain.poke_main_src4382_reg(unit, SRC_REG_TX_CONTROL_2, tx)
+        chain.reset_main_src4382_stats(unit)
+        chain.reset_main_dsp_write_log(unit)
 
 
 def _assert_no_source_cadence_is_reduced(v32_hex: Path) -> None:
@@ -497,24 +526,24 @@ def test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route(
 @pytest.mark.parametrize(
     ("input_select", "route_request"),
     [
-        (0x01, 0x00),  # S/PDIF: external mux path, route 0
-        (0x02, 0x05),  # USB Audio: external mux path
-        (0x03, 0x06),  # AES: external mux path
-        (0x04, 0x07),  # Optical: external mux path
+        (0x01, 0x00),  # legacy external-mux route 0
+        (0x02, 0x05),  # legacy external-mux route 5
+        (0x03, 0x06),  # legacy external-mux route 6
+        (0x04, 0x07),  # legacy external-mux route 7
     ],
 )
-def test_v32_src4382_manual_digital_input_primes_default_receiver_route(
+def test_v32_src4382_external_mux_input_primes_default_receiver_route(
     v32_hex: Path,
     input_select: int,
     route_request: int,
 ) -> None:
     chain = _boot_autodetect_main(v32_hex)
 
-    # Model the hardware report: Auto Detect has been scanning/no-source, then
-    # the operator selects a fixed digital input from CONTROL's Audio/Input menu.
+    # Model the stock external-mux branches after Auto Detect had been scanning.
     # The 0/5/6/7 route requests drive the external mux pins; they must also
     # restore the SRC4382 receiver/transmitter pair from any Auto Detect scan
-    # position so the selected mux input actually reaches the DSP.
+    # position so the selected mux input actually reaches the DSP. Displayed
+    # front-panel fixed digital inputs are covered by the CONTROL S/PDIF test.
     chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x00)
     chain.write_reg(SRC_ROUTE_STATUS, 0x03)
     chain.write_reg(SRC_ROUTE_REQUEST, 0x00)
@@ -534,6 +563,46 @@ def test_v32_src4382_manual_digital_input_primes_default_receiver_route(
     assert 0x30 in chain.read_main_src4382_write_values(0, SRC_REG_TX_CONTROL_2)
     assert chain.read_main_dsp_write_payload(0, TAS_REG_VOLUME_COEFF) is not None
     _assert_rx_ring_drained(chain)
+
+
+def test_v171_v32_control_spdif_menu_selects_route_after_autodetect(
+    v32_hex: Path,
+) -> None:
+    chain = _boot_autodetect_dual_chain(v32_hex)
+
+    # Front-panel path: Volume -> Preset -> Input, then first UP selects the
+    # displayed S/PDIF item. This is the user-observed RCA S/PDIF path; it is
+    # not the older direct-injection assumption that UI value 0x01 means S/PDIF.
+    _tap_control_key(chain, "RIGHT")
+    _tap_control_key(chain, "RIGHT")
+    assert chain.lcd_lines() == ("Input:          ", "Auto Detect     ")
+    assert chain.read_reg(CONTROL_DISPLAY_STATE) == 0x02
+    assert chain.read_reg(CONTROL_RAW_STATUS_CACHE) == 0x03
+
+    # Model the bug report's transition: Auto Detect had already been active
+    # and left the SRC parked on another route before the operator selected the
+    # fixed S/PDIF menu item.
+    _force_mains_to_autodetect_prior_route(chain, route=0x03, rx=0x08, tx=0x30)
+    before_frames = len(chain.tx_frames())
+
+    _tap_control_key(chain, "UP")
+    chain.step_ticks(CHAIN_COMMAND_SETTLE_TICKS)
+
+    new_frames = chain.tx_frames()[before_frames:]
+    assert (0xB0, 0x06, 0x05) in new_frames, new_frames
+    assert chain.lcd_lines() == ("Input:          ", "S/PDIF          ")
+    assert chain.read_reg(CONTROL_INPUT_INDEX) == 0x01
+    assert chain.read_reg(CONTROL_INPUT_SELECT_CACHE) == 0x05
+
+    for unit in (0, 1):
+        assert chain.read_main_reg(unit, INPUT_SELECT) == 0x05
+        assert chain.read_main_reg(unit, INPUT_SELECT_MIRROR) == 0x05
+        assert chain.read_main_reg(unit, SRC_ROUTE_REQUEST) == 0x01
+        assert chain.read_main_reg(unit, ROUTE_SHADOW) == 0x01
+        assert 0x09 in chain.read_main_src4382_write_values(unit, SRC_REG_RX_CONTROL)
+        assert 0x70 in chain.read_main_src4382_write_values(unit, SRC_REG_TX_CONTROL_2)
+        assert chain.read_main_dsp_write_payload(unit, TAS_REG_VOLUME_COEFF) is not None
+        _assert_main_rx_ring_drained(chain, unit)
 
 
 def test_v32_src4382_fixed_input_goes_quiet_after_route_converges(
