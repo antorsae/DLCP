@@ -24,7 +24,7 @@ from dlcp_fw.flash.dlcp_control_flash import (
     parse_intel_hex,
     run_preflight,
 )
-from dlcp_fw.patch.build_v171_release import build_v171_release
+from dlcp_fw.patch.build_v171_release import build_v171_release, bump_v171_release_revision
 
 
 # All tests in this module are backend-agnostic (static source/hex
@@ -280,7 +280,19 @@ def test_preflight_reports_target_release_and_compare_limitation(capsys) -> None
     assert rc == 0
     out = capsys.readouterr().out
     assert "target release: V1.71 / rev 0x" in out
+    assert " / build " in out
     assert "live CONTROL version/revision probe is unavailable" in out
+
+
+def test_static_control_release_info_includes_build_date() -> None:
+    mem = parse_intel_hex(str(V171_CONTROL_HEX))
+    info = detect_static_hex_control_release_info(mem)
+
+    assert info is not None
+    assert (info.major, info.minor, info.sub) == (0x01, 0x07, 0x31)
+    assert info.revision is not None
+    assert info.build_date is not None
+    assert len(info.build_date) == 8 and info.build_date.isdigit()
 
 
 def test_safe_wrapper_timeout_guidance_mentions_manual_bootloader_hold() -> None:
@@ -296,8 +308,11 @@ def test_build_v171_release_rolls_back_source_and_hex_on_assemble_failure(
 ) -> None:
     asm_path = tmp_path / "dlcp_control_v171.asm"
     original_text = (
+        "control_release_banner_row2:\n"
+        "        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x30, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x31, 0x00 ; \"Rev x02 20260521\"\n"
         "control_release_metadata:\n"
         "        db      0x01, 0x07, 0x31, 0x02\n"
+        "        db      0x20, 0x26, 0x05, 0x21                    ; build date 20260521 (BCD YYYYMMDD)\n"
     )
     asm_path.write_text(original_text, encoding="utf-8")
     output_hex = tmp_path / "DLCP_Control_V1.71.hex"
@@ -313,6 +328,66 @@ def test_build_v171_release_rolls_back_source_and_hex_on_assemble_failure(
 
     assert asm_path.read_text(encoding="utf-8") == original_text
     assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+
+
+def test_build_v171_release_updates_revision_date_and_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asm_path = tmp_path / "dlcp_control_v171.asm"
+    asm_path.write_text(
+        "control_release_banner_row2:\n"
+        "        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x30, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x31, 0x00 ; \"Rev x02 20260521\"\n"
+        "control_release_metadata:\n"
+        "        db      0x01, 0x07, 0x31, 0x02\n"
+        "        db      0x20, 0x26, 0x05, 0x21                    ; build date 20260521 (BCD YYYYMMDD)\n",
+        encoding="utf-8",
+    )
+    output_hex = tmp_path / "DLCP_Control_V1.71.hex"
+
+    def _fake_assemble(_asm_path: Path, hex_out: Path, **_kwargs) -> None:
+        hex_out.write_text(":00000001FF\n", encoding="ascii")
+
+    monkeypatch.setattr("dlcp_fw.patch.build_v171_release.assemble_v17", _fake_assemble)
+
+    old_rev, new_rev, built_hex = build_v171_release(
+        asm_path=asm_path,
+        output_hex=output_hex,
+        build_date="20260523",
+    )
+
+    text = asm_path.read_text(encoding="utf-8")
+    assert (old_rev, new_rev, built_hex) == (0x02, 0x03, output_hex)
+    assert "db      0x01, 0x07, 0x31, 0x03" in text
+    assert "db      0x20, 0x26, 0x05, 0x23" in text
+    assert '"Rev x03 20260523"' in text
+    assert (
+        "0x52, 0x65, 0x76, 0x20, 0x78, 0x30, 0x33, 0x20, "
+        "0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x33, 0x00"
+    ) in text
+    assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+
+
+def test_bump_v171_release_revision_keeps_banner_and_date_in_sync(tmp_path: Path) -> None:
+    asm_path = tmp_path / "dlcp_control_v171.asm"
+    asm_path.write_text(
+        "control_release_banner_row2:\n"
+        "        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x30, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x31, 0x00 ; \"Rev x02 20260521\"\n"
+        "control_release_metadata:\n"
+        "        db      0x01, 0x07, 0x31, 0x02\n"
+        "        db      0x20, 0x26, 0x05, 0x21                    ; build date 20260521 (BCD YYYYMMDD)\n",
+        encoding="utf-8",
+    )
+
+    old_rev, new_rev = bump_v171_release_revision(
+        asm_path=asm_path,
+        build_date="20260523",
+    )
+
+    text = asm_path.read_text(encoding="utf-8")
+    assert (old_rev, new_rev) == (0x02, 0x03)
+    assert "db      0x01, 0x07, 0x31, 0x03" in text
+    assert "db      0x20, 0x26, 0x05, 0x23" in text
+    assert '"Rev x03 20260523"' in text
 
 
 def test_pick_device_rejects_ambiguous_auto_select(monkeypatch) -> None:

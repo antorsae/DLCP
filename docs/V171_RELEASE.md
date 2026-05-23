@@ -22,12 +22,12 @@ V1.71 supersedes V1.64b for chains paired with V3.2 MAIN.  V1.64b
 remains the canonical fallback for chains running V3.1 / V2.x MAIN
 that do not need the V1.71-specific features.
 
-## Current Validation Status (2026-05-09)
+## Current Validation Status (2026-05-23)
 
 The historical 2026-04-22 hardware issue for the recommended pair was:
 
 - canonical CONTROL revision then: `V1.71 / rev 0x19`
-- current canonical CONTROL revision: `V1.71 / rev 0x2D`
+- current canonical CONTROL revision: `V1.71 / rev 0x2F / build 20260523`
 - canonical MAIN revision then: `V3.2 / rev 0x53`
 - reproduced symptom: after `STDBY -> WAKE`, CONTROL could remain on
   `WAITING FOR DLCP` while both MAINs are already awake, healthy, and
@@ -129,7 +129,15 @@ EEPROM layout: V1.71 preserves the V1.6x preset slot at EEPROM
 Canonical release revision is not stored in EEPROM because
 EEPROM `0x73` is runtime-owned. The canonical builder bumps a
 monotonic release revision in a flashed metadata block at app-flash
-`0x77B0..0x77BB`. Existing CONTROL EEPROM contents are read
+`0x77B0..0x77BB`, bakes the build date into `0x77BC..0x77BF`, and
+updates the boot LCD splash to print both values:
+
+```text
+Firmware V1.71
+Rev xNN YYYYMMDD
+```
+
+Existing CONTROL EEPROM contents are read
 transparently — no re-baking required when upgrading from
 V1.62b / V1.63b / V1.64b.
 
@@ -145,8 +153,9 @@ scripts/build_v171_release.py
 That command:
 
 1. increments the release revision byte in `control_release_metadata`
-2. assembles `src/dlcp_fw/asm/dlcp_control_v171.asm`
-3. rewrites the canonical release artifact at
+2. bakes the build date into metadata and the LCD-visible release banner
+3. assembles `src/dlcp_fw/asm/dlcp_control_v171.asm`
+4. rewrites the canonical release artifact at
    `firmware/patched/releases/DLCP_Control_V1.71.hex`
 
 The build is transactional: if `gpasm` fails, the source revision byte
@@ -197,7 +206,7 @@ After flashing, power-cycle the CONTROL once so the new code path is
 active from cold boot rather than hot-reload.
 
 During preflight/live flash the flasher reports the target
-`V1.71 / rev 0xNN` from the hex. Unlike MAIN, the current CONTROL
+`V1.71 / rev 0xNN / build YYYYMMDD` from the hex. Unlike MAIN, the current CONTROL
 update relay does not expose a live CONTROL version/revision probe
 back to the host, so device-versus-hex compare is not available yet.
 

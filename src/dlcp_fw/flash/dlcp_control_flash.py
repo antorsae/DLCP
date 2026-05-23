@@ -56,6 +56,7 @@ class ControlReleaseInfo:
     minor: int
     sub: int
     revision: int | None
+    build_date: str | None = None
 
 
 def _parse_int_auto(s: str) -> int:
@@ -141,6 +142,7 @@ def detect_static_hex_control_release_info(hex_mem: Dict[int, int]) -> ControlRe
         for offset in range(len(CONTROL_RELEASE_MAGIC))
     )
     revision: int | None = None
+    build_date: str | None = None
     if magic == CONTROL_RELEASE_MAGIC:
         meta_major = hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + 8, 0xFF) & 0xFF
         meta_minor = hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + 9, 0xFF) & 0xFF
@@ -152,12 +154,21 @@ def detect_static_hex_control_release_info(hex_mem: Dict[int, int]) -> ControlRe
             )
         if meta_revision != 0xFF:
             revision = meta_revision
+        date_bytes = tuple(
+            hex_mem.get(CONTROL_RELEASE_METADATA_ADDR + offset, 0xFF) & 0xFF
+            for offset in range(12, 16)
+        )
+        if 0xFF not in date_bytes:
+            candidate = "".join(f"{byte:02X}" for byte in date_bytes)
+            if candidate.isdigit():
+                build_date = candidate
 
     return ControlReleaseInfo(
         major=major,
         minor=minor,
         sub=sub,
         revision=revision,
+        build_date=build_date,
     )
 
 
@@ -171,9 +182,10 @@ def _format_control_version_label(info: ControlReleaseInfo | None) -> str:
 def _format_control_release_short(info: ControlReleaseInfo | None) -> str:
     if info is None:
         return "<unknown>"
+    date_suffix = f" / build {info.build_date}" if info.build_date else ""
     if info.revision is None:
-        return f"{_format_control_version_label(info)} / rev <unknown>"
-    return f"{_format_control_version_label(info)} / rev 0x{info.revision:02X}"
+        return f"{_format_control_version_label(info)} / rev <unknown>{date_suffix}"
+    return f"{_format_control_version_label(info)} / rev 0x{info.revision:02X}{date_suffix}"
 
 
 def build_control_stream(hex_mem: Dict[int, int], length: int = CONTROL_PROG_END_EXCL) -> bytes:

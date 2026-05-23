@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import re
 import shutil
 import tempfile
@@ -15,6 +16,17 @@ from dlcp_fw.sim.v17_symbols import assemble_v17
 
 _RELEASE_REV_RE = re.compile(
     r"(^\s*db\s+0x01,\s*0x07,\s*0x31,\s*0x)([0-9A-Fa-f]{2})(\b.*$)",
+    re.MULTILINE,
+)
+_BUILD_DATE_RE = re.compile(
+    r"(^\s*db\s+0x)([0-9A-Fa-f]{2})(,\s*0x)([0-9A-Fa-f]{2})"
+    r"(,\s*0x)([0-9A-Fa-f]{2})(,\s*0x)([0-9A-Fa-f]{2})"
+    r"(\s*;\s*build date\s+)([0-9]{8})(.*$)",
+    re.MULTILINE,
+)
+_BANNER_ROW2_RE = re.compile(
+    r"(^\s*db\s+)(0x[0-9A-Fa-f]{2}(?:,\s*0x[0-9A-Fa-f]{2})*)"
+    r"(\s*;\s*\")([^\"]+)(\".*$)",
     re.MULTILINE,
 )
 
@@ -47,10 +59,92 @@ def _rewrite_v171_release_revision(text: str) -> tuple[str, int, int]:
     return updated, old_rev, new_rev
 
 
-def bump_v171_release_revision(asm_path: Path = V171_CONTROL_ASM) -> tuple[int, int]:
-    text = asm_path.read_text(encoding="utf-8")
+def _validate_build_date(build_date: str) -> str:
+    value = build_date.strip()
+    if not re.fullmatch(r"\d{8}", value):
+        raise RuntimeError(f"build date must be YYYYMMDD, got {build_date!r}")
     try:
-        updated, old_rev, new_rev = _rewrite_v171_release_revision(text)
+        date(int(value[0:4]), int(value[4:6]), int(value[6:8]))
+    except ValueError as exc:
+        raise RuntimeError(f"invalid build date {build_date!r}") from exc
+    return value
+
+
+def _build_date_bcd_bytes(build_date: str) -> tuple[int, int, int, int]:
+    values = [int(build_date[i : i + 2], 16) for i in range(0, 8, 2)]
+    return values[0], values[1], values[2], values[3]
+
+
+def _db_bytes(values: list[int]) -> str:
+    return ", ".join(f"0x{value:02X}" for value in values)
+
+
+def _rewrite_v171_build_date(text: str, build_date: str) -> str:
+    marker = text.find("control_release_metadata:")
+    if marker < 0:
+        raise RuntimeError("control_release_metadata block not found")
+    match = _BUILD_DATE_RE.search(text, pos=marker)
+    if match is None:
+        raise RuntimeError("V1.71 build-date metadata line not found")
+    b0, b1, b2, b3 = _build_date_bcd_bytes(build_date)
+    return (
+        text[: match.start(2)]
+        + f"{b0:02X}"
+        + text[match.end(2) : match.start(4)]
+        + f"{b1:02X}"
+        + text[match.end(4) : match.start(6)]
+        + f"{b2:02X}"
+        + text[match.end(6) : match.start(8)]
+        + f"{b3:02X}"
+        + text[match.end(8) : match.start(10)]
+        + build_date
+        + text[match.end(10) :]
+    )
+
+
+def _rewrite_v171_banner_row2(text: str, revision: int, build_date: str) -> str:
+    marker = text.find("control_release_banner_row2:")
+    if marker < 0:
+        raise RuntimeError("control_release_banner_row2 block not found")
+    match = _BANNER_ROW2_RE.search(text, pos=marker)
+    if match is None:
+        raise RuntimeError("V1.71 release banner row 2 db line not found")
+    row = f"Rev x{revision:02X} {build_date}"
+    if len(row) != 16:
+        raise RuntimeError(f"release banner row 2 must be 16 chars, got {row!r}")
+    values = [ord(ch) for ch in row] + [0x00]
+    return (
+        text[: match.start(2)]
+        + _db_bytes(values)
+        + text[match.end(2) : match.start(4)]
+        + row
+        + text[match.end(4) :]
+    )
+
+
+def _rewrite_v171_release_metadata(
+    text: str,
+    *,
+    build_date: str,
+) -> tuple[str, int, int]:
+    updated, old_rev, new_rev = _rewrite_v171_release_revision(text)
+    updated = _rewrite_v171_build_date(updated, build_date)
+    updated = _rewrite_v171_banner_row2(updated, new_rev, build_date)
+    return updated, old_rev, new_rev
+
+
+def bump_v171_release_revision(
+    asm_path: Path = V171_CONTROL_ASM,
+    *,
+    build_date: str | None = None,
+) -> tuple[int, int]:
+    text = asm_path.read_text(encoding="utf-8")
+    release_date = _validate_build_date(build_date or date.today().strftime("%Y%m%d"))
+    try:
+        updated, old_rev, new_rev = _rewrite_v171_release_metadata(
+            text,
+            build_date=release_date,
+        )
     except RuntimeError as exc:
         raise RuntimeError(f"{exc} in {asm_path}") from exc
     asm_path.write_text(updated, encoding="utf-8")
@@ -62,10 +156,15 @@ def build_v171_release(
     asm_path: Path = V171_CONTROL_ASM,
     output_hex: Path = V171_CONTROL_HEX,
     gpasm: str = "gpasm",
+    build_date: str | None = None,
 ) -> tuple[int, int, Path]:
     original_text = asm_path.read_text(encoding="utf-8")
+    release_date = _validate_build_date(build_date or date.today().strftime("%Y%m%d"))
     try:
-        updated_text, old_rev, new_rev = _rewrite_v171_release_revision(original_text)
+        updated_text, old_rev, new_rev = _rewrite_v171_release_metadata(
+            original_text,
+            build_date=release_date,
+        )
     except RuntimeError as exc:
         raise RuntimeError(f"{exc} in {asm_path}") from exc
 
@@ -119,9 +218,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument("--gpasm", default="gpasm", help="gpasm executable (default: gpasm)")
+    ap.add_argument(
+        "--build-date",
+        default=None,
+        help="build date to bake into metadata/banner as YYYYMMDD (default: today)",
+    )
     args = ap.parse_args(argv)
 
-    old_rev, new_rev, output_hex = build_v171_release(gpasm=args.gpasm)
+    old_rev, new_rev, output_hex = build_v171_release(
+        gpasm=args.gpasm,
+        build_date=args.build_date,
+    )
     print(
         "built canonical V1.71 CONTROL release: "
         f"{output_hex} (release rev 0x{old_rev:02X} -> 0x{new_rev:02X})"

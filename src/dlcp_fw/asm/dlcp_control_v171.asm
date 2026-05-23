@@ -5430,21 +5430,22 @@ v171_preset_boot_init_done:
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movlw   HIGH(lcd_str_firmware_v)                          ; shifted via label
+        movlw   HIGH(control_release_banner_row1)                  ; baked release banner row 1
         movwf   TBLPTRH, A                                  ; reg: 0xff7
-        movlw   LOW(lcd_str_firmware_v)                           ; shifted via label
+        movlw   LOW(control_release_banner_row1)                   ; baked release banner row 1
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
-        movlw   0x01
-        call    delay_short_loop, 0x0                           ; dest: 0x000078
-        movlw   0x2e
-        call    lcd_char_write, 0x0                           ; dest: 0x0000ec
+        movlw   0xc0                                        ; row 2
+        call    lcd_command, 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
-        movlw   0x06
-        call    delay_short_loop, 0x0                           ; dest: 0x000078
+        movlw   HIGH(control_release_banner_row2)                  ; baked release banner row 2
+        movwf   TBLPTRH, A                                  ; reg: 0xff7
+        movlw   LOW(control_release_banner_row2)                   ; baked release banner row 2
+        movwf   TBLPTRL, A                                  ; reg: 0xff6
+        call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
         movlw   0x03
         movwf   (Common_RAM + 15), A                        ; reg: 0x00f
         movlw   0xe8
@@ -7011,14 +7012,22 @@ flow_ccs_1912_19EE:                                                  ; address: 
         bra     flow_ccs_1912_192A                                   ; dest: 0x00192a
         return  0x0
 
+; --- V1.71 boot splash release strings ---
+; Row 2 is rewritten by scripts/build_v171_release.py together with the
+; monotonic release revision and build-date metadata below.
+control_release_banner_row1:
+        db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
+control_release_banner_row2:
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x32, 0x46, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x33, 0x00 ; "Rev x2F 20260523"
+
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x2E                    ; V1.71 + monotonic release revision
-        db      0xff, 0xff, 0xff, 0xff
+        db      0x01, 0x07, 0x31, 0x2F                    ; V1.71 + monotonic release revision
+        db      0x20, 0x26, 0x05, 0x23                    ; build date 20260523 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

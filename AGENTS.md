@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-05-20
+Last updated: 2026-05-23
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -125,7 +125,7 @@ Use these locations only:
   - Canonical build path: `scripts/build_v32_release.py` bumps the EEPROM revision byte at `eeprom_data[0x82]` on every build, then assembles the release back into the same canonical filename. Do not mint ad-hoc suffixed release names for V3.2.
 - Control V1.71 (feature-bearing source rewrite + Layer 1/2/5): `firmware/patched/releases/DLCP_Control_V1.71.hex`
   - **Recommended deployed CONTROL release** when paired with V3.2 MAIN (operator runbook: `docs/V171_RELEASE.md`).
-  - Canonical build path: `scripts/build_v171_release.py` bumps the flashed release-metadata revision byte at `control_release_metadata[11]` on every build, then assembles the release back into the same canonical filename.
+  - Canonical build path: `scripts/build_v171_release.py` bumps the flashed release-metadata revision byte at `control_release_metadata[11]`, bakes the build date into `control_release_metadata[12..15]` plus the LCD boot splash, then assembles the release back into the same canonical filename.
 - Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`, `src/dlcp_fw/asm/dlcp_main_v32.asm`, `src/dlcp_fw/asm/dlcp_control_v17.asm`, `src/dlcp_fw/asm/dlcp_control_v171.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
 - Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm`, `src/dlcp_fw/asm/dlcp_main_v31_with_nops.asm`, `src/dlcp_fw/asm/dlcp_main_v31_without_nops.asm`, and matching `DLCP_Firmware_V3.1_diag*` / `DLCP_Firmware_V3.1_WITH*_NOPS.hex` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
@@ -337,6 +337,7 @@ V1.7 CONTROL source rewrite:
 
 V1.71 CONTROL feature-bearing source rewrite:
 - `test_v171_baseline.py` (structural gates: vector block, bootloader, config, EEPROM version tuple + preset slot, app-code growth vs stock)
+- `test_v171_release_banner.py` (boot LCD splash renders baked `Firmware V1.71` plus `Rev xNN YYYYMMDD`)
 - `test_v171_preset_inline.py` (V1.61b: IR 0x38/0x39 A/B shortcuts, boot init from EEPROM 0x74, A↔B toggle, idempotence)
 - `test_v171_ir_endpoints.py` (V1.64b: IR 0x3A/0x3B explicit standby/wake endpoints, first-frame ordering)
 - `test_v171_fault_indicator.py` (V1.63b: BF/08 DSP-fault parser, bf08_fault_byte store at 0x0AB, DSP_FAULT_BIT set/clear, no-op on clean clear)
@@ -371,7 +372,8 @@ Recent verification (latest 2026-05-20):
 
 - `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1130 tests collected`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
-- `.venv_ep0/bin/python scripts/build_v171_release.py` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x2D`
+- `.venv_ep0/bin/python scripts/build_v171_release.py --build-date 20260523` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x2F / build 20260523`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_release_banner.py tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_rev_present tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_build_date_and_boot_banner_match` -> `22 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
 - `.venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x6D -> 0x6E`
@@ -598,7 +600,7 @@ scripts/flash_control_safe.sh
 ## V1.71 Release Ceremony
 
 - Canonical CONTROL release output is always `firmware/patched/releases/DLCP_Control_V1.71.hex`.
-- Each canonical `V1.71` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v171.asm` at `control_release_metadata[11]`; `scripts/build_v171_release.py` is the required path because it bumps the byte before assembling.
+- Each canonical `V1.71` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v171.asm` at `control_release_metadata[11]` and bake the build date into `control_release_metadata[12..15]` plus the LCD boot splash; `scripts/build_v171_release.py` is the required path because it updates all three before assembling.
 - `scripts/flash_control_safe.sh` now defaults to the canonical `V1.71` hex.
 - `src/dlcp_fw/flash/dlcp_control_flash.py` must read version + revision from the target hex and report them during preflight/live flash. The current CONTROL update relay does not expose a live version/revision probe, so device-versus-hex compare is not currently available there.
 

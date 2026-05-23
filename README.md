@@ -3,7 +3,7 @@
 Drop-in replacement firmware for the **Hypex DLCP**.  The current release pair is:
 
 - MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.2.hex`](firmware/patched/releases/DLCP_Firmware_V3.2.hex) (`V3.2 / rev 0x6E`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.71.hex`](firmware/patched/releases/DLCP_Control_V1.71.hex) (`V1.71 / rev 0x2D`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.71.hex`](firmware/patched/releases/DLCP_Control_V1.71.hex) (`V1.71 / rev 0x2F / build 20260523`)
 
 This README focuses on the supported V3.2 + V1.71 deployment.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 

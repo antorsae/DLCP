@@ -28,12 +28,12 @@ Non-canonical local experiment images (e.g. `DLCP_Firmware_V3.2.lst`,
 `DLCP_Firmware_V3.2.cod`) are gpasm byproducts and not part of this
 release workflow.
 
-## Current Validation Status (2026-05-20)
+## Current Validation Status (2026-05-23)
 
 The current canonical release identities are:
 
 - MAIN: `V3.2 / rev 0x6E`
-- CONTROL: `V1.71 / rev 0x2D`
+- CONTROL: `V1.71 / rev 0x2F / build 20260523`
 
 Current local non-hardware verification:
 

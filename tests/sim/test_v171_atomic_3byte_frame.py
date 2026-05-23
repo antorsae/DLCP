@@ -291,3 +291,27 @@ def test_release_metadata_rev_present(v171_assembled) -> None:
         f"0x00 and 0xFF are reserved sentinels — did the release "
         f"ceremony misfire?"
     )
+
+
+def _read_c_string(ih: IntelHex, base: int, max_len: int = 32) -> str:
+    out: list[int] = []
+    for offset in range(max_len):
+        value = ih[base + offset]
+        if value == 0:
+            return bytes(out).decode("ascii")
+        out.append(value)
+    raise AssertionError(f"NUL terminator not found within {max_len} bytes at 0x{base:04X}")
+
+
+def test_release_metadata_build_date_and_boot_banner_match(v171_assembled) -> None:
+    syms, ih = v171_assembled
+    base = syms["control_release_metadata"]
+    rev_byte = ih[base + 11]
+    date_bcd = bytes(ih[base + offset] for offset in range(12, 16))
+    build_date = "".join(f"{byte:02X}" for byte in date_bcd)
+
+    assert build_date.isdigit() and len(build_date) == 8
+    assert _read_c_string(ih, syms["control_release_banner_row1"]) == "Firmware V1.71"
+    assert _read_c_string(ih, syms["control_release_banner_row2"]) == (
+        f"Rev x{rev_byte:02X} {build_date}"
+    )
