@@ -47,6 +47,13 @@ depending on a previous Auto Detect scan.
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
 ```
 
+LCD status format:
+
+- `PB1 OK` / `PB2 OK`: fresh snapshot, no displayed abnormal counters or reset flags.
+- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more non-zero diagnostics; tokens such as `I7`, `A1`, `S1`, `B1`, or `O1` identify the fields that changed.
+- `PB1 old` / `PB2 old`: CONTROL has an older snapshot but has not declared the PB lost.
+- `PB1 lost` / `PB2 lost`: CONTROL has not received fresh diagnostics within the loss window.
+
 Counters:
 
 - `I`: I2C/MSSP transport faults
