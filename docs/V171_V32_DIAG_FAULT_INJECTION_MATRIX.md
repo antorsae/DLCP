@@ -79,18 +79,42 @@ realistic RA1 stimulus.  Until then, the required invariant is simulator-only
 PORTA-edge observability: exactly one firmware-observed RA1 edge increments
 `diag_p`, reaches CONTROL/LCD, and does not repeat while the pin is held steady.
 
+## Operator Classification
+
+The LCD displays a mix of fault indicators, reset-cause flags, and OK behavior
+counters. Operator interpretation must not treat all non-zero cells as faults.
+
+| LCD | Classification | Notes |
+| --- | --- | --- |
+| `S` | OK behavior | Standby/shutdown dispatch count. Expected after intentional standby. |
+| `B` | OK behavior | Bring-up/wake dispatch count. Expected after intentional wake/bring-up. |
+| `O` | OK behavior | Power-on reset. It renders under `PBn OK` and never selects `PBn!` by itself. |
+| `I` | Issue indicator | I2C/MSSP transport fault. |
+| `D` | Issue indicator | DSP/TAS3108 fault episode. |
+| `R` | Issue indicator | Recovery branch entry after DSP/I2C trouble. |
+| `A` | Issue/suspicious indicator | AN0 standby-sense trigger; expected only if AN0 is intentionally driven. |
+| `P` | Suspicious event telemetry | RA1 edge event; expected only if RA1 is intentionally toggled. |
+| `V` | Issue indicator | Brown-out reset / rail sag. |
+| `W` | Issue indicator | Watchdog reset. |
+| `X` | Contextual issue indicator | Software reset; OK only if explained by known flash/reset/reboot action. |
+
+`S`, `B`, and `O` are validation targets because the LCD must surface real
+standby/wake/reset context, not because they are fault counters. Unexpected
+`S/B` growth during playback can help explain an observed symptom, but the
+fault is the unexpected state transition, not the counter increment itself.
+
 ## Current Coverage
 
 | LCD | MAIN cell | Meaning | Current strongest coverage | Status |
 | --- | --- | --- | --- | --- |
 | `I` | `diag_i` | I2C transport faults | Real SRC4382 address/data NACK injection increments MAIN0/MAIN1 `diag_i`, then PB1/PB2 Diag renders `I`. | fault surfaced |
 | `D` | `diag_d` | Volume-write DSP fault episode: retry exhaustion first sets `dsp_fault_flags.6` | Real TAS3108 volume-write address NACK exhausts retry budget, increments MAIN0/MAIN1 `diag_d`, then PB1/PB2 Diag renders `D`. | fault surfaced |
-| `S` | `diag_s` | standby/shutdown dispatch | Real CONTROL STBY increments both MAINs, then PB1/PB2 Diag renders `S`. | event surfaced |
-| `B` | `diag_b` | bring-up/wake dispatch | Real CONTROL WAKE increments both MAINs, then PB1/PB2 Diag renders `B`. | event surfaced |
+| `S` | `diag_s` | standby/shutdown dispatch | Real CONTROL STBY increments both MAINs, then PB1/PB2 Diag renders `S`. | OK event surfaced |
+| `B` | `diag_b` | bring-up/wake dispatch | Real CONTROL WAKE increments both MAINs, then PB1/PB2 Diag renders `B`. | OK event surfaced |
 | `R` | `diag_r` | Recovery branch entries: bounded MSSP/I2C timeout recovery or volume-DSP retry exhaustion | Real TAS3108 volume-write retry exhaustion and bounded MSSP STOP timeout both increment MAIN0/MAIN1 `diag_r`, then PB1/PB2 Diag renders `R`. | fault surfaced |
 | `A` | `diag_a` | AN0 standby low-threshold trip | Real AN0 high-armed then low trip via `set_main_an0_sample` increments MAIN0/MAIN1 `diag_a`, then PB1/PB2 Diag renders `A`. | event surfaced |
 | `P` | `diag_p` | RA1 PORTA-edge observability event | Simulator PORTA-edge stimulus via `set_main_pin(unit, "A", 1, level)` increments exactly once, holds steady without repeat, then PB1/PB2 Diag renders `P`. | not applicable for hardware-realistic release; simulator invariant covered |
-| `O/V/W/X` | reset flags | POR/BOR/WDT/SW reset cause flags | Distinct per-MAIN RCON reset-cause latch stimuli drive V3.2 cold-init classification, then PB1/PB2 Diag receives each reset flag through `cmd 0x22`; `V/W/X` render directly, and `O` is forced visible with an additional real `I` abnormal because clean POR alone intentionally renders `OK`. | reset-cause surfaced |
+| `O/V/W/X` | reset flags | POR/BOR/WDT/SW reset cause flags | Distinct per-MAIN RCON reset-cause latch stimuli drive V3.2 cold-init classification, then PB1/PB2 Diag receives each reset flag through `cmd 0x22`; `O` renders as OK-context telemetry, while `V/W/X` select issue layout. | reset-cause surfaced |
 
 Current concrete tests:
 
@@ -118,9 +142,9 @@ Current concrete tests:
   covers the simulator-only `P` PORTA-edge invariant to PB1/PB2 LCD.
 - `tests/sim/test_v171_v32_layer5_diag_chain.py::test_v171_v32_diag_lcd_surfaces_reset_cause_flags`
   covers `O/V/W/X` from distinct per-MAIN RCON reset-cause latch stimuli to
-  PB1/PB2 cache/LCD via `cmd 0x22` / `BF/28..BF/2B`; the `O` case adds a real
-  post-reset `I` abnormal so the sparse LCD renderer emits `O1` instead of the
-  intentional clean-POR `OK` layout.
+  PB1/PB2 cache/LCD via `cmd 0x22` / `BF/28..BF/2B`; the `O` case also verifies
+  that OK-context reset telemetry can appear at the end of a `PBn!` issue row
+  when there is room.
 - `tests/sim/test_v171_v32_diag_fault_matrix_manifest.py`
   is the executable coverage manifest.  It fails if required row/PB tests are
   missing, skipped, xfailed, or if runtime/reset transports are conflated in

@@ -3755,17 +3755,17 @@ v171_preset_exit_check:
 ; ===========================================================================
 ; V1.71 Layer 5 Phase B + Tier-1 Phase 3.4 — Diagnostics page
 ; ---------------------------------------------------------------------------
-; Per-PB Option-D sparse renderer for the Tier-1 Diagnostics page.
-; Rewritten in Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts (Option D
-; -- locked)") to replace the dual-PB legacy renderer that displayed
+; Per-PB sparse renderer for the Tier-1 Diagnostics page.
+; Rewritten in Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts") to replace
+; the dual-PB legacy renderer that displayed
 ; both PBs simultaneously on a single screen.  The new design renders
 ; ONE PB per page (state 4 = PB1, state 5 = PB2) so that:
 ;   * Per-PB layout has 32 chars to spend on at most 11 cells per PB
 ;     -- enough room for sparse rendering of all 7 runtime + 4 reset-
 ;     cause cells WITHOUT prefix overhead eating the available width.
 ;   * Operator-glanceable: silent PB shows "PBn" + "n/a"; healthy PB
-;     shows "PBn" + "OK"; degraded PB shows the non-zero cells in the
-;     fixed display order I D S B R A P O V W X.
+;     shows "PBn OK" with S/B/O context on row 1; issue PB shows the
+;     non-zero cells in display order I D R A P V W X S B O.
 ;
 ; Cache-source dispatch (PB index 0 -> PB1, 1 -> PB2):
 ;   * PB1: cache base v171_diag_pb1_i = operand 0x080 (phys 0x180)
@@ -3782,25 +3782,22 @@ v171_preset_exit_check:
 ;                                     -- fires when the abnormal-cell
 ;                                     counter `v171_diag_render_abnormal`
 ;                                     is 0, where the counter walks
-;                                     the 7 runtime cells I/D/S/B/R/A/P
-;                                     plus the 3 abnormal-reset cells
-;                                     V/W/X; the POR `O` flag may be 1
-;                                     on a normal cold boot and does
-;                                     NOT count toward the abnormal
-;                                     total)
-;     Row 1: "OK" + 14 spaces
+;                                     issue cells I/D/R/A/P/V/W/X;
+;                                     OK-context cells S/B/O do NOT
+;                                     count toward abnormal)
+;     Row 1: sparse OK-context cells S/B/O, or blank if all zero.
 ;   Absent (present mask bit clear):
 ;     Row 0: "PBn" + 13 spaces
 ;     Row 1: "n/a" + 13 spaces
 ;   Degraded (1 <= count <= 9):
-;     Row 0: "PBn:" + " X#" * min(count,4) + spaces to col 16
+;     Row 0: "PBn!" + " X#" * min(count,4) + spaces to col 16
 ;            (each " X#" = 3 chars: leading space + letter + value)
 ;     Row 1: if count <= 4 -> 16 spaces (entire row blank);
 ;            else "X#" + " X#" * (count-5) + spaces to col 16
 ;            (first row-1 entry has no leading space; subsequent
 ;            entries get a leading space).
 ;   Overflow (count >= 10):
-;     Row 0: "PBn:" + " X# X# X# X#" (4 entries, full width)
+;     Row 0: "PBn!" + " X# X# X# X#" (4 entries, full width)
 ;     Row 1: "X# X# X# X# X#" (5 entries, 14 chars) + ".."
 ;
 ; Counter encoding (unchanged from Phase B baseline):
@@ -3809,9 +3806,10 @@ v171_preset_exit_check:
 ;   A..E -> 'A'..'E'
 ;   F+   -> '+' (saturated)
 ;
-; Display order (static, matches cache slot order):
-;   0=I 1=D 2=S 3=B 4=R 5=A 6=P 7=O 8=V 9=W 10=X
-; -- runtime counters first (I..P), reset-cause flags last (O..X).
+; Display order:
+;   Issue first: I D R A P V W X
+;   OK-context counters last: S B O
+; Healthy row-1 order is the OK-context subset: S B O.
 ;
 ; The screen body runs a non-modal foreground-service subset each tick.
 ; A 16-bit countdown (v171_diag_poll_lo/hi) gates the next cmd 0x21
@@ -3923,60 +3921,35 @@ v171_diag_screen_present:
         call    v171_health_diag_check_stale, 0x0
         movf    (Common_RAM + 4), F, A
         bnz     v171_diag_render_stale_or_lost
-        ; --- Pass 1: count cells across 11 cache slots in 3 sub-passes:
-        ;     [0..6]  = runtime counters (I D S B R A P): always abnormal.
-        ;     [7]     = POR flag (O):                     "expected" -- set on
-        ;                                                 every cold-init via
-        ;                                                 the Phase 2.2 cascade,
-        ;                                                 so it does NOT count
-        ;                                                 as abnormal (else the
-        ;                                                 healthy "OK" gate
-        ;                                                 below would be
-        ;                                                 unreachable).
-        ;     [8..10] = abnormal reset flags (V W X = BOR / WDT / SW).
+        ; --- Pass 1: count display cells in the operator order
+        ;     I/D/R/A/P/V/W/X/S/B/O.
         ;
-        ; v171_diag_render_count tracks all-11 non-zero count (used for
-        ; degraded layout's row-1 entry-count gating).
-        ; v171_diag_render_abnormal tracks the runtime + abnormal-reset
-        ; subset (used for the healthy-vs-degraded gate below).
-        ;
-        ; Healthy "OK" displays when abnormal == 0 (regardless of POR).
-        ; The Option-D layout's "OK" omits POR from the screen -- POR
-        ; is "expected" and not operator-actionable.  Operators see
-        ; "OK" for a clean cold-boot regardless of which reset cell is
-        ; set, as long as no runtime counters have fired and no
-        ; abnormal reset (BOR/WDT/SW) is pending.
-        rcall   v171_diag_load_fsr1_base
+        ; v171_diag_render_count tracks all non-zero display cells.
+        ; v171_diag_render_abnormal tracks issue cells only:
+        ;   I/D/R/A/P/V/W/X.
+        ; S/B/O are OK-context counters: they render under "PBn OK"
+        ; when abnormal==0, or at the end of the degraded sparse list
+        ; when any issue counter is present and there is room.
         movlb   0x01
         clrf    v171_diag_render_count, BANKED
         clrf    v171_diag_render_abnormal, BANKED
-        ; Sub-pass A: walk runtime cells [0..6], increment BOTH counters.
-        movlw   0x07
-        movwf   v171_diag_render_walk_idx, BANKED
-v171_diag_count_runtime_loop:
-        movf    POSTINC1, W, A
-        bz      v171_diag_count_runtime_skip
+        clrf    v171_diag_render_walk_idx, BANKED
+v171_diag_count_display_loop:
+        movlw   0x0B
+        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        bra     v171_diag_count_display_done
+        movf    v171_diag_render_walk_idx, W, BANKED
+        rcall   v171_diag_value_for_display_order
+        bz      v171_diag_count_display_skip
         incf    v171_diag_render_count, F, BANKED
+        movlw   0x08
+        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx < 8 -> issue
+        bra     v171_diag_count_display_skip
         incf    v171_diag_render_abnormal, F, BANKED
-v171_diag_count_runtime_skip:
-        decfsz  v171_diag_render_walk_idx, F, BANKED
-        bra     v171_diag_count_runtime_loop
-        ; Sub-pass B: cell [7] = POR.  Increment only the all-11 count.
-        movf    POSTINC1, W, A
-        bz      v171_diag_count_por_skip
-        incf    v171_diag_render_count, F, BANKED
-v171_diag_count_por_skip:
-        ; Sub-pass C: walk abnormal-reset cells [8..10], increment BOTH.
-        movlw   0x03
-        movwf   v171_diag_render_walk_idx, BANKED
-v171_diag_count_abnormal_loop:
-        movf    POSTINC1, W, A
-        bz      v171_diag_count_abnormal_skip
-        incf    v171_diag_render_count, F, BANKED
-        incf    v171_diag_render_abnormal, F, BANKED
-v171_diag_count_abnormal_skip:
-        decfsz  v171_diag_render_walk_idx, F, BANKED
-        bra     v171_diag_count_abnormal_loop
+v171_diag_count_display_skip:
+        incf    v171_diag_render_walk_idx, F, BANKED
+        bra     v171_diag_count_display_loop
+v171_diag_count_display_done:
         ; --- Branch on abnormal (NOT all-11 count) ---
         movf    v171_diag_render_abnormal, F, BANKED
         bz      v171_diag_render_healthy
@@ -4048,35 +4021,64 @@ v171_diag_render_absent:
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
 
-; --- HEALTHY layout: row 0 = "PBn" + 13 spaces, row 1 = "OK" + 14 spaces.
+; --- HEALTHY layout: row 0 = "PBn OK" + spaces,
+;                     row 1 = sparse OK-context S/B/O counters, or blank.
 v171_diag_render_healthy:
-        movlb   0x01
-        movlw   0x0D
-        movwf   v171_diag_lcd_pad_count, BANKED
-        movlb   0x00
-        rcall   v171_diag_pad_spaces
-        movlw   0xC0                                       ; LCD cursor row 1 col 0
-        call    lcd_command, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
         movlw   'O'
         call    lcd_char_write, 0x0
         movlw   'K'
         call    lcd_char_write, 0x0
         movlb   0x01
-        movlw   0x0E
+        movlw   0x0A
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        rcall   v171_diag_pad_spaces
+
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
+        movlb   0x01
+        clrf    v171_diag_render_emitted, BANKED
+        movlw   0x08                                       ; display-order S
+        movwf   v171_diag_render_walk_idx, BANKED
+v171_diag_healthy_ok_loop:
+        movlw   0x0B
+        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        bra     v171_diag_healthy_ok_done
+        movf    v171_diag_render_walk_idx, W, BANKED
+        rcall   v171_diag_value_for_display_order
+        movwf   v171_diag_render_value, BANKED
+        bz      v171_diag_healthy_ok_advance
+        rcall   v171_diag_emit_row1_token
+v171_diag_healthy_ok_advance:
+        incf    v171_diag_render_walk_idx, F, BANKED
+        bra     v171_diag_healthy_ok_loop
+v171_diag_healthy_ok_done:
+        movf    v171_diag_render_emitted, F, BANKED
+        bnz     v171_diag_healthy_ok_pad_some
+        movlw   0x10
+        bra     v171_diag_healthy_ok_pad_write
+v171_diag_healthy_ok_pad_some:
+        movf    v171_diag_render_emitted, W, BANKED
+        addwf   WREG, W, A                                 ; W = emitted*2
+        addwf   v171_diag_render_emitted, W, BANKED        ; W = emitted*3
+        sublw   0x11                                       ; W = 17 - emitted*3
+v171_diag_healthy_ok_pad_write:
+        movlb   0x01
         movwf   v171_diag_lcd_pad_count, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
 
-; --- DEGRADED layout: row 0 = "PBn:" + sparse row-0 + pad,
+; --- DEGRADED layout: row 0 = "PBn!" + sparse row-0 + pad,
 ;                     row 1 = sparse row-1 + (pad or "..").
 v171_diag_render_degraded:
-        ; Finish row-0 prefix: emit ':' (col 3).
-        movlw   ':'
+        ; Finish row-0 prefix: emit '!' (col 3).
+        movlw   '!'
         call    lcd_char_write, 0x0
 
         ; --- Row 0 walk: emit up to 4 non-zero cells as " X#" each. ---
-        rcall   v171_diag_load_fsr1_base
         movlb   0x01
         clrf    v171_diag_render_emitted, BANKED
         clrf    v171_diag_render_walk_idx, BANKED
@@ -4087,7 +4089,8 @@ v171_diag_row0_loop:
         movlw   0x04
         cpfslt  v171_diag_render_emitted, BANKED          ; emitted >= 4 -> done
         bra     v171_diag_row0_done
-        movf    POSTINC1, W, A
+        movf    v171_diag_render_walk_idx, W, BANKED
+        rcall   v171_diag_value_for_display_order
         movwf   v171_diag_render_value, BANKED
         bz      v171_diag_row0_advance
         ; Non-zero cell -- emit " <letter><val>" (3 chars).
@@ -4095,7 +4098,7 @@ v171_diag_row0_loop:
         movlw   ' '
         call    lcd_char_write, 0x0
         movlb   0x01
-        movf    v171_diag_render_walk_idx, W, BANKED
+        movf    v171_diag_render_letter_tmp, W, BANKED
         rcall   v171_diag_letter_for_idx
         movlb   0x00
         call    lcd_char_write, 0x0
@@ -4137,7 +4140,6 @@ v171_diag_row0_done:
 v171_diag_row1_walk_setup:
         ; Walk again, skipping the first 4 non-zeros (already on row 0),
         ; emitting up to 5 more on row 1.
-        rcall   v171_diag_load_fsr1_base
         movlb   0x01
         clrf    v171_diag_render_emitted, BANKED
         clrf    v171_diag_render_skipped, BANKED
@@ -4149,7 +4151,8 @@ v171_diag_row1_loop:
         movlw   0x05
         cpfslt  v171_diag_render_emitted, BANKED           ; emitted >= 5 -> done
         bra     v171_diag_row1_done
-        movf    POSTINC1, W, A
+        movf    v171_diag_render_walk_idx, W, BANKED
+        rcall   v171_diag_value_for_display_order
         movwf   v171_diag_render_value, BANKED
         bz      v171_diag_row1_advance
         ; Non-zero cell -- skip the first 4 (they were emitted on row 0).
@@ -4159,28 +4162,7 @@ v171_diag_row1_loop:
         incf    v171_diag_render_skipped, F, BANKED
         bra     v171_diag_row1_advance
 v171_diag_row1_emit:
-        ; First entry on row 1 has no leading space; subsequent entries
-        ; get a " " separator first.
-        movf    v171_diag_render_emitted, F, BANKED
-        bz      v171_diag_row1_emit_no_sep
-        movlb   0x00
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        bra     v171_diag_row1_emit_letter
-v171_diag_row1_emit_no_sep:
-        movlb   0x00
-v171_diag_row1_emit_letter:
-        movlb   0x01
-        movf    v171_diag_render_walk_idx, W, BANKED
-        rcall   v171_diag_letter_for_idx
-        movlb   0x00
-        call    lcd_char_write, 0x0
-        movlb   0x01
-        movf    v171_diag_render_value, W, BANKED
-        movlb   0x00
-        rcall   v171_diag_emit_nib_w
-        movlb   0x01
-        incf    v171_diag_render_emitted, F, BANKED
+        rcall   v171_diag_emit_row1_token
 v171_diag_row1_advance:
         incf    v171_diag_render_walk_idx, F, BANKED
         bra     v171_diag_row1_loop
@@ -4214,6 +4196,134 @@ v171_diag_row1_overflow:
         bra     v171_diag_screen_armed
 
 ; ---------------------------------------------------------------------------
+; v171_diag_cache_idx_for_display_order -- map display-order index to cache idx.
+; ---------------------------------------------------------------------------
+; Display order index:
+;   0=I 1=D 2=R 3=A 4=P 5=V 6=W 7=X 8=S 9=B 10=O
+;
+; Cache/letter index:
+;   0=I 1=D 2=S 3=B 4=R 5=A 6=P 7=O 8=V 9=W 10=X
+;
+; Caller convention:
+;   in : W = display-order index 0..10
+;   out: W = cache/letter index, BSR = 1
+; ---------------------------------------------------------------------------
+v171_diag_cache_idx_for_display_order:
+        movlb   0x01
+        movwf   v171_diag_render_letter_tmp, BANKED
+        movlw   0x00                                      ; display 0 -> cache I
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_d
+        return  0x0
+v171_diag_order_dec_to_d:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x01                                      ; display 1 -> cache D
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_r
+        return  0x0
+v171_diag_order_dec_to_r:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x04                                      ; display 2 -> cache R
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_a
+        return  0x0
+v171_diag_order_dec_to_a:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x05                                      ; display 3 -> cache A
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_p
+        return  0x0
+v171_diag_order_dec_to_p:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x06                                      ; display 4 -> cache P
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_v
+        return  0x0
+v171_diag_order_dec_to_v:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x08                                      ; display 5 -> cache V
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_w
+        return  0x0
+v171_diag_order_dec_to_w:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x09                                      ; display 6 -> cache W
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_x
+        return  0x0
+v171_diag_order_dec_to_x:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x0A                                      ; display 7 -> cache X
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_s
+        return  0x0
+v171_diag_order_dec_to_s:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x02                                      ; display 8 -> cache S
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_b
+        return  0x0
+v171_diag_order_dec_to_b:
+        decf    v171_diag_render_letter_tmp, F, BANKED
+        movlw   0x03                                      ; display 9 -> cache B
+        tstfsz  v171_diag_render_letter_tmp, BANKED
+        bra     v171_diag_order_dec_to_o
+        return  0x0
+v171_diag_order_dec_to_o:
+        movlw   0x07                                      ; display 10 -> cache O
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_diag_value_for_display_order -- read one displayed counter value.
+; ---------------------------------------------------------------------------
+; Caller convention:
+;   in : W = display-order index 0..10
+;   out: W = cached value, BSR = 1
+; Side effect:
+;   v171_diag_render_letter_tmp = cache/letter index for the same cell.
+; ---------------------------------------------------------------------------
+v171_diag_value_for_display_order:
+        rcall   v171_diag_cache_idx_for_display_order
+        movwf   v171_diag_render_letter_tmp, BANKED
+        rcall   v171_diag_load_fsr1_base
+        movf    v171_diag_render_letter_tmp, W, BANKED
+        movf    PLUSW1, W, A
+        movlb   0x01
+        return  0x0
+
+; ---------------------------------------------------------------------------
+; v171_diag_emit_row1_token -- emit row-1 token using prepared value/letter.
+; ---------------------------------------------------------------------------
+; Uses:
+;   v171_diag_render_letter_tmp = cache/letter index
+;   v171_diag_render_value      = low-nibble display value
+;   v171_diag_render_emitted    = already-emitted row-1 token count
+;
+; First token has no leading separator. Later tokens emit one leading space.
+; Leaves BSR = 1 on return.
+; ---------------------------------------------------------------------------
+v171_diag_emit_row1_token:
+        movlb   0x01
+        movf    v171_diag_render_emitted, F, BANKED
+        bz      v171_diag_emit_row1_no_sep
+        movlb   0x00
+        movlw   ' '
+        call    lcd_char_write, 0x0
+v171_diag_emit_row1_no_sep:
+        movlb   0x01
+        movf    v171_diag_render_letter_tmp, W, BANKED
+        rcall   v171_diag_letter_for_idx
+        movlb   0x00
+        call    lcd_char_write, 0x0
+        movlb   0x01
+        movf    v171_diag_render_value, W, BANKED
+        movlb   0x00
+        rcall   v171_diag_emit_nib_w
+        movlb   0x01
+        incf    v171_diag_render_emitted, F, BANKED
+        return  0x0
+
+; ---------------------------------------------------------------------------
 ; v171_diag_load_fsr1_base -- set FSR1 to the per-PB cache base.
 ; ---------------------------------------------------------------------------
 ; PB index 0 -> FSR1 = 0x180 (v171_diag_pb1_i physical address)
@@ -4232,9 +4342,9 @@ v171_diag_load_fsr1_pb2:
         return  0x0
 
 ; ---------------------------------------------------------------------------
-; v171_diag_letter_for_idx -- decode a cell index (0..10) to its letter.
+; v171_diag_letter_for_idx -- decode a cache cell index (0..10) to its letter.
 ; ---------------------------------------------------------------------------
-; Display order: I D S B R A P O V W X (matches cache slot order).
+; Cache order: I D S B R A P O V W X.
 ;   0 -> 'I'  3 -> 'B'  6 -> 'P'  9 -> 'W'
 ;   1 -> 'D'  4 -> 'R'  7 -> 'O' 10 -> 'X'
 ;   2 -> 'S'  5 -> 'A'  8 -> 'V'
@@ -6907,7 +7017,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x2D                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x2E                    ; V1.71 + monotonic release revision
         db      0xff, 0xff, 0xff, 0xff
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

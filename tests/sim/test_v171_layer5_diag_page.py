@@ -459,7 +459,7 @@ def test_diag_screen_body_renders_per_pb_sparse_layout() -> None:
 
     2. Special tokens for the three layout cases:
        - "PB" prefix (common to all three layouts)
-       - ':'  (degraded-only -- column 3 separator)
+       - '!'  (degraded-only -- column 3 issue marker)
        - "OK" (healthy)
        - "n/a" via 'n','/','a' literals (absent)
        - ".." via two '.' literals (overflow when count >= 10)
@@ -505,8 +505,8 @@ def test_diag_screen_body_renders_per_pb_sparse_layout() -> None:
     assert re.search(r"movlw\s+'B'", render_body), (
         "PB-prefix 'B' literal missing"
     )
-    assert re.search(r"movlw\s+':'", render_body), (
-        "degraded ':' separator missing"
+    assert re.search(r"movlw\s+'!'", render_body), (
+        "degraded '!' issue marker missing"
     )
     assert re.search(r"movlw\s+'O'", render_body), (
         "healthy 'O' (of 'OK') missing"
@@ -1428,7 +1428,7 @@ def test_diag_loop_times_out_reset_pending_after_n_cadences() -> None:
 
 
 # ===========================================================================
-# Phase 3.4 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) -- per-PB Option-D sparse
+# Phase 3.4 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) -- per-PB sparse
 # renderer structural gates.  These pin shape decisions that the renderer
 # must preserve (layout dispatch on count, FSR1 cache base loading via
 # pb_index, scratch cells in BANK 1 to avoid the Phase 3.1 aliasing
@@ -1500,16 +1500,14 @@ def test_phase3_4_renderer_dispatches_three_layouts() -> None:
     """The renderer must branch on the abnormal-count to dispatch into
     one of three layout paths:
     * v171_diag_render_absent  (present-mask bit clear)
-    * v171_diag_render_healthy (abnormal == 0; POR-only or all-zero)
-    * v171_diag_render_degraded (any runtime/BOR/WDT/SW non-zero)
+    * v171_diag_render_healthy (issue count == 0; all-zero or S/B/O only)
+    * v171_diag_render_degraded (any I/D/R/A/P/V/W/X non-zero)
 
     The healthy gate uses v171_diag_render_abnormal, NOT
-    v171_diag_render_count.  Counting POR (cell index 7) toward the
-    gate would make "OK" unreachable because Phase 2.2 cold-init
-    classification always sets exactly one of POR/BOR/WDT/SW to 1
-    on every power-on, and POR is the most common.  See
-    V32_DIAG_TIER1_SPEC.md §"LCD layouts" + §"Status classification"
-    -- POR is "expected" / "normal" and not operator-actionable.
+    v171_diag_render_count.  Counting OK-context S/B/O cells toward
+    the gate would make intentional standby/wake or clean POR look
+    like a fault.  See V32_DIAG_TIER1_SPEC.md §"LCD layouts" +
+    §"Status classification".
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     for label in ("v171_diag_render_absent",
@@ -1522,14 +1520,14 @@ def test_phase3_4_renderer_dispatches_three_layouts() -> None:
     body = _label_body(text, "v171_diag_screen_present", "v171_diag_render_absent")
     assert body, "v171_diag_screen_present body could not be located"
     # The gate MUST test v171_diag_render_abnormal (NOT
-    # v171_diag_render_count which counts POR too).
+    # v171_diag_render_count, which includes OK-context S/B/O).
     assert re.search(
         r"movf\s+v171_diag_render_abnormal,\s*F,\s*BANKED",
         body,
     ), (
         "healthy/degraded gate must test v171_diag_render_abnormal "
-        "(not v171_diag_render_count -- that would include POR which "
-        "is set on every cold-init, making 'OK' unreachable)"
+        "(not v171_diag_render_count -- that includes OK-context "
+        "S/B/O counters)"
     )
     assert re.search(
         r"bz\s+v171_diag_render_healthy", body,
@@ -1539,56 +1537,66 @@ def test_phase3_4_renderer_dispatches_three_layouts() -> None:
     ), "abnormal != 0 must fall through to v171_diag_render_degraded"
 
 
-def test_phase3_4_count_walk_excludes_por_from_abnormal() -> None:
-    """v171_diag_screen_present uses 3 sub-passes to walk the cache:
-      * sub-pass A: cells [0..6] = runtime counters (I D S B R A P)
-                    -> increment BOTH count AND abnormal.
-      * sub-pass B: cell  [7]    = POR flag (O)
-                    -> increment ONLY count, NOT abnormal.
-      * sub-pass C: cells [8..10] = BOR / WDT / SW flags (V W X)
-                    -> increment BOTH count AND abnormal.
+def test_phase3_4_count_walk_classifies_only_issue_cells_abnormal() -> None:
+    """v171_diag_screen_present walks cells in operator display order:
 
-    This split implements the spec's POR-is-expected rule.  A
-    regression that re-merged the walk into a single 11-cell pass
-    would either break the OK gate (if abnormal is incremented for
-    POR too) or break the row-1 gating (if count loses POR).
+      I D R A P V W X S B O
 
-    Pin the 3-sub-pass shape via the loop labels.
+    Only the first 8 display-order cells are issue indicators and
+    increment v171_diag_render_abnormal.  The final S/B/O cells remain
+    part of v171_diag_render_count so they render, but they must not
+    flip the page from ``PBn OK`` to ``PBn!`` by themselves.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     body = _label_body(text, "v171_diag_screen_present", "v171_diag_render_absent")
     assert body, "v171_diag_screen_present body could not be located"
-    # Each sub-pass has a distinct label.
-    for label in (
-        "v171_diag_count_runtime_loop",
-        "v171_diag_count_por_skip",
-        "v171_diag_count_abnormal_loop",
-    ):
-        assert label + ":" in body, (
-            f"sub-pass label '{label}' missing from count walk -- "
-            f"the 3-pass split is what implements POR-as-expected"
-        )
-    # POR sub-pass MUST NOT touch v171_diag_render_abnormal.  Locate the
-    # POR span (between v171_diag_count_runtime_skip end and
-    # v171_diag_count_abnormal_loop start) and assert no abnormal incf
-    # appears there.
-    por_start = body.find("v171_diag_count_runtime_skip:")
-    por_loop_idx = body.find("v171_diag_count_abnormal_loop:", por_start)
-    assert por_start >= 0 and por_loop_idx > por_start
-    # Find the POR sub-pass body: from after the runtime decfsz through
-    # the v171_diag_count_por_skip label.
-    por_section_start = body.find("v171_diag_count_runtime_loop\n", por_start)
-    if por_section_start < 0:
-        por_section_start = por_start
-    por_section = body[por_section_start:por_loop_idx]
-    abnormal_incs_in_por = re.findall(
-        r"incf\s+v171_diag_render_abnormal,\s*F,\s*BANKED",
-        por_section,
+    assert "v171_diag_count_display_loop:" in body, (
+        "count walk must use the display-order loop"
     )
-    assert not abnormal_incs_in_por, (
-        "POR sub-pass must NOT increment v171_diag_render_abnormal -- "
-        "that would make 'OK' unreachable when POR=1 (which is every "
-        "cold-init).  Found increments at: " + str(abnormal_incs_in_por)
+    assert re.search(
+        r"rcall\s+v171_diag_value_for_display_order",
+        body,
+    ), "count walk must read via display-order helper"
+    assert re.search(
+        r"movlw\s+0x08\s*\n\s*cpfslt\s+v171_diag_render_walk_idx,\s*BANKED"
+        r"[\s\S]*?incf\s+v171_diag_render_abnormal,\s*F,\s*BANKED",
+        body,
+    ), (
+        "abnormal count must increment only for display-order indices "
+        "< 8 (I/D/R/A/P/V/W/X)"
+    )
+    display_order_body = _label_body(
+        text,
+        "v171_diag_cache_idx_for_display_order",
+        "v171_diag_value_for_display_order",
+    )
+    assert display_order_body, "display-order mapper could not be located"
+    expected_map = {
+        "display 0 -> cache I": "0x00",
+        "display 1 -> cache D": "0x01",
+        "display 2 -> cache R": "0x04",
+        "display 3 -> cache A": "0x05",
+        "display 4 -> cache P": "0x06",
+        "display 5 -> cache V": "0x08",
+        "display 6 -> cache W": "0x09",
+        "display 7 -> cache X": "0x0A",
+        "display 8 -> cache S": "0x02",
+        "display 9 -> cache B": "0x03",
+        "display 10 -> cache O": "0x07",
+    }
+    for comment, literal in expected_map.items():
+        assert comment in display_order_body and f"movlw   {literal}" in display_order_body, (
+            f"display-order mapper missing {comment} / {literal}"
+        )
+    healthy_body = _label_body(
+        text, "v171_diag_render_healthy", "v171_diag_render_degraded",
+    )
+    assert re.search(
+        r"movlw\s+0x08\s+; display-order S",
+        healthy_body,
+    ), (
+        "healthy row-1 walk must start at display-order S so only S/B/O "
+        "render under PBn OK"
     )
 
 
@@ -1769,7 +1777,9 @@ def test_phase3_4_renderer_movlb_discipline_before_banked_writes() -> None:
     )
     movlb_b1_pattern = re.compile(r"\bmovlb\s+0x0?1\b")
     movlb_b0_pattern = re.compile(r"\bmovlb\s+0x0?0\b")
-    bsr1_helper_pattern = re.compile(r"\brcall\s+v171_diag_load_fsr1_base\b")
+    bsr1_helper_pattern = re.compile(
+        r"\brcall\s+v171_diag_(?:load_fsr1_base|cache_idx_for_display_order|value_for_display_order)\b"
+    )
     # Routine separator: comment line composed mostly of dashes.  Two
     # such lines bracket each routine's docstring header in this file.
     separator_pattern = re.compile(r"^\s*;\s*-{20,}\s*$")
@@ -1815,7 +1825,7 @@ def test_phase3_4_renderer_movlb_discipline_before_banked_writes() -> None:
             leak_sites.append((idx + 1, line.strip(), verdict))
     assert not leak_sites, (
         f"BANKED v171_diag_render_* access without an upstream movlb "
-        f"0x01 (or rcall to v171_diag_load_fsr1_base, which leaves "
+        f"0x01 (or a diag helper that leaves "
         f"BSR=1 on return):\n"
         + "\n".join(f"  line {n}: {ln}\n      reason: {v}"
                     for n, ln, v in leak_sites)
@@ -1828,8 +1838,8 @@ def test_phase3_4_pad_count_math_yields_16_chars_per_row() -> None:
     """The pad-count expressions encoded in the assembly source must
     produce the correct trailing-space counts for each row layout.
 
-    Row 0 (degraded, after "PBN:"):
-      written so far = 4 + emitted * 3 chars (PBN: + " X#" each)
+    Row 0 (degraded, after "PBN!"):
+      written so far = 4 + emitted * 3 chars (PBN! + " X#" each)
       pad needed     = 16 - (4 + emitted * 3) = 12 - emitted * 3
       asm encodes this as: addwf WREG, W; addwf emitted, W; sublw 0x0C
 
@@ -1866,7 +1876,7 @@ def test_phase3_4_pad_count_math_yields_16_chars_per_row() -> None:
     for count in range(1, 10):
         row0_emitted = min(count, 4)
         row1_emitted = max(0, count - 4)
-        row0_chars = 4 + row0_emitted * 3                   # "PBN:" + " X#" each
+        row0_chars = 4 + row0_emitted * 3                   # "PBN!" + " X#" each
         row0_pad = 12 - row0_emitted * 3
         assert row0_chars + row0_pad == 16, (
             f"count={count}: row 0 width invariant broken: "
@@ -1886,14 +1896,17 @@ def test_phase3_4_pad_count_math_yields_16_chars_per_row() -> None:
 
 
 def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
-    """The two row walks rely on FSR1 surviving across every routine
-    they call from inside the loop body.  Verify that none of those
-    routines touch FSR1L / FSR1H / lfsr 0x1 -- i.e., the renderer can
-    safely walk the cache via POSTINC1 across helper calls.
+    """LCD-emission helpers must not unexpectedly mutate FSR1.
+
+    The display-order value helper intentionally reloads FSR1 for the
+    selected PB/cache cell.  After that value is captured, the row
+    renderer calls token/letter/nibble/LCD helpers that must not touch
+    FSR1L / FSR1H / lfsr 0x1.
 
     Coverage list (callees reached from inside the row walks):
       * v171_diag_letter_for_idx -- letter cascade (Phase 3.4 new)
       * v171_diag_pad_spaces     -- trailing-space writer (Phase 3.4 new)
+      * v171_diag_emit_row1_token -- row-1 separator/letter/value helper
       * v171_diag_emit_letter    -- thin lcd_char_write wrapper
       * v171_diag_emit_nib_w     -- nibble-to-LCD encoder (incl.
                                     secondary entries _zero/_alpha/_sat
@@ -1922,6 +1935,7 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
     # it would still fail this test.  Per-helper end markers eliminate
     # the false-positive risk.
     helpers = (
+        ("v171_diag_emit_row1_token", "v171_diag_load_fsr1_base"),
         ("v171_diag_letter_for_idx", "v171_diag_pad_spaces"),
         ("v171_diag_pad_spaces",     "v171_diag_screen_armed"),
         ("v171_diag_emit_letter",    "v171_diag_emit_nib_w"),
@@ -1950,8 +1964,8 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
         )
         # No lfsr to FSR1.
         assert "lfsr    0x1," not in body, (
-            f"{helper} clobbers FSR1 via lfsr -- breaks the row walk's "
-            f"POSTINC1 cursor across helper calls"
+            f"{helper} clobbers FSR1 via lfsr -- only the display-order "
+            f"value helper should reload the diagnostics cache pointer"
         )
         # No direct write to FSR1L / FSR1H or the FSR1 indirect-write
         # forms.  POSTINC1 / POSTDEC1 / PREINC1 are allowed as READ
@@ -1966,6 +1980,6 @@ def test_phase3_4_helpers_do_not_clobber_fsr1() -> None:
                 body,
             )
             assert not written, (
-                f"{helper} writes to {fsr_reg} -- breaks the row walk's "
-                f"FSR1 cursor across helper calls"
+                f"{helper} writes to {fsr_reg} -- only the display-order "
+                f"value helper should reload the diagnostics cache pointer"
             )

@@ -79,10 +79,14 @@ compact 16x2 layout.
 
 Minimum CONTROL behavior:
 
-- Line 1 shows PB1 counters
-- Line 2 shows PB2 counters
-- If a PB has not (yet) replied to a `cmd 0x21` query, show `n/a` for
-  that row.  This collapses the original draft's two cases (PB exists
+- Diagnostics has separate PB1 and PB2 pages.
+- Row 0 shows the PB status prefix:
+  - `PBn OK` when only OK-context counters are non-zero.
+  - `PBn! ...` when one or more issue counters are non-zero.
+- Row 1 shows OK-context counters in the healthy layout, or remaining
+  overflow counters in the issue layout.
+- If a PB has not (yet) replied to a diagnostics query, show `n/a` for
+  that page.  This collapses the original draft's two cases (PB exists
   but does not support the query, vs. chain has fewer than 2 PBs) into
   a single sentinel because the chain protocol does not give CONTROL
   an independent way to distinguish "topology absence" from "PB silent
@@ -92,26 +96,22 @@ Minimum CONTROL behavior:
   same action ("troubleshoot the chain"), so the lost distinction is
   not load-bearing.
 
-LCD v1 format is a single compact screen with all 7 counters on each line.
+Current V1.71 sparse layout:
 
-Per-line layout:
-
-- `1:IxDxSxBxRxAxPx`
-- `2:IxDxSxBxRxAxPx`
+- Display order is `I D R A P V W X S B O`.
+- `I/D/R/A/P/V/W/X` are issue indicators and select `PBn!`.
+- `S/B/O` are OK-context counters and never select `PBn!` by themselves.
+- Healthy row 0 is `PBn OK` padded to 16 columns.
+- Healthy row 1 shows non-zero `S/B/O` tokens, for example `S1 B1 O1`.
+- Issue row 0 is `PBn!` plus up to four non-zero tokens.
+- Issue row 1 shows additional tokens if more than four non-zero tokens exist.
+- `S/B/O` are placed after issue counters and render only if they fit.
 
 Encoding:
 
 - `x = ' '` when the counter is zero
 - `x = '1'..'9','A'..'E'` for values `1..14`
 - `x = '+'` for values `>=15`
-
-This gives the desired no-error idle display:
-
-- `1:I D S B R A P`
-- `2:I D S B R A P`
-
-The final `P` nibble is blank in the zero case, so the real LCD row has
-one trailing space after `P`.
 
 ## Compact Per-PB Counter Set
 
@@ -126,6 +126,29 @@ Per PB, expose these 7 counters:
 | `B` | Bring-up / wake dispatch count | Increment when `standby_event_dispatch` calls `adc_boot_gate` | Shows whether the PB executed a wake / re-bring-up path after silence |
 | `AN0` | Analog standby-trigger count | Increment when `an0_hysteresis_monitor` clears `active_flags.3` and sets `event_flags.2` because AN0 dropped below threshold | Separates spontaneous analog-triggered standby from commanded standby |
 | `RA1` | RA1 event count | Increment on a new explicit V3.1 RA1 edge/event hook | Requested diagnostic item; useful if the discussed RA1 event is implicated in the glitch |
+
+## Operator Classification
+
+The diagnostics page displays both fault indicators and normal event counters.
+Do not treat every non-zero displayed cell as a fault.
+
+| Display token | Operator classification | Notes |
+|---|---|---|
+| `S` | OK behavior | Standby/shutdown dispatch count. Expected after intentional standby. |
+| `B` | OK behavior | Bring-up/wake dispatch count. Expected after intentional wake/bring-up. |
+| `O` | OK behavior | Power-on reset. It renders under `PBn OK` and never selects `PBn!` by itself. |
+| `I` | Issue indicator | I2C/MSSP transport fault. Should stay zero in normal playback. |
+| `D` | Issue indicator | DSP/TAS3108 fault episode. |
+| `R` | Issue indicator | Firmware entered a recovery branch after DSP/I2C trouble. |
+| `A` | Issue/suspicious indicator | AN0 standby-sense trigger. Expected only when AN0 is deliberately driven. |
+| `P` | Suspicious event telemetry | RA1 edge event. Expected only if RA1 is deliberately toggled. |
+| `V` | Issue indicator | Brown-out reset / rail sag. |
+| `W` | Issue indicator | Watchdog reset. |
+| `X` | Contextual issue indicator | Software reset. OK only when explained by a known flash/reset/reboot action. |
+
+`S`, `B`, and `O` are intentionally classified as OK behavior counters. They
+are useful for reconstructing whether the PB executed standby/wake or came up
+from POR, but their presence alone is not evidence of a fault.
 
 ## UART Protocol
 
@@ -223,10 +246,9 @@ V3.1 instrumentation point:
 That keeps the requested RA1 observability in scope without pretending
 the stock firmware already had a documented RA1 recovery path.
 
-## Counters Intentionally Excluded From LCD v1
+## Counters Intentionally Excluded From LCD
 
-Do not spend one of the 7 visible per-PB slots on these in the first
-revision:
+Do not spend one of the visible per-PB diagnostics cells on these:
 
 - raw retry-current value in `dsp_fault_flags[5:3]`
 - UART timeout count
@@ -382,32 +404,32 @@ This keeps diagnostics traffic page-local and negligible on the
 
 ## LCD Examples
 
-All clear:
+All clear, no OK-context counters:
 
 ```text
-1:I D S B R A P
-2:I D S B R A P
+PB1 OK
+
 ```
 
-Some activity:
+OK-context activity only:
 
 ```text
-1:I2D S B1R1A P
-2:I D S1B1R A3P
+PB1 OK
+S1 B1 O1
 ```
 
-Values above 9:
+Issue activity, with OK-context counters appended after issue counters:
 
 ```text
-1:IAD2S1B1R1A C
-2:I D S B R AEP
+PB1! I2 R1 B1 O1
+
 ```
 
-Saturated display (`>=15`):
+Values above 9 and saturated display (`>=15`):
 
 ```text
-1:I+D3S1B1R1A P
-2:I D S B R A P+
+PB1! IA D2 R+ A1
+P1 V1 W1 X1 S+
 ```
 
 ## First-Pass Implementation Notes
@@ -425,8 +447,10 @@ then recovered” symptom are:
 
 Interpretation guidance:
 
-- `S` incremented without `I2C/DSP` points toward a shutdown-style event
-- `B` rising after `S` points toward a real down/up recovery cycle
+- `S` and `B` are OK behavior counters; they record standby/wake dispatches
+  and are not faults by themselves
+- unexpected `S/B` growth during playback points toward a real down/up state
+  transition, but the issue is the unexpected transition, not the counters
 - `I2C` rising without `S/B` points toward a transport-only DSP disturbance
 - `DSP` plus `RCV` points toward retry exhaustion and active recovery
 - `AN0` implicates the standby-sense analog path
@@ -470,9 +494,8 @@ Notes:
 
 At minimum, implement the following high-impact wire-chain cases:
 
-1. Idle zero screen on the Diagnostics page shows:
-   - `1:I D S B R A P`
-   - `2:I D S B R A P`
+1. Idle zero screen on the Diagnostics page shows `PBn OK`; any non-zero
+   OK-context `S/B/O` counters render on row 1 and do not select `PBn!`.
 2. No diagnostics UART chatter on non-Diagnostics pages.
 3. Entering Diagnostics starts polling; leaving Diagnostics stops polling.
 4. PB1 `I` primary test: transient DSP-write NACK increments only PB1 `I`.

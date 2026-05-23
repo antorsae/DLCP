@@ -1202,17 +1202,13 @@ def test_v171_v32_layer5_chain_pb_cache_isolation(
 def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
     v171_hex: Path, v32_hex: Path
 ) -> None:
-    """Idle Diagnostics page (counters all zero) renders the Tier-1
-    layout 'PB1' on row 0 and 'OK' on row 1 (per V32_DIAG_TIER1_SPEC.md
-    §"LCD Examples" — all-clear case).
+    """Cold-boot Diagnostics renders an OK PB1 title and OK-context
+    reset cause on row 1.
 
     Tier-1 (2026-04-20) replaced the pre-Tier-1 'both PBs on one
-    screen' layout ('1:I D S B R A P' / '2:I D S B R A P') with
-    ONE PB per page; idle is the most compact form ('PB1' / 'OK',
-    16-char rows padded with spaces).  PF.3 (2026-05-04) un-XFAIL'd
-    busy-loop convergence via ``_press_drive_until_pb_present``;
-    task #116 (this commit) un-XFAIL'd the layout drift by updating
-    these assertions to the Tier-1 strings.
+    screen' layout with ONE PB per page.  The current sparse renderer
+    keeps row 0 as ``PB1 OK`` when only OK-context S/B/O cells are
+    present, and emits those OK-context cells on row 1.
     """
     _require_rust()
     c = RustChain.from_v171_v32(
@@ -1233,21 +1229,66 @@ def test_v171_v32_layer5_chain_lcd_renders_zero_idle(
     # test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2 for the
     # full rationale.
     ok = _rust_press_drive_until_pb_present(
-        c, pb_mask=0x03, limit=1200,
-        extra_check=lambda ch: ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG,
+        c, pb_mask=0x03, limit=2000,
+        extra_check=lambda ch: (
+            ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 7) == 0x1
+        ),
     )
     assert ok, "[rust] both PBs never replied"
     for _ in range(8):
         c.step()
     line0, line1 = c.lcd_lines()
-    expected = "PB1             "
+    expected = "PB1 OK          "
     assert line0 == expected, (
         f"[rust] row 0 mismatch: expected {expected!r}, got {line0!r}"
     )
-    expected2 = "OK              "
+    expected2 = "O1              "
     assert line1 == expected2, (
         f"[rust] row 1 mismatch: expected {expected2!r}, got {line1!r}"
     )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v171_v32_layer5_chain_lcd_renders_ok_context_counters(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """S/B/O are OK-context counters: they render under ``PB1 OK`` and
+    must not turn the page into a ``PB1!`` issue layout by themselves.
+    """
+    _require_rust()
+    c = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(v32_hex),
+    )
+    c.run_until_connected(limit=200)
+    assert c.is_connected() and not c.is_waiting(), (
+        f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
+    )
+    _rust_set_main_diag_block(c, 0, diag_s=1, diag_b=1)
+    _rust_navigate_to_diagnostics(c)
+    ok = _rust_press_drive_until_pb_present(
+        c, pb_mask=0x03, limit=2000,
+        extra_check=lambda ch: (
+            ch.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 2) == 0x1
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 3) == 0x1
+            and ch.read_reg(V171_DIAG_PB1_BASE_PHYS + 7) == 0x1
+        ),
+    )
+    assert ok, "[rust] both PBs never replied"
+    for _ in range(8):
+        c.step()
+    line0, line1 = c.lcd_lines()
+    assert line0 == "PB1 OK          ", (
+        f"[rust] row 0 mismatch for OK-context counters: got {line0!r}"
+    )
+    assert line1 == "S1 B1 O1        ", (
+        f"[rust] row 1 mismatch for OK-context counters: got {line1!r}"
+    )
+
+
 @pytest.mark.dual_supported
 @pytest.mark.slow
 def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
@@ -1255,11 +1296,11 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
 ) -> None:
     """Spec §"LCD Examples" — Some-activity case (Tier-1 layout).
 
-    PB1: diag_i=2, diag_b=1, diag_r=1 → "PB1: I2 B1 R1 O1" on row 0,
-        blank row 1.  Trailing "O1" comes from cache slot[7] (Tier-1
-        reset-cause cell BF/28); slot[7] is auto-set to 0x1 by V3.2
-        firmware on every diag-page entry, NOT a counter the test
-        wrote.
+    PB1: diag_i=2, diag_b=1, diag_r=1 -> "PB1! I2 R1 B1 O1" on row 0,
+        blank row 1.  Issue cells (I/R) render before OK-context cells
+        (B/O).  Trailing "O1" comes from cache slot[7] (Tier-1 reset-cause
+        cell BF/28); slot[7] is auto-set to 0x1 by V3.2 firmware on every
+        diag-page entry, NOT a counter the test wrote.
 
     Tier-1 (2026-04-20) replaced pre-Tier-1's "both PBs on one screen"
     layout ('1:I2D S B1R1A P ' / '2:I D S1B1R A3P ') with one PB per
@@ -1315,11 +1356,11 @@ def test_v171_v32_layer5_chain_lcd_renders_mixed_counters(
     for _ in range(8):
         c.step()
     line0, line1 = c.lcd_lines()
-    # Tier-1 PB1 view: compact nonzero list 'PB1: I2 B1 R1 O1'
+    # Tier-1 PB1 view: issue-first compact list 'PB1! I2 R1 B1 O1'
     # on row 0, blank row 1.  PB2 cache content is exercised by
     # the cache_isolation test, so per-PB LCD navigation here
     # would only re-test the same protocol path.
-    assert line0 == "PB1: I2 B1 R1 O1", (
+    assert line0 == "PB1! I2 R1 B1 O1", (
         f"[rust] row 0 mismatch for PB1 mixed counters: got {line0!r}"
     )
     assert line1 == "                ", (
@@ -1835,10 +1876,10 @@ def test_v171_v32_diag_lcd_surfaces_reset_cause_flags(
 
     checks = [(offset, 1)]
     if source == "por":
-        # POR alone intentionally renders as healthy "OK".  Add an unrelated
-        # real I2C fault after reset classification so the sparse renderer has
-        # an abnormal row and must emit the O1 token while still sourcing O
-        # from the cmd 0x22 reset cache.
+        # POR is OK-context telemetry and renders under "PBn OK" by itself.
+        # Add an unrelated real I2C fault after reset classification so the
+        # sparse renderer has an issue row and must still place O1 at the end
+        # when there is room.
         _rust_configure_main_src4382_no_source(c, pb_idx)
         before_i = c.read_main_reg(pb_idx, DIAG_I_PHYS)
         c.inject_main_src4382_address_nack(pb_idx, 1000)
@@ -2243,8 +2284,8 @@ def test_v171_v32_layer5_chain_diag_page_left_button_exits_promptly(
     so a single LEFT press from PB1 Diag(4) now lands on Setup(3),
     not Preset(1).  Phase 3.4 (9bed274, 2026-04-21) then rewrote the
     Diag renderer from the legacy dual-PB layout ("1:IDSBRAP" /
-    "2:IDSBRAP" on one screen) to an Option-D sparse per-PB layout
-    ("PBn" / "OK" or "PBn: X# X# ..." across two menu states).
+    "2:IDSBRAP" on one screen) to a sparse per-PB layout
+    ("PBn OK" or "PBn! X# X# ..." across two menu states).
 
     The exit assertion therefore checks that the LCD no longer starts
     with any Diagnostics-page prefix ("PB1" or "PB2") — it doesn't
