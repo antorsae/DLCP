@@ -27,7 +27,7 @@ that do not need the V1.71-specific features.
 The historical 2026-04-22 hardware issue for the recommended pair was:
 
 - canonical CONTROL revision then: `V1.71 / rev 0x19`
-- current canonical CONTROL revision: `V1.71 / rev 0x2F / build 20260523`
+- current canonical CONTROL revision: `V1.71 / rev 0x30 / build 20260523`
 - canonical MAIN revision then: `V3.2 / rev 0x53`
 - reproduced symptom: after `STDBY -> WAKE`, CONTROL could remain on
   `WAITING FOR DLCP` while both MAINs are already awake, healthy, and

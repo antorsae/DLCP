@@ -131,3 +131,4 @@ def test_v171_v31_blackout_wake_shows_waiting(v171_hex: Path) -> None:
         f"V1.71+V3.1 did not fall back to WAITING after wake "
         f"blackout; lcd={chain.lcd_lines()!r}"
     )
+    assert chain.lcd_lines()[1] == " " * 16

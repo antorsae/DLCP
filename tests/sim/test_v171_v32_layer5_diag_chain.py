@@ -1013,9 +1013,11 @@ def test_v171_v32_layer5_diag_visible_page_refreshes_on_next_cadence(
     # PB1/PB2's ring paths to drain at their natural simulated latency.
     for _ in range(20):
         c.step()
+        line0, line1 = c.lcd_lines()
         if (
             c.read_reg(active_base) == 0x7
-            and c.lcd_lines()[0].startswith(f"{pb_label}: I7")
+            and line0.startswith(pb_label)
+            and re.search(r"(?<![A-Z0-9])I7(?![A-Z0-9])", f"{line0}\n{line1}")
         ):
             break
 
@@ -1026,8 +1028,15 @@ def test_v171_v32_layer5_diag_visible_page_refreshes_on_next_cadence(
         f"cache={[hex(v) for v in _rust_diag_pb_cache(c, pb_idx)]}; "
         f"lcd={c.lcd_lines()!r}"
     )
-    line0, _ = c.lcd_lines()
-    assert line0.startswith(f"{pb_label}: I7"), c.lcd_lines()
+    line0, line1 = c.lcd_lines()
+    assert line0.startswith(pb_label), c.lcd_lines()
+    _assert_lcd_diag_token(
+        line0,
+        line1,
+        label="I",
+        value=0x7,
+        context=f"{pb_label} visible-page cadence refresh",
+    )
 
 
 @pytest.mark.dual_supported
@@ -1749,6 +1758,12 @@ def test_v171_v32_diag_lcd_surfaces_an0_standby_trigger(
         context=f"MAIN{unit} AN0 standby trigger",
     )
     c.set_main_an0_sample(unit, 0x0300)
+    # Let the AN0-induced standby transition reach a stable MAIN service
+    # boundary before issuing the explicit user standby/wake pair.  The
+    # counter has already been proven above; without this short settle,
+    # MAIN0 can still be mid-frame with its active gate closed and will
+    # correctly ignore the immediate PB1 Diagnostics query.
+    c.step_ticks(10_000_000)
     c.press("STBY")
     c.step_many(80)
     c.press("STBY")

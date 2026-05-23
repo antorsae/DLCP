@@ -353,6 +353,11 @@ def _switch_preset_via_ir(chain, target: int) -> None:
     # the conservative two-increment rule rejects {4, 5} so the
     # guard stays correct under boot-transient cadence and under
     # future display-loop changes that might compress the period.
+    for _ in range(8):
+        fs_step = chain.read_reg(_V171_FULL_SYNC_STEP_ADDR)
+        if fs_step not in _V171_FULL_SYNC_STEP_UNSAFE_FOR_IR:
+            break
+        chain.step_ticks(_SWITCH_POLL_CHUNK_TICKS)
     fs_step = chain.read_reg(_V171_FULL_SYNC_STEP_ADDR)
     assert fs_step not in _V171_FULL_SYNC_STEP_UNSAFE_FOR_IR, (
         f"v171_full_sync_step == {fs_step} at IR injection time -- "
@@ -656,8 +661,14 @@ def test_dual_main_preset_sync_via_user_ir_chain() -> None:
     snap_A1 = _assert_mains_synchronised(chain, phase="A1-boot-default")
     assert snap_A1["preset_bit"] is False
 
+    # Match the control-bit path's post-IDLE settle: preset_job_state can
+    # reach IDLE just before a late DSP rewrite tail lands, so byte-level
+    # DSP equality must be sampled after the small tail has drained.
+    _POST_IR_IDLE_SETTLE_TICKS = 50_000_000
+
     # Phase B1: IR cmd 0x39 -> preset B.
     _switch_preset_via_ir(chain, target=1)
+    chain.step_ticks(_POST_IR_IDLE_SETTLE_TICKS)
     snap_B1 = _assert_mains_synchronised(chain, phase="B1-via-IR-0x39")
     assert snap_B1["preset_bit"] is True, (
         f"after IR cmd=0x39, active_flags.bit2 must be 1 (preset B); "
@@ -667,6 +678,7 @@ def test_dual_main_preset_sync_via_user_ir_chain() -> None:
 
     # Phase A2: IR cmd 0x38 -> preset A.
     _switch_preset_via_ir(chain, target=0)
+    chain.step_ticks(_POST_IR_IDLE_SETTLE_TICKS)
     snap_A2 = _assert_mains_synchronised(chain, phase="A2-via-IR-0x38")
     assert snap_A2["preset_bit"] is False, (
         f"after IR cmd=0x38, active_flags.bit2 must be 0 (preset A); "
@@ -677,6 +689,7 @@ def test_dual_main_preset_sync_via_user_ir_chain() -> None:
     # user-IR path is repeatable, not a one-shot artefact of the
     # boot-default state.
     _switch_preset_via_ir(chain, target=1)
+    chain.step_ticks(_POST_IR_IDLE_SETTLE_TICKS)
     snap_B2 = _assert_mains_synchronised(chain, phase="B2-via-IR-0x39-again")
     assert snap_B2["preset_bit"] is True
 

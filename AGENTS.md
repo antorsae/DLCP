@@ -368,12 +368,13 @@ V1.71/V3.2 Diagnostics fault matrix:
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (latest 2026-05-20):
+Recent verification (latest 2026-05-23):
 
 - `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1130 tests collected`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
-- `.venv_ep0/bin/python scripts/build_v171_release.py --build-date 20260523` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x2F / build 20260523`
+- `.venv_ep0/bin/python scripts/build_v171_release.py --build-date 20260523` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x30 / build 20260523`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_release_banner.py tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_rev_present tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_build_date_and_boot_banner_match` -> `22 passed`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v171_release_banner.py tests/sim/test_v171_v31_chain.py::test_v171_v31_blackout_wake_shows_waiting` -> `3 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
 - `.venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x6D -> 0x6E`

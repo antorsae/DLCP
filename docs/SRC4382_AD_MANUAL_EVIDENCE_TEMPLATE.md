@@ -27,9 +27,9 @@ Before closing the ledger, run:
 
 ## Firmware
 
-CONTROL: V1.71 / rev 0x2F / build 20260523
+CONTROL: V1.71 / rev 0x30 / build 20260523
 
-CONTROL SHA256: c9925de5721305d210b23c48198e7cd9817a1aa8808eef9bf8b213366ad4d8bc
+CONTROL SHA256: bf4201a81e370c66b6993e3a59fdee79802e89cf7cbdf0fdbdcb285a9a815081
 
 CONTROL flashed/running V1.71? yes/no:
 

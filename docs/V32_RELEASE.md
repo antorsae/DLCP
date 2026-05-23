@@ -33,7 +33,7 @@ release workflow.
 The current canonical release identities are:
 
 - MAIN: `V3.2 / rev 0x6E`
-- CONTROL: `V1.71 / rev 0x2F / build 20260523`
+- CONTROL: `V1.71 / rev 0x30 / build 20260523`
 
 Current local non-hardware verification:
 

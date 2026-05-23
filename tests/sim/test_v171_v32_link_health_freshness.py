@@ -311,5 +311,5 @@ def test_diag_stale_lost_and_recovery_do_not_render_stale_ok(
     chain.write_reg(age_addr, 0)
     chain.write_reg(HEALTH_FLAGS, 1 << HEALTH_DISPLAY_DIRTY)
     _settle_short(chain, chunks=50)
-    assert chain.lcd_lines()[0] == f"{pb_label}             "
-    assert chain.lcd_lines()[1] == "OK              "
+    assert chain.lcd_lines()[0] == f"{pb_label} OK          "
+    assert chain.lcd_lines()[1] == " " * 16

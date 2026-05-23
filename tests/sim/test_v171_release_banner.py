@@ -47,3 +47,24 @@ def test_v171_boot_splash_renders_baked_release_revision_and_date(v171_hex: Path
     assert seen[1][4] == "x"
     assert seen[1][7] == " "
     assert seen[1][8:].isdigit()
+
+
+def test_v171_waiting_screen_clears_baked_release_banner_row2(v171_hex: Path) -> None:
+    try:
+        from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+    except Exception as exc:  # pragma: no cover
+        pytest.fail(f"rust dlcp_sim_native facade not importable -- {exc!r}")
+
+    chain = RustChain.from_v17_control_only(str(v171_hex))
+    saw_banner = False
+    for _ in range(260):
+        chain.step_ticks(500_000)
+        lines = chain.lcd_lines()
+        if lines[0].startswith("Firmware V") and lines[1].startswith("Rev x"):
+            saw_banner = True
+        if lines[0] == "Waiting for DLCP":
+            assert saw_banner, "test did not observe the boot release banner first"
+            assert lines[1] == " " * 16
+            return
+
+    pytest.fail(f"V1.71 control-only run never reached WAITING; lcd={chain.lcd_lines()!r}")

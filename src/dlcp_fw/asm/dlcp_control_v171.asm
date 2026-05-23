@@ -4450,6 +4450,23 @@ v171_diag_pad_spaces_done:
         movlb   0x00
         return  0x0
 
+; ---------------------------------------------------------------------------
+; v171_clear_lcd_row2 -- blank LCD row 2 before entering one-line screens.
+; ---------------------------------------------------------------------------
+; The V1.71 boot banner owns both LCD rows.  WAITING only writes row 1, so
+; explicitly clear row 2 instead of leaving a stale release banner visible.
+; BSR is restored to 0 on return.
+; ---------------------------------------------------------------------------
+v171_clear_lcd_row2:
+        movlw   0xC0                                       ; LCD cursor row 1 col 0
+        call    lcd_command, 0x0
+        movlb   0x01
+        movlw   0x10
+        movwf   v171_diag_lcd_pad_count, BANKED
+        movlb   0x00
+        call    v171_diag_pad_spaces, 0x0
+        return  0x0
+
 v171_diag_screen_armed:
         ; Cadence prime + present_snap init MOVED to v171_diag_screen
         ; (page-entry-only) to fix the redraw-vs-cadence collapse
@@ -5464,6 +5481,7 @@ v171_preset_boot_init_done:
         movlw   LOW(lcd_str_waiting_for_dlcp)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
+        call    v171_clear_lcd_row2, 0x0
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bsf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
         movlw   0x0f
@@ -5768,6 +5786,7 @@ flow_display_state_entry_126E:                                                  
         movlw   LOW(lcd_str_waiting_for_dlcp_alt)                           ; shifted via label
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         call    lcd_string_write_rom, 0x0                           ; dest: 0x0000dc
+        call    v171_clear_lcd_row2, 0x0
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bsf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
         movlw   0x13
@@ -7018,7 +7037,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x32, 0x46, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x33, 0x00 ; "Rev x2F 20260523"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x30, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x33, 0x00 ; "Rev x30 20260523"
 
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7026,7 +7045,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x2F                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x30                    ; V1.71 + monotonic release revision
         db      0x20, 0x26, 0x05, 0x23                    ; build date 20260523 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
