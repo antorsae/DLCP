@@ -551,7 +551,7 @@ impl Tas3108 {
 mod tests {
     use super::*;
 
-    /// V3.1's `dsp_ping` (firmware/patched/releases/DLCP_Firmware_V3.1.lst:7802):
+    /// V3.1's `dsp_ping` path in `dlcp_main_v31.asm`:
     /// Master sends START + 0x68 + STOP and checks ACKSTAT.
     /// Default-CS0 slave must ACK 0x68.
     #[test]
@@ -824,9 +824,8 @@ mod tests {
         assert!(dsp.consume_tx_byte(0x68));
     }
 
-    /// V3.1's biquad-table write path
-    /// (`firmware/patched/releases/DLCP_Firmware_V3.1.lst:5099`+
-    /// in `main_i2c_service_381c`): write 20 data bytes to a
+    /// V3.1's biquad-table write path in `main_i2c_service_381c`:
+    /// write 20 data bytes to a
     /// biquad subaddress (5×32-bit coefficient words per
     /// entry, per datasheet §6.2.1).  The slave must ACK
     /// every byte and the data must land at the correct

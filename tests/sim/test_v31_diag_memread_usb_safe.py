@@ -12,6 +12,7 @@ from dlcp_fw.paths import (
 )
 from dlcp_fw.patch import build_v31_diag_memread_usb_safe as builder
 from dlcp_fw.sim.hexio import parse_intel_hex
+from dlcp_fw.sim.v30_symbols import assemble_v30
 
 pytestmark = pytest.mark.dual_supported
 
@@ -20,6 +21,20 @@ def _skip_missing(*paths: Path) -> None:
     for p in paths:
         if not p.exists():
             raise AssertionError(f"missing generated artifact: {p}")
+
+
+def _source_listing(tmp_path: Path) -> Path:
+    lst_path = V31_MAIN_ASM_CANONICAL.with_suffix(".lst")
+    if lst_path.exists():
+        return lst_path
+
+    output_lst = tmp_path / "dlcp_main_v31.lst"
+    assemble_v30(
+        V31_MAIN_ASM_CANONICAL,
+        tmp_path / "dlcp_main_v31.hex",
+        output_lst=output_lst,
+    )
+    return output_lst
 
 
 def test_diag_memread_builder_rewrite_is_idempotent_on_canonical_v31() -> None:
@@ -32,9 +47,11 @@ def test_diag_memread_builder_rewrite_is_idempotent_on_canonical_v31() -> None:
     assert text.index("hid_cmd_diag_memread:") < text.index(builder._PRESET_TABLE_ANCHOR)
 
 
-def test_canonical_v31_release_listing_contains_memread_dispatch_and_handler() -> None:
-    lst_path = V31_MAIN_HEX_CANONICAL.with_suffix(".lst")
-    _skip_missing(lst_path)
+def test_canonical_v31_source_listing_contains_memread_dispatch_and_handler(
+    tmp_path: Path,
+) -> None:
+    _skip_missing(V31_MAIN_ASM_CANONICAL)
+    lst_path = _source_listing(tmp_path)
     text = lst_path.read_text(encoding="utf-8", errors="replace")
 
     assert "hid_cmd_diag_memread_probe" in text

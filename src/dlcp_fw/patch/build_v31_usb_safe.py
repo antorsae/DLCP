@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dlcp_fw.paths import (
-    FIRMWARE_PATCHED_DIR,
+    ARTIFACTS_DIR,
     STOCK_MAIN_HEX,
     V31_MAIN_HEX_CANONICAL,
 )
@@ -18,7 +18,7 @@ from dlcp_fw.sim.hexio import parse_intel_hex, write_intel_hex
 
 
 SOURCE_HEX = V31_MAIN_HEX_CANONICAL
-OUT_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.1_usb_safe.hex"
+OUT_HEX = ARTIFACTS_DIR / "reanalysis" / "usb_safe" / "DLCP_Firmware_V3.1_usb_safe.hex"
 
 
 def build(out_hex: Path = OUT_HEX) -> Path:

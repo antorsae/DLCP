@@ -14,11 +14,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dlcp_fw.paths import FIRMWARE_PATCHED_DIR, STOCK_MAIN_HEX, V30_MAIN_HEX
+from dlcp_fw.paths import ARTIFACTS_DIR, STOCK_MAIN_HEX, V30_MAIN_HEX
 from dlcp_fw.sim.hexio import parse_intel_hex, write_intel_hex
 
 
-OUT_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.0_usb_safe.hex"
+OUT_HEX = ARTIFACTS_DIR / "reanalysis" / "usb_safe" / "DLCP_Firmware_V3.0_usb_safe.hex"
 
 
 def build(out_hex: Path = OUT_HEX) -> Path:

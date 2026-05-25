@@ -5424,6 +5424,26 @@ flow_ccs_0FA0_10F6:                                                  ; address: 
         call    settings_load_eeprom, 0x0                           ; dest: 0x000a46
 
         ; ---------------------------------------------------------------
+        ; V1.71 inline (V1.61b): stale Setup-index migration
+        ; ---------------------------------------------------------------
+        ; Stock V1.6b kept restoring EEPROM[0x01] into 0x0BA even after
+        ; Setup was reduced to one visible item ("BL Timeout").  Field
+        ; units upgraded from older CONTROL releases may retain a
+        ; nonzero value there; if left live, the Setup renderer indexes
+        ; past the single valid row and prints code bytes as LCD text.
+        ; Mirror the V1.61b binary-patch behavior: clamp RAM and scrub
+        ; EEPROM[0x01] once, immediately after the stock settings load.
+        movlb   0x00                                        ; 0x0BA is bank-0 setup_sub
+        movf    0xba, W, B                                  ; reg: 0x0ba
+        bz      v171_setup_index_clamp_done
+        clrf    0xba, B                                     ; reg: 0x0ba
+        movlw   0x01
+        movwf   EEADR, A                                    ; reg: 0xfa9
+        clrf    WREG, A                                     ; reg: 0xfe8
+        call    eeprom_write_byte, 0x0                       ; dest: 0x0001a2
+v171_setup_index_clamp_done:
+
+        ; ---------------------------------------------------------------
         ; V1.71 inline (V1.61b): preset boot init
         ; ---------------------------------------------------------------
         ; Read persisted preset byte from EEPROM slot 0x74 and reflect
@@ -7037,7 +7057,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x30, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x33, 0x00 ; "Rev x30 20260523"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x35, 0x00 ; "Rev x32 20260525"
 
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7045,8 +7065,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x30                    ; V1.71 + monotonic release revision
-        db      0x20, 0x26, 0x05, 0x23                    ; build date 20260523 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x31, 0x32                    ; V1.71 + monotonic release revision
+        db      0x20, 0x26, 0x05, 0x25                    ; build date 20260525 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

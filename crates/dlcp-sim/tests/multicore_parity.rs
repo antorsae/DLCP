@@ -335,14 +335,12 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     chain.couple_uart(i_control, default_tx_pin(), i_main, default_rx_pin());
     chain.couple_uart(i_main, default_tx_pin(), i_control, default_rx_pin());
 
-    // TAS3108 audio DSP wired to MAIN's MSSP I²C bus (CS0=0
+    // TAS3108 audio DSP wired to MAIN's MSSP I2C bus (CS0=0
     // -> slave addr 0x68/0x69 per `firmware/reference/tas3108.md`
-    // Tbl 6-1).  Without this slave, MAIN's `dsp_ping`
-    // (`firmware/patched/releases/DLCP_Firmware_V3.1.lst:7802`)
-    // and `volume_dsp_write` (lst:7838) get NACK on every
-    // master TX byte and the firmware spin-retries in
-    // `wait_bf_clear_loop` (label at lst:7753, observed park
-    // at lst:7757 = 0x4738).
+    // Tbl 6-1).  Without this slave, MAIN's `dsp_ping` and
+    // `volume_dsp_write` paths in `dlcp_main_v31.asm` get NACK
+    // on every master TX byte and the firmware spin-retries in
+    // `wait_bf_clear_loop`.
     let i_tas3108 = chain.push_tas3108(Tas3108::default());
     chain.couple_tas3108(i_main, i_tas3108);
 

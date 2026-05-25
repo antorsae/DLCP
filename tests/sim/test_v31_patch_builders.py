@@ -137,6 +137,18 @@ def test_v31_release_builders_use_canonical_inputs(monkeypatch) -> None:
             assert mod.SOURCE_HEX == paths.V31_MAIN_HEX_CANONICAL
 
 
+def test_legacy_usb_safe_builders_write_to_ignored_artifacts_dir() -> None:
+    paths = _reload("dlcp_fw.paths")
+    builders = [
+        _reload("dlcp_fw.patch.build_v30_usb_safe"),
+        _reload("dlcp_fw.patch.build_v31_usb_safe"),
+    ]
+
+    for mod in builders:
+        assert mod.OUT_HEX.parent == paths.ARTIFACTS_DIR / "reanalysis" / "usb_safe"
+        assert mod.OUT_HEX.parent != paths.FIRMWARE_PATCHED_DIR
+
+
 def test_v31_nop_builder_remains_override_aware(monkeypatch) -> None:
     monkeypatch.setenv("DLCP_FW_V31_MAIN_ASM", "tmp/override_v31.asm")
 
