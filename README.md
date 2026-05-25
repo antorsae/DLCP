@@ -7,6 +7,47 @@ Drop-in replacement firmware for the **Hypex DLCP**.  The current release pair i
 
 This README focuses on the supported V3.2 + V1.71 deployment.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
+## Fresh Clone Setup
+
+From a clean machine, clone the repo and install the Python tooling needed for
+flashing and USB probes:
+
+```bash
+git clone https://github.com/antorsae/DLCP.git
+cd DLCP
+
+# Install uv if needed.  Homebrew is also fine: brew install uv
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# Create the repo-local virtualenv used by every command below.
+uv venv .venv_ep0 --python 3.12
+uv pip install --python .venv_ep0/bin/python -e .
+```
+
+Quick flashing/probe setup check:
+
+```bash
+.venv_ep0/bin/python -c "from dlcp_fw.paths import V32_MAIN_HEX; print(V32_MAIN_HEX)"
+.venv_ep0/bin/python scripts/dlcp_v32_release_flash.py --help
+```
+
+For simulation, tests, or firmware-development work, install the optional dev
+dependencies and build the native Rust simulator extension:
+
+```bash
+uv pip install --python .venv_ep0/bin/python -e ".[dev]"
+PYO3_PYTHON="$PWD/.venv_ep0/bin/python" cargo build --release -p dlcp-sim-py
+bash crates/dlcp-sim-py/build.sh
+```
+
+If `cargo` is missing, install a stable Rust toolchain first, then rerun the
+two Rust build commands.  Quick simulator check:
+
+```bash
+PYTHONPATH=src .venv_ep0/bin/python -c "from dlcp_fw.sim.dlcp_sim_native import Chain; c = Chain.from_v171_v32(); c.step_ticks(48_000_000); print(c.lcd_lines())"
+```
+
 ## Why Upgrade
 
 Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `WAITING FOR DLCP` and require a full power cycle.  The V3.2 + V1.71 pair is built around robustness fixes for the real failure modes seen on hardware.
@@ -80,7 +121,7 @@ For raw state capture when USB still works but the chain or LCD is unhealthy:
 
 There are two supported ways to flash the release pair.
 
-Use the **CLI path** for the normal two-PB deployment.  It is the canonical path because it bakes A/B preset captures, finalizes displayed config names, applies L/R routing, verifies identity, and preserves user settings.
+Use the **CLI path** for the normal two-PB deployment.  It is the canonical path because it bakes A/B preset captures when local captures are available, applies L/R routing, verifies identity, and preserves user settings.  With no local captures, it flashes the release unbaked and prints the post-flash DSP upload instructions.
 
 Use the **HFD path** only when you want a stock-style firmware update through Hypex Filter Design.  HFD can stream the HEX files, but it does not run the repo's A/B capture baking, L/R routing, or post-flash verification/finalization steps.
 
@@ -98,6 +139,12 @@ artifacts/LX521.4/LX521.4_22MG10F-v7.json
 ```
 
 The `.json` sidecars carry the config-name metadata used after flashing.
+These files are local operator artifacts and may be absent in a fresh clone.
+If they are missing, `scripts/dlcp_v32_release_flash.py --left/--right` prints
+a warning and flashes the canonical V3.2 MAIN without baking A/B preset
+captures.  In that mode, upload the desired DSP project/settings afterward
+with Hypex Filter Design, or capture local preset tables into
+`artifacts/LX521.4/` and rerun the CLI wrapper.
 
 ### Recommended: CLI
 
@@ -111,6 +158,12 @@ Flash MAIN PB2 / right:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_v32_release_flash.py --right
+```
+
+When the LX521.4 capture files are not present, expect this warning:
+
+```text
+WARNING: local A/B preset captures are incomplete; flashing canonical V3.2 without baked presets.
 ```
 
 Flash CONTROL:

@@ -107,6 +107,55 @@ def test_main_all_ch_right_supports_dry_run(monkeypatch, tmp_path) -> None:
     ]
 
 
+def test_main_missing_local_captures_warns_and_flashes_unbaked_release(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    release_hex = tmp_path / "DLCP_Firmware_V3.2.hex"
+    _touch(release_hex)
+
+    monkeypatch.setattr(release_flash, "V32_MAIN_HEX", release_hex)
+    monkeypatch.setattr(
+        release_flash,
+        "CAPTURE_A_BIN",
+        tmp_path / "artifacts" / "LX521.4" / "LX521.4_22MG10F-v5.bin",
+    )
+    monkeypatch.setattr(
+        release_flash,
+        "CAPTURE_A_META",
+        tmp_path / "artifacts" / "LX521.4" / "LX521.4_22MG10F-v5.json",
+    )
+    monkeypatch.setattr(
+        release_flash,
+        "CAPTURE_B_BIN",
+        tmp_path / "artifacts" / "LX521.4" / "LX521.4_22MG10F-v7.bin",
+    )
+    monkeypatch.setattr(
+        release_flash,
+        "CAPTURE_B_META",
+        tmp_path / "artifacts" / "LX521.4" / "LX521.4_22MG10F-v7.json",
+    )
+
+    seen: dict[str, list[str]] = {}
+
+    def _fake_main(argv: list[str]) -> int:
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(release_flash.main_flash, "main", _fake_main)
+
+    rc = release_flash.main(["--left"])
+
+    assert rc == 0
+    assert seen["argv"] == ["--hex", str(release_hex), "--all-ch", "L"]
+    out = capsys.readouterr().out
+    assert "WARNING: local A/B preset captures are incomplete" in out
+    assert "without baked presets" in out
+    assert "Hypex Filter Design" in out
+    assert "artifacts/LX521.4/" in out
+
+
 def test_info_only_passthrough_does_not_require_release_artifacts(monkeypatch) -> None:
     seen: dict[str, list[str]] = {}
 

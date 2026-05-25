@@ -37,6 +37,39 @@ def _require_file(path: Path, *, label: str, parser: argparse.ArgumentParser) ->
         parser.error(f"{label} not found: {path}")
 
 
+def _missing_capture_files(
+    *,
+    capture_a_bin: Path,
+    capture_a_meta: Path,
+    capture_b_bin: Path,
+    capture_b_meta: Path,
+) -> list[tuple[str, Path]]:
+    candidates = [
+        ("preset A capture", capture_a_bin),
+        ("preset A sidecar", capture_a_meta),
+        ("preset B capture", capture_b_bin),
+        ("preset B sidecar", capture_b_meta),
+    ]
+    return [(label, path) for label, path in candidates if not path.is_file()]
+
+
+def _print_missing_capture_warning(
+    missing: list[tuple[str, Path]],
+    *,
+    version_label: str,
+) -> None:
+    print(
+        f"WARNING: local A/B preset captures are incomplete; flashing canonical {version_label} "
+        "without baked presets."
+    )
+    for label, path in missing:
+        print(f"  missing {label}: {path}")
+    print(
+        "  After flashing, upload the desired DSP/project file with Hypex Filter Design "
+        "or capture local preset tables under artifacts/LX521.4/ and rerun this wrapper."
+    )
+
+
 def _append_common_args(argv: list[str], args: argparse.Namespace) -> None:
     if args.vid != DEFAULT_VID:
         argv.extend(["--vid", hex(args.vid)])
@@ -83,10 +116,17 @@ def build_forward_argv(
         parser.error("a release flash requires exactly one routing target: --left, --right, or --all-ch L|R")
 
     _require_file(release_hex, label=f"canonical {version_label} MAIN hex", parser=parser)
-    _require_file(ca_bin, label="preset A capture", parser=parser)
-    _require_file(ca_meta, label="preset A sidecar", parser=parser)
-    _require_file(cb_bin, label="preset B capture", parser=parser)
-    _require_file(cb_meta, label="preset B sidecar", parser=parser)
+
+    missing_captures = _missing_capture_files(
+        capture_a_bin=ca_bin,
+        capture_a_meta=ca_meta,
+        capture_b_bin=cb_bin,
+        capture_b_meta=cb_meta,
+    )
+    if missing_captures:
+        _print_missing_capture_warning(missing_captures, version_label=version_label)
+        argv.extend(["--hex", str(release_hex), "--all-ch", route])
+        return argv
 
     argv.extend(
         [
@@ -118,7 +158,10 @@ def release_main(
     capture_b_meta: Path | None = None,
 ) -> int:
     ap = argparse.ArgumentParser(
-        description=f"Operator wrapper for the canonical {version_label} baked-preset release flash path.",
+        description=(
+            f"Operator wrapper for the canonical {version_label} MAIN release flash path; "
+            "bakes local A/B preset captures when they are present."
+        ),
     )
     ap.add_argument("--vid", type=_parse_int_auto, default=DEFAULT_VID)
     ap.add_argument("--pid", type=_parse_int_auto, default=DEFAULT_PID)
