@@ -4740,9 +4740,9 @@ flow_main_core_service_3188_3194:
 flow_main_core_service_3188_31aa:
     movlw       0x02
     movwf       ram_0x0C8, BANKED
-    movlw       0x10
+    movlw       HIGH(usb_hid_descriptor)
     movwf       ram_0x076, BANKED
-    movlw       0x3E
+    movlw       LOW(usb_hid_descriptor)
     movwf       ram_0x075, BANKED
     clrf        ram_0x0E8, BANKED
     movlw       0x09
@@ -4752,9 +4752,9 @@ flow_main_core_service_3188_31bc:
     movwf       ram_0x0C8, BANKED
     decf        ram_0x0EB, W, BANKED
     bnz         flow_main_core_service_3188_31cc
-    movlw       0x10
+    movlw       HIGH(usb_hid_report_descriptor)
     movwf       ram_0x076, BANKED
-    movlw       0x55
+    movlw       LOW(usb_hid_report_descriptor)
     movwf       ram_0x075, BANKED
 flow_main_core_service_3188_31cc:
     decf        ram_0x0EB, W, BANKED
@@ -5539,9 +5539,9 @@ main_flash_service_3796:
 flow_main_flash_service_3796_379e:
     movlw       0x01
     movwf       ram_0x0C8, BANKED
-    movlw       0x10
+    movlw       HIGH(usb_device_descriptor)
     movwf       ram_0x076, BANKED
-    movlw       0x88
+    movlw       LOW(usb_device_descriptor)
     movwf       ram_0x075, BANKED
     movlw       0x12
     bra         flow_main_flash_service_3796_37c4
@@ -5550,9 +5550,9 @@ flow_main_flash_service_3796_37ae:
     bra         flow_main_flash_service_3796_380c
     movlw       0x01
     movwf       ram_0x0C8, BANKED
-    movlw       0x10
+    movlw       HIGH(usb_config_descriptor)
     movwf       ram_0x076, BANKED
-    movlw       0x2C
+    movlw       LOW(usb_config_descriptor)
     movwf       ram_0x075, BANKED
     clrf        ram_0x0E8, BANKED
     movlw       0x29

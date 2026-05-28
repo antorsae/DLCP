@@ -4996,6 +4996,10 @@ v171_health_send_query_busy:
 ; routine writes four tail characters at row 2 cols 13..16 only when the
 ; health state marks the display dirty, so a previous longer suffix is cleared
 ; before shorter/empty states without adding LCD work to every foreground tick.
+; The BL Timeout editor is still display_state_index 3 but sets 0x0A4 while
+; active.  Skip that live editor state so a dirty health flag cannot overwrite
+; editor text such as the final "out)" of "Off (no timeout)".  Do not key this
+; from 0x0A3:0x0A2; the menu helper leaves that pointer cached after exit.
 ; ---------------------------------------------------------------------------
 v171_health_patch_suffix:
         movlb   0x01
@@ -5010,6 +5014,13 @@ v171_health_patch_suffix_dirty:
         movlw   0x04
         cpfslt  display_state_index, BANKED
         return  0x0
+        movlw   0x03
+        cpfseq  display_state_index, BANKED
+        bra     v171_health_patch_suffix_top_level
+        movf    0xa4, F, B
+        bz      v171_health_patch_suffix_top_level
+        return  0x0
+v171_health_patch_suffix_top_level:
         clrf    (Common_RAM + 4), A                         ; suffix mask
         movlb   0x01
         movlw   V171_HEALTH_STALE_AGE
@@ -6324,6 +6335,7 @@ flow_ccs_1478_14C4:                                                  ; address: 
 flow_ccs_1478_14CC:                                                  ; address: 0x0014cc
 
         return  0x0
+menu_bl_timeout_options_table:
         tstfsz  (Common_RAM + 79), A                        ; reg: 0x04f
         addwfc  0x66, W, A                                  ; reg: 0xf66
         movwf   (Common_RAM + 40), A                        ; reg: 0x028
@@ -6393,9 +6405,9 @@ main_event_loop:                                               ; address: 0x0015
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         movlw   0x03
         movwf   0xa4, B                                     ; reg: 0x0a4
-        movlw   0x14
+        movlw   HIGH(menu_bl_timeout_options_table)
         movwf   0xa3, B                                     ; reg: 0x0a3
-        movlw   0xce
+        movlw   LOW(menu_bl_timeout_options_table)
         movwf   0xa2, B                                     ; reg: 0x0a2
 
 flow_main_event_loop_1532:                                                  ; address: 0x001532
@@ -7057,7 +7069,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x35, 0x00 ; "Rev x32 20260525"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x34, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x38, 0x00 ; "Rev x34 20260528"
 
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7065,8 +7077,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x32                    ; V1.71 + monotonic release revision
-        db      0x20, 0x26, 0x05, 0x25                    ; build date 20260525 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x31, 0x34                    ; V1.71 + monotonic release revision
+        db      0x20, 0x26, 0x05, 0x28                    ; build date 20260528 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800
