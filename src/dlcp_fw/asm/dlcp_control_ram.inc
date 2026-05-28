@@ -397,6 +397,7 @@ V171_HEALTH_FLAG_DISPLAY_DIRTY  equ 0x02
 v171_health_poll_target    equ  0x0B4  ; physical 0x1B4; 0 PB1, 1 PB2
 v171_health_tick_div       equ  0x0B5  ; physical 0x1B5
 v171_health_pending_ticks  equ  0x0B6  ; physical 0x1B6
+v171_health_suffix_mask    equ  0x0B7  ; physical 0x1B7; LCD suffix scratch
 V171_HEALTH_PENDING_TICKS  equ  0x20
 V171_HEALTH_STALE_AGE      equ  0x03
 V171_HEALTH_LOST_AGE       equ  0x0A

@@ -5021,31 +5021,37 @@ v171_health_patch_suffix_dirty:
         bz      v171_health_patch_suffix_top_level
         return  0x0
 v171_health_patch_suffix_top_level:
-        clrf    (Common_RAM + 4), A                         ; suffix mask
         movlb   0x01
+        clrf    v171_health_suffix_mask, BANKED              ; suffix mask
         movlw   V171_HEALTH_STALE_AGE
         cpfslt  v171_health_age_pb1, BANKED                 ; age < stale? skip
-        bsf     (Common_RAM + 4), 0, A
+        bsf     v171_health_suffix_mask, 0, BANKED
         movlw   V171_HEALTH_STALE_AGE
         cpfslt  v171_health_age_pb2, BANKED
-        bsf     (Common_RAM + 4), 1, A
+        bsf     v171_health_suffix_mask, 1, BANKED
         ; If PB1 is stale and PB2 has missed any health bucket, the ring
         ; cannot prove PB2 is currently reachable through PB1.  Surface the
         ; shared-path uncertainty as !1 2 instead of a misleading narrow !1.
-        btfss   (Common_RAM + 4), 0, A
+        btfss   v171_health_suffix_mask, 0, BANKED
         bra     v171_health_patch_have_mask
         movf    v171_health_age_pb2, F, BANKED
         bz      v171_health_patch_have_mask
-        bsf     (Common_RAM + 4), 1, A
+        bsf     v171_health_suffix_mask, 1, BANKED
 v171_health_patch_have_mask:
         movlb   0x00
+        ; The LCD helpers use access-bank scratch cells also touched by the
+        ; RBIF/IR ISR.  Keep the five-byte suffix patch atomic so an interrupt
+        ; cannot corrupt the cursor command and land the clear at row-2 col 0.
+        bcf     INTCON, GIE, A
         movlw   0x80
         movwf   (Common_RAM + 1), A
         movlw   0xCC                                        ; row 2 col 13 (1-based)
         call    lcd_command, 0x0
+        movlb   0x01
         movlw   0x03
-        cpfseq  (Common_RAM + 4), A
+        cpfseq  v171_health_suffix_mask, BANKED
         bra     v171_health_patch_not_both
+        movlb   0x00
         movlw   '!'
         call    lcd_char_write, 0x0
         movlw   '1'
@@ -5056,20 +5062,25 @@ v171_health_patch_have_mask:
         call    lcd_char_write, 0x0
         bra     v171_health_patch_done
 v171_health_patch_not_both:
-        movf    (Common_RAM + 4), F, A
+        movlb   0x01
+        movf    v171_health_suffix_mask, F, BANKED
         bz      v171_health_patch_clear
+        movlb   0x00
         movlw   ' '
         call    lcd_char_write, 0x0
         movlw   ' '
         call    lcd_char_write, 0x0
         movlw   '!'
         call    lcd_char_write, 0x0
+        movlb   0x01
         movlw   '1'
-        btfsc   (Common_RAM + 4), 1, A
+        btfsc   v171_health_suffix_mask, 1, BANKED
         movlw   '2'
+        movlb   0x00
         call    lcd_char_write, 0x0
         bra     v171_health_patch_done
 v171_health_patch_clear:
+        movlb   0x00
         movlw   ' '
         call    lcd_char_write, 0x0
         movlw   ' '
@@ -5079,6 +5090,7 @@ v171_health_patch_clear:
         movlw   ' '
         call    lcd_char_write, 0x0
 v171_health_patch_done:
+        bsf     INTCON, GIE, A
         movlb   0x01
         bcf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
@@ -7069,7 +7081,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x34, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x38, 0x00 ; "Rev x34 20260528"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x35, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x38, 0x00 ; "Rev x35 20260528"
 
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7077,7 +7089,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x34                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x35                    ; V1.71 + monotonic release revision
         db      0x20, 0x26, 0x05, 0x28                    ; build date 20260528 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
