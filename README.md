@@ -103,13 +103,15 @@ Counters:
 - `B`: bring-up/wake dispatches
 - `R`: recovery branch entries
 - `A`: AN0 standby triggers
-- `P`: RA1 edge events
-- `O/V/W/X`: POR, brownout, watchdog, software-reset flags
+- `P`: RA1 edge events (sim-only observability; no assigned V3.2 hardware function)
+- `O/V/W/X`: POR, brownout, watchdog-timeout latch, software-reset flags
 
 The simulator fault-injection matrix now covers every displayed Diagnostics
 field from stimulus through MAIN counter, CONTROL cache, and PB1/PB2 LCD
 rendering.  `P` is intentionally scoped to the simulator-only RA1 PORTA-edge
-invariant until PIC18F2455 RA1 analog masking is modeled.
+invariant until PIC18F2455 RA1 analog masking is modeled.  `W` is a structural
+RCON.TO readout bucket; current V1.71/V3.2 releases leave WDT disabled, so it
+should stay 0 unless WDT policy changes or a test injects that reset cause.
 
 For raw state capture when USB still works but the chain or LCD is unhealthy:
 

@@ -98,7 +98,8 @@ Doc-only review of round-1 spec found five issues; all addressed below:
    an input.  An MCLR-pin-asserted reset cannot fire on this
    hardware; the counter would be permanent dead code and the spec
    would imply a config-bit change with board impact.  Reduced to 4
-   reset causes: POR, BOR, WDT, SW-reset.
+   reset causes: POR, BOR, WDT-bucket, SW-reset.  Current V3.2 policy keeps
+   WDT disabled; the W bucket is retained as a structural RCON.TO readout.
 3. **`cmd 0x21` reply burst is UNCHANGED at 7 frames.**  Extending
    it to 12 frames would break compatibility with V3.2 MAINs that
    only emit through `BF/27` (CONTROL would never see `BF/2C`,
@@ -114,10 +115,12 @@ Doc-only review of round-1 spec found five issues; all addressed below:
    `BF/2N` reply.  CONTROL drops the stray byte harmlessly and
    times out the reset cells at 0.
 4. **RCON re-arm now covers TO and RI.**  Round-1 only re-armed BOR
-   and POR.  Without re-arming TO (WDT timeout flag) and RI (reset-
-   instruction flag), a single WDT or SW-reset event would persist
-   in `RCON` across subsequent resets and misclassify them.  All
-   four cause-flag bits are now re-armed at the end of cold-init.
+   and POR.  Without re-arming TO (watchdog-timeout latch) and RI
+   (reset-instruction flag), a single injected TO-cleared or SW-reset
+   event could persist in `RCON` across subsequent resets and
+   misclassify them.  Current V3.2 leaves WDT disabled and never sets
+   `WDTCON.SWDTEN`, so the W bucket is normally unreachable; TO re-arm
+   is harmless bookkeeping for the structural RCON readout.
 5. **Rev marker is 0x37 throughout** (was a mix of 0x36 and 0x37);
    JSON sample uses decimal integers (no `0x36` literals).
 
@@ -126,7 +129,9 @@ Doc-only review of round-1 spec found five issues; all addressed below:
 Expands the V3.2 diag block from 7 runtime counters to **7 counters
 + 4 reset-cause flags** (11 cells total).  The reset-cause flags
 encode "which cause fired this session" (not an accumulating count);
-exactly one of {POR, BOR, WDT, SW-reset} is set to 1 per session.
+exactly one of {POR, BOR, WDT-bucket, SW-reset} is set to 1 per session.
+With current WDT-disabled firmware, the WDT bucket should remain 0 in normal
+hardware operation.
 
 `cmd 0x21` chain reply burst stays at 7 frames (forward-compatible
 with V3.2 ≤ rev 0x36 MAINs).  A new `cmd 0x22` chain query returns
@@ -146,8 +151,10 @@ and CI logs alike.
 ## Goals
 
 1. **Reset-cause visibility** — operators flashing new firmware or
-   debugging field issues can tell whether a unit POR'd, BOR'd, hit
-   WDT, or took a software reset (panic path or bootloader hand-off).
+   debugging field issues can tell whether a unit POR'd, BOR'd, had
+   RCON.TO cleared, or took a software reset (panic path or bootloader
+   hand-off).  Current V3.2 leaves WDT disabled, so a non-zero W bucket is
+   unexpected outside reset-cause injection tests or a future WDT policy.
    MCLR is not a reset cause on this hardware (`_CONFIG3H = 0x00`
    disables the MCLR pin); see "RAM layout" §"MCLR is NOT a reset
    cause".
@@ -174,11 +181,11 @@ cold init regardless of reset cause):
 0x2E8  diag_b               B — bring-up dispatches                    [counter]
 0x2E9  diag_r               R — recovery branch entries                [counter]
 0x2EA  diag_a               A — AN0 standby triggers                   [counter]
-0x2EB  diag_p               P — RA1 edge events                        [counter]
+0x2EB  diag_p               P — RA1 edge events (sim-only observability) [counter]
 0x2EC  diag_ra1_prev        (RA1 edge-detect shadow, NOT a counter)
 0x2ED  diag_reset_por       O — set to 1 if this session began via POR [flag 0|1]
 0x2EE  diag_reset_bor       V — set to 1 if BOR (Voltage sag)          [flag]
-0x2EF  diag_reset_wdt       W — set to 1 if WDT timeout                [flag]
+0x2EF  diag_reset_wdt       W — set to 1 if RCON.TO is clear           [flag]
 0x2F0  diag_reset_sw        X — set to 1 if software-reset             [flag]
 ```
 
@@ -206,7 +213,10 @@ below) rather than MCLR.
 
 V3.2's cold-init runs at every reset.  At entry, `RCON` reflects which
 reset cause fired most recently (silicon clears specific bits on POR,
-BOR, WDT; software-reset clears RCON.RI but preserves the others).
+BOR, watchdog timeout; software-reset clears RCON.RI but preserves the
+others).  V3.2 currently disables WDT in config and never enables
+`WDTCON.SWDTEN`, so the TO-cleared/W bucket is structural unless a test
+or future firmware policy explicitly exercises it.
 
 PIC18F2455 RCON bit layout (datasheet `39632e.md` §4.4):
 
@@ -215,7 +225,7 @@ PIC18F2455 RCON bit layout (datasheet `39632e.md` §4.4):
 | 0 | `BOR` | Brown-out reset occurred | yes | yes |
 | 1 | `POR` | Power-on reset occurred | yes | yes |
 | 2 | `PD` | SLEEP instruction executed | yes | yes |
-| 3 | `TO` | WDT timeout occurred | yes | yes |
+| 3 | `TO` | Watchdog-timeout latch cleared | yes | yes |
 | 4 | `RI` | Software reset instruction executed | yes | yes |
 
 Classification cascade (read RCON BEFORE any modification):
@@ -228,7 +238,7 @@ btfss   W, 1                  ; RCON.POR clear → POR fired
 goto    diag_classify_por
 btfss   W, 0                  ; RCON.BOR clear → BOR fired
 goto    diag_classify_bor
-btfss   W, 3                  ; RCON.TO clear  → WDT fired
+btfss   W, 3                  ; RCON.TO clear  → WDT bucket
 goto    diag_classify_wdt
 btfss   W, 4                  ; RCON.RI clear  → SW reset fired
 goto    diag_classify_sw
@@ -261,7 +271,7 @@ diag_classify_sw:
 diag_rcon_rearm:
     bsf    RCON, 0, ACCESS    ; arm BOR detection
     bsf    RCON, 1, ACCESS    ; arm POR detection
-    bsf    RCON, 3, ACCESS    ; arm WDT TO detection
+    bsf    RCON, 3, ACCESS    ; arm TO-latch detection
     bsf    RCON, 4, ACCESS    ; arm RI detection
 ```
 
@@ -280,7 +290,9 @@ flag set per session.  Examples:
 * `O1, V0, W0, X0` → unit was just power-cycled (POR).
 * `O0, V1, W0, X0` → BOR fired since last cold-init.  Power supply
   may be marginal; check the rail.
-* `O0, V0, W1, X0` → WDT fired.  Main loop hung — code bug.
+* `O0, V0, W1, X0` -> W bucket set.  This is unexpected in current
+  releases because WDT is disabled; investigate config/runtime WDT
+  policy or reset-cause injection.
 * `O0, V0, W0, X1` → software reset (panic path or bootloader hand-
   off after FW update).
 
@@ -720,9 +732,10 @@ JSON-format notes:
 - `HEALTHY` — only `O` (POR=1) and at most one `S+B` pair (one
   standby/bring-up cycle is the expected boot sequence) non-zero.
 - `DEGRADED` — any runtime counter (I, D, S>1, B>1, R, A, P) at
-  non-zero, or any unexpected reset flag (V = BOR, W = WDT,
+  non-zero, or any unexpected reset flag (V = BOR, W = TO-cleared bucket,
   X = SW-reset) set.
-- `CRITICAL` — any counter saturated to `+` (15+), or W (WDT) > 0.
+- `CRITICAL` — any counter saturated to `+` (15+), or W > 0.  W is
+  critical/unexpected because current releases leave WDT disabled.
 
 The status line is advisory — operators shouldn't rely on it for
 go/no-go decisions; the raw counter values are authoritative.
@@ -749,9 +762,9 @@ Build (Tier B):
 - EEPROM marker bumps to 0x37.
 
 Behavioral (Tier C):
-- Cold init from gpsim cold POR: `diag_reset_por == 1`, all other
+- Cold init from simulator cold POR: `diag_reset_por == 1`, all other
   reset flags == 0, all 7 runtime counters == 0.
-- Cold init from gpsim warm WDT trigger: `diag_reset_wdt == 1`,
+- Cold init from simulator-injected TO-cleared reset source: `diag_reset_wdt == 1`,
   `diag_reset_por == 0`, runtime counters == 0.
 - Runtime counters stay zero during extended idle (40M cycles).
 - cmd 0x21 reply burst: 7 frames in order, all data bytes 0..0x0F.
@@ -893,7 +906,7 @@ Tracking the sub-phases:
 | 2.4 | HID `cmd 0x44` diag-snapshot endpoint (length 0x0B) | committed |
 | 2.5 | EEPROM marker bump 0x36 -> 0x37 | committed |
 | 2.6 | V3.2 hex build + structural tests | committed |
-| 2.7 | gpsim behavioral test for cold POR classification | committed |
+| 2.7 | simulator behavioral test for cold POR classification | committed |
 | 3.1 | V1.71 cache extension to 11 cells per PB | committed |
 | 3.2 | V1.71 `cmd 0x22` chain parser (BF/2B last frame) | committed |
 | 3.3 | V1.71 menu rework (5 -> 6 states, Diag at end) | committed |

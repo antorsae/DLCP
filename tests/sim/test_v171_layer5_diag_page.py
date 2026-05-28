@@ -1293,11 +1293,12 @@ def test_bf2x_parser_uses_effective_target_for_cmd22_frames() -> None:
     frames would mis-route the 4 reset bytes to the wrong PB's cache
     cells AND set the wrong v171_diag_reset_seen bit on BF/2B.
 
-    Fix: stash the effective target into (Common_RAM + 5) before the
-    cache-base compute, with a cpfslt(0x07) gate that overrides with
-    v171_diag_reset_target when col >= 7.  Then both the cache-base
-    btfsc AND the BF/2B reset_seen-OR-in btfsc read from
-    (Common_RAM + 5) instead of v171_diag_target directly.
+    Fix: stash the effective target into the BANK 1
+    v171_diag_effective_target cell before the cache-base compute, with
+    a cpfslt(0x07) gate that overrides with v171_diag_reset_target when
+    col >= 7.  Then both the cache-base btfsc AND the BF/2B reset_seen
+    OR-in btfsc read from that snapshot instead of v171_diag_target
+    directly.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     off = _label_offset(text, "v171_bf2x_case_check")
@@ -1319,17 +1320,17 @@ def test_bf2x_parser_uses_effective_target_for_cmd22_frames() -> None:
         "col-7 override must load v171_diag_reset_target "
         "(snapshot at cmd 0x22 send time)"
     )
-    # And the override must store into (Common_RAM + 5) so downstream
+    # And the override must store into a BANK 1 cell so downstream
     # cache-base + reset_seen logic picks it up.
     override_pos = body.find("v171_bf2x_use_reset_target:")
     assert override_pos >= 0, "override label missing"
     override_body = body[override_pos:override_pos + 200]
     assert re.search(
-        r"movwf\s+\(Common_RAM \+ 5\),\s*A",
+        r"movwf\s+v171_diag_effective_target,\s*BANKED",
         override_body,
-    ), "override must write effective_target into (Common_RAM + 5)"
-    # Cache-base picker must read (Common_RAM + 5), NOT v171_diag_target.
-    # Search for the btfsc on (Common_RAM + 5), 0 between the override-
+    ), "override must write effective_target into v171_diag_effective_target"
+    # Cache-base picker must read the snapshot, NOT v171_diag_target.
+    # Search for the btfsc on v171_diag_effective_target, 0 between the override-
     # done label and the FSR0L write.
     have_label = "v171_bf2x_have_effective_target:"
     have_pos = body.find(have_label)
@@ -1338,14 +1339,14 @@ def test_bf2x_parser_uses_effective_target_for_cmd22_frames() -> None:
     assert fsr0l_pos > have_pos, "FSR0L write missing after effective-target picker"
     base_block = body[have_pos:fsr0l_pos]
     assert re.search(
-        r"btfsc\s+\(Common_RAM \+ 5\),\s*0,\s*A",
+        r"btfsc\s+v171_diag_effective_target,\s*0,\s*BANKED",
         base_block,
     ), (
-        "cache-base picker must btfsc on (Common_RAM + 5), 0 -- NOT "
+        "cache-base picker must btfsc on v171_diag_effective_target, 0 -- NOT "
         "v171_diag_target.  Reading v171_diag_target here re-introduces "
         "the cmd 0x22 frame-mis-routing bug."
     )
-    # BF/2B reset_seen path must also btfsc (Common_RAM + 5), 0 (NOT
+    # BF/2B reset_seen path must also btfsc the snapshot (NOT
     # v171_diag_target) -- pin this explicitly.
     reset_last_pos = body.find("v171_bf2x_check_reset_last:")
     assert reset_last_pos > 0, "reset-last-frame label missing"
@@ -1354,13 +1355,57 @@ def test_bf2x_parser_uses_effective_target_for_cmd22_frames() -> None:
     assert iorwf_pos > 0, "reset_seen OR-in missing"
     pre_iorwf = reset_block[:iorwf_pos]
     assert re.search(
-        r"btfsc\s+\(Common_RAM \+ 5\),\s*0,\s*A",
+        r"btfsc\s+v171_diag_effective_target,\s*0,\s*BANKED",
         pre_iorwf,
     ), (
-        "BF/2B reset_seen OR-in must btfsc on (Common_RAM + 5), 0 -- "
+        "BF/2B reset_seen OR-in must btfsc on v171_diag_effective_target, 0 -- "
         "reading v171_diag_target here would set the wrong reset_seen "
         "bit if target toggled mid-burst"
     )
+
+
+def test_bf2x_parser_effective_target_not_in_isr_scratch() -> None:
+    """The BF/2N cache-routing key must not live in Common_RAM+5.
+
+    `ir_rc5_decode` runs inside the RBIF ISR and uses Common_RAM+5 as its
+    RC5 accumulator.  The diagnostics parser spans multiple instructions and
+    calls `v171_health_mark_common_target_fresh`; an IR edge in that window
+    can corrupt an access-bank scratch routing key and write the reply into
+    the wrong PB cache.  The fix is a BANK 1 routing cell.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    body = _label_body(text, "v171_bf2x_case_check", "flow_rx_parser_entry_05EA")
+    code_only = "\n".join(line.split(";", 1)[0] for line in body.splitlines())
+    assert "(Common_RAM + 5)" not in code_only, (
+        "BF/2N parser must not use Common_RAM+5; it is clobbered by the "
+        "in-ISR RC5 decoder"
+    )
+    assert "v171_diag_effective_target" in code_only
+
+    helper = _label_body(
+        text,
+        "v171_health_mark_common_target_fresh",
+        "flow_rx_parser_entry_05EA",
+    )
+    helper_code = "\n".join(line.split(";", 1)[0] for line in helper.splitlines())
+    assert "(Common_RAM + 5)" not in helper_code
+    assert "btfsc   v171_diag_effective_target, 0, BANKED" in helper_code
+
+
+def test_health_diag_check_stale_not_in_isr_scratch() -> None:
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    body = _label_body(
+        text,
+        "v171_health_diag_check_stale",
+        "control_core_service_0F54",
+    )
+    code_only = "\n".join(line.split(";", 1)[0] for line in body.splitlines())
+    assert "(Common_RAM + 5)" not in code_only, (
+        "Diag stale/lost classifier must not use Common_RAM+5; it is "
+        "clobbered by the in-ISR RC5 decoder"
+    )
+    assert "v171_health_age_tmp" in code_only
+    assert re.search(r"movwf\s+v171_health_age_tmp,\s*BANKED", code_only)
 
 
 def test_diag_loop_times_out_reset_pending_after_n_cadences() -> None:

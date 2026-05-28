@@ -381,7 +381,7 @@ V171_DIAG_RUNTIME_TIMEOUT_RELOAD equ 0x10
 
 ; --- V1.71/V3.2 link-health freshness MVP (BANK 1) ---
 ; CONTROL-owned freshness state for the tiny cmd 0x23 / BF/2C health ping.
-; Equate operands are BANKED-form; physical addresses are 0x1B0..0x1B6.
+; Equate operands are BANKED-form; physical addresses are 0x1B0..0x1B9.
 ;
 ; Ages are coarse missed-health buckets, saturating at 0x0F.  A received
 ; expected BF/2C reply resets the addressed PB age to 0 and sets the
@@ -398,6 +398,8 @@ v171_health_poll_target    equ  0x0B4  ; physical 0x1B4; 0 PB1, 1 PB2
 v171_health_tick_div       equ  0x0B5  ; physical 0x1B5
 v171_health_pending_ticks  equ  0x0B6  ; physical 0x1B6
 v171_health_suffix_mask    equ  0x0B7  ; physical 0x1B7; LCD suffix scratch
+v171_diag_effective_target equ  0x0B8  ; physical 0x1B8; BF/2N parser routing snapshot
+v171_health_age_tmp        equ  0x0B9  ; physical 0x1B9; Diag stale/lost classifier scratch
 V171_HEALTH_PENDING_TICKS  equ  0x20
 V171_HEALTH_STALE_AGE      equ  0x03
 V171_HEALTH_LOST_AGE       equ  0x0A

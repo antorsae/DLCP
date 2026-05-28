@@ -27,9 +27,12 @@ This file pins the MAIN-side hardening that fixes that path:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from dlcp_fw.paths import V171_CONTROL_ASM, V32_MAIN_ASM
+from dlcp_fw.sim.v30_symbols import assemble_v30
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -153,6 +156,44 @@ def test_v32_duplicate_standby_preserves_pending_shutdown_event() -> None:
         "clear event_flags.bit2; that cancels the pending shutdown dispatcher"
     )
     assert "duplicate standby: keep pending bit2 intact" in closed_branch
+
+
+@pytest.fixture(scope="module")
+def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("v32_duplicate_standby")
+    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
+    assemble_v30(V32_MAIN_ASM, hex_out)
+    return hex_out
+
+
+@pytest.mark.slow
+def test_v32_duplicate_standby_frames_still_dispatch_shutdown(v32_hex: Path) -> None:
+    """Behavioral gate for BUG-STDBY-01.
+
+    CONTROL can legitimately put two `B0/03/00` standby frames into the
+    MAIN RX ring before the foreground dispatcher drains `event_flags.bit2`.
+    The second frame lands while `active_flags.bit3` is already clear.  That
+    closed-gate duplicate branch must leave the pending standby event intact
+    so `standby_event_dispatch` still powers down the hardware latches.
+    """
+    if not _RUST_OK:
+        pytest.fail(f"rust facade not importable: {_RUST_ERR!r}")
+
+    c = RustChain.from_v3x_main_only(str(v32_hex))
+    c.step_tcy(16_000_000)
+    assert c.read_reg(0x05E) & 0x08, "MAIN did not boot into active state"
+
+    delivered, overruns = c.inject_main_frames_fifo(
+        [[0xB0, 0x03, 0x00], [0xB0, 0x03, 0x00]],
+        fifo_limit=47,
+    )
+    assert delivered == 6 and overruns == 0
+    c.step_tcy(12_000_000)
+
+    assert not (c.read_reg(0x05E) & 0x08), "standby gate bit should be closed"
+    assert c.read_reg(0x2E7) >= 1, "diag_s should count the shutdown dispatch"
+    assert (c.read_reg(0xF8A) & 0x18) == 0x00, "LATB amp enables stayed high"
+    assert (c.read_reg(0xF89) & 0x40) == 0x00, "LATA amp enable stayed high"
 
 
 @pytest.mark.dual_supported

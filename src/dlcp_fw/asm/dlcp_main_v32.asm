@@ -1572,11 +1572,18 @@ flow_cmd_dispatch_gated_1a76:
     call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
     call        main_core_service_4574, 0x0
     movlb       0x0
+    ; V3.2 BUG-PRESET-01 hardening: if filename RAM is still dirty or
+    ; under a USB filename transaction, do not report EP0 reapply complete.
+    ; preset_load_filename would be unsafe to run, but clearing bit7 here
+    ; makes the flasher believe the restored preset is coherent while the
+    ; visible filename RAM may still belong to the previous preset.
     btfsc       filename_dirty_flags, 5, BANKED
-    bra         flow_cmd_dispatch_gated_reapply_skip_name
+    bra         flow_cmd_dispatch_gated_reapply_wait_name
     btfsc       filename_dirty_flags, 6, BANKED
-    bra         flow_cmd_dispatch_gated_reapply_skip_name
+    bra         flow_cmd_dispatch_gated_reapply_wait_name
+    bcf         INTCON, 7, ACCESS
     call        preset_load_filename, 0x0
+    bsf         INTCON, 7, ACCESS
 flow_cmd_dispatch_gated_reapply_skip_name:
     bsf         RCSTA, 4, ACCESS
     bcf         active_flags, 7, ACCESS
@@ -1585,6 +1592,10 @@ flow_cmd_dispatch_gated_reapply_skip_name:
     btfsc       active_flags, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1a9c
     bsf         event_flags, 3, BANKED
+    bra         flow_cmd_dispatch_gated_1a9c
+flow_cmd_dispatch_gated_reapply_wait_name:
+    bsf         RCSTA, 4, ACCESS
+    bra         flow_cmd_dispatch_gated_1a9c
 flow_cmd_dispatch_gated_1a9c:
     movlb       0x0
     btfss       event_flags, 5, BANKED
@@ -2524,7 +2535,7 @@ flow_main_core_service_1e88_20c2:
     clrf        ram_0x008, ACCESS
     movlw       0x82
     movwf       ram_0x007, ACCESS
-    movlw       0x6E                            ; V3.2_RUNTIME_EEPROM_REV
+    movlw       0x71                            ; V3.2_RUNTIME_EEPROM_REV
     movwf       ram_0x009, ACCESS
     goto        main_flash_service_46de
 
@@ -3550,6 +3561,7 @@ flow_main_i2c_service_27f0_ad_wait:
     bra         flow_main_i2c_service_27f0_295c
     movlw       0x13
     call        i2c_secondary_dev_random_read, 0x0
+    bc          flow_main_i2c_service_27f0_ad_monitor_timeout
     movlb       0x0
     movwf       ram_0x0BE, BANKED
     tstfsz      ram_0x0BE, BANKED
@@ -3580,6 +3592,9 @@ flow_main_i2c_service_27f0_2902:
     clrf        src4382_loss_debounce, BANKED
     movlb       0x0
     bra         flow_main_i2c_service_27f0_295c
+flow_main_i2c_service_27f0_ad_monitor_timeout:
+    movlb       0x0
+    bra         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_290a:
     movlb       0x02
     clrf        src4382_loss_debounce, BANKED
@@ -3608,6 +3623,7 @@ flow_main_i2c_service_27f0_2924:
 flow_main_i2c_service_27f0_292e:
     movlw       0x12
     call        i2c_secondary_dev_random_read, 0x0
+    bc          flow_main_i2c_service_27f0_ad_monitor
     movlb       0x0
     movwf       ram_0x0BF, BANKED
     movf        ram_0x0BF, W, BANKED
@@ -6465,7 +6481,8 @@ flow_main_flash_service_3ce8_3d78:
     ;
     ;   RCON.POR (bit 1) clear -> POR fired
     ;   RCON.BOR (bit 0) clear -> BOR fired (with POR still set)
-    ;   RCON.TO  (bit 3) clear -> WDT timeout fired
+    ;   RCON.TO  (bit 3) clear -> W bucket (normally unreachable while
+    ;                              WDT is disabled in V3.2 config/policy)
     ;   RCON.RI  (bit 4) clear -> software reset (`reset` instruction) fired
     ;   else                    -> map to SW bucket (MCLR is physically
     ;                              disabled on this hardware via
@@ -6483,7 +6500,7 @@ flow_main_flash_service_3ce8_3d78:
     bra         diag_classify_por
     btfss       RCON, 0, ACCESS                    ; BOR cleared?
     bra         diag_classify_bor
-    btfss       RCON, 3, ACCESS                    ; TO  cleared (WDT)?
+    btfss       RCON, 3, ACCESS                    ; TO cleared (W bucket)?
     bra         diag_classify_wdt
     ; RI cleared OR no recognized bit cleared -> SW bucket (catch-all).
 diag_classify_sw:
@@ -6501,7 +6518,7 @@ diag_classify_wdt:
 diag_rcon_rearm:
     bsf         RCON, 0, ACCESS                    ; arm BOR detection for next reset
     bsf         RCON, 1, ACCESS                    ; arm POR detection for next reset
-    bsf         RCON, 3, ACCESS                    ; arm TO  (WDT)  for next reset
+    bsf         RCON, 3, ACCESS                    ; arm TO latch for next reset
     bsf         RCON, 4, ACCESS                    ; arm RI  (SW)   for next reset
 
     clrf        ram_0x05F, ACCESS
@@ -6699,7 +6716,7 @@ i2c_byte_tx:
     movff       WREG, ram_0x005
     movff       ram_0x005, SSPBUF
     btfsc       SSPCON1, 7, ACCESS
-    bra         flow_i2c_byte_tx_exit
+    bra         flow_i2c_byte_tx_timeout
     rcall       sspcon1_masked_w
     xorlw       0x08
     bz          flow_i2c_byte_tx_master
@@ -7307,6 +7324,7 @@ i2c_secondary_dev_random_read:
     rcall       wait_pen_bounded
     bc          i2c_secondary_dev_random_pen_timeout
     movf        ram_0x007, W, ACCESS
+    bcf         STATUS, 0, ACCESS
     return      0
 i2c_secondary_dev_random_timeout:
     call        i2c_timeout_recover_advertise, 0x0
@@ -8552,6 +8570,7 @@ mssp_hard_reset:
     clrf        SSPCON2, ACCESS
     bcf         SSPCON1, 7, ACCESS
     bcf         SSPCON1, 6, ACCESS
+    bcf         PIR2, 3, ACCESS
     movf        ram_0x004, W, ACCESS
     iorwf       SSPCON1, F, ACCESS
     movf        ram_0x003, W, ACCESS
@@ -8597,7 +8616,7 @@ periodic_service_loop:
 ; Polled once per periodic_service_loop pass (= main_processing_loop tick,
 ; tens of µs).  Compares PORTA bit 1 against diag_ra1_prev shadow byte;
 ; on either edge (0→1 or 1→0) bumps diag_p (saturating at 0x0F).  Tested
-; via gpsim by toggling RA1 in the harness; no real-hardware function is
+; via the simulator by toggling RA1 in the harness; no real-hardware function is
 ; assigned to RA1 in V3.2, so this is pure observability infrastructure
 ; per docs/V163B_DIAGNOSTICS_MENU_SPEC.md "RA1-trigger path" section.
 ; ---------------------------------------------------------------------------
@@ -9433,7 +9452,7 @@ cmd21_diag_query_handler:
 ;
 ;   BF/28 = diag_reset_por  (O — Power-On Reset)
 ;   BF/29 = diag_reset_bor  (V — Brown-Out Reset)
-;   BF/2A = diag_reset_wdt  (W — WDT timeout)
+;   BF/2A = diag_reset_wdt  (W - RCON.TO-cleared bucket; WDT disabled by policy)
 ;   BF/2B = diag_reset_sw   (X — software reset; LAST FRAME — CONTROL
 ;                            uses this to clear RESET_PENDING and refresh
 ;                            the per-PB reset-cause cache)
@@ -9847,7 +9866,9 @@ preset_job_holding:
     ; Toggle preset bit
     btg         active_flags, 2, ACCESS
     ; Load incoming preset filename from EEPROM
+    bcf         INTCON, 7, ACCESS
     rcall       preset_load_filename
+    bsf         INTCON, 7, ACCESS
     ; Set cmd03 dirty flag for I2C parameter refresh
     movlb       0x0
     bsf         event_flags, 0, BANKED
@@ -10450,7 +10471,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x02, 0x6E, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
+    db  0x03, 0x02, 0x71, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.2 Tier-1 lineage: no-pop + reset-cause classification + cmd 0x22 reset-flags burst + HID cmd 0x44 diag snapshot; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

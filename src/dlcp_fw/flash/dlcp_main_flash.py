@@ -72,6 +72,7 @@ EEPROM_SETTINGS_DIRTY_MASK = 0x01
 EEPROM_ROUTE_DIRTY_MASK = 0x02
 EEPROM_SETUP_PROFILE_DIRTY_MASK = 0x04
 FILENAME_DIRTY_MASK = 0x20
+FILENAME_XACT_PENDING_MASK = 0x40
 LOGICAL_VOLUME_RAM_BASE = 0x066
 COMPUTED_VOLUME_RAM_BASE = 0x06E
 SETUP_PROFILE_RAM = 0x0B8
@@ -1128,8 +1129,9 @@ def _force_active_filename_persist(
         raise ValueError("poll_s must be > 0")
 
     ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
+    pending_mask = FILENAME_DIRTY_MASK | FILENAME_XACT_PENDING_MASK
     dirty = _ep0_read_byte(ep0, addr=ROUTE_DIRTY_FLAGS_ADDR)
-    if (dirty & FILENAME_DIRTY_MASK) == 0:
+    if (dirty & pending_mask) == 0:
         return False
 
     deadline = time.monotonic() + timeout_s
@@ -1137,11 +1139,11 @@ def _force_active_filename_persist(
         _ep0_or_byte(ep0, addr=EVENT_FLAGS_ADDR, mask=EVENT_DIRTY_SERVICE_MASK)
         time.sleep(poll_s)
         dirty = _ep0_read_byte(ep0, addr=ROUTE_DIRTY_FLAGS_ADDR)
-        if (dirty & FILENAME_DIRTY_MASK) == 0:
+        if (dirty & pending_mask) == 0:
             return True
         if time.monotonic() >= deadline:
             raise RuntimeError(
-                "filename dirty flag did not clear after EP0 persist trigger "
+                "filename dirty/xact flag did not clear after EP0 persist trigger "
                 f"(dirty=0x{dirty:02X})"
             )
 

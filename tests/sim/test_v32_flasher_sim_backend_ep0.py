@@ -274,6 +274,97 @@ def test_v32_ep0_reapply_reload_filename_ram_for_restored_preset() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("dirty_mask", "case"),
+    [
+        (_FILENAME_DIRTY_MASK, "filename-dirty"),
+        (_USB_XACT_PENDING_MASK, "usb-xact-pending"),
+        (_FILENAME_DIRTY_MASK | _USB_XACT_PENDING_MASK, "dirty-and-xact"),
+    ],
+)
+def test_v32_ep0_reapply_stays_pending_until_filename_dirty_clears(
+    dirty_mask: int,
+    case: str,
+) -> None:
+    """BUG-PRESET-01: EP0 reapply must not report completion while
+    filename dirty/xact bits make ``preset_load_filename`` unsafe.
+
+    A real post-flash or HFD-adjacent interleaving can have live filename
+    RAM from preset B while EP0 requests a restore to preset A.  If bit5
+    or bit6 is set, V3.2 must defer readiness by keeping
+    active_flags.bit7 set; clearing bit7 with B's live filename still in
+    RAM makes the flasher report a complete preset A restore with stale
+    visible metadata.
+    """
+    chain = _open_main_only_chain()
+    slot_a = _filename_slot(b"EP0-REAPPLY-A")
+    slot_b = _filename_slot(b"EP0-REAPPLY-B")
+    _seed_main_only_filename_slot(chain, _PRESET_A_EEPROM_BASE, slot_a)
+    _seed_main_only_filename_slot(chain, _PRESET_B_EEPROM_BASE, slot_b)
+
+    # Precondition: active preset bit says B and live filename RAM is B.
+    flags = chain.read_reg(_ACTIVE_FLAGS_ADDR)
+    flags = (flags | _ACTIVE_PRESET_MASK) & (~_ACTIVE_REAPPLY_MASK & 0xFF)
+    chain.write_reg(_ACTIVE_FLAGS_ADDR, flags)
+    for i, value in enumerate(slot_b):
+        chain.write_reg(_FILENAME_RAM_BASE + i, value)
+    assert _read_main_only_filename_ram(chain) == slot_b
+
+    # EP0 restore request: switch active_flags.bit2 to A and set the
+    # firmware reapply bit while filename metadata is still dirty/gated.
+    chain.write_reg(
+        _FILENAME_DIRTY_FLAGS_ADDR,
+        chain.read_reg(_FILENAME_DIRTY_FLAGS_ADDR) | dirty_mask,
+    )
+    chain.write_reg(
+        _ACTIVE_FLAGS_ADDR,
+        (flags & (~_ACTIVE_PRESET_MASK & 0xFF)) | _ACTIVE_REAPPLY_MASK,
+    )
+
+    # Give the main loop more than enough time to process the reapply
+    # branch.  The old bug clears bit7 here even though it skipped
+    # preset_load_filename; the fixed behavior keeps bit7 pending.
+    for _ in range(80):
+        chain.step_ticks(2_000_000)
+        if not (chain.read_reg(_ACTIVE_FLAGS_ADDR) & _ACTIVE_REAPPLY_MASK):
+            break
+
+    active_flags = chain.read_reg(_ACTIVE_FLAGS_ADDR)
+    assert active_flags & _ACTIVE_REAPPLY_MASK, (
+        f"{case}: reapply must stay pending while filename dirty/xact bits "
+        f"are set; active_flags=0x{active_flags:02X}, "
+        f"dirty=0x{chain.read_reg(_FILENAME_DIRTY_FLAGS_ADDR):02X}"
+    )
+    assert (active_flags & _ACTIVE_PRESET_MASK) == 0, (
+        f"{case}: EP0 preset bit should already reflect requested A; "
+        f"active_flags=0x{active_flags:02X}"
+    )
+    assert _read_main_only_filename_ram(chain) == slot_b, (
+        f"{case}: dirty/gated reapply should not clobber live host RAM yet"
+    )
+
+    # Once the filename transaction is actually clean, the same pending
+    # reapply must complete and load A's EEPROM slot into live RAM.
+    chain.write_reg(
+        _FILENAME_DIRTY_FLAGS_ADDR,
+        chain.read_reg(_FILENAME_DIRTY_FLAGS_ADDR)
+        & (~(_FILENAME_DIRTY_MASK | _USB_XACT_PENDING_MASK) & 0xFF),
+    )
+    for _ in range(80):
+        if not (chain.read_reg(_ACTIVE_FLAGS_ADDR) & _ACTIVE_REAPPLY_MASK):
+            break
+        chain.step_ticks(2_000_000)
+
+    active_flags = chain.read_reg(_ACTIVE_FLAGS_ADDR)
+    assert (active_flags & _ACTIVE_REAPPLY_MASK) == 0, (
+        f"{case}: reapply did not complete after dirty/xact bits cleared; "
+        f"active_flags=0x{active_flags:02X}"
+    )
+    assert _read_main_only_filename_ram(chain) == slot_a, (
+        f"{case}: clean reapply did not load preset A filename RAM"
+    )
+
+
 def test_sim_ep0_read_past_0x10000_raises() -> None:
     """``set_pointer(0xFFFF) + read_exact(2)`` would wrap past the
     12-bit data-memory window.  The real firmware's TBLPTRH-driven

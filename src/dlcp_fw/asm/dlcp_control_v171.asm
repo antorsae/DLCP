@@ -1269,23 +1269,24 @@ v171_bf2x_check_upper:
         ;                 v171_diag_reset_seen bit on BF/2B.  See the
         ;                 codex review note attached to commit d3d15cd.
         ; Default = runtime snapshot; cmd 0x22 path overrides with its
-        ; reset snapshot.
+        ; reset snapshot.  Keep this in BANK 1: Common_RAM+5 is clobbered
+        ; by the in-ISR RC5 decoder.
         movlb   0x01
         movf    v171_diag_runtime_target, W, BANKED
-        movwf   (Common_RAM + 5), A                       ; effective_target
+        movwf   v171_diag_effective_target, BANKED        ; effective_target
         movlw   0x07
         cpfslt  (Common_RAM + 4), A                       ; col < 7? skip if so
         bra     v171_bf2x_use_reset_target                ; col >= 7: override
         bra     v171_bf2x_have_effective_target           ; col < 7: keep live
 v171_bf2x_use_reset_target:
         movf    v171_diag_reset_target, W, BANKED
-        movwf   (Common_RAM + 5), A
+        movwf   v171_diag_effective_target, BANKED
 v171_bf2x_have_effective_target:
         ; Compute slot base: PB1 base = v171_diag_pb1_i (0x80),
         ; PB2 base = v171_diag_pb2_i (0x8B = 0x80 + 11).  Add 11 (0x0B)
         ; if effective_target bit0 set.
         movlw   v171_diag_pb1_i
-        btfsc   (Common_RAM + 5), 0, A
+        btfsc   v171_diag_effective_target, 0, BANKED
         movlw   v171_diag_pb2_i
         addwf   (Common_RAM + 4), W, A                    ; W = base + col_offset
         ; Write payload via FSR0 in BANK 1 (0x180..0x195 physical).
@@ -1312,12 +1313,12 @@ v171_bf2x_have_effective_target:
         ; is HERE (not in the cadence loop) so target stays stable for
         ; the full query/reply round-trip.
         ;
-        ; Use (Common_RAM + 5) effective_target -- which equals
+        ; Use v171_diag_effective_target -- which equals
         ; v171_diag_runtime_target on this path (col 6 < 7) -- for the
         ; present-mask OR-in.  The btg below operates on the LIVE
         ; v171_diag_target directly because that's what we're toggling.
         movlw   0x01                                      ; PB1 mask
-        btfsc   (Common_RAM + 5), 0, A
+        btfsc   v171_diag_effective_target, 0, BANKED
         movlw   0x02                                      ; PB2 mask
         iorwf   v171_diag_present, F, BANKED
         ; A completed addressed Diagnostics burst also proves CONTROL
@@ -1338,7 +1339,7 @@ v171_bf2x_check_reset_last:
         ; present mask / runtime target / RUNTIME_PENDING -- those are
         ; managed independently by the cmd 0x21 path above.
         ;
-        ; Use (Common_RAM + 5) effective_target -- which equals
+        ; Use v171_diag_effective_target -- which equals
         ; v171_diag_reset_target on this path (col 10 >= 7) -- for the
         ; reset_seen OR-in.  v171_diag_target may have toggled via an
         ; interleaved BF/27 from the OTHER PB during the cmd 0x22
@@ -1348,7 +1349,7 @@ v171_bf2x_check_reset_last:
         cpfseq  (Common_RAM + 4), A                       ; col_offset == 10 (BF/2B)?
         bra     v171_bf2x_check_reset_last_exit_bsr0      ; not last frame -- reset BSR + exit
         movlw   0x01                                      ; PB1 reset_seen bit
-        btfsc   (Common_RAM + 5), 0, A
+        btfsc   v171_diag_effective_target, 0, BANKED
         movlw   0x02                                      ; PB2 reset_seen bit
         iorwf   v171_diag_reset_seen, F, BANKED
         bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
@@ -1404,13 +1405,13 @@ v171_health_bf2c_done:
         bra     flow_rx_parser_entry_05EA
 
 v171_health_mark_common_target_fresh:
-        ; Input: (Common_RAM + 5).bit0 = target snapshot (0 PB1, 1 PB2).
+        ; Input: v171_diag_effective_target.bit0 = target snapshot (0 PB1, 1 PB2).
         ; Used by the Diagnostics BF/27 last-frame path; a full addressed
         ; diagnostics reply is also a successful PB reachability proof.
         movlb   0x01
         bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
-        btfsc   (Common_RAM + 5), 0, A
+        btfsc   v171_diag_effective_target, 0, BANKED
         bra     v171_health_mark_common_target_pb2
         clrf    v171_health_age_pb1, BANKED
         bsf     v171_health_seen_mask, 0, BANKED
@@ -2681,8 +2682,10 @@ cmd1d_setting_frame_send_aborted:
         return  0x0
 
 v171_service_pending_ir_decode:
-        ; Foreground completion of the deferred RC5 decode.  The ISR only
-        ; latches `v171_ir_decode_pending`; the expensive decoder runs here.
+        ; Retired legacy deferred RC5 service retained for source-address
+        ; continuity.  Live V1.71 IR uses the stock-compatible RBIF ISR
+        ; path: isr_entry calls ir_rc5_decode directly.  display_loop_iteration
+        ; must not call this routine.
         movf    v171_ir_decode_pending, F, BANKED
         btfsc   STATUS, Z, A
         return  0x0
@@ -2701,25 +2704,16 @@ v171_service_pending_ir_decode_drop:
 
 
 ; ===========================================================================
-; V1.71 IR non-blocking decoder (task #152 / V171_IR_NONBLOCK_DECODER_SPEC.md)
+; Retired V1.71 IR non-blocking decoder experiment
 ; ---------------------------------------------------------------------------
-; Replaces the broken deferred-decode design (bc61c70 / task #151).
-; State machine: IDLE → SAMPLING (32 Timer1 ticks at 889 µs) → DONE.
-; Sample handler reads RB5 once per Timer1 tick, accumulates Manchester
-; bits into a byte-indexed 4-byte buffer (buf0=samples 1-8, buf1=9-16,
-; buf2=17-24, buf3=25-32).  On completion, post-process copies the
-; buffer into (Common_RAM+16..19) at 0x010..0x013 and reuses the legacy
-; ir_rc5_decode body's Manchester pair-validation logic at
-; flow_ir_rc5_decode_025E (no further RB5 reads -- pure post-process).
-;
-; All state lives in BANK 1 (movlb 0x01); see RAM equates at
-; v171_ir_state in dlcp_control_ram.inc.  These routines are NOT
-; reachable yet from the ISR -- M2 commit lands the bodies for
-; structural review; M3 commit wires the ISR dispatch.
+; These Timer1 sampling bodies are not live in the V1.71 release; they are
+; retained only for analysis/source-address continuity.  The live path remains
+; the stock-compatible RBIF ISR path through ir_rc5_decode.
 ; ===========================================================================
 
-; v171_ir_start_decode @ called from RBIF ISR after RB5=LOW falling edge
-; confirmed and IR_ARMED set.  Initializes state machine + arms Timer1
+; v171_ir_start_decode @ retired experimental RBIF entry.  If called by the
+; old experiment after RB5=LOW and IR_ARMED, initializes the state machine
+; and arms Timer1.
 ; with ``V171_IR_TMR1_FIRST_HI/LO`` preload.  Per
 ; V171_IR_NONBLOCK_DECODER_SPEC.md (rust-sim-instrumented against
 ; V1.6b stock decoder), the first sample lands at MID OF S2 FIRST
@@ -2764,7 +2758,8 @@ v171_ir_start_decode:
         return  0x0
 
 
-; v171_ir_sample_handler @ called from Timer1 ISR (TMR1IF set).
+; v171_ir_sample_handler @ retired experimental Timer1 handler (not called by
+; the live ISR).
 ; Reads PORTB.RB5, shifts the resulting Manchester bit into the buffer
 ; byte indexed by sample_count >> 3, increments sample_count.  If
 ; sample_count >= 32, transitions to DONE (calls v171_ir_post_process).
@@ -3018,10 +3013,9 @@ display_loop_iteration:                                               ; address:
 flow_display_loop_iteration_0CB4:                                                  ; address: 0x000cb4
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
-        ; V1.71 task #152 (M3): legacy deferred-decode foreground
-        ; service is removed.  IR decoding now runs entirely from the
-        ; Timer1 ISR via v171_ir_sample_handler -- no foreground
-        ; involvement.  See V171_IR_NONBLOCK_DECODER_SPEC.md.
+        ; Live IR decoding is the stock-compatible RBIF ISR path:
+        ; isr_entry calls ir_rc5_decode directly and stores cmd/address.
+        ; Retired foreground/Timer1 experimental services stay uncalled.
         movlb   0x00
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0                     ; legacy-link parser stall guard
@@ -4503,7 +4497,9 @@ v171_diag_poll_check:
         bnz     v171_diag_loop_dec
         ; Countdown expired.  If RUNTIME_PENDING is still set, wait a
         ; small number of missed cadences before retrying the visible
-        ; PB.  The target is loaded from v171_diag_render_pb_index in
+        ; PB.  The RESET_PENDING timeout below still ages during that
+        ; wait so cmd 0x22 cannot freeze behind a silent runtime burst.
+        ; The target is loaded from v171_diag_render_pb_index in
         ; v171_diag_send_now, so a silent hidden PB cannot steal the
         ; active page's ~1 s refresh cadence, and one BF/21..BF/27
         ; burst stays in flight at a time.
@@ -4511,12 +4507,23 @@ v171_diag_poll_check:
         btfss   v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v171_diag_send_now                         ; previous reply landed
         decf    v171_diag_runtime_timeout, F, BANKED
-        bnz     v171_diag_runtime_wait                     ; still in timeout window
+        bnz     v171_diag_runtime_wait_with_reset_timeout  ; still in timeout window
         ; Previous visible-page query timed out -- retry it.
         call    v171_health_age_visible_diag_target, 0x0
         movlb   0x01
         bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v171_diag_send_now
+v171_diag_runtime_wait_with_reset_timeout:
+        btfss   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        bra     v171_diag_runtime_wait
+        decf    v171_diag_reset_timeout, F, BANKED
+        bnz     v171_diag_runtime_wait
+        movlw   0x01                                       ; PB1 reset_seen bit
+        btfsc   v171_diag_reset_target, 0, BANKED
+        movlw   0x02                                       ; PB2 reset_seen bit
+        iorwf   v171_diag_reset_seen, F, BANKED
+        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        bra     v171_diag_runtime_wait
 v171_diag_runtime_wait:
         movlw   V171_DIAG_POLL_RELOAD_LO
         movwf   v171_diag_poll_lo, BANKED
@@ -5123,12 +5130,12 @@ v171_health_diag_check_pb2_shared:
 v171_health_diag_check_pb2_fresh_after_pb1:
         movf    v171_health_age_pb2, W, BANKED
 v171_health_diag_check_have_age:
-        movwf   (Common_RAM + 5), A
+        movwf   v171_health_age_tmp, BANKED
         movlw   V171_HEALTH_LOST_AGE
-        cpfslt  (Common_RAM + 5), A
+        cpfslt  v171_health_age_tmp, BANKED
         bra     v171_health_diag_check_lost
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  (Common_RAM + 5), A
+        cpfslt  v171_health_age_tmp, BANKED
         bra     v171_health_diag_check_old
         movlb   0x00
         return  0x0
@@ -7081,7 +7088,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x35, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x38, 0x00 ; "Rev x35 20260528"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x36, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x38, 0x00 ; "Rev x36 20260528"
 
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7089,7 +7096,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x35                    ; V1.71 + monotonic release revision
+        db      0x01, 0x07, 0x31, 0x36                    ; V1.71 + monotonic release revision
         db      0x20, 0x26, 0x05, 0x28                    ; build date 20260528 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---

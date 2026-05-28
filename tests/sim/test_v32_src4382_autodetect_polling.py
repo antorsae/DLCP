@@ -34,9 +34,11 @@ NON_PCM_STATUS_SHADOW = 0x0BF
 RX_RING_RD = 0x0C6
 RX_RING_WR = 0x0C7
 DIAG_I = 0x2E5
+DIAG_R = 0x2E9
 SRC_LOSS_DEBOUNCE = 0x2F3
 PRESET_JOB_STATE = 0x2DE
 PRESET_JOB_TARGET = 0x2DF
+SSPCON1 = 0xFC6
 
 ACTIVE_PRESET_MASK = 0x04
 ACTIVE_GATE_MASK = 0x08
@@ -454,6 +456,66 @@ def test_v32_src4382_sustained_source_loss_resumes_scan_within_1s(
     assert chain.read_reg(SRC_LOSS_DEBOUNCE) == 0x00
     assert chain.read_reg(SRC_ROUTE_REQUEST) == 0x00
     assert chain.read_reg(ROUTE_SHADOW) == 0x00
+
+
+def test_v32_src4382_status_read_timeout_does_not_clear_good_route(
+    v32_hex: Path,
+) -> None:
+    """An MSSP timeout while reading SRC4382 reg 0x13 is transport loss,
+    not proof that the selected audio source disappeared.
+
+    Pre-fix, `i2c_secondary_dev_random_read` returned W=0 on timeout and
+    Auto Detect treated two such samples as sustained source loss, clearing
+    a good route.  Fixed firmware preserves the last route and counts I/R.
+    """
+    chain = _boot_autodetect_main(v32_hex)
+    route = _converge_autodetect_source(chain)
+    before_i = chain.read_reg(DIAG_I)
+    before_r = chain.read_reg(DIAG_R)
+
+    chain.set_mssp_start_fault(cycles=5_000_000, count=4)
+    chain.step_tcy(2 * ONE_SECOND_TCY)
+
+    assert chain.read_reg(DIAG_I) > before_i, "timeout did not increment diag_i"
+    assert chain.read_reg(DIAG_R) > before_r, "timeout recovery did not increment diag_r"
+    assert chain.read_reg(SRC_ROUTE_REQUEST) == route
+    assert chain.read_reg(ROUTE_SHADOW) == route
+    assert chain.read_reg(SRC_LOSS_DEBOUNCE) == 0x00
+
+
+def test_v32_i2c_byte_tx_wcol_enters_recovery_and_clears_latch(
+    v32_hex: Path,
+) -> None:
+    """A write collision must use the same visible recovery path as a
+    bounded MSSP timeout.
+
+    Pre-fix, `i2c_byte_tx` branched directly to return when SSPCON1.WCOL was
+    set.  That left WCOL latched forever, every later write returned early,
+    and no diagnostic counter recorded the fault.
+    """
+    chain = _boot_autodetect_main(v32_hex)
+    before_i = chain.read_reg(DIAG_I)
+    before_r = chain.read_reg(DIAG_R)
+    chain.write_reg(SSPCON1, chain.read_reg(SSPCON1) | 0x80)
+
+    _inject_frame(chain, 0x07, 0x40)
+    chain.step_tcy(COMMAND_SETTLE_TCY)
+
+    assert not (chain.read_reg(SSPCON1) & 0x80), "SSPCON1.WCOL stayed latched"
+    assert chain.read_reg(DIAG_I) > before_i, "WCOL did not increment diag_i"
+    assert chain.read_reg(DIAG_R) > before_r, "WCOL did not enter recovery"
+    assert chain.read_reg(LOGICAL_VOLUME) == 0xE0
+
+
+def test_v32_mssp_hard_reset_clears_bclif_source_flag() -> None:
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    start = text.index("mssp_hard_reset:")
+    end = text.index("; ---------------------------------------------------------------------------", start + 1)
+    body = text[start:end]
+    assert re.search(r"bcf\s+PIR2,\s*3,\s*ACCESS", body), (
+        "mssp_hard_reset should clear PIR2.BCLIF so a bus-collision latch "
+        "does not survive transport recovery"
+    )
 
 
 def test_v32_src4382_writes_0d_only_when_candidate_changes(v32_hex: Path) -> None:

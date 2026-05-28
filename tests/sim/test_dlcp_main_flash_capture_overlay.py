@@ -463,6 +463,51 @@ def test_force_active_filename_persist_sets_event_and_waits_for_dirty_clear(
     assert (fake.mem[ROUTE_DIRTY_FLAGS_ADDR] & FILENAME_DIRTY_MASK) == 0
 
 
+def test_force_active_filename_persist_clears_xact_gate_without_dirty(
+    monkeypatch,
+) -> None:
+    """If firmware already cleared bit5 but bit6 is still set, the
+    flasher must still poke event_flags.0 and wait for the gate to drop.
+    Returning "already clean" on bit6-only can strand preset switching.
+    """
+
+    filename_xact_pending_mask = 0x40
+
+    class FakeEp0:
+        def __init__(self, vid: int, pid: int, path: bytes | None = None) -> None:
+            self.mem = bytearray(0x1000)
+            self.mem[ROUTE_DIRTY_FLAGS_ADDR] = filename_xact_pending_mask
+            self.ptr = 0
+            self.event_pokes = 0
+
+        def set_pointer(self, addr16: int) -> None:
+            self.ptr = addr16
+
+        def read_exact(self, n: int) -> bytes:
+            return bytes(self.mem[self.ptr : self.ptr + n])
+
+        def _poke(self, addr: int, value: int, in_dir: bool, read_len: int = 0) -> bytes:
+            assert in_dir is False
+            self.mem[addr] = value & 0xFF
+            if addr == EVENT_FLAGS_ADDR and (value & EVENT_DIRTY_SERVICE_MASK):
+                self.event_pokes += 1
+                self.mem[ROUTE_DIRTY_FLAGS_ADDR] &= (
+                    ~filename_xact_pending_mask
+                ) & 0xFF
+            return b""
+
+    fake = FakeEp0(0x04D8, 0xFF89)
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.DlcpEp0", lambda vid, pid, path=None: fake)
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _: None)
+
+    changed = _force_active_filename_persist(vid=0x04D8, pid=0xFF89)
+
+    assert changed is True
+    assert fake.event_pokes >= 1
+    assert fake.mem[EVENT_FLAGS_ADDR] & EVENT_DIRTY_SERVICE_MASK
+    assert (fake.mem[ROUTE_DIRTY_FLAGS_ADDR] & filename_xact_pending_mask) == 0
+
+
 def test_force_active_filename_persist_returns_false_when_already_clean(monkeypatch) -> None:
     class FakeEp0:
         def __init__(self, vid: int, pid: int, path: bytes | None = None) -> None:

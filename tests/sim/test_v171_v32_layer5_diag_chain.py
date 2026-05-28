@@ -634,6 +634,7 @@ V171_DIAG_PRESENT_PHYS = 0x197
 V171_DIAG_POLL_LO_PHYS = 0x198
 V171_DIAG_POLL_HI_PHYS = 0x199
 V171_DIAG_FLAGS_PHYS = 0x19C
+V171_DIAG_RESET_SEEN_PHYS = 0x19D
 V171_DIAG_RESET_TARGET_PHYS = 0x19E
 V171_DIAG_RESET_TIMEOUT_PHYS = 0x19F
 V171_DIAG_RUNTIME_TARGET_PHYS = 0x1AE
@@ -950,6 +951,56 @@ def test_v171_v32_diag_entry_clears_stale_pending_timeout_state(
     assert line0.startswith(pb_label) and "n/a" not in line1.lower(), (
         f"[rust] {pb_label} Diag must not remain n/a after stale-state entry; "
         f"lcd={(line0, line1)!r}"
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v171_v32_reset_pending_times_out_while_runtime_pending(
+    v171_hex: Path, v32_hex: Path
+) -> None:
+    """RESET_PENDING timeout must not freeze behind RUNTIME_PENDING.
+
+    Pre-fix shape: when the cmd 0x21 runtime burst stayed pending, the cadence
+    loop branched to `v171_diag_runtime_wait` before touching the cmd 0x22
+    reset-cause timeout.  That stretched the documented ~4-cadence give-up
+    window until runtime either replied or timed out.  Seed both pending bits,
+    keep runtime pending alive, and force cadence expiries; reset timeout must
+    still age out and mark the in-flight PB as seen/unknown.
+    """
+    c = _rust_connected_chain(v171_hex, v32_hex)
+    _rust_navigate_to_diag_page(c, 0)
+
+    syms = _parse_v171_symbols(v171_hex)
+    poll_check_pc = syms["v171_diag_poll_check"]
+    c.write_reg(V171_DIAG_FLAGS_PHYS, V171_DIAG_FLAG_RUNTIME_PENDING_MASK | V171_DIAG_FLAG_RESET_PENDING_MASK)
+    c.write_reg(V171_DIAG_RUNTIME_TARGET_PHYS, 0x00)
+    c.write_reg(V171_DIAG_RUNTIME_TIMEOUT_PHYS, 0x20)
+    c.write_reg(V171_DIAG_RESET_TARGET_PHYS, 0x00)
+    c.write_reg(V171_DIAG_RESET_SEEN_PHYS, 0x00)
+    c.write_reg(V171_DIAG_RESET_TIMEOUT_PHYS, 0x02)
+
+    observed_timeouts: list[int] = []
+    for _ in range(3):
+        hit = c.step_until_pc_hit(0, poll_check_pc, poll_check_pc, max_tcy=5_000_000)
+        assert hit == poll_check_pc, f"CONTROL did not reach poll check; pc=0x{hit:04X}"
+        c.write_reg(V171_DIAG_POLL_LO_PHYS, 0x00)
+        c.write_reg(V171_DIAG_POLL_HI_PHYS, 0x00)
+        c.step_tcy(100_000)
+        observed_timeouts.append(c.read_reg(V171_DIAG_RESET_TIMEOUT_PHYS))
+        if not (c.read_reg(V171_DIAG_FLAGS_PHYS) & V171_DIAG_FLAG_RESET_PENDING_MASK):
+            break
+
+    flags = c.read_reg(V171_DIAG_FLAGS_PHYS)
+    assert not (flags & V171_DIAG_FLAG_RESET_PENDING_MASK), (
+        "RESET_PENDING stayed set while RUNTIME_PENDING was also set; "
+        f"timeouts={observed_timeouts}, flags=0x{flags:02X}"
+    )
+    assert c.read_reg(V171_DIAG_RESET_SEEN_PHYS) & 0x01, (
+        "timeout give-up path must mark PB1 reset-cause cache as seen/unknown"
+    )
+    assert flags & V171_DIAG_FLAG_RUNTIME_PENDING_MASK, (
+        "test did not keep runtime pending alive long enough to exercise the freeze"
     )
 
 

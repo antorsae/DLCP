@@ -166,6 +166,41 @@ def test_preset_health_suffix_updates_never_touch_active_prefix(v171_hex: Path) 
     assert not chain.lcd_lines()[1].startswith("    ve")
 
 
+def test_preset_health_suffix_with_uart_diag_burst_keeps_active_prefix(
+    v171_hex: Path,
+) -> None:
+    """Stress the suffix patch with real parser traffic pending.
+
+    The suffix update masks GIE for only the LCD tail patch; once it returns,
+    CONTROL must still parse a normal BF/21..27 diagnostics burst and the
+    Preset row-2 prefix must remain untouched.  This catches the practical
+    UART-stress version of the "Preset /     ve: A" field symptom.
+    """
+    _require_rust()
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(v171_hex),
+        main_hex_path=str(V32_MAIN_HEX),
+    )
+    assert chain.run_until_connected(limit=300) < 300
+    _navigate_to_preset(chain)
+    assert chain.lcd_lines() == ("Preset          ", "Active: A       ")
+    chain.set_blackout(True)
+
+    prefix_before = [chain.lcd_ddram_write_count(0x40 + i) for i in range(4)]
+    burst = []
+    for cmd, value in zip(range(0x21, 0x28), (1, 2, 3, 4, 5, 6, 7)):
+        burst.extend([0xBF, cmd, value])
+    assert chain.inject_control_rx_bytes(burst)
+
+    _force_health_suffix(chain, age_pb1=HEALTH_STALE_AGE, age_pb2=0)
+    for _ in range(200):
+        chain.step_tcy(10_000)
+
+    assert chain.lcd_lines()[1].startswith("Active: A")
+    assert not chain.lcd_lines()[1].startswith("    ve")
+    assert [chain.lcd_ddram_write_count(0x40 + i) for i in range(4)] == prefix_before
+
+
 def test_preset_health_suffix_mid_patch_ir_irq_keeps_cursor_at_tail(
     v171_hex: Path,
 ) -> None:
