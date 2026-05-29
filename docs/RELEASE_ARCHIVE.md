@@ -1,6 +1,6 @@
 # Historical Release Archive
 
-This archive keeps older firmware versions out of the root README.  The supported deployment described in the README is **V3.2 MAIN + V1.71 CONTROL**.
+This archive keeps older firmware versions out of the root README.  The supported deployment described in the README is **V3.3 MAIN + V1.72 CONTROL**.
 
 ## Stock Baseline
 
@@ -9,7 +9,7 @@ This archive keeps older firmware versions out of the root README.  The supporte
 | MAIN | V2.3 | Original Hypex MAIN firmware for PIC18F2455-class DLCP units. |
 | CONTROL | V1.6b | Latest stock CONTROL baseline used for V1.7/V1.71 source rewrite work. |
 
-Stock operation works for normal use, but the firmware has unbounded waits and limited fault visibility.  The V3.2 + V1.71 line exists primarily to fix those robustness gaps.
+Stock operation works for normal use, but the firmware has unbounded waits and limited fault visibility.  The V3.2 + V1.71 line fixed those robustness gaps; V3.3 + V1.72 layers per-MAIN Diagnostics identity display on top.
 
 ## MAIN History
 
@@ -22,7 +22,8 @@ Stock operation works for normal use, but the firmware has unbounded waits and l
 | V2.8 | Binary patch | Added delayed mute/hold preset switching. Last practical binary-patched MAIN line. |
 | V3.0 | Source rewrite | Stock-equivalent source-assembled baseline. |
 | V3.1 | Source rewrite | Integrated the V2.x features into source; precursor to V3.2. |
-| V3.2 | Source rewrite | Current supported MAIN release. |
+| V3.2 | Source rewrite | Robustness/Diagnostics baseline MAIN release. |
+| V3.3 | Source rewrite | Current supported MAIN release; adds cmd `0x25` MAIN identity reply for V1.72 Diagnostics. |
 
 ## CONTROL History
 
@@ -33,15 +34,19 @@ Stock operation works for normal use, but the firmware has unbounded waits and l
 | V1.63b | Binary patch | BF/08 parser, LCD `!` indicator, resync-on-clear. |
 | V1.64b | Binary patch | Explicit IR standby/wake endpoints. |
 | V1.7 | Source rewrite | Stock-equivalent source-assembled V1.6b baseline. |
-| V1.71 | Source rewrite | Current supported CONTROL release. |
+| V1.71 | Source rewrite | Robustness/Diagnostics baseline CONTROL release. |
+| V1.72 | Source rewrite | Current supported CONTROL release; adds per-PB MAIN version/revision display on healthy Diagnostics pages. |
 
 ## Compatibility Notes
 
-V3.2 MAIN and V1.71 CONTROL are designed to run together.  Older combinations can still be useful for comparison or rollback, but they do not expose the full current feature set.
+V3.3 MAIN and V1.72 CONTROL are the current supported pair.  V3.2 MAIN and V1.71 CONTROL remain a useful robustness baseline and rollback pair, but they do not expose the V1.72/V3.3 Diagnostics identity feature.
 
 | MAIN | CONTROL | Status |
 |---|---|---|
-| V3.2 | V1.71 | Current supported pair. |
+| V3.3 | V1.72 | Current supported pair. |
+| V3.3 | V1.71 | Basic operation; old CONTROL never sends cmd `0x25`, so no MAIN identity suffix. |
+| V3.2 | V1.72 | Basic operation; identity query times out and Diagnostics keeps suffixless `PBn OK`. |
+| V3.2 | V1.71 | Previous supported robustness/Diagnostics baseline pair. |
 | V3.2 | V1.64b or older patched CONTROL | Basic operation; no V1.71 diagnostics page or CONTROL Layer 1/2 hardening. |
 | V3.1/V3.0/V2.x | V1.71 | Basic operation; diagnostics pages show `n/a` because older MAINs do not provide V3.2 counters. |
 | V2.8 | V1.64b | Legacy binary-patched fallback pair. |

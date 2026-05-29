@@ -1,11 +1,11 @@
-# DLCP Firmware: V3.2 MAIN + V1.71 CONTROL
+# DLCP Firmware: V3.3 MAIN + V1.72 CONTROL
 
-Drop-in replacement firmware for the **Hypex DLCP**.  The current release pair is:
+Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.2.hex`](firmware/patched/releases/DLCP_Firmware_V3.2.hex) (`V3.2 / rev 0x6E`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.71.hex`](firmware/patched/releases/DLCP_Control_V1.71.hex) (`V1.71 / rev 0x35 / build 20260528`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.3.hex`](firmware/patched/releases/DLCP_Firmware_V3.3.hex) (`V3.3 / rev 0x72`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.72.hex`](firmware/patched/releases/DLCP_Control_V1.72.hex) (`V1.72 / rev 0x38 / build 20260529`)
 
-This README focuses on the supported V3.2 + V1.71 deployment.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
+This README focuses on the recommended V3.3 + V1.72 deployment.  V3.3/V1.72 carries the V3.2/V1.71 robustness and diagnostics base, plus MAIN version/revision display on the CONTROL PB1/PB2 Diagnostics pages.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
 ## Fresh Clone Setup
 
@@ -28,8 +28,8 @@ uv pip install --python .venv_ep0/bin/python -e .
 Quick flashing/probe setup check:
 
 ```bash
-.venv_ep0/bin/python -c "from dlcp_fw.paths import V32_MAIN_HEX; print(V32_MAIN_HEX)"
-.venv_ep0/bin/python scripts/dlcp_v32_release_flash.py --help
+.venv_ep0/bin/python -c "from dlcp_fw.paths import V33_MAIN_HEX; print(V33_MAIN_HEX)"
+.venv_ep0/bin/python scripts/dlcp_v33_release_flash.py --help
 ```
 
 For simulation, tests, or firmware-development work, install the optional dev
@@ -45,23 +45,23 @@ If `cargo` is missing, install a stable Rust toolchain first, then rerun the
 two Rust build commands.  Quick simulator check:
 
 ```bash
-PYTHONPATH=src .venv_ep0/bin/python -c "from dlcp_fw.sim.dlcp_sim_native import Chain; c = Chain.from_v171_v32(); c.step_ticks(48_000_000); print(c.lcd_lines())"
+PYTHONPATH=src .venv_ep0/bin/python -c "from dlcp_fw.paths import V172_CONTROL_HEX, V33_MAIN_HEX; from dlcp_fw.sim.dlcp_sim_native import Chain; c = Chain.from_v171_v32(control_hex_path=str(V172_CONTROL_HEX), main_hex_path=str(V33_MAIN_HEX)); c.run_until_connected(limit=200); print(c.lcd_lines())"
 ```
 
 ## Why Upgrade
 
-Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `WAITING FOR DLCP` and require a full power cycle.  The V3.2 + V1.71 pair is built around robustness fixes for the real failure modes seen on hardware.
+Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `WAITING FOR DLCP` and require a full power cycle.  The V3.3 + V1.72 pair is built around robustness fixes for the real failure modes seen on hardware and shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 
-| Area | Stock V2.3 + V1.6b | V3.2 + V1.71 |
+| Area | Stock V2.3 + V1.6b | V3.3 + V1.72 |
 |---|---|---|
 | Chain hangs | Unbounded waits can leave CONTROL stuck on `WAITING FOR DLCP`. | Bounded waits, UART recovery, reconnect hardening, and a front-panel WAITING escape after the grace window. |
 | I2C/MSSP | MAIN can spin forever on DSP/SRC bus conditions. | Runtime Start/Restart/Stop/ACKEN/BF/SSPIF waits are bounded and route through recovery helpers. |
 | DSP faults | No user-visible fault reporting. | MAIN advertises persistent DSP-path faults with `BF/08`; CONTROL shows `!` and resyncs when the fault clears. |
-| Diagnostics | No useful live PB health view. | PB1/PB2 LCD diagnostics plus USB HID snapshots for counters and reset causes. |
+| Diagnostics | No useful live PB health view. | PB1/PB2 LCD diagnostics, per-MAIN version/rev on healthy pages, plus USB HID snapshots for counters and reset causes. |
 | UI under diagnostics | Not applicable. | Diagnostics pages refresh near 1 Hz and keep buttons/IR responsive. |
 | Presets | One active DSP configuration. | A/B DSP preset banks with coordinated delayed switching across two MAINs. |
 | Flashing | Firmware update can be opaque and resets are hard to reason about. | CLI path prints before/after identity, preserves user settings, and performs post-flash finalizers. |
-| IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus V1.71 shortcuts for preset A/B and explicit standby/wake. |
+| IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus V1.71+ shortcuts for preset A/B and explicit standby/wake. |
 
 ## What You Get
 
@@ -72,9 +72,9 @@ Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `W
 - `0x3A`: standby
 - `0x3B`: wake
 
-**Coordinated switching.**  In a two-MAIN chain, V3.2 coordinates the mute/wait/apply sequence so left and right switch together instead of one side audibly moving first.
+**Coordinated switching.**  In a two-MAIN chain, V3.3 keeps the V3.2 mute/wait/apply sequence so left and right switch together instead of one side audibly moving first.
 
-**SRC4382 input handling.**  V3.2 rev `0x6E` reduces SRC4382 Auto Detect
+**SRC4382 input handling.**  V3.3 keeps the V3.2 SRC4382 changes: reduced Auto Detect
 polling, debounces source-loss detection, and primes the SRC route when a
 fixed digital input is selected.  The rationale is practical: Auto Detect
 should not spend the foreground loop constantly querying the receiver, a single
@@ -82,7 +82,7 @@ transient status sample should not flap the selected route, and selecting
 S/PDIF/USB/AES/Optical manually must restore the receiver/TAS path without
 depending on a previous Auto Detect scan.
 
-**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  The same data is available over USB:
+**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the recommended V1.72 + V3.3 pair, each healthy Diagnostics page also shows that MAIN's live identity, for example `PB1 OK v3.3 x72` and `PB2 OK v3.3 x71`.  The same counter data is available over USB:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
@@ -90,10 +90,11 @@ depending on a previous Auto Detect scan.
 
 LCD status format:
 
-- `PB1 OK` / `PB2 OK`: fresh snapshot, no displayed abnormal counters or reset flags.
-- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more non-zero diagnostics; tokens such as `I7`, `A1`, `S1`, `B1`, or `O1` identify the fields that changed.
-- `PB1 old` / `PB2 old`: CONTROL has an older snapshot but has not declared the PB lost.
-- `PB1 lost` / `PB2 lost`: CONTROL has not received fresh diagnostics within the loss window.
+- `PB1 OK v3.3 xNN` / `PB2 OK v3.3 xNN`: V1.72 CONTROL has a fresh, healthy snapshot from a V3.3 MAIN and has completed that MAIN's identity query.
+- `PB1 OK` / `PB2 OK`: fresh, healthy snapshot from an older MAIN that does not support the V3.3 identity reply yet, or identity has not completed yet.
+- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more non-zero diagnostics; tokens such as `I7`, `A1`, `S1`, `B1`, or `O1` identify the fields that changed. Version text is intentionally suppressed on issue pages.
+- `PB1 old` / `PB2 old`: CONTROL has an older snapshot but has not declared the PB lost. Version text is intentionally suppressed.
+- `PB1 lost` / `PB2 lost`: CONTROL has not received fresh diagnostics within the loss window. Version text is intentionally suppressed.
 
 Counters:
 
@@ -103,14 +104,14 @@ Counters:
 - `B`: bring-up/wake dispatches
 - `R`: recovery branch entries
 - `A`: AN0 standby triggers
-- `P`: RA1 edge events (sim-only observability; no assigned V3.2 hardware function)
+- `P`: RA1 edge events (sim-only observability; no assigned V3.3 hardware function)
 - `O/V/W/X`: POR, brownout, watchdog-timeout latch, software-reset flags
 
 The simulator fault-injection matrix now covers every displayed Diagnostics
 field from stimulus through MAIN counter, CONTROL cache, and PB1/PB2 LCD
 rendering.  `P` is intentionally scoped to the simulator-only RA1 PORTA-edge
 invariant until PIC18F2455 RA1 analog masking is modeled.  `W` is a structural
-RCON.TO readout bucket; current V1.71/V3.2 releases leave WDT disabled, so it
+RCON.TO readout bucket; current V1.72/V3.3 releases leave WDT disabled, so it
 should stay 0 unless WDT policy changes or a test injects that reset cause.
 
 For raw state capture when USB still works but the chain or LCD is unhealthy:
@@ -142,8 +143,8 @@ artifacts/LX521.4/LX521.4_22MG10F-v7.json
 
 The `.json` sidecars carry the config-name metadata used after flashing.
 These files are local operator artifacts and may be absent in a fresh clone.
-If they are missing, `scripts/dlcp_v32_release_flash.py --left/--right` prints
-a warning and flashes the canonical V3.2 MAIN without baking A/B preset
+If they are missing, `scripts/dlcp_v33_release_flash.py --left/--right` prints
+a warning and flashes the canonical V3.3 MAIN without baking A/B preset
 captures.  In that mode, upload the desired DSP project/settings afterward
 with Hypex Filter Design, or capture local preset tables into
 `artifacts/LX521.4/` and rerun the CLI wrapper.
@@ -153,19 +154,19 @@ with Hypex Filter Design, or capture local preset tables into
 Flash MAIN PB1 / left:
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_v32_release_flash.py --left
+.venv_ep0/bin/python scripts/dlcp_v33_release_flash.py --left
 ```
 
 Flash MAIN PB2 / right:
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_v32_release_flash.py --right
+.venv_ep0/bin/python scripts/dlcp_v33_release_flash.py --right
 ```
 
 When the LX521.4 capture files are not present, expect this warning:
 
 ```text
-WARNING: local A/B preset captures are incomplete; flashing canonical V3.2 without baked presets.
+WARNING: local A/B preset captures are incomplete; flashing canonical V3.3 without baked presets.
 ```
 
 Flash CONTROL:
@@ -175,7 +176,7 @@ scripts/flash_control_safe.sh --preflight-only
 scripts/flash_control_safe.sh
 ```
 
-CONTROL must be in its bootloader before the live flash.  Power-cycle while holding **UP + DOWN** for about 6 seconds; do not press SELECT.  After CONTROL flashing, power-cycle once so V1.71 starts cleanly from cold boot.
+`scripts/flash_control_safe.sh` defaults to `firmware/patched/releases/DLCP_Control_V1.72.hex`. CONTROL must be in its bootloader before the live flash.  Power-cycle while holding **UP + DOWN** for about 6 seconds; do not press SELECT.  After CONTROL flashing, power-cycle once so V1.72 starts cleanly from cold boot.
 
 Useful post-flash checks:
 
@@ -189,24 +190,24 @@ Useful post-flash checks:
 
 Hypex Filter Design can be used for a basic firmware update with the same release HEX files:
 
-- MAIN firmware: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
-- CONTROL firmware: `firmware/patched/releases/DLCP_Control_V1.71.hex`
+- MAIN firmware: `firmware/patched/releases/DLCP_Firmware_V3.3.hex`
+- CONTROL firmware: `firmware/patched/releases/DLCP_Control_V1.72.hex`
 
-For CONTROL V1.6b/V1.71, enter the CONTROL bootloader manually first: power-cycle while holding **UP + DOWN** for about 6 seconds.  Then run the HFD control firmware update.
+For CONTROL V1.6b/V1.71/V1.72, enter the CONTROL bootloader manually first: power-cycle while holding **UP + DOWN** for about 6 seconds.  Then run the HFD control firmware update.
 
 Important HFD caveats:
 
 - HFD flashes the HEX payload; it does not bake local A/B preset captures.
 - HFD does not set all MAIN channels to left/right after flashing.
 - HFD does not run the repo's post-flash filename, identity, settings-preservation, and diagnostics checks.
-- For the full V3.2 + V1.71 two-MAIN deployment, use the CLI path.
+- For the full V3.3 + V1.72 two-MAIN deployment, use the CLI path.
 
 ## Validate
 
 Fast simulator gate:
 
 ```bash
-.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -k "v32 or v171"
+.venv_ep0/bin/python -m pytest tests/sim -n 16 -q -k "v33 or v172 or v32 or v171"
 ```
 
 Full simulator gate:
@@ -217,10 +218,10 @@ Full simulator gate:
 
 Current non-hardware verification snapshot:
 
-- `tests --collect-only`: `1130 tests collected`
+- `tests --collect-only`: `1199 tests collected`
 - focused Diagnostics fault matrix gate: `30 passed`
 - broader Diagnostics/SRC gate: `116 passed`
-- full simulator gate: `1112 passed, 1 skipped`
+- full simulator gate: `1181 passed, 1 skipped`
 
 Hardware runbook:
 
@@ -228,11 +229,12 @@ Hardware runbook:
 
 Core implementation docs:
 
-- MAIN release flow: [docs/V32_RELEASE.md](docs/V32_RELEASE.md)
-- CONTROL release flow: [docs/V171_RELEASE.md](docs/V171_RELEASE.md)
+- MAIN release flow: [docs/V32_RELEASE.md](docs/V32_RELEASE.md) plus V3.3 identity wrapper `scripts/dlcp_v33_release_flash.py`
+- CONTROL release flow: [docs/V171_RELEASE.md](docs/V171_RELEASE.md) plus V1.72 default in `scripts/flash_control_safe.sh`
 - Active bug ledger: [docs/IMPL_V171_V32_BUG_LEDGER.md](docs/IMPL_V171_V32_BUG_LEDGER.md)
 - Robustness plan: [docs/V32_MAIN_HANG_HARDENING_PLAN.md](docs/V32_MAIN_HANG_HARDENING_PLAN.md)
 - Diagnostics protocol: [docs/V32_DIAG_TIER1_SPEC.md](docs/V32_DIAG_TIER1_SPEC.md)
+- Diagnostics MAIN identity: [docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md](docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md)
 - Diagnostics fault matrix: [docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
 - Diagnostics matrix implementation: [docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
 - Simulator details: [docs/SIM_REWRITE_RUST_SPEC.md](docs/SIM_REWRITE_RUST_SPEC.md)

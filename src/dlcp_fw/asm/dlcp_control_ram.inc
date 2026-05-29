@@ -482,3 +482,26 @@ v171_diag_render_abnormal   equ  0x0D4   ; non-zero non-POR cells (0..10)
 ; to modal waits.
 V171_DIAG_POLL_RELOAD_LO   equ  0x00
 V171_DIAG_POLL_RELOAD_HI   equ  0x5A
+
+; --- V1.72/V3.3 Diagnostics MAIN identity cache (BANK 2) ---
+; Physical 0x245..0x254.  EQU operands are BANKED-form values; every
+; firmware access must assert `movlb 0x02`.
+v172_diag_id_pb1_major     equ  0x045
+v172_diag_id_pb1_minor     equ  0x046
+v172_diag_id_pb1_rev       equ  0x047
+v172_diag_id_pb2_major     equ  0x048
+v172_diag_id_pb2_minor     equ  0x049
+v172_diag_id_pb2_rev       equ  0x04A
+v172_diag_id_valid_mask    equ  0x04B
+v172_diag_id_seen_mask     equ  0x04C
+v172_diag_id_pending_id    equ  0x04D
+v172_diag_id_flags         equ  0x04E
+V172_DIAG_ID_FLAG_PENDING  equ  0x00
+V172_DIAG_ID_FLAG_TARGET   equ  0x01
+v172_diag_id_timeout       equ  0x04F
+v172_diag_id_next_gen      equ  0x050
+v172_diag_id_expected_cmd  equ  0x051
+v172_diag_id_tmp_major     equ  0x052
+v172_diag_id_tmp_minor     equ  0x053
+v172_diag_id_tmp_rev_hi    equ  0x054
+V172_DIAG_ID_TIMEOUT_RELOAD equ 0x04

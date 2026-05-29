@@ -24,7 +24,9 @@ from dlcp_fw.paths import (
     STOCK_MAIN_HEX,
     V30_MAIN_HEX,
     V31_MAIN_HEX,
+    V33_MAIN_HEX,
 )
+from dlcp_fw.patch.build_v33_release import read_v33_release_revision
 
 
 # All tests in this module are backend-agnostic (Python-level
@@ -122,6 +124,18 @@ def test_v31_usb_version_not_stock() -> None:
     assert v31[1:] != stock[1:], (
         f"V3.1 USB version is still stock: "
         f"major=0x{v31[1]:02X} minor=0x{v31[2]:02X}"
+    )
+
+
+def test_v33_usb_and_eeprom_version_match_release_identity() -> None:
+    _skip_missing(V33_MAIN_HEX)
+    hid = _find_hid_version_bytes(V33_MAIN_HEX)
+    assert hid is not None
+    assert hid[1:] == (0x03, 0x03)
+
+    eeprom = _read_eeprom_version(V33_MAIN_HEX)
+    assert eeprom == (0x03, 0x03, read_v33_release_revision()), (
+        f"V3.3 EEPROM identity mismatch: got {eeprom!r}"
     )
 
 

@@ -121,12 +121,18 @@ Use these locations only:
 - Main V3.1 (all features inline): `firmware/patched/releases/DLCP_Firmware_V3.1.hex`
   - Canonical `V3.1` includes HID `cmd 0x43` diagnostic flash/EEPROM memread.
 - Main V3.2 (async delayed-switch + Layer 5 diag counters): `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
-  - **Recommended deployed MAIN release** when flashed with baked preset A/B captures (operator runbook: `docs/V32_RELEASE.md`).
+  - Previous recommended MAIN release when flashed with baked preset A/B captures (operator runbook: `docs/V32_RELEASE.md`).
   - Canonical build path: `scripts/build_v32_release.py` bumps the EEPROM revision byte at `eeprom_data[0x82]` on every build, then assembles the release back into the same canonical filename. Do not mint ad-hoc suffixed release names for V3.2.
+- Main V3.3 (V3.2 + Diagnostics MAIN identity reply): `firmware/patched/releases/DLCP_Firmware_V3.3.hex`
+  - **Recommended MAIN release candidate** when paired with V1.72 CONTROL for PB1/PB2 Diagnostics MAIN version/revision display.
+  - Canonical build path: `scripts/build_v33_release.py` bumps the EEPROM revision byte at `eeprom_data[0x82]`, updates the boot-time runtime identity literal, updates the cmd `0x25` identity revision nibbles, then assembles the release back into the same canonical filename. Do not mint ad-hoc suffixed release names for V3.3.
 - Control V1.71 (feature-bearing source rewrite + Layer 1/2/5): `firmware/patched/releases/DLCP_Control_V1.71.hex`
-  - **Recommended deployed CONTROL release** when paired with V3.2 MAIN (operator runbook: `docs/V171_RELEASE.md`).
+  - Previous recommended CONTROL release when paired with V3.2 MAIN (operator runbook: `docs/V171_RELEASE.md`).
   - Canonical build path: `scripts/build_v171_release.py` bumps the flashed release-metadata revision byte at `control_release_metadata[11]`, bakes the build date into `control_release_metadata[12..15]` plus the LCD boot splash, then assembles the release back into the same canonical filename.
-- Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`, `src/dlcp_fw/asm/dlcp_main_v32.asm`, `src/dlcp_fw/asm/dlcp_control_v17.asm`, `src/dlcp_fw/asm/dlcp_control_v171.asm`
+- Control V1.72 (V1.71 + Diagnostics MAIN identity display): `firmware/patched/releases/DLCP_Control_V1.72.hex`
+  - **Recommended CONTROL release candidate** when paired with V3.3 MAIN for PB1/PB2 Diagnostics MAIN version/revision display.
+  - Canonical build path: `scripts/build_v172_release.py` bumps `control_release_metadata[11]`, bakes the build date into `control_release_metadata[12..15]` plus the LCD boot splash, then assembles the release back into the same canonical filename. `scripts/flash_control_safe.sh` defaults to this canonical V1.72 hex.
+- Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`, `src/dlcp_fw/asm/dlcp_main_v32.asm`, `src/dlcp_fw/asm/dlcp_main_v33.asm`, `src/dlcp_fw/asm/dlcp_control_v17.asm`, `src/dlcp_fw/asm/dlcp_control_v171.asm`, `src/dlcp_fw/asm/dlcp_control_v172.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
 - Additional local experiment sources such as `src/dlcp_fw/asm/dlcp_main_v31_diag*.asm`, `src/dlcp_fw/asm/dlcp_main_v31_with_nops.asm`, `src/dlcp_fw/asm/dlcp_main_v31_without_nops.asm`, and matching `DLCP_Firmware_V3.1_diag*` / `DLCP_Firmware_V3.1_WITH*_NOPS.hex` build outputs may also be present. Treat them as non-canonical unless the current task explicitly targets them.
 - Dedicated USB-safe memread artifact: `firmware/patched/releases/DLCP_Firmware_V3.1_diag_memread_usb_safe.hex`
@@ -172,12 +178,14 @@ Canonical constants used across scripts/tests:
 - Stock main: `STOCK_MAIN_HEX`, `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`, `STOCK_MAIN_DUMP_TABLE`, `STOCK_MAIN_DUMP_CONVERTED_HEX`, `STOCK_MAIN_COMBINED_HEX`, `STOCK_MAIN_CONFIG_BITS_EXPORT`, `STOCK_MAIN_EE_DATA_EXPORT`, `STOCK_MAIN_USER_ID_EXPORT`
 - Stock control: `STOCK_CONTROL_HEX_V14`, `STOCK_CONTROL_HEX_V15B`, `STOCK_CONTROL_HEX_V16B`
 - Patched main: `PATCHED_MAIN_HEX_V24`, `PATCHED_MAIN_HEX_V25`, `PATCHED_MAIN_HEX_V26`, `PATCHED_MAIN_HEX_V27`, `PATCHED_MAIN_HEX_V28`, `PATCHED_MAIN_HEX` (alias for V2.7)
-- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX_CANONICAL`, `V31_MAIN_ASM_CANONICAL`, `V31_MAIN_HEX`, `V31_MAIN_ASM`, `V32_MAIN_HEX`, `V32_MAIN_ASM`
+- Source-assembled main: `V30_MAIN_HEX`, `V30_MAIN_ASM`, `V30_MAIN_ASM_COMMENTS`, `V31_MAIN_HEX_CANONICAL`, `V31_MAIN_ASM_CANONICAL`, `V31_MAIN_HEX`, `V31_MAIN_ASM`, `V32_MAIN_HEX`, `V32_MAIN_ASM`, `V33_MAIN_HEX`, `V33_MAIN_ASM`
   - `V31_MAIN_HEX_CANONICAL` / `V31_MAIN_ASM_CANONICAL` are the repo-stable inputs for canonical V3.1 builders
   - `V31_MAIN_HEX` / `V31_MAIN_ASM` may be overridden for diagnostics with `DLCP_FW_V31_MAIN_HEX` / `DLCP_FW_V31_MAIN_ASM`
   - `V32_MAIN_HEX` is the canonical V3.2 release artifact at `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
-- Source-assembled control: `V17_CONTROL_ASM`, `V17_CONTROL_ASM_COMMENTS`, `V17_CONTROL_ASM_SHIFTED`, `V171_CONTROL_ASM`, `V171_CONTROL_HEX`
+  - `V33_MAIN_HEX` is the canonical V3.3 release artifact at `firmware/patched/releases/DLCP_Firmware_V3.3.hex`
+- Source-assembled control: `V17_CONTROL_ASM`, `V17_CONTROL_ASM_COMMENTS`, `V17_CONTROL_ASM_SHIFTED`, `V171_CONTROL_ASM`, `V171_CONTROL_HEX`, `V172_CONTROL_ASM`, `V172_CONTROL_HEX`
   - `V171_CONTROL_HEX` is the canonical V1.71 release artifact at `firmware/patched/releases/DLCP_Control_V1.71.hex`
+  - `V172_CONTROL_HEX` is the canonical V1.72 release artifact at `firmware/patched/releases/DLCP_Control_V1.72.hex`
 - Patched control: `PATCHED_CONTROL_HEX` (alias for V1.41), `PATCHED_CONTROL_HEX_V141`, `PATCHED_CONTROL_HEX_V151B`, `PATCHED_CONTROL_HEX_V161B`, `PATCHED_CONTROL_HEX_V162B`, `PATCHED_CONTROL_HEX_V163B`, `PATCHED_CONTROL_HEX_V164B`
 - Disassembly: `MAIN_DISASM`, `MAIN_DISASM_ALT`, `MAIN_DISASM_SHORT`, `CONTROL_DISASM_V14`, `CONTROL_DISASM_V15B`, `CONTROL_DISASM_V16B`
 - Sim/tools: `SIM_ARTIFACTS_DIR`, `REANALYSIS_ARTIFACTS_DIR`
@@ -198,8 +206,11 @@ Always prefer these constants over hardcoded paths.
 
 - V3.0 stock-equivalent source: `dlcp_main_v30.asm`, `dlcp_main_v30_comments.asm` (canonical, zero auto-labels)
 - V3.1 full-feature source: `dlcp_main_v31.asm`
+- V3.2 Layer-5 diagnostics/SRC source: `dlcp_main_v32.asm`
+- V3.3 MAIN identity source: `dlcp_main_v33.asm` (adds cmd `0x25` BF/4F..53 MAIN identity reply for V1.72 Diagnostics)
 - V1.7 CONTROL stock-equivalent source: `dlcp_control_v17.asm` (auto-labeled), `dlcp_control_v17_comments.asm` (canonical, zero auto-labels); shift-test source `dlcp_control_v17_shifted.asm` is generated on demand, not committed
 - V1.71 CONTROL feature-bearing source: `dlcp_control_v171.asm` (cloned from V1.7 commented source; inlines V1.61b–V1.64b features per `docs/V16B_SOURCE_REWRITE_SPEC.md`)
+- V1.72 CONTROL Diagnostics identity source: `dlcp_control_v172.asm` (V1.71 plus per-PB MAIN identity query/parser/LCD suffix)
 - Support: `dlcp_main_ram.inc` (RAM equates), `dlcp_control_ram.inc` (CONTROL RAM equates), `region_manifest.py` (flash region metadata)
 
 ### Patch package (`src/dlcp_fw/patch`)
@@ -213,6 +224,7 @@ Always prefer these constants over hardcoded paths.
 - Safe control flasher: `dlcp_control_flash.py`
 - Safe main flasher: `dlcp_main_flash.py`
 - Canonical V3.1 operator wrapper: `dlcp_v31_release_flash.py`
+- Canonical V3.3 operator wrapper: `dlcp_v33_release_flash.py`
 - Preset query/switch helper: `dlcp_preset.py`
 - V3.2 Tier-1 cmd 0x44 diag-snapshot reader: `dlcp_diag.py`
   (operator runbook: `scripts/dlcp_diag.py`; spec: `docs/V32_DIAG_TIER1_SPEC.md`)
@@ -245,11 +257,14 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/dlcp_preset.py`
 - `scripts/dlcp_diag.py`
 - `scripts/build_v171_release.py`
+- `scripts/build_v172_release.py`
 - `scripts/build_v32_release.py`
+- `scripts/build_v33_release.py`
 - `scripts/validate_src4382_manual_evidence.py`
 - `scripts/dlcp_main_flash.py`
 - `scripts/dlcp_v31_release_flash.py`
 - `scripts/dlcp_v32_release_flash.py`
+- `scripts/dlcp_v33_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
 - `scripts/dlcp_ep0_flash_probe.py`
 - `scripts/sim_presets_ab.py`
@@ -272,8 +287,8 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (~1130 tests collected after PF.4 phase 1 deletions and current
-V1.71/V3.2 bug-ledger additions per `pytest tests --collect-only`).
+Current suite (1199 tests collected after PF.4 phase 1 deletions and current
+V1.72/V3.3 Diagnostics identity additions per `pytest tests --collect-only`).
 
 Pytest markers:
 
@@ -365,12 +380,21 @@ V1.71/V3.2 Diagnostics fault matrix:
 - `test_v171_v32_diag_fault_matrix_manifest.py` (required-test manifest for PB1/PB2 runtime/reset diagnostics fault-surfacing coverage)
 - `test_v171_v32_layer5_diag_chain.py` (Layer 5 chain tests, including real-stimulus LCD surfacing for `I/D/S/B/R/A/P`, reset-cause `O/V/W/X`, stale-pending `n/a`, static PB page freshness, and Diagnostics foreground service responsiveness)
 
+V1.72/V3.3 Diagnostics MAIN identity:
+- `test_v172_v33_diag_identity.py` (V1.72 boot splash/waiting cleanup; compact V3.3 cmd `0x25` structure; PB1/PB2 `PBn OK v3.3 xNN` LCD identity; IR volume/mute/preset/standby/wake dispatch while parked on PB1/PB2 Diag, issue-state suffix suppression, and V1.72+V3.2 backward compatibility)
+- `test_v172_v33_release_builders.py` (V3.3 builder updates EEPROM/runtime/cmd25 identity revision literals and rolls back on failure; V1.72 builder updates metadata/date/banner and rolls back on failure)
+- `test_dlcp_v33_release_flash.py` (V3.3 release-flash wrapper argument forwarding, no-local-captures warning path, info-only passthrough, explicit-route requirement)
+
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (latest 2026-05-23):
+Recent verification (latest 2026-05-29):
 
-- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1130 tests collected`
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v33_release.py` -> canonical `DLCP_Firmware_V3.3.hex` rebuilt; current canonical release identity is `V3.3 / rev 0x72`
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v172_release.py --build-date 20260529` -> canonical `DLCP_Control_V1.72.hex` rebuilt; current canonical release identity is `V1.72 / rev 0x38 / build 20260529`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v172_v33_diag_identity.py` -> `12 passed in 69.20s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q -n 8 tests/sim` -> `1181 passed, 1 skipped, 7 warnings in 628.13s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1199 tests collected`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
 - `.venv_ep0/bin/python scripts/build_v171_release.py --build-date 20260523` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x30 / build 20260523`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_release_banner.py tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_rev_present tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_build_date_and_boot_banner_match` -> `22 passed`
@@ -399,7 +423,6 @@ Recent verification (latest 2026-05-23):
 - `cargo test -p dlcp-sim tas3108 --quiet` -> `17 passed`
 - `cargo test -p dlcp-sim -p dlcp-sim-py` -> passed; `snapshot_soak` reported `6 passed in 1357.95s` and `dlcp-sim-py` reported `0 passed` (compile gate)
 - `cargo build --release -p dlcp-sim-py && bash crates/dlcp-sim-py/build.sh` -> rebuilt and relinked the Python native module
-- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `1112 passed, 1 skipped, 7 warnings in 422.91s`
 
 V3.1-only gate (80 tests, ~8 min):
 
@@ -418,7 +441,7 @@ Full test gate (all versions, parallel):
 Top-level docs:
 
 - `docs/AB_PRESETS.md` (A/B preset patch design, flashing, checks)
-- `docs/RELEASE_ARCHIVE.md` (historical MAIN/CONTROL release table; root README focuses on V3.2 + V1.71)
+- `docs/RELEASE_ARCHIVE.md` (historical MAIN/CONTROL release table; root README focuses on V3.3 + V1.72)
 - `docs/HARDWARE_TEST.md` (real-hardware state-transition validation runbook for two MAINs, CONTROL, IR, and LCD capture)
 - `docs/HARDWARE_LOOP.md` (real-hardware audio playback/capture workflow and firmware comparison matrix)
 - `docs/RECOVERY.md` (PICkit 5 readback recombination and full MAIN recovery image workflow)
@@ -434,6 +457,8 @@ Top-level docs:
 - `docs/V32_RELEASE.md` (recommended `V3.2` MAIN deployment workflow + V1.71 CONTROL pairing)
 - `docs/V171_RELEASE.md` (recommended `V1.71` CONTROL deployment workflow + V3.2 MAIN pairing)
 - `docs/IMPL_V171_V32_BUG_LEDGER.md` (active V1.71/V3.2 implementation bug ledger and red-test-first workflow)
+- `docs/V32_DIAG_TIER1_SPEC.md` (canonical implemented V1.71/V3.2 Diagnostics protocol, CONTROL cache, LCD layout, compatibility, and status)
+- `docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md` (implementation guide for V1.72/V3.3 MAIN version/revision display on the CONTROL Diagnostics LCD)
 - `docs/V171_V32_LINK_HEALTH_FRESHNESS_SPEC.md` (V1.71/V3.2 per-MAIN link-health freshness, UI markers, USB diagnostics, and phased implementation plan)
 - `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (V1.71/V3.2 Diagnostics counter fault-injection coverage matrix and closure plan)
 - `docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (implementation plan for closing the V1.71/V3.2 Diagnostics counter fault-injection matrix)
@@ -526,10 +551,22 @@ Build the canonical V3.2 release:
 .venv_ep0/bin/python scripts/build_v32_release.py
 ```
 
+Build the canonical V3.3 release:
+
+```bash
+.venv_ep0/bin/python scripts/build_v33_release.py
+```
+
 Build the canonical V1.71 CONTROL release:
 
 ```bash
 .venv_ep0/bin/python scripts/build_v171_release.py
+```
+
+Build the canonical V1.72 CONTROL release:
+
+```bash
+.venv_ep0/bin/python scripts/build_v172_release.py
 ```
 
 Combine stock V2.3 main export fragments:
@@ -598,12 +635,26 @@ scripts/flash_control_safe.sh
 - `scripts/dlcp_main_flash.py` and `scripts/dlcp_v32_release_flash.py` must read version + revision from both the selected device and the target hex before flashing. If the device is already at the same or newer firmware identity, emit a `WARNING` rather than silently downgrading.
 - When `--path` is omitted but the operator supplies `--left`, `--right`, or `--all-ch L|R`, the MAIN flasher should auto-pick the target only when exactly one connected app-mode MAIN reports a uniform matching route table (`all L` or `all R`). Any ambiguity must stay a hard error.
 
+## V3.3 Release Ceremony
+
+- Canonical MAIN release output is always `firmware/patched/releases/DLCP_Firmware_V3.3.hex`.
+- Each canonical `V3.3` build must increment the EEPROM revision byte in `src/dlcp_fw/asm/dlcp_main_v33.asm` at `eeprom_data[0x82]`, update the boot-time runtime identity literal, and update the cmd `0x25` identity revision nibbles; `scripts/build_v33_release.py` is the required path because it keeps all three in sync before assembling.
+- `scripts/dlcp_v33_release_flash.py` is the canonical operator wrapper for V3.3 MAIN flashing. It preserves the V3.2 baked-preset/no-local-captures behavior and forwards to `scripts/dlcp_main_flash.py`.
+- The V3.3 cmd `0x25` handler must stay size-efficient: emit only the `BF/4F/id` START frame explicitly, stage major/minor/rev nibbles, and reuse `diag_send_burst_xx` for `BF/50..BF/53`.
+
 ## V1.71 Release Ceremony
 
 - Canonical CONTROL release output is always `firmware/patched/releases/DLCP_Control_V1.71.hex`.
 - Each canonical `V1.71` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v171.asm` at `control_release_metadata[11]` and bake the build date into `control_release_metadata[12..15]` plus the LCD boot splash; `scripts/build_v171_release.py` is the required path because it updates all three before assembling.
-- `scripts/flash_control_safe.sh` now defaults to the canonical `V1.71` hex.
+- `scripts/flash_control_safe.sh` previously defaulted to the canonical `V1.71` hex; use `--hex firmware/patched/releases/DLCP_Control_V1.71.hex` when intentionally flashing the older pair.
 - `src/dlcp_fw/flash/dlcp_control_flash.py` must read version + revision from the target hex and report them during preflight/live flash. The current CONTROL update relay does not expose a live version/revision probe, so device-versus-hex compare is not currently available there.
+
+## V1.72 Release Ceremony
+
+- Canonical CONTROL release output is always `firmware/patched/releases/DLCP_Control_V1.72.hex`.
+- Each canonical `V1.72` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v172.asm` at `control_release_metadata[11]` and bake the build date into `control_release_metadata[12..15]` plus the LCD boot splash; `scripts/build_v172_release.py` is the required path because it updates all three before assembling.
+- `scripts/flash_control_safe.sh` now defaults to the canonical `V1.72` hex.
+- V1.72 is backward compatible with V3.2 MAINs: the Diagnostics identity query times out and the page remains in the existing suffixless `PBn OK` layout.
 
 ## Simulator Rewrite (`feature/sim-rewrite-rust`)
 

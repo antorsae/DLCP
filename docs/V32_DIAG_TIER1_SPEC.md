@@ -1,11 +1,40 @@
 # V3.2 Tier-1 Diagnostics Expansion + V1.71 Menu Rework — Spec
 
-Last updated: 2026-04-20 (round 5 — implementation tightened to fit
-                          PIC18F2455 flash budget; cmd 0x44 trailer
-                          dropped, length byte changed 0x0E → 0x0B;
-                          12 spec-review findings + 1 implementation
-                          adjustment = 13 total)
-Status: design locked + implemented in V3.2 rev 0x37 (firmware/patched/releases/DLCP_Firmware_V3.2.hex)
+Last updated: 2026-05-29 (current V1.71/V3.2 diagnostics tracking refreshed;
+                          V1.72/V3.3 successor work split to
+                          `docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md`)
+Status: design locked + implemented in
+`firmware/patched/releases/DLCP_Control_V1.71.hex` and
+`firmware/patched/releases/DLCP_Firmware_V3.2.hex`.
+
+## Current diagnostics tracking map (2026-05-29)
+
+Use this document as the authoritative protocol/UI spec for the implemented
+V1.71/V3.2 Diagnostics pages.
+
+- `docs/V32_DIAG_TIER1_SPEC.md` — canonical chain/HID protocol, CONTROL
+  cache, LCD layout, compatibility, and implementation plan.
+- `docs/V171_V32_LINK_HEALTH_FRESHNESS_SPEC.md` — freshness/stale/lost
+  semantics shared by normal-screen suffixes and Diagnostics pages.
+- `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` — executable coverage
+  matrix for every displayed counter/flag.
+- `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` — historical draft only; it explains
+  the design lineage, but current behavior is V1.71/V3.2 as tracked here.
+- `docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md` — successor implementation guide
+  for showing MAIN version/rev on the Diagnostics LCD in V1.72/V3.3+.
+
+Implemented V1.71/V3.2 LCD behavior, verified against
+`src/dlcp_fw/asm/dlcp_control_v171.asm`:
+
+- fresh + healthy: row 0 `PBn OK`, row 1 sparse OK-context `S/B/O`
+  counters or blank;
+- fresh + issue: row 0 `PBn! ...`, row 1 overflow/remaining sparse tokens;
+- never seen: row 0 `PBn`, row 1 `n/a`;
+- stale/lost: row 0 `PBn old` / `PBn lost`, row 1 blank.
+
+Successor note: V1.72/V3.3+ adds MAIN version/rev to the healthy Diagnostics
+title.  That work is intentionally tracked outside this V1.71/V3.2 spec in
+`docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md`.
 
 ## Round-5 implementation tightening (2026-04-20)
 
@@ -142,7 +171,7 @@ once per Diag-page entry.  A new HID `cmd 0x44` returns a structured
 The V1.71 CONTROL menu reworks Diagnostics from position 2 (between
 Preset and Input) to positions 4-5 (after Setup), with one screen per
 PB.  LCD layout uses Option D — compact sparse per-PB rendering with
-`OK` / `n/a` / `..` overflow special cases.
+`OK` / `n/a` / `old` / `lost` / `..` overflow special cases.
 
 A new `scripts/dlcp_diag.py` enumerates all attached DLCP MAINs and
 prints a structured diagnostic report — usable from operator shells
@@ -299,7 +328,7 @@ flag set per session.  Examples:
 To track reset-cause COUNTS across multiple sessions, EEPROM-backed
 counters would be needed (Tier-2 deferred work).
 
-## Chain protocol — cmd 0x21 (unchanged) + new cmd 0x22
+## Chain protocol — cmd 0x21 (unchanged) + cmd 0x22
 
 ### `cmd 0x21` — runtime counter reply (UNCHANGED from V3.2 rev 0x36)
 
@@ -350,21 +379,22 @@ session).
 
 ### CONTROL parser side
 
-`v171_bf2x_case_check` accepts cmd 0x21..0x2B (extended from 0x21..
-0x27).  The cmd-byte → cache-slot mapping:
+`v171_bf2x_case_check` accepts reply bytes `BF/21..BF/2B` (extended
+from `BF/21..BF/27`).  These are MAIN reply sub-command bytes, not
+CONTROL request command numbers.  The reply-byte → cache-slot mapping:
 
 ```
-cmd 0x21 → cache slot 0 (diag_i)
-cmd 0x22 → cache slot 1 (diag_d)
-cmd 0x23 → cache slot 2 (diag_s)
-cmd 0x24 → cache slot 3 (diag_b)
-cmd 0x25 → cache slot 4 (diag_r)
-cmd 0x26 → cache slot 5 (diag_a)
-cmd 0x27 → cache slot 6 (diag_p)         ← marks PB present + toggles target
-cmd 0x28 → cache slot 7 (diag_reset_por)
-cmd 0x29 → cache slot 8 (diag_reset_bor)
-cmd 0x2A → cache slot 9 (diag_reset_wdt)
-cmd 0x2B → cache slot 10 (diag_reset_sw) ← marks reset-cache fresh
+BF/21 → cache slot 0 (diag_i)
+BF/22 → cache slot 1 (diag_d)
+BF/23 → cache slot 2 (diag_s)
+BF/24 → cache slot 3 (diag_b)
+BF/25 → cache slot 4 (diag_r)
+BF/26 → cache slot 5 (diag_a)
+BF/27 → cache slot 6 (diag_p)         ← marks PB present + toggles target
+BF/28 → cache slot 7 (diag_reset_por)
+BF/29 → cache slot 8 (diag_reset_bor)
+BF/2A → cache slot 9 (diag_reset_wdt)
+BF/2B → cache slot 10 (diag_reset_sw) ← marks reset-cache fresh
 ```
 
 Two LAST-FRAME markers, one per query type:
@@ -390,13 +420,16 @@ This decoupling preserves backward compatibility:
   `BF/28..BF/2B` reply burst is emitted (the reset-cause handler
   doesn't exist on rev ≤ 0x36).
 
-  CONTROL handles the stray `0x00` harmlessly: when its parser
-  is at `frame_position == 0` (waiting for a route byte), non-
-  route bytes (< 0x80) are silently dropped.  CONTROL's
-  `RESET_PENDING` flag eventually times out (~4 cadence cycles)
-  and the reset-cause cells stay at 0 in the cache — the LCD
-  shows runtime counters but no reset-cause flags (which is
-  correct: the older firmware doesn't track them).
+  CONTROL must tolerate the stray `0x00` without parser drift.  In
+  the common idle case, when its parser is at `frame_position == 0`
+  (waiting for a route byte), non-route bytes (< 0x80) are silently
+  dropped.  If a future scheduling change lets the byte land during a
+  partial frame, the frame-gap resync guard must clear the staged
+  partial state before the next valid route byte.  CONTROL's
+  `RESET_PENDING` flag eventually times out (~4 cadence cycles), and
+  the reset-cause cells stay at 0 in the cache — the LCD shows runtime
+  counters but no reset-cause flags (which is correct: the older
+  firmware doesn't track them).
 
   See "Cross-version compatibility" §"Old MAIN behavior on
   cmd 0x22" for the full byte-level trace.
@@ -532,7 +565,7 @@ cache writes do not force a full LCD redraw.  The redraw gate fires on
 the last frame (`BF/27` or `BF/2B`) so the LCD renders a coherent cache
 snapshot and sustained Diagnostics pages do not repaint for every cell.
 
-## LCD layouts (Option D — locked)
+## LCD layouts (Option D — locked for V1.71)
 
 16x2 display, 16 chars per line.
 
@@ -549,20 +582,22 @@ others 0 -- which still displays as "OK" because POR is "expected"
 (see §"Status classification" below where POR is explicitly treated
 as the normal case).
 
-When "OK" displays, ALL cells (including a possibly-set POR) are
-omitted from the screen; the operator just sees `PBn / OK`.
+When "OK" displays, all issue cells (and a possibly-set POR) are omitted from
+row 0; row 1 shows only OK-context `S/B/O` counters when non-zero.
 
 Operators who want the full Tier-1 view (including which reset
 flag is set) use `scripts/dlcp_diag.py` over USB.
 
-```
-PB1
-OK
+V1.71/V3.2 behavior:
+
+```text
+PB1 OK
+S1 B1 O1
 ```
 
-```
-PB2
-OK
+```text
+PB2 OK
+
 ```
 
 ### Absent / silent PB
@@ -581,6 +616,8 @@ n/a
 PB1: I3 D2 S1 R7      ← title + 4 counters fit in line 1 (16 chars)
 A2 V1 X1 O3 B4        ← 5 more counters in line 2 (15 chars + 1 space)
 ```
+
+Issue counters retain row-0 priority.
 
 Line 1 format: `PBN:` (4 chars) + ` X# X# X# X#` (12 chars) = 16.
 Line 2 format: `X# X# X# X# X# ` (15 chars + trailing space) = 16.
@@ -837,9 +874,9 @@ firmware is attached:
 | MAIN | CONTROL | LCD reset display (CONTROL-mediated) | HID `cmd 0x44` (MAIN-local) |
 |---|---|---|---|
 | ≤ rev 0x36 | pre-Tier1 | runtime counters only | not supported (cmd 0x44 absent on ≤ 0x36) |
-| ≤ rev 0x36 | Tier1 | runtime counters only; CONTROL fires `cmd 0x22` once per page entry, MAIN echoes a stray 0x00 byte (see "Old MAIN behavior on cmd 0x22" below), CONTROL drops it; reset cells stay at 0 in cache; LCD shows runtime counters only | not supported |
-| rev 0x37 | pre-Tier1 | runtime counters only on LCD (CONTROL doesn't fire `cmd 0x22`) | **fully supported** — host can pull the 11-cell snapshot via `cmd 0x44` even though CONTROL doesn't render reset flags on the LCD |
-| rev 0x37 | Tier1 | full Tier-1 feature set: runtime + reset cells populated, full LCD render | **fully supported** |
+| ≤ rev 0x36 | V1.71 Tier1 | runtime counters only; CONTROL fires `cmd 0x22` once per page entry, MAIN echoes a stray 0x00 byte (see "Old MAIN behavior on cmd 0x22" below), CONTROL tolerates it; reset cells stay at 0 in cache; LCD shows runtime counters only | not supported |
+| V3.2 rev 0x37+ | pre-Tier1 | runtime counters only on LCD (CONTROL doesn't fire `cmd 0x22`) | **fully supported** — host can pull the 11-cell snapshot via `cmd 0x44` even though CONTROL doesn't render reset flags on the LCD |
+| V3.2 rev 0x37+ | V1.71 Tier1 | full Tier-1 feature set: runtime + reset cells populated, full LCD render | **fully supported** |
 
 The HID retrieval path bypasses the chain entirely — operators with a
 0x37 MAIN can use `scripts/dlcp_diag.py` regardless of which CONTROL
@@ -864,10 +901,13 @@ So a `cmd 0x22 / data 0x00` query on a ≤ rev 0x36 MAIN produces:
 * ONE stray `0x00` byte upstream (the cmd-XOR ACK echo of the
   data byte).
 
-CONTROL handles the stray `0x00` harmlessly: when the parser
-`frame_position == 0` (no route byte received yet), non-route bytes
-(< 0x80) are silently dropped.  The stray byte does not advance any
-parser state.
+CONTROL must handle the stray `0x00` harmlessly regardless of parser phase.
+In the common idle case, when `frame_position == 0` (no route byte received
+yet), non-route bytes (`< 0x80`) are silently dropped.  If a future change lets
+the stray byte arrive while a partial frame is staged, the frame-gap resync
+guard must clear the partial state before the next valid route byte.  Tests for
+old-MAIN compatibility should assert that a subsequent `cmd 0x21` / `cmd 0x22`
+reply still parses, not only that the stray byte is ignored in isolation.
 
 This is why the spec characterizes the degradation as "graceful":
 the failure mode is one harmless dropped byte per Diag-page entry,
@@ -893,10 +933,10 @@ sides know about Tier-1.
 6. **Operator runbook**: V32_RELEASE.md and V171_RELEASE.md updated
    with the new diag features and rev marker.
 
-## Implementation status (2026-04-20)
+## Implementation status (2026-05-29)
 
-Phase 2 (V3.2 MAIN) and Phase 3 partial (V1.71 CONTROL) are landed.
-Tracking the sub-phases:
+Phase 2 (V3.2 MAIN) and Phase 3 (V1.71 CONTROL) are landed.  Tracking the
+sub-phases:
 
 | Sub-phase | Description | Status |
 |---|---|---|
@@ -913,7 +953,7 @@ Tracking the sub-phases:
 | 3.4 | V1.71 per-PB Option-D sparse renderer | committed |
 | 3.5 | V1.71 fire-once `cmd 0x22` per page entry per PB | committed |
 | 3.6 | V1.71 hex build + structural tests | committed |
-| 4   | `scripts/dlcp_diag.py` host CLI | pending |
+| 4   | `scripts/dlcp_diag.py` host CLI | committed |
 
 ### Phase 3.4 implementation notes
 
@@ -928,18 +968,20 @@ Layout dispatch (per-PB):
 
 * **Absent** (`v171_diag_present.<pb_bit>` clear): row 0 = `PBn`,
   row 1 = `n/a`.  PB has never replied to cmd 0x21 / cmd 0x22 yet.
-* **Healthy** (7 runtime counters I/D/S/B/R/A/P + abnormal reset
-  flags V/W/X all 0; the POR `O` flag may be 1 on a normal cold
-  boot): row 0 = `PBn`, row 1 = `OK`.
-* **Degraded** (1 to 9 non-zero cells): row 0 = `PBn:` + ` X#` * up
-  to 4 entries; row 1 = `X#` + ` X#` * up to 4 more entries (no
-  leading space on first entry); pad both rows to 16 chars.
+* **Healthy** (issue cells I/D/R/A/P/V/W/X all 0; OK-context cells
+  S/B/O may be non-zero): row 0 = `PBn OK`, row 1 = sparse S/B/O tokens
+  or blank.  The POR `O` flag may be 1 on a normal cold boot and is treated
+  as OK-context telemetry.
+* **Degraded** (1 to 8 non-zero issue cells, plus optional S/B/O context
+  cells): row 0 = `PBn!` + sparse row-0 tokens + pad; row 1 = remaining
+  sparse tokens + pad or `..`.
 * **Overflow** (10 or 11 non-zero cells): row 0 = full 4 entries;
   row 1 = 5 entries + `..` overflow indicator (replaces the
   trailing space + col 15).
 
-Cell display order is fixed: I D S B R A P O V W X (7 runtime
-counters from Layer 5 baseline, then 4 Tier-1 reset-cause flags).
+Cell display order is fixed: I D R A P V W X S B O.  The first eight
+positions are issue cells; S/B/O are OK-context telemetry and render under
+`PBn OK` when no issue cells are set.
 
 Implementation cells (BANK 1, operands 0xCD..0xD3, physical
 0x1CD..0x1D3 -- safe range with no aliasing into the BANK 0
@@ -1004,10 +1046,10 @@ also fully Tier-1-aware.
   - Older MAINs (≤ rev 0x36) DO emit one stray `0x00` byte upstream
     when `cmd 0x22` arrives — the cmd-XOR-chain dispatch path's
     cmd-XOR ACK echo runs even for cmds that have no handler.  No
-    `BF/2N` reply burst follows.  CONTROL drops the stray byte
-    harmlessly (parser at `frame_position == 0` silently drops
-    non-route bytes).  See "Old MAIN behavior on cmd 0x22" for
-    the full byte-level trace.
+    `BF/2N` reply burst follows.  CONTROL must tolerate the stray byte
+    without parser drift; tests should assert the next valid diagnostic
+    reply still parses.  See "Old MAIN behavior on cmd 0x22" for the
+    full byte-level trace.
   - Older CONTROLs simply don't fire cmd 0x22 at all.
   Tooling and tests built against this spec must include the
   one-byte stray-traffic budget on the old-MAIN side; it's not

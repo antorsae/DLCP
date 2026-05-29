@@ -16,6 +16,8 @@ from dlcp_fw.paths import (
     V31_MAIN_HEX_CANONICAL,
     V32_MAIN_ASM,
     V32_MAIN_HEX,
+    V33_MAIN_ASM,
+    V33_MAIN_HEX,
 )
 
 from .hexio import parse_intel_hex
@@ -67,6 +69,7 @@ def load_gpasm_symbols_for_hex(main_hex: Path) -> Dict[str, int] | None:
         V30_MAIN_HEX.resolve(): V30_MAIN_ASM.with_suffix(".lst"),
         V31_MAIN_HEX_CANONICAL.resolve(): V31_MAIN_ASM_CANONICAL.with_suffix(".lst"),
         V32_MAIN_HEX.resolve(): V32_MAIN_ASM.with_suffix(".lst"),
+        V33_MAIN_HEX.resolve(): V33_MAIN_ASM.with_suffix(".lst"),
     }
     fallback_lst = canonical_source_lsts.get(release_hex)
     if fallback_lst is not None and fallback_lst not in lst_candidates:

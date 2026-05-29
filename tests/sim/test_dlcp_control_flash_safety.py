@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from dlcp_fw.paths import STOCK_CONTROL_HEX_V14, V171_CONTROL_HEX
+from dlcp_fw.paths import STOCK_CONTROL_HEX_V14, V171_CONTROL_HEX, V172_CONTROL_HEX
 from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_BOOT_START,
     CONTROL_PROG_END_EXCL,
@@ -102,6 +102,15 @@ def test_detect_static_hex_control_release_info_v171() -> None:
     assert (release.major, release.minor, release.sub) == (0x01, 0x07, 0x31)
     assert release.revision is not None
     assert release.revision >= 0x01
+
+
+def test_detect_static_hex_control_release_info_v172() -> None:
+    release = detect_static_hex_control_release_info(parse_intel_hex(str(V172_CONTROL_HEX)))
+    assert release is not None
+    assert (release.major, release.minor, release.sub) == (0x01, 0x07, 0x32)
+    assert release.revision is not None
+    assert release.revision >= 0x01
+    assert release.build_date is not None
 
 
 def test_v171_release_metadata_is_within_flashable_app_window() -> None:
@@ -282,6 +291,20 @@ def test_preflight_reports_target_release_and_compare_limitation(capsys) -> None
     assert "target release: V1.71 / rev 0x" in out
     assert " / build " in out
     assert "live CONTROL version/revision probe is unavailable" in out
+
+
+def test_preflight_reports_v172_target_release(capsys) -> None:
+    rc = main(["--hex", str(V172_CONTROL_HEX), "--preflight-only"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "target release: V1.72 / rev 0x" in out
+    assert " / build " in out
+
+
+def test_safe_control_wrapper_defaults_to_v172_release() -> None:
+    text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
+    assert "DLCP_Control_V1.72.hex" in text
+    assert 'DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.71.hex"' not in text
 
 
 def test_static_control_release_info_includes_build_date() -> None:
