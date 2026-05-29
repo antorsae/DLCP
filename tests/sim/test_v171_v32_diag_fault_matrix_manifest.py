@@ -154,6 +154,14 @@ def test_diag_fault_matrix_docs_keep_runtime_and_reset_transports_separate() -> 
     assert "cmd 0x22" in matrix and "BF/28..BF/2B" in matrix, (
         "reset-cause transport must remain explicit in the matrix"
     )
+    assert "simulator/RCON-latch" in matrix, (
+        "reset-cause coverage must be documented as simulator/RCON-latch "
+        "stimulus, not implied physical fault injection"
+    )
+    assert "WDT disabled" in matrix and "structural/sim-forced" in matrix, (
+        "matrix must make clear that the W reset-cause bucket is structural "
+        "while V1.71/V3.2 leave WDT disabled"
+    )
     assert "source hooks only" not in matrix.lower(), (
         "matrix must not claim source-hook-only coverage is sufficient"
     )

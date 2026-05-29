@@ -1,15 +1,14 @@
 """V1.71 CONTROL RAM static-analysis gates (Tier-1).
 
-Catches the bug shapes we hit during the V1.71 IR non-blocking decoder
-M3 series — equate collisions, BSR/access-mode mismatches, movff bank
-aliasing, and ISR save/restore imbalance — at static-analysis time,
-before the bug ships.
+Catches the bug shapes we hit during V1.71 RAM work — equate collisions,
+BSR/access-mode mismatches, movff bank aliasing, and ISR save/restore
+imbalance — at static-analysis time, before the bug ships.
 
 Per the 2026-05-08 RAM-conflict detection plan in response to user
 question "how can we make sure there are no conflicts in ram use"
 (task #156).  Tier-1 is the cheapest tier (parse-only, <1 s).
 Tiers 2-3 (runtime write tracking, region manifest) are deferred --
-this gate alone would have caught every M3-series RAM/bank bug at
+this gate alone would have caught every earlier RAM/bank bug at
 PR time.
 
 Bug classes covered
@@ -28,20 +27,15 @@ T1.2  BSR discipline -- every BANKED access to a known BANK-1
 T1.3  movff bank aliasing -- ``movff`` takes a 12-bit literal that
       IGNORES BSR.  Using a BANK-1 equate (whose value is the 8-bit
       BANKED operand) as a movff source/dest silently addresses
-      BANK 0 instead.  V1.71 IR M3 was bitten by this when
-      ``movff v171_ir_buf0, dest`` evaluated v171_ir_buf0 as 0xD7 --
-      physical 0x0D7 (BANK 0 channel-source array) instead of
-      0x1D7 (BANK 1 IR buffer).
+      BANK 0 instead.
 
 T1.4  ISR context safety:
       (a) Save/restore balance: every register saved in the ISR
           prologue must be restored in the epilogue and vice versa.
       (b) ISR-context functions must not touch FSR1*: isr_entry
-          saves FSR0 but NOT FSR1.  V1.71 M3 was bitten when
-          ``v171_ir_post_process`` used POSTINC1 to walk a buffer;
-          foreground diag-renderer walks at asm:3857/3943/4004 use
-          FSR1, and the ISR-side POSTINC1 would silently clobber
-          the foreground walk pointer.
+          saves FSR0 but NOT FSR1.  Foreground diag-renderer walks use
+          FSR1, and ISR-side POSTINC1 would silently clobber the
+          foreground walk pointer.
 """
 
 from __future__ import annotations
@@ -61,9 +55,9 @@ def _is_lowercase_ram_name(name: str) -> bool:
     """RAM cell names start with a lowercase letter or 'Common_RAM'.
 
     Convention used in dlcp_control_ram.inc:
-      * lowercase identifiers (``ir_decoded_cmd``, ``v171_ir_state``)
+      * lowercase identifiers (``ir_decoded_cmd``, ``v171_diag_target``)
         denote individual RAM cells
-      * UPPERCASE identifiers (``IR_ARMED``, ``V171_IR_TMR1_FULL_HI``)
+      * UPPERCASE identifiers (``IR_ARMED``, ``V171_DIAG_FLAG_DIRTY``)
         denote bit positions or constants — NOT RAM cells; they may
         legitimately share values with each other (e.g.,
         ``V171_DIAG_FLAG_DIRTY equ 0x00`` and ``IR_ARMED equ 0x00``
@@ -186,14 +180,6 @@ _BANK1_COMMENT_PATTERN = re.compile(
 # any of these prefixes are classified as BANK 1 even when the
 # per-equate block comment doesn't repeat the marker.
 #
-# NOTE: ``v171_ir_*`` is NOT in this list -- it would false-positive
-# on ``v171_ir_decode_pending`` (the legacy deferred-decode latch at
-# 0x0AA, BANK 0; superseded by M3's Timer1-driven decoder but the
-# equate is still in dlcp_control_ram.inc for historical reference).
-# All M3 BANK-1 IR cells (v171_ir_state, sample_count, buf0..3,
-# flags, tmp) have explicit ``; physical 0x1DN`` per-equate comments,
-# so they're caught via the comment-pattern path -- the prefix
-# shortcut isn't needed for them and only leaks false-positives.
 _BANK1_NAME_PREFIXES = (
     "v171_diag_",
 )
@@ -206,8 +192,8 @@ def _bank1_equates() -> list[tuple[str, int]]:
       1. The equate's own comment OR its preceding-block-comment
          contains ``physical 0x1xx`` or ``BANK 1``.
       2. The equate name matches one of the BANK-1 prefix
-         conventions in ``_BANK1_NAME_PREFIXES`` (e.g. ``v171_diag_*``,
-         ``v171_ir_*``) -- both families have section headers
+         conventions in ``_BANK1_NAME_PREFIXES`` (e.g. ``v171_diag_*``)
+         -- these families have section headers
          documenting BANK 1 globally even when individual sub-blocks
          don't repeat the marker (e.g., ``v171_diag_reset_*``).
 
@@ -463,10 +449,9 @@ def test_t1_3_bank1_equates_never_used_as_movff_operand() -> None:
     ``movff`` instruction.
 
     ``movff src, dst`` takes two 12-bit literals that bypass BSR.
-    A BANK-1 equate's value is the 8-bit BANKED operand (e.g.
-    ``v171_ir_buf0 equ 0x0D7`` for physical 0x1D7); using the bare
-    name as a movff operand evaluates the literal at face value,
-    addressing physical 0x0D7 (BANK 0) instead of 0x1D7.
+    A BANK-1 equate's value is the 8-bit BANKED operand; using the bare
+    name as a movff operand evaluates the literal at face value and
+    addresses physical BANK 0 instead of BANK 1.
 
     Correct pattern: ``lfsr 0x0, 0x1D7`` then ``movff POSTINC0, dst``
     -- the lfsr explicitly loads the 12-bit physical address into
@@ -527,11 +512,6 @@ def test_t1_3_bank1_equates_never_used_as_movff_operand() -> None:
 # (T2 follow-up).
 _ISR_CONTEXT_FUNCS = [
     "isr_entry",
-    "v171_isr_check_tmr1",
-    "v171_ir_start_decode",
-    "v171_ir_sample_handler",
-    "v171_ir_decode_done",
-    "v171_ir_post_process",
 ]
 
 
@@ -540,7 +520,7 @@ _ISR_CONTEXT_FUNCS = [
 # the foreground state when the ISR returns.
 _UNSAVED_REGISTERS = {
     # FSR1 — used by foreground diag-renderer walks (asm:3857, 3943,
-    # 4004) and various LCD/scratch paths.  V1.71 IR M3 codex finding.
+    # 4004) and various LCD/scratch paths.
     "FSR1L", "FSR1H",
     "POSTINC1", "POSTDEC1", "PREINC1", "PLUSW1", "INDF1",
     # FSR2 — used by foreground (heavy GPR walks).
@@ -688,8 +668,8 @@ def test_t1_4a_isr_entry_save_restore_balance() -> None:
     slot_collisions = {s: regs for s, regs in slot_to_regs.items() if len(regs) > 1}
 
     # Minimum required save set.  V1.71 isr_entry must save at least
-    # these registers -- ISR helpers (sample_handler, post_process,
-    # ir_rc5_decode body) modify all of them.  An empty save+restore
+    # these registers -- the direct ir_rc5_decode path modifies them.
+    # An empty save+restore
     # block would be "balanced" but catastrophic -- this gate makes
     # that case fail explicitly.
     required_saves = {"STATUS", "W", "BSR", "FSR0L", "FSR0H"}
@@ -717,7 +697,7 @@ def test_t1_4a_isr_entry_save_restore_balance() -> None:
     if missing_required:
         msg_parts.append(
             f"missing required saves: {sorted(missing_required)} "
-            f"(ISR helpers depend on these being saved)"
+            f"(ISR paths depend on these being saved)"
         )
     assert not msg_parts, (
         "isr_entry save/restore imbalance:\n  "
@@ -732,19 +712,14 @@ def test_t1_4b_isr_context_funcs_dont_use_unsaved_registers() -> None:
     TBLPTR*, TABLAT, or PCLATH/U -- isr_entry doesn't save these,
     and foreground routinely uses them.
 
-    Catches the V1.71 IR M3 codex finding shape: v171_ir_post_process
-    used POSTINC1 to walk a buffer; foreground diag-renderer walks
-    (asm:3857, 3943, 4004) use FSR1 too.  An IR-sample interrupt
-    landing during a foreground FSR1 walk silently corrupts the
-    foreground walk pointer.
+    Foreground diag-renderer walks use FSR1.  Any ISR-context helper that
+    touches it can silently corrupt the foreground walk pointer.
 
     Reads of the unsaved registers are also flagged because reading
     POSTINC1/PREINC1/POSTDEC1 modifies FSR1 as a side effect.
 
-    The legacy ir_rc5_decode body (called transitively from
-    v171_ir_post_process) is NOT directly checked here -- transitive
-    call-graph coverage is T2 territory.  This check covers the
-    five direct V1.71 IR ISR helpers + isr_entry itself.
+    The legacy ir_rc5_decode body is called synchronously from isr_entry, so
+    the ISR save/restore budget is still pinned by this test.
     """
     text = V171_CONTROL_ASM.read_text(encoding="utf-8")
     # Pattern: any instruction whose operand is one of the unsaved
@@ -785,6 +760,5 @@ def test_t1_4b_isr_context_funcs_dont_use_unsaved_registers() -> None:
         "  (a) Don't use the register -- rework via FSR0 / Common_RAM.\n"
         "  (b) Save and restore it explicitly in isr_entry's pro/epilogue.\n"
         "Option (a) is strongly preferred -- option (b) extends the\n"
-        "ISR latency budget, which is already tight for the IR sample\n"
-        "handler at 890 µs cadence."
+        "ISR latency budget."
     )

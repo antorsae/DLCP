@@ -64,8 +64,10 @@ Use these terms consistently in release notes and matrix updates:
 - `event surfaced`: a real operator/system event, not a fault, drives MAIN
   firmware to increment the displayed counter and the value reaches
   CONTROL/LCD.  This is the intended closure state for `S` and `B`.
-- `reset-cause surfaced`: a simulator reset-cause stimulus drives `O/V/W/X`
-  through `cmd 0x22` and the PB Diagnostics LCD page.
+- `reset-cause surfaced`: a simulator/RCON-latch reset-cause stimulus drives
+  `O/V/W/X` through `cmd 0x22` and the PB Diagnostics LCD page.  Current
+  V1.71/V3.2 builds leave WDT disabled, so `W` is structural/sim-forced
+  coverage unless a future build enables a physical watchdog.
 - `not applicable`: no realistic stimulus exists for the displayed field; the
   row must explain why and name the narrower invariant that remains tested.
 - `gap`, `partial`, or `PB1-only`: open for release closure.
@@ -114,7 +116,7 @@ fault is the unexpected state transition, not the counter increment itself.
 | `R` | `diag_r` | Recovery branch entries: bounded MSSP/I2C timeout recovery or volume-DSP retry exhaustion | Real TAS3108 volume-write retry exhaustion and bounded MSSP STOP timeout both increment MAIN0/MAIN1 `diag_r`, then PB1/PB2 Diag renders `R`. | fault surfaced |
 | `A` | `diag_a` | AN0 standby low-threshold trip | Real AN0 high-armed then low trip via `set_main_an0_sample` increments MAIN0/MAIN1 `diag_a`, then PB1/PB2 Diag renders `A`. | event surfaced |
 | `P` | `diag_p` | RA1 PORTA-edge observability event | Simulator PORTA-edge stimulus via `set_main_pin(unit, "A", 1, level)` increments exactly once, holds steady without repeat, then PB1/PB2 Diag renders `P`. | not applicable for hardware-realistic release; simulator invariant covered |
-| `O/V/W/X` | reset flags | POR/BOR/WDT/SW reset cause flags | Distinct per-MAIN RCON reset-cause latch stimuli drive V3.2 cold-init classification, then PB1/PB2 Diag receives each reset flag through `cmd 0x22`; `O` renders as OK-context telemetry, while `V/W/X` select issue layout. | reset-cause surfaced |
+| `O/V/W/X` | reset flags | POR/BOR/WDT/SW reset cause flags | Distinct per-MAIN simulator/RCON-latch reset-cause stimuli drive V3.2 cold-init classification, then PB1/PB2 Diag receives each reset flag through `cmd 0x22`; `O` renders as OK-context telemetry, while `V/W/X` select issue layout.  `W` is structural/sim-forced in current releases because WDT is disabled by policy. | reset-cause surfaced |
 
 Current concrete tests:
 
@@ -375,8 +377,9 @@ driven convergence.  For release notes, distinguish:
   reaches CONTROL/LCD.
 - "Event surfaced" means a real operator/system event increments MAIN RAM and
   reaches CONTROL/LCD.
-- "Reset-cause surfaced" means a reset-cause stimulus reaches CONTROL/LCD
-  through `cmd 0x22`.
+- "Reset-cause surfaced" means a simulator/RCON-latch reset-cause stimulus
+  reaches CONTROL/LCD through `cmd 0x22`.  It does not imply the current
+  firmware enables WDT; `W` remains structural/sim-forced today.
 
 The release target is every displayed field in one of the explicit closure
 states above.  As of this update there are no simulator open rows; `P` is

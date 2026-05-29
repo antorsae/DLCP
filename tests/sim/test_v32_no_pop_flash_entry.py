@@ -233,11 +233,12 @@ def test_dispatch_site_does_not_call_hard_reset_directly() -> None:
 def test_hard_reset_remains_minimal() -> None:
     """``hard_reset`` itself must NOT have I2C work added.
 
-    Panic callers (uart_tx_byte_blocking two-strike escalation,
-    volume_dsp_write final escalation, v31_hard_reset_jump2) reach
-    hard_reset from already-broken states and must not be made to
-    touch a potentially-wedged MSSP on the way out — that would turn
-    a recoverable panic into a hang.
+    Panic callers such as uart_tx_byte_blocking two-strike escalation
+    reach hard_reset from already-broken states and must not be made to
+    touch a potentially-wedged MSSP on the way out — that would turn a
+    recoverable panic into a hang.  V3.2 volume_dsp_write exhaustion is
+    separately pinned below as a bounded DSP-fault path that does not
+    enter hard_reset.
 
     The body should consist only of:
       - clrf INTCON (mask interrupts)
@@ -275,11 +276,39 @@ def test_hard_reset_remains_minimal() -> None:
     )
 
 
+def test_volume_dsp_retry_exhaustion_stays_out_of_hard_reset() -> None:
+    """V3.2 volume write failure is fault telemetry, not a reset panic."""
+    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    assert "volume_dsp_write final-escalation path when retries" not in text, (
+        "source still contains the stale V3.1-era comment claiming "
+        "volume_dsp_write reaches hard_reset"
+    )
+    body = _strip_comments(
+        _label_body(text, "volume_dsp_write", "preset_job_apply_i2c_recover")
+    )
+    assert not re.search(r"\b(?:bra|goto|call|rcall)\s+hard_reset\b", body), (
+        "volume_dsp_write retry exhaustion must not branch/call into hard_reset"
+    )
+    for required in (
+        r"\bdiag_inc_sat\s+diag_r\b",
+        r"\brcall\s+i2c_bus_clear\b",
+        r"\brcall\s+dsp_ping\b",
+        r"\bdiag_inc_sat\s+diag_d\b",
+        r"\brcall\s+send_dsp_fault_status\b",
+        r"\bbcf\s+event_flags,\s*3,\s*BANKED\b",
+        r"\breturn\s+0\b",
+    ):
+        assert re.search(required, body), (
+            f"volume_dsp_write retry-exhaustion path missing {required!r}; "
+            "it should recover/report/return instead of resetting"
+        )
+
+
 def test_helper_calls_preset_force_mute_not_volume_dsp_write() -> None:
     """Helper must use ``preset_force_mute`` (synchronous, single
     coefficient write) NOT ``volume_dsp_write`` (which has its own
-    retry + bus-clear + ping escalation that can ITSELF call
-    hard_reset, breaking the helper's full-sequence guarantee).
+    retry + bus-clear + ping + DSP-fault policy, while flash entry
+    needs a single unconditional mute attempt before the reset tail).
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
@@ -289,9 +318,9 @@ def test_helper_calls_preset_force_mute_not_volume_dsp_write() -> None:
         "helper must mute the DSP via preset_force_mute"
     )
     assert "volume_dsp_write" not in body, (
-        "helper must NOT use volume_dsp_write — its escalation chain "
-        "can call hard_reset before the helper's full sequence "
-        "completes, defeating the pop-suppression guarantee"
+        "helper must NOT use volume_dsp_write -- flash entry needs "
+        "one unconditional mute attempt before the full shutdown/reset "
+        "sequence completes"
     )
 
 

@@ -6,10 +6,8 @@ inject the decoded result directly via ``inject_decoded_ir_event``
 -- a RAM poke that writes ``ir_decoded_cmd`` (0x01D),
 ``ir_decoded_addr`` (0x01E), and clears ``control_flags.IR_ARMED``
 (0x01F.bit0).  That bypasses the bit-bang Manchester decoder
-entirely, so a regression in the port-B IOC -> RBIF -> ISR latch
-path, the M3 Timer1-driven sample state machine, or the post-process
-hand-off to ``flow_ir_rc5_decode_025E`` would not be detected by
-the inject-based tests.
+entirely, so a regression in the port-B IOC -> RBIF -> stock in-ISR
+``ir_rc5_decode`` path would not be detected by the inject-based tests.
 
 This file drives a real Manchester-encoded RC5 pulse train at
 CONTROL's RB5 input pin with 889 µs half-bit timing.  Three test
@@ -27,9 +25,8 @@ shapes:
   3. ``test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd`` --
      parametrized over all four V1.71 inline cmds (0x38/0x39/0x3A/
      0x3B) and asserts on ``ir_decoded_cmd`` / ``ir_decoded_addr``
-     registers post-decode.  This locks in the M3 timing fix from
-     61e17a7 (V171_IR_TMR1_FULL retune 0xF595 -> 0xF5D8) as an
-     automated regression gate.
+     registers post-decode.  This locks in the hardware-validated
+     stock-compatible ISR decode path.
 
 Polarity convention (validated empirically against stock V1.6b
 CONTROL by the codex sandbox 2026-05-07): the DLCP firmware
@@ -37,11 +34,9 @@ expects bit '1' = HIGH-then-LOW at the MCU pin, bit '0' =
 LOW-then-HIGH.  Idle = HIGH between frames.  This is INVERTED
 from the standard TSOP-active-low convention.
 
-Decoder pipeline post-M3 (per 86d88e0 + 61e17a7):
+Decoder pipeline:
   RB5 falling edge -> port-B IOC -> RBIF -> isr_entry ->
-  v171_ir_start_decode -> 32 x v171_ir_sample_handler ->
-  v171_ir_decode_done -> v171_ir_post_process ->
-  flow_ir_rc5_decode_025E -> ir_decoded_cmd / ir_decoded_addr ->
+  ir_rc5_decode -> ir_decoded_cmd / ir_decoded_addr ->
   control_core_service_0DCE foreground dispatch -> V1.71 inline
   shortcut case (preset A/B / standby / wake) -> chain TX frame.
 """
@@ -295,12 +290,9 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
     the V1.71 inline IR dispatch emits ``[B0, 03, 00]`` (standby
     frame) to CONTROL's TX stream.
 
-    Exercises the FULL M3 IR pipeline (post-86d88e0 / 61e17a7):
+    Exercises the full live IR pipeline:
       RB5 falling edge → port-B IOC → RBIF → isr_entry →
-      v171_ir_start_decode (Timer1 first preload 0xF0BC) →
-      32 x v171_ir_sample_handler (Timer1 reload 0xF5D8) →
-      v171_ir_decode_done → v171_ir_post_process →
-      flow_ir_rc5_decode_025E (Manchester pair-validation) →
+      ir_rc5_decode (bit-bang Manchester decode) →
       ir_decoded_cmd / ir_decoded_addr written → control_core_
       service_0DCE foreground dispatch → V1.71 inline standby
       case (asm:3422) → v171_send_standby_cmd_frame → TX
@@ -322,9 +314,8 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
         h.step()
 
     # RB5 starts HIGH (idle).  Must be confirmed before injection
-    # because the decoder's RB5=LOW gate at asm:879-880 only arms
-    # the M3 state machine on RBIF when RB5 is currently LOW (i.e.
-    # post falling-edge of S1's first half).
+    # because the stock decoder's RB5=LOW gate must see the falling edge
+    # while RB5 is currently LOW (i.e. post falling-edge of S1's first half).
     chain.set_control_pin("B", 5, True)
     for _ in range(20):
         h.step()
@@ -335,10 +326,8 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
     # cmd=0x3A (V1.64b explicit standby endpoint).
     _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x3A)
 
-    # Settle in chunks (post-frame the M3 sample handler keeps
-    # firing until count == 32, then post_process runs).  20 x 1M
-    # universal ticks ~ 417 ms simulated covers the worst-case
-    # decode + dispatch tail.
+    # Settle in chunks so the foreground dispatch can consume the decoded
+    # cmd and emit the standby frame.
     for _ in range(20):
         h.step_ticks(1_000_000)
     for _ in range(40):
@@ -371,11 +360,9 @@ def test_v171_rc5_pulse_train_decodes_standby_endpoint(v171_hex: Path) -> None:
 # "did the dispatcher fire AND did layer-2 not happen to emit the same
 # frame".
 #
-# This locks in the decoder timing fix from 61e17a7 (V171_IR_TMR1_FULL
-# preload retune from 0xF595 -> 0xF5D8).  Pre-fix, cmds with cmd LSB = 1
-# (0x39 preset B, 0x3B wake) failed Manchester pair-validation on the
-# last sample pair and the legacy decoder bailed to error path
-# (ir_decoded_cmd = 0xFF).  Post-fix, all four cmds decode correctly.
+# This locks in the hardware-validated stock-compatible ISR decoder path.
+# All four V1.71 inline shortcuts must decode correctly from a real RB5
+# Manchester pulse train, not only from inject_decoded_ir_event RAM pokes.
 # ===========================================================================
 
 
@@ -391,15 +378,12 @@ def test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd(
     v171_hex: Path, cmd: int, label: str,
 ) -> None:
     """Drive RC5 (addr=0x10, cmd=<param>) at CONTROL.RB5 and verify
-    the M3 Timer1-driven decoder lands the expected value in
+    the stock-compatible in-ISR decoder lands the expected value in
     ir_decoded_cmd / ir_decoded_addr.
 
-    Exercises the FULL pipeline post-M3 (per 86d88e0 + 61e17a7):
+    Exercises the full live pipeline:
       RB5 falling edge -> port-B IOC -> RBIF -> isr_entry ->
-      v171_ir_start_decode (Timer1 first preload 0xF0BC) -> 32x
-      v171_ir_sample_handler (Timer1 reload preload 0xF5D8) ->
-      v171_ir_decode_done -> v171_ir_post_process ->
-      flow_ir_rc5_decode_025E (legacy Manchester pair-validation) ->
+      ir_rc5_decode (bit-bang Manchester decode) ->
       ir_decoded_cmd / ir_decoded_addr written.
 
     Direct register check, no TX-frame coincidence.
@@ -415,8 +399,7 @@ def test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd(
         chain.step()
 
     _drive_rc5_pulse_train(chain, addr=0x10, cmd=cmd)
-    # Settle long enough for decode + post_process to land cmd/addr
-    # (~150 ms simulated covers the worst-case ISR-dispatch tail).
+    # Settle long enough for decode + foreground dispatch to land cmd/addr.
     for _ in range(8):
         chain.step_ticks(1_000_000)
 
@@ -426,9 +409,7 @@ def test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd(
         f"{label} (cmd 0x{cmd:02X}): decoded_cmd=0x{decoded_cmd:02X}, "
         f"expected 0x{cmd:02X}.  Decoder bailed to error path (0xFF) "
         f"or never wrote cmd (0x00 / pre-warmup value).  Check the "
-        f"M3 Timer1 preloads in dlcp_control_ram.inc -- the FULL "
-        f"preload V171_IR_TMR1_FULL must produce a sample-to-sample "
-        f"interval close to RC5's 890 us at the btfsc PORTB,RB5 step."
+        f"stock in-ISR ir_rc5_decode path and RC5 pulse timing."
     )
     assert decoded_addr == 0x10, (
         f"{label} (cmd 0x{cmd:02X}): decoded_addr=0x{decoded_addr:02X}, "

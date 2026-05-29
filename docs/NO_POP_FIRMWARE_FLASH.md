@@ -214,10 +214,11 @@ regard, and `goto` saves one stack slot and one instruction.
 
 ## What NOT To Do
 
-- **Do not modify `hard_reset`.** Panic callers
-  (`uart_tx_byte_blocking → v31_hard_reset_jump2`, volume-write final
-  escalation) reach it from broken states. Adding I2C work in `hard_reset`
-  itself turns a recoverable panic into a hang when the MSSP is wedged.
+- **Do not modify `hard_reset`.** The UART panic caller
+  (`uart_tx_byte_blocking -> v31_hard_reset_jump2`) can reach it from a
+  broken state. Adding I2C work in `hard_reset` itself turns a recoverable
+  panic into a hang when the MSSP is wedged. V3.2 volume-write exhaustion
+  stays in the bounded DSP-fault path and does not enter `hard_reset`.
 - **Do not call `usb_shutdown` before `RESET`.** The `RESET` instruction
   already disconnects USB cleanly; pre-disabling UCON lengthens the
   device-absent window and can cause the host to report an unexpected
@@ -235,9 +236,9 @@ regard, and `goto` saves one stack slot and one instruction.
   rescued by the next reset.
 - **Do not replace `preset_force_mute`'s `i2c_tas3108_coeff_write` with
   the bounded DSP write path (`volume_dsp_write`).** `volume_dsp_write`
-  has its own retry + bus-clear + ping escalation that can itself call
-  `hard_reset` — we need a single synchronous mute attempt that returns
-  unconditionally so the full Phase A sequence always completes.
+  has its own retry + bus-clear + ping + DSP-fault reporting policy.  Flash
+  entry needs a single synchronous mute attempt that returns unconditionally
+  so the full Phase A sequence always completes.
 
 ## Safety Analysis
 
@@ -247,7 +248,7 @@ regard, and `goto` saves one stack slot and one instruction.
 | `preset_force_mute` I2C wedged | Same bounded waits apply through `i2c_tas3108_coeff_write`. No new hang path introduced. |
 | Host HID timeout for "device vanished" | Added latency ≈ 150 ms (3 × secondary writes ≈ 1.5 ms each + 100 ms timer3 settle + ~5 ms DSP coefficient write). `dlcp_main_flash.py` uses libusb with a multi-second enumeration window — well within margin. |
 | Bootloader re-enumeration | Unchanged. `RESET` still fires at the same final step, USB is still disconnected by the hardware reset, the bootloader still reads `EEPROM[0xFF] = 0` and stays in update mode. |
-| Existing hard_reset panic paths | Untouched. `uart_tx_byte_blocking` and volume-write escalation still reach `hard_reset` directly. |
+| Existing hard_reset panic paths | Untouched. `uart_tx_byte_blocking` still reaches `hard_reset` directly; volume-write escalation remains a bounded DSP-fault path and does not enter `hard_reset`. |
 | EEPROM wear | No extra EEPROM writes. `main_flash_service_46de` runs exactly once per flash entry, same as before. |
 | Code-size impact | ~28 instructions (~56 bytes) new; one instruction changed (`call` → `goto`). No relocation cascade (see verification #1 below). |
 | Test coverage | Simulation gate (`tests/sim/test_dlcp_main_flash.py`) passes unchanged — it does not model audio. Pop regression needs hardware loopback capture; see Test Strategy below. |

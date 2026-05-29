@@ -132,12 +132,12 @@ operator recovery".  This is a UX escape hatch, not a root-cause fix.
 
 Implementation status (last refreshed 2026-05-03):
 
-- ✅ **Move or defer the RC5 decode out of the ISR-critical wake/reconnect
-  window** — landed in commit `bc61c70` (2026-04-23).  V1.71 ISR sets
-  `v171_ir_decode_pending` flag only; foreground
-  `v171_service_pending_ir_decode` runs the ~7-10 ms bit-bang outside
-  the ISR.  Locked by `tests/sim/test_v171_hang_modes.py` (see
-  `test_v171_ir_decode_is_deferred_out_of_isr`).
+- ✅ **IR decode policy settled on stock-compatible ISR path** — the
+  foreground-deferred experiment from `bc61c70` and the later Timer1 sampler
+  were both retired.  V1.71 now uses the stock V1.6b in-ISR RC5 decoder
+  because that is the path confirmed on real hardware.  Locked by
+  `tests/sim/test_v171_hang_modes.py` (see
+  `test_v171_ir_decode_uses_hardware_validated_stock_isr_path`).
 - ✅ **Atomic 3-byte frame emission across the V1.71 senders** — landed
   in commit `bc61c70` via `tx_ring_reserve_3` + per-sender atomic
   prologue.  All ten 3-byte senders (`poll_frame_send`,

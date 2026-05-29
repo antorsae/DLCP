@@ -821,13 +821,10 @@ def test_v171_v32_layer5_chain_diag_page_polls_pb1_and_pb2(
         f"[rust] chain stuck in WAITING/Zzz: lcd={c.lcd_lines()!r}"
     )
     _rust_navigate_to_diagnostics(c)
-    # Limit bumped 600 -> 1200 to absorb the M3 IR non-blocking
-    # decoder code shift (86d88e0 + 61e17a7 V171_IR_TMR1_FULL
-    # retune).  Each push touches v171_isr_check_tmr1 / IR ISR
-    # cluster; the resulting ~50-instruction shift in V1.71's
-    # main loop pushed wiggle convergence for PB1's first cmd 0x21
-    # reply from ~500 to >600 (#153).  1200 keeps the test passing
-    # with 2x margin and matches the bumped limit across all
+    # Limit kept at 1200 to absorb V1.71 source-layout movement around the
+    # display loop.  Earlier IR experiments showed this convergence point is
+    # sensitive to code shifts; 1200 keeps the test passing with margin and
+    # matches the bumped limit across all
     # _rust_press_drive_until_pb_present sites in this file.
     ok = _rust_press_drive_until_pb_present(c, pb_mask=0x03, limit=1200)
     assert ok, (

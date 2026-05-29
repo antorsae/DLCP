@@ -537,10 +537,11 @@ flow_ccs_01F0_0212:                                                  ; address: 
 ;   • Button RBIF events are missed.
 ;   • TXIE-driven outgoing frames stall (standby_wake_broadcast standby/wake frame
 ;     can be delayed by ~10 ms per IR press).
-; The OERR latch exposes BUG C4 in rx_parser_entry because the parser only
-; toggles CREN to clear OERR — it does NOT drain RCREG. Stale bytes in
-; the hardware FIFO then re-trigger the parser with phase-shifted data,
-; which is what produces the V162B "intermittent unresponsive" pattern.
+; Stock/V1.6b exposed BUG C4 here because rx_parser_entry only toggled
+; CREN and left stale bytes in the hardware FIFO.  V1.71 keeps the
+; stock-compatible ISR decode path but hardens rx_parser_entry with the
+; V1.62b full FIFO drain plus parser/ring reset, so IR-induced OERR
+; pressure recovers cleanly instead of phase-shifting the next frame.
 ; ===========================================================================
 ; ir_rc5_decode:
 ir_rc5_decode:                                               ; address: 0x00021e
@@ -859,10 +860,8 @@ flow_app_cold_init_0414:                                                  ; addr
         btfss   control_flags, 0x0, A                   ; reg: 0x01f
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         ; V1.71 hardware fallback (2026-05-09): use the stock V1.6b
-        ; in-ISR RC5 decoder.  The Timer1 sampling state machine passed
-        ; rust-sim pulse tests but decoded no real Flipper IR on silicon.
-        ; Keep the stock timing until a hardware-validated non-blocking
-        ; decoder exists.
+        ; in-ISR RC5 decoder.  The failed Timer1 sampler was removed so
+        ; there is no dormant path that can arm TMR1IE without a handler.
         rcall   ir_rc5_decode                                ; dest: 0x00021e
         movwf   ir_decoded_cmd, A                        ; reg: 0x01d
         movff   (Common_RAM + 13), ir_decoded_addr        ; reg1: 0x00d, reg2: 0x01e
@@ -883,26 +882,20 @@ flow_app_cold_init_0436:                                                  ; addr
 
 
 ; ===========================================================================
-; rx_parser_entry @ 0x00044A — rx_parser_entry  *** BUG C4 / C5 ***
+; rx_parser_entry @ 0x00044A — rx_parser_entry  (V1.71 hardened)
 ; ---------------------------------------------------------------------------
 ; Top of the receive-path service routine. Called every iteration of the
 ; main event loop (main_event_loop) to drain the RX ring, decode 3-byte
 ; [route, cmd, data] frames, and update internal state.
 ;
-; *** BUG C4 (oerr_no_fifo_drain) ***
-; First check: btfss RCSTA.OERR (0xAB.1). If set, toggle CREN to clear,
-; then NOP, then re-arm CREN. This clears the OERR latch but DOES NOT
-; READ RCREG TWICE to drain the 2-deep hardware FIFO. Stale bytes left
-; in RCREG re-trigger the parser at the wrong frame phase, corrupting
-; subsequent frames until the parser happens to resync on a 0xB0/0xB1/
-; 0xBF route byte. The V1.62b fix (`control_uart_soft_recover` at 0x7000+)
-; addresses this with a 2x movf RCREG drain.
+; Retired BUG C4 (oerr_no_fifo_drain): the first branch now performs the
+; V1.62b full soft-recover inline: CREN off, read RCREG twice, CREN on,
+; then clear the TX/RX ring indexes and parser phase latches.  This keeps
+; a UART overrun from leaving stale FIFO bytes for the next frame.
 ;
-; *** BUG C5 (no_frame_resync_timeout) ***
-; The parser tracks position in 0x0A6 (rx_frame_position). If a partial
-; frame is received and the source dies, 0x0A6 stays mid-frame forever
-; — the next byte received (potentially several seconds later) is
-; misinterpreted. There is no per-frame timeout that resets 0x0A6 to 0.
+; Retired BUG C5 (no_frame_resync_timeout): foreground loops call
+; v171_service_rx_frame_gap after rx_parser_entry.  That helper reloads
+; on parser progress and clears rx_frame_position if a partial frame stalls.
 ; ===========================================================================
 ; rx_parser_entry:
 rx_parser_entry:                                               ; address: 0x00044a
@@ -2680,205 +2673,6 @@ cmd1d_setting_frame_send:                                               ; addres
 
 cmd1d_setting_frame_send_aborted:
         return  0x0
-
-v171_service_pending_ir_decode:
-        ; Retired legacy deferred RC5 service retained for source-address
-        ; continuity.  Live V1.71 IR uses the stock-compatible RBIF ISR
-        ; path: isr_entry calls ir_rc5_decode directly.  display_loop_iteration
-        ; must not call this routine.
-        movf    v171_ir_decode_pending, F, BANKED
-        btfsc   STATUS, Z, A
-        return  0x0
-        btfss   control_flags, IR_ARMED, A
-        goto    v171_service_pending_ir_decode_drop
-        clrf    v171_ir_decode_pending, BANKED
-        call    ir_rc5_decode, 0x0                         ; rcall ir_rc5_decode
-        movwf   ir_decoded_cmd, A
-        movff   (Common_RAM + 13), ir_decoded_addr
-        bcf     control_flags, IR_ARMED, A
-        return  0x0
-
-v171_service_pending_ir_decode_drop:
-        clrf    v171_ir_decode_pending, BANKED
-        return  0x0
-
-
-; ===========================================================================
-; Retired V1.71 IR non-blocking decoder experiment
-; ---------------------------------------------------------------------------
-; These Timer1 sampling bodies are not live in the V1.71 release; they are
-; retained only for analysis/source-address continuity.  The live path remains
-; the stock-compatible RBIF ISR path through ir_rc5_decode.
-; ===========================================================================
-
-; v171_ir_start_decode @ retired experimental RBIF entry.  If called by the
-; old experiment after RB5=LOW and IR_ARMED, initializes the state machine
-; and arms Timer1.
-; with ``V171_IR_TMR1_FIRST_HI/LO`` preload.  Per
-; V171_IR_NONBLOCK_DECODER_SPEC.md (rust-sim-instrumented against
-; V1.6b stock decoder), the first sample lands at MID OF S2 FIRST
-; HALF -- legacy SKIPS S1 entirely.  Preload value 0xF0BC = 1303 µs
-; T1CON-to-overflow + ~13 µs of ISR/start_decode/sample_handler-to-
-; btfsc first-sample overhead.  See dlcp_control_ram.inc for the
-; full preload derivation post-codex-correction (the per-sample
-; FULL preload at 0xF5D8 includes a much larger ~70-Tcy ISR-path
-; overhead per subsequent sample, so FULL is tighter than FIRST
-; minus the 1303 us bias).
-;
-; Clobbers: W, STATUS, BSR (movlb 0x1).  Does NOT preserve caller W.
-; This is safe because the V1.71 isr_entry header at asm:786-792
-; saves W/STATUS/BSR/FSR0 to scratch RAM and restores them on exit
-; (W restored at asm:872).  NB: FSR1 is NOT saved by isr_entry --
-; v171_ir_post_process explicitly avoids FSR1 to prevent corrupting
-; foreground FSR1 walks.
-v171_ir_start_decode:
-        movlb   0x1
-        clrf    v171_ir_buf0, BANKED
-        clrf    v171_ir_buf1, BANKED
-        clrf    v171_ir_buf2, BANKED
-        clrf    v171_ir_buf3, BANKED
-        clrf    v171_ir_sample_count, BANKED
-        clrf    v171_ir_flags, BANKED
-        movlw   0x01                                ; SAMPLING state
-        movwf   v171_ir_state, BANKED
-        ; Arm Timer1 for the V1.6b-matched first-sample preload (mid
-        ; of S2 first half).  T1CON=0x81 = TMR1ON + RD16 (16-bit
-        ; writes via TMR1H buffer).  In RD16 mode, the TMR1H write
-        ; goes to a buffer; the TMR1L write triggers
-        ; atomic 16-bit load of the counter.  Clear PIR1.TMR1IF
-        ; first so a stale flag doesn't fire immediately.
-        movlw   V171_IR_TMR1_FIRST_HI
-        movwf   TMR1H, A
-        movlw   V171_IR_TMR1_FIRST_LO
-        movwf   TMR1L, A
-        bcf     PIR1, TMR1IF, A
-        bsf     PIE1, TMR1IE, A
-        movlw   0x81                                ; TMR1ON + RD16
-        movwf   T1CON, A
-        return  0x0
-
-
-; v171_ir_sample_handler @ retired experimental Timer1 handler (not called by
-; the live ISR).
-; Reads PORTB.RB5, shifts the resulting Manchester bit into the buffer
-; byte indexed by sample_count >> 3, increments sample_count.  If
-; sample_count >= 32, transitions to DONE (calls v171_ir_post_process).
-; Otherwise reloads TMR1 with full-period preload (V171_IR_TMR1_FULL_*
-; = 0xF5D8 ≈ 866 µs preload + ~24 µs ISR-path overhead = ~890 µs
-; effective sample-to-sample interval).
-;
-; Uses FSR0 to address buf[byte_index] directly so we don't need a
-; multi-way branch dispatch BEFORE the rlcf -- avoids the carry-
-; clobber bug codex caught in the v2 implementation where addlw
-; (used for branch dispatch) clobbered the RB5-derived carry before
-; the rlcf consumed it.
-v171_ir_sample_handler:
-        ; First compute byte_index = sample_count >> 3 and form the
-        ; 12-bit physical address of buf[byte_index].  Since
-        ; v171_ir_buf0 lives at physical 0x1D7 (BANK 1), buf[k] is at
-        ; 0x1D7 + k for k=0..3.  Loading FSR0 = 0x1D7 + k lets us
-        ; rlcf INDF0 directly without any carry-clobbering arithmetic
-        ; AFTER we set carry from RB5.
-        movlb   0x1
-        movf    v171_ir_sample_count, W, BANKED
-        rrncf   WREG, W, A                          ; W = count >> 1
-        rrncf   WREG, W, A                          ; W = count >> 2
-        rrncf   WREG, W, A                          ; W = count >> 3
-        andlw   0x03                                ; W = byte_index 0..3
-        addlw   0xD7                                ; W = 0xD7 + byte_index
-                                                    ; (physical low byte of v171_ir_buf{k})
-        movwf   FSR0L, A
-        movlw   0x01
-        movwf   FSR0H, A                            ; FSR0 = 0x1D7 + byte_index
-        ; NOW set carry from RB5 -- nothing between this and rlcf
-        ; touches STATUS.C.  Polarity matches legacy decoder
-        ; (asm:573-576): C=1 default; btfsc PORTB.RB5 (skip clear if
-        ; RB5 LOW); bcf C → C=0 if RB5 HIGH.
-        bsf     STATUS, C, A
-        btfsc   PORTB, RB5, A
-        bcf     STATUS, C, A
-        ; rlcf rotates INDF0 left through C: new bit 0 = old C, new
-        ; C = old bit 7.  We don't care about the new C (next
-        ; iteration will reset it from RB5 anyway).
-        rlcf    INDF0, F, A
-        ; Advance sample_count.
-        incf    v171_ir_sample_count, F, BANKED
-        ; Check if we've collected all 32 samples.
-        movlw   V171_IR_TOTAL_SAMPLES
-        cpfslt  v171_ir_sample_count, BANKED
-        bra     v171_ir_decode_done
-        ; Reload TMR1 for next 889 µs sample.  RD16 buffered write:
-        ; TMR1H first, then TMR1L triggers atomic 16-bit load.
-        movlw   V171_IR_TMR1_FULL_HI
-        movwf   TMR1H, A
-        movlw   V171_IR_TMR1_FULL_LO
-        movwf   TMR1L, A
-        return  0x0
-
-; v171_ir_decode_done @ tail-call from sample_handler when 32 samples
-; collected.  Disables Timer1, calls v171_ir_post_process to extract
-; addr/cmd from the buffer, clears IR_ARMED, returns to IDLE state.
-v171_ir_decode_done:
-        bcf     T1CON, TMR1ON, A
-        bcf     PIE1, TMR1IE, A
-        bcf     PIR1, TMR1IF, A
-        rcall   v171_ir_post_process
-        movlb   0x1
-        clrf    v171_ir_state, BANKED
-        clrf    v171_ir_sample_count, BANKED
-        bcf     control_flags, IR_ARMED, A
-        return  0x0
-
-
-; v171_ir_post_process @ Manchester pair validation + addr/cmd extraction.
-; Copies buf0..buf3 (BANK 1) into (Common_RAM+16)..(Common_RAM+19) at
-; physical 0x010..0x013, then jumps into the legacy decoder's
-; post-process path at flow_ir_rc5_decode_025E.  That path is pure
-; post-process (no further RB5 reads, codex-confirmed asm:587+).  It
-; walks the 32-sample buffer through control_core_service_02EE for
-; Manchester pair validation and writes the decoded address into
-; (Common_RAM+13) and returns the decoded command in W -- caller writes
-; both to ir_decoded_cmd / ir_decoded_addr.
-v171_ir_post_process:
-        ; Copy BANK 1 buf0..buf3 (physical 0x1D7..0x1DA) into
-        ; Common_RAM+16..19 (physical 0x010..0x013).
-        ;
-        ; CRITICAL #1: cannot use ``movff v171_ir_buf0, dest``
-        ; because movff takes a FULL 12-bit literal address;
-        ; ``v171_ir_buf0`` evaluates to 0x0D7 which movff would
-        ; interpret as physical 0x0D7 (BANK 0, channel-source
-        ; array) -- NOT the BANK 1 cell at 0x1D7.  Use lfsr +
-        ; POSTINC0 instead.
-        ;
-        ; CRITICAL #2 (codex HIGH vs 86d88e0): the ISR prologue at
-        ; isr_entry (asm:786-792) only saves FSR0, NOT FSR1.
-        ; Foreground code uses FSR1 (diag-renderer walks at
-        ; asm:3857, 3943, 4004 / `lfsr 1, ...` patterns).  If a
-        ; Timer1 IR-sample interrupt fires during one of those
-        ; foreground walks, FSR1 returns clobbered and the
-        ; foreground walk continues with the wrong pointer.  Avoid
-        ; FSR1/POSTINC1 entirely; use FSR0 + explicit 12-bit
-        ; literal destinations.
-        lfsr    0x0, 0x1D7                          ; FSR0 = bank-1 buf0
-        movff   POSTINC0, 0x010                     ; buf0 -> Common_RAM+16
-        movff   POSTINC0, 0x011                     ; buf1 -> Common_RAM+17
-        movff   POSTINC0, 0x012                     ; buf2 -> Common_RAM+18
-        movff   POSTINC0, 0x013                     ; buf3 -> Common_RAM+19
-        movlb   0x0
-        ; Call the legacy post-process.  flow_ir_rc5_decode_025E sets
-        ; up its own FSR0 = 0x010 (the buffer base, which we just
-        ; populated) and clears its scratch (Common_RAM+5/+20/+14/+13/
-        ; +12) at entry.  No further RB5 reads -- pure post-process
-        ; via control_core_service_02EE for Manchester pair validation
-        ; (codex-confirmed asm:600,609,632,657).  On return, W holds
-        ; decoded command and (Common_RAM+13) holds decoded address;
-        ; mirrors the legacy ir_rc5_decode return contract used by
-        ; the original ISR caller at asm:828-830.
-        call    flow_ir_rc5_decode_025E, 0x0
-        movwf   ir_decoded_cmd, A
-        movff   (Common_RAM + 13), ir_decoded_addr
-        return  0x0
-
 
 v171_service_rx_frame_gap:
         ; Foreground parser-stall guard.  Keep the parser front-end untouched
@@ -7088,7 +6882,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x31, 0x00 ; "Firmware V1.71"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x36, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x38, 0x00 ; "Rev x36 20260528"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x37, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x39, 0x00 ; "Rev x37 20260529"
 
 ; --- Canonical V1.71 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7096,8 +6890,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x31, 0x36                    ; V1.71 + monotonic release revision
-        db      0x20, 0x26, 0x05, 0x28                    ; build date 20260528 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x31, 0x37                    ; V1.71 + monotonic release revision
+        db      0x20, 0x26, 0x05, 0x29                    ; build date 20260529 (BCD YYYYMMDD)
 
 ; --- V1.71 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

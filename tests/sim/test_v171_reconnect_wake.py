@@ -26,6 +26,7 @@ Two V1.62b behaviors are inlined into V1.71 and verified here:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,18 @@ def _run_with_rust(hex_path: Path, body) -> None:
     body(chain)
 
 
+def _asm_without_comments(text: str) -> str:
+    return "\n".join(line.split(";", 1)[0] for line in text.splitlines())
+
+
+def _source_between(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.find(start_marker)
+    assert start >= 0, f"{start_marker!r} missing"
+    end = text.find(end_marker, start + len(start_marker))
+    assert end > start, f"{end_marker!r} missing after {start_marker!r}"
+    return text[start:end]
+
+
 @pytest.fixture(scope="module")
 def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     tmp = tmp_path_factory.mktemp("v171_reconnect")
@@ -77,6 +90,58 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     hex_out = tmp / "dlcp_control_v171.hex"
     assemble_v17(asm, hex_out)
     return hex_out
+
+
+@pytest.mark.dual_supported
+def test_v171_rx_parser_source_keeps_oerr_drain_and_gap_guard() -> None:
+    """Pin the current C4/C5 retirement shape in source.
+
+    This is deliberately structural: it catches the bug class even if
+    comments are later rewritten.  The behavioral OERR tests below prove
+    the latch clears and parsing continues.
+    """
+    text = V171_CONTROL_ASM.read_text(encoding="utf-8")
+    for stale in (
+        "rx_parser_entry  *** BUG C4 / C5 ***",
+        "does NOT drain RCREG",
+        "DOES NOT READ RCREG TWICE",
+        "There is no per-frame timeout that resets 0x0A6 to 0",
+    ):
+        assert stale not in text, (
+            f"V1.71 source still contains stale retired-C4/C5 wording: {stale!r}"
+        )
+
+    oerr_body = _asm_without_comments(
+        _source_between(text, "rx_parser_entry:", "flow_rx_parser_entry_0456:")
+    )
+    assert re.search(r"\bbtfss\s+RCSTA,\s*OERR,\s*A\b", oerr_body), (
+        "rx_parser_entry must test RCSTA.OERR at parser entry"
+    )
+    assert re.search(r"\bbcf\s+RCSTA,\s*CREN,\s*A\b", oerr_body), (
+        "OERR recovery must disable CREN before draining RCREG"
+    )
+    assert len(re.findall(r"\bmovf\s+RCREG,\s*W,\s*A\b", oerr_body)) >= 2, (
+        "OERR recovery must drain the 2-deep EUSART FIFO with two RCREG reads"
+    )
+    assert re.search(r"\bbsf\s+RCSTA,\s*CREN,\s*A\b", oerr_body), (
+        "OERR recovery must re-enable CREN after draining RCREG"
+    )
+    for symbol in (
+        "tx_ring_rd",
+        "tx_ring_wr",
+        "rx_ring_rd",
+        "rx_ring_wr",
+        "rx_frame_position",
+    ):
+        assert re.search(rf"\bclrf\s+{symbol}\b", oerr_body), (
+            f"OERR recovery must clear {symbol}"
+        )
+
+    code = _asm_without_comments(text)
+    assert len(re.findall(r"\bcall\s+v171_service_rx_frame_gap,\s*0x0\b", code)) >= 4, (
+        "foreground loops must keep calling v171_service_rx_frame_gap so "
+        "partial frames cannot remain stuck forever"
+    )
 
 
 # ---------------------------------------------------------------------------

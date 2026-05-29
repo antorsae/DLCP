@@ -8809,8 +8809,8 @@ eeprom_read_byte:
 ;       - on a second timeout: goto hard_reset (panic)
 ;   • Original stock body had an unbounded `btfss TXSTA, TRMT` spin at
 ;     label_605, the entire bus would lock if a hardware UART glitch left
-;     TRMT clear forever. The V3.1 escalation matches the volume_dsp_write
-;     pattern (retry, then escalate, then panic).
+;     TRMT clear forever. UART's terminal recovery is deliberately a panic
+;     reset; volume_dsp_write now stays in its bounded DSP-fault path.
 ; ---------------------------------------------------------------------------
 uart_tx_byte_blocking:
     movff       WREG, ram_0x003
@@ -8916,9 +8916,13 @@ main_processing_loop:
 ; Top-of-app panic endpoint. Disables all interrupts (clrf INTCON), pads
 ; with two NOP-equivalent words, executes the PIC18 RESET instruction,
 ; then pads again. Reached from uart_tx_byte_blocking when even the
-; reconfigured EUSART cannot drain TRMT (two strikes), and from the V3.1
-; volume_dsp_write final-escalation path when retries + bus-clear + ping
-; all fail.
+; reconfigured EUSART cannot drain TRMT (two strikes), and from the
+; flash-entry quiet-shutdown terminator after the EEPROM bootloader marker
+; is committed and the outputs have been muted/gated down.
+;
+; V3.2 volume_dsp_write does not enter hard_reset.  Its retry-exhaustion
+; path performs bounded bus-clear/ping recovery, raises BF/08 DSP fault
+; telemetry, clears the dirty bit, and returns to the foreground loop.
 ;
 ; On reset, PC -> 0x0000 (bootloader), which jumps back to 0x1000 unless
 ; the bootloader-entry combo (UP+DOWN+!SELECT for ~5 s) is held on

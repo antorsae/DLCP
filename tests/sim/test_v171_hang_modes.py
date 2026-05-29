@@ -25,18 +25,18 @@ by design and are NOT regressions:
     ``diag_send_burst_xx`` which loops to emit 7 or 4 BF/2N reply
     frames; that lives in dlcp_main_v32.asm, not here.)
 
-The two surviving hang classes:
+The currently pinned hang classes:
 
   1. The 48-byte RX software ring at `rx_ring_base` (0x066..0x095)
      has no unread-data guard.  An RX storm while the main loop is in
-     a slow path (LCD repaint, EEPROM write, IR decode) can wrap the
-     ring before the parser drains it, overwriting in-flight route /
-     cmd / data bytes.
+     a slow path (LCD repaint or EEPROM write) can wrap the ring before
+     the parser drains it, overwriting in-flight route / cmd / data bytes.
 
-  2. The parser has no frame-gap timeout.  A single dropped or
-     corrupted byte mid-frame leaves `rx_frame_position` stuck non-
-     zero until a future Bx route byte happens to arrive AND the
-     parser's modulo state happens to align.
+  2. The historical parser frame-gap class: a single dropped or
+     corrupted byte mid-frame used to leave `rx_frame_position` stuck
+     non-zero until a future Bx route byte happened to arrive AND the
+     parser's modulo state happened to align.  V1.71 now wires
+     `v171_service_rx_frame_gap`; this file pins the fix.
 
 Tests are structural source audits (Tier A) -- behavioural Tier C
 gates against the rust sim are reserved for follow-up commits.
@@ -179,24 +179,24 @@ def test_v171_diag_query_helper_is_a_reference_implementation_of_check_pattern()
     )
 
 
-def test_v171_ram_inc_defines_ir_defer_and_parser_gap_slots() -> None:
-    """The first-pass hardening plan uses the remaining 0x0AA / 0x0AC gap
-    for the new IR-defer latch and parser frame-gap timeout byte.
+def test_v171_ram_inc_defines_parser_gap_and_removes_ir_defer_slot() -> None:
+    """The parser frame-gap timeout owns 0x0AC; the retired IR-defer latch
+    must stay deleted.
 
     Pin the slots here so the asm and tests move in lockstep and we do
     not silently collide with the V1.71 scratch/cache layout.
     """
     text = _read_v171_ram_inc()
-    assert _equ_address(text, "v171_ir_decode_pending") == 0x0AA, (
-        "v171_ir_decode_pending should live at 0x0AA"
-    )
     assert _equ_address(text, "v171_rx_frame_gap_timeout") == 0x0AC, (
         "v171_rx_frame_gap_timeout should live at 0x0AC"
+    )
+    assert _equ_address(text, "v171_ir_decode_pending") is None, (
+        "retired deferred-IR latch must not be reintroduced at 0x0AA"
     )
 
 
 def test_v171_new_bank0_state_cells_are_not_accessed_via_access_bank() -> None:
-    """0x0AA / 0x0AC live in bank-0 GPR space, not the PIC18 access bank.
+    """0x0AC lives in bank-0 GPR space, not the PIC18 access bank.
 
     Using `, A` on these symbols silently hits the wrong physical window
     (high access-bank / SFR space) and can destabilize unrelated runtime
@@ -207,9 +207,9 @@ def test_v171_new_bank0_state_cells_are_not_accessed_via_access_bank() -> None:
     offenders: list[tuple[int, str]] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         code = re.sub(r";.*$", "", raw)
-        if "v171_ir_decode_pending" not in code and "v171_rx_frame_gap_timeout" not in code:
+        if "v171_rx_frame_gap_timeout" not in code:
             continue
-        if re.search(r"\b(v171_ir_decode_pending|v171_rx_frame_gap_timeout)\b.*,\s*A\b", code):
+        if re.search(r"\bv171_rx_frame_gap_timeout\b.*,\s*A\b", code):
             offenders.append((lineno, raw.rstrip()))
 
     assert not offenders, (
@@ -217,10 +217,12 @@ def test_v171_new_bank0_state_cells_are_not_accessed_via_access_bank() -> None:
         "offending site(s):\n"
         + "\n".join(f"  line {lineno}: {raw}" for lineno, raw in offenders)
     )
-    for name in ("v171_ir_decode_pending", "v171_rx_frame_gap_timeout"):
-        assert re.search(rf"\b{name}\b.*\bBANKED\b", text), (
-            f"{name} should be accessed via explicit BANKED operands"
-        )
+    assert re.search(r"\bv171_rx_frame_gap_timeout\b.*\bBANKED\b", text), (
+        "v171_rx_frame_gap_timeout should be accessed via explicit BANKED operands"
+    )
+    assert "v171_ir_decode_pending" not in text, (
+        "retired deferred-IR latch should be absent from the CONTROL source"
+    )
 
 
 def test_v171_preset_persist_skips_eeprom_write_after_tx_abort() -> None:
@@ -248,27 +250,20 @@ def test_v171_preset_persist_skips_eeprom_write_after_tx_abort() -> None:
 def test_v171_ir_decode_uses_hardware_validated_stock_isr_path() -> None:
     """BUG-IR-01 hardware fallback: use the stock V1.6b ISR RC5 path.
 
-    Pre-M3 shape (deferred design, broken on real hardware -- see
-    task #151): ISR latched ``v171_ir_decode_pending`` and a
-    foreground service called ``ir_rc5_decode`` from
-    ``display_loop_iteration``.  This caused the phase-miss bug
-    because the foreground entered the decoder at an arbitrary
-    phase relative to RB5 transitions.
-
-    M3 Timer1 shape: ISR latched falling-edge with a Timer1 arm and
-    samples RB5 in ``v171_ir_sample_handler``.  That passed rust-sim
-    pulse tests but decoded no real Flipper IR on 2026-05-09 hardware.
+    Broken historical shape (task #151): ISR latched a pending byte and
+    foreground later called ``ir_rc5_decode`` from ``display_loop_iteration``.
+    This caused the phase-miss bug because the foreground entered the decoder
+    at an arbitrary phase relative to RB5 transitions.
 
     Current required shape: the RBIF ISR calls the stock ``ir_rc5_decode``
     body directly, stores cmd/address, and clears IR_ARMED exactly like
-    V1.6b.  This intentionally accepts the short ISR stall until a
-    hardware-validated non-blocking receiver exists.
+    V1.6b.  The failed Timer1/deferred receiver bodies are deleted so a
+    future edit cannot accidentally arm TMR1IE without adding a handler.
     """
     text = _read_v171_source()
     isr_block = _label_block(text, "isr_entry", "rx_parser_entry")
     assert "rcall   ir_rc5_decode" in isr_block, (
-        "V1.71 must use the stock-compatible in-ISR RC5 decoder until "
-        "the Timer1 receiver is proven on real hardware"
+        "V1.71 must use the stock-compatible in-ISR RC5 decoder"
     )
     assert "movwf   ir_decoded_cmd" in isr_block, (
         "ISR must store the decoded RC5 command like stock V1.6b"
@@ -280,30 +275,29 @@ def test_v171_ir_decode_uses_hardware_validated_stock_isr_path() -> None:
         "ISR must clear IR_ARMED after a decode, leaving dispatch to the "
         "normal foreground path"
     )
-    # The broken foreground-deferred latch must remain absent.
-    assert not re.search(r"setf\s+v171_ir_decode_pending\b", isr_block), (
-        "ISR must not reintroduce the foreground-deferred decode latch"
+    retired_symbols = (
+        "v171_ir_decode_pending",
+        "v171_service_pending_ir_decode",
+        "v171_ir_start_decode",
+        "v171_ir_sample_handler",
+        "v171_ir_decode_done",
+        "v171_ir_post_process",
     )
-    assert not re.search(r"call\s+v171_ir_start_decode\b", isr_block), (
-        "Timer1 IR receiver is disabled for BUG-IR-01 until it is "
-        "hardware validated"
-    )
-    assert not re.search(r"call\s+v171_ir_sample_handler\b", isr_block), (
-        "Timer1 IR sample handler must not be in the live ISR path"
-    )
+    for symbol in retired_symbols:
+        assert symbol not in text, f"retired IR symbol still present: {symbol}"
 
 
 def test_v171_display_loop_no_longer_calls_legacy_ir_service() -> None:
-    """``display_loop_iteration`` must NOT call the broken foreground
-    ``v171_service_pending_ir_decode`` service.  IR decoding runs from
-    the RBIF ISR stock path until the non-blocking receiver is hardware
-    validated.
+    """``display_loop_iteration`` must NOT call a foreground IR service.
+
+    IR decoding runs from the RBIF ISR stock path; the old foreground
+    service has been deleted, not just unwired.
     """
     text = _read_v171_source()
     display_loop = _label_block(text, "display_loop_iteration", "control_core_service_0DCE")
+    assert "v171_service_pending_ir_decode" not in text
     assert not re.search(r"call\s+v171_service_pending_ir_decode\b", display_loop), (
-        "display_loop_iteration must NOT call the legacy foreground "
-        "IR service (post-M3 the deferred-decode design is removed)"
+        "display_loop_iteration must NOT call a foreground IR service"
     )
 
 
@@ -466,10 +460,8 @@ def test_v171_bf2x_case_check_resets_bsr_before_parser_tail_exit() -> None:
 
 def test_v171_rx_parser_has_frame_gap_timeout() -> None:
     """SHIPPING-CONFIDENCE GATE: rx_parser_entry advances
-    rx_frame_position on each route/cmd/data byte but has no timeout
-    that would reset position to 0 if a frame stalls mid-way.  A
-    single dropped or corrupted byte leaves the parser stuck mid-frame
-    until pure luck re-syncs.
+    rx_frame_position on each route/cmd/data byte and must have a
+    timeout path that resets position to 0 if a frame stalls mid-way.
 
     Detection is naming-agnostic (codex MEDIUM fix vs 47a2db3): the
     prior heuristic only matched `decfsz` on cells named

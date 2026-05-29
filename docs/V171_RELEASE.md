@@ -53,13 +53,11 @@ hardware-realistic not-applicable until PIC18F2455 RA1 analog masking is
 modeled.  The bug-ledger audit and live-rig evidence remain separate final
 release requirements.
 
-2026-05-09 IR note: V1.71 rev `0x1A` uses the stock-compatible V1.6b
-in-ISR RC5 decoder path again.  The Timer1 non-blocking receiver passed
-rust-sim pulse tests but decoded no real Flipper IR in the earlier hardware
-session; keep that Timer1 path out of the live ISR path until a
-hardware-validated replacement exists.  Later operator testing confirmed real
-IR works on both stock CONTROL V1.6b and CONTROL V1.71 with the
-stock-compatible path.
+2026-05-29 IR note: V1.71 uses the stock-compatible V1.6b in-ISR RC5 decoder
+path.  The failed Timer1/deferred receiver bodies and RAM equates were removed
+so they cannot be accidentally re-wired.  Operator testing confirmed real IR
+works on both stock CONTROL V1.6b and CONTROL V1.71 with the stock-compatible
+path.
 
 ## What's New vs V1.64b
 
