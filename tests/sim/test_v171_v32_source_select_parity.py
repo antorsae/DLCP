@@ -17,6 +17,7 @@ from dlcp_fw.paths import (
     STOCK_MAIN_COMBINED_HEX,
     V171_CONTROL_HEX,
     V32_MAIN_ASM,
+    V33_MAIN_ASM,
 )
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
@@ -97,11 +98,15 @@ class FrontPanelResult:
     route_snapshot: tuple[RouteSnapshot, RouteSnapshot]
 
 
-@pytest.fixture(scope="module")
-def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    tmp = tmp_path_factory.mktemp("v171_v32_source_select_parity")
-    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
-    assemble_v30(V32_MAIN_ASM, hex_out)
+@pytest.fixture(scope="module", params=[("v32", V32_MAIN_ASM), ("v33", V33_MAIN_ASM)])
+def v32_hex(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    release_id, asm_path = request.param
+    tmp = tmp_path_factory.mktemp(f"v171_{release_id}_source_select_parity")
+    hex_out = tmp / f"DLCP_Firmware_{release_id.upper()}.hex"
+    assemble_v30(asm_path, hex_out)
     return hex_out
 
 

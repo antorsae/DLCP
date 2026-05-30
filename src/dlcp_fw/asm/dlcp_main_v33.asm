@@ -227,24 +227,15 @@ preset_job_tbl_hi       EQU  0x2E4   ; preset window 0x5600..0x5FFF. flash_read 
 ;   counter == 0x0F →  done                              (saturate)
 ;   counter <  0x0F →  incf counter                      (increment)
 ;
-; LOCAL labels are required so each macro expansion gets unique label
-; names; the previous `bra $+4` style is replaced because the new shape
-; has two forward branches and a hand-counted offset is brittle.
+; Size note (V3.3): the clamp/increment body lives in a shared helper.
+; The macro still asserts BSR=2 at each call site (documented side
+; effect) and deliberately clobbers FSR0 to point at the target cell.
 ;
 ; Usage:    diag_inc_sat   diag_i
 diag_inc_sat MACRO counter
-    LOCAL   _check_low, _done
     movlb   0x02                        ; V3.2 Layer 5 diag block in BANK 2
-    movlw   0x0F
-    cpfsgt  counter, BANKED             ; skip if counter > 0x0F
-    bra     _check_low
-    movwf   counter, BANKED             ; counter > 0x0F: clamp to 0x0F (W=0x0F)
-    bra     _done
-_check_low:
-    cpfslt  counter, BANKED             ; skip if counter < 0x0F
-    bra     _done                       ; counter == 0x0F: saturate (no inc)
-    incf    counter, F, BANKED          ; counter < 0x0F: increment
-_done:
+    lfsr    FSR0, counter
+    rcall   diag_inc_sat_fsr0
     ENDM
 
 ; ---------------------------------------------------------------------------
@@ -2540,7 +2531,7 @@ flow_main_core_service_1e88_20c2:
     clrf        ram_0x008, ACCESS
     movlw       0x82
     movwf       ram_0x007, ACCESS
-    movlw       0x72                            ; V3.3_RUNTIME_EEPROM_REV
+    movlw       0x73                            ; V3.3_RUNTIME_EEPROM_REV
     movwf       ram_0x009, ACCESS
     goto        main_flash_service_46de
 
@@ -3432,123 +3423,35 @@ flow_main_i2c_service_27f0_2800:
     addlw       0x08
     movwf       ram_0x0BE, BANKED
     bra         flow_main_i2c_service_27f0_28ce
-flow_main_i2c_service_27f0_2808:
-    clrf        ram_0x093, BANKED
-    bra         flow_main_i2c_service_27f0_28ce
-flow_main_i2c_service_27f0_280c:
-    movlw       0x01
-    movwf       ram_0x093, BANKED
-    movf        ram_0x05F, W, ACCESS
-    bz          flow_main_i2c_service_27f0_28ce
-    movlw       0x05
-    bra         flow_main_i2c_service_27f0_28a6
-flow_main_i2c_service_27f0_2818:
-    movlw       0x02
-    movwf       ram_0x093, BANKED
-    decf        ram_0x05F, W, ACCESS
-    bnz         flow_main_i2c_service_27f0_2824
-    movlw       0x01
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_2824:
-    movlw       0x01
-    cpfsgt      ram_0x05F, ACCESS
-    bra         flow_main_i2c_service_27f0_28ce
-    movlw       0x06
-    bra         flow_main_i2c_service_27f0_28a6
-flow_main_i2c_service_27f0_282e:
-    movlw       0x03
-    movwf       ram_0x093, BANKED
-    decf        ram_0x05F, W, ACCESS
-    bnz         flow_main_i2c_service_27f0_283a
-    movlw       0x02
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_283a:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x02
-    bnz         flow_main_i2c_service_27f0_2844
-    movlw       0x01
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_2844:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x03
-    bnz         flow_main_i2c_service_27f0_28ce
-    movlw       0x07
-    bra         flow_main_i2c_service_27f0_28a6
-flow_main_i2c_service_27f0_284e:
-    movlw       0x04
-    movwf       ram_0x093, BANKED
-    decf        ram_0x05F, W, ACCESS
-    bnz         flow_main_i2c_service_27f0_285a
-    movlw       0x03
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_285a:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x02
-    bnz         flow_main_i2c_service_27f0_2864
-    movlw       0x02
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_2864:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x03
-    bnz         flow_main_i2c_service_27f0_28ce
-    movlw       0x01
-    bra         flow_main_i2c_service_27f0_28a6
-flow_main_i2c_service_27f0_286e:
-    decf        ram_0x05F, W, ACCESS
-    bnz         flow_main_i2c_service_27f0_2876
-    movlw       0x04
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_2876:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x02
-    bnz         flow_main_i2c_service_27f0_2880
-    movlw       0x03
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_2880:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x03
-    bnz         flow_main_i2c_service_27f0_28ce
-    movlw       0x02
-    bra         flow_main_i2c_service_27f0_28a6
-flow_main_i2c_service_27f0_288a:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x02
-    bnz         flow_main_i2c_service_27f0_2894
-    movlw       0x04
-    movwf       ram_0x093, BANKED
-flow_main_i2c_service_27f0_2894:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x03
-    bnz         flow_main_i2c_service_27f0_28ce
-    movlw       0x03
-    bra         flow_main_i2c_service_27f0_28a6
-flow_main_i2c_service_27f0_289e:
-    movf        ram_0x05F, W, ACCESS
-    xorlw       0x03
-    bnz         flow_main_i2c_service_27f0_28ce
-    movlw       0x04
-flow_main_i2c_service_27f0_28a6:
-    movwf       ram_0x093, BANKED
-    bra         flow_main_i2c_service_27f0_28ce
 flow_main_i2c_service_27f0_28aa:
     movf        input_select, W, BANKED
     bz          flow_main_i2c_service_27f0_2800
-    xorlw       0x01
-    bz          flow_main_i2c_service_27f0_2808
-    xorlw       0x03
-    bz          flow_main_i2c_service_27f0_280c
-    xorlw       0x01
-    bz          flow_main_i2c_service_27f0_2818
-    xorlw       0x07
-    bz          flow_main_i2c_service_27f0_282e
-    xorlw       0x01
-    bz          flow_main_i2c_service_27f0_284e
-    xorlw       0x03
-    bz          flow_main_i2c_service_27f0_286e
-    xorlw       0x01
-    bz          flow_main_i2c_service_27f0_288a
-    xorlw       0x0F
-    bz          flow_main_i2c_service_27f0_289e
+    movlw       0x09
+    cpfslt      input_select, BANKED       ; valid fixed inputs are 1..8
+    bra         flow_main_i2c_service_27f0_28ce
+    movf        input_select, W, BANKED
+    addlw       0xFF                       ; W = input_select - 1
+    movwf       ram_0x003, ACCESS          ; table column
+    movlw       0x03
+    cpfsgt      ram_0x05F, ACCESS          ; status > 3 uses overflow row
+    bra         flow_main_i2c_service_27f0_route_status_ok
+    movlw       0x04
+    bra         flow_main_i2c_service_27f0_route_status_ready
+flow_main_i2c_service_27f0_route_status_ok:
+    movf        ram_0x05F, W, ACCESS
+flow_main_i2c_service_27f0_route_status_ready:
+    movwf       ram_0x004, ACCESS
+    rlncf       ram_0x004, F, ACCESS
+    rlncf       ram_0x004, F, ACCESS
+    rlncf       ram_0x004, W, ACCESS       ; W = row * 8
+    addwf       ram_0x003, W, ACCESS       ; W = row * 8 + column
+    addlw       LOW(main_i2c_service_27f0_route_table)
+    movwf       TBLPTRL, ACCESS
+    movlw       HIGH(main_i2c_service_27f0_route_table)
+    movwf       TBLPTRH, ACCESS
+    clrf        TBLPTRU, ACCESS
+    tblrd*
+    movff       TABLAT, ram_0x093
 flow_main_i2c_service_27f0_28ce:
     tstfsz      input_select, BANKED
     bra         flow_main_i2c_service_27f0_2902
@@ -3672,6 +3575,22 @@ flow_main_i2c_service_27f0_297a:
     incf        ram_0x0BB, F, BANKED
 flow_main_i2c_service_27f0_297c:
     return      0
+
+
+; ---------------------------------------------------------------------------
+; Data: main_i2c_service_27f0_route_table  (status row × input column)
+; ---------------------------------------------------------------------------
+; Rows are SRC status 0..3 plus an overflow row for impossible status bytes.
+; Columns are fixed input_select 1..8. Values are the same intermediate
+; ram_0x093 route requests produced by the old branch ladder before the
+; existing PORTC.0 route-2 fallback below `flow_..._295c` runs.
+; ---------------------------------------------------------------------------
+main_i2c_service_27f0_route_table:
+    db  0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00
+    db  0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00
+    db  0x00, 0x05, 0x06, 0x01, 0x02, 0x03, 0x04, 0x00
+    db  0x00, 0x05, 0x06, 0x07, 0x01, 0x02, 0x03, 0x04
+    db  0x00, 0x05, 0x06, 0x03, 0x04, 0x00, 0x00, 0x00
 
 
 ; ---------------------------------------------------------------------------
@@ -4293,20 +4212,35 @@ adc_boot_gate_exit:
 ; writes; the leak is in the wrapper which can return without restoring GIE
 ; on certain control-flow paths.
 ; ---------------------------------------------------------------------------
-flash_write:
-    btfss       active_flags, 2, ACCESS     ; preset B active?
-    bra         flash_write_stock
+;
+; Helper: preset_b_remap_start_addr (W05)
+; Shared preset-B start-address remap for flash_read / flash_write /
+; flash_erase.  When active_flags.bit2 is set and ram_0x003:006 points
+; into logical preset-A flash 0x56xx..0x5Fxx, subtract 0x0A from
+; ram_0x004 so the operation lands in the physical preset-B table at
+; 0x4Cxx..0x55xx.  The _if_b entry is for callers that have already tested
+; active_flags.bit2 and still need to continue into a second endpoint check.
+; ---------------------------------------------------------------------------
+preset_b_remap_start_addr:
+    btfss       active_flags, 2, ACCESS
+    return      0
+preset_b_remap_start_addr_if_b:
     movf        ram_0x006, W, ACCESS
     iorwf       ram_0x005, W, ACCESS
-    bnz         flash_write_stock
+    bnz         preset_b_remap_start_addr_return
     movlw       0x56
     subwf       ram_0x004, W, ACCESS
-    bnc         flash_write_stock
+    bnc         preset_b_remap_start_addr_return
     movlw       0x60
     subwf       ram_0x004, W, ACCESS
-    bc          flash_write_stock
+    bc          preset_b_remap_start_addr_return
     movlw       0x0A
     subwf       ram_0x004, F, ACCESS
+preset_b_remap_start_addr_return:
+    return      0
+
+flash_write:
+    call        preset_b_remap_start_addr, 0x0
 flash_write_stock:
     clrf        ram_0x010, ACCESS
     movff       ram_0x003, ram_0x014
@@ -5651,6 +5585,27 @@ main_flash_service_3810:
 ;              (channel sync), some legacy reconnect/wake paths.
 ; ---------------------------------------------------------------------------
 main_i2c_service_381c:
+    rcall       preset_table_apply_entry_core
+    bnc         flow_main_i2c_service_381c_38a0
+    btfsc       ram_0x00D, 0, ACCESS
+    bra         main_i2c_service_381c_pen_timeout
+    bra         main_i2c_service_381c_timeout
+flow_main_i2c_service_381c_38a0:
+    return      0
+main_i2c_service_381c_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    return      0
+main_i2c_service_381c_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
+    return      0
+
+; Shared core for legacy blocking applies and the V3.2 async preset job.
+; in : ram_0x013/014 = table-entry flash address.
+; out: C=0 success or sentinel no-op; C=1 bounded wait timeout.
+;      ram_0x00D.bit0 set only for PEN timeout so legacy callers can keep
+;      their separate PEN recovery path.
+preset_table_apply_entry_core:
+    clrf        ram_0x00D, ACCESS
     movff       ram_0x013, ram_0x003                ; copy 16-bit flash addr (caller staged)
     movff       ram_0x014, ram_0x004
     clrf        ram_0x005, ACCESS                   ; high byte and TBLPTRU = 0
@@ -5663,7 +5618,7 @@ main_i2c_service_381c:
     movff       ram_0x019, ram_0x031                ; ram_0x031 = byte count
     movlw       0x19                                ; >= 25 -> end-of-table sentinel
     subwf       ram_0x031, W, ACCESS
-    bc          flow_main_i2c_service_381c_38a0
+    bc          preset_table_apply_entry_done
     movlw       0x04                                ; advance past header
     addwf       ram_0x013, W, ACCESS
     movwf       ram_0x015, ACCESS
@@ -5676,39 +5631,38 @@ main_i2c_service_381c:
     clrf        ram_0x006, ACCESS
     movff       ram_0x031, ram_0x007                ; second read = data block
     clrf        ram_0x008, ACCESS
-    clrf        ram_0x00A, ACCESS
-    movlw       0x17                                ; FSR2 dest = 0x0017 (overlay)
-    movwf       ram_0x009, ACCESS
-    rcall       flash_read                          ; W02-E07: back in range after W01-R01 compaction
+    call        flash_read_fsr2_0017, 0x0
     bsf         SSPCON2, 0, ACCESS                  ; SEN — START
     call        wait_sen_bounded, 0x0
-    bc          main_i2c_service_381c_timeout
+    bc          preset_table_apply_entry_timeout
     movlw       0x68                                ; TAS3108 write address
     rcall       i2c_byte_tx
     movf        ram_0x02F, W, ACCESS                ; reg byte
     rcall       i2c_byte_tx
     clrf        ram_0x030, ACCESS
-    bra         flow_main_i2c_service_381c_3894
-flow_main_i2c_service_381c_3884:
+    bra         preset_table_apply_entry_loop_check
+preset_table_apply_entry_loop:
     movf        ram_0x030, W, ACCESS
     addlw       0x17                                ; data buffer at 0x0017+i
     call        fsr2_page0_read_w, 0x0               ; W04-E03
     rcall       i2c_byte_tx
     incf        ram_0x030, F, ACCESS
-flow_main_i2c_service_381c_3894:
+preset_table_apply_entry_loop_check:
     movf        ram_0x031, W, ACCESS
     subwf       ram_0x030, W, ACCESS
-    bnc         flow_main_i2c_service_381c_3884
+    bnc         preset_table_apply_entry_loop
     bsf         SSPCON2, 2, ACCESS                  ; PEN — STOP
     call        wait_pen_bounded, 0x0
-    bc          main_i2c_service_381c_pen_timeout
-flow_main_i2c_service_381c_38a0:
+    bc          preset_table_apply_entry_pen_timeout
+preset_table_apply_entry_done:
+    bcf         STATUS, 0, ACCESS
     return      0
-main_i2c_service_381c_timeout:
-    call        i2c_timeout_recover_advertise, 0x0
+preset_table_apply_entry_timeout:
+    bsf         STATUS, 0, ACCESS
     return      0
-main_i2c_service_381c_pen_timeout:
-    call        i2c_pen_timeout_recover_advertise, 0x0
+preset_table_apply_entry_pen_timeout:
+    bsf         ram_0x00D, 0, ACCESS
+    bsf         STATUS, 0, ACCESS
     return      0
 
 
@@ -6567,17 +6521,7 @@ flash_erase:
     btfss       active_flags, 2, ACCESS     ; preset B active?
     bra         flash_erase_stock
     ; Remap start address (ram_0x004 = TBLPTRH)
-    movf        ram_0x006, W, ACCESS
-    iorwf       ram_0x005, W, ACCESS
-    bnz         flash_erase_remap_end
-    movlw       0x56
-    subwf       ram_0x004, W, ACCESS
-    bnc         flash_erase_remap_end
-    movlw       0x60
-    subwf       ram_0x004, W, ACCESS
-    bc          flash_erase_remap_end
-    movlw       0x0A
-    subwf       ram_0x004, F, ACCESS
+    call        preset_b_remap_start_addr_if_b, 0x0
 flash_erase_remap_end:
     ; Remap end address (ram_0x008 = end TBLPTRH)
     movf        ram_0x00A, W, ACCESS
@@ -6987,19 +6931,7 @@ flash_read_fsr2_0017:
     movwf       ram_0x009, ACCESS
     ; fall through into flash_read
 flash_read:
-    btfss       active_flags, 2, ACCESS     ; preset B active?
-    bra         flash_read_stock
-    movf        ram_0x006, W, ACCESS        ; check TBLPTRU = 0
-    iorwf       ram_0x005, W, ACCESS
-    bnz         flash_read_stock
-    movlw       0x56
-    subwf       ram_0x004, W, ACCESS        ; TBLPTRH >= 0x56?
-    bnc         flash_read_stock
-    movlw       0x60
-    subwf       ram_0x004, W, ACCESS        ; TBLPTRH < 0x60?
-    bc          flash_read_stock
-    movlw       0x0A
-    subwf       ram_0x004, F, ACCESS        ; remap: 0x56->0x4C etc.
+    call        preset_b_remap_start_addr, 0x0
 flash_read_stock:
     movff       ram_0x003, ram_0x00B
     movff       ram_0x004, ram_0x00C
@@ -7528,10 +7460,10 @@ i2c_tas3108_reg1f_write:
 i2c_reg1f_done:
     return      0
 i2c_reg1f_timeout:
-    call        i2c_timeout_recover_advertise, 0x0
+    rcall       i2c_timeout_recover_advertise
     return      0
 i2c_reg1f_pen_timeout:
-    call        i2c_pen_timeout_recover_advertise, 0x0
+    rcall       i2c_pen_timeout_recover_advertise
     return      0
 
 
@@ -7868,10 +7800,10 @@ i2c_tas3108_coeff_write:
 coeff_write_pen_done:
     return      0
 coeff_write_timeout:
-    call        i2c_timeout_recover_advertise, 0x0
+    rcall       i2c_timeout_recover_advertise
     return      0
 coeff_write_pen_timeout:
-    call        i2c_pen_timeout_recover_advertise, 0x0
+    rcall       i2c_pen_timeout_recover_advertise
     return      0
 
 
@@ -7912,6 +7844,26 @@ flow_main_core_service_4516_4534:
     xorlw       0x01
     bz          flow_main_core_service_4516_452c
 flow_main_core_service_4516_4544:
+    return      0
+
+; ---------------------------------------------------------------------------
+; diag_inc_sat_fsr0 — shared Layer 5 saturating counter increment
+; ---------------------------------------------------------------------------
+; in : FSR0 points at one byte in the diag counter block; BSR already 2
+; out: W=0x0F, BSR unchanged, target clamped/saturated/incremented:
+;      >0x0F -> 0x0F, ==0x0F unchanged, <0x0F incremented.
+; note: uses INDF0/ACCESS so the target is bank-agnostic after FSR0 setup.
+; ---------------------------------------------------------------------------
+diag_inc_sat_fsr0:
+    movlw       0x0F
+    cpfsgt      INDF0, ACCESS             ; skip if counter > 0x0F
+    bra         diag_inc_sat_check_low
+    movwf       INDF0, ACCESS             ; counter > 0x0F: clamp to 0x0F
+    return      0
+diag_inc_sat_check_low:
+    cpfslt      INDF0, ACCESS             ; skip if counter < 0x0F
+    return      0                         ; counter == 0x0F: saturate
+    incf        INDF0, F, ACCESS          ; counter < 0x0F: increment
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -8236,12 +8188,12 @@ main_i2c_service_464c:
     btfsc       STATUS, 2, ACCESS
 flow_main_i2c_service_464c_4668:
     bsf         SSPCON2, 3, ACCESS
-    call        wait_bf_set_bounded, 0x0
+    rcall       wait_bf_set_bounded
     bc          main_i2c_service_464c_timeout
     movf        SSPBUF, W, ACCESS
     return      0
 main_i2c_service_464c_timeout:
-    call        i2c_timeout_recover_advertise, 0x0
+    rcall       i2c_timeout_recover_advertise
     clrf        WREG, ACCESS
     return      0
 
@@ -8336,10 +8288,10 @@ i2c_secondary_dev_write:
 i2c_secondary_done:
     return      0
 i2c_secondary_timeout:
-    call        i2c_timeout_recover_advertise, 0x0
+    rcall       i2c_timeout_recover_advertise
     return      0
 i2c_secondary_pen_timeout:
-    call        i2c_pen_timeout_recover_advertise, 0x0
+    rcall       i2c_pen_timeout_recover_advertise
     return      0
 
 
@@ -8881,7 +8833,7 @@ i2c_wait_bus_idle:
     btfsc       SSPCON2, 2, ACCESS
     bra         i2c_wait_bus_idle_seed
     bcf         i2c_recover_flags, 0, BANKED
-    call        i2c_bus_clear, 0x0
+    rcall       i2c_bus_clear
 i2c_wait_bus_idle_seed:
     rcall       wait_seed
 i2c_wait_bus_idle_loop:
@@ -8896,7 +8848,7 @@ i2c_wait_bus_idle_loop:
 i2c_wait_bus_idle_busy:
     rcall       wait_tick
     bnc         i2c_wait_bus_idle_loop
-    call        i2c_timeout_recover_advertise, 0x0
+    rcall       i2c_timeout_recover_advertise
     retlw       0x1F
 flow_i2c_wait_bus_idle_48c6:
     call        main_i2c_service_355c, 0x0
@@ -9349,18 +9301,18 @@ i2c_timeout_recover_common:
     movlw       0x80
     movwf       ram_0x003, ACCESS            ; stock SSPSTAT SMP state
     movlw       0x08                         ; MSSP master mode bits
-    call        mssp_hard_reset, 0x0
+    rcall       mssp_hard_reset
     btfsc       ram_0x00D, 0, ACCESS
     bra         i2c_timeout_skip_bus_probe
-    call        i2c_bus_clear, 0x0
-    call        dsp_ping, 0x0                ; updates bit6 if DSP still NACKs
+    rcall       i2c_bus_clear
+    rcall       dsp_ping                     ; updates bit6 if DSP still NACKs
 i2c_timeout_skip_bus_probe:
     movlb       0x0
     bcf         SSPCON1, 7, ACCESS           ; clear WCOL after aborted tx
     bcf         SSPCON1, 6, ACCESS           ; clear SSPOV after aborted rx
     movlb       0x0
     bsf         dsp_fault_flags, 2, BANKED   ; keep timeout visible after ACK ping
-    call        send_dsp_fault_status, 0x0
+    rcall       send_dsp_fault_status
     bsf         STATUS, 0, ACCESS
     return      0
 
@@ -9559,7 +9511,7 @@ cmd25_identity_query_handler:
     movwf       ram_0x006, ACCESS
     movlw       0x07                        ; V3.3_IDENTITY_REV_HI
     movwf       ram_0x007, ACCESS
-    movlw       0x02                        ; V3.3_IDENTITY_REV_LO
+    movlw       0x03                        ; V3.3_IDENTITY_REV_LO
     movwf       ram_0x008, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       ram_0x004, ACCESS
@@ -9669,53 +9621,7 @@ preset_job_apply_i2c_recover:
     return      0
 
 preset_job_apply_i2c_entry:
-    movff       ram_0x013, ram_0x003
-    movff       ram_0x014, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
-    clrf        ram_0x008, ACCESS
-    movlw       0x04
-    movwf       ram_0x007, ACCESS
-    call        flash_read_fsr2_0017, 0x0   ; W05-E04: shared preamble helper
-    movff       ram_0x018, ram_0x02F
-    movff       ram_0x019, ram_0x031
-    movlw       0x19
-    subwf       ram_0x031, W, ACCESS
-    bc          preset_job_apply_i2c_done
-    movlw       0x04
-    addwf       ram_0x013, W, ACCESS
-    movwf       ram_0x015, ACCESS
-    movlw       0x00
-    addwfc      ram_0x014, W, ACCESS
-    movwf       ram_0x016, ACCESS
-    movff       ram_0x015, ram_0x003
-    movff       ram_0x016, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
-    movff       ram_0x031, ram_0x007
-    clrf        ram_0x008, ACCESS
-    call        flash_read_fsr2_0017, 0x0   ; W05-E04: shared preamble helper
-    bsf         SSPCON2, 0, ACCESS
-    rcall       wait_sen_bounded
-    bc          preset_job_apply_i2c_timeout
-    movlw       0x68
-    call        i2c_byte_tx, 0x0
-    movf        ram_0x02F, W, ACCESS
-    call        i2c_byte_tx, 0x0
-    clrf        ram_0x030, ACCESS
-    bra         preset_job_apply_i2c_loop_check
-preset_job_apply_i2c_loop:
-    movf        ram_0x030, W, ACCESS
-    addlw       0x17
-    rcall       fsr2_page0_read_w                    ; W04-E03
-    call        i2c_byte_tx, 0x0
-    incf        ram_0x030, F, ACCESS
-preset_job_apply_i2c_loop_check:
-    movf        ram_0x031, W, ACCESS
-    subwf       ram_0x030, W, ACCESS
-    bnc         preset_job_apply_i2c_loop
-    bsf         SSPCON2, 2, ACCESS
-    rcall       wait_pen_bounded
+    call        preset_table_apply_entry_core, 0x0
     bc          preset_job_apply_i2c_timeout
 preset_job_apply_i2c_done:
     bcf         STATUS, 0, ACCESS           ; C=0: success / benign no-op
@@ -10515,7 +10421,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x03, 0x72, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.3 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x03, 0x73, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.3 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

@@ -14,7 +14,7 @@ import shutil
 
 import pytest
 
-from dlcp_fw.paths import V171_CONTROL_HEX, V32_MAIN_ASM
+from dlcp_fw.paths import V171_CONTROL_HEX, V32_MAIN_ASM, V33_MAIN_ASM
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
 
@@ -83,11 +83,15 @@ def _equ_address(text: str, name: str) -> int | None:
     return int(m.group(1), 16) if m else None
 
 
-@pytest.fixture(scope="module")
-def v32_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    tmp = tmp_path_factory.mktemp("v32_src4382_autodetect_polling")
-    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
-    assemble_v30(V32_MAIN_ASM, hex_out)
+@pytest.fixture(scope="module", params=[("v32", V32_MAIN_ASM), ("v33", V33_MAIN_ASM)])
+def v32_hex(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    release_id, asm_path = request.param
+    tmp = tmp_path_factory.mktemp(f"{release_id}_src4382_autodetect_polling")
+    hex_out = tmp / f"DLCP_Firmware_{release_id.upper()}.hex"
+    assemble_v30(asm_path, hex_out)
     return hex_out
 
 

@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import V32_MAIN_ASM, V32_MAIN_HEX
+from dlcp_fw.paths import V32_MAIN_ASM, V32_MAIN_HEX, V33_MAIN_ASM
 from dlcp_fw.sim.v30_symbols import assemble_v30, load_gpasm_symbols_for_hex
 
 
@@ -62,6 +62,11 @@ ALL_COUNTER_ADDRS = (
     ("diag_r", DIAG_R_ADDR),
     ("diag_a", DIAG_A_ADDR),
     ("diag_p", DIAG_P_ADDR),
+)
+
+MAIN_DIAG_ASM_PATHS = (
+    pytest.param(V32_MAIN_ASM, id="v32"),
+    pytest.param(V33_MAIN_ASM, id="v33"),
 )
 
 
@@ -102,6 +107,34 @@ def _label_offset(text: str, name: str) -> int:
     if not m:
         raise AssertionError(f"label {name}: not found in source")
     return m.start()
+
+
+def _diag_inc_sat_sections(text: str) -> tuple[str, str]:
+    """Return the macro body and optional helper body for diag_inc_sat.
+
+    Size work may keep the clamp/saturate/increment logic inline in the macro
+    or move it behind a helper.  Tests should pin the behavioral contract,
+    not the byte-saving implementation shape.
+    """
+    macro_idx = text.find("diag_inc_sat MACRO")
+    assert macro_idx >= 0, "diag_inc_sat MACRO definition missing"
+    endm_idx = text.find("ENDM", macro_idx)
+    assert endm_idx >= 0, "diag_inc_sat macro must terminate with ENDM"
+    macro_body = text[macro_idx:endm_idx]
+
+    helper_body = ""
+    helper_match = re.search(
+        r"\b(?:r?call)\s+(diag_inc_sat_[A-Za-z0-9_]+)\b",
+        macro_body,
+    )
+    if helper_match:
+        helper_label = helper_match.group(1)
+        helper_start = _label_offset(text, helper_label)
+        helper_end = text.find("\n; ---", helper_start + 1)
+        if helper_end < 0:
+            helper_end = helper_start + 600
+        helper_body = text[helper_start:helper_end]
+    return macro_body, helper_body
 
 
 # ===========================================================================
@@ -174,28 +207,46 @@ def test_diag_block_outside_usb_endpoint_buffers() -> None:
 
 
 @pytest.mark.dual_supported
-def test_v32_source_defines_diag_inc_sat_macro() -> None:
-    """The saturating-increment macro must exist (used by every hook).
+@pytest.mark.parametrize("asm_path", MAIN_DIAG_ASM_PATHS)
+def test_v3x_source_defines_diag_inc_sat_contract(asm_path: Path) -> None:
+    """The saturating-increment macro must exist and implement the contract.
 
-    Pattern guard: ``MACRO`` definition with cpfslt + bra + incf shape.
+    The implementation may be inline or helper-based.  The contract is:
+
+    * set BSR=2 for the diag-block side effect existing call sites rely on
+    * clamp cells already above 0x0F back to 0x0F
+    * leave 0x0F saturated
+    * increment cells below 0x0F
     """
-    text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    macro_idx = text.find("diag_inc_sat MACRO")
-    assert macro_idx >= 0, "diag_inc_sat MACRO definition missing"
-    body = text[macro_idx:macro_idx + 800]
-    assert re.search(r"cpfslt\s+counter,\s*BANKED", body), (
-        "saturating-increment must use cpfslt comparison"
+    text = asm_path.read_text(encoding="utf-8")
+    macro_body, helper_body = _diag_inc_sat_sections(text)
+    combined = macro_body + "\n" + helper_body
+    cell_pattern = r"(?:counter|INDF0)"
+    bank_pattern = r"(?:BANKED|ACCESS)"
+
+    assert re.search(r"movlb\s+0x02\b", macro_body), (
+        "diag_inc_sat must keep asserting BSR=2 at the macro call site; "
+        "callers and BSR-safety tests document that side effect"
     )
-    assert re.search(r"incf\s+counter,\s*F,\s*BANKED", body), (
-        "saturating-increment must use incf F"
+    assert re.search(rf"cpfsgt\s+{cell_pattern},\s*{bank_pattern}", combined), (
+        "diag_inc_sat must test for cells above 0x0F before saturating"
     )
-    assert "ENDM" in body, "macro must terminate with ENDM"
+    assert re.search(rf"movwf\s+{cell_pattern},\s*{bank_pattern}", combined), (
+        "diag_inc_sat must clamp cells above 0x0F by storing W=0x0F"
+    )
+    assert re.search(rf"cpfslt\s+{cell_pattern},\s*{bank_pattern}", combined), (
+        "diag_inc_sat must test for cells below 0x0F before incrementing"
+    )
+    assert re.search(rf"incf\s+{cell_pattern},\s*F,\s*{bank_pattern}", combined), (
+        "diag_inc_sat must increment cells below 0x0F in place"
+    )
 
 
 @pytest.mark.dual_supported
-def test_v32_source_invokes_diag_inc_sat_at_each_hook() -> None:
+@pytest.mark.parametrize("asm_path", MAIN_DIAG_ASM_PATHS)
+def test_v3x_source_invokes_diag_inc_sat_at_each_hook(asm_path: Path) -> None:
     """Each of the 7 counters has at least one diag_inc_sat invocation."""
-    text = V32_MAIN_ASM.read_text(encoding="utf-8")
+    text = asm_path.read_text(encoding="utf-8")
     for name, _addr in ALL_COUNTER_ADDRS:
         hook = re.search(rf"diag_inc_sat\s+{re.escape(name)}\b", text)
         assert hook is not None, f"no diag_inc_sat hook for counter {name}"
@@ -790,43 +841,32 @@ def test_v32_diag_block_address_range_within_wipe_protected_window() -> None:
 
 
 @pytest.mark.dual_supported
-def test_v32_diag_inc_sat_macro_has_explicit_upper_bound_clamp() -> None:
-    """REGRESSION: `diag_inc_sat` saturates at 0x0F via `cpfslt
-    counter, BANKED` with W=0x0F.  If the counter is ALREADY > 0x0F
-    (corrupted from uninitialized RAM or earlier overwrite), the
-    macro skips the increment but does NOT bound the counter back
-    to 0x0F.  The cell stays at whatever corrupted value it had,
-    and the cmd 0x21 handler will TX that value verbatim (high bit
-    set → chain forwarder breakage).
+@pytest.mark.parametrize("asm_path", MAIN_DIAG_ASM_PATHS)
+def test_v3x_diag_inc_sat_contract_has_explicit_upper_bound_clamp(
+    asm_path: Path,
+) -> None:
+    """REGRESSION: `diag_inc_sat` must heal cells already above 0x0F.
 
-    Defense: the macro should ALSO clamp counters > 0x0F back to
-    0x0F, OR the cold-init must clear the cells unconditionally
-    (not gated on RCON.BOR).
-
-    Currently expected to fail until the clamp lands.  Marked xfail
-    so it doesn't block other gates.
+    The implementation may be inline (`counter, BANKED`) or helper-based
+    (`INDF0, ACCESS`), but the clamp must exist before the saturating
+    increment path.  Otherwise a corrupted cell stays above 0x0F forever
+    and cmd 0x21 needs to rely solely on the wire-byte mask.
     """
-    text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    macro_idx = text.find("diag_inc_sat MACRO")
-    assert macro_idx >= 0, "diag_inc_sat MACRO definition missing"
-    macro_body = text[macro_idx:macro_idx + 800]
-    # Look for the upper-bound clamp pattern, e.g.:
-    #   movlw 0x0F
-    #   cpfsgt counter, BANKED   ; if counter > 0x0F → clamp
-    #   ... no-op or movff W, counter
-    # OR explicit clearing/saturating logic.
-    has_upper_clamp = bool(
-        re.search(r"cpfsgt\s+counter,\s*BANKED", macro_body)
+    text = asm_path.read_text(encoding="utf-8")
+    macro_body, helper_body = _diag_inc_sat_sections(text)
+    combined = macro_body + "\n" + helper_body
+    cell_pattern = r"(?:counter|INDF0)"
+    bank_pattern = r"(?:BANKED|ACCESS)"
+
+    assert re.search(r"\bmovlw\s+0x0F\b", combined), (
+        "diag_inc_sat must stage the saturation/clamp literal 0x0F"
     )
-    if not has_upper_clamp:
-        pytest.xfail(
-            "diag_inc_sat does not clamp counters that ALREADY exceed "
-            "0x0F (e.g. from uninitialized RAM or memory corruption).  "
-            "Such counters stay at their corrupted value forever and "
-            "the cmd 0x21 handler will TX them verbatim.  Combined "
-            "with no `andlw 0x0F` mask in the handler, this is the "
-            "root cause of the real-HW Diag-page hang."
-        )
+    assert re.search(rf"\bcpfsgt\s+{cell_pattern},\s*{bank_pattern}", combined), (
+        "diag_inc_sat must detect cells already above 0x0F"
+    )
+    assert re.search(rf"\bmovwf\s+{cell_pattern},\s*{bank_pattern}", combined), (
+        "diag_inc_sat must clamp cells above 0x0F back to W=0x0F"
+    )
 
 
 # ===========================================================================
