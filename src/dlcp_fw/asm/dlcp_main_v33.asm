@@ -139,6 +139,10 @@ preset_filename_eeprom_b EQU  0x83
 current_cmd_data         EQU  0x0A3   ; parser-staged data byte (route/cmd live in nearby bank-0 slots)
 filename_dirty_flags     EQU  0x0BD   ; bit5 = stock filename RAM slot dirty
                                        ; bit6 = usb_filename_xact_pending
+                                       ; filename_rev (0x2F8 in
+                                       ; dlcp_main_ram.inc) is bumped by
+                                       ; RAM/EEPROM filename writers so
+                                       ; cmd 0x26 never finalizes torn data.
                                        ;        (V3.2 cleanup: gates
                                        ;        preset_select_handler from
                                        ;        running the state machine
@@ -407,6 +411,10 @@ flow_hid_command_dispatch_111a_dirty:
                                                 ; concurrent CONTROL B0/20/x
                                                 ; broadcast can't race the
                                                 ; host's force_persist.
+    movlb       0x02
+    incf        filename_rev, F, BANKED         ; USB filename write touched RAM
+    incf        filename_rev, F, BANKED         ; leave seqlock even/stable
+    movlb       0x00
 flow_hid_command_dispatch_1126:
     call        main_timer_service_48a6, 0x0
 flow_hid_command_dispatch_112a:
@@ -2276,9 +2284,15 @@ flow_main_uart_service_1be6_1e48:
     xorlw       0x06                            ; V3.3 identity: cumulative 0x23 ^ 0x06 = 0x25
     btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x25 (MAIN identity query)
     goto        cmd25_identity_query_handler
+    xorlw       0x03                            ; V3.3 filename: cumulative 0x25 ^ 0x03 = 0x26
+    btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x26 (preset filename query)
+    goto        cmd26_filename_query_handler
 flow_main_uart_service_1be6_1e6c:
     btfss       active_flags, 6, ACCESS
     bra         flow_main_uart_service_1be6_1e80
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     movlb       0x0
     movf        ram_0x0BC, W, BANKED
     call        uart_tx_byte_blocking, 0x0
@@ -2531,7 +2545,7 @@ flow_main_core_service_1e88_20c2:
     clrf        ram_0x008, ACCESS
     movlw       0x82
     movwf       ram_0x007, ACCESS
-    movlw       0x73                            ; V3.3_RUNTIME_EEPROM_REV
+    movlw       0x75                            ; V3.3_RUNTIME_EEPROM_REV
     movwf       ram_0x009, ACCESS
     goto        main_flash_service_46de
 
@@ -3448,6 +3462,8 @@ flow_main_i2c_service_27f0_route_status_ready:
     addlw       LOW(main_i2c_service_27f0_route_table)
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(main_i2c_service_27f0_route_table)
+    btfsc       STATUS, C, ACCESS          ; carry from low-byte table index
+    addlw       0x01
     movwf       TBLPTRH, ACCESS
     clrf        TBLPTRU, ACCESS
     tblrd*
@@ -6089,6 +6105,9 @@ flow_main_isr_dispatch_3b8c:
 ; separately by report_cmd29_status, NOT here.
 ; ---------------------------------------------------------------------------
 send_status_burst:
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     movlw       0x05
     rcall       send_status_burst_preamble
     movf        ram_0x05F, W, ACCESS
@@ -6431,6 +6450,18 @@ flow_main_flash_service_3ce8_3d78:
     clrf        diag_reset_sw, BANKED
     clrf        i2c_recover_flags, BANKED
     clrf        src4382_loss_debounce, BANKED
+    clrf        fn_job_state, BANKED
+    clrf        fn_job_id, BANKED
+    clrf        fn_job_idx, BANKED
+    clrf        fn_job_src_kind, BANKED
+    clrf        filename_rev, BANKED
+    clrf        fn_job_rev, BANKED
+    clrf        fn_job_start_cmd, BANKED
+    clrf        fn_job_len, BANKED
+    clrf        fname_tx_gap_lo, BANKED
+    clrf        fname_tx_gap_hi, BANKED
+    clrf        chain_tx_emitted, BANKED
+    clrf        fn_job_tmp, BANKED
 
     ; --- V3.2 rev 0x37 Tier-1: reset-cause classification cascade ---
     ; Silicon clears the corresponding RCON bit on each reset cause
@@ -8557,6 +8588,9 @@ mssp_hard_reset:
 ; documented in docs/V32_MAIN_HANG_HARDENING_PLAN.md workstream 1.
 ; ---------------------------------------------------------------------------
 periodic_service_loop:
+    movlb       0x02
+    clrf        chain_tx_emitted, BANKED
+    movlb       0x00
     call        main_usb_service_3a26, 0x0
     call        main_uart_service_1be6, 0x0
     rcall       main_service_rx_frame_gap           ; V3.2 §2: parser stall watchdog
@@ -8564,6 +8598,7 @@ periodic_service_loop:
     call        main_i2c_service_27f0, 0x0
     rcall       standby_event_dispatch
     call        main_core_service_265c, 0x0
+    rcall       filename_reply_job_service          ; V3.3: lowest-priority filename burst
     rcall       ra1_edge_monitor                    ; V3.2 Layer 5: diag_p edge counter
     bra         an0_hysteresis_monitor
 
@@ -8611,6 +8646,9 @@ inline_data_table_47E6:  ; UART status strings for FW update
 ; Notes   : Inferred uart helper routine. Calls: uart_tx_byte_blocking.
 ; ---------------------------------------------------------------------------
 report_cmd29_status:
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x29
@@ -9264,6 +9302,9 @@ dsp_ping_nack:
 ; ---------------------------------------------------------------------------
 send_dsp_fault_status:
     movlb       0x00
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     movf        dsp_fault_flags, W, BANKED
     andlw       0x44                        ; bits 6 + 2
     movwf       ram_0x00D, ACCESS           ; save in ram_0x00D (uart_tx clobbers ram_0x003)
@@ -9353,6 +9394,7 @@ i2c_timeout_skip_bus_probe:
 ;         is bounded so a wedged TX path cannot hang here.
 ; ---------------------------------------------------------------------------
 cmd21_diag_query_handler:
+    ; chain_tx_emitted is set by shared diag_send_burst_xx.
     ; ---------------------------------------------------------------
     ; V3.2 Layer 5 Phase B revision: 7 single-counter frames
     ; ---------------------------------------------------------------
@@ -9450,6 +9492,7 @@ cmd21_diag_query_handler:
 ;         cmd21_diag_query_handler; both share diag_send_burst_xx.
 ; ---------------------------------------------------------------------------
 cmd22_reset_flags_query_handler:
+    ; chain_tx_emitted is set by shared diag_send_burst_xx.
     ; Reuses diag_send_burst_xx (defined immediately below) — exactly
     ; the same wire shape as cmd 0x21 but with a different FSR0 base
     ; (reset-cause flag cells) and different sub-cmd range (0x28..0x2B).
@@ -9476,6 +9519,9 @@ cmd22_reset_flags_query_handler:
 ; through the normal parser tail.
 ; ---------------------------------------------------------------------------
 cmd23_health_query_handler:
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x2C
@@ -9495,6 +9541,9 @@ cmd23_health_query_handler:
 ; into nibbles so future revs above 0x7F cannot look like route bytes.
 ; ---------------------------------------------------------------------------
 cmd25_identity_query_handler:
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     ; START carries the full 6-bit route-safe query id; the remaining
     ; four payloads are low nibbles and can reuse diag_send_burst_xx.
     movlw       0xBF
@@ -9511,7 +9560,7 @@ cmd25_identity_query_handler:
     movwf       ram_0x006, ACCESS
     movlw       0x07                        ; V3.3_IDENTITY_REV_HI
     movwf       ram_0x007, ACCESS
-    movlw       0x03                        ; V3.3_IDENTITY_REV_LO
+    movlw       0x05                        ; V3.3_IDENTITY_REV_LO
     movwf       ram_0x008, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       ram_0x004, ACCESS
@@ -9519,6 +9568,258 @@ cmd25_identity_query_handler:
     movwf       i2c_coeff_3, ACCESS
     lfsr        FSR0, 0x0005                ; major/minor/rev_hi/rev_lo staging
     bra         diag_send_burst_xx
+
+; ---------------------------------------------------------------------------
+; cmd 0x26 — preset filename query (V3.3/V1.72 Preset LCD)
+; ---------------------------------------------------------------------------
+; Reached when CONTROL sends [B1/B2, 0x26, id].  The id format is
+; (generation<<2)|(target_bit<<1)|slot.  V1 display uses PB1, but MAIN just
+; echoes the id it receives so the same protocol is PB2-ready.
+;
+; The handler arms a tiny foreground job and returns through the normal parser
+; tail.  filename_reply_job_service later emits one BF frame per main-loop pass
+; after all other chain senders had a chance to set chain_tx_emitted.
+; ---------------------------------------------------------------------------
+cmd26_filename_query_handler:
+    movlb       0x02
+    movf        filename_rev, W, BANKED
+    andlw       0x01
+    bnz         cmd26_filename_query_done
+    movf        filename_rev, W, BANKED
+    movwf       fn_job_rev, BANKED
+
+    movlb       0x00
+    movf        current_cmd_data, W, BANKED
+    andlw       0x7F
+    movlb       0x02
+    movwf       fn_job_id, BANKED
+    andlw       0x01
+    movwf       fn_job_src_kind, BANKED      ; temporary: requested slot
+    btfsc       active_flags, 2, ACCESS      ; active preset B?
+    xorlw       0x01
+    bz          cmd26_filename_source_ram
+    movf        fn_job_src_kind, W, BANKED
+    bz          cmd26_filename_source_eep_a
+    movlw       0x02                         ; requested B while A active
+    bra         cmd26_filename_source_set
+cmd26_filename_source_eep_a:
+    movlw       0x01                         ; requested A while B active
+    bra         cmd26_filename_source_set
+cmd26_filename_source_ram:
+    clrf        fn_job_src_kind, BANKED       ; requested slot == active RAM
+    bra         cmd26_filename_len_init
+cmd26_filename_source_set:
+    movwf       fn_job_src_kind, BANKED
+
+cmd26_filename_len_init:
+    clrf        fn_job_len, BANKED
+cmd26_filename_len_loop:
+    movf        fn_job_len, W, BANKED
+    xorlw       preset_filename_len
+    bz          cmd26_filename_arm
+    movf        fn_job_len, W, BANKED
+    rcall       filename_read_source_at_w
+    movlb       0x02
+    movwf       fn_job_tmp, BANKED
+    movlw       0x20
+    cpfslt      fn_job_tmp, BANKED
+    bra         cmd26_filename_len_high
+    bra         cmd26_filename_arm
+cmd26_filename_len_high:
+    movlw       0x7F
+    cpfslt      fn_job_tmp, BANKED
+    bra         cmd26_filename_arm
+    incf        fn_job_len, F, BANKED
+    bra         cmd26_filename_len_loop
+
+cmd26_filename_arm:
+    movlw       0x2F                         ; prefix-first default
+    movwf       fn_job_start_cmd, BANKED
+    movlw       0x11
+    cpfslt      fn_job_len, BANKED           ; len < 17?
+    bra         cmd26_filename_compare_prefix16
+    bra         cmd26_filename_arm_rev_check
+
+cmd26_filename_compare_prefix16:
+    movf        fn_job_src_kind, W, BANKED
+    movwf       fname_tx_gap_hi, BANKED      ; save requested source kind
+    clrf        fn_job_idx, BANKED
+cmd26_filename_compare_loop:
+    movf        fname_tx_gap_hi, W, BANKED
+    movwf       fn_job_src_kind, BANKED
+    movf        fn_job_idx, W, BANKED
+    rcall       filename_read_source_at_w
+    movlb       0x02
+    movwf       fname_tx_gap_lo, BANKED      ; requested char
+    movf        fname_tx_gap_hi, W, BANKED
+    bz          cmd26_filename_compare_other_eep
+    clrf        fn_job_src_kind, BANKED       ; requested EEPROM -> other active RAM
+    bra         cmd26_filename_compare_read_other
+cmd26_filename_compare_other_eep:
+    movlw       0x01                         ; active B -> other EEPROM A
+    btfss       active_flags, 2, ACCESS
+    movlw       0x02                         ; active A -> other EEPROM B
+    movwf       fn_job_src_kind, BANKED
+cmd26_filename_compare_read_other:
+    movf        fn_job_idx, W, BANKED
+    rcall       filename_read_source_at_w
+    movlb       0x02
+    cpfseq      fname_tx_gap_lo, BANKED
+    bra         cmd26_filename_compare_done
+    incf        fn_job_idx, F, BANKED
+    movlw       0x10
+    cpfseq      fn_job_idx, BANKED
+    bra         cmd26_filename_compare_loop
+    movlw       0x2E                         ; first 16 match: rest on tail
+    movwf       fn_job_start_cmd, BANKED
+cmd26_filename_compare_done:
+    movf        fname_tx_gap_hi, W, BANKED
+    movwf       fn_job_src_kind, BANKED
+
+cmd26_filename_arm_rev_check:
+    movf        filename_rev, W, BANKED
+    andlw       0x01
+    bnz         cmd26_filename_query_done
+    movf        filename_rev, W, BANKED
+    cpfseq      fn_job_rev, BANKED
+    bra         cmd26_filename_query_done
+    clrf        fn_job_idx, BANKED
+    clrf        fname_tx_gap_lo, BANKED
+    clrf        fname_tx_gap_hi, BANKED
+    movlw       0x01
+    movwf       fn_job_state, BANKED
+cmd26_filename_query_done:
+    bcf         active_flags, 6, ACCESS      ; suppress cmd-XOR ACK echo
+    goto        flow_main_uart_service_1be6_1e6c
+
+filename_read_source_at_w:
+    movwf       fn_job_tmp, BANKED
+    movf        fn_job_src_kind, W, BANKED
+    bz          filename_read_source_ram
+    xorlw       0x01
+    bz          filename_read_source_eep_a
+    movlw       preset_filename_eeprom_b
+    bra         filename_read_source_eep
+filename_read_source_eep_a:
+    movlw       preset_filename_eeprom_a
+filename_read_source_eep:
+    addwf       fn_job_tmp, W, BANKED
+    movwf       ram_0x003, ACCESS
+    clrf        ram_0x004, ACCESS
+    call        eeprom_read_byte, 0x0
+    return      0
+filename_read_source_ram:
+    lfsr        FSR2, preset_filename_ram_base
+    movf        fn_job_tmp, W, BANKED
+    addwf       FSR2L, F, ACCESS
+    movf        INDF2, W, ACCESS
+    return      0
+
+filename_reply_job_service:
+    movlb       0x02
+    movf        fn_job_state, W, BANKED
+    bz          filename_reply_job_ret
+    btfss       chain_tx_emitted, 0, BANKED
+    bra         filename_reply_check_gap
+    clrf        fname_tx_gap_lo, BANKED
+    movlw       0x01
+    movwf       fname_tx_gap_hi, BANKED
+    bra         filename_reply_job_ret
+filename_reply_check_gap:
+    movf        fname_tx_gap_lo, F, BANKED
+    bnz         filename_reply_dec_gap_lo
+    movf        fname_tx_gap_hi, F, BANKED
+    bz          filename_reply_ready
+    decf        fname_tx_gap_hi, F, BANKED
+    decf        fname_tx_gap_lo, F, BANKED
+    bra         filename_reply_job_ret
+filename_reply_dec_gap_lo:
+    decf        fname_tx_gap_lo, F, BANKED
+    bra         filename_reply_job_ret
+filename_reply_ready:
+    movf        filename_rev, W, BANKED
+    andlw       0x01
+    bnz         filename_reply_job_abort
+    movf        filename_rev, W, BANKED
+    cpfseq      fn_job_rev, BANKED
+    bra         filename_reply_job_abort
+    movf        fn_job_state, W, BANKED
+    xorlw       0x01
+    bz          filename_reply_send_start
+    xorlw       0x03
+    bz          filename_reply_send_len
+    xorlw       0x01
+    bz          filename_reply_send_char_or_end
+    xorlw       0x07
+    bz          filename_reply_send_end
+filename_reply_job_abort:
+    clrf        fn_job_state, BANKED
+filename_reply_job_ret:
+    return      0
+
+filename_reply_send_start:
+    movf        fn_job_start_cmd, W, BANKED
+    movwf       ram_0x00D, ACCESS
+    movf        fn_job_id, W, BANKED
+    movwf       ram_0x00E, ACCESS
+    rcall       filename_emit_frame
+    movlb       0x02
+    movlw       0x02
+    movwf       fn_job_state, BANKED
+    return      0
+
+filename_reply_send_len:
+    movlw       0x2D
+    movwf       ram_0x00D, ACCESS
+    movf        fn_job_id, W, BANKED
+    xorwf       fn_job_len, W, BANKED
+    movwf       ram_0x00E, ACCESS
+    rcall       filename_emit_frame
+    movlb       0x02
+    movlw       0x03
+    movwf       fn_job_state, BANKED
+    return      0
+
+filename_reply_send_char_or_end:
+    movf        fn_job_idx, W, BANKED
+    cpfseq      fn_job_len, BANKED
+    bra         filename_reply_send_char
+    bra         filename_reply_send_end
+filename_reply_send_char:
+    movlw       0x30
+    addwf       fn_job_idx, W, BANKED
+    movwf       ram_0x00D, ACCESS
+    movf        fn_job_idx, W, BANKED
+    rcall       filename_read_source_at_w
+    movwf       ram_0x00E, ACCESS
+    rcall       filename_emit_frame
+    movlb       0x02
+    incf        fn_job_idx, F, BANKED
+    return      0
+
+filename_reply_send_end:
+    movlw       0x4E
+    movwf       ram_0x00D, ACCESS
+    movf        fn_job_id, W, BANKED
+    movwf       ram_0x00E, ACCESS
+    rcall       filename_emit_frame
+    movlb       0x02
+    clrf        fn_job_state, BANKED
+    return      0
+
+filename_emit_frame:
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    clrf        fname_tx_gap_lo, BANKED
+    movlw       0x01
+    movwf       fname_tx_gap_hi, BANKED
+    movlb       0x00
+    movlw       0xBF
+    rcall       uart_tx_byte_blocking
+    movf        ram_0x00D, W, ACCESS
+    rcall       uart_tx_byte_blocking
+    movf        ram_0x00E, W, ACCESS
+    bra         uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
 ; diag_send_burst_xx — shared helper for cmd 0x21/0x22 and cmd 0x25 tail
@@ -9540,6 +9841,9 @@ cmd25_identity_query_handler:
 ; storm → unit hang.
 ; ---------------------------------------------------------------------------
 diag_send_burst_xx:
+    movlb       0x02
+    bsf         chain_tx_emitted, 0, BANKED
+    movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movf        i2c_coeff_3, W, ACCESS
@@ -9560,7 +9864,7 @@ diag_send_burst_xx:
 volume_dsp_write:
     movlb       0x0
     bcf         dsp_fault_flags, 2, BANKED  ; clear ACKSTAT latch
-    rcall       i2c_tas3108_coeff_write
+    call        i2c_tas3108_coeff_write, 0x0
     movlb       0x0                          ; helper may leave BSR != 0
     btfsc       dsp_fault_flags, 2, BANKED  ; NACKed?
     bra         vol_write_nacked
@@ -9584,14 +9888,18 @@ vol_write_nacked:
     ; If PEN stuck from fault model, skip I2C recovery to avoid corruption.
     btfsc       SSPCON2, 2, ACCESS          ; PEN pending?
     bra         vol_exhausted_skip_i2c
-    diag_inc_sat diag_r                      ; V3.2 Layer 5: count recovery branch entry
+    movlb       0x02
+    lfsr        FSR0, diag_r                 ; V3.2 Layer 5: count recovery branch entry
+    call        diag_inc_sat_fsr0, 0x0
     rcall       i2c_bus_clear
     rcall       dsp_ping
 vol_exhausted_skip_i2c:
     movlb       0x0                          ; macro / dsp_ping may leave BSR != 0
     btfsc       dsp_fault_flags, 6, BANKED  ; V3.2 Layer 5: skip diag_d if already SET (no transition)
     bra         vol_diag_d_skip
-    diag_inc_sat diag_d                      ; (executed only on 0→1 transition)
+    movlb       0x02
+    lfsr        FSR0, diag_d                 ; executed only on 0→1 transition
+    call        diag_inc_sat_fsr0, 0x0
 vol_diag_d_skip:
     movlb       0x0                          ; restore BSR for the existing bsf line
     bsf         dsp_fault_flags, 6, BANKED  ; flag DSP fault
@@ -9678,6 +9986,9 @@ preset_select_handler_done:
 
 ; --- Persist dirty filename to EEPROM (outgoing preset slot) ---
 preset_persist_filename:
+    movlb       0x02
+    incf        filename_rev, F, BANKED     ; seqlock odd: backing store mutating
+    movlb       0x00
     movlw       preset_filename_eeprom_a
     btfsc       active_flags, 2, ACCESS
     movlw       preset_filename_eeprom_b
@@ -9692,11 +10003,17 @@ preset_pf_lp:
     incf        ram_0x007, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
     bra         preset_pf_lp
+    movlb       0x02
+    incf        filename_rev, F, BANKED     ; seqlock even: stable again
+    movlb       0x00
     bcf         filename_dirty_flags, 5, BANKED
     return      0
 
 ; --- Load filename from EEPROM (incoming preset slot) ---
 preset_load_filename:
+    movlb       0x02
+    incf        filename_rev, F, BANKED     ; seqlock odd: RAM slot mutating
+    movlb       0x00
     movlw       preset_filename_eeprom_a
     btfsc       active_flags, 2, ACCESS
     movlw       preset_filename_eeprom_b
@@ -9711,6 +10028,9 @@ preset_lf_lp:
     incf        ram_0x003, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
     bra         preset_lf_lp
+    movlb       0x02
+    incf        filename_rev, F, BANKED     ; seqlock even: stable again
+    movlb       0x00
     return      0
 
 ; --- Force-mute DSP output ---
@@ -9816,6 +10136,8 @@ preset_job_holding:
     ; Toggle preset bit
     btg         active_flags, 2, ACCESS
     ; Load incoming preset filename from EEPROM
+    ; filename_rev is bumped inside preset_load_filename so any active
+    ; cmd 0x26 filename burst aborts rather than finalizing mixed data.
     bcf         INTCON, 7, ACCESS
     rcall       preset_load_filename
     bsf         INTCON, 7, ACCESS
@@ -9844,6 +10166,8 @@ preset_job_holding_wait:
 
 ; --- APPLY (3): one I2C preset-table entry per main-loop pass ---
 preset_job_apply:
+    ; filename_rev is not modified here; the preset flip path bumps it in
+    ; preset_load_filename before APPLY starts.
     movlb       0x2
     movlw       0x60                        ; 96 regular entries
     cpfslt      preset_job_index, BANKED    ; skip if index < 96
@@ -10421,7 +10745,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x03, 0x73, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.3 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x03, 0x75, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.3 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

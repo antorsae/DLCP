@@ -20,7 +20,6 @@ from typing import Optional, Sequence
 from dlcp_fw.cli import hardware_flipper_ir
 from dlcp_fw.cli import hardware_lcd_probe as lcd_probe
 from dlcp_fw.flash.dlcp_control_flash import DEFAULT_PID, DEFAULT_VID, enumerate_devices
-from dlcp_fw.flash.dlcp_ep0_flash_probe import read_flash_window
 from dlcp_fw.flash.dlcp_main_flash import (
     ACTIVE_FLAGS_ADDR,
     ROUTE_LEN,
@@ -51,6 +50,13 @@ DEFAULT_SOAK_ITERATIONS = 5
 WAKE_FAILURE_FUNCTIONAL_TIMEOUT = "FUNCTIONAL_WAKE_TIMEOUT"
 WAKE_FAILURE_ROLE_DECODE_UNSTABLE = "ROLE_DECODE_UNSTABLE"
 WAKE_FAILURE_CONTROL_WAITING_WHILE_MAINS_HEALTHY = "CONTROL_WAITING_WHILE_MAINS_HEALTHY"
+
+
+def read_flash_window(**kwargs) -> bytes:
+    """Import EP0 probing only for live reads so sim tests can collect without USB deps."""
+    from dlcp_fw.flash.dlcp_ep0_flash_probe import read_flash_window as _read_flash_window
+
+    return _read_flash_window(**kwargs)
 
 
 @dataclasses.dataclass(frozen=True)

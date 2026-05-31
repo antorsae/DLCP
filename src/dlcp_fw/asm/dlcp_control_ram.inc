@@ -505,3 +505,37 @@ v172_diag_id_tmp_major     equ  0x052
 v172_diag_id_tmp_minor     equ  0x053
 v172_diag_id_tmp_rev_hi    equ  0x054
 V172_DIAG_ID_TIMEOUT_RELOAD equ 0x04
+
+; --- V1.72/V3.3 Preset filename LCD cache/state (BANK 2) ---
+; Physical 0x220..0x244 and 0x255..0x25C.  Keep 0x245..0x254
+; reserved for diagnostics identity above.  EQU operands are BANKED-form
+; values; every firmware access must assert `movlb 0x02`.
+v172_fname_cache           equ  0x020  ; physical 0x220..0x23D, 30 chars
+v172_fname_len             equ  0x03E
+v172_fname_expected_len    equ  0x03F
+v172_fname_flags           equ  0x040
+FNAME_VALID                equ  0x00
+FNAME_PENDING              equ  0x01
+FNAME_WANT_QUERY           equ  0x02
+FNAME_ROW_DIRTY            equ  0x03
+FNAME_ARMED                equ  0x04
+FNAME_TAILDIR              equ  0x05
+FNAME_LEN_SEEN             equ  0x06
+v172_fname_gen             equ  0x041
+v172_fname_id              equ  0x042
+v172_fname_scroll_off      equ  0x043
+v172_fname_scroll_hold     equ  0x044
+v172_fname_scroll_div_lo   equ  0x055
+v172_fname_scroll_div_hi   equ  0x056
+v172_fname_deadline_lo     equ  0x057
+v172_fname_deadline_hi     equ  0x058
+v172_fname_render_col      equ  0x059
+v172_fname_render_off      equ  0x05A
+v172_fname_row0_status_snap equ 0x05B
+v172_fname_tmp             equ  0x05C
+FNAME_PENDING_DEADLINE_HI  equ  0x40
+FNAME_PENDING_DEADLINE_LO  equ  0x00
+FNAME_SCROLL_DIV_HI        equ  0x08
+FNAME_SCROLL_DIV_LO        equ  0x00
+FNAME_SCROLL_REST_HOLD     equ  0x06
+FNAME_SCROLL_FAR_HOLD      equ  0x03

@@ -372,7 +372,12 @@ def _wait_for_standby_evidence(
         time.sleep(max(0.0, poll_s))
 
 
-def _capture_lcd_consensus(tmp_path: Path, name: str) -> tuple[str, str]:
+def _capture_lcd_summary(
+    tmp_path: Path,
+    name: str,
+    *,
+    raw_ordered_row: bool = False,
+) -> dict:
     import json
     from dlcp_fw.cli import hardware_lcd_probe
 
@@ -391,12 +396,18 @@ def _capture_lcd_consensus(tmp_path: Path, name: str) -> tuple[str, str]:
         argv.extend(["--address", address])
     if os.environ.get("DLCP_HW_SKIP_CONFIGURE") == "1":
         argv.append("--skip-configure")
+    if raw_ordered_row:
+        argv.append("--raw-ordered-row")
 
     rc = hardware_lcd_probe.main(argv)
     assert rc == 0, "lcd-probe wrapper failed (camera or OCR)"
     summaries = sorted((output_root / "runs").glob("*/summary.json"))
     assert summaries, f"no LCD summary written under {output_root / 'runs'}"
-    summary = json.loads(summaries[-1].read_text(encoding="utf-8"))
+    return json.loads(summaries[-1].read_text(encoding="utf-8"))
+
+
+def _capture_lcd_consensus(tmp_path: Path, name: str) -> tuple[str, str]:
+    summary = _capture_lcd_summary(tmp_path, name)
     consensus = summary.get("consensus", {})
     return (
         (consensus.get("line1") or "").strip(),
@@ -772,6 +783,69 @@ def test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram
             )
 
     assert not failures, "\n".join(failures)
+
+
+@pytest.mark.hardware
+def test_live_preset_filename_lcd_confirm_reconstructs_pb1_name(tmp_path: Path) -> None:
+    """Opt-in hardware gate for the V1.72/V3.3 Preset filename LCD feature.
+
+    Operator workflow:
+      1. Flash filename-capable CONTROL V1.72 rev >=0x39 and MAIN V3.3 rev >=0x73.
+      2. Put CONTROL on the Preset page for PB1's active preset.
+      3. Use a known non-empty PB1 A/B filename for this positive gate.
+      4. Run with DLCP_HW_PRESET_FILENAME_CONFIRM=1 and
+         DLCP_HW_EXPECTED_PRESET_FILENAME set to that PB1 filename.
+
+    This gate intentionally rejects the old row-1 ``Active: A/B`` layout.
+    Accepted HFD blank-name cases need separate START/LEN(0)/END evidence; blank
+    row text is not a positive filename-feature gate.
+    """
+    if os.environ.get("DLCP_HW_PRESET_FILENAME_CONFIRM") != "1":
+        pytest.skip(
+            "set DLCP_HW_PRESET_FILENAME_CONFIRM=1 after navigating CONTROL "
+            "to the filename-capable Preset page"
+        )
+    expected_name = os.environ.get("DLCP_HW_EXPECTED_PRESET_FILENAME", "").strip()
+    if not expected_name:
+        pytest.fail(
+            "set DLCP_HW_EXPECTED_PRESET_FILENAME to a known non-empty PB1 "
+            "preset filename; blank names are validated by protocol evidence, "
+            "not by this OCR gate"
+        )
+
+    _require_main_pair_and_camera_accessible()
+
+    from dlcp_fw.cli import hardware_lcd_probe
+
+    summary = _capture_lcd_summary(
+        tmp_path,
+        "preset_filename_confirm",
+        raw_ordered_row=True,
+    )
+    consensus = summary.get("consensus", {})
+    line1 = (consensus.get("line1") or "").strip()
+    line2 = (consensus.get("line2") or "").strip()
+    raw_line1 = (consensus.get("raw_line1") or "").strip()
+    raw_line2 = (consensus.get("raw_line2") or "").strip()
+    scroll = summary.get("scroll_reconstruction", {})
+    reconstructed = str(scroll.get("line2") or raw_line2).strip()
+
+    assert line1 == "Preset" or raw_line1.startswith("Preset"), (
+        "DLCP_HW_PRESET_FILENAME_CONFIRM must run on the Preset page; "
+        f"summary={summary!r}"
+    )
+    assert not line2.startswith("Active:"), (
+        "old Active: A/B Preset layout must not pass the filename LCD gate; "
+        f"summary={summary!r}"
+    )
+
+    norm_expected = hardware_lcd_probe._norm(expected_name)
+    norm_seen = hardware_lcd_probe._norm(reconstructed)
+    assert norm_expected and norm_expected in norm_seen, (
+        "raw ordered row capture + scroll reconstruction did not contain the "
+        f"expected PB1 filename {expected_name!r}; reconstructed={reconstructed!r}; "
+        f"summary={summary!r}"
+    )
 
 
 @pytest.mark.hardware

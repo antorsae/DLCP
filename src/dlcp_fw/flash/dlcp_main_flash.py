@@ -36,7 +36,6 @@ from dlcp_fw.flash.dlcp_control_flash import (
     enumerate_devices,
     parse_intel_hex,
 )
-from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import DlcpEp0
 from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
 
 
@@ -90,6 +89,13 @@ ALL_CH_ROUTE_VALUES = {
     "L": 0,
     "R": 1,
 }
+
+
+def DlcpEp0(*args, **kwargs):
+    """Construct the live EP0 helper lazily so sim imports avoid USB/plist deps."""
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import DlcpEp0 as _DlcpEp0
+
+    return _DlcpEp0(*args, **kwargs)
 
 
 def _parse_int_auto(s: str) -> int:

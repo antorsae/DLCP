@@ -137,6 +137,19 @@ def _diag_inc_sat_sections(text: str) -> tuple[str, str]:
     return macro_body, helper_body
 
 
+def _diag_inc_sat_hook_present(text: str, name: str) -> bool:
+    if re.search(rf"diag_inc_sat\s+{re.escape(name)}\b", text):
+        return True
+    return bool(
+        re.search(
+            rf"lfsr\s+FSR0,\s*{re.escape(name)}\b"
+            rf"(?:(?!\n[A-Za-z_][A-Za-z0-9_]*:)[\s\S]){{0,240}}?"
+            rf"\b(?:r?call)\s+diag_inc_sat_fsr0\b",
+            text,
+        )
+    )
+
+
 # ===========================================================================
 # Tier A — source-level structural assertions
 # ===========================================================================
@@ -245,11 +258,12 @@ def test_v3x_source_defines_diag_inc_sat_contract(asm_path: Path) -> None:
 @pytest.mark.dual_supported
 @pytest.mark.parametrize("asm_path", MAIN_DIAG_ASM_PATHS)
 def test_v3x_source_invokes_diag_inc_sat_at_each_hook(asm_path: Path) -> None:
-    """Each of the 7 counters has at least one diag_inc_sat invocation."""
+    """Each counter has a macro or helper-backed saturating increment hook."""
     text = asm_path.read_text(encoding="utf-8")
     for name, _addr in ALL_COUNTER_ADDRS:
-        hook = re.search(rf"diag_inc_sat\s+{re.escape(name)}\b", text)
-        assert hook is not None, f"no diag_inc_sat hook for counter {name}"
+        assert _diag_inc_sat_hook_present(text, name), (
+            f"no diag_inc_sat hook for counter {name}"
+        )
 
 
 @pytest.mark.dual_supported

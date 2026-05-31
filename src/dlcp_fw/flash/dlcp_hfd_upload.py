@@ -32,7 +32,6 @@ from dlcp_fw.flash.dlcp_control_flash import (
     _hid_write64,
     _mk_report,
 )
-from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import DlcpEp0
 from dlcp_fw.flash.dlcp_main_flash import (
     DeviceSnapshot,
     _cmd03_write_filename_slot,
@@ -66,6 +65,13 @@ UPLOAD_CMD_LAST = 0x0C
 ACTIVE_FLAGS_ADDR = 0x05E
 ACTIVE_PRESET_MASK = 0x04
 NAME_LEN = 0x1E
+
+
+def DlcpEp0(*args, **kwargs):
+    """Construct the live EP0 helper lazily so sim imports avoid USB/plist deps."""
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import DlcpEp0 as _DlcpEp0
+
+    return _DlcpEp0(*args, **kwargs)
 
 
 def _parse_int_auto(s: str) -> int:

@@ -1202,9 +1202,9 @@ v172_bf4f_identity_case_check:
         ; counters so malformed identity traffic cannot drift diag state.
         ; ---------------------------------------------------------------
         movlw   0x4F
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x4F? -> BF/2x path
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x4F? -> filename/BF/2x path
         bra     v172_bf4f_check_upper
-        bra     v171_bf2x_case_check
+        bra     v172_fname_case_check
 v172_bf4f_check_upper:
         movlw   0x54
         cpfslt  rx_parsed_cmd, A                          ; cmd < 0x54? -> identity
@@ -1302,6 +1302,139 @@ v172_bf4f_commit_done:
 v172_bf4f_abort:
         bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
 v172_bf4f_exit_bsr0:
+        movlb   0x00
+        bra     flow_rx_parser_entry_05EA
+
+v172_fname_case_check:
+        ; ---------------------------------------------------------------
+        ; V1.72/V3.3: BF/2D..4E preset filename replies.
+        ; Keep this after BF/08 + BF/4F..53 identity and before BF/2x
+        ; diagnostics.  Lower/upper misses fall through to BF/2x.
+        ; ---------------------------------------------------------------
+        movlw   0x2D
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x2D?
+        bra     v172_fname_check_upper
+        bra     v171_bf2x_case_check
+v172_fname_check_upper:
+        movlw   0x4F
+        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x4F?
+        bra     v171_bf2x_case_check
+        movlb   0x02
+        btfss   v172_fname_flags, FNAME_PENDING, BANKED
+        bra     fname_exit
+
+        movlw   0x2E
+        cpfseq  rx_parsed_cmd, A
+        bra     fname_not_start_tail
+        bra     fname_start
+fname_not_start_tail:
+        movlw   0x2F
+        cpfseq  rx_parsed_cmd, A
+        bra     fname_not_start
+fname_start:
+        movf    v172_fname_id, W, BANKED
+        xorwf   rx_parsed_data, W, A
+        bnz     fname_disarm
+        bsf     v172_fname_flags, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        bcf     v172_fname_flags, FNAME_VALID, BANKED
+        clrf    v172_fname_len, BANKED
+        clrf    v172_fname_expected_len, BANKED
+        bcf     v172_fname_flags, FNAME_TAILDIR, BANKED
+        movlw   0x2E
+        cpfseq  rx_parsed_cmd, A
+        bra     fname_exit
+        bsf     v172_fname_flags, FNAME_TAILDIR, BANKED
+        bra     fname_exit
+
+fname_not_start:
+        btfss   v172_fname_flags, FNAME_ARMED, BANKED
+        bra     fname_exit
+        movlw   0x2D
+        cpfseq  rx_parsed_cmd, A
+        bra     fname_not_len
+        btfsc   v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        bra     fname_abort
+        movf    v172_fname_len, F, BANKED
+        bnz     fname_abort
+        movf    v172_fname_id, W, BANKED
+        xorwf   rx_parsed_data, W, A
+        movwf   v172_fname_expected_len, BANKED
+        movlw   0x1F
+        cpfslt  v172_fname_expected_len, BANKED             ; expected_len < 31
+        bra     fname_abort
+        bsf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        bra     fname_exit
+
+fname_not_len:
+        movlw   0x4E
+        cpfseq  rx_parsed_cmd, A
+        bra     fname_char
+        movf    v172_fname_id, W, BANKED
+        xorwf   rx_parsed_data, W, A
+        bnz     fname_abort
+        btfss   v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        bra     fname_abort
+        movf    v172_fname_len, W, BANKED
+        xorwf   v172_fname_expected_len, W, BANKED
+        bnz     fname_abort
+        bsf     v172_fname_flags, FNAME_VALID, BANKED
+        bcf     v172_fname_flags, FNAME_PENDING, BANKED
+        bcf     v172_fname_flags, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags, FNAME_WANT_QUERY, BANKED
+        clrf    v172_fname_deadline_lo, BANKED
+        clrf    v172_fname_deadline_hi, BANKED
+        clrf    v172_fname_scroll_off, BANKED
+        movlw   0x11
+        cpfslt  v172_fname_len, BANKED                      ; len < 17?
+        bra     fname_end_maybe_tail
+        bra     fname_end_mark_dirty
+fname_end_maybe_tail:
+        btfss   v172_fname_flags, FNAME_TAILDIR, BANKED
+        bra     fname_end_mark_dirty
+        movf    v172_fname_len, W, BANKED
+        addlw   0xF0                                        ; len - 16
+        movwf   v172_fname_scroll_off, BANKED
+fname_end_mark_dirty:
+        movlw   FNAME_SCROLL_REST_HOLD
+        movwf   v172_fname_scroll_hold, BANKED
+        clrf    v172_fname_scroll_div_lo, BANKED
+        clrf    v172_fname_scroll_div_hi, BANKED
+        call    fname_mark_row_dirty_valid, 0x0
+        bra     fname_exit
+
+fname_char:
+        btfss   v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        bra     fname_abort
+        movlw   0x30
+        subwf   rx_parsed_cmd, W, A                         ; W = cmd - 0x30
+        xorwf   v172_fname_len, W, BANKED
+        bnz     fname_abort
+        movlw   0x20
+        cpfslt  rx_parsed_data, A                           ; data < ' '?
+        bra     fname_char_check_high
+        bra     fname_abort
+fname_char_check_high:
+        movlw   0x7F
+        cpfslt  rx_parsed_data, A                           ; data < 0x7F?
+        bra     fname_abort
+        lfsr    0x0, 0x220
+        movf    v172_fname_len, W, BANKED
+        addwf   FSR0L, F, A
+        movf    rx_parsed_data, W, A
+        movwf   INDF0, A
+        incf    v172_fname_len, F, BANKED
+        bra     fname_exit
+
+fname_abort:
+        call    fname_reset_blank, 0x0
+        bra     fname_exit
+fname_disarm:
+        bcf     v172_fname_flags, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        clrf    v172_fname_len, BANKED
+        clrf    v172_fname_expected_len, BANKED
+fname_exit:
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
 
@@ -2924,6 +3057,7 @@ flow_display_loop_iteration_0CB4:                                               
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0                     ; legacy-link parser stall guard
         call    v171_health_service, 0x0                          ; link-health ping/age tick
+        call    v172_preset_filename_service, 0x0                 ; Preset filename query/timeout/LCD tick
         call    v171_health_patch_suffix, 0x0                     ; top-level LCD row-2 suffix
         movf    0x9e, W, B                                  ; reg: 0x09e
         xorlw   0xea
@@ -3543,43 +3677,27 @@ v171_prs_screen_draw:
         movlw   ' '
         call    lcd_char_write, 0x0
 
-        ; Row 1: "Active: X       " where X is A or B based on PRESET_BIT.
+        ; Row 0 live status cells: col14 health glyph, col15 A/B/!.
+        ; Seed snap invalid so two bounded status patch calls paint both cells.
+        movlb   0x02
+        movlw   0xFF
+        movwf   v172_fname_row0_status_snap, BANKED
+        movlb   0x00
+        call    v172_preset_status_patch_service, 0x0
+        call    v172_preset_status_patch_service, 0x0
+
+        ; Row 1 starts blank; filename service will incrementally repaint.
         movlw   0xC0                                       ; LCD cursor row 1 col 0
         call    lcd_command, 0x0
-        movlw   'A'
-        call    lcd_char_write, 0x0
-        movlw   'c'
-        call    lcd_char_write, 0x0
-        movlw   't'
-        call    lcd_char_write, 0x0
-        movlw   'i'
-        call    lcd_char_write, 0x0
-        movlw   'v'
-        call    lcd_char_write, 0x0
-        movlw   'e'
-        call    lcd_char_write, 0x0
-        movlw   ':'
-        call    lcd_char_write, 0x0
+        movlw   0x10
+        movwf   (Common_RAM + 24), A
+v172_preset_blank_row1_entry:
         movlw   ' '
         call    lcd_char_write, 0x0
-        movlw   'A'
-        btfsc   control_flags, PRESET_BIT, A
-        movlw   'B'
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
+        decfsz  (Common_RAM + 24), F, A
+        bra     v172_preset_blank_row1_entry
+
+        call    fname_reset_and_query, 0x0
 
         ; Snapshot PRESET_BIT in bank-1 0x72 for dirty-check on next loop
         movlb   0x01
@@ -3646,6 +3764,7 @@ v171_preset_exit_check:
         iorwf   (Common_RAM + 24), F, A
         btfsc   STATUS, Z, A
         bra     v171_preset_loop                          ; no exit condition — loop
+        call    fname_reset_blank, 0x0
         movlb   0x00
         return  0x0
 
@@ -4900,6 +5019,365 @@ v172_diag_identity_send_abort:
         return  0x0
 
 ; ---------------------------------------------------------------------------
+; V1.72/V3.3 Preset filename helpers
+; ---------------------------------------------------------------------------
+v172_fname_cold_clear:
+        lfsr    0x0, 0x220
+        movlw   0x25
+        movwf   (Common_RAM + 15), A
+v172_fname_clear_low:
+        clrf    POSTINC0, A
+        decfsz  (Common_RAM + 15), F, A
+        bra     v172_fname_clear_low
+        lfsr    0x0, 0x255
+        movlw   0x08
+        movwf   (Common_RAM + 15), A
+v172_fname_clear_high:
+        clrf    POSTINC0, A
+        decfsz  (Common_RAM + 15), F, A
+        bra     v172_fname_clear_high
+        movlb   0x00
+        return  0x0
+
+fname_mark_row_dirty_blank:
+        movlb   0x02
+        clrf    v172_fname_render_col, BANKED
+        clrf    v172_fname_render_off, BANKED
+        bsf     v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        return  0x0
+
+fname_mark_row_dirty_valid:
+        movlb   0x02
+        clrf    v172_fname_render_col, BANKED
+        movf    v172_fname_scroll_off, W, BANKED
+        movwf   v172_fname_render_off, BANKED
+        bsf     v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        return  0x0
+
+fname_reset_blank:
+        movlb   0x02
+        clrf    v172_fname_flags, BANKED
+        clrf    v172_fname_len, BANKED
+        clrf    v172_fname_expected_len, BANKED
+        clrf    v172_fname_deadline_lo, BANKED
+        clrf    v172_fname_deadline_hi, BANKED
+        clrf    v172_fname_scroll_off, BANKED
+        clrf    v172_fname_scroll_hold, BANKED
+        clrf    v172_fname_scroll_div_lo, BANKED
+        clrf    v172_fname_scroll_div_hi, BANKED
+        rcall   fname_mark_row_dirty_blank
+        return  0x0
+
+fname_reset_and_query:
+        rcall   fname_reset_blank
+        movlb   0x00
+        movlw   0x01
+        cpfseq  display_state_index, BANKED
+        return  0x0
+        btfss   control_flags, CONNECTED, A
+        return  0x0
+        movlb   0x02
+        bsf     v172_fname_flags, FNAME_WANT_QUERY, BANKED
+        movlb   0x00
+        return  0x0
+
+v172_preset_filename_service:
+        movlb   0x00
+        movlw   0x01
+        cpfseq  display_state_index, BANKED
+        return  0x0
+        call    v172_fname_query_service, 0x0
+        call    v172_fname_deadline_service, 0x0
+        call    v172_fname_scroll_service, 0x0
+        call    v172_preset_status_patch_service, 0x0
+        bc      v172_preset_filename_service_done
+        call    v172_fname_row1_render_service, 0x0
+v172_preset_filename_service_done:
+        movlb   0x00
+        return  0x0
+
+v172_fname_query_service:
+        movlb   0x02
+        btfss   v172_fname_flags, FNAME_WANT_QUERY, BANKED
+        return  0x0
+        btfsc   v172_fname_flags, FNAME_PENDING, BANKED
+        return  0x0
+        incf    v172_fname_gen, F, BANKED
+        movlw   0x20
+        cpfseq  v172_fname_gen, BANKED
+        bra     v172_fname_query_gen_ok
+        clrf    v172_fname_gen, BANKED
+v172_fname_query_gen_ok:
+        movf    v172_fname_gen, W, BANKED
+        movwf   v172_fname_id, BANKED
+        rlncf   v172_fname_id, F, BANKED
+        rlncf   v172_fname_id, F, BANKED
+        bcf     v172_fname_id, 1, BANKED
+        movlb   0x00
+        btfsc   control_flags, PRESET_BIT, A
+        bra     v172_fname_query_slot_b
+        movlb   0x02
+        bcf     v172_fname_id, 0, BANKED
+        bra     v172_fname_query_send
+v172_fname_query_slot_b:
+        movlb   0x02
+        bsf     v172_fname_id, 0, BANKED
+v172_fname_query_send:
+        call    v172_fname_send_query, 0x0
+        bc      v172_fname_query_done
+        movlb   0x02
+        bsf     v172_fname_flags, FNAME_PENDING, BANKED
+        bcf     v172_fname_flags, FNAME_WANT_QUERY, BANKED
+        bcf     v172_fname_flags, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        clrf    v172_fname_len, BANKED
+        clrf    v172_fname_expected_len, BANKED
+        movlw   FNAME_PENDING_DEADLINE_LO
+        movwf   v172_fname_deadline_lo, BANKED
+        movlw   FNAME_PENDING_DEADLINE_HI
+        movwf   v172_fname_deadline_hi, BANKED
+v172_fname_query_done:
+        movlb   0x00
+        return  0x0
+
+v172_fname_send_query:
+        call    tx_ring_reserve_3, 0x0
+        bc      v172_fname_send_abort
+        movlw   0xB1
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        bc      v172_fname_send_abort
+        movlw   0x26
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        bc      v172_fname_send_abort
+        movlb   0x02
+        movf    v172_fname_id, W, BANKED
+        movlb   0x00
+        movwf   tx_data_staging, A
+        call    tx_byte_enqueue, 0x0
+        bc      v172_fname_send_abort
+        bcf     STATUS, C, A
+        return  0x0
+v172_fname_send_abort:
+        movlb   0x00
+        bsf     STATUS, C, A
+        return  0x0
+
+v172_fname_deadline_service:
+        movlb   0x02
+        btfss   v172_fname_flags, FNAME_PENDING, BANKED
+        return  0x0
+        movf    v172_fname_deadline_lo, F, BANKED
+        bnz     v172_fname_deadline_dec_lo
+        movf    v172_fname_deadline_hi, F, BANKED
+        bz      v172_fname_deadline_expire
+        decf    v172_fname_deadline_hi, F, BANKED
+        decf    v172_fname_deadline_lo, F, BANKED
+        return  0x0
+v172_fname_deadline_dec_lo:
+        decf    v172_fname_deadline_lo, F, BANKED
+        return  0x0
+v172_fname_deadline_expire:
+        rcall   fname_reset_blank
+        return  0x0
+
+v172_fname_scroll_service:
+        movlb   0x02
+        btfss   v172_fname_flags, FNAME_VALID, BANKED
+        return  0x0
+        movlw   0x11
+        cpfslt  v172_fname_len, BANKED
+        bra     v172_fname_scroll_active
+        return  0x0
+v172_fname_scroll_active:
+        btfsc   v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        return  0x0
+        movf    v172_fname_scroll_div_lo, F, BANKED
+        bnz     v172_fname_scroll_dec_lo
+        movf    v172_fname_scroll_div_hi, F, BANKED
+        bz      v172_fname_scroll_step_ready
+        decf    v172_fname_scroll_div_hi, F, BANKED
+        decf    v172_fname_scroll_div_lo, F, BANKED
+        return  0x0
+v172_fname_scroll_dec_lo:
+        decf    v172_fname_scroll_div_lo, F, BANKED
+        return  0x0
+v172_fname_scroll_step_ready:
+        movlw   FNAME_SCROLL_DIV_LO
+        movwf   v172_fname_scroll_div_lo, BANKED
+        movlw   FNAME_SCROLL_DIV_HI
+        movwf   v172_fname_scroll_div_hi, BANKED
+        movf    v172_fname_scroll_hold, F, BANKED
+        bz      v172_fname_scroll_move
+        decf    v172_fname_scroll_hold, F, BANKED
+        return  0x0
+v172_fname_scroll_move:
+        movf    v172_fname_len, W, BANKED
+        addlw   0xF0                                        ; max_off = len - 16
+        movwf   v172_fname_tmp, BANKED
+        btfsc   v172_fname_flags, FNAME_TAILDIR, BANKED
+        bra     v172_fname_scroll_tail
+        movf    v172_fname_scroll_off, W, BANKED
+        cpfseq  v172_fname_tmp, BANKED
+        bra     v172_fname_scroll_prefix_inc
+        clrf    v172_fname_scroll_off, BANKED
+        movlw   FNAME_SCROLL_REST_HOLD
+        movwf   v172_fname_scroll_hold, BANKED
+        bra     v172_fname_scroll_dirty
+v172_fname_scroll_prefix_inc:
+        incf    v172_fname_scroll_off, F, BANKED
+        movf    v172_fname_scroll_off, W, BANKED
+        cpfseq  v172_fname_tmp, BANKED
+        bra     v172_fname_scroll_dirty
+        movlw   FNAME_SCROLL_FAR_HOLD
+        movwf   v172_fname_scroll_hold, BANKED
+        bra     v172_fname_scroll_dirty
+v172_fname_scroll_tail:
+        movf    v172_fname_scroll_off, F, BANKED
+        bnz     v172_fname_scroll_tail_dec
+        movf    v172_fname_tmp, W, BANKED
+        movwf   v172_fname_scroll_off, BANKED
+        movlw   FNAME_SCROLL_REST_HOLD
+        movwf   v172_fname_scroll_hold, BANKED
+        bra     v172_fname_scroll_dirty
+v172_fname_scroll_tail_dec:
+        decf    v172_fname_scroll_off, F, BANKED
+        movf    v172_fname_scroll_off, F, BANKED
+        bnz     v172_fname_scroll_dirty
+        movlw   FNAME_SCROLL_FAR_HOLD
+        movwf   v172_fname_scroll_hold, BANKED
+v172_fname_scroll_dirty:
+        rcall   fname_mark_row_dirty_valid
+        return  0x0
+
+v172_preset_status_patch_service:
+        movlb   0x02
+        clrf    v172_fname_tmp, BANKED
+        movlb   0x01
+        movlw   V171_HEALTH_STALE_AGE
+        cpfslt  v171_health_age_pb1, BANKED
+        bra     v172_preset_status_set_health
+        movlw   V171_HEALTH_STALE_AGE
+        cpfslt  v171_health_age_pb2, BANKED
+        bra     v172_preset_status_set_health
+        bra     v172_preset_status_preset
+v172_preset_status_set_health:
+        movlb   0x02
+        bsf     v172_fname_tmp, 0, BANKED
+v172_preset_status_preset:
+        movlb   0x00
+        btfsc   control_flags, PRESET_BIT, A
+        bra     v172_preset_status_set_b
+        bra     v172_preset_status_fault
+v172_preset_status_set_b:
+        movlb   0x02
+        bsf     v172_fname_tmp, 1, BANKED
+v172_preset_status_fault:
+        movlb   0x00
+        btfsc   control_flags, DSP_FAULT_BIT, A
+        bra     v172_preset_status_set_fault
+        bra     v172_preset_status_check_col14
+v172_preset_status_set_fault:
+        movlb   0x02
+        bsf     v172_fname_tmp, 2, BANKED
+v172_preset_status_check_col14:
+        movlb   0x02
+        movf    v172_fname_tmp, W, BANKED
+        xorwf   v172_fname_row0_status_snap, W, BANKED
+        andlw   0x01
+        bz      v172_preset_status_check_col15
+        movlb   0x00
+        movlw   0x8E
+        call    lcd_command, 0x0
+        movlb   0x02
+        movlw   ' '
+        btfsc   v172_fname_tmp, 0, BANKED
+        movlw   '*'
+        movlb   0x00
+        call    lcd_char_write, 0x0
+        movlb   0x02
+        bcf     v172_fname_row0_status_snap, 0, BANKED
+        btfsc   v172_fname_tmp, 0, BANKED
+        bsf     v172_fname_row0_status_snap, 0, BANKED
+        movlb   0x00
+        bsf     STATUS, C, A
+        return  0x0
+v172_preset_status_check_col15:
+        movf    v172_fname_tmp, W, BANKED
+        xorwf   v172_fname_row0_status_snap, W, BANKED
+        andlw   0x06
+        bz      v172_preset_status_no_lcd
+        movlb   0x00
+        movlw   0x8F
+        call    lcd_command, 0x0
+        movlb   0x02
+        movlw   '!'
+        btfsc   v172_fname_tmp, 2, BANKED
+        bra     v172_preset_status_write_col15
+        movlw   'A'
+        btfsc   v172_fname_tmp, 1, BANKED
+        movlw   'B'
+v172_preset_status_write_col15:
+        movlb   0x00
+        call    lcd_char_write, 0x0
+        movlb   0x02
+        bcf     v172_fname_row0_status_snap, 1, BANKED
+        bcf     v172_fname_row0_status_snap, 2, BANKED
+        btfsc   v172_fname_tmp, 1, BANKED
+        bsf     v172_fname_row0_status_snap, 1, BANKED
+        btfsc   v172_fname_tmp, 2, BANKED
+        bsf     v172_fname_row0_status_snap, 2, BANKED
+        movlb   0x00
+        bsf     STATUS, C, A
+        return  0x0
+v172_preset_status_no_lcd:
+        movlb   0x00
+        bcf     STATUS, C, A
+        return  0x0
+
+v172_fname_row1_render_service:
+        movlb   0x02
+        btfss   v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        return  0x0
+        movlb   0x00
+        movlw   0xC0
+        movlb   0x02
+        addwf   v172_fname_render_col, W, BANKED
+        movlb   0x00
+        call    lcd_command, 0x0
+        movlb   0x02
+        movlw   ' '
+        btfss   v172_fname_flags, FNAME_VALID, BANKED
+        bra     v172_fname_row1_write
+        movf    v172_fname_render_off, W, BANKED
+        addwf   v172_fname_render_col, W, BANKED
+        movwf   v172_fname_tmp, BANKED
+        movf    v172_fname_len, W, BANKED
+        cpfslt  v172_fname_tmp, BANKED
+        bra     v172_fname_row1_space
+        lfsr    0x0, 0x220
+        movf    v172_fname_tmp, W, BANKED
+        addwf   FSR0L, F, A
+        movf    INDF0, W, A
+        bra     v172_fname_row1_write
+v172_fname_row1_space:
+        movlw   ' '
+v172_fname_row1_write:
+        movlb   0x00
+        call    lcd_char_write, 0x0
+        movlb   0x02
+        incf    v172_fname_render_col, F, BANKED
+        movlw   0x10
+        cpfseq  v172_fname_render_col, BANKED
+        bra     v172_fname_row1_done
+        clrf    v172_fname_render_col, BANKED
+        bcf     v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+v172_fname_row1_done:
+        movlb   0x00
+        return  0x0
+
+; ---------------------------------------------------------------------------
 ; v171_diag_send_query — enqueue a 3-byte cmd 0x21 query for the current
 ; target PB.  Route is computed from v171_diag_target (0 → 0xB1 PB1,
 ; 1 → 0xB2 PB2).  Uses tx_ring_reserve_3 before the raw tx_byte_enqueue
@@ -5179,6 +5657,11 @@ v171_health_patch_suffix_dirty:
         movlb   0x00
         btfss   control_flags, CONNECTED, A
         return  0x0
+        movlw   0x01
+        cpfseq  display_state_index, BANKED
+        bra     v171_health_patch_suffix_not_preset
+        return  0x0
+v171_health_patch_suffix_not_preset:
         movlw   0x04
         cpfslt  display_state_index, BANKED
         return  0x0
@@ -5206,10 +5689,17 @@ v171_health_patch_suffix_top_level:
         bz      v171_health_patch_have_mask
         bsf     v171_health_suffix_mask, 1, BANKED
 v171_health_patch_have_mask:
-        movlb   0x00
         ; The LCD helpers use access-bank scratch cells also touched by the
         ; RBIF/IR ISR.  Keep the five-byte suffix patch atomic so an interrupt
         ; cannot corrupt the cursor command and land the clear at row-2 col 0.
+        ; Restore the prior GIE state instead of unconditionally enabling it:
+        ; this helper may be called from foreground paths that entered with
+        ; interrupts already masked.
+        movlb   0x01
+        clrf    v171_health_age_tmp, BANKED
+        btfsc   INTCON, GIE, A
+        incf    v171_health_age_tmp, F, BANKED
+        movlb   0x00
         bcf     INTCON, GIE, A
         movlw   0x80
         movwf   (Common_RAM + 1), A
@@ -5258,8 +5748,11 @@ v171_health_patch_clear:
         movlw   ' '
         call    lcd_char_write, 0x0
 v171_health_patch_done:
-        bsf     INTCON, GIE, A
         movlb   0x01
+        movf    v171_health_age_tmp, F, BANKED
+        bz      v171_health_patch_gie_restored
+        bsf     INTCON, GIE, A
+v171_health_patch_gie_restored:
         bcf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
         return  0x0
@@ -5489,6 +5982,7 @@ flow_v171_diag_cache_zero:
         clrf    v171_health_flags, BANKED
         clrf    v171_health_poll_target, BANKED
         clrf    v171_health_tick_div, BANKED
+        call    v172_fname_cold_clear, 0x0
         movlb   0x00                                        ; restore default bank
         ; --- end Bug #44 fix ---
 
@@ -7256,7 +7750,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x32, 0x00 ; "Firmware V1.72"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x38, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x32, 0x39, 0x00 ; "Rev x38 20260529"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x39, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x33, 0x31, 0x00 ; "Rev x39 20260531"
 
 ; --- Canonical V1.72 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7264,8 +7758,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x32, 0x38                    ; V1.72 + monotonic release revision
-        db      0x20, 0x26, 0x05, 0x29                    ; build date 20260529 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x32, 0x39                    ; V1.72 + monotonic release revision
+        db      0x20, 0x26, 0x05, 0x31                    ; build date 20260531 (BCD YYYYMMDD)
 
 ; --- V1.72 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

@@ -25,6 +25,22 @@ input_select_mirror         EQU  0x0B3
 rx_ring_rd                  EQU  0x0C6
 rx_ring_wr                  EQU  0x0C7
 
+; --- V3.3/V1.72 Preset filename LCD reply job (BANK 2) ---
+; Physical 0x2F4..0x2FF.  These cells sit above the V3.2 diagnostics /
+; reset / parser-gap / recovery / SRC block at 0x2E5..0x2F3.
+fn_job_state                EQU  0x2F4   ; 0=IDLE,1=START,2=LEN,3=CHARS,4=END
+fn_job_id                   EQU  0x2F5   ; echoed query id
+fn_job_idx                  EQU  0x2F6   ; next char index
+fn_job_src_kind             EQU  0x2F7   ; 0=active RAM,1=EEPROM A,2=EEPROM B
+filename_rev                EQU  0x2F8   ; even=stable, odd=writer in progress
+fn_job_rev                  EQU  0x2F9   ; stable filename_rev snapshot
+fn_job_start_cmd            EQU  0x2FA   ; 0x2E tail-first, 0x2F prefix-first
+fn_job_len                  EQU  0x2FB   ; printable length, 0..30
+fname_tx_gap_lo             EQU  0x2FC   ; reserved 16-bit pacing countdown
+fname_tx_gap_hi             EQU  0x2FD
+chain_tx_emitted            EQU  0x2FE   ; pass-local chain arbitration flag
+fn_job_tmp                  EQU  0x2FF   ; local filename job scratch
+
 ; --- Unnamed RAM variables ---
 ram_0x000                   EQU  0x000
 ram_0x003                   EQU  0x003

@@ -205,6 +205,8 @@ class CaptureResult:
     observations: list[OcrObservation]
     line1: str | None
     line2: str | None
+    raw_line1: str
+    raw_line2: str
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -292,6 +294,50 @@ def _group_rows(observations: list[OcrObservation]) -> tuple[str, str]:
     top_text = " ".join(o.text.strip() for o in top if o.text.strip())
     bottom_text = " ".join(o.text.strip() for o in bottom if o.text.strip())
     return top_text, bottom_text
+
+
+def _raw_ordered_rows(observations: list[OcrObservation]) -> tuple[str, str]:
+    """Return raw ordered LCD rows with no firmware-template snapping.
+
+    This is the capture mode used by the Preset filename OCR gate.  The
+    filename row can be an arbitrary DSP/config name, so snapping it through
+    `_pick_lines` would either erase useful text or accidentally validate the
+    old `Active: A/B` layout.
+    """
+    return _group_rows(observations)
+
+
+def reconstruct_scroll_windows(windows: list[str | None]) -> str:
+    """Best-effort reconstruction of a scrolling LCD row from ordered windows.
+
+    Windows are appended by maximum suffix/prefix overlap.  The helper is
+    deliberately simple: it keeps capture order, ignores empty samples, and
+    works for the DLCP filename gate where every row-1 sample is a consecutive
+    16-character-ish OCR view of the same scrolling name.
+    """
+    cleaned = [value.strip() for value in windows if value and value.strip()]
+    if not cleaned:
+        return ""
+    merged = cleaned[0]
+    for window in cleaned[1:]:
+        if window in merged:
+            continue
+        max_overlap = min(len(merged), len(window))
+        append_overlap = 0
+        for size in range(max_overlap, 0, -1):
+            if merged.endswith(window[:size]):
+                append_overlap = size
+                break
+        prepend_overlap = 0
+        for size in range(max_overlap, 0, -1):
+            if window.endswith(merged[:size]):
+                prepend_overlap = size
+                break
+        if prepend_overlap > append_overlap:
+            merged = window[: len(window) - prepend_overlap] + merged
+        else:
+            merged += window[append_overlap:]
+    return merged
 
 
 def _extract_pb_diag(
@@ -496,6 +542,10 @@ def _consensus_active(values: list[str | None]) -> str | None:
     return "Active:"
 
 
+def _consensus_raw_row(values: list[str]) -> str:
+    return _consensus([value.strip() or None for value in values]) or ""
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera-selector", default=DEFAULT_CAMERA_NAME)
@@ -511,6 +561,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-s", type=float, default=DEFAULT_WARMUP_S)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--skip-configure", action="store_true")
+    parser.add_argument(
+        "--raw-ordered-row",
+        action="store_true",
+        help=(
+            "include raw ordered row capture with no Active:/Preset snapping; "
+            "used by DLCP_HW_PRESET_FILENAME_CONFIRM"
+        ),
+    )
     return parser
 
 
@@ -540,8 +598,18 @@ def main(argv: list[str] | None = None) -> int:
             image_path = run_root / f"capture_{index + 1}.jpg"
             _capture_frame(capture_swift, args.camera_selector, image_path, args.warmup_s)
             observations = _ocr_frame(ocr_swift, image_path)
+            raw_line1, raw_line2 = _raw_ordered_rows(observations)
             line1, line2 = _pick_lines(observations)
-            captures.append(CaptureResult(image_path=image_path, observations=observations, line1=line1, line2=line2))
+            captures.append(
+                CaptureResult(
+                    image_path=image_path,
+                    observations=observations,
+                    line1=line1,
+                    line2=line2,
+                    raw_line1=raw_line1,
+                    raw_line2=raw_line2,
+                )
+            )
 
     summary = {
         "camera_selector": args.camera_selector,
@@ -552,6 +620,8 @@ def main(argv: list[str] | None = None) -> int:
                 "image_path": str(item.image_path),
                 "line1": item.line1,
                 "line2": item.line2,
+                "raw_line1": item.raw_line1,
+                "raw_line2": item.raw_line2,
                 "observations": [dataclasses.asdict(obs) for obs in item.observations],
             }
             for item in captures
@@ -559,8 +629,16 @@ def main(argv: list[str] | None = None) -> int:
         "consensus": {
             "line1": _consensus([item.line1 for item in captures]),
             "line2": _consensus_active([item.line2 for item in captures]),
+            "raw_line1": _consensus_raw_row([item.raw_line1 for item in captures]),
+            "raw_line2": _consensus_raw_row([item.raw_line2 for item in captures]),
         },
     }
+    if args.raw_ordered_row:
+        summary["raw_ordered_row"] = True
+        summary["scroll_reconstruction"] = {
+            "line1": reconstruct_scroll_windows([item.raw_line1 for item in captures]),
+            "line2": reconstruct_scroll_windows([item.raw_line2 for item in captures]),
+        }
     summary_path = run_root / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
 
