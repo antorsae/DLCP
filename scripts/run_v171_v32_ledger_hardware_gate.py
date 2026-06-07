@@ -160,7 +160,8 @@ PHASES: tuple[Phase, ...] = (
         ),
         manual=(
             "Use the physical CONTROL Preset screen to select A, wait for the "
-            "UI to settle on Volume or Preset with row 2 'Active: A', then run."
+            "UI to settle on Volume/'Active: A' or Preset row 0 ending in A "
+            "(or ! if DSP fault is active), then run."
         ),
         needs_camera=True,
     ),
@@ -174,7 +175,22 @@ PHASES: tuple[Phase, ...] = (
         ),
         manual=(
             "Use the physical CONTROL Preset screen to select B, wait for the "
-            "UI to settle on Volume or Preset with row 2 'Active: B', then run."
+            "UI to settle on Volume/'Active: B' or Preset row 0 ending in B "
+            "(or ! if DSP fault is active), then run."
+        ),
+        needs_camera=True,
+    ),
+    Phase(
+        name="preset-filename-lcd",
+        description="Preset page reconstructs PB1 filename on row 1.",
+        node="test_live_preset_filename_lcd_confirm_reconstructs_pb1_name",
+        env=(("DLCP_HW_PRESET_FILENAME_CONFIRM", "1"),),
+        required_env=("DLCP_HW_EXPECTED_PRESET_FILENAME",),
+        manual=(
+            "Flash filename-capable V1.72/V3.3, navigate CONTROL to the "
+            "Preset page for PB1's active preset, and set "
+            "DLCP_HW_EXPECTED_PRESET_FILENAME to the known non-empty PB1 "
+            "filename shown by the LCD scroll reconstruction gate."
         ),
         needs_camera=True,
     ),
@@ -415,6 +431,7 @@ BUG_PHASES: dict[str, tuple[str, ...]] = {
         "identity",
         "front-panel-preset-a",
         "front-panel-preset-b",
+        "preset-filename-lcd",
     ),
     "BUG-PRESET-02": (
         "rapid-toggle",

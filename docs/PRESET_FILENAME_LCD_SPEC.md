@@ -1,9 +1,10 @@
 # Preset Filename on LCD — Feature Specification
 
-Last updated: 2026-05-31
-Status: **implemented for the paired V3.3/V1.72 filename build**. The feature is
-still preliminary/paired-revision only; hardware OCR tolerance remains a gate
-detail rather than a firmware protocol requirement.
+Last updated: 2026-06-07
+Status: **implemented for the paired V3.3/V1.72 filename build, including the
+row-0 immediate re-entry fix documented below**. The feature is still
+preliminary/paired-revision only; hardware OCR tolerance remains a gate detail
+rather than a firmware protocol requirement.
 Scope: show the active preset's DSP filename on the CONTROL Preset screen,
 sourced from MAIN over the 31,250-baud current-loop chain, **horizontally
 scrolled** when it exceeds the 16-column LCD row.
@@ -15,6 +16,93 @@ feature intentionally stays on the `V3.3`/`V1.72` pair, filename-capable images
 are distinguished from diagnostics-identity-only `V3.3`/`V1.72` images by the
 next release revisions: MAIN `V3.3` rev `>= 0x73` and CONTROL `V1.72` rev
 `>= 0x39`.
+
+Implementation split: this file remains the behavioral/protocol SPEC. The
+reviewed implementation and bug-fix ledger for the current Preset A/B and
+screen-reentry defects lives in `docs/IMPL_PRESET_FILENAME_LCD.md`.
+
+### Resolved bug: Preset row-0 blank/stuck on immediate re-entry
+
+Native chain timing probes on 2026-06-07 found this unsafe lifecycle sequence:
+
+1. start in preset B;
+2. enter Preset and verify `('Preset         B', '521.4 22MG10F-v7')`;
+3. press UP to A and verify `('Preset         A', '521.4 22MG10F-v5')`;
+4. press DOWN to B and verify `('Preset         B', '521.4 22MG10F-v7')`;
+5. press RIGHT to Input and wait only until first visible
+   `('Input:          ', 'Auto Detect     ')`;
+6. press LEFT back immediately.
+
+The pre-fix failure was:
+
+```text
+('                ', '521.4 22MG10F-v7')
+```
+
+The row-1 filename was valid, but Preset row 0 was all spaces and did not
+self-recover for at least `60,188 ms` of simulated real time.
+
+The fix is CONTROL-local page ownership and lifecycle ordering, not retries,
+sleeps, or a whole-row recovery rewrite:
+
+- Volume, Setup, and Input page loops return immediately to the top dispatcher
+  when LEFT/RIGHT navigation is latched, so an old page cannot keep writing the
+  LCD after menu state changes.
+- Preset exit sets a row-0 not-ready gate in
+  `v172_fname_row0_status_snap_b2.7`.
+- Preset entry clears that gate only after the full row-0 Preset paint and
+  row-1 entry blank complete.
+- `v172_preset_filename_service` refuses row-1 filename/cache rendering while
+  the gate is set.
+
+Resolved timing evidence from the immediate LEFT trace:
+
+- first visible Input tick: `583600000`;
+- LEFT driven at tick: `583600000`;
+- first sampled Preset tick: `619200000`;
+- valid row-0 Preset line tick: `619200000`;
+- row-1 filename visible tick: `619200000`;
+- exact full LCD match tick: `619200000`;
+- maximum sampled row-0 blank with filename visible: `0 ticks` / `0.000 ms`.
+
+The canonical CONTROL artifact was rebuilt with
+`PYTHONPATH=src .venv_ep0/bin/python scripts/build_v172_release.py --build-date 20260607`,
+producing CONTROL `V1.72` rev `0x3F` / build `20260607`. MAIN was not rebuilt
+for this bug fix; the paired existing MAIN source/artifact identity is `V3.3`
+rev `0x79`.
+
+Regression constants remain:
+
+- `PRESET_REENTRY_POLL_TICKS <= 4_800` (`0.1 ms` at the simulator's 48 MHz
+  universal clock) while waiting for first visible Input and while monitoring
+  the immediate LEFT return.
+- `ROW0_PRESET_REPAINT_BUDGET_TICKS = 960_000` (`20 ms`) from the first sampled
+  Preset re-entry state to a valid row-0 Preset line.
+- `ROW0_BLANK_WITH_FILENAME_BUDGET_TICKS = 0`: once row 1 contains any
+  filename/cache character on Preset re-entry, no sampled state may have row 0
+  equal to 16 spaces.
+
+Verification:
+
+- `tests/sim/test_preset_filename_lcd_spec.py` -> `176 passed in 217.59s`.
+- Immediate re-entry focused trio
+  (`test_v172_v33_full_native_chain_filename_preset_reentry_matrix`,
+  `test_v172_v33_full_native_chain_preset_reentry_immediate_left_never_blanks_row0`,
+  `test_v172_native_preset_entry_paint_precedes_filename_cache_reuse`) ->
+  `8 passed in 76.69s`.
+- Static/release-adjacent bundle
+  (`test_v171_ram_static_analysis.py`, `test_v171_baseline.py`,
+  `test_v172_v33_release_builders.py`, `test_dlcp_control_flash_safety.py`,
+  `test_v172_v33_diag_identity.py`) -> `56 passed, 1 warning in 72.15s`
+  (existing indeterminate-site warning).
+- Post-build release smoke -> `12 passed in 21.18s`.
+- Full simulator gate `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim`
+  -> `1411 passed, 1 skipped, 4 warnings in 3062.67s`.
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/check_ram_access_safety.py --target control-v172`
+  -> `RAM bank safety: OK (control-v172)`.
+- Hardware tests were collected (`18 tests`) and the phase manifest was
+  generated, but no hardware flash or live OCR acceptance was run for this
+  simulator-only bug-fix pass.
 
 ### Review history
 
@@ -245,7 +333,7 @@ lowest-priority: it MUST emit no frame in a foreground pass where another
 chain/BF burst was consumed, forwarded, or emitted, and it MUST also enforce a
 measured **minimum start-to-start interval of at least 2 ms** between filename
 frames. The gate is non-blocking: if the pass was chain-busy or the interval has
-not elapsed, the job just returns and retries next pass. The full 33-frame reply then spans at
+not elapsed, the job returns and checks again on a later pass. The full 33-frame reply then spans at
 least ~66 ms, which is acceptable for LCD text and leaves margin above the
 ~0.96 ms wire time of a 3-byte frame at 31,250 baud. Test #2
 ([§10](#10-test-plan-red-test-first)) is the gate: *red* = unthrottled burst
@@ -583,7 +671,7 @@ the measured Preset-loop cadence changes, tune this reload upward, but keep the
 test invariant: a max-length paced reply under legal interleaving must complete
 before the deadline.
 
-1. **On Preset entry / `PRESET_BIT` change** (full reset, R2-2/R2-3 from review 1):
+1. **On initial Preset entry** (full reset, R2-2/R2-3 from review 1):
    first draw row 0 in the new Preset layout, then either synchronously write 16
    row-1 spaces during the screen-entry paint or call
    `fname_mark_row_dirty_blank` before the first visible service tick. The old
@@ -591,18 +679,45 @@ before the deadline.
    `v172_fname_row0_status_snap` to the row-0 cells just drawn, then call
    `fname_reset_and_query`. Cache need not be cleared — it's only read when
    `VALID`.
+1b. **On ordinary Preset re-entry**: redraw row 0 and blank row 1. If
+   `FNAME_VALID` is set and the cached query-id slot bit matches the current
+   `PRESET_BIT`, reuse the cache by marking row 1 dirty-valid; do not issue a
+   new query just because the user visited the next menu and came back. Row 0
+   redraw is not optional: cache reuse must not make row-1 filename text visible
+   while row 0 is still all spaces from an interrupted or premature menu
+   transition. If no valid matching cache exists, use the standard query path
+   below.
+1c. **On observed `PRESET_BIT` change, or Preset B re-entry without a valid
+   matching cache**: redraw row 0, blank row 1, and delay the first standard
+   filename query. Preset A re-entry without a valid cache may use the immediate
+   query path because it has a quiet reply window in the current chain cadence.
+   Set `FNAME_QUERY_WAIT`, seed `v172_fname_deadline_lo/hi` from
+   `FNAME_QUERY_DELAY_A = 0x3000` or `FNAME_QUERY_DELAY_B = 0x4000` based on the
+   selected slot, and let `v172_fname_deadline_service` count down before setting
+   `WANT_QUERY`. These short delays avoid the visible blank dwell seen with
+   the former A-side `0x6000` countdown while still letting screen-change
+   traffic, MAIN's delayed preset apply, and any old reply burst drain. The
+   filename delay-expiry path must also wait while
+   `v171_health_flags.V171_HEALTH_FLAG_PENDING` is set, so an already-issued
+   `cmd 0x23` health ping can land or time out before `cmd 0x26` starts a
+   filename reply. This is not a reply retry; it is the standard settle window.
+   Once the delayed query is sent, malformed/dropped replies follow the normal
+   blank-without-requery policy.
 2. **On lifecycle interruption:** standby entry, `CONNECTED` clear, PB1 lost
    (`v171_health_age_pb1 >= V171_HEALTH_LOST_AGE`), PB1 reboot, or
    reconnect-wait entry calls `fname_reset_blank`. **Preset exit / menu
-   navigation away from `display_state_index == 1` also calls
-   `fname_reset_blank` before the state change returns to the menu dispatcher**,
-   because the pending deadline only advances while the Preset service is
-   visible and the global one-query state must not be stranded off-screen.
-   Off-screen deadline service is deliberately not required in v1; cancellation
-   on exit is the simpler invariant. Preset entry, slot flip, or
-   reconnect-wait completion /
-   `CONNECTED` set calls `fname_reset_and_query` if the user is still on the
-   Preset screen. Periodic `full_sync_burst` is **not** a lifecycle completion
+   navigation away from `display_state_index == 1` preserves a valid matching
+   filename cache, but cancels invalid, pending, or partial filename state with
+   `fname_reset_blank` before returning to the menu dispatcher.** If the user
+   exits while the selected slot is B and no valid cache exists, CONTROL marks
+   `FNAME_QUERY_WAIT` so the next Preset draw uses the delayed standard query.
+   Off-screen deadline service is deliberately not required in v1; cache reuse
+   on ordinary menu navigation is the simple invariant. Initial Preset entry
+   calls `fname_reset_and_query`; Preset B re-entry without a valid matching
+   cache or slot flip uses the screen-entry settle path in item 1c.
+   Reconnect-wait completion / `CONNECTED` set calls `fname_reset_and_query` only
+   when it needs to request a fresh filename while the Preset screen is already
+   settled. Periodic `full_sync_burst` is **not** a lifecycle completion
    signal and must not trigger automatic filename requery. PB1 stale
    (`V171_HEALTH_STALE_AGE <= age < V171_HEALTH_LOST_AGE`) and PB2
    stale/lost/reboot update the row-0 `*` health glyph but **do not** blank or
@@ -639,9 +754,10 @@ before the deadline.
 6. **Failure** (drop/reorder/old-MAIN/silent) → parser-detected failures call
    `fname_reset_blank`; silent/no-END failures expire by pending age. Neither path
    sets `WANT_QUERY`. Row 1 is blanked, and recovery is only by Preset re-entry,
-   A/B flip, wake, reconnect-wait completion / `CONNECTED` set, or another
-   lifecycle event that calls `fname_reset_and_query`. Periodic `full_sync_burst`
-   is not a recovery trigger. No per-tick re-query storm.
+   A/B flip through the screen-entry settle path as needed, wake,
+   reconnect-wait completion / `CONNECTED` set, or another lifecycle event that
+   explicitly requests a fresh query. Periodic `full_sync_burst` is not a
+   recovery trigger. No per-tick re-query storm.
 
 ### Parser case (`rx_parser_entry`, BF/2D..4E)
 
@@ -772,7 +888,8 @@ Row 0 = `"Preset"` (cols 0–5) + spaces (6–13) + **health glyph @ col 14** +
 | bit 0 | last col-14 health glyph: 0 = space, 1 = `*` |
 | bit 1 | last preset letter source: 0 = A, 1 = B |
 | bit 2 | last DSP-fault status: 0 = show A/B from bit 1, 1 = show `!` |
-| bits 3..7 | reserved, written as 0 |
+| bits 3..6 | reserved, written as 0 |
+| bit 7 | Preset row-0 entry gate: 1 = row 0 is not yet proven ready after navigation; row-1 filename/cache rendering is blocked. Preset entry clears this only after full row-0 Preset paint plus row-1 entry blank. |
 
 The desired col-15 char is `!` when bit 2 is set, otherwise `B` if bit 1 is
 set, else `A`. A col-14 patch updates only bit 0. A col-15 patch updates only
@@ -787,8 +904,8 @@ recomputes the two-character status `(col14, col15)` from current health ages,
 and/or col 15. Do not rely solely on `v171_health_flags.DISPLAY_DIRTY`: DSP
 fault changes and A/B flips also change row 0.
 
-The row-0 patch is deliberately not a full-row redraw. It is two bounded
-single-cell updates:
+The row-0 patch is deliberately not a full-row recovery path. It is two bounded
+single-cell updates for cols 14/15 only:
 
 1. If desired col 14 differs from the snap, set DDRAM col 14, write one char,
    update only the col-14 half of `v172_fname_row0_status_snap`, normalize BSR,
@@ -829,7 +946,10 @@ Concrete row-0 scenarios:
 **Health-suffix change:** `v171_health_patch_suffix` must **skip
 `display_state_index == 1`** for its row-1 tail patch; the Preset screen's health
 is the compact col-14 glyph instead. `v171_health_service` (ping/age tick) still
-runs on all screens. This changes the health contract — update
+runs on all screens, but it must not start a new background `cmd 0x23` poll while
+`FNAME_QUERY_WAIT`, `FNAME_WANT_QUERY`, or `FNAME_PENDING` is set. Existing
+pending health replies/timeouts are still serviced, and health polling resumes
+after the filename query validates or fails. This changes the health contract — update
 `tests/sim/test_v171_preset_lcd_health_suffix.py` accordingly.
 
 ### Row-1 render + scroll (CONTROL-local, zero chain traffic)
@@ -1141,16 +1261,28 @@ Simulator (`tests/sim/`):
    tail. Assert START actually validates a burst end-to-end in the chain.
 5. **Retry policy** — dropped char / reordered / dropped END / old-MAIN echo →
    empty row via parser abort or pending deadline, no per-tick re-query;
-   TX-saturated issue retried until sent; exactly one query per entry/flip
-   otherwise. old-MAIN echo must be injected at frame positions 0/1/2, including
+   TX-saturated issue remains pending until sent; at most one query per Preset
+   entry/re-entry/flip otherwise. Ordinary same-slot re-entry may reuse a valid
+   cache without a fresh query. Preset B re-entry without a valid matching cache
+   and slot-change redraws delay that one query until the screen-entry settle
+   countdown expires, then wait for any pending health ping to drain before
+   issuing `cmd 0x26`; during filename acquisition, background health polling
+   must not create new `BF/2C` interleaving. They do not issue a reply retry.
+   old-MAIN echo must be injected at frame positions 0/1/2, including
    ids `0x2D`, `0x2E`, `0x2F`, and `0x4E`, and including synthetic matching
    START+END without LEN plus adversarial multi-frame stale/old-byte sequences
    that look like `START(id),LEN(id^0),END(id)` but are not a fresh matching
    current query reply; none may finalize.
 5b. **Lifecycle reset** — pending/armed/partial-cache burst interrupted by
     standby, wake, PB1 lost, reconnect-wait entry, PB1 reboot, or Preset
-    exit/menu navigation calls `fname_reset_blank`; Preset entry, slot flip,
-    reconnect-wait completion, or `CONNECTED` set calls `fname_reset_and_query`.
+    exit/menu navigation without a valid matching cache calls
+    `fname_reset_blank`; ordinary Preset exit/menu navigation with a valid
+    matching cache preserves that cache for repaint on return. Initial Preset
+    entry and Preset A re-entry without a valid cache call
+    `fname_reset_and_query`; Preset B re-entry without a valid cache and slot
+    flip call `fname_reset_and_delay_query`; reconnect-wait completion or
+    `CONNECTED` set calls the appropriate fresh-query path for already-settled
+    Preset state.
     Periodic `full_sync_burst` must not requery. PB1 stale and PB2-only
     stale/lost update `*` but do not blank PB1 filename. Add separate PB1-stale,
     PB1-lost, PB2-stale, PB2-lost, and Preset-exit-mid-burst tests. Assert no
@@ -1197,13 +1329,41 @@ Simulator (`tests/sim/`):
    (A) vs `…-v7` (B) → distinguishable.
 10. **End-to-end full native chain** — paired filename V1.72 × V3.3 × V3.3
     chain; simulate flashing/seeding preset filenames independently for PB1 and
-    PB2; flip A↔B
-    (slot+gen+target, no stale); blackout → blank; pre-feature peer smoke test →
-    empty filename row, no desync. Explicit mismatch test: PB1 A=`FILE_A1`,
-    PB2 A=`FILE_A2` → LCD shows PB1 only, no mismatch glyph/error.
+    PB2; cover entry A, entry B, A→B, B→A, A→B→A, and B→A→B using the real
+    front-panel key path (`RIGHT`, `DOWN`, `UP`). Each step must assert row 0,
+    the expected 16-column row-1 filename window, CONTROL's `cmd 0x26` query id
+    slot bit, `BF/START`, `BF/LEN`, `BF/END`, `FNAME_VALID`, and the cached
+    bytes. Transition and round-trip cases must pass without xfail and must
+    assert at most one filename query per step; slot-change redraws use the
+    standard settle delay before that query rather than a reply retry. For each
+    case, also drive `RIGHT` to the Input menu, verify the Input menu, drive
+    `LEFT` back to Preset, and assert both row 0 (`Preset ... A|B`) and row 1
+    filename converge again via cache reuse when the cached slot still matches,
+    with no required fresh query. Also cover switching to B, leaving to Input,
+    entering standby, waking, navigating back to Preset, and verifying
+    `Preset ... B` plus the B filename. Also cover blackout → blank;
+    pre-feature peer smoke test → empty filename row,
+    no desync. Explicit mismatch test: PB1 A=`FILE_A1`, PB2 A=`FILE_A2` → LCD shows PB1 only, no mismatch glyph/error.
     Mixed-version tests cover filename CONTROL + old/pre-feature PB1, filename
     MAIN + old/pre-feature CONTROL, same-version diagnostics-only images, and
     one-side rollback.
+10a. **Immediate re-entry row-0 bug regression** — repeat the full native-chain
+     `B -> A -> B` case, drive `RIGHT` to Input, wait only until the first
+     visible Input LCD frame, then drive `LEFT` back immediately with no
+     test-side settle sleep. The test must fail on the current bug shape
+     `('                ', '521.4 22MG10F-v7')`, and must pass only when row 0
+     is already valid or reaches `Preset         B` while row 1 remains the B
+     filename. The test must also monitor the interval where row 0 is exactly
+     16 spaces using `PRESET_REENTRY_POLL_TICKS <= 4_800`, assert LEFT is driven
+     within one poll quantum after first visible Input, assert row 0 reaches a
+     valid Preset line within `ROW0_PRESET_REPAINT_BUDGET_TICKS`, and fail on
+     any sampled row-1 filename/cache text while row 0 is 16 spaces
+     (`ROW0_BLANK_WITH_FILENAME_BUDGET_TICKS = 0`). It must also mark CONTROL
+     TX/RX before LEFT and assert zero fresh `B1/26` filename queries and zero
+     new `BF/2D..4E` reply frames on this same-slot cache-reuse path. A
+     companion dynamic trace test must pin the source/runtime ordering that
+     prevents row-1 valid/cache rendering before row-0 Preset entry readiness
+     is established.
 10b. **Display combinations** — full chain tests cover prefix-first names,
      tail-first names with shared first 16 chars, ≤16 static names, exactly-16,
      17..30 scrolling, exactly-30, valid blank A/B presets, DSP fault `!`
@@ -1227,18 +1387,23 @@ notes so future work can be traced back to this spec.
 | `test_v172_fname_parser_old_echo_positions_0_1_2_do_not_finalize` | old/pre-feature echo bytes `0x2D/0x2E/0x2F/0x4E` injected at frame positions 0/1/2, including following byte equal to pending id, never produce `VALID` or stuck `ARMED`. |
 | `test_v172_fname_parser_interleaved_bf08_identity_diag_preserved` | `BF/08`, `BF/21..2C`, and `BF/4F..53` still route correctly before/during/after filename pending/armed states. |
 | `test_v172_fname_parser_old_echo_multiframe_start_len_end_do_not_finalize` / `test_raw_protocol_model_old_echo_multibyte_start_len_end_streams_do_not_finalize` | stale/old-byte sequences that look like `START(id),LEN(id^0),END(id)` but are not a fresh current reply do not validate and normal BF/08/diag/identity routing recovers. |
+| `test_v172_v33_full_native_chain_preset_reentry_immediate_left_never_blanks_row0` | native full-chain `B→A→B`, then Preset → first-visible Input sampled at `<=4_800` ticks → immediate LEFT. Fails on `('                ', '521.4 22MG10F-v7')`; passes only when row 0 reaches `Preset         B` within `960_000` ticks, row 1 never shows filename/cache text while row 0 is blank, and no fresh `B1/26` query or `BF/2D..4E` reply occurs on same-slot cache reuse. |
+| `test_v172_native_preset_entry_paint_precedes_filename_cache_reuse` | dynamic native trace/DDRAM-order guard for immediate re-entry. It records `display_state_index`, `FNAME_VALID`, `FNAME_ROW_DIRTY`, `render_col/off`, LCD rows, and first row-0/row-1 visibility ticks, and fails on current source if row-1 filename/cache can become visible before row-0 Preset readiness. Static label ordering is supplemental only. |
 | `test_v172_fname_cold_init_clears_filename_state_preserves_diag_identity` | seeded `0x220..0x25B` clears only filename cells, preserving `0x245..0x254`. |
 | `test_v33_fname_cold_entry_clears_job_state_after_software_reset` | seeded `0x2F4..0x2FF` clears on POR/BOR/software-reset/post-flash handoff. |
 | `test_v172_fname_ram_equates_do_not_overlap_diag_identity` | parses real equates/listing, not copied ranges, and rejects any overlap with Diagnostics identity. |
+| `test_v33_an0_hysteresis_monitor_banks_delay_counter_before_uart_ring_alias` | `an0_hysteresis_monitor` asserts `BSR=0` before touching `ram_0x0A1`; otherwise callers leaving `BSR=2` alias the delay counter into the MAIN UART RX ring at `0x2A1` and can corrupt forwarded `BF/0x30+idx` filename bytes. |
 | `test_v33_filename_code_size_fits_before_preset_table` | parses real V3.3 `.lst`; filename code must fit before `org 0x4C00` with margin. |
 | `test_v172_filename_code_size_fits_before_bootloader` | parses real V1.72 `.lst`; filename code must not cross release metadata/bootloader space. |
 | `test_v33_filename_chain_tx_emitted_coverage_all_chain_senders` | every MAIN chain/status/diag/identity/filename sender sets the pass-local arbitration flag. |
 | `test_v33_filename_rev_writer_hooks_cover_all_filename_mutators` | every RAM/EEPROM filename writer bumps `filename_rev` odd/even around mutation. |
+| `test_v33_native_filename_char_emit_stages_cmd_after_source_read` | MAIN stages filename char data first, then stages the `BF/0x30+idx` command immediately before emit so EEPROM reads cannot clobber the command byte. |
 | `test_v33_reserved_bf_2d_4e_only_filename_emitters` | only filename reply code emits `BF/2D..4E`; diagnostics/status/identity remain outside the range. |
 | `test_v172_fname_row1_incremental_render_writes_one_char_per_tick` | row-1 repaint advances `v172_fname_render_col` one char per visible tick and clears `FNAME_ROW_DIRTY` only after col 15. |
 | `test_v172_fname_dirty_paths_reset_render_cursor` | every path that sets `FNAME_ROW_DIRTY` resets `render_col`/`render_off`; abort blanking cannot leave stale prefix chars. |
 | `test_v172_fname_preset_exit_cancels_pending_or_armed_query` | leaving Preset mid-query calls `fname_reset_blank` and does not strand global filename state. |
 | `test_v172_fname_preset_entry_blanks_old_active_row` | initial Preset paint cannot leave old `Active: A/B` row-1 text visible as a settled state. |
+| `test_v172_filename_acquisition_gates_background_health_polling_native` | CONTROL waits for an already-pending health ping before raising filename `WANT_QUERY`, and suppresses new background `cmd 0x23` health polls while filename WAIT/PENDING/WANT is active. |
 | `test_v172_fname_row1_render_tolerates_ir_rcif_during_pending_valid_scrolling` | IR, RCIF/chain frames, standby/wake, volume/mute, and A/B buttons dispatch during pending, valid static, and scrolling states. |
 | `test_v172_preset_row0_live_patch_health_fault_preset_scenarios` | PB1/PB2 stale/lost, DSP fault `!`, A/B flips, and simultaneous health+fault changes produce the tabled row-0 progressions. |
 | `test_v172_v33_deployment_uses_cmd25_app_identity_not_usb_eeprom_rev` | flashing/runbook validation rejects stale USB/EEPROM rev evidence and accepts only app-resident `cmd 0x25` chain identity. |
@@ -1249,6 +1414,9 @@ notes so future work can be traced back to this spec.
 | `test_preset_filename_spec_defines_hfd_active_ram_vs_inactive_eeprom_validation` | active slot validates RAM on fresh requery; inactive slot validation waits for EEPROM persistence/readback. |
 | `test_v172_v33_pb1_authoritative_lcd_with_pb2_mismatch` | PB1 A=`FILE_A1`, PB2 A=`FILE_A2` displays PB1 only; mismatch is optional warning, not LCD failure. |
 | `test_v172_v33_full_chain_blank_name_requires_fresh_start_len_end_evidence` | blank row passes only with fresh PB1 query id plus `START/LEN(0)/END` capture or after a prior non-empty gate. |
+| `test_v172_v33_full_native_chain_filename_preset_state_matrix` | native full-chain matrix for entry A, entry B, A→B, B→A, A→B→A, and B→A→B. Drives real front-panel keys and validates row 0, row-1 filename window, `cmd 0x26` slot bit, `BF/START`, `BF/LEN`, `BF/END`, `FNAME_VALID`, cache bytes, and at most one filename query per step. Transition/round-trip params pass without xfail via the standard Preset screen-entry settle delay. |
+| `test_v172_v33_full_native_chain_filename_preset_reentry_matrix` | repeats the same six native full-chain cases, then drives Preset → Input → Preset and verifies the returned Preset page shows both row 0 (`Preset ... A\|B`) and the expected filename row through same-slot cache reuse. |
+| `test_v172_v33_full_native_chain_preset_b_survives_next_menu_standby_wake` | drives Preset A → B, verifies B filename, goes Preset → Input → STBY → WAKE, navigates back to Preset, and verifies row 0 is still `Preset ... B` with the B filename. |
 | `test_preset_filename_row1_dirty_render_initializes_render_cursor` | first dirty render snapshots `v172_fname_render_off`, starts at col 0, writes only one row-1 char, and leaves dirty set. |
 | `test_preset_filename_row1_incremental_writer_advances_one_col_per_tick` | every visible Preset tick writes exactly one addressed row-1 char; dirty clears only after col 15. |
 | `test_preset_filename_row1_render_uses_snapshot_offset_until_complete` | a repaint that starts at one scroll offset finishes that 16-char window even if `scroll_off` changes mid-render. |
@@ -1287,10 +1455,10 @@ Hardware (R2-4/R2-5 — existing harness will **not** work unmodified):
   normalization, `hardware_lcd_probe.py:324/469`) and a **scroll-reconstruction**
   step that stitches row-1 windows across a scroll cycle into the full name;
   add unit tests for the reconstruction logic against synthetic scroll frames.
-- **Gates (R2-4):** the existing front-panel preset gate
-  (`tests/hardware/test_live_state_transitions.py:748`) asserts `Active: A|B`,
-  which this feature removes — **update it** to read the row-0 col-15 status
-  (`'!'`/A/B) so it cannot pass against the old layout. Add a distinct
+- **Gates (R2-4):** the front-panel preset gate accepts `Volume` /
+  `Active: A|B` only for the Volume page and accepts the filename-capable
+  Preset page only when row 0 carries `Preset ... A|B|!`; it must not pass
+  against the old Preset `Active: A|B` layout. Add a distinct
   `DLCP_HW_PRESET_FILENAME_CONFIRM=1` gate that OCR-reconstructs row 1 across a
   scroll and **fails** unless it spells the expected non-empty PB1 A/B name and
   tracks on A↔B flip. HFD/USB empty-name validation is a separate accepted-blank
@@ -1302,8 +1470,9 @@ Hardware (R2-4/R2-5 — existing harness will **not** work unmodified):
 ## 11. Future extensions
 
 Ping-pong / wrap-marquee scroll; PB2 filename display/compare using the already
-reserved multi-PB protocol; transient name toast on the Volume screen; one coarse
-reply-retry if dropped-reply blanks annoy.
+reserved multi-PB protocol; transient name toast on the Volume screen; optional
+operator-visible stale/blank indicator if dropped replies ever need more
+diagnostic clarity.
 
 ---
 
@@ -1319,7 +1488,9 @@ Resolved across the reviews: slot+generation query; incremental non-blocking
 MAIN job; RAM-for-active-slot (mandatory); reply identity (START/END `id`,
 target bit in id, START cmd = direction); in-loop service placement; row-0
 fault/health zone; corrected parser; OCR/gate changes; 3-flag plus pending-age
-blank-without-retry policy.
+blank-without-retry policy; cache reuse on ordinary same-slot Preset re-entry;
+screen-entry settle delay before the single standard query when a fresh query is
+required after Preset re-entry or an observed A/B flip.
 
 **Design note — why the 1-bit hint, not a divergence index (Option C).** With a
 16-column window, the prefix window `[0,15]` and suffix window `[L-16,L-1]`

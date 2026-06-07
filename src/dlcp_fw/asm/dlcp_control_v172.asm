@@ -706,7 +706,7 @@ lcd_str_waiting_for_dlcp:                                                  ; add
         btg     0x69, 0x2, A                                ; reg: 0xf69
         movwf   0x69, A                                     ; reg: 0xf69
         addwfc  0x67, W, A                                  ; reg: 0xf67
-        movwf   0x66, B                                     ; reg: 0x066
+        movwf   rx_ring_base_b0, B                                     ; reg: 0x066
         addwfc  0x72, W, A                                  ; reg: 0xf72
         dcfsnz  (Common_RAM + 68), W, A                     ; reg: 0x044
         movf    (Common_RAM + 67), W, A                     ; reg: 0x043
@@ -726,7 +726,7 @@ lcd_str_waiting_for_dlcp_alt:                                                  ;
         btg     0x69, 0x2, A                                ; reg: 0xf69
         movwf   0x69, A                                     ; reg: 0xf69
         addwfc  0x67, W, A                                  ; reg: 0xf67
-        movwf   0x66, B                                     ; reg: 0x066
+        movwf   rx_ring_base_b0, B                                     ; reg: 0x066
         addwfc  0x72, W, A                                  ; reg: 0xf72
         dcfsnz  (Common_RAM + 68), W, A                     ; reg: 0x044
         movf    (Common_RAM + 67), W, A                     ; reg: 0x043
@@ -802,8 +802,8 @@ isr_entry:                                                  ; address: 0x0003a6
         andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_app_cold_init_03F6                                   ; dest: 0x0003f6
-        movf    0x96, W, B                                  ; reg: 0x096
-        cpfseq  0x97, B                                     ; reg: 0x097
+        movf    tx_ring_rd_b0, W, B                                  ; reg: 0x096
+        cpfseq  tx_ring_wr_b0, B                                     ; reg: 0x097
         goto    flow_app_cold_init_03DE                                   ; dest: 0x0003de
         bcf     PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
         goto    flow_app_cold_init_03F6                                   ; dest: 0x0003f6
@@ -811,43 +811,43 @@ isr_entry:                                                  ; address: 0x0003a6
 flow_app_cold_init_03DE:                                                  ; address: 0x0003de
 
         lfsr    0x0, 0x036
-        movf    0x96, W, B                                  ; reg: 0x096
+        movf    tx_ring_rd_b0, W, B                                  ; reg: 0x096
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   TXREG, A                                    ; reg: 0xfad
-        incf    0x96, F, B                                  ; reg: 0x096
+        incf    tx_ring_rd_b0, F, B                                  ; reg: 0x096
         movlw   0x30
-        subwf   0x96, W, B                                  ; reg: 0x096
+        subwf   tx_ring_rd_b0, W, B                                  ; reg: 0x096
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_app_cold_init_03F6                                   ; dest: 0x0003f6
-        clrf    0x96, B                                     ; reg: 0x096
+        clrf    tx_ring_rd_b0, B                                     ; reg: 0x096
 
 flow_app_cold_init_03F6:                                                  ; address: 0x0003f6
 
         btfss   PIR1, RCIF, A                               ; reg: 0xf9e, bit: 5
         goto    flow_app_cold_init_0414
         lfsr    0x0, 0x066
-        movf    0x99, W, B                                  ; reg: 0x099
+        movf    rx_ring_wr_b0, W, B                                  ; reg: 0x099
         movff   RCREG, PLUSW0                               ; reg1: 0xfae, reg2: 0xfeb
-        incf    0x99, F, B                                  ; reg: 0x099
+        incf    rx_ring_wr_b0, F, B                                  ; reg: 0x099
         movlw   0x30
-        subwf   0x99, W, B                                  ; reg: 0x099
+        subwf   rx_ring_wr_b0, W, B                                  ; reg: 0x099
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_app_cold_init_040C                                   ; dest: 0x00040c
-        clrf    0x99, B                                     ; reg: 0x099
+        clrf    rx_ring_wr_b0, B                                     ; reg: 0x099
 
 flow_app_cold_init_040C:                                                  ; address: 0x00040c
 
         ; V1.72 hardening: consume RCREG immediately, but roll back the
         ; software write pointer if this byte would overwrite unread data.
-        movf    0x99, W, B                                  ; reg: 0x099
-        cpfseq  0x98, B                                     ; reg: 0x098
+        movf    rx_ring_wr_b0, W, B                                  ; reg: 0x099
+        cpfseq  rx_ring_rd_b0, B                                     ; reg: 0x098
         goto    flow_app_cold_init_0414
-        decf    0x99, F, B                                  ; reg: 0x099
+        decf    rx_ring_wr_b0, F, B                                  ; reg: 0x099
         movlw   0xff
-        cpfseq  0x99, B                                     ; reg: 0x099
+        cpfseq  rx_ring_wr_b0, B                                     ; reg: 0x099
         goto    flow_app_cold_init_0414
         movlw   0x2f
-        movwf   0x99, B                                     ; reg: 0x099
+        movwf   rx_ring_wr_b0, B                                     ; reg: 0x099
 
 flow_app_cold_init_0414:                                                  ; address: 0x000414
 
@@ -857,15 +857,15 @@ flow_app_cold_init_0414:                                                  ; addr
         iorwf   (Common_RAM + 27), W, A                     ; reg: 0x01b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
-        btfss   control_flags, 0x0, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x0, A                   ; reg: 0x01f
         goto    flow_app_cold_init_0434                                   ; dest: 0x000434
         ; V1.72 hardware fallback (2026-05-09): use the stock V1.6b
         ; in-ISR RC5 decoder.  The failed Timer1 sampler was removed so
         ; there is no dormant path that can arm TMR1IE without a handler.
         rcall   ir_rc5_decode                                ; dest: 0x00021e
-        movwf   ir_decoded_cmd, A                        ; reg: 0x01d
+        movwf   ir_decoded_cmd_acc, A                        ; reg: 0x01d
         movff   (Common_RAM + 13), ir_decoded_addr        ; reg1: 0x00d, reg2: 0x01e
-        bcf     control_flags, 0x0, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x0, A                   ; reg: 0x01f
 
 flow_app_cold_init_0434:                                                  ; address: 0x000434
 
@@ -920,51 +920,51 @@ rx_parser_entry:                                               ; address: 0x0004
         movf    RCREG, W, A                                 ; drain byte 2 (EUSART FIFO depth 2)
         bsf     RCSTA, CREN, A
         movlb   0x00
-        clrf    tx_ring_rd, BANKED                          ; 0x096
-        clrf    tx_ring_wr, BANKED                          ; 0x097
-        clrf    rx_ring_rd, BANKED                          ; 0x098
-        clrf    rx_ring_wr, BANKED                          ; 0x099
-        clrf    rx_frame_position, BANKED                   ; 0x0A6
-        clrf    rx_parsed_cmd, A                            ; 0x02F
-        clrf    rx_parsed_data, A                           ; 0x030
+        clrf    tx_ring_rd_b0, BANKED                          ; 0x096
+        clrf    tx_ring_wr_b0, BANKED                          ; 0x097
+        clrf    rx_ring_rd_b0, BANKED                          ; 0x098
+        clrf    rx_ring_wr_b0, BANKED                          ; 0x099
+        clrf    rx_frame_position_b0, BANKED                   ; 0x0A6
+        clrf    rx_parsed_cmd_acc, A                            ; 0x02F
+        clrf    rx_parsed_data_acc, A                           ; 0x030
 
 flow_rx_parser_entry_0456:                                                  ; address: 0x000456
 
-        movf    0x99, W, B                                  ; reg: 0x099
-        cpfseq  0x98, B                                     ; reg: 0x098
+        movf    rx_ring_wr_b0, W, B                                  ; reg: 0x099
+        cpfseq  rx_ring_rd_b0, B                                     ; reg: 0x098
         goto    flow_rx_parser_entry_0460                                   ; dest: 0x000460
         return  0x0
 
 flow_rx_parser_entry_0460:                                                  ; address: 0x000460
 
         lfsr    0x0, 0x066
-        movf    0x98, W, B                                  ; reg: 0x098
+        movf    rx_ring_rd_b0, W, B                                  ; reg: 0x098
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xb6, B                                     ; reg: 0x0b6
-        incf    0x98, F, B                                  ; reg: 0x098
+        movwf   stock_0B6_b0, B                                     ; reg: 0x0b6
+        incf    rx_ring_rd_b0, F, B                                  ; reg: 0x098
         movlw   0x30
-        subwf   0x98, W, B                                  ; reg: 0x098
+        subwf   rx_ring_rd_b0, W, B                                  ; reg: 0x098
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_rx_parser_entry_0478                                   ; dest: 0x000478
-        clrf    0x98, B                                     ; reg: 0x098
+        clrf    rx_ring_rd_b0, B                                     ; reg: 0x098
 
 flow_rx_parser_entry_0478:                                                  ; address: 0x000478
 
         movlw   0xfe
-        cpfseq  0xb6, B                                     ; reg: 0x0b6
+        cpfseq  stock_0B6_b0, B                                     ; reg: 0x0b6
         goto    flow_rx_parser_entry_048A                                   ; dest: 0x00048a
-        movff   0x0b6, tx_data_staging                    ; reg2: 0x027
+        movff   0x0b6, tx_data_staging_b0_phys                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         bra     rx_parser_entry                                ; dest: 0x00044a
 
 flow_rx_parser_entry_048A:                                                  ; address: 0x00048a
 
         movlw   0x80
-        subwf   0xb6, W, B                                  ; reg: 0x0b6
+        subwf   stock_0B6_b0, W, B                                  ; reg: 0x0b6
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_rx_parser_entry_04D6                                   ; dest: 0x0004d6
         movlw   0xf1
-        andwf   0xb6, W, B                                  ; reg: 0x0b6
+        andwf   stock_0B6_b0, W, B                                  ; reg: 0x0b6
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         clrf    (Common_RAM + 11), A                        ; reg: 0x00b
         movf    (Common_RAM + 10), W, A                     ; reg: 0x00a
@@ -973,32 +973,32 @@ flow_rx_parser_entry_048A:                                                  ; ad
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_04AC                                   ; dest: 0x0004ac
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
-        movwf   0xb6, B                                     ; reg: 0x0b6
+        movwf   stock_0B6_b0, B                                     ; reg: 0x0b6
 
 flow_rx_parser_entry_04AC:                                                  ; address: 0x0004ac
 
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
-        cpfseq  0xb6, B                                     ; reg: 0x0b6
+        cpfseq  stock_0B6_b0, B                                     ; reg: 0x0b6
         goto    flow_rx_parser_entry_04BE                                   ; dest: 0x0004be
         movlw   0x01
-        movwf   0xa6, B                                     ; reg: 0x0a6
-        bsf     control_flags, 0x2, A                   ; reg: 0x01f
+        movwf   rx_frame_position_b0, B                                     ; reg: 0x0a6
+        bsf     control_flags_acc, 0x2, A                   ; reg: 0x01f
         goto    flow_rx_parser_entry_04D4                                   ; dest: 0x0004d4
 
 flow_rx_parser_entry_04BE:                                                  ; address: 0x0004be
 
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
-        cpfseq  0xb6, B                                     ; reg: 0x0b6
+        cpfseq  stock_0B6_b0, B                                     ; reg: 0x0b6
         goto    flow_rx_parser_entry_04D0                                   ; dest: 0x0004d0
         movlw   0x01
-        movwf   0xa6, B                                     ; reg: 0x0a6
-        bsf     control_flags, 0x2, A                   ; reg: 0x01f
+        movwf   rx_frame_position_b0, B                                     ; reg: 0x0a6
+        bsf     control_flags_acc, 0x2, A                   ; reg: 0x01f
         goto    flow_rx_parser_entry_04D4                                   ; dest: 0x0004d4
 
 flow_rx_parser_entry_04D0:                                                  ; address: 0x0004d0
 
-        clrf    0xa6, B                                     ; reg: 0x0a6
-        bsf     control_flags, 0x2, A                   ; reg: 0x01f
+        clrf    rx_frame_position_b0, B                                     ; reg: 0x0a6
+        bcf     control_flags_acc, 0x2, A                   ; unsupported route: no fresh frame
 
 flow_rx_parser_entry_04D4:                                                  ; address: 0x0004d4
 
@@ -1006,60 +1006,60 @@ flow_rx_parser_entry_04D4:                                                  ; ad
 
 flow_rx_parser_entry_04D6:                                                  ; address: 0x0004d6
 
-        movf    0xa6, F, B                                  ; reg: 0x0a6
+        movf    rx_frame_position_b0, F, B                                  ; reg: 0x0a6
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_04E0                                   ; dest: 0x0004e0
-        incf    0xa6, F, B                                  ; reg: 0x0a6
+        incf    rx_frame_position_b0, F, B                                  ; reg: 0x0a6
 
 flow_rx_parser_entry_04E0:                                                  ; address: 0x0004e0
 
         movlw   0x02
-        cpfslt  0xa6, B                                     ; reg: 0x0a6
+        cpfslt  rx_frame_position_b0, B                                     ; reg: 0x0a6
         goto    flow_rx_parser_entry_04EA                                   ; dest: 0x0004ea
         bra     rx_parser_entry                                ; dest: 0x00044a
 
 flow_rx_parser_entry_04EA:                                                  ; address: 0x0004ea
 
         movlw   0x02
-        cpfseq  0xa6, B                                     ; reg: 0x0a6
+        cpfseq  rx_frame_position_b0, B                                     ; reg: 0x0a6
         goto    flow_rx_parser_entry_04F8                                   ; dest: 0x0004f8
-        movff   0x0b6, rx_parsed_cmd                    ; reg2: 0x02f
+        movff   0x0b6, rx_parsed_cmd_b0_phys                    ; reg2: 0x02f
         bra     rx_parser_entry                                ; dest: 0x00044a
 
 flow_rx_parser_entry_04F8:                                                  ; address: 0x0004f8
 
-        movff   0x0b6, rx_parsed_data                    ; reg2: 0x030
+        movff   0x0b6, rx_parsed_data_b0_phys                    ; reg2: 0x030
         movlw   0x01
-        movwf   0xa6, B                                     ; reg: 0x0a6
+        movwf   rx_frame_position_b0, B                                     ; reg: 0x0a6
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    flow_rx_parser_entry_0556                                   ; dest: 0x000556
-        decfsz  rx_parsed_data, W, A                     ; reg: 0x030
+        decfsz  rx_parsed_data_acc, W, A                     ; reg: 0x030
         goto    flow_rx_parser_entry_0514                                   ; dest: 0x000514
-        bsf     control_flags, 0x1, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
 
 flow_rx_parser_entry_0514:                                                  ; address: 0x000514
 
-        movf    rx_parsed_data, F, A                     ; reg: 0x030
+        movf    rx_parsed_data_acc, F, A                     ; reg: 0x030
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_0522                                   ; dest: 0x000522
-        bcf     control_flags, 0x1, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
 
 flow_rx_parser_entry_0522:                                                  ; address: 0x000522
 
         movlw   0x02
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_rx_parser_entry_0540                                   ; dest: 0x000540
-        btfsc   control_flags, 0x5, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x5, A                   ; reg: 0x01f
         goto    flow_rx_parser_entry_053C                                   ; dest: 0x00053c
         movlw   0x2f
-        movwf   0xb4, B                                     ; reg: 0x0b4
+        movwf   stock_0B4_b0, B                                     ; reg: 0x0b4
         movlw   0x75
-        movwf   0xb5, B                                     ; reg: 0x0b5
-        bsf     control_flags, 0x5, A                   ; reg: 0x01f
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
+        movwf   stock_0B5_b0, B                                     ; reg: 0x0b5
+        bsf     control_flags_acc, 0x5, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
 
 flow_rx_parser_entry_053C:                                                  ; address: 0x00053c
 
@@ -1068,12 +1068,12 @@ flow_rx_parser_entry_053C:                                                  ; ad
 flow_rx_parser_entry_0540:                                                  ; address: 0x000540
 
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
-        btfss   control_flags, 0x5, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x5, A                   ; reg: 0x01f
         goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
-        bcf     control_flags, 0x5, A                   ; reg: 0x01f
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
 
 flow_rx_parser_entry_0552:                                                  ; address: 0x000552
 
@@ -1082,19 +1082,19 @@ flow_rx_parser_entry_0552:                                                  ; ad
 flow_rx_parser_entry_0556:                                                  ; address: 0x000556
 
         movlw   0x04                                        ; CMD status_poll
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    flow_rx_parser_entry_0562                                   ; dest: 0x000562
         goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
 
 flow_rx_parser_entry_0562:                                                  ; address: 0x000562
 
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    flow_rx_parser_entry_057A                                   ; dest: 0x00057a
         movlw   0x04                                        ; CMD status_poll
-        cpfslt  rx_parsed_data, A                        ; reg: 0x030
+        cpfslt  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_rx_parser_entry_0576                                   ; dest: 0x000576
-        movff   rx_parsed_data, 0x0a1                    ; reg1: 0x030
+        movff   rx_parsed_data_b0_phys, 0x0a1                    ; reg1: 0x030
 
 flow_rx_parser_entry_0576:                                                  ; address: 0x000576
 
@@ -1103,21 +1103,21 @@ flow_rx_parser_entry_0576:                                                  ; ad
 flow_rx_parser_entry_057A:                                                  ; address: 0x00057a
 
         movlw   0x06                                        ; CMD input_select
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    flow_rx_parser_entry_05AC                                   ; dest: 0x0005ac
         movlw   0x01
         subwf   (Common_RAM + 50), W, A                     ; reg: 0x032
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_05A8                                   ; dest: 0x0005a8
         movlw   0x09
-        cpfslt  rx_parsed_data, A                        ; reg: 0x030
+        cpfslt  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_rx_parser_entry_05A8                                   ; dest: 0x0005a8
-        movf    0xb8, W, B                                  ; reg: 0x0b8
-        subwf   rx_parsed_data, W, A                     ; reg: 0x030
+        movf    input_select_cache_b0, W, B                                  ; reg: 0x0b8
+        subwf   rx_parsed_data_acc, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_05A8                                   ; dest: 0x0005a8
-        movff   rx_parsed_data, 0x0b8                    ; reg1: 0x030
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
+        movff   rx_parsed_data_b0_phys, 0x0b8                    ; reg1: 0x030
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         call    control_core_service_061C, 0x0                           ; dest: 0x00061c
 
 flow_rx_parser_entry_05A8:                                                  ; address: 0x0005a8
@@ -1127,20 +1127,20 @@ flow_rx_parser_entry_05A8:                                                  ; ad
 flow_rx_parser_entry_05AC:                                                  ; address: 0x0005ac
 
         movlw   0x07                                        ; CMD volume (offset 0x60)
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    flow_rx_parser_entry_05D0                                   ; dest: 0x0005d0
         movlw   0x73
-        cpfslt  rx_parsed_data, A                        ; reg: 0x030
+        cpfslt  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_rx_parser_entry_05CC                                   ; dest: 0x0005cc
-        movf    0xb9, W, B                                  ; reg: 0x0b9
-        subwf   rx_parsed_data, W, A                     ; reg: 0x030
+        movf    volume_cache_b0, W, B                                  ; reg: 0x0b9
+        subwf   rx_parsed_data_acc, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_05C8                                   ; dest: 0x0005c8
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
 
 flow_rx_parser_entry_05C8:                                                  ; address: 0x0005c8
 
-        movff   rx_parsed_data, 0x0b9                    ; reg1: 0x030
+        movff   rx_parsed_data_b0_phys, 0x0b9                    ; reg1: 0x030
 
 flow_rx_parser_entry_05CC:                                                  ; address: 0x0005cc
 
@@ -1149,13 +1149,13 @@ flow_rx_parser_entry_05CC:                                                  ; ad
 flow_rx_parser_entry_05D0:                                                  ; address: 0x0005d0
 
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    v171_bf08_case_check                      ; not 0x1D — try V1.72 BF/08
-        movf    0xa7, W, B                                  ; reg: 0x0a7
-        subwf   rx_parsed_data, W, A                     ; reg: 0x030
+        movf    cmd1d_setting_cache_b0, W, B                                  ; reg: 0x0a7
+        subwf   rx_parsed_data_acc, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_rx_parser_entry_05EA                                   ; dest: 0x0005ea
-        movff   rx_parsed_data, 0x0a7                    ; reg1: 0x030
+        movff   rx_parsed_data_b0_phys, 0x0a7                    ; reg1: 0x030
         call    control_core_service_0F54, 0x0                           ; dest: 0x000f54
         bra     flow_rx_parser_entry_05EA                 ; 0x1D handled — exit
 
@@ -1172,27 +1172,27 @@ v171_bf08_case_check:
         ; full-sync counter pair so the main loop re-emits the full
         ; status burst immediately (V1.63b resync-on-clear).
         movlw   0x08                                        ; CMD dsp_fault
-        cpfseq  rx_parsed_cmd, A                        ; reg: 0x02f
+        cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
         goto    v172_bf4f_identity_case_check             ; not BF/08 — try V1.72 identity, then BF/2N
 
-        movff   rx_parsed_data, bf08_fault_byte         ; store payload byte
-        movf    rx_parsed_data, W, A
+        movff   rx_parsed_data_b0_phys, bf08_fault_byte_b0_phys         ; store payload byte
+        movf    rx_parsed_data_acc, W, A
         bnz     v171_bf08_set_fault
 
         ; Payload == 0 — clear fault.  If the bit was already clear this
         ; is a no-op; if it was set, force a full-sync resync so MAIN
         ; gets a fresh status burst on the next loop iteration.
-        btfss   control_flags, DSP_FAULT_BIT, A
+        btfss   control_flags_acc, DSP_FAULT_BIT, A
         bra     flow_rx_parser_entry_05EA                 ; already clear
-        bcf     control_flags, DSP_FAULT_BIT, A
+        bcf     control_flags_acc, DSP_FAULT_BIT, A
         movlb   0x01
-        clrf    0x9F, BANKED                             ; full_sync_lo = 0
-        clrf    0xA0, BANKED                             ; full_sync_hi = 0
+        clrf    v171_diag_reset_timeout_b1, BANKED                             ; full_sync_lo = 0
+        clrf    stock_1A0_b1, BANKED                             ; full_sync_hi = 0
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
 
 v171_bf08_set_fault:
-        bsf     control_flags, DSP_FAULT_BIT, A
+        bsf     control_flags_acc, DSP_FAULT_BIT, A
         bra     flow_rx_parser_entry_05EA
 
 v172_bf4f_identity_case_check:
@@ -1202,38 +1202,38 @@ v172_bf4f_identity_case_check:
         ; counters so malformed identity traffic cannot drift diag state.
         ; ---------------------------------------------------------------
         movlw   0x4F
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x4F? -> filename/BF/2x path
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x4F? -> filename/BF/2x path
         bra     v172_bf4f_check_upper
         bra     v172_fname_case_check
 v172_bf4f_check_upper:
         movlw   0x54
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x54? -> identity
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x54? -> identity
         bra     v171_bf2x_case_check
         movlb   0x02
-        btfss   v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        btfss   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
         bra     v172_bf4f_exit_bsr0
-        movf    v172_diag_id_expected_cmd, W, BANKED
-        xorwf   rx_parsed_cmd, W, A
+        movf    v172_diag_id_expected_cmd_b2, W, BANKED
+        xorwf   rx_parsed_cmd_acc, W, A
         bz      v172_bf4f_expected
         ; Wrong START id while waiting for START is a stale reply: ignore
         ; and leave the pending transaction alive.  Any other in-flight
         ; order error aborts the identity transaction.
         movlw   0x4F
-        cpfseq  v172_diag_id_expected_cmd, BANKED
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_abort
         movlw   0x4F
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     v172_bf4f_exit_bsr0
         bra     v172_bf4f_start_mismatch
 v172_bf4f_expected:
         movlw   0x4F
-        cpfseq  v172_diag_id_expected_cmd, BANKED
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_payload
-        movf    v172_diag_id_pending_id, W, BANKED
-        xorwf   rx_parsed_data, W, A
+        movf    v172_diag_id_pending_id_b2, W, BANKED
+        xorwf   rx_parsed_data_acc, W, A
         bnz     v172_bf4f_start_mismatch
         movlw   0x50
-        movwf   v172_diag_id_expected_cmd, BANKED
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_start_mismatch:
         ; Ignore stale START with the wrong generation; do not cancel the
@@ -1241,66 +1241,66 @@ v172_bf4f_start_mismatch:
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_payload:
         movlw   0x10
-        cpfslt  rx_parsed_data, A                          ; data >= 0x10?
+        cpfslt  rx_parsed_data_acc, A                          ; data >= 0x10?
         bra     v172_bf4f_abort
         movlw   0x50
-        cpfseq  v172_diag_id_expected_cmd, BANKED
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_payload_minor
-        movf    rx_parsed_data, W, A
-        movwf   v172_diag_id_tmp_major, BANKED
+        movf    rx_parsed_data_acc, W, A
+        movwf   v172_diag_id_tmp_major_b2, BANKED
         movlw   0x51
-        movwf   v172_diag_id_expected_cmd, BANKED
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_payload_minor:
         movlw   0x51
-        cpfseq  v172_diag_id_expected_cmd, BANKED
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_payload_rev_hi
-        movf    rx_parsed_data, W, A
-        movwf   v172_diag_id_tmp_minor, BANKED
+        movf    rx_parsed_data_acc, W, A
+        movwf   v172_diag_id_tmp_minor_b2, BANKED
         movlw   0x52
-        movwf   v172_diag_id_expected_cmd, BANKED
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_payload_rev_hi:
         movlw   0x52
-        cpfseq  v172_diag_id_expected_cmd, BANKED
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_payload_rev_lo
-        movf    rx_parsed_data, W, A
-        movwf   v172_diag_id_tmp_rev_hi, BANKED
+        movf    rx_parsed_data_acc, W, A
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
         movlw   0x53
-        movwf   v172_diag_id_expected_cmd, BANKED
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_payload_rev_lo:
         ; Expected BF/53; anything else was caught by the earlier exact
         ; expected-cmd check.  Commit the staged tuple atomically.
-        swapf   v172_diag_id_tmp_rev_hi, W, BANKED
+        swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
         andlw   0xF0
-        iorwf   rx_parsed_data, W, A
-        btfsc   v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        iorwf   rx_parsed_data_acc, W, A
+        btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_bf4f_commit_pb2
-        movwf   v172_diag_id_pb1_rev, BANKED
-        movf    v172_diag_id_tmp_major, W, BANKED
-        movwf   v172_diag_id_pb1_major, BANKED
-        movf    v172_diag_id_tmp_minor, W, BANKED
-        movwf   v172_diag_id_pb1_minor, BANKED
-        bsf     v172_diag_id_valid_mask, 0, BANKED
-        bsf     v172_diag_id_seen_mask, 0, BANKED
+        movwf   v172_diag_id_pb1_rev_b2, BANKED
+        movf    v172_diag_id_tmp_major_b2, W, BANKED
+        movwf   v172_diag_id_pb1_major_b2, BANKED
+        movf    v172_diag_id_tmp_minor_b2, W, BANKED
+        movwf   v172_diag_id_pb1_minor_b2, BANKED
+        bsf     v172_diag_id_valid_mask_b2, 0, BANKED
+        bsf     v172_diag_id_seen_mask_b2, 0, BANKED
         bra     v172_bf4f_commit_done
 v172_bf4f_commit_pb2:
-        movwf   v172_diag_id_pb2_rev, BANKED
-        movf    v172_diag_id_tmp_major, W, BANKED
-        movwf   v172_diag_id_pb2_major, BANKED
-        movf    v172_diag_id_tmp_minor, W, BANKED
-        movwf   v172_diag_id_pb2_minor, BANKED
-        bsf     v172_diag_id_valid_mask, 1, BANKED
-        bsf     v172_diag_id_seen_mask, 1, BANKED
+        movwf   v172_diag_id_pb2_rev_b2, BANKED
+        movf    v172_diag_id_tmp_major_b2, W, BANKED
+        movwf   v172_diag_id_pb2_major_b2, BANKED
+        movf    v172_diag_id_tmp_minor_b2, W, BANKED
+        movwf   v172_diag_id_pb2_minor_b2, BANKED
+        bsf     v172_diag_id_valid_mask_b2, 1, BANKED
+        bsf     v172_diag_id_seen_mask_b2, 1, BANKED
 v172_bf4f_commit_done:
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
         movlb   0x01
-        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
         movlb   0x02
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_abort:
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
 v172_bf4f_exit_bsr0:
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
@@ -1312,130 +1312,134 @@ v172_fname_case_check:
         ; diagnostics.  Lower/upper misses fall through to BF/2x.
         ; ---------------------------------------------------------------
         movlw   0x2D
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x2D?
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x2D?
         bra     v172_fname_check_upper
         bra     v171_bf2x_case_check
 v172_fname_check_upper:
         movlw   0x4F
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x4F?
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x4F?
         bra     v171_bf2x_case_check
         movlb   0x02
-        btfss   v172_fname_flags, FNAME_PENDING, BANKED
+        btfss   v172_fname_flags_b2, FNAME_PENDING, BANKED
+        bra     fname_exit
+        btfss   control_flags_acc, 0x2, A                 ; require fresh BF/Bx route
         bra     fname_exit
 
         movlw   0x2E
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     fname_not_start_tail
         bra     fname_start
 fname_not_start_tail:
         movlw   0x2F
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     fname_not_start
 fname_start:
-        movf    v172_fname_id, W, BANKED
-        xorwf   rx_parsed_data, W, A
+        movf    v172_fname_id_b2, W, BANKED
+        xorwf   rx_parsed_data_acc, W, A
         bnz     fname_disarm
-        bsf     v172_fname_flags, FNAME_ARMED, BANKED
-        bcf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
-        bcf     v172_fname_flags, FNAME_VALID, BANKED
-        clrf    v172_fname_len, BANKED
-        clrf    v172_fname_expected_len, BANKED
-        bcf     v172_fname_flags, FNAME_TAILDIR, BANKED
+        bsf     v172_fname_flags_b2, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
+        bcf     v172_fname_flags_b2, FNAME_VALID, BANKED
+        clrf    v172_fname_len_b2, BANKED
+        clrf    v172_fname_expected_len_b2, BANKED
+        bcf     v172_fname_flags_b2, FNAME_TAILDIR, BANKED
         movlw   0x2E
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     fname_exit
-        bsf     v172_fname_flags, FNAME_TAILDIR, BANKED
+        bsf     v172_fname_flags_b2, FNAME_TAILDIR, BANKED
         bra     fname_exit
 
 fname_not_start:
-        btfss   v172_fname_flags, FNAME_ARMED, BANKED
+        btfss   v172_fname_flags_b2, FNAME_ARMED, BANKED
         bra     fname_exit
         movlw   0x2D
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     fname_not_len
-        btfsc   v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
         bra     fname_abort
-        movf    v172_fname_len, F, BANKED
+        movf    v172_fname_len_b2, F, BANKED
         bnz     fname_abort
-        movf    v172_fname_id, W, BANKED
-        xorwf   rx_parsed_data, W, A
-        movwf   v172_fname_expected_len, BANKED
+        movf    v172_fname_id_b2, W, BANKED
+        xorwf   rx_parsed_data_acc, W, A
+        movwf   v172_fname_expected_len_b2, BANKED
         movlw   0x1F
-        cpfslt  v172_fname_expected_len, BANKED             ; expected_len < 31
+        cpfslt  v172_fname_expected_len_b2, BANKED             ; expected_len < 31
         bra     fname_abort
-        bsf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        bsf     v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
         bra     fname_exit
 
 fname_not_len:
         movlw   0x4E
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     fname_char
-        movf    v172_fname_id, W, BANKED
-        xorwf   rx_parsed_data, W, A
+        movf    v172_fname_id_b2, W, BANKED
+        xorwf   rx_parsed_data_acc, W, A
         bnz     fname_abort
-        btfss   v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        btfss   v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
         bra     fname_abort
-        movf    v172_fname_len, W, BANKED
-        xorwf   v172_fname_expected_len, W, BANKED
+        movf    v172_fname_len_b2, W, BANKED
+        xorwf   v172_fname_expected_len_b2, W, BANKED
         bnz     fname_abort
-        bsf     v172_fname_flags, FNAME_VALID, BANKED
-        bcf     v172_fname_flags, FNAME_PENDING, BANKED
-        bcf     v172_fname_flags, FNAME_ARMED, BANKED
-        bcf     v172_fname_flags, FNAME_WANT_QUERY, BANKED
-        clrf    v172_fname_deadline_lo, BANKED
-        clrf    v172_fname_deadline_hi, BANKED
-        clrf    v172_fname_scroll_off, BANKED
+        bsf     v172_fname_flags_b2, FNAME_VALID, BANKED
+        bcf     v172_fname_flags_b2, FNAME_PENDING, BANKED
+        bcf     v172_fname_flags_b2, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
+        bcf     v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        clrf    v172_fname_deadline_lo_b2, BANKED
+        clrf    v172_fname_deadline_hi_b2, BANKED
+        clrf    v172_fname_scroll_off_b2, BANKED
         movlw   0x11
-        cpfslt  v172_fname_len, BANKED                      ; len < 17?
+        cpfslt  v172_fname_len_b2, BANKED                      ; len < 17?
         bra     fname_end_maybe_tail
         bra     fname_end_mark_dirty
 fname_end_maybe_tail:
-        btfss   v172_fname_flags, FNAME_TAILDIR, BANKED
+        btfss   v172_fname_flags_b2, FNAME_TAILDIR, BANKED
         bra     fname_end_mark_dirty
-        movf    v172_fname_len, W, BANKED
+        movf    v172_fname_len_b2, W, BANKED
         addlw   0xF0                                        ; len - 16
-        movwf   v172_fname_scroll_off, BANKED
+        movwf   v172_fname_scroll_off_b2, BANKED
 fname_end_mark_dirty:
         movlw   FNAME_SCROLL_REST_HOLD
-        movwf   v172_fname_scroll_hold, BANKED
-        clrf    v172_fname_scroll_div_lo, BANKED
-        clrf    v172_fname_scroll_div_hi, BANKED
+        movwf   v172_fname_scroll_hold_b2, BANKED
+        clrf    v172_fname_scroll_div_lo_b2, BANKED
+        clrf    v172_fname_scroll_div_hi_b2, BANKED
         call    fname_mark_row_dirty_valid, 0x0
         bra     fname_exit
 
 fname_char:
-        btfss   v172_fname_flags, FNAME_LEN_SEEN, BANKED
+        btfss   v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
         bra     fname_abort
         movlw   0x30
-        subwf   rx_parsed_cmd, W, A                         ; W = cmd - 0x30
-        xorwf   v172_fname_len, W, BANKED
+        subwf   rx_parsed_cmd_acc, W, A                         ; W = cmd - 0x30
+        xorwf   v172_fname_len_b2, W, BANKED
         bnz     fname_abort
         movlw   0x20
-        cpfslt  rx_parsed_data, A                           ; data < ' '?
+        cpfslt  rx_parsed_data_acc, A                           ; data < ' '?
         bra     fname_char_check_high
         bra     fname_abort
 fname_char_check_high:
         movlw   0x7F
-        cpfslt  rx_parsed_data, A                           ; data < 0x7F?
+        cpfslt  rx_parsed_data_acc, A                           ; data < 0x7F?
         bra     fname_abort
         lfsr    0x0, 0x220
-        movf    v172_fname_len, W, BANKED
+        movf    v172_fname_len_b2, W, BANKED
         addwf   FSR0L, F, A
-        movf    rx_parsed_data, W, A
+        movf    rx_parsed_data_acc, W, A
         movwf   INDF0, A
-        incf    v172_fname_len, F, BANKED
+        incf    v172_fname_len_b2, F, BANKED
         bra     fname_exit
 
 fname_abort:
         call    fname_reset_blank, 0x0
         bra     fname_exit
 fname_disarm:
-        bcf     v172_fname_flags, FNAME_ARMED, BANKED
-        bcf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
-        clrf    v172_fname_len, BANKED
-        clrf    v172_fname_expected_len, BANKED
+        bcf     v172_fname_flags_b2, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
+        clrf    v172_fname_len_b2, BANKED
+        clrf    v172_fname_expected_len_b2, BANKED
 fname_exit:
         movlb   0x00
+        bcf     control_flags_acc, 0x2, A                  ; filename frame consumed
         bra     flow_rx_parser_entry_05EA
 
 v171_bf2x_case_check:
@@ -1469,22 +1473,22 @@ v171_bf2x_case_check:
         ; diagnostics cache range to 0x2C: the cache has exactly 11
         ; cells, so BF/2C would be offset 11 and corrupt adjacent RAM.
         movlw   0x2C
-        cpfseq  rx_parsed_cmd, A
+        cpfseq  rx_parsed_cmd_acc, A
         bra     v171_bf2x_diag_range_check
         bra     v171_health_bf2c_reply
 v171_bf2x_diag_range_check:
         ; Range gate: accept cmd 0x21..0x2B only.
         movlw   0x21
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x21? -> exit
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x21? -> exit
         bra     v171_bf2x_check_upper
         bra     flow_rx_parser_entry_05EA
 v171_bf2x_check_upper:
         movlw   0x2C
-        cpfslt  rx_parsed_cmd, A                          ; cmd < 0x2C? -> ok
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x2C? -> ok
         bra     flow_rx_parser_entry_05EA                 ; cmd >= 0x2C -> exit
         ; Compute byte offset: (cmd - 0x21) gives 0..10.
         movlw   0x21
-        subwf   rx_parsed_cmd, W, A
+        subwf   rx_parsed_cmd_acc, W, A
         movwf   (Common_RAM + 4), A                       ; col_offset
         ; --- Pick "effective target" for this frame's cache routing ---
         ; Two reply burst types share the BF/2N space:
@@ -1508,28 +1512,28 @@ v171_bf2x_check_upper:
         ; reset snapshot.  Keep this in BANK 1: Common_RAM+5 is clobbered
         ; by the in-ISR RC5 decoder.
         movlb   0x01
-        movf    v171_diag_runtime_target, W, BANKED
-        movwf   v171_diag_effective_target, BANKED        ; effective_target
+        movf    v171_diag_runtime_target_b1, W, BANKED
+        movwf   v171_diag_effective_target_b1, BANKED        ; effective_target
         movlw   0x07
         cpfslt  (Common_RAM + 4), A                       ; col < 7? skip if so
         bra     v171_bf2x_use_reset_target                ; col >= 7: override
         bra     v171_bf2x_have_effective_target           ; col < 7: keep live
 v171_bf2x_use_reset_target:
-        movf    v171_diag_reset_target, W, BANKED
-        movwf   v171_diag_effective_target, BANKED
+        movf    v171_diag_reset_target_b1, W, BANKED
+        movwf   v171_diag_effective_target_b1, BANKED
 v171_bf2x_have_effective_target:
         ; Compute slot base: PB1 base = v171_diag_pb1_i (0x80),
         ; PB2 base = v171_diag_pb2_i (0x8B = 0x80 + 11).  Add 11 (0x0B)
         ; if effective_target bit0 set.
         movlw   v171_diag_pb1_i
-        btfsc   v171_diag_effective_target, 0, BANKED
+        btfsc   v171_diag_effective_target_b1, 0, BANKED
         movlw   v171_diag_pb2_i
         addwf   (Common_RAM + 4), W, A                    ; W = base + col_offset
         ; Write payload via FSR0 in BANK 1 (0x180..0x195 physical).
         movwf   FSR0L, A
         movlw   0x01
         movwf   FSR0H, A
-        movff   rx_parsed_data, INDF0                     ; *(slot) = data
+        movff   rx_parsed_data_b0_phys, INDF0                     ; *(slot) = data
         ; Do not redraw on every individual BF/2N cell.  The LCD is
         ; rendered from the complete per-PB cache; mark DIRTY only when
         ; the runtime burst completes (BF/27, via the health-freshness
@@ -1554,16 +1558,16 @@ v171_bf2x_have_effective_target:
         ; present-mask OR-in.  The btg below operates on the LIVE
         ; v171_diag_target directly because that's what we're toggling.
         movlw   0x01                                      ; PB1 mask
-        btfsc   v171_diag_effective_target, 0, BANKED
+        btfsc   v171_diag_effective_target_b1, 0, BANKED
         movlw   0x02                                      ; PB2 mask
-        iorwf   v171_diag_present, F, BANKED
+        iorwf   v171_diag_present_b1, F, BANKED
         ; A completed addressed Diagnostics burst also proves CONTROL
         ; reached that PB.  Count it as link freshness so Diagnostics
         ; pages do not need a competing background cmd 0x23 poll.
         call    v171_health_mark_common_target_fresh, 0x0
         movlb   0x01
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
-        btg     v171_diag_target, 0, BANKED               ; flip for next query
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        btg     v171_diag_target_b1, 0, BANKED               ; flip for next query
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
 v171_bf2x_check_reset_last:
@@ -1585,11 +1589,11 @@ v171_bf2x_check_reset_last:
         cpfseq  (Common_RAM + 4), A                       ; col_offset == 10 (BF/2B)?
         bra     v171_bf2x_check_reset_last_exit_bsr0      ; not last frame -- reset BSR + exit
         movlw   0x01                                      ; PB1 reset_seen bit
-        btfsc   v171_diag_effective_target, 0, BANKED
+        btfsc   v171_diag_effective_target_b1, 0, BANKED
         movlw   0x02                                      ; PB2 reset_seen bit
-        iorwf   v171_diag_reset_seen, F, BANKED
-        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        iorwf   v171_diag_reset_seen_b1, F, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
 v171_bf2x_check_reset_last_exit_bsr0:
         ; HOT FIX (real-HW disaster 2026-04-20): the prior `bra flow_
         ; rx_parser_entry_05EA` here did NOT reset BSR before returning
@@ -1622,20 +1626,20 @@ v171_health_bf2c_reply:
         ; a stale byte cannot falsely mark a PB fresh or touch the
         ; diagnostics cache.
         movlb   0x01
-        btfss   v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        btfss   v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
         bra     v171_health_bf2c_done
-        bcf     v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
-        clrf    v171_health_pending_ticks, BANKED
-        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
-        btg     v171_health_poll_target, 0, BANKED
-        btfsc   v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
+        clrf    v171_health_pending_ticks_b1, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        btg     v171_health_poll_target_b1, 0, BANKED
+        btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_TARGET, BANKED
         bra     v171_health_bf2c_pb2
-        clrf    v171_health_age_pb1, BANKED
-        bsf     v171_health_seen_mask, 0, BANKED
+        clrf    v171_health_age_pb1_b1, BANKED
+        bsf     v171_health_seen_mask_b1, 0, BANKED
         bra     v171_health_bf2c_done
 v171_health_bf2c_pb2:
-        clrf    v171_health_age_pb2, BANKED
-        bsf     v171_health_seen_mask, 1, BANKED
+        clrf    v171_health_age_pb2_b1, BANKED
+        bsf     v171_health_seen_mask_b1, 1, BANKED
 v171_health_bf2c_done:
         movlb   0x00
         bra     flow_rx_parser_entry_05EA
@@ -1645,17 +1649,17 @@ v171_health_mark_common_target_fresh:
         ; Used by the Diagnostics BF/27 last-frame path; a full addressed
         ; diagnostics reply is also a successful PB reachability proof.
         movlb   0x01
-        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
-        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
-        btfsc   v171_diag_effective_target, 0, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+        btfsc   v171_diag_effective_target_b1, 0, BANKED
         bra     v171_health_mark_common_target_pb2
-        clrf    v171_health_age_pb1, BANKED
-        bsf     v171_health_seen_mask, 0, BANKED
+        clrf    v171_health_age_pb1_b1, BANKED
+        bsf     v171_health_seen_mask_b1, 0, BANKED
         movlb   0x00
         return  0x0
 v171_health_mark_common_target_pb2:
-        clrf    v171_health_age_pb2, BANKED
-        bsf     v171_health_seen_mask, 1, BANKED
+        clrf    v171_health_age_pb2_b1, BANKED
+        bsf     v171_health_seen_mask_b1, 1, BANKED
         movlb   0x00
         return  0x0
 
@@ -1746,23 +1750,23 @@ tx_ring_reserve_3:
         ; agnostic from the caller's perspective; the success path
         ; leaves BSR=0 which is also what tx_byte_enqueue expects.
         movlb   0x00
-        movf    tx_ring_rd, W, B                    ; W = rd
-        subwf   tx_ring_wr, W, B                    ; W = wr - rd (2's comp)
+        movf    tx_ring_rd_b0, W, B                    ; W = rd
+        subwf   tx_ring_wr_b0, W, B                    ; W = wr - rd (2's comp)
         btfss   STATUS, C, A                        ; C=1 if wr >= rd (no borrow)
         addlw   0x30                                 ; borrow: W = wr-rd+48 (mod 256 wraps back to occ)
         addlw   0x03                                 ; W = occupancy + 3
-        movwf   v171_tx_enq_retry, A                ; scratch
+        movwf   v171_tx_enq_retry_acc, A                ; scratch
         movlw   0x30                                 ; 48 = ring capacity (one slot reserved)
-        cpfslt  v171_tx_enq_retry, A                ; skip next if (occ+3) < 48 → room OK
+        cpfslt  v171_tx_enq_retry_acc, A                ; skip next if (occ+3) < 48 → room OK
         bra     tx_ring_reserve_3_saturated
         bcf     STATUS, C, A
         return  0x0
 
 tx_ring_reserve_3_saturated:
         movlb   0x01
-        incfsz  v171_tx_saturate_count, F, BANKED
+        incfsz  v171_tx_saturate_count_b1, F, BANKED
         bra     tx_ring_reserve_3_sat_done
-        setf    v171_tx_saturate_count, BANKED       ; clamp at 0xFF
+        setf    v171_tx_saturate_count_b1, BANKED       ; clamp at 0xFF
 tx_ring_reserve_3_sat_done:
         movlb   0x00
         bsf     STATUS, C, A
@@ -1774,15 +1778,15 @@ tx_ring_reserve_3_sat_done:
 tx_byte_enqueue:                                               ; address: 0x0005ec
 
         lfsr    0x0, 0x036
-        movf    0x97, W, B                                  ; reg: 0x097
-        movff   tx_data_staging, PLUSW0                   ; reg1: 0x027, reg2: 0xfeb
-        incf    0x97, W, B                                  ; reg: 0x097
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movf    tx_ring_wr_b0, W, B                                  ; reg: 0x097
+        movff   tx_data_staging_b0_phys, PLUSW0                   ; reg1: 0x027, reg2: 0xfeb
+        incf    tx_ring_wr_b0, W, B                                  ; reg: 0x097
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         movlw   0x30
-        subwf   tx_data_staging, W, A                     ; reg: 0x027
+        subwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_tx_byte_enqueue_0606                                   ; dest: 0x000606
-        clrf    tx_data_staging, A                        ; reg: 0x027
+        clrf    tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_tx_byte_enqueue_0606:                                                  ; address: 0x000606
 
@@ -1794,15 +1798,15 @@ flow_tx_byte_enqueue_0606:                                                  ; ad
         ; 4 MIPS — comfortably longer than worst-case TX ISR latency on
         ; a healthy link, and bounded enough that CONTROL's main loop
         ; can't be stalled by a wedged downstream).
-        setf    v171_tx_enq_retry, A                        ; reg: 0x02d (256-tick budget)
+        setf    v171_tx_enq_retry_acc, A                        ; reg: 0x02d (256-tick budget)
 
 flow_tx_byte_enqueue_060C:                                                  ; address: 0x00060c
 
-        movf    tx_data_staging, W, A                     ; reg: 0x027
-        subwf   0x96, W, B                                  ; reg: 0x096
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
+        subwf   tx_ring_rd_b0, W, B                                  ; reg: 0x096
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_tx_byte_enqueue_0614                   ; room available — commit
-        decfsz  v171_tx_enq_retry, F, A                     ; reg: 0x02d (decrement budget)
+        decfsz  v171_tx_enq_retry_acc, F, A                     ; reg: 0x02d (decrement budget)
         bra     flow_tx_byte_enqueue_060C                   ; budget remains — re-poll
 
         ; --- V1.72 Layer 1 saturation path ---
@@ -1813,9 +1817,9 @@ flow_tx_byte_enqueue_060C:                                                  ; ad
         ; (it never bumps tx_ring_wr) and will be overwritten on the
         ; next successful enqueue.
         movlb   0x01
-        incfsz  v171_tx_saturate_count, F, BANKED           ; reg: 0x0ad
+        incfsz  v171_tx_saturate_count_b1, F, BANKED           ; reg: 0x0ad
         bra     v171_tx_enq_saturate_done
-        setf    v171_tx_saturate_count, BANKED              ; reg: 0x0ad (clamp at 0xFF)
+        setf    v171_tx_saturate_count_b1, BANKED              ; reg: 0x0ad (clamp at 0xFF)
 v171_tx_enq_saturate_done:
         movlb   0x00
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0 (C=1 = saturated)
@@ -1823,43 +1827,43 @@ v171_tx_enq_saturate_done:
 
 flow_tx_byte_enqueue_0614:                                                  ; address: 0x000614
 
-        movff   tx_data_staging, 0x097                    ; reg1: 0x027
+        movff   tx_data_staging_b0_phys, 0x097                    ; reg1: 0x027
         bsf     PIE1, TXIE, A                               ; reg: 0xf9d, bit: 4
         bcf     STATUS, C, A                                ; reg: 0xfd8, bit: 0 (C=0 = success)
         return  0x0
 
 control_core_service_061C:                                               ; address: 0x00061c
 
-        movf    rx_parsed_data, F, A                     ; reg: 0x030
+        movf    rx_parsed_data_acc, F, A                     ; reg: 0x030
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_061C_062A                                   ; dest: 0x00062a
-        clrf    0xb7, B                                     ; reg: 0x0b7
+        clrf    rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
 flow_ccs_061C_062A:                                                  ; address: 0x00062a
 
-        decfsz  rx_parsed_data, W, A                     ; reg: 0x030
+        decfsz  rx_parsed_data_acc, W, A                     ; reg: 0x030
         goto    flow_ccs_061C_0638                                   ; dest: 0x000638
         movlw   0x05
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_061C_0768                                   ; dest: 0x000768
 
 flow_ccs_061C_0638:                                                  ; address: 0x000638
 
         movlw   0x02
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_0658                                   ; dest: 0x000658
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_061C_0650                                   ; dest: 0x000650
         movlw   0x06
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_061C_0654                                   ; dest: 0x000654
 
 flow_ccs_061C_0650:                                                  ; address: 0x000650
 
         movlw   0x01
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0654:                                                  ; address: 0x000654
 
@@ -1868,21 +1872,21 @@ flow_ccs_061C_0654:                                                  ; address: 
 flow_ccs_061C_0658:                                                  ; address: 0x000658
 
         movlw   0x03
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_0686                                   ; dest: 0x000686
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_061C_067E                                   ; dest: 0x00067e
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_061C_0676                                   ; dest: 0x000676
         movlw   0x01
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_061C_067A                                   ; dest: 0x00067a
 
 flow_ccs_061C_0676:                                                  ; address: 0x000676
 
         movlw   0x07
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_067A:                                                  ; address: 0x00067a
 
@@ -1891,7 +1895,7 @@ flow_ccs_061C_067A:                                                  ; address: 
 flow_ccs_061C_067E:                                                  ; address: 0x00067e
 
         movlw   0x02
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0682:                                                  ; address: 0x000682
 
@@ -1900,31 +1904,31 @@ flow_ccs_061C_0682:                                                  ; address: 
 flow_ccs_061C_0686:                                                  ; address: 0x000686
 
         movlw   0x04
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_06C4                                   ; dest: 0x0006c4
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_061C_06BC                                   ; dest: 0x0006bc
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_061C_06A0                                   ; dest: 0x0006a0
         movlw   0x02
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06A0:                                                  ; address: 0x0006a0
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_06AC                                   ; dest: 0x0006ac
         movlw   0x01
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06AC:                                                  ; address: 0x0006ac
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_06B8                                   ; dest: 0x0006b8
         movlw   0x08
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06B8:                                                  ; address: 0x0006b8
 
@@ -1933,7 +1937,7 @@ flow_ccs_061C_06B8:                                                  ; address: 
 flow_ccs_061C_06BC:                                                  ; address: 0x0006bc
 
         movlw   0x03
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06C0:                                                  ; address: 0x0006c0
 
@@ -1942,31 +1946,31 @@ flow_ccs_061C_06C0:                                                  ; address: 
 flow_ccs_061C_06C4:                                                  ; address: 0x0006c4
 
         movlw   0x05
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_0702                                   ; dest: 0x000702
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_061C_06FA                                   ; dest: 0x0006fa
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_061C_06DE                                   ; dest: 0x0006de
         movlw   0x03
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06DE:                                                  ; address: 0x0006de
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_06EA                                   ; dest: 0x0006ea
         movlw   0x02
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06EA:                                                  ; address: 0x0006ea
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_06F6                                   ; dest: 0x0006f6
         movlw   0x01
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06F6:                                                  ; address: 0x0006f6
 
@@ -1975,7 +1979,7 @@ flow_ccs_061C_06F6:                                                  ; address: 
 flow_ccs_061C_06FA:                                                  ; address: 0x0006fa
 
         movlw   0x04
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_06FE:                                                  ; address: 0x0006fe
 
@@ -1984,28 +1988,28 @@ flow_ccs_061C_06FE:                                                  ; address: 
 flow_ccs_061C_0702:                                                  ; address: 0x000702
 
         movlw   0x06
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_0730                                   ; dest: 0x000730
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_061C_0714                                   ; dest: 0x000714
         movlw   0x04
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0714:                                                  ; address: 0x000714
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_0720                                   ; dest: 0x000720
         movlw   0x03
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0720:                                                  ; address: 0x000720
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_072C                                   ; dest: 0x00072c
         movlw   0x02
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_072C:                                                  ; address: 0x00072c
 
@@ -2014,21 +2018,21 @@ flow_ccs_061C_072C:                                                  ; address: 
 flow_ccs_061C_0730:                                                  ; address: 0x000730
 
         movlw   0x07
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_0754                                   ; dest: 0x000754
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_0744                                   ; dest: 0x000744
         movlw   0x04
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0744:                                                  ; address: 0x000744
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_0750                                   ; dest: 0x000750
         movlw   0x03
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0750:                                                  ; address: 0x000750
 
@@ -2037,13 +2041,13 @@ flow_ccs_061C_0750:                                                  ; address: 
 flow_ccs_061C_0754:                                                  ; address: 0x000754
 
         movlw   0x08
-        cpfseq  rx_parsed_data, A                        ; reg: 0x030
+        cpfseq  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_ccs_061C_0768                                   ; dest: 0x000768
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_061C_0768                                   ; dest: 0x000768
         movlw   0x04
-        movwf   0xb7, B                                     ; reg: 0x0b7
+        movwf   rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_061C_0768:                                                  ; address: 0x000768
 
@@ -2051,39 +2055,39 @@ flow_ccs_061C_0768:                                                  ; address: 
 
 control_core_service_076A:                                               ; address: 0x00076a
 
-        movf    0xb7, F, B                                  ; reg: 0x0b7
+        movf    rx_ring_staging_b0, F, B                                  ; reg: 0x0b7
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_076A_0778                                   ; dest: 0x000778
-        clrf    0xb8, B                                     ; reg: 0x0b8
+        clrf    input_select_cache_b0, B                                     ; reg: 0x0b8
         goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
 flow_ccs_076A_0778:                                                  ; address: 0x000778
 
-        decfsz  0xb7, W, B                                  ; reg: 0x0b7
+        decfsz  rx_ring_staging_b0, W, B                                  ; reg: 0x0b7
         goto    flow_ccs_076A_07B4                                   ; dest: 0x0007b4
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_076A_07AC                                   ; dest: 0x0007ac
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_076A_0790                                   ; dest: 0x000790
         movlw   0x03
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_0790:                                                  ; address: 0x000790
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_079C                                   ; dest: 0x00079c
         movlw   0x04
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_079C:                                                  ; address: 0x00079c
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_07A8                                   ; dest: 0x0007a8
         movlw   0x05
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_07A8:                                                  ; address: 0x0007a8
 
@@ -2092,7 +2096,7 @@ flow_ccs_076A_07A8:                                                  ; address: 
 flow_ccs_076A_07AC:                                                  ; address: 0x0007ac
 
         movlw   0x02
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_07B0:                                                  ; address: 0x0007b0
 
@@ -2101,31 +2105,31 @@ flow_ccs_076A_07B0:                                                  ; address: 
 flow_ccs_076A_07B4:                                                  ; address: 0x0007b4
 
         movlw   0x02
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_07F2                                   ; dest: 0x0007f2
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_076A_07EA                                   ; dest: 0x0007ea
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_076A_07CE                                   ; dest: 0x0007ce
         movlw   0x04
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_07CE:                                                  ; address: 0x0007ce
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_07DA                                   ; dest: 0x0007da
         movlw   0x05
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_07DA:                                                  ; address: 0x0007da
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_07E6                                   ; dest: 0x0007e6
         movlw   0x06
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_07E6:                                                  ; address: 0x0007e6
 
@@ -2134,7 +2138,7 @@ flow_ccs_076A_07E6:                                                  ; address: 
 flow_ccs_076A_07EA:                                                  ; address: 0x0007ea
 
         movlw   0x03
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_07EE:                                                  ; address: 0x0007ee
 
@@ -2143,31 +2147,31 @@ flow_ccs_076A_07EE:                                                  ; address: 
 flow_ccs_076A_07F2:                                                  ; address: 0x0007f2
 
         movlw   0x03
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_0830                                   ; dest: 0x000830
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_076A_0828                                   ; dest: 0x000828
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_076A_080C                                   ; dest: 0x00080c
         movlw   0x05
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_080C:                                                  ; address: 0x00080c
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_0818                                   ; dest: 0x000818
         movlw   0x06
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_0818:                                                  ; address: 0x000818
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_0824                                   ; dest: 0x000824
         movlw   0x07
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_0824:                                                  ; address: 0x000824
 
@@ -2176,7 +2180,7 @@ flow_ccs_076A_0824:                                                  ; address: 
 flow_ccs_076A_0828:                                                  ; address: 0x000828
 
         movlw   0x04
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_082C:                                                  ; address: 0x00082c
 
@@ -2185,31 +2189,31 @@ flow_ccs_076A_082C:                                                  ; address: 
 flow_ccs_076A_0830:                                                  ; address: 0x000830
 
         movlw   0x04
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_086E                                   ; dest: 0x00086e
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_076A_0866                                   ; dest: 0x000866
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_076A_084A                                   ; dest: 0x00084a
         movlw   0x06
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_084A:                                                  ; address: 0x00084a
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_0856                                   ; dest: 0x000856
         movlw   0x07
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_0856:                                                  ; address: 0x000856
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_076A_0862                                   ; dest: 0x000862
         movlw   0x08
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_0862:                                                  ; address: 0x000862
 
@@ -2218,7 +2222,7 @@ flow_ccs_076A_0862:                                                  ; address: 
 flow_ccs_076A_0866:                                                  ; address: 0x000866
 
         movlw   0x05
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_086A:                                                  ; address: 0x00086a
 
@@ -2227,37 +2231,37 @@ flow_ccs_076A_086A:                                                  ; address: 
 flow_ccs_076A_086E:                                                  ; address: 0x00086e
 
         movlw   0x05
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_087E                                   ; dest: 0x00087e
         movlw   0x01
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
         goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
 flow_ccs_076A_087E:                                                  ; address: 0x00087e
 
         movlw   0x06
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_088E                                   ; dest: 0x00088e
         movlw   0x02
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
         goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
 flow_ccs_076A_088E:                                                  ; address: 0x00088e
 
         movlw   0x07
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_089E                                   ; dest: 0x00089e
         movlw   0x03
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
         goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
 
 flow_ccs_076A_089E:                                                  ; address: 0x00089e
 
         movlw   0x08
-        cpfseq  0xb7, B                                     ; reg: 0x0b7
+        cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_076A_08AA                                   ; dest: 0x0008aa
         movlw   0x04
-        movwf   0xb8, B                                     ; reg: 0x0b8
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
 
 flow_ccs_076A_08AA:                                                  ; address: 0x0008aa
 
@@ -2279,41 +2283,42 @@ flow_ccs_076A_08AA:                                                  ; address: 
 ; button_scan_debounce:
 button_scan_debounce:                                               ; address: 0x0008ac
 
-        setf    tx_data_staging, A                        ; reg: 0x027
-        bsf     tx_data_staging, 0x0, A                   ; reg: 0x027
+        movlb   0x00
+        setf    tx_data_staging_acc, A                        ; reg: 0x027
+        bsf     tx_data_staging_acc, 0x0, A                   ; reg: 0x027
         btfss   PORTA, RA3, A                               ; reg: 0xf80, bit: 3
-        bcf     tx_data_staging, 0x0, A                   ; reg: 0x027
-        bsf     tx_data_staging, 0x1, A                   ; reg: 0x027
+        bcf     tx_data_staging_acc, 0x0, A                   ; reg: 0x027
+        bsf     tx_data_staging_acc, 0x1, A                   ; reg: 0x027
         btfss   PORTC, RC0, A                               ; reg: 0xf82, bit: 0
-        bcf     tx_data_staging, 0x1, A                   ; reg: 0x027
-        bsf     tx_data_staging, 0x2, A                   ; reg: 0x027
+        bcf     tx_data_staging_acc, 0x1, A                   ; reg: 0x027
+        bsf     tx_data_staging_acc, 0x2, A                   ; reg: 0x027
         btfss   PORTA, RA2, A                               ; reg: 0xf80, bit: 2
-        bcf     tx_data_staging, 0x2, A                   ; reg: 0x027
-        bsf     tx_data_staging, 0x3, A                   ; reg: 0x027
+        bcf     tx_data_staging_acc, 0x2, A                   ; reg: 0x027
+        bsf     tx_data_staging_acc, 0x3, A                   ; reg: 0x027
         btfss   PORTA, RA1, A                               ; reg: 0xf80, bit: 1
-        bcf     tx_data_staging, 0x3, A                   ; reg: 0x027
-        bsf     tx_data_staging, 0x4, A                   ; reg: 0x027
+        bcf     tx_data_staging_acc, 0x3, A                   ; reg: 0x027
+        bsf     tx_data_staging_acc, 0x4, A                   ; reg: 0x027
         btfss   PORTC, RC5, A                               ; reg: 0xf82, bit: 5
-        bcf     tx_data_staging, 0x4, A                   ; reg: 0x027
-        bsf     tx_data_staging, 0x5, A                   ; reg: 0x027
+        bcf     tx_data_staging_acc, 0x4, A                   ; reg: 0x027
+        bsf     tx_data_staging_acc, 0x5, A                   ; reg: 0x027
         btfss   PORTA, RA4, A                               ; reg: 0xf80, bit: 4
-        bcf     tx_data_staging, 0x5, A                   ; reg: 0x027
+        bcf     tx_data_staging_acc, 0x5, A                   ; reg: 0x027
         movlw   0xff
-        xorwf   tx_data_staging, F, A                     ; reg: 0x027
-        movf    tx_data_staging, W, A                     ; reg: 0x027
-        subwf   0xbc, W, B                                  ; reg: 0x0bc
+        xorwf   tx_data_staging_acc, F, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
+        subwf   button_last_scan_b0, W, B                                  ; reg: 0x0bc
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_button_scan_debounce_08EA                                   ; dest: 0x0008ea
-        clrf    0xbb, B                                     ; reg: 0x0bb
-        movff   tx_data_staging, 0x0bc                    ; reg1: 0x027
+        clrf    button_debounce_counter_b0, B                                     ; reg: 0x0bb
+        movff   tx_data_staging_b0_phys, 0x0bc                    ; reg1: 0x027
         goto    flow_button_scan_debounce_08FC                                   ; dest: 0x0008fc
 
 flow_button_scan_debounce_08EA:                                                  ; address: 0x0008ea
 
         movlw   0x04
-        cpfslt  0xbb, B                                     ; reg: 0x0bb
+        cpfslt  button_debounce_counter_b0, B                                     ; reg: 0x0bb
         goto    flow_button_scan_debounce_08F8                                   ; dest: 0x0008f8
-        incf    0xbb, F, B                                  ; reg: 0x0bb
+        incf    button_debounce_counter_b0, F, B                                  ; reg: 0x0bb
         goto    flow_button_scan_debounce_08FC                                   ; dest: 0x0008fc
 
 flow_button_scan_debounce_08F8:                                                  ; address: 0x0008f8
@@ -2322,46 +2327,47 @@ flow_button_scan_debounce_08F8:                                                 
 
 flow_button_scan_debounce_08FC:                                                  ; address: 0x0008fc
 
-        clrf    0x9a, B                                     ; reg: 0x09a
-        movf    0xbe, W, B                                  ; reg: 0x0be
-        subwf   0xbd, W, B                                  ; reg: 0x0bd
+        clrf    stock_09A_b0, B                                     ; reg: 0x09a
+        movf    button_debounced_b0, W, B                                  ; reg: 0x0be
+        subwf   stock_0BD_b0, W, B                                  ; reg: 0x0bd
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_button_scan_debounce_0918                                   ; dest: 0x000918
         movff   0x0be, 0x0bd
-        clrf    0x9b, B                                     ; reg: 0x09b
-        clrf    0x9c, B                                     ; reg: 0x09c
+        clrf    stock_09B_b0, B                                     ; reg: 0x09b
+        clrf    stock_09C_b0, B                                     ; reg: 0x09c
         movff   0x0be, 0x09a
         goto    flow_button_scan_debounce_0924                                   ; dest: 0x000924
 
 flow_button_scan_debounce_0918:                                                  ; address: 0x000918
 
-        rrcf    0xbe, W, B                                  ; reg: 0x0be
+        rrcf    button_debounced_b0, W, B                                  ; reg: 0x0be
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_button_scan_debounce_0924                                   ; dest: 0x000924
-        infsnz  0x9b, F, B                                  ; reg: 0x09b
-        incf    0x9c, F, B                                  ; reg: 0x09c
+        infsnz  stock_09B_b0, F, B                                  ; reg: 0x09b
+        incf    stock_09C_b0, F, B                                  ; reg: 0x09c
 
 flow_button_scan_debounce_0924:                                                  ; address: 0x000924
 
         movlw   0xc9
-        subwf   0x9b, W, B                                  ; reg: 0x09b
+        subwf   stock_09B_b0, W, B                                  ; reg: 0x09b
         movlw   0x32
-        subwfb  0x9c, W, B                                  ; reg: 0x09c
+        subwfb  stock_09C_b0, W, B                                  ; reg: 0x09c
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_button_scan_debounce_093E                                   ; dest: 0x00093e
         movlw   0x28
-        movwf   0x9b, B                                     ; reg: 0x09b
+        movwf   stock_09B_b0, B                                     ; reg: 0x09b
         movlw   0x23
-        movwf   0x9c, B                                     ; reg: 0x09c
+        movwf   stock_09C_b0, B                                     ; reg: 0x09c
         movff   0x0be, 0x09a
 
 flow_button_scan_debounce_093E:                                                  ; address: 0x00093e
 
         return  0x0
 
+;@routine control_core_service_0940 entry_bsr=unknown exit_bsr=preserve
 control_core_service_0940:                                               ; address: 0x000940
 
-        movff   tx_data_staging, (Common_RAM + 43)        ; reg1: 0x027, reg2: 0x02b
+        movff   tx_data_staging_b0_phys, (Common_RAM + 43)        ; reg1: 0x027, reg2: 0x02b
         clrf    (Common_RAM + 44), A                        ; reg: 0x02c
         movf    (Common_RAM + 44), W, A                     ; reg: 0x02c
         mullw   0x10
@@ -2375,14 +2381,14 @@ control_core_service_0940:                                               ; addre
         addwf   (Common_RAM + 41), F, A                     ; reg: 0x029
         movf    (Common_RAM + 44), W, A                     ; reg: 0x02c
         addwfc  (Common_RAM + 42), F, A                     ; reg: 0x02a
-        clrf    tx_data_staging, A                        ; reg: 0x027
+        clrf    tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_ccs_0940_0964:                                                  ; address: 0x000964
 
         movlw   0x10
-        cpfslt  tx_data_staging, A                        ; reg: 0x027
+        cpfslt  tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0940_098E                                   ; dest: 0x00098e
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         addwf   (Common_RAM + 41), W, A                     ; reg: 0x029
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         movlw   0x00
@@ -2394,7 +2400,7 @@ flow_ccs_0940_0964:                                                  ; address: 
         movff   TABLAT, (Common_RAM + 40)                   ; reg1: 0xff5, reg2: 0x028
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
-        incf    tx_data_staging, F, A                     ; reg: 0x027
+        incf    tx_data_staging_acc, F, A                     ; reg: 0x027
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_ccs_0940_0964                                   ; dest: 0x000964
 
@@ -2405,73 +2411,73 @@ flow_ccs_0940_098E:                                                  ; address: 
 control_core_service_0990:                                               ; address: 0x000990
 
         clrf    EEADR, A                                    ; reg: 0xfa9
-        movf    0xbf, W, B                                  ; reg: 0x0bf
+        movf    display_state_index_b0, W, B                                  ; reg: 0x0bf
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x01
         movwf   EEADR, A                                    ; reg: 0xfa9
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x02
         movwf   EEADR, A                                    ; reg: 0xfa9
-        movf    0xc0, W, B                                  ; reg: 0x0c0
+        movf    stock_0C0_b0, W, B                                  ; reg: 0x0c0
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
-        clrf    tx_data_staging, A                        ; reg: 0x027
+        clrf    tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_ccs_0990_09AE:                                                  ; address: 0x0009ae
 
         movlw   0x06                                        ; CMD input_select
-        cpfslt  tx_data_staging, A                        ; reg: 0x027
+        cpfslt  tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0990_0A3A                                   ; dest: 0x000a3a
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0c1
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x09
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0c7
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x0f
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0cd
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x15
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0d3
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x1b                                        ; CMD channel_src_5
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0d9
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x21
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0df
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x27
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
         lfsr    0x0, 0x0e5
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
-        incf    tx_data_staging, F, A                     ; reg: 0x027
+        incf    tx_data_staging_acc, F, A                     ; reg: 0x027
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_ccs_0990_09AE                                   ; dest: 0x0009ae
 
@@ -2479,7 +2485,7 @@ flow_ccs_0990_0A3A:                                                  ; address: 
 
         movlw   0x73
         movwf   EEADR, A                                    ; reg: 0xfa9
-        movf    0xeb, W, B                                  ; reg: 0x0eb
+        movf    stock_0EB_b0, W, B                                  ; reg: 0x0eb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         return  0x0
 
@@ -2500,70 +2506,70 @@ settings_load_eeprom:                                               ; address: 0
 
         movlw   0x00
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
-        movwf   0xbf, B                                     ; reg: 0x0bf
+        movwf   display_state_index_b0, B                                     ; reg: 0x0bf
         movlw   0x01
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
-        movwf   0xba, B                                     ; reg: 0x0ba
+        movwf   stock_0BA_b0, B                                     ; reg: 0x0ba
         movlw   0x02
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
-        movwf   0xc0, B                                     ; reg: 0x0c0
-        clrf    tx_data_staging, A                        ; reg: 0x027
+        movwf   stock_0C0_b0, B                                     ; reg: 0x0c0
+        clrf    tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_settings_load_eeprom_0A60:                                                  ; address: 0x000a60
 
         movlw   0x06                                        ; CMD input_select
-        cpfslt  tx_data_staging, A                        ; reg: 0x027
+        cpfslt  tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_settings_load_eeprom_0AFA                                   ; dest: 0x000afa
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0c1
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x09
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0c7
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x0f
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0cd
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x15
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0d3
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x1b                                        ; CMD channel_src_5
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0d9
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x21
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0df
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x27
-        addwf   tx_data_staging, W, A                     ; reg: 0x027
+        addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
         lfsr    0x0, 0x0e5
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
-        incf    tx_data_staging, F, A                     ; reg: 0x027
+        incf    tx_data_staging_acc, F, A                     ; reg: 0x027
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_settings_load_eeprom_0A60                                   ; dest: 0x000a60
 
@@ -2571,13 +2577,13 @@ flow_settings_load_eeprom_0AFA:                                                 
 
         movlw   0x73
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
-        movwf   0xeb, B                                     ; reg: 0x0eb
+        movwf   stock_0EB_b0, B                                     ; reg: 0x0eb
         movlw   0x05
-        subwf   0xeb, W, B                                  ; reg: 0x0eb
+        subwf   stock_0EB_b0, W, B                                  ; reg: 0x0eb
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_settings_load_eeprom_0B10                                   ; dest: 0x000b10
         movlw   0x01
-        movwf   0xeb, B                                     ; reg: 0x0eb
+        movwf   stock_0EB_b0, B                                     ; reg: 0x0eb
 
 flow_settings_load_eeprom_0B10:                                                  ; address: 0x000b10
 
@@ -2606,14 +2612,14 @@ serial_tx_routed_frame:                                               ; address:
         bc      serial_tx_routed_frame_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         addwf   (Common_RAM + 51), W, A                     ; reg: 0x033
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movff   (Common_RAM + 52), tx_data_staging        ; reg1: 0x034, reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movff   (Common_RAM + 53), tx_data_staging        ; reg1: 0x035, reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        clrf    0x9f, B                                     ; reg: 0x09f
-        clrf    0xa0, B                                     ; reg: 0x0a0
+        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
+        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
         return  0x0
 
 serial_tx_routed_frame_aborted:
@@ -2675,17 +2681,17 @@ full_sync_burst:                                               ; address: 0x000b
 
         ; --- Advance step (1..6, wrap 6 → 1) ---
         movlb   0x01
-        incf    v171_full_sync_step, F, BANKED              ; reg: 0x070
+        incf    v171_full_sync_step_b1, F, BANKED              ; reg: 0x070
         movlw   0x06
-        cpfsgt  v171_full_sync_step, BANKED                 ; if step > 6, fall through to wrap
+        cpfsgt  v171_full_sync_step_b1, BANKED                 ; if step > 6, fall through to wrap
         bra     v171_fs_step_in_range
         movlw   0x01
-        movwf   v171_full_sync_step, BANKED                 ; wrap step → 1
+        movwf   v171_full_sync_step_b1, BANKED                 ; wrap step → 1
 
 v171_fs_step_in_range:
         ; --- Dispatch on step ---
         ; W ← step (1..6); decrement chain matches the active step.
-        movf    v171_full_sync_step, W, BANKED
+        movf    v171_full_sync_step_b1, W, BANKED
         movlb   0x00
 
         addlw   0xFF                                        ; W -= 1; Z if step was 1
@@ -2734,12 +2740,12 @@ poll_frame_send:                                               ; address: 0x000b
         rcall   tx_ring_reserve_3
         bc      poll_frame_send_aborted
         movlw   0xb1                                        ; ROUTE addressed MAIN#1
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movlw   0x04                                        ; CMD status_poll
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        clrf    tx_data_staging, A                        ; reg: 0x027
+        clrf    tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         return  0x0
 
@@ -2842,15 +2848,15 @@ input_frame_send:                                               ; address: 0x000
         rcall   tx_ring_reserve_3
         bc      input_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movlw   0x06                                        ; CMD input_select
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movff   0x0b8, tx_data_staging                    ; reg2: 0x027
+        movff   0x0b8, tx_data_staging_b0_phys                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        clrf    0x9f, B                                     ; reg: 0x09f
-        clrf    0xa0, B                                     ; reg: 0x0a0
+        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
+        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
         return  0x0
 
 input_frame_send_aborted:
@@ -2871,15 +2877,15 @@ volume_frame_send:                                               ; address: 0x00
         rcall   tx_ring_reserve_3
         bc      volume_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movlw   0x07                                        ; CMD volume (offset 0x60)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movff   0x0b9, tx_data_staging                    ; reg2: 0x027
+        movff   0x0b9, tx_data_staging_b0_phys                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        clrf    0x9f, B                                     ; reg: 0x09f
-        clrf    0xa0, B                                     ; reg: 0x0a0
+        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
+        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
         return  0x0
 
 volume_frame_send_aborted:
@@ -2903,15 +2909,15 @@ cmd1d_setting_frame_send:                                               ; addres
         rcall   tx_ring_reserve_3
         bc      cmd1d_setting_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movff   0x0a7, tx_data_staging                    ; reg2: 0x027
+        movff   0x0a7, tx_data_staging_b0_phys                    ; reg2: 0x027
         call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        clrf    0x9f, B                                     ; reg: 0x09f
-        clrf    0xa0, B                                     ; reg: 0x0a0
+        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
+        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
         return  0x0
 
 cmd1d_setting_frame_send_aborted:
@@ -2921,35 +2927,35 @@ v171_service_rx_frame_gap:
         ; Foreground parser-stall guard.  Keep the parser front-end untouched
         ; and watch for a non-empty frame state that stops receiving bytes.
         movlb   0x00
-        movf    rx_frame_position, F, B
+        movf    rx_frame_position_b0, F, B
         btfsc   STATUS, Z, A
         bra     v171_service_rx_frame_gap_clear
-        movf    rx_ring_wr, W, B
-        cpfseq  rx_ring_rd, B
+        movf    rx_ring_wr_b0, W, B
+        cpfseq  rx_ring_rd_b0, B
         bra     v171_service_rx_frame_gap_reload
-        movf    v171_rx_frame_gap_timeout, F, BANKED
+        movf    v171_rx_frame_gap_timeout_b0, F, BANKED
         bnz     v171_service_rx_frame_gap_count
         movlw   V171_RX_FRAME_GAP_RELOAD
-        movwf   v171_rx_frame_gap_timeout, BANKED
+        movwf   v171_rx_frame_gap_timeout_b0, BANKED
         return  0x0
 
 v171_service_rx_frame_gap_count:
-        infsnz  v171_rx_frame_gap_timeout, F, BANKED
+        infsnz  v171_rx_frame_gap_timeout_b0, F, BANKED
         bra     v171_service_rx_frame_gap_expired
         return  0x0
 
 v171_service_rx_frame_gap_reload:
         movlw   V171_RX_FRAME_GAP_RELOAD
-        movwf   v171_rx_frame_gap_timeout, BANKED
+        movwf   v171_rx_frame_gap_timeout_b0, BANKED
         return  0x0
 
 v171_service_rx_frame_gap_clear:
-        clrf    v171_rx_frame_gap_timeout, BANKED
+        clrf    v171_rx_frame_gap_timeout_b0, BANKED
         return  0x0
 
 v171_service_rx_frame_gap_expired:
-        clrf    rx_frame_position, BANKED
-        clrf    v171_rx_frame_gap_timeout, BANKED
+        clrf    rx_frame_position_b0, BANKED
+        clrf    v171_rx_frame_gap_timeout_b0, BANKED
         return  0x0
 
 ; ===========================================================================
@@ -2966,7 +2972,7 @@ mute_frame_send:                                               ; address: 0x000c
         clrf    (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        btfss   control_flags, 0x5, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x5, A                   ; reg: 0x01f
         goto    flow_mute_frame_send_0C90                                   ; dest: 0x000c90
         movlw   0x02
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -3005,7 +3011,7 @@ standby_wake_broadcast:                                               ; address:
         clrf    (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_standby_wake_broadcast_0CAA                                   ; dest: 0x000caa
         clrf    (Common_RAM + 53), A                        ; reg: 0x035
         goto    flow_standby_wake_broadcast_0CAE                                   ; dest: 0x000cae
@@ -3043,6 +3049,7 @@ standby_wake_broadcast_aborted:
 ; from the main display path.
 ; ===========================================================================
 ; display_loop_iteration:
+;@routine display_loop_iteration entry_bsr=unknown exit_bsr=0
 display_loop_iteration:                                               ; address: 0x000cb2
 
         bsf     INTCON, RBIE, A                             ; reg: 0xff2, bit: 3
@@ -3059,11 +3066,11 @@ flow_display_loop_iteration_0CB4:                                               
         call    v171_health_service, 0x0                          ; link-health ping/age tick
         call    v172_preset_filename_service, 0x0                 ; Preset filename query/timeout/LCD tick
         call    v171_health_patch_suffix, 0x0                     ; top-level LCD row-2 suffix
-        movf    0x9e, W, B                                  ; reg: 0x09e
+        movf    idle_timeout_hi_b0, W, B                                  ; reg: 0x09e
         xorlw   0xea
         movlw   0x60
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        xorwf   0x9d, W, B                                  ; reg: 0x09d
+        xorwf   idle_timeout_lo_b0, W, B                                  ; reg: 0x09d
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_loop_iteration_0CCE                                   ; dest: 0x000cce
         rcall   control_core_service_0990                                ; dest: 0x000990
@@ -3071,37 +3078,37 @@ flow_display_loop_iteration_0CB4:                                               
 flow_display_loop_iteration_0CCE:                                                  ; address: 0x000cce
 
         movlw   0x61
-        subwf   0x9d, W, B                                  ; reg: 0x09d
+        subwf   idle_timeout_lo_b0, W, B                                  ; reg: 0x09d
         movlw   0xea
-        subwfb  0x9e, W, B                                  ; reg: 0x09e
+        subwfb  idle_timeout_hi_b0, W, B                                  ; reg: 0x09e
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_display_loop_iteration_0CE0                                   ; dest: 0x000ce0
-        infsnz  0x9d, F, B                                  ; reg: 0x09d
-        incf    0x9e, F, B                                  ; reg: 0x09e
+        infsnz  idle_timeout_lo_b0, F, B                                  ; reg: 0x09d
+        incf    idle_timeout_hi_b0, F, B                                  ; reg: 0x09e
 
 flow_display_loop_iteration_0CE0:                                                  ; address: 0x000ce0
 
         call    control_core_service_0DCE, 0x0                           ; dest: 0x000dce
-        movf    0xa0, W, B                                  ; reg: 0x0a0
+        movf    full_sync_hi_b0, W, B                                  ; reg: 0x0a0
         xorlw   0x4e
         movlw   0x20
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        xorwf   0x9f, W, B                                  ; reg: 0x09f
+        xorwf   full_sync_lo_b0, W, B                                  ; reg: 0x09f
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_loop_iteration_0CFE                                   ; dest: 0x000cfe
         rcall   full_sync_burst                                ; dest: 0x000b36
-        clrf    0x9f, B                                     ; reg: 0x09f
-        clrf    0xa0, B                                     ; reg: 0x0a0
+        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
+        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
         goto    flow_display_loop_iteration_0D02                                   ; dest: 0x000d02
 
 flow_display_loop_iteration_0CFE:                                                  ; address: 0x000cfe
 
-        infsnz  0x9f, F, B                                  ; reg: 0x09f
-        incf    0xa0, F, B                                  ; reg: 0x0a0
+        infsnz  full_sync_lo_b0, F, B                                  ; reg: 0x09f
+        incf    full_sync_hi_b0, F, B                                  ; reg: 0x0a0
 
 flow_display_loop_iteration_0D02:                                                  ; address: 0x000d02
 
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_display_loop_iteration_0D10                                   ; dest: 0x000d10
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bcf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
@@ -3109,19 +3116,19 @@ flow_display_loop_iteration_0D02:                                               
 
 flow_display_loop_iteration_0D10:                                                  ; address: 0x000d10
 
-        movf    0xeb, F, B                                  ; reg: 0x0eb
+        movf    stock_0EB_b0, F, B                                  ; reg: 0x0eb
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_loop_iteration_0D76                                   ; dest: 0x000d76
-        movf    0xec, W, B                                  ; reg: 0x0ec
-        subwf   0xb0, W, B                                  ; reg: 0x0b0
-        movf    0xed, W, B                                  ; reg: 0x0ed
-        subwfb  0xb1, W, B                                  ; reg: 0x0b1
-        movf    0xee, W, B                                  ; reg: 0x0ee
-        subwfb  0xb2, W, B                                  ; reg: 0x0b2
-        movf    0xef, W, B                                  ; reg: 0x0ef
-        subwfb  0xb3, W, B                                  ; reg: 0x0b3
-        movf    0xb3, W, B                                  ; reg: 0x0b3
-        xorwf   0xef, W, B                                  ; reg: 0x0ef
+        movf    stock_0EC_b0, W, B                                  ; reg: 0x0ec
+        subwf   stock_0B0_b0, W, B                                  ; reg: 0x0b0
+        movf    stock_0ED_b0, W, B                                  ; reg: 0x0ed
+        subwfb  stock_0B1_b0, W, B                                  ; reg: 0x0b1
+        movf    stock_0EE_b0, W, B                                  ; reg: 0x0ee
+        subwfb  stock_0B2_b0, W, B                                  ; reg: 0x0b2
+        movf    stock_0EF_b0, W, B                                  ; reg: 0x0ef
+        subwfb  stock_0B3_b0, W, B                                  ; reg: 0x0b3
+        movf    stock_0B3_b0, W, B                                  ; reg: 0x0b3
+        xorwf   stock_0EF_b0, W, B                                  ; reg: 0x0ef
         btfsc   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         xorlw   0x80
         btfss   STATUS, N, A                                ; reg: 0xfd8, bit: 4
@@ -3132,21 +3139,21 @@ flow_display_loop_iteration_0D10:                                               
 
 flow_display_loop_iteration_0D3E:                                                  ; address: 0x000d3e
 
-        btfss   control_flags, 0x5, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x5, A                   ; reg: 0x01f
         goto    flow_display_loop_iteration_0D64                                   ; dest: 0x000d64
-        infsnz  0xb4, F, B                                  ; reg: 0x0b4
-        incf    0xb5, F, B                                  ; reg: 0x0b5
-        movf    0xb5, W, B                                  ; reg: 0x0b5
+        infsnz  stock_0B4_b0, F, B                                  ; reg: 0x0b4
+        incf    stock_0B5_b0, F, B                                  ; reg: 0x0b5
+        movf    stock_0B5_b0, W, B                                  ; reg: 0x0b5
         xorlw   0x75
         movlw   0x30
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        xorwf   0xb4, W, B                                  ; reg: 0x0b4
+        xorwf   stock_0B4_b0, W, B                                  ; reg: 0x0b4
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_loop_iteration_0D60                                   ; dest: 0x000d60
         btg     PORTC, RC1, A                               ; reg: 0xf82, bit: 1
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
-        clrf    0xb4, B                                     ; reg: 0x0b4
-        clrf    0xb5, B                                     ; reg: 0x0b5
+        clrf    stock_0B4_b0, B                                     ; reg: 0x0b4
+        clrf    stock_0B5_b0, B                                     ; reg: 0x0b5
 
 flow_display_loop_iteration_0D60:                                                  ; address: 0x000d60
 
@@ -3159,11 +3166,11 @@ flow_display_loop_iteration_0D64:                                               
 
 flow_display_loop_iteration_0D68:                                                  ; address: 0x000d68
 
-        incf    0xb0, F, B                                  ; reg: 0x0b0
+        incf    stock_0B0_b0, F, B                                  ; reg: 0x0b0
         movlw   0x00
-        addwfc  0xb1, F, B                                  ; reg: 0x0b1
-        addwfc  0xb2, F, B                                  ; reg: 0x0b2
-        addwfc  0xb3, F, B                                  ; reg: 0x0b3
+        addwfc  stock_0B1_b0, F, B                                  ; reg: 0x0b1
+        addwfc  stock_0B2_b0, F, B                                  ; reg: 0x0b2
+        addwfc  stock_0B3_b0, F, B                                  ; reg: 0x0b3
 
 flow_display_loop_iteration_0D72:                                                  ; address: 0x000d72
 
@@ -3177,49 +3184,49 @@ flow_display_loop_iteration_0D76:                                               
 flow_display_loop_iteration_0D7A:                                                  ; address: 0x000d7a
 
         movlw   0x00
-        movf    0x9a, F, B                                  ; reg: 0x09a
+        movf    stock_09A_b0, F, B                                  ; reg: 0x09a
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   control_flags, 0x3, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x3, A                   ; reg: 0x01f
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_display_loop_iteration_0CB4                                   ; dest: 0x000cb4
         movlw   0x00
-        movf    0x9a, F, B                                  ; reg: 0x09a
+        movf    stock_09A_b0, F, B                                  ; reg: 0x09a
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   control_flags, 0x4, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x4, A                   ; reg: 0x01f
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_loop_iteration_0DB0                                   ; dest: 0x000db0
-        clrf    0xb3, B                                     ; reg: 0x0b3
-        clrf    0xb2, B                                     ; reg: 0x0b2
-        clrf    0xb1, B                                     ; reg: 0x0b1
-        clrf    0xb0, B                                     ; reg: 0x0b0
+        clrf    stock_0B3_b0, B                                     ; reg: 0x0b3
+        clrf    stock_0B2_b0, B                                     ; reg: 0x0b2
+        clrf    stock_0B1_b0, B                                     ; reg: 0x0b1
+        clrf    stock_0B0_b0, B                                     ; reg: 0x0b0
 
 flow_display_loop_iteration_0DB0:                                                  ; address: 0x000db0
 
-        bcf     control_flags, 0x4, A                   ; reg: 0x01f
-        rrcf    0x9a, W, B                                  ; reg: 0x09a
+        bcf     control_flags_acc, 0x4, A                   ; reg: 0x01f
+        rrcf    stock_09A_b0, W, B                                  ; reg: 0x09a
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_display_loop_iteration_0DC8                                   ; dest: 0x000dc8
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x0, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x0, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_display_loop_iteration_0DC8                                   ; dest: 0x000dc8
-        btg     control_flags, 0x1, A                   ; reg: 0x01f
+        btg     control_flags_acc, 0x1, A                   ; reg: 0x01f
 
 flow_display_loop_iteration_0DC8:                                                  ; address: 0x000dc8
 
-        clrf    0x9d, B                                     ; reg: 0x09d
-        clrf    0x9e, B                                     ; reg: 0x09e
+        clrf    idle_timeout_lo_b0, B                                     ; reg: 0x09d
+        clrf    idle_timeout_hi_b0, B                                     ; reg: 0x09e
         return  0x0
 
 control_core_service_0DCE:                                               ; address: 0x000dce
@@ -3239,29 +3246,29 @@ flow_ccs_0DCE_0DDE:                                                  ; address: 
 
 flow_ccs_0DCE_0DE4:                                                  ; address: 0x000de4
 
-        btfss   control_flags, 0x0, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x0, A                   ; reg: 0x01f
         goto    flow_ccs_0DCE_0DEC                                   ; dest: 0x000dec
         return  0x0
 
 flow_ccs_0DCE_0DEC:                                                  ; address: 0x000dec
 
-        movf    ir_decoded_addr, W, A                     ; reg: 0x01e
+        movf    ir_decoded_addr_acc, W, A                     ; reg: 0x01e
         cpfseq  (Common_RAM + 32), A                        ; reg: 0x020
         goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 33), A                        ; reg: 0x021
         goto    flow_ccs_0DCE_0E0C                                   ; dest: 0x000e0c
         movlw   0x50
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0xc3
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
-        btg     control_flags, 0x1, A                   ; reg: 0x01f
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
+        btg     control_flags_acc, 0x1, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
 flow_ccs_0DCE_0E0C:                                                  ; address: 0x000e0c
 
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 34), A                        ; reg: 0x022
         goto    flow_ccs_0DCE_0E32                                   ; dest: 0x000e32
         movlw   0xd0
@@ -3269,13 +3276,13 @@ flow_ccs_0DCE_0E0C:                                                  ; address: 
         movlw   0x07
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         movlw   0x72
-        cpfslt  0xb9, B                                     ; reg: 0x0b9
+        cpfslt  volume_cache_b0, B                                     ; reg: 0x0b9
         goto    flow_ccs_0DCE_0E2E                                   ; dest: 0x000e2e
-        incf    0xb9, F, B                                  ; reg: 0x0b9
-        bcf     control_flags, 0x5, A                   ; reg: 0x01f
+        incf    volume_cache_b0, F, B                                  ; reg: 0x0b9
+        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
         rcall   volume_frame_send                                ; dest: 0x000c40
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
-        bsf     control_flags, 0x4, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
 
 flow_ccs_0DCE_0E2E:                                                  ; address: 0x000e2e
 
@@ -3283,21 +3290,21 @@ flow_ccs_0DCE_0E2E:                                                  ; address: 
 
 flow_ccs_0DCE_0E32:                                                  ; address: 0x000e32
 
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 35), A                        ; reg: 0x023
         goto    flow_ccs_0DCE_0E58                                   ; dest: 0x000e58
         movlw   0xd0
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0x07
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
-        movf    0xb9, F, B                                  ; reg: 0x0b9
+        movf    volume_cache_b0, F, B                                  ; reg: 0x0b9
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0DCE_0E54                                   ; dest: 0x000e54
-        decf    0xb9, F, B                                  ; reg: 0x0b9
-        bcf     control_flags, 0x5, A                   ; reg: 0x01f
+        decf    volume_cache_b0, F, B                                  ; reg: 0x0b9
+        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
         rcall   volume_frame_send                                ; dest: 0x000c40
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
-        bsf     control_flags, 0x4, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
 
 flow_ccs_0DCE_0E54:                                                  ; address: 0x000e54
 
@@ -3305,76 +3312,76 @@ flow_ccs_0DCE_0E54:                                                  ; address: 
 
 flow_ccs_0DCE_0E58:                                                  ; address: 0x000e58
 
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 38), A                        ; reg: 0x026
         goto    flow_ccs_0DCE_0E7C                                   ; dest: 0x000e7c
         movlw   0x2f
-        movwf   0xb4, B                                     ; reg: 0x0b4
+        movwf   stock_0B4_b0, B                                     ; reg: 0x0b4
         movlw   0x75
-        movwf   0xb5, B                                     ; reg: 0x0b5
-        btg     control_flags, 0x5, A                   ; reg: 0x01f
+        movwf   stock_0B5_b0, B                                     ; reg: 0x0b5
+        btg     control_flags_acc, 0x5, A                   ; reg: 0x01f
         movlw   0x20
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0x4e
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
-        bsf     control_flags, 0x4, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
         rcall   mute_frame_send                                ; dest: 0x000c7c
         goto    flow_ccs_0DCE_0F50                                   ; dest: 0x000f50
 
 flow_ccs_0DCE_0E7C:                                                  ; address: 0x000e7c
 
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 37), A                        ; reg: 0x025
         goto    flow_ccs_0DCE_0EE6                                   ; dest: 0x000ee6
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0DCE_0E94                                   ; dest: 0x000e94
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
 
 flow_ccs_0DCE_0E94:                                                  ; address: 0x000e94
 
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_0DCE_0EA2                                   ; dest: 0x000ea2
         movlw   0x06                                        ; CMD input_select
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
 
 flow_ccs_0DCE_0EA2:                                                  ; address: 0x000ea2
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_0DCE_0EB2                                   ; dest: 0x000eb2
         movlw   0x07                                        ; CMD volume (offset 0x60)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
 
 flow_ccs_0DCE_0EB2:                                                  ; address: 0x000eb2
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_0DCE_0EBE                                   ; dest: 0x000ebe
         movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_ccs_0DCE_0EBE:                                                  ; address: 0x000ebe
 
-        movf    0xb7, F, B                                  ; reg: 0x0b7
+        movf    rx_ring_staging_b0, F, B                                  ; reg: 0x0b7
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0DCE_0ECC                                   ; dest: 0x000ecc
-        decf    0xb7, F, B                                  ; reg: 0x0b7
+        decf    rx_ring_staging_b0, F, B                                  ; reg: 0x0b7
         goto    flow_ccs_0DCE_0ED0                                   ; dest: 0x000ed0
 
 flow_ccs_0DCE_0ECC:                                                  ; address: 0x000ecc
 
-        movff   tx_data_staging, 0x0b7                    ; reg1: 0x027
+        movff   tx_data_staging_b0_phys, 0x0b7                    ; reg1: 0x027
 
 flow_ccs_0DCE_0ED0:                                                  ; address: 0x000ed0
 
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
-        bsf     control_flags, 0x4, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
         movlw   0x58
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0x1b                                        ; CMD channel_src_5
@@ -3385,57 +3392,57 @@ flow_ccs_0DCE_0ED0:                                                  ; address: 
 
 flow_ccs_0DCE_0EE6:                                                  ; address: 0x000ee6
 
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 36), A                        ; reg: 0x024
         goto    flow_ccs_0DCE_0F4E                                   ; dest: 0x000f4e
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0DCE_0EFE                                   ; dest: 0x000efe
         movlw   0x05                                        ; CMD raw_status (MAIN→CONTROL echo)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
 
 flow_ccs_0DCE_0EFE:                                                  ; address: 0x000efe
 
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_0DCE_0F0C                                   ; dest: 0x000f0c
         movlw   0x06                                        ; CMD input_select
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
 
 flow_ccs_0DCE_0F0C:                                                  ; address: 0x000f0c
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_0DCE_0F1C                                   ; dest: 0x000f1c
         movlw   0x07                                        ; CMD volume (offset 0x60)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
 
 flow_ccs_0DCE_0F1C:                                                  ; address: 0x000f1c
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_0DCE_0F28                                   ; dest: 0x000f28
         movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_ccs_0DCE_0F28:                                                  ; address: 0x000f28
 
-        movf    tx_data_staging, W, A                     ; reg: 0x027
-        cpfslt  0xb7, B                                     ; reg: 0x0b7
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
+        cpfslt  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    flow_ccs_0DCE_0F36                                   ; dest: 0x000f36
-        incf    0xb7, F, B                                  ; reg: 0x0b7
+        incf    rx_ring_staging_b0, F, B                                  ; reg: 0x0b7
         goto    flow_ccs_0DCE_0F38                                   ; dest: 0x000f38
 
 flow_ccs_0DCE_0F36:                                                  ; address: 0x000f36
 
-        clrf    0xb7, B                                     ; reg: 0x0b7
+        clrf    rx_ring_staging_b0, B                                     ; reg: 0x0b7
 
 flow_ccs_0DCE_0F38:                                                  ; address: 0x000f38
 
-        bsf     control_flags, 0x3, A                   ; reg: 0x01f
-        bsf     control_flags, 0x4, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
         movlw   0x58
         movwf   (Common_RAM + 27), A                        ; reg: 0x01b
         movlw   0x1b                                        ; CMD channel_src_5
@@ -3446,7 +3453,7 @@ flow_ccs_0DCE_0F38:                                                  ; address: 
 
 flow_ccs_0DCE_0F4E:                                                  ; stock IR dispatch fallthrough #1
 
-        bsf     control_flags, IR_ARMED, A              ; reg: 0x01f
+        bsf     control_flags_acc, IR_ARMED, A              ; reg: 0x01f
 
 flow_ccs_0DCE_0F50:                                                  ; stock IR dispatch exit (no stock case matched)
 
@@ -3464,47 +3471,47 @@ flow_ccs_0DCE_0F50:                                                  ; stock IR 
         ;
         ; All four are handled inline before re-arming the IR gate; any
         ; other unmapped code falls through to the stock re-arm path.
-        movf    ir_decoded_cmd, W, A
+        movf    ir_decoded_cmd_acc, W, A
         xorlw   RC5_PRESET_A                             ; 0x38
         bz      v171_ir_preset_a_case
-        movf    ir_decoded_cmd, W, A
+        movf    ir_decoded_cmd_acc, W, A
         xorlw   RC5_PRESET_B                             ; 0x39
         bz      v171_ir_preset_b_case
-        movf    ir_decoded_cmd, W, A
+        movf    ir_decoded_cmd_acc, W, A
         xorlw   RC5_STANDBY_ENTER                        ; 0x3A
         bz      v171_ir_standby_case
-        movf    ir_decoded_cmd, W, A
+        movf    ir_decoded_cmd_acc, W, A
         xorlw   RC5_WAKE                                 ; 0x3B
         bz      v171_ir_wake_case
         ; Not a V1.72 shortcut — standard re-arm + return.
-        bsf     control_flags, IR_ARMED, A
+        bsf     control_flags_acc, IR_ARMED, A
         return  0x0
 
 v171_ir_preset_a_case:
-        btfss   control_flags, PRESET_BIT, A             ; already A?
+        btfss   control_flags_acc, PRESET_BIT, A             ; already A?
         bra     v171_ir_preset_done                      ; yes — skip emit
-        bcf     control_flags, PRESET_BIT, A             ; 0 = preset A
+        bcf     control_flags_acc, PRESET_BIT, A             ; 0 = preset A
         rcall   v171_send_preset_frame_and_persist
         bc      v171_ir_preset_a_abort
-        bsf     control_flags, 0x3, A                    ; event_exit
+        bsf     control_flags_acc, 0x3, A                    ; event_exit
         bra     v171_ir_preset_done
 v171_ir_preset_a_abort:
-        bsf     control_flags, PRESET_BIT, A             ; restore B if TX/EEPROM aborted
+        bsf     control_flags_acc, PRESET_BIT, A             ; restore B if TX/EEPROM aborted
         bra     v171_ir_preset_done
 
 v171_ir_preset_b_case:
-        btfsc   control_flags, PRESET_BIT, A             ; already B?
+        btfsc   control_flags_acc, PRESET_BIT, A             ; already B?
         bra     v171_ir_preset_done
-        bsf     control_flags, PRESET_BIT, A             ; 1 = preset B
+        bsf     control_flags_acc, PRESET_BIT, A             ; 1 = preset B
         rcall   v171_send_preset_frame_and_persist
         bc      v171_ir_preset_b_abort
-        bsf     control_flags, 0x3, A                    ; event_exit
+        bsf     control_flags_acc, 0x3, A                    ; event_exit
         bra     v171_ir_preset_done
 v171_ir_preset_b_abort:
-        bcf     control_flags, PRESET_BIT, A             ; restore A if TX/EEPROM aborted
+        bcf     control_flags_acc, PRESET_BIT, A             ; restore A if TX/EEPROM aborted
 
 v171_ir_preset_done:
-        bsf     control_flags, IR_ARMED, A
+        bsf     control_flags_acc, IR_ARMED, A
         return  0x0
 
 v171_ir_standby_case:
@@ -3513,8 +3520,8 @@ v171_ir_standby_case:
         ; this endpoint forces standby regardless of current state.
         rcall   v171_send_standby_cmd_frame
         bc      v171_ir_endpoint_done
-        bcf     control_flags, 0x1, A                    ; local UI state = standby
-        bsf     control_flags, 0x3, A                    ; event_exit
+        bcf     control_flags_acc, 0x1, A                    ; local UI state = standby
+        bsf     control_flags_acc, 0x3, A                    ; event_exit
         bra     v171_ir_endpoint_done
 
 v171_ir_wake_case:
@@ -3522,11 +3529,11 @@ v171_ir_wake_case:
         ; set event_exit.  Forces wake regardless of current state.
         rcall   v171_send_wake_cmd_frame
         bc      v171_ir_endpoint_done
-        bsf     control_flags, 0x1, A                    ; local UI state = awake
-        bsf     control_flags, 0x3, A                    ; event_exit
+        bsf     control_flags_acc, 0x1, A                    ; local UI state = awake
+        bsf     control_flags_acc, 0x3, A                    ; event_exit
 
 v171_ir_endpoint_done:
-        bsf     control_flags, IR_ARMED, A
+        bsf     control_flags_acc, IR_ARMED, A
         return  0x0
 
 v171_send_standby_cmd_frame:
@@ -3540,12 +3547,12 @@ v171_send_standby_cmd_frame:
         call    tx_ring_reserve_3, 0x0
         bc      v171_send_standby_cmd_frame_aborted
         movlw   0xB0
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         movlw   0x03
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
-        clrf    tx_data_staging, A
+        clrf    tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         return  0x0
 
@@ -3560,13 +3567,13 @@ v171_send_wake_cmd_frame:
         call    tx_ring_reserve_3, 0x0
         bc      v171_send_wake_cmd_frame_aborted
         movlw   0xB0
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         movlw   0x03
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         movlw   0x01
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         return  0x0
 
@@ -3590,15 +3597,15 @@ v171_send_preset_frame_txonly:
         call    tx_ring_reserve_3, 0x0
         bc      v171_send_preset_frame_txonly_aborted
         movlw   0xB0                                     ; ROUTE broadcast CONTROL→MAIN
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         movlw   0x20                                     ; CMD preset_select
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         clrf    WREG, A
-        btfsc   control_flags, PRESET_BIT, A
+        btfsc   control_flags_acc, PRESET_BIT, A
         movlw   0x01
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         return  0x0
 
@@ -3618,7 +3625,7 @@ v171_send_preset_frame_and_persist:
         movlw   EEPROM_PRESET_STATE_ADDR                 ; 0x74
         movwf   EEADR, A
         clrf    WREG, A
-        btfsc   control_flags, PRESET_BIT, A
+        btfsc   control_flags_acc, PRESET_BIT, A
         movlw   0x01
         call    eeprom_write_byte, 0x0
         return  0x0
@@ -3639,6 +3646,12 @@ v171_preset_screen:
         ; Port of the V1.61b binary-overlay preset_screen, inlined
         ; here so there is no jump-out to an `org 0x7000` stub.
 v171_prs_screen_draw:
+        bra     v171_prs_screen_draw_body
+v171_prs_screen_draw_delayed_query:
+        movlb   0x02
+        bsf     v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        movlb   0x00
+v171_prs_screen_draw_body:
         ; Row 0: "Preset          " (16 characters)
         movlw   0x80
         movwf   (Common_RAM + 1), A
@@ -3681,7 +3694,7 @@ v171_prs_screen_draw:
         ; Seed snap invalid so two bounded status patch calls paint both cells.
         movlb   0x02
         movlw   0xFF
-        movwf   v172_fname_row0_status_snap, BANKED
+        movwf   v172_fname_row0_status_snap_b2, BANKED
         movlb   0x00
         call    v172_preset_status_patch_service, 0x0
         call    v172_preset_status_patch_service, 0x0
@@ -3697,13 +3710,59 @@ v172_preset_blank_row1_entry:
         decfsz  (Common_RAM + 24), F, A
         bra     v172_preset_blank_row1_entry
 
+        movlb   0x02
+        bcf     v172_fname_row0_status_snap_b2, 7, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_VALID, BANKED
+        bra     v171_prs_screen_cache_check
+        bra     v171_prs_screen_query_check_wait
+v171_prs_screen_cache_check:
+        movf    v172_fname_id_b2, W, BANKED
+        andlw   0x01
+        movwf   v172_fname_tmp_b2, BANKED
+        movlb   0x00
+        btfsc   control_flags_acc, PRESET_BIT, A
+        bra     v171_prs_screen_cache_expect_b
+        movlb   0x02
+        movf    v172_fname_tmp_b2, F, BANKED
+        bnz     v171_prs_screen_query_check_wait
+        call    fname_mark_row_dirty_valid, 0x0
+        movlb   0x00
+        bra     v171_prs_screen_query_done
+v171_prs_screen_cache_expect_b:
+        movlb   0x02
+        movf    v172_fname_tmp_b2, F, BANKED
+        bz      v171_prs_screen_query_check_wait
+        call    fname_mark_row_dirty_valid, 0x0
+        movlb   0x00
+        bra     v171_prs_screen_query_done
+
+v171_prs_screen_query_check_wait:
+        movlb   0x02
+        btfsc   v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        bra     v171_prs_screen_query_after_settle
+        movlb   0x00
         call    fname_reset_and_query, 0x0
+        bra     v171_prs_screen_query_done
+v171_prs_screen_query_after_settle:
+        movlb   0x00
+        ; Re-entry and slot-change redraws use one delayed first query.  This
+        ; lets screen-change and preset-apply traffic drain without retrying
+        ; malformed replies.
+        call    fname_reset_and_delay_query, 0x0
+v171_prs_screen_query_done:
 
         ; Snapshot PRESET_BIT in bank-1 0x72 for dirty-check on next loop
         movlb   0x01
-        clrf    0x72, BANKED
-        btfsc   control_flags, PRESET_BIT, A
-        incf    0x72, F, BANKED
+        clrf    stock_172_b1, BANKED
+        btfsc   control_flags_acc, PRESET_BIT, A
+        incf    stock_172_b1, F, BANKED
+
+        ; Consume the key that entered/redrew the Preset page so the freshly
+        ; painted screen cannot immediately self-exit on the same latched
+        ; LEFT/RIGHT/UP/DOWN event.
+        movlb   0x00
+        clrf    stock_09A_b0, BANKED
+        bcf     control_flags_acc, 0x3, A
 
 v171_preset_loop:
         movlb   0x00
@@ -3711,60 +3770,72 @@ v171_preset_loop:
         ; Compare current PRESET_BIT against snapshot — if flipped,
         ; redraw; otherwise fall through to button scan.
         movlb   0x00
-        btfsc   control_flags, 0x3, A                    ; event_exit bit?
-        bcf     control_flags, 0x3, A
+        btfsc   control_flags_acc, 0x3, A                    ; event_exit bit?
+        bcf     control_flags_acc, 0x3, A
         clrf    WREG, A
-        btfsc   control_flags, PRESET_BIT, A
+        btfsc   control_flags_acc, PRESET_BIT, A
         movlw   0x01
         movlb   0x01
-        xorwf   0x72, W, BANKED
+        xorwf   stock_172_b1, W, BANKED
         movlb   0x00
         bz      v171_prs_check_up
-        goto    v171_prs_screen_draw
+        goto    v171_prs_screen_draw_delayed_query
 
 v171_prs_check_up:
-        btfss   0x9a, 0x1, B                              ; UP pressed?
+        btfss   stock_09A_b0, 0x1, B                              ; UP pressed?
         goto    v171_prs_check_down
-        btfss   control_flags, PRESET_BIT, A             ; already A?
+        btfss   control_flags_acc, PRESET_BIT, A             ; already A?
         goto    v171_preset_loop                          ; yes — nothing to do
-        bcf     control_flags, PRESET_BIT, A             ; flip to A
+        bcf     control_flags_acc, PRESET_BIT, A             ; flip to A
         rcall   v171_send_preset_frame_and_persist
         bc      v171_prs_up_abort
-        goto    v171_prs_screen_draw
+        goto    v171_prs_screen_draw_delayed_query
 v171_prs_up_abort:
-        bsf     control_flags, PRESET_BIT, A             ; restore B if TX/EEPROM aborted
+        bsf     control_flags_acc, PRESET_BIT, A             ; restore B if TX/EEPROM aborted
         goto    v171_preset_loop
 
 v171_prs_check_down:
-        btfss   0x9a, 0x2, B                              ; DOWN pressed?
+        btfss   stock_09A_b0, 0x2, B                              ; DOWN pressed?
         goto    v171_preset_exit_check
-        btfsc   control_flags, PRESET_BIT, A             ; already B?
+        btfsc   control_flags_acc, PRESET_BIT, A             ; already B?
         goto    v171_preset_loop                          ; yes — nothing to do
-        bsf     control_flags, PRESET_BIT, A             ; flip to B
+        bsf     control_flags_acc, PRESET_BIT, A             ; flip to B
         rcall   v171_send_preset_frame_and_persist
         bc      v171_prs_down_abort
-        goto    v171_prs_screen_draw
+        goto    v171_prs_screen_draw_delayed_query
 v171_prs_down_abort:
-        bcf     control_flags, PRESET_BIT, A             ; restore A if TX/EEPROM aborted
+        bcf     control_flags_acc, PRESET_BIT, A             ; restore A if TX/EEPROM aborted
         goto    v171_preset_loop
 
 v171_preset_exit_check:
-        bcf     control_flags, 0x3, A                    ; clear event_exit
+        bcf     control_flags_acc, 0x3, A                    ; clear event_exit
         clrf    WREG, A
-        btfsc   0x9a, 0x5, B                              ; RIGHT pressed?
+        btfsc   stock_09A_b0, 0x5, B                              ; RIGHT pressed?
         movlw   0x01
         movwf   (Common_RAM + 24), A                      ; ram_0x018
         clrf    WREG, A
-        btfsc   0x9a, 0x4, B                              ; LEFT pressed?
+        btfsc   stock_09A_b0, 0x4, B                              ; LEFT pressed?
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A
         movlw   0x01
-        btfsc   control_flags, CONNECTED, A              ; disconnected → exit
+        btfsc   control_flags_acc, CONNECTED, A              ; disconnected → exit
         clrf    WREG, A
         iorwf   (Common_RAM + 24), F, A
         btfsc   STATUS, Z, A
         bra     v171_preset_loop                          ; no exit condition — loop
+        movlb   0x02
+        bsf     v172_fname_row0_status_snap_b2, 7, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_VALID, BANKED
+        bra     v171_preset_exit_keep_valid_filename
+        movlb   0x00
         call    fname_reset_blank, 0x0
+        btfss   control_flags_acc, PRESET_BIT, A
+        return  0x0
+        movlb   0x02
+        bsf     v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        movlb   0x00
+        return  0x0
+v171_preset_exit_keep_valid_filename:
         movlb   0x00
         return  0x0
 
@@ -3854,7 +3925,7 @@ v171_preset_exit_check:
 v171_diag_pb_screen:
         movlb   0x01
         andlw   0x01                                       ; mask to 0 or 1
-        movwf   v171_diag_render_pb_index, BANKED
+        movwf   v171_diag_render_pb_index_b1, BANKED
         movlb   0x00
         ; fall through to v171_diag_screen
 
@@ -3874,16 +3945,16 @@ v171_diag_screen:
         ; of the session.  Operator must navigate AWAY and back to
         ; re-enter, which clears reset_seen here and re-fires cmd 0x22.
         movlb   0x01
-        clrf    v171_diag_reset_seen, BANKED
+        clrf    v171_diag_reset_seen_b1, BANKED
         ; Drop any stale in-flight transaction state on page entry.
         ; If RUNTIME_PENDING or RESET_PENDING survives with a zero
         ; timeout byte, the cadence loop decrements 0 -> 0xFF and can
         ; block fresh PB queries for 256 poll cadences before retrying.
-        clrf    v171_diag_flags, BANKED
-        clrf    v171_diag_reset_target, BANKED
-        clrf    v171_diag_reset_timeout, BANKED
-        clrf    v171_diag_runtime_target, BANKED
-        clrf    v171_diag_runtime_timeout, BANKED
+        clrf    v171_diag_flags_b1, BANKED
+        clrf    v171_diag_reset_target_b1, BANKED
+        clrf    v171_diag_reset_timeout_b1, BANKED
+        clrf    v171_diag_runtime_target_b1, BANKED
+        clrf    v171_diag_runtime_timeout_b1, BANKED
         ; --- Tier-1 Phase 3.4 follow-up: cadence prime moved to
         ;     page-entry-only.  Originally the countdown clear lived
         ;     in v171_diag_screen_armed below, which the render
@@ -3901,25 +3972,25 @@ v171_diag_screen:
         ;     Snapshot the present mask here too so the first
         ;     check_redraw doesn't fire a spurious redraw against an
         ;     uninitialized snapshot byte.
-        clrf    v171_diag_poll_lo, BANKED
-        clrf    v171_diag_poll_hi, BANKED
-        movf    v171_diag_present, W, BANKED
-        movwf   v171_diag_present_snap, BANKED
+        clrf    v171_diag_poll_lo_b1, BANKED
+        clrf    v171_diag_poll_hi_b1, BANKED
+        movf    v171_diag_present_b1, W, BANKED
+        movwf   v171_diag_present_snap_b1, BANKED
         ; V1.72 identity query epoch: page re-entry retries identity
         ; after a previous old-MAIN timeout and cancels late replies from
         ; another visible page.
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v172_diag_entry_identity_pb2
         movlb   0x02
-        bcf     v172_diag_id_seen_mask, 0, BANKED
+        bcf     v172_diag_id_seen_mask_b2, 0, BANKED
         bra     v172_diag_entry_identity_common
 v172_diag_entry_identity_pb2:
         movlb   0x02
-        bcf     v172_diag_id_seen_mask, 1, BANKED
+        bcf     v172_diag_id_seen_mask_b2, 1, BANKED
 v172_diag_entry_identity_common:
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
-        clrf    v172_diag_id_timeout, BANKED
-        clrf    v172_diag_id_expected_cmd, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
+        clrf    v172_diag_id_timeout_b2, BANKED
+        clrf    v172_diag_id_expected_cmd_b2, BANKED
         movlb   0x00
 
 v171_diag_screen_draw:
@@ -3934,7 +4005,7 @@ v171_diag_screen_draw:
         movlw   'B'
         call    lcd_char_write, 0x0
         movlb   0x01
-        movf    v171_diag_render_pb_index, W, BANKED
+        movf    v171_diag_render_pb_index_b1, W, BANKED
         addlw   0x31                                       ; pb_index 0->'1', 1->'2'
         movlb   0x00
         call    lcd_char_write, 0x0
@@ -3943,9 +4014,9 @@ v171_diag_screen_draw:
         ; Compute per-PB present-mask bit (PB1 -> 0x01, PB2 -> 0x02).
         movlb   0x01
         movlw   0x01
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         movlw   0x02
-        andwf   v171_diag_present, W, BANKED
+        andwf   v171_diag_present_b1, W, BANKED
         bnz     v171_diag_screen_present
         ; --- ABSENT path ---
         bra     v171_diag_render_absent
@@ -3963,27 +4034,27 @@ v171_diag_screen_present:
         ; when abnormal==0, or at the end of the degraded sparse list
         ; when any issue counter is present and there is room.
         movlb   0x01
-        clrf    v171_diag_render_count, BANKED
-        clrf    v171_diag_render_abnormal, BANKED
-        clrf    v171_diag_render_walk_idx, BANKED
+        clrf    v171_diag_render_count_b1, BANKED
+        clrf    v171_diag_render_abnormal_b1, BANKED
+        clrf    v171_diag_render_walk_idx_b1, BANKED
 v171_diag_count_display_loop:
         movlw   0x0B
-        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        cpfslt  v171_diag_render_walk_idx_b1, BANKED          ; idx >= 11 -> done
         bra     v171_diag_count_display_done
-        movf    v171_diag_render_walk_idx, W, BANKED
+        movf    v171_diag_render_walk_idx_b1, W, BANKED
         rcall   v171_diag_value_for_display_order
         bz      v171_diag_count_display_skip
-        incf    v171_diag_render_count, F, BANKED
+        incf    v171_diag_render_count_b1, F, BANKED
         movlw   0x08
-        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx < 8 -> issue
+        cpfslt  v171_diag_render_walk_idx_b1, BANKED          ; idx < 8 -> issue
         bra     v171_diag_count_display_skip
-        incf    v171_diag_render_abnormal, F, BANKED
+        incf    v171_diag_render_abnormal_b1, F, BANKED
 v171_diag_count_display_skip:
-        incf    v171_diag_render_walk_idx, F, BANKED
+        incf    v171_diag_render_walk_idx_b1, F, BANKED
         bra     v171_diag_count_display_loop
 v171_diag_count_display_done:
         ; --- Branch on abnormal (NOT all-11 count) ---
-        movf    v171_diag_render_abnormal, F, BANKED
+        movf    v171_diag_render_abnormal_b1, F, BANKED
         bz      v171_diag_render_healthy
         bra     v171_diag_render_degraded
 
@@ -4006,7 +4077,7 @@ v171_diag_render_stale_or_lost:
         call    lcd_char_write, 0x0
         movlb   0x01
         movlw   0x08
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_render_stale_row1_blank
@@ -4019,7 +4090,7 @@ v171_diag_render_old:
         call    lcd_char_write, 0x0
         movlb   0x01
         movlw   0x09
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
 v171_diag_render_stale_row1_blank:
@@ -4027,7 +4098,7 @@ v171_diag_render_stale_row1_blank:
         call    lcd_command, 0x0
         movlb   0x01
         movlw   0x10
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
@@ -4036,7 +4107,7 @@ v171_diag_render_stale_row1_blank:
 v171_diag_render_absent:
         movlb   0x01
         movlw   0x0D
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         movlw   0xC0                                       ; LCD cursor row 1 col 0
@@ -4049,7 +4120,7 @@ v171_diag_render_absent:
         call    lcd_char_write, 0x0
         movlb   0x01
         movlw   0x0D
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
@@ -4068,34 +4139,34 @@ v171_diag_render_healthy:
         movlw   0xC0                                       ; LCD cursor row 1 col 0
         call    lcd_command, 0x0
         movlb   0x01
-        clrf    v171_diag_render_emitted, BANKED
+        clrf    v171_diag_render_emitted_b1, BANKED
         movlw   0x08                                       ; display-order S
-        movwf   v171_diag_render_walk_idx, BANKED
+        movwf   v171_diag_render_walk_idx_b1, BANKED
 v171_diag_healthy_ok_loop:
         movlw   0x0B
-        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        cpfslt  v171_diag_render_walk_idx_b1, BANKED          ; idx >= 11 -> done
         bra     v171_diag_healthy_ok_done
-        movf    v171_diag_render_walk_idx, W, BANKED
+        movf    v171_diag_render_walk_idx_b1, W, BANKED
         rcall   v171_diag_value_for_display_order
-        movwf   v171_diag_render_value, BANKED
+        movwf   v171_diag_render_value_b1, BANKED
         bz      v171_diag_healthy_ok_advance
         rcall   v171_diag_emit_row1_token
 v171_diag_healthy_ok_advance:
-        incf    v171_diag_render_walk_idx, F, BANKED
+        incf    v171_diag_render_walk_idx_b1, F, BANKED
         bra     v171_diag_healthy_ok_loop
 v171_diag_healthy_ok_done:
-        movf    v171_diag_render_emitted, F, BANKED
+        movf    v171_diag_render_emitted_b1, F, BANKED
         bnz     v171_diag_healthy_ok_pad_some
         movlw   0x10
         bra     v171_diag_healthy_ok_pad_write
 v171_diag_healthy_ok_pad_some:
-        movf    v171_diag_render_emitted, W, BANKED
+        movf    v171_diag_render_emitted_b1, W, BANKED
         addwf   WREG, W, A                                 ; W = emitted*2
-        addwf   v171_diag_render_emitted, W, BANKED        ; W = emitted*3
+        addwf   v171_diag_render_emitted_b1, W, BANKED        ; W = emitted*3
         sublw   0x11                                       ; W = 17 - emitted*3
 v171_diag_healthy_ok_pad_write:
         movlb   0x01
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
@@ -4109,45 +4180,45 @@ v171_diag_render_degraded:
 
         ; --- Row 0 walk: emit up to 4 non-zero cells as " X#" each. ---
         movlb   0x01
-        clrf    v171_diag_render_emitted, BANKED
-        clrf    v171_diag_render_walk_idx, BANKED
+        clrf    v171_diag_render_emitted_b1, BANKED
+        clrf    v171_diag_render_walk_idx_b1, BANKED
 v171_diag_row0_loop:
         movlw   0x0B
-        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        cpfslt  v171_diag_render_walk_idx_b1, BANKED          ; idx >= 11 -> done
         bra     v171_diag_row0_done
         movlw   0x04
-        cpfslt  v171_diag_render_emitted, BANKED          ; emitted >= 4 -> done
+        cpfslt  v171_diag_render_emitted_b1, BANKED          ; emitted >= 4 -> done
         bra     v171_diag_row0_done
-        movf    v171_diag_render_walk_idx, W, BANKED
+        movf    v171_diag_render_walk_idx_b1, W, BANKED
         rcall   v171_diag_value_for_display_order
-        movwf   v171_diag_render_value, BANKED
+        movwf   v171_diag_render_value_b1, BANKED
         bz      v171_diag_row0_advance
         ; Non-zero cell -- emit " <letter><val>" (3 chars).
         movlb   0x00
         movlw   ' '
         call    lcd_char_write, 0x0
         movlb   0x01
-        movf    v171_diag_render_letter_tmp, W, BANKED
+        movf    v171_diag_render_letter_tmp_b1, W, BANKED
         rcall   v171_diag_letter_for_idx
         movlb   0x00
         call    lcd_char_write, 0x0
         movlb   0x01
-        movf    v171_diag_render_value, W, BANKED
+        movf    v171_diag_render_value_b1, W, BANKED
         movlb   0x00
         rcall   v171_diag_emit_nib_w
         movlb   0x01
-        incf    v171_diag_render_emitted, F, BANKED
+        incf    v171_diag_render_emitted_b1, F, BANKED
 v171_diag_row0_advance:
-        incf    v171_diag_render_walk_idx, F, BANKED
+        incf    v171_diag_render_walk_idx_b1, F, BANKED
         bra     v171_diag_row0_loop
 v171_diag_row0_done:
         ; Pad row 0: each emitted entry consumes 3 chars; row-0 tail
         ; has 12 chars (cols 4..15).  pad_count = 12 - emitted*3.
-        movf    v171_diag_render_emitted, W, BANKED
+        movf    v171_diag_render_emitted_b1, W, BANKED
         addwf   WREG, W, A                                 ; W = emitted*2
-        addwf   v171_diag_render_emitted, W, BANKED        ; W = emitted*3
+        addwf   v171_diag_render_emitted_b1, W, BANKED        ; W = emitted*3
         sublw   0x0C                                       ; W = 12 - emitted*3
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
 
@@ -4158,10 +4229,10 @@ v171_diag_row0_done:
         ; If count <= 4, no entries on row 1 -- write 16 spaces.
         movlb   0x01
         movlw   0x05
-        cpfslt  v171_diag_render_count, BANKED             ; count >= 5 ?
+        cpfslt  v171_diag_render_count_b1, BANKED             ; count >= 5 ?
         bra     v171_diag_row1_walk_setup
         movlw   0x10
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
@@ -4170,30 +4241,30 @@ v171_diag_row1_walk_setup:
         ; Walk again, skipping the first 4 non-zeros (already on row 0),
         ; emitting up to 5 more on row 1.
         movlb   0x01
-        clrf    v171_diag_render_emitted, BANKED
-        clrf    v171_diag_render_skipped, BANKED
-        clrf    v171_diag_render_walk_idx, BANKED
+        clrf    v171_diag_render_emitted_b1, BANKED
+        clrf    v171_diag_render_skipped_b1, BANKED
+        clrf    v171_diag_render_walk_idx_b1, BANKED
 v171_diag_row1_loop:
         movlw   0x0B
-        cpfslt  v171_diag_render_walk_idx, BANKED          ; idx >= 11 -> done
+        cpfslt  v171_diag_render_walk_idx_b1, BANKED          ; idx >= 11 -> done
         bra     v171_diag_row1_done
         movlw   0x05
-        cpfslt  v171_diag_render_emitted, BANKED           ; emitted >= 5 -> done
+        cpfslt  v171_diag_render_emitted_b1, BANKED           ; emitted >= 5 -> done
         bra     v171_diag_row1_done
-        movf    v171_diag_render_walk_idx, W, BANKED
+        movf    v171_diag_render_walk_idx_b1, W, BANKED
         rcall   v171_diag_value_for_display_order
-        movwf   v171_diag_render_value, BANKED
+        movwf   v171_diag_render_value_b1, BANKED
         bz      v171_diag_row1_advance
         ; Non-zero cell -- skip the first 4 (they were emitted on row 0).
         movlw   0x04
-        cpfslt  v171_diag_render_skipped, BANKED           ; skipped >= 4 -> emit
+        cpfslt  v171_diag_render_skipped_b1, BANKED           ; skipped >= 4 -> emit
         bra     v171_diag_row1_emit
-        incf    v171_diag_render_skipped, F, BANKED
+        incf    v171_diag_render_skipped_b1, F, BANKED
         bra     v171_diag_row1_advance
 v171_diag_row1_emit:
         rcall   v171_diag_emit_row1_token
 v171_diag_row1_advance:
-        incf    v171_diag_render_walk_idx, F, BANKED
+        incf    v171_diag_render_walk_idx_b1, F, BANKED
         bra     v171_diag_row1_loop
 v171_diag_row1_done:
         ; Decide tail: count >= 10 -> overflow ".."; else pad with spaces.
@@ -4204,14 +4275,14 @@ v171_diag_row1_done:
         ;              space, save 1 char).
         ; pad_count_no_overflow = 16 - chars_used = 17 - emitted*3.
         movlw   0x0A
-        cpfslt  v171_diag_render_count, BANKED             ; count >= 10 ?
+        cpfslt  v171_diag_render_count_b1, BANKED             ; count >= 10 ?
         bra     v171_diag_row1_overflow
         ; Non-overflow: pad to 16.
-        movf    v171_diag_render_emitted, W, BANKED
+        movf    v171_diag_render_emitted_b1, W, BANKED
         addwf   WREG, W, A                                 ; W = emitted*2
-        addwf   v171_diag_render_emitted, W, BANKED        ; W = emitted*3
+        addwf   v171_diag_render_emitted_b1, W, BANKED        ; W = emitted*3
         sublw   0x11                                       ; W = 17 - emitted*3
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         rcall   v171_diag_pad_spaces
         bra     v171_diag_screen_armed
@@ -4239,63 +4310,63 @@ v171_diag_row1_overflow:
 ; ---------------------------------------------------------------------------
 v171_diag_cache_idx_for_display_order:
         movlb   0x01
-        movwf   v171_diag_render_letter_tmp, BANKED
+        movwf   v171_diag_render_letter_tmp_b1, BANKED
         movlw   0x00                                      ; display 0 -> cache I
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_d
         return  0x0
 v171_diag_order_dec_to_d:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x01                                      ; display 1 -> cache D
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_r
         return  0x0
 v171_diag_order_dec_to_r:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x04                                      ; display 2 -> cache R
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_a
         return  0x0
 v171_diag_order_dec_to_a:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x05                                      ; display 3 -> cache A
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_p
         return  0x0
 v171_diag_order_dec_to_p:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x06                                      ; display 4 -> cache P
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_v
         return  0x0
 v171_diag_order_dec_to_v:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x08                                      ; display 5 -> cache V
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_w
         return  0x0
 v171_diag_order_dec_to_w:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x09                                      ; display 6 -> cache W
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_x
         return  0x0
 v171_diag_order_dec_to_x:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x0A                                      ; display 7 -> cache X
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_s
         return  0x0
 v171_diag_order_dec_to_s:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x02                                      ; display 8 -> cache S
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_b
         return  0x0
 v171_diag_order_dec_to_b:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   0x03                                      ; display 9 -> cache B
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_order_dec_to_o
         return  0x0
 v171_diag_order_dec_to_o:
@@ -4313,9 +4384,9 @@ v171_diag_order_dec_to_o:
 ; ---------------------------------------------------------------------------
 v171_diag_value_for_display_order:
         rcall   v171_diag_cache_idx_for_display_order
-        movwf   v171_diag_render_letter_tmp, BANKED
+        movwf   v171_diag_render_letter_tmp_b1, BANKED
         rcall   v171_diag_load_fsr1_base
-        movf    v171_diag_render_letter_tmp, W, BANKED
+        movf    v171_diag_render_letter_tmp_b1, W, BANKED
         movf    PLUSW1, W, A
         movlb   0x01
         return  0x0
@@ -4333,23 +4404,23 @@ v171_diag_value_for_display_order:
 ; ---------------------------------------------------------------------------
 v171_diag_emit_row1_token:
         movlb   0x01
-        movf    v171_diag_render_emitted, F, BANKED
+        movf    v171_diag_render_emitted_b1, F, BANKED
         bz      v171_diag_emit_row1_no_sep
         movlb   0x00
         movlw   ' '
         call    lcd_char_write, 0x0
 v171_diag_emit_row1_no_sep:
         movlb   0x01
-        movf    v171_diag_render_letter_tmp, W, BANKED
+        movf    v171_diag_render_letter_tmp_b1, W, BANKED
         rcall   v171_diag_letter_for_idx
         movlb   0x00
         call    lcd_char_write, 0x0
         movlb   0x01
-        movf    v171_diag_render_value, W, BANKED
+        movf    v171_diag_render_value_b1, W, BANKED
         movlb   0x00
         rcall   v171_diag_emit_nib_w
         movlb   0x01
-        incf    v171_diag_render_emitted, F, BANKED
+        incf    v171_diag_render_emitted_b1, F, BANKED
         return  0x0
 
 ; ---------------------------------------------------------------------------
@@ -4362,7 +4433,7 @@ v171_diag_emit_row1_no_sep:
 ; ---------------------------------------------------------------------------
 v171_diag_load_fsr1_base:
         movlb   0x01
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v171_diag_load_fsr1_pb2
         lfsr    0x1, 0x180
         return  0x0
@@ -4392,63 +4463,63 @@ v171_diag_load_fsr1_pb2:
 ; ---------------------------------------------------------------------------
 v171_diag_letter_for_idx:
         movlb   0x01
-        movwf   v171_diag_render_letter_tmp, BANKED
+        movwf   v171_diag_render_letter_tmp_b1, BANKED
         movlw   'I'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_d
         return  0x0
 v171_diag_letter_dec_to_d:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'D'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_s
         return  0x0
 v171_diag_letter_dec_to_s:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'S'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_b
         return  0x0
 v171_diag_letter_dec_to_b:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'B'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_r
         return  0x0
 v171_diag_letter_dec_to_r:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'R'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_a
         return  0x0
 v171_diag_letter_dec_to_a:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'A'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_p
         return  0x0
 v171_diag_letter_dec_to_p:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'P'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_o
         return  0x0
 v171_diag_letter_dec_to_o:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'O'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_v
         return  0x0
 v171_diag_letter_dec_to_v:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'V'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_w
         return  0x0
 v171_diag_letter_dec_to_w:
-        decf    v171_diag_render_letter_tmp, F, BANKED
+        decf    v171_diag_render_letter_tmp_b1, F, BANKED
         movlw   'W'
-        tstfsz  v171_diag_render_letter_tmp, BANKED
+        tstfsz  v171_diag_render_letter_tmp_b1, BANKED
         bra     v171_diag_letter_dec_to_x
         return  0x0
 v171_diag_letter_dec_to_x:
@@ -4466,14 +4537,14 @@ v171_diag_letter_dec_to_x:
 ; ---------------------------------------------------------------------------
 v171_diag_pad_spaces:
         movlb   0x01
-        movf    v171_diag_lcd_pad_count, F, BANKED
+        movf    v171_diag_lcd_pad_count_b1, F, BANKED
         bz      v171_diag_pad_spaces_done                  ; count == 0 -> no-op
 v171_diag_pad_spaces_loop:
         movlb   0x00
         movlw   ' '
         call    lcd_char_write, 0x0
         movlb   0x01                                       ; lcd_char_write may have touched BSR
-        decfsz  v171_diag_lcd_pad_count, F, BANKED
+        decfsz  v171_diag_lcd_pad_count_b1, F, BANKED
         bra     v171_diag_pad_spaces_loop
 v171_diag_pad_spaces_done:
         movlb   0x00
@@ -4491,7 +4562,7 @@ v171_clear_lcd_row2:
         call    lcd_command, 0x0
         movlb   0x01
         movlw   0x10
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         call    v171_diag_pad_spaces, 0x0
         return  0x0
@@ -4527,8 +4598,8 @@ v171_diag_loop:
         ; enqueue a cmd 0x21 query for the current target PB and reload.
 v171_diag_poll_check:
         movlb   0x01
-        movf    v171_diag_poll_lo, W, BANKED
-        iorwf   v171_diag_poll_hi, W, BANKED
+        movf    v171_diag_poll_lo_b1, W, BANKED
+        iorwf   v171_diag_poll_hi_b1, W, BANKED
         bnz     v171_diag_loop_dec
         ; Countdown expired.  If RUNTIME_PENDING is still set, wait a
         ; small number of missed cadences before retrying the visible
@@ -4539,31 +4610,31 @@ v171_diag_poll_check:
         ; active page's ~1 s refresh cadence, and one BF/21..BF/27
         ; burst stays in flight at a time.
         movlb   0x01
-        btfss   v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        btfss   v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v171_diag_send_now                         ; previous reply landed
-        decf    v171_diag_runtime_timeout, F, BANKED
+        decf    v171_diag_runtime_timeout_b1, F, BANKED
         bnz     v171_diag_runtime_wait_with_reset_timeout  ; still in timeout window
         ; Previous visible-page query timed out -- retry it.
         call    v171_health_age_visible_diag_target, 0x0
         movlb   0x01
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v171_diag_send_now
 v171_diag_runtime_wait_with_reset_timeout:
-        btfss   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        btfss   v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v171_diag_runtime_wait
-        decf    v171_diag_reset_timeout, F, BANKED
+        decf    v171_diag_reset_timeout_b1, F, BANKED
         bnz     v171_diag_runtime_wait
         movlw   0x01                                       ; PB1 reset_seen bit
-        btfsc   v171_diag_reset_target, 0, BANKED
+        btfsc   v171_diag_reset_target_b1, 0, BANKED
         movlw   0x02                                       ; PB2 reset_seen bit
-        iorwf   v171_diag_reset_seen, F, BANKED
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        iorwf   v171_diag_reset_seen_b1, F, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v171_diag_runtime_wait
 v171_diag_runtime_wait:
         movlw   V171_DIAG_POLL_RELOAD_LO
-        movwf   v171_diag_poll_lo, BANKED
+        movwf   v171_diag_poll_lo_b1, BANKED
         movlw   V171_DIAG_POLL_RELOAD_HI
-        movwf   v171_diag_poll_hi, BANKED
+        movwf   v171_diag_poll_hi_b1, BANKED
         movlb   0x00
         bra     v171_diag_check_redraw
 v171_diag_send_now:
@@ -4574,11 +4645,12 @@ v171_diag_send_now:
         ; hidden PBs cannot make the active page wait every other
         ; cadence cycle.
         movlb   0x01
-        movf    v171_diag_render_pb_index, W, BANKED
+        movf    v171_diag_render_pb_index_b1, W, BANKED
         andlw   0x01
-        movwf   v171_diag_target, BANKED
+        movwf   v171_diag_target_b1, BANKED
         call    v172_diag_identity_cadence, 0x0
         bc      v172_diag_identity_skip_runtime
+        movlb   0x01
         ; --- Tier-1: cmd 0x22 fire-once-per-PB-per-page-entry hook ---
         ; State machine for the new cmd 0x22 (reset-cause flags) query:
         ;
@@ -4608,10 +4680,10 @@ v171_diag_send_now:
         ; separately from v171_diag_target because v171_diag_target can
         ; toggle independently (via the cmd 0x21 BF/27 last-frame path)
         ; between cmd 0x22 send and BF/2B reception or timeout.
-        btfss   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        btfss   v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v171_diag_check_reset_seen                 ; not pending -- proceed
         ; --- RESET_PENDING set: timeout countdown ---
-        decf    v171_diag_reset_timeout, F, BANKED
+        decf    v171_diag_reset_timeout_b1, F, BANKED
         bnz     v171_diag_send_runtime_only                ; not yet expired
         ; --- Timeout: spec "give up" path ---
         ; Mark the in-flight reset target as reset_seen so the gate
@@ -4619,32 +4691,32 @@ v171_diag_send_now:
         ; Using v171_diag_reset_target (snapshot at send time), NOT
         ; v171_diag_target (which may have toggled).
         movlw   0x01                                       ; PB1 mask
-        btfsc   v171_diag_reset_target, 0, BANKED
+        btfsc   v171_diag_reset_target_b1, 0, BANKED
         movlw   0x02                                       ; PB2 mask
-        iorwf   v171_diag_reset_seen, F, BANKED
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        iorwf   v171_diag_reset_seen_b1, F, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v171_diag_send_runtime_only
 v171_diag_check_reset_seen:
         ; Compute reset_seen mask for the current target: bit0 for PB1,
         ; bit1 for PB2.  If already seen (BF/2B received OR timed out),
         ; skip the cmd 0x22 fire and fall through to cmd 0x21.
         movlw   0x01                                       ; PB1 mask
-        btfsc   v171_diag_target, 0, BANKED
+        btfsc   v171_diag_target_b1, 0, BANKED
         movlw   0x02                                       ; PB2 mask
-        andwf   v171_diag_reset_seen, W, BANKED
+        andwf   v171_diag_reset_seen_b1, W, BANKED
         bnz     v171_diag_send_runtime_only                ; already seen for this PB
         ; --- reset_seen.target clear AND RESET_PENDING clear: fire ---
         ; Snapshot v171_diag_target.0 into v171_diag_reset_target so
         ; the timeout path knows which PB to give up on (target may
         ; toggle independently before BF/2B arrives or times out).
-        movf    v171_diag_target, W, BANKED
+        movf    v171_diag_target_b1, W, BANKED
         andlw   0x01
-        movwf   v171_diag_reset_target, BANKED
+        movwf   v171_diag_reset_target_b1, BANKED
         ; Reload timeout counter.  Each cadence cycle is ~1 s so
         ; V171_DIAG_RESET_TIMEOUT_RELOAD = 4 gives ~4 s timeout per spec.
         movlw   V171_DIAG_RESET_TIMEOUT_RELOAD
-        movwf   v171_diag_reset_timeout, BANKED
-        bsf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        movwf   v171_diag_reset_timeout_b1, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         movlb   0x00
         rcall   v171_diag_send_reset_query
         movlb   0x01
@@ -4653,38 +4725,38 @@ v171_diag_send_runtime_only:
         ; BF/21..BF/27 reply burst is routed to cache via this snapshot
         ; instead of the live target, which may toggle or be reused by
         ; reset-cause query handling before all reply frames land.
-        movf    v171_diag_target, W, BANKED
+        movf    v171_diag_target_b1, W, BANKED
         andlw   0x01
-        movwf   v171_diag_runtime_target, BANKED
+        movwf   v171_diag_runtime_target_b1, BANKED
         movlw   V171_DIAG_RUNTIME_TIMEOUT_RELOAD
-        movwf   v171_diag_runtime_timeout, BANKED
-        bsf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        movwf   v171_diag_runtime_timeout_b1, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         movlb   0x00
         rcall   v171_diag_send_runtime_query
         movlb   0x01
         movlw   V171_DIAG_POLL_RELOAD_LO
-        movwf   v171_diag_poll_lo, BANKED
+        movwf   v171_diag_poll_lo_b1, BANKED
         movlw   V171_DIAG_POLL_RELOAD_HI
-        movwf   v171_diag_poll_hi, BANKED
+        movwf   v171_diag_poll_hi_b1, BANKED
         movlb   0x00
         bra     v171_diag_check_redraw
 
 v172_diag_identity_skip_runtime:
         movlb   0x01
         movlw   V171_DIAG_POLL_RELOAD_LO
-        movwf   v171_diag_poll_lo, BANKED
+        movwf   v171_diag_poll_lo_b1, BANKED
         movlw   V171_DIAG_POLL_RELOAD_HI
-        movwf   v171_diag_poll_hi, BANKED
+        movwf   v171_diag_poll_hi_b1, BANKED
         movlb   0x00
         bra     v171_diag_check_redraw
 
 v171_diag_loop_dec:
         ; 16-bit decrement with borrow.
-        movf    v171_diag_poll_lo, W, BANKED
+        movf    v171_diag_poll_lo_b1, W, BANKED
         bnz     v171_diag_loop_dec_lo_only
-        decf    v171_diag_poll_hi, F, BANKED
+        decf    v171_diag_poll_hi_b1, F, BANKED
 v171_diag_loop_dec_lo_only:
-        decf    v171_diag_poll_lo, F, BANKED
+        decf    v171_diag_poll_lo_b1, F, BANKED
         movlb   0x00
 
 v171_diag_check_redraw:
@@ -4695,35 +4767,35 @@ v171_diag_check_redraw:
         ; scratch cell because display_loop_iteration and the LCD
         ; char-write helpers stomp it on every tick.
         movlb   0x01
-        btfsc   v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
+        btfsc   v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
         bra     v171_diag_do_redraw                        ; cache changed
-        btfsc   v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         bra     v171_diag_do_redraw                        ; freshness changed
-        movf    v171_diag_present, W, BANKED
-        xorwf   v171_diag_present_snap, W, BANKED
+        movf    v171_diag_present_b1, W, BANKED
+        xorwf   v171_diag_present_snap_b1, W, BANKED
         bz      v171_diag_redraw_skip                      ; no change
 v171_diag_do_redraw:
-        movf    v171_diag_present, W, BANKED
-        movwf   v171_diag_present_snap, BANKED
-        bcf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
-        bcf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        movf    v171_diag_present_b1, W, BANKED
+        movwf   v171_diag_present_snap_b1, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
         goto    v171_diag_screen_draw
 v171_diag_redraw_skip:
         movlb   0x00
 
 v171_diag_check_buttons:
-        bcf     control_flags, 0x3, A                      ; clear event_exit
+        bcf     control_flags_acc, 0x3, A                      ; clear event_exit
         clrf    WREG, A
-        btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
+        btfsc   stock_09A_b0, 0x5, B                               ; RIGHT pressed?
         movlw   0x01
         movwf   (Common_RAM + 24), A                       ; ram_0x018
         clrf    WREG, A
-        btfsc   0x9a, 0x4, B                               ; LEFT pressed?
+        btfsc   stock_09A_b0, 0x4, B                               ; LEFT pressed?
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A
         movlw   0x01
-        btfsc   control_flags, CONNECTED, A                ; disconnected → exit
+        btfsc   control_flags_acc, CONNECTED, A                ; disconnected → exit
         clrf    WREG, A
         iorwf   (Common_RAM + 24), F, A
         btfsc   STATUS, Z, A
@@ -4788,23 +4860,23 @@ v171_diag_emit_nib_sat:
 ; ---------------------------------------------------------------------------
 v172_diag_render_identity_suffix:
         movlb   0x01
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v172_diag_render_identity_pb2
         movlb   0x02
-        btfss   v172_diag_id_valid_mask, 0, BANKED
+        btfss   v172_diag_id_valid_mask_b2, 0, BANKED
         bra     v172_diag_render_identity_absent
         movlw   ' '
         call    lcd_char_write, 0x0
         movlw   'v'
         call    lcd_char_write, 0x0
         movlb   0x02
-        movf    v172_diag_id_pb1_major, W, BANKED
+        movf    v172_diag_id_pb1_major_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         movlw   '.'
         call    lcd_char_write, 0x0
         movlb   0x02
-        movf    v172_diag_id_pb1_minor, W, BANKED
+        movf    v172_diag_id_pb1_minor_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         movlw   ' '
@@ -4812,32 +4884,32 @@ v172_diag_render_identity_suffix:
         movlw   'x'
         call    lcd_char_write, 0x0
         movlb   0x02
-        movf    v172_diag_id_pb1_rev, W, BANKED
-        movwf   v172_diag_id_tmp_rev_hi, BANKED
-        swapf   v172_diag_id_tmp_rev_hi, W, BANKED
+        movf    v172_diag_id_pb1_rev_b2, W, BANKED
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
+        swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         movlb   0x02
-        movf    v172_diag_id_pb1_rev, W, BANKED
+        movf    v172_diag_id_pb1_rev_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         bra     v172_diag_render_identity_pad_one
 v172_diag_render_identity_pb2:
         movlb   0x02
-        btfss   v172_diag_id_valid_mask, 1, BANKED
+        btfss   v172_diag_id_valid_mask_b2, 1, BANKED
         bra     v172_diag_render_identity_absent
         movlw   ' '
         call    lcd_char_write, 0x0
         movlw   'v'
         call    lcd_char_write, 0x0
         movlb   0x02
-        movf    v172_diag_id_pb2_major, W, BANKED
+        movf    v172_diag_id_pb2_major_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         movlw   '.'
         call    lcd_char_write, 0x0
         movlb   0x02
-        movf    v172_diag_id_pb2_minor, W, BANKED
+        movf    v172_diag_id_pb2_minor_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         movlw   ' '
@@ -4845,26 +4917,26 @@ v172_diag_render_identity_pb2:
         movlw   'x'
         call    lcd_char_write, 0x0
         movlb   0x02
-        movf    v172_diag_id_pb2_rev, W, BANKED
-        movwf   v172_diag_id_tmp_rev_hi, BANKED
-        swapf   v172_diag_id_tmp_rev_hi, W, BANKED
+        movf    v172_diag_id_pb2_rev_b2, W, BANKED
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
+        swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
         movlb   0x02
-        movf    v172_diag_id_pb2_rev, W, BANKED
+        movf    v172_diag_id_pb2_rev_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
 v172_diag_render_identity_pad_one:
         movlb   0x01
         movlw   0x01
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         call    v171_diag_pad_spaces, 0x0
         return  0x0
 v172_diag_render_identity_absent:
         movlb   0x01
         movlw   0x0A
-        movwf   v171_diag_lcd_pad_count, BANKED
+        movwf   v171_diag_lcd_pad_count_b1, BANKED
         movlb   0x00
         call    v171_diag_pad_spaces, 0x0
         return  0x0
@@ -4887,22 +4959,22 @@ v172_diag_emit_hex_alpha:
 
 v172_diag_identity_invalidate_visible:
         movlb   0x01
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v172_diag_identity_invalidate_pb2
         movlb   0x02
-        bcf     v172_diag_id_valid_mask, 0, BANKED
-        bcf     v172_diag_id_seen_mask, 0, BANKED
-        btfsc   v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        bcf     v172_diag_id_valid_mask_b2, 0, BANKED
+        bcf     v172_diag_id_seen_mask_b2, 0, BANKED
+        btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_diag_identity_invalidate_done
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
         bra     v172_diag_identity_invalidate_done
 v172_diag_identity_invalidate_pb2:
         movlb   0x02
-        bcf     v172_diag_id_valid_mask, 1, BANKED
-        bcf     v172_diag_id_seen_mask, 1, BANKED
-        btfss   v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        bcf     v172_diag_id_valid_mask_b2, 1, BANKED
+        bcf     v172_diag_id_seen_mask_b2, 1, BANKED
+        btfss   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_diag_identity_invalidate_done
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
 v172_diag_identity_invalidate_done:
         movlb   0x00
         return  0x0
@@ -4917,74 +4989,74 @@ v172_diag_identity_invalidate_done:
 ; ---------------------------------------------------------------------------
 v172_diag_identity_cadence:
         movlb   0x02
-        btfsc   v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
         bra     v172_diag_identity_pending
         movlb   0x01
-        btfsc   v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        btfsc   v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         bra     v172_diag_identity_noop
-        btfsc   v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        btfsc   v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v172_diag_identity_noop
-        btfsc   v171_diag_target, 0, BANKED
+        btfsc   v171_diag_target_b1, 0, BANKED
         bra     v172_diag_identity_check_pb2
-        btfss   v171_diag_present, 0, BANKED
+        btfss   v171_diag_present_b1, 0, BANKED
         bra     v172_diag_identity_noop
         movlb   0x02
-        btfsc   v172_diag_id_valid_mask, 0, BANKED
+        btfsc   v172_diag_id_valid_mask_b2, 0, BANKED
         bra     v172_diag_identity_noop
-        btfsc   v172_diag_id_seen_mask, 0, BANKED
+        btfsc   v172_diag_id_seen_mask_b2, 0, BANKED
         bra     v172_diag_identity_noop
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_diag_identity_start
 v172_diag_identity_check_pb2:
-        btfss   v171_diag_present, 1, BANKED
+        btfss   v171_diag_present_b1, 1, BANKED
         bra     v172_diag_identity_noop
         movlb   0x02
-        btfsc   v172_diag_id_valid_mask, 1, BANKED
+        btfsc   v172_diag_id_valid_mask_b2, 1, BANKED
         bra     v172_diag_identity_noop
-        btfsc   v172_diag_id_seen_mask, 1, BANKED
+        btfsc   v172_diag_id_seen_mask_b2, 1, BANKED
         bra     v172_diag_identity_noop
-        bsf     v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        bsf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
 v172_diag_identity_start:
-        movf    v172_diag_id_next_gen, W, BANKED
+        movf    v172_diag_id_next_gen_b2, W, BANKED
         andlw   0x1F
         addwf   WREG, W, A
-        movwf   v172_diag_id_pending_id, BANKED
-        btfsc   v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
-        bsf     v172_diag_id_pending_id, 0, BANKED
+        movwf   v172_diag_id_pending_id_b2, BANKED
+        btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
+        bsf     v172_diag_id_pending_id_b2, 0, BANKED
         call    v172_diag_identity_send_query, 0x0
         bc      v172_diag_identity_noop
         movlb   0x02
         movlw   0x4F
-        movwf   v172_diag_id_expected_cmd, BANKED
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
         movlw   V172_DIAG_ID_TIMEOUT_RELOAD
-        movwf   v172_diag_id_timeout, BANKED
-        bsf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
-        incf    v172_diag_id_next_gen, F, BANKED
+        movwf   v172_diag_id_timeout_b2, BANKED
+        bsf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
+        incf    v172_diag_id_next_gen_b2, F, BANKED
         movlw   0x20
-        cpfseq  v172_diag_id_next_gen, BANKED
+        cpfseq  v172_diag_id_next_gen_b2, BANKED
         bra     v172_diag_identity_sent
-        clrf    v172_diag_id_next_gen, BANKED
+        clrf    v172_diag_id_next_gen_b2, BANKED
 v172_diag_identity_sent:
         movlb   0x00
         bsf     STATUS, C, A
         return  0x0
 v172_diag_identity_pending:
-        movf    v172_diag_id_timeout, F, BANKED
+        movf    v172_diag_id_timeout_b2, F, BANKED
         bz      v172_diag_identity_timeout
-        decf    v172_diag_id_timeout, F, BANKED
+        decf    v172_diag_id_timeout_b2, F, BANKED
         bz      v172_diag_identity_timeout
         movlb   0x00
         bsf     STATUS, C, A
         return  0x0
 v172_diag_identity_timeout:
-        btfsc   v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_diag_identity_timeout_pb2
-        bsf     v172_diag_id_seen_mask, 0, BANKED
+        bsf     v172_diag_id_seen_mask_b2, 0, BANKED
         bra     v172_diag_identity_timeout_done
 v172_diag_identity_timeout_pb2:
-        bsf     v172_diag_id_seen_mask, 1, BANKED
+        bsf     v172_diag_id_seen_mask_b2, 1, BANKED
 v172_diag_identity_timeout_done:
-        bcf     v172_diag_id_flags, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
 v172_diag_identity_noop:
         movlb   0x00
         bcf     STATUS, C, A
@@ -4995,20 +5067,20 @@ v172_diag_identity_send_query:
         bc      v172_diag_identity_send_abort
         movlw   0xB1
         movlb   0x02
-        btfsc   v172_diag_id_flags, V172_DIAG_ID_FLAG_TARGET, BANKED
+        btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         movlw   0xB2
         movlb   0x00
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v172_diag_identity_send_abort
         movlw   0x25
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v172_diag_identity_send_abort
         movlb   0x02
-        movf    v172_diag_id_pending_id, W, BANKED
+        movf    v172_diag_id_pending_id_b2, W, BANKED
         movlb   0x00
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v172_diag_identity_send_abort
         bcf     STATUS, C, A
@@ -5041,30 +5113,30 @@ v172_fname_clear_high:
 
 fname_mark_row_dirty_blank:
         movlb   0x02
-        clrf    v172_fname_render_col, BANKED
-        clrf    v172_fname_render_off, BANKED
-        bsf     v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        clrf    v172_fname_render_col_b2, BANKED
+        clrf    v172_fname_render_off_b2, BANKED
+        bsf     v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
         return  0x0
 
 fname_mark_row_dirty_valid:
         movlb   0x02
-        clrf    v172_fname_render_col, BANKED
-        movf    v172_fname_scroll_off, W, BANKED
-        movwf   v172_fname_render_off, BANKED
-        bsf     v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        clrf    v172_fname_render_col_b2, BANKED
+        movf    v172_fname_scroll_off_b2, W, BANKED
+        movwf   v172_fname_render_off_b2, BANKED
+        bsf     v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
         return  0x0
 
 fname_reset_blank:
         movlb   0x02
-        clrf    v172_fname_flags, BANKED
-        clrf    v172_fname_len, BANKED
-        clrf    v172_fname_expected_len, BANKED
-        clrf    v172_fname_deadline_lo, BANKED
-        clrf    v172_fname_deadline_hi, BANKED
-        clrf    v172_fname_scroll_off, BANKED
-        clrf    v172_fname_scroll_hold, BANKED
-        clrf    v172_fname_scroll_div_lo, BANKED
-        clrf    v172_fname_scroll_div_hi, BANKED
+        clrf    v172_fname_flags_b2, BANKED
+        clrf    v172_fname_len_b2, BANKED
+        clrf    v172_fname_expected_len_b2, BANKED
+        clrf    v172_fname_deadline_lo_b2, BANKED
+        clrf    v172_fname_deadline_hi_b2, BANKED
+        clrf    v172_fname_scroll_off_b2, BANKED
+        clrf    v172_fname_scroll_hold_b2, BANKED
+        clrf    v172_fname_scroll_div_lo_b2, BANKED
+        clrf    v172_fname_scroll_div_hi_b2, BANKED
         rcall   fname_mark_row_dirty_blank
         return  0x0
 
@@ -5072,20 +5144,54 @@ fname_reset_and_query:
         rcall   fname_reset_blank
         movlb   0x00
         movlw   0x01
-        cpfseq  display_state_index, BANKED
+        cpfseq  display_state_index_b0, BANKED
         return  0x0
-        btfss   control_flags, CONNECTED, A
+        btfss   control_flags_acc, CONNECTED, A
         return  0x0
         movlb   0x02
-        bsf     v172_fname_flags, FNAME_WANT_QUERY, BANKED
+        bsf     v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
+        movlb   0x00
+        return  0x0
+
+fname_reset_and_delay_query:
+        rcall   fname_reset_blank
+        movlb   0x00
+        movlw   0x01
+        cpfseq  display_state_index_b0, BANKED
+        return  0x0
+        btfss   control_flags_acc, CONNECTED, A
+        return  0x0
+        movlb   0x02
+        bsf     v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        movlw   FNAME_QUERY_DELAY_LO
+        movwf   v172_fname_deadline_lo_b2, BANKED
+        movlb   0x00
+        btfsc   control_flags_acc, PRESET_BIT, A
+        bra     fname_delay_query_slot_b
+        movlb   0x02
+        movlw   FNAME_QUERY_DELAY_A_HI
+        movwf   v172_fname_deadline_hi_b2, BANKED
+        movlb   0x00
+        return  0x0
+fname_delay_query_slot_b:
+        movlb   0x02
+        movlw   FNAME_QUERY_DELAY_B_HI
+        movwf   v172_fname_deadline_hi_b2, BANKED
         movlb   0x00
         return  0x0
 
 v172_preset_filename_service:
         movlb   0x00
         movlw   0x01
-        cpfseq  display_state_index, BANKED
+        cpfseq  display_state_index_b0, BANKED
         return  0x0
+        movlb   0x02
+        btfss   v172_fname_row0_status_snap_b2, 7, BANKED
+        bra     v172_preset_filename_service_row0_ready
+        movlb   0x00
+        return  0x0
+v172_preset_filename_service_row0_ready:
+        movlb   0x00
         call    v172_fname_query_service, 0x0
         call    v172_fname_deadline_service, 0x0
         call    v172_fname_scroll_service, 0x0
@@ -5098,44 +5204,44 @@ v172_preset_filename_service_done:
 
 v172_fname_query_service:
         movlb   0x02
-        btfss   v172_fname_flags, FNAME_WANT_QUERY, BANKED
+        btfss   v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
         return  0x0
-        btfsc   v172_fname_flags, FNAME_PENDING, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_PENDING, BANKED
         return  0x0
-        incf    v172_fname_gen, F, BANKED
+        incf    v172_fname_gen_b2, F, BANKED
         movlw   0x20
-        cpfseq  v172_fname_gen, BANKED
+        cpfseq  v172_fname_gen_b2, BANKED
         bra     v172_fname_query_gen_ok
-        clrf    v172_fname_gen, BANKED
+        clrf    v172_fname_gen_b2, BANKED
 v172_fname_query_gen_ok:
-        movf    v172_fname_gen, W, BANKED
-        movwf   v172_fname_id, BANKED
-        rlncf   v172_fname_id, F, BANKED
-        rlncf   v172_fname_id, F, BANKED
-        bcf     v172_fname_id, 1, BANKED
+        movf    v172_fname_gen_b2, W, BANKED
+        movwf   v172_fname_id_b2, BANKED
+        rlncf   v172_fname_id_b2, F, BANKED
+        rlncf   v172_fname_id_b2, F, BANKED
+        bcf     v172_fname_id_b2, 1, BANKED
         movlb   0x00
-        btfsc   control_flags, PRESET_BIT, A
+        btfsc   control_flags_acc, PRESET_BIT, A
         bra     v172_fname_query_slot_b
         movlb   0x02
-        bcf     v172_fname_id, 0, BANKED
+        bcf     v172_fname_id_b2, 0, BANKED
         bra     v172_fname_query_send
 v172_fname_query_slot_b:
         movlb   0x02
-        bsf     v172_fname_id, 0, BANKED
+        bsf     v172_fname_id_b2, 0, BANKED
 v172_fname_query_send:
         call    v172_fname_send_query, 0x0
         bc      v172_fname_query_done
         movlb   0x02
-        bsf     v172_fname_flags, FNAME_PENDING, BANKED
-        bcf     v172_fname_flags, FNAME_WANT_QUERY, BANKED
-        bcf     v172_fname_flags, FNAME_ARMED, BANKED
-        bcf     v172_fname_flags, FNAME_LEN_SEEN, BANKED
-        clrf    v172_fname_len, BANKED
-        clrf    v172_fname_expected_len, BANKED
+        bsf     v172_fname_flags_b2, FNAME_PENDING, BANKED
+        bcf     v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
+        bcf     v172_fname_flags_b2, FNAME_ARMED, BANKED
+        bcf     v172_fname_flags_b2, FNAME_LEN_SEEN, BANKED
+        clrf    v172_fname_len_b2, BANKED
+        clrf    v172_fname_expected_len_b2, BANKED
         movlw   FNAME_PENDING_DEADLINE_LO
-        movwf   v172_fname_deadline_lo, BANKED
+        movwf   v172_fname_deadline_lo_b2, BANKED
         movlw   FNAME_PENDING_DEADLINE_HI
-        movwf   v172_fname_deadline_hi, BANKED
+        movwf   v172_fname_deadline_hi_b2, BANKED
 v172_fname_query_done:
         movlb   0x00
         return  0x0
@@ -5144,17 +5250,17 @@ v172_fname_send_query:
         call    tx_ring_reserve_3, 0x0
         bc      v172_fname_send_abort
         movlw   0xB1
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v172_fname_send_abort
         movlw   0x26
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v172_fname_send_abort
         movlb   0x02
-        movf    v172_fname_id, W, BANKED
+        movf    v172_fname_id_b2, W, BANKED
         movlb   0x00
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v172_fname_send_abort
         bcf     STATUS, C, A
@@ -5166,125 +5272,163 @@ v172_fname_send_abort:
 
 v172_fname_deadline_service:
         movlb   0x02
-        btfss   v172_fname_flags, FNAME_PENDING, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_PENDING, BANKED
+        bra     v172_fname_pending_deadline_service
+        btfss   v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
         return  0x0
-        movf    v172_fname_deadline_lo, F, BANKED
+        bra     v172_fname_query_delay_service
+v172_fname_pending_deadline_service:
+        movf    v172_fname_deadline_lo_b2, F, BANKED
         bnz     v172_fname_deadline_dec_lo
-        movf    v172_fname_deadline_hi, F, BANKED
+        movf    v172_fname_deadline_hi_b2, F, BANKED
         bz      v172_fname_deadline_expire
-        decf    v172_fname_deadline_hi, F, BANKED
-        decf    v172_fname_deadline_lo, F, BANKED
+        decf    v172_fname_deadline_hi_b2, F, BANKED
+        decf    v172_fname_deadline_lo_b2, F, BANKED
         return  0x0
 v172_fname_deadline_dec_lo:
-        decf    v172_fname_deadline_lo, F, BANKED
+        decf    v172_fname_deadline_lo_b2, F, BANKED
         return  0x0
 v172_fname_deadline_expire:
         rcall   fname_reset_blank
         return  0x0
 
+v172_fname_query_delay_service:
+        movf    v172_fname_deadline_lo_b2, F, BANKED
+        bnz     v172_fname_query_delay_dec_lo
+        movf    v172_fname_deadline_hi_b2, F, BANKED
+        bz      v172_fname_query_delay_expire
+        decf    v172_fname_deadline_hi_b2, F, BANKED
+        decf    v172_fname_deadline_lo_b2, F, BANKED
+        return  0x0
+v172_fname_query_delay_dec_lo:
+        decf    v172_fname_deadline_lo_b2, F, BANKED
+        return  0x0
+v172_fname_query_delay_expire:
+        movlb   0x00
+        movlw   0x01
+        cpfseq  display_state_index_b0, BANKED
+        bra     v172_fname_query_delay_cancel
+        btfss   control_flags_acc, CONNECTED, A
+        bra     v172_fname_query_delay_cancel
+        ; Do not start the filename reply while a background health ping is
+        ; still outstanding.  Holding WAIT here lets BF/2C drain or time out;
+        ; v171_health_service suppresses new health pings while WAIT/PENDING.
+        movlb   0x01
+        btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
+        return  0x0
+        movlb   0x02
+        bcf     v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        bsf     v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
+        movlb   0x00
+        return  0x0
+v172_fname_query_delay_cancel:
+        call    fname_reset_blank, 0x0
+        movlb   0x00
+        return  0x0
+
 v172_fname_scroll_service:
         movlb   0x02
-        btfss   v172_fname_flags, FNAME_VALID, BANKED
+        btfss   v172_fname_flags_b2, FNAME_VALID, BANKED
         return  0x0
         movlw   0x11
-        cpfslt  v172_fname_len, BANKED
+        cpfslt  v172_fname_len_b2, BANKED
         bra     v172_fname_scroll_active
         return  0x0
 v172_fname_scroll_active:
-        btfsc   v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
         return  0x0
-        movf    v172_fname_scroll_div_lo, F, BANKED
+        movf    v172_fname_scroll_div_lo_b2, F, BANKED
         bnz     v172_fname_scroll_dec_lo
-        movf    v172_fname_scroll_div_hi, F, BANKED
+        movf    v172_fname_scroll_div_hi_b2, F, BANKED
         bz      v172_fname_scroll_step_ready
-        decf    v172_fname_scroll_div_hi, F, BANKED
-        decf    v172_fname_scroll_div_lo, F, BANKED
+        decf    v172_fname_scroll_div_hi_b2, F, BANKED
+        decf    v172_fname_scroll_div_lo_b2, F, BANKED
         return  0x0
 v172_fname_scroll_dec_lo:
-        decf    v172_fname_scroll_div_lo, F, BANKED
+        decf    v172_fname_scroll_div_lo_b2, F, BANKED
         return  0x0
 v172_fname_scroll_step_ready:
         movlw   FNAME_SCROLL_DIV_LO
-        movwf   v172_fname_scroll_div_lo, BANKED
+        movwf   v172_fname_scroll_div_lo_b2, BANKED
         movlw   FNAME_SCROLL_DIV_HI
-        movwf   v172_fname_scroll_div_hi, BANKED
-        movf    v172_fname_scroll_hold, F, BANKED
+        movwf   v172_fname_scroll_div_hi_b2, BANKED
+        movf    v172_fname_scroll_hold_b2, F, BANKED
         bz      v172_fname_scroll_move
-        decf    v172_fname_scroll_hold, F, BANKED
+        decf    v172_fname_scroll_hold_b2, F, BANKED
         return  0x0
 v172_fname_scroll_move:
-        movf    v172_fname_len, W, BANKED
+        movf    v172_fname_len_b2, W, BANKED
         addlw   0xF0                                        ; max_off = len - 16
-        movwf   v172_fname_tmp, BANKED
-        btfsc   v172_fname_flags, FNAME_TAILDIR, BANKED
+        movwf   v172_fname_tmp_b2, BANKED
+        btfsc   v172_fname_flags_b2, FNAME_TAILDIR, BANKED
         bra     v172_fname_scroll_tail
-        movf    v172_fname_scroll_off, W, BANKED
-        cpfseq  v172_fname_tmp, BANKED
+        movf    v172_fname_scroll_off_b2, W, BANKED
+        cpfseq  v172_fname_tmp_b2, BANKED
         bra     v172_fname_scroll_prefix_inc
-        clrf    v172_fname_scroll_off, BANKED
+        clrf    v172_fname_scroll_off_b2, BANKED
         movlw   FNAME_SCROLL_REST_HOLD
-        movwf   v172_fname_scroll_hold, BANKED
+        movwf   v172_fname_scroll_hold_b2, BANKED
         bra     v172_fname_scroll_dirty
 v172_fname_scroll_prefix_inc:
-        incf    v172_fname_scroll_off, F, BANKED
-        movf    v172_fname_scroll_off, W, BANKED
-        cpfseq  v172_fname_tmp, BANKED
+        incf    v172_fname_scroll_off_b2, F, BANKED
+        movf    v172_fname_scroll_off_b2, W, BANKED
+        cpfseq  v172_fname_tmp_b2, BANKED
         bra     v172_fname_scroll_dirty
         movlw   FNAME_SCROLL_FAR_HOLD
-        movwf   v172_fname_scroll_hold, BANKED
+        movwf   v172_fname_scroll_hold_b2, BANKED
         bra     v172_fname_scroll_dirty
 v172_fname_scroll_tail:
-        movf    v172_fname_scroll_off, F, BANKED
+        movf    v172_fname_scroll_off_b2, F, BANKED
         bnz     v172_fname_scroll_tail_dec
-        movf    v172_fname_tmp, W, BANKED
-        movwf   v172_fname_scroll_off, BANKED
+        movf    v172_fname_tmp_b2, W, BANKED
+        movwf   v172_fname_scroll_off_b2, BANKED
         movlw   FNAME_SCROLL_REST_HOLD
-        movwf   v172_fname_scroll_hold, BANKED
+        movwf   v172_fname_scroll_hold_b2, BANKED
         bra     v172_fname_scroll_dirty
 v172_fname_scroll_tail_dec:
-        decf    v172_fname_scroll_off, F, BANKED
-        movf    v172_fname_scroll_off, F, BANKED
+        decf    v172_fname_scroll_off_b2, F, BANKED
+        movf    v172_fname_scroll_off_b2, F, BANKED
         bnz     v172_fname_scroll_dirty
         movlw   FNAME_SCROLL_FAR_HOLD
-        movwf   v172_fname_scroll_hold, BANKED
+        movwf   v172_fname_scroll_hold_b2, BANKED
 v172_fname_scroll_dirty:
         rcall   fname_mark_row_dirty_valid
         return  0x0
 
 v172_preset_status_patch_service:
         movlb   0x02
-        clrf    v172_fname_tmp, BANKED
+        clrf    v172_fname_tmp_b2, BANKED
         movlb   0x01
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  v171_health_age_pb1, BANKED
+        cpfslt  v171_health_age_pb1_b1, BANKED
         bra     v172_preset_status_set_health
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  v171_health_age_pb2, BANKED
+        cpfslt  v171_health_age_pb2_b1, BANKED
         bra     v172_preset_status_set_health
         bra     v172_preset_status_preset
 v172_preset_status_set_health:
         movlb   0x02
-        bsf     v172_fname_tmp, 0, BANKED
+        bsf     v172_fname_tmp_b2, 0, BANKED
 v172_preset_status_preset:
         movlb   0x00
-        btfsc   control_flags, PRESET_BIT, A
+        btfsc   control_flags_acc, PRESET_BIT, A
         bra     v172_preset_status_set_b
         bra     v172_preset_status_fault
 v172_preset_status_set_b:
         movlb   0x02
-        bsf     v172_fname_tmp, 1, BANKED
+        bsf     v172_fname_tmp_b2, 1, BANKED
 v172_preset_status_fault:
         movlb   0x00
-        btfsc   control_flags, DSP_FAULT_BIT, A
+        btfsc   control_flags_acc, DSP_FAULT_BIT, A
         bra     v172_preset_status_set_fault
         bra     v172_preset_status_check_col14
 v172_preset_status_set_fault:
         movlb   0x02
-        bsf     v172_fname_tmp, 2, BANKED
+        bsf     v172_fname_tmp_b2, 2, BANKED
 v172_preset_status_check_col14:
         movlb   0x02
-        movf    v172_fname_tmp, W, BANKED
-        xorwf   v172_fname_row0_status_snap, W, BANKED
+        movf    v172_fname_tmp_b2, W, BANKED
+        xorwf   v172_fname_row0_status_snap_b2, W, BANKED
         andlw   0x01
         bz      v172_preset_status_check_col15
         movlb   0x00
@@ -5292,20 +5436,22 @@ v172_preset_status_check_col14:
         call    lcd_command, 0x0
         movlb   0x02
         movlw   ' '
-        btfsc   v172_fname_tmp, 0, BANKED
+        btfsc   v172_fname_tmp_b2, 0, BANKED
         movlw   '*'
         movlb   0x00
         call    lcd_char_write, 0x0
         movlb   0x02
-        bcf     v172_fname_row0_status_snap, 0, BANKED
-        btfsc   v172_fname_tmp, 0, BANKED
-        bsf     v172_fname_row0_status_snap, 0, BANKED
+        bcf     v172_fname_row0_status_snap_b2, 0, BANKED
+        btfsc   v172_fname_tmp_b2, 0, BANKED
+        bsf     v172_fname_row0_status_snap_b2, 0, BANKED
+        movlw   0x87
+        andwf   v172_fname_row0_status_snap_b2, F, BANKED
         movlb   0x00
         bsf     STATUS, C, A
         return  0x0
 v172_preset_status_check_col15:
-        movf    v172_fname_tmp, W, BANKED
-        xorwf   v172_fname_row0_status_snap, W, BANKED
+        movf    v172_fname_tmp_b2, W, BANKED
+        xorwf   v172_fname_row0_status_snap_b2, W, BANKED
         andlw   0x06
         bz      v172_preset_status_no_lcd
         movlb   0x00
@@ -5313,21 +5459,23 @@ v172_preset_status_check_col15:
         call    lcd_command, 0x0
         movlb   0x02
         movlw   '!'
-        btfsc   v172_fname_tmp, 2, BANKED
+        btfsc   v172_fname_tmp_b2, 2, BANKED
         bra     v172_preset_status_write_col15
         movlw   'A'
-        btfsc   v172_fname_tmp, 1, BANKED
+        btfsc   v172_fname_tmp_b2, 1, BANKED
         movlw   'B'
 v172_preset_status_write_col15:
         movlb   0x00
         call    lcd_char_write, 0x0
         movlb   0x02
-        bcf     v172_fname_row0_status_snap, 1, BANKED
-        bcf     v172_fname_row0_status_snap, 2, BANKED
-        btfsc   v172_fname_tmp, 1, BANKED
-        bsf     v172_fname_row0_status_snap, 1, BANKED
-        btfsc   v172_fname_tmp, 2, BANKED
-        bsf     v172_fname_row0_status_snap, 2, BANKED
+        bcf     v172_fname_row0_status_snap_b2, 1, BANKED
+        bcf     v172_fname_row0_status_snap_b2, 2, BANKED
+        btfsc   v172_fname_tmp_b2, 1, BANKED
+        bsf     v172_fname_row0_status_snap_b2, 1, BANKED
+        btfsc   v172_fname_tmp_b2, 2, BANKED
+        bsf     v172_fname_row0_status_snap_b2, 2, BANKED
+        movlw   0x87
+        andwf   v172_fname_row0_status_snap_b2, F, BANKED
         movlb   0x00
         bsf     STATUS, C, A
         return  0x0
@@ -5338,26 +5486,26 @@ v172_preset_status_no_lcd:
 
 v172_fname_row1_render_service:
         movlb   0x02
-        btfss   v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        btfss   v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
         return  0x0
         movlb   0x00
         movlw   0xC0
         movlb   0x02
-        addwf   v172_fname_render_col, W, BANKED
+        addwf   v172_fname_render_col_b2, W, BANKED
         movlb   0x00
         call    lcd_command, 0x0
         movlb   0x02
         movlw   ' '
-        btfss   v172_fname_flags, FNAME_VALID, BANKED
+        btfss   v172_fname_flags_b2, FNAME_VALID, BANKED
         bra     v172_fname_row1_write
-        movf    v172_fname_render_off, W, BANKED
-        addwf   v172_fname_render_col, W, BANKED
-        movwf   v172_fname_tmp, BANKED
-        movf    v172_fname_len, W, BANKED
-        cpfslt  v172_fname_tmp, BANKED
+        movf    v172_fname_render_off_b2, W, BANKED
+        addwf   v172_fname_render_col_b2, W, BANKED
+        movwf   v172_fname_tmp_b2, BANKED
+        movf    v172_fname_len_b2, W, BANKED
+        cpfslt  v172_fname_tmp_b2, BANKED
         bra     v172_fname_row1_space
         lfsr    0x0, 0x220
-        movf    v172_fname_tmp, W, BANKED
+        movf    v172_fname_tmp_b2, W, BANKED
         addwf   FSR0L, F, A
         movf    INDF0, W, A
         bra     v172_fname_row1_write
@@ -5367,12 +5515,12 @@ v172_fname_row1_write:
         movlb   0x00
         call    lcd_char_write, 0x0
         movlb   0x02
-        incf    v172_fname_render_col, F, BANKED
+        incf    v172_fname_render_col_b2, F, BANKED
         movlw   0x10
-        cpfseq  v172_fname_render_col, BANKED
+        cpfseq  v172_fname_render_col_b2, BANKED
         bra     v172_fname_row1_done
-        clrf    v172_fname_render_col, BANKED
-        bcf     v172_fname_flags, FNAME_ROW_DIRTY, BANKED
+        clrf    v172_fname_render_col_b2, BANKED
+        bcf     v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
 v172_fname_row1_done:
         movlb   0x00
         return  0x0
@@ -5457,19 +5605,19 @@ v171_diag_send_query_w:
         ; --- byte 0: route ---
         movlw   0xB1                                       ; default = PB1 query
         movlb   0x01
-        btfsc   v171_diag_target, 0, BANKED                ; bit0 set -> PB2 instead
+        btfsc   v171_diag_target_b1, 0, BANKED                ; bit0 set -> PB2 instead
         movlw   0xB2
         movlb   0x00
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v171_diag_send_query_aborted               ; ring saturated
         ; --- byte 1: cmd byte (0x21 or 0x22) ---
         movf    (Common_RAM + 28), W, A
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v171_diag_send_query_aborted
         ; --- byte 2: data 0x00 (final byte) ---
-        clrf    tx_data_staging, A
+        clrf    tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         bc      v171_diag_send_query_aborted               ; final byte also checked
         return  0x0
@@ -5490,10 +5638,10 @@ v171_diag_send_query_aborted:
         ; helper accepts) and clear RESET_PENDING.  This branch also
         ; covers any future cmd type as "non-runtime" until the helper
         ; gains a real dispatch table.
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RESET_PENDING, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
         bra     v171_diag_send_query_aborted_done
 v171_diag_send_query_aborted_runtime:
-        bcf     v171_diag_flags, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
+        bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
 v171_diag_send_query_aborted_done:
         movlb   0x00
         return  0x0
@@ -5509,13 +5657,13 @@ v171_diag_send_query_aborted_done:
 ; ---------------------------------------------------------------------------
 v171_health_service:
         movlb   0x01
-        incf    v171_health_tick_div, F, BANKED
+        incf    v171_health_tick_div_b1, F, BANKED
         bz      v171_health_tick
         movlb   0x00
         return  0x0
 
 v171_health_tick:
-        btfss   control_flags, CONNECTED, A
+        btfss   control_flags_acc, CONNECTED, A
         bra     v171_health_reset_unknown
         ; Diagnostics pages already run addressed cmd 0x21/cmd 0x22
         ; traffic.  Do not add background cmd 0x23 traffic there:
@@ -5523,79 +5671,90 @@ v171_health_tick:
         ; the visible PB.
         movlb   0x00
         movlw   0x04
-        cpfslt  display_state_index, BANKED
+        cpfslt  display_state_index_b0, BANKED
         return  0x0
         movlb   0x01
-        btfsc   v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
         bra     v171_health_pending_timeout
+        ; Filename acquisition needs a short quiet link window.  Do not start
+        ; a fresh health ping while CONTROL is waiting to query or parsing the
+        ; reply; an already-pending health ping is still serviced above.
+        movlb   0x02
+        btfsc   v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
+        bra     v171_health_done_b0
+        btfsc   v172_fname_flags_b2, FNAME_PENDING, BANKED
+        bra     v171_health_done_b0
+        btfsc   v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
+        bra     v171_health_done_b0
+        movlb   0x01
         call    v171_health_send_query, 0x0
         bc      v171_health_done_b0
         movlb   0x01
-        bsf     v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
         movlw   V171_HEALTH_PENDING_TICKS
-        movwf   v171_health_pending_ticks, BANKED
-        bcf     v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
-        btfsc   v171_health_poll_target, 0, BANKED
-        bsf     v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        movwf   v171_health_pending_ticks_b1, BANKED
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_TARGET, BANKED
+        btfsc   v171_health_poll_target_b1, 0, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_TARGET, BANKED
         movlb   0x00
         return  0x0
 
 v171_health_pending_timeout:
-        movf    v171_health_pending_ticks, F, BANKED
+        movf    v171_health_pending_ticks_b1, F, BANKED
         bz      v171_health_pending_timeout_expired
-        decf    v171_health_pending_ticks, F, BANKED
+        decf    v171_health_pending_ticks_b1, F, BANKED
         movlb   0x00
         return  0x0
 v171_health_pending_timeout_expired:
         rcall   v171_health_age_pending_target
-        bcf     v171_health_flags, V171_HEALTH_FLAG_PENDING, BANKED
-        clrf    v171_health_pending_ticks, BANKED
-        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
-        btg     v171_health_poll_target, 0, BANKED
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
+        clrf    v171_health_pending_ticks_b1, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        btg     v171_health_poll_target_b1, 0, BANKED
         movlb   0x00
         return  0x0
 
 v171_health_age_pending_target:
         movlb   0x01
-        btfsc   v171_health_flags, V171_HEALTH_FLAG_TARGET, BANKED
+        btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_TARGET, BANKED
         bra     v171_health_age_pending_pb2
         movlw   0x0F
-        cpfseq  v171_health_age_pb1, BANKED
-        incf    v171_health_age_pb1, F, BANKED
+        cpfseq  v171_health_age_pb1_b1, BANKED
+        incf    v171_health_age_pb1_b1, F, BANKED
         return  0x0
 v171_health_age_pending_pb2:
         movlw   0x0F
-        cpfseq  v171_health_age_pb2, BANKED
-        incf    v171_health_age_pb2, F, BANKED
+        cpfseq  v171_health_age_pb2_b1, BANKED
+        incf    v171_health_age_pb2_b1, F, BANKED
         return  0x0
 
 v171_health_age_visible_diag_target:
         movlb   0x01
-        bsf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
-        bsf     v171_diag_flags, V171_DIAG_FLAG_DIRTY, BANKED
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v171_health_age_visible_diag_pb2
         movlw   0x0F
-        cpfseq  v171_health_age_pb1, BANKED
-        incf    v171_health_age_pb1, F, BANKED
+        cpfseq  v171_health_age_pb1_b1, BANKED
+        incf    v171_health_age_pb1_b1, F, BANKED
         movlb   0x00
         return  0x0
 v171_health_age_visible_diag_pb2:
         movlw   0x0F
-        cpfseq  v171_health_age_pb2, BANKED
-        incf    v171_health_age_pb2, F, BANKED
+        cpfseq  v171_health_age_pb2_b1, BANKED
+        incf    v171_health_age_pb2_b1, F, BANKED
         movlb   0x00
         return  0x0
 
 v171_health_reset_unknown:
         movlb   0x01
-        clrf    v171_health_age_pb1, BANKED
-        clrf    v171_health_age_pb2, BANKED
-        clrf    v171_health_seen_mask, BANKED
-        clrf    v171_health_flags, BANKED
-        clrf    v171_health_poll_target, BANKED
-        clrf    v171_health_tick_div, BANKED
-        clrf    v171_health_pending_ticks, BANKED
+        clrf    v171_health_age_pb1_b1, BANKED
+        clrf    v171_health_age_pb2_b1, BANKED
+        clrf    v171_health_seen_mask_b1, BANKED
+        clrf    v171_health_flags_b1, BANKED
+        clrf    v171_health_poll_target_b1, BANKED
+        clrf    v171_health_tick_div_b1, BANKED
+        clrf    v171_health_pending_ticks_b1, BANKED
 v171_health_done_b0:
         movlb   0x00
         return  0x0
@@ -5611,22 +5770,22 @@ v171_health_done_b0:
 ; ---------------------------------------------------------------------------
 v171_health_send_query:
         movlb   0x00
-        movf    tx_ring_wr, W, B
-        cpfseq  tx_ring_rd, B
+        movf    tx_ring_wr_b0, W, B
+        cpfseq  tx_ring_rd_b0, B
         bra     v171_health_send_query_busy
         call    tx_ring_reserve_3, 0x0
         bc      v171_health_send_query_done
         movlw   0xB1
         movlb   0x01
-        btfsc   v171_health_poll_target, 0, BANKED
+        btfsc   v171_health_poll_target_b1, 0, BANKED
         movlw   0xB2
         movlb   0x00
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
         movlw   0x23
-        movwf   tx_data_staging, A
+        movwf   tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
-        clrf    tx_data_staging, A
+        clrf    tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
 v171_health_send_query_done:
         movlb   0x00
@@ -5649,45 +5808,45 @@ v171_health_send_query_busy:
 ; ---------------------------------------------------------------------------
 v171_health_patch_suffix:
         movlb   0x01
-        btfsc   v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         bra     v171_health_patch_suffix_dirty
         movlb   0x00
         return  0x0
 v171_health_patch_suffix_dirty:
         movlb   0x00
-        btfss   control_flags, CONNECTED, A
+        btfss   control_flags_acc, CONNECTED, A
         return  0x0
         movlw   0x01
-        cpfseq  display_state_index, BANKED
+        cpfseq  display_state_index_b0, BANKED
         bra     v171_health_patch_suffix_not_preset
         return  0x0
 v171_health_patch_suffix_not_preset:
         movlw   0x04
-        cpfslt  display_state_index, BANKED
+        cpfslt  display_state_index_b0, BANKED
         return  0x0
         movlw   0x03
-        cpfseq  display_state_index, BANKED
+        cpfseq  display_state_index_b0, BANKED
         bra     v171_health_patch_suffix_top_level
-        movf    0xa4, F, B
+        movf    stock_0A4_b0, F, B
         bz      v171_health_patch_suffix_top_level
         return  0x0
 v171_health_patch_suffix_top_level:
         movlb   0x01
-        clrf    v171_health_suffix_mask, BANKED              ; suffix mask
+        clrf    v171_health_suffix_mask_b1, BANKED              ; suffix mask
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  v171_health_age_pb1, BANKED                 ; age < stale? skip
-        bsf     v171_health_suffix_mask, 0, BANKED
+        cpfslt  v171_health_age_pb1_b1, BANKED                 ; age < stale? skip
+        bsf     v171_health_suffix_mask_b1, 0, BANKED
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  v171_health_age_pb2, BANKED
-        bsf     v171_health_suffix_mask, 1, BANKED
+        cpfslt  v171_health_age_pb2_b1, BANKED
+        bsf     v171_health_suffix_mask_b1, 1, BANKED
         ; If PB1 is stale and PB2 has missed any health bucket, the ring
         ; cannot prove PB2 is currently reachable through PB1.  Surface the
         ; shared-path uncertainty as !1 2 instead of a misleading narrow !1.
-        btfss   v171_health_suffix_mask, 0, BANKED
+        btfss   v171_health_suffix_mask_b1, 0, BANKED
         bra     v171_health_patch_have_mask
-        movf    v171_health_age_pb2, F, BANKED
+        movf    v171_health_age_pb2_b1, F, BANKED
         bz      v171_health_patch_have_mask
-        bsf     v171_health_suffix_mask, 1, BANKED
+        bsf     v171_health_suffix_mask_b1, 1, BANKED
 v171_health_patch_have_mask:
         ; The LCD helpers use access-bank scratch cells also touched by the
         ; RBIF/IR ISR.  Keep the five-byte suffix patch atomic so an interrupt
@@ -5696,9 +5855,9 @@ v171_health_patch_have_mask:
         ; this helper may be called from foreground paths that entered with
         ; interrupts already masked.
         movlb   0x01
-        clrf    v171_health_age_tmp, BANKED
+        clrf    v171_health_age_tmp_b1, BANKED
         btfsc   INTCON, GIE, A
-        incf    v171_health_age_tmp, F, BANKED
+        incf    v171_health_age_tmp_b1, F, BANKED
         movlb   0x00
         bcf     INTCON, GIE, A
         movlw   0x80
@@ -5707,7 +5866,7 @@ v171_health_patch_have_mask:
         call    lcd_command, 0x0
         movlb   0x01
         movlw   0x03
-        cpfseq  v171_health_suffix_mask, BANKED
+        cpfseq  v171_health_suffix_mask_b1, BANKED
         bra     v171_health_patch_not_both
         movlb   0x00
         movlw   '!'
@@ -5721,7 +5880,7 @@ v171_health_patch_have_mask:
         bra     v171_health_patch_done
 v171_health_patch_not_both:
         movlb   0x01
-        movf    v171_health_suffix_mask, F, BANKED
+        movf    v171_health_suffix_mask_b1, F, BANKED
         bz      v171_health_patch_clear
         movlb   0x00
         movlw   ' '
@@ -5732,7 +5891,7 @@ v171_health_patch_not_both:
         call    lcd_char_write, 0x0
         movlb   0x01
         movlw   '1'
-        btfsc   v171_health_suffix_mask, 1, BANKED
+        btfsc   v171_health_suffix_mask_b1, 1, BANKED
         movlw   '2'
         movlb   0x00
         call    lcd_char_write, 0x0
@@ -5749,11 +5908,11 @@ v171_health_patch_clear:
         call    lcd_char_write, 0x0
 v171_health_patch_done:
         movlb   0x01
-        movf    v171_health_age_tmp, F, BANKED
+        movf    v171_health_age_tmp_b1, F, BANKED
         bz      v171_health_patch_gie_restored
         bsf     INTCON, GIE, A
 v171_health_patch_gie_restored:
-        bcf     v171_health_flags, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
         return  0x0
 
@@ -5766,30 +5925,30 @@ v171_health_patch_gie_restored:
 v171_health_diag_check_stale:
         clrf    (Common_RAM + 4), A
         movlb   0x01
-        btfsc   v171_diag_render_pb_index, 0, BANKED
+        btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v171_health_diag_check_pb2
-        movf    v171_health_age_pb1, W, BANKED
+        movf    v171_health_age_pb1_b1, W, BANKED
         bra     v171_health_diag_check_have_age
 v171_health_diag_check_pb2:
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  v171_health_age_pb1, BANKED
+        cpfslt  v171_health_age_pb1_b1, BANKED
         bra     v171_health_diag_check_pb2_shared
-        movf    v171_health_age_pb2, W, BANKED
+        movf    v171_health_age_pb2_b1, W, BANKED
         bra     v171_health_diag_check_have_age
 v171_health_diag_check_pb2_shared:
-        movf    v171_health_age_pb2, F, BANKED
+        movf    v171_health_age_pb2_b1, F, BANKED
         bz      v171_health_diag_check_pb2_fresh_after_pb1
-        movf    v171_health_age_pb1, W, BANKED
+        movf    v171_health_age_pb1_b1, W, BANKED
         bra     v171_health_diag_check_have_age
 v171_health_diag_check_pb2_fresh_after_pb1:
-        movf    v171_health_age_pb2, W, BANKED
+        movf    v171_health_age_pb2_b1, W, BANKED
 v171_health_diag_check_have_age:
-        movwf   v171_health_age_tmp, BANKED
+        movwf   v171_health_age_tmp_b1, BANKED
         movlw   V171_HEALTH_LOST_AGE
-        cpfslt  v171_health_age_tmp, BANKED
+        cpfslt  v171_health_age_tmp_b1, BANKED
         bra     v171_health_diag_check_lost
         movlw   V171_HEALTH_STALE_AGE
-        cpfslt  v171_health_age_tmp, BANKED
+        cpfslt  v171_health_age_tmp_b1, BANKED
         bra     v171_health_diag_check_old
         movlb   0x00
         return  0x0
@@ -5808,7 +5967,7 @@ v171_health_diag_check_lost:
 control_core_service_0F54:                                               ; address: 0x000f54
 
         movlw   0x04
-        cpfseq  0xa7, B                                     ; reg: 0x0a7
+        cpfseq  cmd1d_setting_cache_b0, B                                     ; reg: 0x0a7
         goto    flow_ccs_0F54_0F7C                                   ; dest: 0x000f7c
         movlw   0x10                                        ; RC5 0x10 volume up
         movwf   (Common_RAM + 32), A                        ; reg: 0x020
@@ -5829,7 +5988,7 @@ control_core_service_0F54:                                               ; addre
 flow_ccs_0F54_0F7C:                                                  ; address: 0x000f7c
 
         movlw   0x03
-        cpfseq  0xa7, B                                     ; reg: 0x0a7
+        cpfseq  cmd1d_setting_cache_b0, B                                     ; reg: 0x0a7
         goto    flow_ccs_0F54_0F9E                                   ; dest: 0x000f9e
         clrf    (Common_RAM + 32), A                        ; reg: 0x020
         movlw   0x0c                                        ; RC5 0x0C standby toggle
@@ -5853,7 +6012,7 @@ control_core_service_0FA0:                                               ; addre
 
         movff   0x0a2, (Common_RAM + 41)                    ; reg2: 0x029
         movff   0x0a3, (Common_RAM + 42)                    ; reg2: 0x02a
-        movff   0x0a5, tx_data_staging                    ; reg2: 0x027
+        movff   0x0a5, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xc0
@@ -5869,38 +6028,38 @@ flow_ccs_0FA0_0FBA:                                                  ; address: 
         ; addressing so it's range-immune; semantics are identical.
         call    display_loop_iteration, 0x0                ; dest: 0x000cb2
         movlw   0x00
-        movf    0x9a, F, B                                  ; reg: 0x09a
+        movf    stock_09A_b0, F, B                                  ; reg: 0x09a
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   control_flags, 0x3, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x3, A                   ; reg: 0x01f
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_ccs_0FA0_0FBA                                   ; dest: 0x000fba
-        rrcf    0x9a, W, B                                  ; reg: 0x09a
+        rrcf    stock_09A_b0, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_ccs_0FA0_0FEC                                   ; dest: 0x000fec
-        movf    0xa5, W, B                                  ; reg: 0x0a5
-        cpfseq  0xa4, B                                     ; reg: 0x0a4
+        movf    stock_0A5_b0, W, B                                  ; reg: 0x0a5
+        cpfseq  stock_0A4_b0, B                                     ; reg: 0x0a4
         goto    flow_ccs_0FA0_0FEA                                   ; dest: 0x000fea
-        clrf    0xa5, B                                     ; reg: 0x0a5
+        clrf    stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_ccs_0FA0_0FEC                                   ; dest: 0x000fec
 
 flow_ccs_0FA0_0FEA:                                                  ; address: 0x000fea
 
-        incf    0xa5, F, B                                  ; reg: 0x0a5
+        incf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
 
 flow_ccs_0FA0_0FEC:                                                  ; address: 0x000fec
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x2, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_ccs_0FA0_100A                                   ; dest: 0x00100a
-        movf    0xa5, F, B                                  ; reg: 0x0a5
+        movf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0FA0_1008                                   ; dest: 0x001008
         movff   0x0a4, 0x0a5
@@ -5908,7 +6067,7 @@ flow_ccs_0FA0_0FEC:                                                  ; address: 
 
 flow_ccs_0FA0_1008:                                                  ; address: 0x001008
 
-        decf    0xa5, F, B                                  ; reg: 0x0a5
+        decf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
 
 flow_ccs_0FA0_100A:                                                  ; address: 0x00100a
 
@@ -5970,18 +6129,18 @@ flow_v171_diag_cache_zero:
         decfsz  (Common_RAM + 15), F, A
         bra     flow_v171_diag_cache_zero
         movlb   0x01                                        ; reset_seen lives in bank 1
-        clrf    v171_diag_reset_seen, BANKED                ; physical 0x19D
-        clrf    v171_diag_flags, BANKED                     ; physical 0x19C
-        clrf    v171_diag_reset_target, BANKED              ; physical 0x19E
-        clrf    v171_diag_reset_timeout, BANKED             ; physical 0x19F
-        clrf    v171_diag_runtime_target, BANKED            ; physical 0x1AE
-        clrf    v171_diag_runtime_timeout, BANKED           ; physical 0x1AF
-        clrf    v171_health_age_pb1, BANKED                 ; link health starts unknown/fresh
-        clrf    v171_health_age_pb2, BANKED
-        clrf    v171_health_seen_mask, BANKED
-        clrf    v171_health_flags, BANKED
-        clrf    v171_health_poll_target, BANKED
-        clrf    v171_health_tick_div, BANKED
+        clrf    v171_diag_reset_seen_b1, BANKED                ; physical 0x19D
+        clrf    v171_diag_flags_b1, BANKED                     ; physical 0x19C
+        clrf    v171_diag_reset_target_b1, BANKED              ; physical 0x19E
+        clrf    v171_diag_reset_timeout_b1, BANKED             ; physical 0x19F
+        clrf    v171_diag_runtime_target_b1, BANKED            ; physical 0x1AE
+        clrf    v171_diag_runtime_timeout_b1, BANKED           ; physical 0x1AF
+        clrf    v171_health_age_pb1_b1, BANKED                 ; link health starts unknown/fresh
+        clrf    v171_health_age_pb2_b1, BANKED
+        clrf    v171_health_seen_mask_b1, BANKED
+        clrf    v171_health_flags_b1, BANKED
+        clrf    v171_health_poll_target_b1, BANKED
+        clrf    v171_health_tick_div_b1, BANKED
         call    v172_fname_cold_clear, 0x0
         movlb   0x00                                        ; restore default bank
         ; --- end Bug #44 fix ---
@@ -5997,17 +6156,17 @@ flow_v171_diag_cache_zero:
         bsf     PIE1, RCIE, A                               ; reg: 0xf9d, bit: 5
         bsf     INTCON, GIE, A                              ; reg: 0xff2, bit: 7
         bsf     INTCON, PEIE, A                             ; reg: 0xff2, bit: 6
-        clrf    0x96, B                                     ; reg: 0x096
-        clrf    0x97, B                                     ; reg: 0x097
-        clrf    0x98, B                                     ; reg: 0x098
-        clrf    0x99, B                                     ; reg: 0x099
-        bcf     control_flags, 0x2, A                   ; reg: 0x01f
-        clrf    0xa6, B                                     ; reg: 0x0a6
-        clrf    ir_decoded_cmd, A                        ; reg: 0x01d
-        clrf    ir_decoded_cmd, A                        ; reg: 0x01d
-        clrf    ir_decoded_addr, A                        ; reg: 0x01e
-        clrf    0x9b, B                                     ; reg: 0x09b
-        clrf    0x9c, B                                     ; reg: 0x09c
+        clrf    tx_ring_rd_b0, B                                     ; reg: 0x096
+        clrf    tx_ring_wr_b0, B                                     ; reg: 0x097
+        clrf    rx_ring_rd_b0, B                                     ; reg: 0x098
+        clrf    rx_ring_wr_b0, B                                     ; reg: 0x099
+        bcf     control_flags_acc, 0x2, A                   ; reg: 0x01f
+        clrf    rx_frame_position_b0, B                                     ; reg: 0x0a6
+        clrf    ir_decoded_cmd_acc, A                        ; reg: 0x01d
+        clrf    ir_decoded_cmd_acc, A                        ; reg: 0x01d
+        clrf    ir_decoded_addr_acc, A                        ; reg: 0x01e
+        clrf    stock_09B_b0, B                                     ; reg: 0x09b
+        clrf    stock_09C_b0, B                                     ; reg: 0x09c
         lfsr    0x0, 0x0c1
         movlw   0x06
 
@@ -6057,16 +6216,16 @@ flow_ccs_0FA0_10AA:                                                  ; address: 
         decfsz  WREG, F, A                                  ; reg: 0xfe8
         bra     flow_ccs_0FA0_10AA                                   ; dest: 0x0010aa
         clrf    (Common_RAM + 50), A                        ; reg: 0x032
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
-        bcf     control_flags, 0x4, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x4, A                   ; reg: 0x01f
         setf    EEADR, A                                    ; reg: 0xfa9
         movlw   0x02
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x70
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         movlw   0x01
-        subwf   tx_data_staging, W, A                     ; reg: 0x027
+        subwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0FA0_10DA                                   ; dest: 0x0010da
         movlw   0x70
@@ -6078,9 +6237,9 @@ flow_ccs_0FA0_10DA:                                                  ; address: 
 
         movlw   0x71
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         movlw   0x07                                        ; V1.72 minor byte
-        subwf   tx_data_staging, W, A                     ; reg: 0x027
+        subwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0FA0_10F6                                   ; dest: 0x0010f6
         movlw   0x71
@@ -6090,15 +6249,15 @@ flow_ccs_0FA0_10DA:                                                  ; address: 
 
 flow_ccs_0FA0_10F6:                                                  ; address: 0x0010f6
 
-        clrf    0xbc, B                                     ; reg: 0x0bc
-        clrf    0xbe, B                                     ; reg: 0x0be
-        clrf    0xbd, B                                     ; reg: 0x0bd
-        clrf    0xb4, B                                     ; reg: 0x0b4
-        clrf    0xb5, B                                     ; reg: 0x0b5
-        clrf    0xb3, B                                     ; reg: 0x0b3
-        clrf    0xb2, B                                     ; reg: 0x0b2
-        clrf    0xb1, B                                     ; reg: 0x0b1
-        clrf    0xb0, B                                     ; reg: 0x0b0
+        clrf    button_last_scan_b0, B                                     ; reg: 0x0bc
+        clrf    button_debounced_b0, B                                     ; reg: 0x0be
+        clrf    stock_0BD_b0, B                                     ; reg: 0x0bd
+        clrf    stock_0B4_b0, B                                     ; reg: 0x0b4
+        clrf    stock_0B5_b0, B                                     ; reg: 0x0b5
+        clrf    stock_0B3_b0, B                                     ; reg: 0x0b3
+        clrf    stock_0B2_b0, B                                     ; reg: 0x0b2
+        clrf    stock_0B1_b0, B                                     ; reg: 0x0b1
+        clrf    stock_0B0_b0, B                                     ; reg: 0x0b0
         lfsr    0x0, 0x245                                  ; V1.72 identity cache
         movlw   0x10
         movwf   (Common_RAM + 4), A
@@ -6126,9 +6285,9 @@ v172_clear_identity_cache_loop:
         ; Mirror the V1.61b binary-patch behavior: clamp RAM and scrub
         ; EEPROM[0x01] once, immediately after the stock settings load.
         movlb   0x00                                        ; 0x0BA is bank-0 setup_sub
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         bz      v171_setup_index_clamp_done
-        clrf    0xba, B                                     ; reg: 0x0ba
+        clrf    stock_0BA_b0, B                                     ; reg: 0x0ba
         movlw   0x01
         movwf   EEADR, A                                    ; reg: 0xfa9
         clrf    WREG, A                                     ; reg: 0xfe8
@@ -6146,10 +6305,10 @@ v171_setup_index_clamp_done:
         ; (v171_send_preset_frame_and_persist) writes the same encoding.
         movlw   EEPROM_PRESET_STATE_ADDR                      ; 0x74
         call    eeprom_read_byte, 0x0
-        bcf     control_flags, PRESET_BIT, A                 ; default = preset A
+        bcf     control_flags_acc, PRESET_BIT, A                 ; default = preset A
         xorlw   0x01
         bnz     v171_preset_boot_init_done
-        bsf     control_flags, PRESET_BIT, A                 ; byte was 0x01 → preset B
+        bsf     control_flags_acc, PRESET_BIT, A                 ; byte was 0x01 → preset B
 v171_preset_boot_init_done:
 
         movlw   0x01
@@ -6180,12 +6339,12 @@ v171_preset_boot_init_done:
         movlw   0xe8
         call    control_core_service_01BE, 0x0                           ; dest: 0x0001be
         movlw   0x80
-        movwf   0xb8, B                                     ; reg: 0x0b8
-        movwf   0xb9, B                                     ; reg: 0x0b9
-        movwf   0xa7, B                                     ; reg: 0x0a7
-        movwf   0xa1, B                                     ; reg: 0x0a1
-        clrf    v171_waiting_grace_count_lo, B              ; reset 16-bit grace counter (lo)
-        clrf    v171_waiting_grace_count_hi, B              ; reset 16-bit grace counter (hi)
+        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   volume_cache_b0, B                                     ; reg: 0x0b9
+        movwf   cmd1d_setting_cache_b0, B                                     ; reg: 0x0a7
+        movwf   raw_status_cache_b0, B                                     ; reg: 0x0a1
+        clrf    v171_waiting_grace_count_lo_b0, B              ; reset 16-bit grace counter (lo)
+        clrf    v171_waiting_grace_count_hi_b0, B              ; reset 16-bit grace counter (hi)
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         movlw   HIGH(lcd_str_waiting_for_dlcp)                          ; shifted via label
@@ -6273,15 +6432,15 @@ flow_ccs_0FA0_118C:                                                  ; address: 
         ;  - else bump the 16-bit counter (lo first; on lo wrap, hi++)
         ;    and skip the button test (still in grace)
         movlw   V171_WAITING_GRACE_THRESHOLD_HI
-        cpfslt  v171_waiting_grace_count_hi, B             ; skip if hi <  threshold_hi
+        cpfslt  v171_waiting_grace_count_hi_b0, B             ; skip if hi <  threshold_hi
         bra     v171_waiting_cold_armed                    ; hi >= threshold_hi -> armed
-        infsnz  v171_waiting_grace_count_lo, F, B          ; bump lo; skip if lo != 0
-        incf    v171_waiting_grace_count_hi, F, B          ; lo wrapped -> bump hi
+        infsnz  v171_waiting_grace_count_lo_b0, F, B          ; bump lo; skip if lo != 0
+        incf    v171_waiting_grace_count_hi_b0, F, B          ; lo wrapped -> bump hi
         bra     v171_waiting_cold_past_grace_done          ; still in grace, no buttons
 v171_waiting_cold_armed:
-        btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
+        btfsc   stock_09A_b0, 0x5, B                               ; RIGHT pressed?
         reset                                              ; soft CPU reset
-        btfsc   0x9a, 0x4, B                               ; LEFT pressed?
+        btfsc   stock_09A_b0, 0x4, B                               ; LEFT pressed?
         reset                                              ; soft CPU reset
 v171_waiting_cold_past_grace_done:
 
@@ -6291,46 +6450,46 @@ v171_waiting_cold_past_grace_done:
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0             ; cold WAITING parser stall guard (entry/exit movlb 0x0 absorbs rx_parser_entry BSR drift)
         movlw   0x80
-        subwf   0xb8, W, B                                  ; reg: 0x0b8
+        subwf   input_select_cache_b0, W, B                                  ; reg: 0x0b8
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         movlw   0x80
-        subwf   0xb9, W, B                                  ; reg: 0x0b9
+        subwf   volume_cache_b0, W, B                                  ; reg: 0x0b9
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         movlw   0x80
-        subwf   0xa7, W, B                                  ; reg: 0x0a7
+        subwf   cmd1d_setting_cache_b0, W, B                                  ; reg: 0x0a7
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         movlw   0x80
-        subwf   0xa1, W, B                                  ; reg: 0x0a1
+        subwf   raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_ccs_0FA0_118C                                   ; dest: 0x00118c
         movlw   0x61
-        movwf   0x9d, B                                     ; reg: 0x09d
+        movwf   idle_timeout_lo_b0, B                                     ; reg: 0x09d
         movlw   0xea
-        movwf   0x9e, B                                     ; reg: 0x09e
-        clrf    0x9f, B                                     ; reg: 0x09f
-        clrf    0xa0, B                                     ; reg: 0x0a0
-        bcf     control_flags, 0x5, A                   ; reg: 0x01f
+        movwf   idle_timeout_hi_b0, B                                     ; reg: 0x09e
+        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
+        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
+        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
         movlw   0x01
         movwf   (Common_RAM + 50), A                        ; reg: 0x032
 
 post_connect_init:                                                  ; address: 0x0011d8
 
-        btfss   control_flags, 0x1, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_display_state_entry_1250                                   ; dest: 0x001250
 
 flow_post_connect_init_11DE:                                                  ; address: 0x0011de
 
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
-        movf    0xbf, F, B                                  ; reg: 0x0bf
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        movf    display_state_index_b0, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_post_connect_init_11F0                                   ; dest: 0x0011f0
         call    control_core_service_12D0, 0x0                           ; dest: 0x0012d0
@@ -6366,14 +6525,14 @@ flow_post_connect_init_11F0:                                                  ; 
         ; Nav wrap literals downstream are bumped from 0x04 (5-state ring)
         ; to 0x05 (6-state ring).
         movlb   0x00
-        decfsz  0xbf, W, B                                  ; state - 1 == 0?
+        decfsz  display_state_index_b0, W, B                                  ; state - 1 == 0?
         goto    v171_menu_ck_state_2
         call    v171_preset_screen, 0x0                     ; state == 1 -> Preset
         goto    flow_boot_handshake_wait_120A
 
 v171_menu_ck_state_2:
         movlw   0x02
-        cpfseq  0xbf, B
+        cpfseq  display_state_index_b0, B
         goto    v171_menu_ck_state_3                        ; not 2 -- try Setup
         ; Tier-1: state 2 is now Input (was Diagnostics).
         call    control_core_service_1912, 0x0              ; state == 2 -> Input
@@ -6381,7 +6540,7 @@ v171_menu_ck_state_2:
 
 v171_menu_ck_state_3:
         movlw   0x03
-        cpfseq  0xbf, B
+        cpfseq  display_state_index_b0, B
         goto    v171_menu_ck_state_4                        ; not 3 -- try PB1 Diag
         ; Tier-1: state 3 is now Setup (was Input).
         call    control_core_service_13FE, 0x0              ; state == 3 -> Setup
@@ -6389,7 +6548,7 @@ v171_menu_ck_state_3:
 
 v171_menu_ck_state_4:
         movlw   0x04
-        cpfseq  0xbf, B
+        cpfseq  display_state_index_b0, B
         goto    boot_handshake_wait                         ; not 4 -- try PB2 Diag
         ; Tier-1: state 4 = PB1 Diag (W = PB index 0).
         movlw   0x00
@@ -6399,7 +6558,7 @@ v171_menu_ck_state_4:
 boot_handshake_wait:                                                  ; address: 0x0011fe
 
         movlw   0x05
-        cpfseq  0xbf, B                                     ; reg: 0x0bf
+        cpfseq  display_state_index_b0, B                                     ; reg: 0x0bf
         goto    flow_boot_handshake_wait_120A                                   ; dest: 0x00120a
         ; Tier-1: state 5 = PB2 Diag (W = PB index 1).
         movlw   0x01
@@ -6407,8 +6566,9 @@ boot_handshake_wait:                                                  ; address:
 
 flow_boot_handshake_wait_120A:                                                  ; address: 0x00120a
 
+        movlb   0x00
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x5, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x5, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_display_state_entry_1226                                   ; dest: 0x001226
@@ -6417,23 +6577,23 @@ flow_boot_handshake_wait_120A:                                                  
         ; 4 -> 5 so the 6-state Vol/Preset/Input/Setup/PB1Diag/PB2Diag
         ; ring wraps cleanly (DOWN at state 5 -> state 0).
         movlw   0x05
-        cpfseq  0xbf, B                                     ; reg: 0x0bf
+        cpfseq  display_state_index_b0, B                                     ; reg: 0x0bf
         goto    display_state_entry                                   ; dest: 0x001224
-        clrf    0xbf, B                                     ; reg: 0x0bf
+        clrf    display_state_index_b0, B                                     ; reg: 0x0bf
         goto    flow_display_state_entry_1226                                   ; dest: 0x001226
 
 display_state_entry:                                                  ; address: 0x001224
 
-        incf    0xbf, F, B                                  ; reg: 0x0bf
+        incf    display_state_index_b0, F, B                                  ; reg: 0x0bf
 
 flow_display_state_entry_1226:                                                  ; address: 0x001226
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x4, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x4, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_display_state_entry_1244                                   ; dest: 0x001244
-        movf    0xbf, F, B                                  ; reg: 0x0bf
+        movf    display_state_index_b0, F, B                                  ; reg: 0x0bf
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_display_state_entry_1242                                   ; dest: 0x001242
         ; V1.72: nav UP wrap target bumped from 2 -> 3 (V1.61b ring),
@@ -6441,23 +6601,23 @@ flow_display_state_entry_1226:                                                  
         ; 4 -> 5 so the 6-state ring wraps cleanly (UP at state 0 ->
         ; state 5 = PB2 Diag).
         movlw   0x05
-        movwf   0xbf, B                                     ; reg: 0x0bf
+        movwf   display_state_index_b0, B                                     ; reg: 0x0bf
         goto    flow_display_state_entry_1244                                   ; dest: 0x001244
 
 flow_display_state_entry_1242:                                                  ; address: 0x001242
 
-        decf    0xbf, F, B                                  ; reg: 0x0bf
+        decf    display_state_index_b0, F, B                                  ; reg: 0x0bf
 
 flow_display_state_entry_1244:                                                  ; address: 0x001244
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         bra     flow_post_connect_init_11DE                                   ; dest: 0x0011de
         goto    flow_reconnect_wait_loop_12CE                                   ; dest: 0x0012ce
 
 flow_display_state_entry_1250:                                                  ; address: 0x001250
 
-        bcf     control_flags, 0x1, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x1, A                   ; reg: 0x01f
         call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
         call    app_entry_defensive_stub, 0x0                           ; dest: 0x00004c
         movlw   0x80
@@ -6472,23 +6632,23 @@ flow_display_state_entry_1250:                                                  
 flow_display_state_entry_126E:                                                  ; address: 0x00126e
 
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         movlw   0x00
-        movf    0x9a, F, B                                  ; reg: 0x09a
+        movf    stock_09A_b0, F, B                                  ; reg: 0x09a
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     flow_display_state_entry_126E                                   ; dest: 0x00126e
-        clrf    0xb3, B                                     ; reg: 0x0b3
-        clrf    0xb2, B                                     ; reg: 0x0b2
-        clrf    0xb1, B                                     ; reg: 0x0b1
-        clrf    0xb0, B                                     ; reg: 0x0b0
-        bsf     control_flags, 0x1, A                   ; reg: 0x01f
+        clrf    stock_0B3_b0, B                                     ; reg: 0x0b3
+        clrf    stock_0B2_b0, B                                     ; reg: 0x0b2
+        clrf    stock_0B1_b0, B                                     ; reg: 0x0b1
+        clrf    stock_0B0_b0, B                                     ; reg: 0x0b0
+        bsf     control_flags_acc, 0x1, A                   ; reg: 0x01f
         call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
@@ -6505,7 +6665,7 @@ flow_display_state_entry_126E:                                                  
         movwf   (Common_RAM + 15), A                        ; reg: 0x00f
         movlw   0x88
         call    control_core_service_01BE, 0x0                           ; dest: 0x0001be
-        bcf     control_flags, 0x1, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x1, A                   ; reg: 0x01f
 
 reconnect_wait_loop:                                                  ; address: 0x0012bc
 
@@ -6528,7 +6688,7 @@ reconnect_wait_loop:                                                  ; address:
         ; Zero bank-1 0x73 on entry so each reconnect attempt starts
         ; with a fresh retry counter.
         movlb   0x01
-        clrf    0x73, BANKED
+        clrf    stock_173_b1, BANKED
         ; ---------------------------------------------------------------
         ; V1.72 reconnect-loop operator-recovery grace counter (2026-04-21)
         ; ---------------------------------------------------------------
@@ -6542,8 +6702,8 @@ reconnect_wait_loop:                                                  ; address:
         ; fails to re-emit its sentinel burst -- see the matching
         ; block's comment for the V3.2 MAIN-side root cause tracking.
         movlb   0x00
-        clrf    v171_waiting_grace_count_lo, B
-        clrf    v171_waiting_grace_count_hi, B
+        clrf    v171_waiting_grace_count_lo_b0, B
+        clrf    v171_waiting_grace_count_hi_b0, B
 
 v171_reconnect_wait_body:
         ; Refresh the debounced button event latch at 0x9A via the
@@ -6560,15 +6720,15 @@ v171_reconnect_wait_body:
         ; 16-bit saturating grace counter (same shape as the
         ; cold-boot WAITING loop at asm:4448).
         movlw   V171_WAITING_GRACE_THRESHOLD_HI
-        cpfslt  v171_waiting_grace_count_hi, B             ; skip if hi <  threshold_hi
+        cpfslt  v171_waiting_grace_count_hi_b0, B             ; skip if hi <  threshold_hi
         bra     v171_reconnect_armed                       ; hi >= threshold_hi -> armed
-        infsnz  v171_waiting_grace_count_lo, F, B          ; bump lo; skip if lo != 0
-        incf    v171_waiting_grace_count_hi, F, B          ; lo wrapped -> bump hi
+        infsnz  v171_waiting_grace_count_lo_b0, F, B          ; bump lo; skip if lo != 0
+        incf    v171_waiting_grace_count_hi_b0, F, B          ; lo wrapped -> bump hi
         bra     v171_reconnect_past_grace_done             ; still in grace
 v171_reconnect_armed:
-        btfsc   0x9a, 0x5, B                               ; RIGHT pressed?
+        btfsc   stock_09A_b0, 0x5, B                               ; RIGHT pressed?
         reset                                              ; soft CPU reset
-        btfsc   0x9a, 0x4, B                               ; LEFT pressed?
+        btfsc   stock_09A_b0, 0x4, B                               ; LEFT pressed?
         reset                                              ; soft CPU reset
 v171_reconnect_past_grace_done:
         movlb   0x00
@@ -6598,25 +6758,25 @@ v171_reconnect_past_grace_done:
         ; instructions saves 8 bytes total in the V1.72 release;
         ; downstream addresses shift accordingly.
         movlw   0x80
-        subwf   input_select_cache, W, B                     ; 0xB8
+        subwf   input_select_cache_b0, W, B                     ; 0xB8
         btfss   STATUS, Z, A
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; ram_0x018
 
         movlw   0x80
-        subwf   volume_cache, W, B                           ; 0xB9
+        subwf   volume_cache_b0, W, B                           ; 0xB9
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
 
         movlw   0x80
-        subwf   cmd1d_setting_cache, W, B                    ; 0xA7
+        subwf   cmd1d_setting_cache_b0, W, B                    ; 0xA7
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
 
         movlw   0x80
-        subwf   raw_status_cache, W, B                       ; 0xA1
+        subwf   raw_status_cache_b0, W, B                       ; 0xA1
         btfss   STATUS, Z, A
         movlw   0x01
         andwf   (Common_RAM + 24), F, A
@@ -6626,11 +6786,11 @@ v171_reconnect_past_grace_done:
 
         ; Not done yet — increment retry counter.
         movlb   0x01
-        incf    0x73, F, BANKED
+        incf    stock_173_b1, F, BANKED
         movlw   0x08
-        cpfseq  0x73, BANKED
+        cpfseq  stock_173_b1, BANKED
         bra     v171_reconnect_wait_body                    ; still under 8 — keep polling
-        clrf    0x73, BANKED                                ; 8 retries hit — reset counter
+        clrf    stock_173_b1, BANKED                                ; 8 retries hit — reset counter
 
         ; 8 polls without full sentinel clear → kick the UART through
         ; the full V1.62b soft-recover.  The parser-entry inline
@@ -6642,27 +6802,27 @@ v171_reconnect_past_grace_done:
         movf    RCREG, W, A
         bsf     RCSTA, CREN, A
         movlb   0x00
-        clrf    tx_ring_rd, BANKED
-        clrf    tx_ring_wr, BANKED
-        clrf    rx_ring_rd, BANKED
-        clrf    rx_ring_wr, BANKED
-        clrf    rx_frame_position, BANKED
-        clrf    v171_rx_frame_gap_timeout, BANKED
-        clrf    rx_parsed_cmd, A
-        clrf    rx_parsed_data, A
+        clrf    tx_ring_rd_b0, BANKED
+        clrf    tx_ring_wr_b0, BANKED
+        clrf    rx_ring_rd_b0, BANKED
+        clrf    rx_ring_wr_b0, BANKED
+        clrf    rx_frame_position_b0, BANKED
+        clrf    v171_rx_frame_gap_timeout_b0, BANKED
+        clrf    rx_parsed_cmd_acc, A
+        clrf    rx_parsed_data_acc, A
         bra     v171_reconnect_wait_body
 
 v171_reconnect_wait_done:
         movlb   0x01
-        clrf    0x73, BANKED                                ; clear retry counter
-        clrf    v171_health_age_pb1, BANKED                 ; wake/reconnect health unknown
-        clrf    v171_health_age_pb2, BANKED
-        clrf    v171_health_seen_mask, BANKED
-        clrf    v171_health_flags, BANKED
-        clrf    v171_health_poll_target, BANKED
-        clrf    v171_health_tick_div, BANKED
+        clrf    stock_173_b1, BANKED                                ; clear retry counter
+        clrf    v171_health_age_pb1_b1, BANKED                 ; wake/reconnect health unknown
+        clrf    v171_health_age_pb2_b1, BANKED
+        clrf    v171_health_seen_mask_b1, BANKED
+        clrf    v171_health_flags_b1, BANKED
+        clrf    v171_health_poll_target_b1, BANKED
+        clrf    v171_health_tick_div_b1, BANKED
         movlb   0x00
-        bsf     control_flags, CONNECTED, A                ; mark connected
+        bsf     control_flags_acc, CONNECTED, A                ; mark connected
 
 flow_reconnect_wait_loop_12CE:                                                  ; address: 0x0012ce
 
@@ -6706,12 +6866,12 @@ flow_reconnect_wait_loop_12CE:                                                  
         bra     reconnect_wait_loop                         ; retry whole reconnect cycle
 flow_reconnect_wait_loop_12CE_delivered:
         movlw   0x61
-        movwf   idle_timeout_lo, BANKED                     ; 0x9D
+        movwf   idle_timeout_lo_b0, BANKED                     ; 0x9D
         movlw   0xEA
-        movwf   idle_timeout_hi, BANKED                     ; 0x9E
-        clrf    full_sync_lo, BANKED                        ; 0x9F
-        clrf    full_sync_hi, BANKED                        ; 0xA0
-        bcf     control_flags, RECONNECT_WAIT_DONE, A       ; bit 5
+        movwf   idle_timeout_hi_b0, BANKED                     ; 0x9E
+        clrf    full_sync_lo_b0, BANKED                        ; 0x9F
+        clrf    full_sync_hi_b0, BANKED                        ; 0xA0
+        bcf     control_flags_acc, RECONNECT_WAIT_DONE, A       ; bit 5
         movlw   0x01
         movwf   (Common_RAM + 50), A                        ; 0x032
         bra     post_connect_init                                   ; dest: 0x0011d8
@@ -6721,7 +6881,7 @@ control_core_service_12D0:                                               ; addre
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movff   0x0bf, tx_data_staging                    ; reg2: 0x027
+        movff   0x0bf, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_title_table)                           ; shifted via label
@@ -6734,26 +6894,26 @@ standby_display:                                                  ; address: 0x0
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0x87
         call    lcd_command, 0x0                           ; dest: 0x000066
-        btfsc   control_flags, 0x5, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x5, A                   ; reg: 0x01f
         goto    flow_standby_display_1354                                   ; dest: 0x001354
         movlw   0x60
-        cpfslt  0xb9, B                                     ; reg: 0x0b9
+        cpfslt  volume_cache_b0, B                                     ; reg: 0x0b9
         goto    flow_standby_display_1310                                   ; dest: 0x001310
         movlw   0x2d
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
-        movf    0xb9, W, B                                  ; reg: 0x0b9
+        movf    volume_cache_b0, W, B                                  ; reg: 0x0b9
         sublw   0x60
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_standby_display_132E                                   ; dest: 0x00132e
 
 flow_standby_display_1310:                                                  ; address: 0x001310
 
         movlw   0x60
-        cpfseq  0xb9, B                                     ; reg: 0x0b9
+        cpfseq  volume_cache_b0, B                                     ; reg: 0x0b9
         goto    flow_standby_display_1322                                   ; dest: 0x001322
         movlw   0x60
-        subwf   0xb9, W, B                                  ; reg: 0x0b9
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        subwf   volume_cache_b0, W, B                                  ; reg: 0x0b9
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         goto    flow_standby_display_132E                                   ; dest: 0x00132e
 
 flow_standby_display_1322:                                                  ; address: 0x001322
@@ -6761,14 +6921,14 @@ flow_standby_display_1322:                                                  ; ad
         movlw   0x2b
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
         movlw   0x60
-        subwf   0xb9, W, B                                  ; reg: 0x0b9
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        subwf   volume_cache_b0, W, B                                  ; reg: 0x0b9
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
 
 flow_standby_display_132E:                                                  ; address: 0x00132e
 
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
-        movf    tx_data_staging, W, A                     ; reg: 0x027
+        movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         call    delay_short_loop, 0x0                           ; dest: 0x000078
         movlw   0x2e
         call    lcd_char_write, 0x0                           ; dest: 0x0000ec
@@ -6791,7 +6951,7 @@ flow_standby_display_1354:                                                  ; ad
 
 flow_standby_display_1360:                                                  ; address: 0x001360
 
-        movff   0x0b7, tx_data_staging                    ; reg2: 0x027
+        movff   0x0b7, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_input_auto_detect_table)                           ; shifted via label
@@ -6818,71 +6978,79 @@ flow_standby_display_1360:                                                  ; ad
         movlw   0x8F                                   ; row 0, col 15
         call    lcd_command, 0x0
         movlw   'A'
-        btfsc   control_flags, PRESET_BIT, A
+        btfsc   control_flags_acc, PRESET_BIT, A
         movlw   'B'
-        btfsc   control_flags, DSP_FAULT_BIT, A        ; V1.63b: fault overrides
+        btfsc   control_flags_acc, DSP_FAULT_BIT, A        ; V1.63b: fault overrides
         movlw   '!'
         call    lcd_char_write, 0x0
 
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
-        rrcf    0x9a, W, B                                  ; reg: 0x09a
+        ; LEFT/RIGHT are menu-navigation keys owned by the top dispatcher.
+        ; Return before processing page-local controls so the previous page
+        ; cannot keep writing LCD after a requested menu transition.
+        movlb   0x00
+        btfsc   stock_09A_b0, 0x5, B
+        return  0x0
+        btfsc   stock_09A_b0, 0x4, B
+        return  0x0
+        rrcf    stock_09A_b0, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_standby_display_1398                                   ; dest: 0x001398
         movlw   0x72
-        cpfslt  0xb9, B                                     ; reg: 0x0b9
+        cpfslt  volume_cache_b0, B                                     ; reg: 0x0b9
         goto    flow_standby_display_1392                                   ; dest: 0x001392
-        incf    0xb9, F, B                                  ; reg: 0x0b9
+        incf    volume_cache_b0, F, B                                  ; reg: 0x0b9
 
 flow_standby_display_1392:                                                  ; address: 0x001392
 
-        bcf     control_flags, 0x5, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
 
 flow_standby_display_1398:                                                  ; address: 0x001398
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x2, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_standby_display_13B4                                   ; dest: 0x0013b4
-        movf    0xb9, F, B                                  ; reg: 0x0b9
+        movf    volume_cache_b0, F, B                                  ; reg: 0x0b9
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_standby_display_13AE                                   ; dest: 0x0013ae
-        decf    0xb9, F, B                                  ; reg: 0x0b9
+        decf    volume_cache_b0, F, B                                  ; reg: 0x0b9
 
 flow_standby_display_13AE:                                                  ; address: 0x0013ae
 
-        bcf     control_flags, 0x5, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
 
 flow_standby_display_13B4:                                                  ; address: 0x0013b4
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x3, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x3, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_standby_display_13CE                                   ; dest: 0x0013ce
-        btg     control_flags, 0x5, A                   ; reg: 0x01f
+        btg     control_flags_acc, 0x5, A                   ; reg: 0x01f
         movlw   0x2f
-        movwf   0xb4, B                                     ; reg: 0x0b4
+        movwf   stock_0B4_b0, B                                     ; reg: 0x0b4
         movlw   0x75
-        movwf   0xb5, B                                     ; reg: 0x0b5
+        movwf   stock_0B5_b0, B                                     ; reg: 0x0b5
         call    mute_frame_send, 0x0                           ; dest: 0x000c7c
 
 flow_standby_display_13CE:                                                  ; address: 0x0013ce
 
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x5, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x5, B                                ; reg: 0x09a
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x4, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x4, B                                ; reg: 0x09a
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         movlw   0x01
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -6911,33 +7079,42 @@ control_core_service_13FE:                                               ; addre
         ; "garbled chars over BL Timeout" symptom.  Force the Setup
         ; title to read from table[2] (the legacy Setup slot).
         movlw   0x02                                      ; legacy Setup table index
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_title_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
-        movff   0x0ba, tx_data_staging                    ; reg2: 0x027
+        movff   0x0ba, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_setup_bl_timeout_entry)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_setup_bl_timeout_entry)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movff   0x0ba, 0x0a5
-        clrf    0xa4, B                                     ; reg: 0x0a4
+        movlb   0x00
+        clrf    stock_0A4_b0, B                                     ; reg: 0x0a4
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xc0
         call    lcd_command, 0x0                           ; dest: 0x000066
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
-        btfss   control_flags, 0x3, A                   ; reg: 0x01f
+        ; LEFT/RIGHT belong to the top menu dispatcher.  Do not redraw Setup
+        ; or enter its editor after a menu-transition key has been latched.
+        movlb   0x00
+        btfsc   stock_09A_b0, 0x5, B
+        return  0x0
+        btfsc   stock_09A_b0, 0x4, B
+        return  0x0
+        btfss   control_flags_acc, 0x3, A                   ; reg: 0x01f
         goto    flow_ccs_13FE_1442                                   ; dest: 0x001442
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
 
 flow_ccs_13FE_1442:                                                  ; address: 0x001442
 
+        movlb   0x00
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x3, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x3, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_ccs_13FE_1452                                   ; dest: 0x001452
@@ -6946,19 +7123,19 @@ flow_ccs_13FE_1442:                                                  ; address: 
 flow_ccs_13FE_1452:                                                  ; address: 0x001452
 
         movlw   0x01
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x3, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x3, B                                ; reg: 0x09a
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x5, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x5, B                                ; reg: 0x09a
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x4, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x4, B                                ; reg: 0x09a
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -6967,51 +7144,51 @@ flow_ccs_13FE_1452:                                                  ; address: 
 
 control_core_service_1478:                                               ; address: 0x001478
 
-        decfsz  0xeb, W, B                                  ; reg: 0x0eb
+        decfsz  stock_0EB_b0, W, B                                  ; reg: 0x0eb
         goto    flow_ccs_1478_1490                                   ; dest: 0x001490
-        clrf    0xef, B                                     ; reg: 0x0ef
+        clrf    stock_0EF_b0, B                                     ; reg: 0x0ef
         movlw   0x08
-        movwf   0xee, B                                     ; reg: 0x0ee
+        movwf   stock_0EE_b0, B                                     ; reg: 0x0ee
         movlw   0x91
-        movwf   0xed, B                                     ; reg: 0x0ed
+        movwf   stock_0ED_b0, B                                     ; reg: 0x0ed
         movlw   0x3a
-        movwf   0xec, B                                     ; reg: 0x0ec
+        movwf   stock_0EC_b0, B                                     ; reg: 0x0ec
         goto    flow_ccs_1478_14CC                                   ; dest: 0x0014cc
 
 flow_ccs_1478_1490:                                                  ; address: 0x001490
 
         movlw   0x02
-        cpfseq  0xeb, B                                     ; reg: 0x0eb
+        cpfseq  stock_0EB_b0, B                                     ; reg: 0x0eb
         goto    flow_ccs_1478_14AA                                   ; dest: 0x0014aa
-        clrf    0xef, B                                     ; reg: 0x0ef
+        clrf    stock_0EF_b0, B                                     ; reg: 0x0ef
         movlw   0x22
-        movwf   0xee, B                                     ; reg: 0x0ee
+        movwf   stock_0EE_b0, B                                     ; reg: 0x0ee
         movlw   0x44
-        movwf   0xed, B                                     ; reg: 0x0ed
+        movwf   stock_0ED_b0, B                                     ; reg: 0x0ed
         movlw   0xeb
-        movwf   0xec, B                                     ; reg: 0x0ec
+        movwf   stock_0EC_b0, B                                     ; reg: 0x0ec
         goto    flow_ccs_1478_14CC                                   ; dest: 0x0014cc
 
 flow_ccs_1478_14AA:                                                  ; address: 0x0014aa
 
         movlw   0x03
-        cpfseq  0xeb, B                                     ; reg: 0x0eb
+        cpfseq  stock_0EB_b0, B                                     ; reg: 0x0eb
         goto    flow_ccs_1478_14C4                                   ; dest: 0x0014c4
-        clrf    0xef, B                                     ; reg: 0x0ef
+        clrf    stock_0EF_b0, B                                     ; reg: 0x0ef
         movlw   0x55
-        movwf   0xee, B                                     ; reg: 0x0ee
+        movwf   stock_0EE_b0, B                                     ; reg: 0x0ee
         movlw   0xac
-        movwf   0xed, B                                     ; reg: 0x0ed
+        movwf   stock_0ED_b0, B                                     ; reg: 0x0ed
         movlw   0x44
-        movwf   0xec, B                                     ; reg: 0x0ec
+        movwf   stock_0EC_b0, B                                     ; reg: 0x0ec
         goto    flow_ccs_1478_14CC                                   ; dest: 0x0014cc
 
 flow_ccs_1478_14C4:                                                  ; address: 0x0014c4
 
-        clrf    0xef, B                                     ; reg: 0x0ef
-        clrf    0xee, B                                     ; reg: 0x0ee
-        clrf    0xed, B                                     ; reg: 0x0ed
-        clrf    0xec, B                                     ; reg: 0x0ec
+        clrf    stock_0EF_b0, B                                     ; reg: 0x0ef
+        clrf    stock_0EE_b0, B                                     ; reg: 0x0ee
+        clrf    stock_0ED_b0, B                                     ; reg: 0x0ed
+        clrf    stock_0EC_b0, B                                     ; reg: 0x0ec
 
 flow_ccs_1478_14CC:                                                  ; address: 0x0014cc
 
@@ -7021,20 +7198,20 @@ menu_bl_timeout_options_table:
         addwfc  0x66, W, A                                  ; reg: 0xf66
         movwf   (Common_RAM + 40), A                        ; reg: 0x028
         addwfc  0x6f, W, A                                  ; reg: 0xf6f
-        setf    0x74, B                                     ; reg: 0x074
-        cpfsgt  0x6d, B                                     ; reg: 0x06d
-        btg     0x6f, 0x2, B                                ; reg: 0x06f
-        incf    0x74, W, B                                  ; reg: 0x074
+        setf    stock_074_b0, B                                     ; reg: 0x074
+        cpfsgt  stock_06D_b0, B                                     ; reg: 0x06d
+        btg     stock_06F_b0, 0x2, B                                ; reg: 0x06f
+        incf    stock_074_b0, W, B                                  ; reg: 0x074
         rrcf    (Common_RAM + 51), W, A                     ; reg: 0x033
         btg     (Common_RAM + 32), 0x1, B                   ; reg: 0x020
-        cpfseq  0x65, B                                     ; reg: 0x065
+        cpfseq  stock_065_b0, B                                     ; reg: 0x065
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 50), W, A                     ; reg: 0x032
-        setf    0x6d, B                                     ; reg: 0x06d
+        setf    stock_06D_b0, B                                     ; reg: 0x06d
         addwfc  0x6e, W, A                                  ; reg: 0xf6e
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -7042,7 +7219,7 @@ menu_bl_timeout_options_table:
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 53), W, A                     ; reg: 0x035
-        setf    0x6d, B                                     ; reg: 0x06d
+        setf    stock_06D_b0, B                                     ; reg: 0x06d
         addwfc  0x6e, W, A                                  ; reg: 0xf6e
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -7073,9 +7250,10 @@ menu_bl_timeout_options_table:
 ; lazy debounce on the next iteration.
 ; ===========================================================================
 ; main_event_loop:
+;@routine main_event_loop entry_bsr=0 exit_bsr=0
 main_event_loop:                                               ; address: 0x00150e
 
-        movff   0x0ba, tx_data_staging                    ; reg2: 0x027
+        movff   0x0ba, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_setup_bl_timeout_entry)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_setup_bl_timeout_entry)                           ; shifted via label
@@ -7084,24 +7262,25 @@ main_event_loop:                                               ; address: 0x0015
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
+        movlb   0x00
         movlw   0x03
-        movwf   0xa4, B                                     ; reg: 0x0a4
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
         movlw   HIGH(menu_bl_timeout_options_table)
-        movwf   0xa3, B                                     ; reg: 0x0a3
+        movwf   stock_0A3_b0, B                                     ; reg: 0x0a3
         movlw   LOW(menu_bl_timeout_options_table)
-        movwf   0xa2, B                                     ; reg: 0x0a2
+        movwf   stock_0A2_b0, B                                     ; reg: 0x0a2
 
 flow_main_event_loop_1532:                                                  ; address: 0x001532
 
         movff   0x0eb, 0x0a5
         call    control_core_service_0FA0, 0x0                           ; dest: 0x000fa0
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x1, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x1, B                                ; reg: 0x09a
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x2, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x2, B                                ; reg: 0x09a
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -7112,11 +7291,11 @@ flow_main_event_loop_1532:                                                  ; ad
 flow_main_event_loop_1558:                                                  ; address: 0x001558
 
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x3, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x3, B                                ; reg: 0x09a
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         movlw   0x01
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -7231,12 +7410,13 @@ menu_input_cat_spdif_table:                                                  ; a
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
 
+;@routine flow_main_event_loop_1642 entry_bsr=0 exit_bsr=0
 flow_main_event_loop_1642:                                                  ; address: 0x001642
 
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        movff   0x0ba, tx_data_staging                    ; reg2: 0x027
+        movff   0x0ba, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_setup_bl_timeout_entry)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_setup_bl_timeout_entry)                           ; shifted via label
@@ -7245,7 +7425,7 @@ flow_main_event_loop_1642:                                                  ; ad
 
 flow_main_event_loop_165A:                                                  ; address: 0x00165a
 
-        movff   0x0c0, tx_data_staging                    ; reg2: 0x027
+        movff   0x0c0, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_source_channel_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_source_channel_table)                           ; shifted via label
@@ -7256,75 +7436,75 @@ flow_main_event_loop_165A:                                                  ; ad
         call    lcd_command, 0x0                           ; dest: 0x000066
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         movlw   0x06
-        cpfslt  0xc0, B                                     ; reg: 0x0c0
+        cpfslt  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_1718                                   ; dest: 0x001718
-        movf    0xc0, F, B                                  ; reg: 0x0c0
+        movf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_main_event_loop_1692                                   ; dest: 0x001692
         lfsr    0x0, 0x0c1
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
 flow_main_event_loop_1692:                                                  ; address: 0x001692
 
-        decfsz  0xc0, W, B                                  ; reg: 0x0c0
+        decfsz  stock_0C0_b0, W, B                                  ; reg: 0x0c0
         goto    flow_main_event_loop_16A6                                   ; dest: 0x0016a6
         lfsr    0x0, 0x0c7
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
 flow_main_event_loop_16A6:                                                  ; address: 0x0016a6
 
         movlw   0x02
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16BC                                   ; dest: 0x0016bc
         lfsr    0x0, 0x0cd
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
 flow_main_event_loop_16BC:                                                  ; address: 0x0016bc
 
         movlw   0x03
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16D2                                   ; dest: 0x0016d2
         lfsr    0x0, 0x0d3
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
 flow_main_event_loop_16D2:                                                  ; address: 0x0016d2
 
         movlw   0x04
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16E8                                   ; dest: 0x0016e8
         lfsr    0x0, 0x0d9
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
 
 flow_main_event_loop_16E8:                                                  ; address: 0x0016e8
 
         movlw   0x05
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
         lfsr    0x0, 0x0df
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
 
 flow_main_event_loop_16FA:                                                  ; address: 0x0016fa
 
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
-        movwf   0xa4, B                                     ; reg: 0x0a4
-        movff   0x0a5, tx_data_staging                    ; reg2: 0x027
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
+        movff   0x0a5, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_routing_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_routing_table)                           ; shifted via label
@@ -7338,12 +7518,12 @@ flow_main_event_loop_16FA:                                                  ; ad
 flow_main_event_loop_1718:                                                  ; address: 0x001718
 
         lfsr    0x0, 0x0e5
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
-        movwf   0xa5, B                                     ; reg: 0x0a5
+        movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
         movlw   0x01
-        movwf   0xa4, B                                     ; reg: 0x0a4
-        movff   0x0a5, tx_data_staging                    ; reg2: 0x027
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
+        movff   0x0a5, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_input_cat_spdif_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_input_cat_spdif_table)                           ; shifted via label
@@ -7357,28 +7537,28 @@ flow_main_event_loop_173C:                                                  ; ad
 
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
-        btfss   control_flags, 0x3, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x3, A                   ; reg: 0x01f
         goto    flow_main_event_loop_1754                                   ; dest: 0x001754
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
-        btfss   control_flags, 0x1, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_main_event_loop_1754                                   ; dest: 0x001754
         bra     flow_main_event_loop_1642                                   ; dest: 0x001642
 
 flow_main_event_loop_1754:                                                  ; address: 0x001754
 
-        rrcf    0x9a, W, B                                  ; reg: 0x09a
+        rrcf    stock_09A_b0, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_main_event_loop_1772                                   ; dest: 0x001772
-        movf    0xa5, W, B                                  ; reg: 0x0a5
-        cpfseq  0xa4, B                                     ; reg: 0x0a4
+        movf    stock_0A5_b0, W, B                                  ; reg: 0x0a5
+        cpfseq  stock_0A4_b0, B                                     ; reg: 0x0a4
         goto    flow_main_event_loop_176C                                   ; dest: 0x00176c
-        clrf    0xa5, B                                     ; reg: 0x0a5
+        clrf    stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_main_event_loop_176E                                   ; dest: 0x00176e
 
 flow_main_event_loop_176C:                                                  ; address: 0x00176c
 
-        incf    0xa5, F, B                                  ; reg: 0x0a5
+        incf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
 
 flow_main_event_loop_176E:                                                  ; address: 0x00176e
 
@@ -7387,11 +7567,11 @@ flow_main_event_loop_176E:                                                  ; ad
 flow_main_event_loop_1772:                                                  ; address: 0x001772
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x2, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_main_event_loop_1794                                   ; dest: 0x001794
-        movf    0xa5, F, B                                  ; reg: 0x0a5
+        movf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_main_event_loop_178E                                   ; dest: 0x00178e
         movff   0x0a4, 0x0a5
@@ -7399,7 +7579,7 @@ flow_main_event_loop_1772:                                                  ; ad
 
 flow_main_event_loop_178E:                                                  ; address: 0x00178e
 
-        decf    0xa5, F, B                                  ; reg: 0x0a5
+        decf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
 
 flow_main_event_loop_1790:                                                  ; address: 0x001790
 
@@ -7408,46 +7588,46 @@ flow_main_event_loop_1790:                                                  ; ad
 flow_main_event_loop_1794:                                                  ; address: 0x001794
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x5, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x5, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_main_event_loop_17B0                                   ; dest: 0x0017b0
         movlw   0x06
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_17AE                                   ; dest: 0x0017ae
-        clrf    0xc0, B                                     ; reg: 0x0c0
+        clrf    stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_17B0                                   ; dest: 0x0017b0
 
 flow_main_event_loop_17AE:                                                  ; address: 0x0017ae
 
-        incf    0xc0, F, B                                  ; reg: 0x0c0
+        incf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
 
 flow_main_event_loop_17B0:                                                  ; address: 0x0017b0
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x4, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x4, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_main_event_loop_17CE                                   ; dest: 0x0017ce
-        movf    0xc0, F, B                                  ; reg: 0x0c0
+        movf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_main_event_loop_17CC                                   ; dest: 0x0017cc
         movlw   0x06
-        movwf   0xc0, B                                     ; reg: 0x0c0
+        movwf   stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_17CE                                   ; dest: 0x0017ce
 
 flow_main_event_loop_17CC:                                                  ; address: 0x0017cc
 
-        decf    0xc0, F, B                                  ; reg: 0x0c0
+        decf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
 
 flow_main_event_loop_17CE:                                                  ; address: 0x0017ce
 
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x3, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x3, B                                ; reg: 0x09a
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         movlw   0x01
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -7455,66 +7635,67 @@ flow_main_event_loop_17CE:                                                  ; ad
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         return  0x0
 
+;@routine control_core_service_17E8 entry_bsr=0 exit_bsr=0
 control_core_service_17E8:                                               ; address: 0x0017e8
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         movlw   0x06
-        cpfslt  0xc0, B                                     ; reg: 0x0c0
+        cpfslt  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1876                                   ; dest: 0x001876
-        movf    0xc0, F, B                                  ; reg: 0x0c0
+        movf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_17E8_180A                                   ; dest: 0x00180a
         lfsr    0x0, 0x0c1
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
 flow_ccs_17E8_180A:                                                  ; address: 0x00180a
 
-        decfsz  0xc0, W, B                                  ; reg: 0x0c0
+        decfsz  stock_0C0_b0, W, B                                  ; reg: 0x0c0
         goto    flow_ccs_17E8_181E                                   ; dest: 0x00181e
         lfsr    0x0, 0x0c7
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
 flow_ccs_17E8_181E:                                                  ; address: 0x00181e
 
         movlw   0x02
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1834                                   ; dest: 0x001834
         lfsr    0x0, 0x0cd
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
 flow_ccs_17E8_1834:                                                  ; address: 0x001834
 
         movlw   0x03
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_184A                                   ; dest: 0x00184a
         lfsr    0x0, 0x0d3
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
 flow_ccs_17E8_184A:                                                  ; address: 0x00184a
 
         movlw   0x04
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1860                                   ; dest: 0x001860
         lfsr    0x0, 0x0d9
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
 
 flow_ccs_17E8_1860:                                                  ; address: 0x001860
 
         movlw   0x05
-        cpfseq  0xc0, B                                     ; reg: 0x0c0
+        cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
         lfsr    0x0, 0x0df
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
 
 flow_ccs_17E8_1872:                                                  ; address: 0x001872
@@ -7524,7 +7705,7 @@ flow_ccs_17E8_1872:                                                  ; address: 
 flow_ccs_17E8_1876:                                                  ; address: 0x001876
 
         lfsr    0x0, 0x0e5
-        movf    0xba, W, B                                  ; reg: 0x0ba
+        movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
 
 flow_ccs_17E8_1880:                                                  ; address: 0x001880
@@ -7617,7 +7798,7 @@ control_core_service_1912:                                               ; addre
         ; Force the Input title to read from table[1] (the legacy
         ; Input slot) regardless of where Input lives in the new ring.
         movlw   0x01                                      ; legacy Input table index
-        movwf   tx_data_staging, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A                        ; reg: 0x027
         movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_title_table)                           ; shifted via label
@@ -7626,43 +7807,43 @@ control_core_service_1912:                                               ; addre
 
 flow_ccs_1912_192A:                                                  ; address: 0x00192a
 
-        movff   0x0b7, tx_data_staging                    ; reg2: 0x027
+        movff   0x0b7, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_input_auto_detect_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
         movff   0x0b7, 0x0a5
-        movf    0xa1, F, B                                  ; reg: 0x0a1
+        movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_1912_194A                                   ; dest: 0x00194a
         movlw   0x05
-        movwf   0xa4, B                                     ; reg: 0x0a4
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
         goto    flow_ccs_1912_1974                                   ; dest: 0x001974
 
 flow_ccs_1912_194A:                                                  ; address: 0x00194a
 
-        decfsz  0xa1, W, B                                  ; reg: 0x0a1
+        decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    flow_ccs_1912_1958                                   ; dest: 0x001958
         movlw   0x06
-        movwf   0xa4, B                                     ; reg: 0x0a4
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
         goto    flow_ccs_1912_1974                                   ; dest: 0x001974
 
 flow_ccs_1912_1958:                                                  ; address: 0x001958
 
         movlw   0x02
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_1912_1968                                   ; dest: 0x001968
         movlw   0x07
-        movwf   0xa4, B                                     ; reg: 0x0a4
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
         goto    flow_ccs_1912_1974                                   ; dest: 0x001974
 
 flow_ccs_1912_1968:                                                  ; address: 0x001968
 
         movlw   0x03
-        cpfseq  0xa1, B                                     ; reg: 0x0a1
+        cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    flow_ccs_1912_1974                                   ; dest: 0x001974
         movlw   0x08
-        movwf   0xa4, B                                     ; reg: 0x0a4
+        movwf   stock_0A4_b0, B                                     ; reg: 0x0a4
 
 flow_ccs_1912_1974:                                                  ; address: 0x001974
 
@@ -7672,28 +7853,42 @@ flow_ccs_1912_1974:                                                  ; address: 
         call    lcd_command, 0x0                           ; dest: 0x000066
         call    control_core_service_0940, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
-        btfss   control_flags, 0x3, A                   ; reg: 0x01f
+        ; LEFT/RIGHT are menu-navigation keys owned by the top dispatcher.
+        ; Return before processing page-local input controls so the old page
+        ; cannot redraw itself after a requested menu transition.
+        movlb   0x00
+        btfsc   stock_09A_b0, 0x5, B
+        return  0x0
+        btfsc   stock_09A_b0, 0x4, B
+        return  0x0
+        ; If an out-of-band transition has already changed state, return so
+        ; the dispatcher paints the new owner before any page-local service.
+        movlb   0x00
+        movlw   0x02
+        cpfseq  display_state_index_b0, BANKED
+        return  0x0
+        btfss   control_flags_acc, 0x3, A                   ; reg: 0x01f
         goto    flow_ccs_1912_1996                                   ; dest: 0x001996
-        bcf     control_flags, 0x3, A                   ; reg: 0x01f
-        btfss   control_flags, 0x1, A                   ; reg: 0x01f
+        bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
+        btfss   control_flags_acc, 0x1, A                   ; reg: 0x01f
         goto    flow_ccs_1912_1996                                   ; dest: 0x001996
         bra     control_core_service_1912                                ; dest: 0x001912
 
 flow_ccs_1912_1996:                                                  ; address: 0x001996
 
-        rrcf    0x9a, W, B                                  ; reg: 0x09a
+        rrcf    stock_09A_b0, W, B                                  ; reg: 0x09a
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         btfss   STATUS, C, A                                ; reg: 0xfd8, bit: 0
         goto    flow_ccs_1912_19C0                                   ; dest: 0x0019c0
-        movf    0xa5, W, B                                  ; reg: 0x0a5
-        cpfseq  0xa4, B                                     ; reg: 0x0a4
+        movf    stock_0A5_b0, W, B                                  ; reg: 0x0a5
+        cpfseq  stock_0A4_b0, B                                     ; reg: 0x0a4
         goto    flow_ccs_1912_19AE                                   ; dest: 0x0019ae
-        clrf    0xa5, B                                     ; reg: 0x0a5
+        clrf    stock_0A5_b0, B                                     ; reg: 0x0a5
         goto    flow_ccs_1912_19B0                                   ; dest: 0x0019b0
 
 flow_ccs_1912_19AE:                                                  ; address: 0x0019ae
 
-        incf    0xa5, F, B                                  ; reg: 0x0a5
+        incf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
 
 flow_ccs_1912_19B0:                                                  ; address: 0x0019b0
 
@@ -7705,11 +7900,11 @@ flow_ccs_1912_19B0:                                                  ; address: 
 flow_ccs_1912_19C0:                                                  ; address: 0x0019c0
 
         bcf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
-        btfss   0x9a, 0x2, B                                ; reg: 0x09a
+        btfss   stock_09A_b0, 0x2, B                                ; reg: 0x09a
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    flow_ccs_1912_19EE                                   ; dest: 0x0019ee
-        movf    0xa5, F, B                                  ; reg: 0x0a5
+        movf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_1912_19DC                                   ; dest: 0x0019dc
         movff   0x0a4, 0x0a5
@@ -7717,7 +7912,7 @@ flow_ccs_1912_19C0:                                                  ; address: 
 
 flow_ccs_1912_19DC:                                                  ; address: 0x0019dc
 
-        decf    0xa5, F, B                                  ; reg: 0x0a5
+        decf    stock_0A5_b0, F, B                                  ; reg: 0x0a5
 
 flow_ccs_1912_19DE:                                                  ; address: 0x0019de
 
@@ -7729,15 +7924,15 @@ flow_ccs_1912_19DE:                                                  ; address: 
 flow_ccs_1912_19EE:                                                  ; address: 0x0019ee
 
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x5, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x5, B                                ; reg: 0x09a
         movlw   0x01
         movwf   (Common_RAM + 24), A                        ; reg: 0x018
         clrf    WREG, A                                     ; reg: 0xfe8
-        btfsc   0x9a, 0x4, B                                ; reg: 0x09a
+        btfsc   stock_09A_b0, 0x4, B                                ; reg: 0x09a
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         movlw   0x01
-        btfsc   control_flags, 0x1, A                   ; reg: 0x01f
+        btfsc   control_flags_acc, 0x1, A                   ; reg: 0x01f
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -7750,7 +7945,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x32, 0x00 ; "Firmware V1.72"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x39, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x35, 0x33, 0x31, 0x00 ; "Rev x39 20260531"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x33, 0x46, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x30, 0x37, 0x00 ; "Rev x3F 20260607"
 
 ; --- Canonical V1.72 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7758,8 +7953,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x32, 0x39                    ; V1.72 + monotonic release revision
-        db      0x20, 0x26, 0x05, 0x31                    ; build date 20260531 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x32, 0x3F                    ; V1.72 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x07                    ; build date 20260607 (BCD YYYYMMDD)
 
 ; --- V1.72 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800
@@ -8307,7 +8502,7 @@ flow_ccs_7ADA_7AE2:                                                  ; address: 
         return  0x0
         movwf   (Common_RAM + 66), B                        ; reg: 0x042
         btg     0x6f, 0x2, A                                ; reg: 0xf6f
-        movwf   0x6c, B                                     ; reg: 0x06c
+        movwf   stock_06C_b0, B                                     ; reg: 0x06c
         cpfsgt  0x61, A                                     ; reg: 0xf61
         btg     0x65, 0x1, A                                ; reg: 0xf65
         negf    (Common_RAM + 32), B                        ; reg: 0x020
@@ -8341,28 +8536,28 @@ flow_ccs_7ADA_7AFE:                                                  ; address: 
         movlw   0x05
         rcall   control_core_service_7AA6                                ; dest: 0x007aa6
         movlw   0x46
-        movwf   0x76, B                                     ; reg: 0x076
+        movwf   stock_076_b0, B                                     ; reg: 0x076
         movlw   0x57
-        movwf   0x77, B                                     ; reg: 0x077
+        movwf   stock_077_b0, B                                     ; reg: 0x077
         movlw   0x5f
-        movwf   0x78, B                                     ; reg: 0x078
+        movwf   stock_078_b0, B                                     ; reg: 0x078
         movlw   0x55
-        movwf   0x79, B                                     ; reg: 0x079
+        movwf   stock_079_b0, B                                     ; reg: 0x079
         movlw   0x70
-        movwf   0x7a, B                                     ; reg: 0x07a
+        movwf   stock_07A_b0, B                                     ; reg: 0x07a
         movlw   0x64
-        movwf   0x7b, B                                     ; reg: 0x07b
+        movwf   stock_07B_b0, B                                     ; reg: 0x07b
         bcf     TRISB, RB6, A                               ; reg: 0xf93, bit: 6
         bcf     LATB, LATB6, A                              ; reg: 0xf8a, bit: 6
-        bcf     0x82, 0x1, B                                ; reg: 0x082
+        bcf     stock_082_b0, 0x1, B                                ; reg: 0x082
         rcall   bootloader_manual_entry                                ; dest: 0x007f02
-        rrcf    0x82, W, B                                  ; reg: 0x082
+        rrcf    stock_082_b0, W, B                                  ; reg: 0x082
         rrcf    WREG, F, A                                  ; reg: 0xfe8
         bc      flow_ccs_7ADA_7B7C
         movlw   0xff
         rcall   control_core_service_7A48                                ; dest: 0x007a48
-        movwf   control_flags, A                        ; reg: 0x01f
-        decfsz  control_flags, W, A                     ; reg: 0x01f
+        movwf   control_flags_acc, A                        ; reg: 0x01f
+        decfsz  control_flags_acc, W, A                     ; reg: 0x01f
         bra     flow_ccs_7ADA_7B68                                   ; dest: 0x007b68
         setf    EEADR, A                                    ; reg: 0xfa9
         movlw   0x77
@@ -8373,7 +8568,7 @@ flow_ccs_7ADA_7AFE:                                                  ; address: 
 flow_ccs_7ADA_7B68:                                                  ; address: 0x007b68
 
         movlw   0x02
-        cpfseq  control_flags, A                        ; reg: 0x01f
+        cpfseq  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7B7A                                   ; dest: 0x007b7a
         movlw   0xfe
         movwf   EEADR, A                                    ; reg: 0xfa9
@@ -8417,8 +8612,8 @@ flow_ccs_7ADA_7BA4:                                                  ; address: 
         bra     flow_ccs_7ADA_7BA4                                   ; dest: 0x007ba4
         bcf     INTCON, GIE, A                              ; reg: 0xff2, bit: 7
         movlw   0x40
-        movwf   ir_decoded_cmd, A                        ; reg: 0x01d
-        clrf    ir_decoded_addr, A                        ; reg: 0x01e
+        movwf   ir_decoded_cmd_acc, A                        ; reg: 0x01d
+        clrf    ir_decoded_addr_acc, A                        ; reg: 0x01e
         clrf    (Common_RAM + 32), A                        ; reg: 0x020
         clrf    (Common_RAM + 33), A                        ; reg: 0x021
 
@@ -8482,31 +8677,31 @@ flow_ccs_7ADA_7C02:                                                  ; address: 
 
 flow_ccs_7ADA_7C0A:                                                  ; address: 0x007c0a
 
-        bcf     0x82, 0x0, B                                ; reg: 0x082
-        clrf    control_flags, A                        ; reg: 0x01f
+        bcf     stock_082_b0, 0x0, B                                ; reg: 0x082
+        clrf    control_flags_acc, A                        ; reg: 0x01f
 
 flow_ccs_7ADA_7C0E:                                                  ; address: 0x007c0e
 
         movlw   0x06
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7C2A                                   ; dest: 0x007c2a
         lfsr    0x0, 0x043
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
         movlw   0x30
         subwf   (Common_RAM + 8), W, A                      ; reg: 0x008
         bz      flow_ccs_7ADA_7C26
-        bsf     0x82, 0x0, B                                ; reg: 0x082
+        bsf     stock_082_b0, 0x0, B                                ; reg: 0x082
 
 flow_ccs_7ADA_7C26:                                                  ; address: 0x007c26
 
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_ccs_7ADA_7C0E
 
 flow_ccs_7ADA_7C2A:                                                  ; address: 0x007c2a
 
-        rrcf    0x82, W, B                                  ; reg: 0x082
+        rrcf    stock_082_b0, W, B                                  ; reg: 0x082
         bc      flow_ccs_7ADA_7C30
         bra     flow_bootloader_manual_entry_7F56                                   ; dest: 0x007f56
 
@@ -8514,16 +8709,16 @@ flow_ccs_7ADA_7C30:                                                  ; address: 
 
         clrf    (Common_RAM + 34), A                        ; reg: 0x022
         clrf    (Common_RAM + 35), A                        ; reg: 0x023
-        clrf    control_flags, A                        ; reg: 0x01f
+        clrf    control_flags_acc, A                        ; reg: 0x01f
 
 flow_ccs_7ADA_7C36:                                                  ; address: 0x007c36
 
         movlw   0x14
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7C74                                   ; dest: 0x007c74
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
         movff   PRODH, (Common_RAM + 26)                    ; reg1: 0xff4, reg2: 0x01a
@@ -8540,7 +8735,7 @@ flow_ccs_7ADA_7C36:                                                  ; address: 
         addwf   (Common_RAM + 34), F, A                     ; reg: 0x022
         movf    (Common_RAM + 26), W, A                     ; reg: 0x01a
         addwfc  (Common_RAM + 35), F, A                     ; reg: 0x023
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_ccs_7ADA_7C36
 
 flow_ccs_7ADA_7C74:                                                  ; address: 0x007c74
@@ -8582,10 +8777,10 @@ flow_ccs_7ADA_7C74:                                                  ; address: 
         clrf    INDF0, A                                    ; reg: 0xfef
         lfsr    0x0, 0x071
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
-        movwf   ir_decoded_cmd, A                        ; reg: 0x01d
+        movwf   ir_decoded_cmd_acc, A                        ; reg: 0x01d
         movff   (Common_RAM + 16), ir_decoded_addr        ; reg1: 0x010, reg2: 0x01e
         movlw   0x3f
-        andwf   ir_decoded_cmd, W, A                     ; reg: 0x01d
+        andwf   ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
         clrf    (Common_RAM + 9), A                         ; reg: 0x009
         movf    (Common_RAM + 9), W, A                      ; reg: 0x009
@@ -8601,53 +8796,53 @@ flow_ccs_7ADA_7CE8:                                                  ; address: 
 flow_ccs_7ADA_7CEA:                                                  ; address: 0x007cea
 
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
-        movff   ir_decoded_cmd, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
-        movff   ir_decoded_addr, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
+        movff   ir_decoded_cmd_b0_phys, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
+        movff   ir_decoded_addr_b0_phys, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
         movlw   0x77
         movwf   (Common_RAM + 14), A                        ; reg: 0x00e
         movlw   0xc0
         call    control_core_service_780A, 0x0                           ; dest: 0x00780a
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
-        movff   ir_decoded_cmd, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
-        movff   ir_decoded_addr, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
+        movff   ir_decoded_cmd_b0_phys, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
+        movff   ir_decoded_addr_b0_phys, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
         clrf    (Common_RAM + 14), A                        ; reg: 0x00e
         movlw   0x40
         call    control_core_service_7804, 0x0                           ; dest: 0x007804
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
         bz      flow_ccs_7ADA_7D22
-        movf    ir_decoded_addr, W, A                     ; reg: 0x01e
-        iorwf   ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_addr_acc, W, A                     ; reg: 0x01e
+        iorwf   ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         bz      flow_ccs_7ADA_7D22
-        movff   ir_decoded_addr, TBLPTRH                  ; reg1: 0x01e, reg2: 0xff7
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movff   ir_decoded_addr_b0_phys, TBLPTRH                  ; reg1: 0x01e, reg2: 0xff7
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         rcall   control_core_service_7A90                                ; dest: 0x007a90
 
 flow_ccs_7ADA_7D22:                                                  ; address: 0x007d22
 
-        movff   ir_decoded_cmd, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
-        movff   ir_decoded_addr, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
+        movff   ir_decoded_cmd_b0_phys, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
+        movff   ir_decoded_addr_b0_phys, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
         movlw   0x77
         movwf   (Common_RAM + 14), A                        ; reg: 0x00e
         movlw   0xc0
         call    control_core_service_780A, 0x0                           ; dest: 0x00780a
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
-        movff   ir_decoded_cmd, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
-        movff   ir_decoded_addr, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
+        movff   ir_decoded_cmd_b0_phys, (Common_RAM + 11)        ; reg1: 0x01d, reg2: 0x00b
+        movff   ir_decoded_addr_b0_phys, (Common_RAM + 12)        ; reg1: 0x01e, reg2: 0x00c
         clrf    (Common_RAM + 14), A                        ; reg: 0x00e
         movlw   0x40
         call    control_core_service_7804, 0x0                           ; dest: 0x007804
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
         bz      flow_ccs_7ADA_7DA4
-        clrf    control_flags, A                        ; reg: 0x01f
+        clrf    control_flags_acc, A                        ; reg: 0x01f
 
 flow_ccs_7ADA_7D4C:                                                  ; address: 0x007d4c
 
         movlw   0x08
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7DA4                                   ; dest: 0x007da4
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x04
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
         movff   PRODH, (Common_RAM + 26)                    ; reg1: 0xff4, reg2: 0x01a
@@ -8661,21 +8856,21 @@ flow_ccs_7ADA_7D4C:                                                  ; address: 
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 32), A                        ; reg: 0x020
         movff   (Common_RAM + 16), (Common_RAM + 33)        ; reg1: 0x010, reg2: 0x021
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
         movff   PRODH, (Common_RAM + 26)                    ; reg1: 0xff4, reg2: 0x01a
         movf    (Common_RAM + 25), W, A                     ; reg: 0x019
-        addwf   ir_decoded_cmd, W, A                     ; reg: 0x01d
+        addwf   ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         movf    (Common_RAM + 26), W, A                     ; reg: 0x01a
-        addwfc  ir_decoded_addr, W, A                     ; reg: 0x01e
+        addwfc  ir_decoded_addr_acc, W, A                     ; reg: 0x01e
         movwf   TBLPTRH, A                                  ; reg: 0xff7
         movf    (Common_RAM + 33), W, A                     ; reg: 0x021
         rcall   control_core_service_7A6E                                ; dest: 0x007a6e
         movf    (Common_RAM + 32), W, A                     ; reg: 0x020
         rcall   control_core_service_7A6E                                ; dest: 0x007a6e
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_ccs_7ADA_7D4C
 
 flow_ccs_7ADA_7DA4:                                                  ; address: 0x007da4
@@ -8692,21 +8887,21 @@ flow_ccs_7ADA_7DA4:                                                  ; address: 
         rcall   control_core_service_7A2A                                ; dest: 0x007a2a
         movlw   0x0a
         rcall   control_core_service_7A2A                                ; dest: 0x007a2a
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         xorlw   0x40
-        iorwf   ir_decoded_addr, W, A                     ; reg: 0x01e
+        iorwf   ir_decoded_addr_acc, W, A                     ; reg: 0x01e
         bnz     flow_ccs_7ADA_7E0E
         movlw   0x08
-        movwf   control_flags, A                        ; reg: 0x01f
+        movwf   control_flags_acc, A                        ; reg: 0x01f
 
 flow_ccs_7ADA_7DCA:                                                  ; address: 0x007dca
 
         movlw   0x10
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7E08                                   ; dest: 0x007e08
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
         movff   PRODH, (Common_RAM + 26)                    ; reg1: 0xff4, reg2: 0x01a
@@ -8720,9 +8915,9 @@ flow_ccs_7ADA_7DCA:                                                  ; address: 
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
         lfsr    0x0, 0x024
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         movff   (Common_RAM + 8), PLUSW0                    ; reg1: 0x008, reg2: 0xfeb
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_ccs_7ADA_7DCA
 
 flow_ccs_7ADA_7E08:                                                  ; address: 0x007e08
@@ -8733,20 +8928,20 @@ flow_ccs_7ADA_7E08:                                                  ; address: 
 
 flow_ccs_7ADA_7E0E:                                                  ; address: 0x007e0e
 
-        movf    ir_decoded_cmd, W, A                     ; reg: 0x01d
+        movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         xorlw   0x50
-        iorwf   ir_decoded_addr, W, A                     ; reg: 0x01e
+        iorwf   ir_decoded_addr_acc, W, A                     ; reg: 0x01e
         bnz     flow_ccs_7ADA_7E5E
-        clrf    control_flags, A                        ; reg: 0x01f
+        clrf    control_flags_acc, A                        ; reg: 0x01f
 
 flow_ccs_7ADA_7E18:                                                  ; address: 0x007e18
 
         movlw   0x10                                        ; RC5 0x10 volume up
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7E5C                                   ; dest: 0x007e5c
         lfsr    0x0, 0x071
         lfsr    0x1, 0x043
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
         movff   PRODH, (Common_RAM + 26)                    ; reg1: 0xff4, reg2: 0x01a
@@ -8757,7 +8952,7 @@ flow_ccs_7ADA_7E18:                                                  ; address: 
         rcall   control_core_service_7ADA                                ; dest: 0x007ada
         clrf    INDF0, A                                    ; reg: 0xfef
         movlw   0x10
-        addwf   control_flags, W, A                     ; reg: 0x01f
+        addwf   control_flags_acc, W, A                     ; reg: 0x01f
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
         lfsr    0x0, 0x071
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
@@ -8765,7 +8960,7 @@ flow_ccs_7ADA_7E18:                                                  ; address: 
         lfsr    0x0, 0x024
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_ccs_7ADA_7E18
 
 flow_ccs_7ADA_7E5C:                                                  ; address: 0x007e5c
@@ -8831,20 +9026,20 @@ control_core_service_7E94:                                               ; addre
         movlw   0xff
         call    control_core_service_7A6E, 0x0                           ; dest: 0x007a6e
         movlw   0x08
-        movwf   control_flags, A                        ; reg: 0x01f
+        movwf   control_flags_acc, A                        ; reg: 0x01f
 
 flow_ccs_7E94_7EE4:                                                  ; address: 0x007ee4
 
         movlw   0x20
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7E94_7F00                                   ; dest: 0x007f00
-        movff   control_flags, TBLPTRL                  ; reg1: 0x01f, reg2: 0xff6
+        movff   control_flags_b0_phys, TBLPTRL                  ; reg1: 0x01f, reg2: 0xff6
         clrf    TBLPTRH, A                                  ; reg: 0xff7
         lfsr    0x0, 0x024
-        movf    control_flags, W, A                     ; reg: 0x01f
+        movf    control_flags_acc, W, A                     ; reg: 0x01f
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    control_core_service_7A6E, 0x0                           ; dest: 0x007a6e
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_ccs_7E94_7EE4
 
 flow_ccs_7E94_7F00:                                                  ; address: 0x007f00
@@ -8868,12 +9063,12 @@ flow_ccs_7E94_7F00:                                                  ; address: 
 ; bootloader_manual_entry:
 bootloader_manual_entry:                                               ; address: 0x007f02
 
-        clrf    control_flags, A                        ; reg: 0x01f
+        clrf    control_flags_acc, A                        ; reg: 0x01f
 
 flow_bootloader_manual_entry_7F04:                                                  ; address: 0x007f04
 
         movlw   0x0b
-        cpfslt  control_flags, A                        ; reg: 0x01f
+        cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_bootloader_manual_entry_7F54                                   ; dest: 0x007f54
         movlw   0x01
         btfsc   PORTC, RC0, A                               ; reg: 0xf82, bit: 0
@@ -8905,13 +9100,13 @@ flow_bootloader_manual_entry_7F04:                                              
         movlw   0x01
         andwf   (Common_RAM + 28), F, A                     ; reg: 0x01c
         bz      flow_bootloader_manual_entry_7F4A
-        bsf     0x82, 0x1, B                                ; reg: 0x082
+        bsf     stock_082_b0, 0x1, B                                ; reg: 0x082
 
 flow_bootloader_manual_entry_7F4A:                                                  ; address: 0x007f4a
 
         movlw   0x0a
         call    control_core_service_7AA6, 0x0                           ; dest: 0x007aa6
-        incf    control_flags, F, A                     ; reg: 0x01f
+        incf    control_flags_acc, F, A                     ; reg: 0x01f
         bnz     flow_bootloader_manual_entry_7F04
 
 flow_bootloader_manual_entry_7F54:                                                  ; address: 0x007f54

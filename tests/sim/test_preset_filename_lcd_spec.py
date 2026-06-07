@@ -70,11 +70,13 @@ FNAME_ROW_DIRTY_MASK = 0x08
 FNAME_ARMED_MASK = 0x10
 FNAME_TAILDIR_MASK = 0x20
 FNAME_LEN_SEEN_MASK = 0x40
+FNAME_QUERY_WAIT_MASK = 0x80
 CONTROL_FLAGS_PHYS = 0x01F
 CONTROL_CONNECTED_MASK = 0x02
 DSP_FAULT_MASK = 0x80
 MUTE_MASK = 0x20
 PRESET_BIT_MASK = 0x40
+DISPLAY_STATE_INDEX_PHYS = 0x0BF
 VOLUME_CACHE_PHYS = 0x0B9
 IR_PROFILE_ADDR_PHYS = 0x020
 IR_PROFILE_POWER_PHYS = 0x021
@@ -94,7 +96,24 @@ REQUESTED_FILENAME_LONG_A = "LX521 V15 L22MG old_NC100"
 REQUESTED_FILENAME_SHORT_B = "LX521.4 PB6v23 Q"
 PINS = {
     "RIGHT": ("A", 4),
+    "LEFT": ("C", 5),
+    "UP": ("C", 0),
+    "DOWN": ("A", 2),
+    "STBY": ("A", 3),
 }
+
+PRESET_FILENAME_SLOT_A = "LX521.4 22MG10F-v5"
+PRESET_FILENAME_SLOT_B = "LX521.4 22MG10F-v7"
+PRESET_REENTRY_POLL_TICKS = 4_800
+ROW0_PRESET_REPAINT_BUDGET_TICKS = 960_000
+PRESET_REENTRY_TRACE_TICKS = 80_000_000
+KEY_HOLD_TICKS = 5_000_000
+
+
+@dataclass(frozen=True)
+class NativePresetFilenameStep:
+    key: str
+    preset: str
 
 
 def _query_id(gen: int, target: int = PB1, slot: int = SLOT_A) -> int:
@@ -145,8 +164,189 @@ def _press(chain, key: str) -> None:  # type: ignore[no-untyped-def]
         chain.step()
 
 
+def _key_down(chain, key: str) -> None:  # type: ignore[no-untyped-def]
+    port, bit = PINS[key]
+    chain.set_control_pin(port, bit, False)
+
+
+def _key_up(chain, key: str) -> None:  # type: ignore[no-untyped-def]
+    port, bit = PINS[key]
+    chain.set_control_pin(port, bit, True)
+
+
+def _press_until_lcd(
+    chain,
+    key: str,
+    predicate,
+    *,  # type: ignore[no-untyped-def]
+    timeout_ticks: int = 80_000_000,
+    poll_ticks: int = PRESET_REENTRY_POLL_TICKS,
+) -> tuple[tuple[str, str], int]:  # type: ignore[no-untyped-def]
+    start = chain.current_tick()
+    release_at = start + KEY_HOLD_TICKS
+    released = False
+    _key_down(chain, key)
+    try:
+        while chain.current_tick() - start <= timeout_ticks:
+            now = chain.current_tick()
+            if not released and now >= release_at:
+                _key_up(chain, key)
+                released = True
+            lines = chain.lcd_lines()
+            if predicate(lines):
+                if not released:
+                    _key_up(chain, key)
+                    released = True
+                return lines, chain.current_tick()
+            chain.step_ticks(poll_ticks)
+    finally:
+        if not released:
+            _key_up(chain, key)
+    pytest.fail(
+        f"{key} did not reach requested LCD state; lcd={chain.lcd_lines()!r}; "
+        f"tick={chain.current_tick()}"
+    )
+
+
+def _preset_row0_ready(line0: str, preset: str) -> bool:
+    return line0 == _preset_row0(preset)
+
+
+def _row1_has_filename_cache_text(line1: str, expected_window: str) -> bool:
+    if not line1.strip():
+        return False
+    if line1 == "Auto Detect     ":
+        return False
+    return any(
+        actual != " " and actual == expected
+        for actual, expected in zip(line1, expected_window, strict=True)
+    )
+
+
+def _drive_b_a_b_to_input_and_trace_immediate_left(
+    v172_v33_filename_hexes: tuple[Path, Path],
+) -> dict[str, object]:
+    _require_rust()
+    control_hex, main_hex = v172_v33_filename_hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset="B",
+    )
+
+    for step in (
+        NativePresetFilenameStep("RIGHT", "B"),
+        NativePresetFilenameStep("UP", "A"),
+        NativePresetFilenameStep("DOWN", "B"),
+    ):
+        _drive_and_assert_native_preset_filename(
+            chain,
+            step,
+            slot_a=PRESET_FILENAME_SLOT_A,
+            slot_b=PRESET_FILENAME_SLOT_B,
+        )
+
+    _press(chain, "RIGHT")
+    input_lines, input_visible_tick = _wait_for_lcd(
+        chain,
+        lambda lcd: lcd == ("Input:          ", "Auto Detect     "),
+        ticks=PRESET_REENTRY_POLL_TICKS,
+    ), chain.current_tick()
+    assert input_lines == ("Input:          ", "Auto Detect     ")
+
+    expected = (
+        _preset_row0("B"),
+        _preset_filename_window("B", PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B),
+    )
+    chain.mark_ctl_tx_capture_point()
+    chain.mark_ctl_rx_capture_point()
+    before_gen = chain.read_reg(FNAME_ID_PHYS)
+    before_flags = chain.read_reg(FNAME_FLAGS_PHYS)
+    left_down_tick = chain.current_tick()
+    _press(chain, "LEFT")
+    assert left_down_tick - input_visible_tick <= PRESET_REENTRY_POLL_TICKS
+
+    first_preset_tick: int | None = None
+    row0_ready_tick: int | None = None
+    row1_visible_tick: int | None = None
+    exact_expected_tick: int | None = None
+    trace: list[tuple[int, int, int, int, int, tuple[str, str]]] = []
+    while chain.current_tick() - left_down_tick <= PRESET_REENTRY_TRACE_TICKS:
+        now = chain.current_tick()
+        lines = chain.lcd_lines()
+        display_state = chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
+        flags = chain.read_reg(FNAME_FLAGS_PHYS)
+        render_col = chain.read_reg(FNAME_RENDER_COL_PHYS)
+        render_off = chain.read_reg(FNAME_RENDER_OFF_PHYS)
+        if len(trace) < 512 or display_state == 1:
+            trace.append((now, display_state, flags, render_col, render_off, lines))
+        if display_state == 1:
+            if first_preset_tick is None:
+                first_preset_tick = now
+            if row0_ready_tick is None and _preset_row0_ready(lines[0], "B"):
+                row0_ready_tick = now
+            row1_has_filename = _row1_has_filename_cache_text(lines[1], expected[1])
+            if row1_visible_tick is None and row1_has_filename:
+                row1_visible_tick = now
+            if lines[0] == " " * 16 and row1_has_filename:
+                pytest.fail(
+                    "Preset row 1 became visible while row 0 was blank; "
+                    f"tick={now}; input_visible_tick={input_visible_tick}; "
+                    f"left_down_tick={left_down_tick}; flags=0x{flags:02X}; "
+                    f"render_col={render_col}; render_off={render_off}; "
+                    f"lcd={lines!r}; trace_tail={trace[-24:]!r}"
+                )
+            if (
+                first_preset_tick is not None
+                and row0_ready_tick is None
+                and now - first_preset_tick > ROW0_PRESET_REPAINT_BUDGET_TICKS
+            ):
+                pytest.fail(
+                    "Preset row 0 did not repaint within budget; "
+                    f"first_preset_tick={first_preset_tick}; now={now}; "
+                    f"lcd={lines!r}; trace_tail={trace[-24:]!r}"
+                )
+            if lines == expected:
+                exact_expected_tick = now
+                break
+        chain.step_ticks(PRESET_REENTRY_POLL_TICKS)
+
+    tx_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    filename_queries = [
+        frame for frame in tx_frames if frame[0] == 0xB1 and frame[1] == 0x26
+    ]
+    rx_frames = _sliding_frames(chain.ctl_rx_record_since_last_capture())
+    filename_replies = [
+        frame for frame in rx_frames if frame[0] == 0xBF and 0x2D <= frame[1] <= 0x4E
+    ]
+    assert not filename_queries, f"same-slot re-entry issued fresh query: {filename_queries!r}"
+    assert not filename_replies, f"same-slot re-entry consumed fresh reply: {filename_replies!r}"
+    assert not (chain.read_reg(FNAME_FLAGS_PHYS) & (FNAME_PENDING_MASK | FNAME_QUERY_WAIT_MASK))
+    assert chain.read_reg(FNAME_ID_PHYS) == before_gen
+    assert before_flags & FNAME_VALID_MASK
+    assert first_preset_tick is not None, f"never re-entered Preset; trace_tail={trace[-24:]!r}"
+    assert row0_ready_tick is not None, f"row0 never reached Preset B; trace_tail={trace[-24:]!r}"
+    assert row0_ready_tick - first_preset_tick <= ROW0_PRESET_REPAINT_BUDGET_TICKS
+    assert exact_expected_tick is not None, f"expected LCD never converged; trace_tail={trace[-24:]!r}"
+    return {
+        "input_visible_tick": input_visible_tick,
+        "left_down_tick": left_down_tick,
+        "first_preset_tick": first_preset_tick,
+        "row0_ready_tick": row0_ready_tick,
+        "row1_visible_tick": row1_visible_tick,
+        "exact_expected_tick": exact_expected_tick,
+        "trace": trace,
+    }
+
+
 def _bytes_to_frames(raw: list[int]) -> list[tuple[int, int, int]]:
     return [tuple(raw[i : i + 3]) for i in range(0, len(raw) - 2, 3)]  # type: ignore[misc]
+
+
+def _sliding_frames(raw: list[int]) -> list[tuple[int, int, int]]:
+    return [tuple(raw[i : i + 3]) for i in range(0, len(raw) - 2)]  # type: ignore[misc]
 
 
 def _frame_tuple(frame) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
@@ -204,6 +404,221 @@ def _wait_for_lcd(chain, predicate, *, attempts: int = 160, ticks: int = 1_000_0
         f"fname_flags=0x{chain.read_reg(FNAME_FLAGS_PHYS):02X}; "
         f"fname_len={chain.read_reg(FNAME_LEN_PHYS)}"
     )
+
+
+def _preset_name(preset: str, slot_a: str, slot_b: str) -> str:
+    if preset == "A":
+        return slot_a
+    if preset == "B":
+        return slot_b
+    raise AssertionError(f"unknown preset {preset!r}")
+
+
+def _preset_other_name(preset: str, slot_a: str, slot_b: str) -> str:
+    if preset == "A":
+        return slot_b
+    if preset == "B":
+        return slot_a
+    raise AssertionError(f"unknown preset {preset!r}")
+
+
+def _preset_slot_bit(preset: str) -> int:
+    if preset == "A":
+        return SLOT_A
+    if preset == "B":
+        return SLOT_B
+    raise AssertionError(f"unknown preset {preset!r}")
+
+
+def _preset_row0(preset: str) -> str:
+    return f"Preset         {preset}"
+
+
+def _preset_filename_window(preset: str, slot_a: str, slot_b: str) -> str:
+    name = _preset_name(preset, slot_a, slot_b)
+    other = _preset_other_name(preset, slot_a, slot_b)
+    return _window(name, tail_first=_start_cmd_for(name, other) == START_TAIL)
+
+
+def _start_native_filename_chain(
+    control_hex: Path,
+    main_hex: Path,
+    *,
+    slot_a: str,
+    slot_b: str,
+    initial_preset: str = "A",
+):  # type: ignore[no-untyped-def]
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(control_hex),
+        main_hex_path=str(main_hex),
+    )
+    _seed_filename_slots(chain, slot_a, slot_b)
+    chain.write_control_eeprom_byte(0x74, _preset_slot_bit(initial_preset))
+
+    chain.run_until_connected(limit=300)
+    assert chain.is_connected() and not chain.is_waiting()
+    chain.step_ticks(50_000_000)
+    return chain
+
+
+def _assert_native_filename_query_completed(
+    chain,
+    *,
+    preset: str,
+    slot_a: str,
+    slot_b: str,
+) -> int:  # type: ignore[no-untyped-def]
+    name = _preset_name(preset, slot_a, slot_b)
+    other = _preset_other_name(preset, slot_a, slot_b)
+    effective = _effective_name(name)
+
+    query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    filename_queries = [
+        frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26
+    ]
+    assert filename_queries, f"CONTROL did not issue PB1 cmd 0x26 query: {query_frames!r}"
+    assert len(filename_queries) <= 1, (
+        f"CONTROL issued {len(filename_queries)} filename queries, expected at most "
+        f"1: {filename_queries!r}"
+    )
+    query_id = filename_queries[-1][2]
+    assert (query_id & 0x01) == _preset_slot_bit(preset), (
+        f"CONTROL queried preset bit {query_id & 0x01}, expected {preset}; "
+        f"frames={query_frames!r}"
+    )
+
+    rx_raw = chain.ctl_rx_record_since_last_capture()
+    rx_frames = _sliding_frames(rx_raw)
+    expected_start = _start_cmd_for(name, other)
+    assert (0xBF, expected_start, query_id) in rx_frames, _bytes_to_frames(rx_raw)
+    assert (0xBF, LEN_CMD, query_id ^ len(effective)) in rx_frames, _bytes_to_frames(rx_raw)
+    assert (0xBF, END_CMD, query_id) in rx_frames, _bytes_to_frames(rx_raw)
+
+    _assert_native_filename_cache_valid(
+        chain,
+        preset=preset,
+        slot_a=slot_a,
+        slot_b=slot_b,
+        expected_id=query_id,
+    )
+    return query_id
+
+
+def _assert_native_filename_cache_valid(
+    chain,
+    *,
+    preset: str,
+    slot_a: str,
+    slot_b: str,
+    expected_id: int | None = None,
+) -> None:  # type: ignore[no-untyped-def]
+    name = _preset_name(preset, slot_a, slot_b)
+    other = _preset_other_name(preset, slot_a, slot_b)
+    effective = _effective_name(name)
+    expected_start = _start_cmd_for(name, other)
+
+    flags = chain.read_reg(FNAME_FLAGS_PHYS)
+    assert flags & FNAME_VALID_MASK
+    assert flags & FNAME_LEN_SEEN_MASK
+    assert bool(flags & FNAME_TAILDIR_MASK) == (expected_start == START_TAIL)
+    assert not (flags & FNAME_PENDING_MASK)
+    assert not (flags & FNAME_QUERY_WAIT_MASK)
+    query_id = chain.read_reg(FNAME_ID_PHYS)
+    if expected_id is not None:
+        assert query_id == expected_id
+    assert (query_id & 0x01) == _preset_slot_bit(preset)
+    assert chain.read_reg(FNAME_LEN_PHYS) == len(effective)
+    cache = bytes(chain.read_reg(FNAME_CACHE_PHYS + i) for i in range(len(effective)))
+    assert cache == effective.encode("ascii")
+
+
+def _assert_native_filename_cache_or_query_completed(
+    chain,
+    *,
+    preset: str,
+    slot_a: str,
+    slot_b: str,
+    allow_query: bool,
+) -> None:  # type: ignore[no-untyped-def]
+    query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    filename_queries = [
+        frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26
+    ]
+    assert len(filename_queries) <= 1, (
+        f"CONTROL issued {len(filename_queries)} filename queries, expected at most "
+        f"1: {filename_queries!r}"
+    )
+    if filename_queries:
+        assert allow_query, f"expected cache reuse, got query frames: {filename_queries!r}"
+        _assert_native_filename_query_completed(
+            chain,
+            preset=preset,
+            slot_a=slot_a,
+            slot_b=slot_b,
+        )
+        return
+
+    _assert_native_filename_cache_valid(
+        chain,
+        preset=preset,
+        slot_a=slot_a,
+        slot_b=slot_b,
+    )
+
+
+def _drive_and_assert_native_preset_filename(
+    chain,
+    step: NativePresetFilenameStep,
+    *,
+    slot_a: str,
+    slot_b: str,
+):  # type: ignore[no-untyped-def]
+    chain.mark_ctl_tx_capture_point()
+    chain.mark_ctl_rx_capture_point()
+    _press(chain, step.key)
+
+    expected = (
+        _preset_row0(step.preset),
+        _preset_filename_window(step.preset, slot_a, slot_b),
+    )
+    lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
+    assert lines == expected
+    _assert_native_filename_query_completed(
+        chain,
+        preset=step.preset,
+        slot_a=slot_a,
+        slot_b=slot_b,
+    )
+    return lines
+
+
+def _navigate_to_preset_and_assert_native_filename(
+    chain,
+    *,
+    preset: str,
+    slot_a: str,
+    slot_b: str,
+):  # type: ignore[no-untyped-def]
+    expected = (
+        _preset_row0(preset),
+        _preset_filename_window(preset, slot_a, slot_b),
+    )
+    for _ in range(8):
+        if chain.lcd_lines()[0].startswith("Preset"):
+            lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
+            assert lines == expected
+            _assert_native_filename_cache_or_query_completed(
+                chain,
+                preset=preset,
+                slot_a=slot_a,
+                slot_b=slot_b,
+                allow_query=True,
+            )
+            return lines
+        chain.mark_ctl_tx_capture_point()
+        chain.mark_ctl_rx_capture_point()
+        _press(chain, "RIGHT")
+    pytest.fail(f"did not navigate back to Preset; lcd={chain.lcd_lines()!r}")
 
 
 def _arm_pending_filename_query(chain, query_id: int, *, deadline: int = 2) -> None:  # type: ignore[no-untyped-def]
@@ -573,6 +988,25 @@ def test_preset_filename_spec_has_pending_expiry_without_retry() -> None:
     )
 
 
+def test_preset_filename_spec_defines_screen_entry_settle_without_reply_retry() -> None:
+    text = _spec_text()
+
+    _assert_contains_all(
+        text,
+        [
+            "On ordinary Preset re-entry",
+            "reuse the cache",
+            "On observed `PRESET_BIT` change, or Preset B re-entry without a valid",
+            "`FNAME_QUERY_WAIT`",
+            "`FNAME_QUERY_DELAY_A = 0x3000`",
+            "`FNAME_QUERY_DELAY_B = 0x4000`",
+            "This is not a reply retry",
+            "blank-without-requery policy",
+            "at most one filename query per step",
+        ],
+    )
+
+
 def test_preset_filename_spec_keeps_hfd_empty_names_blank_but_not_gate() -> None:
     text = _spec_text()
 
@@ -727,7 +1161,8 @@ def test_preset_filename_spec_covers_parser_faults_and_lifecycle_edges() -> None
             "`fname_reset_blank`",
             "`fname_reset_and_query`",
             "Off-screen deadline service is deliberately not required",
-            "the simpler invariant",
+            "cache reuse",
+            "ordinary menu navigation is the simple invariant",
             "Periodic `full_sync_burst`",
             "PB1-stale,",
             "PB1-lost, PB2-stale, PB2-lost",
@@ -1518,6 +1953,7 @@ def test_spec_lists_named_implementation_tests_for_reviewed_gaps() -> None:
             "`test_v172_filename_code_size_fits_before_bootloader`",
             "`test_v33_filename_chain_tx_emitted_coverage_all_chain_senders`",
             "`test_v33_filename_rev_writer_hooks_cover_all_filename_mutators`",
+            "`test_v33_native_filename_char_emit_stages_cmd_after_source_read`",
             "`test_v33_reserved_bf_2d_4e_only_filename_emitters`",
             "`test_v172_fname_row1_incremental_render_writes_one_char_per_tick`",
             "`test_v172_fname_row1_render_tolerates_ir_rcif_during_pending_valid_scrolling`",
@@ -1530,6 +1966,9 @@ def test_spec_lists_named_implementation_tests_for_reviewed_gaps() -> None:
             "`test_preset_filename_spec_defines_hfd_active_ram_vs_inactive_eeprom_validation`",
             "`test_v172_v33_pb1_authoritative_lcd_with_pb2_mismatch`",
             "`test_v172_v33_full_chain_blank_name_requires_fresh_start_len_end_evidence`",
+            "`test_v172_v33_full_native_chain_filename_preset_state_matrix`",
+            "`test_v172_v33_full_native_chain_filename_preset_reentry_matrix`",
+            "`test_v172_v33_full_native_chain_preset_b_survives_next_menu_standby_wake`",
             "`test_v172_native_parser_old_echo_multiframe_start_len_end_do_not_finalize`",
             "`test_v172_native_lcd_row1_abort_valid_end_restart_render_cursor`",
             "`test_v172_native_row0_patch_consumes_lcd_budget_only`",
@@ -1625,6 +2064,17 @@ def test_v33_fname_ram_equates_do_not_overlap_diag_recovery_cells() -> None:
     assert not {symbol: ram[symbol] for symbol in expected if ram[symbol] in reserved}
 
 
+def test_v33_an0_hysteresis_monitor_banks_delay_counter_before_uart_ring_alias() -> None:
+    text = V33_MAIN_ASM.read_text(encoding="utf-8")
+    body = _label_body(text, "an0_hysteresis_monitor", ["main_core_service_41b6"])
+    first_delay_touch = body.index("an0_delay_b0")
+    prefix = body[:first_delay_touch]
+    assert "movlb       0x0" in prefix, (
+        "an0_hysteresis_monitor must assert BSR=0 before touching an0_delay_b0; "
+        "with BSR=2 the delay counter aliases the MAIN UART RX ring at 0x2A1"
+    )
+
+
 def test_v33_filename_chain_tx_emitted_coverage_all_chain_senders() -> None:
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
     _filename_feature_xfail(text, "filename_reply_job_service")
@@ -1664,7 +2114,7 @@ def test_v33_filename_rev_writer_hooks_cover_all_filename_mutators() -> None:
             start = min(text.find(marker) for marker in bounds if text.find(marker) >= 0)
             body = text[start : start + 900]
         elif label == "btg active_flags":
-            match = re.search(r"\bbtg\s+active_flags\b", text)
+            match = re.search(r"\bbtg\s+active_flags(?:_acc|_b0)?\b", text)
             start = match.start() if match else -1
             body = text[start : start + 900] if start >= 0 else ""
         else:
@@ -1689,6 +2139,20 @@ def test_v33_native_cmd26_computes_auto_scroll_direction() -> None:
             "movlw       0x2F",
         ],
     )
+
+
+def test_v33_native_filename_char_emit_stages_cmd_after_source_read() -> None:
+    text = V33_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(text, "filename_reply_send_char", ["filename_reply_send_end"])
+
+    read_pos = body.index("filename_read_source_at_w")
+    data_stage_pos = body.index("movwf       stock_00E_acc")
+    bank_pos = body.index("movlb       0x02", data_stage_pos)
+    cmd_base_pos = body.index("movlw       0x30")
+    cmd_stage_pos = body.index("movwf       stock_00D_acc")
+    emit_pos = body.index("filename_emit_frame")
+
+    assert read_pos < data_stage_pos < bank_pos < cmd_base_pos < cmd_stage_pos < emit_pos
 
 
 def test_v33_reserved_bf_2d_4e_only_filename_emitters() -> None:
@@ -1758,7 +2222,88 @@ def test_v172_native_filename_late_len_after_char_aborts_and_blanks() -> None:
     body = _label_body(text, "v172_fname_case_check", ["v171_bf2x_case_check"])
     assert "fname_abort:" in body
     assert "fname_reset_blank" in body
-    _assert_contains_all(body, ["movf    v172_fname_len, F", "bnz     fname_abort"])
+    _assert_contains_all(body, ["movf    v172_fname_len_b2, F", "bnz     fname_abort"])
+
+
+def test_v172_native_preset_draw_delays_first_filename_query_without_reply_retry() -> None:
+    text = V172_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
+    helper = _label_body(text, "fname_reset_and_delay_query", ["v172_preset_filename_service"])
+    deadline = _label_body(text, "v172_fname_deadline_service", ["v172_fname_scroll_service"])
+    abort = _label_body(text, "fname_abort", ["fname_disarm"])
+
+    _assert_contains_all(
+        text,
+        [
+            "fname_reset_and_delay_query",
+            "FNAME_QUERY_WAIT",
+            "FNAME_QUERY_DELAY_A_HI",
+            "FNAME_QUERY_DELAY_B_HI",
+            "FNAME_QUERY_DELAY_LO",
+            "Re-entry and slot-change redraws use one delayed first query.",
+            "v171_prs_screen_draw_delayed_query",
+        ],
+    )
+    _assert_contains_all(
+        helper,
+        [
+            "fname_reset_blank",
+            "FNAME_QUERY_WAIT",
+            "FNAME_QUERY_DELAY_LO",
+            "FNAME_QUERY_DELAY_A_HI",
+            "FNAME_QUERY_DELAY_B_HI",
+        ],
+    )
+    _assert_contains_all(
+        deadline,
+        [
+            "v172_fname_query_delay_service",
+            "bcf     v172_fname_flags_b2, FNAME_QUERY_WAIT",
+            "bsf     v172_fname_flags_b2, FNAME_WANT_QUERY",
+        ],
+    )
+    _assert_contains_all(abort, ["call    fname_reset_blank"])
+    assert "FNAME_RETRY_ON_ABORT" not in text
+    assert "fname_reset_blank_maybe_retry" not in text
+
+
+def test_v172_filename_acquisition_gates_background_health_polling_native() -> None:
+    text = V172_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
+    delay_expire = _label_body(
+        text,
+        "v172_fname_query_delay_expire",
+        ["v172_fname_query_delay_cancel"],
+    )
+    health_tick = _label_body(
+        text,
+        "v171_health_tick",
+        ["v171_health_pending_timeout"],
+    )
+
+    _assert_contains_all(
+        delay_expire,
+        [
+            "v171_health_flags",
+            "V171_HEALTH_FLAG_PENDING",
+            "return  0x0",
+            "bcf     v172_fname_flags_b2, FNAME_QUERY_WAIT",
+            "bsf     v172_fname_flags_b2, FNAME_WANT_QUERY",
+        ],
+    )
+    _assert_contains_all(
+        health_tick,
+        [
+            "btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_PENDING",
+            "bra     v171_health_pending_timeout",
+            "FNAME_QUERY_WAIT",
+            "FNAME_PENDING",
+            "FNAME_WANT_QUERY",
+            "call    v171_health_send_query",
+        ],
+    )
+    pending_check = health_tick.find("btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_PENDING")
+    query_wait_check = health_tick.find("FNAME_QUERY_WAIT")
+    send_query = health_tick.find("call    v171_health_send_query")
+    assert 0 <= pending_check < query_wait_check < send_query
 
 
 def test_v172_native_filename_duplicate_len_aborts_and_blanks() -> None:
@@ -1766,7 +2311,7 @@ def test_v172_native_filename_duplicate_len_aborts_and_blanks() -> None:
     body = _label_body(text, "v172_fname_case_check", ["v171_bf2x_case_check"])
     _assert_contains_all(
         body,
-        ["btfsc   v172_fname_flags, FNAME_LEN_SEEN", "bra     fname_abort"],
+        ["btfsc   v172_fname_flags_b2, FNAME_LEN_SEEN", "bra     fname_abort"],
     )
 
 
@@ -1784,9 +2329,9 @@ def test_v172_native_filename_wrong_id_start_disarms_keeps_pending() -> None:
     body = _label_body(text, "fname_disarm", ["fname_exit"])
     _assert_contains_all(
         body,
-        ["bcf     v172_fname_flags, FNAME_ARMED", "bcf     v172_fname_flags, FNAME_LEN_SEEN"],
+        ["bcf     v172_fname_flags_b2, FNAME_ARMED", "bcf     v172_fname_flags_b2, FNAME_LEN_SEEN"],
     )
-    assert "bcf     v172_fname_flags, FNAME_PENDING" not in body
+    assert "bcf     v172_fname_flags_b2, FNAME_PENDING" not in body
 
 
 def test_v172_native_parser_old_echo_multiframe_start_len_end_do_not_finalize() -> None:
@@ -1803,7 +2348,7 @@ def test_v172_fname_dirty_paths_reset_render_cursor_native() -> None:
     for idx, match in enumerate(label_matches):
         label = match.group(1)
         end = label_matches[idx + 1].start() if idx + 1 < len(label_matches) else len(text)
-        if re.search(r"\bbsf\s+v172_fname_flags,\s*FNAME_ROW_DIRTY\b", text[match.start() : end]):
+        if re.search(r"\bbsf\s+v172_fname_flags(?:_b2)?,\s*FNAME_ROW_DIRTY\b", text[match.start() : end]):
             dirty_writers.append(label)
     assert set(dirty_writers) <= {
         "fname_mark_row_dirty_blank",
@@ -1836,7 +2381,7 @@ def test_v172_fname_row1_incremental_render_writes_one_char_per_tick_native() ->
     text = V172_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(text, "v172_fname_row1_render_service", ["v171_diag_send_runtime_query"])
     assert body.count("lcd_char_write") == 1
-    _assert_contains_all(body, ["incf    v172_fname_render_col", "movlw   0x10", "bcf     v172_fname_flags, FNAME_ROW_DIRTY"])
+    _assert_contains_all(body, ["incf    v172_fname_render_col_b2", "movlw   0x10", "bcf     v172_fname_flags_b2, FNAME_ROW_DIRTY"])
 
 
 def test_v172_preset_row0_live_patch_health_fault_preset_scenarios_native() -> None:
@@ -1889,47 +2434,22 @@ def test_v172_v33_full_native_chain_filename_feature(
 ) -> None:
     _require_rust()
     control_hex, main_hex = v172_v33_filename_hexes
-    slot_a = "LX521.4 22MG10F-v5"
-    slot_b = "LX521.4 22MG10F-v7"
-    chain = RustChain.from_v171_v32(
-        control_hex_path=str(control_hex),
-        main_hex_path=str(main_hex),
+    slot_a = PRESET_FILENAME_SLOT_A
+    slot_b = PRESET_FILENAME_SLOT_B
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=slot_a,
+        slot_b=slot_b,
     )
-    _seed_filename_slots(chain, slot_a, slot_b)
 
-    chain.run_until_connected(limit=300)
-    assert chain.is_connected() and not chain.is_waiting()
-    chain.step_ticks(50_000_000)
-
-    chain.mark_ctl_tx_capture_point()
-    chain.mark_ctl_rx_capture_point()
-    _press(chain, "RIGHT")
-
-    lines = _wait_for_lcd(
+    lines = _drive_and_assert_native_preset_filename(
         chain,
-        lambda lcd: lcd[0] == "Preset         A" and lcd[1] == "521.4 22MG10F-v5",
+        NativePresetFilenameStep("RIGHT", "A"),
+        slot_a=slot_a,
+        slot_b=slot_b,
     )
     assert lines == ("Preset         A", "521.4 22MG10F-v5")
-
-    query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
-    filename_queries = [frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26]
-    assert filename_queries, f"CONTROL did not issue PB1 cmd 0x26 query: {query_frames!r}"
-    query_id = filename_queries[0][2]
-
-    rx_frames = _bytes_to_frames(chain.ctl_rx_record_since_last_capture())
-    assert (0xBF, START_TAIL, query_id) in rx_frames
-    assert (0xBF, LEN_CMD, query_id ^ len(slot_a)) in rx_frames
-    assert (0xBF, END_CMD, query_id) in rx_frames
-
-    flags = chain.read_reg(FNAME_FLAGS_PHYS)
-    assert flags & FNAME_VALID_MASK
-    assert flags & FNAME_LEN_SEEN_MASK
-    assert flags & FNAME_TAILDIR_MASK
-    assert not (flags & FNAME_PENDING_MASK)
-    assert chain.read_reg(FNAME_ID_PHYS) == query_id
-    assert chain.read_reg(FNAME_LEN_PHYS) == len(slot_a)
-    cache = bytes(chain.read_reg(FNAME_CACHE_PHYS + i) for i in range(len(slot_a)))
-    assert cache == slot_a.encode("ascii")
 
     lines = _wait_for_lcd(
         chain,
@@ -1947,45 +2467,270 @@ def test_v172_v33_full_native_chain_requested_filename_pair(
     control_hex, main_hex = v172_v33_filename_hexes
     slot_a = REQUESTED_FILENAME_LONG_A
     slot_b = REQUESTED_FILENAME_SHORT_B
-    chain = RustChain.from_v171_v32(
-        control_hex_path=str(control_hex),
-        main_hex_path=str(main_hex),
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=slot_a,
+        slot_b=slot_b,
     )
-    _seed_filename_slots(chain, slot_a, slot_b)
 
-    chain.run_until_connected(limit=300)
-    assert chain.is_connected() and not chain.is_waiting()
-    chain.step_ticks(50_000_000)
-
-    chain.mark_ctl_tx_capture_point()
-    chain.mark_ctl_rx_capture_point()
-    _press(chain, "RIGHT")
-
-    lines = _wait_for_lcd(
+    lines = _drive_and_assert_native_preset_filename(
         chain,
-        lambda lcd: lcd[0] == "Preset         A" and lcd[1] == "LX521 V15 L22MG ",
+        NativePresetFilenameStep("RIGHT", "A"),
+        slot_a=slot_a,
+        slot_b=slot_b,
     )
     assert lines == ("Preset         A", "LX521 V15 L22MG ")
 
-    query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
-    filename_queries = [frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26]
-    assert filename_queries, f"CONTROL did not issue PB1 cmd 0x26 query: {query_frames!r}"
-    query_id = filename_queries[0][2]
 
-    rx_frames = _bytes_to_frames(chain.ctl_rx_record_since_last_capture())
-    assert (0xBF, START_PREFIX, query_id) in rx_frames
-    assert (0xBF, LEN_CMD, query_id ^ len(slot_a)) in rx_frames
-    assert (0xBF, END_CMD, query_id) in rx_frames
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("initial_preset", "steps"),
+    [
+        pytest.param(
+            "A",
+            (NativePresetFilenameStep("RIGHT", "A"),),
+            id="entry-a",
+        ),
+        pytest.param(
+            "B",
+            (NativePresetFilenameStep("RIGHT", "B"),),
+            id="entry-b",
+        ),
+        pytest.param(
+            "A",
+            (
+                NativePresetFilenameStep("RIGHT", "A"),
+                NativePresetFilenameStep("DOWN", "B"),
+            ),
+            id="a-to-b",
+        ),
+        pytest.param(
+            "B",
+            (
+                NativePresetFilenameStep("RIGHT", "B"),
+                NativePresetFilenameStep("UP", "A"),
+            ),
+            id="b-to-a",
+        ),
+        pytest.param(
+            "A",
+            (
+                NativePresetFilenameStep("RIGHT", "A"),
+                NativePresetFilenameStep("DOWN", "B"),
+                NativePresetFilenameStep("UP", "A"),
+            ),
+            id="a-b-a",
+        ),
+        pytest.param(
+            "B",
+            (
+                NativePresetFilenameStep("RIGHT", "B"),
+                NativePresetFilenameStep("UP", "A"),
+                NativePresetFilenameStep("DOWN", "B"),
+            ),
+            id="b-a-b",
+        ),
+    ],
+)
+def test_v172_v33_full_native_chain_filename_preset_state_matrix(
+    v172_v33_filename_hexes: tuple[Path, Path],
+    initial_preset: str,
+    steps: tuple[NativePresetFilenameStep, ...],
+) -> None:
+    _require_rust()
+    control_hex, main_hex = v172_v33_filename_hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset=initial_preset,
+    )
 
-    flags = chain.read_reg(FNAME_FLAGS_PHYS)
-    assert flags & FNAME_VALID_MASK
-    assert flags & FNAME_LEN_SEEN_MASK
-    assert not (flags & FNAME_TAILDIR_MASK)
-    assert not (flags & FNAME_PENDING_MASK)
-    assert chain.read_reg(FNAME_ID_PHYS) == query_id
-    assert chain.read_reg(FNAME_LEN_PHYS) == len(slot_a)
-    cache = bytes(chain.read_reg(FNAME_CACHE_PHYS + i) for i in range(len(slot_a)))
-    assert cache == slot_a.encode("ascii")
+    for step in steps:
+        _drive_and_assert_native_preset_filename(
+            chain,
+            step,
+            slot_a=PRESET_FILENAME_SLOT_A,
+            slot_b=PRESET_FILENAME_SLOT_B,
+        )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("initial_preset", "steps", "final_preset"),
+    [
+        pytest.param(
+            "A",
+            (NativePresetFilenameStep("RIGHT", "A"),),
+            "A",
+            id="entry-a",
+        ),
+        pytest.param(
+            "B",
+            (NativePresetFilenameStep("RIGHT", "B"),),
+            "B",
+            id="entry-b",
+        ),
+        pytest.param(
+            "A",
+            (
+                NativePresetFilenameStep("RIGHT", "A"),
+                NativePresetFilenameStep("DOWN", "B"),
+            ),
+            "B",
+            id="a-to-b",
+        ),
+        pytest.param(
+            "B",
+            (
+                NativePresetFilenameStep("RIGHT", "B"),
+                NativePresetFilenameStep("UP", "A"),
+            ),
+            "A",
+            id="b-to-a",
+        ),
+        pytest.param(
+            "A",
+            (
+                NativePresetFilenameStep("RIGHT", "A"),
+                NativePresetFilenameStep("DOWN", "B"),
+                NativePresetFilenameStep("UP", "A"),
+            ),
+            "A",
+            id="a-b-a",
+        ),
+        pytest.param(
+            "B",
+            (
+                NativePresetFilenameStep("RIGHT", "B"),
+                NativePresetFilenameStep("UP", "A"),
+                NativePresetFilenameStep("DOWN", "B"),
+            ),
+            "B",
+            id="b-a-b",
+        ),
+    ],
+)
+def test_v172_v33_full_native_chain_filename_preset_reentry_matrix(
+    v172_v33_filename_hexes: tuple[Path, Path],
+    initial_preset: str,
+    steps: tuple[NativePresetFilenameStep, ...],
+    final_preset: str,
+) -> None:
+    _require_rust()
+    control_hex, main_hex = v172_v33_filename_hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset=initial_preset,
+    )
+
+    for step in steps:
+        _drive_and_assert_native_preset_filename(
+            chain,
+            step,
+            slot_a=PRESET_FILENAME_SLOT_A,
+            slot_b=PRESET_FILENAME_SLOT_B,
+        )
+
+    _press(chain, "RIGHT")
+    input_lines = _wait_for_lcd(
+        chain,
+        lambda lcd: lcd == ("Input:          ", "Auto Detect     "),
+        ticks=PRESET_REENTRY_POLL_TICKS,
+    )
+    assert input_lines == ("Input:          ", "Auto Detect     ")
+
+    chain.mark_ctl_tx_capture_point()
+    chain.mark_ctl_rx_capture_point()
+    _press(chain, "LEFT")
+    expected = (
+        _preset_row0(final_preset),
+        _preset_filename_window(final_preset, PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B),
+    )
+    lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
+    assert lines == expected
+    _assert_native_filename_cache_or_query_completed(
+        chain,
+        preset=final_preset,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        allow_query=False,
+    )
+
+
+@pytest.mark.slow
+def test_v172_v33_full_native_chain_preset_reentry_immediate_left_never_blanks_row0(
+    v172_v33_filename_hexes: tuple[Path, Path],
+) -> None:
+    _drive_b_a_b_to_input_and_trace_immediate_left(v172_v33_filename_hexes)
+
+
+@pytest.mark.slow
+def test_v172_native_preset_entry_paint_precedes_filename_cache_reuse(
+    v172_v33_filename_hexes: tuple[Path, Path],
+) -> None:
+    result = _drive_b_a_b_to_input_and_trace_immediate_left(v172_v33_filename_hexes)
+    row0_ready_tick = result["row0_ready_tick"]
+    row1_visible_tick = result["row1_visible_tick"]
+    assert isinstance(row0_ready_tick, int)
+    assert isinstance(row1_visible_tick, int)
+    assert row0_ready_tick <= row1_visible_tick, result["trace"]
+
+
+@pytest.mark.slow
+def test_v172_v33_full_native_chain_preset_b_survives_next_menu_standby_wake(
+    v172_v33_filename_hexes: tuple[Path, Path],
+) -> None:
+    _require_rust()
+    control_hex, main_hex = v172_v33_filename_hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset="A",
+    )
+
+    _drive_and_assert_native_preset_filename(
+        chain,
+        NativePresetFilenameStep("RIGHT", "A"),
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
+    _drive_and_assert_native_preset_filename(
+        chain,
+        NativePresetFilenameStep("DOWN", "B"),
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
+
+    _press(chain, "RIGHT")
+    input_lines = _wait_for_lcd(chain, lambda lcd: lcd[0].startswith("Input:"))
+    assert input_lines == ("Input:          ", "Auto Detect     ")
+
+    chain.press("STBY")
+    chain.step_many(80)
+    assert "ZZZ" in chain.lcd_lines()[0].upper()
+
+    chain.press("STBY")
+    for _ in range(20):
+        chain.step_many(100)
+        if chain.is_connected() and not chain.is_waiting() and "ZZZ" not in chain.lcd_lines()[0].upper():
+            break
+    else:
+        pytest.fail(f"chain did not wake from standby; lcd={chain.lcd_lines()!r}")
+
+    _navigate_to_preset_and_assert_native_filename(
+        chain,
+        preset="B",
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
 
 
 def test_v172_v33_native_chain_tail_first_prefix_first_blank_mismatch_cases() -> None:

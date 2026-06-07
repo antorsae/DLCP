@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from dlcp_fw.analysis.ram_bank_safety import assert_targets_safe
 from dlcp_fw.paths import V33_MAIN_ASM, V33_MAIN_HEX
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
@@ -124,6 +125,7 @@ def build_v33_release(
             output_lst=source_lst,
             gpasm=gpasm,
         )
+        assert_targets_safe(["main-v33"])
         shutil.copy2(temp_hex, output_hex)
         build_ok = True
     finally:

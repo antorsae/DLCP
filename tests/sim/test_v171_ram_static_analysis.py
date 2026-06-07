@@ -73,6 +73,11 @@ _EQU_PATTERN = re.compile(
     r"^\s*(\w+)\s+(?:equ|EQU)\s+(\S+)\s*(?:;(.*))?$",
     re.MULTILINE,
 )
+_GENERATED_ALIAS_BLOCK_RE = re.compile(
+    r"; --- RAM bank safety generated aliases: BEGIN ---.*?"
+    r"; --- RAM bank safety generated aliases: END ---",
+    re.DOTALL,
+)
 
 
 def _parse_equates() -> list[tuple[str, int | None, str, str]]:
@@ -82,7 +87,10 @@ def _parse_equates() -> list[tuple[str, int | None, str, str]]:
     (e.g., ``V171_DIAG_FLAG_PENDING equ V171_DIAG_FLAG_RUNTIME_PENDING``)
     and integer otherwise.
     """
-    text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+    text = _GENERATED_ALIAS_BLOCK_RE.sub(
+        "",
+        V17_CONTROL_RAM_INC.read_text(encoding="utf-8"),
+    )
     out: list[tuple[str, int | None, str, str]] = []
     for m in _EQU_PATTERN.finditer(text):
         name = m.group(1)

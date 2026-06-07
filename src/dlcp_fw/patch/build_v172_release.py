@@ -10,6 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from dlcp_fw.analysis.ram_bank_safety import assert_targets_safe
 from dlcp_fw.paths import V172_CONTROL_ASM, V172_CONTROL_HEX
 from dlcp_fw.sim.v17_symbols import assemble_v17
 
@@ -191,6 +192,7 @@ def build_v172_release(
             output_lst=source_lst,
             gpasm=gpasm,
         )
+        assert_targets_safe(["control-v172"])
         shutil.copy2(temp_hex, output_hex)
         build_ok = True
     finally:

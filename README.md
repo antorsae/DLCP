@@ -2,8 +2,8 @@
 
 Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.3.hex`](firmware/patched/releases/DLCP_Firmware_V3.3.hex) (`V3.3 / rev 0x72`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.72.hex`](firmware/patched/releases/DLCP_Control_V1.72.hex) (`V1.72 / rev 0x38 / build 20260529`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.3.hex`](firmware/patched/releases/DLCP_Firmware_V3.3.hex) (`V3.3 / rev 0x79`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.72.hex`](firmware/patched/releases/DLCP_Control_V1.72.hex) (`V1.72 / rev 0x3F / build 20260607`)
 
 This README focuses on the recommended V3.3 + V1.72 deployment.  V3.3/V1.72 carries the V3.2/V1.71 robustness and diagnostics base, plus MAIN version/revision display on the CONTROL PB1/PB2 Diagnostics pages.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
@@ -82,7 +82,7 @@ transient status sample should not flap the selected route, and selecting
 S/PDIF/USB/AES/Optical manually must restore the receiver/TAS path without
 depending on a previous Auto Detect scan.
 
-**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the recommended V1.72 + V3.3 pair, each healthy Diagnostics page also shows that MAIN's live identity, for example `PB1 OK v3.3 x72` and `PB2 OK v3.3 x71`.  The same counter data is available over USB:
+**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the recommended V1.72 + V3.3 pair, each healthy Diagnostics page also shows that MAIN's live identity, for example `PB1 OK v3.3 x79` and `PB2 OK v3.3 x79`.  The same counter data is available over USB:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
@@ -218,10 +218,10 @@ Full simulator gate:
 
 Current non-hardware verification snapshot:
 
-- `tests --collect-only`: `1199 tests collected`
-- focused Diagnostics fault matrix gate: `30 passed`
-- broader Diagnostics/SRC gate: `116 passed`
-- full simulator gate: `1181 passed, 1 skipped`
+- `tests --collect-only`: `1430 tests collected`
+- focused Preset filename LCD spec: `176 passed`
+- static/release-adjacent gate: `56 passed, 1 warning`
+- full simulator gate: `1411 passed, 1 skipped, 4 warnings`
 
 Hardware runbook:
 

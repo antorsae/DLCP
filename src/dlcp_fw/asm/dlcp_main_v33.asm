@@ -255,8 +255,8 @@ diag_inc_sat MACRO counter
     goto        flow_app_entry_1014                 ; 0x1000 user reset trampoline
     dw          0xFFFF
     dw          0xFFFF
-    movff       FSR2L, isr_save_fsr2l               ; 0x1008 ISR shadow vector entry
-    movff       FSR2H, isr_save_fsr2h
+    movff       FSR2L, isr_save_fsr2l_b0_phys               ; 0x1008 ISR shadow vector entry
+    movff       FSR2H, isr_save_fsr2h_b0_phys
     call        main_isr_dispatch, 0x1              ; FAST=1: shadow STATUS/W/BSR
 flow_app_entry_1014:
     goto        flow_main_flash_service_3ce8_3d4e   ; cold init / boot
@@ -333,7 +333,7 @@ usb_hid_report_descriptor EQU  usb_ep1_out_descriptor + 0x7; HID report (vendor-
 ; signal completion to the SIE.
 ; ---------------------------------------------------------------------------
 hid_command_dispatch:
-    movff       WREG, i2c_coeff_2
+    movff       WREG, i2c_coeff_2_b0_phys
     lfsr        FSR2, 0x01ED
     lfsr        FSR1, 0x004D
     movlw       0x07
@@ -341,29 +341,29 @@ flow_hid_command_dispatch_10ba:
     movff       POSTINC2, POSTINC1
     decfsz      WREG, F, ACCESS
     bra         flow_hid_command_dispatch_10ba
-    movf        i2c_coeff_2, W, ACCESS
+    movf        i2c_coeff_2_acc, W, ACCESS
     xorlw       0x42
     bnz         flow_hid_command_dispatch_10ca
     bra         hid_cmd_xor_dispatch
 flow_hid_command_dispatch_10ca:
     movlb       0x0
-    clrf        ram_0x0CB, BANKED
+    clrf        stock_0CB_b0, BANKED
     bra         hid_cmd_xor_dispatch
 flow_hid_command_dispatch_10d0:
-    movff       ram_0x11B, ram_0x097
+    movff       stock_11B_b1_phys, stock_097_b0_phys
     movlb       0x0
-    movf        ram_0x097, W, BANKED
+    movf        stock_097_b0, W, BANKED
     xorlw       0x09
     bnz         flow_hid_command_dispatch_1104
     movlw       0x02
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
 flow_hid_command_dispatch_10e0:
     rcall       main_core_service_15b0
     movf        INDF2, W, ACCESS
     bz          flow_hid_command_dispatch_10fa
     rcall       main_core_service_15b0
     movlw       0xBE
-    addwf       i2c_coeff_3, W, ACCESS
+    addwf       i2c_coeff_3_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movlw       0x02
@@ -373,37 +373,37 @@ flow_hid_command_dispatch_10e0:
 flow_hid_command_dispatch_10fa:
     rcall       main_core_service_15be
 flow_hid_command_dispatch_10fc:
-    incf        i2c_coeff_3, F, ACCESS
+    incf        i2c_coeff_3_acc, F, ACCESS
     movlw       0x1F
-    cpfsgt      i2c_coeff_3, ACCESS
+    cpfsgt      i2c_coeff_3_acc, ACCESS
     bra         flow_hid_command_dispatch_10e0
 flow_hid_command_dispatch_1104:
     movlb       0x0
-    movf        ram_0x097, W, BANKED
+    movf        stock_097_b0, W, BANKED
     xorlw       0x0A
     bnz         flow_hid_command_dispatch_111a
     movlw       0x02
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
 flow_hid_command_dispatch_1110:
     rcall       main_core_service_15be
-    incf        i2c_coeff_3, F, ACCESS
+    incf        i2c_coeff_3_acc, F, ACCESS
     movlw       0x1F
-    cpfsgt      i2c_coeff_3, ACCESS
+    cpfsgt      i2c_coeff_3_acc, ACCESS
     bra         flow_hid_command_dispatch_1110
 flow_hid_command_dispatch_111a:
     movlw       0x03
     movlb       0x0
-    movwf       ram_0x0C1, BANKED
-    movff       ram_0x11B, ram_0x0C2
-    movf        ram_0x097, W, BANKED
+    movwf       stock_0C1_b0, BANKED
+    movff       stock_11B_b1_phys, stock_0C2_b0_phys
+    movf        stock_097_b0, W, BANKED
     xorlw       0x09
     bz          flow_hid_command_dispatch_111a_dirty
-    movf        ram_0x097, W, BANKED
+    movf        stock_097_b0, W, BANKED
     xorlw       0x0A
     bnz         flow_hid_command_dispatch_1126
 flow_hid_command_dispatch_111a_dirty:
-    bsf         ram_0x0BD, 5, BANKED            ; filename RAM dirty
-    bsf         ram_0x0BD, 6, BANKED            ; V3.2: gate USB filename xact
+    bsf         filename_dirty_flags_b0, 5, BANKED            ; filename RAM dirty
+    bsf         filename_dirty_flags_b0, 6, BANKED            ; V3.2: gate USB filename xact
                                                 ; until force_persist clears
                                                 ; both bits.  preset_select_
                                                 ; handler defers state-machine
@@ -412,8 +412,8 @@ flow_hid_command_dispatch_111a_dirty:
                                                 ; broadcast can't race the
                                                 ; host's force_persist.
     movlb       0x02
-    incf        filename_rev, F, BANKED         ; USB filename write touched RAM
-    incf        filename_rev, F, BANKED         ; leave seqlock even/stable
+    incf        filename_rev_b2, F, BANKED         ; USB filename write touched RAM
+    incf        filename_rev_b2, F, BANKED         ; leave seqlock even/stable
     movlb       0x00
 flow_hid_command_dispatch_1126:
     call        main_timer_service_48a6, 0x0
@@ -424,57 +424,57 @@ flow_hid_command_dispatch_112e:
     bra         flow_hid_command_dispatch_15aa
 flow_hid_command_dispatch_1134:
     movlb       0x1
-    decf        ram_0x01B, W, BANKED
+    decf        stock_11B_b1, W, BANKED
     bnz         flow_hid_command_dispatch_116a
-    movff       ram_0x11C, ram_0x0B7
+    movff       stock_11C_b1_phys, stock_0B7_b0_phys
     bra         flow_hid_command_dispatch_115c
 flow_hid_command_dispatch_1140:
     movlw       0x04
-    movwf       ram_0x0C1, BANKED
+    movwf       stock_0C1_b0, BANKED
     movlw       0x01
-    movwf       ram_0x0C2, BANKED
+    movwf       stock_0C2_b0, BANKED
     bra         flow_hid_command_dispatch_112a
 flow_hid_command_dispatch_114a:
-    movff       ram_0x11D, ram_0x0B8
+    movff       stock_11D_b1_phys, stock_0B8_b0_phys
     movlw       0x04
-    movwf       ram_0x0C1, BANKED
+    movwf       stock_0C1_b0, BANKED
     movlw       0x01
-    movwf       ram_0x0C2, BANKED
-    bsf         ram_0x07F, 0, BANKED
-    bsf         ram_0x094, 4, BANKED
+    movwf       stock_0C2_b0, BANKED
+    bsf         dsp_fault_flags_b0, 0, BANKED
+    bsf         stock_094_b0, 4, BANKED
     bra         flow_hid_command_dispatch_112a
 flow_hid_command_dispatch_115c:
     movlb       0x0
-    movf        ram_0x0B7, W, BANKED
+    movf        stock_0B7_b0, W, BANKED
     xorlw       0x01
     bz          flow_hid_command_dispatch_1140
     xorlw       0x03
     bz          flow_hid_command_dispatch_114a
     bra         flow_hid_command_dispatch_15aa
 flow_hid_command_dispatch_116a:
-    movf        ram_0x01B, W, BANKED
+    movf        stock_11B_b1, W, BANKED
     xorlw       0x02
     bz          flow_hid_command_dispatch_1172
     bra         flow_hid_command_dispatch_15aa
 flow_hid_command_dispatch_1172:
-    movff       ram_0x11E, ram_0x0B5
+    movff       stock_11E_b1_phys, stock_0B5_b0_phys
     movlw       0x04
     movlb       0x0
-    movwf       ram_0x0C1, BANKED
+    movwf       stock_0C1_b0, BANKED
     movlw       0x02
-    movwf       ram_0x0C2, BANKED
-    movf        ram_0x0B5, W, BANKED
+    movwf       stock_0C2_b0, BANKED
+    movf        stock_0B5_b0, W, BANKED
     xorlw       0x06
     bnz         flow_hid_command_dispatch_11c0
     movlw       0x05
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
 flow_hid_command_dispatch_118a:
     rcall       main_core_service_15b0
     movf        INDF2, W, ACCESS
     bz          flow_hid_command_dispatch_11a4
     rcall       main_core_service_15b0
     movlw       0xFB
-    addwf       i2c_coeff_3, W, ACCESS
+    addwf       i2c_coeff_3_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movlw       0x00
@@ -483,235 +483,235 @@ flow_hid_command_dispatch_118a:
     bra         flow_hid_command_dispatch_11b2
 flow_hid_command_dispatch_11a4:
     movlw       0xFB
-    addwf       i2c_coeff_3, W, ACCESS
+    addwf       i2c_coeff_3_acc, W, ACCESS
     call        setup_fsr2_page_1, 0x0
     setf        INDF2, ACCESS
 flow_hid_command_dispatch_11b2:
-    incf        i2c_coeff_3, F, ACCESS
+    incf        i2c_coeff_3_acc, F, ACCESS
     movlw       0x13
-    cpfsgt      i2c_coeff_3, ACCESS
+    cpfsgt      i2c_coeff_3_acc, ACCESS
     bra         flow_hid_command_dispatch_118a
     movlb       0x0
-    bsf         ram_0x0BD, 4, BANKED
+    bsf         filename_dirty_flags_b0, 4, BANKED
     bra         flow_hid_command_dispatch_1126
 flow_hid_command_dispatch_11c0:
-    movf        ram_0x0B5, W, BANKED
+    movf        stock_0B5_b0, W, BANKED
     xorlw       0x05
     bz          flow_hid_command_dispatch_112a
-    movf        ram_0x0B5, W, BANKED
+    movf        stock_0B5_b0, W, BANKED
     xorlw       0x07
     bz          flow_hid_command_dispatch_112a
     bra         flow_hid_command_dispatch_15aa
 flow_hid_command_dispatch_11ce:
-    movff       ram_0x11B, input_select
-    movff       ram_0x11F, computed_volume_3
-    movff       ram_0x120, computed_volume_2
-    movff       ram_0x121, computed_volume_1
-    movff       ram_0x122, computed_volume
+    movff       stock_11B_b1_phys, input_select_b0_phys
+    movff       stock_11F_b1_phys, computed_volume_3_b0_phys
+    movff       stock_120_b1_phys, computed_volume_2_b0_phys
+    movff       stock_121_b1_phys, computed_volume_1_b0_phys
+    movff       stock_122_b1_phys, computed_volume_b0_phys
     movlb       0x1
-    btfsc       ram_0x023, 0, BANKED
+    btfsc       stock_123_b1, 0, BANKED
     bra         flow_hid_command_dispatch_11ec
-    bcf         active_flags, 4, ACCESS
+    bcf         active_flags_acc, 4, ACCESS
     bra         flow_hid_command_dispatch_11ee
 flow_hid_command_dispatch_11ec:
-    bsf         active_flags, 4, ACCESS
+    bsf         active_flags_acc, 4, ACCESS
 flow_hid_command_dispatch_11ee:
     movlb       0x1
-    btfsc       ram_0x024, 0, BANKED
+    btfsc       stock_124_b1, 0, BANKED
     bra         flow_hid_command_dispatch_11fa
     movlb       0x0
-    bcf         ram_0x0A4, 0, BANKED
+    bcf         stock_0A4_b0, 0, BANKED
     bra         flow_hid_command_dispatch_11fe
 flow_hid_command_dispatch_11fa:
     movlb       0x0
-    bsf         ram_0x0A4, 0, BANKED
+    bsf         stock_0A4_b0, 0, BANKED
 flow_hid_command_dispatch_11fe:
     movlb       0x1
-    btfsc       ram_0x025, 0, BANKED
+    btfsc       stock_125_b1, 0, BANKED
     bra         flow_hid_command_dispatch_120a
     movlb       0x0
-    bcf         ram_0x0A4, 1, BANKED
+    bcf         stock_0A4_b0, 1, BANKED
     bra         flow_hid_command_dispatch_120e
 flow_hid_command_dispatch_120a:
     movlb       0x0
-    bsf         ram_0x0A4, 1, BANKED
+    bsf         stock_0A4_b0, 1, BANKED
 flow_hid_command_dispatch_120e:
     movlb       0x1
-    btfsc       ram_0x026, 0, BANKED
+    btfsc       stock_126_b1, 0, BANKED
     bra         flow_hid_command_dispatch_121a
     movlb       0x0
-    bcf         ram_0x0A4, 2, BANKED
+    bcf         stock_0A4_b0, 2, BANKED
     bra         flow_hid_command_dispatch_121e
 flow_hid_command_dispatch_121a:
     movlb       0x0
-    bsf         ram_0x0A4, 2, BANKED
+    bsf         stock_0A4_b0, 2, BANKED
 flow_hid_command_dispatch_121e:
     movlb       0x1
-    btfsc       ram_0x028, 0, BANKED
+    btfsc       stock_128_b1, 0, BANKED
     bra         flow_hid_command_dispatch_122a
     movlb       0x0
-    bcf         ram_0x0A4, 3, BANKED
+    bcf         stock_0A4_b0, 3, BANKED
     bra         flow_hid_command_dispatch_122e
 flow_hid_command_dispatch_122a:
     movlb       0x0
-    bsf         ram_0x0A4, 3, BANKED
+    bsf         stock_0A4_b0, 3, BANKED
 flow_hid_command_dispatch_122e:
     movlb       0x1
-    btfsc       ram_0x029, 0, BANKED
+    btfsc       stock_129_b1, 0, BANKED
     bra         flow_hid_command_dispatch_123a
     movlb       0x0
-    bcf         ram_0x0A4, 4, BANKED
+    bcf         stock_0A4_b0, 4, BANKED
     bra         flow_hid_command_dispatch_123e
 flow_hid_command_dispatch_123a:
     movlb       0x0
-    bsf         ram_0x0A4, 4, BANKED
+    bsf         stock_0A4_b0, 4, BANKED
 flow_hid_command_dispatch_123e:
     movlb       0x1
-    btfsc       ram_0x02A, 0, BANKED
+    btfsc       stock_12A_b1, 0, BANKED
     bra         flow_hid_command_dispatch_124a
     movlb       0x0
-    bcf         ram_0x0A4, 5, BANKED
+    bcf         stock_0A4_b0, 5, BANKED
     bra         flow_hid_command_dispatch_124e
 flow_hid_command_dispatch_124a:
     movlb       0x0
-    bsf         ram_0x0A4, 5, BANKED
+    bsf         stock_0A4_b0, 5, BANKED
 flow_hid_command_dispatch_124e:
-    movff       ram_0x12C, ram_0x060
-    movff       ram_0x12D, ram_0x061
-    movff       ram_0x12E, ram_0x062
-    movff       ram_0x12F, ram_0x063
-    movff       ram_0x130, ram_0x064
-    movff       ram_0x131, ram_0x065
-    movff       ram_0x132, ram_0x05F
-    movff       ram_0x133, ram_0x09B
-    movff       ram_0x134, ram_0x09C
-    movff       ram_0x135, ram_0x09D
-    movff       ram_0x136, ram_0x09E
-    movff       ram_0x138, ram_0x0B4
-    movf        input_select_mirror, W, BANKED
-    xorwf       input_select, W, BANKED
+    movff       stock_12C_b1_phys, stock_060_b0_phys
+    movff       stock_12D_b1_phys, stock_061_b0_phys
+    movff       stock_12E_b1_phys, stock_062_b0_phys
+    movff       stock_12F_b1_phys, stock_063_b0_phys
+    movff       stock_130_b1_phys, stock_064_b0_phys
+    movff       stock_131_b1_phys, stock_065_b0_phys
+    movff       stock_132_b1_phys, stock_05F_b0_phys
+    movff       stock_133_b1_phys, stock_09B_b0_phys
+    movff       stock_134_b1_phys, stock_09C_b0_phys
+    movff       stock_135_b1_phys, stock_09D_b0_phys
+    movff       stock_136_b1_phys, stock_09E_b0_phys
+    movff       stock_138_b1_phys, stock_0B4_b0_phys
+    movf        input_select_mirror_b0, W, BANKED
+    xorwf       input_select_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         ram_0x094, 0, BANKED
-    movf        logical_volume_3, W, BANKED
-    xorwf       computed_volume_3, W, BANKED
+    bsf         stock_094_b0, 0, BANKED
+    movf        logical_volume_3_b0, W, BANKED
+    xorwf       computed_volume_3_b0, W, BANKED
     bnz         flow_hid_command_dispatch_129c
-    movf        logical_volume_2, W, BANKED
-    xorwf       computed_volume_2, W, BANKED
+    movf        logical_volume_2_b0, W, BANKED
+    xorwf       computed_volume_2_b0, W, BANKED
     bnz         flow_hid_command_dispatch_129c
-    movf        logical_volume_1, W, BANKED
-    xorwf       computed_volume_1, W, BANKED
+    movf        logical_volume_1_b0, W, BANKED
+    xorwf       computed_volume_1_b0, W, BANKED
     bnz         flow_hid_command_dispatch_129c
-    movf        logical_volume, W, BANKED
-    xorwf       computed_volume, W, BANKED
+    movf        logical_volume_b0, W, BANKED
+    xorwf       computed_volume_b0, W, BANKED
 flow_hid_command_dispatch_129c:
     bz          flow_hid_command_dispatch_12a2
-    bsf         event_flags, 3, BANKED
-    bsf         ram_0x094, 1, BANKED
+    bsf         event_flags_b0, 3, BANKED
+    bsf         stock_094_b0, 1, BANKED
 flow_hid_command_dispatch_12a2:
-    movf        ram_0x0AC, W, BANKED
-    xorwf       ram_0x09B, W, BANKED
+    movf        stock_0AC_b0, W, BANKED
+    xorwf       stock_09B_b0, W, BANKED
     bz          flow_hid_command_dispatch_12ac
-    bsf         event_flags, 3, BANKED
-    bsf         ram_0x0BD, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
+    bsf         filename_dirty_flags_b0, 3, BANKED
 flow_hid_command_dispatch_12ac:
-    movf        ram_0x0AD, W, BANKED
-    xorwf       ram_0x09C, W, BANKED
+    movf        stock_0AD_b0, W, BANKED
+    xorwf       stock_09C_b0, W, BANKED
     bz          flow_hid_command_dispatch_12b6
-    bsf         event_flags, 3, BANKED
-    bsf         ram_0x0BD, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
+    bsf         filename_dirty_flags_b0, 3, BANKED
 flow_hid_command_dispatch_12b6:
-    movf        ram_0x0AE, W, BANKED
-    xorwf       ram_0x09D, W, BANKED
+    movf        stock_0AE_b0, W, BANKED
+    xorwf       stock_09D_b0, W, BANKED
     bz          flow_hid_command_dispatch_12c0
-    bsf         event_flags, 3, BANKED
-    bsf         ram_0x0BD, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
+    bsf         filename_dirty_flags_b0, 3, BANKED
 flow_hid_command_dispatch_12c0:
-    movf        ram_0x0AF, W, BANKED
-    xorwf       ram_0x09E, W, BANKED
+    movf        stock_0AF_b0, W, BANKED
+    xorwf       stock_09E_b0, W, BANKED
     bz          flow_hid_command_dispatch_12ca
-    bsf         event_flags, 3, BANKED
-    bsf         ram_0x0BD, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
+    bsf         filename_dirty_flags_b0, 3, BANKED
 flow_hid_command_dispatch_12ca:
     movlw       0x01
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     movlw       0x00
-    movwf       ram_0x04C, ACCESS
+    movwf       stock_04C_acc, ACCESS
     movlw       0x01
-    btfss       active_flags, 5, ACCESS
+    btfss       active_flags_acc, 5, ACCESS
     movlw       0x00
-    xorwf       ram_0x04C, F, ACCESS
+    xorwf       stock_04C_acc, F, ACCESS
     bz          flow_hid_command_dispatch_12e0
-    bsf         event_flags, 5, BANKED
-    bsf         ram_0x094, 3, BANKED
+    bsf         event_flags_b0, 5, BANKED
+    bsf         stock_094_b0, 3, BANKED
 flow_hid_command_dispatch_12e0:
-    movf        ram_0x0B0, W, BANKED
-    xorwf       ram_0x0A4, W, BANKED
+    movf        stock_0B0_b0, W, BANKED
+    xorwf       stock_0A4_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 6, BANKED
-    movf        ram_0x0B4, W, BANKED
-    xorwf       ram_0x0B1, W, BANKED
+    bsf         event_flags_b0, 6, BANKED
+    movf        stock_0B4_b0, W, BANKED
+    xorwf       stock_0B1_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         ram_0x07F, 1, BANKED
-    movf        ram_0x060, W, BANKED
-    cpfseq      ram_0x0A5, BANKED
+    bsf         dsp_fault_flags_b0, 1, BANKED
+    movf        stock_060_b0, W, BANKED
+    cpfseq      stock_0A5_b0, BANKED
     bra         flow_hid_command_dispatch_1324
-    movf        ram_0x0A6, W, BANKED
+    movf        stock_0A6_b0, W, BANKED
     lfsr        FSR2, 0x0061
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
-    movf        ram_0x0A7, W, BANKED
+    movf        stock_0A7_b0, W, BANKED
     lfsr        FSR2, 0x0062
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
-    movf        ram_0x0A8, W, BANKED
+    movf        stock_0A8_b0, W, BANKED
     lfsr        FSR2, 0x0063
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
-    movf        ram_0x0A9, W, BANKED
+    movf        stock_0A9_b0, W, BANKED
     lfsr        FSR2, 0x0064
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
-    movf        ram_0x065, W, BANKED
-    xorwf       ram_0x0AA, W, BANKED
+    movf        stock_065_b0, W, BANKED
+    xorwf       stock_0AA_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
 flow_hid_command_dispatch_1324:
-    bsf         event_flags, 4, BANKED
-    movff       input_select, input_select_mirror
+    bsf         event_flags_b0, 4, BANKED
+    movff       input_select_b0_phys, input_select_mirror_b0_phys
     call        copy_computed_volume_to_logical_volume, 0x0
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     bra         flow_hid_command_dispatch_1342
-    bsf         active_flags, 5, ACCESS
+    bsf         active_flags_acc, 5, ACCESS
     bra         flow_hid_command_dispatch_1344
 flow_hid_command_dispatch_1342:
-    bcf         active_flags, 5, ACCESS
+    bcf         active_flags_acc, 5, ACCESS
 flow_hid_command_dispatch_1344:
-    movff       ram_0x0A4, ram_0x0B0
-    movff       ram_0x060, ram_0x0A5
-    movff       ram_0x061, ram_0x0A6
-    movff       ram_0x062, ram_0x0A7
-    movff       ram_0x063, ram_0x0A8
-    movff       ram_0x064, ram_0x0A9
-    movff       ram_0x065, ram_0x0AA
-    movff       ram_0x0B4, ram_0x0B1
-    movff       ram_0x09B, ram_0x0AC
-    movff       ram_0x09C, ram_0x0AD
-    movff       ram_0x09D, ram_0x0AE
-    movff       ram_0x09E, ram_0x0AF
+    movff       stock_0A4_b0_phys, stock_0B0_b0_phys
+    movff       stock_060_b0_phys, stock_0A5_b0_phys
+    movff       stock_061_b0_phys, stock_0A6_b0_phys
+    movff       stock_062_b0_phys, stock_0A7_b0_phys
+    movff       stock_063_b0_phys, stock_0A8_b0_phys
+    movff       stock_064_b0_phys, stock_0A9_b0_phys
+    movff       stock_065_b0_phys, stock_0AA_b0_phys
+    movff       stock_0B4_b0_phys, stock_0B1_b0_phys
+    movff       stock_09B_b0_phys, stock_0AC_b0_phys
+    movff       stock_09C_b0_phys, stock_0AD_b0_phys
+    movff       stock_09D_b0_phys, stock_0AE_b0_phys
+    movff       stock_09E_b0_phys, stock_0AF_b0_phys
 flow_hid_command_dispatch_1374:
     movlw       0x05
     bra         flow_hid_command_dispatch_1384
 flow_hid_command_dispatch_1378:
     movlb       0x1
-    decf        ram_0x01B, W, BANKED
+    decf        stock_11B_b1, W, BANKED
     bnz         flow_hid_command_dispatch_138a
     call        main_core_service_4942, 0x0
     movlw       0x06
 flow_hid_command_dispatch_1384:
     movlb       0x0
-    movwf       ram_0x0C1, BANKED
+    movwf       stock_0C1_b0, BANKED
     bra         flow_hid_command_dispatch_112e
 flow_hid_command_dispatch_138a:
-    movf        ram_0x01B, W, BANKED
+    movf        stock_11B_b1, W, BANKED
     xorlw       0x02
     bz          flow_hid_command_dispatch_1392
     bra         flow_hid_command_dispatch_15aa
@@ -720,159 +720,159 @@ flow_hid_command_dispatch_1392:
     bra         flow_hid_command_dispatch_1374
 flow_hid_command_dispatch_1398:
     movlb       0x1
-    movf        ram_0x01B, W, BANKED
+    movf        stock_11B_b1, W, BANKED
     xorlw       0x0F
     btfsc       STATUS, 2, ACCESS
-    bsf         active_flags, 7, ACCESS
+    bsf         active_flags_acc, 7, ACCESS
 flow_hid_command_dispatch_13a2:
-    movf        i2c_coeff_2, W, ACCESS
+    movf        i2c_coeff_2_acc, W, ACCESS
     xorlw       0x07
     bnz         flow_hid_command_dispatch_13ba
     movlb       0x1
-    tstfsz      ram_0x01B, BANKED
+    tstfsz      stock_11B_b1, BANKED
     bra         flow_hid_command_dispatch_13ba
     movlb       0x0
-    clrf        ram_0x0C5, BANKED
+    clrf        stock_0C5_b0, BANKED
     movlw       0x56
-    movwf       ram_0x083, BANKED
-    clrf        ram_0x082, BANKED
+    movwf       stock_083_b0, BANKED
+    clrf        stock_082_b0, BANKED
 flow_hid_command_dispatch_13ba:
     bcf         RCSTA, 4, ACCESS
-    bsf         active_flags, 0, ACCESS
+    bsf         active_flags_acc, 0, ACCESS
     movlb       0x0
-    clrf        rx_frame_position, BANKED
-    clrf        rx_ring_wr, BANKED
-    clrf        rx_ring_rd, BANKED
+    clrf        rx_frame_position_b0, BANKED
+    clrf        rx_ring_wr_b0, BANKED
+    clrf        rx_ring_rd_b0, BANKED
     call        main_flash_service_2bb8, 0x0
 flow_hid_command_dispatch_13ca:
-    movff       i2c_coeff_2, ram_0x0C1
+    movff       i2c_coeff_2_b0_phys, stock_0C1_b0_phys
     bra         flow_hid_command_dispatch_112e
 flow_hid_command_dispatch_13d0:
     ; BUG-SETTINGS-01: app cmd 0x40 is the firmware-update handoff,
     ; not a factory reset.  Preserve user EEPROM-backed settings and
     ; only set the bootloader-entry marker below.
-    clrf        ram_0x008, ACCESS
-    setf        ram_0x007, ACCESS
-    clrf        ram_0x009, ACCESS
+    clrf        stock_008_acc, ACCESS
+    setf        stock_007_acc, ACCESS
+    clrf        stock_009_acc, ACCESS
     call        main_flash_service_46de, 0x0
     goto        flash_entry_quiet_shutdown      ; V3.2+: pop-free reset path
     bra         flow_hid_command_dispatch_15aa
 fw_update_init_sequence:
     movlb       0x0
-    tstfsz      ram_0x0CB, BANKED
+    tstfsz      stock_0CB_b0, BANKED
     bra         flow_hid_command_dispatch_14fc
-    clrf        ram_0x07C, BANKED
-    clrf        ram_0x07D, BANKED
-    clrf        ram_0x080, BANKED
-    clrf        ram_0x081, BANKED
-    clrf        ram_0x086, BANKED
-    clrf        ram_0x087, BANKED
-    clrf        ram_0x084, BANKED
-    clrf        ram_0x085, BANKED
+    clrf        stock_07C_b0, BANKED
+    clrf        stock_07D_b0, BANKED
+    clrf        stock_080_b0, BANKED
+    clrf        stock_081_b0, BANKED
+    clrf        stock_086_b0, BANKED
+    clrf        stock_087_b0, BANKED
+    clrf        stock_084_b0, BANKED
+    clrf        stock_085_b0, BANKED
     call        prep_bank1_ram004, 0x0
     movlw       0xC7
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x0A
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     call        ram_block_clear, 0x0
     call        prep_bank1_ram004, 0x0
     movlw       0x9A
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x2D
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     call        ram_block_clear, 0x0
     call        prep_bank1_ram004, 0x0
     movlw       0xD1
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x08
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     call        ram_block_clear, 0x0
     call        factory_reset_status_emit, 0x0
     movlw       0x05
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0xDC
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     movlb       0x1
     movlw       0x01
-    movwf       ram_0x008, ACCESS
+    movwf       stock_008_acc, ACCESS
     movlw       0xD1
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     movlw       0x08
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     call        uart_rx_with_framing, 0x0
-    movwf       ram_0x04C, ACCESS
+    movwf       stock_04C_acc, ACCESS
     movlw       0x05
-    subwf       ram_0x04C, W, ACCESS
+    subwf       stock_04C_acc, W, ACCESS
     bnc         flow_hid_command_dispatch_14fa
     movlw       0x01
-    movwf       ram_0x0CB, BANKED
-    clrf        i2c_coeff_3, ACCESS
+    movwf       stock_0CB_b0, BANKED
+    clrf        i2c_coeff_3_acc, ACCESS
 flow_hid_command_dispatch_14ce:
-    movf        i2c_coeff_3, W, ACCESS
+    movf        i2c_coeff_3_acc, W, ACCESS
     addlw       0x4D
     call        fsr2_page0_read_w, 0x0               ; W04-E03
-    movwf       ram_0x04C, ACCESS
+    movwf       stock_04C_acc, ACCESS
     movlw       0xD1
-    addwf       i2c_coeff_3, W, ACCESS
+    addwf       i2c_coeff_3_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     movf        INDF2, W, ACCESS
-    xorwf       ram_0x04C, W, ACCESS
+    xorwf       stock_04C_acc, W, ACCESS
     bz          flow_hid_command_dispatch_14f0
     movlb       0x0
-    clrf        ram_0x0CB, BANKED
+    clrf        stock_0CB_b0, BANKED
 flow_hid_command_dispatch_14f0:
-    incf        i2c_coeff_3, F, ACCESS
+    incf        i2c_coeff_3_acc, F, ACCESS
     movlw       0x05
-    cpfsgt      i2c_coeff_3, ACCESS
+    cpfsgt      i2c_coeff_3_acc, ACCESS
     bra         flow_hid_command_dispatch_14ce
     bra         flow_hid_command_dispatch_14fc
 flow_hid_command_dispatch_14fa:
-    clrf        ram_0x0CB, BANKED
+    clrf        stock_0CB_b0, BANKED
 flow_hid_command_dispatch_14fc:
     movlb       0x0
-    movf        ram_0x0CB, W, BANKED
+    movf        stock_0CB_b0, W, BANKED
     bnz         flow_hid_command_dispatch_1504
     bra         flow_hid_command_dispatch_13ca
 flow_hid_command_dispatch_1504:
     rcall       fw_update_relay
     bra         flow_hid_command_dispatch_13ca
 flow_hid_command_dispatch_150a:
-    movff       ram_0x11E, i2c_coeff_1
-    movff       ram_0x11F, i2c_coeff_0
-    movff       i2c_coeff_2, ram_0x0C1
+    movff       stock_11E_b1_phys, i2c_coeff_1_b0_phys
+    movff       stock_11F_b1_phys, i2c_coeff_0_b0_phys
+    movff       i2c_coeff_2_b0_phys, stock_0C1_b0_phys
     call        main_core_service_2328, 0x0
-    movf        ram_0x07D, W, BANKED
-    xorwf       i2c_coeff_1, W, ACCESS
+    movf        stock_07D_b0, W, BANKED
+    xorwf       i2c_coeff_1_acc, W, ACCESS
     bnz         flow_hid_command_dispatch_1524
-    movf        ram_0x07C, W, BANKED
-    xorwf       i2c_coeff_0, W, ACCESS
+    movf        stock_07C_b0, W, BANKED
+    xorwf       i2c_coeff_0_acc, W, ACCESS
 flow_hid_command_dispatch_1524:
     bnz         flow_hid_command_dispatch_1532
     call        main_core_service_4672, 0x0
     movlw       0xAA
     movlb       0x1
-    movwf       ram_0x05C, BANKED
+    movwf       stock_15C_b1, BANKED
     bra         flow_hid_command_dispatch_15aa
 flow_hid_command_dispatch_1532:
     movlw       0x11
     movlb       0x1
-    movwf       ram_0x05B, BANKED
+    movwf       stock_15B_b1, BANKED
     movlb       0x0
-    clrf        ram_0x084, BANKED
-    clrf        ram_0x085, BANKED
-    clrf        ram_0x080, BANKED
-    clrf        ram_0x081, BANKED
-    clrf        ram_0x086, BANKED
-    clrf        ram_0x087, BANKED
-    clrf        ram_0x07C, BANKED
-    clrf        ram_0x07D, BANKED
+    clrf        stock_084_b0, BANKED
+    clrf        stock_085_b0, BANKED
+    clrf        stock_080_b0, BANKED
+    clrf        stock_081_b0, BANKED
+    clrf        stock_086_b0, BANKED
+    clrf        stock_087_b0, BANKED
+    clrf        stock_07C_b0, BANKED
+    clrf        stock_07D_b0, BANKED
     bra         flow_hid_command_dispatch_15aa
 flow_hid_command_dispatch_154c:
     movlb       0x1
-    clrf        ram_0x01A, BANKED
+    clrf        stock_11A_b1, BANKED
     bra         flow_hid_command_dispatch_15aa
 hid_cmd_xor_dispatch:
-    movf        i2c_coeff_2, W, ACCESS
+    movf        i2c_coeff_2_acc, W, ACCESS
     xorlw       0x01
     bz          flow_hid_command_dispatch_15aa
     xorlw       0x03
@@ -938,7 +938,7 @@ flow_hid_command_dispatch_15a8b:
     bra         flow_hid_command_dispatch_154c
 flow_hid_command_dispatch_15aa:
     movlb       0x1
-    clrf        ram_0x01A, BANKED
+    clrf        stock_11A_b1, BANKED
     return      0
 
 
@@ -949,7 +949,7 @@ flow_hid_command_dispatch_15aa:
 ; ---------------------------------------------------------------------------
 main_core_service_15b0:
     movlw       0x1A
-    addwf       i2c_coeff_3, W, ACCESS
+    addwf       i2c_coeff_3_acc, W, ACCESS
     bra         setup_fsr2_page_1_or_2
 
 
@@ -960,7 +960,7 @@ main_core_service_15b0:
 ; ---------------------------------------------------------------------------
 main_core_service_15be:
     movlw       0xBE
-    addwf       i2c_coeff_3, W, ACCESS
+    addwf       i2c_coeff_3_acc, W, ACCESS
     call        fsr2_page2_from_W, 0x0       ; W05-E02: FSR2=0x0200|W (helper clobbers W with 0x02; setf uses no W)
     setf        INDF2, ACCESS
     return      0
@@ -993,166 +993,166 @@ flow_fw_update_relay_15d8:
     decfsz      WREG, F, ACCESS
     bra         flow_fw_update_relay_15d8
     movlw       0x02
-    movwf       ram_0x049, ACCESS
+    movwf       stock_049_acc, ACCESS
 flow_fw_update_relay_15e4:
     movlw       0x1A
-    addwf       ram_0x049, W, ACCESS
+    addwf       stock_049_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     movf        INDF2, W, ACCESS
-    movwf       ram_0x04A, ACCESS
+    movwf       stock_04A_acc, ACCESS
     movlw       0xC0
     movlb       0x0
-    subwf       ram_0x084, W, BANKED
+    subwf       stock_084_b0, W, BANKED
     movlw       0x77
-    subwfb      ram_0x085, W, BANKED
+    subwfb      stock_085_b0, W, BANKED
     bc          flow_fw_update_relay_1634
-    movff       ram_0x04A, ram_0x045
-    clrf        ram_0x048, ACCESS
+    movff       stock_04A_b0_phys, stock_045_b0_phys
+    clrf        stock_048_acc, ACCESS
 flow_fw_update_relay_1606:
-    btfss       ram_0x07D, 5, BANKED
+    btfss       stock_07D_b0, 5, BANKED
     bra         flow_fw_update_relay_1610
     movlw       0x01
-    movwf       ram_0x044, ACCESS
+    movwf       stock_044_acc, ACCESS
     bra         flow_fw_update_relay_1612
 flow_fw_update_relay_1610:
-    clrf        ram_0x044, ACCESS
+    clrf        stock_044_acc, ACCESS
 flow_fw_update_relay_1612:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x07C, F, BANKED
-    rlcf        ram_0x07D, F, BANKED
-    btfsc       ram_0x045, 0, ACCESS
-    bsf         ram_0x07C, 0, BANKED
+    rlcf        stock_07C_b0, F, BANKED
+    rlcf        stock_07D_b0, F, BANKED
+    btfsc       stock_045_acc, 0, ACCESS
+    bsf         stock_07C_b0, 0, BANKED
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x045, F, ACCESS
-    movf        ram_0x044, W, ACCESS
+    rrcf        stock_045_acc, F, ACCESS
+    movf        stock_044_acc, W, ACCESS
     bz          flow_fw_update_relay_162c
     movlw       0x02
-    xorwf       ram_0x07C, F, BANKED
+    xorwf       stock_07C_b0, F, BANKED
     movlw       0x44
-    xorwf       ram_0x07D, F, BANKED
+    xorwf       stock_07D_b0, F, BANKED
 flow_fw_update_relay_162c:
-    incf        ram_0x048, F, ACCESS
+    incf        stock_048_acc, F, ACCESS
     movlw       0x07
-    cpfsgt      ram_0x048, ACCESS
+    cpfsgt      stock_048_acc, ACCESS
     bra         flow_fw_update_relay_1606
 flow_fw_update_relay_1634:
     movlw       0x40
-    subwf       ram_0x084, W, BANKED
+    subwf       stock_084_b0, W, BANKED
     movlw       0x00
-    subwfb      ram_0x085, W, BANKED
+    subwfb      stock_085_b0, W, BANKED
     bc          flow_fw_update_relay_1640
     bra         flow_fw_update_relay_18d0
 flow_fw_update_relay_1640:
     movlw       0xC0
-    subwf       ram_0x084, W, BANKED
+    subwf       stock_084_b0, W, BANKED
     movlw       0x77
-    subwfb      ram_0x085, W, BANKED
+    subwfb      stock_085_b0, W, BANKED
     bnc         flow_fw_update_relay_164c
     bra         flow_fw_update_relay_18d0
 flow_fw_update_relay_164c:
     movlw       0x0F
-    andwf       ram_0x084, W, BANKED
-    movwf       ram_0x08A, BANKED
-    clrf        ram_0x08B, BANKED
-    iorwf       ram_0x08B, W, BANKED
+    andwf       stock_084_b0, W, BANKED
+    movwf       stock_08A_b0, BANKED
+    clrf        stock_08B_b0, BANKED
+    iorwf       stock_08B_b0, W, BANKED
     bz          flow_fw_update_relay_165a
     bra         flow_fw_update_relay_182e
 flow_fw_update_relay_165a:
-    movf        ram_0x087, W, BANKED
-    iorwf       ram_0x086, W, BANKED
+    movf        stock_087_b0, W, BANKED
+    iorwf       stock_086_b0, W, BANKED
     bnz         flow_fw_update_relay_1662
     bra         flow_fw_update_relay_179c
 flow_fw_update_relay_1662:
-    movf        ram_0x086, W, BANKED
-    addwf       ram_0x080, F, BANKED
+    movf        stock_086_b0, W, BANKED
+    addwf       stock_080_b0, F, BANKED
     movlw       0x00
-    addwfc      ram_0x081, F, BANKED
-    movf        ram_0x087, W, BANKED
-    addwf       ram_0x080, F, BANKED
+    addwfc      stock_081_b0, F, BANKED
+    movf        stock_087_b0, W, BANKED
+    addwf       stock_080_b0, F, BANKED
     movlw       0x00
-    addwfc      ram_0x081, F, BANKED
-    comf        ram_0x080, W, BANKED
-    movwf       ram_0x01B, ACCESS
-    comf        ram_0x081, W, BANKED
-    movwf       ram_0x01C, ACCESS
+    addwfc      stock_081_b0, F, BANKED
+    comf        stock_080_b0, W, BANKED
+    movwf       stock_01B_acc, ACCESS
+    comf        stock_081_b0, W, BANKED
+    movwf       stock_01C_acc, ACCESS
     movlw       0xF1
-    addwf       ram_0x01B, W, ACCESS
-    movwf       ram_0x080, BANKED
+    addwf       stock_01B_acc, W, ACCESS
+    movwf       stock_080_b0, BANKED
     movlw       0xFF
-    addwfc      ram_0x01C, W, ACCESS
-    movwf       ram_0x081, BANKED
-    movf        ram_0x080, W, BANKED
+    addwfc      stock_01C_acc, W, ACCESS
+    movwf       stock_081_b0, BANKED
+    movf        stock_080_b0, W, BANKED
     call        main_uart_service_43a2, 0x0
     rcall       emit_crlf
-    movff       ram_0x080, ram_0x01B
-    swapf       ram_0x01B, F, ACCESS
+    movff       stock_080_b0_phys, stock_01B_b0_phys
+    swapf       stock_01B_acc, F, ACCESS
     movlw       0x0F
-    andwf       ram_0x01B, F, ACCESS
-    andwf       ram_0x01B, F, ACCESS
-    movf        ram_0x01B, W, ACCESS
+    andwf       stock_01B_acc, F, ACCESS
+    andwf       stock_01B_acc, F, ACCESS
+    movf        stock_01B_acc, W, ACCESS
     rcall       hex_lookup_table_ptr                ; indexed TBLPTR -> hex_lookup_table
     movlw       0x9A
-    addwf       ram_0x04B, W, ACCESS
+    addwf       stock_04B_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     tblrd*
     movff       TABLAT, INDF2
-    movff       ram_0x080, ram_0x01B
+    movff       stock_080_b0_phys, stock_01B_b0_phys
     movlw       0x0F
-    andwf       ram_0x01B, F, ACCESS
-    movf        ram_0x01B, W, ACCESS
+    andwf       stock_01B_acc, F, ACCESS
+    movf        stock_01B_acc, W, ACCESS
     rcall       hex_lookup_table_ptr                ; indexed TBLPTR -> hex_lookup_table
     movlw       0x9B
-    addwf       ram_0x04B, W, ACCESS
+    addwf       stock_04B_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     tblrd*
     movff       TABLAT, INDF2
     movlw       0x9C
-    addwf       ram_0x04B, W, ACCESS
+    addwf       stock_04B_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     clrf        INDF2, ACCESS
     movlw       0x02
-    addwf       ram_0x04B, F, ACCESS
+    addwf       stock_04B_acc, F, ACCESS
     movlb       0x0
-    clrf        ram_0x09F, BANKED
+    clrf        stock_09F_b0, BANKED
 flow_fw_update_relay_16fa:
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x0A
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     movlb       0x1
     movlw       0x01
-    movwf       ram_0x008, ACCESS
+    movwf       stock_008_acc, ACCESS
     movlw       0xC7
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     movlw       0x0A
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     call        uart_rx_with_framing, 0x0
-    movff       ram_0x1C8, ram_0x003
+    movff       stock_1C8_b1_phys, stock_003_b0_phys
     movlb       0x1
-    movf        rx_ring_wr, W, BANKED
+    movf        stock_1C7_b1, W, BANKED
     call        intel_hex_checksum_update, 0x0
     movlb       0x0
-    xorwf       ram_0x080, W, BANKED
+    xorwf       stock_080_b0, W, BANKED
     bnz         flow_fw_update_relay_172a
     movlw       0x01
-    movwf       ram_0x043, ACCESS
+    movwf       stock_043_acc, ACCESS
     bra         flow_fw_update_relay_1796
 flow_fw_update_relay_172a:
-    clrf        ram_0x043, ACCESS
-    clrf        ram_0x019, ACCESS
+    clrf        stock_043_acc, ACCESS
+    clrf        stock_019_acc, ACCESS
     movlw       0x1D
-    movwf       ram_0x018, ACCESS
+    movwf       stock_018_acc, ACCESS
     call        uart_tx_block_from_buffer, 0x0
     movlb       0x0
-    movff       ram_0x09F, ram_0x012
-    clrf        ram_0x013, ACCESS
-    clrf        ram_0x015, ACCESS
+    movff       stock_09F_b0_phys, stock_012_b0_phys
+    clrf        stock_013_acc, ACCESS
+    clrf        stock_015_acc, ACCESS
     movlw       0x0A
-    movwf       ram_0x014, ACCESS
+    movwf       stock_014_acc, ACCESS
     movlw       0x25
     call        main_core_service_41b6, 0x0
-    movwf       ram_0x01B, ACCESS
-    clrf        ram_0x019, ACCESS
-    movff       ram_0x01B, ram_0x018
+    movwf       stock_01B_acc, ACCESS
+    clrf        stock_019_acc, ACCESS
+    movff       stock_01B_b0_phys, stock_018_b0_phys
     call        uart_tx_block_from_buffer, 0x0
     movlw       0x21
     call        uart_tx_byte_blocking, 0x0
@@ -1160,150 +1160,150 @@ flow_fw_update_relay_172a:
     rcall       emit_crlf
     movlw       0x19
     movlb       0x0
-    subwf       ram_0x09F, W, BANKED
+    subwf       stock_09F_b0, W, BANKED
     bc          flow_fw_update_relay_1792
-    incf        ram_0x09F, F, BANKED
+    incf        stock_09F_b0, F, BANKED
     movlb       0x1
     movlw       0x01
-    movwf       ram_0x019, ACCESS
+    movwf       stock_019_acc, ACCESS
     movlw       0x9A
-    movwf       ram_0x018, ACCESS
+    movwf       stock_018_acc, ACCESS
     call        uart_tx_block_from_buffer, 0x0
     rcall       emit_crlf
     bra         flow_fw_update_relay_1796
 flow_fw_update_relay_1792:
-    incf        ram_0x09F, F, BANKED
+    incf        stock_09F_b0, F, BANKED
     bra         flow_fw_update_relay_18dc
 flow_fw_update_relay_1796:
-    movf        ram_0x043, W, ACCESS
+    movf        stock_043_acc, W, ACCESS
     bnz         flow_fw_update_relay_179e
     bra         flow_fw_update_relay_16fa
 flow_fw_update_relay_179c:
-    clrf        ram_0x08E, BANKED
+    clrf        stock_08E_b0, BANKED
 flow_fw_update_relay_179e:
     movlw       0xBF
     movlb       0x0
-    subwf       ram_0x084, W, BANKED
+    subwf       stock_084_b0, W, BANKED
     movlw       0x77
-    subwfb      ram_0x085, W, BANKED
+    subwfb      stock_085_b0, W, BANKED
     bc          flow_fw_update_relay_182e
     movlw       0x04
-    subwf       ram_0x08E, W, BANKED
+    subwf       stock_08E_b0, W, BANKED
     bc          flow_fw_update_relay_17bc
-    incf        ram_0x08E, F, BANKED
+    incf        stock_08E_b0, F, BANKED
     movlw       0x0A
     call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (10 ms)
 flow_fw_update_relay_17bc:
-    movff       ram_0x084, ram_0x086
-    movff       ram_0x085, ram_0x087
+    movff       stock_084_b0_phys, stock_086_b0_phys
+    movff       stock_085_b0_phys, stock_087_b0_phys
     movlw       0x3A
     movlb       0x1
-    movwf       ram_0x09A, BANKED
+    movwf       stock_19A_b1, BANKED
     movlw       0x31
-    movwf       ram_0x09B, BANKED
+    movwf       stock_19B_b1, BANKED
     movlw       0x30
-    movwf       ram_0x09C, BANKED
-    movff       ram_0x087, ram_0x01B
+    movwf       stock_19C_b1, BANKED
+    movff       stock_087_b0_phys, stock_01B_b0_phys
     rcall       nibble_to_hex_ascii_from_01B
-    movff       TABLAT, ram_0x19D
-    movff       ram_0x087, ram_0x01B
+    movff       TABLAT, stock_19D_b1_phys
+    movff       stock_087_b0_phys, stock_01B_b0_phys
     movlw       0x0F
     rcall       nibble_to_hex_ascii
-    movff       TABLAT, ram_0x19E
-    movff       ram_0x086, ram_0x01B
+    movff       TABLAT, stock_19E_b1_phys
+    movff       stock_086_b0_phys, stock_01B_b0_phys
     rcall       nibble_to_hex_ascii_from_01B
-    movff       TABLAT, ram_0x19F
-    movff       ram_0x086, ram_0x01B
+    movff       TABLAT, stock_19F_b1_phys
+    movff       stock_086_b0_phys, stock_01B_b0_phys
     movlw       0x0F
     rcall       nibble_to_hex_ascii
-    movff       TABLAT, ram_0x1A0
+    movff       TABLAT, stock_1A0_b1_phys
     movlw       0x30
-    movwf       ram_0x0A1, BANKED
-    movwf       ram_0x0A2, BANKED
-    clrf        ram_0x0A3, BANKED
+    movwf       stock_1A1_b1, BANKED
+    movwf       stock_1A2_b1, BANKED
+    clrf        stock_1A3_b1, BANKED
     movlw       0x09
-    movwf       ram_0x04B, ACCESS
+    movwf       stock_04B_acc, ACCESS
     call        main_uart_service_4860, 0x0
     movlb       0x1
     movlw       0x01
-    movwf       ram_0x019, ACCESS
+    movwf       stock_019_acc, ACCESS
     movlw       0x9A
-    movwf       ram_0x018, ACCESS
+    movwf       stock_018_acc, ACCESS
     call        uart_tx_block_from_buffer, 0x0
     movlb       0x0
-    clrf        ram_0x080, BANKED
-    clrf        ram_0x081, BANKED
+    clrf        stock_080_b0, BANKED
+    clrf        stock_081_b0, BANKED
 flow_fw_update_relay_182e:
     movlw       0xBF
-    subwf       ram_0x084, W, BANKED
+    subwf       stock_084_b0, W, BANKED
     movlw       0x77
-    subwfb      ram_0x085, W, BANKED
+    subwfb      stock_085_b0, W, BANKED
     bc          flow_fw_update_relay_18cc
-    btfss       ram_0x084, 0, BANKED
+    btfss       stock_084_b0, 0, BANKED
     bra         flow_fw_update_relay_18bc
-    movff       ram_0x046, ram_0x01B
+    movff       stock_046_b0_phys, stock_01B_b0_phys
     rcall       nibble_to_hex_ascii_from_01B
-    movff       TABLAT, ram_0x02F
-    movff       ram_0x046, ram_0x01B
+    movff       TABLAT, stock_02F_b0_phys
+    movff       stock_046_b0_phys, stock_01B_b0_phys
     movlw       0x0F
     rcall       nibble_to_hex_ascii
-    movff       TABLAT, ram_0x030
-    movff       ram_0x04A, ram_0x01B
+    movff       TABLAT, stock_030_b0_phys
+    movff       stock_04A_b0_phys, stock_01B_b0_phys
     rcall       nibble_to_hex_ascii_from_01B
-    movff       TABLAT, ram_0x031
-    movff       ram_0x04A, ram_0x01B
+    movff       TABLAT, stock_031_b0_phys
+    movff       stock_04A_b0_phys, stock_01B_b0_phys
     movlw       0x0F
     rcall       nibble_to_hex_ascii
-    movff       TABLAT, ram_0x032
-    clrf        ram_0x033, ACCESS
-    clrf        ram_0x019, ACCESS
+    movff       TABLAT, stock_032_b0_phys
+    clrf        stock_033_acc, ACCESS
+    clrf        stock_019_acc, ACCESS
     movlw       0x2F
-    movwf       ram_0x018, ACCESS
+    movwf       stock_018_acc, ACCESS
     call        uart_tx_block_from_buffer, 0x0
-    clrf        ram_0x047, ACCESS
+    clrf        stock_047_acc, ACCESS
     bra         flow_fw_update_relay_18a0
 flow_fw_update_relay_1884:
-    movf        ram_0x047, W, ACCESS
+    movf        stock_047_acc, W, ACCESS
     addlw       0x2F
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x9A
-    addwf       ram_0x04B, W, ACCESS
+    addwf       stock_04B_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movlw       0x01
     addwfc      FSR1H, F, ACCESS
     movff       INDF2, INDF1
-    incf        ram_0x047, F, ACCESS
-    incf        ram_0x04B, F, ACCESS
+    incf        stock_047_acc, F, ACCESS
+    incf        stock_04B_acc, F, ACCESS
 flow_fw_update_relay_18a0:
-    movf        ram_0x047, W, ACCESS
+    movf        stock_047_acc, W, ACCESS
     addlw       0x2F
     call        fsr2_page0_read_w, 0x0               ; W04-E03
     bnz         flow_fw_update_relay_1884
     movlw       0x9A
-    addwf       ram_0x04B, W, ACCESS
+    addwf       stock_04B_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     clrf        INDF2, ACCESS
     bra         flow_fw_update_relay_18c0
 flow_fw_update_relay_18bc:
-    movff       ram_0x04A, ram_0x046
+    movff       stock_04A_b0_phys, stock_046_b0_phys
 flow_fw_update_relay_18c0:
-    movf        ram_0x04A, W, ACCESS
+    movf        stock_04A_acc, W, ACCESS
     movlb       0x0
-    addwf       ram_0x080, F, BANKED
+    addwf       stock_080_b0, F, BANKED
     movlw       0x00
-    addwfc      ram_0x081, F, BANKED
+    addwfc      stock_081_b0, F, BANKED
     bra         flow_fw_update_relay_18d0
 flow_fw_update_relay_18cc:
-    clrf        ram_0x080, BANKED
-    clrf        ram_0x081, BANKED
+    clrf        stock_080_b0, BANKED
+    clrf        stock_081_b0, BANKED
 flow_fw_update_relay_18d0:
-    infsnz      ram_0x084, F, BANKED
-    incf        ram_0x085, F, BANKED
-    incf        ram_0x049, F, ACCESS
+    infsnz      stock_084_b0, F, BANKED
+    incf        stock_085_b0, F, BANKED
+    incf        stock_049_acc, F, ACCESS
     movlw       0x1F
-    cpfsgt      ram_0x049, ACCESS
+    cpfsgt      stock_049_acc, ACCESS
     bra         flow_fw_update_relay_15e4
 flow_fw_update_relay_18dc:
     return      0
@@ -1346,7 +1346,7 @@ emit_crlf:
 ; nibble_to_hex_ascii in both layouts.
 ; ---------------------------------------------------------------------------
 nibble_to_hex_ascii_from_01B:
-    swapf       ram_0x01B, F, ACCESS                ; high nibble -> low
+    swapf       stock_01B_acc, F, ACCESS                ; high nibble -> low
     movlw       0x0F                                ; mask, consumed by shared andwf below
 
 ; ---------------------------------------------------------------------------
@@ -1359,8 +1359,8 @@ nibble_to_hex_ascii_from_01B:
 ; uses ram_0x004 for the firmware-update path.
 ; ---------------------------------------------------------------------------
 nibble_to_hex_ascii:
-    andwf       ram_0x01B, F, ACCESS
-    movf        ram_0x01B, W, ACCESS
+    andwf       stock_01B_acc, F, ACCESS
+    movf        stock_01B_acc, W, ACCESS
     rcall       hex_lookup_table_ptr                ; W=nibble -> TBLPTR -> hex_lookup_table[nibble]
     tblrd*
     return      0
@@ -1404,12 +1404,12 @@ hex_lookup_table_ptr:
 ;        main_i2c_service_2100, main_usb_service_45a2, main_timer_service_48a6.
 ; ---------------------------------------------------------------------------
 cmd_dispatch_gated:
-    movff       WREG, ram_0x0FD
-    btfss       active_flags, 3, ACCESS
+    movff       WREG, stock_0FD_b0_phys
+    btfss       active_flags_acc, 3, ACCESS
     bra         cmd_gate_reject
-    btfss       event_flags, 1, BANKED
+    btfss       event_flags_b0, 1, BANKED
     bra         flow_cmd_dispatch_gated_19a8
-    bsf         event_flags, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
     bra         flow_cmd_dispatch_gated_1970
 ; W05-E07: tail-call merge — 4 callers previously did
 ;   rcall cmd_dispatch_gated_i2c_pair / bra flow_cmd_dispatch_gated_1990.
@@ -1419,30 +1419,30 @@ cmd_dispatch_gated:
 ; size unchanged (return -> bra, both 1 word).
 flow_cmd_dispatch_gated_18fe:
     movlw       0x09
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x70
     bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_1918:
     movlw       0x0A
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0xB0
     bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_1932:
     movlw       0x08
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x30
     bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_194c:
     movlw       0x0B
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0xF0
     bra         cmd_dispatch_gated_i2c_pair
 cmd_dispatch_gated_i2c_pair:
-    movwf       ram_0x00D, ACCESS
+    movwf       stock_00D_acc, ACCESS
     movlw       0x0D
     call        i2c_secondary_dev_write, 0x0
-    movf        ram_0x00D, W, ACCESS
-    movwf       ram_0x006, ACCESS
+    movf        stock_00D_acc, W, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x08
     call        i2c_secondary_dev_write, 0x0
     call        main_i2c_service_48e2, 0x0
@@ -1452,11 +1452,11 @@ flow_cmd_dispatch_gated_1966:
     movlw       0x01
     call        i2c_tas3108_reg1f_write, 0x0
     movlw       0x08
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x30
     bra         cmd_dispatch_gated_i2c_pair
 flow_cmd_dispatch_gated_1970:
-    movf        ram_0x093, W, BANKED
+    movf        stock_093_b0, W, BANKED
     bz          flow_cmd_dispatch_gated_1966
     xorlw       0x01
     bz          flow_cmd_dispatch_gated_18fe
@@ -1475,38 +1475,38 @@ flow_cmd_dispatch_gated_1970:
 flow_cmd_dispatch_gated_1990:
     rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
-    bcf         event_flags, 1, BANKED
-    bsf         ram_0x0BD, 0, BANKED
+    bcf         event_flags_b0, 1, BANKED
+    bsf         filename_dirty_flags_b0, 0, BANKED
     call        main_timer_service_48a6, 0x0
 flow_cmd_dispatch_gated_19a8:
     movlb       0x0
-    btfss       event_flags, 3, BANKED
+    btfss       event_flags_b0, 3, BANKED
     bra         flow_cmd_dispatch_gated_1a76
     ; V3.2: skip unmute if a user cmd 0x03 mute arrived this pass.
     ; event_flags.5 is only set by cmd 0x03 mute/unmute handlers;
     ; preset_force_mute clears it, so a set bit here means user intent.
-    btfss       event_flags, 5, BANKED
-    bcf         active_flags, 4, ACCESS
+    btfss       event_flags_b0, 5, BANKED
+    bcf         active_flags_acc, 4, ACCESS
     ; Leave event_flags.5 for the mute handler at 1a9c to process.
-    bsf         event_flags, 6, BANKED
-    clrf        ram_0x0A4, BANKED
-    movff       ram_0x0A4, ram_0x0B0
-    clrf        ram_0x09A, BANKED
+    bsf         event_flags_b0, 6, BANKED
+    clrf        stock_0A4_b0, BANKED
+    movff       stock_0A4_b0_phys, stock_0B0_b0_phys
+    clrf        stock_09A_b0, BANKED
     bra         flow_cmd_dispatch_gated_19d6
 flow_cmd_dispatch_gated_19be:
-    movff       ram_0x09B, ram_0x09A
+    movff       stock_09B_b0_phys, stock_09A_b0_phys
     bra         flow_cmd_dispatch_gated_19e6
 flow_cmd_dispatch_gated_19c4:
-    movff       ram_0x09C, ram_0x09A
+    movff       stock_09C_b0_phys, stock_09A_b0_phys
     bra         flow_cmd_dispatch_gated_19e6
 flow_cmd_dispatch_gated_19ca:
-    movff       ram_0x09D, ram_0x09A
+    movff       stock_09D_b0_phys, stock_09A_b0_phys
     bra         flow_cmd_dispatch_gated_19e6
 flow_cmd_dispatch_gated_19d0:
-    movff       ram_0x09E, ram_0x09A
+    movff       stock_09E_b0_phys, stock_09A_b0_phys
     bra         flow_cmd_dispatch_gated_19e6
 flow_cmd_dispatch_gated_19d6:
-    movf        ram_0x093, W, BANKED
+    movf        stock_093_b0, W, BANKED
     bz          flow_cmd_dispatch_gated_19be
     xorlw       0x05
     bz          flow_cmd_dispatch_gated_19c4
@@ -1515,56 +1515,56 @@ flow_cmd_dispatch_gated_19d6:
     xorlw       0x01
     bz          flow_cmd_dispatch_gated_19d0
 flow_cmd_dispatch_gated_19e6:
-    movf        ram_0x09A, W, BANKED
-    addwf       computed_volume, W, BANKED
-    movwf       ram_0x00D, ACCESS
+    movf        stock_09A_b0, W, BANKED
+    addwf       computed_volume_b0, W, BANKED
+    movwf       stock_00D_acc, ACCESS
     movlw       0x00
-    addwfc      computed_volume_1, W, BANKED
-    movwf       ram_0x00E, ACCESS
+    addwfc      computed_volume_1_b0, W, BANKED
+    movwf       stock_00E_acc, ACCESS
     movlw       0x00
-    addwfc      computed_volume_2, W, BANKED
-    movwf       ram_0x00F, ACCESS
+    addwfc      computed_volume_2_b0, W, BANKED
+    movwf       stock_00F_acc, ACCESS
     movlw       0x00
-    addwfc      computed_volume_3, W, BANKED
-    movwf       ram_0x010, ACCESS
+    addwfc      computed_volume_3_b0, W, BANKED
+    movwf       stock_010_acc, ACCESS
     call        main_core_service_3e0a, 0x0
-    movff       ram_0x00D, ram_0x012
-    movff       ram_0x00E, ram_0x013
-    movff       ram_0x00F, ram_0x014
-    movff       ram_0x010, ram_0x015
+    movff       stock_00D_b0_phys, stock_012_b0_phys
+    movff       stock_00E_b0_phys, stock_013_b0_phys
+    movff       stock_00F_b0_phys, stock_014_b0_phys
+    movff       stock_010_b0_phys, stock_015_b0_phys
     movlw       0x47
-    movwf       ram_0x016, ACCESS
+    movwf       stock_016_acc, ACCESS
     movlw       0xC9
-    movwf       ram_0x017, ACCESS
+    movwf       stock_017_acc, ACCESS
     movlw       0xEB
-    movwf       ram_0x018, ACCESS
+    movwf       stock_018_acc, ACCESS
     movlw       0x3D
-    movwf       ram_0x019, ACCESS
+    movwf       stock_019_acc, ACCESS
     call        main_core_service_2abc, 0x0
-    movff       ram_0x012, ram_0x0ED
-    movff       ram_0x013, ram_0x0EE
-    movff       ram_0x014, ram_0x0EF
-    movff       ram_0x015, ram_0x0F0
-    movff       ram_0x0ED, ram_0x02F
-    movff       ram_0x0EE, ram_0x030
-    movff       ram_0x0EF, ram_0x031
-    movff       ram_0x0F0, ram_0x032
+    movff       stock_012_b0_phys, stock_0ED_b0_phys
+    movff       stock_013_b0_phys, stock_0EE_b0_phys
+    movff       stock_014_b0_phys, stock_0EF_b0_phys
+    movff       stock_015_b0_phys, stock_0F0_b0_phys
+    movff       stock_0ED_b0_phys, stock_02F_b0_phys
+    movff       stock_0EE_b0_phys, stock_030_b0_phys
+    movff       stock_0EF_b0_phys, stock_031_b0_phys
+    movff       stock_0F0_b0_phys, stock_032_b0_phys
     call        main_core_service_297e, 0x0
-    movff       ram_0x02F, i2c_coeff_0
-    movff       ram_0x030, i2c_coeff_1
-    movff       ram_0x031, i2c_coeff_2
-    movff       ram_0x032, i2c_coeff_3
+    movff       stock_02F_b0_phys, i2c_coeff_0_b0_phys
+    movff       stock_030_b0_phys, i2c_coeff_1_b0_phys
+    movff       stock_031_b0_phys, i2c_coeff_2_b0_phys
+    movff       stock_032_b0_phys, i2c_coeff_3_b0_phys
     call        volume_dsp_write, 0x0       ; V3.1 Fix B: verified volume write
     rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
-    bsf         ram_0x0BD, 0, BANKED
+    bsf         filename_dirty_flags_b0, 0, BANKED
     call        main_timer_service_48a6, 0x0
 flow_cmd_dispatch_gated_1a76:
-    btfss       active_flags, 7, ACCESS
+    btfss       active_flags_acc, 7, ACCESS
     bra         flow_cmd_dispatch_gated_1a9c
     ; V3.2: cancel any active preset job — reconnect does a full table apply
     movlb       0x2
-    clrf        preset_job_state, BANKED
+    clrf        preset_job_state_b2, BANKED
     bcf         T3CON, 0, ACCESS
     bcf         PIE2, 1, ACCESS
     bcf         PIR2, 1, ACCESS
@@ -1576,46 +1576,46 @@ flow_cmd_dispatch_gated_1a76:
     ; preset_load_filename would be unsafe to run, but clearing bit7 here
     ; makes the flasher believe the restored preset is coherent while the
     ; visible filename RAM may still belong to the previous preset.
-    btfsc       filename_dirty_flags, 5, BANKED
+    btfsc       filename_dirty_flags_b0, 5, BANKED
     bra         flow_cmd_dispatch_gated_reapply_wait_name
-    btfsc       filename_dirty_flags, 6, BANKED
+    btfsc       filename_dirty_flags_b0, 6, BANKED
     bra         flow_cmd_dispatch_gated_reapply_wait_name
     bcf         INTCON, 7, ACCESS
     call        preset_load_filename, 0x0
     bsf         INTCON, 7, ACCESS
 flow_cmd_dispatch_gated_reapply_skip_name:
     bsf         RCSTA, 4, ACCESS
-    bcf         active_flags, 7, ACCESS
+    bcf         active_flags_acc, 7, ACCESS
     movlb       0x0
-    btfss       event_flags, 5, BANKED
-    btfsc       active_flags, 4, ACCESS
+    btfss       event_flags_b0, 5, BANKED
+    btfsc       active_flags_acc, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1a9c
-    bsf         event_flags, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
     bra         flow_cmd_dispatch_gated_1a9c
 flow_cmd_dispatch_gated_reapply_wait_name:
     bsf         RCSTA, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1a9c
 flow_cmd_dispatch_gated_1a9c:
     movlb       0x0
-    btfss       event_flags, 5, BANKED
+    btfss       event_flags_b0, 5, BANKED
     bra         flow_cmd_dispatch_gated_1aca
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1ab6
     call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
     bra         flow_cmd_dispatch_gated_1ab8
 flow_cmd_dispatch_gated_1ab6:
-    bsf         event_flags, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
 flow_cmd_dispatch_gated_1ab8:
     rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
-    bcf         event_flags, 5, BANKED
+    bcf         event_flags_b0, 5, BANKED
 flow_cmd_dispatch_gated_1aca:
-    btfss       event_flags, 6, BANKED
+    btfss       event_flags_b0, 6, BANKED
     bra         flow_cmd_dispatch_gated_1baa
     movlw       0x5F
-    movwf       ram_0x014, ACCESS
+    movwf       stock_014_acc, ACCESS
     movlb       0x0
-    btfsc       ram_0x0A4, 0, BANKED
+    btfsc       stock_0A4_b0, 0, BANKED
     bra         flow_cmd_dispatch_gated_1ad8
     movlw       0x1C
     bra         flow_cmd_dispatch_gated_1ada
@@ -1623,7 +1623,7 @@ flow_cmd_dispatch_gated_1ad8:
     movlw       0x08
 flow_cmd_dispatch_gated_1ada:
     rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
-    btfsc       ram_0x0A4, 1, BANKED
+    btfsc       stock_0A4_b0, 1, BANKED
     bra         flow_cmd_dispatch_gated_1aee
     movlw       0x44
     bra         flow_cmd_dispatch_gated_1af0
@@ -1631,7 +1631,7 @@ flow_cmd_dispatch_gated_1aee:
     movlw       0x30
 flow_cmd_dispatch_gated_1af0:
     rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
-    btfsc       ram_0x0A4, 2, BANKED
+    btfsc       stock_0A4_b0, 2, BANKED
     bra         flow_cmd_dispatch_gated_1b04
     movlw       0x6C
     bra         flow_cmd_dispatch_gated_1b06
@@ -1639,7 +1639,7 @@ flow_cmd_dispatch_gated_1b04:
     movlw       0x58
 flow_cmd_dispatch_gated_1b06:
     rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
-    btfsc       ram_0x0A4, 3, BANKED
+    btfsc       stock_0A4_b0, 3, BANKED
     bra         flow_cmd_dispatch_gated_1b1a
     movlw       0x94
     bra         flow_cmd_dispatch_gated_1b1c
@@ -1647,7 +1647,7 @@ flow_cmd_dispatch_gated_1b1a:
     movlw       0x80
 flow_cmd_dispatch_gated_1b1c:
     rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
-    btfsc       ram_0x0A4, 4, BANKED
+    btfsc       stock_0A4_b0, 4, BANKED
     bra         flow_cmd_dispatch_gated_1b30
     movlw       0xBC
     bra         flow_cmd_dispatch_gated_1b32
@@ -1655,46 +1655,46 @@ flow_cmd_dispatch_gated_1b30:
     movlw       0xA8
 flow_cmd_dispatch_gated_1b32:
     rcall       i2c_381c_with_w_bank0           ; W05-E01: factored 3-line pattern
-    btfsc       ram_0x0A4, 5, BANKED
+    btfsc       stock_0A4_b0, 5, BANKED
     bra         flow_cmd_dispatch_gated_1b46
     movlw       0xE4
     bra         flow_cmd_dispatch_gated_1b48
 flow_cmd_dispatch_gated_1b46:
     movlw       0xD0
 flow_cmd_dispatch_gated_1b48:
-    movwf       ram_0x013, ACCESS
+    movwf       stock_013_acc, ACCESS
     call        main_i2c_service_381c, 0x0
     bra         flow_cmd_dispatch_gated_1b8c
 flow_cmd_dispatch_gated_1b8c:
     rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
-    bcf         event_flags, 6, BANKED
+    bcf         event_flags_b0, 6, BANKED
 flow_cmd_dispatch_gated_1baa:
-    btfss       event_flags, 4, BANKED
+    btfss       event_flags_b0, 4, BANKED
     bra         flow_cmd_dispatch_gated_1bc8
     rcall       main_i2c_service_2100
     movlb       0x0
-    bcf         event_flags, 4, BANKED
-    bsf         ram_0x0BD, 1, BANKED
+    bcf         event_flags_b0, 4, BANKED
+    bsf         filename_dirty_flags_b0, 1, BANKED
     movlw       0x05
-    movwf       ram_0x0C1, BANKED
-    movf        ram_0x0FD, W, BANKED
+    movwf       stock_0C1_b0, BANKED
+    movf        stock_0FD_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
     call        main_usb_service_45a2, 0x0
     call        main_timer_service_48a6, 0x0
 flow_cmd_dispatch_gated_1bc8:
     movlb       0x0
-    btfss       ram_0x07F, 0, BANKED
+    btfss       dsp_fault_flags_b0, 0, BANKED
     bra         flow_cmd_dispatch_gated_1bd6
-    bcf         ram_0x07F, 0, BANKED
-    bsf         ram_0x0BD, 2, BANKED
+    bcf         dsp_fault_flags_b0, 0, BANKED
+    bsf         filename_dirty_flags_b0, 2, BANKED
     call        main_timer_service_48a6, 0x0
 flow_cmd_dispatch_gated_1bd6:
     movlb       0x0
-    btfss       ram_0x07F, 1, BANKED
+    btfss       dsp_fault_flags_b0, 1, BANKED
     bra         cmd_gate_reject
-    bcf         ram_0x07F, 1, BANKED
-    bsf         ram_0x0BD, 2, BANKED
+    bcf         dsp_fault_flags_b0, 1, BANKED
+    bsf         filename_dirty_flags_b0, 2, BANKED
     call        main_timer_service_48a6, 0x0
 cmd_gate_reject:
     return      0
@@ -1717,8 +1717,8 @@ cmd_gate_reject:
 usb_mailbox_service_05:
     movlw       0x05
     movlb       0x0
-    movwf       ram_0x0C1, BANKED
-    movf        ram_0x0FD, W, BANKED
+    movwf       stock_0C1_b0, BANKED
+    movf        stock_0FD_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
     call        main_usb_service_45a2, 0x0
     return      0
@@ -1739,7 +1739,7 @@ usb_mailbox_service_05:
 ; Savings : 5 sites × (8 B → 2 B rcall) − 10 B helper = 20 B.
 ; ---------------------------------------------------------------------------
 i2c_381c_with_w_bank0:
-    movwf       ram_0x013, ACCESS
+    movwf       stock_013_acc, ACCESS
     call        main_i2c_service_381c, 0x0
     movlb       0x0
     return      0
@@ -1823,7 +1823,7 @@ setup_fsr2_page_1:
 ;        send_status_burst, volume_dsp_write, preset_select_handler.
 ; ---------------------------------------------------------------------------
 main_uart_service_1be6:
-    clrf        ram_0x009, ACCESS
+    clrf        stock_009_acc, ACCESS
     bra         flow_main_uart_service_1be6_1e78
 flow_main_uart_service_1be6_1bea:
     call        rx_ring_has_data, 0x0
@@ -1832,38 +1832,38 @@ flow_main_uart_service_1be6_1bea:
     bra         flow_main_uart_service_1be6_1e7c
 flow_main_uart_service_1be6_1bf4:
     call        rx_ring_read, 0x0
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
     movlw       0x7F
-    cpfsgt      ram_0x00A, ACCESS
+    cpfsgt      stock_00A_acc, ACCESS
     bra         flow_main_uart_service_1be6_1c42
-    movf        ram_0x00A, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
     xorlw       0xB0
     bnz         flow_main_uart_service_1be6_1c0e
     movlw       0x01
-    movwf       rx_frame_position, BANKED
-    bcf         active_flags, 0, ACCESS
+    movwf       rx_frame_position_b0, BANKED
+    bcf         active_flags_acc, 0, ACCESS
     bra         parser_route_phase_handler
 flow_main_uart_service_1be6_1c0e:
-    movf        ram_0x00A, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
     xorlw       0xB1
     bnz         flow_main_uart_service_1be6_1c1c
     movlw       0x01
-    movwf       rx_frame_position, BANKED
-    bsf         active_flags, 0, ACCESS
+    movwf       rx_frame_position_b0, BANKED
+    bsf         active_flags_acc, 0, ACCESS
     bra         parser_route_phase_handler
 flow_main_uart_service_1be6_1c1c:
-    clrf        rx_frame_position, BANKED
-    bcf         active_flags, 0, ACCESS
-    movff       ram_0x00A, ram_0x005
+    clrf        rx_frame_position_b0, BANKED
+    bcf         active_flags_acc, 0, ACCESS
+    movff       stock_00A_b0_phys, saved_w_b0_phys
     movlw       0xF0
-    andwf       ram_0x005, F, ACCESS
-    movf        ram_0x005, W, ACCESS
+    andwf       stock_005_acc, F, ACCESS
+    movf        stock_005_acc, W, ACCESS
     xorlw       0xB0
     bnz         parser_route_phase_handler
-    movf        ram_0x00A, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
     xorlw       0xBF
     btfss       STATUS, 2, ACCESS
-    decf        ram_0x00A, F, ACCESS
+    decf        stock_00A_acc, F, ACCESS
 ; ---------------------------------------------------------------------------
 ; parser_route_phase_handler
 ; Receives a route byte (0xB0/0xB1/0xBF/...) and decides whether to forward
@@ -1873,40 +1873,40 @@ flow_main_uart_service_1be6_1c1c:
 ; multi-MAIN install behave as one current loop to CONTROL.
 ; ---------------------------------------------------------------------------
 parser_route_phase_handler:
-    btfsc       active_flags, 0, ACCESS              ; addressed to us?
+    btfsc       active_flags_acc, 0, ACCESS              ; addressed to us?
     bra         flow_main_uart_service_1be6_1e80     ; yes -> consume locally
-    movf        ram_0x00A, W, ACCESS                 ; no  -> echo to next link
+    movf        stock_00A_acc, W, ACCESS                 ; no  -> echo to next link
     call        uart_tx_byte_blocking, 0x0
     bra         flow_main_uart_service_1be6_1e80
 flow_main_uart_service_1be6_1c42:
-    btfsc       active_flags, 0, ACCESS
+    btfsc       active_flags_acc, 0, ACCESS
     bra         flow_main_uart_service_1be6_1c52
     movlw       0x02
-    subwf       rx_frame_position, W, BANKED
+    subwf       rx_frame_position_b0, W, BANKED
     bc          flow_main_uart_service_1be6_1c52
-    movf        ram_0x00A, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
     call        uart_tx_byte_blocking, 0x0
 flow_main_uart_service_1be6_1c52:
     movlb       0x0
-    movf        rx_frame_position, W, BANKED
+    movf        rx_frame_position_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    incf        rx_frame_position, F, BANKED
+    incf        rx_frame_position_b0, F, BANKED
     movlw       0x02
-    subwf       rx_frame_position, W, BANKED
+    subwf       rx_frame_position_b0, W, BANKED
     bc          flow_main_uart_service_1be6_1c62
     bra         flow_main_uart_service_1be6_1e80
 flow_main_uart_service_1be6_1c62:
-    movf        rx_frame_position, W, BANKED
+    movf        rx_frame_position_b0, W, BANKED
     xorlw       0x02
     bnz         flow_main_uart_service_1be6_1c6e
-    movff       ram_0x00A, ram_0x0A2
+    movff       stock_00A_b0_phys, stock_0A2_b0_phys
     bra         flow_main_uart_service_1be6_1e80
 flow_main_uart_service_1be6_1c6e:
-    movff       ram_0x00A, ram_0x0A3
-    movff       ram_0x00A, ram_0x0BC
-    bsf         active_flags, 6, ACCESS
+    movff       stock_00A_b0_phys, current_cmd_data_b0_phys
+    movff       stock_00A_b0_phys, stock_0BC_b0_phys
+    bsf         active_flags_acc, 6, ACCESS
     movlw       0x01
-    movwf       rx_frame_position, BANKED
+    movwf       rx_frame_position_b0, BANKED
     bra         cmd_dispatch_xor_chain
 ; ---------------------------------------------------------------------------
 ; wake_request_handler                     (cmd=0x03 data=0x01)
@@ -1919,18 +1919,18 @@ flow_main_uart_service_1be6_1c6e:
 ; ---------------------------------------------------------------------------
 wake_request_handler:
     movlw       0x01
-    btfsc       active_flags, 3, ACCESS              ; gate already open?
+    btfsc       active_flags_acc, 3, ACCESS              ; gate already open?
     movlw       0x00                                 ; yes -> ram_0x005 = 0
-    movwf       ram_0x005, ACCESS                    ; ram_0x005 = (gate-was-closed) ? 1 : 0
-    rlncf       ram_0x005, F, ACCESS
-    rlncf       ram_0x005, F, ACCESS                 ; shifted into bit2 mask position
-    movf        event_flags, W, BANKED
-    xorwf       ram_0x005, W, ACCESS
+    movwf       stock_005_acc, ACCESS                    ; ram_0x005 = (gate-was-closed) ? 1 : 0
+    rlncf       stock_005_acc, F, ACCESS
+    rlncf       stock_005_acc, F, ACCESS                 ; shifted into bit2 mask position
+    movf        event_flags_b0, W, BANKED
+    xorwf       stock_005_acc, W, ACCESS
     andlw       0xFB                                 ; preserve every bit except bit2
-    xorwf       ram_0x005, W, ACCESS                 ; OR in bit2 if we computed it
-    movwf       event_flags, BANKED
-    btfsc       event_flags, 2, BANKED               ; event raised?
-    bsf         active_flags, 3, ACCESS              ; open the gate
+    xorwf       stock_005_acc, W, ACCESS                 ; OR in bit2 if we computed it
+    movwf       event_flags_b0, BANKED
+    btfsc       event_flags_b0, 2, BANKED               ; event raised?
+    bsf         active_flags_acc, 3, ACCESS              ; open the gate
     bra         flow_main_uart_service_1be6_1e6c
 
 ; ---------------------------------------------------------------------------
@@ -1945,16 +1945,16 @@ wake_request_handler:
 ; wake reopens it.
 ; ---------------------------------------------------------------------------
 standby_request_handler:
-    btfss       active_flags, 3, ACCESS              ; gate currently open?
+    btfss       active_flags_acc, 3, ACCESS              ; gate currently open?
     bra         flow_main_uart_service_1be6_1ca2     ; no  -> just consume the event
-    bsf         event_flags, 2, BANKED               ; yes -> raise standby event
+    bsf         event_flags_b0, 2, BANKED               ; yes -> raise standby event
     bra         flow_main_uart_service_1be6_1ca6
 flow_main_uart_service_1be6_1ca2:
     movlb       0x0
     nop                                             ; duplicate standby: keep pending bit2 intact
 flow_main_uart_service_1be6_1ca6:
-    btfsc       event_flags, 2, BANKED
-    bcf         active_flags, 3, ACCESS              ; close the gate (BROADCAST drops all MAINs)
+    btfsc       event_flags_b0, 2, BANKED
+    bcf         active_flags_acc, 3, ACCESS              ; close the gate (BROADCAST drops all MAINs)
     bra         flow_main_uart_service_1be6_1e6c
 ; ---------------------------------------------------------------------------
 ; cmd03_mute_on_handler                    (cmd=0x03 data=0x02 — mute on)
@@ -1965,44 +1965,44 @@ flow_main_uart_service_1be6_1ca6:
 ; comparing user-mute (bit4) against the shadow forced-mute (bit5).
 ; ---------------------------------------------------------------------------
 cmd03_mute_on_handler:
-    btfsc       ram_0x094, 3, BANKED                 ; HID query mode?
+    btfsc       stock_094_b0, 3, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1cd6
-    bsf         active_flags, 4, ACCESS              ; user mute on
+    bsf         active_flags_acc, 4, ACCESS              ; user mute on
     ; V3.2: if preset job active, record user wants mute
     movlb       0x2
-    tstfsz      preset_job_state, BANKED             ; skip if IDLE
-    bsf         preset_job_flags, 1, BANKED          ; latch user_mute_desired
+    tstfsz      preset_job_state_b2, BANKED             ; skip if IDLE
+    bsf         preset_job_flags_b2, 1, BANKED          ; latch user_mute_desired
     movlb       0x0
     movlw       0x01
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     movlw       0x00
-    movwf       ram_0x005, ACCESS
-    btfss       active_flags, 5, ACCESS
+    movwf       stock_005_acc, ACCESS
+    btfss       active_flags_acc, 5, ACCESS
     bra         flow_main_uart_service_1be6_1cc2
     movlw       0x01
     bra         flow_main_uart_service_1be6_1cc4
 flow_main_uart_service_1be6_1cc2:
     movlw       0x00
 flow_main_uart_service_1be6_1cc4:
-    xorwf       ram_0x005, F, ACCESS
+    xorwf       stock_005_acc, F, ACCESS
     btfss       STATUS, 2, ACCESS
 flow_main_uart_service_1be6_1cc8:
-    bsf         event_flags, 5, BANKED
+    bsf         event_flags_b0, 5, BANKED
 flow_main_uart_service_1be6_1cca:
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     bra         flow_main_uart_service_1be6_1cd2
-    bsf         active_flags, 5, ACCESS
+    bsf         active_flags_acc, 5, ACCESS
     bra         flow_main_uart_service_1be6_1cd4
 flow_main_uart_service_1be6_1cd2:
-    bcf         active_flags, 5, ACCESS
+    bcf         active_flags_acc, 5, ACCESS
 flow_main_uart_service_1be6_1cd4:
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1cd6:
     movlw       0x02
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     movlw       0x03
-    movwf       ram_0x0BC, BANKED
-    bcf         ram_0x094, 3, BANKED
+    movwf       stock_0BC_b0, BANKED
+    bcf         stock_094_b0, 3, BANKED
     bra         flow_main_uart_service_1be6_1e6c
 ; ---------------------------------------------------------------------------
 ; cmd03_mute_off_handler                   (cmd=0x03 data=0x03 — mute off)
@@ -2016,34 +2016,34 @@ flow_main_uart_service_1be6_1cd6:
 ; brief loud burst because the table wasn't fully applied yet.
 ; ---------------------------------------------------------------------------
 cmd03_mute_off_handler:
-    btfsc       ram_0x094, 3, BANKED                 ; HID query mode?
+    btfsc       stock_094_b0, 3, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1cd6
     ; V3.2: during a force-muted preset job, suppress the actual mute-off
     ; so the DSP stays muted while the table apply is in progress.
     ; Only record the user's desire for COMMIT to act on later.
     movlb       0x2
-    tstfsz      preset_job_state, BANKED             ; skip next if IDLE
-    btfss       preset_job_flags, 0, BANKED          ; skip next if force-muted
+    tstfsz      preset_job_state_b2, BANKED             ; skip next if IDLE
+    btfss       preset_job_flags_b2, 0, BANKED          ; skip next if force-muted
     bra         cmd03_mute_off_apply
-    bcf         preset_job_flags, 1, BANKED          ; record: user wants unmute
+    bcf         preset_job_flags_b2, 1, BANKED          ; record: user wants unmute
     movlb       0x0
     bra         flow_main_uart_service_1be6_1e6c
 cmd03_mute_off_apply:
     movlb       0x0
-    bcf         active_flags, 4, ACCESS
+    bcf         active_flags_acc, 4, ACCESS
     ; V3.2: if preset job active (non-force-muted), record user wants unmute
     movlb       0x2
-    tstfsz      preset_job_state, BANKED
-    bcf         preset_job_flags, 1, BANKED
+    tstfsz      preset_job_state_b2, BANKED
+    bcf         preset_job_flags_b2, 1, BANKED
     movlb       0x0
     movlw       0x01
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     movlw       0x00
-    movwf       ram_0x005, ACCESS
-    btfss       active_flags, 5, ACCESS
+    movwf       stock_005_acc, ACCESS
+    btfss       active_flags_acc, 5, ACCESS
     bra         flow_main_uart_service_1be6_1cc2
     movlw       0x01
-    xorwf       ram_0x005, F, ACCESS
+    xorwf       stock_005_acc, F, ACCESS
     bnz         flow_main_uart_service_1be6_1cc8
     bra         flow_main_uart_service_1be6_1cca
 ; ---------------------------------------------------------------------------
@@ -2058,7 +2058,7 @@ cmd03_mute_off_apply:
 ; Any other data falls through to "no-op consume" (1e6c).
 ; ---------------------------------------------------------------------------
 cmd03_subdispatch:
-    movf        ram_0x0A3, W, BANKED
+    movf        current_cmd_data_b0, W, BANKED
     bz          standby_request_handler              ; data=0x00
     xorlw       0x01
     bz          wake_request_handler                 ; data=0x01
@@ -2086,18 +2086,18 @@ cmd04_status_response:
 ; carries it back.
 ; ---------------------------------------------------------------------------
 cmd06_input_select_handler:
-    btfsc       ram_0x094, 0, BANKED                 ; HID query mode?
+    btfsc       stock_094_b0, 0, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1d22
-    movff       ram_0x0A3, input_select              ; commit new input
-    movff       input_select, input_select_mirror
+    movff       current_cmd_data_b0_phys, input_select_b0_phys              ; commit new input
+    movff       input_select_b0_phys, input_select_mirror_b0_phys
     movlb       0x0
-    setf        ram_0x0AB, BANKED                    ; force route re-evaluation
+    setf        stock_0AB_b0, BANKED                    ; force route re-evaluation
     movlw       0x65
-    movwf       ram_0x0BB, BANKED                    ; run slow I2C service immediately
+    movwf       stock_0BB_b0, BANKED                    ; run slow I2C service immediately
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d22:
-    movff       input_select, ram_0x0BC
-    bcf         ram_0x094, 0, BANKED
+    movff       input_select_b0_phys, stock_0BC_b0_phys
+    bcf         stock_094_b0, 0, BANKED
     bra         flow_main_uart_service_1be6_1e6c
 ; ---------------------------------------------------------------------------
 ; volume_cmd_handler                       (cmd=0x07 — volume set)
@@ -2114,50 +2114,50 @@ flow_main_uart_service_1be6_1d22:
 ; cleared the dirty bit, so a NACK was silent (DSP2 bug).
 ; ---------------------------------------------------------------------------
 volume_cmd_handler:
-    btfsc       ram_0x094, 1, BANKED                 ; HID query mode?
+    btfsc       stock_094_b0, 1, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1d80
     movlw       0xA0                                 ; -0x60 low byte (two's complement)
-    movwf       ram_0x005, ACCESS
-    setf        ram_0x006, ACCESS                    ; 0xFFFF... high byte
-    movf        ram_0x0A3, W, BANKED                 ; data byte
-    movwf       ram_0x007, ACCESS
-    clrf        ram_0x008, ACCESS
-    movf        ram_0x005, W, ACCESS
-    addwf       ram_0x007, F, ACCESS                 ; data + 0xA0 (8-bit)
-    movf        ram_0x006, W, ACCESS
-    addwfc      ram_0x008, F, ACCESS                 ; carry → upper byte
-    movff       ram_0x007, computed_volume
-    movff       ram_0x008, computed_volume_1
+    movwf       stock_005_acc, ACCESS
+    setf        stock_006_acc, ACCESS                    ; 0xFFFF... high byte
+    movf        current_cmd_data_b0, W, BANKED                 ; data byte
+    movwf       stock_007_acc, ACCESS
+    clrf        stock_008_acc, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    addwf       stock_007_acc, F, ACCESS                 ; data + 0xA0 (8-bit)
+    movf        stock_006_acc, W, ACCESS
+    addwfc      stock_008_acc, F, ACCESS                 ; carry → upper byte
+    movff       stock_007_b0_phys, computed_volume_b0_phys
+    movff       stock_008_b0_phys, computed_volume_1_b0_phys
     movlw       0x00
-    btfsc       computed_volume_1, 7, BANKED         ; sign-extend to 32 bits
+    btfsc       computed_volume_1_b0, 7, BANKED         ; sign-extend to 32 bits
     movlw       0xFF
-    movwf       computed_volume_2, BANKED
-    movwf       computed_volume_3, BANKED
-    xorwf       logical_volume_3, W, BANKED
+    movwf       computed_volume_2_b0, BANKED
+    movwf       computed_volume_3_b0, BANKED
+    xorwf       logical_volume_3_b0, W, BANKED
     bnz         flow_main_uart_service_1be6_1d68
-    movf        logical_volume_2, W, BANKED
-    xorwf       computed_volume_2, W, BANKED
+    movf        logical_volume_2_b0, W, BANKED
+    xorwf       computed_volume_2_b0, W, BANKED
     bnz         flow_main_uart_service_1be6_1d68
-    movf        logical_volume_1, W, BANKED
-    xorwf       computed_volume_1, W, BANKED
+    movf        logical_volume_1_b0, W, BANKED
+    xorwf       computed_volume_1_b0, W, BANKED
     bnz         flow_main_uart_service_1be6_1d68
-    movf        logical_volume, W, BANKED
-    xorwf       computed_volume, W, BANKED
+    movf        logical_volume_b0, W, BANKED
+    xorwf       computed_volume_b0, W, BANKED
 flow_main_uart_service_1be6_1d68:
     bnz         flow_main_uart_service_1be6_1d6c
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d6c:
-    bsf         event_flags, 3, BANKED
+    bsf         event_flags_b0, 3, BANKED
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d80:
-    movf        computed_volume, W, BANKED
+    movf        computed_volume_b0, W, BANKED
     addlw       0x60
-    movwf       ram_0x0BC, BANKED
-    bcf         ram_0x094, 1, BANKED
+    movwf       stock_0BC_b0, BANKED
+    bcf         stock_094_b0, 1, BANKED
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d8a:
-    movf        ram_0x0A3, W, BANKED
+    movf        current_cmd_data_b0, W, BANKED
     xorlw       0x29
     bz          flow_main_uart_service_1be6_1d8a_report
     goto        flow_main_uart_service_1be6_1e6c
@@ -2165,76 +2165,76 @@ flow_main_uart_service_1be6_1d8a_report:
     call        report_cmd29_status, 0x0
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d96:
-    movff       ram_0x0A3, ram_0x060
-    movf        ram_0x0A5, W, BANKED
-    xorwf       ram_0x060, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_060_b0_phys
+    movf        stock_0A5_b0, W, BANKED
+    xorwf       stock_060_b0, W, BANKED
     bz          flow_main_uart_service_1be6_1e6c
-    bsf         event_flags, 4, BANKED
-    movff       ram_0x060, ram_0x0A5
+    bsf         event_flags_b0, 4, BANKED
+    movff       stock_060_b0_phys, stock_0A5_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1da8:
-    movff       ram_0x0A3, ram_0x061
-    movf        ram_0x061, W, BANKED
-    xorwf       ram_0x0A6, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_061_b0_phys
+    movf        stock_061_b0, W, BANKED
+    xorwf       stock_0A6_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 4, BANKED
-    movff       ram_0x061, ram_0x0A6
+    bsf         event_flags_b0, 4, BANKED
+    movff       stock_061_b0_phys, stock_0A6_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1dba:
-    movff       ram_0x0A3, ram_0x062
-    movf        ram_0x062, W, BANKED
-    xorwf       ram_0x0A7, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_062_b0_phys
+    movf        stock_062_b0, W, BANKED
+    xorwf       stock_0A7_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 4, BANKED
-    movff       ram_0x062, ram_0x0A7
+    bsf         event_flags_b0, 4, BANKED
+    movff       stock_062_b0_phys, stock_0A7_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1dcc:
-    movff       ram_0x0A3, ram_0x063
-    movf        ram_0x063, W, BANKED
-    xorwf       ram_0x0A8, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_063_b0_phys
+    movf        stock_063_b0, W, BANKED
+    xorwf       stock_0A8_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 4, BANKED
-    movff       ram_0x063, ram_0x0A8
+    bsf         event_flags_b0, 4, BANKED
+    movff       stock_063_b0_phys, stock_0A8_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1dde:
-    movff       ram_0x0A3, ram_0x064
-    movf        ram_0x064, W, BANKED
-    xorwf       ram_0x0A9, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_064_b0_phys
+    movf        stock_064_b0, W, BANKED
+    xorwf       stock_0A9_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 4, BANKED
-    movff       ram_0x064, ram_0x0A9
+    bsf         event_flags_b0, 4, BANKED
+    movff       stock_064_b0_phys, stock_0A9_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1df0:
-    movff       ram_0x0A3, ram_0x065
-    movf        ram_0x065, W, BANKED
-    xorwf       ram_0x0AA, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_065_b0_phys
+    movf        stock_065_b0, W, BANKED
+    xorwf       stock_0AA_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 4, BANKED
-    movff       ram_0x065, ram_0x0AA
+    bsf         event_flags_b0, 4, BANKED
+    movff       stock_065_b0_phys, stock_0AA_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1e02:
-    btfsc       ram_0x094, 4, BANKED
+    btfsc       stock_094_b0, 4, BANKED
     bra         flow_main_uart_service_1be6_1e14
-    movf        ram_0x0B8, W, BANKED
-    xorwf       ram_0x0A3, W, BANKED
+    movf        stock_0B8_b0, W, BANKED
+    xorwf       current_cmd_data_b0, W, BANKED
     bz          flow_main_uart_service_1be6_1e6c
-    movff       ram_0x0A3, ram_0x0B8
-    bsf         ram_0x07F, 0, BANKED
+    movff       current_cmd_data_b0_phys, stock_0B8_b0_phys
+    bsf         dsp_fault_flags_b0, 0, BANKED
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1e14:
-    movff       ram_0x0B8, ram_0x0BC
-    bcf         ram_0x094, 4, BANKED
+    movff       stock_0B8_b0_phys, stock_0BC_b0_phys
+    bcf         stock_094_b0, 4, BANKED
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1e1c:
-    movff       ram_0x0A3, ram_0x0C3
-    movf        ram_0x0B2, W, BANKED
-    xorwf       ram_0x0C3, W, BANKED
+    movff       current_cmd_data_b0_phys, stock_0C3_b0_phys
+    movf        stock_0B2_b0, W, BANKED
+    xorwf       stock_0C3_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         ram_0x0BD, 0, BANKED
-    movff       ram_0x0C3, ram_0x0B2
+    bsf         filename_dirty_flags_b0, 0, BANKED
+    movff       stock_0C3_b0_phys, stock_0B2_b0_phys
     bra         flow_main_uart_service_1be6_1e6c
 cmd_dispatch_xor_chain:
-    movf        ram_0x0A2, W, BANKED
+    movf        stock_0A2_b0, W, BANKED
     xorlw       0x03
     bnz         flow_main_uart_service_1be6_1e36
     bra         cmd03_subdispatch
@@ -2288,22 +2288,22 @@ flow_main_uart_service_1be6_1e48:
     btfsc       STATUS, 2, ACCESS               ; Z = cmd 0x26 (preset filename query)
     goto        cmd26_filename_query_handler
 flow_main_uart_service_1be6_1e6c:
-    btfss       active_flags, 6, ACCESS
+    btfss       active_flags_acc, 6, ACCESS
     bra         flow_main_uart_service_1be6_1e80
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
     movlb       0x0
-    movf        ram_0x0BC, W, BANKED
+    movf        stock_0BC_b0, W, BANKED
     call        uart_tx_byte_blocking, 0x0
 flow_main_uart_service_1be6_1e78:
-    bcf         active_flags, 6, ACCESS
+    bcf         active_flags_acc, 6, ACCESS
     bra         flow_main_uart_service_1be6_1e80
 flow_main_uart_service_1be6_1e7c:
     movlw       0x01
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
 flow_main_uart_service_1be6_1e80:
-    movf        ram_0x009, W, ACCESS
+    movf        stock_009_acc, W, ACCESS
     btfss       STATUS, 2, ACCESS
     return      0
     bra         flow_main_uart_service_1be6_1bea
@@ -2315,238 +2315,238 @@ flow_main_uart_service_1be6_1e80:
 ; Notes   : Inferred core helper routine. Calls: eeprom_read_byte, main_flash_service_46de.
 ; ---------------------------------------------------------------------------
 main_core_service_1e88:
-    clrf        ram_0x004, ACCESS
-    clrf        ram_0x003, ACCESS
+    clrf        stock_004_acc, ACCESS
+    clrf        stock_003_acc, ACCESS
     call        eeprom_read_byte, 0x0
     movlb       0x0
-    movwf       computed_volume_3, BANKED
+    movwf       computed_volume_3_b0, BANKED
     movlw       0x01
     rcall       eeprom_read_byte_W
-    movwf       computed_volume_2, BANKED
+    movwf       computed_volume_2_b0, BANKED
     movlw       0x02
     rcall       eeprom_read_byte_W
-    movwf       computed_volume_1, BANKED
+    movwf       computed_volume_1_b0, BANKED
     movlw       0x03
     rcall       eeprom_read_byte_W
-    movwf       computed_volume, BANKED
+    movwf       computed_volume_b0, BANKED
     movlw       0x04
     rcall       eeprom_read_byte_W
-    movwf       input_select, BANKED
+    movwf       input_select_b0, BANKED
     movlw       0x07
     rcall       eeprom_read_byte_W
-    movwf       ram_0x060, BANKED
+    movwf       stock_060_b0, BANKED
     movlw       0x08
     rcall       eeprom_read_byte_W
-    movwf       ram_0x061, BANKED
+    movwf       stock_061_b0, BANKED
     movlw       0x09
     rcall       eeprom_read_byte_W
-    movwf       ram_0x062, BANKED
+    movwf       stock_062_b0, BANKED
     movlw       0x0A
     rcall       eeprom_read_byte_W
-    movwf       ram_0x063, BANKED
+    movwf       stock_063_b0, BANKED
     movlw       0x0B
     rcall       eeprom_read_byte_W
-    movwf       ram_0x064, BANKED
+    movwf       stock_064_b0, BANKED
     movlw       0x0C
     rcall       eeprom_read_byte_W
-    movwf       ram_0x065, BANKED
-    clrf        ram_0x004, ACCESS
+    movwf       stock_065_b0, BANKED
+    clrf        stock_004_acc, ACCESS
     movlw       0x0D
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     call        eeprom_read_byte, 0x0
-    movwf       ram_0x05F, ACCESS
+    movwf       stock_05F_acc, ACCESS
     movlw       0x14
     rcall       eeprom_read_byte_W
-    movwf       ram_0x0C3, BANKED
-    movf        computed_volume_3, W, BANKED
+    movwf       stock_0C3_b0, BANKED
+    movf        computed_volume_3_b0, W, BANKED
     xorlw       0x80
     addlw       0x80
     bnz         flow_main_core_service_1e88_1f54
     movlw       0x00
-    subwf       computed_volume_2, W, BANKED
+    subwf       computed_volume_2_b0, W, BANKED
     bnz         flow_main_core_service_1e88_1f54
     movlw       0x00
-    subwf       computed_volume_1, W, BANKED
+    subwf       computed_volume_1_b0, W, BANKED
     bnz         flow_main_core_service_1e88_1f54
     movlw       0x13
-    subwf       computed_volume, W, BANKED
+    subwf       computed_volume_b0, W, BANKED
 flow_main_core_service_1e88_1f54:
     bnc         flow_main_core_service_1e88_1f60
     movlw       0xA0
-    movwf       computed_volume, BANKED
-    setf        computed_volume_1, BANKED
-    setf        computed_volume_2, BANKED
-    setf        computed_volume_3, BANKED
+    movwf       computed_volume_b0, BANKED
+    setf        computed_volume_1_b0, BANKED
+    setf        computed_volume_2_b0, BANKED
+    setf        computed_volume_3_b0, BANKED
 flow_main_core_service_1e88_1f60:
     movlw       0x08
-    cpfsgt      input_select, BANKED
+    cpfsgt      input_select_b0, BANKED
     bra         flow_main_core_service_1e88_1f6a
     movlw       0x01
-    movwf       input_select, BANKED
+    movwf       input_select_b0, BANKED
 flow_main_core_service_1e88_1f6a:
     movlw       0x03
-    cpfsgt      ram_0x060, BANKED
+    cpfsgt      stock_060_b0, BANKED
     bra         flow_main_core_service_1e88_1f72
-    clrf        ram_0x060, BANKED
+    clrf        stock_060_b0, BANKED
 flow_main_core_service_1e88_1f72:
     lfsr        FSR2, 0x0061
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1f7e
-    clrf        ram_0x061, BANKED
+    clrf        stock_061_b0, BANKED
 flow_main_core_service_1e88_1f7e:
     lfsr        FSR2, 0x0062
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1f8a
-    clrf        ram_0x062, BANKED
+    clrf        stock_062_b0, BANKED
 flow_main_core_service_1e88_1f8a:
     lfsr        FSR2, 0x0063
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1f98
     movlw       0x01
-    movwf       ram_0x063, BANKED
+    movwf       stock_063_b0, BANKED
 flow_main_core_service_1e88_1f98:
     lfsr        FSR2, 0x0064
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1fa6
     movlw       0x01
-    movwf       ram_0x064, BANKED
+    movwf       stock_064_b0, BANKED
 flow_main_core_service_1e88_1fa6:
     lfsr        FSR2, 0x0065
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1fb4
     movlw       0x01
-    movwf       ram_0x064, BANKED
+    movwf       stock_064_b0, BANKED
 flow_main_core_service_1e88_1fb4:
     movlw       0x03
-    cpfsgt      ram_0x05F, ACCESS
+    cpfsgt      stock_05F_acc, ACCESS
     bra         flow_main_core_service_1e88_1fbc
-    movwf       ram_0x05F, ACCESS
+    movwf       stock_05F_acc, ACCESS
 flow_main_core_service_1e88_1fbc:
     movlw       0x04
-    cpfsgt      ram_0x0C3, BANKED
+    cpfsgt      stock_0C3_b0, BANKED
     bra         flow_main_core_service_1e88_1fc6
     movlw       0x01
-    movwf       ram_0x0C3, BANKED
+    movwf       stock_0C3_b0, BANKED
 flow_main_core_service_1e88_1fc6:
     call        copy_computed_volume_to_logical_volume, 0x0
-    movff       input_select, input_select_mirror
-    movff       ram_0x060, ram_0x0A5
-    movff       ram_0x061, ram_0x0A6
-    movff       ram_0x062, ram_0x0A7
-    movff       ram_0x063, ram_0x0A8
-    movff       ram_0x064, ram_0x0A9
-    movff       ram_0x065, ram_0x0AA
-    movff       ram_0x0C3, ram_0x0B2
+    movff       input_select_b0_phys, input_select_mirror_b0_phys
+    movff       stock_060_b0_phys, stock_0A5_b0_phys
+    movff       stock_061_b0_phys, stock_0A6_b0_phys
+    movff       stock_062_b0_phys, stock_0A7_b0_phys
+    movff       stock_063_b0_phys, stock_0A8_b0_phys
+    movff       stock_064_b0_phys, stock_0A9_b0_phys
+    movff       stock_065_b0_phys, stock_0AA_b0_phys
+    movff       stock_0C3_b0_phys, stock_0B2_b0_phys
     movlw       0x0F
     rcall       eeprom_read_byte_W
-    movwf       ram_0x0B4, BANKED
-    incf        ram_0x0B4, W, BANKED
+    movwf       stock_0B4_b0, BANKED
+    incf        stock_0B4_b0, W, BANKED
     btfsc       STATUS, 2, ACCESS
-    bcf         ram_0x0B4, 0, BANKED
-    movff       ram_0x0B4, ram_0x0B1
+    bcf         stock_0B4_b0, 0, BANKED
+    movff       stock_0B4_b0_phys, stock_0B1_b0_phys
     movlw       0x0E
     rcall       eeprom_read_byte_W
-    movwf       ram_0x0B8, BANKED
+    movwf       stock_0B8_b0, BANKED
     movlw       0x03
-    subwf       ram_0x0B8, W, BANKED
+    subwf       stock_0B8_b0, W, BANKED
     bc          flow_main_core_service_1e88_2026
     movlw       0x03
-    movwf       ram_0x0B8, BANKED
+    movwf       stock_0B8_b0, BANKED
 flow_main_core_service_1e88_2026:
     movlw       0x04
-    cpfsgt      ram_0x0B8, BANKED
+    cpfsgt      stock_0B8_b0, BANKED
     bra         flow_main_core_service_1e88_2030
     movlw       0x03
-    movwf       ram_0x0B8, BANKED
+    movwf       stock_0B8_b0, BANKED
 flow_main_core_service_1e88_2030:
     movlw       0x10
     rcall       eeprom_read_byte_W
-    movwf       ram_0x09B, BANKED
+    movwf       stock_09B_b0, BANKED
     movlw       0x11
     rcall       eeprom_read_byte_W
-    movwf       ram_0x09C, BANKED
+    movwf       stock_09C_b0, BANKED
     movlw       0x12
     rcall       eeprom_read_byte_W
-    movwf       ram_0x09D, BANKED
+    movwf       stock_09D_b0, BANKED
     movlw       0x13
     rcall       eeprom_read_byte_W
-    movwf       ram_0x09E, BANKED
+    movwf       stock_09E_b0, BANKED
     movlw       0x12
-    cpfsgt      ram_0x09B, BANKED
+    cpfsgt      stock_09B_b0, BANKED
     bra         flow_main_core_service_1e88_2070
-    clrf        ram_0x09B, BANKED
+    clrf        stock_09B_b0, BANKED
 flow_main_core_service_1e88_2070:
     movlw       0x12
-    cpfsgt      ram_0x09C, BANKED
+    cpfsgt      stock_09C_b0, BANKED
     bra         flow_main_core_service_1e88_2078
-    clrf        ram_0x09C, BANKED
+    clrf        stock_09C_b0, BANKED
 flow_main_core_service_1e88_2078:
     movlw       0x12
-    cpfsgt      ram_0x09D, BANKED
+    cpfsgt      stock_09D_b0, BANKED
     bra         flow_main_core_service_1e88_2080
-    clrf        ram_0x09D, BANKED
+    clrf        stock_09D_b0, BANKED
 flow_main_core_service_1e88_2080:
     movlw       0x12
-    cpfsgt      ram_0x09E, BANKED
+    cpfsgt      stock_09E_b0, BANKED
     bra         flow_main_core_service_1e88_2088
-    clrf        ram_0x09E, BANKED
+    clrf        stock_09E_b0, BANKED
 flow_main_core_service_1e88_2088:
-    movff       ram_0x09B, ram_0x0AC
-    movff       ram_0x09C, ram_0x0AD
-    movff       ram_0x09D, ram_0x0AE
-    movff       ram_0x09E, ram_0x0AF
+    movff       stock_09B_b0_phys, stock_0AC_b0_phys
+    movff       stock_09C_b0_phys, stock_0AD_b0_phys
+    movff       stock_09D_b0_phys, stock_0AE_b0_phys
+    movff       stock_09E_b0_phys, stock_0AF_b0_phys
     movlw       0x50
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
 flow_main_core_service_1e88_209c:
     movlb       0x1
     movlw       0xB0
-    addwf       ram_0x00A, W, ACCESS
+    addwf       stock_00A_acc, W, ACCESS
     rcall       setup_fsr2_page_1
-    movff       ram_0x00A, ram_0x003
-    clrf        ram_0x004, ACCESS
+    movff       stock_00A_b0_phys, stock_003_b0_phys
+    clrf        stock_004_acc, ACCESS
     call        eeprom_read_byte, 0x0
     movwf       INDF2, ACCESS
-    incf        ram_0x00A, F, ACCESS
+    incf        stock_00A_acc, F, ACCESS
     movlw       0x5E
-    cpfsgt      ram_0x00A, ACCESS
+    cpfsgt      stock_00A_acc, ACCESS
     bra         flow_main_core_service_1e88_209c
     movlw       0x60
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
 flow_main_core_service_1e88_20c2:
     movlb       0x2
     movlw       0x60
-    addwf       ram_0x00A, W, ACCESS
+    addwf       stock_00A_acc, W, ACCESS
     call        fsr2_page2_from_W, 0x0       ; W05-E02: FSR2=0x0200|W (helper clobbers W; eeprom_read_byte takes input via ram_0x003)
-    movff       ram_0x00A, ram_0x003
-    clrf        ram_0x004, ACCESS
+    movff       stock_00A_b0_phys, stock_003_b0_phys
+    clrf        stock_004_acc, ACCESS
     call        eeprom_read_byte, 0x0
     movwf       INDF2, ACCESS
-    incf        ram_0x00A, F, ACCESS
+    incf        stock_00A_acc, F, ACCESS
     movlw       0x7D
-    cpfsgt      ram_0x00A, ACCESS
+    cpfsgt      stock_00A_acc, ACCESS
     bra         flow_main_core_service_1e88_20c2
-    clrf        ram_0x008, ACCESS
+    clrf        stock_008_acc, ACCESS
     movlw       0x80
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     movlw       0x03
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
+    clrf        stock_008_acc, ACCESS
     movlw       0x81
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     movlw       0x03
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     call        main_flash_service_46de, 0x0
-    clrf        ram_0x008, ACCESS
+    clrf        stock_008_acc, ACCESS
     movlw       0x82
-    movwf       ram_0x007, ACCESS
-    movlw       0x75                            ; V3.3_RUNTIME_EEPROM_REV
-    movwf       ram_0x009, ACCESS
+    movwf       stock_007_acc, ACCESS
+    movlw       0x79                            ; V3.3_RUNTIME_EEPROM_REV
+    movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
 
@@ -2558,8 +2558,8 @@ flow_main_core_service_1e88_20c2:
 ; main_core_service_1e88 into 17 × 2-instruction sequences.
 ; ---------------------------------------------------------------------------
 eeprom_read_byte_W:
-    movwf       ram_0x003, ACCESS   ; ram_0x003 = address low byte
-    clrf        ram_0x004, ACCESS   ; high byte always 0 in this call site set
+    movwf       stock_003_acc, ACCESS   ; ram_0x003 = address low byte
+    clrf        stock_004_acc, ACCESS   ; high byte always 0 in this call site set
     call        eeprom_read_byte, 0x0
     movlb       0x0
     return      0
@@ -2576,7 +2576,7 @@ eeprom_read_byte_W:
 prep_bank1_ram004:
     movlb       0x1
     movlw       0x01
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
     return      0
 
 
@@ -2590,9 +2590,9 @@ prep_bank1_ram004:
 ; ram_block_clear. Saves 30 B vs inlined setup at 7 sites.
 ; ---------------------------------------------------------------------------
 ram_block_clear_4:
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x04
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     goto        ram_block_clear
 
 
@@ -2608,21 +2608,21 @@ ram_block_clear_4:
 ; changes; not part of the volume-only fast path.
 ; ---------------------------------------------------------------------------
 main_i2c_service_2100:
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlw       0xD7
     rcall       ram_block_clear_4
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlb       0x0
     movlw       0xDB
     rcall       ram_block_clear_4
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlb       0x0
     movlw       0xDF
     rcall       ram_block_clear_4
     rcall       prep_bank1_ram004
     movlw       0xD9
     rcall       ram_block_clear_4
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlb       0x0
     movlw       0xE3
     rcall       ram_block_clear_4
@@ -2643,9 +2643,9 @@ main_i2c_service_2100:
     ; starts at the current entry; callees are not audited to preserve
     ; TBLPTR.
     ; -------------------------------------------------------------------
-    clrf        ram_0x059, ACCESS
+    clrf        stock_059_acc, ACCESS
 flow_main_i2c_service_2100_217a:
-    rlncf       ram_0x059, W, ACCESS                ; W = counter * 2
+    rlncf       stock_059_acc, W, ACCESS                ; W = counter * 2
     addlw       LOW(main_i2c_service_2100_dispatch_table)
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(main_i2c_service_2100_dispatch_table)
@@ -2655,16 +2655,16 @@ flow_main_i2c_service_2100_217a:
     movff       TABLAT, FSR1L
     tblrd*+
     movff       TABLAT, FSR1H
-    movf        ram_0x059, W, ACCESS
+    movf        stock_059_acc, W, ACCESS
     movlb       0x0
     addlw       0x60
     call        fsr2_page0_read_w, 0x0               ; W04-E03
     call        main_core_service_4448, 0x0
-    movff       ram_0x0A0, POSTINC1
-    movff       ram_0x0B9, INDF1
-    incf        ram_0x059, F, ACCESS
+    movff       stock_0A0_b0_phys, POSTINC1
+    movff       stock_0B9_b0_phys, INDF1
+    incf        stock_059_acc, F, ACCESS
     movlw       0x05
-    cpfsgt      ram_0x059, ACCESS
+    cpfsgt      stock_059_acc, ACCESS
     bra         flow_main_i2c_service_2100_217a
 
     ; --- Part 3: 7 I2C transactions with source-table indexed copy ------
@@ -2673,9 +2673,9 @@ flow_main_i2c_service_2100_217a:
     ; 4-byte movff copy through FSR1.  The I2C transaction body below is
     ; unchanged from the pre-rewrite function.
     ; -------------------------------------------------------------------
-    clrf        ram_0x05A, ACCESS
+    clrf        stock_05A_acc, ACCESS
 flow_main_i2c_service_2100_226a:
-    rlncf       ram_0x05A, W, ACCESS                ; W = counter * 2
+    rlncf       stock_05A_acc, W, ACCESS                ; W = counter * 2
     addlw       LOW(main_i2c_service_2100_source_table)
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(main_i2c_service_2100_source_table)
@@ -2685,10 +2685,10 @@ flow_main_i2c_service_2100_226a:
     movff       TABLAT, FSR1L
     tblrd*+
     movff       TABLAT, FSR1H
-    movff       POSTINC1, ram_0x06A
-    movff       POSTINC1, ram_0x06B
-    movff       POSTINC1, ram_0x06C
-    movff       INDF1, ram_0x06D
+    movff       POSTINC1, stock_06A_b0_phys
+    movff       POSTINC1, stock_06B_b0_phys
+    movff       POSTINC1, stock_06C_b0_phys
+    movff       INDF1, stock_06D_b0_phys
 flow_main_i2c_service_2100_2286:
     bsf         SSPCON2, 0, ACCESS
     call        wait_sen_bounded, 0x0
@@ -2697,13 +2697,13 @@ flow_main_i2c_service_2100_2286:
     call        i2c_byte_tx, 0x0
     movlb       0x1
     movlw       0x0F
-    addwf       ram_0x05A, W, ACCESS
+    addwf       stock_05A_acc, W, ACCESS
     rcall       setup_fsr2_page_1_or_2
     movf        INDF2, W, ACCESS
     call        i2c_byte_tx, 0x0
-    clrf        ram_0x05B, ACCESS
+    clrf        stock_05B_acc, ACCESS
 flow_main_i2c_service_2100_22a8:
-    movf        ram_0x05B, W, ACCESS
+    movf        stock_05B_acc, W, ACCESS
     movlb       0x0
     addlw       0x6A
     movwf       FSR2L, ACCESS
@@ -2711,52 +2711,52 @@ flow_main_i2c_service_2100_22a8:
     movlw       0x02
     cpfseq      INDF2, ACCESS
     bra         flow_main_i2c_service_2100_22c2
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
-    clrf        i2c_coeff_2, ACCESS
+    clrf        i2c_coeff_0_acc, ACCESS
+    clrf        i2c_coeff_1_acc, ACCESS
+    clrf        i2c_coeff_2_acc, ACCESS
     movlw       0x3F
     bra         flow_main_i2c_service_2100_22da
 flow_main_i2c_service_2100_22c2:
-    movf        ram_0x05B, W, ACCESS
+    movf        stock_05B_acc, W, ACCESS
     addlw       0x6A
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x03
     cpfseq      INDF2, ACCESS
     bra         flow_main_i2c_service_2100_22de
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
+    clrf        i2c_coeff_0_acc, ACCESS
+    clrf        i2c_coeff_1_acc, ACCESS
     movlw       0x80
-    movwf       i2c_coeff_2, ACCESS
+    movwf       i2c_coeff_2_acc, ACCESS
     movlw       0xBF
 flow_main_i2c_service_2100_22da:
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
     bra         flow_main_i2c_service_2100_22fc
 flow_main_i2c_service_2100_22de:
-    movf        ram_0x05B, W, ACCESS
+    movf        stock_05B_acc, W, ACCESS
     addlw       0x6A
     call        fsr2_page0_read_w, 0x0               ; W04-E03
     call        main_core_service_45ce, 0x0
-    movff       ram_0x00D, i2c_coeff_0
-    movff       ram_0x00E, i2c_coeff_1
-    movff       ram_0x00F, i2c_coeff_2
-    movff       ram_0x010, i2c_coeff_3
+    movff       stock_00D_b0_phys, i2c_coeff_0_b0_phys
+    movff       stock_00E_b0_phys, i2c_coeff_1_b0_phys
+    movff       stock_00F_b0_phys, i2c_coeff_2_b0_phys
+    movff       stock_010_b0_phys, i2c_coeff_3_b0_phys
 flow_main_i2c_service_2100_22fc:
-    movff       i2c_coeff_0, ram_0x049
-    movff       i2c_coeff_1, ram_0x04A
-    movff       i2c_coeff_2, ram_0x04B
-    movff       i2c_coeff_3, ram_0x04C
+    movff       i2c_coeff_0_b0_phys, stock_049_b0_phys
+    movff       i2c_coeff_1_b0_phys, stock_04A_b0_phys
+    movff       i2c_coeff_2_b0_phys, stock_04B_b0_phys
+    movff       i2c_coeff_3_b0_phys, stock_04C_b0_phys
     call        main_i2c_service_39a6, 0x0
-    incf        ram_0x05B, F, ACCESS
+    incf        stock_05B_acc, F, ACCESS
     movlw       0x03
-    cpfsgt      ram_0x05B, ACCESS
+    cpfsgt      stock_05B_acc, ACCESS
     bra         flow_main_i2c_service_2100_22a8
     bsf         SSPCON2, 2, ACCESS
     call        wait_pen_bounded, 0x0
     bc          main_i2c_service_2100_timeout
-    incf        ram_0x05A, F, ACCESS
+    incf        stock_05A_acc, F, ACCESS
     movlw       0x06
-    cpfsgt      ram_0x05A, ACCESS
+    cpfsgt      stock_05A_acc, ACCESS
     bra         flow_main_i2c_service_2100_226a
     retlw       0x06
 main_i2c_service_2100_timeout:
@@ -2809,158 +2809,158 @@ main_i2c_service_2100_source_table:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_24ac.
 ; ---------------------------------------------------------------------------
 main_core_service_2328:
-    movff       ram_0x0C1, ram_0x15A
+    movff       stock_0C1_b0_phys, stock_15A_b1_phys
     bra         flow_main_core_service_2328_2472
 flow_main_core_service_2328_232e:
-    movff       ram_0x0C2, ram_0x15B
+    movff       stock_0C2_b0_phys, stock_15B_b1_phys
     movlw       0x02
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
 flow_main_core_service_2328_2336:
     movlw       0xBE
-    addwf       ram_0x003, W, ACCESS
+    addwf       stock_003_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x02
     rcall       main_core_service_24ac
     movlw       0x1F
-    cpfsgt      ram_0x003, ACCESS
+    cpfsgt      stock_003_acc, ACCESS
     bra         flow_main_core_service_2328_2336
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_234a:
-    movff       ram_0x0C2, ram_0x15B
-    decf        ram_0x0C2, W, BANKED
+    movff       stock_0C2_b0_phys, stock_15B_b1_phys
+    decf        stock_0C2_b0, W, BANKED
     bnz         flow_main_core_service_2328_235c
-    movff       ram_0x0B7, ram_0x15C
-    movff       ram_0x0B8, ram_0x15D
+    movff       stock_0B7_b0_phys, stock_15C_b1_phys
+    movff       stock_0B8_b0_phys, stock_15D_b1_phys
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_235c:
-    movf        ram_0x0C2, W, BANKED
+    movf        stock_0C2_b0, W, BANKED
     xorlw       0x02
     bz          flow_main_core_service_2328_2364
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_2364:
-    movff       ram_0x0B5, ram_0x15E
+    movff       stock_0B5_b0_phys, stock_15E_b1_phys
     movlw       0x05
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
 flow_main_core_service_2328_236c:
     movlw       0xFB
-    addwf       ram_0x003, W, ACCESS
+    addwf       stock_003_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x00
     rcall       main_core_service_24ac
     movlw       0x13
-    cpfsgt      ram_0x003, ACCESS
+    cpfsgt      stock_003_acc, ACCESS
     bra         flow_main_core_service_2328_236c
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_2380:
-    movff       ram_0x093, ram_0x15B
-    movff       input_select, ram_0x15C
+    movff       stock_093_b0_phys, stock_15B_b1_phys
+    movff       input_select_b0_phys, stock_15C_b1_phys
     movlb       0x1
-    clrf        ram_0x05D, BANKED
-    clrf        active_flags, BANKED
-    movff       computed_volume_3, ram_0x15F
-    movff       computed_volume_2, ram_0x160
-    movff       computed_volume_1, ram_0x161
-    movff       computed_volume, ram_0x162
+    clrf        stock_15D_b1, BANKED
+    clrf        stock_15E_b1, BANKED
+    movff       computed_volume_3_b0_phys, stock_15F_b1_phys
+    movff       computed_volume_2_b0_phys, stock_160_b1_phys
+    movff       computed_volume_1_b0_phys, stock_161_b1_phys
+    movff       computed_volume_b0_phys, stock_162_b1_phys
     movlw       0x00
-    btfsc       active_flags, 4, ACCESS
+    btfsc       active_flags_acc, 4, ACCESS
     movlw       0x01
-    movwf       ram_0x063, BANKED
-    movlw       0x00
-    movlb       0x0
-    btfsc       ram_0x0A4, 0, BANKED
-    movlw       0x01
-    movlb       0x1
-    movwf       ram_0x064, BANKED
+    movwf       stock_163_b1, BANKED
     movlw       0x00
     movlb       0x0
-    btfsc       ram_0x0A4, 1, BANKED
+    btfsc       stock_0A4_b0, 0, BANKED
     movlw       0x01
     movlb       0x1
-    movwf       ram_0x065, BANKED
+    movwf       stock_164_b1, BANKED
     movlw       0x00
     movlb       0x0
-    btfsc       ram_0x0A4, 2, BANKED
+    btfsc       stock_0A4_b0, 1, BANKED
     movlw       0x01
     movlb       0x1
-    movwf       logical_volume, BANKED
+    movwf       stock_165_b1, BANKED
     movlw       0x00
     movlb       0x0
-    btfsc       ram_0x0A4, 3, BANKED
+    btfsc       stock_0A4_b0, 2, BANKED
     movlw       0x01
     movlb       0x1
-    movwf       logical_volume_2, BANKED
+    movwf       stock_166_b1, BANKED
     movlw       0x00
     movlb       0x0
-    btfsc       ram_0x0A4, 4, BANKED
+    btfsc       stock_0A4_b0, 3, BANKED
     movlw       0x01
     movlb       0x1
-    movwf       logical_volume_3, BANKED
+    movwf       stock_168_b1, BANKED
     movlw       0x00
     movlb       0x0
-    btfsc       ram_0x0A4, 5, BANKED
+    btfsc       stock_0A4_b0, 4, BANKED
     movlw       0x01
     movlb       0x1
-    movwf       ram_0x06A, BANKED
-    movff       ram_0x060, ram_0x16C
-    movff       ram_0x061, ram_0x16D
-    movff       ram_0x062, ram_0x16E
-    movff       ram_0x063, ram_0x16F
-    movff       ram_0x064, ram_0x170
-    movff       ram_0x065, ram_0x171
-    movff       ram_0x0B4, ram_0x178
+    movwf       stock_169_b1, BANKED
+    movlw       0x00
+    movlb       0x0
+    btfsc       stock_0A4_b0, 5, BANKED
+    movlw       0x01
+    movlb       0x1
+    movwf       stock_16A_b1, BANKED
+    movff       stock_060_b0_phys, stock_16C_b1_phys
+    movff       stock_061_b0_phys, stock_16D_b1_phys
+    movff       stock_062_b0_phys, stock_16E_b1_phys
+    movff       stock_063_b0_phys, stock_16F_b1_phys
+    movff       stock_064_b0_phys, stock_170_b1_phys
+    movff       stock_065_b0_phys, stock_171_b1_phys
+    movff       stock_0B4_b0_phys, stock_178_b1_phys
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_240c:
     movlw       0x03
     movlb       0x1
-    movwf       ram_0x05B, BANKED
+    movwf       stock_15B_b1, BANKED
     movlw       0x03                        ; V3.3: major version = 3
-    movwf       ram_0x05C, BANKED
+    movwf       stock_15C_b1, BANKED
     movlw       0x03                        ; V3.3: minor version = 3
-    movwf       ram_0x05D, BANKED
-    movff       input_select, ram_0x15E
-    clrf        ram_0x05F, BANKED
-    clrf        ram_0x060, BANKED
-    clrf        ram_0x061, BANKED
-    movff       ram_0x05F, ram_0x163
+    movwf       stock_15D_b1, BANKED
+    movff       input_select_b0_phys, stock_15E_b1_phys
+    clrf        stock_15F_b1, BANKED
+    clrf        stock_160_b1, BANKED
+    clrf        stock_161_b1, BANKED
+    movff       stock_05F_b0_phys, stock_163_b1_phys
     movlw       0x06
-    movwf       ram_0x064, BANKED
+    movwf       stock_164_b1, BANKED
     movlw       0x0F
-    movwf       ram_0x065, BANKED
-    movwf       logical_volume, BANKED
-    movwf       logical_volume_1, BANKED
-    movwf       logical_volume_2, BANKED
-    movwf       logical_volume_3, BANKED
-    movwf       ram_0x06A, BANKED
+    movwf       stock_165_b1, BANKED
+    movwf       stock_166_b1, BANKED
+    movwf       stock_167_b1, BANKED
+    movwf       stock_168_b1, BANKED
+    movwf       stock_169_b1, BANKED
+    movwf       stock_16A_b1, BANKED
     movlw       0x0A
-    movwf       ram_0x06B, BANKED
-    movwf       ram_0x06C, BANKED
-    movwf       ram_0x06D, BANKED
-    movwf       computed_volume, BANKED
-    movwf       computed_volume_1, BANKED
-    movwf       computed_volume_2, BANKED
+    movwf       stock_16B_b1, BANKED
+    movwf       stock_16C_b1, BANKED
+    movwf       stock_16D_b1, BANKED
+    movwf       stock_16E_b1, BANKED
+    movwf       stock_16F_b1, BANKED
+    movwf       stock_170_b1, BANKED
     movlw       0x01
-    movwf       computed_volume_3, BANKED
-    movwf       ram_0x072, BANKED
-    movff       ram_0x09B, ram_0x173
-    movff       ram_0x09C, ram_0x174
-    movff       ram_0x09D, ram_0x175
-    movff       ram_0x09E, ram_0x176
+    movwf       stock_171_b1, BANKED
+    movwf       stock_172_b1, BANKED
+    movff       stock_09B_b0_phys, stock_173_b1_phys
+    movff       stock_09C_b0_phys, stock_174_b1_phys
+    movff       stock_09D_b0_phys, stock_175_b1_phys
+    movff       stock_09E_b0_phys, stock_176_b1_phys
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_2460:
-    movff       ram_0x11B, ram_0x15B
+    movff       stock_11B_b1_phys, stock_15B_b1_phys
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_2466:
     movlb       0x1
-    clrf        ram_0x05B, BANKED
-    clrf        ram_0x05C, BANKED
-    clrf        ram_0x05D, BANKED
-    clrf        active_flags, BANKED
+    clrf        stock_15B_b1, BANKED
+    clrf        stock_15C_b1, BANKED
+    clrf        stock_15D_b1, BANKED
+    clrf        stock_15E_b1, BANKED
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_2472:
     movlb       0x0
-    movf        ram_0x0C1, W, BANKED
+    movf        stock_0C1_b0, W, BANKED
     xorlw       0x03
     bnz         flow_main_core_service_2328_247c
     bra         flow_main_core_service_2328_232e
@@ -2990,7 +2990,7 @@ flow_main_core_service_2328_2488:
     bra         flow_main_core_service_2328_2466
 flow_main_core_service_2328_24a6:
     movlb       0x0
-    clrf        ram_0x0C1, BANKED
+    clrf        stock_0C1_b0, BANKED
     return      0
 
 
@@ -3002,13 +3002,13 @@ flow_main_core_service_2328_24a6:
 main_core_service_24ac:
     addwfc      FSR2H, F, ACCESS
     movlw       0x5A
-    addwf       ram_0x003, W, ACCESS
+    addwf       stock_003_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movlw       0x01
     addwfc      FSR1H, F, ACCESS
     movff       INDF2, INDF1
-    incf        ram_0x003, F, ACCESS
+    incf        stock_003_acc, F, ACCESS
     return      0
 
 
@@ -3018,10 +3018,10 @@ main_core_service_24ac:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_2650, main_core_service_263e, main_core_service_30d8.
 ; ---------------------------------------------------------------------------
 main_core_service_24c2:
-    movff       ram_0x020, ram_0x028
-    movff       ram_0x021, ram_0x029
-    movff       ram_0x022, ram_0x02A
-    movff       ram_0x023, ram_0x02B
+    movff       stock_020_b0_phys, stock_028_b0_phys
+    movff       stock_021_b0_phys, stock_029_b0_phys
+    movff       stock_022_b0_phys, stock_02A_b0_phys
+    movff       stock_023_b0_phys, stock_02B_b0_phys
     movlw       0x18
     bra         flow_main_core_service_24c2_24d8
 flow_main_core_service_24c2_24d6:
@@ -3029,12 +3029,12 @@ flow_main_core_service_24c2_24d6:
 flow_main_core_service_24c2_24d8:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_24c2_24d6
-    movf        ram_0x028, W, ACCESS
-    movwf       ram_0x02E, ACCESS
-    movff       ram_0x024, ram_0x028
-    movff       ram_0x025, ram_0x029
-    movff       ram_0x026, ram_0x02A
-    movff       ram_0x027, ram_0x02B
+    movf        stock_028_acc, W, ACCESS
+    movwf       stock_02E_acc, ACCESS
+    movff       stock_024_b0_phys, stock_028_b0_phys
+    movff       stock_025_b0_phys, stock_029_b0_phys
+    movff       stock_026_b0_phys, stock_02A_b0_phys
+    movff       stock_027_b0_phys, stock_02B_b0_phys
     movlw       0x18
     bra         flow_main_core_service_24c2_24f6
 flow_main_core_service_24c2_24f4:
@@ -3042,157 +3042,157 @@ flow_main_core_service_24c2_24f4:
 flow_main_core_service_24c2_24f6:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_24c2_24f4
-    movf        ram_0x028, W, ACCESS
-    movwf       ram_0x02D, ACCESS
-    movf        ram_0x02E, W, ACCESS
+    movf        stock_028_acc, W, ACCESS
+    movwf       stock_02D_acc, ACCESS
+    movf        stock_02E_acc, W, ACCESS
     bz          flow_main_core_service_24c2_2514
-    movf        ram_0x02D, W, ACCESS
-    subwf       ram_0x02E, W, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    subwf       stock_02E_acc, W, ACCESS
     bc          flow_main_core_service_24c2_2526
-    movf        ram_0x02E, W, ACCESS
-    subwf       ram_0x02D, W, ACCESS
-    movwf       ram_0x028, ACCESS
+    movf        stock_02E_acc, W, ACCESS
+    subwf       stock_02D_acc, W, ACCESS
+    movwf       stock_028_acc, ACCESS
     movlw       0x21
-    subwf       ram_0x028, W, ACCESS
+    subwf       stock_028_acc, W, ACCESS
     bnc         flow_main_core_service_24c2_2526
 flow_main_core_service_24c2_2514:
-    movff       ram_0x024, ram_0x020
-    movff       ram_0x025, ram_0x021
-    movff       ram_0x026, ram_0x022
-    movff       ram_0x027, ram_0x023
+    movff       stock_024_b0_phys, stock_020_b0_phys
+    movff       stock_025_b0_phys, stock_021_b0_phys
+    movff       stock_026_b0_phys, stock_022_b0_phys
+    movff       stock_027_b0_phys, stock_023_b0_phys
     bra         flow_main_core_service_24c2_263c
 flow_main_core_service_24c2_2526:
-    movf        ram_0x02D, W, ACCESS
+    movf        stock_02D_acc, W, ACCESS
     bz          flow_main_core_service_24c2_253c
-    movf        ram_0x02E, W, ACCESS
-    subwf       ram_0x02D, W, ACCESS
+    movf        stock_02E_acc, W, ACCESS
+    subwf       stock_02D_acc, W, ACCESS
     bc          flow_main_core_service_24c2_254e
-    movf        ram_0x02D, W, ACCESS
-    subwf       ram_0x02E, W, ACCESS
-    movwf       ram_0x028, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    subwf       stock_02E_acc, W, ACCESS
+    movwf       stock_028_acc, ACCESS
     movlw       0x21
-    subwf       ram_0x028, W, ACCESS
+    subwf       stock_028_acc, W, ACCESS
     bnc         flow_main_core_service_24c2_254e
 flow_main_core_service_24c2_253c:
     bra         flow_main_core_service_24c2_263c
 flow_main_core_service_24c2_254e:
     movlw       0x06
-    movwf       ram_0x02C, ACCESS
-    btfsc       ram_0x023, 7, ACCESS
-    bsf         ram_0x02C, 7, ACCESS
-    btfsc       ram_0x027, 7, ACCESS
-    bsf         ram_0x02C, 6, ACCESS
-    bsf         ram_0x022, 7, ACCESS
-    clrf        ram_0x023, ACCESS
-    bsf         ram_0x026, 7, ACCESS
-    clrf        ram_0x027, ACCESS
-    movf        ram_0x02D, W, ACCESS
-    subwf       ram_0x02E, W, ACCESS
+    movwf       stock_02C_acc, ACCESS
+    btfsc       stock_023_acc, 7, ACCESS
+    bsf         stock_02C_acc, 7, ACCESS
+    btfsc       stock_027_acc, 7, ACCESS
+    bsf         stock_02C_acc, 6, ACCESS
+    bsf         stock_022_acc, 7, ACCESS
+    clrf        stock_023_acc, ACCESS
+    bsf         stock_026_acc, 7, ACCESS
+    clrf        stock_027_acc, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    subwf       stock_02E_acc, W, ACCESS
     bc          flow_main_core_service_24c2_259c
 flow_main_core_service_24c2_2568:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x024, F, ACCESS
-    rlcf        ram_0x025, F, ACCESS
-    rlcf        ram_0x026, F, ACCESS
-    rlcf        ram_0x027, F, ACCESS
-    decf        ram_0x02D, F, ACCESS
-    movf        ram_0x02D, W, ACCESS
-    xorwf       ram_0x02E, W, ACCESS
+    rlcf        stock_024_acc, F, ACCESS
+    rlcf        stock_025_acc, F, ACCESS
+    rlcf        stock_026_acc, F, ACCESS
+    rlcf        stock_027_acc, F, ACCESS
+    decf        stock_02D_acc, F, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    xorwf       stock_02E_acc, W, ACCESS
     bz          flow_main_core_service_24c2_2594
-    decf        ram_0x02C, F, ACCESS
-    movff       ram_0x02C, ram_0x028
+    decf        stock_02C_acc, F, ACCESS
+    movff       stock_02C_b0_phys, stock_028_b0_phys
     movlw       0x07
-    andwf       ram_0x028, F, ACCESS
+    andwf       stock_028_acc, F, ACCESS
     bz          flow_main_core_service_24c2_2594
     bra         flow_main_core_service_24c2_2568
 flow_main_core_service_24c2_2588:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x023, F, ACCESS
-    rrcf        ram_0x022, F, ACCESS
-    rrcf        ram_0x021, F, ACCESS
-    rrcf        ram_0x020, F, ACCESS
-    incf        ram_0x02E, F, ACCESS
+    rrcf        stock_023_acc, F, ACCESS
+    rrcf        stock_022_acc, F, ACCESS
+    rrcf        stock_021_acc, F, ACCESS
+    rrcf        stock_020_acc, F, ACCESS
+    incf        stock_02E_acc, F, ACCESS
 flow_main_core_service_24c2_2594:
-    movf        ram_0x02D, W, ACCESS
-    cpfseq      ram_0x02E, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    cpfseq      stock_02E_acc, ACCESS
     bra         flow_main_core_service_24c2_2588
     bra         flow_main_core_service_24c2_25d4
 flow_main_core_service_24c2_259c:
-    movf        ram_0x02E, W, ACCESS
-    subwf       ram_0x02D, W, ACCESS
+    movf        stock_02E_acc, W, ACCESS
+    subwf       stock_02D_acc, W, ACCESS
     bc          flow_main_core_service_24c2_25d4
 flow_main_core_service_24c2_25a2:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x020, F, ACCESS
-    rlcf        ram_0x021, F, ACCESS
-    rlcf        ram_0x022, F, ACCESS
-    rlcf        ram_0x023, F, ACCESS
-    decf        ram_0x02E, F, ACCESS
-    movf        ram_0x02D, W, ACCESS
-    xorwf       ram_0x02E, W, ACCESS
+    rlcf        stock_020_acc, F, ACCESS
+    rlcf        stock_021_acc, F, ACCESS
+    rlcf        stock_022_acc, F, ACCESS
+    rlcf        stock_023_acc, F, ACCESS
+    decf        stock_02E_acc, F, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    xorwf       stock_02E_acc, W, ACCESS
     bz          flow_main_core_service_24c2_25ce
-    decf        ram_0x02C, F, ACCESS
-    movff       ram_0x02C, ram_0x028
+    decf        stock_02C_acc, F, ACCESS
+    movff       stock_02C_b0_phys, stock_028_b0_phys
     movlw       0x07
-    andwf       ram_0x028, F, ACCESS
+    andwf       stock_028_acc, F, ACCESS
     bz          flow_main_core_service_24c2_25ce
     bra         flow_main_core_service_24c2_25a2
 flow_main_core_service_24c2_25c2:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x027, F, ACCESS
-    rrcf        ram_0x026, F, ACCESS
-    rrcf        ram_0x025, F, ACCESS
-    rrcf        ram_0x024, F, ACCESS
-    incf        ram_0x02D, F, ACCESS
+    rrcf        stock_027_acc, F, ACCESS
+    rrcf        stock_026_acc, F, ACCESS
+    rrcf        stock_025_acc, F, ACCESS
+    rrcf        stock_024_acc, F, ACCESS
+    incf        stock_02D_acc, F, ACCESS
 flow_main_core_service_24c2_25ce:
-    movf        ram_0x02D, W, ACCESS
-    cpfseq      ram_0x02E, ACCESS
+    movf        stock_02D_acc, W, ACCESS
+    cpfseq      stock_02E_acc, ACCESS
     bra         flow_main_core_service_24c2_25c2
 flow_main_core_service_24c2_25d4:
-    btfss       ram_0x02C, 7, ACCESS
+    btfss       stock_02C_acc, 7, ACCESS
     bra         flow_main_core_service_24c2_25ea
-    comf        ram_0x020, F, ACCESS
-    comf        ram_0x021, F, ACCESS
-    comf        ram_0x022, F, ACCESS
-    comf        ram_0x023, F, ACCESS
-    incf        ram_0x020, F, ACCESS
+    comf        stock_020_acc, F, ACCESS
+    comf        stock_021_acc, F, ACCESS
+    comf        stock_022_acc, F, ACCESS
+    comf        stock_023_acc, F, ACCESS
+    incf        stock_020_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x021, F, ACCESS
-    addwfc      ram_0x022, F, ACCESS
-    addwfc      ram_0x023, F, ACCESS
+    addwfc      stock_021_acc, F, ACCESS
+    addwfc      stock_022_acc, F, ACCESS
+    addwfc      stock_023_acc, F, ACCESS
 flow_main_core_service_24c2_25ea:
-    btfss       ram_0x02C, 6, ACCESS
+    btfss       stock_02C_acc, 6, ACCESS
     bra         flow_main_core_service_24c2_25f2
-    comf        ram_0x024, F, ACCESS
+    comf        stock_024_acc, F, ACCESS
     rcall       main_core_service_263e
 flow_main_core_service_24c2_25f2:
-    clrf        ram_0x02C, ACCESS
-    movf        ram_0x020, W, ACCESS
-    addwf       ram_0x024, F, ACCESS
-    movf        ram_0x021, W, ACCESS
-    addwfc      ram_0x025, F, ACCESS
-    movf        ram_0x022, W, ACCESS
-    addwfc      ram_0x026, F, ACCESS
-    movf        ram_0x023, W, ACCESS
-    addwfc      ram_0x027, F, ACCESS
-    btfss       ram_0x027, 7, ACCESS
+    clrf        stock_02C_acc, ACCESS
+    movf        stock_020_acc, W, ACCESS
+    addwf       stock_024_acc, F, ACCESS
+    movf        stock_021_acc, W, ACCESS
+    addwfc      stock_025_acc, F, ACCESS
+    movf        stock_022_acc, W, ACCESS
+    addwfc      stock_026_acc, F, ACCESS
+    movf        stock_023_acc, W, ACCESS
+    addwfc      stock_027_acc, F, ACCESS
+    btfss       stock_027_acc, 7, ACCESS
     bra         flow_main_core_service_24c2_2610
-    comf        ram_0x024, F, ACCESS
+    comf        stock_024_acc, F, ACCESS
     rcall       main_core_service_263e
     movlw       0x01
-    movwf       ram_0x02C, ACCESS
+    movwf       stock_02C_acc, ACCESS
 flow_main_core_service_24c2_2610:
-    movff       ram_0x024, ram_0x003
-    movff       ram_0x025, ram_0x004
-    movff       ram_0x026, ram_0x005
-    movff       ram_0x027, ram_0x006
-    movff       ram_0x02E, ram_0x007
-    movff       ram_0x02C, ram_0x008
+    movff       stock_024_b0_phys, stock_003_b0_phys
+    movff       stock_025_b0_phys, stock_004_b0_phys
+    movff       stock_026_b0_phys, saved_w_b0_phys
+    movff       stock_027_b0_phys, stock_006_b0_phys
+    movff       stock_02E_b0_phys, stock_007_b0_phys
+    movff       stock_02C_b0_phys, stock_008_b0_phys
     call        main_core_service_30d8, 0x0
-    movff       ram_0x003, ram_0x020
-    movff       ram_0x004, ram_0x021
-    movff       ram_0x005, ram_0x022
-    movff       ram_0x006, ram_0x023
+    movff       stock_003_b0_phys, stock_020_b0_phys
+    movff       stock_004_b0_phys, stock_021_b0_phys
+    movff       saved_w_b0_phys, stock_022_b0_phys
+    movff       stock_006_b0_phys, stock_023_b0_phys
 flow_main_core_service_24c2_263c:
     return      0
 
@@ -3203,14 +3203,14 @@ flow_main_core_service_24c2_263c:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_263e:
-    comf        ram_0x025, F, ACCESS
-    comf        ram_0x026, F, ACCESS
-    comf        ram_0x027, F, ACCESS
-    incf        ram_0x024, F, ACCESS
+    comf        stock_025_acc, F, ACCESS
+    comf        stock_026_acc, F, ACCESS
+    comf        stock_027_acc, F, ACCESS
+    incf        stock_024_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x025, F, ACCESS
-    addwfc      ram_0x026, F, ACCESS
-    addwfc      ram_0x027, F, ACCESS
+    addwfc      stock_025_acc, F, ACCESS
+    addwfc      stock_026_acc, F, ACCESS
+    addwfc      stock_027_acc, F, ACCESS
     retlw       0x00
 
 
@@ -3221,10 +3221,10 @@ main_core_service_263e:
 ; ---------------------------------------------------------------------------
 main_core_service_2650:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x02B, F, ACCESS
-    rrcf        ram_0x02A, F, ACCESS
-    rrcf        ram_0x029, F, ACCESS
-    rrcf        ram_0x028, F, ACCESS
+    rrcf        stock_02B_acc, F, ACCESS
+    rrcf        stock_02A_acc, F, ACCESS
+    rrcf        stock_029_acc, F, ACCESS
+    rrcf        stock_028_acc, F, ACCESS
     return      0
 
 
@@ -3247,7 +3247,7 @@ main_core_service_2650:
 ; ---------------------------------------------------------------------------
 main_core_service_265c:
     movlb       0x0
-    btfss       event_flags, 0, BANKED
+    btfss       event_flags_b0, 0, BANKED
     return      0
     ; Seed TBLPTR at the packed records table so the block walker can
     ; consume it sequentially across all four static blocks.
@@ -3265,28 +3265,28 @@ main_core_service_265c:
     movlw       0x08
     rcall       eeprom_persist_block_walker      ; block 3 (4 records)
 flow_main_core_service_265c_278c:
-    btfss       ram_0x0BD, 4, BANKED
+    btfss       filename_dirty_flags_b0, 4, BANKED
     bra         flow_main_core_service_265c_27bc
     movlw       0x50
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
 flow_main_core_service_265c_2794:
-    movff       ram_0x00A, ram_0x007
-    clrf        ram_0x008, ACCESS
+    movff       stock_00A_b0_phys, stock_007_b0_phys
+    clrf        stock_008_acc, ACCESS
     movlb       0x1
     movlw       0xB0
-    addwf       ram_0x00A, W, ACCESS
+    addwf       stock_00A_acc, W, ACCESS
     call        setup_fsr2_page_1, 0x0
     movf        INDF2, W, ACCESS
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     call        main_flash_service_46de, 0x0
-    incf        ram_0x00A, F, ACCESS
+    incf        stock_00A_acc, F, ACCESS
     movlw       0x5E
-    cpfsgt      ram_0x00A, ACCESS
+    cpfsgt      stock_00A_acc, ACCESS
     bra         flow_main_core_service_265c_2794
     movlb       0x0
-    bcf         ram_0x0BD, 4, BANKED
+    bcf         filename_dirty_flags_b0, 4, BANKED
 flow_main_core_service_265c_27bc:
-    btfss       ram_0x0BD, 5, BANKED
+    btfss       filename_dirty_flags_b0, 5, BANKED
     bra         flow_main_core_service_265c_27ec
     call        preset_persist_filename, 0x0
 flow_main_core_service_265c_27ec:
@@ -3303,8 +3303,8 @@ flow_main_core_service_265c_27ec:
     ; main_flash_service_46de which may leave BSR in a different
     ; bank.
     movlb       0x0
-    bcf         ram_0x0BD, 6, BANKED
-    bcf         event_flags, 0, BANKED
+    bcf         filename_dirty_flags_b0, 6, BANKED
+    bcf         event_flags_b0, 0, BANKED
 flow_main_core_service_265c_27ee:
     return      0
 
@@ -3332,33 +3332,33 @@ flow_main_core_service_265c_27ee:
 ;          ram_0x003/4/7/8/9 (main_flash_service_46de I/O), FSR0.
 ; ---------------------------------------------------------------------------
 eeprom_persist_block_walker:
-    movwf       ram_0x00A, ACCESS                ; save the bit mask
+    movwf       stock_00A_acc, ACCESS                ; save the bit mask
     tblrd*+                                      ; fetch record count
-    movff       TABLAT, ram_0x013
-    movf        ram_0x0BD, W, BANKED             ; BSR = 0 on entry
-    andwf       ram_0x00A, W, ACCESS
-    movwf       ram_0x00B, ACCESS                ; non-zero => do the work
+    movff       TABLAT, stock_013_b0_phys
+    movf        filename_dirty_flags_b0, W, BANKED             ; BSR = 0 on entry
+    andwf       stock_00A_acc, W, ACCESS
+    movwf       stock_00B_acc, ACCESS                ; non-zero => do the work
 eeprom_persist_record_loop:
     tblrd*+                                      ; fetch EEPROM offset
-    movff       TABLAT, ram_0x007
+    movff       TABLAT, stock_007_b0_phys
     tblrd*+                                      ; fetch bank-0 src_lo
     movff       TABLAT, FSR0L
     clrf        FSR0H, ACCESS                    ; all source RAM in bank 0
-    movf        ram_0x00B, F, ACCESS             ; is the gate still set?
+    movf        stock_00B_acc, F, ACCESS             ; is the gate still set?
     btfsc       STATUS, 2, ACCESS                ; Z => bit was clear
     bra         eeprom_persist_record_next
-    clrf        ram_0x008, ACCESS
-    movff       INDF0, ram_0x009
+    clrf        stock_008_acc, ACCESS
+    movff       INDF0, stock_009_b0_phys
     call        main_flash_service_46de, 0x0
 eeprom_persist_record_next:
-    decfsz      ram_0x013, F, ACCESS
+    decfsz      stock_013_acc, F, ACCESS
     bra         eeprom_persist_record_loop
-    movf        ram_0x00B, F, ACCESS
+    movf        stock_00B_acc, F, ACCESS
     btfsc       STATUS, 2, ACCESS                ; gate was clear: no bit to clear
     return      0
     movlb       0x0
-    comf        ram_0x00A, W, ACCESS             ; W = ~mask
-    andwf       ram_0x0BD, F, BANKED             ; drop only this block's bit
+    comf        stock_00A_acc, W, ACCESS             ; W = ~mask
+    andwf       filename_dirty_flags_b0, F, BANKED             ; drop only this block's bit
     return      0
 
 
@@ -3424,41 +3424,41 @@ eeprom_persist_static_records:
 ; through volume_dsp_write and preset_job_apply_i2c_entry respectively.
 ; ---------------------------------------------------------------------------
 main_i2c_service_27f0:
-    btfss       active_flags, 3, ACCESS
+    btfss       active_flags_acc, 3, ACCESS
     bra         flow_main_i2c_service_27f0_297c
     movlw       0x64
     movlb       0x0
-    cpfsgt      ram_0x0BB, BANKED
+    cpfsgt      stock_0BB_b0, BANKED
     bra         flow_main_i2c_service_27f0_297a
-    clrf        ram_0x0BB, BANKED
+    clrf        stock_0BB_b0, BANKED
     bra         flow_main_i2c_service_27f0_28aa
 flow_main_i2c_service_27f0_2800:
-    movf        ram_0x0B6, W, BANKED
+    movf        stock_0B6_b0, W, BANKED
     addlw       0x08
-    movwf       ram_0x0BE, BANKED
+    movwf       stock_0BE_b0, BANKED
     bra         flow_main_i2c_service_27f0_28ce
 flow_main_i2c_service_27f0_28aa:
-    movf        input_select, W, BANKED
+    movf        input_select_b0, W, BANKED
     bz          flow_main_i2c_service_27f0_2800
     movlw       0x09
-    cpfslt      input_select, BANKED       ; valid fixed inputs are 1..8
+    cpfslt      input_select_b0, BANKED       ; valid fixed inputs are 1..8
     bra         flow_main_i2c_service_27f0_28ce
-    movf        input_select, W, BANKED
+    movf        input_select_b0, W, BANKED
     addlw       0xFF                       ; W = input_select - 1
-    movwf       ram_0x003, ACCESS          ; table column
+    movwf       stock_003_acc, ACCESS          ; table column
     movlw       0x03
-    cpfsgt      ram_0x05F, ACCESS          ; status > 3 uses overflow row
+    cpfsgt      stock_05F_acc, ACCESS          ; status > 3 uses overflow row
     bra         flow_main_i2c_service_27f0_route_status_ok
     movlw       0x04
     bra         flow_main_i2c_service_27f0_route_status_ready
 flow_main_i2c_service_27f0_route_status_ok:
-    movf        ram_0x05F, W, ACCESS
+    movf        stock_05F_acc, W, ACCESS
 flow_main_i2c_service_27f0_route_status_ready:
-    movwf       ram_0x004, ACCESS
-    rlncf       ram_0x004, F, ACCESS
-    rlncf       ram_0x004, F, ACCESS
-    rlncf       ram_0x004, W, ACCESS       ; W = row * 8
-    addwf       ram_0x003, W, ACCESS       ; W = row * 8 + column
+    movwf       stock_004_acc, ACCESS
+    rlncf       stock_004_acc, F, ACCESS
+    rlncf       stock_004_acc, F, ACCESS
+    rlncf       stock_004_acc, W, ACCESS       ; W = row * 8
+    addwf       stock_003_acc, W, ACCESS       ; W = row * 8 + column
     addlw       LOW(main_i2c_service_27f0_route_table)
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(main_i2c_service_27f0_route_table)
@@ -3467,53 +3467,53 @@ flow_main_i2c_service_27f0_route_status_ready:
     movwf       TBLPTRH, ACCESS
     clrf        TBLPTRU, ACCESS
     tblrd*
-    movff       TABLAT, ram_0x093
+    movff       TABLAT, stock_093_b0_phys
 flow_main_i2c_service_27f0_28ce:
-    tstfsz      input_select, BANKED
+    tstfsz      input_select_b0, BANKED
     bra         flow_main_i2c_service_27f0_2902
-    tstfsz      ram_0x0BA, BANKED
+    tstfsz      stock_0BA_b0, BANKED
     bra         flow_main_i2c_service_27f0_ad_wait
-    movff       ram_0x0BE, ram_0x006
+    movff       stock_0BE_b0_phys, stock_006_b0_phys
     movlw       0x0D
     call        i2c_secondary_dev_write, 0x0
     movlb       0x0
     movlw       0x12                            ; candidate settle countdown
-    movwf       ram_0x0BA, BANKED
+    movwf       stock_0BA_b0, BANKED
     bra         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_ad_wait:
-    decfsz      ram_0x0BA, F, BANKED
+    decfsz      stock_0BA_b0, F, BANKED
     bra         flow_main_i2c_service_27f0_295c
     movlw       0x13
     call        i2c_secondary_dev_random_read, 0x0
     bc          flow_main_i2c_service_27f0_ad_monitor_timeout
     movlb       0x0
-    movwf       ram_0x0BE, BANKED
-    tstfsz      ram_0x0BE, BANKED
+    movwf       stock_0BE_b0, BANKED
+    tstfsz      stock_0BE_b0, BANKED
     bra         flow_main_i2c_service_27f0_290a
-    movf        ram_0x0AB, W, BANKED
+    movf        stock_0AB_b0, W, BANKED
     bz          flow_main_i2c_service_27f0_ad_scan_miss
     movlb       0x02
-    tstfsz      src4382_loss_debounce, BANKED
+    tstfsz      src4382_loss_debounce_b2, BANKED
     bra         flow_main_i2c_service_27f0_ad_loss_confirmed
     movlw       0x01
-    movwf       src4382_loss_debounce, BANKED
+    movwf       src4382_loss_debounce_b2, BANKED
     movlb       0x0
-    movff       ram_0x0AB, ram_0x093
+    movff       stock_0AB_b0_phys, stock_093_b0_phys
     bra         flow_main_i2c_service_27f0_ad_monitor
 flow_main_i2c_service_27f0_ad_loss_confirmed:
-    clrf        src4382_loss_debounce, BANKED
+    clrf        src4382_loss_debounce_b2, BANKED
     movlb       0x0
 flow_main_i2c_service_27f0_ad_scan_miss:
-    clrf        ram_0x093, BANKED
-    incf        ram_0x0B6, F, BANKED
-    movf        ram_0x0B6, W, BANKED
+    clrf        stock_093_b0, BANKED
+    incf        stock_0B6_b0, F, BANKED
+    movf        stock_0B6_b0, W, BANKED
     xorlw       0x04
     bnz         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_2902:
-    clrf        ram_0x0B6, BANKED
-    clrf        ram_0x0BA, BANKED
+    clrf        stock_0B6_b0, BANKED
+    clrf        stock_0BA_b0, BANKED
     movlb       0x02
-    clrf        src4382_loss_debounce, BANKED
+    clrf        src4382_loss_debounce_b2, BANKED
     movlb       0x0
     bra         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_ad_monitor_timeout:
@@ -3521,74 +3521,75 @@ flow_main_i2c_service_27f0_ad_monitor_timeout:
     bra         flow_main_i2c_service_27f0_295c
 flow_main_i2c_service_27f0_290a:
     movlb       0x02
-    clrf        src4382_loss_debounce, BANKED
+    clrf        src4382_loss_debounce_b2, BANKED
     movlb       0x0
-    tstfsz      ram_0x0B6, BANKED
+    tstfsz      stock_0B6_b0, BANKED
     bra         flow_main_i2c_service_27f0_2912
     movlw       0x03
-    movwf       ram_0x093, BANKED
+    movwf       stock_093_b0, BANKED
 flow_main_i2c_service_27f0_2912:
-    decf        ram_0x0B6, W, BANKED
+    decf        stock_0B6_b0, W, BANKED
     bnz         flow_main_i2c_service_27f0_291a
     movlw       0x01
-    movwf       ram_0x093, BANKED
+    movwf       stock_093_b0, BANKED
 flow_main_i2c_service_27f0_291a:
-    movf        ram_0x0B6, W, BANKED
+    movf        stock_0B6_b0, W, BANKED
     xorlw       0x02
     bnz         flow_main_i2c_service_27f0_2924
     movlw       0x02
-    movwf       ram_0x093, BANKED
+    movwf       stock_093_b0, BANKED
 flow_main_i2c_service_27f0_2924:
-    movf        ram_0x0B6, W, BANKED
+    movf        stock_0B6_b0, W, BANKED
     xorlw       0x03
     bnz         flow_main_i2c_service_27f0_292e
     movlw       0x04
-    movwf       ram_0x093, BANKED
+    movwf       stock_093_b0, BANKED
 flow_main_i2c_service_27f0_292e:
     movlw       0x12
     call        i2c_secondary_dev_random_read, 0x0
     bc          flow_main_i2c_service_27f0_ad_monitor
     movlb       0x0
-    movwf       ram_0x0BF, BANKED
-    movf        ram_0x0BF, W, BANKED
+    movwf       stock_0BF_b0, BANKED
+    movf        stock_0BF_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         active_flags, 4, ACCESS
+    bsf         active_flags_acc, 4, ACCESS
     movlw       0x01
-    btfss       active_flags, 4, ACCESS
+    btfss       active_flags_acc, 4, ACCESS
     movlw       0x00
-    movwf       ram_0x008, ACCESS
+    movwf       stock_008_acc, ACCESS
     movlw       0x01
-    btfss       active_flags, 5, ACCESS
+    btfss       active_flags_acc, 5, ACCESS
     movlw       0x00
-    xorwf       ram_0x008, F, ACCESS
+    xorwf       stock_008_acc, F, ACCESS
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 5, BANKED
-    btfss       active_flags, 4, ACCESS
+    bsf         event_flags_b0, 5, BANKED
+    btfss       active_flags_acc, 4, ACCESS
     bra         flow_main_i2c_service_27f0_295a
-    bsf         active_flags, 5, ACCESS
+    bsf         active_flags_acc, 5, ACCESS
     bra         flow_main_i2c_service_27f0_ad_monitor
 flow_main_i2c_service_27f0_295a:
-    bcf         active_flags, 5, ACCESS
+    bcf         active_flags_acc, 5, ACCESS
 flow_main_i2c_service_27f0_ad_monitor:
     movlw       0x28                            ; source-present monitor countdown
-    movwf       ram_0x0BA, BANKED
+    movlb       0x0
+    movwf       stock_0BA_b0, BANKED
 flow_main_i2c_service_27f0_295c:
     movlb       0x0
-    movf        ram_0x093, W, BANKED
+    movf        stock_093_b0, W, BANKED
     xorlw       0x02
     btfsc       STATUS, 2, ACCESS
     btfsc       PORTC, 0, ACCESS
     bra         flow_main_i2c_service_27f0_296c
-    movff       ram_0x0C3, ram_0x093
+    movff       stock_0C3_b0_phys, stock_093_b0_phys
 flow_main_i2c_service_27f0_296c:
-    movf        ram_0x0AB, W, BANKED
-    xorwf       ram_0x093, W, BANKED
+    movf        stock_0AB_b0, W, BANKED
+    xorwf       stock_093_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
-    bsf         event_flags, 1, BANKED
-    movff       ram_0x093, ram_0x0AB
+    bsf         event_flags_b0, 1, BANKED
+    movff       stock_093_b0_phys, stock_0AB_b0_phys
     bra         flow_main_i2c_service_27f0_297c
 flow_main_i2c_service_27f0_297a:
-    incf        ram_0x0BB, F, BANKED
+    incf        stock_0BB_b0, F, BANKED
 flow_main_i2c_service_27f0_297c:
     return      0
 
@@ -3615,42 +3616,42 @@ main_i2c_service_27f0_route_table:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_2ca8, main_core_service_24c2, main_core_service_3ec4.
 ; ---------------------------------------------------------------------------
 main_core_service_297e:
-    clrf        ram_0x011, ACCESS
-    clrf        ram_0x012, ACCESS
+    clrf        stock_011_acc, ACCESS
+    clrf        stock_012_acc, ACCESS
     movlw       0x80
-    movwf       ram_0x013, ACCESS
+    movwf       stock_013_acc, ACCESS
     movlw       0x44
-    movwf       ram_0x014, ACCESS
-    movff       ram_0x02F, ram_0x00D
-    movff       ram_0x030, ram_0x00E
-    movff       ram_0x031, ram_0x00F
-    movff       ram_0x032, ram_0x010
+    movwf       stock_014_acc, ACCESS
+    movff       stock_02F_b0_phys, stock_00D_b0_phys
+    movff       stock_030_b0_phys, stock_00E_b0_phys
+    movff       stock_031_b0_phys, stock_00F_b0_phys
+    movff       stock_032_b0_phys, stock_010_b0_phys
     rcall       main_core_service_2ca8
-    movff       ram_0x00D, ram_0x020
-    movff       ram_0x00E, ram_0x021
-    movff       ram_0x00F, ram_0x022
-    movff       ram_0x010, ram_0x023
-    clrf        ram_0x024, ACCESS
-    clrf        ram_0x025, ACCESS
+    movff       stock_00D_b0_phys, stock_020_b0_phys
+    movff       stock_00E_b0_phys, stock_021_b0_phys
+    movff       stock_00F_b0_phys, stock_022_b0_phys
+    movff       stock_010_b0_phys, stock_023_b0_phys
+    clrf        stock_024_acc, ACCESS
+    clrf        stock_025_acc, ACCESS
     movlw       0x80
-    movwf       ram_0x026, ACCESS
+    movwf       stock_026_acc, ACCESS
     movlw       0x3F
-    movwf       ram_0x027, ACCESS
+    movwf       stock_027_acc, ACCESS
     rcall       main_core_service_24c2
-    movff       ram_0x020, ram_0x02F
-    movff       ram_0x021, ram_0x030
-    movff       ram_0x022, ram_0x031
-    movff       ram_0x023, ram_0x032
+    movff       stock_020_b0_phys, stock_02F_b0_phys
+    movff       stock_021_b0_phys, stock_030_b0_phys
+    movff       stock_022_b0_phys, stock_031_b0_phys
+    movff       stock_023_b0_phys, stock_032_b0_phys
     movlw       0x0A
-    movwf       ram_0x011, ACCESS
+    movwf       stock_011_acc, ACCESS
 flow_main_core_service_297e_apply_loop:
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
+    movff       stock_02F_b0_phys, stock_025_b0_phys
+    movff       stock_030_b0_phys, stock_026_b0_phys
+    movff       stock_031_b0_phys, stock_027_b0_phys
+    movff       stock_032_b0_phys, stock_028_b0_phys
     movlw       0x2F
     call        main_core_service_3ec4, 0x0
-    decfsz      ram_0x011, F, ACCESS
+    decfsz      stock_011_acc, F, ACCESS
     bra         flow_main_core_service_297e_apply_loop
     return      0
 
@@ -3661,10 +3662,10 @@ flow_main_core_service_297e_apply_loop:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_2bac, main_core_service_2b8e, main_core_service_2b9e.
 ; ---------------------------------------------------------------------------
 main_core_service_2abc:
-    movff       ram_0x012, ram_0x01A
-    movff       ram_0x013, ram_0x01B
-    movff       ram_0x014, ram_0x01C
-    movff       ram_0x015, ram_0x01D
+    movff       stock_012_b0_phys, stock_01A_b0_phys
+    movff       stock_013_b0_phys, stock_01B_b0_phys
+    movff       stock_014_b0_phys, stock_01C_b0_phys
+    movff       stock_015_b0_phys, stock_01D_b0_phys
     movlw       0x18
     bra         flow_main_core_service_2abc_2ad2
 flow_main_core_service_2abc_2ad0:
@@ -3672,16 +3673,16 @@ flow_main_core_service_2abc_2ad0:
 flow_main_core_service_2abc_2ad2:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_2abc_2ad0
-    movf        ram_0x01A, W, ACCESS
-    movwf       ram_0x01E, ACCESS
-    tstfsz      ram_0x01E, ACCESS
+    movf        stock_01A_acc, W, ACCESS
+    movwf       stock_01E_acc, ACCESS
+    tstfsz      stock_01E_acc, ACCESS
     bra         flow_main_core_service_2abc_2ae0
     bra         flow_main_core_service_2abc_2b02
 flow_main_core_service_2abc_2ae0:
-    movff       ram_0x016, ram_0x01A
-    movff       ram_0x017, ram_0x01B
-    movff       ram_0x018, ram_0x01C
-    movff       ram_0x019, ram_0x01D
+    movff       stock_016_b0_phys, stock_01A_b0_phys
+    movff       stock_017_b0_phys, stock_01B_b0_phys
+    movff       stock_018_b0_phys, stock_01C_b0_phys
+    movff       stock_019_b0_phys, stock_01D_b0_phys
     movlw       0x18
     bra         flow_main_core_service_2abc_2af6
 flow_main_core_service_2abc_2af4:
@@ -3689,73 +3690,73 @@ flow_main_core_service_2abc_2af4:
 flow_main_core_service_2abc_2af6:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_2abc_2af4
-    movf        ram_0x01A, W, ACCESS
-    movwf       ram_0x024, ACCESS
-    tstfsz      ram_0x024, ACCESS
+    movf        stock_01A_acc, W, ACCESS
+    movwf       stock_024_acc, ACCESS
+    tstfsz      stock_024_acc, ACCESS
     bra         flow_main_core_service_2abc_2b0c
 flow_main_core_service_2abc_2b02:
-    clrf        ram_0x012, ACCESS
-    clrf        ram_0x013, ACCESS
-    clrf        ram_0x014, ACCESS
-    clrf        ram_0x015, ACCESS
+    clrf        stock_012_acc, ACCESS
+    clrf        stock_013_acc, ACCESS
+    clrf        stock_014_acc, ACCESS
+    clrf        stock_015_acc, ACCESS
     bra         flow_main_core_service_2abc_2b8c
 flow_main_core_service_2abc_2b0c:
-    movf        ram_0x024, W, ACCESS
+    movf        stock_024_acc, W, ACCESS
     addlw       0x7B
-    addwf       ram_0x01E, F, ACCESS
-    movff       ram_0x015, ram_0x024
-    movf        ram_0x019, W, ACCESS
-    xorwf       ram_0x024, F, ACCESS
+    addwf       stock_01E_acc, F, ACCESS
+    movff       stock_015_b0_phys, stock_024_b0_phys
+    movf        stock_019_acc, W, ACCESS
+    xorwf       stock_024_acc, F, ACCESS
     movlw       0x80
-    andwf       ram_0x024, F, ACCESS
-    bsf         ram_0x014, 7, ACCESS
-    bsf         ram_0x018, 7, ACCESS
-    clrf        ram_0x019, ACCESS
-    clrf        ram_0x01F, ACCESS
-    clrf        ram_0x020, ACCESS
-    clrf        ram_0x021, ACCESS
-    clrf        ram_0x022, ACCESS
+    andwf       stock_024_acc, F, ACCESS
+    bsf         stock_014_acc, 7, ACCESS
+    bsf         stock_018_acc, 7, ACCESS
+    clrf        stock_019_acc, ACCESS
+    clrf        stock_01F_acc, ACCESS
+    clrf        stock_020_acc, ACCESS
+    clrf        stock_021_acc, ACCESS
+    clrf        stock_022_acc, ACCESS
     movlw       0x07
-    movwf       ram_0x023, ACCESS
+    movwf       stock_023_acc, ACCESS
 flow_main_core_service_2abc_2b30:
-    btfss       ram_0x012, 0, ACCESS
+    btfss       stock_012_acc, 0, ACCESS
     bra         flow_main_core_service_2abc_2b38
-    movf        ram_0x016, W, ACCESS
+    movf        stock_016_acc, W, ACCESS
     rcall       main_core_service_2b8e
 flow_main_core_service_2abc_2b38:
     rcall       main_core_service_2b9e
-    rlcf        ram_0x016, F, ACCESS
-    rlcf        ram_0x017, F, ACCESS
-    rlcf        ram_0x018, F, ACCESS
-    rlcf        ram_0x019, F, ACCESS
-    decfsz      ram_0x023, F, ACCESS
+    rlcf        stock_016_acc, F, ACCESS
+    rlcf        stock_017_acc, F, ACCESS
+    rlcf        stock_018_acc, F, ACCESS
+    rlcf        stock_019_acc, F, ACCESS
+    decfsz      stock_023_acc, F, ACCESS
     bra         flow_main_core_service_2abc_2b30
     movlw       0x11
-    movwf       ram_0x023, ACCESS
+    movwf       stock_023_acc, ACCESS
 flow_main_core_service_2abc_2b4a:
-    btfss       ram_0x012, 0, ACCESS
+    btfss       stock_012_acc, 0, ACCESS
     bra         flow_main_core_service_2abc_2b52
-    movf        ram_0x016, W, ACCESS
+    movf        stock_016_acc, W, ACCESS
     rcall       main_core_service_2b8e
 flow_main_core_service_2abc_2b52:
     rcall       main_core_service_2b9e
-    rrcf        ram_0x022, F, ACCESS
-    rrcf        ram_0x021, F, ACCESS
-    rrcf        ram_0x020, F, ACCESS
-    rrcf        ram_0x01F, F, ACCESS
-    decfsz      ram_0x023, F, ACCESS
+    rrcf        stock_022_acc, F, ACCESS
+    rrcf        stock_021_acc, F, ACCESS
+    rrcf        stock_020_acc, F, ACCESS
+    rrcf        stock_01F_acc, F, ACCESS
+    decfsz      stock_023_acc, F, ACCESS
     bra         flow_main_core_service_2abc_2b4a
-    movff       ram_0x01F, ram_0x003
-    movff       ram_0x020, ram_0x004
-    movff       ram_0x021, ram_0x005
-    movff       ram_0x022, ram_0x006
-    movff       ram_0x01E, ram_0x007
-    movff       ram_0x024, ram_0x008
+    movff       stock_01F_b0_phys, stock_003_b0_phys
+    movff       stock_020_b0_phys, stock_004_b0_phys
+    movff       stock_021_b0_phys, saved_w_b0_phys
+    movff       stock_022_b0_phys, stock_006_b0_phys
+    movff       stock_01E_b0_phys, stock_007_b0_phys
+    movff       stock_024_b0_phys, stock_008_b0_phys
     rcall       main_core_service_30d8
-    movff       ram_0x003, ram_0x012
-    movff       ram_0x004, ram_0x013
-    movff       ram_0x005, ram_0x014
-    movff       ram_0x006, ram_0x015
+    movff       stock_003_b0_phys, stock_012_b0_phys
+    movff       stock_004_b0_phys, stock_013_b0_phys
+    movff       saved_w_b0_phys, stock_014_b0_phys
+    movff       stock_006_b0_phys, stock_015_b0_phys
 flow_main_core_service_2abc_2b8c:
     return      0
 
@@ -3766,13 +3767,13 @@ flow_main_core_service_2abc_2b8c:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_2b8e:
-    addwf       ram_0x01F, F, ACCESS
-    movf        ram_0x017, W, ACCESS
-    addwfc      ram_0x020, F, ACCESS
-    movf        ram_0x018, W, ACCESS
-    addwfc      ram_0x021, F, ACCESS
-    movf        ram_0x019, W, ACCESS
-    addwfc      ram_0x022, F, ACCESS
+    addwf       stock_01F_acc, F, ACCESS
+    movf        stock_017_acc, W, ACCESS
+    addwfc      stock_020_acc, F, ACCESS
+    movf        stock_018_acc, W, ACCESS
+    addwfc      stock_021_acc, F, ACCESS
+    movf        stock_019_acc, W, ACCESS
+    addwfc      stock_022_acc, F, ACCESS
     return      0
 
 
@@ -3783,10 +3784,10 @@ main_core_service_2b8e:
 ; ---------------------------------------------------------------------------
 main_core_service_2b9e:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x015, F, ACCESS
-    rrcf        ram_0x014, F, ACCESS
-    rrcf        ram_0x013, F, ACCESS
-    rrcf        ram_0x012, F, ACCESS
+    rrcf        stock_015_acc, F, ACCESS
+    rrcf        stock_014_acc, F, ACCESS
+    rrcf        stock_013_acc, F, ACCESS
+    rrcf        stock_012_acc, F, ACCESS
     bcf         STATUS, 0, ACCESS
     return      0
 
@@ -3798,10 +3799,10 @@ main_core_service_2b9e:
 ; ---------------------------------------------------------------------------
 main_core_service_2bac:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x01D, F, ACCESS
-    rrcf        ram_0x01C, F, ACCESS
-    rrcf        ram_0x01B, F, ACCESS
-    rrcf        ram_0x01A, F, ACCESS
+    rrcf        stock_01D_acc, F, ACCESS
+    rrcf        stock_01C_acc, F, ACCESS
+    rrcf        stock_01B_acc, F, ACCESS
+    rrcf        stock_01A_acc, F, ACCESS
     return      0
 
 
@@ -3814,10 +3815,10 @@ main_core_service_2bac:
 ; Uses only ACCESS-bank + movff, so BSR is preserved across the call.
 ; ---------------------------------------------------------------------------
 flash_addr_setup_from_82_83:
-    movff       ram_0x082, ram_0x003
-    movff       ram_0x083, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
+    movff       stock_082_b0_phys, stock_003_b0_phys
+    movff       stock_083_b0_phys, stock_004_b0_phys
+    clrf        stock_005_acc, ACCESS
+    clrf        stock_006_acc, ACCESS
     return      0
 
 
@@ -3827,104 +3828,104 @@ flash_addr_setup_from_82_83:
 ; Notes   : Inferred flash helper routine. Calls: flash_read, flash_erase, flash_write.
 ; ---------------------------------------------------------------------------
 main_flash_service_2bb8:
-    tstfsz      ram_0x0C5, BANKED
+    tstfsz      stock_0C5_b0, BANKED
     bra         flow_main_flash_service_2bb8_2bdc
     rcall       flash_addr_setup_from_82_83
-    clrf        ram_0x008, ACCESS
+    clrf        stock_008_acc, ACCESS
     movlw       0xC0
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     movlb       0x3
     movlw       0x03
-    movwf       ram_0x00A, ACCESS
-    clrf        ram_0x009, ACCESS
+    movwf       stock_00A_acc, ACCESS
+    clrf        stock_009_acc, ACCESS
     call        flash_read, 0x0
 flow_main_flash_service_2bb8_2bdc:
     movlb       0x1
-    movf        ram_0x01B, W, BANKED
+    movf        stock_11B_b1, W, BANKED
     bz          flow_main_flash_service_2bb8_2bea
-    clrf        ram_0x01D, ACCESS
+    clrf        stock_01D_acc, ACCESS
     movlw       0x02
-    movwf       ram_0x01C, ACCESS
+    movwf       stock_01C_acc, ACCESS
     bra         flow_main_flash_service_2bb8_2bee
 flow_main_flash_service_2bb8_2bea:
-    clrf        ram_0x01C, ACCESS
-    clrf        ram_0x01D, ACCESS
+    clrf        stock_01C_acc, ACCESS
+    clrf        stock_01D_acc, ACCESS
 flow_main_flash_service_2bb8_2bee:
-    movff       ram_0x01C, ram_0x01E
+    movff       stock_01C_b0_phys, stock_01E_b0_phys
     movlw       0x04
-    movwf       ram_0x01F, ACCESS
+    movwf       stock_01F_acc, ACCESS
 flow_main_flash_service_2bb8_2bf6:
     movlw       0x1A
-    movwf       ram_0x018, ACCESS
+    movwf       stock_018_acc, ACCESS
     movlw       0x01
-    movwf       ram_0x019, ACCESS
-    movf        ram_0x01F, W, ACCESS
-    addwf       ram_0x018, F, ACCESS
+    movwf       stock_019_acc, ACCESS
+    movf        stock_01F_acc, W, ACCESS
+    addwf       stock_018_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x019, F, ACCESS
-    movf        ram_0x01E, W, ACCESS
-    subwf       ram_0x018, W, ACCESS
+    addwfc      stock_019_acc, F, ACCESS
+    movf        stock_01E_acc, W, ACCESS
+    subwf       stock_018_acc, W, ACCESS
     movwf       FSR2L, ACCESS
-    movf        ram_0x019, W, ACCESS
+    movf        stock_019_acc, W, ACCESS
     btfss       STATUS, 0, ACCESS
-    decf        ram_0x019, W, ACCESS
+    decf        stock_019_acc, W, ACCESS
     movwf       FSR2H, ACCESS
-    clrf        ram_0x01A, ACCESS
+    clrf        stock_01A_acc, ACCESS
     movlw       0x03
-    movwf       ram_0x01B, ACCESS
+    movwf       stock_01B_acc, ACCESS
     movlb       0x0
-    movf        ram_0x0C5, W, BANKED
-    addwf       ram_0x01A, F, ACCESS
+    movf        stock_0C5_b0, W, BANKED
+    addwf       stock_01A_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x01B, F, ACCESS
-    movf        ram_0x01F, W, ACCESS
-    addwf       ram_0x01A, W, ACCESS
+    addwfc      stock_01B_acc, F, ACCESS
+    movf        stock_01F_acc, W, ACCESS
+    addwf       stock_01A_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     movlw       0x00
-    addwfc      ram_0x01B, W, ACCESS
+    addwfc      stock_01B_acc, W, ACCESS
     movwf       FSR1H, ACCESS
     movff       INDF2, INDF1
-    incf        ram_0x01F, F, ACCESS
+    incf        stock_01F_acc, F, ACCESS
     movlw       0x17
-    cpfsgt      ram_0x01F, ACCESS
+    cpfsgt      stock_01F_acc, ACCESS
     bra         flow_main_flash_service_2bb8_2bf6
     movlw       0x18
-    addwf       ram_0x0C5, F, BANKED
+    addwf       stock_0C5_b0, F, BANKED
     movlw       0xBF
-    cpfsgt      ram_0x0C5, BANKED
+    cpfsgt      stock_0C5_b0, BANKED
     bra         flow_main_flash_service_2bb8_2ca6
-    clrf        ram_0x0C5, BANKED
+    clrf        stock_0C5_b0, BANKED
     movlw       0x3F
-    subwf       ram_0x082, W, BANKED
+    subwf       stock_082_b0, W, BANKED
     movlw       0x5F
-    subwfb      ram_0x083, W, BANKED
+    subwfb      stock_083_b0, W, BANKED
     bc          flow_main_flash_service_2bb8_2ca6
     rcall       flash_addr_setup_from_82_83
     movlw       0xBF
-    addwf       ram_0x082, W, BANKED
-    movwf       ram_0x018, ACCESS
+    addwf       stock_082_b0, W, BANKED
+    movwf       stock_018_acc, ACCESS
     movlw       0x00
-    addwfc      ram_0x083, W, BANKED
-    movwf       ram_0x019, ACCESS
-    movff       ram_0x018, ram_0x007
-    movff       ram_0x019, ram_0x008
-    clrf        ram_0x009, ACCESS
-    clrf        ram_0x00A, ACCESS
+    addwfc      stock_083_b0, W, BANKED
+    movwf       stock_019_acc, ACCESS
+    movff       stock_018_b0_phys, stock_007_b0_phys
+    movff       stock_019_b0_phys, stock_008_b0_phys
+    clrf        stock_009_acc, ACCESS
+    clrf        stock_00A_acc, ACCESS
     call        flash_erase, 0x0
     rcall       flash_addr_setup_from_82_83
-    clrf        ram_0x008, ACCESS
+    clrf        stock_008_acc, ACCESS
     movlw       0xC0
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     movlb       0x3
     movlw       0x03
-    movwf       ram_0x00A, ACCESS
-    clrf        ram_0x009, ACCESS
+    movwf       stock_00A_acc, ACCESS
+    clrf        stock_009_acc, ACCESS
     rcall       flash_write
     movlw       0xC0
     movlb       0x0
-    addwf       ram_0x082, F, BANKED
+    addwf       stock_082_b0, F, BANKED
     movlw       0x00
-    addwfc      ram_0x083, F, BANKED
+    addwfc      stock_083_b0, F, BANKED
 flow_main_flash_service_2bb8_2ca6:
     return      0
 
@@ -3935,10 +3936,10 @@ flow_main_flash_service_2bb8_2ca6:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_2d80, main_core_service_30d8.
 ; ---------------------------------------------------------------------------
 main_core_service_2ca8:
-    movff       ram_0x00D, ram_0x015
-    movff       ram_0x00E, ram_0x016
-    movff       ram_0x00F, ram_0x017
-    movff       ram_0x010, ram_0x018
+    movff       stock_00D_b0_phys, stock_015_b0_phys
+    movff       stock_00E_b0_phys, stock_016_b0_phys
+    movff       stock_00F_b0_phys, stock_017_b0_phys
+    movff       stock_010_b0_phys, stock_018_b0_phys
     movlw       0x18
     bra         flow_main_core_service_2ca8_2cbe
 flow_main_core_service_2ca8_2cbc:
@@ -3946,16 +3947,16 @@ flow_main_core_service_2ca8_2cbc:
 flow_main_core_service_2ca8_2cbe:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_2ca8_2cbc
-    movf        ram_0x015, W, ACCESS
-    movwf       ram_0x01E, ACCESS
-    tstfsz      ram_0x01E, ACCESS
+    movf        stock_015_acc, W, ACCESS
+    movwf       stock_01E_acc, ACCESS
+    tstfsz      stock_01E_acc, ACCESS
     bra         flow_main_core_service_2ca8_2ccc
     bra         flow_main_core_service_2ca8_2cee
 flow_main_core_service_2ca8_2ccc:
-    movff       ram_0x011, ram_0x015
-    movff       ram_0x012, ram_0x016
-    movff       ram_0x013, ram_0x017
-    movff       ram_0x014, ram_0x018
+    movff       stock_011_b0_phys, stock_015_b0_phys
+    movff       stock_012_b0_phys, stock_016_b0_phys
+    movff       stock_013_b0_phys, stock_017_b0_phys
+    movff       stock_014_b0_phys, stock_018_b0_phys
     movlw       0x18
     bra         flow_main_core_service_2ca8_2ce2
 flow_main_core_service_2ca8_2ce0:
@@ -3963,69 +3964,69 @@ flow_main_core_service_2ca8_2ce0:
 flow_main_core_service_2ca8_2ce2:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_2ca8_2ce0
-    movf        ram_0x015, W, ACCESS
-    movwf       ram_0x01F, ACCESS
-    tstfsz      ram_0x01F, ACCESS
+    movf        stock_015_acc, W, ACCESS
+    movwf       stock_01F_acc, ACCESS
+    tstfsz      stock_01F_acc, ACCESS
     bra         flow_main_core_service_2ca8_2cf8
 flow_main_core_service_2ca8_2cee:
-    clrf        ram_0x00D, ACCESS
-    clrf        ram_0x00E, ACCESS
-    clrf        ram_0x00F, ACCESS
-    clrf        ram_0x010, ACCESS
+    clrf        stock_00D_acc, ACCESS
+    clrf        stock_00E_acc, ACCESS
+    clrf        stock_00F_acc, ACCESS
+    clrf        stock_010_acc, ACCESS
     bra         flow_main_core_service_2ca8_2d7e
 flow_main_core_service_2ca8_2cf8:
-    movf        ram_0x01F, W, ACCESS
+    movf        stock_01F_acc, W, ACCESS
     addlw       0x89
-    subwf       ram_0x01E, F, ACCESS
-    movff       ram_0x010, ram_0x01F
-    movf        ram_0x014, W, ACCESS
-    xorwf       ram_0x01F, F, ACCESS
+    subwf       stock_01E_acc, F, ACCESS
+    movff       stock_010_b0_phys, stock_01F_b0_phys
+    movf        stock_014_acc, W, ACCESS
+    xorwf       stock_01F_acc, F, ACCESS
     movlw       0x80
-    andwf       ram_0x01F, F, ACCESS
-    bsf         ram_0x00F, 7, ACCESS
-    clrf        ram_0x010, ACCESS
-    bsf         ram_0x013, 7, ACCESS
-    clrf        ram_0x014, ACCESS
+    andwf       stock_01F_acc, F, ACCESS
+    bsf         stock_00F_acc, 7, ACCESS
+    clrf        stock_010_acc, ACCESS
+    bsf         stock_013_acc, 7, ACCESS
+    clrf        stock_014_acc, ACCESS
     movlw       0x20
-    movwf       ram_0x01D, ACCESS
+    movwf       stock_01D_acc, ACCESS
 flow_main_core_service_2ca8_2d16:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x019, F, ACCESS
-    rlcf        ram_0x01A, F, ACCESS
-    rlcf        ram_0x01B, F, ACCESS
-    rlcf        ram_0x01C, F, ACCESS
-    movf        ram_0x011, W, ACCESS
-    subwf       ram_0x00D, W, ACCESS
-    movf        ram_0x012, W, ACCESS
-    subwfb      ram_0x00E, W, ACCESS
-    movf        ram_0x013, W, ACCESS
-    subwfb      ram_0x00F, W, ACCESS
-    movf        ram_0x014, W, ACCESS
-    subwfb      ram_0x010, W, ACCESS
+    rlcf        stock_019_acc, F, ACCESS
+    rlcf        stock_01A_acc, F, ACCESS
+    rlcf        stock_01B_acc, F, ACCESS
+    rlcf        stock_01C_acc, F, ACCESS
+    movf        stock_011_acc, W, ACCESS
+    subwf       stock_00D_acc, W, ACCESS
+    movf        stock_012_acc, W, ACCESS
+    subwfb      stock_00E_acc, W, ACCESS
+    movf        stock_013_acc, W, ACCESS
+    subwfb      stock_00F_acc, W, ACCESS
+    movf        stock_014_acc, W, ACCESS
+    subwfb      stock_010_acc, W, ACCESS
     bnc         flow_main_core_service_2ca8_2d44
-    movf        ram_0x011, W, ACCESS
-    subwf       ram_0x00D, F, ACCESS
-    movf        ram_0x012, W, ACCESS
-    subwfb      ram_0x00E, F, ACCESS
-    movf        ram_0x013, W, ACCESS
-    subwfb      ram_0x00F, F, ACCESS
-    movf        ram_0x014, W, ACCESS
-    subwfb      ram_0x010, F, ACCESS
-    bsf         ram_0x019, 0, ACCESS
+    movf        stock_011_acc, W, ACCESS
+    subwf       stock_00D_acc, F, ACCESS
+    movf        stock_012_acc, W, ACCESS
+    subwfb      stock_00E_acc, F, ACCESS
+    movf        stock_013_acc, W, ACCESS
+    subwfb      stock_00F_acc, F, ACCESS
+    movf        stock_014_acc, W, ACCESS
+    subwfb      stock_010_acc, F, ACCESS
+    bsf         stock_019_acc, 0, ACCESS
 flow_main_core_service_2ca8_2d44:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x00D, F, ACCESS
-    rlcf        ram_0x00E, F, ACCESS
-    rlcf        ram_0x00F, F, ACCESS
-    rlcf        ram_0x010, F, ACCESS
-    decfsz      ram_0x01D, F, ACCESS
+    rlcf        stock_00D_acc, F, ACCESS
+    rlcf        stock_00E_acc, F, ACCESS
+    rlcf        stock_00F_acc, F, ACCESS
+    rlcf        stock_010_acc, F, ACCESS
+    decfsz      stock_01D_acc, F, ACCESS
     bra         flow_main_core_service_2ca8_2d16
-    movff       ram_0x019, ram_0x003
-    movff       ram_0x01A, ram_0x004
-    movff       ram_0x01B, ram_0x005
-    movff       ram_0x01C, ram_0x006
-    movff       ram_0x01E, ram_0x007
-    movff       ram_0x01F, ram_0x008
+    movff       stock_019_b0_phys, stock_003_b0_phys
+    movff       stock_01A_b0_phys, stock_004_b0_phys
+    movff       stock_01B_b0_phys, saved_w_b0_phys
+    movff       stock_01C_b0_phys, stock_006_b0_phys
+    movff       stock_01E_b0_phys, stock_007_b0_phys
+    movff       stock_01F_b0_phys, stock_008_b0_phys
     ; W04-E01: factor rcall+4 movff tail into main_core_service_30d8_with_save
     bra         main_core_service_30d8_with_save
 flow_main_core_service_2ca8_2d7e:
@@ -4039,10 +4040,10 @@ flow_main_core_service_2ca8_2d7e:
 ; ---------------------------------------------------------------------------
 main_core_service_2d80:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x018, F, ACCESS
-    rrcf        ram_0x017, F, ACCESS
-    rrcf        ram_0x016, F, ACCESS
-    rrcf        ram_0x015, F, ACCESS
+    rrcf        stock_018_acc, F, ACCESS
+    rrcf        stock_017_acc, F, ACCESS
+    rrcf        stock_016_acc, F, ACCESS
+    rrcf        stock_015_acc, F, ACCESS
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -4084,8 +4085,8 @@ adc_boot_gate:
     call        uart_quiesce_for_wake, 0x0
     bcf         LATB, 2, ACCESS
     movlb       0x0
-    clrf        ram_0x088, BANKED
-    clrf        ram_0x089, BANKED
+    clrf        stock_088_b0, BANKED
+    clrf        stock_089_b0, BANKED
     bsf         ADCON0, 1, ACCESS
     ; Bug #45 §C: bound the rail-rise wait at ~50 iters * 10 ms = ~500 ms so a
     ; depressed AN0 (e.g. asymmetric shared-rail coupling on a two-MAIN chain)
@@ -4094,31 +4095,31 @@ adc_boot_gate:
     ; loop is timer3_blocking_delay_ms_W which uses ram_0x003/0x004 for its
     ; own countdown.
     movlw       0x32
-    movwf       ram_0x008, ACCESS
+    movwf       stock_008_acc, ACCESS
 adc_boot_gate_loop:
     movlw       0x0A
     call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (10 ms poll)
     btfsc       ADCON0, 1, ACCESS
     bra         flow_adc_boot_gate_2dbc
     movf        ADRESH, W, ACCESS
-    movwf       ram_0x05D, ACCESS
-    clrf        ram_0x05C, ACCESS
+    movwf       stock_05D_acc, ACCESS
+    clrf        stock_05C_acc, ACCESS
     movf        ADRESL, W, ACCESS
-    addwf       ram_0x05C, W, ACCESS
+    addwf       stock_05C_acc, W, ACCESS
     movlb       0x0
-    movwf       ram_0x088, BANKED
+    movwf       stock_088_b0, BANKED
     movlw       0x00
-    addwfc      ram_0x05D, W, ACCESS
-    movwf       ram_0x089, BANKED
+    addwfc      stock_05D_acc, W, ACCESS
+    movwf       stock_089_b0, BANKED
     bsf         ADCON0, 1, ACCESS
 flow_adc_boot_gate_2dbc:
     movlw       0x36
     movlb       0x0
-    subwf       ram_0x088, W, BANKED
+    subwf       stock_088_b0, W, BANKED
     movlw       0x02
-    subwfb      ram_0x089, W, BANKED
+    subwfb      stock_089_b0, W, BANKED
     bc          adc_boot_gate_exit
-    decfsz      ram_0x008, F, ACCESS
+    decfsz      stock_008_acc, F, ACCESS
     bra         adc_boot_gate_loop
     ; Counter exhausted -- proceed with bring-up despite low rail.  If the
     ; rail is still genuinely bad, downstream supplies will collapse and BOR
@@ -4138,16 +4139,16 @@ adc_boot_gate_exit:
     call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (100 ms)
     bsf         LATB, 4, ACCESS
     movlw       0x05
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
     movlw       0xDC
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     call        timer3_blocking_delay, 0x0
     bsf         TRISB, 1, ACCESS
     bsf         TRISB, 0, ACCESS
     movlw       0x01
     call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (1 ms)
     movlw       0x80
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x08
     call        mssp_hard_reset, 0x0
     bsf         LATA, 6, ACCESS
@@ -4178,16 +4179,16 @@ adc_boot_gate_exit:
     movlw       0x01
     call        uart_tx_byte_blocking, 0x0
     movlb       0x0
-    bsf         event_flags, 1, BANKED
-    bsf         event_flags, 3, BANKED
-    bsf         event_flags, 4, BANKED
-    bsf         ram_0x07F, 0, BANKED
-    bsf         ram_0x07F, 1, BANKED
+    bsf         event_flags_b0, 1, BANKED
+    bsf         event_flags_b0, 3, BANKED
+    bsf         event_flags_b0, 4, BANKED
+    bsf         dsp_fault_flags_b0, 0, BANKED
+    bsf         dsp_fault_flags_b0, 1, BANKED
     movlw       0x00
     call        cmd_dispatch_gated, 0x0
     call        send_status_burst, 0x0
     movlw       0x01
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x1B
     call        i2c_secondary_dev_write, 0x0
     bcf         INTCON, 5, ACCESS
@@ -4197,8 +4198,8 @@ adc_boot_gate_exit:
     movlw       0x71
     movwf       TMR0L, ACCESS
     movlb       0x0
-    clrf        ram_0x0A1, BANKED
-    bcf         ram_0x094, 2, BANKED
+    clrf        an0_delay_b0, BANKED
+    bcf         stock_094_b0, 2, BANKED
     call        main_uart_service_4938, 0x0
     bsf         PIE1, 5, ACCESS
     bsf         INTCON, 7, ACCESS
@@ -4238,97 +4239,97 @@ adc_boot_gate_exit:
 ; active_flags.bit2 and still need to continue into a second endpoint check.
 ; ---------------------------------------------------------------------------
 preset_b_remap_start_addr:
-    btfss       active_flags, 2, ACCESS
+    btfss       active_flags_acc, 2, ACCESS
     return      0
 preset_b_remap_start_addr_if_b:
-    movf        ram_0x006, W, ACCESS
-    iorwf       ram_0x005, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    iorwf       stock_005_acc, W, ACCESS
     bnz         preset_b_remap_start_addr_return
     movlw       0x56
-    subwf       ram_0x004, W, ACCESS
+    subwf       stock_004_acc, W, ACCESS
     bnc         preset_b_remap_start_addr_return
     movlw       0x60
-    subwf       ram_0x004, W, ACCESS
+    subwf       stock_004_acc, W, ACCESS
     bc          preset_b_remap_start_addr_return
     movlw       0x0A
-    subwf       ram_0x004, F, ACCESS
+    subwf       stock_004_acc, F, ACCESS
 preset_b_remap_start_addr_return:
     return      0
 
 flash_write:
     call        preset_b_remap_start_addr, 0x0
 flash_write_stock:
-    clrf        ram_0x010, ACCESS
-    movff       ram_0x003, ram_0x014
-    movff       ram_0x004, ram_0x015
-    movff       ram_0x005, ram_0x016
-    movff       ram_0x006, ram_0x017
+    clrf        stock_010_acc, ACCESS
+    movff       stock_003_b0_phys, stock_014_b0_phys
+    movff       stock_004_b0_phys, stock_015_b0_phys
+    movff       saved_w_b0_phys, stock_016_b0_phys
+    movff       stock_006_b0_phys, stock_017_b0_phys
     movlw       0x05
-    movwf       ram_0x00B, ACCESS
+    movwf       stock_00B_acc, ACCESS
 flow_flash_write_2e84:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x006, F, ACCESS
-    rrcf        ram_0x005, F, ACCESS
-    rrcf        ram_0x004, F, ACCESS
-    rrcf        ram_0x003, F, ACCESS
-    decfsz      ram_0x00B, F, ACCESS
+    rrcf        stock_006_acc, F, ACCESS
+    rrcf        stock_005_acc, F, ACCESS
+    rrcf        stock_004_acc, F, ACCESS
+    rrcf        stock_003_acc, F, ACCESS
+    decfsz      stock_00B_acc, F, ACCESS
     bra         flow_flash_write_2e84
     movlw       0x05
 flow_flash_write_2e94:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x003, F, ACCESS
-    rlcf        ram_0x004, F, ACCESS
-    rlcf        ram_0x005, F, ACCESS
-    rlcf        ram_0x006, F, ACCESS
+    rlcf        stock_003_acc, F, ACCESS
+    rlcf        stock_004_acc, F, ACCESS
+    rlcf        stock_005_acc, F, ACCESS
+    rlcf        stock_006_acc, F, ACCESS
     decfsz      WREG, F, ACCESS
     bra         flow_flash_write_2e94
     movlw       0x20
-    addwf       ram_0x003, F, ACCESS
+    addwf       stock_003_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x004, F, ACCESS
-    addwfc      ram_0x005, F, ACCESS
-    addwfc      ram_0x006, F, ACCESS
-    movf        ram_0x014, W, ACCESS
-    subwf       ram_0x003, W, ACCESS
-    movwf       ram_0x00F, ACCESS
+    addwfc      stock_004_acc, F, ACCESS
+    addwfc      stock_005_acc, F, ACCESS
+    addwfc      stock_006_acc, F, ACCESS
+    movf        stock_014_acc, W, ACCESS
+    subwf       stock_003_acc, W, ACCESS
+    movwf       stock_00F_acc, ACCESS
     bra         flow_flash_write_2f44
 flow_flash_write_2eb6:
-    movff       ram_0x016, ram_0x013
-    movff       ram_0x015, ram_0x012
-    movff       ram_0x014, ram_0x011
+    movff       stock_016_b0_phys, stock_013_b0_phys
+    movff       stock_015_b0_phys, stock_012_b0_phys
+    movff       stock_014_b0_phys, stock_011_b0_phys
     bra         flow_flash_write_2ef6
 flow_flash_write_2ec4:
-    movff       ram_0x009, FSR2L
-    movff       ram_0x00A, FSR2H
+    movff       stock_009_b0_phys, FSR2L
+    movff       stock_00A_b0_phys, FSR2H
     movf        INDF2, W, ACCESS
-    movff       ram_0x011, TBLPTRL
-    movff       ram_0x012, TBLPTRH
-    movff       ram_0x013, TBLPTRU
+    movff       stock_011_b0_phys, TBLPTRL
+    movff       stock_012_b0_phys, TBLPTRH
+    movff       stock_013_b0_phys, TBLPTRU
     movwf       TABLAT, ACCESS
     tblwt*
-    infsnz      ram_0x009, F, ACCESS
-    incf        ram_0x00A, F, ACCESS
-    incf        ram_0x011, F, ACCESS
+    infsnz      stock_009_acc, F, ACCESS
+    incf        stock_00A_acc, F, ACCESS
+    incf        stock_011_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x012, F, ACCESS
-    addwfc      ram_0x013, F, ACCESS
-    decf        ram_0x007, F, ACCESS
+    addwfc      stock_012_acc, F, ACCESS
+    addwfc      stock_013_acc, F, ACCESS
+    decf        stock_007_acc, F, ACCESS
     btfss       STATUS, 0, ACCESS
-    decf        ram_0x008, F, ACCESS
-    movf        ram_0x008, W, ACCESS
-    iorwf       ram_0x007, W, ACCESS
+    decf        stock_008_acc, F, ACCESS
+    movf        stock_008_acc, W, ACCESS
+    iorwf       stock_007_acc, W, ACCESS
     bz          flow_flash_write_2efc
 flow_flash_write_2ef6:
-    decf        ram_0x00F, F, ACCESS
-    incf        ram_0x00F, W, ACCESS
+    decf        stock_00F_acc, F, ACCESS
+    incf        stock_00F_acc, W, ACCESS
     bnz         flow_flash_write_2ec4
 flow_flash_write_2efc:
-    movff       ram_0x013, ram_0x00E
-    movff       ram_0x012, ram_0x00D
-    movff       ram_0x011, ram_0x00C
-    movff       ram_0x016, ram_0x013
-    movff       ram_0x015, ram_0x012
-    movff       ram_0x014, ram_0x011
+    movff       stock_013_b0_phys, stock_00E_b0_phys
+    movff       stock_012_b0_phys, stock_00D_b0_phys
+    movff       stock_011_b0_phys, timeout_hi_b0_phys
+    movff       stock_016_b0_phys, stock_013_b0_phys
+    movff       stock_015_b0_phys, stock_012_b0_phys
+    movff       stock_014_b0_phys, stock_011_b0_phys
     bsf         EECON1, 7, ACCESS
     bcf         EECON1, 6, ACCESS
     bsf         EECON1, 2, ACCESS
@@ -4336,27 +4337,27 @@ flow_flash_write_2efc:
     bra         flow_flash_write_2f24
     bcf         INTCON, 7, ACCESS
     movlw       0x01
-    movwf       ram_0x010, ACCESS
+    movwf       stock_010_acc, ACCESS
 flow_flash_write_2f24:
     call        main_flash_service_4406, 0x0
     bcf         EECON1, 2, ACCESS
-    movf        ram_0x010, W, ACCESS
+    movf        stock_010_acc, W, ACCESS
     bz          flow_flash_write_2f32
     bsf         INTCON, 7, ACCESS
-    clrf        ram_0x010, ACCESS
+    clrf        stock_010_acc, ACCESS
 flow_flash_write_2f32:
     movlw       0x20
-    movwf       ram_0x00F, ACCESS
-    movf        ram_0x00C, W, ACCESS
-    movwf       ram_0x014, ACCESS
-    movf        ram_0x00D, W, ACCESS
-    movwf       ram_0x015, ACCESS
-    movf        ram_0x00E, W, ACCESS
-    movwf       ram_0x016, ACCESS
-    clrf        ram_0x017, ACCESS
+    movwf       stock_00F_acc, ACCESS
+    movf        stock_00C_acc, W, ACCESS
+    movwf       stock_014_acc, ACCESS
+    movf        stock_00D_acc, W, ACCESS
+    movwf       stock_015_acc, ACCESS
+    movf        stock_00E_acc, W, ACCESS
+    movwf       stock_016_acc, ACCESS
+    clrf        stock_017_acc, ACCESS
 flow_flash_write_2f44:
-    movf        ram_0x008, W, ACCESS
-    iorwf       ram_0x007, W, ACCESS
+    movf        stock_008_acc, W, ACCESS
+    iorwf       stock_007_acc, W, ACCESS
     btfsc       STATUS, 2, ACCESS
     return      0
     bra         flow_flash_write_2eb6
@@ -4369,7 +4370,7 @@ flow_flash_write_2f44:
 ; ---------------------------------------------------------------------------
 main_usb_service_2f4e:
     call        main_usb_service_475c, 0x0
-    tstfsz      ram_0x0CD, BANKED
+    tstfsz      stock_0CD_b0, BANKED
     bra         flow_main_usb_service_2f4e_2f58
     bra         flow_main_usb_service_2f4e_3018
 flow_main_usb_service_2f4e_2f58:
@@ -4383,66 +4384,66 @@ flow_main_usb_service_2f4e_2f58:
     call        main_usb_service_4720, 0x0
     movlw       0x03
     movlb       0x0
-    subwf       ram_0x0CD, W, BANKED
+    subwf       stock_0CD_b0, W, BANKED
     bnc         flow_main_usb_service_2f4e_3018
-    clrf        ram_0x0C4, BANKED
+    clrf        stock_0C4_b0, BANKED
 flow_main_usb_service_2f4e_2f78:
     btfss       UIR, 3, ACCESS
     bra         flow_main_usb_service_2f4e_3018
     movf        USTAT, W, ACCESS
-    movff       USTAT, ram_0x006
+    movff       USTAT, stock_006_b0_phys
     movlw       0x7C
-    andwf       ram_0x006, F, ACCESS
+    andwf       stock_006_acc, F, ACCESS
     bnz         flow_main_usb_service_2f4e_2ffe
     btfsc       USTAT, 1, ACCESS
     bra         flow_main_usb_service_2f4e_2f96
     movlw       0x04
     movlb       0x0
-    movwf       ram_0x07B, BANKED
+    movwf       stock_07B_b0, BANKED
     movlw       0x00
     bra         flow_main_usb_service_2f4e_2f9c
 flow_main_usb_service_2f4e_2f96:
     movlw       0x04
     movlb       0x0
-    movwf       ram_0x07B, BANKED
+    movwf       stock_07B_b0, BANKED
 flow_main_usb_service_2f4e_2f9c:
     movlb       0x0
-    movwf       ram_0x07A, BANKED
+    movwf       stock_07A_b0, BANKED
     bcf         UIR, 3, ACCESS
-    movff       ram_0x07A, FSR2L
-    movff       ram_0x07B, FSR2H
+    movff       stock_07A_b0_phys, FSR2L
+    movff       stock_07B_b0_phys, FSR2H
     rrcf        INDF2, W, ACCESS
     rrcf        WREG, F, ACCESS
     andlw       0x0F
     xorlw       0x0D
     bnz         flow_main_usb_service_2f4e_300e
-    clrf        ram_0x090, BANKED
+    clrf        stock_090_b0, BANKED
 flow_main_usb_service_2f4e_2fb6:
     lfsr        FSR2, 0x0002
-    movf        ram_0x07A, W, BANKED
+    movf        stock_07A_b0, W, BANKED
     addwf       FSR2L, F, ACCESS
-    movf        ram_0x07B, W, BANKED
+    movf        stock_07B_b0, W, BANKED
     addwfc      FSR2H, F, ACCESS
-    movff       POSTINC2, ram_0x006
-    movff       POSTDEC2, ram_0x007
-    movff       ram_0x006, FSR2L
-    movff       ram_0x007, FSR2H
-    movf        ram_0x090, W, BANKED
+    movff       POSTINC2, stock_006_b0_phys
+    movff       POSTDEC2, stock_007_b0_phys
+    movff       stock_006_b0_phys, FSR2L
+    movff       stock_007_b0_phys, FSR2H
+    movf        stock_090_b0, W, BANKED
     addlw       0xCF
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movff       INDF2, INDF1
     lfsr        FSR2, 0x0002
-    movf        ram_0x07A, W, BANKED
+    movf        stock_07A_b0, W, BANKED
     addwf       FSR2L, F, ACCESS
-    movf        ram_0x07B, W, BANKED
+    movf        stock_07B_b0, W, BANKED
     addwfc      FSR2H, F, ACCESS
     incf        POSTINC2, F, ACCESS
     movlw       0x00
     addwfc      POSTDEC2, F, ACCESS
-    incf        ram_0x090, F, BANKED
+    incf        stock_090_b0, F, BANKED
     movlw       0x07
-    cpfsgt      ram_0x090, BANKED
+    cpfsgt      stock_090_b0, BANKED
     bra         flow_main_usb_service_2f4e_2fb6
     call        main_usb_service_42f4, 0x0
     bra         flow_main_usb_service_2f4e_300e
@@ -4457,9 +4458,9 @@ flow_main_usb_service_2f4e_300c:
     bcf         UIR, 3, ACCESS
 flow_main_usb_service_2f4e_300e:
     movlb       0x0
-    incf        ram_0x0C4, F, BANKED
+    incf        stock_0C4_b0, F, BANKED
     movlw       0x03
-    cpfsgt      ram_0x0C4, BANKED
+    cpfsgt      stock_0C4_b0, BANKED
     bra         flow_main_usb_service_2f4e_2f78
 flow_main_usb_service_2f4e_3018:
     return      0
@@ -4471,10 +4472,10 @@ flow_main_usb_service_2f4e_3018:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_30cc.
 ; ---------------------------------------------------------------------------
 main_core_service_301a:
-    movff       ram_0x025, ram_0x029
-    movff       ram_0x026, ram_0x02A
-    movff       ram_0x027, ram_0x02B
-    movff       ram_0x028, ram_0x02C
+    movff       stock_025_b0_phys, stock_029_b0_phys
+    movff       stock_026_b0_phys, stock_02A_b0_phys
+    movff       stock_027_b0_phys, stock_02B_b0_phys
+    movff       stock_028_b0_phys, stock_02C_b0_phys
     movlw       0x18
     bra         flow_main_core_service_301a_3030
 flow_main_core_service_301a_302e:
@@ -4482,21 +4483,21 @@ flow_main_core_service_301a_302e:
 flow_main_core_service_301a_3030:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_301a_302e
-    movf        ram_0x029, W, ACCESS
-    movwf       ram_0x02E, ACCESS
-    tstfsz      ram_0x02E, ACCESS
+    movf        stock_029_acc, W, ACCESS
+    movwf       stock_02E_acc, ACCESS
+    tstfsz      stock_02E_acc, ACCESS
     bra         flow_main_core_service_301a_3046
 flow_main_core_service_301a_303c:
-    clrf        ram_0x025, ACCESS
-    clrf        ram_0x026, ACCESS
-    clrf        ram_0x027, ACCESS
-    clrf        ram_0x028, ACCESS
+    clrf        stock_025_acc, ACCESS
+    clrf        stock_026_acc, ACCESS
+    clrf        stock_027_acc, ACCESS
+    clrf        stock_028_acc, ACCESS
     bra         flow_main_core_service_301a_30ca
 flow_main_core_service_301a_3046:
-    movff       ram_0x025, ram_0x029
-    movff       ram_0x026, ram_0x02A
-    movff       ram_0x027, ram_0x02B
-    movff       ram_0x028, ram_0x02C
+    movff       stock_025_b0_phys, stock_029_b0_phys
+    movff       stock_026_b0_phys, stock_02A_b0_phys
+    movff       stock_027_b0_phys, stock_02B_b0_phys
+    movff       stock_028_b0_phys, stock_02C_b0_phys
     movlw       0x20
     bra         flow_main_core_service_301a_305c
 flow_main_core_service_301a_305a:
@@ -4504,56 +4505,56 @@ flow_main_core_service_301a_305a:
 flow_main_core_service_301a_305c:
     decfsz      WREG, F, ACCESS
     bra         flow_main_core_service_301a_305a
-    movf        ram_0x029, W, ACCESS
-    movwf       ram_0x02D, ACCESS
-    bsf         ram_0x027, 7, ACCESS
-    clrf        ram_0x028, ACCESS
+    movf        stock_029_acc, W, ACCESS
+    movwf       stock_02D_acc, ACCESS
+    bsf         stock_027_acc, 7, ACCESS
+    clrf        stock_028_acc, ACCESS
     movlw       0x96
-    subwf       ram_0x02E, F, ACCESS
-    btfss       ram_0x02E, 7, ACCESS
+    subwf       stock_02E_acc, F, ACCESS
+    btfss       stock_02E_acc, 7, ACCESS
     bra         flow_main_core_service_301a_308e
-    movf        ram_0x02E, W, ACCESS
+    movf        stock_02E_acc, W, ACCESS
     xorlw       0x80
-    movwf       ram_0x029, ACCESS
+    movwf       stock_029_acc, ACCESS
     movlw       0xE9
     xorlw       0x80
-    subwf       ram_0x029, W, ACCESS
+    subwf       stock_029_acc, W, ACCESS
     bnc         flow_main_core_service_301a_303c
 flow_main_core_service_301a_307e:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x028, F, ACCESS
-    rrcf        ram_0x027, F, ACCESS
-    rrcf        ram_0x026, F, ACCESS
-    rrcf        ram_0x025, F, ACCESS
-    incfsz      ram_0x02E, F, ACCESS
+    rrcf        stock_028_acc, F, ACCESS
+    rrcf        stock_027_acc, F, ACCESS
+    rrcf        stock_026_acc, F, ACCESS
+    rrcf        stock_025_acc, F, ACCESS
+    incfsz      stock_02E_acc, F, ACCESS
     bra         flow_main_core_service_301a_307e
     bra         flow_main_core_service_301a_30a6
 flow_main_core_service_301a_308e:
     movlw       0x1F
-    cpfsgt      ram_0x02E, ACCESS
+    cpfsgt      stock_02E_acc, ACCESS
     bra         flow_main_core_service_301a_30a2
     bra         flow_main_core_service_301a_303c
 flow_main_core_service_301a_3096:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x025, F, ACCESS
-    rlcf        ram_0x026, F, ACCESS
-    rlcf        ram_0x027, F, ACCESS
-    rlcf        ram_0x028, F, ACCESS
-    decf        ram_0x02E, F, ACCESS
+    rlcf        stock_025_acc, F, ACCESS
+    rlcf        stock_026_acc, F, ACCESS
+    rlcf        stock_027_acc, F, ACCESS
+    rlcf        stock_028_acc, F, ACCESS
+    decf        stock_02E_acc, F, ACCESS
 flow_main_core_service_301a_30a2:
-    tstfsz      ram_0x02E, ACCESS
+    tstfsz      stock_02E_acc, ACCESS
     bra         flow_main_core_service_301a_3096
 flow_main_core_service_301a_30a6:
-    movf        ram_0x02D, W, ACCESS
+    movf        stock_02D_acc, W, ACCESS
     bz          flow_main_core_service_301a_30ba
-    comf        ram_0x028, F, ACCESS
-    comf        ram_0x027, F, ACCESS
-    comf        ram_0x026, F, ACCESS
-    negf        ram_0x025, ACCESS
+    comf        stock_028_acc, F, ACCESS
+    comf        stock_027_acc, F, ACCESS
+    comf        stock_026_acc, F, ACCESS
+    negf        stock_025_acc, ACCESS
     movlw       0x00
-    addwfc      ram_0x026, F, ACCESS
-    addwfc      ram_0x027, F, ACCESS
-    addwfc      ram_0x028, F, ACCESS
+    addwfc      stock_026_acc, F, ACCESS
+    addwfc      stock_027_acc, F, ACCESS
+    addwfc      stock_028_acc, F, ACCESS
 flow_main_core_service_301a_30ba:
 flow_main_core_service_301a_30ca:
     return      0
@@ -4566,10 +4567,10 @@ flow_main_core_service_301a_30ca:
 ; ---------------------------------------------------------------------------
 main_core_service_30cc:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x02C, F, ACCESS
-    rrcf        ram_0x02B, F, ACCESS
-    rrcf        ram_0x02A, F, ACCESS
-    rrcf        ram_0x029, F, ACCESS
+    rrcf        stock_02C_acc, F, ACCESS
+    rrcf        stock_02B_acc, F, ACCESS
+    rrcf        stock_02A_acc, F, ACCESS
+    rrcf        stock_029_acc, F, ACCESS
     return      0
 
 
@@ -4579,91 +4580,91 @@ main_core_service_30cc:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_3188.
 ; ---------------------------------------------------------------------------
 main_core_service_30d8:
-    movf        ram_0x007, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
     bz          flow_main_core_service_30d8_30e6
-    movf        ram_0x006, W, ACCESS
-    iorwf       ram_0x003, W, ACCESS
-    iorwf       ram_0x004, W, ACCESS
-    iorwf       ram_0x005, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    iorwf       stock_003_acc, W, ACCESS
+    iorwf       stock_004_acc, W, ACCESS
+    iorwf       stock_005_acc, W, ACCESS
     bnz         flow_main_core_service_30d8_30f4
 flow_main_core_service_30d8_30e6:
-    clrf        ram_0x003, ACCESS
-    clrf        ram_0x004, ACCESS
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
+    clrf        stock_003_acc, ACCESS
+    clrf        stock_004_acc, ACCESS
+    clrf        stock_005_acc, ACCESS
+    clrf        stock_006_acc, ACCESS
     bra         flow_main_core_service_30d8_3186
 flow_main_core_service_30d8_30f0:
-    incf        ram_0x007, F, ACCESS
+    incf        stock_007_acc, F, ACCESS
     rcall       main_core_service_3188
 flow_main_core_service_30d8_30f4:
-    clrf        ram_0x009, ACCESS
-    clrf        ram_0x00A, ACCESS
-    clrf        ram_0x00B, ACCESS
+    clrf        stock_009_acc, ACCESS
+    clrf        stock_00A_acc, ACCESS
+    clrf        stock_00B_acc, ACCESS
     movlw       0xFE
-    andwf       ram_0x006, W, ACCESS
-    movwf       ram_0x00C, ACCESS
-    movf        ram_0x00C, W, ACCESS
-    iorwf       ram_0x009, W, ACCESS
-    iorwf       ram_0x00A, W, ACCESS
-    iorwf       ram_0x00B, W, ACCESS
+    andwf       stock_006_acc, W, ACCESS
+    movwf       stock_00C_acc, ACCESS
+    movf        stock_00C_acc, W, ACCESS
+    iorwf       stock_009_acc, W, ACCESS
+    iorwf       stock_00A_acc, W, ACCESS
+    iorwf       stock_00B_acc, W, ACCESS
     bz          flow_main_core_service_30d8_311a
     bra         flow_main_core_service_30d8_30f0
 flow_main_core_service_30d8_310c:
-    incf        ram_0x007, F, ACCESS
-    incf        ram_0x003, F, ACCESS
+    incf        stock_007_acc, F, ACCESS
+    incf        stock_003_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x004, F, ACCESS
-    addwfc      ram_0x005, F, ACCESS
-    addwfc      ram_0x006, F, ACCESS
+    addwfc      stock_004_acc, F, ACCESS
+    addwfc      stock_005_acc, F, ACCESS
+    addwfc      stock_006_acc, F, ACCESS
     rcall       main_core_service_3188
 flow_main_core_service_30d8_311a:
-    clrf        ram_0x009, ACCESS
-    clrf        ram_0x00A, ACCESS
-    clrf        ram_0x00B, ACCESS
-    movf        ram_0x006, W, ACCESS
-    movwf       ram_0x00C, ACCESS
-    movf        ram_0x00C, W, ACCESS
-    iorwf       ram_0x009, W, ACCESS
-    iorwf       ram_0x00A, W, ACCESS
-    iorwf       ram_0x00B, W, ACCESS
+    clrf        stock_009_acc, ACCESS
+    clrf        stock_00A_acc, ACCESS
+    clrf        stock_00B_acc, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    movwf       stock_00C_acc, ACCESS
+    movf        stock_00C_acc, W, ACCESS
+    iorwf       stock_009_acc, W, ACCESS
+    iorwf       stock_00A_acc, W, ACCESS
+    iorwf       stock_00B_acc, W, ACCESS
     bz          flow_main_core_service_30d8_313c
     bra         flow_main_core_service_30d8_310c
 flow_main_core_service_30d8_3130:
-    decf        ram_0x007, F, ACCESS
+    decf        stock_007_acc, F, ACCESS
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x003, F, ACCESS
-    rlcf        ram_0x004, F, ACCESS
-    rlcf        ram_0x005, F, ACCESS
-    rlcf        ram_0x006, F, ACCESS
+    rlcf        stock_003_acc, F, ACCESS
+    rlcf        stock_004_acc, F, ACCESS
+    rlcf        stock_005_acc, F, ACCESS
+    rlcf        stock_006_acc, F, ACCESS
 flow_main_core_service_30d8_313c:
-    btfss       ram_0x005, 7, ACCESS
+    btfss       stock_005_acc, 7, ACCESS
     bra         flow_main_core_service_30d8_3130
-    btfsc       ram_0x007, 0, ACCESS
+    btfsc       stock_007_acc, 0, ACCESS
     bra         flow_main_core_service_30d8_3148
     movlw       0x7F
-    andwf       ram_0x005, F, ACCESS
+    andwf       stock_005_acc, F, ACCESS
 flow_main_core_service_30d8_3148:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x007, F, ACCESS
-    movff       ram_0x007, ram_0x009
-    clrf        ram_0x00A, ACCESS
-    clrf        ram_0x00B, ACCESS
-    clrf        ram_0x00C, ACCESS
-    movff       ram_0x009, ram_0x00C
-    clrf        ram_0x00B, ACCESS
-    clrf        ram_0x00A, ACCESS
-    clrf        ram_0x009, ACCESS
-    movf        ram_0x009, W, ACCESS
-    iorwf       ram_0x003, F, ACCESS
-    movf        ram_0x00A, W, ACCESS
-    iorwf       ram_0x004, F, ACCESS
-    movf        ram_0x00B, W, ACCESS
-    iorwf       ram_0x005, F, ACCESS
-    movf        ram_0x00C, W, ACCESS
-    iorwf       ram_0x006, F, ACCESS
-    movf        ram_0x008, W, ACCESS
+    rrcf        stock_007_acc, F, ACCESS
+    movff       stock_007_b0_phys, stock_009_b0_phys
+    clrf        stock_00A_acc, ACCESS
+    clrf        stock_00B_acc, ACCESS
+    clrf        stock_00C_acc, ACCESS
+    movff       stock_009_b0_phys, timeout_hi_b0_phys
+    clrf        stock_00B_acc, ACCESS
+    clrf        stock_00A_acc, ACCESS
+    clrf        stock_009_acc, ACCESS
+    movf        stock_009_acc, W, ACCESS
+    iorwf       stock_003_acc, F, ACCESS
+    movf        stock_00A_acc, W, ACCESS
+    iorwf       stock_004_acc, F, ACCESS
+    movf        stock_00B_acc, W, ACCESS
+    iorwf       stock_005_acc, F, ACCESS
+    movf        stock_00C_acc, W, ACCESS
+    iorwf       stock_006_acc, F, ACCESS
+    movf        stock_008_acc, W, ACCESS
     btfss       STATUS, 2, ACCESS
-    bsf         ram_0x006, 7, ACCESS
+    bsf         stock_006_acc, 7, ACCESS
 flow_main_core_service_30d8_3186:
     return      0
 
@@ -4677,10 +4678,10 @@ flow_main_core_service_30d8_3186:
 ; ---------------------------------------------------------------------------
 main_core_service_30d8_with_save:
     rcall       main_core_service_30d8
-    movff       ram_0x003, ram_0x00D
-    movff       ram_0x004, ram_0x00E
-    movff       ram_0x005, ram_0x00F
-    movff       ram_0x006, ram_0x010
+    movff       stock_003_b0_phys, stock_00D_b0_phys
+    movff       stock_004_b0_phys, stock_00E_b0_phys
+    movff       saved_w_b0_phys, stock_00F_b0_phys
+    movff       stock_006_b0_phys, stock_010_b0_phys
     return      0
 
 
@@ -4691,65 +4692,65 @@ main_core_service_30d8_with_save:
 ; ---------------------------------------------------------------------------
 main_core_service_3188:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x006, F, ACCESS
-    rrcf        ram_0x005, F, ACCESS
-    rrcf        ram_0x004, F, ACCESS
-    rrcf        ram_0x003, F, ACCESS
+    rrcf        stock_006_acc, F, ACCESS
+    rrcf        stock_005_acc, F, ACCESS
+    rrcf        stock_004_acc, F, ACCESS
+    rrcf        stock_003_acc, F, ACCESS
     return      0
 flow_main_core_service_3188_3194:
-    movf        ram_0x0CF, W, BANKED
+    movf        stock_0CF_b0, W, BANKED
     andlw       0x1F
-    movwf       ram_0x003, ACCESS
-    decf        ram_0x003, W, ACCESS
+    movwf       stock_003_acc, ACCESS
+    decf        stock_003_acc, W, ACCESS
     bnz         flow_main_core_service_3188_324a
-    movf        ram_0x0D3, W, BANKED
+    movf        stock_0D3_b0, W, BANKED
     bnz         flow_main_core_service_3188_324a
-    movf        ram_0x0D0, W, BANKED
+    movf        stock_0D0_b0, W, BANKED
     xorlw       0x06
     bz          flow_main_core_service_3188_31d8
     bra         flow_main_core_service_3188_31e6
 flow_main_core_service_3188_31aa:
     movlw       0x02
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     movlw       HIGH(usb_hid_descriptor)
-    movwf       ram_0x076, BANKED
+    movwf       stock_076_b0, BANKED
     movlw       LOW(usb_hid_descriptor)
-    movwf       ram_0x075, BANKED
-    clrf        ram_0x0E8, BANKED
+    movwf       stock_075_b0, BANKED
+    clrf        stock_0E8_b0, BANKED
     movlw       0x09
     bra         flow_main_core_service_3188_31d4
 flow_main_core_service_3188_31bc:
     movlw       0x02
-    movwf       ram_0x0C8, BANKED
-    decf        ram_0x0EB, W, BANKED
+    movwf       stock_0C8_b0, BANKED
+    decf        stock_0EB_b0, W, BANKED
     bnz         flow_main_core_service_3188_31cc
     movlw       HIGH(usb_hid_report_descriptor)
-    movwf       ram_0x076, BANKED
+    movwf       stock_076_b0, BANKED
     movlw       LOW(usb_hid_report_descriptor)
-    movwf       ram_0x075, BANKED
+    movwf       stock_075_b0, BANKED
 flow_main_core_service_3188_31cc:
-    decf        ram_0x0EB, W, BANKED
+    decf        stock_0EB_b0, W, BANKED
     bnz         flow_main_core_service_3188_31e4
-    clrf        ram_0x0E8, BANKED
+    clrf        stock_0E8_b0, BANKED
     movlw       0x1D
 flow_main_core_service_3188_31d4:
-    movwf       ram_0x0E7, BANKED
+    movwf       stock_0E7_b0, BANKED
     bra         flow_main_core_service_3188_31e4
 flow_main_core_service_3188_31d8:
-    movf        ram_0x0D2, W, BANKED
+    movf        stock_0D2_b0, W, BANKED
     xorlw       0x21
     bz          flow_main_core_service_3188_31aa
     xorlw       0x03
     bz          flow_main_core_service_3188_31bc
     xorlw       0x01
 flow_main_core_service_3188_31e4:
-    bsf         ram_0x0CE, 1, BANKED
+    bsf         stock_0CE_b0, 1, BANKED
 flow_main_core_service_3188_31e6:
-    swapf       ram_0x0CF, W, BANKED
+    swapf       stock_0CF_b0, W, BANKED
     rrcf        WREG, F, ACCESS
     andlw       0x03
-    movwf       ram_0x003, ACCESS
-    decf        ram_0x003, W, ACCESS
+    movwf       stock_003_acc, ACCESS
+    decf        stock_003_acc, W, ACCESS
     bnz         flow_main_core_service_3188_324a
     bra         flow_main_core_service_3188_3230
 flow_main_core_service_3188_31f4:
@@ -4758,33 +4759,33 @@ flow_main_core_service_3188_31fa:
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_3200:
     movlw       0x02
-    movwf       ram_0x0C8, BANKED
-    clrf        ram_0x076, BANKED
+    movwf       stock_0C8_b0, BANKED
+    clrf        stock_076_b0, BANKED
     movlw       0xEA
 flow_main_core_service_3188_3208:
-    movwf       ram_0x075, BANKED
-    bcf         ram_0x0CE, 1, BANKED
+    movwf       stock_075_b0, BANKED
+    bcf         stock_0CE_b0, 1, BANKED
     movlw       0x01
-    movwf       ram_0x0E7, BANKED
+    movwf       stock_0E7_b0, BANKED
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_3212:
     movlw       0x02
-    movwf       ram_0x0C8, BANKED
-    movff       ram_0x0D2, ram_0x0EA
+    movwf       stock_0C8_b0, BANKED
+    movff       stock_0D2_b0_phys, stock_0EA_b0_phys
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_321c:
     movlw       0x02
-    movwf       ram_0x0C8, BANKED
-    clrf        ram_0x076, BANKED
+    movwf       stock_0C8_b0, BANKED
+    clrf        stock_076_b0, BANKED
     movlw       0xE9
     bra         flow_main_core_service_3188_3208
 flow_main_core_service_3188_3226:
     movlw       0x02
-    movwf       ram_0x0C8, BANKED
-    movff       ram_0x0D1, ram_0x0E9
+    movwf       stock_0C8_b0, BANKED
+    movff       stock_0D1_b0_phys, stock_0E9_b0_phys
     bra         flow_main_core_service_3188_324a
 flow_main_core_service_3188_3230:
-    movf        ram_0x0D0, W, BANKED
+    movf        stock_0D0_b0, W, BANKED
     xorlw       0x01
     bz          flow_main_core_service_3188_31f4
     xorlw       0x03
@@ -4800,90 +4801,90 @@ flow_main_core_service_3188_3230:
 flow_main_core_service_3188_324a:
     return      0
 flow_main_core_service_3188_324c:
-    tstfsz      ram_0x0C8, BANKED
+    tstfsz      stock_0C8_b0, BANKED
     bra         flow_main_core_service_3188_3278
     movlw       0x04
     movlb       0x4
-    movwf       ram_0x008, BANKED
-    bsf         ram_0x008, 7, BANKED
+    movwf       stock_408_b4, BANKED
+    bsf         stock_408_b4, 7, BANKED
     movlb       0x1
-    movwf       ram_0x016, BANKED
+    movwf       stock_116_b1, BANKED
     movlb       0x0
-    decf        ram_0x096, W, BANKED
+    decf        stock_096_b0, W, BANKED
     bnz         flow_main_core_service_3188_326c
     movlw       0x01
     call        main_core_service_4080, 0x0
-    clrf        ram_0x096, BANKED
+    clrf        stock_096_b0, BANKED
     bra         flow_main_core_service_3188_32f6
 flow_main_core_service_3188_326c:
     movlw       0x00
     call        main_core_service_4080, 0x0
     movlw       0x01
-    movwf       ram_0x096, BANKED
+    movwf       stock_096_b0, BANKED
     bra         flow_main_core_service_3188_32f6
 flow_main_core_service_3188_3278:
-    btfss       ram_0x0CF, 7, BANKED
+    btfss       stock_0CF_b0, 7, BANKED
     bra         flow_main_core_service_3188_32b4
     movlw       0x01
-    movwf       ram_0x0C9, BANKED
-    movf        ram_0x0E7, W, BANKED
-    subwf       ram_0x0D5, W, BANKED
-    movf        ram_0x0E8, W, BANKED
-    subwfb      ram_0x0D6, W, BANKED
+    movwf       stock_0C9_b0, BANKED
+    movf        stock_0E7_b0, W, BANKED
+    subwf       stock_0D5_b0, W, BANKED
+    movf        stock_0E8_b0, W, BANKED
+    subwfb      stock_0D6_b0, W, BANKED
     bc          flow_main_core_service_3188_3292
-    movff       ram_0x0D5, ram_0x0E7
-    movff       ram_0x0D6, ram_0x0E8
+    movff       stock_0D5_b0_phys, stock_0E7_b0_phys
+    movff       stock_0D6_b0_phys, stock_0E8_b0_phys
 flow_main_core_service_3188_3292:
     rcall       main_flash_service_35f0
     movlw       0x48
     movlb       0x1
-    movwf       ram_0x016, BANKED
+    movwf       stock_116_b1, BANKED
     movlw       0x01
     call        main_core_service_4080, 0x0
     movlw       0x00
     call        main_core_service_4080, 0x0
     movlb       0x4
     movlw       0x04
-    movwf       ram_0x00B, BANKED
+    movwf       stock_40B_b4, BANKED
     movlw       0x24
-    movwf       ram_0x00A, BANKED
+    movwf       stock_40A_b4, BANKED
     bra         flow_main_core_service_3188_32f0
 flow_main_core_service_3188_32b4:
     movlw       0x02
-    movwf       ram_0x0C9, BANKED
+    movwf       stock_0C9_b0, BANKED
     movlw       0x04
     movlb       0x1
-    movwf       ram_0x016, BANKED
+    movwf       stock_116_b1, BANKED
     movlb       0x0
-    movf        ram_0x0D6, W, BANKED
-    iorwf       ram_0x0D5, W, BANKED
+    movf        stock_0D6_b0, W, BANKED
+    iorwf       stock_0D5_b0, W, BANKED
     bnz         flow_main_core_service_3188_32cc
     movlw       0x48
     movlb       0x1
-    movwf       ram_0x016, BANKED
+    movwf       stock_116_b1, BANKED
 flow_main_core_service_3188_32cc:
     movlb       0x0
-    decf        ram_0x096, W, BANKED
+    decf        stock_096_b0, W, BANKED
     bnz         flow_main_core_service_3188_32dc
     movlw       0x01
     call        main_core_service_4080, 0x0
-    clrf        ram_0x096, BANKED
+    clrf        stock_096_b0, BANKED
     bra         flow_main_core_service_3188_32e6
 flow_main_core_service_3188_32dc:
     movlw       0x00
     call        main_core_service_4080, 0x0
     movlw       0x01
-    movwf       ram_0x096, BANKED
+    movwf       stock_096_b0, BANKED
 flow_main_core_service_3188_32e6:
-    movf        ram_0x0D6, W, BANKED
-    iorwf       ram_0x0D5, W, BANKED
+    movf        stock_0D6_b0, W, BANKED
+    iorwf       stock_0D5_b0, W, BANKED
     bnz         flow_main_core_service_3188_32f6
     movlb       0x4
-    clrf        ram_0x009, BANKED
+    clrf        stock_409_b4, BANKED
 flow_main_core_service_3188_32f0:
     movlw       0x48
-    movwf       ram_0x008, BANKED
-    bsf         ram_0x008, 7, BANKED
+    movwf       stock_408_b4, BANKED
+    bsf         stock_408_b4, 7, BANKED
 flow_main_core_service_3188_32f6:
     return      0
 
@@ -4896,65 +4897,65 @@ flow_main_core_service_3188_32f6:
 main_i2c_service_32f8:
     call        i2c_wait_bus_idle, 0x0
     movlw       0x3F
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x01
     call        i2c_secondary_dev_write, 0x0
     movlw       0x30
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x03
     call        i2c_secondary_dev_write, 0x0
     movlw       0x01
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x04
     call        i2c_secondary_dev_write, 0x0
     movlw       0x08
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x05
     call        i2c_secondary_dev_write, 0x0
     movlw       0x01
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x06
     call        i2c_secondary_dev_write, 0x0
     movlw       0x34
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x07
     call        i2c_secondary_dev_write, 0x0
     movlw       0x30
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x08
     call        i2c_secondary_dev_write, 0x0
     movlw       0x08
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x0D
     call        i2c_secondary_dev_write, 0x0
     movlw       0x08
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x0E
     call        i2c_secondary_dev_write, 0x0
     movlw       0x22
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x0F
     call        i2c_secondary_dev_write, 0x0
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x10
     call        i2c_secondary_dev_write, 0x0
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x11
     call        i2c_secondary_dev_write, 0x0
     movlw       0x01
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x1C
     call        i2c_secondary_dev_write, 0x0
     movlw       0x01
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x1D
     call        i2c_secondary_dev_write, 0x0
     movlw       0x02
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x2D
     call        i2c_secondary_dev_write, 0x0
     movlw       0x20
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x2E
     goto        i2c_secondary_dev_write
 
@@ -4965,53 +4966,53 @@ main_i2c_service_32f8:
 ; Notes   : Inferred core helper routine. Calls: main_flash_service_3ce8, main_core_service_301a, main_core_service_3e0a.
 ; ---------------------------------------------------------------------------
 main_core_service_3398:
-    movff       ram_0x02F, ram_0x003
-    movff       ram_0x030, ram_0x004
-    movff       ram_0x031, ram_0x005
-    movff       ram_0x032, ram_0x006
+    movff       stock_02F_b0_phys, stock_003_b0_phys
+    movff       stock_030_b0_phys, stock_004_b0_phys
+    movff       stock_031_b0_phys, saved_w_b0_phys
+    movff       stock_032_b0_phys, stock_006_b0_phys
     movlw       0x37
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     call        main_flash_service_3ce8, 0x0
-    movf        ram_0x038, W, ACCESS
+    movf        stock_038_acc, W, ACCESS
     xorlw       0x80
     movwf       PRODL, ACCESS
     movlw       0x80
     subwf       PRODL, W, ACCESS
     movlw       0x00
     btfsc       STATUS, 2, ACCESS
-    subwf       ram_0x037, W, ACCESS
+    subwf       stock_037_acc, W, ACCESS
     bc          flow_main_core_service_3398_33cc
-    clrf        ram_0x02F, ACCESS
-    clrf        ram_0x030, ACCESS
-    clrf        ram_0x031, ACCESS
-    clrf        ram_0x032, ACCESS
+    clrf        stock_02F_acc, ACCESS
+    clrf        stock_030_acc, ACCESS
+    clrf        stock_031_acc, ACCESS
+    clrf        stock_032_acc, ACCESS
     bra         flow_main_core_service_3398_3430
 flow_main_core_service_3398_33cc:
     movlw       0x1D
-    subwf       ram_0x037, W, ACCESS
+    subwf       stock_037_acc, W, ACCESS
     movlw       0x00
-    subwfb      ram_0x038, W, ACCESS
+    subwfb      stock_038_acc, W, ACCESS
     bnc         flow_main_core_service_3398_33e8
     bra         flow_main_core_service_3398_3430
 flow_main_core_service_3398_33e8:
-    movff       ram_0x02F, ram_0x025
-    movff       ram_0x030, ram_0x026
-    movff       ram_0x031, ram_0x027
-    movff       ram_0x032, ram_0x028
+    movff       stock_02F_b0_phys, stock_025_b0_phys
+    movff       stock_030_b0_phys, stock_026_b0_phys
+    movff       stock_031_b0_phys, stock_027_b0_phys
+    movff       stock_032_b0_phys, stock_028_b0_phys
     rcall       main_core_service_301a
-    movff       ram_0x025, ram_0x00D
-    movff       ram_0x026, ram_0x00E
-    movff       ram_0x027, ram_0x00F
-    movff       ram_0x028, ram_0x010
+    movff       stock_025_b0_phys, stock_00D_b0_phys
+    movff       stock_026_b0_phys, stock_00E_b0_phys
+    movff       stock_027_b0_phys, stock_00F_b0_phys
+    movff       stock_028_b0_phys, stock_010_b0_phys
     call        main_core_service_3e0a, 0x0
-    movff       ram_0x00D, ram_0x033
-    movff       ram_0x00E, ram_0x034
-    movff       ram_0x00F, ram_0x035
-    movff       ram_0x010, ram_0x036
-    movff       ram_0x033, ram_0x02F
-    movff       ram_0x034, ram_0x030
-    movff       ram_0x035, ram_0x031
-    movff       ram_0x036, ram_0x032
+    movff       stock_00D_b0_phys, stock_033_b0_phys
+    movff       stock_00E_b0_phys, stock_034_b0_phys
+    movff       stock_00F_b0_phys, stock_035_b0_phys
+    movff       stock_010_b0_phys, stock_036_b0_phys
+    movff       stock_033_b0_phys, stock_02F_b0_phys
+    movff       stock_034_b0_phys, stock_030_b0_phys
+    movff       stock_035_b0_phys, stock_031_b0_phys
+    movff       stock_036_b0_phys, stock_032_b0_phys
 flow_main_core_service_3398_3430:
     return      0
 
@@ -5022,56 +5023,56 @@ flow_main_core_service_3398_3430:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_3432:
-    decf        ram_0x0D1, W, BANKED
+    decf        stock_0D1_b0, W, BANKED
     bnz         flow_main_core_service_3432_344c
-    movf        ram_0x0CF, W, BANKED
+    movf        stock_0CF_b0, W, BANKED
     andlw       0x1F
     bnz         flow_main_core_service_3432_344c
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
-    movf        ram_0x0D0, W, BANKED
+    movwf       stock_0C8_b0, BANKED
+    movf        stock_0D0_b0, W, BANKED
     xorlw       0x03
     bnz         flow_main_core_service_3432_344a
-    bsf         ram_0x0CE, 0, BANKED
+    bsf         stock_0CE_b0, 0, BANKED
     bra         flow_main_core_service_3432_344c
 flow_main_core_service_3432_344a:
-    bcf         ram_0x0CE, 0, BANKED
+    bcf         stock_0CE_b0, 0, BANKED
 flow_main_core_service_3432_344c:
-    tstfsz      ram_0x0D1, BANKED
+    tstfsz      stock_0D1_b0, BANKED
     bra         flow_main_core_service_3432_34c6
-    movf        ram_0x0CF, W, BANKED
+    movf        stock_0CF_b0, W, BANKED
     andlw       0x1F
     xorlw       0x02
     bnz         flow_main_core_service_3432_34c6
-    movf        ram_0x0D3, W, BANKED
+    movf        stock_0D3_b0, W, BANKED
     andlw       0x0F
     bz          flow_main_core_service_3432_34c6
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     rcall       core_filter_addr_from_0x0D3        ; W05-E06 factored
-    movf        ram_0x0D0, W, BANKED
+    movf        stock_0D0_b0, W, BANKED
     xorlw       0x03
     bnz         flow_main_core_service_3432_349c
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
+    movff       stock_072_b0_phys, FSR2L
+    movff       stock_073_b0_phys, FSR2H
     movlw       0x04
     bra         flow_main_core_service_3432_34b8
 flow_main_core_service_3432_349c:
-    btfss       ram_0x0D3, 7, BANKED
+    btfss       stock_0D3_b0, 7, BANKED
     bra         flow_main_core_service_3432_34ae
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
+    movff       stock_072_b0_phys, FSR2L
+    movff       stock_073_b0_phys, FSR2H
     movlw       0x40
     movwf       INDF2, ACCESS
     bra         flow_main_core_service_3432_34c6
 flow_main_core_service_3432_34ae:
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
+    movff       stock_072_b0_phys, FSR2L
+    movff       stock_073_b0_phys, FSR2H
     movlw       0x08
 flow_main_core_service_3432_34b8:
     movwf       INDF2, ACCESS
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
+    movff       stock_072_b0_phys, FSR2L
+    movff       stock_073_b0_phys, FSR2H
     movlw       0x00
     bsf         PLUSW2, 7, ACCESS
 flow_main_core_service_3432_34c6:
@@ -5084,58 +5085,58 @@ flow_main_core_service_3432_34c6:
 ; Notes   : Inferred core helper routine. Calls: main_adc_service_4124, main_core_service_427a.
 ; ---------------------------------------------------------------------------
 main_core_service_34c8:
-    movff       WREG, ram_0x011
-    movff       ram_0x00A, ram_0x00E
-    movff       ram_0x00B, ram_0x00F
+    movff       WREG, stock_011_b0_phys
+    movff       stock_00A_b0_phys, stock_00E_b0_phys
+    movff       timeout_lo_b0_phys, stock_00F_b0_phys
 flow_main_core_service_34c8_34d4:
-    movff       ram_0x00E, ram_0x003
-    movff       ram_0x00F, ram_0x004
-    movff       ram_0x00C, ram_0x005
-    movff       ram_0x00D, ram_0x006
+    movff       stock_00E_b0_phys, stock_003_b0_phys
+    movff       stock_00F_b0_phys, stock_004_b0_phys
+    movff       timeout_hi_b0_phys, saved_w_b0_phys
+    movff       stock_00D_b0_phys, stock_006_b0_phys
     call        main_adc_service_4124, 0x0
-    movff       ram_0x003, ram_0x00E
-    movff       ram_0x004, ram_0x00F
-    incf        ram_0x011, F, ACCESS
-    movf        ram_0x00F, W, ACCESS
-    iorwf       ram_0x00E, W, ACCESS
+    movff       stock_003_b0_phys, stock_00E_b0_phys
+    movff       stock_004_b0_phys, stock_00F_b0_phys
+    incf        stock_011_acc, F, ACCESS
+    movf        stock_00F_acc, W, ACCESS
+    iorwf       stock_00E_acc, W, ACCESS
     bnz         flow_main_core_service_34c8_34d4
-    movf        ram_0x011, W, ACCESS
+    movf        stock_011_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     clrf        INDF2, ACCESS
-    decf        ram_0x011, F, ACCESS
+    decf        stock_011_acc, F, ACCESS
 flow_main_core_service_34c8_3504:
-    movff       ram_0x00A, ram_0x003
-    movff       ram_0x00B, ram_0x004
-    movff       ram_0x00C, ram_0x005
-    movff       ram_0x00D, ram_0x006
+    movff       stock_00A_b0_phys, stock_003_b0_phys
+    movff       timeout_lo_b0_phys, stock_004_b0_phys
+    movff       timeout_hi_b0_phys, saved_w_b0_phys
+    movff       stock_00D_b0_phys, stock_006_b0_phys
     call        main_core_service_427a, 0x0
-    movf        ram_0x003, W, ACCESS
-    movwf       ram_0x010, ACCESS
-    movff       ram_0x00A, ram_0x003
-    movff       ram_0x00B, ram_0x004
-    movff       ram_0x00C, ram_0x005
-    movff       ram_0x00D, ram_0x006
+    movf        stock_003_acc, W, ACCESS
+    movwf       stock_010_acc, ACCESS
+    movff       stock_00A_b0_phys, stock_003_b0_phys
+    movff       timeout_lo_b0_phys, stock_004_b0_phys
+    movff       timeout_hi_b0_phys, saved_w_b0_phys
+    movff       stock_00D_b0_phys, stock_006_b0_phys
     call        main_adc_service_4124, 0x0
-    movff       ram_0x003, ram_0x00A
-    movff       ram_0x004, ram_0x00B
+    movff       stock_003_b0_phys, stock_00A_b0_phys
+    movff       stock_004_b0_phys, timeout_lo_b0_phys
     movlw       0x09
-    cpfsgt      ram_0x010, ACCESS
+    cpfsgt      stock_010_acc, ACCESS
     bra         flow_main_core_service_34c8_3542
     movlw       0x07
-    addwf       ram_0x010, F, ACCESS
+    addwf       stock_010_acc, F, ACCESS
 flow_main_core_service_34c8_3542:
     movlw       0x30
-    addwf       ram_0x010, F, ACCESS
-    movf        ram_0x011, W, ACCESS
+    addwf       stock_010_acc, F, ACCESS
+    movf        stock_011_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       ram_0x010, INDF2
-    decf        ram_0x011, F, ACCESS
-    movf        ram_0x00B, W, ACCESS
-    iorwf       ram_0x00A, W, ACCESS
+    movff       stock_010_b0_phys, INDF2
+    decf        stock_011_acc, F, ACCESS
+    movf        stock_00B_acc, W, ACCESS
+    iorwf       stock_00A_acc, W, ACCESS
     bnz         flow_main_core_service_34c8_3504
-    incf        ram_0x011, F, ACCESS
+    incf        stock_011_acc, F, ACCESS
     return      0
 
 
@@ -5176,43 +5177,43 @@ main_i2c_service_355c:
     movwf       SSPADD, ACCESS
     movlw       0x01
     movlb       0x0
-    movwf       ram_0x0FE, BANKED
-    clrf        ram_0x004, ACCESS
+    movwf       stock_0FE_b0, BANKED
+    clrf        stock_004_acc, ACCESS
     movlw       0xFF
-    setf        ram_0x003, ACCESS
+    setf        stock_003_acc, ACCESS
     call        eeprom_read_byte, 0x0
     xorlw       0x77
     bz          flow_main_i2c_service_355c_35bc
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlw       0xFF
-    setf        ram_0x003, ACCESS
+    setf        stock_003_acc, ACCESS
     call        eeprom_read_byte, 0x0
     xorlw       0x88
     bz          flow_main_i2c_service_355c_35bc
     movlb       0x0
-    clrf        ram_0x0FE, BANKED
+    clrf        stock_0FE_b0, BANKED
 flow_main_i2c_service_355c_35bc:
     movlb       0x0
-    movf        ram_0x0FE, W, BANKED
+    movf        stock_0FE_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
     call        flash_write_with_gie_off, 0x0
-    clrf        ram_0x008, ACCESS
-    setf        ram_0x007, ACCESS
+    clrf        stock_008_acc, ACCESS
+    setf        stock_007_acc, ACCESS
     movlw       0x02
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     call        main_flash_service_46de, 0x0
     bsf         PORTB, 6, ACCESS
     rcall       adaptive_baud_select
     movlw       0x03
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
     movlw       0xE8
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     call        timer3_blocking_delay, 0x0
     call        main_core_service_1e88, 0x0
     bsf         PIE1, 5, ACCESS
-    bsf         active_flags, 3, ACCESS
+    bsf         active_flags_acc, 3, ACCESS
     movlb       0x0
-    bsf         event_flags, 7, BANKED      ; V3.1: boot complete — enable bounded PEN waits
+    bsf         event_flags_b0, 7, BANKED      ; V3.1: boot complete — enable bounded PEN waits
     goto        adc_boot_gate
 
 
@@ -5223,34 +5224,34 @@ flow_main_i2c_service_355c_35bc:
 ; ---------------------------------------------------------------------------
 main_flash_service_35f0:
     movlw       0x08
-    movwf       ram_0x08F, BANKED
-    subwf       ram_0x0E7, W, BANKED
+    movwf       stock_08F_b0, BANKED
+    subwf       stock_0E7_b0, W, BANKED
     movlw       0x00
-    subwfb      ram_0x0E8, W, BANKED
+    subwfb      stock_0E8_b0, W, BANKED
     bc          flow_main_flash_service_35f0_3610
-    movff       ram_0x0E7, ram_0x08F
-    tstfsz      ram_0x0CC, BANKED
+    movff       stock_0E7_b0_phys, stock_08F_b0_phys
+    tstfsz      stock_0CC_b0, BANKED
     bra         flow_main_flash_service_35f0_3608
     movlw       0x01
     bra         flow_main_flash_service_35f0_360e
 flow_main_flash_service_35f0_3608:
-    decf        ram_0x0CC, W, BANKED
+    decf        stock_0CC_b0, W, BANKED
     bnz         flow_main_flash_service_35f0_3610
     movlw       0x02
 flow_main_flash_service_35f0_360e:
-    movwf       ram_0x0CC, BANKED
+    movwf       stock_0CC_b0, BANKED
 flow_main_flash_service_35f0_3610:
-    movff       ram_0x08F, ram_0x409
-    movf        ram_0x08F, W, BANKED
-    subwf       ram_0x0E7, F, BANKED
+    movff       stock_08F_b0_phys, stock_409_b4_phys
+    movf        stock_08F_b0, W, BANKED
+    subwf       stock_0E7_b0, F, BANKED
     movlw       0x00
-    subwfb      ram_0x0E8, F, BANKED
+    subwfb      stock_0E8_b0, F, BANKED
     movlw       0x04
     movlb       0x0
-    movwf       ram_0x073, BANKED
+    movwf       stock_073_b0, BANKED
     movlw       0x24
-    movwf       ram_0x072, BANKED
-    btfsc       ram_0x0CE, 1, BANKED
+    movwf       stock_072_b0, BANKED
+    btfsc       stock_0CE_b0, 1, BANKED
     bra         flow_main_flash_service_35f0_363e
     bra         flow_main_flash_service_35f0_3656
 flow_main_flash_service_35f0_362c:
@@ -5265,7 +5266,7 @@ flow_main_flash_service_35f0_3638:
 flow_main_flash_service_35f0_363c:
     rcall       main_core_service_3672
 flow_main_flash_service_35f0_363e:
-    tstfsz      ram_0x08F, BANKED
+    tstfsz      stock_08F_b0, BANKED
     bra         flow_main_flash_service_35f0_362c
     bra         flow_main_flash_service_35f0_365a
 flow_main_flash_service_35f0_3644:
@@ -5280,7 +5281,7 @@ flow_main_flash_service_35f0_3650:
 flow_main_flash_service_35f0_3654:
     rcall       main_core_service_3672
 flow_main_flash_service_35f0_3656:
-    tstfsz      ram_0x08F, BANKED
+    tstfsz      stock_08F_b0, BANKED
     bra         flow_main_flash_service_35f0_3644
 flow_main_flash_service_35f0_365a:
     return      0
@@ -5292,11 +5293,11 @@ flow_main_flash_service_35f0_365a:
 ; Notes   : Inferred flash helper; touches flash.
 ; ---------------------------------------------------------------------------
 main_flash_service_365c:
-    movff       ram_0x075, TBLPTRL
-    movff       ram_0x076, TBLPTRH
+    movff       stock_075_b0_phys, TBLPTRL
+    movff       stock_076_b0_phys, TBLPTRH
     clrf        TBLPTRU, ACCESS
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
+    movff       stock_072_b0_phys, FSR2L
+    movff       stock_073_b0_phys, FSR2H
     movlw       0x07
     return      0
 
@@ -5309,11 +5310,11 @@ main_flash_service_365c:
 main_core_service_3672:
     movwf       INDF2, ACCESS
     movlb       0x0
-    infsnz      ram_0x072, F, BANKED
-    incf        ram_0x073, F, BANKED
-    infsnz      ram_0x075, F, BANKED
-    incf        ram_0x076, F, BANKED
-    decf        ram_0x08F, F, BANKED
+    infsnz      stock_072_b0, F, BANKED
+    incf        stock_073_b0, F, BANKED
+    infsnz      stock_075_b0, F, BANKED
+    incf        stock_076_b0, F, BANKED
+    decf        stock_08F_b0, F, BANKED
     return      0
 
 
@@ -5323,16 +5324,16 @@ main_core_service_3672:
 ; Notes   : Inferred core helper routine. Calls: main_flash_service_3796, main_usb_service_41fe, main_core_service_3710.
 ; ---------------------------------------------------------------------------
 main_core_service_3682:
-    swapf       ram_0x0CF, W, BANKED
+    swapf       stock_0CF_b0, W, BANKED
     rrcf        WREG, F, ACCESS
     andlw       0x03
     bnz         flow_main_core_service_3682_370e
     bra         flow_main_core_service_3682_36e4
 flow_main_core_service_3682_368c:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     movlw       0x04
-    movwf       ram_0x0CD, BANKED
+    movwf       stock_0CD_b0, BANKED
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_3696:
     rcall       main_flash_service_3796
@@ -5342,14 +5343,14 @@ flow_main_core_service_3682_369c:
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36a2:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
-    clrf        ram_0x076, BANKED
+    movwf       stock_0C8_b0, BANKED
+    clrf        stock_076_b0, BANKED
     movlw       0xEB
-    movwf       ram_0x075, BANKED
+    movwf       stock_075_b0, BANKED
 flow_main_core_service_3682_36ac:
-    bcf         ram_0x0CE, 1, BANKED
+    bcf         stock_0CE_b0, 1, BANKED
     movlw       0x01
-    movwf       ram_0x0E7, BANKED
+    movwf       stock_0E7_b0, BANKED
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36b4:
     rcall       main_core_service_3710
@@ -5359,24 +5360,24 @@ flow_main_core_service_3682_36ba:
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36c0:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
-    movf        ram_0x0D3, W, BANKED
+    movwf       stock_0C8_b0, BANKED
+    movf        stock_0D3_b0, W, BANKED
     addlw       0xEC
-    movwf       ram_0x005, ACCESS
-    clrf        ram_0x076, BANKED
-    movff       ram_0x005, ram_0x075
+    movwf       stock_005_acc, ACCESS
+    clrf        stock_076_b0, BANKED
+    movff       saved_w_b0_phys, stock_075_b0_phys
     bra         flow_main_core_service_3682_36ac
 flow_main_core_service_3682_36d2:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
-    movf        ram_0x0D3, W, BANKED
+    movwf       stock_0C8_b0, BANKED
+    movf        stock_0D3_b0, W, BANKED
     addlw       0xEC
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       ram_0x0D1, INDF2
+    movff       stock_0D1_b0_phys, INDF2
     bra         flow_main_core_service_3682_370e
 flow_main_core_service_3682_36e4:
-    movf        ram_0x0D0, W, BANKED
+    movf        stock_0D0_b0, W, BANKED
     bz          flow_main_core_service_3682_36b4
     xorlw       0x01
     bz          flow_main_core_service_3682_36ba
@@ -5408,34 +5409,34 @@ flow_main_core_service_3682_370e:
 ; ---------------------------------------------------------------------------
 main_core_service_3710:
     movlb       0x4
-    clrf        ram_0x024, BANKED
-    clrf        ram_0x025, BANKED
+    clrf        stock_424_b4, BANKED
+    clrf        stock_425_b4, BANKED
     bra         flow_main_core_service_3710_3770
 flow_main_core_service_3710_3718:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
-    btfss       ram_0x0CE, 0, BANKED
+    movwf       stock_0C8_b0, BANKED
+    btfss       stock_0CE_b0, 0, BANKED
     bra         flow_main_core_service_3710_3780
     movlb       0x4
-    bsf         ram_0x024, 1, BANKED
+    bsf         stock_424_b4, 1, BANKED
     bra         flow_main_core_service_3710_3780
 flow_main_core_service_3710_3726:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     bra         flow_main_core_service_3710_3780
 flow_main_core_service_3710_372c:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     rcall       core_filter_addr_from_0x0D3        ; W05-E06 factored
-    movff       ram_0x072, FSR2L
-    movff       ram_0x073, FSR2H
+    movff       stock_072_b0_phys, FSR2L
+    movff       stock_073_b0_phys, FSR2H
     movf        INDF2, W, ACCESS
-    movwf       ram_0x003, ACCESS
-    btfss       ram_0x003, 2, ACCESS
+    movwf       stock_003_acc, ACCESS
+    btfss       stock_003_acc, 2, ACCESS
     bra         flow_main_core_service_3710_3780
     movlw       0x01
     movlb       0x4
-    movwf       ram_0x024, BANKED
+    movwf       stock_424_b4, BANKED
     bra         flow_main_core_service_3710_3780
 ; ---------------------------------------------------------------------------
 ; core_filter_addr_from_0x0D3 (W05-E06 factored helper, 2 sites)
@@ -5452,30 +5453,30 @@ flow_main_core_service_3710_372c:
 ;   in bank 0).
 ; ---------------------------------------------------------------------------
 core_filter_addr_from_0x0D3:
-    movf        ram_0x0D3, W, BANKED
+    movf        stock_0D3_b0, W, BANKED
     andlw       0x0F
     mullw       0x08
     movlw       0x04
-    movwf       ram_0x003, ACCESS
-    movwf       ram_0x004, ACCESS
+    movwf       stock_003_acc, ACCESS
+    movwf       stock_004_acc, ACCESS
     movf        PRODL, W, ACCESS
-    addwf       ram_0x003, F, ACCESS
+    addwf       stock_003_acc, F, ACCESS
     movf        PRODH, W, ACCESS
-    addwfc      ram_0x004, F, ACCESS
+    addwfc      stock_004_acc, F, ACCESS
     movlw       0x01
-    btfss       ram_0x0D3, 7, BANKED
+    btfss       stock_0D3_b0, 7, BANKED
     movlw       0x00
     mullw       0x04
     movf        PRODL, W, ACCESS
-    addwf       ram_0x003, W, ACCESS
-    movwf       ram_0x072, BANKED
+    addwf       stock_003_acc, W, ACCESS
+    movwf       stock_072_b0, BANKED
     movf        PRODH, W, ACCESS
-    addwfc      ram_0x004, W, ACCESS
-    movwf       ram_0x073, BANKED
+    addwfc      stock_004_acc, W, ACCESS
+    movwf       stock_073_b0, BANKED
     return      0
 flow_main_core_service_3710_3770:
     movlb       0x0
-    movf        ram_0x0CF, W, BANKED
+    movf        stock_0CF_b0, W, BANKED
     andlw       0x1F
     bz          flow_main_core_service_3710_3718
     xorlw       0x01
@@ -5484,15 +5485,15 @@ flow_main_core_service_3710_3770:
     bz          flow_main_core_service_3710_372c
 flow_main_core_service_3710_3780:
     movlb       0x0
-    decf        ram_0x0C8, W, BANKED
+    decf        stock_0C8_b0, W, BANKED
     bnz         flow_main_core_service_3710_3794
     movlw       0x04
-    movwf       ram_0x076, BANKED
+    movwf       stock_076_b0, BANKED
     movlw       0x24
-    movwf       ram_0x075, BANKED
-    bcf         ram_0x0CE, 1, BANKED
+    movwf       stock_075_b0, BANKED
+    bcf         stock_0CE_b0, 1, BANKED
     movlw       0x02
-    movwf       ram_0x0E7, BANKED
+    movwf       stock_0E7_b0, BANKED
 flow_main_core_service_3710_3794:
     return      0
 
@@ -5503,46 +5504,46 @@ flow_main_core_service_3710_3794:
 ; Notes   : Inferred flash helper; touches flash. Calls: main_flash_service_3810.
 ; ---------------------------------------------------------------------------
 main_flash_service_3796:
-    movf        ram_0x0CF, W, BANKED
+    movf        stock_0CF_b0, W, BANKED
     xorlw       0x80
     bz          flow_main_flash_service_3796_37fe
     bra         flow_main_flash_service_3796_380e
 flow_main_flash_service_3796_379e:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     movlw       HIGH(usb_device_descriptor)
-    movwf       ram_0x076, BANKED
+    movwf       stock_076_b0, BANKED
     movlw       LOW(usb_device_descriptor)
-    movwf       ram_0x075, BANKED
+    movwf       stock_075_b0, BANKED
     movlw       0x12
     bra         flow_main_flash_service_3796_37c4
 flow_main_flash_service_3796_37ae:
-    tstfsz      ram_0x0D1, BANKED
+    tstfsz      stock_0D1_b0, BANKED
     bra         flow_main_flash_service_3796_380c
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     movlw       HIGH(usb_config_descriptor)
-    movwf       ram_0x076, BANKED
+    movwf       stock_076_b0, BANKED
     movlw       LOW(usb_config_descriptor)
-    movwf       ram_0x075, BANKED
-    clrf        ram_0x0E8, BANKED
+    movwf       stock_075_b0, BANKED
+    clrf        stock_0E8_b0, BANKED
     movlw       0x29
 flow_main_flash_service_3796_37c4:
-    movwf       ram_0x0E7, BANKED
+    movwf       stock_0E7_b0, BANKED
     bra         flow_main_flash_service_3796_380c
 flow_main_flash_service_3796_37c8:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
-    movf        ram_0x0D1, W, BANKED
+    movwf       stock_0C8_b0, BANKED
+    movf        stock_0D1_b0, W, BANKED
     addlw       LOW(string_desc_ptr_table)          ; indexed TBLPTR -> string_desc_ptr_table
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(string_desc_ptr_table)
     movwf       TBLPTRH, ACCESS
     tblrd*+
-    movff       TABLAT, ram_0x075
-    movwf       ram_0x076, BANKED
-    movff       ram_0x075, TBLPTRL
-    movff       ram_0x076, TBLPTRH
+    movff       TABLAT, stock_075_b0_phys
+    movwf       stock_076_b0, BANKED
+    movff       stock_075_b0_phys, TBLPTRL
+    movff       stock_076_b0_phys, TBLPTRH
     clrf        TBLPTRU, ACCESS
     movlw       0x07
     cpfsgt      TBLPTRH, ACCESS
@@ -5554,11 +5555,11 @@ flow_main_flash_service_3796_37f4:
     rcall       main_flash_service_3810
 flow_main_flash_service_3796_37f6:
     movlb       0x0
-    movwf       ram_0x0E7, BANKED
-    clrf        ram_0x0E8, BANKED
+    movwf       stock_0E7_b0, BANKED
+    clrf        stock_0E8_b0, BANKED
     bra         flow_main_flash_service_3796_380c
 flow_main_flash_service_3796_37fe:
-    movf        ram_0x0D2, W, BANKED
+    movf        stock_0D2_b0, W, BANKED
     xorlw       0x01
     bz          flow_main_flash_service_3796_379e
     xorlw       0x03
@@ -5566,7 +5567,7 @@ flow_main_flash_service_3796_37fe:
     xorlw       0x01
     bz          flow_main_flash_service_3796_37c8
 flow_main_flash_service_3796_380c:
-    bsf         ram_0x0CE, 1, BANKED
+    bsf         stock_0CE_b0, 1, BANKED
 flow_main_flash_service_3796_380e:
     return      0
 
@@ -5603,7 +5604,7 @@ main_flash_service_3810:
 main_i2c_service_381c:
     rcall       preset_table_apply_entry_core
     bnc         flow_main_i2c_service_381c_38a0
-    btfsc       ram_0x00D, 0, ACCESS
+    btfsc       stock_00D_acc, 0, ACCESS
     bra         main_i2c_service_381c_pen_timeout
     bra         main_i2c_service_381c_timeout
 flow_main_i2c_service_381c_38a0:
@@ -5621,51 +5622,51 @@ main_i2c_service_381c_pen_timeout:
 ;      ram_0x00D.bit0 set only for PEN timeout so legacy callers can keep
 ;      their separate PEN recovery path.
 preset_table_apply_entry_core:
-    clrf        ram_0x00D, ACCESS
-    movff       ram_0x013, ram_0x003                ; copy 16-bit flash addr (caller staged)
-    movff       ram_0x014, ram_0x004
-    clrf        ram_0x005, ACCESS                   ; high byte and TBLPTRU = 0
-    clrf        ram_0x006, ACCESS
-    clrf        ram_0x008, ACCESS
+    clrf        stock_00D_acc, ACCESS
+    movff       stock_013_b0_phys, stock_003_b0_phys                ; copy 16-bit flash addr (caller staged)
+    movff       stock_014_b0_phys, stock_004_b0_phys
+    clrf        stock_005_acc, ACCESS                   ; high byte and TBLPTRU = 0
+    clrf        stock_006_acc, ACCESS
+    clrf        stock_008_acc, ACCESS
     movlw       0x04                                ; first read: 4-byte header (TAS reg + len)
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     call        flash_read_fsr2_0017, 0x0           ; W05-E04 helper; far-safe after M1 growth
-    movff       ram_0x018, ram_0x02F                ; ram_0x02F = TAS reg byte
-    movff       ram_0x019, ram_0x031                ; ram_0x031 = byte count
+    movff       stock_018_b0_phys, stock_02F_b0_phys                ; ram_0x02F = TAS reg byte
+    movff       stock_019_b0_phys, stock_031_b0_phys                ; ram_0x031 = byte count
     movlw       0x19                                ; >= 25 -> end-of-table sentinel
-    subwf       ram_0x031, W, ACCESS
+    subwf       stock_031_acc, W, ACCESS
     bc          preset_table_apply_entry_done
     movlw       0x04                                ; advance past header
-    addwf       ram_0x013, W, ACCESS
-    movwf       ram_0x015, ACCESS
+    addwf       stock_013_acc, W, ACCESS
+    movwf       stock_015_acc, ACCESS
     movlw       0x00
-    addwfc      ram_0x014, W, ACCESS
-    movwf       ram_0x016, ACCESS
-    movff       ram_0x015, ram_0x003
-    movff       ram_0x016, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
-    movff       ram_0x031, ram_0x007                ; second read = data block
-    clrf        ram_0x008, ACCESS
+    addwfc      stock_014_acc, W, ACCESS
+    movwf       stock_016_acc, ACCESS
+    movff       stock_015_b0_phys, stock_003_b0_phys
+    movff       stock_016_b0_phys, stock_004_b0_phys
+    clrf        stock_005_acc, ACCESS
+    clrf        stock_006_acc, ACCESS
+    movff       stock_031_b0_phys, stock_007_b0_phys                ; second read = data block
+    clrf        stock_008_acc, ACCESS
     call        flash_read_fsr2_0017, 0x0
     bsf         SSPCON2, 0, ACCESS                  ; SEN — START
     call        wait_sen_bounded, 0x0
     bc          preset_table_apply_entry_timeout
     movlw       0x68                                ; TAS3108 write address
     rcall       i2c_byte_tx
-    movf        ram_0x02F, W, ACCESS                ; reg byte
+    movf        stock_02F_acc, W, ACCESS                ; reg byte
     rcall       i2c_byte_tx
-    clrf        ram_0x030, ACCESS
+    clrf        stock_030_acc, ACCESS
     bra         preset_table_apply_entry_loop_check
 preset_table_apply_entry_loop:
-    movf        ram_0x030, W, ACCESS
+    movf        stock_030_acc, W, ACCESS
     addlw       0x17                                ; data buffer at 0x0017+i
     call        fsr2_page0_read_w, 0x0               ; W04-E03
     rcall       i2c_byte_tx
-    incf        ram_0x030, F, ACCESS
+    incf        stock_030_acc, F, ACCESS
 preset_table_apply_entry_loop_check:
-    movf        ram_0x031, W, ACCESS
-    subwf       ram_0x030, W, ACCESS
+    movf        stock_031_acc, W, ACCESS
+    subwf       stock_030_acc, W, ACCESS
     bnc         preset_table_apply_entry_loop
     bsf         SSPCON2, 2, ACCESS                  ; PEN — STOP
     call        wait_pen_bounded, 0x0
@@ -5677,7 +5678,7 @@ preset_table_apply_entry_timeout:
     bsf         STATUS, 0, ACCESS
     return      0
 preset_table_apply_entry_pen_timeout:
-    bsf         ram_0x00D, 0, ACCESS
+    bsf         stock_00D_acc, 0, ACCESS
     bsf         STATUS, 0, ACCESS
     return      0
 
@@ -5688,39 +5689,39 @@ preset_table_apply_entry_pen_timeout:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_3398, main_core_service_432e, main_core_service_3f1e.
 ; ---------------------------------------------------------------------------
 main_core_service_38a2:
-    movff       ram_0x041, ram_0x039
-    movff       ram_0x042, ram_0x03A
-    movff       ram_0x043, ram_0x03B
-    movff       ram_0x044, ram_0x03C
-    movff       ram_0x041, ram_0x02F
-    movff       ram_0x042, ram_0x030
-    movff       ram_0x043, ram_0x031
-    movff       ram_0x044, ram_0x032
+    movff       stock_041_b0_phys, stock_039_b0_phys
+    movff       stock_042_b0_phys, stock_03A_b0_phys
+    movff       stock_043_b0_phys, stock_03B_b0_phys
+    movff       stock_044_b0_phys, stock_03C_b0_phys
+    movff       stock_041_b0_phys, stock_02F_b0_phys
+    movff       stock_042_b0_phys, stock_030_b0_phys
+    movff       stock_043_b0_phys, stock_031_b0_phys
+    movff       stock_044_b0_phys, stock_032_b0_phys
     rcall       main_core_service_3398
-    movff       ram_0x02F, ram_0x03D
-    movff       ram_0x030, ram_0x03E
-    movff       ram_0x031, ram_0x03F
-    movff       ram_0x032, ram_0x040
+    movff       stock_02F_b0_phys, stock_03D_b0_phys
+    movff       stock_030_b0_phys, stock_03E_b0_phys
+    movff       stock_031_b0_phys, stock_03F_b0_phys
+    movff       stock_032_b0_phys, stock_040_b0_phys
     call        main_core_service_432e, 0x0
-    movff       ram_0x039, ram_0x045
-    movff       ram_0x03A, ram_0x046
-    movff       ram_0x03B, ram_0x047
-    movff       ram_0x03C, ram_0x048
-    movff       ram_0x045, ram_0x02F
-    movff       ram_0x046, ram_0x030
-    movff       ram_0x047, ram_0x031
-    movff       ram_0x048, ram_0x032
+    movff       stock_039_b0_phys, stock_045_b0_phys
+    movff       stock_03A_b0_phys, stock_046_b0_phys
+    movff       stock_03B_b0_phys, stock_047_b0_phys
+    movff       stock_03C_b0_phys, stock_048_b0_phys
+    movff       stock_045_b0_phys, stock_02F_b0_phys
+    movff       stock_046_b0_phys, stock_030_b0_phys
+    movff       stock_047_b0_phys, stock_031_b0_phys
+    movff       stock_048_b0_phys, stock_032_b0_phys
     movlw       0x41
     rcall       main_core_service_3f1e
-    movff       ram_0x041, ram_0x02F
-    movff       ram_0x042, ram_0x030
-    movff       ram_0x043, ram_0x031
-    movff       ram_0x044, ram_0x032
+    movff       stock_041_b0_phys, stock_02F_b0_phys
+    movff       stock_042_b0_phys, stock_030_b0_phys
+    movff       stock_043_b0_phys, stock_031_b0_phys
+    movff       stock_044_b0_phys, stock_032_b0_phys
     rcall       main_core_service_3398
-    movff       ram_0x02F, ram_0x041
-    movff       ram_0x030, ram_0x042
-    movff       ram_0x031, ram_0x043
-    movff       ram_0x032, ram_0x044
+    movff       stock_02F_b0_phys, stock_041_b0_phys
+    movff       stock_030_b0_phys, stock_042_b0_phys
+    movff       stock_031_b0_phys, stock_043_b0_phys
+    movff       stock_032_b0_phys, stock_044_b0_phys
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -5766,43 +5767,43 @@ flow_adaptive_baud_select_3940:
     call        main_uart_service_4938, 0x0
     bsf         INTCON, 7, ACCESS
     bsf         INTCON, 6, ACCESS
-    clrf        ram_0x093, BANKED
-    movff       ram_0x093, ram_0x0AB
+    clrf        stock_093_b0, BANKED
+    movff       stock_093_b0_phys, stock_0AB_b0_phys
     bcf         INTCON3, 4, ACCESS
     bcf         INTCON3, 1, ACCESS
     bcf         INTCON, 2, ACCESS
     bcf         T0CON, 7, ACCESS
     bcf         INTCON, 5, ACCESS
-    clrf        ram_0x0A4, BANKED
-    clrf        ram_0x0B0, BANKED
-    clrf        ram_0x0B6, BANKED
-    clrf        ram_0x0BA, BANKED
-    clrf        event_flags, BANKED
-    clrf        ram_0x07F, BANKED
-    clrf        ram_0x0BD, BANKED
-    clrf        active_flags, ACCESS
-    clrf        ram_0x0BB, BANKED
-    clrf        ram_0x0BC, BANKED
-    clrf        ram_0x0A1, BANKED
-    clrf        ram_0x088, BANKED
-    clrf        ram_0x089, BANKED
+    clrf        stock_0A4_b0, BANKED
+    clrf        stock_0B0_b0, BANKED
+    clrf        stock_0B6_b0, BANKED
+    clrf        stock_0BA_b0, BANKED
+    clrf        event_flags_b0, BANKED
+    clrf        dsp_fault_flags_b0, BANKED
+    clrf        filename_dirty_flags_b0, BANKED
+    clrf        active_flags_acc, ACCESS
+    clrf        stock_0BB_b0, BANKED
+    clrf        stock_0BC_b0, BANKED
+    clrf        an0_delay_b0, BANKED
+    clrf        stock_088_b0, BANKED
+    clrf        stock_089_b0, BANKED
     bcf         ADCON0, 1, ACCESS
-    clrf        ram_0x094, BANKED
+    clrf        stock_094_b0, BANKED
     movlw       0x20
     movlb       0x1
-    movwf       ram_0x00F, BANKED
+    movwf       stock_10F_b1, BANKED
     movlw       0x21
-    movwf       ram_0x010, BANKED
+    movwf       stock_110_b1, BANKED
     movlw       0x22
-    movwf       ram_0x011, BANKED
+    movwf       stock_111_b1, BANKED
     movlw       0x23
-    movwf       ram_0x012, BANKED
+    movwf       stock_112_b1, BANKED
     movlw       0x25
-    movwf       ram_0x013, BANKED
+    movwf       stock_113_b1, BANKED
     movlw       0x27
-    movwf       ram_0x014, BANKED
+    movwf       stock_114_b1, BANKED
     movlw       0x28
-    movwf       ram_0x015, BANKED
+    movwf       stock_115_b1, BANKED
     retlw       0x28
 
 
@@ -5812,42 +5813,42 @@ flow_adaptive_baud_select_3940:
 ; Notes   : Inferred i2c helper routine. Calls: main_core_service_2abc, main_core_service_38a2, main_core_service_301a.
 ; ---------------------------------------------------------------------------
 main_i2c_service_39a6:
-    clrf        ram_0x016, ACCESS
-    clrf        ram_0x017, ACCESS
-    clrf        ram_0x018, ACCESS
+    clrf        stock_016_acc, ACCESS
+    clrf        stock_017_acc, ACCESS
+    clrf        stock_018_acc, ACCESS
     movlw       0x4B
-    movwf       ram_0x019, ACCESS
-    movff       ram_0x049, ram_0x012
-    movff       ram_0x04A, ram_0x013
-    movff       ram_0x04B, ram_0x014
-    movff       ram_0x04C, ram_0x015
+    movwf       stock_019_acc, ACCESS
+    movff       stock_049_b0_phys, stock_012_b0_phys
+    movff       stock_04A_b0_phys, stock_013_b0_phys
+    movff       stock_04B_b0_phys, stock_014_b0_phys
+    movff       stock_04C_b0_phys, stock_015_b0_phys
     call        main_core_service_2abc, 0x0
-    movff       ram_0x012, ram_0x041
-    movff       ram_0x013, ram_0x042
-    movff       ram_0x014, ram_0x043
-    movff       ram_0x015, ram_0x044
+    movff       stock_012_b0_phys, stock_041_b0_phys
+    movff       stock_013_b0_phys, stock_042_b0_phys
+    movff       stock_014_b0_phys, stock_043_b0_phys
+    movff       stock_015_b0_phys, stock_044_b0_phys
     rcall       main_core_service_38a2
-    movff       ram_0x041, ram_0x04D
-    movff       ram_0x042, ram_0x04E
-    movff       ram_0x043, ram_0x04F
-    movff       ram_0x044, ram_0x050
-    movff       ram_0x04D, ram_0x025
-    movff       ram_0x04E, ram_0x026
-    movff       ram_0x04F, ram_0x027
-    movff       ram_0x050, ram_0x028
+    movff       stock_041_b0_phys, stock_04D_b0_phys
+    movff       stock_042_b0_phys, stock_04E_b0_phys
+    movff       stock_043_b0_phys, stock_04F_b0_phys
+    movff       stock_044_b0_phys, stock_050_b0_phys
+    movff       stock_04D_b0_phys, stock_025_b0_phys
+    movff       stock_04E_b0_phys, stock_026_b0_phys
+    movff       stock_04F_b0_phys, stock_027_b0_phys
+    movff       stock_050_b0_phys, stock_028_b0_phys
     call        main_core_service_301a, 0x0
-    movff       ram_0x025, ram_0x051
-    movff       ram_0x026, ram_0x052
-    movff       ram_0x027, ram_0x053
-    movff       ram_0x028, ram_0x054
-    movf        ram_0x054, W, ACCESS
+    movff       stock_025_b0_phys, stock_051_b0_phys
+    movff       stock_026_b0_phys, stock_052_b0_phys
+    movff       stock_027_b0_phys, stock_053_b0_phys
+    movff       stock_028_b0_phys, stock_054_b0_phys
+    movf        stock_054_acc, W, ACCESS
     andlw       0x0F
     rcall       i2c_byte_tx
-    movf        ram_0x053, W, ACCESS
+    movf        stock_053_acc, W, ACCESS
     rcall       i2c_byte_tx
-    movf        ram_0x052, W, ACCESS
+    movf        stock_052_acc, W, ACCESS
     rcall       i2c_byte_tx
-    movf        ram_0x051, W, ACCESS
+    movf        stock_051_acc, W, ACCESS
     bra         i2c_byte_tx
 
 
@@ -5876,12 +5877,12 @@ main_i2c_service_39a6:
 ; ---------------------------------------------------------------------------
 main_usb_service_3a26:
     movlb       0x0
-    movf        ram_0x0CD, W, BANKED
+    movf        stock_0CD_b0, W, BANKED
     xorlw       0x06
     btfsc       STATUS, 2, ACCESS
     btfsc       UCON, 1, ACCESS
     bra         flow_main_usb_service_3a26_3a3a
-    btfss       active_flags, 3, ACCESS
+    btfss       active_flags_acc, 3, ACCESS
     bra         flow_main_usb_service_3a26_3a3a
     btfsc       PORTC, 0, ACCESS
     bra         flow_main_usb_service_3a26_3a40
@@ -5889,47 +5890,47 @@ flow_main_usb_service_3a26_3a3a:
     bsf         RCSTA, 4, ACCESS
     bra         flow_main_usb_service_3a26_3aa2
 flow_main_usb_service_3a26_3a40:
-    tstfsz      ram_0x0C0, BANKED
+    tstfsz      stock_0C0_b0, BANKED
     bra         flow_main_usb_service_3a26_3a7e
     movlb       0x4
-    btfsc       ram_0x00C, 7, BANKED
+    btfsc       stock_40C_b4, 7, BANKED
     bra         flow_main_usb_service_3a26_3aa2
     call        prep_bank1_ram004, 0x0
     movlw       0x1A
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x40
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     rcall       main_core_service_3c82
     movlw       0x01
     movlb       0x0
-    movwf       ram_0x0C0, BANKED
-    clrf        ram_0x059, ACCESS
+    movwf       stock_0C0_b0, BANKED
+    clrf        stock_059_acc, ACCESS
 flow_main_usb_service_3a26_3a64:
     movlb       0x1
     movlw       0x5A
-    addwf       ram_0x059, W, ACCESS
+    addwf       stock_059_acc, W, ACCESS
     call        setup_fsr2_page_1_or_2, 0x0
     clrf        INDF2, ACCESS
-    incf        ram_0x059, F, ACCESS
+    incf        stock_059_acc, F, ACCESS
     movlw       0x3F
-    cpfsgt      ram_0x059, ACCESS
+    cpfsgt      stock_059_acc, ACCESS
     bra         flow_main_usb_service_3a26_3a64
     bra         flow_main_usb_service_3a26_3aa2
 flow_main_usb_service_3a26_3a7e:
     movlb       0x1
-    movf        ram_0x01A, W, BANKED
+    movf        stock_11A_b1, W, BANKED
     call        hid_command_dispatch, 0x0
     movlb       0x4
-    btfsc       ram_0x010, 7, BANKED
+    btfsc       stock_410_b4, 7, BANKED
     bra         flow_main_usb_service_3a26_3aa2
     call        prep_bank1_ram004, 0x0
     movlw       0x5A
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x40
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     rcall       main_core_service_3fd0
     movlb       0x0
-    clrf        ram_0x0C0, BANKED
+    clrf        stock_0C0_b0, BANKED
 flow_main_usb_service_3a26_3aa2:
     return      0
 
@@ -5947,62 +5948,62 @@ flow_main_usb_service_3a26_3aa2:
 ; through main_uart_service_1be6).
 ; ---------------------------------------------------------------------------
 uart_rx_with_framing:
-    clrf        ram_0x00E, ACCESS
-    clrf        ram_0x00D, ACCESS
-    clrf        ram_0x00F, ACCESS
-    clrf        ram_0x00B, ACCESS
-    movff       ram_0x005, ram_0x003
-    movff       ram_0x006, ram_0x004
+    clrf        stock_00E_acc, ACCESS
+    clrf        stock_00D_acc, ACCESS
+    clrf        stock_00F_acc, ACCESS
+    clrf        stock_00B_acc, ACCESS
+    movff       saved_w_b0_phys, stock_003_b0_phys
+    movff       stock_006_b0_phys, stock_004_b0_phys
     call        main_timer_service_477a, 0x0
 flow_uart_rx_with_framing_3ab8:
     call        rx_ring_has_data, 0x0
 
     bz          flow_uart_rx_with_framing_3b06
-    movff       ram_0x00F, ram_0x00A
+    movff       stock_00F_b0_phys, stock_00A_b0_phys
     call        rx_ring_read, 0x0
-    movwf       ram_0x00F, ACCESS
-    movf        ram_0x00D, W, ACCESS
+    movwf       stock_00F_acc, ACCESS
+    movf        stock_00D_acc, W, ACCESS
     bz          flow_uart_rx_with_framing_3ae2
-    movf        ram_0x00E, W, ACCESS
-    addwf       ram_0x007, W, ACCESS
+    movf        stock_00E_acc, W, ACCESS
+    addwf       stock_007_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     movlw       0x00
-    addwfc      ram_0x008, W, ACCESS
+    addwfc      stock_008_acc, W, ACCESS
     movwf       FSR2H, ACCESS
-    movff       ram_0x00F, INDF2
-    incf        ram_0x00E, F, ACCESS
+    movff       stock_00F_b0_phys, INDF2
+    incf        stock_00E_acc, F, ACCESS
     bra         flow_uart_rx_with_framing_3aec
 flow_uart_rx_with_framing_3ae2:
-    movf        ram_0x00F, W, ACCESS
+    movf        stock_00F_acc, W, ACCESS
     xorlw       0x3A
     bnz         flow_uart_rx_with_framing_3aec
     movlw       0x01
-    movwf       ram_0x00D, ACCESS
+    movwf       stock_00D_acc, ACCESS
 flow_uart_rx_with_framing_3aec:
-    clrf        ram_0x00C, ACCESS
-    movf        ram_0x00D, W, ACCESS
+    clrf        stock_00C_acc, ACCESS
+    movf        stock_00D_acc, W, ACCESS
     bz          flow_uart_rx_with_framing_3b02
-    movf        ram_0x00A, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
     xorlw       0x0D
     bnz         flow_uart_rx_with_framing_3b02
-    movf        ram_0x00F, W, ACCESS
+    movf        stock_00F_acc, W, ACCESS
     xorlw       0x0A
     bnz         flow_uart_rx_with_framing_3b02
     movlw       0x01
-    movwf       ram_0x00C, ACCESS
+    movwf       stock_00C_acc, ACCESS
 flow_uart_rx_with_framing_3b02:
-    movff       ram_0x00C, ram_0x00B
+    movff       timeout_hi_b0_phys, timeout_lo_b0_phys
 flow_uart_rx_with_framing_3b06:
     call        main_usb_service_490c, 0x0
     bc          flow_uart_rx_with_framing_3b16
-    movf        ram_0x009, W, ACCESS
-    subwf       ram_0x00E, W, ACCESS
+    movf        stock_009_acc, W, ACCESS
+    subwf       stock_00E_acc, W, ACCESS
     bc          flow_uart_rx_with_framing_3b16
-    movf        ram_0x00B, W, ACCESS
+    movf        stock_00B_acc, W, ACCESS
     bz          flow_uart_rx_with_framing_3ab8
 flow_uart_rx_with_framing_3b16:
     call        main_timer_service_494c, 0x0
-    movf        ram_0x00E, W, ACCESS
+    movf        stock_00E_acc, W, ACCESS
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -6039,7 +6040,7 @@ timer0_irq_handler:
     btfss       INTCON, 2, ACCESS                    ; T0IF — Timer0 overflow?
     bra         timer3_irq_handler
     movlb       0x0
-    bsf         event_flags, 0, BANKED               ; raise t0_tick for main loop
+    bsf         event_flags_b0, 0, BANKED               ; raise t0_tick for main loop
     bcf         INTCON, 2, ACCESS                    ; clear T0IF
     bcf         INTCON, 5, ACCESS                    ; mask T0IE (re-armed by main loop)
     bcf         T0CON, 7, ACCESS                     ; stop Timer0 (re-armed by main loop)
@@ -6054,12 +6055,12 @@ timer3_irq_handler:
     bsf         T3CON, 0, ACCESS
     bcf         PIR2, 1, ACCESS                      ; clear TMR3IF
     movlb       0x0
-    movf        ram_0x08D, W, BANKED                 ; HOLDING countdown {hi,lo}
-    iorwf       ram_0x08C, W, BANKED
+    movf        preset_hold_timer_hi_b0, W, BANKED                 ; HOLDING countdown {hi,lo}
+    iorwf       preset_hold_timer_lo_b0, W, BANKED
     bz          flow_main_isr_dispatch_3b58          ; reached zero -> stop Timer3
-    decf        ram_0x08C, F, BANKED                 ; 16-bit countdown decrement
+    decf        preset_hold_timer_lo_b0, F, BANKED                 ; 16-bit countdown decrement
     btfss       STATUS, 0, ACCESS                    ; borrow into hi byte?
-    decf        ram_0x08D, F, BANKED
+    decf        preset_hold_timer_hi_b0, F, BANKED
     bra         uart_rx_irq_enqueue
 flow_main_isr_dispatch_3b58:
     bcf         T3CON, 0, ACCESS                     ; HOLDING expired: T3 off
@@ -6068,21 +6069,21 @@ uart_rx_irq_enqueue:
     btfss       PIR1, 5, ACCESS                      ; RCIF — UART byte arrived?
     bra         flow_main_isr_dispatch_3b8c
     movlb       0x0
-    movf        rx_ring_wr, W, BANKED                ; FSR2 = 0x0200 + rx_ring_wr
+    movf        rx_ring_wr_b0, W, BANKED                ; FSR2 = 0x0200 + rx_ring_wr
     call        fsr2_page2_from_W, 0x0               ; W05-E02: FSR2=0x0200|W (movff uses no W)
     movff       RCREG, INDF2                         ; copy RX byte into ring
-    incf        rx_ring_wr, F, BANKED
+    incf        rx_ring_wr_b0, F, BANKED
     movlw       0xBF                                 ; ring size = 0xC0 (192 bytes)
-    cpfsgt      rx_ring_wr, BANKED                   ; wr > 0xBF -> wrap
+    cpfsgt      rx_ring_wr_b0, BANKED                   ; wr > 0xBF -> wrap
     bra         uart_oerr_recover
-    clrf        rx_ring_wr, BANKED                   ; wrap to 0
+    clrf        rx_ring_wr_b0, BANKED                   ; wrap to 0
 uart_oerr_recover:
     btfss       RCSTA, 1, ACCESS                     ; OERR? (RX overrun)
     bra         flow_main_isr_dispatch_3b8c
     call        uart_soft_recover_full, 0x0
 flow_main_isr_dispatch_3b8c:
-    movff       isr_save_fsr2h, FSR2H                ; restore FSR2 spilled at vector entry
-    movff       isr_save_fsr2l, FSR2L
+    movff       isr_save_fsr2h_b0_phys, FSR2H                ; restore FSR2 spilled at vector entry
+    movff       isr_save_fsr2l_b0_phys, FSR2L
     retfie      1                                    ; FAST=1: pop shadow STATUS/W/BSR
 
 ; ---------------------------------------------------------------------------
@@ -6106,40 +6107,40 @@ flow_main_isr_dispatch_3b8c:
 ; ---------------------------------------------------------------------------
 send_status_burst:
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
     movlw       0x05
     rcall       send_status_burst_preamble
-    movf        ram_0x05F, W, ACCESS
+    movf        stock_05F_acc, W, ACCESS
     rcall       send_status_burst_postamble
     movlw       0x07
     rcall       send_status_burst_preamble
     movlb       0x0
-    movf        computed_volume, W, BANKED
+    movf        computed_volume_b0, W, BANKED
     addlw       0x60
     rcall       send_status_burst_postamble
     movlw       0x03
     rcall       send_status_burst_preamble
     movlw       0x01
-    btfss       active_flags, 3, ACCESS
+    btfss       active_flags_acc, 3, ACCESS
     movlw       0x00
     rcall       send_status_burst_postamble
     movlw       0x06
     rcall       send_status_burst_preamble
     movlb       0x0
-    movf        input_select, W, BANKED
+    movf        input_select_b0, W, BANKED
     rcall       send_status_burst_postamble
     movlw       0x1D
     rcall       send_status_burst_preamble
     movlb       0x0
-    movf        ram_0x0B8, W, BANKED
+    movf        stock_0B8_b0, W, BANKED
     goto        uart_tx_byte_blocking
 
 send_status_burst_preamble:
-    movwf       ram_0x00D, ACCESS
+    movwf       stock_00D_acc, ACCESS
     movlw       0xBF
     call        uart_tx_byte_blocking, 0x0
-    movf        ram_0x00D, W, ACCESS
+    movf        stock_00D_acc, W, ACCESS
     goto        uart_tx_byte_blocking
 
 send_status_burst_postamble:
@@ -6187,13 +6188,13 @@ uart_baud_31250_prefix:
 ; AN0 rail comes back up.
 ; ---------------------------------------------------------------------------
 hw_standby_shutdown:
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x1B
     call        i2c_secondary_dev_write, 0x0
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x1C
     call        i2c_secondary_dev_write, 0x0
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x1D
     call        i2c_secondary_dev_write, 0x0
     btfss       PORTC, 2, ACCESS
@@ -6215,23 +6216,23 @@ flow_hw_standby_shutdown_3c3e:
     bcf         LATA, 5, ACCESS
     movlw       0x28
     movlb       0x0
-    subwf       ram_0x088, W, BANKED
+    subwf       stock_088_b0, W, BANKED
     movlw       0x02
-    subwfb      ram_0x089, W, BANKED
+    subwfb      stock_089_b0, W, BANKED
     bc          flow_hw_standby_shutdown_3c78
-    clrf        ram_0x008, ACCESS
-    clrf        ram_0x009, ACCESS
+    clrf        stock_008_acc, ACCESS
+    clrf        stock_009_acc, ACCESS
 flow_hw_standby_shutdown_3c58:
-    movff       ram_0x008, ram_0x006
+    movff       stock_008_b0_phys, stock_006_b0_phys
     movlw       0x1C
     call        i2c_secondary_dev_write, 0x0
     movlw       0x01
-    xorwf       ram_0x008, F, ACCESS
+    xorwf       stock_008_acc, F, ACCESS
     movlw       0xFA
     call        timer3_blocking_delay_ms_W, 0x0 ; W04-E08 factored (250 ms pulse)
-    incf        ram_0x009, F, ACCESS
+    incf        stock_009_acc, F, ACCESS
     movlw       0x04
-    cpfsgt      ram_0x009, ACCESS
+    cpfsgt      stock_009_acc, ACCESS
     bra         flow_hw_standby_shutdown_3c58
 flow_hw_standby_shutdown_3c78:
     bcf         LATB, 3, ACCESS
@@ -6247,55 +6248,55 @@ flow_hw_standby_shutdown_3c78:
 ; ---------------------------------------------------------------------------
 main_core_service_3c82:
     movlb       0x0
-    clrf        ram_0x0CA, BANKED
+    clrf        stock_0CA_b0, BANKED
     movlb       0x4
-    btfsc       ram_0x00C, 7, BANKED
+    btfsc       stock_40C_b4, 7, BANKED
     bra         flow_main_core_service_3c82_3ce6
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x00D, W, BANKED
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_40D_b4, W, BANKED
     btfss       STATUS, 0, ACCESS
-    movff       ram_0x40D, ram_0x005
+    movff       stock_40D_b4_phys, saved_w_b0_phys
     movlb       0x0
-    clrf        ram_0x0CA, BANKED
+    clrf        stock_0CA_b0, BANKED
     bra         flow_main_core_service_3c82_3cbc
 flow_main_core_service_3c82_3c9c:
     movlw       0x2C
     movlb       0x0
-    addwf       ram_0x0CA, W, BANKED
+    addwf       stock_0CA_b0, W, BANKED
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x04
     addwfc      FSR2H, F, ACCESS
-    movf        ram_0x0CA, W, BANKED
-    addwf       ram_0x003, W, ACCESS
+    movf        stock_0CA_b0, W, BANKED
+    addwf       stock_003_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     movlw       0x00
-    addwfc      ram_0x004, W, ACCESS
+    addwfc      stock_004_acc, W, ACCESS
     movwf       FSR1H, ACCESS
     movff       INDF2, INDF1
-    incf        ram_0x0CA, F, BANKED
+    incf        stock_0CA_b0, F, BANKED
 flow_main_core_service_3c82_3cbc:
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x0CA, W, BANKED
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_0CA_b0, W, BANKED
     bnc         flow_main_core_service_3c82_3c9c
     movlw       0x40
     movlb       0x4
-    movwf       ram_0x00D, BANKED
-    andwf       ram_0x00C, F, BANKED
+    movwf       stock_40D_b4, BANKED
+    andwf       stock_40C_b4, F, BANKED
     movlw       0x01
-    btfsc       ram_0x00C, 6, BANKED
+    btfsc       stock_40C_b4, 6, BANKED
     movlw       0x00
-    movwf       ram_0x006, ACCESS
-    swapf       ram_0x006, F, ACCESS
-    rlncf       ram_0x006, F, ACCESS
-    rlncf       ram_0x006, F, ACCESS
-    movf        ram_0x00C, W, BANKED
-    xorwf       ram_0x006, W, ACCESS
+    movwf       stock_006_acc, ACCESS
+    swapf       stock_006_acc, F, ACCESS
+    rlncf       stock_006_acc, F, ACCESS
+    rlncf       stock_006_acc, F, ACCESS
+    movf        stock_40C_b4, W, BANKED
+    xorwf       stock_006_acc, W, ACCESS
     andlw       0xBF
-    xorwf       ram_0x006, W, ACCESS
-    movwf       ram_0x00C, BANKED
-    bsf         ram_0x00C, 3, BANKED
-    bsf         ram_0x00C, 7, BANKED
+    xorwf       stock_006_acc, W, ACCESS
+    movwf       stock_40C_b4, BANKED
+    bsf         stock_40C_b4, 3, BANKED
+    bsf         stock_40C_b4, 7, BANKED
 flow_main_core_service_3c82_3ce6:
     return      0
 
@@ -6331,7 +6332,7 @@ main_flash_service_3ce8:
     iorwf       POSTINC2, W, ACCESS
     iorwf       POSTINC2, W, ACCESS
     bnz         flow_main_flash_service_3ce8_3d04
-    movf        ram_0x007, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x00
@@ -6339,40 +6340,40 @@ main_flash_service_3ce8:
     movwf       POSTDEC2, ACCESS
     bra         flow_main_flash_service_3ce8_3d4c
 flow_main_flash_service_3ce8_3d04:
-    movf        ram_0x006, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
     andlw       0x7F
-    movwf       ram_0x008, ACCESS
+    movwf       stock_008_acc, ACCESS
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x008, W, ACCESS
-    movwf       ram_0x009, ACCESS
-    clrf        ram_0x00A, ACCESS
-    rlcf        ram_0x00A, F, ACCESS
-    movf        ram_0x007, W, ACCESS
+    rlcf        stock_008_acc, W, ACCESS
+    movwf       stock_009_acc, ACCESS
+    clrf        stock_00A_acc, ACCESS
+    rlcf        stock_00A_acc, F, ACCESS
+    movf        stock_007_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       ram_0x009, POSTINC2
-    movff       ram_0x00A, POSTDEC2
-    movf        ram_0x007, W, ACCESS
+    movff       stock_009_b0_phys, POSTINC2
+    movff       stock_00A_b0_phys, POSTDEC2
+    movf        stock_007_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x01
-    btfss       ram_0x005, 7, ACCESS
+    btfss       stock_005_acc, 7, ACCESS
     movlw       0x00
     iorwf       POSTINC2, F, ACCESS
     movlw       0x00
     iorwf       POSTDEC2, F, ACCESS
-    movf        ram_0x007, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x82
     addwf       POSTINC2, F, ACCESS
     movlw       0xFF
     addwfc      POSTDEC2, F, ACCESS
-    movf        ram_0x006, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
     andlw       0x80
     iorlw       0x3F
-    movwf       ram_0x006, ACCESS
-    bcf         ram_0x005, 7, ACCESS
+    movwf       stock_006_acc, ACCESS
+    bcf         stock_005_acc, 7, ACCESS
 flow_main_flash_service_3ce8_3d4c:
     return      0
 flow_main_flash_service_3ce8_3d4e:
@@ -6431,37 +6432,37 @@ flow_main_flash_service_3ce8_3d78:
     ; arming below is still done so future code that wants reset-cause
     ; classification can read RCON before re-arming.
     movlb       0x02
-    clrf        diag_i, BANKED
-    clrf        diag_d, BANKED
-    clrf        diag_s, BANKED
-    clrf        diag_b, BANKED
-    clrf        diag_r, BANKED
-    clrf        diag_a, BANKED
-    clrf        diag_p, BANKED
-    clrf        diag_ra1_prev, BANKED
+    clrf        diag_i_b2, BANKED
+    clrf        diag_d_b2, BANKED
+    clrf        diag_s_b2, BANKED
+    clrf        diag_b_b2, BANKED
+    clrf        diag_r_b2, BANKED
+    clrf        diag_a_b2, BANKED
+    clrf        diag_p_b2, BANKED
+    clrf        diag_ra1_prev_b2, BANKED
 
     ; --- V3.2 rev 0x37 Tier-1: zero reset-cause flag cells too ---
     ; Cold-init zeroes all four flags before classification picks one
     ; (V32_DIAG_TIER1_SPEC.md §"RAM layout").  The classification cascade
     ; below then writes 1 to whichever flag matches the cleared RCON bit.
-    clrf        diag_reset_por, BANKED
-    clrf        diag_reset_bor, BANKED
-    clrf        diag_reset_wdt, BANKED
-    clrf        diag_reset_sw, BANKED
-    clrf        i2c_recover_flags, BANKED
-    clrf        src4382_loss_debounce, BANKED
-    clrf        fn_job_state, BANKED
-    clrf        fn_job_id, BANKED
-    clrf        fn_job_idx, BANKED
-    clrf        fn_job_src_kind, BANKED
-    clrf        filename_rev, BANKED
-    clrf        fn_job_rev, BANKED
-    clrf        fn_job_start_cmd, BANKED
-    clrf        fn_job_len, BANKED
-    clrf        fname_tx_gap_lo, BANKED
-    clrf        fname_tx_gap_hi, BANKED
-    clrf        chain_tx_emitted, BANKED
-    clrf        fn_job_tmp, BANKED
+    clrf        diag_reset_por_b2, BANKED
+    clrf        diag_reset_bor_b2, BANKED
+    clrf        diag_reset_wdt_b2, BANKED
+    clrf        diag_reset_sw_b2, BANKED
+    clrf        i2c_recover_flags_b2, BANKED
+    clrf        src4382_loss_debounce_b2, BANKED
+    clrf        fn_job_state_b2, BANKED
+    clrf        fn_job_id_b2, BANKED
+    clrf        fn_job_idx_b2, BANKED
+    clrf        fn_job_src_kind_b2, BANKED
+    clrf        filename_rev_b2, BANKED
+    clrf        fn_job_rev_b2, BANKED
+    clrf        fn_job_start_cmd_b2, BANKED
+    clrf        fn_job_len_b2, BANKED
+    clrf        fname_tx_gap_lo_b2, BANKED
+    clrf        fname_tx_gap_hi_b2, BANKED
+    clrf        chain_tx_emitted_b2, BANKED
+    clrf        fn_job_tmp_b2, BANKED
 
     ; --- V3.2 rev 0x37 Tier-1: reset-cause classification cascade ---
     ; Silicon clears the corresponding RCON bit on each reset cause
@@ -6494,16 +6495,16 @@ flow_main_flash_service_3ce8_3d78:
     bra         diag_classify_wdt
     ; RI cleared OR no recognized bit cleared -> SW bucket (catch-all).
 diag_classify_sw:
-    movwf       diag_reset_sw, BANKED
+    movwf       diag_reset_sw_b2, BANKED
     bra         diag_rcon_rearm
 diag_classify_por:
-    movwf       diag_reset_por, BANKED
+    movwf       diag_reset_por_b2, BANKED
     bra         diag_rcon_rearm
 diag_classify_bor:
-    movwf       diag_reset_bor, BANKED
+    movwf       diag_reset_bor_b2, BANKED
     bra         diag_rcon_rearm
 diag_classify_wdt:
-    movwf       diag_reset_wdt, BANKED
+    movwf       diag_reset_wdt_b2, BANKED
     ; fall through
 diag_rcon_rearm:
     bsf         RCON, 0, ACCESS                    ; arm BOR detection for next reset
@@ -6511,8 +6512,8 @@ diag_rcon_rearm:
     bsf         RCON, 3, ACCESS                    ; arm TO latch for next reset
     bsf         RCON, 4, ACCESS                    ; arm RI  (SW)   for next reset
 
-    clrf        ram_0x05F, ACCESS
-    clrf        active_flags, ACCESS
+    clrf        stock_05F_acc, ACCESS
+    clrf        active_flags_acc, ACCESS
     movlw       LOW(inline_data_table_47E6)         ; TBLPTR -> inline_data_table_47E6
     movwf       TBLPTRL, ACCESS
     movlw       HIGH(inline_data_table_47E6)
@@ -6549,34 +6550,34 @@ flow_main_flash_service_3ce8_3d96:
 ; keep block alignment.
 ; ---------------------------------------------------------------------------
 flash_erase:
-    btfss       active_flags, 2, ACCESS     ; preset B active?
+    btfss       active_flags_acc, 2, ACCESS     ; preset B active?
     bra         flash_erase_stock
     ; Remap start address (ram_0x004 = TBLPTRH)
     call        preset_b_remap_start_addr_if_b, 0x0
 flash_erase_remap_end:
     ; Remap end address (ram_0x008 = end TBLPTRH)
-    movf        ram_0x00A, W, ACCESS
-    iorwf       ram_0x009, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
+    iorwf       stock_009_acc, W, ACCESS
     bnz         flash_erase_stock
     movlw       0x56
-    subwf       ram_0x008, W, ACCESS
+    subwf       stock_008_acc, W, ACCESS
     bnc         flash_erase_stock
     movlw       0x60
-    subwf       ram_0x008, W, ACCESS
+    subwf       stock_008_acc, W, ACCESS
     bc          flash_erase_stock
     movlw       0x0A
-    subwf       ram_0x008, F, ACCESS
+    subwf       stock_008_acc, F, ACCESS
 flash_erase_stock:
-    clrf        ram_0x00B, ACCESS
-    movff       ram_0x003, ram_0x00C
-    movff       ram_0x004, ram_0x00D
-    movff       ram_0x005, ram_0x00E
-    movff       ram_0x006, ram_0x00F
+    clrf        stock_00B_acc, ACCESS
+    movff       stock_003_b0_phys, timeout_hi_b0_phys
+    movff       stock_004_b0_phys, stock_00D_b0_phys
+    movff       saved_w_b0_phys, stock_00E_b0_phys
+    movff       stock_006_b0_phys, stock_00F_b0_phys
     bra         flow_flash_erase_3df4
 flow_flash_erase_3dc0:
-    movff       ram_0x00E, TBLPTRU
-    movff       ram_0x00D, TBLPTRH
-    movff       ram_0x00C, TBLPTRL
+    movff       stock_00E_b0_phys, TBLPTRU
+    movff       stock_00D_b0_phys, TBLPTRH
+    movff       timeout_hi_b0_phys, TBLPTRL
     bsf         EECON1, 7, ACCESS
     bcf         EECON1, 6, ACCESS
     bsf         EECON1, 2, ACCESS
@@ -6585,27 +6586,27 @@ flow_flash_erase_3dc0:
     bra         flow_flash_erase_3dde
     bcf         INTCON, 7, ACCESS
     movlw       0x01
-    movwf       ram_0x00B, ACCESS
+    movwf       stock_00B_acc, ACCESS
 flow_flash_erase_3dde:
     rcall       main_flash_service_4406
-    movf        ram_0x00B, W, ACCESS
+    movf        stock_00B_acc, W, ACCESS
     btfss       STATUS, 2, ACCESS
     bsf         INTCON, 7, ACCESS
     movlw       0x40
-    addwf       ram_0x00C, F, ACCESS
+    addwf       stock_00C_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x00D, F, ACCESS
-    addwfc      ram_0x00E, F, ACCESS
-    addwfc      ram_0x00F, F, ACCESS
+    addwfc      stock_00D_acc, F, ACCESS
+    addwfc      stock_00E_acc, F, ACCESS
+    addwfc      stock_00F_acc, F, ACCESS
 flow_flash_erase_3df4:
-    movf        ram_0x007, W, ACCESS
-    subwf       ram_0x00C, W, ACCESS
-    movf        ram_0x008, W, ACCESS
-    subwfb      ram_0x00D, W, ACCESS
-    movf        ram_0x009, W, ACCESS
-    subwfb      ram_0x00E, W, ACCESS
-    movf        ram_0x00A, W, ACCESS
-    subwfb      ram_0x00F, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
+    subwf       stock_00C_acc, W, ACCESS
+    movf        stock_008_acc, W, ACCESS
+    subwfb      stock_00D_acc, W, ACCESS
+    movf        stock_009_acc, W, ACCESS
+    subwfb      stock_00E_acc, W, ACCESS
+    movf        stock_00A_acc, W, ACCESS
+    subwfb      stock_00F_acc, W, ACCESS
     btfsc       STATUS, 0, ACCESS
     return      0
     bra         flow_flash_erase_3dc0
@@ -6617,39 +6618,39 @@ flow_flash_erase_3df4:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_30d8.
 ; ---------------------------------------------------------------------------
 main_core_service_3e0a:
-    clrf        ram_0x011, ACCESS
-    movf        ram_0x010, W, ACCESS
+    clrf        stock_011_acc, ACCESS
+    movf        stock_010_acc, W, ACCESS
     xorlw       0x80
     addlw       0x80
     bnz         flow_main_core_service_3e0a_3e24
     movlw       0x00
-    subwf       ram_0x00F, W, ACCESS
+    subwf       stock_00F_acc, W, ACCESS
     bnz         flow_main_core_service_3e0a_3e24
     movlw       0x00
-    subwf       ram_0x00E, W, ACCESS
+    subwf       stock_00E_acc, W, ACCESS
     bnz         flow_main_core_service_3e0a_3e24
     movlw       0x00
-    subwf       ram_0x00D, W, ACCESS
+    subwf       stock_00D_acc, W, ACCESS
 flow_main_core_service_3e0a_3e24:
     bc          flow_main_core_service_3e0a_3e3a
-    comf        ram_0x010, F, ACCESS
-    comf        ram_0x00F, F, ACCESS
-    comf        ram_0x00E, F, ACCESS
-    negf        ram_0x00D, ACCESS
+    comf        stock_010_acc, F, ACCESS
+    comf        stock_00F_acc, F, ACCESS
+    comf        stock_00E_acc, F, ACCESS
+    negf        stock_00D_acc, ACCESS
     movlw       0x00
-    addwfc      ram_0x00E, F, ACCESS
-    addwfc      ram_0x00F, F, ACCESS
-    addwfc      ram_0x010, F, ACCESS
+    addwfc      stock_00E_acc, F, ACCESS
+    addwfc      stock_00F_acc, F, ACCESS
+    addwfc      stock_010_acc, F, ACCESS
     movlw       0x01
-    movwf       ram_0x011, ACCESS
+    movwf       stock_011_acc, ACCESS
 flow_main_core_service_3e0a_3e3a:
-    movff       ram_0x00D, ram_0x003
-    movff       ram_0x00E, ram_0x004
-    movff       ram_0x00F, ram_0x005
-    movff       ram_0x010, ram_0x006
+    movff       stock_00D_b0_phys, stock_003_b0_phys
+    movff       stock_00E_b0_phys, stock_004_b0_phys
+    movff       stock_00F_b0_phys, saved_w_b0_phys
+    movff       stock_010_b0_phys, stock_006_b0_phys
     movlw       0x96
-    movwf       ram_0x007, ACCESS
-    movff       ram_0x011, ram_0x008
+    movwf       stock_007_acc, ACCESS
+    movff       stock_011_b0_phys, stock_008_b0_phys
     ; W04-E01: factor call+4 movff tail into main_core_service_30d8_with_save
     goto        main_core_service_30d8_with_save
 
@@ -6666,10 +6667,10 @@ flow_main_core_service_3e0a_3e3a:
 ; final movf into W (Z set iff masked value == 0, same as the in-line form).
 ; ---------------------------------------------------------------------------
 sspcon1_masked_w:
-    movff       SSPCON1, ram_0x004
+    movff       SSPCON1, stock_004_b0_phys
     movlw       0x0F
-    andwf       ram_0x004, F, ACCESS
-    movf        ram_0x004, W, ACCESS
+    andwf       stock_004_acc, F, ACCESS
+    movf        stock_004_acc, W, ACCESS
     return      0
 
 
@@ -6693,8 +6694,8 @@ sspcon1_masked_w:
 ;            (BSR spill); leaves BSR == caller's value on return.
 ; ---------------------------------------------------------------------------
 i2c_byte_tx:
-    movff       WREG, ram_0x005
-    movff       ram_0x005, SSPBUF
+    movff       WREG, saved_w_b0_phys
+    movff       saved_w_b0_phys, SSPBUF
     btfsc       SSPCON1, 7, ACCESS
     bra         flow_i2c_byte_tx_timeout
     rcall       sspcon1_masked_w
@@ -6726,14 +6727,14 @@ flow_i2c_byte_tx_bf:
     ; V3.1 Fix A: ACKSTAT check after successful master TX
     ; Save/restore BSR — callers may have any bank selected and stock
     ; i2c_byte_tx never touched BSR.
-    movff       BSR, ram_0x00E              ; save caller's BSR
+    movff       BSR, stock_00E_b0_phys              ; save caller's BSR
     movlb       0x0
     btfss       SSPCON2, 6, ACCESS          ; skip if NACK (ACKSTAT=1)
     bra         flow_i2c_byte_tx_was_ack
-    bsf         dsp_fault_flags, 2, BANKED  ; latch ACKSTAT fault
+    bsf         dsp_fault_flags_b0, 2, BANKED  ; latch ACKSTAT fault
     diag_inc_sat diag_i                      ; V3.2 Layer 5: count I2C transport fault
 flow_i2c_byte_tx_was_ack:
-    movff       ram_0x00E, BSR              ; restore caller's BSR (also undoes any macro BSR clobber)
+    movff       stock_00E_b0_phys, BSR              ; restore caller's BSR (also undoes any macro BSR clobber)
     movf        SSPCON2, W, ACCESS
 flow_i2c_byte_tx_exit:
     return      0
@@ -6748,30 +6749,30 @@ flow_i2c_byte_tx_timeout:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_2abc.
 ; ---------------------------------------------------------------------------
 main_core_service_3ec4:
-    movff       WREG, ram_0x02D
-    movf        ram_0x02D, W, ACCESS
+    movff       WREG, stock_02D_b0_phys
+    movf        stock_02D_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       POSTINC2, ram_0x012
-    movff       POSTINC2, ram_0x013
-    movff       POSTINC2, ram_0x014
-    movff       POSTINC2, ram_0x015
-    movff       ram_0x025, ram_0x016
-    movff       ram_0x026, ram_0x017
-    movff       ram_0x027, ram_0x018
-    movff       ram_0x028, ram_0x019
+    movff       POSTINC2, stock_012_b0_phys
+    movff       POSTINC2, stock_013_b0_phys
+    movff       POSTINC2, stock_014_b0_phys
+    movff       POSTINC2, stock_015_b0_phys
+    movff       stock_025_b0_phys, stock_016_b0_phys
+    movff       stock_026_b0_phys, stock_017_b0_phys
+    movff       stock_027_b0_phys, stock_018_b0_phys
+    movff       stock_028_b0_phys, stock_019_b0_phys
     call        main_core_service_2abc, 0x0
-    movff       ram_0x012, ram_0x029
-    movff       ram_0x013, ram_0x02A
-    movff       ram_0x014, ram_0x02B
-    movff       ram_0x015, ram_0x02C
-    movf        ram_0x02D, W, ACCESS
+    movff       stock_012_b0_phys, stock_029_b0_phys
+    movff       stock_013_b0_phys, stock_02A_b0_phys
+    movff       stock_014_b0_phys, stock_02B_b0_phys
+    movff       stock_015_b0_phys, stock_02C_b0_phys
+    movf        stock_02D_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       ram_0x029, POSTINC2
-    movff       ram_0x02A, POSTINC2
-    movff       ram_0x02B, POSTINC2
-    movff       ram_0x02C, POSTDEC2
+    movff       stock_029_b0_phys, POSTINC2
+    movff       stock_02A_b0_phys, POSTINC2
+    movff       stock_02B_b0_phys, POSTINC2
+    movff       stock_02C_b0_phys, POSTDEC2
     decf        FSR2L, F, ACCESS
     decf        FSR2L, F, ACCESS
     return      0
@@ -6783,30 +6784,30 @@ main_core_service_3ec4:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_24c2.
 ; ---------------------------------------------------------------------------
 main_core_service_3f1e:
-    movff       WREG, ram_0x037
-    movf        ram_0x037, W, ACCESS
+    movff       WREG, stock_037_b0_phys
+    movf        stock_037_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       POSTINC2, ram_0x020
-    movff       POSTINC2, ram_0x021
-    movff       POSTINC2, ram_0x022
-    movff       POSTINC2, ram_0x023
-    movff       ram_0x02F, ram_0x024
-    movff       ram_0x030, ram_0x025
-    movff       ram_0x031, ram_0x026
-    movff       ram_0x032, ram_0x027
+    movff       POSTINC2, stock_020_b0_phys
+    movff       POSTINC2, stock_021_b0_phys
+    movff       POSTINC2, stock_022_b0_phys
+    movff       POSTINC2, stock_023_b0_phys
+    movff       stock_02F_b0_phys, stock_024_b0_phys
+    movff       stock_030_b0_phys, stock_025_b0_phys
+    movff       stock_031_b0_phys, stock_026_b0_phys
+    movff       stock_032_b0_phys, stock_027_b0_phys
     call        main_core_service_24c2, 0x0
-    movff       ram_0x020, ram_0x033
-    movff       ram_0x021, ram_0x034
-    movff       ram_0x022, ram_0x035
-    movff       ram_0x023, ram_0x036
-    movf        ram_0x037, W, ACCESS
+    movff       stock_020_b0_phys, stock_033_b0_phys
+    movff       stock_021_b0_phys, stock_034_b0_phys
+    movff       stock_022_b0_phys, stock_035_b0_phys
+    movff       stock_023_b0_phys, stock_036_b0_phys
+    movf        stock_037_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
-    movff       ram_0x033, POSTINC2
-    movff       ram_0x034, POSTINC2
-    movff       ram_0x035, POSTINC2
-    movff       ram_0x036, POSTDEC2
+    movff       stock_033_b0_phys, POSTINC2
+    movff       stock_034_b0_phys, POSTINC2
+    movff       stock_035_b0_phys, POSTINC2
+    movff       stock_036_b0_phys, POSTDEC2
     decf        FSR2L, F, ACCESS
     decf        FSR2L, F, ACCESS
     return      0
@@ -6826,54 +6827,54 @@ main_core_service_3f1e:
 ; received Intel HEX record while keeping the running checksum.
 ; ---------------------------------------------------------------------------
 intel_hex_checksum_update:
-    movff       WREG, ram_0x005
-    clrf        ram_0x004, ACCESS
+    movff       WREG, saved_w_b0_phys
+    clrf        stock_004_acc, ACCESS
     movlw       0x2F
-    cpfsgt      ram_0x005, ACCESS
+    cpfsgt      stock_005_acc, ACCESS
     bra         flow_intel_hex_checksum_updat_3f90
     movlw       0x3A
-    subwf       ram_0x005, W, ACCESS
+    subwf       stock_005_acc, W, ACCESS
     bc          flow_intel_hex_checksum_updat_3f90
-    movf        ram_0x005, W, ACCESS
+    movf        stock_005_acc, W, ACCESS
     addlw       0xD0
     bra         flow_intel_hex_checksum_updat_3fa0
 flow_intel_hex_checksum_updat_3f90:
     movlw       0x40
-    cpfsgt      ram_0x005, ACCESS
+    cpfsgt      stock_005_acc, ACCESS
     bra         flow_intel_hex_checksum_updat_3fa2
     movlw       0x47
-    subwf       ram_0x005, W, ACCESS
+    subwf       stock_005_acc, W, ACCESS
     bc          flow_intel_hex_checksum_updat_3fa2
-    movf        ram_0x005, W, ACCESS
+    movf        stock_005_acc, W, ACCESS
     addlw       0xC9
 flow_intel_hex_checksum_updat_3fa0:
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
 flow_intel_hex_checksum_updat_3fa2:
-    swapf       ram_0x004, F, ACCESS
+    swapf       stock_004_acc, F, ACCESS
     movlw       0xF0
-    andwf       ram_0x004, F, ACCESS
+    andwf       stock_004_acc, F, ACCESS
     movlw       0x2F
-    cpfsgt      ram_0x003, ACCESS
+    cpfsgt      stock_003_acc, ACCESS
     bra         flow_intel_hex_checksum_updat_3fba
     movlw       0x3A
-    subwf       ram_0x003, W, ACCESS
+    subwf       stock_003_acc, W, ACCESS
     bc          flow_intel_hex_checksum_updat_3fba
-    movf        ram_0x003, W, ACCESS
+    movf        stock_003_acc, W, ACCESS
     addlw       0xD0
     bra         flow_intel_hex_checksum_updat_3fca
 flow_intel_hex_checksum_updat_3fba:
     movlw       0x40
-    cpfsgt      ram_0x003, ACCESS
+    cpfsgt      stock_003_acc, ACCESS
     bra         flow_intel_hex_checksum_updat_3fcc
     movlw       0x47
-    subwf       ram_0x003, W, ACCESS
+    subwf       stock_003_acc, W, ACCESS
     bc          flow_intel_hex_checksum_updat_3fcc
-    movf        ram_0x003, W, ACCESS
+    movf        stock_003_acc, W, ACCESS
     addlw       0xC9
 flow_intel_hex_checksum_updat_3fca:
-    addwf       ram_0x004, F, ACCESS
+    addwf       stock_004_acc, F, ACCESS
 flow_intel_hex_checksum_updat_3fcc:
-    movf        ram_0x004, W, ACCESS
+    movf        stock_004_acc, W, ACCESS
     return      0
 
 
@@ -6884,49 +6885,49 @@ flow_intel_hex_checksum_updat_3fcc:
 ; ---------------------------------------------------------------------------
 main_core_service_3fd0:
     movlw       0x40
-    cpfsgt      ram_0x005, ACCESS
+    cpfsgt      stock_005_acc, ACCESS
     bra         flow_main_core_service_3fd0_3fd8
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
 flow_main_core_service_3fd0_3fd8:
-    clrf        ram_0x007, ACCESS
+    clrf        stock_007_acc, ACCESS
     bra         flow_main_core_service_3fd0_3ffa
 flow_main_core_service_3fd0_3fdc:
-    movf        ram_0x007, W, ACCESS
-    addwf       ram_0x003, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
+    addwf       stock_003_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     movlw       0x00
-    addwfc      ram_0x004, W, ACCESS
+    addwfc      stock_004_acc, W, ACCESS
     movwf       FSR2H, ACCESS
     movlw       0x6C
-    addwf       ram_0x007, W, ACCESS
+    addwf       stock_007_acc, W, ACCESS
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movlw       0x04
     addwfc      FSR1H, F, ACCESS
     movff       INDF2, INDF1
-    incf        ram_0x007, F, ACCESS
+    incf        stock_007_acc, F, ACCESS
 flow_main_core_service_3fd0_3ffa:
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x007, W, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_007_acc, W, ACCESS
     bnc         flow_main_core_service_3fd0_3fdc
-    movff       ram_0x005, ram_0x411
+    movff       saved_w_b0_phys, stock_411_b4_phys
     movlw       0x40
     movlb       0x4
-    andwf       ram_0x010, F, BANKED
+    andwf       stock_410_b4, F, BANKED
     movlw       0x01
-    btfsc       ram_0x010, 6, BANKED
+    btfsc       stock_410_b4, 6, BANKED
     movlw       0x00
-    movwf       ram_0x006, ACCESS
-    swapf       ram_0x006, F, ACCESS
-    rlncf       ram_0x006, F, ACCESS
-    rlncf       ram_0x006, F, ACCESS
-    movf        ram_0x010, W, BANKED
-    xorwf       ram_0x006, W, ACCESS
+    movwf       stock_006_acc, ACCESS
+    swapf       stock_006_acc, F, ACCESS
+    rlncf       stock_006_acc, F, ACCESS
+    rlncf       stock_006_acc, F, ACCESS
+    movf        stock_410_b4, W, BANKED
+    xorwf       stock_006_acc, W, ACCESS
     andlw       0xBF
-    xorwf       ram_0x006, W, ACCESS
-    movwf       ram_0x010, BANKED
-    bsf         ram_0x010, 3, BANKED
-    bsf         ram_0x010, 7, BANKED
+    xorwf       stock_006_acc, W, ACCESS
+    movwf       stock_410_b4, BANKED
+    bsf         stock_410_b4, 3, BANKED
+    bsf         stock_410_b4, 7, BANKED
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -6957,42 +6958,42 @@ flow_main_core_service_3fd0_3ffa:
 ; immediately above flash_read's entry point.
 ; ---------------------------------------------------------------------------
 flash_read_fsr2_0017:
-    clrf        ram_0x00A, ACCESS
+    clrf        stock_00A_acc, ACCESS
     movlw       0x17
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     ; fall through into flash_read
 flash_read:
     call        preset_b_remap_start_addr, 0x0
 flash_read_stock:
-    movff       ram_0x003, ram_0x00B
-    movff       ram_0x004, ram_0x00C
-    movff       ram_0x005, ram_0x00D
-    movff       ram_0x006, ram_0x00E
-    movff       TBLPTRU, ram_0x011
-    movff       TBLPTRH, ram_0x010
-    movff       TBLPTRL, ram_0x00F
-    movff       ram_0x00D, TBLPTRU
-    movff       ram_0x00C, TBLPTRH
-    movff       ram_0x00B, TBLPTRL
+    movff       stock_003_b0_phys, timeout_lo_b0_phys
+    movff       stock_004_b0_phys, timeout_hi_b0_phys
+    movff       saved_w_b0_phys, stock_00D_b0_phys
+    movff       stock_006_b0_phys, stock_00E_b0_phys
+    movff       TBLPTRU, stock_011_b0_phys
+    movff       TBLPTRH, stock_010_b0_phys
+    movff       TBLPTRL, stock_00F_b0_phys
+    movff       stock_00D_b0_phys, TBLPTRU
+    movff       timeout_hi_b0_phys, TBLPTRH
+    movff       timeout_lo_b0_phys, TBLPTRL
     bra         flow_flash_read_4064
 flow_flash_read_4052:
     tblrd*+
-    movff       ram_0x009, FSR2L
-    movff       ram_0x00A, FSR2H
+    movff       stock_009_b0_phys, FSR2L
+    movff       stock_00A_b0_phys, FSR2H
     movff       TABLAT, INDF2
-    infsnz      ram_0x009, F, ACCESS
-    incf        ram_0x00A, F, ACCESS
+    infsnz      stock_009_acc, F, ACCESS
+    incf        stock_00A_acc, F, ACCESS
 flow_flash_read_4064:
-    decf        ram_0x007, F, ACCESS
+    decf        stock_007_acc, F, ACCESS
     btfss       STATUS, 0, ACCESS
-    decf        ram_0x008, F, ACCESS
-    incf        ram_0x007, W, ACCESS
+    decf        stock_008_acc, F, ACCESS
+    incf        stock_007_acc, W, ACCESS
     btfsc       STATUS, 2, ACCESS
-    incf        ram_0x008, W, ACCESS
+    incf        stock_008_acc, W, ACCESS
     bnz         flow_flash_read_4052
-    movff       ram_0x011, TBLPTRU
-    movff       ram_0x010, TBLPTRH
-    movff       ram_0x00F, TBLPTRL
+    movff       stock_011_b0_phys, TBLPTRU
+    movff       stock_010_b0_phys, TBLPTRH
+    movff       stock_00F_b0_phys, TBLPTRL
     return      0
 
 
@@ -7002,39 +7003,39 @@ flow_flash_read_4064:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_4080:
-    movff       WREG, ram_0x003
+    movff       WREG, stock_003_b0_phys
     movlw       0x08
     movlb       0x1
-    movwf       ram_0x017, BANKED
+    movwf       stock_117_b1, BANKED
     movlw       0x04
-    movwf       ram_0x019, BANKED
+    movwf       stock_119_b1, BANKED
     movlw       0x1C
-    movwf       ram_0x018, BANKED
-    tstfsz      ram_0x003, ACCESS
+    movwf       stock_118_b1, BANKED
+    tstfsz      stock_003_acc, ACCESS
     bra         flow_main_core_service_4080_40a8
     movlw       0x04
-    movwf       ram_0x019, BANKED
+    movwf       stock_119_b1, BANKED
     movlw       0x14
-    movwf       ram_0x018, BANKED
+    movwf       stock_118_b1, BANKED
     movlw       0x04
     movlb       0x0
-    movwf       ram_0x079, BANKED
+    movwf       stock_079_b0, BANKED
     movlw       0x00
     bra         flow_main_core_service_4080_40ae
 flow_main_core_service_4080_40a8:
     movlw       0x04
     movlb       0x0
-    movwf       ram_0x079, BANKED
+    movwf       stock_079_b0, BANKED
 flow_main_core_service_4080_40ae:
-    movwf       ram_0x078, BANKED
-    movff       ram_0x078, FSR2L
-    movff       ram_0x079, FSR2H
-    movff       ram_0x116, POSTINC2
-    movff       ram_0x117, POSTINC2
-    movff       ram_0x118, POSTINC2
-    movff       ram_0x119, POSTINC2
-    movff       ram_0x078, FSR2L
-    movff       ram_0x079, FSR2H
+    movwf       stock_078_b0, BANKED
+    movff       stock_078_b0_phys, FSR2L
+    movff       stock_079_b0_phys, FSR2H
+    movff       stock_116_b1_phys, POSTINC2
+    movff       stock_117_b1_phys, POSTINC2
+    movff       stock_118_b1_phys, POSTINC2
+    movff       stock_119_b1_phys, POSTINC2
+    movff       stock_078_b0_phys, FSR2L
+    movff       stock_079_b0_phys, FSR2H
     movlb       0x0
     bsf         INDF2, 7, ACCESS
     return      0
@@ -7048,7 +7049,7 @@ flow_main_core_service_4080_40ae:
 main_usb_service_40d6:
     movlw       0x03
     movlb       0x0
-    movwf       ram_0x0CD, BANKED
+    movwf       stock_0CD_b0, BANKED
     clrf        UEIE, ACCESS
     clrf        UIR, ACCESS
     movlw       0x7B
@@ -7075,13 +7076,13 @@ flow_main_usb_service_40d6_4102:
     bcf         UCON, 4, ACCESS
     movlw       0x04
     movlb       0x1
-    movwf       ram_0x016, BANKED
+    movwf       stock_116_b1, BANKED
     movlw       0x00
     rcall       main_core_service_4080
     movlw       0x01
-    movwf       ram_0x096, BANKED
-    clrf        ram_0x0CE, BANKED
-    clrf        ram_0x0EB, BANKED
+    movwf       stock_096_b0, BANKED
+    clrf        stock_0CE_b0, BANKED
+    clrf        stock_0EB_b0, BANKED
     movlw       0x00
     goto        main_core_service_48fe
 
@@ -7092,86 +7093,87 @@ flow_main_usb_service_40d6_4102:
 ; Notes   : Inferred adc helper; touches adc.
 ; ---------------------------------------------------------------------------
 main_adc_service_4124:
-    clrf        ram_0x007, ACCESS
-    clrf        ram_0x008, ACCESS
-    movf        ram_0x006, W, ACCESS
-    iorwf       ram_0x005, W, ACCESS
+    clrf        stock_007_acc, ACCESS
+    clrf        stock_008_acc, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    iorwf       stock_005_acc, W, ACCESS
     bz          flow_main_adc_service_4124_4164
     movlw       0x01
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     bra         flow_main_adc_service_4124_413c
 flow_main_adc_service_4124_4134:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x005, F, ACCESS
-    rlcf        ram_0x006, F, ACCESS
-    incf        ram_0x009, F, ACCESS
+    rlcf        stock_005_acc, F, ACCESS
+    rlcf        stock_006_acc, F, ACCESS
+    incf        stock_009_acc, F, ACCESS
 flow_main_adc_service_4124_413c:
-    btfss       ram_0x006, 7, ACCESS
+    btfss       stock_006_acc, 7, ACCESS
     bra         flow_main_adc_service_4124_4134
 flow_main_adc_service_4124_4140:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x007, F, ACCESS
-    rlcf        ram_0x008, F, ACCESS
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x003, W, ACCESS
-    movf        ram_0x006, W, ACCESS
-    subwfb      ram_0x004, W, ACCESS
+    rlcf        stock_007_acc, F, ACCESS
+    rlcf        stock_008_acc, F, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_003_acc, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    subwfb      stock_004_acc, W, ACCESS
     bnc         flow_main_adc_service_4124_415a
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x003, F, ACCESS
-    movf        ram_0x006, W, ACCESS
-    subwfb      ram_0x004, F, ACCESS
-    bsf         ram_0x007, 0, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_003_acc, F, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    subwfb      stock_004_acc, F, ACCESS
+    bsf         stock_007_acc, 0, ACCESS
 flow_main_adc_service_4124_415a:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x006, F, ACCESS
-    rrcf        ram_0x005, F, ACCESS
-    decfsz      ram_0x009, F, ACCESS
+    rrcf        stock_006_acc, F, ACCESS
+    rrcf        stock_005_acc, F, ACCESS
+    decfsz      stock_009_acc, F, ACCESS
     bra         flow_main_adc_service_4124_4140
 flow_main_adc_service_4124_4164:
-    movff       ram_0x007, ram_0x003
-    movff       ram_0x008, ram_0x004
+    movff       stock_007_b0_phys, stock_003_b0_phys
+    movff       stock_008_b0_phys, stock_004_b0_phys
     return      0
 an0_hysteresis_monitor:
-    btfss       active_flags, 3, ACCESS
+    movlb       0x0                                  ; callers may leave BSR=2; ram_0x0A1 is bank 0
+    btfss       active_flags_acc, 3, ACCESS
     bra         flow_main_adc_service_4124_41b4
-    movf        ram_0x0A1, W, BANKED
+    movf        an0_delay_b0, W, BANKED
     xorlw       0x64
     bnz         flow_main_adc_service_4124_41b2
     btfsc       ADCON0, 1, ACCESS
     bra         flow_main_adc_service_4124_41ae
     movf        ADRESH, W, ACCESS
-    movwf       ram_0x004, ACCESS
-    clrf        ram_0x003, ACCESS
+    movwf       stock_004_acc, ACCESS
+    clrf        stock_003_acc, ACCESS
     movf        ADRESL, W, ACCESS
-    addwf       ram_0x003, W, ACCESS
-    movwf       ram_0x088, BANKED
+    addwf       stock_003_acc, W, ACCESS
+    movwf       stock_088_b0, BANKED
     movlw       0x00
-    addwfc      ram_0x004, W, ACCESS
-    movwf       ram_0x089, BANKED
+    addwfc      stock_004_acc, W, ACCESS
+    movwf       stock_089_b0, BANKED
     movlw       0x29
-    subwf       ram_0x088, W, BANKED
+    subwf       stock_088_b0, W, BANKED
     movlw       0x02
-    subwfb      ram_0x089, W, BANKED
+    subwfb      stock_089_b0, W, BANKED
     btfsc       STATUS, 0, ACCESS
-    bsf         ram_0x094, 2, BANKED
+    bsf         stock_094_b0, 2, BANKED
     bsf         ADCON0, 1, ACCESS
-    btfss       ram_0x094, 2, BANKED
+    btfss       stock_094_b0, 2, BANKED
     bra         flow_main_adc_service_4124_41ae
     movlw       0x28
-    subwf       ram_0x088, W, BANKED
+    subwf       stock_088_b0, W, BANKED
     movlw       0x02
-    subwfb      ram_0x089, W, BANKED
+    subwfb      stock_089_b0, W, BANKED
     bc          flow_main_adc_service_4124_41ae
-    bcf         active_flags, 3, ACCESS
-    bsf         event_flags, 2, BANKED
+    bcf         active_flags_acc, 3, ACCESS
+    bsf         event_flags_b0, 2, BANKED
     diag_inc_sat diag_a                              ; V3.2 Layer 5: count AN0-triggered standby
     movlb       0x0                                  ; macro clobbers BSR; restore for the bra below
 flow_main_adc_service_4124_41ae:
-    clrf        ram_0x0A1, BANKED
+    clrf        an0_delay_b0, BANKED
     bra         flow_main_adc_service_4124_41b4
 flow_main_adc_service_4124_41b2:
-    incf        ram_0x0A1, F, BANKED
+    incf        an0_delay_b0, F, BANKED
 flow_main_adc_service_4124_41b4:
     return      0
 
@@ -7182,35 +7184,35 @@ flow_main_adc_service_4124_41b4:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_34c8.
 ; ---------------------------------------------------------------------------
 main_core_service_41b6:
-    movff       WREG, ram_0x017
-    movff       ram_0x017, ram_0x016
-    movf        ram_0x013, W, ACCESS
+    movff       WREG, stock_017_b0_phys
+    movff       stock_017_b0_phys, stock_016_b0_phys
+    movf        stock_013_acc, W, ACCESS
     xorlw       0x80
     movwf       PRODL, ACCESS
     movlw       0x80
     subwf       PRODL, W, ACCESS
     movlw       0x00
     btfsc       STATUS, 2, ACCESS
-    subwf       ram_0x012, W, ACCESS
+    subwf       stock_012_acc, W, ACCESS
     bc          flow_main_core_service_41b6_41e4
-    movf        ram_0x017, W, ACCESS
+    movf        stock_017_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     movlw       0x2D
     movwf       INDF2, ACCESS
-    incf        ram_0x017, F, ACCESS
-    negf        ram_0x012, ACCESS
-    comf        ram_0x013, F, ACCESS
+    incf        stock_017_acc, F, ACCESS
+    negf        stock_012_acc, ACCESS
+    comf        stock_013_acc, F, ACCESS
     btfsc       STATUS, 0, ACCESS
-    incf        ram_0x013, F, ACCESS
+    incf        stock_013_acc, F, ACCESS
 flow_main_core_service_41b6_41e4:
-    movff       ram_0x012, ram_0x00A
-    movff       ram_0x013, ram_0x00B
-    movff       ram_0x014, ram_0x00C
-    movff       ram_0x015, ram_0x00D
-    movf        ram_0x017, W, ACCESS
+    movff       stock_012_b0_phys, stock_00A_b0_phys
+    movff       stock_013_b0_phys, timeout_lo_b0_phys
+    movff       stock_014_b0_phys, timeout_hi_b0_phys
+    movff       stock_015_b0_phys, stock_00D_b0_phys
+    movf        stock_017_acc, W, ACCESS
     call        main_core_service_34c8, 0x0
-    movf        ram_0x016, W, ACCESS
+    movf        stock_016_acc, W, ACCESS
     return      0
 
 
@@ -7221,7 +7223,7 @@ flow_main_core_service_41b6_41e4:
 ; ---------------------------------------------------------------------------
 main_usb_service_41fe:
     movlw       0x01
-    movwf       ram_0x0C8, BANKED
+    movwf       stock_0C8_b0, BANKED
     clrf        UEP1, ACCESS
     clrf        UEP2, ACCESS
     clrf        UEP3, ACCESS
@@ -7229,28 +7231,28 @@ main_usb_service_41fe:
     clrf        UEP5, ACCESS
     clrf        UEP6, ACCESS
     clrf        UEP7, ACCESS
-    clrf        ram_0x091, BANKED
+    clrf        stock_091_b0, BANKED
 flow_main_usb_service_41fe_4212:
-    movf        ram_0x091, W, BANKED
+    movf        stock_091_b0, W, BANKED
     addlw       0xEC
     movwf       FSR2L, ACCESS
     clrf        FSR2H, ACCESS
     clrf        INDF2, ACCESS
-    incf        ram_0x091, F, BANKED
-    movf        ram_0x091, W, BANKED
+    incf        stock_091_b0, F, BANKED
+    movf        stock_091_b0, W, BANKED
     bz          flow_main_usb_service_41fe_4212
-    movff       ram_0x0D1, ram_0x0EB
-    movf        ram_0x0EB, W, BANKED
+    movff       stock_0D1_b0_phys, stock_0EB_b0_phys
+    movf        stock_0EB_b0, W, BANKED
     rcall       main_core_service_48fe
     movlb       0x0
-    tstfsz      ram_0x0D1, BANKED
+    tstfsz      stock_0D1_b0, BANKED
     bra         flow_main_usb_service_41fe_4236
     movlw       0x05
     bra         flow_main_usb_service_41fe_4238
 flow_main_usb_service_41fe_4236:
     movlw       0x06
 flow_main_usb_service_41fe_4238:
-    movwf       ram_0x0CD, BANKED
+    movwf       stock_0CD_b0, BANKED
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -7268,14 +7270,14 @@ flow_main_usb_service_41fe_4238:
 ; require boundification here yet. See workstream 1 for the migration plan.
 ; ---------------------------------------------------------------------------
 i2c_secondary_dev_random_read:
-    movff       WREG, ram_0x006
+    movff       WREG, stock_006_b0_phys
     rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS
     rcall       wait_sen_bounded
     bc          i2c_secondary_dev_random_timeout
     movlw       0xE2
     rcall       i2c_byte_tx
-    movf        ram_0x006, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
     rcall       i2c_byte_tx
     bsf         SSPCON2, 1, ACCESS
     rcall       wait_rsen_bounded
@@ -7283,7 +7285,7 @@ i2c_secondary_dev_random_read:
     movlw       0xE3
     rcall       i2c_byte_tx
     rcall       main_i2c_service_464c
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     bsf         SSPCON2, 5, ACCESS
     bsf         SSPCON2, 4, ACCESS
     rcall       wait_acken_bounded
@@ -7291,7 +7293,7 @@ i2c_secondary_dev_random_read:
     bsf         SSPCON2, 2, ACCESS
     rcall       wait_pen_bounded
     bc          i2c_secondary_dev_random_pen_timeout
-    movf        ram_0x007, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
     bcf         STATUS, 0, ACCESS
     return      0
 i2c_secondary_dev_random_timeout:
@@ -7310,35 +7312,35 @@ i2c_secondary_dev_random_pen_timeout:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_427a:
-    movf        ram_0x006, W, ACCESS
-    iorwf       ram_0x005, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    iorwf       stock_005_acc, W, ACCESS
     bz          flow_main_core_service_427a_42ae
     movlw       0x01
-    movwf       ram_0x007, ACCESS
+    movwf       stock_007_acc, ACCESS
     bra         flow_main_core_service_427a_428e
 flow_main_core_service_427a_4286:
     bcf         STATUS, 0, ACCESS
-    rlcf        ram_0x005, F, ACCESS
-    rlcf        ram_0x006, F, ACCESS
-    incf        ram_0x007, F, ACCESS
+    rlcf        stock_005_acc, F, ACCESS
+    rlcf        stock_006_acc, F, ACCESS
+    incf        stock_007_acc, F, ACCESS
 flow_main_core_service_427a_428e:
-    btfss       ram_0x006, 7, ACCESS
+    btfss       stock_006_acc, 7, ACCESS
     bra         flow_main_core_service_427a_4286
 flow_main_core_service_427a_4292:
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x003, W, ACCESS
-    movf        ram_0x006, W, ACCESS
-    subwfb      ram_0x004, W, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_003_acc, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    subwfb      stock_004_acc, W, ACCESS
     bnc         flow_main_core_service_427a_42a4
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x003, F, ACCESS
-    movf        ram_0x006, W, ACCESS
-    subwfb      ram_0x004, F, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_003_acc, F, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    subwfb      stock_004_acc, F, ACCESS
 flow_main_core_service_427a_42a4:
     bcf         STATUS, 0, ACCESS
-    rrcf        ram_0x006, F, ACCESS
-    rrcf        ram_0x005, F, ACCESS
-    decfsz      ram_0x007, F, ACCESS
+    rrcf        stock_006_acc, F, ACCESS
+    rrcf        stock_005_acc, F, ACCESS
+    decfsz      stock_007_acc, F, ACCESS
     bra         flow_main_core_service_427a_4292
 flow_main_core_service_427a_42ae:
     return      0
@@ -7397,29 +7399,29 @@ flow_flash_write_with_gie_off_42ec:
 ; ---------------------------------------------------------------------------
 main_usb_service_42f4:
     movlb       0x4
-    clrf        ram_0x008, BANKED
+    clrf        stock_408_b4, BANKED
     movlb       0x0
-    clrf        ram_0x0CC, BANKED
+    clrf        stock_0CC_b0, BANKED
     movlb       0x4
-    btfss       ram_0x000, 7, BANKED
+    btfss       stock_400_b4, 7, BANKED
     bra         flow_main_usb_service_42f4_4308
-    clrf        ram_0x000, BANKED
+    clrf        stock_400_b4, BANKED
     movlb       0x0
-    clrf        ram_0x096, BANKED
+    clrf        stock_096_b0, BANKED
 flow_main_usb_service_42f4_4308:
     movlb       0x4
-    btfss       ram_0x004, 7, BANKED
+    btfss       stock_404_b4, 7, BANKED
     bra         flow_main_usb_service_42f4_4316
-    clrf        ram_0x004, BANKED
+    clrf        stock_404_b4, BANKED
     movlw       0x01
     movlb       0x0
-    movwf       ram_0x096, BANKED
+    movwf       stock_096_b0, BANKED
 flow_main_usb_service_42f4_4316:
     movlb       0x0
-    clrf        ram_0x0C9, BANKED
-    clrf        ram_0x0C8, BANKED
-    clrf        ram_0x0E7, BANKED
-    clrf        ram_0x0E8, BANKED
+    clrf        stock_0C9_b0, BANKED
+    clrf        stock_0C8_b0, BANKED
+    clrf        stock_0E7_b0, BANKED
+    clrf        stock_0E8_b0, BANKED
     bcf         UCON, 4, ACCESS
     call        main_core_service_3682, 0x0
     call        flow_main_core_service_3188_3194, 0x0
@@ -7433,20 +7435,20 @@ flow_main_usb_service_42f4_4316:
 ; ---------------------------------------------------------------------------
 main_core_service_432e:
     movlw       0x80
-    xorwf       ram_0x040, F, ACCESS
-    movff       ram_0x039, ram_0x020
-    movff       ram_0x03A, ram_0x021
-    movff       ram_0x03B, ram_0x022
-    movff       ram_0x03C, ram_0x023
-    movff       ram_0x03D, ram_0x024
-    movff       ram_0x03E, ram_0x025
-    movff       ram_0x03F, ram_0x026
-    movff       ram_0x040, ram_0x027
+    xorwf       stock_040_acc, F, ACCESS
+    movff       stock_039_b0_phys, stock_020_b0_phys
+    movff       stock_03A_b0_phys, stock_021_b0_phys
+    movff       stock_03B_b0_phys, stock_022_b0_phys
+    movff       stock_03C_b0_phys, stock_023_b0_phys
+    movff       stock_03D_b0_phys, stock_024_b0_phys
+    movff       stock_03E_b0_phys, stock_025_b0_phys
+    movff       stock_03F_b0_phys, stock_026_b0_phys
+    movff       stock_040_b0_phys, stock_027_b0_phys
     call        main_core_service_24c2, 0x0
-    movff       ram_0x020, ram_0x039
-    movff       ram_0x021, ram_0x03A
-    movff       ram_0x022, ram_0x03B
-    movff       ram_0x023, ram_0x03C
+    movff       stock_020_b0_phys, stock_039_b0_phys
+    movff       stock_021_b0_phys, stock_03A_b0_phys
+    movff       stock_022_b0_phys, stock_03B_b0_phys
+    movff       stock_023_b0_phys, stock_03C_b0_phys
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -7468,7 +7470,7 @@ main_core_service_432e:
 ; is the volume_dsp_write path that drives the retry/escalation.
 ; ---------------------------------------------------------------------------
 i2c_tas3108_reg1f_write:
-    movff       WREG, ram_0x006
+    movff       WREG, stock_006_b0_phys
     rcall       i2c_wait_bus_idle
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
     rcall       wait_sen_bounded
@@ -7483,7 +7485,7 @@ i2c_tas3108_reg1f_write:
     rcall       i2c_byte_tx
     movlw       0x00
     rcall       i2c_byte_tx
-    movf        ram_0x006, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
     rcall       i2c_byte_tx
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     rcall       wait_pen_bounded
@@ -7504,19 +7506,19 @@ i2c_reg1f_pen_timeout:
 ; Notes   : Inferred uart helper routine. Calls: tblrd_lookup, uart_tx_byte_blocking.
 ; ---------------------------------------------------------------------------
 main_uart_service_43a2:
-    movff       WREG, ram_0x006
-    movff       ram_0x006, ram_0x004
-    swapf       ram_0x004, F, ACCESS
+    movff       WREG, stock_006_b0_phys
+    movff       stock_006_b0_phys, stock_004_b0_phys
+    swapf       stock_004_acc, F, ACCESS
     movlw       0x0F
-    andwf       ram_0x004, F, ACCESS
+    andwf       stock_004_acc, F, ACCESS
     rcall       tblrd_lookup
     rcall       uart_tx_byte_blocking
-    movwf       ram_0x005, ACCESS
-    movff       ram_0x006, ram_0x004
+    movwf       stock_005_acc, ACCESS
+    movff       stock_006_b0_phys, stock_004_b0_phys
     movlw       0x0F
     rcall       tblrd_lookup
     rcall       uart_tx_byte_blocking
-    xorwf       ram_0x005, F, ACCESS
+    xorwf       stock_005_acc, F, ACCESS
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -7530,8 +7532,8 @@ main_uart_service_43a2:
 ; clobbering the main parser's ram_0x01B accumulator.
 ; ---------------------------------------------------------------------------
 tblrd_lookup:
-    andwf       ram_0x004, F, ACCESS
-    movf        ram_0x004, W, ACCESS
+    andwf       stock_004_acc, F, ACCESS
+    movf        stock_004_acc, W, ACCESS
     call        hex_lookup_table_ptr, 0x0           ; far call: helper lives near nibble_to_hex_ascii
     tblrd*
     movf        TABLAT, W, ACCESS
@@ -7553,21 +7555,21 @@ tblrd_lookup:
 ; docs/V32_MAIN_HANG_HARDENING_PLAN workstream 2.
 ; ---------------------------------------------------------------------------
 eeprom_write_blocking:
-    movff       ram_0x003, EEADR
-    movff       ram_0x005, EEDATA
+    movff       stock_003_b0_phys, EEADR
+    movff       saved_w_b0_phys, EEDATA
     bcf         EECON1, 7, ACCESS
     bcf         EECON1, 6, ACCESS
     bsf         EECON1, 2, ACCESS
     movlw       0x00
     btfsc       INTCON, 7, ACCESS
     movlw       0x01
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     bcf         INTCON, 7, ACCESS
     rcall       main_flash_service_4406
 flow_eeprom_write_blocking_43f4:
     btfsc       EECON1, 1, ACCESS
     bra         flow_eeprom_write_blocking_43f4
-    btfsc       ram_0x006, 0, ACCESS
+    btfsc       stock_006_acc, 0, ACCESS
     bra         flow_eeprom_write_blocking_4400
     bcf         INTCON, 7, ACCESS
     bra         flow_eeprom_write_blocking_4402
@@ -7598,20 +7600,20 @@ main_flash_service_4406:
 ; Notes   : Inferred usb helper; touches usb. Calls: main_flash_service_35f0.
 ; ---------------------------------------------------------------------------
 main_usb_service_4412:
-    movf        ram_0x0CD, W, BANKED
+    movf        stock_0CD_b0, W, BANKED
     xorlw       0x04
     bnz         flow_main_usb_service_4412_4426
-    movff       ram_0x0D1, UADDR
+    movff       stock_0D1_b0_phys, UADDR
     movf        UADDR, W, ACCESS
     movlw       0x05
     btfsc       STATUS, 2, ACCESS
     movlw       0x03
-    movwf       ram_0x0CD, BANKED
+    movwf       stock_0CD_b0, BANKED
 flow_main_usb_service_4412_4426:
-    decf        ram_0x0C9, W, BANKED
+    decf        stock_0C9_b0, W, BANKED
     bnz         flow_main_usb_service_4412_4446
     call        main_flash_service_35f0, 0x0
-    movf        ram_0x0CC, W, BANKED
+    movf        stock_0CC_b0, W, BANKED
     xorlw       0x02
     bnz         flow_main_usb_service_4412_443a
     movlw       0x04
@@ -7620,11 +7622,11 @@ flow_main_usb_service_4412_4426:
 flow_main_usb_service_4412_443a:
     movlb       0x4
     movlw       0x48
-    btfsc       ram_0x008, 6, BANKED
+    btfsc       stock_408_b4, 6, BANKED
     movlw       0x08
 flow_main_usb_service_4412_4442:
-    movwf       ram_0x008, BANKED
-    bsf         ram_0x008, 7, BANKED
+    movwf       stock_408_b4, BANKED
+    bsf         stock_408_b4, 7, BANKED
 flow_main_usb_service_4412_4446:
     return      0
 
@@ -7635,30 +7637,30 @@ flow_main_usb_service_4412_4446:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_4448:
-    movff       WREG, ram_0x003
+    movff       WREG, stock_003_b0_phys
     bra         flow_main_core_service_4448_446c
 flow_main_core_service_4448_444e:
     movlw       0x01
-    movwf       ram_0x0A0, BANKED
-    clrf        ram_0x0B9, BANKED
+    movwf       stock_0A0_b0, BANKED
+    clrf        stock_0B9_b0, BANKED
     bra         flow_main_core_service_4448_447c
 flow_main_core_service_4448_4456:
-    clrf        ram_0x0A0, BANKED
+    clrf        stock_0A0_b0, BANKED
     movlw       0x01
     bra         flow_main_core_service_4448_4468
 flow_main_core_service_4448_445c:
     movlw       0x02
-    movwf       ram_0x0A0, BANKED
+    movwf       stock_0A0_b0, BANKED
     bra         flow_main_core_service_4448_4468
 flow_main_core_service_4448_4462:
     movlw       0x01
-    movwf       ram_0x0A0, BANKED
+    movwf       stock_0A0_b0, BANKED
     movlw       0x03
 flow_main_core_service_4448_4468:
-    movwf       ram_0x0B9, BANKED
+    movwf       stock_0B9_b0, BANKED
     bra         flow_main_core_service_4448_447c
 flow_main_core_service_4448_446c:
-    movf        ram_0x003, W, ACCESS
+    movf        stock_003_acc, W, ACCESS
     bz          flow_main_core_service_4448_444e
     xorlw       0x01
     bz          flow_main_core_service_4448_4456
@@ -7695,8 +7697,8 @@ flow_main_core_service_4448_447c:
 ; not depend on order.
 ; ---------------------------------------------------------------------------
 timer3_blocking_delay_ms_W:
-    movwf       ram_0x003, ACCESS
-    clrf        ram_0x004, ACCESS
+    movwf       stock_003_acc, ACCESS
+    clrf        stock_004_acc, ACCESS
     ; fall through into timer3_blocking_delay
 timer3_blocking_delay:
     bcf         PIE2, 1, ACCESS
@@ -7721,12 +7723,12 @@ flow_timer3_blocking_delay_449a:
 flow_timer3_blocking_delay_449e:
     btfss       PIR2, 1, ACCESS
     bra         flow_timer3_blocking_delay_449e
-    decf        ram_0x003, F, ACCESS
+    decf        stock_003_acc, F, ACCESS
     btfss       STATUS, 0, ACCESS
-    decf        ram_0x004, F, ACCESS
+    decf        stock_004_acc, F, ACCESS
 flow_timer3_blocking_delay_44a8:
-    movf        ram_0x004, W, ACCESS
-    iorwf       ram_0x003, W, ACCESS
+    movf        stock_004_acc, W, ACCESS
+    iorwf       stock_003_acc, W, ACCESS
     bnz         flow_timer3_blocking_delay_4488
     bcf         T3CON, 0, ACCESS
     return      0
@@ -7738,7 +7740,7 @@ flow_timer3_blocking_delay_44a8:
 ; Notes   : Inferred uart helper routine. Calls: uart_tx_byte_blocking, uart_tx_block_from_buffer.
 ; ---------------------------------------------------------------------------
 main_uart_service_44b2:
-    movff       WREG, ram_0x01B
+    movff       WREG, stock_01B_b0_phys
     movlw       0x0D
     rcall       uart_tx_byte_blocking
     movlw       0x0A
@@ -7747,8 +7749,8 @@ main_uart_service_44b2:
     rcall       uart_tx_byte_blocking
     movlw       0x3A
     rcall       uart_tx_byte_blocking
-    clrf        ram_0x019, ACCESS
-    movff       ram_0x01B, ram_0x018
+    clrf        stock_019_acc, ACCESS
+    movff       stock_01B_b0_phys, stock_018_b0_phys
     rcall       uart_tx_block_from_buffer
     movlw       0x0D
     rcall       uart_tx_byte_blocking
@@ -7780,10 +7782,10 @@ main_uart_service_44b2:
 ;           − 8 B helper = 24 + 10 − 8 = 26 B.
 ; ---------------------------------------------------------------------------
 clrf_i2c_coeff_0123_and_write:
-    clrf        i2c_coeff_0, ACCESS
-    clrf        i2c_coeff_1, ACCESS
-    clrf        i2c_coeff_2, ACCESS
-    clrf        i2c_coeff_3, ACCESS
+    clrf        i2c_coeff_0_acc, ACCESS
+    clrf        i2c_coeff_1_acc, ACCESS
+    clrf        i2c_coeff_2_acc, ACCESS
+    clrf        i2c_coeff_3_acc, ACCESS
     ; fall through into i2c_tas3108_coeff_write
 
 ; ---------------------------------------------------------------------------
@@ -7820,10 +7822,10 @@ i2c_tas3108_coeff_write:
     rcall       i2c_byte_tx
     movlw       0x30
     rcall       i2c_byte_tx
-    movff       i2c_coeff_0, ram_0x049
-    movff       i2c_coeff_1, ram_0x04A
-    movff       i2c_coeff_2, ram_0x04B
-    movff       i2c_coeff_3, ram_0x04C
+    movff       i2c_coeff_0_b0_phys, stock_049_b0_phys
+    movff       i2c_coeff_1_b0_phys, stock_04A_b0_phys
+    movff       i2c_coeff_2_b0_phys, stock_04B_b0_phys
+    movff       i2c_coeff_3_b0_phys, stock_04C_b0_phys
     call        main_i2c_service_39a6, 0x0
     bsf         SSPCON2, 2, ACCESS          ; stock STOP wait
     rcall       wait_pen_bounded
@@ -7844,7 +7846,7 @@ coeff_write_pen_timeout:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_4516:
-    tstfsz      ram_0x05F, ACCESS
+    tstfsz      stock_05F_acc, ACCESS
     bra         flow_main_core_service_4516_4534
 flow_main_core_service_4516_451a:
     bcf         LATA, 3, ACCESS
@@ -7866,7 +7868,7 @@ flow_main_core_service_4516_4530:
     bsf         LATA, 5, ACCESS
     bra         flow_main_core_service_4516_4544
 flow_main_core_service_4516_4534:
-    movf        ram_0x093, W, BANKED
+    movf        stock_093_b0, W, BANKED
     bz          flow_main_core_service_4516_451a
     xorlw       0x05
     bz          flow_main_core_service_4516_451e
@@ -7963,14 +7965,14 @@ uart_soft_recover_full:
 ; ---------------------------------------------------------------------------
 uart_parser_resync:
     movlb       0x0
-    clrf        rx_ring_rd, BANKED
-    clrf        rx_ring_wr, BANKED
-    clrf        rx_frame_position, BANKED
-    clrf        ram_0x0A2, BANKED
-    clrf        current_cmd_data, BANKED
-    clrf        ram_0x0BC, BANKED
-    bcf         active_flags, 0, ACCESS
-    bcf         active_flags, 6, ACCESS
+    clrf        rx_ring_rd_b0, BANKED
+    clrf        rx_ring_wr_b0, BANKED
+    clrf        rx_frame_position_b0, BANKED
+    clrf        stock_0A2_b0, BANKED
+    clrf        current_cmd_data_b0, BANKED
+    clrf        stock_0BC_b0, BANKED
+    bcf         active_flags_acc, 0, ACCESS
+    bcf         active_flags_acc, 6, ACCESS
     return      0
 
 
@@ -7998,24 +8000,24 @@ uart_parser_resync:
 ; ---------------------------------------------------------------------------
 main_service_rx_frame_gap:
     movlb       0x0
-    movf        rx_frame_position, F, BANKED
+    movf        rx_frame_position_b0, F, BANKED
     btfsc       STATUS, 2, ACCESS               ; Z = parser idle
     bra         main_rx_frame_gap_idle
-    movf        rx_ring_wr, W, BANKED
-    cpfseq      rx_ring_rd, BANKED               ; ring has data? parser about to progress
+    movf        rx_ring_wr_b0, W, BANKED
+    cpfseq      rx_ring_rd_b0, BANKED               ; ring has data? parser about to progress
     bra         main_rx_frame_gap_idle
     movlb       0x2
-    infsnz      main_rx_frame_gap_timeout, F, BANKED
+    infsnz      main_rx_frame_gap_timeout_b2, F, BANKED
     bra         main_rx_frame_gap_expired
     return      0
 main_rx_frame_gap_expired:
     movlb       0x0
-    clrf        rx_frame_position, BANKED
-    bcf         active_flags, 0, ACCESS
+    clrf        rx_frame_position_b0, BANKED
+    bcf         active_flags_acc, 0, ACCESS
     ; fall through to idle — clears the timeout after reset
 main_rx_frame_gap_idle:
     movlb       0x2
-    clrf        main_rx_frame_gap_timeout, BANKED
+    clrf        main_rx_frame_gap_timeout_b2, BANKED
     return      0
 
 
@@ -8043,8 +8045,8 @@ uart_config:
     bcf         RCSTA, 7, ACCESS
     bcf         RCON, 7, ACCESS
     movlb       0x0
-    clrf        rx_ring_rd, BANKED
-    clrf        rx_ring_wr, BANKED
+    clrf        rx_ring_rd_b0, BANKED
+    clrf        rx_ring_wr_b0, BANKED
     movlw       0x06
     movwf       TXSTA, ACCESS
     movlw       0x80
@@ -8072,23 +8074,23 @@ uart_config:
 ; ---------------------------------------------------------------------------
 main_core_service_4574:
     movlw       0x56
-    movwf       ram_0x033, ACCESS
-    clrf        ram_0x032, ACCESS
-    clrf        ram_0x034, ACCESS
+    movwf       stock_033_acc, ACCESS
+    clrf        stock_032_acc, ACCESS
+    clrf        stock_034_acc, ACCESS
 flow_main_core_service_4574_457e:
-    movff       ram_0x032, ram_0x013
-    movff       ram_0x033, ram_0x014
+    movff       stock_032_b0_phys, stock_013_b0_phys
+    movff       stock_033_b0_phys, stock_014_b0_phys
     call        main_i2c_service_381c, 0x0
     movlw       0x18
-    addwf       ram_0x032, F, ACCESS
+    addwf       stock_032_acc, F, ACCESS
     movlw       0x00
-    addwfc      ram_0x033, F, ACCESS
-    incf        ram_0x034, F, ACCESS
+    addwfc      stock_033_acc, F, ACCESS
+    incf        stock_034_acc, F, ACCESS
     movlw       0x5F
-    cpfsgt      ram_0x034, ACCESS
+    cpfsgt      stock_034_acc, ACCESS
     bra         flow_main_core_service_4574_457e
-    movwf       ram_0x014, ACCESS
-    clrf        ram_0x013, ACCESS
+    movwf       stock_014_acc, ACCESS
+    clrf        stock_013_acc, ACCESS
     goto        main_i2c_service_381c
 
 
@@ -8099,7 +8101,7 @@ flow_main_core_service_4574_457e:
 ; ---------------------------------------------------------------------------
 main_usb_service_45a2:
     call        main_core_service_2328, 0x0
-    movf        ram_0x0CD, W, BANKED
+    movf        stock_0CD_b0, W, BANKED
     xorlw       0x06
     btfsc       STATUS, 2, ACCESS
     btfsc       UCON, 1, ACCESS
@@ -8107,13 +8109,13 @@ main_usb_service_45a2:
     btfss       PORTC, 0, ACCESS
     bra         flow_main_usb_service_45a2_45cc
     movlb       0x4
-    btfsc       ram_0x010, 7, BANKED
+    btfsc       stock_410_b4, 7, BANKED
     bra         flow_main_usb_service_45a2_45cc
     call        prep_bank1_ram004, 0x0
     movlw       0x5A
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x40
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     rcall       main_core_service_3fd0
 flow_main_usb_service_45a2_45cc:
     return      0
@@ -8125,15 +8127,15 @@ flow_main_usb_service_45a2_45cc:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_30d8.
 ; ---------------------------------------------------------------------------
 main_core_service_45ce:
-    movff       WREG, ram_0x011
-    movf        ram_0x011, W, ACCESS
-    movwf       ram_0x003, ACCESS
-    clrf        ram_0x004, ACCESS
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
+    movff       WREG, stock_011_b0_phys
+    movf        stock_011_acc, W, ACCESS
+    movwf       stock_003_acc, ACCESS
+    clrf        stock_004_acc, ACCESS
+    clrf        stock_005_acc, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x96
-    movwf       ram_0x007, ACCESS
-    clrf        ram_0x008, ACCESS
+    movwf       stock_007_acc, ACCESS
+    clrf        stock_008_acc, ACCESS
     ; W04-E01: factor call+4 movff tail into main_core_service_30d8_with_save
     goto        main_core_service_30d8_with_save
 
@@ -8158,22 +8160,22 @@ main_core_service_45ce:
 ; this routine is about to read. V3.2 hardening plan workstream 2.
 ; ---------------------------------------------------------------------------
 rx_ring_read:
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     rcall       rx_ring_has_data
 
     bz          flow_rx_ring_read_4620
     movlb       0x0
-    movf        rx_ring_rd, W, BANKED
+    movf        rx_ring_rd_b0, W, BANKED
     rcall       fsr2_page2_from_W                    ; W05-E02: FSR2=0x0200|W (movf INDF2 overwrites W)
     movf        INDF2, W, ACCESS
-    movwf       ram_0x004, ACCESS
-    incf        rx_ring_rd, F, BANKED
+    movwf       stock_004_acc, ACCESS
+    incf        rx_ring_rd_b0, F, BANKED
     movlw       0xBF
-    cpfsgt      rx_ring_rd, BANKED
+    cpfsgt      rx_ring_rd_b0, BANKED
     bra         flow_rx_ring_read_4620
-    clrf        rx_ring_rd, BANKED
+    clrf        rx_ring_rd_b0, BANKED
 flow_rx_ring_read_4620:
-    movf        ram_0x004, W, ACCESS
+    movf        stock_004_acc, W, ACCESS
     return      0
 
 
@@ -8183,25 +8185,25 @@ flow_rx_ring_read_4620:
 ; Notes   : Inferred usb helper; touches usb.
 ; ---------------------------------------------------------------------------
 main_usb_service_4624:
-    clrf        ram_0x0CA, BANKED
+    clrf        stock_0CA_b0, BANKED
     movlw       0x1E
     movwf       UEP1, ACCESS
     movlw       0x40
     movlb       0x4
-    movwf       ram_0x00D, BANKED
+    movwf       stock_40D_b4, BANKED
     movlw       0x04
-    movwf       ram_0x00F, BANKED
+    movwf       stock_40F_b4, BANKED
     movlw       0x2C
-    movwf       ram_0x00E, BANKED
+    movwf       stock_40E_b4, BANKED
     movlw       0x08
-    movwf       ram_0x00C, BANKED
-    bsf         ram_0x00C, 7, BANKED
+    movwf       stock_40C_b4, BANKED
+    bsf         stock_40C_b4, 7, BANKED
     movlw       0x04
-    movwf       ram_0x013, BANKED
+    movwf       stock_413_b4, BANKED
     movlw       0x6C
-    movwf       ram_0x012, BANKED
+    movwf       stock_412_b4, BANKED
     movlw       0x40
-    movwf       ram_0x010, BANKED
+    movwf       stock_410_b4, BANKED
     retlw       0x40
 
 
@@ -8256,12 +8258,12 @@ flow_main_core_service_4672_467c:
 ; Notes   : Transmits a buffered UART block one byte at a time.
 ; ---------------------------------------------------------------------------
 uart_tx_block_from_buffer:
-    clrf        ram_0x01A, ACCESS
+    clrf        stock_01A_acc, ACCESS
     bra         flow_uart_tx_block_from_buffe_46a2
 flow_uart_tx_block_from_buffe_469a:
     rcall       main_core_service_46aa
     rcall       uart_tx_byte_blocking
-    incf        ram_0x01A, F, ACCESS
+    incf        stock_01A_acc, F, ACCESS
 flow_uart_tx_block_from_buffe_46a2:
     rcall       main_core_service_46aa
     btfsc       STATUS, 2, ACCESS
@@ -8275,11 +8277,11 @@ flow_uart_tx_block_from_buffe_46a2:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_46aa:
-    movf        ram_0x01A, W, ACCESS
-    addwf       ram_0x018, W, ACCESS
+    movf        stock_01A_acc, W, ACCESS
+    addwf       stock_018_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     movlw       0x00
-    addwfc      ram_0x019, W, ACCESS
+    addwfc      stock_019_acc, W, ACCESS
     movwf       FSR2H, ACCESS
     movf        INDF2, W, ACCESS
     return      0
@@ -8303,15 +8305,15 @@ main_core_service_46aa:
 ; down" signature; bounding it was part of V3.1.
 ; ---------------------------------------------------------------------------
 i2c_secondary_dev_write:
-    movff       WREG, ram_0x007
+    movff       WREG, stock_007_b0_phys
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
     rcall       wait_sen_bounded
     bc          i2c_secondary_timeout
     movlw       0xE2
     call        i2c_byte_tx, 0x0
-    movf        ram_0x007, W, ACCESS
+    movf        stock_007_acc, W, ACCESS
     call        i2c_byte_tx, 0x0
-    movf        ram_0x006, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
     call        i2c_byte_tx, 0x0
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     rcall       wait_pen_bounded
@@ -8332,14 +8334,14 @@ i2c_secondary_pen_timeout:
 ; Notes   : Inferred flash helper routine. Calls: eeprom_read_byte, eeprom_write_blocking.
 ; ---------------------------------------------------------------------------
 main_flash_service_46de:
-    movff       ram_0x007, ram_0x003
-    movff       ram_0x008, ram_0x004
+    movff       stock_007_b0_phys, stock_003_b0_phys
+    movff       stock_008_b0_phys, stock_004_b0_phys
     rcall       eeprom_read_byte
-    xorwf       ram_0x009, W, ACCESS
+    xorwf       stock_009_acc, W, ACCESS
     bz          flow_main_flash_service_46de_46fe
-    movff       ram_0x007, ram_0x003
-    movff       ram_0x008, ram_0x004
-    movff       ram_0x009, ram_0x005
+    movff       stock_007_b0_phys, stock_003_b0_phys
+    movff       stock_008_b0_phys, stock_004_b0_phys
+    movff       stock_009_b0_phys, saved_w_b0_phys
     rcall       eeprom_write_blocking
 flow_main_flash_service_46de_46fe:
     return      0
@@ -8351,7 +8353,7 @@ flow_main_flash_service_46de_46fe:
 ; Notes   : Inferred usb helper; touches usb. Calls: main_usb_service_4828, main_usb_service_40d6.
 ; ---------------------------------------------------------------------------
 main_usb_service_4700:
-    decf        usb_reinit_pending, W, BANKED
+    decf        usb_reinit_pending_b0, W, BANKED
     btfsc       STATUS, 2, ACCESS
     rcall       main_usb_service_4828
     clrf        UCON, ACCESS
@@ -8362,8 +8364,8 @@ main_usb_service_4700:
     rcall       main_usb_service_40d6
     movlw       0x01
     movlb       0x0
-    movwf       ram_0x0CD, BANKED
-    clrf        usb_reinit_pending, BANKED
+    movwf       stock_0CD_b0, BANKED
+    clrf        usb_reinit_pending_b0, BANKED
     return      0
 
 
@@ -8373,7 +8375,7 @@ main_usb_service_4700:
 ; Notes   : Inferred usb helper; touches timer,usb.
 ; ---------------------------------------------------------------------------
 main_usb_service_4720:
-    movff       UIE, ram_0x092
+    movff       UIE, stock_092_b0_phys
     movlw       0x04
     movwf       UIE, ACCESS
     bcf         UIR, 4, ACCESS
@@ -8382,7 +8384,7 @@ main_usb_service_4720:
     bsf         PIE2, 5, ACCESS
     bcf         PIE2, 5, ACCESS
     movlb       0x0
-    movf        ram_0x092, W, BANKED
+    movf        stock_092_b0, W, BANKED
     iorwf       UIE, F, ACCESS
     return      0
 
@@ -8433,20 +8435,20 @@ fsr2_page2_from_W:
 ; Notes   : Clears a RAM span from an FSR2 pointer and byte count.
 ; ---------------------------------------------------------------------------
 ram_block_clear:
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     bra         flow_ram_block_clear_4752
 flow_ram_block_clear_4742:
-    movf        ram_0x006, W, ACCESS
-    addwf       ram_0x003, W, ACCESS
+    movf        stock_006_acc, W, ACCESS
+    addwf       stock_003_acc, W, ACCESS
     movwf       FSR2L, ACCESS
     movlw       0x00
-    addwfc      ram_0x004, W, ACCESS
+    addwfc      stock_004_acc, W, ACCESS
     movwf       FSR2H, ACCESS
     clrf        INDF2, ACCESS
-    incf        ram_0x006, F, ACCESS
+    incf        stock_006_acc, F, ACCESS
 flow_ram_block_clear_4752:
-    movf        ram_0x005, W, ACCESS
-    subwf       ram_0x006, W, ACCESS
+    movf        stock_005_acc, W, ACCESS
+    subwf       stock_006_acc, W, ACCESS
     btfsc       STATUS, 0, ACCESS
     return      0
     bra         flow_ram_block_clear_4742
@@ -8459,7 +8461,7 @@ flow_ram_block_clear_4752:
 ; ---------------------------------------------------------------------------
 main_usb_service_475c:
     movlb       0x0
-    decf        usb_reinit_pending, W, BANKED
+    decf        usb_reinit_pending_b0, W, BANKED
     bz          flow_main_usb_service_475c_4778
     btfss       PORTC, 0, ACCESS
     bra         flow_main_usb_service_475c_476e
@@ -8470,7 +8472,7 @@ flow_main_usb_service_475c_476e:
     btfss       UCON, 3, ACCESS
     bra         flow_main_usb_service_475c_4778
     rcall       usb_shutdown
-    clrf        usb_reinit_pending, BANKED
+    clrf        usb_reinit_pending_b0, BANKED
 flow_main_usb_service_475c_4778:
     return      0
 
@@ -8487,8 +8489,8 @@ main_timer_service_477a:
     movwf       TMR3H, ACCESS
     movlw       0x30
     movwf       TMR3L, ACCESS
-    movff       ram_0x003, ram_0x08C
-    movff       ram_0x004, ram_0x08D
+    movff       stock_003_b0_phys, preset_hold_timer_lo_b0_phys
+    movff       stock_004_b0_phys, preset_hold_timer_hi_b0_phys
     bcf         PIR2, 1, ACCESS
     bsf         T3CON, 0, ACCESS
     bsf         PIE2, 1, ACCESS
@@ -8518,9 +8520,9 @@ main_timer_service_477a:
 ; ---------------------------------------------------------------------------
 standby_event_dispatch:
     movlb       0x0
-    btfss       event_flags, 2, BANKED              ; pending stdby/wake event?
+    btfss       event_flags_b0, 2, BANKED              ; pending stdby/wake event?
     bra         flow_standby_event_dispatch_47ac    ; no -> tail-call gate dispatch
-    btfss       active_flags, 3, ACCESS             ; gate currently open?
+    btfss       active_flags_acc, 3, ACCESS             ; gate currently open?
     bra         flow_standby_event_dispatch_47a6    ;   no -> shutdown path
     diag_inc_sat diag_b                              ; V3.2 Layer 5: count bring-up dispatch
     call        adc_boot_gate, 0x0                  ; gate open -> rail-rise wait
@@ -8529,7 +8531,7 @@ flow_standby_event_dispatch_47a6:
     diag_inc_sat diag_s                              ; V3.2 Layer 5: count standby dispatch
     call        hw_standby_shutdown, 0x0            ; I2C DSP shutdown / OSC switch
 flow_standby_event_dispatch_47aa:
-    bcf         event_flags, 2, BANKED              ; consume the event
+    bcf         event_flags_b0, 2, BANKED              ; consume the event
 flow_standby_event_dispatch_47ac:
     movlw       0x01                                ; W=1 forces post-event reconciliation
     goto        cmd_dispatch_gated
@@ -8551,7 +8553,7 @@ flow_standby_event_dispatch_47ac:
 ; (i2c_bus_clear drops SSPEN itself before bit-banging).
 ; ---------------------------------------------------------------------------
 mssp_hard_reset:
-    movff       WREG, ram_0x004
+    movff       WREG, stock_004_b0_phys
     movlw       0xC0
     andwf       SSPSTAT, F, ACCESS
     clrf        SSPCON1, ACCESS
@@ -8559,9 +8561,9 @@ mssp_hard_reset:
     bcf         SSPCON1, 7, ACCESS
     bcf         SSPCON1, 6, ACCESS
     bcf         PIR2, 3, ACCESS
-    movf        ram_0x004, W, ACCESS
+    movf        stock_004_acc, W, ACCESS
     iorwf       SSPCON1, F, ACCESS
-    movf        ram_0x003, W, ACCESS
+    movf        stock_003_acc, W, ACCESS
     iorwf       SSPSTAT, F, ACCESS
     bsf         TRISB, 1, ACCESS
     bsf         TRISB, 0, ACCESS
@@ -8589,7 +8591,7 @@ mssp_hard_reset:
 ; ---------------------------------------------------------------------------
 periodic_service_loop:
     movlb       0x02
-    clrf        chain_tx_emitted, BANKED
+    clrf        chain_tx_emitted_b2, BANKED
     movlb       0x00
     call        main_usb_service_3a26, 0x0
     call        main_uart_service_1be6, 0x0
@@ -8613,20 +8615,20 @@ periodic_service_loop:
 ; per docs/V163B_DIAGNOSTICS_MENU_SPEC.md "RA1-trigger path" section.
 ; ---------------------------------------------------------------------------
 ra1_edge_monitor:
-    movff       BSR, ram_0x00E                  ; save caller BSR
+    movff       BSR, stock_00E_b0_phys                  ; save caller BSR
     movlb       0x02                            ; V3.2 Layer 5 diag block in BANK 2
     movf        PORTA, W, ACCESS                ; W = PORTA snapshot
     andlw       0x02                            ; isolate RA1
-    xorwf       diag_ra1_prev, W, BANKED        ; W = current ^ prev (bit 1 only)
+    xorwf       diag_ra1_prev_b2, W, BANKED        ; W = current ^ prev (bit 1 only)
     btfsc       STATUS, 2, ACCESS               ; if Z (no edge), skip increment
     bra         ra1_no_edge
     ; Edge detected — refresh shadow and bump counter.
     movf        PORTA, W, ACCESS
     andlw       0x02
-    movwf       diag_ra1_prev, BANKED
+    movwf       diag_ra1_prev_b2, BANKED
     diag_inc_sat diag_p                          ; macro re-asserts movlb 0x02
 ra1_no_edge:
-    movff       ram_0x00E, BSR                  ; restore caller BSR
+    movff       stock_00E_b0_phys, BSR                  ; restore caller BSR
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -8647,14 +8649,14 @@ inline_data_table_47E6:  ; UART status strings for FW update
 ; ---------------------------------------------------------------------------
 report_cmd29_status:
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x29
     rcall       uart_tx_byte_blocking
     movlw       0x01
-    btfss       active_flags, 1, ACCESS
+    btfss       active_flags_acc, 1, ACCESS
     movlw       0x00
     bra         uart_tx_byte_blocking
 
@@ -8673,12 +8675,12 @@ main_usb_service_4812:
     bra         flow_main_usb_service_4812_481e
 flow_main_usb_service_4812_4814:
     clrwdt
-    decf        ram_0x003, F, ACCESS
+    decf        stock_003_acc, F, ACCESS
     btfss       STATUS, 0, ACCESS
-    decf        ram_0x004, F, ACCESS
+    decf        stock_004_acc, F, ACCESS
 flow_main_usb_service_4812_481e:
-    movf        ram_0x004, W, ACCESS
-    iorwf       ram_0x003, W, ACCESS
+    movf        stock_004_acc, W, ACCESS
+    iorwf       stock_003_acc, W, ACCESS
     btfsc       STATUS, 2, ACCESS
     return      0
     bra         flow_main_usb_service_4812_4814
@@ -8693,11 +8695,11 @@ main_usb_service_4828:
     bcf         UCON, 1, ACCESS
     clrf        UCON, ACCESS
     movlw       0xFF
-    setf        ram_0x004, ACCESS
-    setf        ram_0x003, ACCESS
+    setf        stock_004_acc, ACCESS
+    setf        stock_003_acc, ACCESS
     rcall       main_usb_service_4812
     movlb       0x0
-    clrf        ram_0x0CD, BANKED
+    clrf        stock_0CD_b0, BANKED
     return      0
 
 
@@ -8764,8 +8766,8 @@ flow_main_uart_service_4860_4866:
 ; ---------------------------------------------------------------------------
 rx_ring_has_data:
     movlb       0x0
-    movf        rx_ring_wr, W, BANKED
-    xorwf       rx_ring_rd, W, BANKED
+    movf        rx_ring_wr_b0, W, BANKED
+    xorwf       rx_ring_rd_b0, W, BANKED
     return      0
 
 
@@ -8780,7 +8782,7 @@ rx_ring_has_data:
 ; (preset_load_filename) and settings_load.
 ; ---------------------------------------------------------------------------
 eeprom_read_byte:
-    movff       ram_0x003, EEADR
+    movff       stock_003_b0_phys, EEADR
     bcf         EECON1, 6, ACCESS
     bcf         EECON1, 7, ACCESS
     bsf         EECON1, 0, ACCESS
@@ -8808,18 +8810,18 @@ eeprom_read_byte:
 ;     reset; volume_dsp_write now stays in its bounded DSP-fault path.
 ; ---------------------------------------------------------------------------
 uart_tx_byte_blocking:
-    movff       WREG, ram_0x003
+    movff       WREG, stock_003_b0_phys
     rcall       wait_trmt_bounded
     bc          uart_tx_timeout
-    movff       ram_0x003, TXREG
-    movf        ram_0x003, W, ACCESS
+    movff       stock_003_b0_phys, TXREG
+    movf        stock_003_acc, W, ACCESS
     return      0
 uart_tx_timeout:
     rcall       uart_config
     rcall       wait_trmt_bounded
     bc          v31_hard_reset_jump2
-    movff       ram_0x003, TXREG
-    movf        ram_0x003, W, ACCESS
+    movff       stock_003_b0_phys, TXREG
+    movf        stock_003_acc, W, ACCESS
     return      0
 v31_hard_reset_jump2:
     bra         hard_reset
@@ -8866,18 +8868,18 @@ main_timer_service_48a6:
 ; ---------------------------------------------------------------------------
 i2c_wait_bus_idle:
     movlb       0x2
-    btfss       i2c_recover_flags, 0, BANKED
+    btfss       i2c_recover_flags_b2, 0, BANKED
     bra         i2c_wait_bus_idle_seed
     btfsc       SSPCON2, 2, ACCESS
     bra         i2c_wait_bus_idle_seed
-    bcf         i2c_recover_flags, 0, BANKED
+    bcf         i2c_recover_flags_b2, 0, BANKED
     rcall       i2c_bus_clear
 i2c_wait_bus_idle_seed:
     rcall       wait_seed
 i2c_wait_bus_idle_loop:
-    movff       SSPCON2, ram_0x003
+    movff       SSPCON2, stock_003_b0_phys
     movlw       0x1F
-    andwf       ram_0x003, F, ACCESS                ; mask SEN/RSEN/PEN/RCEN/ACKEN
+    andwf       stock_003_acc, F, ACCESS                ; mask SEN/RSEN/PEN/RCEN/ACKEN
     btfsc       STATUS, 2, ACCESS                   ; if any of those set, keep spinning
     btfsc       SSPSTAT, 2, ACCESS                  ; AND while R_nW (master in receive)
     bra         i2c_wait_bus_idle_busy
@@ -8963,9 +8965,9 @@ usb_shutdown:
     bcf         UCON, 1, ACCESS
     clrf        UCON, ACCESS
     movlb       0x0
-    clrf        ram_0x0CD, BANKED
+    clrf        stock_0CD_b0, BANKED
     movlw       0x01
-    movwf       usb_reinit_pending, BANKED
+    movwf       usb_reinit_pending_b0, BANKED
     retlw       0x01
 
 
@@ -8989,13 +8991,13 @@ usb_shutdown:
 ; ---------------------------------------------------------------------------
 flash_entry_quiet_shutdown:
     rcall       preset_force_mute               ; (1) DSP coefficients = 0
-    clrf        ram_0x006, ACCESS               ; (2) drop audio rails via 0x71
+    clrf        stock_006_acc, ACCESS               ; (2) drop audio rails via 0x71
     movlw       0x1B
     rcall       i2c_secondary_dev_write
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x1C
     rcall       i2c_secondary_dev_write
-    clrf        ram_0x006, ACCESS
+    clrf        stock_006_acc, ACCESS
     movlw       0x1D
     rcall       i2c_secondary_dev_write
     bcf         LATB, 4, ACCESS                 ; (3) amp enable - graceful
@@ -9015,8 +9017,8 @@ flash_entry_quiet_shutdown:
 ; Notes   : Inferred core helper routine. Calls: main_usb_service_4624.
 ; ---------------------------------------------------------------------------
 main_core_service_48fe:
-    movff       WREG, ram_0x003
-    decf        ram_0x003, W, ACCESS
+    movff       WREG, stock_003_b0_phys
+    decf        stock_003_acc, W, ACCESS
     btfsc       STATUS, 2, ACCESS
     rcall       main_usb_service_4624
     return      0
@@ -9039,7 +9041,7 @@ flow_main_usb_service_490c_4916:
 flow_main_usb_service_490c_4918:
     btfsc       UCON, 3, ACCESS
     rcall       main_usb_service_4828
-    clrf        usb_reinit_pending, BANKED
+    clrf        usb_reinit_pending_b0, BANKED
     bra         main_usb_service_475c
 
 
@@ -9050,8 +9052,8 @@ flow_main_usb_service_490c_4918:
 ; ---------------------------------------------------------------------------
 main_core_service_4924:
     movlw       0x03
-    movwf       ram_0x004, ACCESS
-    clrf        ram_0x003, ACCESS
+    movwf       stock_004_acc, ACCESS
+    clrf        stock_003_acc, ACCESS
     bra         flow_main_usb_service_4812_481e
 
 
@@ -9061,9 +9063,9 @@ main_core_service_4924:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_492e:
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlw       0x01
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     bra         timer3_blocking_delay
 
 
@@ -9098,9 +9100,9 @@ main_uart_service_4938:
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
 main_core_service_4942:
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlw       0x02
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     bra         timer3_blocking_delay
 
 
@@ -9117,10 +9119,10 @@ main_timer_service_494c:
 
 
 copy_computed_volume_to_logical_volume:
-    movff       computed_volume, logical_volume
-    movff       computed_volume_1, logical_volume_1
-    movff       computed_volume_2, logical_volume_2
-    movff       computed_volume_3, logical_volume_3
+    movff       computed_volume_b0_phys, logical_volume_b0_phys
+    movff       computed_volume_1_b0_phys, logical_volume_1_b0_phys
+    movff       computed_volume_2_b0_phys, logical_volume_2_b0_phys
+    movff       computed_volume_3_b0_phys, logical_volume_3_b0_phys
     return      0
 
 
@@ -9132,16 +9134,16 @@ copy_computed_volume_to_logical_volume:
 ; Bounded Wait Helpers (shared 16-bit timeout infrastructure)
 ; ---------------------------------------------------------------------------
 wait_seed:
-    clrf        timeout_lo, ACCESS
+    clrf        timeout_lo_acc, ACCESS
     movlw       0x10
-    movwf       timeout_hi, ACCESS
+    movwf       timeout_hi_acc, ACCESS
     bcf         STATUS, 0, ACCESS           ; clear C
     return      0
 
 wait_tick:
-    decfsz      timeout_lo, F, ACCESS
+    decfsz      timeout_lo_acc, F, ACCESS
     return      0
-    decfsz      timeout_hi, F, ACCESS
+    decfsz      timeout_hi_acc, F, ACCESS
     return      0
     bsf         STATUS, 0, ACCESS           ; C=1: timeout
     return      0
@@ -9232,7 +9234,7 @@ i2c_bus_clear:
     bsf         TRISB, 1, ACCESS            ; RB1 (SCL) input (pulled high)
     bsf         TRISB, 0, ACCESS            ; RB0 (SDA) input (pulled high)
     movlw       0x09
-    movwf       timeout_lo, ACCESS
+    movwf       timeout_lo_acc, ACCESS
 i2c_bus_clear_clk:
     bcf         TRISB, 1, ACCESS            ; SCL low
     bcf         LATB, 1, ACCESS
@@ -9243,7 +9245,7 @@ i2c_bus_clear_clk:
     nop
     btfsc       PORTB, 0, ACCESS            ; SDA released?
     bra         i2c_bus_clear_stop
-    decfsz      timeout_lo, F, ACCESS
+    decfsz      timeout_lo_acc, F, ACCESS
     bra         i2c_bus_clear_clk
 i2c_bus_clear_stop:
     bcf         TRISB, 0, ACCESS            ; SDA output
@@ -9272,6 +9274,7 @@ i2c_bus_clear_stop:
 ; (BSR-neutral) and ``i2c_byte_tx`` save/restores caller's BSR
 ; (asm:6696/6703), so the entry assertion alone is sufficient.
 ; ---------------------------------------------------------------------------
+;@routine dsp_ping entry_bsr=unknown exit_bsr=0
 dsp_ping:
     movlb       0x0                          ; assert bank 0 for dsp_fault_flags
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
@@ -9282,19 +9285,20 @@ dsp_ping:
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     rcall       wait_pen_bounded
     bc          dsp_ping_nack_reset
+    movlb       0x0
     btfss       SSPCON2, 6, ACCESS          ; ACKSTAT?
-    bcf         dsp_fault_flags, 6, BANKED  ; ACK: clear fault
+    bcf         dsp_fault_flags_b0, 6, BANKED  ; ACK: clear fault
     btfsc       SSPCON2, 6, ACCESS
     bra         dsp_ping_nack
     return      0
 dsp_ping_nack_reset:
     movlw       0x80
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x08
     rcall       mssp_hard_reset
     movlb       0x0
 dsp_ping_nack:
-    bsf         dsp_fault_flags, 6, BANKED  ; NACK: set fault
+    bsf         dsp_fault_flags_b0, 6, BANKED  ; NACK: set fault
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -9303,16 +9307,16 @@ dsp_ping_nack:
 send_dsp_fault_status:
     movlb       0x00
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
-    movf        dsp_fault_flags, W, BANKED
+    movf        dsp_fault_flags_b0, W, BANKED
     andlw       0x44                        ; bits 6 + 2
-    movwf       ram_0x00D, ACCESS           ; save in ram_0x00D (uart_tx clobbers ram_0x003)
+    movwf       stock_00D_acc, ACCESS           ; save in ram_0x00D (uart_tx clobbers ram_0x003)
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x08
     rcall       uart_tx_byte_blocking
-    movf        ram_0x00D, W, ACCESS
+    movf        stock_00D_acc, W, ACCESS
     bra         uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
@@ -9326,24 +9330,25 @@ send_dsp_fault_status:
 ;   touches: timeout scratch, BSR, W, UART TX.
 ; ---------------------------------------------------------------------------
 i2c_pen_timeout_recover_advertise:
-    clrf        ram_0x00D, ACCESS
-    bsf         ram_0x00D, 0, ACCESS
+    clrf        stock_00D_acc, ACCESS
+    bsf         stock_00D_acc, 0, ACCESS
     bra         i2c_timeout_recover_common
 
+;@routine i2c_timeout_recover_advertise entry_bsr=unknown exit_bsr=0
 i2c_timeout_recover_advertise:
-    clrf        ram_0x00D, ACCESS
+    clrf        stock_00D_acc, ACCESS
     btfsc       SSPCON2, 2, ACCESS
-    bsf         ram_0x00D, 0, ACCESS         ; remember PEN-pending timeout
+    bsf         stock_00D_acc, 0, ACCESS         ; remember PEN-pending timeout
 i2c_timeout_recover_common:
     diag_inc_sat diag_i                      ; I: I2C/MSSP transport timeout
     diag_inc_sat diag_r                      ; R: recovery branch entered
     movlb       0x2
-    bsf         i2c_recover_flags, 0, BANKED ; next clean I2C entry bus-clears
+    bsf         i2c_recover_flags_b2, 0, BANKED ; next clean I2C entry bus-clears
     movlw       0x80
-    movwf       ram_0x003, ACCESS            ; stock SSPSTAT SMP state
+    movwf       stock_003_acc, ACCESS            ; stock SSPSTAT SMP state
     movlw       0x08                         ; MSSP master mode bits
     rcall       mssp_hard_reset
-    btfsc       ram_0x00D, 0, ACCESS
+    btfsc       stock_00D_acc, 0, ACCESS
     bra         i2c_timeout_skip_bus_probe
     rcall       i2c_bus_clear
     rcall       dsp_ping                     ; updates bit6 if DSP still NACKs
@@ -9352,7 +9357,7 @@ i2c_timeout_skip_bus_probe:
     bcf         SSPCON1, 7, ACCESS           ; clear WCOL after aborted tx
     bcf         SSPCON1, 6, ACCESS           ; clear SSPOV after aborted rx
     movlb       0x0
-    bsf         dsp_fault_flags, 2, BANKED   ; keep timeout visible after ACK ping
+    bsf         dsp_fault_flags_b0, 2, BANKED   ; keep timeout visible after ACK ping
     rcall       send_dsp_fault_status
     bsf         STATUS, 0, ACCESS
     return      0
@@ -9439,10 +9444,10 @@ cmd21_diag_query_handler:
     ; payload byte 14 corruption on every filename / route HID write.
     ; See dlcp_main_ram.inc.
     movlw       0x28                        ; sentinel: stop AFTER BF/27 sent
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
     movlw       0x21                        ; first sub-cmd byte
-    movwf       i2c_coeff_3, ACCESS
-    lfsr        FSR0, diag_i                ; 0x2E5 — first diag counter
+    movwf       i2c_coeff_3_acc, ACCESS
+    lfsr        FSR0, diag_i_b2_phys                ; 0x2E5 — first diag counter
     bra         diag_send_burst_xx
 
 ; ---------------------------------------------------------------------------
@@ -9497,10 +9502,10 @@ cmd22_reset_flags_query_handler:
     ; the same wire shape as cmd 0x21 but with a different FSR0 base
     ; (reset-cause flag cells) and different sub-cmd range (0x28..0x2B).
     movlw       0x2C                        ; sentinel: stop AFTER BF/2B sent
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
     movlw       0x28                        ; first sub-cmd byte
-    movwf       i2c_coeff_3, ACCESS
-    lfsr        FSR0, diag_reset_por        ; 0x2ED — first reset-flag cell
+    movwf       i2c_coeff_3_acc, ACCESS
+    lfsr        FSR0, diag_reset_por_b2_phys        ; 0x2ED — first reset-flag cell
     bra         diag_send_burst_xx
 
 ; ---------------------------------------------------------------------------
@@ -9520,7 +9525,7 @@ cmd22_reset_flags_query_handler:
 ; ---------------------------------------------------------------------------
 cmd23_health_query_handler:
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
@@ -9528,7 +9533,7 @@ cmd23_health_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x00
     rcall       uart_tx_byte_blocking
-    bcf         active_flags, 6, ACCESS     ; suppress cmd-XOR ACK echo
+    bcf         active_flags_acc, 6, ACCESS     ; suppress cmd-XOR ACK echo
     goto        flow_main_uart_service_1be6_1e6c
 
 ; ---------------------------------------------------------------------------
@@ -9542,7 +9547,7 @@ cmd23_health_query_handler:
 ; ---------------------------------------------------------------------------
 cmd25_identity_query_handler:
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
     ; START carries the full 6-bit route-safe query id; the remaining
     ; four payloads are low nibbles and can reuse diag_send_burst_xx.
@@ -9550,22 +9555,22 @@ cmd25_identity_query_handler:
     rcall       uart_tx_byte_blocking
     movlw       0x4F
     rcall       uart_tx_byte_blocking
-    movf        ram_0x0A3, W, BANKED        ; query id
+    movf        current_cmd_data_b0, W, BANKED        ; query id
     andlw       0x3F
     rcall       uart_tx_byte_blocking
 
     movlw       0x03                        ; V3.3 identity major
-    movwf       ram_0x005, ACCESS
+    movwf       stock_005_acc, ACCESS
     movlw       0x03                        ; V3.3 identity minor
-    movwf       ram_0x006, ACCESS
+    movwf       stock_006_acc, ACCESS
     movlw       0x07                        ; V3.3_IDENTITY_REV_HI
-    movwf       ram_0x007, ACCESS
-    movlw       0x05                        ; V3.3_IDENTITY_REV_LO
-    movwf       ram_0x008, ACCESS
+    movwf       stock_007_acc, ACCESS
+    movlw       0x09                        ; V3.3_IDENTITY_REV_LO
+    movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
-    movwf       ram_0x004, ACCESS
+    movwf       stock_004_acc, ACCESS
     movlw       0x50                        ; first identity payload sub-cmd
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
     lfsr        FSR0, 0x0005                ; major/minor/rev_hi/rev_lo staging
     bra         diag_send_burst_xx
 
@@ -9582,23 +9587,23 @@ cmd25_identity_query_handler:
 ; ---------------------------------------------------------------------------
 cmd26_filename_query_handler:
     movlb       0x02
-    movf        filename_rev, W, BANKED
+    movf        filename_rev_b2, W, BANKED
     andlw       0x01
     bnz         cmd26_filename_query_done
-    movf        filename_rev, W, BANKED
-    movwf       fn_job_rev, BANKED
+    movf        filename_rev_b2, W, BANKED
+    movwf       fn_job_rev_b2, BANKED
 
     movlb       0x00
-    movf        current_cmd_data, W, BANKED
+    movf        current_cmd_data_b0, W, BANKED
     andlw       0x7F
     movlb       0x02
-    movwf       fn_job_id, BANKED
+    movwf       fn_job_id_b2, BANKED
     andlw       0x01
-    movwf       fn_job_src_kind, BANKED      ; temporary: requested slot
-    btfsc       active_flags, 2, ACCESS      ; active preset B?
+    movwf       fn_job_src_kind_b2, BANKED      ; temporary: requested slot
+    btfsc       active_flags_acc, 2, ACCESS      ; active preset B?
     xorlw       0x01
     bz          cmd26_filename_source_ram
-    movf        fn_job_src_kind, W, BANKED
+    movf        fn_job_src_kind_b2, W, BANKED
     bz          cmd26_filename_source_eep_a
     movlw       0x02                         ; requested B while A active
     bra         cmd26_filename_source_set
@@ -9606,95 +9611,95 @@ cmd26_filename_source_eep_a:
     movlw       0x01                         ; requested A while B active
     bra         cmd26_filename_source_set
 cmd26_filename_source_ram:
-    clrf        fn_job_src_kind, BANKED       ; requested slot == active RAM
+    clrf        fn_job_src_kind_b2, BANKED       ; requested slot == active RAM
     bra         cmd26_filename_len_init
 cmd26_filename_source_set:
-    movwf       fn_job_src_kind, BANKED
+    movwf       fn_job_src_kind_b2, BANKED
 
 cmd26_filename_len_init:
-    clrf        fn_job_len, BANKED
+    clrf        fn_job_len_b2, BANKED
 cmd26_filename_len_loop:
-    movf        fn_job_len, W, BANKED
+    movf        fn_job_len_b2, W, BANKED
     xorlw       preset_filename_len
     bz          cmd26_filename_arm
-    movf        fn_job_len, W, BANKED
+    movf        fn_job_len_b2, W, BANKED
     rcall       filename_read_source_at_w
     movlb       0x02
-    movwf       fn_job_tmp, BANKED
+    movwf       fn_job_tmp_b2, BANKED
     movlw       0x20
-    cpfslt      fn_job_tmp, BANKED
+    cpfslt      fn_job_tmp_b2, BANKED
     bra         cmd26_filename_len_high
     bra         cmd26_filename_arm
 cmd26_filename_len_high:
     movlw       0x7F
-    cpfslt      fn_job_tmp, BANKED
+    cpfslt      fn_job_tmp_b2, BANKED
     bra         cmd26_filename_arm
-    incf        fn_job_len, F, BANKED
+    incf        fn_job_len_b2, F, BANKED
     bra         cmd26_filename_len_loop
 
 cmd26_filename_arm:
     movlw       0x2F                         ; prefix-first default
-    movwf       fn_job_start_cmd, BANKED
+    movwf       fn_job_start_cmd_b2, BANKED
     movlw       0x11
-    cpfslt      fn_job_len, BANKED           ; len < 17?
+    cpfslt      fn_job_len_b2, BANKED           ; len < 17?
     bra         cmd26_filename_compare_prefix16
     bra         cmd26_filename_arm_rev_check
 
 cmd26_filename_compare_prefix16:
-    movf        fn_job_src_kind, W, BANKED
-    movwf       fname_tx_gap_hi, BANKED      ; save requested source kind
-    clrf        fn_job_idx, BANKED
+    movf        fn_job_src_kind_b2, W, BANKED
+    movwf       fname_tx_gap_hi_b2, BANKED      ; save requested source kind
+    clrf        fn_job_idx_b2, BANKED
 cmd26_filename_compare_loop:
-    movf        fname_tx_gap_hi, W, BANKED
-    movwf       fn_job_src_kind, BANKED
-    movf        fn_job_idx, W, BANKED
+    movf        fname_tx_gap_hi_b2, W, BANKED
+    movwf       fn_job_src_kind_b2, BANKED
+    movf        fn_job_idx_b2, W, BANKED
     rcall       filename_read_source_at_w
     movlb       0x02
-    movwf       fname_tx_gap_lo, BANKED      ; requested char
-    movf        fname_tx_gap_hi, W, BANKED
+    movwf       fname_tx_gap_lo_b2, BANKED      ; requested char
+    movf        fname_tx_gap_hi_b2, W, BANKED
     bz          cmd26_filename_compare_other_eep
-    clrf        fn_job_src_kind, BANKED       ; requested EEPROM -> other active RAM
+    clrf        fn_job_src_kind_b2, BANKED       ; requested EEPROM -> other active RAM
     bra         cmd26_filename_compare_read_other
 cmd26_filename_compare_other_eep:
     movlw       0x01                         ; active B -> other EEPROM A
-    btfss       active_flags, 2, ACCESS
+    btfss       active_flags_acc, 2, ACCESS
     movlw       0x02                         ; active A -> other EEPROM B
-    movwf       fn_job_src_kind, BANKED
+    movwf       fn_job_src_kind_b2, BANKED
 cmd26_filename_compare_read_other:
-    movf        fn_job_idx, W, BANKED
+    movf        fn_job_idx_b2, W, BANKED
     rcall       filename_read_source_at_w
     movlb       0x02
-    cpfseq      fname_tx_gap_lo, BANKED
+    cpfseq      fname_tx_gap_lo_b2, BANKED
     bra         cmd26_filename_compare_done
-    incf        fn_job_idx, F, BANKED
+    incf        fn_job_idx_b2, F, BANKED
     movlw       0x10
-    cpfseq      fn_job_idx, BANKED
+    cpfseq      fn_job_idx_b2, BANKED
     bra         cmd26_filename_compare_loop
     movlw       0x2E                         ; first 16 match: rest on tail
-    movwf       fn_job_start_cmd, BANKED
+    movwf       fn_job_start_cmd_b2, BANKED
 cmd26_filename_compare_done:
-    movf        fname_tx_gap_hi, W, BANKED
-    movwf       fn_job_src_kind, BANKED
+    movf        fname_tx_gap_hi_b2, W, BANKED
+    movwf       fn_job_src_kind_b2, BANKED
 
 cmd26_filename_arm_rev_check:
-    movf        filename_rev, W, BANKED
+    movf        filename_rev_b2, W, BANKED
     andlw       0x01
     bnz         cmd26_filename_query_done
-    movf        filename_rev, W, BANKED
-    cpfseq      fn_job_rev, BANKED
+    movf        filename_rev_b2, W, BANKED
+    cpfseq      fn_job_rev_b2, BANKED
     bra         cmd26_filename_query_done
-    clrf        fn_job_idx, BANKED
-    clrf        fname_tx_gap_lo, BANKED
-    clrf        fname_tx_gap_hi, BANKED
+    clrf        fn_job_idx_b2, BANKED
+    clrf        fname_tx_gap_lo_b2, BANKED
+    clrf        fname_tx_gap_hi_b2, BANKED
     movlw       0x01
-    movwf       fn_job_state, BANKED
+    movwf       fn_job_state_b2, BANKED
 cmd26_filename_query_done:
-    bcf         active_flags, 6, ACCESS      ; suppress cmd-XOR ACK echo
+    bcf         active_flags_acc, 6, ACCESS      ; suppress cmd-XOR ACK echo
     goto        flow_main_uart_service_1be6_1e6c
 
 filename_read_source_at_w:
-    movwf       fn_job_tmp, BANKED
-    movf        fn_job_src_kind, W, BANKED
+    movwf       fn_job_tmp_b2, BANKED
+    movf        fn_job_src_kind_b2, W, BANKED
     bz          filename_read_source_ram
     xorlw       0x01
     bz          filename_read_source_eep_a
@@ -9703,47 +9708,47 @@ filename_read_source_at_w:
 filename_read_source_eep_a:
     movlw       preset_filename_eeprom_a
 filename_read_source_eep:
-    addwf       fn_job_tmp, W, BANKED
-    movwf       ram_0x003, ACCESS
-    clrf        ram_0x004, ACCESS
+    addwf       fn_job_tmp_b2, W, BANKED
+    movwf       stock_003_acc, ACCESS
+    clrf        stock_004_acc, ACCESS
     call        eeprom_read_byte, 0x0
     return      0
 filename_read_source_ram:
     lfsr        FSR2, preset_filename_ram_base
-    movf        fn_job_tmp, W, BANKED
+    movf        fn_job_tmp_b2, W, BANKED
     addwf       FSR2L, F, ACCESS
     movf        INDF2, W, ACCESS
     return      0
 
 filename_reply_job_service:
     movlb       0x02
-    movf        fn_job_state, W, BANKED
+    movf        fn_job_state_b2, W, BANKED
     bz          filename_reply_job_ret
-    btfss       chain_tx_emitted, 0, BANKED
+    btfss       chain_tx_emitted_b2, 0, BANKED
     bra         filename_reply_check_gap
-    clrf        fname_tx_gap_lo, BANKED
+    clrf        fname_tx_gap_lo_b2, BANKED
     movlw       0x01
-    movwf       fname_tx_gap_hi, BANKED
+    movwf       fname_tx_gap_hi_b2, BANKED
     bra         filename_reply_job_ret
 filename_reply_check_gap:
-    movf        fname_tx_gap_lo, F, BANKED
+    movf        fname_tx_gap_lo_b2, F, BANKED
     bnz         filename_reply_dec_gap_lo
-    movf        fname_tx_gap_hi, F, BANKED
+    movf        fname_tx_gap_hi_b2, F, BANKED
     bz          filename_reply_ready
-    decf        fname_tx_gap_hi, F, BANKED
-    decf        fname_tx_gap_lo, F, BANKED
+    decf        fname_tx_gap_hi_b2, F, BANKED
+    decf        fname_tx_gap_lo_b2, F, BANKED
     bra         filename_reply_job_ret
 filename_reply_dec_gap_lo:
-    decf        fname_tx_gap_lo, F, BANKED
+    decf        fname_tx_gap_lo_b2, F, BANKED
     bra         filename_reply_job_ret
 filename_reply_ready:
-    movf        filename_rev, W, BANKED
+    movf        filename_rev_b2, W, BANKED
     andlw       0x01
     bnz         filename_reply_job_abort
-    movf        filename_rev, W, BANKED
-    cpfseq      fn_job_rev, BANKED
+    movf        filename_rev_b2, W, BANKED
+    cpfseq      fn_job_rev_b2, BANKED
     bra         filename_reply_job_abort
-    movf        fn_job_state, W, BANKED
+    movf        fn_job_state_b2, W, BANKED
     xorlw       0x01
     bz          filename_reply_send_start
     xorlw       0x03
@@ -9753,72 +9758,73 @@ filename_reply_ready:
     xorlw       0x07
     bz          filename_reply_send_end
 filename_reply_job_abort:
-    clrf        fn_job_state, BANKED
+    clrf        fn_job_state_b2, BANKED
 filename_reply_job_ret:
     return      0
 
 filename_reply_send_start:
-    movf        fn_job_start_cmd, W, BANKED
-    movwf       ram_0x00D, ACCESS
-    movf        fn_job_id, W, BANKED
-    movwf       ram_0x00E, ACCESS
+    movf        fn_job_start_cmd_b2, W, BANKED
+    movwf       stock_00D_acc, ACCESS
+    movf        fn_job_id_b2, W, BANKED
+    movwf       stock_00E_acc, ACCESS
     rcall       filename_emit_frame
     movlb       0x02
     movlw       0x02
-    movwf       fn_job_state, BANKED
+    movwf       fn_job_state_b2, BANKED
     return      0
 
 filename_reply_send_len:
     movlw       0x2D
-    movwf       ram_0x00D, ACCESS
-    movf        fn_job_id, W, BANKED
-    xorwf       fn_job_len, W, BANKED
-    movwf       ram_0x00E, ACCESS
+    movwf       stock_00D_acc, ACCESS
+    movf        fn_job_id_b2, W, BANKED
+    xorwf       fn_job_len_b2, W, BANKED
+    movwf       stock_00E_acc, ACCESS
     rcall       filename_emit_frame
     movlb       0x02
     movlw       0x03
-    movwf       fn_job_state, BANKED
+    movwf       fn_job_state_b2, BANKED
     return      0
 
 filename_reply_send_char_or_end:
-    movf        fn_job_idx, W, BANKED
-    cpfseq      fn_job_len, BANKED
+    movf        fn_job_idx_b2, W, BANKED
+    cpfseq      fn_job_len_b2, BANKED
     bra         filename_reply_send_char
     bra         filename_reply_send_end
 filename_reply_send_char:
-    movlw       0x30
-    addwf       fn_job_idx, W, BANKED
-    movwf       ram_0x00D, ACCESS
-    movf        fn_job_idx, W, BANKED
+    movf        fn_job_idx_b2, W, BANKED
     rcall       filename_read_source_at_w
-    movwf       ram_0x00E, ACCESS
+    movwf       stock_00E_acc, ACCESS
+    movlb       0x02
+    movlw       0x30
+    addwf       fn_job_idx_b2, W, BANKED
+    movwf       stock_00D_acc, ACCESS
     rcall       filename_emit_frame
     movlb       0x02
-    incf        fn_job_idx, F, BANKED
+    incf        fn_job_idx_b2, F, BANKED
     return      0
 
 filename_reply_send_end:
     movlw       0x4E
-    movwf       ram_0x00D, ACCESS
-    movf        fn_job_id, W, BANKED
-    movwf       ram_0x00E, ACCESS
+    movwf       stock_00D_acc, ACCESS
+    movf        fn_job_id_b2, W, BANKED
+    movwf       stock_00E_acc, ACCESS
     rcall       filename_emit_frame
     movlb       0x02
-    clrf        fn_job_state, BANKED
+    clrf        fn_job_state_b2, BANKED
     return      0
 
 filename_emit_frame:
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
-    clrf        fname_tx_gap_lo, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
+    clrf        fname_tx_gap_lo_b2, BANKED
     movlw       0x01
-    movwf       fname_tx_gap_hi, BANKED
+    movwf       fname_tx_gap_hi_b2, BANKED
     movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
-    movf        ram_0x00D, W, ACCESS
+    movf        stock_00D_acc, W, ACCESS
     rcall       uart_tx_byte_blocking
-    movf        ram_0x00E, W, ACCESS
+    movf        stock_00E_acc, W, ACCESS
     bra         uart_tx_byte_blocking
 
 ; ---------------------------------------------------------------------------
@@ -9842,20 +9848,20 @@ filename_emit_frame:
 ; ---------------------------------------------------------------------------
 diag_send_burst_xx:
     movlb       0x02
-    bsf         chain_tx_emitted, 0, BANKED
+    bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
     movlw       0xBF
     rcall       uart_tx_byte_blocking
-    movf        i2c_coeff_3, W, ACCESS
+    movf        i2c_coeff_3_acc, W, ACCESS
     rcall       uart_tx_byte_blocking
     movf        POSTINC0, W, ACCESS
     andlw       0x0F                        ; chain-forwarder safe (data < 0x80)
     rcall       uart_tx_byte_blocking
-    incf        i2c_coeff_3, F, ACCESS
-    movf        ram_0x004, W, ACCESS
-    cpfseq      i2c_coeff_3, ACCESS
+    incf        i2c_coeff_3_acc, F, ACCESS
+    movf        stock_004_acc, W, ACCESS
+    cpfseq      i2c_coeff_3_acc, ACCESS
     bra         diag_send_burst_xx
-    bcf         active_flags, 6, ACCESS     ; suppress cmd-XOR ACK echo
+    bcf         active_flags_acc, 6, ACCESS     ; suppress cmd-XOR ACK echo
     goto        flow_main_uart_service_1be6_1e6c
 
 ; ---------------------------------------------------------------------------
@@ -9863,24 +9869,24 @@ diag_send_burst_xx:
 ; ---------------------------------------------------------------------------
 volume_dsp_write:
     movlb       0x0
-    bcf         dsp_fault_flags, 2, BANKED  ; clear ACKSTAT latch
+    bcf         dsp_fault_flags_b0, 2, BANKED  ; clear ACKSTAT latch
     call        i2c_tas3108_coeff_write, 0x0
     movlb       0x0                          ; helper may leave BSR != 0
-    btfsc       dsp_fault_flags, 2, BANKED  ; NACKed?
+    btfsc       dsp_fault_flags_b0, 2, BANKED  ; NACKed?
     bra         vol_write_nacked
     ; Success: DSP responded, clear all fault state
     movlb       0x0
-    bcf         event_flags, 3, BANKED      ; clear volume dirty
-    bsf         event_flags, 7, BANKED      ; boot-complete gate
+    bcf         event_flags_b0, 3, BANKED      ; clear volume dirty
+    bsf         event_flags_b0, 7, BANKED      ; boot-complete gate
     rcall       copy_computed_volume_to_logical_volume  ; W02-E07: in range after W01-R01
-    bcf         dsp_fault_flags, 6, BANKED  ; clear DSP fault (write worked)
+    bcf         dsp_fault_flags_b0, 6, BANKED  ; clear DSP fault (write worked)
     movlw       0xC7
-    andwf       dsp_fault_flags, F, BANKED  ; clear retry counter, preserve bits 7,6
+    andwf       dsp_fault_flags_b0, F, BANKED  ; clear retry counter, preserve bits 7,6
     bra         send_dsp_fault_status
 vol_write_nacked:
     movlw       0x08
-    addwf       dsp_fault_flags, F, BANKED  ; bump retry [5:3]
-    movf        dsp_fault_flags, W, BANKED
+    addwf       dsp_fault_flags_b0, F, BANKED  ; bump retry [5:3]
+    movf        dsp_fault_flags_b0, W, BANKED
     andlw       0x38
     sublw       0x28                        ; 5 retries?
     bc          vol_retry_ok
@@ -9889,25 +9895,25 @@ vol_write_nacked:
     btfsc       SSPCON2, 2, ACCESS          ; PEN pending?
     bra         vol_exhausted_skip_i2c
     movlb       0x02
-    lfsr        FSR0, diag_r                 ; V3.2 Layer 5: count recovery branch entry
+    lfsr        FSR0, diag_r_b2_phys                 ; V3.2 Layer 5: count recovery branch entry
     call        diag_inc_sat_fsr0, 0x0
     rcall       i2c_bus_clear
     rcall       dsp_ping
 vol_exhausted_skip_i2c:
     movlb       0x0                          ; macro / dsp_ping may leave BSR != 0
-    btfsc       dsp_fault_flags, 6, BANKED  ; V3.2 Layer 5: skip diag_d if already SET (no transition)
+    btfsc       dsp_fault_flags_b0, 6, BANKED  ; V3.2 Layer 5: skip diag_d if already SET (no transition)
     bra         vol_diag_d_skip
     movlb       0x02
-    lfsr        FSR0, diag_d                 ; executed only on 0→1 transition
+    lfsr        FSR0, diag_d_b2_phys                 ; executed only on 0→1 transition
     call        diag_inc_sat_fsr0, 0x0
 vol_diag_d_skip:
     movlb       0x0                          ; restore BSR for the existing bsf line
-    bsf         dsp_fault_flags, 6, BANKED  ; flag DSP fault
+    bsf         dsp_fault_flags_b0, 6, BANKED  ; flag DSP fault
     rcall       send_dsp_fault_status
     movlb       0x0
-    bcf         event_flags, 3, BANKED
+    bcf         event_flags_b0, 3, BANKED
     movlw       0xC7
-    andwf       dsp_fault_flags, F, BANKED  ; clear retry, preserve bit6 (DSP fault)
+    andwf       dsp_fault_flags_b0, F, BANKED  ; clear retry, preserve bit6 (DSP fault)
     return      0
 vol_retry_ok:
     return      0                           ; dirty bit stays: main loop retries
@@ -9919,7 +9925,7 @@ vol_retry_ok:
 ; ---------------------------------------------------------------------------
 preset_job_apply_i2c_recover:
     movlw       0x80                        ; restore stock SSPSTAT SMP state
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     movlw       0x08                        ; SSPM master bits (SSPEN re-set in helper)
     rcall       mssp_hard_reset
     rcall       i2c_bus_clear
@@ -9961,84 +9967,84 @@ preset_select_handler:
     ; CONTROL full_sync_burst step 6 broadcast (within ~6 sec) will
     ; retry once the gate clears.  2-instruction gate; we share the
     ; ``movlb 0x0`` already at the top of the handler.
-    btfsc       filename_dirty_flags, 6, BANKED
+    btfsc       filename_dirty_flags_b0, 6, BANKED
     bra         preset_select_handler_done
-    movf        current_cmd_data, W, BANKED ; data byte: 0=A, 1=B
+    movf        current_cmd_data_b0, W, BANKED ; data byte: 0=A, 1=B
     andlw       0x01
     movlb       0x2
-    movwf       preset_job_target, BANKED   ; store requested preset
+    movwf       preset_job_target_b2, BANKED   ; store requested preset
     ; If a job is already active, the target update is enough (coalesce)
-    movf        preset_job_state, W, BANKED
+    movf        preset_job_state_b2, W, BANKED
     bnz         preset_select_handler_done
     ; Compare target with current preset
-    movf        preset_job_target, W, BANKED
-    btfsc       active_flags, 2, ACCESS     ; current preset B?
+    movf        preset_job_target_b2, W, BANKED
+    btfsc       active_flags_acc, 2, ACCESS     ; current preset B?
     xorlw       0x01                        ; invert for comparison
     bz          preset_select_handler_done  ; no change needed
     ; Start new job
     movlw       0x01                        ; PENDING state
-    movwf       preset_job_state, BANKED
-    clrf        preset_job_flags, BANKED
-    btfsc       active_flags, 4, ACCESS     ; user already muted?
-    bsf         preset_job_flags, 1, BANKED ; remember user mute desire
+    movwf       preset_job_state_b2, BANKED
+    clrf        preset_job_flags_b2, BANKED
+    btfsc       active_flags_acc, 4, ACCESS     ; user already muted?
+    bsf         preset_job_flags_b2, 1, BANKED ; remember user mute desire
 preset_select_handler_done:
     goto        flow_main_uart_service_1be6_1e6c
 
 ; --- Persist dirty filename to EEPROM (outgoing preset slot) ---
 preset_persist_filename:
     movlb       0x02
-    incf        filename_rev, F, BANKED     ; seqlock odd: backing store mutating
+    incf        filename_rev_b2, F, BANKED     ; seqlock odd: backing store mutating
     movlb       0x00
     movlw       preset_filename_eeprom_a
-    btfsc       active_flags, 2, ACCESS
+    btfsc       active_flags_acc, 2, ACCESS
     movlw       preset_filename_eeprom_b
-    movwf       ram_0x007, ACCESS
-    clrf        ram_0x008, ACCESS
+    movwf       stock_007_acc, ACCESS
+    clrf        stock_008_acc, ACCESS
     lfsr        FSR2, preset_filename_ram_base
     movlw       preset_filename_len
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
 preset_pf_lp:
-    movff       POSTINC2, ram_0x009
+    movff       POSTINC2, stock_009_b0_phys
     rcall       main_flash_service_46de
-    incf        ram_0x007, F, ACCESS
-    decfsz      ram_0x00A, F, ACCESS
+    incf        stock_007_acc, F, ACCESS
+    decfsz      stock_00A_acc, F, ACCESS
     bra         preset_pf_lp
     movlb       0x02
-    incf        filename_rev, F, BANKED     ; seqlock even: stable again
+    incf        filename_rev_b2, F, BANKED     ; seqlock even: stable again
     movlb       0x00
-    bcf         filename_dirty_flags, 5, BANKED
+    bcf         filename_dirty_flags_b0, 5, BANKED
     return      0
 
 ; --- Load filename from EEPROM (incoming preset slot) ---
 preset_load_filename:
     movlb       0x02
-    incf        filename_rev, F, BANKED     ; seqlock odd: RAM slot mutating
+    incf        filename_rev_b2, F, BANKED     ; seqlock odd: RAM slot mutating
     movlb       0x00
     movlw       preset_filename_eeprom_a
-    btfsc       active_flags, 2, ACCESS
+    btfsc       active_flags_acc, 2, ACCESS
     movlw       preset_filename_eeprom_b
-    movwf       ram_0x003, ACCESS
-    clrf        ram_0x004, ACCESS
+    movwf       stock_003_acc, ACCESS
+    clrf        stock_004_acc, ACCESS
     lfsr        FSR2, preset_filename_ram_base
     movlw       preset_filename_len
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
 preset_lf_lp:
     rcall       eeprom_read_byte
     movwf       POSTINC2
-    incf        ram_0x003, F, ACCESS
-    decfsz      ram_0x00A, F, ACCESS
+    incf        stock_003_acc, F, ACCESS
+    decfsz      stock_00A_acc, F, ACCESS
     bra         preset_lf_lp
     movlb       0x02
-    incf        filename_rev, F, BANKED     ; seqlock even: stable again
+    incf        filename_rev_b2, F, BANKED     ; seqlock even: stable again
     movlb       0x00
     return      0
 
 ; --- Force-mute DSP output ---
 preset_force_mute:
     movlb       0x0
-    bsf         active_flags, 4, ACCESS
-    bsf         active_flags, 5, ACCESS
-    bcf         event_flags, 5, BANKED
+    bsf         active_flags_acc, 4, ACCESS
+    bsf         active_flags_acc, 5, ACCESS
+    bcf         event_flags_b0, 5, BANKED
     goto        clrf_i2c_coeff_0123_and_write   ; tail-call; far-safe after M1 growth
 
 ; ---------------------------------------------------------------------------
@@ -10048,18 +10054,18 @@ preset_force_mute:
 ; ---------------------------------------------------------------------------
 preset_job_service:
     movlb       0x2
-    movf        preset_job_state, W, BANKED
+    movf        preset_job_state_b2, W, BANKED
     bz          preset_job_ret              ; IDLE — nothing to do
 
     ; Cancel on standby shutdown or reconnect
-    btfss       active_flags, 3, ACCESS     ; active flag clear → standby
+    btfss       active_flags_acc, 3, ACCESS     ; active flag clear → standby
     bra         preset_job_cancel
-    btfsc       active_flags, 7, ACCESS     ; reconnect pending
+    btfsc       active_flags_acc, 7, ACCESS     ; reconnect pending
     bra         preset_job_cancel
 
     ; Dispatch by state
     movlb       0x2
-    movf        preset_job_state, W, BANKED
+    movf        preset_job_state_b2, W, BANKED
     xorlw       0x01
     bz          preset_job_pending          ; state 1
     xorlw       0x03                        ; cumulative 0x02
@@ -10077,41 +10083,41 @@ preset_job_ret:
 preset_job_pending:
     ; Persist dirty filename for outgoing preset
     movlb       0x0
-    btfsc       filename_dirty_flags, 5, BANKED
+    btfsc       filename_dirty_flags_b0, 5, BANKED
     rcall       preset_persist_filename
 
     ; Force mute if user is not already muted
     movlb       0x2
-    btfsc       active_flags, 4, ACCESS     ; already muted?
+    btfsc       active_flags_acc, 4, ACCESS     ; already muted?
     bra         preset_job_pending_no_mute
-    bsf         preset_job_flags, 0, BANKED ; flag: we forced mute
+    bsf         preset_job_flags_b2, 0, BANKED ; flag: we forced mute
     rcall       preset_force_mute
     bra         preset_job_pending_timer
 
 preset_job_pending_no_mute:
-    bcf         preset_job_flags, 0, BANKED ; we did not force mute
+    bcf         preset_job_flags_b2, 0, BANKED ; we did not force mute
 
 preset_job_pending_timer:
     ; Start ISR-based Timer3 countdown (150 ticks, ~150 ms)
     ; The Timer3 ISR decrements ram_0x08C:08D on each overflow;
     ; HOLDING polls that pair for zero.
-    clrf        ram_0x004, ACCESS
+    clrf        stock_004_acc, ACCESS
     movlw       0x96                        ; 150 decimal
-    movwf       ram_0x003, ACCESS
+    movwf       stock_003_acc, ACCESS
     rcall       main_timer_service_477a
 
     ; Advance to HOLDING
     movlb       0x2
     movlw       0x02
-    movwf       preset_job_state, BANKED
+    movwf       preset_job_state_b2, BANKED
     return      0
 
 ; --- HOLDING (2): non-blocking timer countdown, coalescing window ---
 preset_job_holding:
     ; Check if the ISR-driven Timer3 countdown has reached zero
     movlb       0x0
-    movf        preset_hold_timer_hi, W, BANKED
-    iorwf       preset_hold_timer_lo, W, BANKED
+    movf        preset_hold_timer_hi_b0, W, BANKED
+    iorwf       preset_hold_timer_lo_b0, W, BANKED
     bnz         preset_job_holding_wait     ; still counting
 
     ; V3.2 USB-xact gate (codex MEDIUM vs entry-only gate at
@@ -10123,18 +10129,18 @@ preset_job_holding:
     ; filename.  Defer the toggle until force_persist clears bit6.
     ; (BSR is 0 from the earlier movlb above, so the BANKED check
     ; targets ram_0x0BD bit6 directly without an extra movlb.)
-    btfsc       filename_dirty_flags, 6, BANKED
+    btfsc       filename_dirty_flags_b0, 6, BANKED
     return      0
 
     ; After coalescing, check if target still differs from current
     movlb       0x2
-    movf        preset_job_target, W, BANKED
-    btfsc       active_flags, 2, ACCESS     ; current preset B?
+    movf        preset_job_target_b2, W, BANKED
+    btfsc       active_flags_acc, 2, ACCESS     ; current preset B?
     xorlw       0x01
     bz          preset_job_cancel_unmute    ; coalesced back → cancel
 
     ; Toggle preset bit
-    btg         active_flags, 2, ACCESS
+    btg         active_flags_acc, 2, ACCESS
     ; Load incoming preset filename from EEPROM
     ; filename_rev is bumped inside preset_load_filename so any active
     ; cmd 0x26 filename burst aborts rather than finalizing mixed data.
@@ -10143,7 +10149,7 @@ preset_job_holding:
     bsf         INTCON, 7, ACCESS
     ; Set cmd03 dirty flag for I2C parameter refresh
     movlb       0x0
-    bsf         event_flags, 0, BANKED
+    bsf         event_flags_b0, 0, BANKED
 
     ; Initialize table-apply state
     ; Always seed the STOCK-aligned logical preset window at 0x5600.
@@ -10151,14 +10157,14 @@ preset_job_holding:
     ; active_flags.bit2 says preset B is now active, so callers never seed
     ; a physical 0x4Cxx base directly.
     movlb       0x2
-    clrf        preset_job_index, BANKED
-    clrf        preset_job_tbl_lo, BANKED
+    clrf        preset_job_index_b2, BANKED
+    clrf        preset_job_tbl_lo_b2, BANKED
     movlw       0x56
-    movwf       preset_job_tbl_hi, BANKED
+    movwf       preset_job_tbl_hi_b2, BANKED
 
     ; Advance to APPLY
     movlw       0x03
-    movwf       preset_job_state, BANKED
+    movwf       preset_job_state_b2, BANKED
     return      0
 
 preset_job_holding_wait:
@@ -10170,22 +10176,22 @@ preset_job_apply:
     ; preset_load_filename before APPLY starts.
     movlb       0x2
     movlw       0x60                        ; 96 regular entries
-    cpfslt      preset_job_index, BANKED    ; skip if index < 96
+    cpfslt      preset_job_index_b2, BANKED    ; skip if index < 96
     bra         preset_job_apply_final      ; index >= 96 → final entry
 
     ; Apply regular entry from tracked address
-    movff       preset_job_tbl_lo, ram_0x013
-    movff       preset_job_tbl_hi, ram_0x014
+    movff       preset_job_tbl_lo_b2_phys, stock_013_b0_phys
+    movff       preset_job_tbl_hi_b2_phys, stock_014_b0_phys
     rcall       preset_job_apply_i2c_entry
     bc          preset_job_apply_retry      ; timeout: retry same entry next pass
 
     ; Advance address by 0x18 and increment index
     movlb       0x2
     movlw       0x18
-    addwf       preset_job_tbl_lo, F, BANKED
+    addwf       preset_job_tbl_lo_b2, F, BANKED
     movlw       0x00
-    addwfc      preset_job_tbl_hi, F, BANKED
-    incf        preset_job_index, F, BANKED
+    addwfc      preset_job_tbl_hi_b2, F, BANKED
+    incf        preset_job_index_b2, F, BANKED
     return      0
 
 preset_job_apply_retry:
@@ -10194,16 +10200,16 @@ preset_job_apply_retry:
 
 preset_job_apply_final:
     ; Final logical entry at 0x5F00 (flash_read remaps to 0x5500 for preset B).
-    clrf        ram_0x013, ACCESS
+    clrf        stock_013_acc, ACCESS
     movlw       0x5F
-    movwf       ram_0x014, ACCESS
+    movwf       stock_014_acc, ACCESS
     rcall       preset_job_apply_i2c_entry
     bc          preset_job_apply_retry      ; timeout: stay in APPLY, keep final entry pending
 
     ; Advance to COMMIT
     movlb       0x2
     movlw       0x04
-    movwf       preset_job_state, BANKED
+    movwf       preset_job_state_b2, BANKED
     return      0
 
 ; --- COMMIT (4): finalize preset switch, restore volume if appropriate ---
@@ -10212,19 +10218,19 @@ preset_job_commit:
     ; If CONTROL changed target during APPLY, keep the forced-mute context
     ; and immediately run another coalesced switch instead of going idle on
     ; the older target.
-    movf        preset_job_target, W, BANKED
-    btfsc       active_flags, 2, ACCESS     ; current preset B?
+    movf        preset_job_target_b2, W, BANKED
+    btfsc       active_flags_acc, 2, ACCESS     ; current preset B?
     xorlw       0x01
     bnz         preset_job_commit_rearm
-    btfss       preset_job_flags, 0, BANKED ; did we force mute?
+    btfss       preset_job_flags_b2, 0, BANKED ; did we force mute?
     bra         preset_job_commit_idle      ; no → leave mute as user had it
-    btfsc       preset_job_flags, 1, BANKED ; user wants mute?
+    btfsc       preset_job_flags_b2, 1, BANKED ; user wants mute?
     bra         preset_job_commit_idle      ; yes → stay muted
     ; Unmute and schedule volume restore
-    bcf         active_flags, 4, ACCESS
-    bcf         active_flags, 5, ACCESS
+    bcf         active_flags_acc, 4, ACCESS
+    bcf         active_flags_acc, 5, ACCESS
     movlb       0x0
-    bsf         event_flags, 3, BANKED      ; restore volume on next pass
+    bsf         event_flags_b0, 3, BANKED      ; restore volume on next pass
 
 preset_job_commit_idle:
     bra         preset_job_cancel_done      ; shared tail: state=IDLE+return
@@ -10238,14 +10244,14 @@ preset_job_cancel_unmute:
     bcf         PIE2, 1, ACCESS             ; disable Timer3 interrupt
     bcf         PIR2, 1, ACCESS             ; clear TMR3IF
     movlb       0x2
-    btfss       preset_job_flags, 0, BANKED ; did we force mute?
+    btfss       preset_job_flags_b2, 0, BANKED ; did we force mute?
     bra         preset_job_cancel_done
-    btfsc       preset_job_flags, 1, BANKED ; user wants mute?
+    btfsc       preset_job_flags_b2, 1, BANKED ; user wants mute?
     bra         preset_job_cancel_done
-    bcf         active_flags, 4, ACCESS
-    bcf         active_flags, 5, ACCESS
+    bcf         active_flags_acc, 4, ACCESS
+    bcf         active_flags_acc, 5, ACCESS
     movlb       0x0
-    bsf         event_flags, 3, BANKED      ; restore volume
+    bsf         event_flags_b0, 3, BANKED      ; restore volume
     bra         preset_job_cancel_done
 
 ; --- Cancel (standby/reconnect): clear state, don't touch mute ---
@@ -10255,16 +10261,16 @@ preset_job_cancel:
     bcf         PIR2, 1, ACCESS             ; clear TMR3IF
     ; Clear forced-mute flags so reconnect/standby path is not confused
     movlb       0x2
-    btfss       preset_job_flags, 0, BANKED ; did we force mute?
+    btfss       preset_job_flags_b2, 0, BANKED ; did we force mute?
     bra         preset_job_cancel_done
-    bcf         active_flags, 5, ACCESS     ; clear forced-mute shadow
-    btfsc       preset_job_flags, 1, BANKED ; user wanted mute?
+    bcf         active_flags_acc, 5, ACCESS     ; clear forced-mute shadow
+    btfsc       preset_job_flags_b2, 1, BANKED ; user wanted mute?
     bra         preset_job_cancel_done      ; yes → leave bit4
-    bcf         active_flags, 4, ACCESS     ; clear our force-mute in bit4
+    bcf         active_flags_acc, 4, ACCESS     ; clear our force-mute in bit4
 
 preset_job_cancel_done:
     movlb       0x2
-    clrf        preset_job_state, BANKED
+    clrf        preset_job_state_b2, BANKED
     return      0
 
 ; ---------------------------------------------------------------------------
@@ -10278,51 +10284,51 @@ hid_cmd_diag_memread:
     movlw       0x43
     movwf       POSTINC2, ACCESS
     clrf        POSTINC2, ACCESS
-    movf        ram_0x11E, W, BANKED
+    movf        stock_11E_b1, W, BANKED
     movwf       POSTINC2, ACCESS
     bz          hid_cmd_diag_memread_bad_len
     movlw       0x3D
-    cpfsgt      ram_0x11E, BANKED
+    cpfsgt      stock_11E_b1, BANKED
     bra         hid_cmd_diag_memread_len_ok
 hid_cmd_diag_memread_bad_len:
     movlw       0x02
     bra         hid_cmd_diag_memread_fail
 hid_cmd_diag_memread_len_ok:
-    movf        ram_0x11B, W, BANKED
+    movf        stock_11B_b1, W, BANKED
     bz          hid_cmd_diag_memread_flash
     xorlw       0x01
     bz          hid_cmd_diag_memread_eeprom
     movlw       0x01
     bra         hid_cmd_diag_memread_fail
 hid_cmd_diag_memread_flash:
-    movff       ram_0x11C, ram_0x003
-    movff       ram_0x11D, ram_0x004
-    clrf        ram_0x005, ACCESS
-    clrf        ram_0x006, ACCESS
-    movff       ram_0x11E, ram_0x007
-    clrf        ram_0x008, ACCESS
+    movff       stock_11C_b1_phys, stock_003_b0_phys
+    movff       stock_11D_b1_phys, stock_004_b0_phys
+    clrf        stock_005_acc, ACCESS
+    clrf        stock_006_acc, ACCESS
+    movff       stock_11E_b1_phys, stock_007_b0_phys
+    clrf        stock_008_acc, ACCESS
     movlw       0x5D
-    movwf       ram_0x009, ACCESS
+    movwf       stock_009_acc, ACCESS
     movlw       0x01
-    movwf       ram_0x00A, ACCESS
+    movwf       stock_00A_acc, ACCESS
     call        flash_read, 0x0
     goto        flow_hid_command_dispatch_15aa
 hid_cmd_diag_memread_eeprom:
-    movf        ram_0x11C, W, BANKED
-    movwf       ram_0x003, ACCESS
-    clrf        ram_0x004, ACCESS
-    movf        ram_0x11E, W, BANKED
-    movwf       ram_0x00A, ACCESS
+    movf        stock_11C_b1, W, BANKED
+    movwf       stock_003_acc, ACCESS
+    clrf        stock_004_acc, ACCESS
+    movf        stock_11E_b1, W, BANKED
+    movwf       stock_00A_acc, ACCESS
     lfsr        FSR2, 0x015D
 hid_cmd_diag_memread_eeprom_lp:
     rcall       eeprom_read_byte
     movwf       POSTINC2, ACCESS
-    incf        ram_0x003, F, ACCESS
-    decfsz      ram_0x00A, F, ACCESS
+    incf        stock_003_acc, F, ACCESS
+    decfsz      stock_00A_acc, F, ACCESS
     bra         hid_cmd_diag_memread_eeprom_lp
     goto        flow_hid_command_dispatch_15aa
 hid_cmd_diag_memread_fail:
-    movwf       ram_0x05B, BANKED
+    movwf       stock_15B_b1, BANKED
     goto        flow_hid_command_dispatch_15aa
 
 ; ---------------------------------------------------------------------------
@@ -10369,24 +10375,24 @@ hid_cmd_diag_snapshot:
     movwf       POSTINC2, ACCESS
     ; [3..9] = 7 runtime counters from diag_i..diag_p (0x2E5..0x2EB).
     ; FSR0 walks the diag block; FSR2 walks the HID IN buffer.
-    lfsr        FSR0, diag_i                ; 0x2E5
+    lfsr        FSR0, diag_i_b2_phys                ; 0x2E5
     movlw       0x07
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
 hid_diag_snap_cnt:
     movf        POSTINC0, W, ACCESS
     movwf       POSTINC2, ACCESS
-    decfsz      i2c_coeff_3, F, ACCESS
+    decfsz      i2c_coeff_3_acc, F, ACCESS
     bra         hid_diag_snap_cnt
     ; FSR0 now sits on diag_ra1_prev (0x2EC); skip past it to the
     ; reset-cause flag block at 0x2ED.
     incf        FSR0L, F, ACCESS
     ; [10..13] = 4 reset-cause flags from diag_reset_por..diag_reset_sw.
     movlw       0x04
-    movwf       i2c_coeff_3, ACCESS
+    movwf       i2c_coeff_3_acc, ACCESS
 hid_diag_snap_flag:
     movf        POSTINC0, W, ACCESS
     movwf       POSTINC2, ACCESS
-    decfsz      i2c_coeff_3, F, ACCESS
+    decfsz      i2c_coeff_3_acc, F, ACCESS
     bra         hid_diag_snap_flag
     ; [14..63] = padding — host sees length byte at [2]=0x0B so it
     ; stops parsing at offset 13.  Firmware version metadata is
@@ -10745,7 +10751,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x03, 0x75, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.3 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x03, 0x79, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.3 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

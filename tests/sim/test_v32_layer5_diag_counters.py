@@ -138,11 +138,12 @@ def _diag_inc_sat_sections(text: str) -> tuple[str, str]:
 
 
 def _diag_inc_sat_hook_present(text: str, name: str) -> bool:
-    if re.search(rf"diag_inc_sat\s+{re.escape(name)}\b", text):
+    alias = rf"{re.escape(name)}(?:_b\d+(?:_phys)?)?"
+    if re.search(rf"diag_inc_sat\s+{alias}\b", text):
         return True
     return bool(
         re.search(
-            rf"lfsr\s+FSR0,\s*{re.escape(name)}\b"
+            rf"lfsr\s+FSR0,\s*{alias}\b"
             rf"(?:(?!\n[A-Za-z_][A-Za-z0-9_]*:)[\s\S]){{0,240}}?"
             rf"\b(?:r?call)\s+diag_inc_sat_fsr0\b",
             text,

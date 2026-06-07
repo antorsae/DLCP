@@ -329,8 +329,9 @@ Pass criteria:
 
 - the generated `summary.json` contains a stable `consensus.line1`
 - the generated `summary.json` contains a stable `consensus.line2`
-- the captured stills are readable enough to distinguish `Volume`, `Active: A`
-  or `Active: B`, `Zzz...`, and `WAITING FOR DLCP`
+- the captured stills are readable enough to distinguish `Volume`,
+  `Active: A` or `Active: B`, `Preset ... A/B/!`, `Zzz...`, and
+  `WAITING FOR DLCP`
 
 ### 4. Exercise one public IR preset-switch roundtrip
 
@@ -522,7 +523,8 @@ DLCP_HW_EXPECTED_PRESET=B \
 
 Pass criteria:
 
-- CONTROL LCD is either `Volume` / `Active: A|B` or `Preset` / `Active: A|B`.
+- CONTROL LCD is either `Volume` / `Active: A|B` or Preset row 0 ending in
+  `A`, `B`, or `!` when a DSP fault hides the preset letter.
 - both MAINs report the selected active preset.
 - both MAINs' active filename RAM matches the baked release capture:
   A = `LX521.4 22MG10F-v5`, B = `LX521.4 22MG10F-v7`.

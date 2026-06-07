@@ -781,6 +781,12 @@ def test_phase_env_contract_covers_live_hardware_opt_in_gates() -> None:
         "DLCP_HW_FRONT_PANEL_PRESET_CONFIRM": "1",
         "DLCP_HW_EXPECTED_PRESET": "B",
     }
+    assert phase_contract["preset-filename-lcd"]["env"] == {
+        "DLCP_HW_PRESET_FILENAME_CONFIRM": "1"
+    }
+    assert phase_contract["preset-filename-lcd"]["required_env"] == {
+        "DLCP_HW_EXPECTED_PRESET_FILENAME"
+    }
     assert phase_contract["front-panel-standby-wake"]["env"] == {
         "DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM": "1"
     }
@@ -865,6 +871,7 @@ def test_phase_resource_contract_covers_live_hardware_requirements() -> None:
         "src4382-ad-acoustic": ("pair", False, False),
         "front-panel-preset-a": ("pair", True, False),
         "front-panel-preset-b": ("pair", True, False),
+        "preset-filename-lcd": ("pair", True, False),
         "front-panel-standby-wake": ("pair", True, False),
         "preset-convergence": ("pair", True, True),
         "rapid-toggle": ("pair", True, True),
@@ -1307,6 +1314,7 @@ def test_bug_selector_expands_aliases_and_deduplicates() -> None:
         "identity",
         "front-panel-preset-a",
         "front-panel-preset-b",
+        "preset-filename-lcd",
     ]
 
 
@@ -1732,13 +1740,14 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
         "diag-ir-pb2",
         "ir-receiver-sweep",
         "ir-legacy-v16b",
-        "ir-legacy-v171",
-        "preset-mute",
-        "preset-standby-wake",
-        "identity",
-        "front-panel-preset-a",
-        "front-panel-preset-b",
-        "rapid-toggle",
+            "ir-legacy-v171",
+            "preset-mute",
+            "preset-standby-wake",
+            "identity",
+            "front-panel-preset-a",
+            "front-panel-preset-b",
+            "preset-filename-lcd",
+            "rapid-toggle",
         "preset-convergence",
         "settings",
         "src4382-ad-acoustic",
@@ -1751,6 +1760,7 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
     )
     assert plan["required_env"] == [
         "DLCP_HW_EXPECTED_INPUT",
+        "DLCP_HW_EXPECTED_PRESET_FILENAME",
         "DLCP_HW_EXPECTED_SETUP_PROFILE",
         "DLCP_HW_EXPECTED_VOLUME_LOW",
         "DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK",

@@ -287,8 +287,9 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (1199 tests collected after PF.4 phase 1 deletions and current
-V1.72/V3.3 Diagnostics identity additions per `pytest tests --collect-only`).
+Current suite (1430 tests collected after PF.4 phase 1 deletions and current
+V1.72/V3.3 Diagnostics identity plus Preset filename LCD additions per
+`pytest tests --collect-only`).
 
 Pytest markers:
 
@@ -388,13 +389,14 @@ V1.72/V3.3 Diagnostics MAIN identity:
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (latest 2026-05-29):
+Recent verification (latest 2026-06-07):
 
-- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v33_release.py` -> canonical `DLCP_Firmware_V3.3.hex` rebuilt; current canonical release identity is `V3.3 / rev 0x72`
-- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v172_release.py --build-date 20260529` -> canonical `DLCP_Control_V1.72.hex` rebuilt; current canonical release identity is `V1.72 / rev 0x38 / build 20260529`
-- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v172_v33_diag_identity.py` -> `12 passed in 69.20s`
-- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q -n 8 tests/sim` -> `1181 passed, 1 skipped, 7 warnings in 628.13s`
-- `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1199 tests collected`
+- Current paired MAIN source/hex identity observed as `V3.3 / rev 0x79`; no V3.3 rebuild was run for the CONTROL-local Preset LCD re-entry fix.
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v172_release.py --build-date 20260607` -> canonical `DLCP_Control_V1.72.hex` rebuilt; current canonical release identity is `V1.72 / rev 0x3F / build 20260607`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_preset_filename_lcd_spec.py` -> `176 passed in 217.59s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v171_ram_static_analysis.py tests/sim/test_v171_baseline.py tests/sim/test_v172_v33_release_builders.py tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v172_v33_diag_identity.py` -> `56 passed, 1 warning in 72.15s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim` -> `1411 passed, 1 skipped, 4 warnings in 3062.67s`
+- `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1430 tests collected in 0.41s`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_baseline.py` -> `20 passed`
 - `.venv_ep0/bin/python scripts/build_v171_release.py --build-date 20260523` -> canonical `DLCP_Control_V1.71.hex` rebuilt; current canonical release identity is `V1.71 / rev 0x30 / build 20260523`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_control_flash_safety.py tests/sim/test_v171_release_banner.py tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_rev_present tests/sim/test_v171_atomic_3byte_frame.py::test_release_metadata_build_date_and_boot_banner_match` -> `22 passed`

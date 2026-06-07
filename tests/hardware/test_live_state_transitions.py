@@ -728,8 +728,8 @@ def test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram
     Operator workflow:
       1. From CONTROL's Preset screen, select the target preset using
          the physical front-panel UP/DOWN controls.
-      2. Wait for the UI to settle on ``Volume`` or ``Preset`` with
-         row 2 ``Active: <target>``.
+      2. Wait for the UI to settle on either ``Volume`` / ``Active: <target>``
+         or the filename-capable ``Preset ... <target>`` row-0 layout.
       3. Run this test with DLCP_HW_EXPECTED_PRESET=A or B.
 
     This intentionally covers the original user-reported path: physical
@@ -757,15 +757,24 @@ def test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram
     }
 
     line1, line2 = _capture_lcd_consensus(tmp_path, f"front_panel_preset_{target}")
-    assert line1 in {"Volume", "Preset"}, (
-        f"CONTROL should be on Volume or Preset after manual front-panel "
-        f"selection; got {line1!r} / {line2!r}"
-    )
-    assert line2 == f"Active: {target}", (
-        f"CONTROL LCD did not show target preset after physical front-panel "
-        f"selection; expected row 2 Active: {target!s}, got "
-        f"{line1!r} / {line2!r}"
-    )
+    if line1 == "Volume":
+        assert line2 == f"Active: {target}", (
+            f"CONTROL LCD did not show target preset after physical front-panel "
+            f"selection; expected Volume / Active: {target!s}, got "
+            f"{line1!r} / {line2!r}"
+        )
+    elif line1.startswith("Preset"):
+        suffix = line1[-1:] if len(line1) > len("Preset") else ""
+        assert suffix in {target, "!"}, (
+            f"CONTROL LCD Preset row did not show target preset/fault marker "
+            f"after physical front-panel selection; expected row-0 suffix "
+            f"{target!r} or '!', got {line1!r} / {line2!r}"
+        )
+    else:
+        raise AssertionError(
+            f"CONTROL should be on Volume or Preset after manual front-panel "
+            f"selection; got {line1!r} / {line2!r}"
+        )
 
     left, right = hw._read_pair_state(vid=hw.DEFAULT_VID, pid=hw.DEFAULT_PID)
     failures: list[str] = []

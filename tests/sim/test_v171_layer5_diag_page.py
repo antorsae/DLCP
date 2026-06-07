@@ -1154,7 +1154,13 @@ def test_diag_renderer_uses_single_sentinel_no_topology_byte() -> None:
         "v171_diag_present alone for both 'topology absent' and "
         "'PB silent' cases"
     )
-    ram = V17_CONTROL_RAM_INC.read_text(encoding="utf-8")
+    ram = re.sub(
+        r"; --- RAM bank safety generated aliases: BEGIN ---.*?"
+        r"; --- RAM bank safety generated aliases: END ---",
+        "",
+        V17_CONTROL_RAM_INC.read_text(encoding="utf-8"),
+        flags=re.DOTALL,
+    )
     assert "v171_diag_topology" not in ram, (
         "no v171_diag_topology equ allowed in ram.inc — spec collapse"
     )
@@ -1728,6 +1734,8 @@ def test_phase3_4_no_other_bank1_equ_collides_with_scratch_range() -> None:
         ram, re.MULTILINE,
     ):
         name = m.group(1)
+        if re.search(r"_(?:b\d+|acc)(?:_op|_phys)?$", name):
+            continue
         if name in phase3_4_names:
             continue
         value = _equ_address(ram, name)
