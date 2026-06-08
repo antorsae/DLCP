@@ -25,8 +25,10 @@ from dlcp_fw.paths import (
     V30_MAIN_HEX,
     V31_MAIN_HEX,
     V33_MAIN_HEX,
+    V34_MAIN_HEX,
 )
 from dlcp_fw.patch.build_v33_release import read_v33_release_revision
+from dlcp_fw.patch.build_v34_release import read_v34_release_revision
 
 
 # All tests in this module are backend-agnostic (Python-level
@@ -136,6 +138,18 @@ def test_v33_usb_and_eeprom_version_match_release_identity() -> None:
     eeprom = _read_eeprom_version(V33_MAIN_HEX)
     assert eeprom == (0x03, 0x03, read_v33_release_revision()), (
         f"V3.3 EEPROM identity mismatch: got {eeprom!r}"
+    )
+
+
+def test_v34_usb_and_eeprom_version_match_release_identity() -> None:
+    _skip_missing(V34_MAIN_HEX)
+    hid = _find_hid_version_bytes(V34_MAIN_HEX)
+    assert hid is not None
+    assert hid[1:] == (0x03, 0x04)
+
+    eeprom = _read_eeprom_version(V34_MAIN_HEX)
+    assert eeprom == (0x03, 0x04, read_v34_release_revision()), (
+        f"V3.4 EEPROM identity mismatch: got {eeprom!r}"
     )
 
 

@@ -53,6 +53,7 @@ STOCK_BANK_ALIAS_RE = re.compile(r"^stock_([0-9A-Fa-f]{3})_b([0-9])$")
 STOCK_PHYS_ALIAS_RE = re.compile(r"^stock_([0-9A-Fa-f]{3})_b([0-9])_phys$")
 BANK_SUFFIX_ALIAS_RE = re.compile(r"^(.+)_b[0-9]$")
 BANK_SUFFIX_PHYS_ALIAS_RE = re.compile(r"^(.+)_b[0-9]_phys$")
+RAW_NUMERIC_RE = re.compile(r"^0x([0-9A-Fa-f]{1,4})$")
 NUMERIC_BANKED_RE = re.compile(
     rf"\b(?:{F_OPERAND_MNEMONICS})\s+0x([0-9A-Fa-f]{{2,3}})(?:[^;\n]*),\s*(?:BANKED|B)\b",
     re.IGNORECASE,
@@ -443,6 +444,16 @@ def check_source_text(
             for operand in movff.groups():
                 operand = operand.strip()
                 cell = cells.get(operand)
+                if cell is None and operand.endswith("_phys"):
+                    findings.append(
+                        Finding(
+                            finding_path,
+                            lineno,
+                            "RAM_UNKNOWN_PHYS_ALIAS",
+                            f"movff operand {operand} is not present in the generated RAM manifest",
+                        )
+                    )
+                    continue
                 if cell is not None and not operand.endswith("_phys"):
                     findings.append(
                         Finding(
@@ -455,7 +466,27 @@ def check_source_text(
         lfsr = LFSR_RE.search(body)
         if lfsr is not None:
             operand = lfsr.group(1).strip()
+            raw_numeric = RAW_NUMERIC_RE.match(operand)
+            if raw_numeric is not None and int(raw_numeric.group(1), 16) < 0xF00:
+                findings.append(
+                    Finding(
+                        finding_path,
+                        lineno,
+                        "RAM_LFSR_RAW_NUMERIC",
+                        "raw numeric RAM lfsr target must use a generated *_phys alias",
+                    )
+                )
             cell = cells.get(operand)
+            if cell is None and operand.endswith("_phys"):
+                findings.append(
+                    Finding(
+                        finding_path,
+                        lineno,
+                        "RAM_UNKNOWN_PHYS_ALIAS",
+                        f"lfsr target {operand} is not present in the generated RAM manifest",
+                    )
+                )
+                continue
             if cell is not None and not operand.endswith("_phys"):
                 findings.append(
                     Finding(
@@ -844,7 +875,23 @@ def _default_roots(target: str, program: _AsmProgram) -> list[tuple[int, BsrStat
             "hid_command_dispatch",
             "main_isr_dispatch",
         ),
+        "main-v34": (
+            # V3.4 is the V3.3 successor and starts from the same CFG roots.
+            "flow_app_entry_1014",
+            "hid_command_dispatch",
+            "main_isr_dispatch",
+        ),
         "control-v172": (
+            "vector_reset",
+            "vector_int_high",
+            "vector_int_low",
+            "flow_local_0040",
+            "app_entry_defensive_stub",
+            "main_event_loop",
+            "flow_main_event_loop_1642",
+            "control_core_service_17E8",
+        ),
+        "control-v173": (
             "vector_reset",
             "vector_int_high",
             "vector_int_low",
@@ -1177,6 +1224,13 @@ def migrate_source_aliases(target: str) -> bool:
             elif operand in source_names:
                 new_operand = source_names[operand].phys_alias
             else:
+                raw_numeric = RAW_NUMERIC_RE.match(operand)
+                if raw_numeric is not None:
+                    phys = int(raw_numeric.group(1), 16)
+                    if phys < 0xF00:
+                        cell2 = _cell_for_phys(target, phys, access="banked")
+                        if cell2 is not None:
+                            new_operand = cell2.phys_alias
                 raw = re.match(r"^ram_0x([0-9A-Fa-f]{3})$", operand)
                 if raw is not None:
                     cell2 = _cell_for_phys(target, int(raw.group(1), 16), access="banked")

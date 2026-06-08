@@ -89,6 +89,10 @@ ALL_CH_ROUTE_VALUES = {
     "L": 0,
     "R": 1,
 }
+IR_PROFILE_VALUES = {
+    "hypex": 0x04,
+    "rc5": 0x03,
+}
 
 
 def DlcpEp0(*args, **kwargs):
@@ -1121,6 +1125,36 @@ def _restore_runtime_settings_ep0(
     )
 
 
+def _apply_ir_profile_ep0(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None,
+    profile_label: str,
+) -> tuple[int, int]:
+    profile_value = IR_PROFILE_VALUES[profile_label]
+    current = _probe_ep0_input_state(vid=vid, pid=pid, path=path)
+    desired = InputRuntimeInfo(
+        input_select=current.input_select,
+        input_mirror=current.input_mirror,
+        setup_profile=profile_value,
+    )
+    _restore_runtime_settings_ep0(
+        vid=vid,
+        pid=pid,
+        path=path,
+        volume_state=None,
+        input_state=desired,
+    )
+    after = _probe_ep0_input_state(vid=vid, pid=pid, path=path)
+    if after.setup_profile != profile_value:
+        raise RuntimeError(
+            "IR profile verify failed after EP0 restore: "
+            f"expected 0x{profile_value:02X}, got 0x{after.setup_profile:02X}"
+        )
+    return current.setup_profile, after.setup_profile
+
+
 def _force_active_filename_persist(
     *,
     vid: int,
@@ -1702,6 +1736,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="after flashing, set all channel mappings to this source (currently: L or R)",
     )
     ap.add_argument(
+        "--profile",
+        type=str.lower,
+        choices=sorted(IR_PROFILE_VALUES),
+        default="hypex",
+        help="after flashing, persist MAIN IR profile (default: hypex)",
+    )
+    ap.add_argument(
         "--info-only",
         action="store_true",
         help="probe current device info and exit (no flashing)",
@@ -1858,12 +1899,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  capture {overlay.preset} table sha256: {_sha256_hex(overlay.table)}")
         if args.all_ch is not None:
             print(f"  post-flash all-ch mapping: {args.all_ch}")
+        print(
+            "  post-flash IR profile: "
+            f"{args.profile} (0x{IR_PROFILE_VALUES[args.profile]:02X})"
+        )
 
     stream = build_main_stream(hex_mem)
 
     path: Optional[bytes] = args.path.encode("utf-8") if args.path else None
     pre_finalize_snapshot: Optional[DeviceSnapshot] = None
-    if (bool(overlays) or args.all_ch is not None) and not (
+    needs_post_finalize = bool(overlays) or args.all_ch is not None or args.profile is not None
+    if needs_post_finalize and not (
         args.dry_run or args.preflight_only
     ):
         try:
@@ -1897,7 +1943,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dry_run=args.dry_run or args.preflight_only,
         report_info=not args.no_info and not (args.dry_run or args.preflight_only),
         need_post_app=(
-            (bool(overlays) or args.all_ch is not None)
+            needs_post_finalize
             and not (args.dry_run or args.preflight_only)
         ),
         post_info_timeout_s=max(0.1, float(args.post_info_timeout_s)),
@@ -1906,7 +1952,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         verbose=args.verbose,
     )
 
-    if (bool(overlays) or args.all_ch is not None) and not (
+    if needs_post_finalize and not (
         args.dry_run or args.preflight_only
     ):
         if post_dev is None:
@@ -2020,6 +2066,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                 volume_state=pre_finalize_snapshot.volume_state,
                 input_state=pre_finalize_snapshot.input_state,
             )
+
+        before_profile, after_profile = _apply_ir_profile_ep0(
+            vid=args.vid,
+            pid=args.pid,
+            path=post_dev.path,
+            profile_label=args.profile,
+        )
+        print(
+            "post-flash IR profile finalize:\n"
+            f"  requested profile: {args.profile} "
+            f"(0x{IR_PROFILE_VALUES[args.profile]:02X})\n"
+            f"  verified setup/profile: 0x{before_profile:02X} -> 0x{after_profile:02X}"
+        )
 
     return 0
 

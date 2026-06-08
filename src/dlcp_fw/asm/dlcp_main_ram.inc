@@ -1517,6 +1517,9 @@ stock_0FD_b0_phys                EQU  0x0FD    ; physical address for movff/lfsr
 stock_0FE_b0                     EQU  0x0FE    ; phys 0x0FE, bank 0, owner stock-derived
 stock_0FE_b0_op                  EQU  0xFE     ; 8-bit f operand for stock_0FE_b0
 stock_0FE_b0_phys                EQU  0x0FE    ; physical address for movff/lfsr
+stock_100_b1                     EQU  0x100    ; phys 0x100, bank 1, owner stock-derived
+stock_100_b1_op                  EQU  0x00     ; 8-bit f operand for stock_100_b1
+stock_100_b1_phys                EQU  0x100    ; physical address for movff/lfsr
 stock_10F_b1                     EQU  0x10F    ; phys 0x10F, bank 1, owner stock-derived
 stock_10F_b1_op                  EQU  0x0F     ; 8-bit f operand for stock_10F_b1
 stock_10F_b1_phys                EQU  0x10F    ; physical address for movff/lfsr
@@ -1805,6 +1808,18 @@ stock_1E3_b1_phys                EQU  0x1E3    ; physical address for movff/lfsr
 stock_1E4_b1                     EQU  0x1E4    ; phys 0x1E4, bank 1, owner stock-derived
 stock_1E4_b1_op                  EQU  0xE4     ; 8-bit f operand for stock_1E4_b1
 stock_1E4_b1_phys                EQU  0x1E4    ; physical address for movff/lfsr
+stock_1E5_b1                     EQU  0x1E5    ; phys 0x1E5, bank 1, owner stock-derived
+stock_1E5_b1_op                  EQU  0xE5     ; 8-bit f operand for stock_1E5_b1
+stock_1E5_b1_phys                EQU  0x1E5    ; physical address for movff/lfsr
+stock_1ED_b1                     EQU  0x1ED    ; phys 0x1ED, bank 1, owner stock-derived
+stock_1ED_b1_op                  EQU  0xED     ; 8-bit f operand for stock_1ED_b1
+stock_1ED_b1_phys                EQU  0x1ED    ; physical address for movff/lfsr
+stock_1F4_b1                     EQU  0x1F4    ; phys 0x1F4, bank 1, owner stock-derived
+stock_1F4_b1_op                  EQU  0xF4     ; 8-bit f operand for stock_1F4_b1
+stock_1F4_b1_phys                EQU  0x1F4    ; physical address for movff/lfsr
+stock_200_b2                     EQU  0x200    ; phys 0x200, bank 2, owner stock-derived
+stock_200_b2_op                  EQU  0x00     ; 8-bit f operand for stock_200_b2
+stock_200_b2_phys                EQU  0x200    ; physical address for movff/lfsr
 preset_job_state_b2              EQU  0x2DE    ; phys 0x2DE, bank 2, owner preset_job_state
 preset_job_state_b2_op           EQU  0xDE     ; 8-bit f operand for preset_job_state_b2
 preset_job_state_b2_phys         EQU  0x2DE    ; physical address for movff/lfsr
@@ -1907,6 +1922,9 @@ chain_tx_emitted_b2_phys         EQU  0x2FE    ; physical address for movff/lfsr
 fn_job_tmp_b2                    EQU  0x2FF    ; phys 0x2FF, bank 2, owner fn_job_tmp
 fn_job_tmp_b2_op                 EQU  0xFF     ; 8-bit f operand for fn_job_tmp_b2
 fn_job_tmp_b2_phys               EQU  0x2FF    ; physical address for movff/lfsr
+stock_300_b3                     EQU  0x300    ; phys 0x300, bank 3, owner stock-derived
+stock_300_b3_op                  EQU  0x00     ; 8-bit f operand for stock_300_b3
+stock_300_b3_phys                EQU  0x300    ; physical address for movff/lfsr
 stock_400_b4                     EQU  0x400    ; phys 0x400, bank 4, owner stock-derived
 stock_400_b4_op                  EQU  0x00     ; 8-bit f operand for stock_400_b4
 stock_400_b4_phys                EQU  0x400    ; physical address for movff/lfsr

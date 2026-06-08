@@ -10,10 +10,13 @@ import pytest
 from dlcp_fw.paths import (
     V17_CONTROL_RAM_INC,
     V172_CONTROL_ASM,
+    V173_CONTROL_ASM,
     V32_MAIN_ASM,
     V33_MAIN_ASM,
+    V34_MAIN_ASM,
 )
 from dlcp_fw.patch.build_v33_release import read_v33_release_revision
+from dlcp_fw.patch.build_v34_release import read_v34_release_revision
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
@@ -61,8 +64,18 @@ MAIN_ACTIVE_FLAGS_PHYS = 0x05E
 MAIN_ACTIVE_PRESET_MASK = 0x04
 MAIN_ACTIVE_GATE_MASK = 0x08
 IR_ADDR_HYPEX = 0x10
-IR_CMD_VOL_UP = 0x10
-IR_CMD_MUTE = 0x0D
+IR_CMD_HYPEX_POWER = 0x32
+IR_CMD_HYPEX_VOL_UP = 0x33
+IR_CMD_HYPEX_VOL_DOWN = 0x34
+IR_CMD_HYPEX_MUTE = 0x35
+IR_CMD_HYPEX_INPUT_UP = 0x36
+IR_CMD_HYPEX_INPUT_DOWN = 0x37
+IR_CMD_STD_POWER = 0x0C
+IR_CMD_STD_VOL_UP = 0x10
+IR_CMD_STD_VOL_DOWN = 0x11
+IR_CMD_STD_MUTE = 0x0D
+IR_CMD_STD_INPUT_UP = 0x20
+IR_CMD_STD_INPUT_DOWN = 0x21
 IR_CMD_PRESET_B = 0x39
 IR_CMD_STANDBY = 0x3A
 IR_CMD_WAKE = 0x3B
@@ -80,10 +93,29 @@ def v172_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(scope="module")
+def v173_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("v173_v34_diag_identity_control")
+    (tmp / V17_CONTROL_RAM_INC.name).write_bytes(V17_CONTROL_RAM_INC.read_bytes())
+    asm = tmp / V173_CONTROL_ASM.name
+    asm.write_bytes(V173_CONTROL_ASM.read_bytes())
+    hex_out = tmp / "dlcp_control_v173.hex"
+    assemble_v17(asm, hex_out)
+    return hex_out
+
+
+@pytest.fixture(scope="module")
 def v33_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     tmp = tmp_path_factory.mktemp("v172_v33_diag_identity_main")
     hex_out = tmp / "DLCP_Firmware_V3.3.hex"
     assemble_v30(V33_MAIN_ASM, hex_out)
+    return hex_out
+
+
+@pytest.fixture(scope="module")
+def v34_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("v173_v34_diag_identity_main")
+    hex_out = tmp / "DLCP_Firmware_V3.4.hex"
+    assemble_v30(V34_MAIN_ASM, hex_out)
     return hex_out
 
 
@@ -155,12 +187,12 @@ def _frame_tuple(frame) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
 def _configure_hypex_ir_profile(chain) -> None:  # type: ignore[no-untyped-def]
     for addr, value in (
         (IR_PROFILE_ADDR_PHYS, IR_ADDR_HYPEX),
-        (IR_PROFILE_POWER_PHYS, 0x0C),
-        (IR_PROFILE_VOL_UP_PHYS, IR_CMD_VOL_UP),
-        (IR_PROFILE_VOL_DOWN_PHYS, 0x11),
-        (IR_PROFILE_INPUT_UP_PHYS, 0x20),
-        (IR_PROFILE_INPUT_DOWN_PHYS, 0x21),
-        (IR_PROFILE_MUTE_PHYS, IR_CMD_MUTE),
+        (IR_PROFILE_POWER_PHYS, IR_CMD_HYPEX_POWER),
+        (IR_PROFILE_VOL_UP_PHYS, IR_CMD_HYPEX_VOL_UP),
+        (IR_PROFILE_VOL_DOWN_PHYS, IR_CMD_HYPEX_VOL_DOWN),
+        (IR_PROFILE_INPUT_UP_PHYS, IR_CMD_HYPEX_INPUT_UP),
+        (IR_PROFILE_INPUT_DOWN_PHYS, IR_CMD_HYPEX_INPUT_DOWN),
+        (IR_PROFILE_MUTE_PHYS, IR_CMD_HYPEX_MUTE),
     ):
         chain.write_reg(addr, value)
 
@@ -207,6 +239,11 @@ def _expected_v33_diag_title(pb_idx: int) -> str:
     return f"PB{pb_idx + 1} OK v3.3 x{rev:02X} "
 
 
+def _expected_v34_diag_title(pb_idx: int) -> str:
+    rev = read_v34_release_revision(V34_MAIN_ASM)
+    return f"PB{pb_idx + 1} OK v3.4 x{rev:02X} "
+
+
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     """MAIN space is tight: cmd 0x25 must stay compact, not unroll 5 frames."""
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
@@ -222,7 +259,7 @@ def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
         "cmd 0x25 should explicitly emit only the BF/4F/id START frame; "
         "the four payload frames must reuse diag_send_burst_xx"
     )
-    assert "lfsr        FSR0, 0x0005" in body
+    assert "lfsr        FSR0, saved_w_b0_phys" in body
     assert "movlw       0x54" in body
     assert "movlw       0x50" in body
     assert "bra         diag_send_burst_xx" in body
@@ -311,6 +348,27 @@ def test_v172_v33_diag_ok_title_shows_visible_main_identity(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v34_diag_ok_title_shows_visible_main_identity(
+    v173_hex: Path, v34_hex: Path, pb_idx: int
+) -> None:
+    chain = _connected_chain(v173_hex, v34_hex)
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_v34_diag_title(pb_idx)
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: (
+            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
+            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
+            and lcd[0] == expected
+        ),
+        limit=700,
+    )
+    assert lines[0] == expected
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
 def test_v172_v33_diag_page_dispatches_ir_volume_mute_and_preset(
     v172_hex: Path, v33_hex: Path, pb_idx: int
 ) -> None:
@@ -335,11 +393,56 @@ def test_v172_v33_diag_page_dispatches_ir_volume_mute_and_preset(
         limit=700,
     )
 
-    frames = _inject_diag_ir(chain, IR_CMD_VOL_UP)
+    frames = _inject_diag_ir(chain, IR_CMD_HYPEX_VOL_UP)
     assert chain.read_reg(VOLUME_CACHE_PHYS) == 0x34
     assert (0xB0, 0x07, 0x34) in frames
 
-    frames = _inject_diag_ir(chain, IR_CMD_MUTE)
+    frames = _inject_diag_ir(chain, IR_CMD_HYPEX_MUTE)
+    assert chain.read_reg(CONTROL_FLAGS_PHYS) & MUTE_MASK
+    assert (0xB0, 0x03, 0x02) in frames
+
+    frames = _inject_diag_ir(chain, IR_CMD_PRESET_B, settle_ticks=20_000_000)
+    assert chain.read_reg(CONTROL_FLAGS_PHYS) & PRESET_BIT_MASK
+    assert (0xB0, 0x20, 0x01) in frames
+    _wait_until(chain, lambda: _main_preset_bits(chain) == (1, 1), attempts=160)
+
+    assert chain.lcd_lines()[0].startswith(f"PB{pb_idx + 1}"), (
+        f"IR volume/mute/preset should not navigate away from Diag; "
+        f"lcd={chain.lcd_lines()!r}"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v34_diag_page_dispatches_hypex_ir_volume_mute_and_preset(
+    v173_hex: Path, v34_hex: Path, pb_idx: int
+) -> None:
+    """V1.73/V3.4 must dispatch the real Hypex profile command bytes."""
+    chain = _connected_chain(v173_hex, v34_hex)
+    _configure_hypex_ir_profile(chain)
+    chain.write_reg(VOLUME_CACHE_PHYS, 0x33)
+    chain.write_reg(
+        CONTROL_FLAGS_PHYS,
+        chain.read_reg(CONTROL_FLAGS_PHYS) & ~MUTE_MASK & ~PRESET_BIT_MASK,
+    )
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_v34_diag_title(pb_idx)
+    _wait_for_lcd(
+        chain,
+        lambda lcd: (
+            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
+            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
+            and lcd[0] == expected
+        ),
+        limit=700,
+    )
+
+    frames = _inject_diag_ir(chain, IR_CMD_HYPEX_VOL_UP)
+    assert chain.read_reg(VOLUME_CACHE_PHYS) == 0x34
+    assert (0xB0, 0x07, 0x34) in frames
+
+    frames = _inject_diag_ir(chain, IR_CMD_HYPEX_MUTE)
     assert chain.read_reg(CONTROL_FLAGS_PHYS) & MUTE_MASK
     assert (0xB0, 0x03, 0x02) in frames
 
@@ -392,6 +495,92 @@ def test_v172_v33_diag_page_dispatches_ir_standby_and_wake(
         attempts=180,
     )
     _wait_until(chain, lambda: _main_active_gates(chain) == (1, 1), attempts=240)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v34_diag_page_dispatches_ir_standby_and_wake(
+    v173_hex: Path, v34_hex: Path, pb_idx: int
+) -> None:
+    """V1.73/V3.4 Diag pages must not starve explicit IR standby/wake."""
+    chain = _connected_chain(v173_hex, v34_hex)
+    _configure_hypex_ir_profile(chain)
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_v34_diag_title(pb_idx)
+    _wait_for_lcd(
+        chain,
+        lambda lcd: (
+            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
+            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
+            and lcd[0] == expected
+        ),
+        limit=700,
+    )
+
+    standby_frames = _inject_diag_ir(chain, IR_CMD_STANDBY, settle_ticks=20_000_000)
+    assert (0xB0, 0x03, 0x00) in standby_frames
+    _wait_until(chain, lambda: "ZZZ" in chain.lcd_lines()[0].upper(), attempts=120)
+    _wait_until(chain, lambda: _main_active_gates(chain) == (0, 0), attempts=180)
+
+    wake_frames = _inject_diag_ir(chain, IR_CMD_WAKE, settle_ticks=20_000_000)
+    assert (0xB0, 0x03, 0x01) in wake_frames
+    _wait_until(
+        chain,
+        lambda: (
+            chain.is_connected()
+            and bool(chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_CONNECTED_MASK)
+            and "ZZZ" not in chain.lcd_lines()[0].upper()
+        ),
+        attempts=180,
+    )
+    _wait_until(chain, lambda: _main_active_gates(chain) == (1, 1), attempts=240)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("profile_byte", "expected_profile"),
+    [
+        (
+            0x04,
+            [
+                IR_ADDR_HYPEX,
+                IR_CMD_HYPEX_POWER,
+                IR_CMD_HYPEX_VOL_UP,
+                IR_CMD_HYPEX_VOL_DOWN,
+                IR_CMD_HYPEX_INPUT_UP,
+                IR_CMD_HYPEX_INPUT_DOWN,
+                IR_CMD_HYPEX_MUTE,
+            ],
+        ),
+        (
+            0x03,
+            [
+                0x00,
+                IR_CMD_STD_POWER,
+                IR_CMD_STD_VOL_UP,
+                IR_CMD_STD_VOL_DOWN,
+                IR_CMD_STD_INPUT_UP,
+                IR_CMD_STD_INPUT_DOWN,
+                IR_CMD_STD_MUTE,
+            ],
+        ),
+    ],
+)
+def test_v173_v34_boot_loads_ir_profile_from_main_setup_byte(
+    v173_hex: Path, v34_hex: Path, profile_byte: int, expected_profile: list[int]
+) -> None:
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(v173_hex),
+        main_hex_path=str(v34_hex),
+    )
+    for unit in (0, 1):
+        chain.write_main_eeprom_byte(unit, 0x0E, profile_byte)
+    assert chain.run_until_connected(limit=300) < 300
+
+    actual = [chain.read_reg(addr) for addr in range(0x020, 0x027)]
+    assert actual == expected_profile
+    assert chain.read_reg(0x0A7) == profile_byte
 
 
 @pytest.mark.slow

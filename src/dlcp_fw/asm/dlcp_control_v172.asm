@@ -549,7 +549,7 @@ ir_rc5_decode:                                               ; address: 0x00021e
         bsf     TRISB, RB5, A                               ; reg: 0xf93, bit: 5
         clrf    (Common_RAM + 21), A                        ; reg: 0x015
         clrf    (Common_RAM + 20), A                        ; reg: 0x014
-        lfsr    0x0, 0x010
+        lfsr    0x0, stock_010_b0_phys
         movlw   0x01
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
         movlw   0xba
@@ -587,7 +587,7 @@ flow_ir_rc5_decode_025C:                                                  ; addr
 
 flow_ir_rc5_decode_025E:                                                  ; address: 0x00025e
 
-        lfsr    0x0, 0x010
+        lfsr    0x0, stock_010_b0_phys
         clrf    (Common_RAM + 5), A                         ; reg: 0x005
         clrf    (Common_RAM + 20), A                        ; reg: 0x014
         clrf    (Common_RAM + 14), A                        ; reg: 0x00e
@@ -810,7 +810,7 @@ isr_entry:                                                  ; address: 0x0003a6
 
 flow_app_cold_init_03DE:                                                  ; address: 0x0003de
 
-        lfsr    0x0, 0x036
+        lfsr    0x0, tx_ring_base_b0_phys
         movf    tx_ring_rd_b0, W, B                                  ; reg: 0x096
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   TXREG, A                                    ; reg: 0xfad
@@ -825,7 +825,7 @@ flow_app_cold_init_03F6:                                                  ; addr
 
         btfss   PIR1, RCIF, A                               ; reg: 0xf9e, bit: 5
         goto    flow_app_cold_init_0414
-        lfsr    0x0, 0x066
+        lfsr    0x0, rx_ring_base_b0_phys
         movf    rx_ring_wr_b0, W, B                                  ; reg: 0x099
         movff   RCREG, PLUSW0                               ; reg1: 0xfae, reg2: 0xfeb
         incf    rx_ring_wr_b0, F, B                                  ; reg: 0x099
@@ -937,7 +937,7 @@ flow_rx_parser_entry_0456:                                                  ; ad
 
 flow_rx_parser_entry_0460:                                                  ; address: 0x000460
 
-        lfsr    0x0, 0x066
+        lfsr    0x0, rx_ring_base_b0_phys
         movf    rx_ring_rd_b0, W, B                                  ; reg: 0x098
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0B6_b0, B                                     ; reg: 0x0b6
@@ -1421,7 +1421,7 @@ fname_char_check_high:
         movlw   0x7F
         cpfslt  rx_parsed_data_acc, A                           ; data < 0x7F?
         bra     fname_abort
-        lfsr    0x0, 0x220
+        lfsr    0x0, v172_fname_cache_b2_phys
         movf    v172_fname_len_b2, W, BANKED
         addwf   FSR0L, F, A
         movf    rx_parsed_data_acc, W, A
@@ -1777,7 +1777,7 @@ tx_ring_reserve_3_sat_done:
 ; tx_byte_enqueue:
 tx_byte_enqueue:                                               ; address: 0x0005ec
 
-        lfsr    0x0, 0x036
+        lfsr    0x0, tx_ring_base_b0_phys
         movf    tx_ring_wr_b0, W, B                                  ; reg: 0x097
         movff   tx_data_staging_b0_phys, PLUSW0                   ; reg1: 0x027, reg2: 0xfeb
         incf    tx_ring_wr_b0, W, B                                  ; reg: 0x097
@@ -2431,49 +2431,49 @@ flow_ccs_0990_09AE:                                                  ; address: 
         movlw   0x03                                        ; CMD standby/wake (data 00=standby 01=wake 02=mute_on 03=mute_off)
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0c1
+        lfsr    0x0, saved_settings_base_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x09
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0c7
+        lfsr    0x0, stock_0C7_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x0f
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0cd
+        lfsr    0x0, stock_0CD_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x15
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0d3
+        lfsr    0x0, stock_0D3_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x1b                                        ; CMD channel_src_5
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0d9
+        lfsr    0x0, stock_0D9_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x21
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0df
+        lfsr    0x0, stock_0DF_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x27
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         movwf   EEADR, A                                    ; reg: 0xfa9
-        lfsr    0x0, 0x0e5
+        lfsr    0x0, stock_0E5_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
@@ -2524,49 +2524,49 @@ flow_settings_load_eeprom_0A60:                                                 
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0c1
+        lfsr    0x0, saved_settings_base_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x09
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0c7
+        lfsr    0x0, stock_0C7_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x0f
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0cd
+        lfsr    0x0, stock_0CD_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x15
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0d3
+        lfsr    0x0, stock_0D3_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x1b                                        ; CMD channel_src_5
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0d9
+        lfsr    0x0, stock_0D9_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x21
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0df
+        lfsr    0x0, stock_0DF_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         movlw   0x27
         addwf   tx_data_staging_acc, W, A                     ; reg: 0x027
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x0e5
+        lfsr    0x0, stock_0E5_b0_phys
         movf    tx_data_staging_acc, W, A                     ; reg: 0x027
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         incf    tx_data_staging_acc, F, A                     ; reg: 0x027
@@ -2756,7 +2756,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x17
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0c1
+        lfsr    0x0, saved_settings_base_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -2766,7 +2766,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x18
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0c7
+        lfsr    0x0, stock_0C7_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -2776,7 +2776,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x19
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0cd
+        lfsr    0x0, stock_0CD_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -2786,7 +2786,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x1a
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0d3
+        lfsr    0x0, stock_0D3_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -2796,7 +2796,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x1b
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0d9
+        lfsr    0x0, stock_0D9_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -2806,7 +2806,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x1c
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0df
+        lfsr    0x0, stock_0DF_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -2816,7 +2816,7 @@ poll_frame_send_aborted:
         movwf   (Common_RAM + 51), A                        ; reg: 0x033
         movlw   0x1e
         movwf   (Common_RAM + 52), A                        ; reg: 0x034
-        lfsr    0x0, 0x0e5
+        lfsr    0x0, stock_0E5_b0_phys
         movf    (Common_RAM + 40), W, A                     ; reg: 0x028
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 53), A                        ; reg: 0x035
@@ -4435,10 +4435,10 @@ v171_diag_load_fsr1_base:
         movlb   0x01
         btfsc   v171_diag_render_pb_index_b1, 0, BANKED
         bra     v171_diag_load_fsr1_pb2
-        lfsr    0x1, 0x180
+        lfsr    0x1, v171_diag_pb1_i_b1_phys
         return  0x0
 v171_diag_load_fsr1_pb2:
-        lfsr    0x1, 0x18B
+        lfsr    0x1, v171_diag_pb2_i_b1_phys
         return  0x0
 
 ; ---------------------------------------------------------------------------
@@ -5094,14 +5094,14 @@ v172_diag_identity_send_abort:
 ; V1.72/V3.3 Preset filename helpers
 ; ---------------------------------------------------------------------------
 v172_fname_cold_clear:
-        lfsr    0x0, 0x220
+        lfsr    0x0, v172_fname_cache_b2_phys
         movlw   0x25
         movwf   (Common_RAM + 15), A
 v172_fname_clear_low:
         clrf    POSTINC0, A
         decfsz  (Common_RAM + 15), F, A
         bra     v172_fname_clear_low
-        lfsr    0x0, 0x255
+        lfsr    0x0, v172_fname_scroll_div_lo_b2_phys
         movlw   0x08
         movwf   (Common_RAM + 15), A
 v172_fname_clear_high:
@@ -5504,7 +5504,7 @@ v172_fname_row1_render_service:
         movf    v172_fname_len_b2, W, BANKED
         cpfslt  v172_fname_tmp_b2, BANKED
         bra     v172_fname_row1_space
-        lfsr    0x0, 0x220
+        lfsr    0x0, v172_fname_cache_b2_phys
         movf    v172_fname_tmp_b2, W, BANKED
         addwf   FSR0L, F, A
         movf    INDF0, W, A
@@ -6121,7 +6121,7 @@ flow_ccs_0FA0_103C:                                                  ; address: 
         ; app_cold_init body proper, because adding code there shifts
         ; isr_entry past 0x0003a6 and breaks the byte-identical vector
         ; block contract gated by test_v171_layer1_vector_block_byte_identical).
-        lfsr    0x0, 0x180                                  ; FSR0 -> first cache cell
+        lfsr    0x0, v171_diag_pb1_i_b1_phys                                  ; FSR0 -> first cache cell
         movlw   0x18                                        ; 24 cells (0x180..0x197 inclusive)
         movwf   (Common_RAM + 15), A                        ; transient loop counter
 flow_v171_diag_cache_zero:
@@ -6167,7 +6167,7 @@ flow_v171_diag_cache_zero:
         clrf    ir_decoded_addr_acc, A                        ; reg: 0x01e
         clrf    stock_09B_b0, B                                     ; reg: 0x09b
         clrf    stock_09C_b0, B                                     ; reg: 0x09c
-        lfsr    0x0, 0x0c1
+        lfsr    0x0, saved_settings_base_b0_phys
         movlw   0x06
 
 flow_ccs_0FA0_106E:                                                  ; address: 0x00106e
@@ -6175,7 +6175,7 @@ flow_ccs_0FA0_106E:                                                  ; address: 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
         bra     flow_ccs_0FA0_106E                                   ; dest: 0x00106e
-        lfsr    0x0, 0x0c7
+        lfsr    0x0, stock_0C7_b0_phys
         movlw   0x06
 
 flow_ccs_0FA0_107A:                                                  ; address: 0x00107a
@@ -6183,7 +6183,7 @@ flow_ccs_0FA0_107A:                                                  ; address: 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
         bra     flow_ccs_0FA0_107A                                   ; dest: 0x00107a
-        lfsr    0x0, 0x0cd
+        lfsr    0x0, stock_0CD_b0_phys
         movlw   0x06
 
 flow_ccs_0FA0_1086:                                                  ; address: 0x001086
@@ -6191,7 +6191,7 @@ flow_ccs_0FA0_1086:                                                  ; address: 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
         bra     flow_ccs_0FA0_1086                                   ; dest: 0x001086
-        lfsr    0x0, 0x0d3
+        lfsr    0x0, stock_0D3_b0_phys
         movlw   0x06
 
 flow_ccs_0FA0_1092:                                                  ; address: 0x001092
@@ -6199,7 +6199,7 @@ flow_ccs_0FA0_1092:                                                  ; address: 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
         bra     flow_ccs_0FA0_1092                                   ; dest: 0x001092
-        lfsr    0x0, 0x0d9
+        lfsr    0x0, stock_0D9_b0_phys
         movlw   0x06
 
 flow_ccs_0FA0_109E:                                                  ; address: 0x00109e
@@ -6207,7 +6207,7 @@ flow_ccs_0FA0_109E:                                                  ; address: 
         clrf    POSTINC0, A                                 ; reg: 0xfee
         decfsz  WREG, F, A                                  ; reg: 0xfe8
         bra     flow_ccs_0FA0_109E                                   ; dest: 0x00109e
-        lfsr    0x0, 0x0df
+        lfsr    0x0, stock_0DF_b0_phys
         movlw   0x06
 
 flow_ccs_0FA0_10AA:                                                  ; address: 0x0010aa
@@ -6258,7 +6258,7 @@ flow_ccs_0FA0_10F6:                                                  ; address: 
         clrf    stock_0B2_b0, B                                     ; reg: 0x0b2
         clrf    stock_0B1_b0, B                                     ; reg: 0x0b1
         clrf    stock_0B0_b0, B                                     ; reg: 0x0b0
-        lfsr    0x0, 0x245                                  ; V1.72 identity cache
+        lfsr    0x0, v172_diag_id_pb1_major_b2_phys                                  ; V1.72 identity cache
         movlw   0x10
         movwf   (Common_RAM + 4), A
 v172_clear_identity_cache_loop:
@@ -7441,7 +7441,7 @@ flow_main_event_loop_165A:                                                  ; ad
         movf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_main_event_loop_1692                                   ; dest: 0x001692
-        lfsr    0x0, 0x0c1
+        lfsr    0x0, saved_settings_base_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7451,7 +7451,7 @@ flow_main_event_loop_1692:                                                  ; ad
 
         decfsz  stock_0C0_b0, W, B                                  ; reg: 0x0c0
         goto    flow_main_event_loop_16A6                                   ; dest: 0x0016a6
-        lfsr    0x0, 0x0c7
+        lfsr    0x0, stock_0C7_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7462,7 +7462,7 @@ flow_main_event_loop_16A6:                                                  ; ad
         movlw   0x02
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16BC                                   ; dest: 0x0016bc
-        lfsr    0x0, 0x0cd
+        lfsr    0x0, stock_0CD_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7473,7 +7473,7 @@ flow_main_event_loop_16BC:                                                  ; ad
         movlw   0x03
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16D2                                   ; dest: 0x0016d2
-        lfsr    0x0, 0x0d3
+        lfsr    0x0, stock_0D3_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7484,7 +7484,7 @@ flow_main_event_loop_16D2:                                                  ; ad
         movlw   0x04
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16E8                                   ; dest: 0x0016e8
-        lfsr    0x0, 0x0d9
+        lfsr    0x0, stock_0D9_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7495,7 +7495,7 @@ flow_main_event_loop_16E8:                                                  ; ad
         movlw   0x05
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_main_event_loop_16FA                                   ; dest: 0x0016fa
-        lfsr    0x0, 0x0df
+        lfsr    0x0, stock_0DF_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7517,7 +7517,7 @@ flow_main_event_loop_16FA:                                                  ; ad
 
 flow_main_event_loop_1718:                                                  ; address: 0x001718
 
-        lfsr    0x0, 0x0e5
+        lfsr    0x0, stock_0E5_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   stock_0A5_b0, B                                     ; reg: 0x0a5
@@ -7645,7 +7645,7 @@ control_core_service_17E8:                                               ; addre
         movf    stock_0C0_b0, F, B                                  ; reg: 0x0c0
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_17E8_180A                                   ; dest: 0x00180a
-        lfsr    0x0, 0x0c1
+        lfsr    0x0, saved_settings_base_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
@@ -7654,7 +7654,7 @@ flow_ccs_17E8_180A:                                                  ; address: 
 
         decfsz  stock_0C0_b0, W, B                                  ; reg: 0x0c0
         goto    flow_ccs_17E8_181E                                   ; dest: 0x00181e
-        lfsr    0x0, 0x0c7
+        lfsr    0x0, stock_0C7_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
@@ -7664,7 +7664,7 @@ flow_ccs_17E8_181E:                                                  ; address: 
         movlw   0x02
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1834                                   ; dest: 0x001834
-        lfsr    0x0, 0x0cd
+        lfsr    0x0, stock_0CD_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
@@ -7674,7 +7674,7 @@ flow_ccs_17E8_1834:                                                  ; address: 
         movlw   0x03
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_184A                                   ; dest: 0x00184a
-        lfsr    0x0, 0x0d3
+        lfsr    0x0, stock_0D3_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
@@ -7684,7 +7684,7 @@ flow_ccs_17E8_184A:                                                  ; address: 
         movlw   0x04
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1860                                   ; dest: 0x001860
-        lfsr    0x0, 0x0d9
+        lfsr    0x0, stock_0D9_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
@@ -7694,7 +7694,7 @@ flow_ccs_17E8_1860:                                                  ; address: 
         movlw   0x05
         cpfseq  stock_0C0_b0, B                                     ; reg: 0x0c0
         goto    flow_ccs_17E8_1872                                   ; dest: 0x001872
-        lfsr    0x0, 0x0df
+        lfsr    0x0, stock_0DF_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
 
@@ -7704,7 +7704,7 @@ flow_ccs_17E8_1872:                                                  ; address: 
 
 flow_ccs_17E8_1876:                                                  ; address: 0x001876
 
-        lfsr    0x0, 0x0e5
+        lfsr    0x0, stock_0E5_b0_phys
         movf    stock_0BA_b0, W, B                                  ; reg: 0x0ba
         movff   0x0a5, PLUSW0                               ; reg2: 0xfeb
 
@@ -8602,7 +8602,7 @@ flow_ccs_7ADA_7B82:                                                  ; address: 
         movlw   0xec
         movwf   TBLPTRL, A                                  ; reg: 0xff6
         rcall   control_core_service_7946                                ; dest: 0x007946
-        lfsr    0x0, 0x024
+        lfsr    0x0, stock_024_b0_phys
         movlw   0x1f
 
 flow_ccs_7ADA_7BA4:                                                  ; address: 0x007ba4
@@ -8623,11 +8623,11 @@ flow_ccs_7ADA_7BB6:                                                  ; address: 
 
 flow_ccs_7ADA_7BB8:                                                  ; address: 0x007bb8
 
-        lfsr    0x0, 0x076
+        lfsr    0x0, stock_076_b0_phys
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 25), A                        ; reg: 0x019
-        lfsr    0x0, 0x07c
+        lfsr    0x0, stock_07C_b0_phys
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
         movff   (Common_RAM + 25), PLUSW0                   ; reg1: 0x019, reg2: 0xfeb
         incf    (Common_RAM + 8), F, A                      ; reg: 0x008
@@ -8638,7 +8638,7 @@ flow_ccs_7ADA_7BB8:                                                  ; address: 
 
 flow_ccs_7ADA_7BD6:                                                  ; address: 0x007bd6
 
-        lfsr    0x0, 0x043
+        lfsr    0x0, stock_043_b0_phys
         movlw   0x2e
 
 flow_ccs_7ADA_7BDC:                                                  ; address: 0x007bdc
@@ -8657,7 +8657,7 @@ flow_ccs_7ADA_7BEA:                                                  ; address: 
         bnc     flow_ccs_7ADA_7BB6
         sublw   0x3a
         bnz     flow_ccs_7ADA_7BEA
-        lfsr    0x1, 0x043
+        lfsr    0x1, stock_043_b0_phys
 
 flow_ccs_7ADA_7BF6:                                                  ; address: 0x007bf6
 
@@ -8685,7 +8685,7 @@ flow_ccs_7ADA_7C0E:                                                  ; address: 
         movlw   0x06
         cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7C2A                                   ; dest: 0x007c2a
-        lfsr    0x0, 0x043
+        lfsr    0x0, stock_043_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
@@ -8716,8 +8716,8 @@ flow_ccs_7ADA_7C36:                                                  ; address: 
         movlw   0x14
         cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7C74                                   ; dest: 0x007c74
-        lfsr    0x0, 0x071
-        lfsr    0x1, 0x043
+        lfsr    0x0, stock_071_b0_phys
+        lfsr    0x1, stock_043_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
@@ -8727,7 +8727,7 @@ flow_ccs_7ADA_7C36:                                                  ; address: 
         movlw   0x02
         rcall   control_core_service_7ADA                                ; dest: 0x007ada
         clrf    INDF0, A                                    ; reg: 0xfef
-        lfsr    0x0, 0x071
+        lfsr    0x0, stock_071_b0_phys
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 25), A                        ; reg: 0x019
         movff   (Common_RAM + 16), (Common_RAM + 26)        ; reg1: 0x010, reg2: 0x01a
@@ -8752,14 +8752,14 @@ flow_ccs_7ADA_7C74:                                                  ; address: 
         movlw   0x00
         addwfc  (Common_RAM + 26), W, A                     ; reg: 0x01a
         movwf   (Common_RAM + 35), A                        ; reg: 0x023
-        lfsr    0x0, 0x071
-        lfsr    0x1, 0x043
+        lfsr    0x0, stock_071_b0_phys
+        lfsr    0x1, stock_043_b0_phys
         movlw   0x29
         movwf   PRODL, A                                    ; reg: 0xff3
         movlw   0x02
         rcall   control_core_service_7ADA                                ; dest: 0x007ada
         clrf    INDF0, A                                    ; reg: 0xfef
-        lfsr    0x0, 0x071
+        lfsr    0x0, stock_071_b0_phys
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 32), A                        ; reg: 0x020
         movff   (Common_RAM + 16), (Common_RAM + 33)        ; reg1: 0x010, reg2: 0x021
@@ -8768,14 +8768,14 @@ flow_ccs_7ADA_7C74:                                                  ; address: 
         bra     flow_ccs_7ADA_7E5E                                   ; dest: 0x007e5e
         tstfsz  (Common_RAM + 33), A                        ; reg: 0x021
         bra     flow_ccs_7ADA_7E5E                                   ; dest: 0x007e5e
-        lfsr    0x0, 0x071
-        lfsr    0x1, 0x043
+        lfsr    0x0, stock_071_b0_phys
+        lfsr    0x1, stock_043_b0_phys
         movlw   0x03
         movwf   PRODL, A                                    ; reg: 0xff3
         movlw   0x04
         rcall   control_core_service_7ADA                                ; dest: 0x007ada
         clrf    INDF0, A                                    ; reg: 0xfef
-        lfsr    0x0, 0x071
+        lfsr    0x0, stock_071_b0_phys
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   ir_decoded_cmd_acc, A                        ; reg: 0x01d
         movff   (Common_RAM + 16), ir_decoded_addr        ; reg1: 0x010, reg2: 0x01e
@@ -8840,8 +8840,8 @@ flow_ccs_7ADA_7D4C:                                                  ; address: 
         movlw   0x08
         cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7DA4                                   ; dest: 0x007da4
-        lfsr    0x0, 0x071
-        lfsr    0x1, 0x043
+        lfsr    0x0, stock_071_b0_phys
+        lfsr    0x1, stock_043_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x04
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
@@ -8852,7 +8852,7 @@ flow_ccs_7ADA_7D4C:                                                  ; address: 
         movlw   0x04
         rcall   control_core_service_7ADA                                ; dest: 0x007ada
         clrf    INDF0, A                                    ; reg: 0xfef
-        lfsr    0x0, 0x071
+        lfsr    0x0, stock_071_b0_phys
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 32), A                        ; reg: 0x020
         movff   (Common_RAM + 16), (Common_RAM + 33)        ; reg1: 0x010, reg2: 0x021
@@ -8899,8 +8899,8 @@ flow_ccs_7ADA_7DCA:                                                  ; address: 
         movlw   0x10
         cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7E08                                   ; dest: 0x007e08
-        lfsr    0x0, 0x071
-        lfsr    0x1, 0x043
+        lfsr    0x0, stock_071_b0_phys
+        lfsr    0x1, stock_043_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
@@ -8911,10 +8911,10 @@ flow_ccs_7ADA_7DCA:                                                  ; address: 
         movlw   0x02
         rcall   control_core_service_7ADA                                ; dest: 0x007ada
         clrf    INDF0, A                                    ; reg: 0xfef
-        lfsr    0x0, 0x071
+        lfsr    0x0, stock_071_b0_phys
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
-        lfsr    0x0, 0x024
+        lfsr    0x0, stock_024_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         movff   (Common_RAM + 8), PLUSW0                    ; reg1: 0x008, reg2: 0xfeb
         incf    control_flags_acc, F, A                     ; reg: 0x01f
@@ -8939,8 +8939,8 @@ flow_ccs_7ADA_7E18:                                                  ; address: 
         movlw   0x10                                        ; RC5 0x10 volume up
         cpfslt  control_flags_acc, A                        ; reg: 0x01f
         bra     flow_ccs_7ADA_7E5C                                   ; dest: 0x007e5c
-        lfsr    0x0, 0x071
-        lfsr    0x1, 0x043
+        lfsr    0x0, stock_071_b0_phys
+        lfsr    0x1, stock_043_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         mullw   0x02
         movff   PRODL, (Common_RAM + 25)                    ; reg1: 0xff3, reg2: 0x019
@@ -8954,10 +8954,10 @@ flow_ccs_7ADA_7E18:                                                  ; address: 
         movlw   0x10
         addwf   control_flags_acc, W, A                     ; reg: 0x01f
         movwf   (Common_RAM + 8), A                         ; reg: 0x008
-        lfsr    0x0, 0x071
+        lfsr    0x0, stock_071_b0_phys
         call    control_core_service_784E, 0x0                           ; dest: 0x00784e
         movwf   (Common_RAM + 10), A                        ; reg: 0x00a
-        lfsr    0x0, 0x024
+        lfsr    0x0, stock_024_b0_phys
         movf    (Common_RAM + 8), W, A                      ; reg: 0x008
         movff   (Common_RAM + 10), PLUSW0                   ; reg1: 0x00a, reg2: 0xfeb
         incf    control_flags_acc, F, A                     ; reg: 0x01f
@@ -9035,7 +9035,7 @@ flow_ccs_7E94_7EE4:                                                  ; address: 
         bra     flow_ccs_7E94_7F00                                   ; dest: 0x007f00
         movff   control_flags_b0_phys, TBLPTRL                  ; reg1: 0x01f, reg2: 0xff6
         clrf    TBLPTRH, A                                  ; reg: 0xff7
-        lfsr    0x0, 0x024
+        lfsr    0x0, stock_024_b0_phys
         movf    control_flags_acc, W, A                     ; reg: 0x01f
         movf    PLUSW0, W, A                                ; reg: 0xfeb
         call    control_core_service_7A6E, 0x0                           ; dest: 0x007a6e

@@ -126,6 +126,8 @@ def build_forward_argv(
     if missing_captures:
         _print_missing_capture_warning(missing_captures, version_label=version_label)
         argv.extend(["--hex", str(release_hex), "--all-ch", route])
+        if args.profile:
+            argv.extend(["--profile", args.profile])
         return argv
 
     argv.extend(
@@ -144,6 +146,8 @@ def build_forward_argv(
             route,
         ]
     )
+    if args.profile:
+        argv.extend(["--profile", args.profile])
     return argv
 
 
@@ -179,6 +183,12 @@ def release_main(
     )
     ap.add_argument("--preflight-only", action="store_true", help="run preflight only; do not write over USB")
     ap.add_argument("--dry-run", action="store_true", help="parse/prepare only, no USB writes")
+    ap.add_argument(
+        "--profile",
+        choices=("hypex", "rc5"),
+        default=None,
+        help="post-flash MAIN IR profile; omitted uses the MAIN flasher default (hypex)",
+    )
     ap.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     args = ap.parse_args(argv)
 

@@ -267,11 +267,12 @@ def _legacy_ir_action(action: str, *, profile: str) -> str:
 
 def _expected_control_hex_identity(expected_control: str) -> dict[str, object]:
     from dlcp_fw.flash import dlcp_control_flash
-    from dlcp_fw.paths import STOCK_CONTROL_HEX_V16B, V171_CONTROL_HEX
+    from dlcp_fw.paths import STOCK_CONTROL_HEX_V16B, V171_CONTROL_HEX, V173_CONTROL_HEX
 
     hex_paths = {
         "V1.6b": STOCK_CONTROL_HEX_V16B,
         "V1.71": V171_CONTROL_HEX,
+        "V1.73": V173_CONTROL_HEX,
     }
     hex_path = hex_paths[expected_control]
     hex_mem = dlcp_control_flash.parse_intel_hex(str(hex_path))
@@ -1099,9 +1100,9 @@ def test_live_ir_legacy_command_stress_from_volume(tmp_path: Path) -> None:
     """Opt-in real-IR stress gate for BUG-IR-01.
 
     This intentionally uses legacy CONTROL commands that should work on both
-    stock V1.6b and V1.71: volume up/down, mute toggle, and POWER
-    standby/wake toggle.  Run it once on stock V1.6b CONTROL to establish the
-    baseline and again with V1.71 CONTROL; both runs must pass.
+    stock V1.6b, V1.71, and V1.73: volume up/down, mute toggle, and
+    POWER standby/wake toggle.  Run it once on stock V1.6b CONTROL to
+    establish the baseline and again with the release CONTROL under test.
     """
     if os.environ.get("DLCP_HW_IR_LEGACY_STRESS") != "1":
         pytest.skip(
@@ -1109,9 +1110,9 @@ def test_live_ir_legacy_command_stress_from_volume(tmp_path: Path) -> None:
             "legacy command stress gate; run once on V1.6b and once on V1.71"
         )
     expected_control = os.environ.get("DLCP_HW_EXPECTED_CONTROL_VERSION", "").strip()
-    if expected_control not in {"V1.6b", "V1.71"}:
+    if expected_control not in {"V1.6b", "V1.71", "V1.73"}:
         pytest.fail(
-            "set DLCP_HW_EXPECTED_CONTROL_VERSION=V1.6b or V1.71 so the "
+            "set DLCP_HW_EXPECTED_CONTROL_VERSION=V1.6b, V1.71, or V1.73 so the "
             "legacy real-IR evidence is tied to the CONTROL firmware under test"
         )
     expected_control_hex = _expected_control_hex_identity(expected_control)

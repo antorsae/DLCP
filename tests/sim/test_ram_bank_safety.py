@@ -12,7 +12,12 @@ def _codes(findings: list[rbs.Finding]) -> set[str]:
 
 
 def test_current_targets_pass_ram_bank_safety_checker() -> None:
-    assert rbs.check_targets(["main-v33", "control-v172"]) == []
+    assert rbs.check_targets(["main-v33", "control-v172", "main-v34", "control-v173"]) == []
+
+
+def test_v34_v173_targets_are_registered() -> None:
+    assert rbs.TARGET_SPECS["main-v34"].asm_path.name == "dlcp_main_v34.asm"
+    assert rbs.TARGET_SPECS["control-v173"].asm_path.name == "dlcp_control_v173.asm"
 
 
 def test_raw_ram_symbol_operand_fails() -> None:
@@ -299,6 +304,40 @@ test:
     )
     assert "RAM_MOVFF_NEEDS_PHYS" not in _codes(good)
     assert "RAM_LFSR_NEEDS_PHYS" not in _codes(good)
+
+
+def test_raw_numeric_ram_lfsr_fails_but_sfr_numeric_is_allowed() -> None:
+    ram_findings = rbs.check_source_text(
+        "main-v34",
+        """
+test:
+    lfsr    FSR0, 0x01ED
+""",
+        path=Path("fixture.asm"),
+    )
+    assert "RAM_LFSR_RAW_NUMERIC" in _codes(ram_findings)
+
+    sfr_findings = rbs.check_source_text(
+        "main-v34",
+        """
+test:
+    lfsr    FSR0, 0xF60
+""",
+        path=Path("fixture.asm"),
+    )
+    assert "RAM_LFSR_RAW_NUMERIC" not in _codes(sfr_findings)
+
+
+def test_lfsr_unknown_phys_alias_fails() -> None:
+    findings = rbs.check_source_text(
+        "main-v34",
+        """
+test:
+    lfsr    FSR0, missing_range_b0_phys
+""",
+        path=Path("fixture.asm"),
+    )
+    assert "RAM_UNKNOWN_PHYS_ALIAS" in _codes(findings)
 
 
 def test_manifest_duplicate_physical_address_fails_without_alias(monkeypatch) -> None:

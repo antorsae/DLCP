@@ -5,6 +5,7 @@ import pytest
 from dlcp_fw.flash.dlcp_main_flash import (
     DeviceSnapshot,
     EepromVersionInfo,
+    InputRuntimeInfo,
     MAIN_APP_START,
     MAIN_BOOT_END_EXCL,
     MAIN_PROG_END_EXCL,
@@ -13,6 +14,7 @@ from dlcp_fw.flash.dlcp_main_flash import (
     VersionInfo,
     VolumeRuntimeInfo,
     _looks_like_main_boot_ack,
+    _apply_ir_profile_ep0,
     bootloader_mismatch_addresses,
     build_main_stream,
     decode_filename_slot,
@@ -100,6 +102,60 @@ def test_cli_blocks_unsafe_flags_without_force(stock_main_hex) -> None:
 def test_cli_allows_unsafe_when_explicitly_forced(stock_main_hex) -> None:
     rc = main(["--hex", str(stock_main_hex), "--preflight-only", "--no-verify", "--force-unsafe"])
     assert rc == 0
+
+
+def test_preflight_reports_default_hypex_ir_profile(stock_main_hex, capsys) -> None:
+    rc = main(["--hex", str(stock_main_hex), "--preflight-only"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "post-flash IR profile: hypex (0x04)" in out
+
+
+def test_preflight_accepts_rc5_ir_profile(stock_main_hex, capsys) -> None:
+    rc = main(["--hex", str(stock_main_hex), "--preflight-only", "--profile", "rc5"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "post-flash IR profile: rc5 (0x03)" in out
+
+
+def test_apply_ir_profile_ep0_preserves_input_and_sets_profile(monkeypatch) -> None:
+    probes = [
+        InputRuntimeInfo(input_select=0x02, input_mirror=0x02, setup_profile=0x03),
+        InputRuntimeInfo(input_select=0x02, input_mirror=0x02, setup_profile=0x04),
+    ]
+    seen: dict[str, object] = {}
+
+    def _fake_probe_ep0_input_state(**_kwargs):
+        return probes.pop(0)
+
+    def _fake_restore_runtime_settings_ep0(**kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_ep0_input_state",
+        _fake_probe_ep0_input_state,
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._restore_runtime_settings_ep0",
+        _fake_restore_runtime_settings_ep0,
+    )
+
+    before, after = _apply_ir_profile_ep0(
+        vid=0x04D8,
+        pid=0xFF89,
+        path=b"main",
+        profile_label="hypex",
+    )
+
+    assert (before, after) == (0x03, 0x04)
+    assert seen["input_state"] == InputRuntimeInfo(
+        input_select=0x02,
+        input_mirror=0x02,
+        setup_profile=0x04,
+    )
+    assert seen["volume_state"] is None
 
 
 def test_parse_cmd06_version_response_extracts_fields() -> None:
@@ -334,6 +390,21 @@ def test_cli_warns_when_device_revision_is_same_or_newer(monkeypatch, stock_main
     monkeypatch.setattr(
         "dlcp_fw.flash.dlcp_main_flash._hid_read64",
         lambda dev, timeout_ms=0: bytes([0x40, 0x00, 0x00]) + bytes(61),
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._wait_for_app",
+        lambda **kwargs: HidDeviceInfo(
+            vendor_id=0x04D8,
+            product_id=0xFF89,
+            path=b"hid-main-a",
+            manufacturer_string="Hypex",
+            product_string="DLCP",
+            serial_number="SER-A",
+        ),
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._apply_ir_profile_ep0",
+        lambda **kwargs: (0x04, 0x04),
     )
 
     rc = main(

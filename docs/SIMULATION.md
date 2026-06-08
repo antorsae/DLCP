@@ -15,6 +15,9 @@ inventory live in:
   closure tracking.
 - `docs/SIM_REWRITE_RUST_PROGRESS.md` — machine-readable progress ledger
   (driven by `scripts/sim_rewrite_next.py`).
+- `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md` — operator spec for long
+  exploratory chain runs that combine realistic UI/HFD stimuli, injected
+  faults, and oracle-based incident capture.
 
 This document is the day-to-day operator's guide: how to build, how to run
 tests, and what the public Python and CLI surfaces look like.

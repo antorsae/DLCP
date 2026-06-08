@@ -12,7 +12,14 @@ from functools import lru_cache
 from pathlib import Path
 import re
 
-from dlcp_fw.paths import PROJECT_ROOT, V17_CONTROL_RAM_INC, V172_CONTROL_ASM, V33_MAIN_ASM
+from dlcp_fw.paths import (
+    PROJECT_ROOT,
+    V17_CONTROL_RAM_INC,
+    V172_CONTROL_ASM,
+    V173_CONTROL_ASM,
+    V33_MAIN_ASM,
+    V34_MAIN_ASM,
+)
 
 
 @dataclass(frozen=True)
@@ -54,9 +61,21 @@ TARGET_SPECS: dict[str, TargetRamSpec] = {
         inc_path=MAIN_RAM_INC,
         mcu="pic18f2455",
     ),
+    "main-v34": TargetRamSpec(
+        key="main-v34",
+        asm_path=V34_MAIN_ASM,
+        inc_path=MAIN_RAM_INC,
+        mcu="pic18f2455",
+    ),
     "control-v172": TargetRamSpec(
         key="control-v172",
         asm_path=V172_CONTROL_ASM,
+        inc_path=V17_CONTROL_RAM_INC,
+        mcu="pic18f25k20",
+    ),
+    "control-v173": TargetRamSpec(
+        key="control-v173",
+        asm_path=V173_CONTROL_ASM,
         inc_path=V17_CONTROL_RAM_INC,
         mcu="pic18f25k20",
     ),
@@ -116,7 +135,27 @@ _EXPLICIT_SOURCE_RAM_NAMES: dict[str, set[str]] = {
         "preset_job_tbl_lo",
         "preset_job_tbl_hi",
     },
+    "main-v34": {
+        "dsp_fault_flags",
+        "i2c_recover_flags",
+        "src4382_loss_debounce",
+        "timeout_lo",
+        "timeout_hi",
+        "saved_w",
+        "current_cmd_data",
+        "filename_dirty_flags",
+        "preset_hold_timer_lo",
+        "preset_hold_timer_hi",
+        "preset_job_state",
+        "preset_job_target",
+        "preset_job_index",
+        "preset_job_delay",
+        "preset_job_flags",
+        "preset_job_tbl_lo",
+        "preset_job_tbl_hi",
+    },
     "control-v172": set(),
+    "control-v173": set(),
 }
 
 _EXPLICIT_STOCK_PHYS: dict[str, set[int]] = {
@@ -130,7 +169,25 @@ _EXPLICIT_STOCK_PHYS: dict[str, set[int]] = {
         0x1A3,
         0x1C7,
     },
+    "main-v34": {
+        0x166,
+        0x167,
+        0x168,
+        0x169,
+        0x1A1,
+        0x1A2,
+        0x1A3,
+        0x1C7,
+    },
     "control-v172": {
+        0x065,
+        0x06D,
+        0x06F,
+        0x074,
+        0x0AE,
+        0x0AF,
+    },
+    "control-v173": {
         0x065,
         0x06D,
         0x06F,
@@ -300,7 +357,7 @@ def _source_inferred_stock_cells(target: str, known_names: set[str]) -> set[int]
         hint = _comment_phys_hint(line)
         for movff in _SOURCE_MOVFF_RE.finditer(body):
             for operand in movff.groups():
-                raw = re.match(r"^0x([0-9A-Fa-f]{2,3})$", operand.strip())
+                raw = re.match(r"^0x([0-9A-Fa-f]{1,4})$", operand.strip())
                 if raw is not None and hint is not None:
                     add_phys(hint)
                 stock_phys = _STOCK_PHYS_ALIAS_RE.match(operand.strip())
@@ -309,9 +366,12 @@ def _source_inferred_stock_cells(target: str, known_names: set[str]) -> set[int]
         lfsr = _SOURCE_LFSR_RE.search(body)
         if lfsr is not None:
             operand = lfsr.group(1).strip()
-            raw = re.match(r"^0x([0-9A-Fa-f]{2,3})$", operand)
+            raw = re.match(r"^0x([0-9A-Fa-f]{1,4})$", operand)
             if raw is not None:
                 add_phys(int(raw.group(1), 16))
+            stock_phys = _STOCK_PHYS_ALIAS_RE.match(operand)
+            if stock_phys is not None:
+                add_phys(int(stock_phys.group(1), 16))
         fop = _SOURCE_FOP_RE.search(body)
         if fop is None:
             continue

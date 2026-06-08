@@ -334,8 +334,8 @@ usb_hid_report_descriptor EQU  usb_ep1_out_descriptor + 0x7; HID report (vendor-
 ; ---------------------------------------------------------------------------
 hid_command_dispatch:
     movff       WREG, i2c_coeff_2_b0_phys
-    lfsr        FSR2, 0x01ED
-    lfsr        FSR1, 0x004D
+    lfsr        FSR2, stock_1ED_b1_phys
+    lfsr        FSR1, stock_04D_b0_phys
     movlw       0x07
 flow_hid_command_dispatch_10ba:
     movff       POSTINC2, POSTINC1
@@ -656,19 +656,19 @@ flow_hid_command_dispatch_12e0:
     cpfseq      stock_0A5_b0, BANKED
     bra         flow_hid_command_dispatch_1324
     movf        stock_0A6_b0, W, BANKED
-    lfsr        FSR2, 0x0061
+    lfsr        FSR2, stock_061_b0_phys
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
     movf        stock_0A7_b0, W, BANKED
-    lfsr        FSR2, 0x0062
+    lfsr        FSR2, stock_062_b0_phys
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
     movf        stock_0A8_b0, W, BANKED
-    lfsr        FSR2, 0x0063
+    lfsr        FSR2, stock_063_b0_phys
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
     movf        stock_0A9_b0, W, BANKED
-    lfsr        FSR2, 0x0064
+    lfsr        FSR2, stock_064_b0_phys
     cpfseq      INDF2, ACCESS
     bra         flow_hid_command_dispatch_1324
     movf        stock_065_b0, W, BANKED
@@ -985,8 +985,8 @@ main_core_service_15be:
 ; and the downstream PB2 from a single host connection.
 ; ---------------------------------------------------------------------------
 fw_update_relay:
-    lfsr        FSR2, 0x01E5
-    lfsr        FSR1, 0x001D
+    lfsr        FSR2, stock_1E5_b1_phys
+    lfsr        FSR1, stock_01D_b0_phys
     movlw       0x08
 flow_fw_update_relay_15d8:
     movff       POSTINC2, POSTINC1
@@ -2389,33 +2389,33 @@ flow_main_core_service_1e88_1f6a:
     bra         flow_main_core_service_1e88_1f72
     clrf        stock_060_b0, BANKED
 flow_main_core_service_1e88_1f72:
-    lfsr        FSR2, 0x0061
+    lfsr        FSR2, stock_061_b0_phys
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1f7e
     clrf        stock_061_b0, BANKED
 flow_main_core_service_1e88_1f7e:
-    lfsr        FSR2, 0x0062
+    lfsr        FSR2, stock_062_b0_phys
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1f8a
     clrf        stock_062_b0, BANKED
 flow_main_core_service_1e88_1f8a:
-    lfsr        FSR2, 0x0063
+    lfsr        FSR2, stock_063_b0_phys
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1f98
     movlw       0x01
     movwf       stock_063_b0, BANKED
 flow_main_core_service_1e88_1f98:
-    lfsr        FSR2, 0x0064
+    lfsr        FSR2, stock_064_b0_phys
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1fa6
     movlw       0x01
     movwf       stock_064_b0, BANKED
 flow_main_core_service_1e88_1fa6:
-    lfsr        FSR2, 0x0065
+    lfsr        FSR2, stock_065_b0_phys
     movlw       0x03
     cpfsgt      INDF2, ACCESS
     bra         flow_main_core_service_1e88_1fb4
@@ -4419,7 +4419,7 @@ flow_main_usb_service_2f4e_2f9c:
     bnz         flow_main_usb_service_2f4e_300e
     clrf        stock_090_b0, BANKED
 flow_main_usb_service_2f4e_2fb6:
-    lfsr        FSR2, 0x0002
+    lfsr        FSR2, isr_save_fsr2h_b0_phys
     movf        stock_07A_b0, W, BANKED
     addwf       FSR2L, F, ACCESS
     movf        stock_07B_b0, W, BANKED
@@ -4433,7 +4433,7 @@ flow_main_usb_service_2f4e_2fb6:
     movwf       FSR1L, ACCESS
     clrf        FSR1H, ACCESS
     movff       INDF2, INDF1
-    lfsr        FSR2, 0x0002
+    lfsr        FSR2, isr_save_fsr2h_b0_phys
     movf        stock_07A_b0, W, BANKED
     addwf       FSR2L, F, ACCESS
     movf        stock_07B_b0, W, BANKED
@@ -6326,7 +6326,7 @@ flow_main_core_service_3c82_3ce6:
 ;     then drops into main_processing_loop.
 ; ---------------------------------------------------------------------------
 main_flash_service_3ce8:
-    lfsr        FSR2, 0x0003
+    lfsr        FSR2, stock_003_b0_phys
     movf        POSTINC2, W, ACCESS
     iorwf       POSTINC2, W, ACCESS
     iorwf       POSTINC2, W, ACCESS
@@ -6377,25 +6377,25 @@ flow_main_flash_service_3ce8_3d04:
 flow_main_flash_service_3ce8_3d4c:
     return      0
 flow_main_flash_service_3ce8_3d4e:
-    lfsr        FSR0, 0x0300
+    lfsr        FSR0, stock_300_b3_phys
     movlw       0xC0
 flow_main_flash_service_3ce8_3d54:
     clrf        POSTINC0, ACCESS
     decf        WREG, F, ACCESS
     bnz         flow_main_flash_service_3ce8_3d54
-    lfsr        FSR0, 0x0200
+    lfsr        FSR0, stock_200_b2_phys
     movlw       0xDE
 flow_main_flash_service_3ce8_3d60:
     clrf        POSTINC0, ACCESS
     decf        WREG, F, ACCESS
     bnz         flow_main_flash_service_3ce8_3d60
-    lfsr        FSR0, 0x0100
+    lfsr        FSR0, stock_100_b1_phys
     movlw       0xE5
 flow_main_flash_service_3ce8_3d6c:
     clrf        POSTINC0, ACCESS
     decf        WREG, F, ACCESS
     bnz         flow_main_flash_service_3ce8_3d6c
-    lfsr        FSR0, 0x0060
+    lfsr        FSR0, stock_060_b0_phys
     movlw       0x8D
 flow_main_flash_service_3ce8_3d78:
     clrf        POSTINC0, ACCESS
@@ -6520,8 +6520,8 @@ diag_rcon_rearm:
     movwf       TBLPTRH, ACCESS
     movlw       UPPER(inline_data_table_47E6)
     movwf       TBLPTRU, ACCESS
-    lfsr        FSR0, 0x01E5
-    lfsr        FSR1, 0x0016
+    lfsr        FSR0, stock_1E5_b1_phys
+    lfsr        FSR1, stock_016_b0_phys
 flow_main_flash_service_3ce8_3d96:
     tblrd*+
     movff       TABLAT, POSTINC0
@@ -8237,8 +8237,8 @@ main_i2c_service_464c_timeout:
 ; Notes   : Inferred core helper routine. Calls: main_uart_service_44b2.
 ; ---------------------------------------------------------------------------
 main_core_service_4672:
-    lfsr        FSR2, 0x01F4
-    lfsr        FSR1, 0x001C
+    lfsr        FSR2, stock_1F4_b1_phys
+    lfsr        FSR1, stock_01C_b0_phys
     movlw       0x07
 flow_main_core_service_4672_467c:
     movff       POSTINC2, POSTINC1
@@ -9571,7 +9571,7 @@ cmd25_identity_query_handler:
     movwf       stock_004_acc, ACCESS
     movlw       0x50                        ; first identity payload sub-cmd
     movwf       i2c_coeff_3_acc, ACCESS
-    lfsr        FSR0, 0x0005                ; major/minor/rev_hi/rev_lo staging
+    lfsr        FSR0, saved_w_b0_phys                ; major/minor/rev_hi/rev_lo staging
     bra         diag_send_burst_xx
 
 ; ---------------------------------------------------------------------------
@@ -10280,7 +10280,7 @@ preset_job_cancel_done:
 ; ---------------------------------------------------------------------------
 hid_cmd_diag_memread:
     movlb       0x1
-    lfsr        FSR2, 0x015A
+    lfsr        FSR2, stock_15A_b1_phys
     movlw       0x43
     movwf       POSTINC2, ACCESS
     clrf        POSTINC2, ACCESS
@@ -10319,7 +10319,7 @@ hid_cmd_diag_memread_eeprom:
     clrf        stock_004_acc, ACCESS
     movf        stock_11E_b1, W, BANKED
     movwf       stock_00A_acc, ACCESS
-    lfsr        FSR2, 0x015D
+    lfsr        FSR2, stock_15D_b1_phys
 hid_cmd_diag_memread_eeprom_lp:
     rcall       eeprom_read_byte
     movwf       POSTINC2, ACCESS
@@ -10367,7 +10367,7 @@ hid_cmd_diag_memread_fail:
 ; See V32_DIAG_TIER1_SPEC.md §"HID protocol extension — new cmd 0x44".
 ; ---------------------------------------------------------------------------
 hid_cmd_diag_snapshot:
-    lfsr        FSR2, 0x015A                ; HID IN buffer base
+    lfsr        FSR2, stock_15A_b1_phys                ; HID IN buffer base
     movlw       0x44                        ; [0] cmd echo
     movwf       POSTINC2, ACCESS
     clrf        POSTINC2, ACCESS            ; [1] status = OK

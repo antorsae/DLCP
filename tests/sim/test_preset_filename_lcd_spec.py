@@ -12,8 +12,10 @@ from dlcp_fw.paths import (
     V17_CONTROL_RAM_INC,
     V171_CONTROL_HEX,
     V172_CONTROL_ASM,
+    V173_CONTROL_ASM,
     V32_MAIN_HEX,
     V33_MAIN_ASM,
+    V34_MAIN_ASM,
 )
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
@@ -30,7 +32,9 @@ except Exception as exc:  # pragma: no cover
 
 SPEC = PROJECT_ROOT / "docs" / "PRESET_FILENAME_LCD_SPEC.md"
 V33_MAIN_LST = V33_MAIN_ASM.with_suffix(".lst")
+V34_MAIN_LST = V34_MAIN_ASM.with_suffix(".lst")
 V172_CONTROL_LST = V172_CONTROL_ASM.with_suffix(".lst")
+V173_CONTROL_LST = V173_CONTROL_ASM.with_suffix(".lst")
 
 
 def _spec_text() -> str:
@@ -116,6 +120,107 @@ class NativePresetFilenameStep:
     preset: str
 
 
+PRESET_STATE_MATRIX_CASES = [
+    pytest.param(
+        "A",
+        (NativePresetFilenameStep("RIGHT", "A"),),
+        id="entry-a",
+    ),
+    pytest.param(
+        "B",
+        (NativePresetFilenameStep("RIGHT", "B"),),
+        id="entry-b",
+    ),
+    pytest.param(
+        "A",
+        (
+            NativePresetFilenameStep("RIGHT", "A"),
+            NativePresetFilenameStep("DOWN", "B"),
+        ),
+        id="a-to-b",
+    ),
+    pytest.param(
+        "B",
+        (
+            NativePresetFilenameStep("RIGHT", "B"),
+            NativePresetFilenameStep("UP", "A"),
+        ),
+        id="b-to-a",
+    ),
+    pytest.param(
+        "A",
+        (
+            NativePresetFilenameStep("RIGHT", "A"),
+            NativePresetFilenameStep("DOWN", "B"),
+            NativePresetFilenameStep("UP", "A"),
+        ),
+        id="a-b-a",
+    ),
+    pytest.param(
+        "B",
+        (
+            NativePresetFilenameStep("RIGHT", "B"),
+            NativePresetFilenameStep("UP", "A"),
+            NativePresetFilenameStep("DOWN", "B"),
+        ),
+        id="b-a-b",
+    ),
+]
+
+PRESET_REENTRY_MATRIX_CASES = [
+    pytest.param(
+        "A",
+        (NativePresetFilenameStep("RIGHT", "A"),),
+        "A",
+        id="entry-a",
+    ),
+    pytest.param(
+        "B",
+        (NativePresetFilenameStep("RIGHT", "B"),),
+        "B",
+        id="entry-b",
+    ),
+    pytest.param(
+        "A",
+        (
+            NativePresetFilenameStep("RIGHT", "A"),
+            NativePresetFilenameStep("DOWN", "B"),
+        ),
+        "B",
+        id="a-to-b",
+    ),
+    pytest.param(
+        "B",
+        (
+            NativePresetFilenameStep("RIGHT", "B"),
+            NativePresetFilenameStep("UP", "A"),
+        ),
+        "A",
+        id="b-to-a",
+    ),
+    pytest.param(
+        "A",
+        (
+            NativePresetFilenameStep("RIGHT", "A"),
+            NativePresetFilenameStep("DOWN", "B"),
+            NativePresetFilenameStep("UP", "A"),
+        ),
+        "A",
+        id="a-b-a",
+    ),
+    pytest.param(
+        "B",
+        (
+            NativePresetFilenameStep("RIGHT", "B"),
+            NativePresetFilenameStep("UP", "A"),
+            NativePresetFilenameStep("DOWN", "B"),
+        ),
+        "B",
+        id="b-a-b",
+    ),
+]
+
+
 def _query_id(gen: int, target: int = PB1, slot: int = SLOT_A) -> int:
     return ((gen & 0x1F) << 2) | ((target & 1) << 1) | (slot & 1)
 
@@ -138,6 +243,19 @@ def v172_v33_filename_hexes(tmp_path_factory: pytest.TempPathFactory) -> tuple[P
     main_hex = tmp / "DLCP_Firmware_V3.3.hex"
     assemble_v17(control_asm, control_hex)
     assemble_v30(V33_MAIN_ASM, main_hex)
+    return control_hex, main_hex
+
+
+@pytest.fixture(scope="module")
+def v173_v34_filename_hexes(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    tmp = tmp_path_factory.mktemp("v173_v34_preset_filename")
+    shutil.copy(V17_CONTROL_RAM_INC, tmp / V17_CONTROL_RAM_INC.name)
+    control_asm = tmp / V173_CONTROL_ASM.name
+    control_asm.write_bytes(V173_CONTROL_ASM.read_bytes())
+    control_hex = tmp / "dlcp_control_v173.hex"
+    main_hex = tmp / "DLCP_Firmware_V3.4.hex"
+    assemble_v17(control_asm, control_hex)
+    assemble_v30(V34_MAIN_ASM, main_hex)
     return control_hex, main_hex
 
 
@@ -621,6 +739,160 @@ def _navigate_to_preset_and_assert_native_filename(
     pytest.fail(f"did not navigate back to Preset; lcd={chain.lcd_lines()!r}")
 
 
+def _run_full_native_chain_filename_feature(hexes: tuple[Path, Path]) -> None:
+    _require_rust()
+    control_hex, main_hex = hexes
+    slot_a = PRESET_FILENAME_SLOT_A
+    slot_b = PRESET_FILENAME_SLOT_B
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=slot_a,
+        slot_b=slot_b,
+    )
+
+    lines = _drive_and_assert_native_preset_filename(
+        chain,
+        NativePresetFilenameStep("RIGHT", "A"),
+        slot_a=slot_a,
+        slot_b=slot_b,
+    )
+    assert lines == ("Preset         A", "521.4 22MG10F-v5")
+
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: lcd[0] == "Preset         A" and lcd[1] == "LX521.4 22MG10F-",
+        attempts=120,
+    )
+    assert lines == ("Preset         A", "LX521.4 22MG10F-")
+
+
+def _run_full_native_chain_preset_state_matrix(
+    hexes: tuple[Path, Path],
+    *,
+    initial_preset: str,
+    steps: tuple[NativePresetFilenameStep, ...],
+) -> None:
+    _require_rust()
+    control_hex, main_hex = hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset=initial_preset,
+    )
+
+    for step in steps:
+        _drive_and_assert_native_preset_filename(
+            chain,
+            step,
+            slot_a=PRESET_FILENAME_SLOT_A,
+            slot_b=PRESET_FILENAME_SLOT_B,
+        )
+
+
+def _run_full_native_chain_preset_reentry_matrix(
+    hexes: tuple[Path, Path],
+    *,
+    initial_preset: str,
+    steps: tuple[NativePresetFilenameStep, ...],
+    final_preset: str,
+) -> None:
+    _require_rust()
+    control_hex, main_hex = hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset=initial_preset,
+    )
+
+    for step in steps:
+        _drive_and_assert_native_preset_filename(
+            chain,
+            step,
+            slot_a=PRESET_FILENAME_SLOT_A,
+            slot_b=PRESET_FILENAME_SLOT_B,
+        )
+
+    _press(chain, "RIGHT")
+    input_lines = _wait_for_lcd(
+        chain,
+        lambda lcd: lcd == ("Input:          ", "Auto Detect     "),
+        ticks=PRESET_REENTRY_POLL_TICKS,
+    )
+    assert input_lines == ("Input:          ", "Auto Detect     ")
+
+    chain.mark_ctl_tx_capture_point()
+    chain.mark_ctl_rx_capture_point()
+    _press(chain, "LEFT")
+    expected = (
+        _preset_row0(final_preset),
+        _preset_filename_window(final_preset, PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B),
+    )
+    lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
+    assert lines == expected
+    _assert_native_filename_cache_or_query_completed(
+        chain,
+        preset=final_preset,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        allow_query=False,
+    )
+
+
+def _run_full_native_chain_preset_b_survives_next_menu_standby_wake(
+    hexes: tuple[Path, Path],
+) -> None:
+    _require_rust()
+    control_hex, main_hex = hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset="A",
+    )
+
+    _drive_and_assert_native_preset_filename(
+        chain,
+        NativePresetFilenameStep("RIGHT", "A"),
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
+    _drive_and_assert_native_preset_filename(
+        chain,
+        NativePresetFilenameStep("DOWN", "B"),
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
+
+    _press(chain, "RIGHT")
+    input_lines = _wait_for_lcd(chain, lambda lcd: lcd[0].startswith("Input:"))
+    assert input_lines == ("Input:          ", "Auto Detect     ")
+
+    chain.press("STBY")
+    chain.step_many(80)
+    assert "ZZZ" in chain.lcd_lines()[0].upper()
+
+    chain.press("STBY")
+    for _ in range(20):
+        chain.step_many(100)
+        if chain.is_connected() and not chain.is_waiting() and "ZZZ" not in chain.lcd_lines()[0].upper():
+            break
+    else:
+        pytest.fail(f"chain did not wake from standby; lcd={chain.lcd_lines()!r}")
+
+    _navigate_to_preset_and_assert_native_filename(
+        chain,
+        preset="B",
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
+
+
 def _arm_pending_filename_query(chain, query_id: int, *, deadline: int = 2) -> None:  # type: ignore[no-untyped-def]
     chain.write_reg(FNAME_FLAGS_PHYS, FNAME_PENDING_MASK)
     chain.write_reg(FNAME_ID_PHYS, query_id)
@@ -897,15 +1169,17 @@ def _assert_native_labels_present(labels: dict[object, list[str]]) -> None:
 
 def _highest_listing_end_before_org(lst_text: str, org: int) -> int:
     highest = 0
-    line_pattern = re.compile(r"^\s*([0-9A-Fa-f]{6})\s+((?:[0-9A-Fa-f]{4}\s*)+)")
     for line in lst_text.splitlines():
-        match = line_pattern.match(line)
+        match = re.match(r"^\s*([0-9A-Fa-f]{6})\s+(.*)$", line)
         if not match:
             continue
         addr = int(match.group(1), 16)
         if addr >= org:
             continue
-        object_words = re.findall(r"[0-9A-Fa-f]{4}", match.group(2))
+        line_no = re.search(r"\s+\d{5}\s+", match.group(2))
+        if line_no is None:
+            continue
+        object_words = re.findall(r"\b[0-9A-Fa-f]{4}\b", match.group(2)[: line_no.start()])
         if object_words:
             highest = max(highest, addr + (2 * len(object_words)))
     return highest
@@ -1869,7 +2143,8 @@ def test_spec_defines_row0_two_cell_patch_scenarios() -> None:
             "bit 0 | last col-14 health glyph",
             "bit 1 | last preset letter source",
             "bit 2 | last DSP-fault status",
-            "bits 3..7 | reserved",
+            "bits 3..6 | reserved",
+            "bit 7 | Preset row-0 entry gate",
             "two bounded",
             "single-cell updates",
             "This single-snap approach is sufficient even when both cells change",
@@ -2016,6 +2291,16 @@ def test_v33_v172_fixed_layout_labels_are_pinned() -> None:
     assert _lst_symbol_address(V33_MAIN_LST, "preset_table_b") == 0x4C00
     assert _lst_symbol_address(V172_CONTROL_LST, "control_release_metadata") == 0x77B0
     assert _lst_symbol_address(V172_CONTROL_LST, "bootloader_entry") == 0x7800
+
+
+def test_v34_v173_refactoring_layout_labels_are_pinned() -> None:
+    assert V34_MAIN_LST.exists(), f"missing listing: {V34_MAIN_LST}"
+    assert V173_CONTROL_LST.exists(), f"missing listing: {V173_CONTROL_LST}"
+    assert _lst_symbol_address(V34_MAIN_LST, "preset_table_b") == 0x4C00
+    assert _lst_symbol_address(V173_CONTROL_LST, "control_release_metadata") == 0x77B0
+    assert _lst_symbol_address(V173_CONTROL_LST, "bootloader_entry") == 0x7800
+    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=64)
+    _assert_listing_fits_before(V173_CONTROL_LST, 0x77B0, min_margin=64)
 
 
 def test_v172_fname_ram_equates_do_not_overlap_diag_identity_native() -> None:
@@ -2210,7 +2495,7 @@ def test_v172_native_filename_clean_burst_sets_valid_len_cache() -> None:
             "FNAME_LEN_SEEN",
             "FNAME_VALID",
             "v172_fname_expected_len",
-            "lfsr    0x0, 0x220",
+            "lfsr    0x0, v172_fname_cache_b2_phys",
             "movwf   INDF0",
             "fname_mark_row_dirty_valid",
         ],
@@ -2432,31 +2717,14 @@ def test_v172_lcd_critical_section_restores_prior_gie_native() -> None:
 def test_v172_v33_full_native_chain_filename_feature(
     v172_v33_filename_hexes: tuple[Path, Path],
 ) -> None:
-    _require_rust()
-    control_hex, main_hex = v172_v33_filename_hexes
-    slot_a = PRESET_FILENAME_SLOT_A
-    slot_b = PRESET_FILENAME_SLOT_B
-    chain = _start_native_filename_chain(
-        control_hex,
-        main_hex,
-        slot_a=slot_a,
-        slot_b=slot_b,
-    )
+    _run_full_native_chain_filename_feature(v172_v33_filename_hexes)
 
-    lines = _drive_and_assert_native_preset_filename(
-        chain,
-        NativePresetFilenameStep("RIGHT", "A"),
-        slot_a=slot_a,
-        slot_b=slot_b,
-    )
-    assert lines == ("Preset         A", "521.4 22MG10F-v5")
 
-    lines = _wait_for_lcd(
-        chain,
-        lambda lcd: lcd[0] == "Preset         A" and lcd[1] == "LX521.4 22MG10F-",
-        attempts=120,
-    )
-    assert lines == ("Preset         A", "LX521.4 22MG10F-")
+@pytest.mark.slow
+def test_v173_v34_full_native_chain_filename_feature(
+    v173_v34_filename_hexes: tuple[Path, Path],
+) -> None:
+    _run_full_native_chain_filename_feature(v173_v34_filename_hexes)
 
 
 @pytest.mark.slow
@@ -2486,132 +2754,41 @@ def test_v172_v33_full_native_chain_requested_filename_pair(
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("initial_preset", "steps"),
-    [
-        pytest.param(
-            "A",
-            (NativePresetFilenameStep("RIGHT", "A"),),
-            id="entry-a",
-        ),
-        pytest.param(
-            "B",
-            (NativePresetFilenameStep("RIGHT", "B"),),
-            id="entry-b",
-        ),
-        pytest.param(
-            "A",
-            (
-                NativePresetFilenameStep("RIGHT", "A"),
-                NativePresetFilenameStep("DOWN", "B"),
-            ),
-            id="a-to-b",
-        ),
-        pytest.param(
-            "B",
-            (
-                NativePresetFilenameStep("RIGHT", "B"),
-                NativePresetFilenameStep("UP", "A"),
-            ),
-            id="b-to-a",
-        ),
-        pytest.param(
-            "A",
-            (
-                NativePresetFilenameStep("RIGHT", "A"),
-                NativePresetFilenameStep("DOWN", "B"),
-                NativePresetFilenameStep("UP", "A"),
-            ),
-            id="a-b-a",
-        ),
-        pytest.param(
-            "B",
-            (
-                NativePresetFilenameStep("RIGHT", "B"),
-                NativePresetFilenameStep("UP", "A"),
-                NativePresetFilenameStep("DOWN", "B"),
-            ),
-            id="b-a-b",
-        ),
-    ],
+    PRESET_STATE_MATRIX_CASES,
 )
 def test_v172_v33_full_native_chain_filename_preset_state_matrix(
     v172_v33_filename_hexes: tuple[Path, Path],
     initial_preset: str,
     steps: tuple[NativePresetFilenameStep, ...],
 ) -> None:
-    _require_rust()
-    control_hex, main_hex = v172_v33_filename_hexes
-    chain = _start_native_filename_chain(
-        control_hex,
-        main_hex,
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
+    _run_full_native_chain_preset_state_matrix(
+        v172_v33_filename_hexes,
         initial_preset=initial_preset,
+        steps=steps,
     )
 
-    for step in steps:
-        _drive_and_assert_native_preset_filename(
-            chain,
-            step,
-            slot_a=PRESET_FILENAME_SLOT_A,
-            slot_b=PRESET_FILENAME_SLOT_B,
-        )
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("initial_preset", "steps"),
+    PRESET_STATE_MATRIX_CASES,
+)
+def test_v173_v34_full_native_chain_filename_preset_state_matrix(
+    v173_v34_filename_hexes: tuple[Path, Path],
+    initial_preset: str,
+    steps: tuple[NativePresetFilenameStep, ...],
+) -> None:
+    _run_full_native_chain_preset_state_matrix(
+        v173_v34_filename_hexes,
+        initial_preset=initial_preset,
+        steps=steps,
+    )
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("initial_preset", "steps", "final_preset"),
-    [
-        pytest.param(
-            "A",
-            (NativePresetFilenameStep("RIGHT", "A"),),
-            "A",
-            id="entry-a",
-        ),
-        pytest.param(
-            "B",
-            (NativePresetFilenameStep("RIGHT", "B"),),
-            "B",
-            id="entry-b",
-        ),
-        pytest.param(
-            "A",
-            (
-                NativePresetFilenameStep("RIGHT", "A"),
-                NativePresetFilenameStep("DOWN", "B"),
-            ),
-            "B",
-            id="a-to-b",
-        ),
-        pytest.param(
-            "B",
-            (
-                NativePresetFilenameStep("RIGHT", "B"),
-                NativePresetFilenameStep("UP", "A"),
-            ),
-            "A",
-            id="b-to-a",
-        ),
-        pytest.param(
-            "A",
-            (
-                NativePresetFilenameStep("RIGHT", "A"),
-                NativePresetFilenameStep("DOWN", "B"),
-                NativePresetFilenameStep("UP", "A"),
-            ),
-            "A",
-            id="a-b-a",
-        ),
-        pytest.param(
-            "B",
-            (
-                NativePresetFilenameStep("RIGHT", "B"),
-                NativePresetFilenameStep("UP", "A"),
-                NativePresetFilenameStep("DOWN", "B"),
-            ),
-            "B",
-            id="b-a-b",
-        ),
-    ],
+    PRESET_REENTRY_MATRIX_CASES,
 )
 def test_v172_v33_full_native_chain_filename_preset_reentry_matrix(
     v172_v33_filename_hexes: tuple[Path, Path],
@@ -2619,47 +2796,30 @@ def test_v172_v33_full_native_chain_filename_preset_reentry_matrix(
     steps: tuple[NativePresetFilenameStep, ...],
     final_preset: str,
 ) -> None:
-    _require_rust()
-    control_hex, main_hex = v172_v33_filename_hexes
-    chain = _start_native_filename_chain(
-        control_hex,
-        main_hex,
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
+    _run_full_native_chain_preset_reentry_matrix(
+        v172_v33_filename_hexes,
         initial_preset=initial_preset,
+        steps=steps,
+        final_preset=final_preset,
     )
 
-    for step in steps:
-        _drive_and_assert_native_preset_filename(
-            chain,
-            step,
-            slot_a=PRESET_FILENAME_SLOT_A,
-            slot_b=PRESET_FILENAME_SLOT_B,
-        )
 
-    _press(chain, "RIGHT")
-    input_lines = _wait_for_lcd(
-        chain,
-        lambda lcd: lcd == ("Input:          ", "Auto Detect     "),
-        ticks=PRESET_REENTRY_POLL_TICKS,
-    )
-    assert input_lines == ("Input:          ", "Auto Detect     ")
-
-    chain.mark_ctl_tx_capture_point()
-    chain.mark_ctl_rx_capture_point()
-    _press(chain, "LEFT")
-    expected = (
-        _preset_row0(final_preset),
-        _preset_filename_window(final_preset, PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B),
-    )
-    lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
-    assert lines == expected
-    _assert_native_filename_cache_or_query_completed(
-        chain,
-        preset=final_preset,
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
-        allow_query=False,
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("initial_preset", "steps", "final_preset"),
+    PRESET_REENTRY_MATRIX_CASES,
+)
+def test_v173_v34_full_native_chain_filename_preset_reentry_matrix(
+    v173_v34_filename_hexes: tuple[Path, Path],
+    initial_preset: str,
+    steps: tuple[NativePresetFilenameStep, ...],
+    final_preset: str,
+) -> None:
+    _run_full_native_chain_preset_reentry_matrix(
+        v173_v34_filename_hexes,
+        initial_preset=initial_preset,
+        steps=steps,
+        final_preset=final_preset,
     )
 
 
@@ -2668,6 +2828,13 @@ def test_v172_v33_full_native_chain_preset_reentry_immediate_left_never_blanks_r
     v172_v33_filename_hexes: tuple[Path, Path],
 ) -> None:
     _drive_b_a_b_to_input_and_trace_immediate_left(v172_v33_filename_hexes)
+
+
+@pytest.mark.slow
+def test_v173_v34_full_native_chain_preset_reentry_immediate_left_never_blanks_row0(
+    v173_v34_filename_hexes: tuple[Path, Path],
+) -> None:
+    _drive_b_a_b_to_input_and_trace_immediate_left(v173_v34_filename_hexes)
 
 
 @pytest.mark.slow
@@ -2683,53 +2850,32 @@ def test_v172_native_preset_entry_paint_precedes_filename_cache_reuse(
 
 
 @pytest.mark.slow
+def test_v173_native_preset_entry_paint_precedes_filename_cache_reuse(
+    v173_v34_filename_hexes: tuple[Path, Path],
+) -> None:
+    result = _drive_b_a_b_to_input_and_trace_immediate_left(v173_v34_filename_hexes)
+    row0_ready_tick = result["row0_ready_tick"]
+    row1_visible_tick = result["row1_visible_tick"]
+    assert isinstance(row0_ready_tick, int)
+    assert isinstance(row1_visible_tick, int)
+    assert row0_ready_tick <= row1_visible_tick, result["trace"]
+
+
+@pytest.mark.slow
 def test_v172_v33_full_native_chain_preset_b_survives_next_menu_standby_wake(
     v172_v33_filename_hexes: tuple[Path, Path],
 ) -> None:
-    _require_rust()
-    control_hex, main_hex = v172_v33_filename_hexes
-    chain = _start_native_filename_chain(
-        control_hex,
-        main_hex,
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
-        initial_preset="A",
+    _run_full_native_chain_preset_b_survives_next_menu_standby_wake(
+        v172_v33_filename_hexes
     )
 
-    _drive_and_assert_native_preset_filename(
-        chain,
-        NativePresetFilenameStep("RIGHT", "A"),
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
-    )
-    _drive_and_assert_native_preset_filename(
-        chain,
-        NativePresetFilenameStep("DOWN", "B"),
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
-    )
 
-    _press(chain, "RIGHT")
-    input_lines = _wait_for_lcd(chain, lambda lcd: lcd[0].startswith("Input:"))
-    assert input_lines == ("Input:          ", "Auto Detect     ")
-
-    chain.press("STBY")
-    chain.step_many(80)
-    assert "ZZZ" in chain.lcd_lines()[0].upper()
-
-    chain.press("STBY")
-    for _ in range(20):
-        chain.step_many(100)
-        if chain.is_connected() and not chain.is_waiting() and "ZZZ" not in chain.lcd_lines()[0].upper():
-            break
-    else:
-        pytest.fail(f"chain did not wake from standby; lcd={chain.lcd_lines()!r}")
-
-    _navigate_to_preset_and_assert_native_filename(
-        chain,
-        preset="B",
-        slot_a=PRESET_FILENAME_SLOT_A,
-        slot_b=PRESET_FILENAME_SLOT_B,
+@pytest.mark.slow
+def test_v173_v34_full_native_chain_preset_b_survives_next_menu_standby_wake(
+    v173_v34_filename_hexes: tuple[Path, Path],
+) -> None:
+    _run_full_native_chain_preset_b_survives_next_menu_standby_wake(
+        v173_v34_filename_hexes
     )
 
 
@@ -2989,7 +3135,15 @@ def test_v172_fname_parser_interleaved_bf08_identity_diag_preserved() -> None:
 def test_v172_fname_cold_init_clears_filename_state_preserves_diag_identity() -> None:
     text = V172_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(text, "v172_fname_cold_clear", ["fname_mark_row_dirty_blank"])
-    _assert_contains_all(body, ["lfsr    0x0, 0x220", "movlw   0x25", "lfsr    0x0, 0x255", "movlw   0x08"])
+    _assert_contains_all(
+        body,
+        [
+            "lfsr    0x0, v172_fname_cache_b2_phys",
+            "movlw   0x25",
+            "lfsr    0x0, v172_fname_scroll_div_lo_b2_phys",
+            "movlw   0x08",
+        ],
+    )
     assert "0x245" not in body
 
 

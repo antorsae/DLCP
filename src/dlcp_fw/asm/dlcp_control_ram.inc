@@ -522,6 +522,13 @@ FNAME_ARMED                equ  0x04
 FNAME_TAILDIR              equ  0x05
 FNAME_LEN_SEEN             equ  0x06
 FNAME_QUERY_WAIT           equ  0x07  ; delayed first filename query after Preset draw
+FNAME_ROW0_HEALTH          equ  0x00
+FNAME_ROW0_PRESET_B        equ  0x01
+FNAME_ROW0_DSP_FAULT       equ  0x02
+FNAME_ROW0_NOT_READY       equ  0x07
+FNAME_ROW0_HEALTH_MASK     equ  0x01
+FNAME_ROW0_PRESET_FAULT_MASK equ 0x06
+FNAME_ROW0_SNAP_MASK       equ  0x87
 v172_fname_gen             equ  0x041
 v172_fname_id              equ  0x042
 v172_fname_scroll_off      equ  0x043
@@ -600,12 +607,6 @@ rx_parsed_data_acc_phys          EQU  0x030    ; physical address for movff/lfsr
 rx_parsed_data_b0                EQU  0x030    ; phys 0x030, bank 0, owner rx_parsed_data
 rx_parsed_data_b0_op             EQU  0x30     ; 8-bit f operand for rx_parsed_data_b0
 rx_parsed_data_b0_phys           EQU  0x030    ; physical address for movff/lfsr
-stock_036_acc                    EQU  0x036    ; phys 0x036, bank 0, owner stock-derived
-stock_036_acc_op                 EQU  0x36     ; 8-bit f operand for stock_036_acc
-stock_036_acc_phys               EQU  0x036    ; physical address for movff/lfsr
-stock_036_b0                     EQU  0x036    ; phys 0x036, bank 0, owner stock-derived
-stock_036_b0_op                  EQU  0x36     ; 8-bit f operand for stock_036_b0
-stock_036_b0_phys                EQU  0x036    ; physical address for movff/lfsr
 tx_ring_base_acc                 EQU  0x036    ; phys 0x036, bank 0, owner tx_ring_base
 tx_ring_base_acc_op              EQU  0x36     ; 8-bit f operand for tx_ring_base_acc
 tx_ring_base_acc_phys            EQU  0x036    ; physical address for movff/lfsr
@@ -624,9 +625,6 @@ stock_065_b0_phys                EQU  0x065    ; physical address for movff/lfsr
 rx_ring_base_b0                  EQU  0x066    ; phys 0x066, bank 0, owner rx_ring_base
 rx_ring_base_b0_op               EQU  0x66     ; 8-bit f operand for rx_ring_base_b0
 rx_ring_base_b0_phys             EQU  0x066    ; physical address for movff/lfsr
-stock_066_b0                     EQU  0x066    ; phys 0x066, bank 0, owner stock-derived
-stock_066_b0_op                  EQU  0x66     ; 8-bit f operand for stock_066_b0
-stock_066_b0_phys                EQU  0x066    ; physical address for movff/lfsr
 stock_06C_b0                     EQU  0x06C    ; phys 0x06C, bank 0, owner stock-derived
 stock_06C_b0_op                  EQU  0x6C     ; 8-bit f operand for stock_06C_b0
 stock_06C_b0_phys                EQU  0x06C    ; physical address for movff/lfsr
@@ -792,9 +790,6 @@ stock_0C0_b0_phys                EQU  0x0C0    ; physical address for movff/lfsr
 saved_settings_base_b0           EQU  0x0C1    ; phys 0x0C1, bank 0, owner saved_settings_base
 saved_settings_base_b0_op        EQU  0xC1     ; 8-bit f operand for saved_settings_base_b0
 saved_settings_base_b0_phys      EQU  0x0C1    ; physical address for movff/lfsr
-stock_0C1_b0                     EQU  0x0C1    ; phys 0x0C1, bank 0, owner stock-derived
-stock_0C1_b0_op                  EQU  0xC1     ; 8-bit f operand for stock_0C1_b0
-stock_0C1_b0_phys                EQU  0x0C1    ; physical address for movff/lfsr
 stock_0C7_b0                     EQU  0x0C7    ; phys 0x0C7, bank 0, owner stock-derived
 stock_0C7_b0_op                  EQU  0xC7     ; 8-bit f operand for stock_0C7_b0
 stock_0C7_b0_phys                EQU  0x0C7    ; physical address for movff/lfsr
@@ -837,9 +832,6 @@ stock_172_b1_phys                EQU  0x172    ; physical address for movff/lfsr
 stock_173_b1                     EQU  0x173    ; phys 0x173, bank 1, owner stock-derived
 stock_173_b1_op                  EQU  0x73     ; 8-bit f operand for stock_173_b1
 stock_173_b1_phys                EQU  0x173    ; physical address for movff/lfsr
-stock_180_b1                     EQU  0x180    ; phys 0x180, bank 1, owner stock-derived
-stock_180_b1_op                  EQU  0x80     ; 8-bit f operand for stock_180_b1
-stock_180_b1_phys                EQU  0x180    ; physical address for movff/lfsr
 v171_diag_pb1_i_b1               EQU  0x180    ; phys 0x180, bank 1, owner v171_diag_pb1_i
 v171_diag_pb1_i_b1_op            EQU  0x80     ; 8-bit f operand for v171_diag_pb1_i_b1
 v171_diag_pb1_i_b1_phys          EQU  0x180    ; physical address for movff/lfsr
@@ -873,9 +865,6 @@ v171_diag_pb1_reset_wdt_b1_phys  EQU  0x189    ; physical address for movff/lfsr
 v171_diag_pb1_reset_sw_b1        EQU  0x18A    ; phys 0x18A, bank 1, owner v171_diag_pb1_reset_sw
 v171_diag_pb1_reset_sw_b1_op     EQU  0x8A     ; 8-bit f operand for v171_diag_pb1_reset_sw_b1
 v171_diag_pb1_reset_sw_b1_phys   EQU  0x18A    ; physical address for movff/lfsr
-stock_18B_b1                     EQU  0x18B    ; phys 0x18B, bank 1, owner stock-derived
-stock_18B_b1_op                  EQU  0x8B     ; 8-bit f operand for stock_18B_b1
-stock_18B_b1_phys                EQU  0x18B    ; physical address for movff/lfsr
 v171_diag_pb2_i_b1               EQU  0x18B    ; phys 0x18B, bank 1, owner v171_diag_pb2_i
 v171_diag_pb2_i_b1_op            EQU  0x8B     ; 8-bit f operand for v171_diag_pb2_i_b1
 v171_diag_pb2_i_b1_phys          EQU  0x18B    ; physical address for movff/lfsr
@@ -1005,9 +994,6 @@ v171_diag_render_letter_tmp_b1_phys EQU  0x1D3    ; physical address for movff/l
 v171_diag_render_abnormal_b1     EQU  0x1D4    ; phys 0x1D4, bank 1, owner v171_diag_render_abnormal
 v171_diag_render_abnormal_b1_op  EQU  0xD4     ; 8-bit f operand for v171_diag_render_abnormal_b1
 v171_diag_render_abnormal_b1_phys EQU  0x1D4    ; physical address for movff/lfsr
-stock_220_b2                     EQU  0x220    ; phys 0x220, bank 2, owner stock-derived
-stock_220_b2_op                  EQU  0x20     ; 8-bit f operand for stock_220_b2
-stock_220_b2_phys                EQU  0x220    ; physical address for movff/lfsr
 v172_fname_cache_b2              EQU  0x220    ; phys 0x220, bank 2, owner v172_fname_cache
 v172_fname_cache_b2_op           EQU  0x20     ; 8-bit f operand for v172_fname_cache_b2
 v172_fname_cache_b2_phys         EQU  0x220    ; physical address for movff/lfsr
@@ -1032,9 +1018,6 @@ v172_fname_scroll_off_b2_phys    EQU  0x243    ; physical address for movff/lfsr
 v172_fname_scroll_hold_b2        EQU  0x244    ; phys 0x244, bank 2, owner v172_fname_scroll_hold
 v172_fname_scroll_hold_b2_op     EQU  0x44     ; 8-bit f operand for v172_fname_scroll_hold_b2
 v172_fname_scroll_hold_b2_phys   EQU  0x244    ; physical address for movff/lfsr
-stock_245_b2                     EQU  0x245    ; phys 0x245, bank 2, owner stock-derived
-stock_245_b2_op                  EQU  0x45     ; 8-bit f operand for stock_245_b2
-stock_245_b2_phys                EQU  0x245    ; physical address for movff/lfsr
 v172_diag_id_pb1_major_b2        EQU  0x245    ; phys 0x245, bank 2, owner v172_diag_id_pb1_major
 v172_diag_id_pb1_major_b2_op     EQU  0x45     ; 8-bit f operand for v172_diag_id_pb1_major_b2
 v172_diag_id_pb1_major_b2_phys   EQU  0x245    ; physical address for movff/lfsr
@@ -1083,9 +1066,6 @@ v172_diag_id_tmp_minor_b2_phys   EQU  0x253    ; physical address for movff/lfsr
 v172_diag_id_tmp_rev_hi_b2       EQU  0x254    ; phys 0x254, bank 2, owner v172_diag_id_tmp_rev_hi
 v172_diag_id_tmp_rev_hi_b2_op    EQU  0x54     ; 8-bit f operand for v172_diag_id_tmp_rev_hi_b2
 v172_diag_id_tmp_rev_hi_b2_phys  EQU  0x254    ; physical address for movff/lfsr
-stock_255_b2                     EQU  0x255    ; phys 0x255, bank 2, owner stock-derived
-stock_255_b2_op                  EQU  0x55     ; 8-bit f operand for stock_255_b2
-stock_255_b2_phys                EQU  0x255    ; physical address for movff/lfsr
 v172_fname_scroll_div_lo_b2      EQU  0x255    ; phys 0x255, bank 2, owner v172_fname_scroll_div_lo
 v172_fname_scroll_div_lo_b2_op   EQU  0x55     ; 8-bit f operand for v172_fname_scroll_div_lo_b2
 v172_fname_scroll_div_lo_b2_phys EQU  0x255    ; physical address for movff/lfsr

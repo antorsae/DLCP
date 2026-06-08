@@ -6,7 +6,12 @@ import types
 
 import pytest
 
-from dlcp_fw.paths import STOCK_CONTROL_HEX_V14, V171_CONTROL_HEX, V172_CONTROL_HEX
+from dlcp_fw.paths import (
+    STOCK_CONTROL_HEX_V14,
+    V171_CONTROL_HEX,
+    V172_CONTROL_HEX,
+    V173_CONTROL_HEX,
+)
 from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_BOOT_START,
     CONTROL_PROG_END_EXCL,
@@ -108,6 +113,17 @@ def test_detect_static_hex_control_release_info_v172() -> None:
     release = detect_static_hex_control_release_info(parse_intel_hex(str(V172_CONTROL_HEX)))
     assert release is not None
     assert (release.major, release.minor, release.sub) == (0x01, 0x07, 0x32)
+    assert release.revision is not None
+    assert release.revision >= 0x01
+    assert release.build_date is not None
+
+
+def test_detect_static_hex_control_release_info_v173() -> None:
+    if not V173_CONTROL_HEX.exists():
+        pytest.skip(f"missing: {V173_CONTROL_HEX.name}")
+    release = detect_static_hex_control_release_info(parse_intel_hex(str(V173_CONTROL_HEX)))
+    assert release is not None
+    assert (release.major, release.minor, release.sub) == (0x01, 0x07, 0x33)
     assert release.revision is not None
     assert release.revision >= 0x01
     assert release.build_date is not None
@@ -301,10 +317,27 @@ def test_preflight_reports_v172_target_release(capsys) -> None:
     assert " / build " in out
 
 
-def test_safe_control_wrapper_defaults_to_v172_release() -> None:
+def test_preflight_reports_v173_target_release(capsys) -> None:
+    if not V173_CONTROL_HEX.exists():
+        pytest.skip(f"missing: {V173_CONTROL_HEX.name}")
+    rc = main(["--hex", str(V173_CONTROL_HEX), "--preflight-only"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "target release: V1.73 / rev 0x" in out
+    assert " / build " in out
+
+
+def test_safe_control_wrapper_defaults_to_v173_release() -> None:
     text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
-    assert "DLCP_Control_V1.72.hex" in text
+    assert 'DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.73.hex"' in text
+    assert 'DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.72.hex"' not in text
     assert 'DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.71.hex"' not in text
+
+
+def test_safe_control_wrapper_does_not_own_main_ir_profile_restore() -> None:
+    text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
+    assert "--profile hypex|rc5" not in text
+    assert "persisting MAIN IR profile" not in text
 
 
 def test_static_control_release_info_includes_build_date() -> None:

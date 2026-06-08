@@ -388,7 +388,8 @@ Implemented coverage:
 - `tests/sim/test_dlcp_control_flash_safety.py`
   - V1.72 static release metadata detection
   - V1.72 preflight target identity output
-  - `flash_control_safe.sh` defaults to V1.72
+  - `flash_control_safe.sh` defaulted to V1.72 for this release pair; current
+    promoted releases default to V1.73
 
 MAIN source tests:
 
