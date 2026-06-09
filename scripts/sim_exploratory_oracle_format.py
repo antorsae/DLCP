@@ -650,6 +650,20 @@ def _triage_session(
     else:
         # no observations: boot/connect failure or aborted before sampling
         signals["no_observations"] = True
+    # KNOWN LIMITATION (deferred, tracked 2026-06-09): preset_coeff_unstable and
+    # preset_coeff_collision are BEST-EFFORT ranking heuristics, not reliable
+    # detectors, for two reasons the trace cannot fully resolve:
+    #   1. Boot-apply timing — when the first preset apply completes during
+    #      run_until_connected (before the first sample), the initial preset's
+    #      post-apply image is recorded as `first_digest` and the warmup gate
+    #      never opens, so that preset may not be recorded at all (a one-way
+    #      A->B collision or initial-preset drift can be missed).
+    #   2. The biquad range 0x37..0x90 is also perturbed within a held preset by
+    #      input/mute activity, so "same preset, >1 image" is not purely a
+    #      preset-coeff bug.
+    # The TRUSTWORTHY coeff signal is cross_pb_coeff_desync (compares both units
+    # at the same instant with identical state), and the LLM oracle reads the raw
+    # dsp_coeff timeline from the card directly. These two are kept low-weight.
     for u in (0, 1):
         per_preset = preset_digests[u]
         if any(len(digs) > 1 for digs in per_preset.values()):
