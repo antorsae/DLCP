@@ -1,7 +1,7 @@
 # Mute DSP Refresh Bug Implementation Plan
 
 Date: 2026-06-09
-Status: Reviewed - ready for implementation
+Status: Implemented - sim verified; no live flash performed
 Source spec: `docs/MUTE_DSP_REFRESH_BUG_SPEC.md`
 Scope: BUG-MUTE-REFRESH-01 in canonical MAIN V3.4 + CONTROL V1.73 only.
 
@@ -392,7 +392,9 @@ Actual files changed:
 - `crates/dlcp-sim-py/src/lib.rs`
 - `src/dlcp_fw/sim/dlcp_sim_native.py`
 - `tests/sim/test_v34_mute_refresh_bug.py`
+- `tests/sim/test_dlcp_main_flash_capture_overlay.py`
 - `tests/sim/test_v32_flasher_sim_backend_hid.py`
+- `tests/sim/test_v32_release_flash_sim.py`
 - `tests/sim/test_v34_v173_i2c_recovery_contract.py`
 - `tests/sim/test_v34_v173_refactoring_contracts.py`
 - `docs/IMPL_MUTE_DSP_REFRESH_BUG.md`
@@ -421,9 +423,26 @@ Actual size/free-space metrics:
   `free_bytes_before_0x4C00=144`, `free_object_words=72`.
 - Final canonical V3.4: `used_bytes_pre_preset_b=15115`,
   `last_used_pre_preset_b=0x4B7D`,
-  `free_bytes_before_0x4C00=130`, `free_object_words=65`.
+  `free_bytes_before_0x4C00=130`, `free_object_words=65`,
+  `byte_margin=130`.
+- Bug-fix delta: `+16` used bytes, `+0x0E` last-used address,
+  `-14` free bytes, `-7` free object words.
 - Acceptance floor remains met: `free_object_words >= 64` and
   `byte_margin >= 128`.
+
+Final canonical V3.4 artifact identity:
+
+- Release revision: `0x7F`.
+- Hex file SHA-256:
+  `10566b6e96bb0e9218c3d9ee838fec164c208e7070667da28479b3e75682da58`.
+- App payload CRC: `0x2769`.
+- App payload SHA-256:
+  `3cb5505e5098edce1bc3009c76381920453de5607245191717898b21e9736fcb`.
+- Listing:
+  `src/dlcp_fw/asm/dlcp_main_v34.lst`.
+- `0x1000..0x4BFF` pre-fix/current V3.4 diff:
+  `14144` changed bytes, first `0x1000`, last `0x4B7D`,
+  `885` contiguous changed ranges.
 
 Exact test commands/results:
 
@@ -454,31 +473,33 @@ PYTHONPATH=src .venv_ep0/bin/python -m pytest -q -n 16 tests/sim
 PYTHONPATH=src .venv_ep0/bin/python -m pytest -q \
   tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_firmware_hid_entrypoint_matches_listing
 # 1 passed in 0.08s
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q \
+  tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_and_b_finalize_switches_b_and_restores_a \
+  tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_all_ch_requests_post_flash_finalize \
+  tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_warns_when_diag_memread_endpoint_is_missing \
+  tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_warns_when_eeprom_name_has_not_persisted_yet \
+  tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_firmware_hid_entrypoint_matches_listing \
+  tests/sim/test_v32_release_flash_sim.py::test_v32_release_flash_sim_full_main_post_flash_state
+# 6 passed in 37.62s
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q -n 16 tests/sim
+# 1490 passed, 1 skipped, 7 warnings in 479.68s
 ```
 
-Full-suite failures observed in the long run:
+The first full-suite run exposed stale test expectations rather than mute
+firmware regressions:
 
-- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_and_b_finalize_switches_b_and_restores_a`
-- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_all_ch_requests_post_flash_finalize`
-- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_warns_when_diag_memread_endpoint_is_missing`
-- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_warns_when_eeprom_name_has_not_persisted_yet`
-- `tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_firmware_hid_entrypoint_matches_listing`
-- `tests/sim/test_v32_release_flash_sim.py::test_v32_release_flash_sim_full_main_post_flash_state`
+- Four flasher unit tests were still entering live EP0 profile probing after
+  the current default profile finalization path; they now stub
+  `_apply_ir_profile_ep0` and assert the default `hypex` profile request.
+- The V32 release-flash sim now checks that handoff preserved the preflash
+  sentinel profile, then that the default Hypex profile was intentionally
+  applied to final EEPROM/RAM state.
+- The V32 HID entrypoint test now uses the loaded-hex symbol resolver instead
+  of assuming the old V3.2-only helper name.
 
-The V32 HID entrypoint failure was caused by this implementation replacing the
-V3.2-only helper with the loaded-hex symbol resolver; the test was updated and
-rerun green as shown above.
-
-Known remaining full-suite failures after that fix:
-
-- The four `test_dlcp_main_flash_capture_overlay.py` failures enter live EP0
-  profile probing from flasher unit tests and fail with `DLCP not found`.
-- The V32 release-flash sim failure expects setup profile `0x03` but the
-  current flasher path verifies `0x04` after default Hypex profile
-  application.
-
-These remaining failures are outside the V3.4 mute firmware path and remain
-separate flasher/profile cleanup work.
+No full `tests/sim` failures remain after those test fixes.
 
 Deploy/hardware evidence:
 
@@ -488,12 +509,13 @@ Deploy/hardware evidence:
 
 Remaining low-risk issues:
 
-- Full sim gate has unrelated flasher/profile failures listed above, so this
-  commit is not a whole-repo release-ready declaration.
+- Live muted-playback hardware smoke was not run because no flash/deploy was
+  approved in this goal.  The sim and full-suite release gates are green.
 
 Final acceptance status:
 
 - Sim-focused implementation acceptance is met.
 - V3.4/V1.73 release-adjacent mute and compatibility tests pass.
-- Release-ready status is pending unrelated flasher/profile cleanup and live
-  muted-playback smoke evidence.
+- Full `tests/sim` gate passes.
+- Live rig deployment remains pending explicit flash approval and hardware
+  smoke evidence.

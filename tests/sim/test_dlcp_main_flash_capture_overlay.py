@@ -67,6 +67,21 @@ def _write_minimal_main_hex(path: Path, *, major: int, minor: int, flag: int = 0
     write_intel_hex(path, mem)
 
 
+def _stub_ir_profile_finalize(
+    monkeypatch: pytest.MonkeyPatch,
+    seen: dict[str, object] | None = None,
+) -> None:
+    def fake_apply_ir_profile_ep0(**kwargs):
+        if seen is not None:
+            seen["profile_kwargs"] = kwargs
+        return (0x03, 0x04)
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._apply_ir_profile_ep0",
+        fake_apply_ir_profile_ep0,
+    )
+
+
 def test_load_capture_overlay_reads_sidecar_json(tmp_path: Path) -> None:
     capture = tmp_path / "presetA.bin"
     sidecar = tmp_path / "presetA.json"
@@ -638,6 +653,7 @@ def test_cli_all_ch_requests_post_flash_finalize(monkeypatch, tmp_path: Path) ->
         "dlcp_fw.flash.dlcp_main_flash._pick_device",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no live unit")),
     )
+    _stub_ir_profile_finalize(monkeypatch, seen)
 
     rc = main(
         [
@@ -654,6 +670,7 @@ def test_cli_all_ch_requests_post_flash_finalize(monkeypatch, tmp_path: Path) ->
     assert rc == 0
     assert seen["flash_kwargs"]["need_post_app"] is True
     assert seen["all_ch_kwargs"]["route_label"] == "R"
+    assert seen["profile_kwargs"]["profile_label"] == "hypex"
 
 
 def test_cli_capture_a_warns_when_diag_memread_endpoint_is_missing(
@@ -720,6 +737,7 @@ def test_cli_capture_a_warns_when_diag_memread_endpoint_is_missing(
             )
         ),
     )
+    _stub_ir_profile_finalize(monkeypatch)
 
     rc = main(
         [
@@ -879,6 +897,7 @@ def test_cli_capture_a_warns_when_eeprom_name_has_not_persisted_yet(
             )
         ),
     )
+    _stub_ir_profile_finalize(monkeypatch)
 
     rc = main(
         [
@@ -982,6 +1001,7 @@ def test_cli_capture_a_and_b_finalize_switches_b_and_restores_a(
         "dlcp_fw.flash.dlcp_main_flash._switch_active_preset_ep0",
         lambda *, preset, **kwargs: switches.append(preset) or preset,
     )
+    _stub_ir_profile_finalize(monkeypatch)
 
     rc = main(
         [

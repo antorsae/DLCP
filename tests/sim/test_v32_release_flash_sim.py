@@ -78,6 +78,7 @@ _SETUP_PROFILE_RAM = 0x0B8
 _USER_VOLUME_MINUS_30 = (0xFF, 0xFF, 0xFF, 0xE2)
 _USER_INPUT_COAX_2 = 0x03
 _USER_SETUP_PROFILE_SENTINEL = 0x03
+_DEFAULT_IR_PROFILE_HYPEX = 0x04
 _PRESET_JOB_STATE = 0x2DE
 _PRESET_JOB_IDLE = 0
 _CONTROL_FLAGS_ADDR = 0x01F
@@ -554,9 +555,11 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
         f"(seed was all-L; flasher must flip to R)"
     )
 
-    # ---- Verify release flash preserves user volume/input/profile settings ----
+    # ---- Verify release flash preserves user volume/input and applies default profile ----
     # BUG-SETTINGS-01: app cmd 0x40 used by the flasher must only set the
-    # bootloader-entry marker, not flush factory defaults into EEPROM.
+    # bootloader-entry marker, not flush factory defaults into EEPROM.  The
+    # current main flasher then intentionally applies the default Hypex IR
+    # profile after restoring runtime settings.
     post_flash_eeprom_volume = tuple(
         chain.read_main_eeprom_byte(1, offset) for offset in range(4)
     )
@@ -580,10 +583,12 @@ def test_v32_release_flash_sim_full_main_post_flash_state(capsys) -> None:
     )
     assert post_flash_computed_volume == handoff_settings["computed_volume"]
     assert post_flash_logical_volume == handoff_settings["logical_volume"]
+    assert handoff_settings["eeprom_setup_profile"] == _USER_SETUP_PROFILE_SENTINEL
+    assert handoff_settings["setup_profile"] == _USER_SETUP_PROFILE_SENTINEL
     assert chain.read_main_reg(1, _INPUT_SELECT_RAM) == _USER_INPUT_COAX_2
     assert chain.read_main_reg(1, _INPUT_SELECT_MIRROR_RAM) == _USER_INPUT_COAX_2
-    assert chain.read_main_eeprom_byte(1, 0x0E) == _USER_SETUP_PROFILE_SENTINEL
-    assert chain.read_main_reg(1, _SETUP_PROFILE_RAM) == _USER_SETUP_PROFILE_SENTINEL
+    assert chain.read_main_eeprom_byte(1, 0x0E) == _DEFAULT_IR_PROFILE_HYPEX
+    assert chain.read_main_reg(1, _SETUP_PROFILE_RAM) == _DEFAULT_IR_PROFILE_HYPEX
 
     # ---- Verify EEPROM identity reflects V3.2 (post-seed) ----
     # MEANINGFUL: the V3.2 identity bytes survive the run; the
