@@ -567,8 +567,13 @@ def _triage_session(
         # before sampling) -- must still be surfaceable to the oracle (M4).
         "no_observations": False,
     }
-    # per-unit map: active preset bit -> set of settled biquad digests seen
+    # per-unit map: active preset bit -> set of settled biquad digests seen.
+    # Only populated AFTER a unit's first preset change, so the boot warmup (the
+    # DSP's pre-apply default image, established while the preset is still at its
+    # initial value) is not mistaken for preset-coeff instability.
     preset_digests: dict[int, dict[int, set[str]]] = {0: {}, 1: {}}
+    initial_preset: dict[int, int | None] = {0: None, 1: None}
+    seen_preset_change: dict[int, bool] = {0: False, 1: False}
     last_lcd: tuple[str, str] | None = None
     idle = 0
     for sv in svs:
@@ -584,11 +589,17 @@ def _triage_session(
             and d1 and d2 and d1 != d2
         ):
             signals["cross_pb_coeff_desync_obs"] += 1
-        # learn each unit's settled preset->coeff mapping (job idle = settled)
+        # learn each unit's settled preset->coeff mapping (job idle = settled),
+        # but only after the unit has changed preset at least once (skips warmup)
         for u, tag in ((0, "PB1"), (1, "PB2")):
+            preset = sv[f"{tag}_preset"]
+            if initial_preset[u] is None:
+                initial_preset[u] = preset
+            elif preset != initial_preset[u]:
+                seen_preset_change[u] = True
             dg = sv.get(f"{tag}_dsp_digest", "")
-            if dg and sv[f"{tag}_gate"] and sv[f"{tag}_job"] == 0:
-                preset_digests[u].setdefault(sv[f"{tag}_preset"], set()).add(dg)
+            if seen_preset_change[u] and dg and sv[f"{tag}_gate"] and sv[f"{tag}_job"] == 0:
+                preset_digests[u].setdefault(preset, set()).add(dg)
         # candidate mute-leak: CONTROL shows muted but a MAIN wrote a NON-ZERO
         # (unmute) 0x30 coefficient this interval (uncapped flag, cap-proof).
         if sv.get("ctl_mute") and (sv.get("PB1_tas30_nonzero") or sv.get("PB2_tas30_nonzero")):
