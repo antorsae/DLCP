@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exploratory oracle — per-card judge output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_summary", "overall", "findings"],
+  "properties": {
+    "session_summary": {
+      "type": "string",
+      "description": "one line: what this session exercised"
+    },
+    "overall": {
+      "type": "string",
+      "enum": ["nominal", "suspicious"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["obs_ref", "bug_class", "severity", "confidence", "symptom", "stimulus", "evidence", "expected", "artifact_risk"],
+        "properties": {
+          "obs_ref": {"type": "string", "description": "observation block(s) involved, e.g. \"obs #4..#40\""},
+          "bug_class": {"type": "string", "description": "taxonomy class name (1-9) or \"other\""},
+          "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW", "INFO"]},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "symptom": {"type": "string", "description": "user-observable symptom"},
+          "stimulus": {"type": "string", "description": "the stimulus sequence that triggered it"},
+          "evidence": {"type": "string", "description": "exact card field values supporting the claim"},
+          "expected": {"type": "string", "description": "what correct firmware should have done instead"},
+          "artifact_risk": {"type": "string", "description": "self-skeptical note: why this might be a harness artifact / fidelity gap / expected transient"}
+        }
+      }
+    }
+  }
+}

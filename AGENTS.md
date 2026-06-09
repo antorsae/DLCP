@@ -294,6 +294,14 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/sim_rewrite_next.py` *(progress-ledger automation)*
 - `scripts/sim_v32_fault_injection_sweep.py` *(V3.2 labelled sim-only fault-injection sweep: MSSP SEN/PEN, I2C line holds, BOR/rail sag, USB polling, wake-window UART bursts)*
 
+**Exploratory chain bug-hunt (sim + model-agnostic LLM oracle):**
+
+- `scripts/sim_chain_exploratory.py` *(seeded random CONTROL+PB1+PB2 chain campaigns; injects IR/buttons/USB/chain-frames/faults and logs full stimulus→observation JSONL, including enriched MAIN audio state (mute latch 0x094, event_flags 0x07E, dsp_fault 0x07F, logical/computed volume, input/route mirror, TAS 0x30 payloads) and per-MAIN TAS3108 biquad coefficient digests 0x37..0x90; IR profile DE-MASKED to the firmware's real loaded profile-0x04 Hypex map). Spec: `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md`.*
+- `scripts/sim_exploratory_oracle_format.py` *(pure-Python: renders raw sim JSONL into agent-readable per-session "cards" with stimulus→state deltas; `triage`/`render-all`/`card`/`index` subcommands; mechanical interestingness signals incl. cross-PB coeff desync and preset↔coeff consistency)*
+- `scripts/sim_exploratory_select_cards.py` *(triage + render the most divergent sessions and emit the oracle input list; `--realistic` mode ranks zero-synthetic-fault divergence)*
+- `scripts/exploratory_oracle_run.py` *(MODEL-AGNOSTIC runner: drives judge→dual adversarial verify→synthesize over cards via any `--model-cmd`, e.g. codex or Claude; instructions live in `docs/exploratory_oracle/`)*
+- `scripts/validate_dsp_coeff_digest.py` *(sanity check: proves the biquad digest distinguishes preset A vs B coeffs and that PB1==PB2 nominally)*
+
 **gpsim retirement complete (PF.4 phases 1+2)**:
 
 * Phase 1 (commit 5a56279): deleted 14 gpsim-only operator scripts plus 30 gpsim-only test files now that the rust silicon-ring engine is the default backend (`scripts/gpsim_tui_simulator.py`, `scripts/gpsim_menu_command_audit.py`, `scripts/gpsim_lcd_capture_decode.py`, `scripts/gpsim_headless_chain_diagnose.py`, `scripts/test_full_boot.py`, `scripts/test_button_inject.py`, `scripts/simctl.py`, `scripts/probe_baudcon_mapping.py`, `scripts/probe_v171_layer2_chain.py`, `scripts/capture_v171_early_boot_parity.py`, `scripts/capture_gpsim_ground_truth.py`, `scripts/run_phase0_blessing.py`, `scripts/replay_ground_truth.py`, `scripts/check_ground_truth_capture.py`).
@@ -482,6 +490,9 @@ Top-level docs:
 - `docs/DLCP_LINK_V2_SPEC.md` (lean robust replacement for the legacy 3-byte CONTROL<->MAIN current-loop protocol)
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
+- `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md` (exploratory chain bug-hunt campaign spec: stimulus families, observation capture, and the oracle/bug-classifier rubric used by the LLM judge)
+- `docs/SIM_EXPLORATORY_BUG_TAXONOMY.md` (9-class intermittent-bug failure-mode taxonomy used as the oracle reference: preset/coeff desync, UI/MAIN disagreement, standby/wake, LCD glitch, mute leak, lost IR, liveness, fault-surfacing, protocol framing)
+- `docs/exploratory_oracle/ORACLE_PROTOCOL.md` (MODEL-AGNOSTIC oracle protocol: judge/verify/synthesize prompt templates in `docs/exploratory_oracle/prompts/`, JSON schemas in `docs/exploratory_oracle/schemas/`, driven by `scripts/exploratory_oracle_run.py` with any `--model-cmd` — codex or Claude)
 - `docs/SIM_REWRITE_RUST_SPEC.md` (Rust single-process PIC18 simulator rewrite specification)
 - `docs/IMPL_SIM_REWRITE_RUST_FIDELITY_SPEC.md` (implementation plan for Rust PIC18 silicon-fidelity gap closure)
 - `docs/TEST_SIMULATOR.md` (test framework and commands)

@@ -42,23 +42,42 @@ IR_PROFILE_VOL_DOWN = 0x023
 IR_PROFILE_INPUT_UP = 0x024
 IR_PROFILE_INPUT_DOWN = 0x025
 IR_PROFILE_MUTE = 0x026
+# Real profile-0x04 (Hypex remote, addr 0x10) command codes the V1.73 firmware
+# actually loads into ir_cmd_cfg (0x021..0x026) at boot — verified empirically.
+# Previously the harness wrote a synthetic Frankenstein map (addr 0x10 + standard
+# RC-5 codes 0x0C/0x10/0x11/0x20/0x21/0x0D), which masked any profile-load bug.
+# Using the firmware's real codes against its own un-clobbered map means a broken
+# profile load now surfaces as a configurable IR command that fails to dispatch.
 IR_CMDS = {
-    "power": 0x0C,
-    "mute": 0x0D,
-    "volume_up": 0x10,
-    "volume_down": 0x11,
-    "input_up": 0x20,
-    "input_down": 0x21,
-    "preset_a": 0x38,
-    "preset_b": 0x39,
-    "standby": 0x3A,
-    "wake": 0x3B,
+    "power": 0x32,
+    "mute": 0x35,
+    "volume_up": 0x33,
+    "volume_down": 0x34,
+    "input_up": 0x36,
+    "input_down": 0x37,
+    "preset_a": 0x38,   # V1.71 hardcoded inline shortcut (profile-independent)
+    "preset_b": 0x39,   # V1.71 hardcoded inline shortcut (profile-independent)
+    "standby": 0x3A,    # V1.71 hardcoded inline shortcut (profile-independent)
+    "wake": 0x3B,       # V1.71 hardcoded inline shortcut (profile-independent)
 }
+CONTROL_IR_PROFILE_SEL = 0x0A7  # cmd1d_setting: 0x04=Hypex@0x10, 0x03=RC-5@0x00
 
 MAIN_ACTIVE_FLAGS = 0x05E
 MAIN_ACTIVE_PRESET_MASK = 0x04
 MAIN_ACTIVE_GATE_MASK = 0x08
 MAIN_PRESET_JOB_STATE = 0x2DE
+MAIN_PRESET_JOB_TARGET = 0x2DF
+# Semantically-critical MAIN state the oracle was previously blind to.  Without
+# these, mute-leak (Class 5) and IR/volume/route bugs cannot be distinguished
+# from benign refresh traffic.  Addresses from src/dlcp_fw/asm/dlcp_main_ram.inc.
+MAIN_LOGICAL_VOLUME = 0x066
+MAIN_COMPUTED_VOLUME = 0x06E
+MAIN_EVENT_FLAGS = 0x07E
+MAIN_DSP_FAULT_FLAGS = 0x07F
+MAIN_STOCK094_MUTE_LATCH = 0x094
+MAIN_INPUT_SELECT = 0x099
+MAIN_INPUT_MIRROR = 0x0B3
+TAS_VOLUME_SUBADDR = 0x30
 MAIN_DIAG_BASE = 0x2E5
 MAIN_DIAG_RESET_BASE = 0x2ED
 MAIN_DIAG_NAMES = ("I", "D", "S", "B", "R", "A", "P")
@@ -361,8 +380,8 @@ class Explorer:
         names = [
             "",
             "A",
-            "USB Audio",
-            "RCA SPDIF",
+            "Flat",
+            "Night Mode",
             "LX521.4 PB6v23 Q",
             "LX521 V15 L22MG old_NC100",
             "Long preset name scroll tail first",
@@ -431,16 +450,15 @@ class Explorer:
         return chain
 
     def _configure_after_boot(self, chain: Chain, config: SessionConfig) -> None:
-        for addr, value in (
-            (IR_PROFILE_ADDR, IR_ADDR_HYPEX),
-            (IR_PROFILE_POWER, IR_CMDS["power"]),
-            (IR_PROFILE_VOL_UP, IR_CMDS["volume_up"]),
-            (IR_PROFILE_VOL_DOWN, IR_CMDS["volume_down"]),
-            (IR_PROFILE_INPUT_UP, IR_CMDS["input_up"]),
-            (IR_PROFILE_INPUT_DOWN, IR_CMDS["input_down"]),
-            (IR_PROFILE_MUTE, IR_CMDS["mute"]),
-        ):
-            chain.write_reg(addr, value)
+        # IR profile DE-MASKED: do NOT overwrite the IR command map.  The V1.73
+        # firmware loads its real profile-0x04 map at boot (forced via the
+        # EEPROM[0x71]!=0x04 -> 0x04 path), and IR stimuli use the real Hypex
+        # codes in IR_CMDS.  Record what the firmware actually loaded so the
+        # oracle can spot a broken/empty profile map (e.g. configurable commands
+        # that silently fail while the hardcoded preset shortcuts still work).
+        loaded_profile = chain.read_reg(CONTROL_IR_PROFILE_SEL)
+        loaded_ir_addr = chain.read_reg(IR_PROFILE_ADDR)
+        loaded_ir_cmds = [chain.read_reg(IR_PROFILE_POWER + i) for i in range(6)]
         if config.src_initial == "locked":
             for unit in (0, 1):
                 chain.poke_main_src4382_reg(unit, 0x12, 0x00)
@@ -452,7 +470,16 @@ class Explorer:
             for unit in (0, 1):
                 chain.poke_main_src4382_reg(unit, 0x12, 0x01)
                 chain.poke_main_src4382_reg(unit, 0x13, 0x01)
-        self._log_event(config.session_id, "post_boot_config", {"src_initial": config.src_initial})
+        self._log_event(
+            config.session_id,
+            "post_boot_config",
+            {
+                "src_initial": config.src_initial,
+                "ir_profile_sel": loaded_profile,
+                "ir_addr_cfg": loaded_ir_addr,
+                "ir_cmd_cfg": loaded_ir_cmds,
+            },
+        )
 
     def _sample(
         self,
@@ -489,6 +516,37 @@ class Explorer:
                     )
                     >> 3,
                     "preset_job_state": chain.read_main_reg(unit, MAIN_PRESET_JOB_STATE),
+                    "preset_job_target": chain.read_main_reg(unit, MAIN_PRESET_JOB_TARGET),
+                    "mute_latch": chain.read_main_reg(unit, MAIN_STOCK094_MUTE_LATCH),
+                    "event_flags": chain.read_main_reg(unit, MAIN_EVENT_FLAGS),
+                    "dsp_fault_flags": chain.read_main_reg(unit, MAIN_DSP_FAULT_FLAGS),
+                    "logical_volume": chain.read_main_reg(unit, MAIN_LOGICAL_VOLUME),
+                    "computed_volume": chain.read_main_reg(unit, MAIN_COMPUTED_VOLUME),
+                    "input_select": chain.read_main_reg(unit, MAIN_INPUT_SELECT),
+                    "input_mirror": chain.read_main_reg(unit, MAIN_INPUT_MIRROR),
+                    # TAS3108 volume-coefficient (0x30) write history: the
+                    # ground truth for mute-leak detection (a non-zero 0x30
+                    # write while mute_latch is set = audio returning).
+                    "tas30_last_write": (
+                        chain.read_main_dsp_write_payload(unit, TAS_VOLUME_SUBADDR) or b""
+                    ).hex(),
+                    "tas30_write_count": len(
+                        chain.read_main_dsp_write_payloads(unit, TAS_VOLUME_SUBADDR)
+                    ),
+                    # ACTUAL DSP preset-coefficient fingerprint.  The biquad
+                    # range 0x37..0x90 (per test_v171_v32_dual_main_preset_sync)
+                    # is the preset-defining coefficient block; it EXCLUDES
+                    # volume (0x30) so the digest changes on a preset switch but
+                    # not on a volume change.  Lets the oracle verify
+                    # preset A -> coeffs A / preset B -> coeffs B, that PB1 and
+                    # PB2 hold byte-identical coeffs, and that a preset flag flip
+                    # actually rewrote the coefficients (not a silent no-op).
+                    "dsp_biquad_digest": hashlib.sha256(
+                        bytes(chain.read_main_dsp_reg(unit, s) for s in range(0x37, 0x91))
+                    ).hexdigest()[:12],
+                    "dsp_full_digest": hashlib.sha256(
+                        bytes(chain.read_main_dsp_reg(unit, s) for s in range(0x00, 0x100))
+                    ).hexdigest()[:12],
                     "diag": {
                         name: chain.read_main_reg(unit, MAIN_DIAG_BASE + idx)
                         for idx, name in enumerate(MAIN_DIAG_NAMES)
