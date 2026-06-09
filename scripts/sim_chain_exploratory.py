@@ -534,9 +534,13 @@ class Explorer:
                     # write while mute_latch is set = audio returning).
                     "tas30_last_write": (tas30_all[-1].hex() if tas30_all else ""),
                     "tas30_write_count": len(tas30_all),
-                    # every distinct 0x30 write since the previous sample (capped),
-                    # so a transient unmute-while-muted is visible to the oracle.
+                    # 0x30 writes since the previous sample (display-capped), so a
+                    # transient unmute-while-muted is visible to the oracle.
                     "tas30_writes_since": [p.hex() for p in tas30_since[-16:]],
+                    # UNCAPPED leak signal: did ANY non-zero (unmute) 0x30 write
+                    # happen this interval?  Survives the display cap above, so a
+                    # bursty interval cannot hide the transient.
+                    "tas30_nonzero_since": any(int.from_bytes(p, "big") for p in tas30_since),
                     # ACTUAL DSP preset-coefficient fingerprint.  The biquad
                     # range 0x37..0x90 (per test_v171_v32_dual_main_preset_sync)
                     # is the preset-defining coefficient block; it EXCLUDES

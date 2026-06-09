@@ -227,6 +227,7 @@ def _state_vector(obs: dict[str, Any]) -> dict[str, Any]:
         sv[f"{tag}_tas30"] = m.get("tas30_last_write", "")
         sv[f"{tag}_tas30_count"] = int(m.get("tas30_write_count", 0))
         sv[f"{tag}_tas30_since"] = list(m.get("tas30_writes_since", []))
+        sv[f"{tag}_tas30_nonzero"] = bool(m.get("tas30_nonzero_since"))
         # actual preset-coefficient fingerprint (biquad range 0x37..0x90)
         sv[f"{tag}_dsp_digest"] = m.get("dsp_biquad_digest", "")
         sv[f"{tag}_dsp_full"] = m.get("dsp_full_digest", "")
@@ -425,6 +426,7 @@ def render_card(run_dir: Path, session_id: int) -> str:
                 f"input={sv[f'{tag}_input']}/mirror={sv[f'{tag}_input_mirror']} "
                 f"tas30={sv[f'{tag}_tas30'] or '--'}(n={sv[f'{tag}_tas30_count']})"
                 + (f" tas30_since={sv[f'{tag}_tas30_since']}" if sv[f'{tag}_tas30_since'] else "")
+                + (" tas30_nonzero!" if sv[f'{tag}_tas30_nonzero'] else "")
                 + (f" dsp_coeff={sv.get(f'{tag}_dsp_digest', '--')}" if sv.get(f'{tag}_dsp_digest') else "")
             )
         changes = _diff(prev_sv, sv)
@@ -587,8 +589,9 @@ def _triage_session(
             dg = sv.get(f"{tag}_dsp_digest", "")
             if dg and sv[f"{tag}_gate"] and sv[f"{tag}_job"] == 0:
                 preset_digests[u].setdefault(sv[f"{tag}_preset"], set()).add(dg)
-        # candidate mute-leak: CONTROL shows muted but a MAIN wrote 0x30 this interval
-        if sv.get("ctl_mute") and (sv.get("PB1_tas30_since") or sv.get("PB2_tas30_since")):
+        # candidate mute-leak: CONTROL shows muted but a MAIN wrote a NON-ZERO
+        # (unmute) 0x30 coefficient this interval (uncapped flag, cap-proof).
+        if sv.get("ctl_mute") and (sv.get("PB1_tas30_nonzero") or sv.get("PB2_tas30_nonzero")):
             signals["mute_volwrite_obs"] += 1
         if sv["PB1_gate"] != sv["PB2_gate"]:
             signals["gate_mismatch_obs"] += 1
@@ -627,7 +630,7 @@ def _triage_session(
             and ld1 and ld2 and ld1 != ld2
         )
         signals["final_mute_volwrite"] = bool(
-            last.get("ctl_mute") and (last.get("PB1_tas30_since") or last.get("PB2_tas30_since"))
+            last.get("ctl_mute") and (last.get("PB1_tas30_nonzero") or last.get("PB2_tas30_nonzero"))
         )
     else:
         # no observations: boot/connect failure or aborted before sampling
