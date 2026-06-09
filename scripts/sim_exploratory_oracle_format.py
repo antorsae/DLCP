@@ -568,12 +568,14 @@ def _triage_session(
         "no_observations": False,
     }
     # per-unit map: active preset bit -> set of settled biquad digests seen.
-    # Only populated AFTER a unit's first preset change, so the boot warmup (the
-    # DSP's pre-apply default image, established while the preset is still at its
-    # initial value) is not mistaken for preset-coeff instability.
+    # The boot warmup (the DSP's pre-apply DEFAULT image, the first settled image
+    # a unit shows) is excluded by only recording once the image has changed from
+    # that default -- i.e. the first preset apply has run.  This keeps the initial
+    # preset's REAL (post-apply) image, so collision/drift detection still works
+    # even for sessions that never change preset or only switch one way.
     preset_digests: dict[int, dict[int, set[str]]] = {0: {}, 1: {}}
-    initial_preset: dict[int, int | None] = {0: None, 1: None}
-    seen_preset_change: dict[int, bool] = {0: False, 1: False}
+    first_digest: dict[int, str | None] = {0: None, 1: None}
+    coeffs_applied: dict[int, bool] = {0: False, 1: False}
     last_lcd: tuple[str, str] | None = None
     idle = 0
     for sv in svs:
@@ -590,16 +592,18 @@ def _triage_session(
         ):
             signals["cross_pb_coeff_desync_obs"] += 1
         # learn each unit's settled preset->coeff mapping (job idle = settled),
-        # but only after the unit has changed preset at least once (skips warmup)
+        # excluding the boot warmup default image (record only once the coeff
+        # image has changed from the first-seen settled value = first apply done)
         for u, tag in ((0, "PB1"), (1, "PB2")):
-            preset = sv[f"{tag}_preset"]
-            if initial_preset[u] is None:
-                initial_preset[u] = preset
-            elif preset != initial_preset[u]:
-                seen_preset_change[u] = True
             dg = sv.get(f"{tag}_dsp_digest", "")
-            if seen_preset_change[u] and dg and sv[f"{tag}_gate"] and sv[f"{tag}_job"] == 0:
-                preset_digests[u].setdefault(preset, set()).add(dg)
+            if not (dg and sv[f"{tag}_gate"] and sv[f"{tag}_job"] == 0):
+                continue
+            if first_digest[u] is None:
+                first_digest[u] = dg
+            elif dg != first_digest[u]:
+                coeffs_applied[u] = True
+            if coeffs_applied[u]:
+                preset_digests[u].setdefault(sv[f"{tag}_preset"], set()).add(dg)
         # candidate mute-leak: CONTROL shows muted but a MAIN wrote a NON-ZERO
         # (unmute) 0x30 coefficient this interval (uncapped flag, cap-proof).
         if sv.get("ctl_mute") and (sv.get("PB1_tas30_nonzero") or sv.get("PB2_tas30_nonzero")):
@@ -668,7 +672,11 @@ def _triage_session(
         + (5 if signals["lcd_idle_streak"] >= 8 else 0)
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
-        + 14 * int(signals["preset_coeff_unstable"])
+        # soft/confounded: the biquad range (0x37..0x90) is also perturbed within a
+        # held preset by input/mute activity, so same-preset >1 image is not purely
+        # a preset-coeff bug.  cross_pb_coeff_desync (same instant, same state) is
+        # the trustworthy coeff signal; keep this only as a minor tiebreaker.
+        + 4 * int(signals["preset_coeff_unstable"])
         + 3 * min(signals["cross_pb_coeff_desync_obs"], 8)
         + 20 * int(signals["final_mute_volwrite"])
         + 3 * min(signals["mute_volwrite_obs"], 6)
@@ -697,7 +705,8 @@ def _triage_session(
         + (4 if signals["lcd_idle_streak"] >= 8 else 0)
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
-        + 14 * int(signals["preset_coeff_unstable"])
+        # soft/confounded (see score above); minor tiebreaker only
+        + 4 * int(signals["preset_coeff_unstable"])
         + 3 * min(signals["cross_pb_coeff_desync_obs"], 6)
         + 20 * int(signals["final_mute_volwrite"])
         + 3 * min(signals["mute_volwrite_obs"], 6)
